@@ -248,7 +248,7 @@ pub fn kill_tree(pgid: Option<i32>, pid: i32, grace: Duration) {
 
     #[cfg(windows)]
     {
-        use future_host::NoWindow;
+        use crate::NoWindow;
         let _ = (pgid, grace);
         // ConPTY children are not a process group; `taskkill /T` walks the tree
         // by parent links, which is the closest portable equivalent. (A Job
@@ -888,7 +888,7 @@ mod tests {
     #[cfg(all(unix, not(target_os = "linux")))]
     #[test]
     fn the_ps_based_session_query_parses_and_survives_a_broken_ps() {
-        if future_host::test_support::reexec_test() {
+        if crate::test_support::reexec_test() {
             return;
         }
         let root = tempfile::tempdir().unwrap();
@@ -929,7 +929,7 @@ mod tests {
     #[cfg(all(unix, not(target_os = "linux")))]
     #[test]
     fn the_session_sweep_signals_reported_members_and_escalates() {
-        if future_host::test_support::reexec_test() {
+        if crate::test_support::reexec_test() {
             return;
         }
         let root = tempfile::tempdir().unwrap();

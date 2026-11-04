@@ -20,6 +20,10 @@ pub(crate) const EVENTS_PAGE_BYTE_BUDGET: usize =
 pub(crate) const EVENT_WIRE_OVERHEAD: usize =
     crate::session::content::transport::EVENT_WIRE_OVERHEAD;
 
+/// Messages in a `get_messages` page when the caller names an `offset` but no
+/// `limit`. Remote clients name both; this only bounds the unusual request.
+const DEFAULT_MESSAGE_PAGE: i64 = 100;
+
 /// Cut `events` to one page for a paging caller (`max_events > 0`): at most
 /// `max_events` entries, and at most [`EVENTS_PAGE_BYTE_BUDGET`] of estimated
 /// serialized size, whichever comes first. The first event always goes out —
@@ -133,36 +137,89 @@ pub(crate) fn handle_get_system_prompt(
 
 pub(crate) fn handle_get_messages(
     session: &Arc<parking_lot::RwLock<ServerSession>>,
+    cmd: &RpcCommand,
     id: &str,
 ) -> String {
+    // A caller that names a page gets the page. Resolving `offset` to a row range
+    // in `entries` and hydrating only those rows is what stops this command from
+    // growing with the conversation: the whole transcript used to be mapped and
+    // serialised for a reply carrying 40 messages, which cost 249 ms on a
+    // 14,531-entry conversation and made a 25,000-entry one fail outright on the
+    // 32 MiB frame limit. A caller that names no page keeps the whole in-memory
+    // list, unchanged.
+    if cmd.offset.is_some() || cmd.limit.is_some() {
+        let offset = cmd.offset.unwrap_or(0).max(0).unsigned_abs() as usize;
+        let limit = cmd
+            .limit
+            .filter(|limit| *limit > 0)
+            .unwrap_or(DEFAULT_MESSAGE_PAGE) as usize;
+        let (session_manager, session_id, supports_images) = {
+            let current = session.read();
+            let supports_images = current
+                .model_registry
+                .read()
+                .request_model_accepts_images(&current.model);
+            (
+                current.session_manager.clone(),
+                current.session_id.clone(),
+                supports_images,
+            )
+        };
+        let (entries, total) = match session_manager.message_page(&session_id, offset, limit) {
+            Ok(page) => page,
+            Err(error) => {
+                return RpcResponse::build_fail(
+                    id,
+                    "get_messages",
+                    &format!("Unable to read conversation messages: {error}"),
+                )
+            }
+        };
+        let messages = crate::session::entries_to_agent_messages(&entries, supports_images);
+        let msgs: Vec<_> = messages.iter().map(context_message).collect();
+        let kept = msgs.len();
+        return RpcResponse::ok(
+            id,
+            "get_messages",
+            serde_json::json!({
+                "messages": msgs,
+                "offset": offset,
+                "nextOffset": offset + kept,
+                "total": total,
+                "hasMore": offset + kept < total,
+            }),
+        );
+    }
     let session = session.read();
     let messages = session.messages.read();
-    let msgs: Vec<_> = messages
-        .iter()
-        .map(|message| future_rpc::message::ContextMessage {
-            role: message.role.clone(),
-            run_id: message
-                .metadata
-                .as_ref()
-                .and_then(|m| m.get("run_id"))
-                .and_then(|v| v.as_str())
-                .map(str::to_owned),
-            blocks: message
-                .content
-                .iter()
-                .map(|block| {
-                    future_rpc::message::MessageBlock::from_model(
-                        &serde_json::to_value(block).expect("model block"),
-                    )
-                })
-                .collect(),
-            metadata: message.metadata.clone().and_then(|mut meta| {
-                meta.remove("run_id");
-                (!meta.is_empty()).then_some(serde_json::Value::Object(meta))
-            }),
-        })
-        .collect();
+    let msgs: Vec<_> = messages.iter().map(context_message).collect();
     RpcResponse::ok(id, "get_messages", serde_json::json!({"messages": msgs}))
+}
+
+/// One stored message as the RPC carries it.
+fn context_message(message: &crate::types::AgentMessage) -> future_rpc::message::ContextMessage {
+    future_rpc::message::ContextMessage {
+        role: message.role.clone(),
+        run_id: message
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("run_id"))
+            .and_then(|v| v.as_str())
+            .map(str::to_owned),
+        blocks: message
+            .content
+            .iter()
+            .map(|block| {
+                future_rpc::message::MessageBlock::from_model(
+                    &serde_json::to_value(block).expect("model block"),
+                )
+            })
+            .collect(),
+        metadata: message.metadata.clone().and_then(|mut meta| {
+            meta.remove("run_id");
+            (!meta.is_empty()).then_some(serde_json::Value::Object(meta))
+        }),
+    }
 }
 
 pub(crate) fn handle_get_events_since(

@@ -1,17 +1,23 @@
-import { Trash2, X } from "lucide-react";
+import { Archive, Trash2, X } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../ui/Button";
 
 export function ActivityRailSelectionToolbar({
+  onArchive,
   onCancel,
   onDelete,
+  onRestore,
   onToggleAll,
   selectedCount,
   totalCount,
 }: {
+  /** Absent in a list that offers no archive action. */
+  onArchive?: () => void;
   onCancel: () => void;
   onDelete: () => void;
+  /** Present in the archived view, where a batch means "put these back". */
+  onRestore?: () => void;
   onToggleAll: () => void;
   selectedCount: number;
   totalCount: number;
@@ -46,6 +52,25 @@ export function ActivityRailSelectionToolbar({
               : t("activityRail.selectAll")}
           </span>
         </label>
+        {onRestore
+          ? (
+              <Button
+                aria-label={t("activityRail.restoreSelected")}
+                className="activity-rail-selection-action shrink-0"
+                disabled={selectedCount === 0}
+                leftIcon={<Archive className="size-3.5" />}
+                onClick={onRestore}
+                size="sm"
+                title={t("activityRail.restoreSelected")}
+                type="button"
+                variant="secondary"
+              >
+                <span className="activity-rail-selection-action-label whitespace-nowrap">
+                  {t("activityRail.restoreSelected")}
+                </span>
+              </Button>
+            )
+          : null}
         <Button
           aria-label={t("activityRail.deleteSelected")}
           className="activity-rail-selection-action shrink-0"
@@ -61,6 +86,25 @@ export function ActivityRailSelectionToolbar({
             {t("activityRail.deleteSelected")}
           </span>
         </Button>
+        {onArchive
+          ? (
+              <Button
+                aria-label={t("activityRail.archiveSelected")}
+                className="activity-rail-selection-action shrink-0"
+                disabled={selectedCount === 0}
+                leftIcon={<Archive className="size-3.5" />}
+                onClick={onArchive}
+                size="sm"
+                title={t("activityRail.archiveSelected")}
+                type="button"
+                variant="secondary"
+              >
+                <span className="activity-rail-selection-action-label whitespace-nowrap">
+                  {t("activityRail.archiveSelected")}
+                </span>
+              </Button>
+            )
+          : null}
         <Button
           aria-label={t("common:cancel")}
           className="activity-rail-selection-action shrink-0"

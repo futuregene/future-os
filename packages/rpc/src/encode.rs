@@ -294,6 +294,7 @@ fn get_session_entries(data: &Value) -> Option<proto::SessionEntriesResponse> {
             .get("nextOffset")
             .and_then(Value::as_i64)
             .unwrap_or_default(),
+        total: data.get("total").and_then(Value::as_i64),
     })
 }
 

@@ -1062,3 +1062,199 @@ fn coalescing_does_not_discard_changing_extension_metadata() {
     );
     assert!(serde_json::from_str::<Value>(&page.events[1].data).unwrap()["future"].is_null());
 }
+
+/// A journal written across batches keeps one row per fragment. Folding it at
+/// rest must reproduce exactly the range the writer would have written had the
+/// fragments arrived together — same cursors, same body bytes, one row.
+#[test]
+fn folding_a_settled_run_coalesces_fragments_the_writer_would_have_merged() {
+    let (_root, store) = store();
+    // One batch first: the writer emits the range it always emits for a text
+    // stream, which is the row the fold has to reproduce.
+    let events: Vec<Value> = [(0i64, "one"), (3, "two"), (6, "six")]
+        .iter()
+        .enumerate()
+        .map(|(idx, (offset, text))| {
+            event(
+                idx as i64,
+                "text_chunk",
+                json!({
+                    "entry_id":"m","content_key":"m:text:0",
+                    "content_offset":offset,"content_bytes":text.len(),"text":text
+                }),
+            )
+        })
+        .collect();
+    let mut writer = Writer::default();
+    writer.persist(&store, "s", [&events[0]]).unwrap();
+    // Extend the same body to the nine bytes the three fragments describe, then
+    // re-create what the journal looks like written in three batches.
+    store
+        .db
+        .call(|db| {
+            let (id, content): (i64, i64) = db.query_row(
+                "SELECT id,content_id FROM stream_changes",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            db.execute(
+                "INSERT INTO content_segments(content_id,byte_offset,body) VALUES (?1,3,'two')",
+                params![content],
+            )?;
+            db.execute(
+                "INSERT INTO content_segments(content_id,byte_offset,body) VALUES (?1,6,'six')",
+                params![content],
+            )?;
+            db.execute(
+                "UPDATE content_objects SET byte_length=9 WHERE id=?1",
+                params![content],
+            )?;
+            db.execute(
+                "UPDATE stream_runs SET durable_cursor=2
+                  WHERE id=(SELECT stream_id FROM stream_changes WHERE id=?1)",
+                params![id],
+            )?;
+            // One row per batch: each fragment's range facts live in its row, not
+            // in its metadata, which is exactly what the row flags then say.
+            db.execute(
+                "UPDATE stream_changes
+                    SET last_cursor=0,byte_offset=0,byte_length=3,
+                        metadata_json=json_remove(metadata_json,
+                            '$.data.content_offset','$.data.content_bytes','$.data.content_first_idx')
+                  WHERE id=?1",
+                params![id],
+            )?;
+            for cursor in [1i64, 2] {
+                db.execute(
+                    "INSERT INTO stream_changes(stream_id,context_id,first_cursor,last_cursor,
+                         event_kind,flags,metadata_json,content_id,byte_offset,byte_length)
+                     SELECT stream_id,context_id,?2,?2,event_kind,flags,metadata_json,content_id,
+                            ?2*3,3 FROM stream_changes WHERE id=?1",
+                    params![id, cursor],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    store
+        .db
+        .call(|db| {
+            db.execute(
+                "INSERT INTO runs(session_id,run_id,status,completed_at_ms) VALUES ('s','r','completed',1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let text_of = |events: Vec<Value>| -> String {
+        events
+            .iter()
+            .filter_map(|event| event["data"].as_str())
+            .filter_map(|data| serde_json::from_str::<Value>(data).ok())
+            .filter_map(|data| data["text"].as_str().map(str::to_owned))
+            .collect()
+    };
+    let before = text_of(store.typed_events("s", "r").unwrap());
+    let (rows_before, folded) = store
+        .db
+        .call(|db| {
+            let rows: i64 =
+                db.query_row("SELECT count(*) FROM stream_changes", [], |r| r.get(0))?;
+            let folded = crate::session::database::try_maintenance_transaction(db, |tx| {
+                super::journal::fold_settled_run(tx, "s", "r")
+            })?;
+            Ok((rows, folded))
+        })
+        .unwrap();
+    assert_eq!(rows_before, 3, "one row per batch before folding");
+    assert_eq!(
+        folded,
+        (3, 1),
+        "three fragments become the range they describe"
+    );
+    let after = text_of(store.typed_events("s", "r").unwrap());
+    assert_eq!(
+        before, after,
+        "a fold must not change what a replay renders"
+    );
+    assert_eq!(after, "onetwosix");
+
+    // Idempotent: a second pass finds nothing to merge.
+    let again = store
+        .db
+        .call(|db| {
+            crate::session::database::try_maintenance_transaction(db, |tx| {
+                super::journal::fold_settled_run(tx, "s", "r")
+            })
+        })
+        .unwrap();
+    assert_eq!(again, (1, 1));
+}
+
+/// A settled run's journal is retired; its transcript and bodies stay.
+#[test]
+fn retiring_a_settled_stream_drops_the_journal_and_keeps_the_transcript() {
+    let (_root, store) = store();
+    let mut writer = Writer::default();
+    let chunk = event(
+        0,
+        "text_chunk",
+        json!({"entry_id":"m","content_key":"m:text:0","content_offset":0,"content_bytes":7,"text":"retired"}),
+    );
+    writer.persist(&store, "s", [&chunk]).unwrap();
+    store
+        .db
+        .call(|db| {
+            db.execute(
+                "INSERT INTO runs(session_id,run_id,status,started_at_ms,completed_at_ms)
+                 VALUES ('s','r','completed',1,2)",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let (streams, rows) = store.db.call(|db| super::retire::plan(db)).unwrap();
+    assert_eq!(streams, 1);
+    assert!(rows >= 1, "the journal has rows to retire");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let (retired, deleted) = store
+        .db
+        .call(move |db| super::retire::apply(db, 8, deadline))
+        .unwrap();
+    assert_eq!(retired, 1);
+    assert!(deleted >= 1);
+    let leftover: (i64, i64, i64, i64) = store
+        .db
+        .call(|db| {
+            Ok((
+                db.query_row("SELECT count(*) FROM stream_changes", [], |r| r.get(0))?,
+                db.query_row("SELECT count(*) FROM stream_runs", [], |r| r.get(0))?,
+                db.query_row("SELECT count(*) FROM retired_streams", [], |r| r.get(0))?,
+                db.query_row("SELECT count(*) FROM content_segments", [], |r| r.get(0))?,
+            ))
+        })
+        .unwrap();
+    assert_eq!(leftover.0, 0, "no journal rows left");
+    assert_eq!(leftover.1, 0, "the stream itself is gone");
+    assert_eq!(leftover.2, 0, "the retirement marker is cleared");
+    assert!(leftover.3 > 0, "the transcript body must survive");
+    assert_eq!(
+        store.db.call(|db| super::retire::plan(db)).unwrap(),
+        (0, 0),
+        "nothing left to retire"
+    );
+    // The transcript still reads even though the run's stream is gone.
+    let text: String = store
+        .db
+        .call(|db| {
+            Ok(db.query_row(
+                "SELECT coalesce(group_concat(body,''),'') FROM
+                   (SELECT body FROM content_segments ORDER BY byte_offset)",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(text, "retired", "the body is still the text it was");
+}

@@ -324,6 +324,65 @@ pub(super) async fn run(args: &[String], out: &Output) -> Result<(), String> {
         "  {} leftover rows from earlier interruptions",
         count(number(&plan, "leftoverEvents"))
     ));
+    // Folds published before this build stored plain JSON; the sweep encodes them
+    // in the same pass, so the plan says how much is still that way.
+    let plain_folds = number(&plan["snapshotBodies"], "pendingRuns");
+    if plain_folds > 0 {
+        out.log(&format!(
+            "  {} published folds still plain JSON · {} to encode",
+            count(plain_folds),
+            bytes(number(&plan["snapshotBodies"], "pendingBytes"))
+        ));
+    }
+    let foldable = number(&plan["settledFolds"], "pendingRows");
+    if foldable > 0 {
+        out.log(&format!(
+            "  {} settled-run journal rows to coalesce into ranges",
+            count(foldable)
+        ));
+    }
+    let segments = number(&plan["bodySegments"], "pendingRows");
+    if segments > 0 {
+        out.log(&format!(
+            "  {} body fragments to repack into one row each",
+            count(segments)
+        ));
+    }
+    let compressible = number(&plan["bodyEncoding"], "pendingBytes");
+    if compressible > 0 {
+        out.log(&format!(
+            "  {} of sealed body text to compress",
+            bytes(compressible)
+        ));
+    }
+    let block_text = number(&plan["blockEncoding"], "pendingBytes");
+    if block_text > 0 {
+        out.log(&format!(
+            "  {} of legacy block text to store compressed",
+            bytes(block_text)
+        ));
+    }
+    let entry_text = number(&plan["entryEncoding"], "pendingBytes");
+    if entry_text > 0 {
+        out.log(&format!(
+            "  {} of entry metadata to store compressed",
+            bytes(entry_text)
+        ));
+    }
+    let settled = number(&plan["settledStreams"], "pendingRows");
+    if settled > 0 {
+        out.log(&format!(
+            "  {} settled-run stream rows to retire (no token replay afterwards)",
+            count(settled)
+        ));
+    }
+    let projections = number(&plan["historyProjections"], "pendingRows");
+    if projections > 0 {
+        out.log(&format!(
+            "  {} derived display rows to drop (rebuilt on next open)",
+            count(projections)
+        ));
+    }
     print_entries(&plan, true, out);
     if options.json {
         out.log(&serde_json::to_string_pretty(&plan).map_err(|e| e.to_string())?);

@@ -71,12 +71,6 @@ pub use commands::dispatch_update_helper;
 #[cfg(feature = "gui")]
 use commands::*;
 use error::AppError;
-/// Process-wide lock for tests that mutate the global `HOME` env var
-/// (`auth_store` and the shadow-review smoke test). `HOME` is process-global, so
-/// those tests must run one at a time or they clobber each other's paths.
-#[cfg(all(test, feature = "gui"))]
-pub(crate) use future_host::TEST_HOME_LOCK;
-
 #[cfg(all(test, feature = "gui"))]
 fn install_rustls_provider() {
     future_host::install_rustls_provider();
@@ -1076,7 +1070,15 @@ mod gui {
                 get_future_balance,
                 archive_finished_runs,
                 list_threads,
+                list_threads_page,
+                list_pinned_threads,
+                list_active_threads,
+                search_threads,
                 list_workspaces,
+                list_workspaces_page,
+                list_pinned_workspaces,
+                archive_workspace,
+                restore_workspace,
                 create_workspace,
                 rename_workspace,
                 pin_workspace,
@@ -1095,6 +1097,9 @@ mod gui {
                 pin_thread,
                 archive_thread,
                 restore_thread,
+                archive_thread_tree,
+                restore_thread_tree,
+                batch_archive_threads,
                 delete_thread,
                 batch_delete_threads,
                 fork_thread,
@@ -1286,6 +1291,12 @@ mod gui {
         if let Err(error) = terminal::server::bind() {
             tracing::error!(event = "initialize_process_state", error = %error,"FutureOS terminal server bind failed: {error}");
         }
+        // A paired device drives these same shells (see
+        // `docs/internals/desktop/embedded-terminal.md` §Remote). The registry
+        // is the host's (`future_host::terminal`), so the window and a headless
+        // `future host` install the same one; what the control plane may offer
+        // is advertised in the handshake.
+        future_host::terminal::install_service();
         Ok(())
     }
 

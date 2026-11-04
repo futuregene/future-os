@@ -53,6 +53,12 @@
 | [RPC crate](architecture/rpc.zh-CN.md)（[en](architecture/rpc.md)） | `packages/rpc` — protobuf 线上契约（唯一事实来源） |
 | [远程下载分档](architecture/remote-download-tiers.zh-CN.md)（[en](architecture/remote-download-tiers.md)） | 桌面保存副本不是手机下载：按客户端分档（手机 10 MiB、桌面 512 MiB）、桌面档去掉了什么、旧 host 的受匹配拒绝文案及其验收证据 |
 
+## 设计（`design/`）
+
+| 文档 | 内容 |
+|---|---|
+| [工作区与会话：分页加载与归档设计](design/workspace-thread-archive-and-paging.zh-CN.md)（[en](design/workspace-thread-archive-and-paging.md)） | 定稿设计：树级归档与统一的"无活跃会话"前置规则、工作区归档与容器唤醒、只读详情、首次归档引导，以及工作区列表/工作区对话/临时对话的 keyset 分页 |
+
 ## 内部文档（`internals/`）
 
 桌面应用与移动客户端的分模块工作文档：产品语义、数据模型、各平台沙箱、连接与远程行为、上下文压缩、移动端构建与平台对齐记录，以及 TUI 测试框架约定。

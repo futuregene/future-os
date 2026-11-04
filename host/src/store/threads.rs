@@ -3,6 +3,7 @@ use serde::Serialize;
 
 use super::db::*;
 use super::records::*;
+use super::status::TERMINAL_RUN_STATUSES_SQL;
 use super::util::*;
 use super::workspaces::{
     get_or_create_chat_workspace_in, get_or_create_user_workspace_in, get_workspace_in,
@@ -500,6 +501,239 @@ pub fn archive_thread(thread_id: &str) -> Result<ThreadRecord, crate::Error> {
 
 pub fn restore_thread(thread_id: &str) -> Result<ThreadRecord, crate::Error> {
     update_thread_status(thread_id, "active")
+}
+
+/// The thread and every descendant it parents, as **archive** resolves it.
+///
+/// Archiving is a tree operation (a fork tree is shelved or visible as a
+/// whole), so the target set is the same closure a recursive delete uses
+/// ([`thread_delete_ids_in`]) — real `parent_session_id` lineage, cycle-safe.
+/// Soft-deleted rows are excluded: they are not archivable and their status
+/// must not decide the answer.
+pub fn thread_archive_closure(thread_id: &str) -> Result<Vec<ThreadRecord>, crate::Error> {
+    let conn = connect()?;
+    let ids = thread_delete_ids_in(&conn, thread_id)?;
+    let mut threads = Vec::with_capacity(ids.len());
+    for id in &ids {
+        if let Some(thread) = get_thread_in(&conn, id)? {
+            if thread.status != "deleted" {
+                threads.push(thread);
+            }
+        }
+    }
+    Ok(threads)
+}
+
+/// A conversation cannot be shelved while it is still running: an archived
+/// `waiting_approval` row would hide the badge and stall the run silently, and
+/// setTimeout semantics ("archived" means "done with this") would lie. The
+/// caller renders this as a refusal naming the members.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveConflict {
+    pub thread_id: String,
+    pub title: String,
+}
+
+/// Archive one fork tree (the thread plus every descendant), refusing when any
+/// member is still running.
+///
+/// `streaming_thread_ids` is the Agent's resident streaming set mapped to local
+/// thread ids (see `agent_bridge::reconcile_streaming_observers`), so a run
+/// another client started still counts as active. Pins are cleared for every
+/// member: the pinned section is an active-list shortcut, not an archive flag.
+pub fn archive_thread_tree(
+    thread_id: &str,
+    streaming_thread_ids: &[String],
+) -> Result<ThreadRecord, crate::Error> {
+    let closure = thread_archive_closure(thread_id)?;
+    if closure.is_empty() {
+        return Err("Conversation could not be loaded.".to_string().into());
+    }
+    let active = active_members(
+        closure.iter().map(|thread| thread.id.clone()).collect(),
+        streaming_thread_ids,
+    )?;
+    if !active.is_empty() {
+        return Err(archive_refusal(&active));
+    }
+    let members: Vec<String> = closure.iter().map(|thread| thread.id.clone()).collect();
+    archive_threads_in(&members)?;
+    loaded(get_thread(thread_id)?, "Conversation")
+}
+
+/// Restore one archived tree: the row the caller named plus every descendant
+/// that is archived as part of it. Members that were never archived stay
+/// untouched, so a partially archived lineage converges to "all active".
+pub fn restore_thread_tree(thread_id: &str) -> Result<ThreadRecord, crate::Error> {
+    let closure = thread_archive_closure(thread_id)?;
+    if closure.is_empty() {
+        return Err("Conversation could not be loaded.".to_string().into());
+    }
+    let mut conn = connect()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let now = now_millis();
+    for thread in &closure {
+        if thread.status == "archived" {
+            tx.execute(
+                "UPDATE threads SET status = 'active', archived_at = NULL, updated_at = ?1
+                 WHERE id = ?2 AND status = 'archived'",
+                params![now, thread.id],
+            )?;
+        }
+    }
+    tx.commit()?;
+    mark_catalog_dirty();
+    loaded(get_thread(thread_id)?, "Conversation")
+}
+
+fn archive_threads_in(thread_ids: &[String]) -> Result<(), crate::Error> {
+    let mut conn = connect()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let now = now_millis();
+    for id in thread_ids {
+        tx.execute(
+            "UPDATE threads
+             SET status = 'archived', archived_at = ?1, pinned = 0, updated_at = ?1
+             WHERE id = ?2 AND status != 'deleted'",
+            params![now, id],
+        )?;
+    }
+    tx.commit()?;
+    mark_catalog_dirty();
+    Ok(())
+}
+
+/// The members of `thread_ids` that are still running: a non-terminal run row,
+/// or a session the Agent reports as streaming right now. Shared with the
+/// workspace-archive path, which applies the same rule to every tree in it.
+pub(super) fn active_members(
+    thread_ids: Vec<String>,
+    streaming_thread_ids: &[String],
+) -> Result<Vec<ArchiveConflict>, crate::Error> {
+    let conn = connect()?;
+    let mut conflicts = Vec::new();
+    for id in thread_ids {
+        let streaming = streaming_thread_ids
+            .iter()
+            .any(|candidate| candidate == &id);
+        let active: bool = conn.query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM runs
+                 WHERE thread_id = ?1 AND status NOT IN ({TERMINAL_RUN_STATUSES_SQL}))"
+            ),
+            params![id],
+            |row| row.get(0),
+        )?;
+        if active || streaming {
+            let title: String = conn
+                .query_row(
+                    "SELECT title FROM threads WHERE id = ?1",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .unwrap_or_else(|_| id.clone());
+            conflicts.push(ArchiveConflict {
+                thread_id: id,
+                title,
+            });
+        }
+    }
+    Ok(conflicts)
+}
+
+/// The refusal text every archive path shares: it names the running members so
+/// the user knows what to stop, instead of a generic "not allowed".
+pub(super) fn archive_refusal(conflicts: &[ArchiveConflict]) -> crate::Error {
+    let names = conflicts
+        .iter()
+        .take(3)
+        .map(|conflict| format!("\"{}\"", conflict.title))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = conflicts.len().saturating_sub(3);
+    let tail = if more > 0 {
+        format!(" and {more} more")
+    } else {
+        String::new()
+    };
+    format!("Conversation {names}{tail} is still running; finish or stop it before archiving.")
+        .into()
+}
+
+/// Archive each of `thread_ids` as its own tree. A tree with any running member
+/// is skipped and reported; the rest are archived. This is the selection-mode
+/// path, where a partial result is the useful answer.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchArchiveResult {
+    pub archived_count: usize,
+    pub skipped: Vec<ArchiveConflict>,
+}
+
+pub fn batch_archive_threads(
+    thread_ids: &[String],
+    streaming_thread_ids: &[String],
+) -> Result<BatchArchiveResult, crate::Error> {
+    let mut archived = Vec::new();
+    let mut skipped: Vec<ArchiveConflict> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for thread_id in thread_ids {
+        let closure = thread_archive_closure(thread_id)?;
+        let members: Vec<String> = closure
+            .iter()
+            .filter(|thread| thread.status == "active")
+            .map(|thread| thread.id.clone())
+            .collect();
+        if members.is_empty() {
+            continue;
+        }
+        let key = members.join("|");
+        if !seen.insert(key) {
+            continue;
+        }
+        let conflicts = active_members(members.clone(), streaming_thread_ids)?;
+        if !conflicts.is_empty() {
+            skipped.extend(conflicts);
+            continue;
+        }
+        archive_threads_in(&members)?;
+        archived.extend(members);
+    }
+    Ok(BatchArchiveResult {
+        archived_count: archived.len(),
+        skipped,
+    })
+}
+
+/// Every live conversation whose run has not finished (or that the Agent is
+/// streaming right now), for the recent view's "active" stretch.
+pub fn list_active_threads(
+    streaming_thread_ids: &[String],
+) -> Result<Vec<ThreadRecord>, crate::Error> {
+    let conn = connect()?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {THREAD_COLUMNS} FROM threads
+         WHERE status != 'deleted' AND (
+             id IN (SELECT thread_id FROM runs WHERE status NOT IN ({TERMINAL_RUN_STATUSES_SQL}))
+         )
+         ORDER BY COALESCE(last_message_at, updated_at, created_at) DESC"
+    ))?;
+    let rows = stmt.query_map([], thread_from_row)?;
+    let mut threads = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    // Sessions streaming in another client without a local run row would be
+    // missed by the SQL above; append them by id.
+    for id in streaming_thread_ids {
+        if threads.iter().any(|thread| &thread.id == id) {
+            continue;
+        }
+        if let Some(thread) = get_thread_in(&conn, id)? {
+            if thread.status != "deleted" {
+                threads.push(thread);
+            }
+        }
+    }
+    Ok(threads)
 }
 
 /// FK-safe hard delete of every child row belonging to `thread_id` (the
@@ -2052,5 +2286,168 @@ mod tests {
             error.contains("Thread is not available for session binding"),
             "{error}"
         );
+    }
+}
+
+#[cfg(test)]
+mod archive_tests {
+    use super::*;
+    use crate::store::db::test_support::guarded_conn;
+
+    fn seed(conn: &rusqlite::Connection, id: &str, parent_session: Option<&str>, status: &str) {
+        conn.execute(
+            "INSERT INTO threads (id, workspace_id, mode, title, status, pinned,
+                 readonly, agent_session_id, parent_session_id, created_at, updated_at)
+             VALUES (?1, 'ws', 'chat', ?1, ?2, 1, 0, ?1, ?3, 1, 1)",
+            params![id, status, parent_session],
+        )
+        .unwrap();
+    }
+
+    /// A tree archive takes the whole fork tree and clears every pin: a pinned
+    /// child would otherwise be left behind in the shortcut section.
+    #[test]
+    fn archiving_a_tree_takes_descendants_and_clears_pins() {
+        let (_home, conn) = guarded_conn("archive_tree");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+             VALUES ('ws', 'W', 'user', '/tmp/ws', 1, 1);",
+        )
+        .unwrap();
+        seed(&conn, "root", None, "active");
+        seed(&conn, "child", Some("root"), "active");
+        seed(&conn, "grandchild", Some("child"), "active");
+        drop(conn);
+
+        let archived = archive_thread_tree("root", &[]).expect("archive tree");
+        assert_eq!(archived.status, "archived");
+        assert!(archived.archived_at.is_some());
+        assert!(!archived.pinned, "archiving clears the pin");
+        for id in ["root", "child", "grandchild"] {
+            let thread = get_thread(id).expect("get").expect("exists");
+            assert_eq!(thread.status, "archived", "{id} must follow its tree");
+            assert!(!thread.pinned, "{id} must lose its pin");
+        }
+    }
+
+    /// Any running member refuses the whole tree, and the refusal names it.
+    #[test]
+    fn archiving_refuses_a_tree_with_a_running_member() {
+        let (_home, conn) = guarded_conn("archive_active");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+             VALUES ('ws', 'W', 'user', '/tmp/ws', 1, 1);",
+        )
+        .unwrap();
+        seed(&conn, "root", None, "active");
+        seed(&conn, "child", Some("root"), "active");
+        conn.execute(
+            "INSERT INTO runs (id, thread_id, status, created_at, updated_at)
+             VALUES ('run', 'child', 'waiting_approval', 1, 1)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let error = archive_thread_tree("root", &[]).expect_err("a running member refuses");
+        assert!(error.to_string().contains("child"), "{error}");
+        for id in ["root", "child"] {
+            assert_eq!(
+                get_thread(id).unwrap().unwrap().status,
+                "active",
+                "nothing changes on a refusal"
+            );
+        }
+    }
+
+    /// A session the Agent reports as streaming counts as running even with no
+    /// local run row (a prompt another client started).
+    #[test]
+    fn a_streaming_session_counts_as_running() {
+        let (_home, conn) = guarded_conn("archive_streaming");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+             VALUES ('ws', 'W', 'user', '/tmp/ws', 1, 1);",
+        )
+        .unwrap();
+        seed(&conn, "root", None, "active");
+        drop(conn);
+
+        let error =
+            archive_thread_tree("root", &["root".to_string()]).expect_err("streaming refuses");
+        assert!(error.to_string().contains("root"), "{error}");
+        assert_eq!(get_thread("root").unwrap().unwrap().status, "active");
+    }
+
+    /// Restoring one member brings the archived tree back, and a member that
+    /// was never archived stays untouched.
+    #[test]
+    fn restoring_a_tree_reactivates_its_archived_members() {
+        let (_home, conn) = guarded_conn("restore_tree");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+             VALUES ('ws', 'W', 'user', '/tmp/ws', 1, 1);",
+        )
+        .unwrap();
+        seed(&conn, "root", None, "archived");
+        seed(&conn, "child", Some("root"), "archived");
+        seed(&conn, "keep", None, "active");
+        drop(conn);
+
+        let restored = restore_thread_tree("root").expect("restore tree");
+        assert_eq!(restored.status, "active");
+        assert_eq!(get_thread("root").unwrap().unwrap().status, "active");
+        assert_eq!(get_thread("child").unwrap().unwrap().status, "active");
+        assert_eq!(get_thread("keep").unwrap().unwrap().status, "active");
+    }
+
+    /// Batch archive archives the inactive trees and reports the running ones
+    /// instead of failing the whole batch.
+    #[test]
+    fn batch_archive_skips_running_trees_and_reports_them() {
+        let (_home, conn) = guarded_conn("archive_batch");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+             VALUES ('ws', 'W', 'user', '/tmp/ws', 1, 1);",
+        )
+        .unwrap();
+        seed(&conn, "idle", None, "active");
+        seed(&conn, "busy", None, "active");
+        conn.execute(
+            "INSERT INTO runs (id, thread_id, status, created_at, updated_at)
+             VALUES ('run', 'busy', 'running', 1, 1)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let result =
+            batch_archive_threads(&["idle".to_string(), "busy".to_string()], &[]).expect("batch");
+        assert_eq!(result.archived_count, 1);
+        assert_eq!(result.skipped.len(), 1);
+        assert_eq!(result.skipped[0].thread_id, "busy");
+        assert_eq!(get_thread("idle").unwrap().unwrap().status, "archived");
+        assert_eq!(get_thread("busy").unwrap().unwrap().status, "active");
+    }
+
+    /// A selection that names both a parent and its child archives that tree
+    /// once, not twice.
+    #[test]
+    fn batch_archive_dedupes_a_tree_selected_twice() {
+        let (_home, conn) = guarded_conn("archive_dedupe");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+             VALUES ('ws', 'W', 'user', '/tmp/ws', 1, 1);",
+        )
+        .unwrap();
+        seed(&conn, "root", None, "active");
+        seed(&conn, "child", Some("root"), "active");
+        drop(conn);
+
+        let result =
+            batch_archive_threads(&["root".to_string(), "child".to_string()], &[]).expect("batch");
+        assert_eq!(result.archived_count, 2, "one tree, two members");
+        assert!(result.skipped.is_empty());
+        assert_eq!(get_thread("child").unwrap().unwrap().status, "archived");
     }
 }

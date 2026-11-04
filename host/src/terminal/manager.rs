@@ -112,13 +112,18 @@ pub struct Manager {
 }
 
 /// Reversible admission reservation while the Agent's idle state is checked.
-/// It becomes permanent only when the update commits to service shutdown.
-pub(crate) struct IdleReservation {
+///
+/// It becomes permanent only when the update commits to service shutdown; a
+/// reservation that is dropped without [`IdleReservation::commit`] reopens the
+/// registry, which is what keeps a cancelled update from leaving the machine
+/// unable to open a shell.
+pub struct IdleReservation {
     manager: Arc<Manager>,
     committed: bool,
 }
 impl IdleReservation {
-    pub(crate) fn commit(mut self) {
+    /// Keep the registry closed: the update is going ahead.
+    pub fn commit(mut self) {
         self.committed = true;
     }
 }
@@ -231,8 +236,8 @@ impl Manager {
     /// only way to produce it is to call the same `Session::on_eof` that
     /// `close()` and the reader thread call. Test-only, and it exposes no
     /// behaviour the manager itself does not already have.
-    #[cfg(test)]
-    pub(crate) fn session_for_test(&self, id: &str) -> Option<Arc<super::session::Session>> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn session_for_test(&self, id: &str) -> Option<Arc<super::session::Session>> {
         self.registry.lock().unwrap().sessions.get(id).cloned()
     }
 
@@ -299,7 +304,13 @@ impl Manager {
         registry.exit_order.clear();
     }
 
-    pub(crate) fn reserve_idle(self: &Arc<Self>) -> Option<IdleReservation> {
+    /// Take the registry idle, or report that a shell is still running.
+    ///
+    /// The updater's admission check: resetting or replacing the binary must not
+    /// race a shell the user is working in, so it reserves only when nothing is
+    /// running, and holds the reservation while it decides. A dropped
+    /// reservation is released automatically — see [`IdleReservation`].
+    pub fn reserve_idle(self: &Arc<Self>) -> Option<IdleReservation> {
         let mut registry = self.registry.lock().unwrap();
         if registry.closed
             || registry
@@ -316,12 +327,21 @@ impl Manager {
         })
     }
 
-    pub(crate) fn freeze(&self) {
+    /// Refuse new sessions; existing ones keep running.
+    ///
+    /// Part of the same admission story as [`Manager::reserve_idle`]: once an
+    /// entry point has decided to stop, a create must fail rather than spawn a
+    /// shell into a process that is going away.
+    pub fn freeze(&self) {
         self.registry.lock().unwrap().closed = true;
     }
 
     /// Reset/relaunch must refuse to race a shell the OS could not reap.
-    pub(crate) fn shutdown_checked(&self, grace: Duration) -> Result<(), String> {
+    ///
+    /// Closes everything, then reports the sessions whose child the OS has not
+    /// collected. An entry point that gets an error here must not continue into
+    /// an update: a live child would survive the swap and belong to nothing.
+    pub fn shutdown_checked(&self, grace: Duration) -> Result<(), String> {
         self.freeze();
         let sessions: Vec<_> = self
             .registry
@@ -406,7 +426,12 @@ impl Manager {
         }
     }
 
-    fn session(&self, id: &str) -> Result<Arc<Session>, ManagerError> {
+    /// The session behind an id.
+    ///
+    /// `pub(crate)` so the remote control plane's adapter (`terminal::service`)
+    /// can read a page and write input without going through an `Attachment` it
+    /// would have to register and drop per call.
+    pub(crate) fn session(&self, id: &str) -> Result<Arc<Session>, ManagerError> {
         let registry = self.registry.lock().unwrap();
         registry
             .sessions

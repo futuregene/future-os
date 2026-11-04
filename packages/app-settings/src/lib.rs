@@ -41,6 +41,10 @@ pub struct AppSettings {
     /// 知道了 / click-outside). Off by default; once set, the bubble and its
     /// blue dot never show again (until app data is wiped).
     pub skill_intro_dismissed: bool,
+    /// The first-archive guide was shown (the pulse on the archive button plus
+    /// its coachmark bubble). Off by default; once set, archiving never
+    /// re-teaches the destination.
+    pub archive_guide_seen: bool,
     /// Play a completion bell + request window attention when an agent run
     /// finishes. On by default.
     pub bell_on_complete: bool,
@@ -76,6 +80,7 @@ pub struct UpdateAppSettingsInput {
     pub auto_connect_remote: Option<bool>,
     pub skill_guide_dismissed: Option<bool>,
     pub skill_intro_dismissed: Option<bool>,
+    pub archive_guide_seen: Option<bool>,
     pub bell_on_complete: Option<bool>,
     #[serde(alias = "autoCompactFirstTurn")]
     pub auto_title_first_turn: Option<bool>,
@@ -90,6 +95,7 @@ pub const KEY_AUTO_UPGRADE_SKILLS: &str = "auto_upgrade_skills";
 pub const KEY_AUTO_CONNECT_REMOTE: &str = "auto_connect_remote";
 pub const KEY_SKILL_GUIDE_DISMISSED: &str = "skill_guide_dismissed";
 pub const KEY_SKILL_INTRO_DISMISSED: &str = "skill_intro_dismissed";
+pub const KEY_ARCHIVE_GUIDE_SEEN: &str = "archive_guide_seen";
 pub const KEY_BELL_ON_COMPLETE: &str = "bell_on_complete";
 // Retain the original stored key so existing opt-ins survive the behavior fix.
 // This preference now generates titles only; it never requests compaction.
@@ -246,6 +252,12 @@ pub const SETTINGS: &[Setting] = &[
         stored: KEY_SKILL_INTRO_DISMISSED,
         kind: ValueKind::Bool,
         help: "Skills nav-entry intro bubble acknowledged",
+    },
+    Setting {
+        key: "archiveGuideSeen",
+        stored: KEY_ARCHIVE_GUIDE_SEEN,
+        kind: ValueKind::Bool,
+        help: "First-archive guide shown",
     },
     Setting {
         key: "bellOnComplete",
@@ -429,6 +441,7 @@ pub fn defaults() -> AppSettings {
         auto_connect_remote: true,
         skill_guide_dismissed: false,
         skill_intro_dismissed: false,
+        archive_guide_seen: false,
         bell_on_complete: true,
         auto_title_first_turn: true,
         title_language: "en".to_string(),
@@ -478,6 +491,9 @@ pub fn read(conn: &Connection) -> Result<AppSettings, Error> {
     let skill_intro_dismissed = read_value(conn, KEY_SKILL_INTRO_DISMISSED)?
         .map(|value| value == "true")
         .unwrap_or(false); // Off by default — the bubble shows once until dismissed.
+    let archive_guide_seen = read_value(conn, KEY_ARCHIVE_GUIDE_SEEN)?
+        .map(|value| value == "true")
+        .unwrap_or(false); // Off by default — the first archive teaches the destination.
     let bell_on_complete = read_value(conn, KEY_BELL_ON_COMPLETE)?
         .map(|value| value == "true")
         .unwrap_or(true); // On by default — a finished run should get noticed.
@@ -503,6 +519,7 @@ pub fn read(conn: &Connection) -> Result<AppSettings, Error> {
         auto_connect_remote,
         skill_guide_dismissed,
         skill_intro_dismissed,
+        archive_guide_seen,
         bell_on_complete,
         auto_title_first_turn,
         title_language,
@@ -557,6 +574,14 @@ pub fn apply(
             conn,
             KEY_SKILL_INTRO_DISMISSED,
             bool_str(skill_intro_dismissed),
+            now,
+        )?;
+    }
+    if let Some(archive_guide_seen) = input.archive_guide_seen {
+        write_value(
+            conn,
+            KEY_ARCHIVE_GUIDE_SEEN,
+            bool_str(archive_guide_seen),
             now,
         )?;
     }
@@ -660,6 +685,7 @@ mod tests {
             auto_connect_remote: Some(true),
             skill_guide_dismissed: Some(true),
             skill_intro_dismissed: Some(true),
+            archive_guide_seen: None,
             bell_on_complete: None,
             auto_title_first_turn: None,
             title_language: None,
@@ -761,6 +787,7 @@ mod tests {
                 "autoConnectRemote": input.auto_connect_remote,
                 "skillGuideDismissed": input.skill_guide_dismissed,
                 "skillIntroDismissed": input.skill_intro_dismissed,
+                "archiveGuideSeen": input.archive_guide_seen,
                 "bellOnComplete": input.bell_on_complete,
                 "autoTitleFirstTurn": input.auto_title_first_turn,
                 "titleLanguage": input.title_language,

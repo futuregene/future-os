@@ -1837,6 +1837,7 @@ dependencies = [
  "dhat",
  "dirs",
  "fd-lock",
+ "flate2",
  "fs2",
  "future-fusion",
  "future-http",
@@ -2003,6 +2004,7 @@ name = "future-fusion"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "future-rpc",
  "globset",
  "regex",
  "rusqlite",
@@ -2067,6 +2069,7 @@ dependencies = [
  "image",
  "libc",
  "nkeys",
+ "portable-pty",
  "rand 0.8.7",
  "reqwest",
  "rusqlite",
@@ -2318,7 +2321,6 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "open",
- "portable-pty",
  "prost",
  "qrcode",
  "rand 0.8.7",

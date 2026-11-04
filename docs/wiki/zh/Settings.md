@@ -11,7 +11,7 @@
 应用级别的桌面选项:
 
 - **Language(语言)** —— 选择应用的显示语言。
-- **Appearance(外观)** —— 浅色、深色或跟随系统。**Color theme(配色主题)** 选择调色板（FutureOS、Ayu、Catppuccin、Dracula、Everforest 等），每个主题都同时有浅色和深色版本；**Font size(字号)** 只缩放文字，不改变布局。
+- **Appearance(外观)** —— 浅色、深色或跟随系统。**Color theme(配色主题)** 选择调色板（FutureOS、Ayu、Catppuccin、Dracula、Everforest 等），每个主题都同时有浅色和深色版本；这一行只显示当前主题的色样，点「展开全部 14 套配色」才列出完整清单供切换。**Font size(字号)** 只缩放文字，不改变布局。
 - **Approval mode(批准模式)** —— agent 在操作前询问的程度:
   - **Manual(手动)** —— 文件访问遵循 Allow/Ask/Deny 路径规则；shell 除只读白名单外先询问。
   - **Sandboxed(沙箱)** —— 可用时使用 macOS Seatbelt、Linux 系统 Bubblewrap 或 Windows 受限令牌写保护；文件访问仍遵循路径规则，各平台保护范围不同。

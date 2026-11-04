@@ -59,6 +59,14 @@ tonic.workspace = true
 
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
+# The embedded terminal (`host/src/terminal`): a PTY registry every entry point
+# serves, so a paired device drives the same shells in a window or on a box
+# running `future host`. portable-pty is the cross-platform PTY abstraction
+# (wezterm); `libc` below carries the process-group teardown.
+portable-pty = "0.9"
+libc = "0.2"
+
+
 [dev-dependencies]
 future-remote-server = { path = "../packages/remote-server", features = ["test-support"] }
 future-remote-client = { path = "../packages/remote-client", features = ["test-support"] }
@@ -66,4 +74,3 @@ tokio = { workspace = true, features = ["test-util"] }
 # A real HTTPS endpoint for the relay-CA test: the same rustls provider the
 # library installs (`ring`), without pulling a second crypto backend in.
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
-libc = "0.2"

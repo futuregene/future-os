@@ -138,7 +138,20 @@ fn initialize_connection(
     // pointer-map layout before that first write, without a full VACUUM.
     cancellation.check()?;
     configure_incremental_auto_vacuum(connection)?;
-    connection.pragma_update(None, "journal_mode", "WAL")?;
+    let mode = future_rpc::storage::StorageMode::from_env().map_err(anyhow::Error::msg)?;
+    let actual: String = connection.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
+    if !actual.eq_ignore_ascii_case(mode.journal_mode()) {
+        let actual: String = connection.query_row(
+            &format!("PRAGMA journal_mode={}", mode.journal_mode()),
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            actual.eq_ignore_ascii_case(mode.journal_mode()),
+            "unable to select {mode} storage mode; stop all database users first"
+        );
+    }
+    tracing::info!(event="storage_mode_selected", storage_mode=%mode, journal_mode=mode.journal_mode());
     connection.pragma_update(None, "synchronous", "FULL")?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
     // FULL durability stays on the writer; PASSIVE checkpoints have their own

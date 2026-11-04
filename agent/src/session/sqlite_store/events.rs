@@ -155,9 +155,8 @@ impl SqliteStore {
         let expected_run = run.clone();
         let (rows,snapshot) = self.db.read(move |db| {
             let tx = db.transaction()?;
-            let snapshot: Option<(i64,String)> = tx.query_row(
-                "SELECT cursor,payload FROM run_snapshots WHERE session_id=?1 AND run_id=?2 AND version=1",
-                params![session,run], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+            let snapshot: Option<(i64,String)> =
+                crate::session::journal_compaction::load_run_snapshot(&tx, &session, &run)?;
             let rows = if snapshot.is_some() {Vec::new()} else {
                 let sql = if run.is_empty() {
                     "SELECT session_id,run_id,epoch,idx,event_id,payload,sequence FROM run_events WHERE session_id=?1 AND run_id=?2 ORDER BY sequence"
@@ -237,20 +236,25 @@ impl SqliteStore {
     }
 
     /// Restore sequence counters without decoding the session event history.
+    #[cfg(test)]
     pub(crate) fn event_cursors(&self, session: &str) -> Result<(i64, i64)> {
         let session = session.to_owned();
-        self.db.fence(move |db| {
-            let sql = if crate::session::content::format(db,&session)? == crate::session::content::FORMAT_VERSION {
-                "SELECT COALESCE(MAX(CASE WHEN epoch=-1 THEN durable_cursor END),-1),COALESCE(MAX(CASE WHEN epoch>=0 THEN durable_cursor END),-1) FROM stream_runs WHERE session_id=?1 AND run_id='' AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=stream_runs.id)"
-            } else {
-                "SELECT COALESCE(MAX(CASE WHEN epoch=-1 THEN idx END),-1), COALESCE(MAX(CASE WHEN epoch>=0 THEN idx END),-1) FROM run_events WHERE session_id=?1 AND run_id=''"
-            };
-            let session=crate::session::identity::BoundIdentity::session(db,&session)?;
-            let (session_idx, loose_idx): (i64, i64) = db.query_row(
-                sql,
-                [session], |row| Ok((row.get(0)?, row.get(1)?)),
-            )?;
-            Ok((session_idx.saturating_add(1), loose_idx.saturating_add(1)))
+        self.db.fence(move |db| read_event_cursors(db, &session))
+    }
+
+    pub(crate) fn journal_binding(
+        &self,
+        session: &str,
+    ) -> Result<(future_rpc::content_range::StorageIdentity, (i64, i64), bool)> {
+        let session = session.to_owned();
+        self.db.read_as("journal_binding", move |db| {
+            let tx = db.transaction()?;
+            let cursors = read_event_cursors(&tx, &session)?;
+            let identity = crate::session::content::transport::storage_identity(&tx)?;
+            let segmented = crate::session::content::format(&tx, &session)?
+                == crate::session::content::FORMAT_VERSION;
+            tx.commit()?;
+            Ok((identity, cursors, segmented))
         })
     }
 
@@ -636,6 +640,20 @@ pub(crate) fn decode_event_row<T: serde::de::DeserializeOwned>(row: StoredEventR
         Value::String(row.event_id.unwrap_or(identity)),
     );
     Ok(serde_json::from_value(value)?)
+}
+
+fn read_event_cursors(db: &Connection, session: &str) -> Result<(i64, i64)> {
+    let sql = if crate::session::content::format(db, session)?
+        == crate::session::content::FORMAT_VERSION
+    {
+        "SELECT COALESCE(MAX(CASE WHEN epoch=-1 THEN durable_cursor END),-1),COALESCE(MAX(CASE WHEN epoch>=0 THEN durable_cursor END),-1) FROM stream_runs WHERE session_id=?1 AND run_id='' AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=stream_runs.id)"
+    } else {
+        "SELECT COALESCE(MAX(CASE WHEN epoch=-1 THEN idx END),-1), COALESCE(MAX(CASE WHEN epoch>=0 THEN idx END),-1) FROM run_events WHERE session_id=?1 AND run_id=''"
+    };
+    let session = crate::session::identity::BoundIdentity::session(db, session)?;
+    let (session_idx, loose_idx): (i64, i64) =
+        db.query_row(sql, [session], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    Ok((session_idx.saturating_add(1), loose_idx.saturating_add(1)))
 }
 
 #[cfg(test)]

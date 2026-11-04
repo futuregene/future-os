@@ -1,0 +1,79 @@
+{
+  "tag": "20261104-after",
+  "machine": {
+    "os": "Darwin 25.6.0",
+    "arch": "arm64",
+    "python": "3.14.5",
+    "cpu": "Apple M3 Ultra",
+    "cpus": "32",
+    "memoryBytes": "103079215104",
+    "osVersion": "26.6.2"
+  },
+  "profile": "--release",
+  "sourceBytes": {
+    ".future/agent/agent.db": 2531119104,
+    ".future/app/app.db": 54206464,
+    ".future/tasks/tasks.db": 4059136
+  },
+  "derived": {
+    "sessionsWithEntries": 355,
+    "entriesTotal": 229631,
+    "largestSession": {
+      "id": "20261016-172323-78e08a2913da44819765aeed0d924a56",
+      "entries": 14531,
+      "deepCursor": 7265,
+      "lastCursor": 14530
+    },
+    "medianSession": {
+      "id": "20261022-140446-a9be8f40298545c688ea3e4529eea504",
+      "entries": 236
+    },
+    "midSession": {
+      "id": "20261017-235455-e72faf18270d4dd58f8f2043a4898299",
+      "entries": 3145
+    },
+    "smallSession": {
+      "id": "20261020-162512-95336e77e4b749bab18e3dc9e6bd4f67",
+      "entries": 41
+    },
+    "heaviestRun": {
+      "session": "20261019-094227-dbf629a2dd3346da90e09b8cd16683b8",
+      "run": "run_26ce295be0a248a39e14f806375479f8",
+      "events": 10855,
+      "toolCall": {
+        "id": "call_00_6V9yT7mAakbPpHiU1OKO4170",
+        "name": "edit",
+        "argsBytes": 2909
+      }
+    },
+    "runEventsTotal": 200693,
+    "runsTotal": 2376,
+    "smallRun": null,
+    "bigBody": {
+      "session": "20261019-094227-dbf629a2dd3346da90e09b8cd16683b8",
+      "run": "run_26ce295be0a248a39e14f806375479f8",
+      "idx": 9049,
+      "bodyBytes": 14077,
+      "eventType": "tool_end",
+      "inlineThresholdBytes": 16384
+    },
+    "threadsTotal": 687,
+    "thread": {
+      "id": "thread-20261023-103019-3e6078",
+      "session": "20261016-172323-78e08a2913da44819765aeed0d924a56",
+      "workspace": "/Users/geilige/future-os",
+      "runs": 1
+    },
+    "promptId": "prompt_78908ff34d79465ca55d2d5a09f36573",
+    "tasksTotal": 33,
+    "taskRunsTotal": 555,
+    "task": {
+      "busiest": "tsk_ca72453d023540d49b4c407b530c72d6",
+      "busiestRuns": 357,
+      "mostRevisions": "tsk_ca72453d023540d49b4c407b530c72d6",
+      "revisions": 36
+    },
+    "contentObjects": 165841,
+    "databaseId": "e84b6a1e-db9b-41ed-9715-8b52f30e7435"
+  }
+}

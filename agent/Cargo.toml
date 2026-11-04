@@ -53,6 +53,10 @@ unicode-width = "0.2.2"
 pulldown-cmark = "0.13"
 rand = "0.8"
 sha2 = "0.10"
+# Folded run bodies are stored gzipped (run_snapshot_bodies). The crate is
+# already in the workspace graph (host, desktop, remote-protocol), so this adds
+# no new native build to any platform.
+flate2 = "1"
 fs2 = "0.4"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 semver = "1"

@@ -408,7 +408,17 @@ vi.mock("./hooks/useWorkspaceDialogs", () => ({ useWorkspaceDialogs: () => mocks
 vi.mock("../../features/terminal/useTerminalPanel", () => ({
   useTerminalPanel: () => ({ open: Boolean(mocks.store.terminalOpen), shortcut: "mod+j", toggle: mocks.hooks.toggleTerminal }),
 }));
-vi.mock("../../features/terminal/panelTarget", () => ({ terminalTarget: () => mocks.terminalTarget }));
+vi.mock("../../features/terminal/panelTarget", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../features/terminal/panelTarget")>();
+  // The rule itself is unit-tested (`panelTarget.test.ts`); this suite pins what
+  // the shell does with its answer, so only the answer is stubbed.
+  return {
+    ...actual,
+    terminalScope: () => (mocks.terminalTarget
+      ? { kind: "local", threadId: mocks.terminalTarget, key: mocks.terminalTarget }
+      : null),
+  };
+});
 
 // ── integration layer ───────────────────────────────────────────────────────
 vi.mock("../../integrations/agent/agentStateCache", () => ({
@@ -451,7 +461,7 @@ vi.mock("../../integrations/storage/threadStore", () => ({
   markThreadOpened: (threadId: string) => mocks.hooks.markThreadOpened?.(threadId),
   pinThread: (input: unknown) => mocks.hooks.pinThread?.(input),
   pinWorkspace: (input: unknown) => mocks.hooks.pinWorkspace?.(input),
-  restoreThread: (threadId: string) => mocks.hooks.restoreThread?.(threadId),
+  restoreThreadTree: (threadId: string) => mocks.hooks.restoreThread?.(threadId),
 }));
 vi.mock("../../integrations/tauri/invoke", () => ({
   invokeCommand: (command: string, args?: unknown) => mocks.invoke(command, args),
@@ -571,14 +581,31 @@ function resetStore(overrides: Record<string, unknown> = {}) {
     modelOptions: [{ id: "m1", label: "M1", provider: "future" }],
     selectedModelId: "future/m1",
     startup: { auth: { status: "authenticated" }, phase: "ready", providers: { builtin: [], custom: [] } },
-    threadDialogs: { ...threadDialogFns, batchDeleteDialog: null, deleteDialog: null, renameDialog: null },
+    threadDialogs: {
+      ...threadDialogFns,
+      archiveDialog: null,
+      batchDeleteDialog: null,
+      confirmArchive: vi.fn(async () => {}),
+      deleteDialog: null,
+      renameDialog: null,
+      requestArchive: vi.fn(async () => {}),
+      archiveThreads: vi.fn(async () => {}),
+      setArchiveDialog: vi.fn(),
+    },
     threadStore: {
       activeThread: chatThread,
       activeThreadId: "t1",
       activeWorkspace: chatWorkspace,
       loadingStore: false,
+      ensureScope: vi.fn(),
+      loadMore: vi.fn(async () => {}),
+      loadMoreWorkspaces: vi.fn(async () => {}),
       refreshStore: mocks.refreshStore,
+      scopeHasMore: () => false,
+      scopeLoading: () => false,
+      selectThread: vi.fn(),
       setActiveThreadId: vi.fn(),
+      workspacesHasMore: false,
       storeError: null,
       threadRunStatuses: {},
       threadStreamingStatuses: {},

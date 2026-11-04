@@ -34,11 +34,11 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
 
-use super::manager::{CreateRequest, Manager, ManagerError, MAX_SESSIONS};
-use super::protocol::{self, Meta};
-use super::session::SessionEvent;
-use super::shell;
 use super::ticket::{IssuedTicket, TicketScope, TicketStore};
+use future_host::terminal::manager::{CreateRequest, Manager, ManagerError, MAX_SESSIONS};
+use future_host::terminal::protocol::{self, Meta};
+use future_host::terminal::session::SessionEvent;
+use future_host::terminal::shell;
 
 /// Largest request head we accept (request line + headers).
 const MAX_HEAD: usize = 16 * 1024;
@@ -98,7 +98,7 @@ pub fn bind() -> Result<&'static TerminalServer, String> {
             max_sessions: MAX_SESSIONS,
         },
         listener: Mutex::new(Some(listener)),
-        manager: Arc::new(Manager::new()),
+        manager: Arc::clone(future_host::terminal::manager()),
         tickets: TicketStore::default(),
         connections: Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS)),
     };
@@ -169,9 +169,19 @@ pub fn serve() -> Result<(), String> {
     Ok(())
 }
 
-/// The process-wide manager (sessions outlive any single request).
-pub fn manager() -> Option<&'static Arc<Manager>> {
-    SERVER.get().map(|server| &server.manager)
+/// This process's terminal registry.
+///
+/// The registry outlives any single request, and it is the *host's* — a paired
+/// device drives the same shells through `future_host::terminal`, and
+/// `future host` serves them with no window at all. Kept as an accessor here
+/// because the Desktop's shutdown and updater address it through this module.
+///
+/// Not an `Option` any more: a shell can exist without the loopback listener
+/// (a paired device creates it over the control plane), and that shell is
+/// exactly as necessary to close on shutdown or when its conversation goes.
+/// Whether the *webview* transport is up is `info().is_some()`.
+pub fn manager() -> &'static Arc<Manager> {
+    future_host::terminal::manager()
 }
 
 /// Info for the frontend, or `None` before `bind`.
@@ -993,7 +1003,7 @@ mod end_to_end {
     use crate::test_support::wait_budget::{deadline as escape_deadline, wait_budget as escape};
 
     use super::*;
-    use crate::terminal::test_support;
+    use future_host::terminal::test_support;
 
     /// The payload of an output frame, or `None` for any other frame.
     ///
@@ -1021,7 +1031,7 @@ mod end_to_end {
                 max_sessions: MAX_SESSIONS,
             },
             listener: Mutex::new(None),
-            manager: Arc::new(Manager::new()),
+            manager: Arc::clone(future_host::terminal::manager()),
             tickets: TicketStore::default(),
             connections: Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS)),
         }
@@ -2054,7 +2064,7 @@ mod end_to_end {
         // no code rather than invent one, and the transport must still tell the
         // viewer the stream is over and close the socket normally.
         let session = server.manager.session_for_test(&id).expect("session");
-        session.on_eof();
+        session.eof_for_test();
 
         let mut exit_frame = None;
         let mut close_code = None;
@@ -2286,8 +2296,8 @@ mod tests {
     // `crate::test_support::wait_budget` so a fixture that waits on another
     // process can widen them, while an in-memory fixture keeps the number
     // written at the call site.
-    use crate::terminal::test_support;
     use crate::test_support::wait_budget::{deadline as escape_deadline, wait_budget as escape};
+    use future_host::terminal::test_support;
     // The DSR-aware pump tests are Windows-only, but the unix pump test below
     // waits on a deadline too, so the import is unconditional.
     use std::time::Instant;
@@ -2620,7 +2630,7 @@ mod tests {
                 max_sessions: MAX_SESSIONS,
             },
             listener: Mutex::new(None),
-            manager: Arc::new(Manager::new()),
+            manager: Arc::clone(future_host::terminal::manager()),
             tickets: TicketStore::default(),
             connections: Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS)),
         }
@@ -2718,7 +2728,7 @@ mod tests {
         let id = isolated_session(&server, "thread-nul", test_support::idle_command());
         let live = server.manager.session_for_test(&id).expect("session");
         // Retained output: what the next viewer is replayed.
-        live.on_data(b"\0replayed");
+        live.push_output_for_test(b"\0replayed");
 
         let socket = FakeSocket::new();
         let pump = {
@@ -2729,7 +2739,7 @@ mod tests {
             tokio::spawn(async move { server.pump(pump_socket(socket).await, id, None).await })
         };
         await_first_write(&socket).await;
-        live.on_data(b"\0live");
+        live.push_output_for_test(b"\0live");
 
         let deadline = Instant::now() + escape(Duration::from_secs(20));
         let mut frames = sent_frames(&socket.sent());
@@ -2793,7 +2803,7 @@ mod tests {
             .manager
             .session_for_test(&id)
             .expect("session")
-            .on_data(b"retained screen");
+            .push_output_for_test(b"retained screen");
         let socket = FakeSocket::new();
         socket.fail_writes();
         server
@@ -2841,7 +2851,7 @@ mod tests {
         };
         await_first_write(&socket).await;
         socket.fail_writes();
-        live.on_data(b"undeliverable");
+        live.push_output_for_test(b"undeliverable");
         tokio::time::timeout(escape(Duration::from_secs(20)), pump)
             .await
             .expect("the pump must stop when the client is gone")
@@ -2863,7 +2873,7 @@ mod tests {
         };
         await_first_write(&socket).await;
         socket.fail_writes();
-        live.on_eof();
+        live.eof_for_test();
         tokio::time::timeout(escape(Duration::from_secs(20)), pump)
             .await
             .expect("the pump must stop when the exit cannot be sent")
@@ -3075,8 +3085,8 @@ mod tests {
             live.wait_for_child_exit(escape(Duration::from_secs(30))),
             "the fixture child must really exit"
         );
-        live.on_data(b"the last screen");
-        live.on_eof();
+        live.push_output_for_test(b"the last screen");
+        live.eof_for_test();
         assert_eq!(
             live.info().exit_code,
             Some(4),
@@ -3122,7 +3132,7 @@ mod tests {
             };
             await_first_write(&socket).await;
             // The shell is gone, so the next input cannot be delivered.
-            live.on_eof();
+            live.eof_for_test();
             socket.push_frame(opcode, b"echo too-late\r");
             assert!(
                 !live.is_running(),

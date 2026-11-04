@@ -59,6 +59,7 @@ export function RailViewSwitch({
   const [dragging, setDragging] = useState<RailView | null>(null);
 
   const labels: Record<RailView, string> = {
+    archived: t("activityRail.viewArchived"),
     recent: t("activityRail.viewRecent"),
     workspace: t("activityRail.viewWorkspace"),
   };
@@ -166,7 +167,7 @@ export function RailViewSwitch({
   return (
     <div
       aria-label={t("activityRail.viewSwitch")}
-      className="mb-2 flex h-7 shrink-0 items-center gap-0.5 rounded-md bg-surface-subtle p-0.5"
+      className="flex h-7 shrink-0 items-center gap-0.5 rounded-md bg-surface-subtle p-0.5"
       data-testid="rail-view-switch"
       role="group"
     >

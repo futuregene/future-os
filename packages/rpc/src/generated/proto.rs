@@ -556,6 +556,11 @@ pub struct SessionEntriesResponse {
     pub next_offset: i64,
     #[prost(message, optional, tag = "4")]
     pub fragment: ::core::option::Option<HistoryEntryFragment>,
+    /// How many display rows the session has, so an `offset` reader can size its
+    /// scrollbar and know when it reached the end without paging the whole
+    /// conversation to count them. Absent from a page whose sender predates it.
+    #[prost(int64, optional, tag = "5")]
+    pub total: ::core::option::Option<i64>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct HistoryEntryFragment {

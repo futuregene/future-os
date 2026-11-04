@@ -1,9 +1,7 @@
 //! Tauri IPC adapter for shared application operations.
 use crate::store;
 pub(crate) fn close_thread_terminals(thread_id: &str) {
-    if let Some(manager) = crate::terminal::server::manager() {
-        manager.close_thread(thread_id);
-    }
+    crate::terminal::server::manager().close_thread(thread_id);
 }
 #[tauri::command]
 pub async fn fork_thread(
@@ -94,6 +92,58 @@ pub fn archive_thread(thread_id: String) -> Result<store::ThreadRecord, crate::A
 #[tauri::command]
 pub fn restore_thread(thread_id: String) -> Result<store::ThreadRecord, crate::AppError> {
     future_host::application::threads::restore_thread(thread_id)
+}
+
+/// Archive one fork tree; refuses (naming the member) while anything in it runs.
+#[tauri::command]
+pub async fn archive_thread_tree(
+    thread_id: String,
+) -> Result<store::ThreadRecord, crate::AppError> {
+    future_host::application::threads::archive_thread_tree(thread_id).await
+}
+
+#[tauri::command]
+pub fn restore_thread_tree(thread_id: String) -> Result<store::ThreadRecord, crate::AppError> {
+    future_host::application::threads::restore_thread_tree(thread_id)
+}
+
+/// Archive each selected tree, reporting the ones a running member kept back.
+#[tauri::command]
+pub async fn batch_archive_threads(
+    thread_ids: Vec<String>,
+) -> Result<store::BatchArchiveResult, crate::AppError> {
+    future_host::application::threads::batch_archive_threads(thread_ids).await
+}
+
+/// One page of a conversation list (`chat`, `workspace:<id>`, `recent`, `archived`).
+#[tauri::command]
+pub fn list_threads_page(
+    scope: String,
+    cursor: Option<String>,
+    limit: i64,
+) -> Result<store::ThreadsPage, crate::AppError> {
+    future_host::application::threads::list_threads_page(scope, cursor, limit)
+}
+
+/// The pinned conversations of a scope, whole (the rail's shortcut section).
+#[tauri::command]
+pub fn list_pinned_threads(scope: String) -> Result<Vec<store::ThreadRecord>, crate::AppError> {
+    future_host::application::threads::list_pinned_threads(scope)
+}
+
+/// Every conversation whose run has not finished, for the recent view.
+#[tauri::command]
+pub async fn list_active_threads() -> Result<Vec<store::ThreadRecord>, crate::AppError> {
+    future_host::application::threads::list_active_threads().await
+}
+
+/// Server-side search, split into active and archived results.
+#[tauri::command]
+pub fn search_threads(
+    query: String,
+    limit: i64,
+) -> Result<store::ThreadSearchResults, crate::AppError> {
+    future_host::application::threads::search_threads(query, limit)
 }
 
 #[tauri::command]

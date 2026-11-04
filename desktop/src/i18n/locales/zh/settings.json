@@ -13,7 +13,9 @@
   },
   "theme": {
     "title": "配色主题",
-    "description": "界面底色、文字与强调色的色系。每个主题都跟随上方的外观设置，因此各有浅色与深色两套取值。",
+    "description": "界面底色、文字与强调色的色系，随上方外观设置切换明暗。",
+    "showAll": "展开全部 {{count}} 套配色",
+    "collapse": "只看当前配色",
     "palettes": {
       "futureos": {
         "name": "FutureOS",

@@ -179,6 +179,18 @@ pub(super) async fn initialize(
     let skill_dirs = crate::global_skill_dirs();
     let skills = crate::discover_skills_cached(&skill_dirs);
     let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
+    // Warm the platform skill catalogue off the startup path. `list_available_skills`
+    // serves it from cache and refreshes it in the background, so a client that
+    // opens the skill panel right after launch reads the copy this leaves behind
+    // instead of an empty list. The manager builds a **blocking** HTTP client,
+    // which must never happen on this async path (building one here drops its
+    // runtime inside an async context, which panics the process) — hence the
+    // thread.
+    std::thread::spawn(|| {
+        if let Ok(manager) = crate::skills::manager::SkillManager::local() {
+            manager.prewarm_catalogue();
+        }
+    });
 
     // Load project context
     let agent_content = crate::prompt::load_project_context(&cwd, true).content;

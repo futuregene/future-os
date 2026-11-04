@@ -1,0 +1,35 @@
+[
+  {
+    "goal_id": "goal_e47628ad0e43",
+    "objective": "Finish the remote-desktop open-latency audit: measure how each command's latency scales with data volume (T4), independently verify the audit's claims and numbers (T5), and produce the final optimization report that makes every command open in <100ms worst case with flat scaling.",
+    "status": "active",
+    "ledger_read_diagnostics": null,
+    "turn_no_progress": [],
+    "todos": [
+      {
+        "id": "todo_c42a04ab9f54",
+        "text": "[P1] Run `future goal status` for this goal and record the goal count as evidence, or declare an explicit no-follow-up rationale.",
+        "class": "Advancement",
+        "status": "open",
+        "priority": "P1",
+        "blocks": "",
+        "owner": null,
+        "claimed_by": "scaler",
+        "lease_expires_at": 1793783578,
+        "holder_pid": 95601
+      },
+      {
+        "id": "todo_4b913fbaead2",
+        "text": "T4 scaling sweep. Read docs/testing/remote-latency/03-measurements.md, 02-code-audit.md and the harness scripts/perf/remote-commands/measure-remote-latency.py + host/src/remote_host/latency_probe.rs first; reuse that harness rather than writing a second one. Produce docs/testing/remote-latency/04-scaling.md (Chinese) from REAL end-to-end measurements of how each read command's handler latency changes with data volume, so the follow-up optimization team knows which command breaches 100ms at which data size and why. Scale points, each dimension swept alone with the others left at their real values: (a) threads in app.db: 10 / 100 / 682 / 2000 / 5000 -> list_sessions, list_workspaces; (b) entries in ONE session: 41 / 236 / 1000 / 3145 / 14531 / 25000 / 50000 -> get_state, get_session_entries (both the before cursor and the offset path), get_messages, get_tool_call_args, list_session_files; (c) run_events in one run: 100 / 1000 / 10000 / 50000 -> get_events_since (first page, deep page, preferSnapshot); (d) task_runs of one task: 10 / 100 / 356 / 2000 -> list_task_runs, get_task, list_tasks; (e) tasks count: 1 / 33 / 500 -> list_tasks; (f) directory entries in one workspace root: 10 / 100 / 1000 / 5000 -> list_session_files. Build each scale point by copying the real snapshot (sqlite3 online backup of $HOME/.future/agent/agent.db, app.db, tasks.db, source opened mode=ro) into a throwaway HOME and then inserting/duplicating rows in the COPY only; never write the real files, never touch the running agent, always bind the isolated agent to a fresh free loopback port. Same #[ignore] probe, and keep the home marker. For every (command, dimension) give a table (data size -> p50/p95/max handler ms, reply bytes), the fitted growth class (flat / logarithmic / linear / worse) and the concrete ratio (e.g. n=10 vs n=5000), the slope in ms per 10x, and the size at which it crosses 100 ms (extrapolated if not measured, marked as extrapolation). End with two ranked lists: every command whose latency grows with data size at all, and every command that crosses 100 ms at a data size a heavy real user could reach. Keep raw JSON under docs/testing/remote-latency/raw/scaling/ and generator scripts under scripts/perf/remote-commands/scale/. HARD RULE: do not run git commit, git merge, git push, git worktree remove or any task-branch finishing flow - leave the worktree exactly where it is and just write your files and report; the supervisor finishes the branch.",
+        "class": "Advancement",
+        "status": "open",
+        "priority": "P1",
+        "blocks": "",
+        "owner": "scaler",
+        "claimed_by": null,
+        "lease_expires_at": null,
+        "holder_pid": null
+      }
+    ]
+  }
+]

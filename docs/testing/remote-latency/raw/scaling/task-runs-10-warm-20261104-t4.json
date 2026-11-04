@@ -1,0 +1,374 @@
+{
+  "phase": "warm",
+  "agentAddress": "http://127.0.0.1:59210",
+  "home": "/Users/geilige/future-os/.worktrees/perf-remote-scale/target/remote-latency/scale/homes/task-runs-10",
+  "machine": {
+    "os": "macos",
+    "arch": "aarch64",
+    "cpus": 32
+  },
+  "cargoProfile": "--release",
+  "builtAt": "2026-11-04T09:25:53",
+  "results": [
+    {
+      "label": "list_tasks",
+      "command": "list_tasks",
+      "parseError": null,
+      "scale": {
+        "tasks": 33,
+        "runsOfBusiest": 10
+      },
+      "iterations": 10,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 3.868,
+        "parseMs": 0.01,
+        "encodeMs": 0.038,
+        "replyBytes": 9123,
+        "jsonBytes": 9123,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 2.27,
+          "parseMs": 0.002,
+          "encodeMs": 0.018,
+          "replyBytes": 9123,
+          "jsonBytes": 9123,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 2.254,
+          "parseMs": 0.002,
+          "encodeMs": 0.02,
+          "replyBytes": 9123,
+          "jsonBytes": 9123,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.765,
+          "parseMs": 0.002,
+          "encodeMs": 0.023,
+          "replyBytes": 9123,
+          "jsonBytes": 9123,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 2.196,
+          "parseMs": 0.002,
+          "encodeMs": 0.018,
+          "replyBytes": 9123,
+          "jsonBytes": 9123,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 2.148,
+          "parseMs": 0.002,
+          "encodeMs": 0.023,
+          "replyBytes": 9123,
+          "jsonBytes": 9123,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.726,
+          "parseMs": 0.002,
+          "encodeMs": 0.022,
+          "replyBytes": 9123,
+          "jsonBytes": 9123,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 4.731,
+          "parseMs": 0.002,
+          "encodeMs": 0.017,
+          "replyBytes": 9123,
+          "jsonBytes": 9123,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.072,
+          "parseMs": 0.001,
+          "encodeMs": 0.019,
+          "replyBytes": 9123,
+          "jsonBytes": 9123,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 2.331,
+          "parseMs": 0.002,
+          "encodeMs": 0.019,
+          "replyBytes": 9123,
+          "jsonBytes": 9123,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 2.173,
+          "parseMs": 0.002,
+          "encodeMs": 0.017,
+          "replyBytes": 9123,
+          "jsonBytes": 9123,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 2.27,
+      "p95Ms": 5.765,
+      "maxMs": 5.765,
+      "minMs": 2.148,
+      "encodeP50Ms": 0.019,
+      "replyBytes": 9123,
+      "jsonBytes": 9123,
+      "replies": 10
+    },
+    {
+      "label": "get_task",
+      "command": "get_task",
+      "parseError": null,
+      "scale": {
+        "taskId": "tsk_ca72453d023540d49b4c407b530c72d6",
+        "runs": 10
+      },
+      "iterations": 10,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 0.98,
+        "parseMs": 0.002,
+        "encodeMs": 0.3,
+        "replyBytes": 24765,
+        "jsonBytes": 40930,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 0.882,
+          "parseMs": 0.001,
+          "encodeMs": 0.207,
+          "replyBytes": 24765,
+          "jsonBytes": 40930,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 0.877,
+          "parseMs": 0.001,
+          "encodeMs": 0.203,
+          "replyBytes": 24765,
+          "jsonBytes": 40930,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 0.875,
+          "parseMs": 0.001,
+          "encodeMs": 0.2,
+          "replyBytes": 24765,
+          "jsonBytes": 40930,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 0.867,
+          "parseMs": 0.001,
+          "encodeMs": 0.199,
+          "replyBytes": 24765,
+          "jsonBytes": 40930,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 0.881,
+          "parseMs": 0.001,
+          "encodeMs": 0.2,
+          "replyBytes": 24765,
+          "jsonBytes": 40930,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 0.916,
+          "parseMs": 0.001,
+          "encodeMs": 0.199,
+          "replyBytes": 24765,
+          "jsonBytes": 40930,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 0.875,
+          "parseMs": 0.001,
+          "encodeMs": 0.195,
+          "replyBytes": 24765,
+          "jsonBytes": 40930,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 0.869,
+          "parseMs": 0.001,
+          "encodeMs": 0.195,
+          "replyBytes": 24765,
+          "jsonBytes": 40930,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 0.881,
+          "parseMs": 0.001,
+          "encodeMs": 0.247,
+          "replyBytes": 24765,
+          "jsonBytes": 40930,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 0.968,
+          "parseMs": 0.001,
+          "encodeMs": 0.232,
+          "replyBytes": 24765,
+          "jsonBytes": 40930,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 0.877,
+      "p95Ms": 0.968,
+      "maxMs": 0.968,
+      "minMs": 0.867,
+      "encodeP50Ms": 0.2,
+      "replyBytes": 24765,
+      "jsonBytes": 40930,
+      "replies": 10
+    },
+    {
+      "label": "list_task_runs",
+      "command": "list_task_runs",
+      "parseError": null,
+      "scale": {
+        "taskId": "tsk_ca72453d023540d49b4c407b530c72d6",
+        "runs": 10
+      },
+      "iterations": 10,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 0.822,
+        "parseMs": 0.001,
+        "encodeMs": 0.01,
+        "replyBytes": 5439,
+        "jsonBytes": 5439,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 0.779,
+          "parseMs": 0.001,
+          "encodeMs": 0.009,
+          "replyBytes": 5439,
+          "jsonBytes": 5439,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 0.778,
+          "parseMs": 0.001,
+          "encodeMs": 0.008,
+          "replyBytes": 5439,
+          "jsonBytes": 5439,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 0.765,
+          "parseMs": 0.001,
+          "encodeMs": 0.009,
+          "replyBytes": 5439,
+          "jsonBytes": 5439,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 0.807,
+          "parseMs": 0.001,
+          "encodeMs": 0.009,
+          "replyBytes": 5439,
+          "jsonBytes": 5439,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 0.793,
+          "parseMs": 0.001,
+          "encodeMs": 0.009,
+          "replyBytes": 5439,
+          "jsonBytes": 5439,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 0.804,
+          "parseMs": 0.001,
+          "encodeMs": 0.008,
+          "replyBytes": 5439,
+          "jsonBytes": 5439,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 0.795,
+          "parseMs": 0.001,
+          "encodeMs": 0.008,
+          "replyBytes": 5439,
+          "jsonBytes": 5439,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 0.81,
+          "parseMs": 0.001,
+          "encodeMs": 0.009,
+          "replyBytes": 5439,
+          "jsonBytes": 5439,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 0.786,
+          "parseMs": 0.001,
+          "encodeMs": 0.009,
+          "replyBytes": 5439,
+          "jsonBytes": 5439,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 0.792,
+          "parseMs": 0.001,
+          "encodeMs": 0.008,
+          "replyBytes": 5439,
+          "jsonBytes": 5439,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 0.792,
+      "p95Ms": 0.81,
+      "maxMs": 0.81,
+      "minMs": 0.765,
+      "encodeP50Ms": 0.009,
+      "replyBytes": 5439,
+      "jsonBytes": 5439,
+      "replies": 10
+    }
+  ]
+}

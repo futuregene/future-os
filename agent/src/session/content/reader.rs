@@ -151,7 +151,12 @@ impl Snapshot {
     }
 
     pub(crate) fn use_read_snapshot(&mut self, snapshot: crate::session::database::ReadSnapshot) {
-        self.read_snapshot = Some(snapshot);
+        // Rollback-journal readers release their transaction before returning
+        // to application code. The existing unpinned reader validates storage
+        // identity and history generation on every range and before delivery.
+        if snapshot.pins_transaction() {
+            self.read_snapshot = Some(snapshot);
+        }
     }
 
     /// Count this page's round trips into `tally`.
@@ -316,7 +321,7 @@ impl Snapshot {
             let mut rows = std::collections::HashMap::new();
             {
                 let mut query = tx.prepare_cached(
-                    "SELECT e.position,e.entry_id,e.entry_type,e.role,e.run_id,e.metadata_json,e.content_json,coalesce(v.metadata_generation,0),s.current_metadata_json FROM entries e JOIN sessions s ON s.id=e.session_id LEFT JOIN content_history_versions v ON v.session_id=e.session_id WHERE e.session_id=?1 AND e.position>=?2 AND e.position<=?3 ORDER BY e.position",
+                    "SELECT e.position,e.entry_id,e.entry_type,e.role,e.run_id,\n                     coalesce((SELECT future_gunzip(x.body) FROM entry_bodies x WHERE x.session_id=e.session_id AND x.position=e.position AND x.field='metadata'),e.metadata_json) AS metadata_json,\n                     e.content_json,coalesce(v.metadata_generation,0),s.current_metadata_json FROM entries e JOIN sessions s ON s.id=e.session_id LEFT JOIN content_history_versions v ON v.session_id=e.session_id WHERE e.session_id=?1 AND e.position>=?2 AND e.position<=?3 ORDER BY e.position",
                 )?;
                 let mapped = query.query_map(params![scope.session, first, last], |row| {
                     Ok((
@@ -351,7 +356,7 @@ impl Snapshot {
             let mut blocks = std::collections::HashMap::<i64, Vec<Value>>::new();
             {
                 let mut query = tx.prepare_cached(
-                    "SELECT entry_position,ordinal,kind,text,tool_call_id,tool_name,arguments_json,is_error,metadata_json FROM message_blocks WHERE session_id=?1 AND entry_position>=?2 AND entry_position<=?3 ORDER BY entry_position,ordinal",
+                    "SELECT entry_position,ordinal,kind,\n                     coalesce(text,(SELECT future_gunzip(x.body) FROM message_block_bodies x\n                       WHERE x.session_id=message_blocks.session_id\n                         AND x.entry_position=message_blocks.entry_position\n                         AND x.ordinal=message_blocks.ordinal AND x.field='text')) AS text,\n                     tool_call_id,tool_name,\n                     coalesce(arguments_json,(SELECT future_gunzip(x.body) FROM message_block_bodies x\n                       WHERE x.session_id=message_blocks.session_id\n                         AND x.entry_position=message_blocks.entry_position\n                         AND x.ordinal=message_blocks.ordinal AND x.field='args')) AS arguments_json,\n                     is_error,metadata_json\n                     FROM message_blocks WHERE session_id=?1 AND entry_position>=?2 AND entry_position<=?3 ORDER BY entry_position,ordinal",
                 )?;
                 let mapped = query.query_map(params![scope.session, first, last], |row| {
                     Ok((
@@ -754,12 +759,12 @@ impl Snapshot {
             let (length,piece)=self.read(store, move |db| {
                 let tx=db.savepoint()?;scope.check(&tx)?;
                 let (expression,join,ordinal)=match column {
-                    Column::Metadata=>("e.metadata_json","",None),
+                    Column::Metadata=>("coalesce((SELECT future_gunzip(x.body) FROM entry_bodies x WHERE x.session_id=e.session_id AND x.position=e.position AND x.field='metadata'),e.metadata_json)","",None),
                     Column::Content=>("e.content_json","",None),
                     Column::SessionMetadata=>("s.current_metadata_json","JOIN sessions s ON s.id=e.session_id",None),
                     Column::BlockMetadata(ordinal)=>("b.metadata_json","JOIN message_blocks b ON b.session_id=e.session_id AND b.entry_position=e.position AND b.ordinal=?6",Some(ordinal)),
-                    Column::BlockText(ordinal)=>("b.text","JOIN message_blocks b ON b.session_id=e.session_id AND b.entry_position=e.position AND b.ordinal=?6",Some(ordinal)),
-                    Column::BlockArguments(ordinal)=>("b.arguments_json","JOIN message_blocks b ON b.session_id=e.session_id AND b.entry_position=e.position AND b.ordinal=?6",Some(ordinal)),
+                    Column::BlockText(ordinal)=>("coalesce(b.text,(SELECT future_gunzip(x.body) FROM message_block_bodies x WHERE x.session_id=b.session_id AND x.entry_position=b.entry_position AND x.ordinal=b.ordinal AND x.field='text'))","JOIN message_blocks b ON b.session_id=e.session_id AND b.entry_position=e.position AND b.ordinal=?6",Some(ordinal)),
+                    Column::BlockArguments(ordinal)=>("coalesce(b.arguments_json,(SELECT future_gunzip(x.body) FROM message_block_bodies x WHERE x.session_id=b.session_id AND x.entry_position=b.entry_position AND x.ordinal=b.ordinal AND x.field='args'))","JOIN message_blocks b ON b.session_id=e.session_id AND b.entry_position=e.position AND b.ordinal=?6",Some(ordinal)),
                 };
                 if let Some(expected)=metadata_generation {
                     ensure!(super::metadata::generation(&tx,&scope.session)?==expected,"session metadata changed during paged read");

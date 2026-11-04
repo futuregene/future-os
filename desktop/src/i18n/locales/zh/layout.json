@@ -72,7 +72,24 @@
     "recentEarlier": "更早",
     "recentShowMore": "再显示 {{count}} 个",
     "recentJustNow": "刚刚",
-    "recentActions": "最近列表操作"
+    "recentActions": "最近列表操作",
+    "archive": "归档",
+    "archiveWorkspace": "归档工作区",
+    "restoreWorkspace": "恢复工作区",
+    "viewArchived": "已归档的会话",
+    "archivedTreeMembers": "{{count}} 条会话",
+    "loadMore": "加载更多",
+    "archivePinnedCleared": "归档会取消置顶",
+    "archivedWorkspacesHeader": "已归档工作区",
+    "archivedWorkspacesEmpty": "暂无已归档工作区。",
+    "archivedThreadsHeader": "已归档会话",
+    "archivedThreadsEmpty": "暂无已归档会话。",
+    "loadMoreWorkspaces": "加载更多工作区",
+    "archiveSelected": "归档",
+    "loading": "加载中…",
+    "archiveGuideAgain": "再看一次归档提示",
+    "archivedThreadsActions": "已归档会话操作",
+    "restoreSelected": "恢复"
   },
   "appShell": {
     "storeInitFailed": "FutureOS 本地存储初始化失败：",
@@ -121,7 +138,10 @@
     "rejectedInGui": "已在 GUI 中拒绝。"
   },
   "threadDialogs": {
-    "titleEmpty": "标题不能为空。"
+    "titleEmpty": "标题不能为空。",
+    "archiveSkipped": "{{names}}{{more}} 仍在运行，结束后才能归档。",
+    "archiveTitle": "归档此会话？",
+    "archiveDescription": "该会话及其 {{count}} 条派生会话将一起归档，之后可随时恢复。"
   },
   "workspaceDialogs": {
     "renameTitle": "重命名工作区",
@@ -204,6 +224,12 @@
     "titleEmpty": "你还没有安装技能",
     "body": "技能可以让 AI 帮你做 PPT、深度调研、分析数据……点这里看看你能用什么。",
     "go": "去看看",
+    "dismiss": "知道了"
+  },
+  "archiveGuide": {
+    "title": "已归档的会话收在这里",
+    "body": "随时查看完整历史，或恢复后继续对话。",
+    "viewArchived": "查看已归档",
     "dismiss": "知道了"
   }
 }

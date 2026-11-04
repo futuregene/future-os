@@ -26,8 +26,7 @@ impl Store {
             version <= 1,
             "Unsupported Fusion database version {version}"
         );
-        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
-            BEGIN IMMEDIATE;
+        db.execute_batch("BEGIN IMMEDIATE;
             CREATE TABLE IF NOT EXISTS fusion_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS fusion_runs(id TEXT PRIMARY KEY,parent_session TEXT NOT NULL,parent_run TEXT NOT NULL,tool_call TEXT NOT NULL,status TEXT NOT NULL,owner TEXT,data TEXT NOT NULL CHECK(json_valid(data)),UNIQUE(parent_session,parent_run,tool_call));
             CREATE INDEX IF NOT EXISTS fusion_queue ON fusion_runs(status);
@@ -114,7 +113,11 @@ impl Store {
     fn connect(&self) -> Result<Connection> {
         let db = Connection::open(self.root.join("fusion.db"))?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
-        db.pragma_update(None, "foreign_keys", "ON")?;
+        db.execute_batch(
+            future_rpc::storage::StorageMode::from_env()
+                .map_err(anyhow::Error::msg)?
+                .pragmas(),
+        )?;
         Ok(db)
     }
 

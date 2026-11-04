@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS workspaces (
     last_opened_at INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
+    -- Shelved by the user: hidden from the default lists (JOIN filter) without
+    -- touching its conversations' own `status`. NULL means active.
+    archived_at INTEGER,
     deleted_at INTEGER
 );
 
@@ -318,6 +321,11 @@ pub(super) const ADDED_COLUMNS: &[(&str, &str)] = &[
     ("review_file_changes", "omission_reason TEXT"),
     // Phase 2 sandbox: suggested rule (JSON) for session/always-allow buttons.
     ("approval_requests", "save_suggestion TEXT"),
+    // Workspace archiving (see SCHEMA's comment): the container marker a
+    // workspace archive sets, joined against by every default list query.
+    // ADDED_COLUMNS (not a VERSIONED_MIGRATION) because a missing column would
+    // make the current contract fail validation on an upgraded database.
+    ("workspaces", "archived_at INTEGER"),
 ];
 
 /// Optional run-archive migrations, whose failures do not block startup.

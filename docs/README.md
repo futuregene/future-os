@@ -45,6 +45,7 @@ entry point; the [wiki](wiki/en/Home.md) is the user-facing app guide.
 | [Long-Run Evidence Ledger](architecture/long-run-evidence-ledger.md) ([中文](architecture/long-run-evidence-ledger.zh-CN.md)) | Accountability record for long-range goal-plane goals — wall clock, spend, validation results, explicit boundaries per closed goal |
 | [Scheduled tasks](architecture/tasks.md) ([中文](architecture/tasks.zh-CN.md)) | `future-tasks` — reusable prompt + trigger (schedule or on demand), full-permission runs, deterministic `next_due` kernel, run ledger and prompt versions |
 | [Fusion development design](architecture/fusion.md) ([中文](architecture/fusion.zh-CN.md)) | Run-scoped `/fusion` discussion policy, read-only inner discussion, shared settings, durable review/debug records and a Desktop discussion-detail panel, with desktop/mobile/terminal support on Windows/macOS/Linux hosts |
+| [Bots and bot groups](architecture/bots.md) ([中文](architecture/bots.zh-CN.md)) | Design draft, implementation not started: the v1 minimal slice — one bot with a private conversation, one group with an owner and `@` routing, serial execution and a durable transcript; shared agent, tables in `app.db`, one-shot group turns, and a seven-day usage-based go/no-go check |
 | [SQLite migration](architecture/sqlite-migration.md) ([中文](architecture/sqlite-migration.zh-CN.md)) | Agent/desktop SQLite storage layout and migration policy |
 | [Streaming storage development plan](architecture/stream-storage-development.md) ([中文](architecture/stream-storage-development.zh-CN.md)) | Reviewed 2026-10-27 revision: replace the unpublished layout, compact changes and rerun released migrations; implementation pending |
 | [Storage space baselines](architecture/stream-storage-space-baselines.md) ([中文](architecture/stream-storage-space-baselines.zh-CN.md)) | Preserved original survey, both previous synthetic samples, actual-layout audit and in-memory model |
@@ -61,6 +62,12 @@ entry point; the [wiki](wiki/en/Home.md) is the user-facing app guide.
 | [Headless unsigned downloads/results](testing/headless-unsigned-results.md) ([中文](testing/headless-unsigned-results.zh-CN.md)) | Verified dev payloads, public URLs, SHA-256, CLI/sidecar and static/old-Linux checks |
 | [Channel test coverage](architecture/channels-test-coverage.md) ([中文](architecture/channels-test-coverage.zh-CN.md)) | What the channel framework's tests promise, and the handful of lines that are deliberately not covered, with the reason for each |
 | [RPC crate](architecture/rpc.md) ([中文](architecture/rpc.zh-CN.md)) | `packages/rpc` — the protobuf wire contract (single source of truth) |
+
+## Design (`design/`)
+
+| Doc | What it covers |
+|---|---|
+| [Workspace & conversation pagination and archive](design/workspace-thread-archive-and-paging.md) ([中文](design/workspace-thread-archive-and-paging.zh-CN.md)) | Finalized design: tree-level archiving with a uniform no-active-runs rule, workspace archive with container wake, read-only archived details, first-archive guide, and keyset pagination for the workspace list, workspace conversations and chats |
 
 ## Internals (`internals/`)
 

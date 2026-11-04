@@ -10,6 +10,7 @@ mod prompt;
 mod providers;
 mod settings;
 mod tasks;
+mod terminal;
 mod transfers;
 mod wire_limits;
 pub(crate) use prompt::*;
@@ -36,6 +37,7 @@ pub(crate) enum Route {
     Settings,
     Tasks,
     Providers,
+    Terminal,
 }
 
 /// `None` means no handler owns the command: the bridge answers it with the
@@ -100,6 +102,15 @@ pub(crate) fn route(cmd_type: &str) -> Option<Route> {
         | "update_builtin_provider"
         | "upsert_custom_provider"
         | "delete_custom_provider" => Route::Providers,
+        // The embedded terminal, driven by a paired desktop. Deliberately not in
+        // `needs_content_capability`: a shell is not conversation content, and
+        // the preflight would make every keystroke wait on the Agent twice.
+        "terminal_list"
+        | "terminal_create"
+        | "terminal_update"
+        | "terminal_delete"
+        | "terminal_read"
+        | "terminal_write" => Route::Terminal,
         _ => return None,
     })
 }
@@ -180,6 +191,7 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
         Route::Settings => settings::execute(&cmd, sink).await,
         Route::Tasks => tasks::execute(&cmd, sink).await,
         Route::Providers => providers::execute(&cmd, sink).await,
+        Route::Terminal => terminal::execute(&cmd, sink).await,
     }
 }
 

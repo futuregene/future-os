@@ -5,6 +5,7 @@ mod display_index;
 mod display_projection;
 pub(super) mod fragment_cache;
 pub(super) mod paging;
+pub(crate) mod purge;
 mod recall;
 mod recovery;
 
