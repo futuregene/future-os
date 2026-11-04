@@ -1810,15 +1810,14 @@ mod tests {
         s.insert_run(&settled).unwrap();
 
         let mut got = s.running_run_owners().unwrap();
+        let mut expected = vec![
+            (legacy.id.clone(), None),
+            (owned.id.clone(), Some("1234:abc".to_string())),
+        ];
+        // Run IDs are random: compare both complete mappings in the same order.
         got.sort();
-        assert_eq!(
-            got,
-            vec![
-                (legacy.id.clone(), None),
-                (owned.id.clone(), Some("1234:abc".to_string())),
-            ],
-            "only unsettled runs, each with its host"
-        );
+        expected.sort();
+        assert_eq!(got, expected, "only unsettled runs, each with its host");
     }
 
     /// Settling an orphaned run is an audit write, not a cleanup: the row keeps
