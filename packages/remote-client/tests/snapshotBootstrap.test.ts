@@ -8,7 +8,7 @@ const event = (type: string, idx: number, data: unknown): StreamEvent => ({ type
 const attachment = { name: "file.pdf", path: "file.pdf", kind: "file" as const };
 const journal = [
   event("agent_start", 0, { started_at_ms: 1000 }),
-  event("user_message", 1, { entry_id: "u", run_id: "r", text: "question", attachments: [attachment] }),
+  event("user_message", 1, { entry_id: "u", run_id: "r", text: "question", created_at_ms: 1, attachments: [attachment] }),
   event("thinking_start", 2, {}), event("thinking_delta", 3, { text: "reason" }),
   event("thinking_delta", 4, { text: " more" }), event("thinking_end", 5, {}),
   event("text_chunk", 6, { text: "prefix" }), event("text_chunk", 7, { text: " body" }),

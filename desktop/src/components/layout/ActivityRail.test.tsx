@@ -185,6 +185,54 @@ describe("activity rail conversation hierarchy", () => {
     }
   });
 
+  /**
+   * A list's "load more" is the next row of *that* list.
+   *
+   * Reported as "the load-more under the conversations is not indented like
+   * them": the control sat at the section heading's left edge (8px) while the
+   * conversations above it started at their own column, so it read as another
+   * list's button. It now takes the column of the rows it continues — 16 for a
+   * section's own conversations, 28 for the ones inside a workspace group.
+   */
+  it("puts each list's load-more on the column of the rows it continues", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const loadRemainingThreadScope = vi.fn(async () => {});
+    const p: ComponentProps<typeof ActivityRail> = {
+      ...props([thread("chat-row"), { ...thread("group-row", "ws"), mode: "workspace", workspaceId: "ws" }]),
+      loadRemainingThreadScope,
+      threadScopeHasMore: () => true,
+      threadScopeRemaining: (scope: string) => (scope === "chat" ? 45 : 660),
+      workspaces: [{ id: "ws", name: "Workspace", kind: "user" as const, path: "/tmp/ws", cleanupStatus: "active" as const, createdAt: 0, updatedAt: 0 }],
+    };
+    act(() => root.render(<ActivityRail {...p} />));
+    await flushAsync();
+    try {
+      const moreRows = [...container.querySelectorAll<HTMLButtonElement>("[data-testid=\"rail-load-more\"]")];
+      expect(moreRows).toHaveLength(2);
+      // Each names what is really behind it, and loads exactly that in one go.
+      expect(moreRows[0]!.textContent).toContain("660");
+      expect(moreRows[0]!.getAttribute("data-load-more")).toBe("660");
+      expect(moreRows[1]!.textContent).toContain("45");
+      act(() => moreRows[0]!.click());
+      expect(loadRemainingThreadScope).toHaveBeenLastCalledWith("workspace:ws");
+      act(() => moreRows[1]!.click());
+      expect(loadRemainingThreadScope).toHaveBeenLastCalledWith("chat");
+      // The workspaces come first in this view, then the chat section: each
+      // control lines up with the rows above it, not with the heading above them.
+      const [groupMore, chatMore] = moreRows;
+      expect(Number.parseFloat(groupMore!.style.paddingLeft)).toBe(28);
+      expect(Number.parseFloat(chatMore!.style.paddingLeft)).toBe(16);
+      expect(container.querySelector<HTMLButtonElement>("button[aria-label=\"chat-row\"]")!.parentElement!.style.paddingLeft).toBe("16px");
+      expect(container.querySelector<HTMLButtonElement>("button[aria-label=\"group-row\"]")!.parentElement!.style.paddingLeft).toBe("28px");
+    }
+    finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
+
   it("keeps the workspace header's name on its first-level title column", async () => {
     const container = document.createElement("div");
     document.body.appendChild(container);

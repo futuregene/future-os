@@ -19,6 +19,9 @@ export const useStyles = createThemedStyles(theme => StyleSheet.create({
   promptToggle: { minHeight: 44, justifyContent: "center", paddingHorizontal: spacing.sm },
   promptToggleLabel: { color: theme.colors.accent, fontSize: theme.font(12) },
   userBlock: { alignItems: "flex-end", gap: spacing.xs },
+  // The question's caption under its bubble: the same muted size as a reply's
+  // stats line, hugging the bubble's right edge (the block is flex-end).
+  sentAt: { color: theme.colors.inkMuted, fontSize: theme.font(12) },
   attachmentRow: {
     maxWidth: "88%",
     flexDirection: "row",

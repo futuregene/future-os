@@ -76,6 +76,9 @@ pub struct ReviewSnapshotRecord {
     pub file_count: i64,
     pub total_bytes: i64,
     pub ignored_count: i64,
+    /// JSON list of what `ignored_count` counts: the paths the Workspace's
+    /// ignore rules kept out of the tree, each with the rule that did it.
+    pub ignored_paths: Option<String>,
     pub omitted_count: i64,
     pub error_message: Option<String>,
     pub created_at: i64,
@@ -97,7 +100,8 @@ sql_record!(pub(super) REVIEW_FILE_CHANGE_COLUMNS, review_file_change_from_row -
 
 sql_record!(pub(super) REVIEW_SNAPSHOT_COLUMNS, review_snapshot_from_row -> ReviewSnapshotRecord {
     id, workspace_id, thread_id, run_id, phase, commit_id, tree_id, status,
-    file_count, total_bytes, ignored_count, omitted_count, error_message, created_at,
+    file_count, total_bytes, ignored_count, ignored_paths, omitted_count, error_message,
+    created_at,
 });
 
 /// `review_changesets.status` is `NOT NULL` and only meaningful for the legacy
@@ -114,8 +118,9 @@ pub fn create_review_snapshot(
     conn.execute(
         "INSERT INTO review_snapshots (
              id, workspace_id, thread_id, run_id, phase, commit_id, tree_id, status,
-             file_count, total_bytes, ignored_count, omitted_count, error_message, created_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             file_count, total_bytes, ignored_count, ignored_paths, omitted_count,
+             error_message, created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT(run_id, phase) DO UPDATE SET
              commit_id = excluded.commit_id,
              tree_id = excluded.tree_id,
@@ -123,6 +128,7 @@ pub fn create_review_snapshot(
              file_count = excluded.file_count,
              total_bytes = excluded.total_bytes,
              ignored_count = excluded.ignored_count,
+             ignored_paths = excluded.ignored_paths,
              omitted_count = excluded.omitted_count,
              error_message = excluded.error_message,
              created_at = excluded.created_at",
@@ -138,6 +144,7 @@ pub fn create_review_snapshot(
             input.file_count,
             input.total_bytes,
             input.ignored_count,
+            input.ignored_paths,
             input.omitted_count,
             input.error_message,
             now,
@@ -553,6 +560,7 @@ mod tests {
             file_count: 3,
             total_bytes: 100,
             ignored_count: 1,
+            ignored_paths: None,
             omitted_count: 0,
             error_message: None,
         }

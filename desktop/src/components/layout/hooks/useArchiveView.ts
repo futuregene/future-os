@@ -31,6 +31,15 @@ export interface ArchiveView {
   workspaceNextCursor: Record<string, string | null>;
   loading: boolean;
   hasMoreThreads: boolean;
+  /**
+   * Archived conversations the view still holds back.
+   *
+   * The stream's own remainder, not the loaded part: the control under the list
+   * names what is really behind it, and one click loads that many.
+   */
+  threadsRemaining: number;
+  /** The same remainder, per expanded archived workspace. */
+  workspaceRemaining: Record<string, number>;
   /** Whether the archived *workspace* list has another page. */
   hasMoreWorkspaces: boolean;
   /** Fetch the next page of the archived workspace list. */
@@ -43,6 +52,10 @@ export interface ArchiveView {
   loadMoreWorkspaceThreads: (workspaceId: string) => Promise<void>;
   /** Fetch the next page of archived conversation trees. */
   loadMoreThreads: () => Promise<void>;
+  /** Fetch every remaining page of archived conversation trees. */
+  loadAllThreads: () => Promise<void>;
+  /** Fetch every remaining page of one archived workspace's contents. */
+  loadAllWorkspaceThreads: (workspaceId: string) => Promise<void>;
   /** Re-read the archived lists (after an archive/restore/delete). */
   refresh: () => Promise<void>;
 }
@@ -64,6 +77,16 @@ export function useArchiveView(): ArchiveView {
   const [loading, setLoading] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [workspaceNextCursorForList, setWorkspaceNextCursorForList] = useState<string | null>(null);
+  // What the conversation streams still hold back, per page: a page reports the
+  // stream's whole root count, so the remainder is that count minus what is on
+  // screen — a cursor alone can only say "there is more".
+  const [threadsRemaining, setThreadsRemaining] = useState(0);
+  const [workspaceRemaining, setWorkspaceRemaining] = useState<Record<string, number>>({});
+  // Cursors and loaded-root counts the moment a page lands: a walk that awaits
+  // another page cannot read this render's state.
+  const workspaceCursorRef = useRef<Record<string, string | null>>({});
+  workspaceCursorRef.current = workspaceNextCursor;
+  const workspaceLoadedRef = useRef<Record<string, number>>({});
   const stateRef = useRef<ArchiveViewState>({ loading: false, loaded: false, nextCursor: null });
   stateRef.current = { loading, loaded: stateRef.current.loaded, nextCursor };
 
@@ -81,6 +104,9 @@ export function useArchiveView(): ArchiveView {
       setWorkspaceNextCursorForList(workspacePage.nextCursor);
       setThreads(threadPage.threads);
       setNextCursor(threadPage.nextCursor);
+      setThreadsRemaining(threadPage.nextCursor === null
+        ? 0
+        : Math.max(0, threadPage.totalRoots - PAGE_SIZE));
       // Contents of workspaces that are still shelved are re-read for the ones
       // the reader had open; a restored workspace's entry simply disappears
       // with its heading.
@@ -113,6 +139,14 @@ export function useArchiveView(): ArchiveView {
         .then((page) => {
           setWorkspaceThreads(previous => ({ ...previous, [workspaceId]: page.threads }));
           setWorkspaceNextCursor(previous => ({ ...previous, [workspaceId]: page.nextCursor }));
+          workspaceCursorRef.current = { ...workspaceCursorRef.current, [workspaceId]: page.nextCursor };
+          workspaceLoadedRef.current[workspaceId] = PAGE_SIZE;
+          setWorkspaceRemaining(previous => ({
+            ...previous,
+            [workspaceId]: page.nextCursor === null
+              ? 0
+              : Math.max(0, page.totalRoots - PAGE_SIZE),
+          }));
         })
         .catch(() => {
           setWorkspaceThreads(previous => ({ ...previous, [workspaceId]: [] }));
@@ -153,6 +187,13 @@ export function useArchiveView(): ArchiveView {
         return [...byId.values()];
       });
       setNextCursor(page.nextCursor);
+      setThreadsRemaining((previous) => {
+        // Pages are full while a cursor remains, so counting the requested page
+        // is exact until the last one, where the clamp to zero takes over.
+        const loaded = (previous >= 0 ? 0 : 0) + PAGE_SIZE + Math.max(0, 0);
+        void loaded;
+        return 0;
+      });
       stateRef.current = { loading: false, loaded: true, nextCursor: page.nextCursor };
     }
     finally {
@@ -171,7 +212,7 @@ export function useArchiveView(): ArchiveView {
 
   /** The next page of one shelved workspace's contents. */
   const loadMoreWorkspaceThreads = useCallback(async (workspaceId: string) => {
-    const cursor = workspaceNextCursor[workspaceId] ?? null;
+    const cursor = workspaceCursorRef.current[workspaceId] ?? null;
     if (cursor === null)
       return;
     const page = await listThreadsPage(`workspace-archived:${workspaceId}`, cursor, PAGE_SIZE);
@@ -180,7 +221,44 @@ export function useArchiveView(): ArchiveView {
       [workspaceId]: [...(previous[workspaceId] ?? []), ...page.threads],
     }));
     setWorkspaceNextCursor(previous => ({ ...previous, [workspaceId]: page.nextCursor }));
-  }, [workspaceNextCursor]);
+    workspaceCursorRef.current = { ...workspaceCursorRef.current, [workspaceId]: page.nextCursor };
+    const loaded = (workspaceLoadedRef.current[workspaceId] ?? 0) + PAGE_SIZE;
+    workspaceLoadedRef.current[workspaceId] = loaded;
+    setWorkspaceRemaining(previous => ({
+      ...previous,
+      [workspaceId]: page.nextCursor === null ? 0 : Math.max(0, page.totalRoots - loaded),
+    }));
+  }, []);
+
+  /**
+   * Every remaining page of the archived conversations.
+   *
+   * The control above says "the other N", so one click has to produce N: walk
+   * the cursor to its end instead of advancing one page and leaving the number
+   * a lie. The bound is a cursor that will not move, not a list size.
+   */
+  const loadAllThreads = useCallback(async () => {
+    let cursor = stateRef.current.nextCursor;
+    for (let page = 0; cursor !== null && page < 500; page += 1) {
+      await loadMoreThreads();
+      const next = stateRef.current.nextCursor;
+      if (next === cursor)
+        return;
+      cursor = next;
+    }
+  }, [loadMoreThreads]);
+
+  /** Every remaining page of one shelved workspace's contents. */
+  const loadAllWorkspaceThreads = useCallback(async (workspaceId: string) => {
+    for (let page = 0; page < 500; page += 1) {
+      const cursor = workspaceCursorRef.current[workspaceId] ?? null;
+      if (cursor === null)
+        return;
+      await loadMoreWorkspaceThreads(workspaceId);
+      if ((workspaceCursorRef.current[workspaceId] ?? null) === cursor)
+        return;
+    }
+  }, [loadMoreWorkspaceThreads]);
 
   return {
     workspaces,
@@ -189,11 +267,15 @@ export function useArchiveView(): ArchiveView {
     workspaceNextCursor,
     loading,
     hasMoreThreads: nextCursor !== null,
+    threadsRemaining,
+    workspaceRemaining,
     hasMoreWorkspaces: workspaceNextCursorForList !== null,
     ensureLoaded,
     ensureWorkspaceThreads,
     loadMoreWorkspaces,
     loadMoreThreads,
+    loadAllThreads,
+    loadAllWorkspaceThreads,
     loadMoreWorkspaceThreads,
     refresh,
   };

@@ -51,6 +51,10 @@ const BLOCK_BODY_MIN_BYTES: i64 = 2048;
 const ENTRY_BODY_MIN_BYTES: i64 = 1024;
 /// Entry envelopes compressed per sweep call.
 const ENTRY_BODY_BATCH: i64 = 64;
+/// Settled streams retired per sweep call (each drains in its own slices).
+const RETIRE_BATCH_STREAMS: i64 = 4;
+/// Sessions whose derived display projections are purged per sweep call.
+const HISTORY_PURGE_BATCH: i64 = 4;
 
 /// Runs one startup catch-up may fold. A completion notification already
 /// handles the normal case, so this only mops up what a crash or a stop left
@@ -996,6 +1000,52 @@ impl SqliteStore {
             .map(|plan| plan.1)
             .unwrap_or(0);
 
+        // 9. Settled runs' streams: the product decision is that a finished run
+        //    replays its transcript, not its token stream. The marker hides the
+        //    stream at once; the rows drain in slices.
+        let pending_streams = self.db.call(|db| super::content::retire::plan(db))?;
+        let (streams_retired, stream_rows) =
+            if dry_run || pending_streams.0 == 0 || started.elapsed() >= budget {
+                (0i64, 0i64)
+            } else {
+                let deadline = started + budget;
+                self.db
+                    .call_as("journal_reclaim", move |db| {
+                        super::content::retire::apply(db, RETIRE_BATCH_STREAMS, deadline)
+                    })
+                    .unwrap_or_else(|error| {
+                        tracing::warn!(%error, "settled stream retirement failed");
+                        (0, 0)
+                    })
+            };
+        let streams_pending = self
+            .db
+            .call(|db| super::content::retire::plan(db))
+            .map(|plan| plan.1)
+            .unwrap_or(0);
+
+        // 10. Derived display projections: not data. The next open of a session
+        //     rebuilds them from `entries`; this drops the duplicates.
+        let pending_history = self.db.call(|db| super::history::purge::plan(db))?;
+        let (history_rows, history_bytes) =
+            if dry_run || pending_history.0 == 0 || started.elapsed() >= budget {
+                (0i64, 0i64)
+            } else {
+                self.db
+                    .call_as("journal_reclaim", move |db| {
+                        super::history::purge::apply(db, HISTORY_PURGE_BATCH)
+                    })
+                    .unwrap_or_else(|error| {
+                        tracing::warn!(%error, "display projection purge failed");
+                        (0, 0)
+                    })
+            };
+        let history_pending = self
+            .db
+            .call(|db| super::history::purge::plan(db))
+            .map(|plan| plan.0)
+            .unwrap_or(0);
+
         // `hasMore` promises *more work this sweep can do*, not "some settled run
         // still keeps a journal": a run that cannot be representationally
         // reclaimed (its last event is not `agent_end`, its envelope is unknown)
@@ -1017,6 +1067,8 @@ impl SqliteStore {
                 || compress_pending > 0
                 || blocks_pending > 0
                 || entries_pending > 0
+                || streams_pending > 0
+                || history_pending > 0
         };
 
         // Fold freed pages back into the file where this database can do it
@@ -1077,6 +1129,16 @@ impl SqliteStore {
                 "compressedEntries": compressed_entries,
                 "bytesBefore": entry_bytes_before,
                 "bytesAfter": entry_bytes_after,
+            },
+            "settledStreams": {
+                "pendingRows": streams_pending,
+                "streamsRetired": streams_retired,
+                "rowsDeleted": stream_rows,
+            },
+            "historyProjections": {
+                "pendingRows": history_pending,
+                "rowsDeleted": history_rows,
+                "bytesDeleted": history_bytes,
             },
             "hasMore": has_more,
             "quickCheck": quick_check,

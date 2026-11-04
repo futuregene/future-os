@@ -113,9 +113,11 @@ pub fn access_diagnostics() -> (u64, bool, bool) {
 /// supervisor below is one process-global machine, so a test that reaches it
 /// must be the test that owns the machine. This exists because one did not
 /// (`F7`: a `Root`-based dispatch test with no guard drove `add_device` with an
-/// empty pairing book, which is `re_pair` → `unpair` → a machine-wide
+/// empty pairing book, which was then `re_pair` → `unpair` → a machine-wide
 /// `stop_with`: epoch bumped and `start_requested` cleared *under another
-/// test's in-flight `start`*, whose answer was then the empty `Stopped` status).
+/// test's in-flight `start`*, whose answer was then the empty `Stopped` status.
+/// Re-pairing an empty book no longer stops anything — see
+/// `Supervisor::re_pair` — but the dispatch still writes these globals.)
 ///
 /// The owner is a thread id, not a count: a rogue dispatch that happens to run
 /// while *some other* fixture is active is exactly the failure being prevented,
@@ -177,13 +179,12 @@ pub fn leave_fixture_scope() {
 /// What this does **not** cover, and must not be read as covered: the entry
 /// points below are the host's own (`remote stop`, `unpair`, `stop_gracefully`,
 /// `handle_system_suspend`). A control dispatch reaches the same teardown
-/// *inside* `future-remote-server` instead — `pair_new_device` on an empty book
-/// is `re_pair` → `Supervisor::unpair` → `stop_with`, none of which passes
-/// through here (measured: with the F7 fixture removed,
-/// `serving_one_request_answers_it_and_removes_every_trace` still performs the
-/// stop unguarded). F7's prevention is therefore the **fixture**, which
-/// serializes that test against every other fixture on `TEST_HOME_LOCK`; this
-/// check is the tripwire for the direct-call shape of the same mistake.
+/// *inside* `future-remote-server` instead — `pair_new_device` is `re_pair` →
+/// `Supervisor::unpair` → `stop_with` whenever the book or the served slots
+/// still hold something to replace, none of which passes through here.
+/// F7's prevention is therefore the **fixture**, which serializes that test
+/// against every other fixture on `TEST_HOME_LOCK`; this check is the tripwire
+/// for the direct-call shape of the same mistake.
 #[cfg(test)]
 pub fn assert_fixture_scope(what: &str) {
     // Never escalate while a test is already unwinding: a panic on the way out

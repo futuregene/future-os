@@ -2,7 +2,7 @@
 //! the changed candidate set, write a tree, reuse-or-create a commit, pin a ref,
 //! and persist snapshot metadata.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::store::{self, CreateReviewSnapshotInput, ReviewSnapshotRecord};
@@ -13,6 +13,7 @@ use super::repository::ShadowRepo;
 
 /// A captured snapshot plus the sensitive credential paths that changed this
 /// round (omitted from the tree, surfaced as metadata-only rows — §13).
+#[derive(Debug)]
 pub struct CaptureOutcome {
     pub snapshot: ReviewSnapshotRecord,
     pub sensitive: Vec<String>,
@@ -79,7 +80,13 @@ pub fn capture(
     }
 
     let staged_outcome = stage(repo, &temp_index, &staged)?;
-    ignored += staged_outcome.ignored;
+    // A path can be reported twice (once when candidates are filtered, once by
+    // the staging retry); the snapshot lists it once.
+    for entry in staged_outcome.ignored {
+        if !ignored.iter().any(|seen| seen.path == entry.path) {
+            ignored.push(entry);
+        }
+    }
     if staged_outcome.paths.len() != staged.len() {
         let actually_staged: HashSet<&str> =
             staged_outcome.paths.iter().map(String::as_str).collect();
@@ -111,6 +118,17 @@ pub fn capture(
         "complete"
     };
 
+    // The ignore-rule exclusions are named, not only counted: a snapshot has to
+    // be able to answer "what am I missing, and because of which rule" (§5.4).
+    let ignored_paths = if ignored.is_empty() {
+        None
+    } else {
+        Some(
+            serde_json::to_string(&ignored)
+                .map_err(|error| format!("shadow snapshot metadata failed: {error}"))?,
+        )
+    };
+
     let snapshot = store::create_review_snapshot(CreateReviewSnapshotInput {
         workspace_id: repo.workspace_id.clone(),
         thread_id: thread_id.to_string(),
@@ -121,7 +139,8 @@ pub fn capture(
         status: status.to_string(),
         file_count: staged_outcome.paths.len() as i64,
         total_bytes: total_bytes as i64,
-        ignored_count: ignored as i64,
+        ignored_count: ignored.len() as i64,
+        ignored_paths,
         omitted_count: omitted as i64,
         error_message: None,
     })?;
@@ -176,23 +195,79 @@ fn candidate_paths(repo: &ShadowRepo, index: &Path) -> Result<Vec<String>, Error
     Ok(set)
 }
 
-/// Remove untracked paths that currently match the Workspace's ignore rules.
-/// Tracked paths are intentionally retained: like normal Git, adding a new
-/// ignore rule does not stop an already tracked file from being snapshotted.
+/// One candidate the Workspace's ignore rules kept out of the snapshot, with
+/// the rule that did it (`source:line:pattern`). Persisted as snapshot
+/// metadata so a snapshot can answer "what did I leave out, and why" (§5.4).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(super) struct IgnoredPath {
+    pub path: String,
+    /// Anonymous when git's `add` refusal named the path and no rule was
+    /// readable at the time (the rules changed mid-capture).
+    pub rule: Option<String>,
+}
+
+/// Split the candidate set into what can be snapshotted and what the
+/// Workspace's ignore rules exclude.
+///
+/// Ask git two different questions, because `git add` and `git check-ignore`
+/// disagree about exactly one shape, and that shape broke every before-snapshot
+/// of a Workspace that excluded a directory it had already snapshotted
+/// (measured 2026-11-03: 40 lost before-snapshots a day, `bugfind/`):
+///
+/// 1. The candidates themselves, with git's normal index awareness — a path
+///    already in the snapshot index counts as tracked, so a rule added later
+///    does not silently stop its changes being captured (as with real Git).
+/// 2. Their ancestor directories, from the ignore rules alone. `git add -A`
+///    refuses a path below an ignored *directory* even when that path is in the
+///    index, and names the directory (`bugfind`) — while `check-ignore` on the
+///    file reports nothing, because the file's own index entry masks the rule.
+///    The directory is the only question git answers the way `add` will.
 fn filter_ignored(
     repo: &ShadowRepo,
     index: &Path,
     paths: &[String],
-) -> Result<(Vec<String>, usize), Error> {
+) -> Result<(Vec<String>, Vec<IgnoredPath>), Error> {
     if paths.is_empty() {
-        return Ok((Vec::new(), 0));
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let own_rules = check_ignore(repo, index, paths, false)?;
+    let dir_rules = check_ignore(repo, index, &ancestor_dirs(paths), true)?;
+
+    let mut visible: Vec<String> = Vec::new();
+    let mut ignored: Vec<IgnoredPath> = Vec::new();
+    for path in paths {
+        let rule = own_rules.get(path).cloned().or_else(|| {
+            ancestor_dirs(std::slice::from_ref(path))
+                .into_iter()
+                .find_map(|dir| dir_rules.get(&dir).cloned())
+        });
+        match rule {
+            Some(rule) => ignored.push(IgnoredPath {
+                path: path.clone(),
+                rule: Some(rule),
+            }),
+            None => visible.push(path.clone()),
+        }
+    }
+    Ok((visible, ignored))
+}
+
+/// `git check-ignore -v -z --stdin` as `path -> source:line:pattern`.
+///
+/// `rules_only` adds `--no-index`, which asks what the ignore rules say about a
+/// path that this index already carries.
+fn check_ignore(
+    repo: &ShadowRepo,
+    index: &Path,
+    paths: &[String],
+    rules_only: bool,
+) -> Result<HashMap<String, String>, Error> {
+    let mut args: Vec<&str> = vec!["check-ignore", "-v", "-z", "--stdin"];
+    if rules_only {
+        args.insert(1, "--no-index");
     }
     let stdin = paths.join("\0").into_bytes();
-    let output = repo.run(
-        &["check-ignore", "-z", "--stdin"],
-        Some(index),
-        Some(&stdin),
-    )?;
+    let output = repo.run(&args, Some(index), Some(&stdin))?;
     if !output.status.success() && output.status.code() != Some(1) {
         return Err(format!(
             "shadow git check-ignore failed: {}",
@@ -200,24 +275,80 @@ fn filter_ignored(
         )
         .into());
     }
-    let ignored: HashSet<String> = output
+    // `-v -z` prints source, line, pattern, pathname — four NUL-terminated
+    // fields per match, and nothing at all for a path no rule matches.
+    let mut fields: Vec<String> = output
         .stdout
         .split(|byte| *byte == 0)
-        .filter(|raw| !raw.is_empty())
         .map(|raw| String::from_utf8_lossy(raw).into_owned())
         .collect();
-    let visible = paths
+    // The trailing NUL of the last match leaves one empty field (or a single
+    // empty field when nothing matched — a case already handled above by git
+    // exiting 1 with empty output).
+    if fields.last().is_some_and(String::is_empty) {
+        fields.pop();
+    }
+    if !fields.len().is_multiple_of(4) {
+        // Reading a garbled answer as "nothing is ignored" would snapshot files
+        // the Workspace excludes, so it is reported instead.
+        return Err(format!(
+            "shadow git check-ignore returned {} unparseable fields",
+            fields.len()
+        )
+        .into());
+    }
+    let (matches, _rest) = fields.as_chunks::<4>();
+    Ok(matches
         .iter()
-        .filter(|path| !ignored.contains(path.as_str()))
-        .cloned()
-        .collect();
-    Ok((visible, ignored.len()))
+        .map(|match_fields| {
+            let rule = format!(
+                "{}:{}:{}",
+                short_rule_source(repo, &match_fields[0]),
+                match_fields[1],
+                match_fields[2]
+            );
+            (match_fields[3].clone(), rule)
+        })
+        .collect())
+}
+
+/// The rule's location as a person can act on it: `info/exclude` for the rules
+/// this capture itself derived from the real repo, a Workspace-relative
+/// `.gitignore` otherwise.
+fn short_rule_source(repo: &ShadowRepo, source: &str) -> String {
+    let path = Path::new(source);
+    if repo.owns_path(path) {
+        return "info/exclude".to_string();
+    }
+    path.strip_prefix(&repo.workspace_path)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+/// Every proper ancestor directory of the given paths, deduped, so one
+/// `check-ignore` asks about all of them.
+fn ancestor_dirs(paths: &[String]) -> Vec<String> {
+    let mut dirs: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for path in paths {
+        let mut current = path.as_str();
+        while let Some((parent, _)) = current.rsplit_once('/') {
+            // A directory already walked brought its own parents with it.
+            if !seen.insert(parent.to_string()) {
+                break;
+            }
+            dirs.push(parent.to_string());
+            current = parent;
+        }
+    }
+    dirs
 }
 
 #[derive(Debug)]
 struct StageOutcome {
     paths: Vec<String>,
-    ignored: usize,
+    ignored: Vec<IgnoredPath>,
 }
 
 /// Why one `git add` of a candidate set failed.
@@ -243,7 +374,7 @@ impl StageFailure {
 /// If an untracked path becomes ignored after candidate discovery, drop it and
 /// retry once so one expected exclusion cannot fail the entire snapshot.
 fn stage(repo: &ShadowRepo, index: &Path, paths: &[String]) -> Result<StageOutcome, Error> {
-    let (paths, ignored) = filter_ignored(repo, index, paths)?;
+    let (paths, mut ignored) = filter_ignored(repo, index, paths)?;
     if paths.is_empty() {
         return Ok(StageOutcome { paths, ignored });
     }
@@ -256,16 +387,18 @@ fn stage(repo: &ShadowRepo, index: &Path, paths: &[String]) -> Result<StageOutco
             // report — measured 2026-11-03, a Workspace whose `.git/info/exclude`
             // hid `bugfind/` failed every before-snapshot this way. git's own
             // list of refused paths is authoritative, so it is what gets dropped.
-            let (visible, _rechecked) = filter_ignored(repo, index, &paths)?;
-            let mut dropped: Vec<String> = paths
-                .iter()
-                .filter(|path| !visible.contains(path))
-                .cloned()
+            let (visible, rechecked) = filter_ignored(repo, index, &paths)?;
+            let mut dropped: Vec<IgnoredPath> = rechecked
+                .into_iter()
+                .filter(|entry| !visible.contains(&entry.path))
                 .collect();
             if let StageFailure::Ignored { paths: named, .. } = &failure {
                 for path in named {
-                    if !dropped.contains(path) {
-                        dropped.push(path.clone());
+                    if !dropped.iter().any(|entry| &entry.path == path) {
+                        dropped.push(IgnoredPath {
+                            path: path.clone(),
+                            rule: None,
+                        });
                     }
                 }
             }
@@ -274,10 +407,10 @@ fn stage(repo: &ShadowRepo, index: &Path, paths: &[String]) -> Result<StageOutco
             }
             let retry_paths: Vec<String> = paths
                 .iter()
-                .filter(|path| !dropped.contains(path))
+                .filter(|path| !dropped.iter().any(|entry| &entry.path == *path))
                 .cloned()
                 .collect();
-            let ignored = ignored + dropped.len();
+            ignored.extend(dropped);
             if retry_paths.is_empty() {
                 return Ok(StageOutcome {
                     paths: retry_paths,
@@ -546,7 +679,13 @@ mod tests {
         .unwrap();
 
         assert_eq!(outcome.paths, vec!["keep.txt"]);
-        assert_eq!(outcome.ignored, 1);
+        assert_eq!(outcome.ignored.len(), 1);
+        assert_eq!(outcome.ignored[0].path, "ignored.log");
+        assert_eq!(
+            outcome.ignored[0].rule.as_deref(),
+            Some(".gitignore:1:*.log"),
+            "the snapshot names the rule that excluded the path"
+        );
         assert_eq!(s.repo.git(&["ls-files"], Some(&index)).unwrap(), "keep.txt");
     }
 
@@ -563,7 +702,7 @@ mod tests {
         let outcome = stage(&s.repo, &index, &["tracked.log".to_string()]).unwrap();
 
         assert_eq!(outcome.paths, vec!["tracked.log"]);
-        assert_eq!(outcome.ignored, 0);
+        assert!(outcome.ignored.is_empty());
     }
 
     /// A candidate `git add` refuses is re-checked against the ignore rules
@@ -804,7 +943,12 @@ mod tests {
         .expect("a candidate that became ignored must not fail the whole staging");
 
         assert!(outcome.paths.is_empty(), "{:?}", outcome.paths);
-        assert_eq!(outcome.ignored, 2, "both paths are reported as excluded");
+        assert_eq!(
+            outcome.ignored.len(),
+            2,
+            "both paths are reported as excluded: {:?}",
+            outcome.ignored
+        );
         assert_eq!(
             s.repo.git(&["ls-files"], Some(&index)).unwrap_or_default(),
             "",
@@ -831,7 +975,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(outcome.paths, vec!["z.bin"]);
-        assert_eq!(outcome.ignored, 1);
+        assert_eq!(outcome.ignored.len(), 1);
         assert_eq!(s.repo.git(&["ls-files"], Some(&index)).unwrap(), "z.bin");
     }
 
@@ -1007,5 +1151,224 @@ mod tests {
             Some(3),
             "the warning names every path the add refused"
         );
+    }
+    // ── ignored directories the snapshot index already carries ──────────────
+
+    /// A Workspace that is a real git repository, so the real repo's
+    /// `info/exclude` becomes part of the snapshot's ignore rules (§5.5).
+    fn setup_git(name: &str) -> Setup {
+        let mut s = setup(name);
+        let workspace = s.repo.workspace_path.clone();
+        run_git(&workspace, &["init", "-q", "."]);
+        run_git(
+            &workspace,
+            &["config", "user.email", "test@example.invalid"],
+        );
+        run_git(&workspace, &["config", "user.name", "Test"]);
+        std::fs::write(workspace.join("tracked.txt"), "original\n").unwrap();
+        run_git(&workspace, &["add", "tracked.txt"]);
+        run_git(&workspace, &["commit", "-qm", "init"]);
+        s.repo = ShadowRepo::open(&s.workspace_id, &workspace, true).unwrap();
+        s
+    }
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// The rule a person can act on: the workspace's own `info/exclude`, which
+    /// is what hid `bugfind/` in the Workspace that lost 40 snapshots a day.
+    fn write_real_info_exclude(workspace: &Path, body: &str) {
+        std::fs::write(workspace.join(".git").join("info").join("exclude"), body).unwrap();
+    }
+
+    fn new_run(s: &Setup) -> String {
+        store::create_run(CreateRunInput {
+            id: None,
+            thread_id: s.thread_id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .unwrap()
+        .id
+    }
+
+    /// Snapshot a Workspace after it started excluding a directory the shadow
+    /// index already carries a file from.
+    ///
+    /// Measured 2026-11-03 in `future-os`: `bugfind/` was excluded *after*
+    /// earlier snapshots had staged files below it, so the shadow index still
+    /// tracked 94 of them. Every later run's before-snapshot died on `shadow git
+    /// add failed: The following paths are ignored by one of your .gitignore
+    /// files: bugfind` — 40 lost snapshots a day. Both halves of git disagree
+    /// about that path: `check-ignore` says nothing because the file is in the
+    /// index, while `add -A` refuses it because its *directory* is ignored.
+    #[test]
+    fn capture_keeps_the_snapshot_when_an_ignored_directory_is_already_indexed() {
+        let s = setup_git("capture-ignored-dir");
+
+        // An earlier snapshot ran while `bugfind/` was still visible.
+        std::fs::create_dir_all(s.repo.workspace_path.join("bugfind/h1")).unwrap();
+        std::fs::write(s.repo.workspace_path.join("bugfind/h1/note.md"), "old\n").unwrap();
+        capture(
+            &s.repo,
+            &s.thread_id,
+            &s.run_id,
+            "before",
+            &Limits::default(),
+        )
+        .unwrap();
+        let index = s.repo.prepare_temp_index("snapshot-index-probe").unwrap();
+        let mut indexed: Vec<String> = s
+            .repo
+            .git(&["ls-files"], Some(&index))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        indexed.sort();
+        assert_eq!(
+            indexed,
+            vec!["bugfind/h1/note.md".to_string(), "tracked.txt".to_string()],
+            "the shadow index carries a file below the directory about to be excluded"
+        );
+
+        // The Workspace starts excluding the directory, as this repo did, and a
+        // run then edits a file below it *and* a tracked file.
+        write_real_info_exclude(&s.repo.workspace_path, "/bugfind/\n");
+        std::fs::write(s.repo.workspace_path.join("bugfind/h1/note.md"), "new\n").unwrap();
+        std::fs::write(s.repo.workspace_path.join("tracked.txt"), "changed\n").unwrap();
+
+        let run = new_run(&s);
+        let outcome = capture(&s.repo, &s.thread_id, &run, "before", &Limits::default())
+            .expect("one excluded directory must not cost the whole snapshot");
+
+        // Not merely "no error": the tracked change is in the snapshot.
+        let commit = outcome.snapshot.commit_id.clone().expect("a commit");
+        assert_eq!(
+            s.repo
+                .git(&["show", &format!("{commit}:tracked.txt")], None)
+                .unwrap(),
+            "changed",
+            "the tracked change reached the snapshot tree"
+        );
+        // The excluded path keeps the content it had when it was last
+        // snapshotted and is never refreshed — which the metadata says.
+        assert_eq!(
+            s.repo
+                .git(&["show", &format!("{commit}:bugfind/h1/note.md")], None)
+                .unwrap(),
+            "old",
+            "a path the ignore rules exclude is not re-staged"
+        );
+        assert_eq!(outcome.snapshot.status, "complete");
+
+        // What is missing, and because of which rule — read back from the row,
+        // because `ignored_count` alone cannot say which path was left out or
+        // which rule did it.
+        let stored = store::get_review_snapshot(&run, "before")
+            .unwrap()
+            .expect("the before snapshot row");
+        assert_eq!(stored.ignored_count, 1);
+        let skipped: serde_json::Value = serde_json::from_str(
+            stored
+                .ignored_paths
+                .as_deref()
+                .expect("the snapshot names what it left out"),
+        )
+        .unwrap();
+        let listed = skipped.as_array().expect("a list of excluded paths");
+        assert_eq!(listed.len(), 1, "{skipped}");
+        assert_eq!(listed[0]["path"], "bugfind/h1/note.md", "{skipped}");
+        let rule = listed[0]["rule"].as_str().unwrap_or_default();
+        assert!(
+            rule.starts_with("info/exclude:") && rule.ends_with(":/bugfind/"),
+            "the metadata names the rule, not just the count: {skipped}"
+        );
+        // A path the ignore rules left alone is not reported as excluded, so
+        // the list cannot be "every candidate" wearing a different name.
+        assert!(
+            listed.iter().all(|entry| entry["path"] != "tracked.txt"),
+            "a snapshotted path must not be listed as excluded: {skipped}"
+        );
+    }
+
+    /// A path git genuinely cannot add still fails the capture, with git's own
+    /// message — dropping excluded paths must not turn a real failure into a
+    /// short snapshot. The unindexable file sits *beside* the excluded one, so
+    /// the failure survives the ignore pass that removed its neighbour.
+    #[cfg(unix)]
+    #[test]
+    fn capture_still_fails_with_the_original_error_when_a_candidate_cannot_be_added() {
+        use std::os::unix::fs::PermissionsExt;
+        let s = setup_git("capture-bad-beside-ignored");
+        std::fs::create_dir_all(s.repo.workspace_path.join("bugfind/h1")).unwrap();
+        std::fs::write(s.repo.workspace_path.join("bugfind/h1/note.md"), "old\n").unwrap();
+        capture(
+            &s.repo,
+            &s.thread_id,
+            &s.run_id,
+            "before",
+            &Limits::default(),
+        )
+        .unwrap();
+
+        write_real_info_exclude(&s.repo.workspace_path, "/bugfind/\n");
+        std::fs::write(s.repo.workspace_path.join("bugfind/h1/note.md"), "new\n").unwrap();
+        let locked = s.repo.workspace_path.join("locked.txt");
+        std::fs::write(&locked, "unreadable\n").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let run = new_run(&s);
+        let error = capture(&s.repo, &s.thread_id, &run, "before", &Limits::default())
+            .expect_err("a file git cannot index must not be absorbed as an exclusion")
+            .to_string();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert!(error.contains("shadow git add failed"), "{error}");
+        assert!(
+            error.contains("locked.txt"),
+            "the original error is kept: {error}"
+        );
+    }
+
+    /// The two questions `filter_ignored` asks, on a path that is in the index
+    /// *and* ignored by a directory rule: only the second one sees it. Reading
+    /// the first alone is what let `bugfind/` reach `git add` and fail every
+    /// capture.
+    #[test]
+    fn filter_ignored_sees_a_rule_that_the_index_masks() {
+        let s = setup("filter-ignored-dir");
+        let workspace = s.repo.workspace_path.clone();
+        std::fs::create_dir_all(workspace.join("sub")).unwrap();
+        std::fs::write(workspace.join("sub/deep.txt"), "deep\n").unwrap();
+        std::fs::write(workspace.join(".gitignore"), "").unwrap();
+        let index = s.repo.prepare_temp_index("filter-ignored-dir").unwrap();
+        stage(&s.repo, &index, &["sub/deep.txt".to_string()]).unwrap();
+
+        // The directory becomes excluded after the file was staged.
+        std::fs::write(workspace.join(".gitignore"), "/sub/\n").unwrap();
+        let (visible, ignored) = filter_ignored(
+            &s.repo,
+            &index,
+            &["sub/deep.txt".to_string(), "other.txt".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(visible, vec!["other.txt"]);
+        assert_eq!(ignored.len(), 1);
+        assert_eq!(ignored[0].path, "sub/deep.txt");
+        assert_eq!(ignored[0].rule.as_deref(), Some(".gitignore:1:/sub/"));
     }
 }

@@ -567,6 +567,8 @@ export const resources = {
         collapseCode: "Collapse code",
         expandPrompt: "Show full prompt",
         promptTitle: "Full prompt",
+        /** Spoken label for the clock time under a sent prompt. */
+        sentAt: "Sent {{time}}",
         tableRowsExpand: "{{count}} rows in all — tap to show every row",
         tableRowsCollapse: "Collapse table",
         tokens: "{{formattedCount}} tokens",
@@ -1712,6 +1714,7 @@ export const resources = {
         collapseCode: "收起代码",
         expandPrompt: "展开提问全文",
         promptTitle: "提问全文",
+        sentAt: "发送于 {{time}}",
         tableRowsExpand: "共 {{count}} 行 · 点击展开全部",
         tableRowsCollapse: "收起表格",
         tokens: "{{formattedCount}} tokens",

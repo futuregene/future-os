@@ -1,0 +1,3254 @@
+{
+  "phase": "warm",
+  "agentAddress": "http://127.0.0.1:61093",
+  "home": "/Users/geilige/future-os/.worktrees/perf-p1/target/remote-latency/scale/homes/history",
+  "machine": {
+    "os": "macos",
+    "arch": "aarch64",
+    "cpus": 32
+  },
+  "cargoProfile": "--release",
+  "builtAt": "2026-11-04T14:46:45",
+  "results": [
+    {
+      "label": "verdict:rows32195_vol11.22MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "e59fbf5b-03c1-4839-ad9b-259531441b57",
+        "runId": "run_c0f478c1c10544079bdc6eaaf38c4793",
+        "preferSnapshot": true
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 28.536,
+        "parseMs": 0.011,
+        "encodeMs": 0.169,
+        "replyBytes": 9164,
+        "jsonBytes": 41762,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 12.392,
+          "parseMs": 0.004,
+          "encodeMs": 0.129,
+          "replyBytes": 9164,
+          "jsonBytes": 41762,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 12.637,
+          "parseMs": 0.004,
+          "encodeMs": 0.146,
+          "replyBytes": 9164,
+          "jsonBytes": 41762,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 12.234,
+          "parseMs": 0.004,
+          "encodeMs": 0.152,
+          "replyBytes": 9164,
+          "jsonBytes": 41762,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 12.392,
+      "p95Ms": 12.637,
+      "maxMs": 12.637,
+      "minMs": 12.234,
+      "encodeP50Ms": 0.146,
+      "replyBytes": 9164,
+      "jsonBytes": 41762,
+      "replies": 3
+    },
+    {
+      "label": "page:rows32195_vol11.22MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "e59fbf5b-03c1-4839-ad9b-259531441b57",
+        "runId": "run_c0f478c1c10544079bdc6eaaf38c4793",
+        "preferSnapshot": false
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 6.009,
+        "parseMs": 0.004,
+        "encodeMs": 0.132,
+        "replyBytes": 9164,
+        "jsonBytes": 41762,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 6.002,
+          "parseMs": 0.003,
+          "encodeMs": 0.143,
+          "replyBytes": 9164,
+          "jsonBytes": 41762,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.898,
+          "parseMs": 0.003,
+          "encodeMs": 0.119,
+          "replyBytes": 9164,
+          "jsonBytes": 41762,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.917,
+          "parseMs": 0.003,
+          "encodeMs": 0.164,
+          "replyBytes": 9164,
+          "jsonBytes": 41762,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 5.917,
+      "p95Ms": 6.002,
+      "maxMs": 6.002,
+      "minMs": 5.898,
+      "encodeP50Ms": 0.143,
+      "replyBytes": 9164,
+      "jsonBytes": 41762,
+      "replies": 3
+    },
+    {
+      "label": "verdict:rows19340_vol6.64MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "73785d6b-9aa0-45aa-b0e4-b19952d11c56",
+        "runId": "run_2b2a84e76a3b445ca3f494e5d65415b3",
+        "preferSnapshot": true
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 421.115,
+        "parseMs": 0.003,
+        "encodeMs": 0.146,
+        "replyBytes": 9486,
+        "jsonBytes": 42374,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 393.127,
+          "parseMs": 0.005,
+          "encodeMs": 0.137,
+          "replyBytes": 9486,
+          "jsonBytes": 42374,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 393.108,
+          "parseMs": 0.005,
+          "encodeMs": 0.137,
+          "replyBytes": 9486,
+          "jsonBytes": 42374,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 366.422,
+          "parseMs": 0.005,
+          "encodeMs": 0.14,
+          "replyBytes": 9486,
+          "jsonBytes": 42374,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 393.108,
+      "p95Ms": 393.127,
+      "maxMs": 393.127,
+      "minMs": 366.422,
+      "encodeP50Ms": 0.137,
+      "replyBytes": 9486,
+      "jsonBytes": 42374,
+      "replies": 3
+    },
+    {
+      "label": "page:rows19340_vol6.64MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "73785d6b-9aa0-45aa-b0e4-b19952d11c56",
+        "runId": "run_2b2a84e76a3b445ca3f494e5d65415b3",
+        "preferSnapshot": false
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 5.916,
+        "parseMs": 0.005,
+        "encodeMs": 0.128,
+        "replyBytes": 9486,
+        "jsonBytes": 42374,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 5.779,
+          "parseMs": 0.001,
+          "encodeMs": 0.111,
+          "replyBytes": 9486,
+          "jsonBytes": 42374,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.691,
+          "parseMs": 0.001,
+          "encodeMs": 0.11,
+          "replyBytes": 9486,
+          "jsonBytes": 42374,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.692,
+          "parseMs": 0.001,
+          "encodeMs": 0.12,
+          "replyBytes": 9486,
+          "jsonBytes": 42374,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 5.692,
+      "p95Ms": 5.779,
+      "maxMs": 5.779,
+      "minMs": 5.691,
+      "encodeP50Ms": 0.111,
+      "replyBytes": 9486,
+      "jsonBytes": 42374,
+      "replies": 3
+    },
+    {
+      "label": "verdict:rows18160_vol6.50MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "5addc5ad-6080-4c9e-885e-b833ecb4d8e5",
+        "runId": "run_89f0a6f1cefd47229eadd216c1c0309f",
+        "preferSnapshot": true
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 254.935,
+        "parseMs": 0.001,
+        "encodeMs": 0.203,
+        "replyBytes": 15157,
+        "jsonBytes": 58170,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 229.261,
+          "parseMs": 0.003,
+          "encodeMs": 0.194,
+          "replyBytes": 15157,
+          "jsonBytes": 58170,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 229.923,
+          "parseMs": 0.004,
+          "encodeMs": 0.197,
+          "replyBytes": 15157,
+          "jsonBytes": 58170,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 234.444,
+          "parseMs": 0.004,
+          "encodeMs": 0.196,
+          "replyBytes": 15157,
+          "jsonBytes": 58170,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 229.923,
+      "p95Ms": 234.444,
+      "maxMs": 234.444,
+      "minMs": 229.261,
+      "encodeP50Ms": 0.196,
+      "replyBytes": 15157,
+      "jsonBytes": 58170,
+      "replies": 3
+    },
+    {
+      "label": "page:rows18160_vol6.50MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "5addc5ad-6080-4c9e-885e-b833ecb4d8e5",
+        "runId": "run_89f0a6f1cefd47229eadd216c1c0309f",
+        "preferSnapshot": false
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 5.074,
+        "parseMs": 0.006,
+        "encodeMs": 0.197,
+        "replyBytes": 15157,
+        "jsonBytes": 58170,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 5.002,
+          "parseMs": 0.002,
+          "encodeMs": 0.191,
+          "replyBytes": 15157,
+          "jsonBytes": 58170,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.019,
+          "parseMs": 0.001,
+          "encodeMs": 0.177,
+          "replyBytes": 15157,
+          "jsonBytes": 58170,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 4.711,
+          "parseMs": 0.002,
+          "encodeMs": 0.178,
+          "replyBytes": 15157,
+          "jsonBytes": 58170,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 5.002,
+      "p95Ms": 5.019,
+      "maxMs": 5.019,
+      "minMs": 4.711,
+      "encodeP50Ms": 0.178,
+      "replyBytes": 15157,
+      "jsonBytes": 58170,
+      "replies": 3
+    },
+    {
+      "label": "verdict:rows17910_vol6.25MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "6c494af8-be1e-40e4-beb9-f0d31cb4f17d",
+        "runId": "run_2faa37b427b344b0a7e43bffa4321a4f",
+        "preferSnapshot": true
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 614.471,
+        "parseMs": 0.001,
+        "encodeMs": 0.194,
+        "replyBytes": 13290,
+        "jsonBytes": 54238,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 571.922,
+          "parseMs": 0.005,
+          "encodeMs": 0.184,
+          "replyBytes": 13290,
+          "jsonBytes": 54238,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 572.595,
+          "parseMs": 0.004,
+          "encodeMs": 0.182,
+          "replyBytes": 13290,
+          "jsonBytes": 54238,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 575.811,
+          "parseMs": 0.004,
+          "encodeMs": 0.182,
+          "replyBytes": 13290,
+          "jsonBytes": 54238,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 572.595,
+      "p95Ms": 575.811,
+      "maxMs": 575.811,
+      "minMs": 571.922,
+      "encodeP50Ms": 0.182,
+      "replyBytes": 13290,
+      "jsonBytes": 54238,
+      "replies": 3
+    },
+    {
+      "label": "page:rows17910_vol6.25MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "6c494af8-be1e-40e4-beb9-f0d31cb4f17d",
+        "runId": "run_2faa37b427b344b0a7e43bffa4321a4f",
+        "preferSnapshot": false
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 5.579,
+        "parseMs": 0.005,
+        "encodeMs": 0.2,
+        "replyBytes": 13290,
+        "jsonBytes": 54238,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 5.387,
+          "parseMs": 0.001,
+          "encodeMs": 0.168,
+          "replyBytes": 13290,
+          "jsonBytes": 54238,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.439,
+          "parseMs": 0.001,
+          "encodeMs": 0.17,
+          "replyBytes": 13290,
+          "jsonBytes": 54238,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.428,
+          "parseMs": 0.002,
+          "encodeMs": 0.155,
+          "replyBytes": 13290,
+          "jsonBytes": 54238,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 5.428,
+      "p95Ms": 5.439,
+      "maxMs": 5.439,
+      "minMs": 5.387,
+      "encodeP50Ms": 0.168,
+      "replyBytes": 13290,
+      "jsonBytes": 54238,
+      "replies": 3
+    },
+    {
+      "label": "verdict:rows17291_vol6.10MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "af38abef-3170-44ea-8225-311745c36610",
+        "runId": "run_ffb96a8aab4c4d6883926a557f2fe6c7",
+        "preferSnapshot": true
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 383.708,
+        "parseMs": 0.001,
+        "encodeMs": 0.06,
+        "replyBytes": 28591,
+        "jsonBytes": 28591,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 368.763,
+          "parseMs": 0.005,
+          "encodeMs": 0.046,
+          "replyBytes": 28591,
+          "jsonBytes": 28591,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 374.251,
+          "parseMs": 0.005,
+          "encodeMs": 0.046,
+          "replyBytes": 28591,
+          "jsonBytes": 28591,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 381.503,
+          "parseMs": 0.005,
+          "encodeMs": 0.052,
+          "replyBytes": 28591,
+          "jsonBytes": 28591,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 374.251,
+      "p95Ms": 381.503,
+      "maxMs": 381.503,
+      "minMs": 368.763,
+      "encodeP50Ms": 0.046,
+      "replyBytes": 28591,
+      "jsonBytes": 28591,
+      "replies": 3
+    },
+    {
+      "label": "page:rows17291_vol6.10MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "af38abef-3170-44ea-8225-311745c36610",
+        "runId": "run_ffb96a8aab4c4d6883926a557f2fe6c7",
+        "preferSnapshot": false
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 6.288,
+        "parseMs": 0.006,
+        "encodeMs": 0.051,
+        "replyBytes": 28591,
+        "jsonBytes": 28591,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 6.036,
+          "parseMs": 0.003,
+          "encodeMs": 0.046,
+          "replyBytes": 28591,
+          "jsonBytes": 28591,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.791,
+          "parseMs": 0.003,
+          "encodeMs": 0.046,
+          "replyBytes": 28591,
+          "jsonBytes": 28591,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.989,
+          "parseMs": 0.003,
+          "encodeMs": 0.046,
+          "replyBytes": 28591,
+          "jsonBytes": 28591,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 5.989,
+      "p95Ms": 6.036,
+      "maxMs": 6.036,
+      "minMs": 5.791,
+      "encodeP50Ms": 0.046,
+      "replyBytes": 28591,
+      "jsonBytes": 28591,
+      "replies": 3
+    },
+    {
+      "label": "verdict:rows16446_vol5.76MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "4919f239-e066-4507-91ab-254ad54f4942",
+        "runId": "run_de4682a3b52f4484bfca4f1287d48a55",
+        "preferSnapshot": true
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 215.377,
+        "parseMs": 0.003,
+        "encodeMs": 0.2,
+        "replyBytes": 13449,
+        "jsonBytes": 59090,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 198.131,
+          "parseMs": 0.005,
+          "encodeMs": 0.19,
+          "replyBytes": 13449,
+          "jsonBytes": 59090,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 197.687,
+          "parseMs": 0.005,
+          "encodeMs": 0.195,
+          "replyBytes": 13449,
+          "jsonBytes": 59090,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 197.825,
+          "parseMs": 0.004,
+          "encodeMs": 0.206,
+          "replyBytes": 13449,
+          "jsonBytes": 59090,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 197.825,
+      "p95Ms": 198.131,
+      "maxMs": 198.131,
+      "minMs": 197.687,
+      "encodeP50Ms": 0.195,
+      "replyBytes": 13449,
+      "jsonBytes": 59090,
+      "replies": 3
+    },
+    {
+      "label": "page:rows16446_vol5.76MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "4919f239-e066-4507-91ab-254ad54f4942",
+        "runId": "run_de4682a3b52f4484bfca4f1287d48a55",
+        "preferSnapshot": false
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 5.413,
+        "parseMs": 0.004,
+        "encodeMs": 0.182,
+        "replyBytes": 13449,
+        "jsonBytes": 59090,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 5.314,
+          "parseMs": 0.002,
+          "encodeMs": 0.162,
+          "replyBytes": 13449,
+          "jsonBytes": 59090,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.167,
+          "parseMs": 0.002,
+          "encodeMs": 0.189,
+          "replyBytes": 13449,
+          "jsonBytes": 59090,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.179,
+          "parseMs": 0.002,
+          "encodeMs": 0.16,
+          "replyBytes": 13449,
+          "jsonBytes": 59090,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 5.179,
+      "p95Ms": 5.314,
+      "maxMs": 5.314,
+      "minMs": 5.167,
+      "encodeP50Ms": 0.162,
+      "replyBytes": 13449,
+      "jsonBytes": 59090,
+      "replies": 3
+    },
+    {
+      "label": "verdict:rows15380_vol5.31MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "2afa0bf2-0c06-4ae3-ae34-4563009c4f6f",
+        "runId": "run_4113a29db52b4f26a537eab7b56b8b89",
+        "preferSnapshot": true
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 511.394,
+        "parseMs": 0.002,
+        "encodeMs": 0.178,
+        "replyBytes": 10191,
+        "jsonBytes": 48342,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 473.798,
+          "parseMs": 0.005,
+          "encodeMs": 0.158,
+          "replyBytes": 10191,
+          "jsonBytes": 48342,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 477.834,
+          "parseMs": 0.005,
+          "encodeMs": 0.156,
+          "replyBytes": 10191,
+          "jsonBytes": 48342,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 481.462,
+          "parseMs": 0.005,
+          "encodeMs": 0.157,
+          "replyBytes": 10191,
+          "jsonBytes": 48342,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 477.834,
+      "p95Ms": 481.462,
+      "maxMs": 481.462,
+      "minMs": 473.798,
+      "encodeP50Ms": 0.157,
+      "replyBytes": 10191,
+      "jsonBytes": 48342,
+      "replies": 3
+    },
+    {
+      "label": "page:rows15380_vol5.31MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "2afa0bf2-0c06-4ae3-ae34-4563009c4f6f",
+        "runId": "run_4113a29db52b4f26a537eab7b56b8b89",
+        "preferSnapshot": false
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 5.17,
+        "parseMs": 0.005,
+        "encodeMs": 0.141,
+        "replyBytes": 10191,
+        "jsonBytes": 48342,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 5.096,
+          "parseMs": 0.002,
+          "encodeMs": 0.152,
+          "replyBytes": 10191,
+          "jsonBytes": 48342,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.084,
+          "parseMs": 0.002,
+          "encodeMs": 0.158,
+          "replyBytes": 10191,
+          "jsonBytes": 48342,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 4.993,
+          "parseMs": 0.002,
+          "encodeMs": 0.138,
+          "replyBytes": 10191,
+          "jsonBytes": 48342,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 5.084,
+      "p95Ms": 5.096,
+      "maxMs": 5.096,
+      "minMs": 4.993,
+      "encodeP50Ms": 0.152,
+      "replyBytes": 10191,
+      "jsonBytes": 48342,
+      "replies": 3
+    },
+    {
+      "label": "verdict:rows15279_vol5.23MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "1921b4d1-0d83-47dd-9266-50130dcf5abb",
+        "runId": "run_2e936c1ff2b14f668b857399608f2976",
+        "preferSnapshot": true
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 489.406,
+        "parseMs": 0.002,
+        "encodeMs": 0.201,
+        "replyBytes": 11196,
+        "jsonBytes": 50756,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 475.482,
+          "parseMs": 0.005,
+          "encodeMs": 0.184,
+          "replyBytes": 11196,
+          "jsonBytes": 50756,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 453.708,
+          "parseMs": 0.006,
+          "encodeMs": 0.185,
+          "replyBytes": 11196,
+          "jsonBytes": 50756,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 456.489,
+          "parseMs": 0.006,
+          "encodeMs": 0.17,
+          "replyBytes": 11196,
+          "jsonBytes": 50756,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 456.489,
+      "p95Ms": 475.482,
+      "maxMs": 475.482,
+      "minMs": 453.708,
+      "encodeP50Ms": 0.184,
+      "replyBytes": 11196,
+      "jsonBytes": 50756,
+      "replies": 3
+    },
+    {
+      "label": "page:rows15279_vol5.23MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "1921b4d1-0d83-47dd-9266-50130dcf5abb",
+        "runId": "run_2e936c1ff2b14f668b857399608f2976",
+        "preferSnapshot": false
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 5.312,
+        "parseMs": 0.005,
+        "encodeMs": 0.155,
+        "replyBytes": 11196,
+        "jsonBytes": 50756,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 5.303,
+          "parseMs": 0.003,
+          "encodeMs": 0.15,
+          "replyBytes": 11196,
+          "jsonBytes": 50756,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.286,
+          "parseMs": 0.003,
+          "encodeMs": 0.153,
+          "replyBytes": 11196,
+          "jsonBytes": 50756,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.372,
+          "parseMs": 0.002,
+          "encodeMs": 0.163,
+          "replyBytes": 11196,
+          "jsonBytes": 50756,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 5.303,
+      "p95Ms": 5.372,
+      "maxMs": 5.372,
+      "minMs": 5.286,
+      "encodeP50Ms": 0.153,
+      "replyBytes": 11196,
+      "jsonBytes": 50756,
+      "replies": 3
+    },
+    {
+      "label": "verdict:rows13565_vol5.11MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "d396a209-8f75-43f9-96bd-90a123846b3b",
+        "runId": "run_c5b17cc1f2074d6c8c993cd210a22c59",
+        "preferSnapshot": true
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 268.737,
+        "parseMs": 0.003,
+        "encodeMs": 0.238,
+        "replyBytes": 15183,
+        "jsonBytes": 72823,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 249.256,
+          "parseMs": 0.006,
+          "encodeMs": 0.23,
+          "replyBytes": 15183,
+          "jsonBytes": 72823,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 232.12,
+          "parseMs": 0.005,
+          "encodeMs": 0.219,
+          "replyBytes": 15183,
+          "jsonBytes": 72823,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 232.197,
+          "parseMs": 0.005,
+          "encodeMs": 0.223,
+          "replyBytes": 15183,
+          "jsonBytes": 72823,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 232.197,
+      "p95Ms": 249.256,
+      "maxMs": 249.256,
+      "minMs": 232.12,
+      "encodeP50Ms": 0.223,
+      "replyBytes": 15183,
+      "jsonBytes": 72823,
+      "replies": 3
+    },
+    {
+      "label": "page:rows13565_vol5.11MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "d396a209-8f75-43f9-96bd-90a123846b3b",
+        "runId": "run_c5b17cc1f2074d6c8c993cd210a22c59",
+        "preferSnapshot": false
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 5.434,
+        "parseMs": 0.004,
+        "encodeMs": 0.205,
+        "replyBytes": 15183,
+        "jsonBytes": 72823,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 5.507,
+          "parseMs": 0.002,
+          "encodeMs": 0.219,
+          "replyBytes": 15183,
+          "jsonBytes": 72823,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.379,
+          "parseMs": 0.003,
+          "encodeMs": 0.204,
+          "replyBytes": 15183,
+          "jsonBytes": 72823,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.314,
+          "parseMs": 0.002,
+          "encodeMs": 0.207,
+          "replyBytes": 15183,
+          "jsonBytes": 72823,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 5.379,
+      "p95Ms": 5.507,
+      "maxMs": 5.507,
+      "minMs": 5.314,
+      "encodeP50Ms": 0.207,
+      "replyBytes": 15183,
+      "jsonBytes": 72823,
+      "replies": 3
+    },
+    {
+      "label": "verdict:rows14443_vol5.11MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "d9db72ac-36f5-4435-a30c-5f37e446c7aa",
+        "runId": "run_dccd3aef3ff842978bfc0a060b91e581",
+        "preferSnapshot": true
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 344.869,
+        "parseMs": 0.002,
+        "encodeMs": 0.213,
+        "replyBytes": 13402,
+        "jsonBytes": 63968,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 328.042,
+          "parseMs": 0.005,
+          "encodeMs": 0.217,
+          "replyBytes": 13402,
+          "jsonBytes": 63968,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 319.651,
+          "parseMs": 0.006,
+          "encodeMs": 0.195,
+          "replyBytes": 13402,
+          "jsonBytes": 63968,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 321.248,
+          "parseMs": 0.005,
+          "encodeMs": 0.198,
+          "replyBytes": 13402,
+          "jsonBytes": 63968,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 321.248,
+      "p95Ms": 328.042,
+      "maxMs": 328.042,
+      "minMs": 319.651,
+      "encodeP50Ms": 0.198,
+      "replyBytes": 13402,
+      "jsonBytes": 63968,
+      "replies": 3
+    },
+    {
+      "label": "page:rows14443_vol5.11MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "d9db72ac-36f5-4435-a30c-5f37e446c7aa",
+        "runId": "run_dccd3aef3ff842978bfc0a060b91e581",
+        "preferSnapshot": false
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 6.532,
+        "parseMs": 0.005,
+        "encodeMs": 0.193,
+        "replyBytes": 13402,
+        "jsonBytes": 63968,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 5.958,
+          "parseMs": 0.003,
+          "encodeMs": 0.188,
+          "replyBytes": 13402,
+          "jsonBytes": 63968,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.932,
+          "parseMs": 0.003,
+          "encodeMs": 0.179,
+          "replyBytes": 13402,
+          "jsonBytes": 63968,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 6.002,
+          "parseMs": 0.002,
+          "encodeMs": 0.18,
+          "replyBytes": 13402,
+          "jsonBytes": 63968,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 5.958,
+      "p95Ms": 6.002,
+      "maxMs": 6.002,
+      "minMs": 5.932,
+      "encodeP50Ms": 0.18,
+      "replyBytes": 13402,
+      "jsonBytes": 63968,
+      "replies": 3
+    },
+    {
+      "label": "verdict:rows14343_vol5.09MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "89ff4935-7f4a-43d2-9166-362c0e17ad33",
+        "runId": "run_cd51547af1344305b2d777292e1db25b",
+        "preferSnapshot": true
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 265.403,
+        "parseMs": 0.002,
+        "encodeMs": 0.151,
+        "replyBytes": 9644,
+        "jsonBytes": 44537,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 246.42,
+          "parseMs": 0.005,
+          "encodeMs": 0.149,
+          "replyBytes": 9644,
+          "jsonBytes": 44537,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 250.926,
+          "parseMs": 0.005,
+          "encodeMs": 0.152,
+          "replyBytes": 9644,
+          "jsonBytes": 44537,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 257.941,
+          "parseMs": 0.005,
+          "encodeMs": 0.165,
+          "replyBytes": 9644,
+          "jsonBytes": 44537,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 250.926,
+      "p95Ms": 257.941,
+      "maxMs": 257.941,
+      "minMs": 246.42,
+      "encodeP50Ms": 0.152,
+      "replyBytes": 9644,
+      "jsonBytes": 44537,
+      "replies": 3
+    },
+    {
+      "label": "page:rows14343_vol5.09MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "89ff4935-7f4a-43d2-9166-362c0e17ad33",
+        "runId": "run_cd51547af1344305b2d777292e1db25b",
+        "preferSnapshot": false
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 5.777,
+        "parseMs": 0.005,
+        "encodeMs": 0.162,
+        "replyBytes": 9644,
+        "jsonBytes": 44537,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 5.378,
+          "parseMs": 0.003,
+          "encodeMs": 0.151,
+          "replyBytes": 9644,
+          "jsonBytes": 44537,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 6.055,
+          "parseMs": 0.003,
+          "encodeMs": 0.167,
+          "replyBytes": 9644,
+          "jsonBytes": 44537,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 6.512,
+          "parseMs": 0.004,
+          "encodeMs": 0.187,
+          "replyBytes": 9644,
+          "jsonBytes": 44537,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 6.055,
+      "p95Ms": 6.512,
+      "maxMs": 6.512,
+      "minMs": 5.378,
+      "encodeP50Ms": 0.167,
+      "replyBytes": 9644,
+      "jsonBytes": 44537,
+      "replies": 3
+    },
+    {
+      "label": "verdict:rows14224_vol4.89MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "6c1142ea-8d2b-429a-9602-1774682a4102",
+        "runId": "run_1b9307183c0d4bf7aca7a1a2dedfca7f",
+        "preferSnapshot": true
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 455.771,
+        "parseMs": 0.004,
+        "encodeMs": 0.127,
+        "replyBytes": 7686,
+        "jsonBytes": 36771,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 405.408,
+          "parseMs": 0.005,
+          "encodeMs": 0.145,
+          "replyBytes": 7686,
+          "jsonBytes": 36771,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 403.361,
+          "parseMs": 0.006,
+          "encodeMs": 0.149,
+          "replyBytes": 7686,
+          "jsonBytes": 36771,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 407.45,
+          "parseMs": 0.005,
+          "encodeMs": 0.132,
+          "replyBytes": 7686,
+          "jsonBytes": 36771,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 405.408,
+      "p95Ms": 407.45,
+      "maxMs": 407.45,
+      "minMs": 403.361,
+      "encodeP50Ms": 0.145,
+      "replyBytes": 7686,
+      "jsonBytes": 36771,
+      "replies": 3
+    },
+    {
+      "label": "page:rows14224_vol4.89MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "6c1142ea-8d2b-429a-9602-1774682a4102",
+        "runId": "run_1b9307183c0d4bf7aca7a1a2dedfca7f",
+        "preferSnapshot": false
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 5.826,
+        "parseMs": 0.005,
+        "encodeMs": 0.121,
+        "replyBytes": 7686,
+        "jsonBytes": 36771,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 5.705,
+          "parseMs": 0.002,
+          "encodeMs": 0.114,
+          "replyBytes": 7686,
+          "jsonBytes": 36771,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.837,
+          "parseMs": 0.002,
+          "encodeMs": 0.109,
+          "replyBytes": 7686,
+          "jsonBytes": 36771,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.696,
+          "parseMs": 0.002,
+          "encodeMs": 0.11,
+          "replyBytes": 7686,
+          "jsonBytes": 36771,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 5.705,
+      "p95Ms": 5.837,
+      "maxMs": 5.837,
+      "minMs": 5.696,
+      "encodeP50Ms": 0.11,
+      "replyBytes": 7686,
+      "jsonBytes": 36771,
+      "replies": 3
+    },
+    {
+      "label": "verdict:rows14079_vol4.88MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "4fea4bde-cfa4-4c0f-8f03-522616e5e00f",
+        "runId": "run_09cbc5f95f5b430390305c235000390b",
+        "preferSnapshot": true
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 248.577,
+        "parseMs": 0.002,
+        "encodeMs": 0.008,
+        "replyBytes": 2490,
+        "jsonBytes": 2490,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 205.025,
+          "parseMs": 0.004,
+          "encodeMs": 0.008,
+          "replyBytes": 2490,
+          "jsonBytes": 2490,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 204.154,
+          "parseMs": 0.003,
+          "encodeMs": 0.007,
+          "replyBytes": 2490,
+          "jsonBytes": 2490,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 204.555,
+          "parseMs": 0.003,
+          "encodeMs": 0.007,
+          "replyBytes": 2490,
+          "jsonBytes": 2490,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 204.555,
+      "p95Ms": 205.025,
+      "maxMs": 205.025,
+      "minMs": 204.154,
+      "encodeP50Ms": 0.007,
+      "replyBytes": 2490,
+      "jsonBytes": 2490,
+      "replies": 3
+    },
+    {
+      "label": "page:rows14079_vol4.88MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "4fea4bde-cfa4-4c0f-8f03-522616e5e00f",
+        "runId": "run_09cbc5f95f5b430390305c235000390b",
+        "preferSnapshot": false
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 5.789,
+        "parseMs": 0.004,
+        "encodeMs": 0.006,
+        "replyBytes": 2490,
+        "jsonBytes": 2490,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 5.76,
+          "parseMs": 0.001,
+          "encodeMs": 0.004,
+          "replyBytes": 2490,
+          "jsonBytes": 2490,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.676,
+          "parseMs": 0.001,
+          "encodeMs": 0.005,
+          "replyBytes": 2490,
+          "jsonBytes": 2490,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.798,
+          "parseMs": 0.001,
+          "encodeMs": 0.004,
+          "replyBytes": 2490,
+          "jsonBytes": 2490,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 5.76,
+      "p95Ms": 5.798,
+      "maxMs": 5.798,
+      "minMs": 5.676,
+      "encodeP50Ms": 0.004,
+      "replyBytes": 2490,
+      "jsonBytes": 2490,
+      "replies": 3
+    },
+    {
+      "label": "verdict:rows12624_vol4.63MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "6c8a8520-f634-4e76-b749-bf402b9bff27",
+        "runId": "run_4ef04bff6b2648b181f7bcc3e02d6de9",
+        "preferSnapshot": true
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 318.898,
+        "parseMs": 0.001,
+        "encodeMs": 0.172,
+        "replyBytes": 11561,
+        "jsonBytes": 56319,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 272.265,
+          "parseMs": 0.004,
+          "encodeMs": 0.161,
+          "replyBytes": 11561,
+          "jsonBytes": 56319,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 274.699,
+          "parseMs": 0.004,
+          "encodeMs": 0.169,
+          "replyBytes": 11561,
+          "jsonBytes": 56319,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 269.935,
+          "parseMs": 0.005,
+          "encodeMs": 0.165,
+          "replyBytes": 11561,
+          "jsonBytes": 56319,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 272.265,
+      "p95Ms": 274.699,
+      "maxMs": 274.699,
+      "minMs": 269.935,
+      "encodeP50Ms": 0.165,
+      "replyBytes": 11561,
+      "jsonBytes": 56319,
+      "replies": 3
+    },
+    {
+      "label": "page:rows12624_vol4.63MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "6c8a8520-f634-4e76-b749-bf402b9bff27",
+        "runId": "run_4ef04bff6b2648b181f7bcc3e02d6de9",
+        "preferSnapshot": false
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 5.058,
+        "parseMs": 0.004,
+        "encodeMs": 0.157,
+        "replyBytes": 11561,
+        "jsonBytes": 56319,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 4.955,
+          "parseMs": 0.001,
+          "encodeMs": 0.149,
+          "replyBytes": 11561,
+          "jsonBytes": 56319,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.056,
+          "parseMs": 0.001,
+          "encodeMs": 0.143,
+          "replyBytes": 11561,
+          "jsonBytes": 56319,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 4.927,
+          "parseMs": 0.002,
+          "encodeMs": 0.141,
+          "replyBytes": 11561,
+          "jsonBytes": 56319,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 4.955,
+      "p95Ms": 5.056,
+      "maxMs": 5.056,
+      "minMs": 4.927,
+      "encodeP50Ms": 0.143,
+      "replyBytes": 11561,
+      "jsonBytes": 56319,
+      "replies": 3
+    },
+    {
+      "label": "verdict:rows12796_vol4.45MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "b1e8ed93-b275-4d58-8ace-2da3c66a97cb",
+        "runId": "run_26894d5a79004969b90d68a6da77af39",
+        "preferSnapshot": true
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 381.672,
+        "parseMs": 0.001,
+        "encodeMs": 3.179,
+        "replyBytes": 207190,
+        "jsonBytes": 1244299,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 344.022,
+          "parseMs": 0.005,
+          "encodeMs": 3.134,
+          "replyBytes": 207190,
+          "jsonBytes": 1244299,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 338.888,
+          "parseMs": 0.005,
+          "encodeMs": 3.146,
+          "replyBytes": 207190,
+          "jsonBytes": 1244299,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 339.868,
+          "parseMs": 0.004,
+          "encodeMs": 3.25,
+          "replyBytes": 207190,
+          "jsonBytes": 1244299,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 339.868,
+      "p95Ms": 344.022,
+      "maxMs": 344.022,
+      "minMs": 338.888,
+      "encodeP50Ms": 3.146,
+      "replyBytes": 207190,
+      "jsonBytes": 1244299,
+      "replies": 3
+    },
+    {
+      "label": "page:rows12796_vol4.45MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "b1e8ed93-b275-4d58-8ace-2da3c66a97cb",
+        "runId": "run_26894d5a79004969b90d68a6da77af39",
+        "preferSnapshot": false
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 6.422,
+        "parseMs": 0.005,
+        "encodeMs": 0.25,
+        "replyBytes": 16585,
+        "jsonBytes": 63588,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 5.506,
+          "parseMs": 0.003,
+          "encodeMs": 0.184,
+          "replyBytes": 16585,
+          "jsonBytes": 63588,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.288,
+          "parseMs": 0.001,
+          "encodeMs": 0.197,
+          "replyBytes": 16585,
+          "jsonBytes": 63588,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.199,
+          "parseMs": 0.002,
+          "encodeMs": 0.191,
+          "replyBytes": 16585,
+          "jsonBytes": 63588,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 5.288,
+      "p95Ms": 5.506,
+      "maxMs": 5.506,
+      "minMs": 5.199,
+      "encodeP50Ms": 0.191,
+      "replyBytes": 16585,
+      "jsonBytes": 63588,
+      "replies": 3
+    },
+    {
+      "label": "verdict:rows12143_vol4.43MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "142732e5-b8c8-4fee-9d66-a29bfbba3962",
+        "runId": "run_a6e08608a8304d39a5f26f862ba840b1",
+        "preferSnapshot": true
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 293.069,
+        "parseMs": 0.002,
+        "encodeMs": 5.116,
+        "replyBytes": 331741,
+        "jsonBytes": 2041380,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 249.389,
+          "parseMs": 0.005,
+          "encodeMs": 5.412,
+          "replyBytes": 331741,
+          "jsonBytes": 2041380,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 251.854,
+          "parseMs": 0.006,
+          "encodeMs": 5.023,
+          "replyBytes": 331741,
+          "jsonBytes": 2041380,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 247.903,
+          "parseMs": 0.005,
+          "encodeMs": 5.029,
+          "replyBytes": 331741,
+          "jsonBytes": 2041380,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 249.389,
+      "p95Ms": 251.854,
+      "maxMs": 251.854,
+      "minMs": 247.903,
+      "encodeP50Ms": 5.029,
+      "replyBytes": 331741,
+      "jsonBytes": 2041380,
+      "replies": 3
+    },
+    {
+      "label": "page:rows12143_vol4.43MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "142732e5-b8c8-4fee-9d66-a29bfbba3962",
+        "runId": "run_a6e08608a8304d39a5f26f862ba840b1",
+        "preferSnapshot": false
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 5.776,
+        "parseMs": 0.005,
+        "encodeMs": 0.159,
+        "replyBytes": 11527,
+        "jsonBytes": 54974,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 5.22,
+          "parseMs": 0.002,
+          "encodeMs": 0.145,
+          "replyBytes": 11527,
+          "jsonBytes": 54974,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.249,
+          "parseMs": 0.001,
+          "encodeMs": 0.15,
+          "replyBytes": 11527,
+          "jsonBytes": 54974,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.062,
+          "parseMs": 0.002,
+          "encodeMs": 0.136,
+          "replyBytes": 11527,
+          "jsonBytes": 54974,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 5.22,
+      "p95Ms": 5.249,
+      "maxMs": 5.249,
+      "minMs": 5.062,
+      "encodeP50Ms": 0.145,
+      "replyBytes": 11527,
+      "jsonBytes": 54974,
+      "replies": 3
+    },
+    {
+      "label": "verdict:rows12295_vol4.38MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "56f9f644-654c-4a9d-a67a-03aa25f63685",
+        "runId": "run_b689cae149754f50a9568e205e277480",
+        "preferSnapshot": true
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 293.309,
+        "parseMs": 0.001,
+        "encodeMs": 4.999,
+        "replyBytes": 326382,
+        "jsonBytes": 1961221,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 250.101,
+          "parseMs": 0.005,
+          "encodeMs": 4.918,
+          "replyBytes": 326382,
+          "jsonBytes": 1961221,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 248.438,
+          "parseMs": 0.006,
+          "encodeMs": 4.991,
+          "replyBytes": 326382,
+          "jsonBytes": 1961221,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 247.404,
+          "parseMs": 0.006,
+          "encodeMs": 4.925,
+          "replyBytes": 326382,
+          "jsonBytes": 1961221,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 248.438,
+      "p95Ms": 250.101,
+      "maxMs": 250.101,
+      "minMs": 247.404,
+      "encodeP50Ms": 4.925,
+      "replyBytes": 326382,
+      "jsonBytes": 1961221,
+      "replies": 3
+    },
+    {
+      "label": "page:rows12295_vol4.38MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "56f9f644-654c-4a9d-a67a-03aa25f63685",
+        "runId": "run_b689cae149754f50a9568e205e277480",
+        "preferSnapshot": false
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 5.725,
+        "parseMs": 0.005,
+        "encodeMs": 0.148,
+        "replyBytes": 12247,
+        "jsonBytes": 48660,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 5.058,
+          "parseMs": 0.002,
+          "encodeMs": 0.138,
+          "replyBytes": 12247,
+          "jsonBytes": 48660,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.358,
+          "parseMs": 0.001,
+          "encodeMs": 0.151,
+          "replyBytes": 12247,
+          "jsonBytes": 48660,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.347,
+          "parseMs": 0.003,
+          "encodeMs": 0.14,
+          "replyBytes": 12247,
+          "jsonBytes": 48660,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 5.347,
+      "p95Ms": 5.358,
+      "maxMs": 5.358,
+      "minMs": 5.058,
+      "encodeP50Ms": 0.14,
+      "replyBytes": 12247,
+      "jsonBytes": 48660,
+      "replies": 3
+    },
+    {
+      "label": "verdict:rows11987_vol4.37MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "8a53f437-b2a2-4cd4-b224-1923d97e4030",
+        "runId": "run_fc803f40b4d8400a8bf76242772ccd11",
+        "preferSnapshot": true
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 322.115,
+        "parseMs": 0.001,
+        "encodeMs": 4.55,
+        "replyBytes": 299681,
+        "jsonBytes": 1731347,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 368.011,
+          "parseMs": 0.006,
+          "encodeMs": 5.074,
+          "replyBytes": 299681,
+          "jsonBytes": 1731347,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 373.527,
+          "parseMs": 0.007,
+          "encodeMs": 5.03,
+          "replyBytes": 299681,
+          "jsonBytes": 1731347,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 379.507,
+          "parseMs": 0.007,
+          "encodeMs": 5.151,
+          "replyBytes": 299681,
+          "jsonBytes": 1731347,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 373.527,
+      "p95Ms": 379.507,
+      "maxMs": 379.507,
+      "minMs": 368.011,
+      "encodeP50Ms": 5.074,
+      "replyBytes": 299681,
+      "jsonBytes": 1731347,
+      "replies": 3
+    },
+    {
+      "label": "page:rows11987_vol4.37MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "8a53f437-b2a2-4cd4-b224-1923d97e4030",
+        "runId": "run_fc803f40b4d8400a8bf76242772ccd11",
+        "preferSnapshot": false
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 7.859,
+        "parseMs": 0.006,
+        "encodeMs": 0.056,
+        "replyBytes": 30782,
+        "jsonBytes": 30782,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 7.44,
+          "parseMs": 0.007,
+          "encodeMs": 0.056,
+          "replyBytes": 30782,
+          "jsonBytes": 30782,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 7.431,
+          "parseMs": 0.006,
+          "encodeMs": 0.055,
+          "replyBytes": 30782,
+          "jsonBytes": 30782,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 6.663,
+          "parseMs": 0.005,
+          "encodeMs": 0.055,
+          "replyBytes": 30782,
+          "jsonBytes": 30782,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 7.431,
+      "p95Ms": 7.44,
+      "maxMs": 7.44,
+      "minMs": 6.663,
+      "encodeP50Ms": 0.055,
+      "replyBytes": 30782,
+      "jsonBytes": 30782,
+      "replies": 3
+    },
+    {
+      "label": "verdict:rows12075_vol4.37MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "ffdd9abc-afef-4c6d-a0ac-96bc50aafffe",
+        "runId": "run_70c8c147db784de097f079a68b0ddebf",
+        "preferSnapshot": true
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 378.173,
+        "parseMs": 0.005,
+        "encodeMs": 4.93,
+        "replyBytes": 271537,
+        "jsonBytes": 1758125,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 341.329,
+          "parseMs": 0.006,
+          "encodeMs": 4.875,
+          "replyBytes": 271537,
+          "jsonBytes": 1758125,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 347.424,
+          "parseMs": 0.006,
+          "encodeMs": 4.821,
+          "replyBytes": 271537,
+          "jsonBytes": 1758125,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 353.598,
+          "parseMs": 0.006,
+          "encodeMs": 4.846,
+          "replyBytes": 271537,
+          "jsonBytes": 1758125,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 347.424,
+      "p95Ms": 353.598,
+      "maxMs": 353.598,
+      "minMs": 341.329,
+      "encodeP50Ms": 4.846,
+      "replyBytes": 271537,
+      "jsonBytes": 1758125,
+      "replies": 3
+    },
+    {
+      "label": "page:rows12075_vol4.37MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "ffdd9abc-afef-4c6d-a0ac-96bc50aafffe",
+        "runId": "run_70c8c147db784de097f079a68b0ddebf",
+        "preferSnapshot": false
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 8.667,
+        "parseMs": 0.006,
+        "encodeMs": 0.135,
+        "replyBytes": 8552,
+        "jsonBytes": 34158,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 8.164,
+          "parseMs": 0.005,
+          "encodeMs": 0.14,
+          "replyBytes": 8552,
+          "jsonBytes": 34158,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 14.641,
+          "parseMs": 0.006,
+          "encodeMs": 0.276,
+          "replyBytes": 8552,
+          "jsonBytes": 34158,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 10.654,
+          "parseMs": 0.008,
+          "encodeMs": 0.136,
+          "replyBytes": 8552,
+          "jsonBytes": 34158,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 10.654,
+      "p95Ms": 14.641,
+      "maxMs": 14.641,
+      "minMs": 8.164,
+      "encodeP50Ms": 0.14,
+      "replyBytes": 8552,
+      "jsonBytes": 34158,
+      "replies": 3
+    },
+    {
+      "label": "verdict:rows12702_vol4.32MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "50b4eb0c-7bf8-4656-8726-e27c32f491d3",
+        "runId": "run_68bb9febc49f4bc6bd57436456eeec2e",
+        "preferSnapshot": true
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 447.187,
+        "parseMs": 0.006,
+        "encodeMs": 2.805,
+        "replyBytes": 151181,
+        "jsonBytes": 1031363,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 400.993,
+          "parseMs": 0.007,
+          "encodeMs": 2.789,
+          "replyBytes": 151181,
+          "jsonBytes": 1031363,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 398.686,
+          "parseMs": 0.007,
+          "encodeMs": 2.854,
+          "replyBytes": 151181,
+          "jsonBytes": 1031363,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 407.961,
+          "parseMs": 0.007,
+          "encodeMs": 2.832,
+          "replyBytes": 151181,
+          "jsonBytes": 1031363,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 400.993,
+      "p95Ms": 407.961,
+      "maxMs": 407.961,
+      "minMs": 398.686,
+      "encodeP50Ms": 2.832,
+      "replyBytes": 151181,
+      "jsonBytes": 1031363,
+      "replies": 3
+    },
+    {
+      "label": "page:rows12702_vol4.32MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "50b4eb0c-7bf8-4656-8726-e27c32f491d3",
+        "runId": "run_68bb9febc49f4bc6bd57436456eeec2e",
+        "preferSnapshot": false
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 8.97,
+        "parseMs": 0.006,
+        "encodeMs": 0.187,
+        "replyBytes": 12544,
+        "jsonBytes": 47018,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 10.591,
+          "parseMs": 0.006,
+          "encodeMs": 0.192,
+          "replyBytes": 12544,
+          "jsonBytes": 47018,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 10.317,
+          "parseMs": 0.006,
+          "encodeMs": 0.201,
+          "replyBytes": 12544,
+          "jsonBytes": 47018,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 10.28,
+          "parseMs": 0.005,
+          "encodeMs": 0.239,
+          "replyBytes": 12544,
+          "jsonBytes": 47018,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 10.317,
+      "p95Ms": 10.591,
+      "maxMs": 10.591,
+      "minMs": 10.28,
+      "encodeP50Ms": 0.201,
+      "replyBytes": 12544,
+      "jsonBytes": 47018,
+      "replies": 3
+    },
+    {
+      "label": "verdict:rows12087_vol4.24MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "84d5dae2-64cf-46a8-9095-54b220b0f6f4",
+        "runId": "run_a21a7949ef03426c948183d5fb02f337",
+        "preferSnapshot": true
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 489.604,
+        "parseMs": 0.005,
+        "encodeMs": 3.183,
+        "replyBytes": 170881,
+        "jsonBytes": 1116280,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 455.744,
+          "parseMs": 0.006,
+          "encodeMs": 3.199,
+          "replyBytes": 170881,
+          "jsonBytes": 1116280,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 460.816,
+          "parseMs": 0.007,
+          "encodeMs": 3.121,
+          "replyBytes": 170881,
+          "jsonBytes": 1116280,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 469.015,
+          "parseMs": 0.007,
+          "encodeMs": 3.211,
+          "replyBytes": 170881,
+          "jsonBytes": 1116280,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 460.816,
+      "p95Ms": 469.015,
+      "maxMs": 469.015,
+      "minMs": 455.744,
+      "encodeP50Ms": 3.199,
+      "replyBytes": 170881,
+      "jsonBytes": 1116280,
+      "replies": 3
+    },
+    {
+      "label": "page:rows12087_vol4.24MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "84d5dae2-64cf-46a8-9095-54b220b0f6f4",
+        "runId": "run_a21a7949ef03426c948183d5fb02f337",
+        "preferSnapshot": false
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 8.455,
+        "parseMs": 0.007,
+        "encodeMs": 0.183,
+        "replyBytes": 10105,
+        "jsonBytes": 50766,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 7.733,
+          "parseMs": 0.004,
+          "encodeMs": 0.174,
+          "replyBytes": 10105,
+          "jsonBytes": 50766,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 7.894,
+          "parseMs": 0.004,
+          "encodeMs": 0.176,
+          "replyBytes": 10105,
+          "jsonBytes": 50766,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 8.399,
+          "parseMs": 0.005,
+          "encodeMs": 0.191,
+          "replyBytes": 10105,
+          "jsonBytes": 50766,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 7.894,
+      "p95Ms": 8.399,
+      "maxMs": 8.399,
+      "minMs": 7.733,
+      "encodeP50Ms": 0.176,
+      "replyBytes": 10105,
+      "jsonBytes": 50766,
+      "replies": 3
+    },
+    {
+      "label": "verdict:rows12367_vol4.18MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "eb3d15a3-aac7-42cb-a749-fea247baa417",
+        "runId": "run_1377b1b1fe0e4246a02416f23fc7dbd6",
+        "preferSnapshot": true
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 574.733,
+        "parseMs": 0.006,
+        "encodeMs": 3.825,
+        "replyBytes": 223213,
+        "jsonBytes": 1302804,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 552.451,
+          "parseMs": 0.007,
+          "encodeMs": 3.848,
+          "replyBytes": 223213,
+          "jsonBytes": 1302804,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 587.597,
+          "parseMs": 0.007,
+          "encodeMs": 3.843,
+          "replyBytes": 223213,
+          "jsonBytes": 1302804,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 579.329,
+          "parseMs": 0.007,
+          "encodeMs": 3.77,
+          "replyBytes": 223213,
+          "jsonBytes": 1302804,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 579.329,
+      "p95Ms": 587.597,
+      "maxMs": 587.597,
+      "minMs": 552.451,
+      "encodeP50Ms": 3.843,
+      "replyBytes": 223213,
+      "jsonBytes": 1302804,
+      "replies": 3
+    },
+    {
+      "label": "page:rows12367_vol4.18MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "eb3d15a3-aac7-42cb-a749-fea247baa417",
+        "runId": "run_1377b1b1fe0e4246a02416f23fc7dbd6",
+        "preferSnapshot": false
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 8.727,
+        "parseMs": 0.006,
+        "encodeMs": 0.287,
+        "replyBytes": 8152,
+        "jsonBytes": 40801,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 7.236,
+          "parseMs": 0.005,
+          "encodeMs": 0.151,
+          "replyBytes": 8152,
+          "jsonBytes": 40801,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 6.961,
+          "parseMs": 0.004,
+          "encodeMs": 0.218,
+          "replyBytes": 8152,
+          "jsonBytes": 40801,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 8.514,
+          "parseMs": 0.004,
+          "encodeMs": 0.147,
+          "replyBytes": 8152,
+          "jsonBytes": 40801,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 7.236,
+      "p95Ms": 8.514,
+      "maxMs": 8.514,
+      "minMs": 6.961,
+      "encodeP50Ms": 0.151,
+      "replyBytes": 8152,
+      "jsonBytes": 40801,
+      "replies": 3
+    },
+    {
+      "label": "verdict:rows12393_vol4.14MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "1d930ac8-cc5a-40d8-ab08-a3fc2243dc01",
+        "runId": "run_12afdbd63cbe46ffa572d9ad59e0efc7",
+        "preferSnapshot": true
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 739.8,
+        "parseMs": 0.005,
+        "encodeMs": 2.087,
+        "replyBytes": 115978,
+        "jsonBytes": 639060,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 769.936,
+          "parseMs": 0.006,
+          "encodeMs": 1.943,
+          "replyBytes": 115978,
+          "jsonBytes": 639060,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 752.644,
+          "parseMs": 0.006,
+          "encodeMs": 1.923,
+          "replyBytes": 115978,
+          "jsonBytes": 639060,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 650.33,
+          "parseMs": 0.006,
+          "encodeMs": 1.95,
+          "replyBytes": 115978,
+          "jsonBytes": 639060,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 752.644,
+      "p95Ms": 769.936,
+      "maxMs": 769.936,
+      "minMs": 650.33,
+      "encodeP50Ms": 1.943,
+      "replyBytes": 115978,
+      "jsonBytes": 639060,
+      "replies": 3
+    },
+    {
+      "label": "page:rows12393_vol4.14MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "1d930ac8-cc5a-40d8-ab08-a3fc2243dc01",
+        "runId": "run_12afdbd63cbe46ffa572d9ad59e0efc7",
+        "preferSnapshot": false
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 8.514,
+        "parseMs": 0.006,
+        "encodeMs": 0.243,
+        "replyBytes": 16949,
+        "jsonBytes": 61706,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 8.206,
+          "parseMs": 0.005,
+          "encodeMs": 0.236,
+          "replyBytes": 16949,
+          "jsonBytes": 61706,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 8.439,
+          "parseMs": 0.004,
+          "encodeMs": 0.241,
+          "replyBytes": 16949,
+          "jsonBytes": 61706,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 7.795,
+          "parseMs": 0.004,
+          "encodeMs": 0.239,
+          "replyBytes": 16949,
+          "jsonBytes": 61706,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 8.206,
+      "p95Ms": 8.439,
+      "maxMs": 8.439,
+      "minMs": 7.795,
+      "encodeP50Ms": 0.239,
+      "replyBytes": 16949,
+      "jsonBytes": 61706,
+      "replies": 3
+    },
+    {
+      "label": "verdict:rows11424_vol4.11MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "03144310-a40b-4f00-ab21-18bf019b403f",
+        "runId": "run_17393383fa874e9aa9688a1d0a8af5c8",
+        "preferSnapshot": true
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 426.309,
+        "parseMs": 0.004,
+        "encodeMs": 5.095,
+        "replyBytes": 289750,
+        "jsonBytes": 1814866,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 339.891,
+          "parseMs": 0.005,
+          "encodeMs": 5.126,
+          "replyBytes": 289750,
+          "jsonBytes": 1814866,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 340.576,
+          "parseMs": 0.007,
+          "encodeMs": 5.145,
+          "replyBytes": 289750,
+          "jsonBytes": 1814866,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 360.634,
+          "parseMs": 0.006,
+          "encodeMs": 5.261,
+          "replyBytes": 289750,
+          "jsonBytes": 1814866,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 340.576,
+      "p95Ms": 360.634,
+      "maxMs": 360.634,
+      "minMs": 339.891,
+      "encodeP50Ms": 5.145,
+      "replyBytes": 289750,
+      "jsonBytes": 1814866,
+      "replies": 3
+    },
+    {
+      "label": "page:rows11424_vol4.11MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "03144310-a40b-4f00-ab21-18bf019b403f",
+        "runId": "run_17393383fa874e9aa9688a1d0a8af5c8",
+        "preferSnapshot": false
+      },
+      "iterations": 3,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 7.592,
+        "parseMs": 0.006,
+        "encodeMs": 0.285,
+        "replyBytes": 14806,
+        "jsonBytes": 70318,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 7.227,
+          "parseMs": 0.004,
+          "encodeMs": 0.243,
+          "replyBytes": 14806,
+          "jsonBytes": 70318,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 7.646,
+          "parseMs": 0.004,
+          "encodeMs": 0.241,
+          "replyBytes": 14806,
+          "jsonBytes": 70318,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 7.709,
+          "parseMs": 0.003,
+          "encodeMs": 0.25,
+          "replyBytes": 14806,
+          "jsonBytes": 70318,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 7.646,
+      "p95Ms": 7.709,
+      "maxMs": 7.709,
+      "minMs": 7.227,
+      "encodeP50Ms": 0.243,
+      "replyBytes": 14806,
+      "jsonBytes": 70318,
+      "replies": 3
+    },
+    {
+      "label": "fits:rows209_vol0.07MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "2d129781-d424-46db-ba9e-8b95edf2d205",
+        "runId": "run_cab21769e80b40da84f32afd4dfdfdf3",
+        "preferSnapshot": true
+      },
+      "iterations": 5,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 19.383,
+        "parseMs": 0.004,
+        "encodeMs": 0.021,
+        "replyBytes": 7254,
+        "jsonBytes": 7254,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 6.4,
+          "parseMs": 0.004,
+          "encodeMs": 0.02,
+          "replyBytes": 7254,
+          "jsonBytes": 7254,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 6.71,
+          "parseMs": 0.004,
+          "encodeMs": 0.019,
+          "replyBytes": 7254,
+          "jsonBytes": 7254,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 6.456,
+          "parseMs": 0.004,
+          "encodeMs": 0.019,
+          "replyBytes": 7254,
+          "jsonBytes": 7254,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 6.646,
+          "parseMs": 0.004,
+          "encodeMs": 0.021,
+          "replyBytes": 7254,
+          "jsonBytes": 7254,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 6.404,
+          "parseMs": 0.005,
+          "encodeMs": 0.02,
+          "replyBytes": 7254,
+          "jsonBytes": 7254,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 6.456,
+      "p95Ms": 6.71,
+      "maxMs": 6.71,
+      "minMs": 6.4,
+      "encodeP50Ms": 0.02,
+      "replyBytes": 7254,
+      "jsonBytes": 7254,
+      "replies": 5
+    },
+    {
+      "label": "fits_page:rows209",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "2d129781-d424-46db-ba9e-8b95edf2d205",
+        "runId": "run_cab21769e80b40da84f32afd4dfdfdf3",
+        "preferSnapshot": false
+      },
+      "iterations": 5,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 7.15,
+        "parseMs": 0.004,
+        "encodeMs": 0.043,
+        "replyBytes": 22966,
+        "jsonBytes": 22966,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 7.093,
+          "parseMs": 0.004,
+          "encodeMs": 0.046,
+          "replyBytes": 22966,
+          "jsonBytes": 22966,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 7.408,
+          "parseMs": 0.004,
+          "encodeMs": 0.042,
+          "replyBytes": 22966,
+          "jsonBytes": 22966,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 7.418,
+          "parseMs": 0.004,
+          "encodeMs": 0.042,
+          "replyBytes": 22966,
+          "jsonBytes": 22966,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 7.405,
+          "parseMs": 0.004,
+          "encodeMs": 0.041,
+          "replyBytes": 22966,
+          "jsonBytes": 22966,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 7.57,
+          "parseMs": 0.003,
+          "encodeMs": 0.043,
+          "replyBytes": 22966,
+          "jsonBytes": 22966,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 7.408,
+      "p95Ms": 7.57,
+      "maxMs": 7.57,
+      "minMs": 7.093,
+      "encodeP50Ms": 0.042,
+      "replyBytes": 22966,
+      "jsonBytes": 22966,
+      "replies": 5
+    },
+    {
+      "label": "fits:rows201_vol0.07MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "375e38ea-042e-4f6f-a3f1-c24f84218b2e",
+        "runId": "run_382191db939f4f04be09f72a7bb5cf88",
+        "preferSnapshot": true
+      },
+      "iterations": 5,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 19.22,
+        "parseMs": 0.003,
+        "encodeMs": 0.045,
+        "replyBytes": 22949,
+        "jsonBytes": 22949,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 5.833,
+          "parseMs": 0.004,
+          "encodeMs": 0.044,
+          "replyBytes": 22949,
+          "jsonBytes": 22949,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 6.16,
+          "parseMs": 0.004,
+          "encodeMs": 0.045,
+          "replyBytes": 22949,
+          "jsonBytes": 22949,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.404,
+          "parseMs": 0.003,
+          "encodeMs": 0.056,
+          "replyBytes": 22949,
+          "jsonBytes": 22949,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.466,
+          "parseMs": 0.003,
+          "encodeMs": 0.043,
+          "replyBytes": 22949,
+          "jsonBytes": 22949,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 5.777,
+          "parseMs": 0.003,
+          "encodeMs": 0.048,
+          "replyBytes": 22949,
+          "jsonBytes": 22949,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 5.777,
+      "p95Ms": 6.16,
+      "maxMs": 6.16,
+      "minMs": 5.404,
+      "encodeP50Ms": 0.045,
+      "replyBytes": 22949,
+      "jsonBytes": 22949,
+      "replies": 5
+    },
+    {
+      "label": "fits_page:rows201",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "375e38ea-042e-4f6f-a3f1-c24f84218b2e",
+        "runId": "run_382191db939f4f04be09f72a7bb5cf88",
+        "preferSnapshot": false
+      },
+      "iterations": 5,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 6.171,
+        "parseMs": 0.003,
+        "encodeMs": 0.213,
+        "replyBytes": 10751,
+        "jsonBytes": 67557,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 6.478,
+          "parseMs": 0.003,
+          "encodeMs": 0.202,
+          "replyBytes": 10751,
+          "jsonBytes": 67557,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 6.94,
+          "parseMs": 0.004,
+          "encodeMs": 0.227,
+          "replyBytes": 10751,
+          "jsonBytes": 67557,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 6.552,
+          "parseMs": 0.004,
+          "encodeMs": 0.202,
+          "replyBytes": 10751,
+          "jsonBytes": 67557,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 6.256,
+          "parseMs": 0.004,
+          "encodeMs": 0.219,
+          "replyBytes": 10751,
+          "jsonBytes": 67557,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 6.776,
+          "parseMs": 0.004,
+          "encodeMs": 0.199,
+          "replyBytes": 10751,
+          "jsonBytes": 67557,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 6.552,
+      "p95Ms": 6.94,
+      "maxMs": 6.94,
+      "minMs": 6.256,
+      "encodeP50Ms": 0.202,
+      "replyBytes": 10751,
+      "jsonBytes": 67557,
+      "replies": 5
+    },
+    {
+      "label": "fits:rows200_vol0.07MiB",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "92552cdd-cb4c-479d-bfd4-92dc36f9682e",
+        "runId": "run_69c8f2be2cd34c0da7dba24600e43d5d",
+        "preferSnapshot": true
+      },
+      "iterations": 5,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 24.062,
+        "parseMs": 0.003,
+        "encodeMs": 0.15,
+        "replyBytes": 8907,
+        "jsonBytes": 35243,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 6.419,
+          "parseMs": 0.004,
+          "encodeMs": 0.147,
+          "replyBytes": 8907,
+          "jsonBytes": 35243,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 6.365,
+          "parseMs": 0.004,
+          "encodeMs": 0.15,
+          "replyBytes": 8907,
+          "jsonBytes": 35243,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 6.522,
+          "parseMs": 0.004,
+          "encodeMs": 0.151,
+          "replyBytes": 8907,
+          "jsonBytes": 35243,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 6.332,
+          "parseMs": 0.004,
+          "encodeMs": 0.141,
+          "replyBytes": 8907,
+          "jsonBytes": 35243,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 6.122,
+          "parseMs": 0.003,
+          "encodeMs": 0.15,
+          "replyBytes": 8907,
+          "jsonBytes": 35243,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 6.365,
+      "p95Ms": 6.522,
+      "maxMs": 6.522,
+      "minMs": 6.122,
+      "encodeP50Ms": 0.15,
+      "replyBytes": 8907,
+      "jsonBytes": 35243,
+      "replies": 5
+    },
+    {
+      "label": "fits_page:rows200",
+      "command": "get_events_since",
+      "parseError": null,
+      "scale": {
+        "sessionId": "92552cdd-cb4c-479d-bfd4-92dc36f9682e",
+        "runId": "run_69c8f2be2cd34c0da7dba24600e43d5d",
+        "preferSnapshot": false
+      },
+      "iterations": 5,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 7.341,
+        "parseMs": 0.003,
+        "encodeMs": 0.071,
+        "replyBytes": 31980,
+        "jsonBytes": 31980,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 7.179,
+          "parseMs": 0.003,
+          "encodeMs": 0.087,
+          "replyBytes": 31980,
+          "jsonBytes": 31980,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 7.142,
+          "parseMs": 0.005,
+          "encodeMs": 0.06,
+          "replyBytes": 31980,
+          "jsonBytes": 31980,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 7.179,
+          "parseMs": 0.004,
+          "encodeMs": 0.057,
+          "replyBytes": 31980,
+          "jsonBytes": 31980,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 6.907,
+          "parseMs": 0.003,
+          "encodeMs": 0.057,
+          "replyBytes": 31980,
+          "jsonBytes": 31980,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 7.115,
+          "parseMs": 0.003,
+          "encodeMs": 0.066,
+          "replyBytes": 31980,
+          "jsonBytes": 31980,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 7.142,
+      "p95Ms": 7.179,
+      "maxMs": 7.179,
+      "minMs": 6.907,
+      "encodeP50Ms": 0.06,
+      "replyBytes": 31980,
+      "jsonBytes": 31980,
+      "replies": 5
+    }
+  ]
+}

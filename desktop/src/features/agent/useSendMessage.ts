@@ -44,8 +44,11 @@ interface UseSendMessageInput {
  * still around to flush it.
  *
  * The queued ack comes back as `run_queued`, which the pipeline already reads as
- * "accepted and alive" — so the optimistic bubble stays, waiting for its turn,
- * instead of being settled as a cut-off reply.
+ * "accepted and alive" — the run is not settled as a cut-off reply, and nothing
+ * is drawn in the transcript on the way out: a message the Agent is holding has
+ * not been sent, so it is the queue's row, not a transcript turn, until the run
+ * starts. (That is what `busyPolicy` tells the pipeline before the ack exists;
+ * a send the Agent turns out to run immediately still gets its bubble back.)
  */
 export function useQueuedSend({
   thread,

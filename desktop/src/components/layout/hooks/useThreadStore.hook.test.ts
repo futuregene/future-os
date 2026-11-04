@@ -4,6 +4,7 @@ import { act } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { flushAsync, renderHook } from "../../../test/renderHook";
 
+import { RECENT_PAGE_SIZE } from "../recentOrder";
 import { useThreadStore } from "./useThreadStore";
 
 const listThreadsPage = vi.fn();
@@ -50,8 +51,12 @@ function thread(id: string, workspaceId = "w1", status = "active", agentSessionI
 const workspace: StoredWorkspace = { id: "w1", kind: "user" } as unknown as StoredWorkspace;
 
 /** The chat scope's first page: what bootstrap asks for. */
-function pageOf(threads: StoredThread[], nextCursor: string | null = null) {
-  return { threads, nextCursor };
+function pageOf(
+  threads: StoredThread[],
+  nextCursor: string | null = null,
+  totalRoots = threads.length,
+) {
+  return { threads, nextCursor, totalRoots };
 }
 
 function workspacesPageOf(workspaces: StoredWorkspace[], nextCursor: string | null = null) {
@@ -252,20 +257,152 @@ describe("useThreadStore", () => {
     h.unmount();
   });
 
-  it("loadMore advances a scope's cursor and reports when it is exhausted", async () => {
-    listThreadsPage.mockResolvedValueOnce(pageOf([thread("t1")], "cursor-1"));
-    const h = await mountStore();
-    expect(h.current.scopeHasMore("chat")).toBe(true);
+  /**
+   * The recent view's own stream.
+   *
+   * Reported as "after a restart the recent list is missing most of my
+   * conversations": the view ranked only the rows some *other* scope had
+   * loaded (`chat`'s first page of ten roots, plus whatever workspace group was
+   * expanded), and never asked for the one stream that spans the store. These
+   * cases pin both halves of the fix down — the stream is requested, and it is
+   * paged by the size its own control promises.
+   */
+  describe("the recent view's stream", () => {
+    /**
+     * `count` conversations from `offset`, as one page of roots.
+     *
+     * `total` is the whole stream's size, which the host reports with every page
+     * (it describes the scope, not the page).
+     */
+    function recentPage(count: number, nextCursor: string | null, total: number, offset = 0) {
+      return pageOf(
+        Array.from({ length: count }, (_, index) => thread(`r${offset + index}`)),
+        nextCursor,
+        total,
+      );
+    }
 
-    listThreadsPage.mockResolvedValueOnce(pageOf([thread("t2")], null));
-    await act(async () => {
-      await h.current.loadMore("chat");
+    it("asks for the recent scope, thirty roots at a time", async () => {
+      const h = await mountStore();
+      listThreadsPage.mockClear();
+      listThreadsPage.mockResolvedValue(recentPage(RECENT_PAGE_SIZE, null, RECENT_PAGE_SIZE));
+
+      act(() => {
+        h.current.ensureScope("recent");
+      });
+      await flushAsync();
+      await flushAsync();
+
+      expect(listThreadsPage).toHaveBeenCalledTimes(1);
+      expect(listThreadsPage.mock.calls[0]![0]).toBe("recent");
+      expect(listThreadsPage.mock.calls[0]![1]).toBeNull();
+      // Thirty, not the tree's ten: the page is what the view's control names.
+      expect(listThreadsPage.mock.calls[0]![2]).toBe(RECENT_PAGE_SIZE);
+      // The stream holds its own rows, and only its own: the chat page's rows
+      // are in the store but are not what this view draws.
+      expect(h.current.recentThreadIds?.size).toBe(RECENT_PAGE_SIZE);
+      expect(h.current.recentThreadIds?.has("t1")).toBe(false);
+      h.unmount();
     });
-    expect(listThreadsPage.mock.calls[1]![0]).toBe("chat");
-    expect(listThreadsPage.mock.calls[1]![1]).toBe("cursor-1");
-    expect(h.current.threads.map(t => t.id).sort()).toEqual(["t1", "t2"]);
-    expect(h.current.scopeHasMore("chat")).toBe(false);
-    h.unmount();
+
+    it("keeps the stream's own count and reveals all of it on one request", async () => {
+      const h = await mountStore();
+      listThreadsPage.mockReset();
+      listThreadsPage
+        .mockResolvedValueOnce(recentPage(RECENT_PAGE_SIZE, "cursor-1", 62))
+        .mockResolvedValueOnce(recentPage(RECENT_PAGE_SIZE, "cursor-2", 62, RECENT_PAGE_SIZE))
+        .mockResolvedValueOnce(recentPage(2, null, 62, 60));
+
+      act(() => {
+        h.current.ensureScope("recent");
+      });
+      await flushAsync();
+      await flushAsync();
+
+      // One page is in; the scope says where the stream ends, so the control can
+      // name the real remainder instead of the loaded part.
+      expect(h.current.scopeRemaining("recent")).toBe(32);
+
+      await act(async () => {
+        await h.current.loadRemaining("recent");
+      });
+
+      // Every page behind that one control, and the count is now zero.
+      expect(listThreadsPage.mock.calls.map(call => call[1])).toEqual([null, "cursor-1", "cursor-2"]);
+      expect(h.current.scopeRemaining("recent")).toBe(0);
+      expect(h.current.scopeHasMore("recent")).toBe(false);
+      expect(h.current.recentThreadIds?.size).toBe(62);
+      h.unmount();
+    });
+
+    it("reports no stream at all until it is started", async () => {
+      // The list must not read "empty" because nobody asked for it yet: absent
+      // means "draw what you were handed", not "there is nothing".
+      const h = await mountStore();
+      expect(h.current.recentThreadIds).toBeUndefined();
+      expect(h.current.scopeRemaining("recent")).toBe(0);
+      h.unmount();
+    });
+
+    it("keeps a stream the reader opened while bootstrap was still running", async () => {
+      // A window restored on the recent view asks for its stream at mount, which
+      // is while bootstrap's own first pages are still in flight. The request
+      // must not be thrown away — the view asks once per mount, so losing it left
+      // the list on the chat page's rows until the reader switched views.
+      let finishBootstrap: () => void = () => {};
+      initializeAppStore.mockImplementation(() => new Promise<void>((resolve) => {
+        finishBootstrap = resolve;
+      }));
+      listThreadsPage.mockImplementation((scope: unknown) => Promise.resolve(
+        scope === "recent"
+          ? recentPage(RECENT_PAGE_SIZE, "cursor-1", 62)
+          : pageOf([thread("t1"), thread("t2")]),
+      ));
+
+      const h = renderHook(() => useThreadStore());
+      act(() => {
+        h.current.ensureScope("recent");
+      });
+      await flushAsync();
+      // Held, not asked: the database this page is read from is not open yet.
+      expect(listThreadsPage.mock.calls.filter(call => call[0] === "recent")).toHaveLength(0);
+
+      finishBootstrap();
+      await flushAsync();
+      await flushAsync();
+      await flushAsync();
+
+      // The view draws its own page, still knows how much it holds back, and the
+      // rows it read are in the store behind it.
+      expect(h.current.recentThreadIds?.size).toBe(RECENT_PAGE_SIZE);
+      expect(h.current.scopeRemaining("recent")).toBe(62 - RECENT_PAGE_SIZE);
+      expect(h.current.threads.filter(thread => thread.id.startsWith("r"))).toHaveLength(RECENT_PAGE_SIZE);
+      h.unmount();
+    });
+
+    it("keeps the rows a push brought in while bootstrap was still running", async () => {
+      // Bootstrap contributes its first pages; it does not get to drop what a
+      // refresh already merged (a `threads-updated` push lands during startup).
+      let finishBootstrap: (recent: StoredThread) => void = () => {};
+      getRecentOrCreateDefaultThread.mockImplementation(() => new Promise<StoredThread>((resolve) => {
+        finishBootstrap = resolve;
+      }));
+      // Consumed by the push's refresh, not by bootstrap's own read.
+      listPinnedThreads.mockResolvedValueOnce([thread("imported")]).mockResolvedValue([]);
+
+      const h = renderHook(() => useThreadStore());
+      await act(async () => {
+        await h.current.refreshStore();
+      });
+      expect(h.current.threads.map(thread => thread.id)).toContain("imported");
+
+      finishBootstrap(thread("t1"));
+      await flushAsync();
+      await flushAsync();
+
+      expect(h.current.threads.map(thread => thread.id)).toContain("imported");
+      h.unmount();
+    });
   });
 
   it("ensureScope starts a scope exactly once", async () => {

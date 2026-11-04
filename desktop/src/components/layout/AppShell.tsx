@@ -391,13 +391,13 @@ function ReadyAppShell({
     threadStreamingStatuses,
     loadingStore,
     storeError,
+    recentThreadIds,
     refreshStore,
     ensureScope,
-    loadMore,
-    loadMoreWorkspaces,
+    loadRemaining,
     scopeHasMore,
     scopeLoading,
-    workspacesHasMore,
+    scopeRemaining,
   } = useThreadStore();
 
   // Start observing the active thread's agent session for real-time
@@ -1633,6 +1633,7 @@ function ReadyAppShell({
       : null,
     hasUpdate,
     threads,
+    recentThreadIds,
     threadRunStatuses,
     threadStreamingStatuses,
     unreadThreadIds,
@@ -1678,11 +1679,10 @@ function ReadyAppShell({
     // set, so a released build cannot reach this handler.
     onShowArchiveGuide: DEV ? showArchiveGuide : undefined,
     ensureThreadScope: ensureScope,
-    loadMoreThreadScope: loadMore,
+    loadRemainingThreadScope: loadRemaining,
     threadScopeHasMore: scopeHasMore,
     threadScopeLoading: scopeLoading,
-    workspacesHasMore,
-    onLoadMoreWorkspaces: loadMoreWorkspaces,
+    threadScopeRemaining: scopeRemaining,
     onSelectWorkspace: handleSelectWorkspace,
     onSelectThread: handleSelectThread,
     onTogglePinThread: handleTogglePinThread,

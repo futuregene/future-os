@@ -1,0 +1,53 @@
+{
+  "phase": "cold",
+  "agentAddress": "http://127.0.0.1:61298",
+  "home": "/Users/geilige/future-os/.worktrees/perf-p1/target/remote-latency/scale/homes/dirs-10",
+  "machine": {
+    "os": "macos",
+    "arch": "aarch64",
+    "cpus": 32
+  },
+  "cargoProfile": "--release",
+  "builtAt": "2026-11-04T14:50:33",
+  "results": [
+    {
+      "label": "list_session_files",
+      "command": "list_session_files",
+      "parseError": null,
+      "scale": {
+        "files": 10,
+        "workspace": "/Users/geilige/future-os/.worktrees/perf-p1/target/remote-latency/scale/homes/dirs-10/workspace-roots/files-10"
+      },
+      "iterations": 1,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 0.467,
+        "parseMs": 0.011,
+        "encodeMs": 0.017,
+        "replyBytes": 2198,
+        "jsonBytes": 2198,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 0.197,
+          "parseMs": 0.001,
+          "encodeMs": 0.005,
+          "replyBytes": 2198,
+          "jsonBytes": 2198,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 0.197,
+      "p95Ms": 0.197,
+      "maxMs": 0.197,
+      "minMs": 0.197,
+      "encodeP50Ms": 0.005,
+      "replyBytes": 2198,
+      "jsonBytes": 2198,
+      "replies": 1
+    }
+  ]
+}

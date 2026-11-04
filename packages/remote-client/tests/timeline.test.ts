@@ -906,6 +906,56 @@ describe("user message mirror", () => {
     expect(state.items[0]).toMatchObject({ kind: "message", role: "user", text: "check this" });
   });
 
+  test("a durable prompt carries the entry's own creation time", () => {
+    const sentAt = Date.parse("2026-11-04T06:32:00.000Z");
+    const timeline = timelineFromEntries([
+      {
+        id: "u1",
+        kind: "user",
+        role: "user",
+        createdAtMs: sentAt,
+        runId: "r1",
+        blocks: [{ kind: "text", text: "when was this sent?" }],
+      },
+    ]);
+
+    // The row shows when the question was asked. Reading it back out of the
+    // journal must not substitute the moment this client read the page.
+    expect(timeline.items[0]).toMatchObject({ createdAt: new Date(sentAt).toISOString() });
+  });
+
+  test("a mirrored prompt keeps the desktop's send time, not this client's receipt time", () => {
+    const sentAt = 1_760_000_000_000;
+    const state = applyStreamEvent(emptyTimeline(), {
+      type: "user_message",
+      data: JSON.stringify({ text: "hi", entry_id: "u1", run_id: "r1", created_at_ms: sentAt }),
+    });
+
+    // A client that joined late still draws when the prompt was written, which
+    // is what makes the time worth reading at all.
+    expect(state.items[0]).toMatchObject({ createdAt: new Date(sentAt).toISOString() });
+  });
+
+  test("a prompt this client drew itself is stamped, and a later mirror keeps that stamp", () => {
+    const before = Date.now();
+    const accepted = commitAcknowledgedUserMessage(emptyTimeline(), {
+      id: "local:prompt-1",
+      runId: "run-1",
+      text: "check this",
+    });
+    const stamped = (accepted.items[0] as { createdAt?: string }).createdAt;
+    expect(stamped).toBeDefined();
+    expect(Date.parse(stamped!)).toBeGreaterThanOrEqual(before);
+
+    // The ack carries no time of its own: it must not overwrite one the row
+    // already has (a live mirror that arrived first, a durable row it enriched).
+    const replayed = commitAcknowledgedUserMessage(
+      { ...accepted, items: [{ ...accepted.items[0]!, createdAt: "2026-11-04T06:32:00.000Z" } as typeof accepted.items[number]] },
+      { id: "local:prompt-1", runId: "run-1", text: "check this" },
+    );
+    expect((replayed.items[0] as { createdAt?: string }).createdAt).toBe("2026-11-04T06:32:00.000Z");
+  });
+
   test("events deduplicate by identity while identical prompts remain separate", () => {
     const event = {
       type: "user_message",

@@ -1698,10 +1698,11 @@ mod tests {
 
     #[tokio::test]
     async fn serving_one_request_answers_it_and_removes_every_trace() {
-        // The machine, not just a directory. Without it this test answered
-        // `add_device` against whatever pairing book the last fixture left — and
-        // on an empty one that is `re_pair` → `unpair`, a machine-wide stop that
-        // landed under another test's in-flight start (F7).
+        // The machine, not just a directory: this dispatch reaches the
+        // process-global supervisor, and with a pairing book left behind by the
+        // last fixture it would mint and start against it (F7's dispatch test
+        // did the same and stopped the machine, back when an empty book was
+        // `re_pair` → `unpair`).
         let _home = HomeGuard::new("control-serve-one-trace");
         let root = Root::new();
         let reply_path = root.dir.path().join("answer.json");

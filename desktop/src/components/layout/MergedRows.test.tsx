@@ -84,7 +84,6 @@ async function render(props: {
   onToggleChatSection?: () => void;
   onToggleRemoteExpanded?: (key: string) => void;
   onToggleWorkspace?: (key: string) => void;
-  onToggleWorkspaceSection?: () => void;
   peers?: RemotePeer[];
   /** Where each listed row sits in the shared list's tree, by row key. */
   rowMeta?: ReadonlyMap<string, { depth: number; hasChildren: boolean }>;
@@ -100,7 +99,6 @@ async function render(props: {
   rows: MergedConversation[];
   selectionMode?: boolean;
   threadById: Map<string, StoredThread>;
-  workspaceSectionCollapsed?: boolean;
   /** The hosts' workspaces, for the headings of empty ones. */
   workspaces?: ReadonlyMap<string, readonly RemoteWorkspaceRow[]>;
 }) {
@@ -129,7 +127,6 @@ async function render(props: {
         onToggleChatSection={props.onToggleChatSection ?? vi.fn()}
         onToggleRemoteExpanded={props.onToggleRemoteExpanded ?? vi.fn()}
         onToggleWorkspace={props.onToggleWorkspace ?? vi.fn()}
-        onToggleWorkspaceSection={props.onToggleWorkspaceSection ?? vi.fn()}
         peers={props.peers ?? []}
         rowMeta={props.rowMeta ?? new Map()}
         remoteSelection={props.remoteSelection}
@@ -139,7 +136,6 @@ async function render(props: {
         rows={props.rows}
         selectionMode={props.selectionMode ?? false}
         threadById={props.threadById}
-        workspaceSectionCollapsed={props.workspaceSectionCollapsed ?? false}
         workspaces={props.workspaces}
       />,
     );
