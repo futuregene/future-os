@@ -345,7 +345,7 @@ few hundred tokens, and no tools. So `eager` asking every member costs far less
 than "every member runs a full turn", which is exactly where Grok Bot's
 group-chat cost comes from
 ([ANTIPATTERNS §35](https://github.com/unicodef1wn/grokbot-field-notes/blob/main/ANTIPATTERNS.md)).
-The exact ratio needs measurement (§15).
+The exact ratio needs measurement (§16).
 
 **The default is `router`.** A new channel includes the chief as a member (§9.2)
 and lets it judge; when the user declines to create a chief the channel falls back
@@ -759,7 +759,7 @@ reached.
 | 1 | **Full access by default**: bot sessions carry no `sandbox_tier` and `permission_level='all'` (§10.1) | The person running the bot owns the machine; breaking a config costs a reinstall, while a policy layer that must be maintained forever costs continuously | The day bots are offered to someone other than the machine's owner: switch to "layer 0 only" (no touching model config or credentials) |
 | 2 | **Point at the config first, hoist later**: v1 adds a config-directory override so the bot instance reads the user's `models.json`, `auth.json` and app-scope skills; moving all three into `~/.future/config/` is a separate follow-up task | The override is one change with the same behaviour as hoisting, while hoisting touches a released data layout and drags in migration, the backup manifest, the sandbox's hard-deny paths and the docs | Once the second instance has run stably, hoist as its own task; the two then share by construction and the override field retires |
 | 3 | **`settings.json` stays per instance** | It carries the default model, the approval tier and compaction thresholds; a bot may want a cheaper model than you, and a bot editing it must not edit yours | If the two sides turn out to be identical for a long time and the upkeep becomes a burden, revisit sharing the read-only fields |
-| 4 | **Default speaking policy `router`** (with a chief); `mention_only` without one; `eager` off by default (§5) | One judgement of a few hundred tokens removes the largest friction — the human doing the routing every turn — at almost no cost | The measured misjudgement rate (§15 item 6) is high enough that a user would rather name speakers |
+| 4 | **Default speaking policy `router`** (with a chief); `mention_only` without one; `eager` off by default (§5) | One judgement of a few hundred tokens removes the largest friction — the human doing the routing every turn — at almost no cost | The measured misjudgement rate (§16 item 6) is high enough that a user would rather name speakers |
 | 5 | **`eager` is capped at 6 members and judged by a cheap model** (§5) | A group's value is a few viewpoints, not a crowd; the judge only needs to know whether a job is involved, not to reason hard | Measurement shows a cheap judge misjudges far more than a strong one *and* users turn `eager` on often |
 | 6 | **`@` on the bot and channel surfaces lists bots only** (§11.3) | In a channel, `@` means "call someone"; making a person first think about what `@` points at now costs more than one missing menu group | Users need to cite files there often enough that dragging and typed paths are not enough, and the file group comes back |
 | 7 | **Private-chat context is off by default inside a channel**, with a per-channel switch (§4.4) | The leak is silent: others in the group see a sentence and never learn it came from a private chat | Users complain about re-explaining background every time and accept a visible "this turn cited private context" mark |
@@ -798,7 +798,72 @@ one explicit message instead of pretending it can participate.
 
 ---
 
-## 14. Phases and acceptance
+## 14. Where the code lives
+
+In one line: **the kernel is a crate, the executor sits in the host, the UI sits in
+the desktop app** — the same shape as goal / tasks / fusion, with no new
+top-level directory.
+
+| Location | What goes there | Mirrors |
+|---|---|---|
+| `orchestration/bots/` | data model, the `bots.db` store, the pure routing kernel, the application service, the speaking rules and the fixed skeleton (crate `future-bots`) | `orchestration/tasks/`, `orchestration/fusion/` |
+| `host/src/bots/` | the executor (tick, serial within a channel), the startup sweep, `bots-updated` | `host/src/tasks.rs`, `host/src/tasks/service.rs` |
+| `cli/src/commands/bot.rs`, `channel.rs` | `future bot …`, `future channel …` | the existing subcommands under `cli/src/commands/` |
+| `desktop/src-tauri/src/commands/bots.rs` | a thin Tauri adapter that only calls the host service | `commands/tasks.rs` |
+| `desktop/src/features/bots/` | the bots surface, the channel view, `useBots`, the backend bridge | `features/tasks/` |
+| `desktop/src/i18n/locales/{en,zh}/bots.json` | UI strings | `tasks.json` |
+| `ActivityRail.tsx` and `ActivitySection` | the navigation button, and `"bots"` added to the view union | the existing tasks / remote buttons |
+| `packages/remote-protocol/src/handshake.rs` | the `bots_v1` capability (phone and a paired desktop) | `tasks_v1` |
+| the root `Cargo.toml` `members` | one line, `"orchestration/bots"`; `default-members` unchanged | the existing three orchestration entries |
+
+Runtime data is not code: `~/.future/bots/{bots.db, agent-home/, workspaces/}`
+(§3.3, §8.3).
+
+```
+orchestration/bots/
+  Cargo.toml            # name = "future-bots"
+  src/lib.rs
+  src/model.rs          # Bot / Channel / Binding / Turn
+  src/store.rs          # bots.db: schema, migrate, open
+  src/kernel.rs         # pure: mentions / enqueue / judge / should_stop
+  src/service.rs        # application service, shared by host and CLI
+  src/rules.rs          # speaking rules and the fixed skeleton
+  tests/
+host/src/bots/
+  mod.rs
+  executor.rs           # serial per channel, at most two in parallel
+  sweep.rs              # startup sweep: orphans, dangling references
+  notify.rs             # bots-updated
+```
+
+There is exactly one dependency direction:
+
+```
+orchestration/bots  ←── host ──→ desktop/src-tauri ←── desktop(TS)
+        ↑                ↑
+       cli ──────────────┘   (calls the service, never assembles SQL)
+```
+
+`future-bots` depends on neither `host` nor `agent`: it is pure logic plus its own
+store, so the kernel is unit-testable and reusable. `host` is the single writer of
+`bots.db`, the same assumption tasks makes.
+
+No new top-level `bots/`: workspace members are grouped by *what they are* —
+`host` is the shared backend, `agent` the process, `channels` the IM bridge,
+`orchestration/*` the control planes, `packages/*` shared libraries, plus `tui`,
+`cli` and `desktop/*`. A top-level `bots/` would sit beside `channels/` and force
+every mention to explain which "channel" it means; under `orchestration/` it is
+the same kind of thing as goal, tasks and fusion.
+
+Protocol: v1 does not change `packages/rpc/proto/future.proto`. Every bot action
+goes through the existing `prompt` / `new_session` / `set_session` /
+`list_sessions`; the rest lives in `bots.db` and the CLI. Only the "layer 0 only"
+tier of §10.3 would touch the proto. The phone needs a capability bit, no message
+change.
+
+---
+
+## 15. Phases and acceptance
 
 | Phase | Deliverable | Observable acceptance |
 |---|---|---|
@@ -812,7 +877,7 @@ control, `@bot` from X, wiring a channel into an IM bridge, cross-machine bots.
 
 ---
 
-## 15. Points that code must verify, not this document
+## 16. Points that code must verify, not this document
 
 Each is an **assumption** of this design. Paper cannot settle them; each needs a
 measurement or a test.
