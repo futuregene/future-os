@@ -3303,6 +3303,10 @@ pub(crate) mod tests {
                         }],
                         has_more: true,
                         next_offset: 7,
+                        // The TUI pager continues by cursor only: an `offset`
+                        // reader's row total has no consumer here, so this page
+                        // carries none (like one from a sender that predates it).
+                        total: None,
                     },
                 )),
             },
