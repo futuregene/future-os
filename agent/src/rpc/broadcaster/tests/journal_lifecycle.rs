@@ -618,11 +618,30 @@ fn a_settled_run_keeps_the_same_projection_the_journal_folds_to() {
     }
     let cached = cached.expect("the terminal must keep the run's projection");
 
-    let folded =
+    // A cached open answers with the wire projection: type, data and idx. The
+    // envelope the reply never sends is not part of the comparison, and the
+    // journal side is trimmed exactly as the cache is, so this still says the
+    // kept events are the fold's own.
+    let mut folded =
         crate::rpc::run_snapshot::fold_events(broadcaster.read_journal("run-settled").unwrap());
+    crate::rpc::broadcaster::trim_projection(&mut folded);
+    let wire = |events: &[SseEvent]| {
+        events
+            .iter()
+            .map(|event| (event.event_type.clone(), event.data.clone(), event.idx))
+            .collect::<Vec<_>>()
+    };
     assert_eq!(
-        serde_json::to_string(&cached.events).unwrap(),
-        serde_json::to_string(&folded).unwrap(),
+        wire(&cached.events),
+        wire(&folded),
         "a cached open must answer with the journal's own fold"
+    );
+    assert!(
+        cached
+            .events
+            .iter()
+            .filter(|event| event.event_type == "tool_end")
+            .all(|event| !event.data.contains("text")),
+        "a tool result's captured text is not part of the projection"
     );
 }

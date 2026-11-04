@@ -15,6 +15,7 @@ mod replay;
 #[cfg(test)]
 pub(in crate::rpc) use projection::apply_to_projection;
 use projection::is_buffered_delta;
+pub(crate) use replay::trim_projection;
 use replay::CapturedSnapshot;
 
 /// Max buffered events per run (for `events_since` backfill). Oldest dropped.
@@ -522,6 +523,7 @@ impl SseBroadcaster {
             return;
         }
         snapshot.events = crate::rpc::run_snapshot::strip_repeated_tool_arguments(snapshot.events);
+        trim_projection(&mut snapshot.events);
         let keep = crate::session::journal_compaction::RunJournalSnapshot {
             run_id: snapshot.run_id,
             epoch: snapshot.epoch,

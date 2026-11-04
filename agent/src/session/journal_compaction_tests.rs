@@ -667,15 +667,24 @@ fn a_cached_fold_is_byte_identical_to_folding_the_journal() {
         .cached_run_snapshot("s", "run", epoch)
         .unwrap()
         .expect("a stored fold is a hit");
+    // The cache keeps the wire's own three fields per event, so "the same
+    // bytes" means the identity and the projection the reply would carry — the
+    // envelope a reply never sends is not part of the comparison.
     assert_eq!(
-        serde_json::to_string(&cached).unwrap(),
-        serde_json::to_string(&snapshot).unwrap(),
-        "the cached fold must be the same bytes the fold produced"
+        (cached.run_id.clone(), cached.epoch, cached.run_sequence, cached.cursor),
+        (snapshot.run_id.clone(), snapshot.epoch, snapshot.run_sequence, snapshot.cursor),
+        "the cached fold must keep the fold's identity and cursor"
     );
-    // And the same events the raw journal folds to, not merely the same row.
+    let wire = |events: &[crate::rpc::SseEvent]| {
+        events
+            .iter()
+            .map(|event| (event.event_type.clone(), event.data.clone(), event.idx))
+            .collect::<Vec<_>>()
+    };
     assert_eq!(
-        serde_json::to_string(&cached.events).unwrap(),
-        serde_json::to_string(&folded).unwrap()
+        wire(&cached.events),
+        wire(&folded),
+        "the cached events must be the fold's own"
     );
     assert_eq!(cached.cursor, last.idx);
 }
