@@ -299,6 +299,52 @@ impl SqliteStore {
         })
     }
 
+    /// What one run's replay journal still holds: how many rows it has to decode,
+    /// how many content bytes and how many metadata bytes those rows carry.
+    ///
+    /// A lower bound on what a full replay costs, by construction: the canonical
+    /// replay charges every row a fixed wire overhead plus the event's materialised
+    /// data, and that data carries at least the row's own content body and the
+    /// fields the row stores as metadata. So three counters decide an obviously
+    /// oversized run without decoding a single event — which is what makes the
+    /// answer cheap for a long run.
+    ///
+    /// `None` when there is nothing to weigh: an unknown run, an empty journal, or
+    /// a session still on the legacy format, whose replay has no byte budget and
+    /// therefore nothing this volume could decide.
+    pub(crate) fn run_replay_volume(
+        &self,
+        session: &str,
+        run: &str,
+    ) -> Result<Option<(i64, i64, i64)>> {
+        let (session, run) = (session.to_owned(), run.to_owned());
+        self.db.read(move |db| {
+            if crate::session::content::format(db, &session)?
+                != crate::session::content::FORMAT_VERSION
+            {
+                return Ok(None);
+            }
+            let run = crate::session::identity::BoundIdentity::run(db, &session, &run)?;
+            let session = crate::session::identity::BoundIdentity::session(db, &session)?;
+            let volume = db.query_row(
+                "SELECT count(*), coalesce(sum(coalesce(c.byte_length,0)),0),
+                        coalesce(sum(length(CAST(c.metadata_json AS BLOB))),0)
+                 FROM stream_changes c JOIN stream_runs r ON r.id=c.stream_id
+                 WHERE r.session_id=?1 AND r.run_id=?2
+                   AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=r.id)",
+                params![session, run],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )?;
+            Ok((volume.0 > 0).then_some(volume))
+        })
+    }
+
     pub fn append_event(&self, session: &str, event: Value) -> Result<()> {
         self.append_events(session, vec![event])
     }
