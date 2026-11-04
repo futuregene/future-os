@@ -3,8 +3,10 @@
 > （[English](embedded-terminal.md)）状态：**Linux** 已实现（自动化测试验证）；
 > macOS/Windows 路径存在但**未在本机验证**——见 §平台。
 
-终端是一个由桌面主进程持有的 PTY 注册表，通过**仅回环的 HTTP/WebSocket 监听器**
-服务给应用自己的 webview。它刻意不是 Tauri-IPC 消息泵。
+终端是宿主进程持有的 PTY 注册表，有两条供给路径：应用自己 webview 的**仅回环的
+HTTP/WebSocket 监听器**，以及已配对设备的远程控制面（§[远程](#远程)）。注册表在
+`future-host` 里，所以完全没有窗口的 `future host` 也供给同一批 shell。它刻意不是
+Tauri-IPC 消息泵。
 
 ## 为什么用 socket
 
@@ -78,8 +80,11 @@ socket 上：
 * 来源不是应用自身（或回环 dev server）的请求即使持票也拒绝。来源检查是纵深防御：
   秘密与票据才是真正的门。
 * 监听器每连接只服务一个请求并限制并发连接数；不接受 keep-alive，也不接受流水线。
-* 终端输出永远不进 agent、RPC 桥接、远程控制面、日志或 SQLite。子进程环境是用户
-  自身环境减去应用的私有管道（`FUTURE_AGENT_GRPC_ADDR`）。
+* 终端输出永远不进 agent、RPC 桥接、日志或 SQLite。子进程环境是用户自身环境减去
+  应用的私有管道（`FUTURE_AGENT_GRPC_ADDR`）。
+* 已配对的桌面可以驱动这些 shell，且只在密封的遥控信封内（§[远程](#远程)）。
+  那不是第二条传输通道：同一个注册表、同一套稳定错误码、同一条通往会话缓冲尾巴
+  的路由。
 
 ## 生命周期
 
@@ -192,6 +197,58 @@ shell，以 **ibus-libpinyin** 作为输入法，经 `WebKitWebDriver`——IME 
    删除后必须留下干净的一行（无残留副本、无多余退格）。预编辑必须用终端自己的
    颜色渲染，而不是黑框。
 
+## 远程
+
+已配对的桌面驱动的是本机用户看到的**同一批** shell：同一个注册表、同一个会话
+作用域、同一条拆除规则（删除会话会关闭它的 shell，无论删除来自哪一端）。
+
+| 层 | 位置 |
+| --- | --- |
+| 注册表 | `host/src/terminal/`（`manager`、`session`、`pty`、`shell`、`cwd`） |
+| 注册表在控制面眼中的样子 | `host/src/terminal/service.rs`，trait 与安装槽在 `host/src/terminal_service.rs` |
+| 谁来安装 | `future_host::terminal::install_service()`——窗口与 `future host` 都一样 |
+| wire 命令 | `host/src/remote_host/business/terminal.rs` |
+| 能力位 | `future_remote_protocol::TERMINAL_FEATURE`（`terminal_v1`） |
+| 客户端一半 | `desktop/src/features/terminal/remoteTerminal.ts` |
+| 传输接缝 | `desktop/src/features/terminal/transport.ts` |
+
+**是公布，不是假定。** 握手只在安装了注册表的进程里列出 `terminal_v1`
+（`services::set_terminal_available`），而两个入口都会安装：窗口的
+`AppState::initialize_process_state`，以及 `headless::session` 在远程桥接启动之前。
+已配对桌面只在公布了该能力的宿主上显示面板；从未安装过注册表的构建什么都不显示，
+而不是给出一个每次都只回 `Unsupported command` 的按钮。
+
+**它是分页拉取，不是推流。** 命令走普通控制面通道：`terminal_list` /
+`terminal_create` / `terminal_update` / `terminal_delete` / `terminal_read` /
+`terminal_write`。字节以**URL-safe、无填充**的 base64 走在 `terminal_data` 里——是宿主的
+`URL_SAFE_NO_PAD`，不是浏览器的 `btoa` 字母表：`[0xFB, 0xFF]` 写作 `-_8`，两端都在测试里
+钉住这个字面量，因为这里不一致要到很晚才暴露（带填充的 `bA==` 宿主直接拒绝，而 `atob`
+遇到 `-_` 会抛异常）。`terminal_read` 返回客户端已应用游标**之后**的字节以及新游标
+——与回环挂接同一套绝对偏移契约，所以重连的客户端只要差额，并且会在保留尾巴
+覆盖不到时被告知（`start > cursor`）。单页上限 64 KiB，单次写入上限 256 KiB。
+
+**顺序是正确性，不是体验。** 宿主并发派发命令（一条慢命令不能挡住其他），键击
+否则可能乱序抵达 shell。所以客户端**同一时刻只有一个写入在飞**：输入先攒约
+10 ms，发出去，下一批等这一批的确认。这也是为什么没有交错写入需要合并，以及
+下面这条代价为什么成立。
+
+**已配对设备能做什么。** trait 允许的全部：起 shell、往里打字、改尺寸、杀掉它。
+这刻意比 agent 自身的面更宽——prompt 要过审批规则，shell 不过。仍在的门是*
+控制权*：`commands.rs` 在进入 handler 之前就拒绝待命设备的一切业务命令，所以
+只有用户把机器交出去的那台设备能开 shell 或打字。
+
+**headless 宿主是一等目标。** `future host` 在开始服务之前安装注册表，所以从已配对
+桌面访问一台服务器时，开出的是真实 shell，工作目录与 agent 在该机上用的一致；
+它的退出路径会冻结注册表，并与其他服务一起拆除子进程
+（`cli/src/headless/mod.rs::stop`）。工作目录仍由**存储**解析，也就是窗口使用的同一份
+`~/.future` 存储。
+
+**代价说清楚。** 输出每页一次往返（有产出时 16 ms 轮询、空闲时 250 ms——客户端
+只在面板打开时轮询），一次键击在 shell 收到前要一次往返，回显再来一次。经中继
+那样就是"看着构建跑"的终端：`make`、`git log`、`tail -f` 好用，200 ms 下
+`vim` 不好用。推流通道（`p.{pair}.term.{id}`，同一套游标契约）是这套设计留出的
+升级位——落点是传输接缝——但要让功能正确并不需要它。
+
 ## 与 opencode 的差异
 
 架构相同；以下是有意为之的偏差，免得未来读者把它们当事故：
@@ -208,6 +265,7 @@ shell，以 **ibus-libpinyin** 作为输入法，经 `WebKitWebDriver`——IME 
 
 * UI 里没有拖拽排序、重命名、shell 选择器（服务端已暴露 `GET /terminal/shells`）。
 * 还没有终端内搜索、链接处理、粘贴确认。
-* 远程（手机遥控）与移动端界面按设计看不到终端。
+* 已配对的**桌面**能看到本机的终端（§[远程](#远程)）；手机遥控界面与移动端应用
+  看不到，而且手机端根本没有终端渲染器。
 * 面板的打开/高度偏好与 tab 视图状态在 `localStorage` 里；清掉存储丢的是*视图*，
   永远不会丢 shell。

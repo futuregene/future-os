@@ -311,6 +311,40 @@ pub async fn get_event_content_range(
 /// including TUI/CLI sessions the GUI store only holds as imported thread stubs
 /// with no message rows — so the remote bridge serves history from here rather
 /// than from the store.
+/// Fetch one page of a session's message history from the agent (LLM Message
+/// shape: `{role, content, tool_calls?}` where `content` is a string or an array
+/// of content blocks). The agent's transcript is the source of truth for ALL
+/// sessions — including TUI/CLI sessions the GUI store only holds as imported
+/// thread stubs with no message rows — so the remote bridge serves history from
+/// here rather than from the store.
+///
+/// The agent reads only the page: `offset`/`limit` used to be ignored agent-side,
+/// so every open materialised the whole conversation and this side sliced it
+/// afterwards.
+pub async fn get_session_messages_page(
+    session_id: String,
+    offset: i64,
+    limit: i64,
+) -> Result<serde_json::Value, crate::Error> {
+    let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, &session_id).await?;
+    let response = client
+        .execute_command(future_rpc::proto::RpcCommand {
+            offset: Some(offset),
+            limit: Some(limit),
+            ..base_command("get_messages", session_id)
+        })
+        .await
+        .map_err(|status| format!("get_messages failed: {status}"))?
+        .into_inner()
+        .ok_or_rpc_error("get_messages returned an error")?;
+    if response.data.is_empty() {
+        Ok(serde_json::json!({ "messages": [] }))
+    } else {
+        Ok(future_rpc::decode::response_data(&response))
+    }
+}
+
 pub async fn get_session_messages(session_id: String) -> Result<serde_json::Value, crate::Error> {
     let mut client = connect_agent().await?;
     super::verify_session_database(&mut client, &session_id).await?;
@@ -460,6 +494,38 @@ pub async fn session_has_entries(session_id: &str) -> Result<bool, crate::Error>
         .entries
         .iter()
         .any(|entry| entry.kind != future_agent::session::ENTRY_TYPE_SESSION_INFO))
+}
+
+/// One forward page of display entries, at an absolute `offset`.
+///
+/// This is the `offset` half of `get_session_entries` done as a seek: the Agent
+/// resolves `offset` against `history_display`'s primary key, so a page costs
+/// the rows it returns. Asking for the whole session and slicing it in memory
+/// (what `fetch_all_session_entries_with_client` + `paginate_items_with_cap`
+/// did) cost one round trip per 250 rows of the *conversation*, whatever page
+/// the client wanted: measured 698 ms against a 14,531-entry conversation for a
+/// 40-row page, 2,133 ms at 50,000 entries.
+pub async fn get_session_entries_at_offset(
+    session_id: String,
+    offset: i64,
+    limit: i64,
+) -> Result<future_rpc::payloads::SessionEntriesPage, crate::Error> {
+    let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, &session_id).await?;
+    get_session_entries_at_offset_with_client(&client, session_id, offset, limit).await
+}
+
+pub(super) async fn get_session_entries_at_offset_with_client(
+    client: &super::client::AgentClient,
+    session_id: String,
+    offset: i64,
+    limit: i64,
+) -> Result<future_rpc::payloads::SessionEntriesPage, crate::Error> {
+    read_history_page_with_client(
+        client,
+        get_session_entries_page_command(session_id, offset, limit),
+    )
+    .await
 }
 
 /// Fetch all of a session's entries, paged.

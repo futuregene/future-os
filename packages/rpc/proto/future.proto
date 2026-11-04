@@ -594,6 +594,10 @@ message SessionEntriesResponse {
   bool has_more = 2;
   int64 next_offset = 3;
   optional HistoryEntryFragment fragment = 4;
+  // How many display rows the session has, so an `offset` reader can size its
+  // scrollbar and know when it reached the end without paging the whole
+  // conversation to count them. Absent from a page whose sender predates it.
+  optional int64 total = 5;
 }
 
 message HistoryEntryFragment {

@@ -928,6 +928,13 @@ impl ServerSession {
     }
 
     pub fn set_model(&mut self, model: &str) -> Result<()> {
+        // What the session carried before this call. Re-installing the identity a
+        // conversation already has is what a cold open does (see
+        // `restore_session`), and writing it back would cost a synchronous
+        // durable write, bump the session revision and invalidate every cached
+        // history page — before the client that only asked for state has seen
+        // anything.
+        let previous_model = self.model.clone();
         // Resolve identity against the shared authoritative Registry. The
         // resulting live client retains this identity, not these settings.
         let resolved = self.model_registry.read().resolve(model);
@@ -1022,8 +1029,10 @@ impl ServerSession {
         // Brand-new sessions have no JSONL yet; their first accepted prompt
         // creates it with the selected model.
         if !self.initializing && self.session_manager.contains(&self.session_id)? {
-            self.persistence
-                .update_info("model", serde_json::Value::String(self.model.clone()))?;
+            if self.model != previous_model {
+                self.persistence
+                    .update_info("model", serde_json::Value::String(self.model.clone()))?;
+            }
             if clamped_level != original_level {
                 self.persistence.update_info(
                     "thinking_level",

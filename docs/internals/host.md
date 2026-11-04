@@ -77,6 +77,7 @@ data, Agent bridging or remote belongs here, not there.
 | `startup.rs` | Startup steps plus a watchdog that keeps a stalled launch diagnosable | `host/src/startup.rs` |
 | `shutdown.rs` (+ `shutdown/`) | One process-wide stop operation shared by every exit/reset/update caller | `host/src/shutdown.rs`, `host/src/shutdown/services.rs` |
 | `runtime.rs` | Shared task ownership, bounded cleanup; entry points install the runtime | `host/src/runtime.rs` |
+| `terminal/` | The embedded terminal: the process's PTY registry, shared by the window and `future host`, plus the remote control plane's adapter for it | `host/src/terminal/mod.rs`, `host/src/terminal/service.rs`, `host/src/terminal_service.rs` |
 | `scheduler.rs` | Process-lifetime scheduler primitives and the fixed-interval jobs (app update, Future balance, Future models) | `host/src/scheduler.rs` |
 | `events.rs` | Presentation outlet for committed backend changes | `host/src/events.rs` |
 | `environment.rs` | Shared process preparation and diagnostics | `host/src/environment.rs` |
@@ -131,6 +132,7 @@ data, Agent bridging or remote belongs here, not there.
 ## Out of scope for this map
 
 The Agent's own modules are mapped in [agent/README.md](agent/README.md). The
-GUI's remaining modules (`desktop/src-tauri/src/terminal/`, windows and menus,
-platform power helpers, update transactions) still live in `desktop/src-tauri` and are described by the
+GUI's remaining modules (the terminal's loopback listener
+`desktop/src-tauri/src/terminal/`, windows and menus, platform power helpers,
+update transactions) still live in `desktop/src-tauri` and are described by the
 [desktop documents](desktop/PRODUCT.md) rather than here.

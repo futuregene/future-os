@@ -1225,6 +1225,40 @@ async fn handle_pair_handshake(
     .await;
 }
 
+/// The capabilities this host offers the client that just confirmed.
+///
+/// Static per process except for the one that depends on what this process can
+/// actually do: [`future_remote_protocol::TERMINAL_FEATURE`] is advertised only
+/// by a host that installed a terminal registry. Everything else here is a wire
+/// shape the code always speaks.
+pub fn advertised_features(terminal: bool) -> Vec<&'static str> {
+    let mut features = vec![
+        "file_transfer_v1",
+        "file_download_v2",
+        "approval_tier_v1",
+        "continue_run_v1",
+        "prompt_receipt_v1",
+        "session_files_v1",
+        "skills_v1",
+        "selective_events_v1",
+        "workspace_pinning_v1",
+        "workspace_create_v1",
+        "desktop_settings_v1",
+        "skill_management_v1",
+        "compaction_v1",
+        "provider_management_v1",
+        "fork_v1",
+        "tasks_v1",
+        "task_deps_v1",
+        future_remote_protocol::READ_BINARY_FEATURE,
+        future_remote_protocol::SEGMENTED_CONTENT_FEATURE,
+    ];
+    if terminal {
+        features.push(future_remote_protocol::TERMINAL_FEATURE);
+    }
+    features
+}
+
 async fn handle_pair_handshake_confirm(
     client: &async_nats::Client,
     msg: &async_nats::Message,
@@ -1322,7 +1356,7 @@ async fn handle_pair_handshake_confirm(
             "bridgeInstanceId": state.bridge_instance_id,
             "deviceId": cmd.device_id,
             "desktopNonce": cmd.desktop_nonce,
-            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1", "selective_events_v1", "workspace_pinning_v1", "workspace_create_v1", "desktop_settings_v1", "skill_management_v1", "compaction_v1", "provider_management_v1", "fork_v1", "tasks_v1", "task_deps_v1", future_remote_protocol::READ_BINARY_FEATURE, future_remote_protocol::SEGMENTED_CONTENT_FEATURE],
+            "features": advertised_features(crate::services::terminal_available()),
             // A device that is not in control gets its own liveness and nothing
             // else: the conversation list belongs to the machine, and this reply
             // is also what a replayed handshake receives. `control` and `holder`
@@ -1581,6 +1615,31 @@ impl HandshakeState {
 }
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+
+#[cfg(test)]
+mod feature_tests {
+    use super::*;
+
+    /// The advertised list is what a client gates a feature on, so the two
+    /// branches have to be exactly this: a machine with no PTY registry never
+    /// offers a panel it cannot fill, and one with a registry always does.
+    #[test]
+    fn a_terminal_is_advertised_only_by_a_host_that_has_one() {
+        let without = advertised_features(false);
+        assert!(!without.contains(&future_remote_protocol::TERMINAL_FEATURE));
+        assert!(without.contains(&"skills_v1"));
+
+        let with = advertised_features(true);
+        assert!(with.contains(&future_remote_protocol::TERMINAL_FEATURE));
+        assert_eq!(with.len(), without.len() + 1);
+        // Everything else is unchanged by the flag: one capability is decided,
+        // not the shape of the list.
+        assert!(with
+            .iter()
+            .filter(|feature| **feature != future_remote_protocol::TERMINAL_FEATURE)
+            .eq(without.iter()));
+    }
+}
 
 #[cfg(test)]
 mod identity_tests {

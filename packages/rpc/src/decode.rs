@@ -170,6 +170,7 @@ pub fn decode_session_entries_page(resp: &proto::RpcResponse) -> Option<SessionE
                 .collect(),
             has_more: response.has_more,
             next_offset: response.next_offset,
+            total: response.total,
         });
     }
     fallback_value(resp).and_then(|value| {
@@ -196,6 +197,7 @@ pub fn decode_session_entries_page(resp: &proto::RpcResponse) -> Option<SessionE
                 .or_else(|| value.get("next_offset"))
                 .and_then(Value::as_i64)
                 .unwrap_or_default(),
+            total: value.get("total").and_then(Value::as_i64),
         })
     })
 }
@@ -1223,6 +1225,7 @@ mod tests {
             entries: vec![],
             has_more: false,
             next_offset: 42,
+            total: None,
         }));
         assert_eq!(
             response_data(&response),
@@ -1277,10 +1280,12 @@ mod tests {
             entries: vec![crate::encode::session_entry_to_proto(&entry)],
             has_more: true,
             next_offset: 7,
+            total: Some(9),
         }));
         let page = decode_session_entries_page(&resp).unwrap();
         assert!(page.has_more);
         assert_eq!(page.next_offset, 7);
+        assert_eq!(page.total, Some(9));
         assert_eq!(serde_json::to_value(&page.entries[0]).unwrap(), expected);
         let resp = resp_with_data(&json!({"entries":[expected]}).to_string());
         assert_eq!(

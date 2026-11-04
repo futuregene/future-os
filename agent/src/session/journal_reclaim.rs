@@ -13,7 +13,9 @@
 //!   resumable legacy command. Normal startup/completion never schedules it.
 //!   Canonical conversations are excluded; upgrades never sweep old bodies.
 
-use super::journal_compaction::{bump_meta, delete_raw_rows, RETIRE_CHUNK_ROWS};
+use super::journal_compaction::{
+    bump_meta, delete_raw_rows, RETIRE_CHUNK_ROWS, SNAPSHOT_BODY_MIN_BYTES,
+};
 use super::sqlite_store::SqliteStore;
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -27,6 +29,28 @@ use std::time::{Duration, Instant};
 pub(crate) const SWEEP_WORK_BUDGET: Duration = Duration::from_secs(20);
 /// Runs examined per call, so one call cannot queue an unbounded plan.
 const SWEEP_BATCH_RUNS: i64 = 64;
+/// Folds encoded per sweep call. Each one is a read, a gzip and a two-statement
+/// transaction, so the batch is smaller than the journal plan's: the point is a
+/// pass that finishes its slices, not one that holds the worker.
+const SNAPSHOT_BODY_BATCH: i64 = 32;
+/// Runs folded per sweep call. One run is a read of its whole journal plus one
+/// write transaction, so the batch is small enough to finish inside a slice.
+const FOLD_BATCH_RUNS: i64 = 8;
+/// Bodies repacked per sweep call. Each is a read of its fragments plus a delete
+/// and an insert, so the batch stays small enough to finish inside a slice.
+const RECHUNK_BATCH_OBJECTS: i64 = 64;
+/// Bodies compressed per sweep call. Each is a read of one body plus a gzip and
+/// a two-statement transaction, so a small batch keeps a slice responsive.
+const COMPRESS_BATCH_OBJECTS: i64 = 16;
+/// Blocks compressed per sweep call.
+const BLOCK_BODY_BATCH: i64 = 32;
+/// A block smaller than this keeps its text inline: the body row costs more than
+/// the text saves.
+const BLOCK_BODY_MIN_BYTES: i64 = 2048;
+/// An entry envelope smaller than this keeps its document inline.
+const ENTRY_BODY_MIN_BYTES: i64 = 1024;
+/// Entry envelopes compressed per sweep call.
+const ENTRY_BODY_BATCH: i64 = 64;
 
 /// Runs one startup catch-up may fold. A completion notification already
 /// handles the normal case, so this only mops up what a crash or a stop left
@@ -189,6 +213,321 @@ fn skip_counters(connection: &Connection) -> Result<Value> {
     Ok(Value::Object(counters))
 }
 
+/// Published folds still stored as plain JSON: how many, and the bytes they hold.
+///
+/// Read-only and cheap (one index probe per candidate row's size), so the
+/// report can print it on every run without touching a payload.
+pub(crate) fn plan_snapshot_bodies(db: &Connection) -> Result<(i64, i64)> {
+    Ok(db.query_row(
+        "SELECT count(*),coalesce(sum(length(CAST(s.payload AS BLOB))),0)
+           FROM run_snapshots s
+          WHERE length(CAST(s.payload AS BLOB)) >= ?1
+            AND NOT EXISTS(SELECT 1 FROM run_snapshot_bodies b
+                            WHERE b.session_id=s.session_id AND b.run_id=s.run_id)",
+        params![SNAPSHOT_BODY_MIN_BYTES as i64],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?)
+}
+
+/// Encode up to `limit` published folds, biggest first.
+///
+/// Returns `(runs, bytes before, bytes after)`. Each fold is rewritten in its
+/// own maintenance transaction, so an interruption leaves the remaining rows
+/// exactly as they were and the next pass continues from what is left.
+pub(crate) fn compress_snapshot_bodies(db: &mut Connection, limit: i64) -> Result<(i64, i64, i64)> {
+    let candidates: Vec<(String, String, i64, String)> = {
+        let mut statement = db.prepare_cached(
+            "SELECT s.session_id,s.run_id,s.cursor,s.payload
+               FROM run_snapshots s
+              WHERE length(CAST(s.payload AS BLOB)) >= ?1
+                AND NOT EXISTS(SELECT 1 FROM run_snapshot_bodies b
+                                WHERE b.session_id=s.session_id AND b.run_id=s.run_id)
+              ORDER BY length(CAST(s.payload AS BLOB)) DESC LIMIT ?2",
+        )?;
+        let rows = statement
+            .query_map(params![SNAPSHOT_BODY_MIN_BYTES as i64, limit], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let (mut runs, mut before, mut after) = (0i64, 0i64, 0i64);
+    for (session, run, cursor, payload) in candidates {
+        let row_before = payload.len() as i64;
+        let written = super::database::try_maintenance_transaction(db, |tx| {
+            super::journal_compaction::store_run_snapshot_body(tx, &session, &run, cursor, &payload)
+        });
+        match written {
+            Ok(()) => {}
+            Err(error) => {
+                // One unencodable fold must not end the pass; it stays as it is
+                // and the next sweep tries again.
+                tracing::debug!(%session, %run, %error, "snapshot body left as plain JSON");
+                continue;
+            }
+        }
+        let now: i64 = db.query_row(
+            "SELECT coalesce((SELECT length(body) FROM run_snapshot_bodies
+                               WHERE session_id=?1 AND run_id=?2),0)
+                    + length(CAST((SELECT payload FROM run_snapshots
+                                    WHERE session_id=?1 AND run_id=?2) AS BLOB))",
+            params![session, run],
+            |row| row.get(0),
+        )?;
+        runs += 1;
+        before += row_before;
+        after += now;
+    }
+    Ok((runs, before, after))
+}
+
+/// Settled runs that still hold fragments a sweep can actually merge, and what
+/// those fragments cost: `(groups, removable rows, bytes)`.
+///
+/// A settled journal holds far more rows than this count: the writer already
+/// coalesced everything inside a batch, and what is left across batches is
+/// separated by other contexts' cursors. Counting every settled row (as this
+/// did at first) advertised 2.8 M rows a sweep could never fold, which read as
+/// a broken pass rather than as nothing to do.
+pub(crate) fn plan_settled_folds(db: &Connection) -> Result<(i64, i64, i64)> {
+    Ok(db.query_row(
+        &format!(
+            "SELECT count(DISTINCT a.stream_id||':'||a.context_id),count(*),
+                    coalesce(sum(length(b.metadata_json)+coalesce(b.byte_length,0)),0)
+               FROM stream_changes a
+               JOIN stream_changes b
+                 ON b.stream_id=a.stream_id AND b.context_id=a.context_id
+                AND b.event_kind=a.event_kind AND b.last_cursor=a.last_cursor+1
+                AND b.byte_offset=a.byte_offset+a.byte_length AND a.content_id=b.content_id
+               JOIN stream_runs r ON r.id=a.stream_id
+               JOIN runs u ON u.session_id=r.session_id AND u.run_id=r.run_id
+              WHERE u.status IN {SETTLED}"
+        ),
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?)
+}
+
+/// Coalesce the delta rows of up to `limit` settled runs, largest first.
+///
+/// Returns `(runs, rows before, rows after)`. Each run is its own maintenance
+/// transaction: an interruption leaves the remaining runs exactly as they were,
+/// and folding is idempotent, so the next pass simply continues.
+pub(crate) fn fold_settled_journals(db: &mut Connection, limit: i64) -> Result<(i64, i64, i64)> {
+    // The stored session key is bound verbatim: it is text for older sessions
+    // and raw bytes for the ones the desktop created, and both must reach the
+    // same rows here. `String` would refuse the second kind outright.
+    let candidates: Vec<(rusqlite::types::Value, String)> = {
+        let mut statement = db.prepare_cached(&format!(
+            "SELECT r.session_id,r.run_id
+               FROM stream_changes c
+               JOIN stream_runs r ON r.id=c.stream_id
+               JOIN runs u ON u.session_id=r.session_id AND u.run_id=r.run_id
+              WHERE u.status IN {SETTLED}
+              GROUP BY 1,2 ORDER BY count(*) DESC LIMIT ?1"
+        ))?;
+        let rows = statement
+            .query_map(params![limit], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let (mut runs, mut before, mut after) = (0i64, 0i64, 0i64);
+    for (session, run) in candidates {
+        let folded = super::database::try_maintenance_transaction(db, |tx| {
+            super::content::journal::fold_settled_run(tx, &session, &run)
+        });
+        match folded {
+            Ok((b, a)) if a < b => {
+                runs += 1;
+                before += b;
+                after += a;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                // One unfoldable run must not end the pass; its rows stay as they
+                // are and a later sweep tries again.
+                tracing::debug!(session = ?session, %run, %error, "settled journal left unfolded");
+            }
+        }
+    }
+    Ok((runs, before, after))
+}
+
+/// Blocks whose text or tool arguments are big enough to store compressed:
+/// `(rows, bytes)`.
+pub(crate) fn plan_block_bodies(db: &Connection) -> Result<(i64, i64)> {
+    Ok(db.query_row(
+        &format!(
+            "SELECT count(*),coalesce(sum(size),0) FROM (
+                 SELECT max(length(CAST(coalesce(text,'') AS BLOB)),
+                            length(CAST(coalesce(arguments_json,'') AS BLOB))) size
+                   FROM message_blocks
+                  WHERE length(CAST(coalesce(text,'') AS BLOB))>={BLOCK_BODY_MIN_BYTES}
+                     OR length(CAST(coalesce(arguments_json,'') AS BLOB))>={BLOCK_BODY_MIN_BYTES})"
+        ),
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?)
+}
+
+/// One block the sweep may move: stored key, position, ordinal, and the fields
+/// large enough to be worth encoding.
+type BlockBodyCandidate = (
+    rusqlite::types::Value,
+    i64,
+    i64,
+    Option<String>,
+    Option<String>,
+);
+
+/// Compress up to `limit` blocks, largest first.
+///
+/// Returns `(rows, bytes before, bytes after)`, counting the moved text only.
+/// Each block is one maintenance transaction; the body row and the cleared
+/// column land together, so a read never sees a block whose text is neither
+/// inline nor stored.
+pub(crate) fn compress_block_bodies(db: &mut Connection, limit: i64) -> Result<(i64, i64, i64)> {
+    let candidates: Vec<BlockBodyCandidate> = {
+        let mut statement = db.prepare_cached(&format!(
+            "SELECT session_id,entry_position,ordinal,
+                    CASE WHEN length(CAST(coalesce(text,'') AS BLOB))>={BLOCK_BODY_MIN_BYTES}
+                         THEN text END,
+                    CASE WHEN length(CAST(coalesce(arguments_json,'') AS BLOB))>={BLOCK_BODY_MIN_BYTES}
+                         THEN arguments_json END
+               FROM message_blocks
+              WHERE length(CAST(coalesce(text,'') AS BLOB))>={BLOCK_BODY_MIN_BYTES}
+                 OR length(CAST(coalesce(arguments_json,'') AS BLOB))>={BLOCK_BODY_MIN_BYTES}
+              ORDER BY max(length(CAST(coalesce(text,'') AS BLOB)),
+                           length(CAST(coalesce(arguments_json,'') AS BLOB))) DESC
+              LIMIT ?1"
+        ))?;
+        let rows = statement
+            .query_map(params![limit], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let (mut blocks, mut before, mut after) = (0i64, 0i64, 0i64);
+    for (session, position, ordinal, text, arguments) in candidates {
+        let done = super::database::try_maintenance_transaction(db, |tx| {
+            let mut plain = 0i64;
+            let mut stored = 0i64;
+            for (field, value) in [("text", text.as_deref()), ("args", arguments.as_deref())] {
+                let Some(value) = value else { continue };
+                let body = super::content::compress::encode(value.as_bytes())?;
+                // A block whose field does not pay for itself keeps its text.
+                if body.len() * 10 >= value.len() * 9 {
+                    continue;
+                }
+                tx.execute(
+                    "INSERT INTO message_block_bodies(session_id,entry_position,ordinal,field,encoding,body)
+                     VALUES (?1,?2,?3,?4,'gzip',?5)
+                     ON CONFLICT(session_id,entry_position,ordinal,field) DO UPDATE SET body=excluded.body",
+                    params![session, position, ordinal, field, body.as_slice()],
+                )?;
+                plain += value.len() as i64;
+                stored += body.len() as i64;
+            }
+            if plain == 0 {
+                return Ok(None);
+            }
+            if text.is_some() && plain > 0 {
+                tx.execute(
+                    "UPDATE message_blocks SET text=NULL WHERE session_id=?1 AND entry_position=?2 AND ordinal=?3
+                       AND EXISTS(SELECT 1 FROM message_block_bodies x WHERE x.session_id=?1 AND x.entry_position=?2 AND x.ordinal=?3 AND x.field='text')",
+                    params![session, position, ordinal],
+                )?;
+            }
+            if arguments.is_some() {
+                tx.execute(
+                    "UPDATE message_blocks SET arguments_json=NULL WHERE session_id=?1 AND entry_position=?2 AND ordinal=?3
+                       AND EXISTS(SELECT 1 FROM message_block_bodies x WHERE x.session_id=?1 AND x.entry_position=?2 AND x.ordinal=?3 AND x.field='args')",
+                    params![session, position, ordinal],
+                )?;
+            }
+            Ok(Some((plain, stored)))
+        })?;
+        if let Some((plain, stored)) = done {
+            blocks += 1;
+            before += plain;
+            after += stored;
+        }
+    }
+    Ok((blocks, before, after))
+}
+
+/// Entries whose metadata document is big enough to store compressed:
+/// `(rows, bytes)`.
+pub(crate) fn plan_entry_bodies(db: &Connection) -> Result<(i64, i64)> {
+    Ok(db.query_row(
+        &format!(
+            "SELECT count(*),coalesce(sum(length(CAST(metadata_json AS BLOB))),0)
+               FROM entries
+              WHERE length(CAST(metadata_json AS BLOB))>={ENTRY_BODY_MIN_BYTES}
+                AND NOT EXISTS(SELECT 1 FROM entry_bodies x
+                                WHERE x.session_id=entries.session_id AND x.position=entries.position)"
+        ),
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?)
+}
+
+/// Compress up to `limit` entry envelopes, largest first.
+///
+/// `entries.metadata_json` is NOT NULL, so the column keeps `{}` rather than
+/// NULL; every projection prefers the stored body over the column, and a row
+/// that does not pay for itself is left exactly as it was.
+pub(crate) fn compress_entry_bodies(db: &mut Connection, limit: i64) -> Result<(i64, i64, i64)> {
+    let candidates: Vec<(rusqlite::types::Value, i64, String)> = {
+        let mut statement = db.prepare_cached(&format!(
+            "SELECT session_id,position,metadata_json FROM entries
+              WHERE length(CAST(metadata_json AS BLOB))>={ENTRY_BODY_MIN_BYTES}
+                AND NOT EXISTS(SELECT 1 FROM entry_bodies x
+                                WHERE x.session_id=entries.session_id AND x.position=entries.position)
+              ORDER BY length(CAST(metadata_json AS BLOB)) DESC LIMIT ?1"
+        ))?;
+        let rows = statement
+            .query_map(params![limit], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let (mut entries, mut before, mut after) = (0i64, 0i64, 0i64);
+    for (session, position, metadata) in candidates {
+        let moved = super::database::try_maintenance_transaction(db, |tx| {
+            let body = super::content::compress::encode(metadata.as_bytes())?;
+            if body.len() * 10 >= metadata.len() * 9 {
+                return Ok(None);
+            }
+            tx.execute(
+                "INSERT INTO entry_bodies(session_id,position,field,encoding,body)
+                 VALUES (?1,?2,'metadata','gzip',?3)
+                 ON CONFLICT(session_id,position,field) DO UPDATE SET body=excluded.body",
+                params![session, position, body.as_slice()],
+            )?;
+            tx.execute(
+                "UPDATE entries SET metadata_json='{}' WHERE session_id=?1 AND position=?2",
+                params![session, position],
+            )?;
+            Ok(Some((metadata.len() as i64, body.len() as i64)))
+        })?;
+        if let Some((plain, stored)) = moved {
+            entries += 1;
+            before += plain;
+            after += stored;
+        }
+    }
+    Ok((entries, before, after))
+}
+
 impl SqliteStore {
     /// Everything `future session journal` prints. Read-only, cheap enough to
     /// run whenever someone suspects the journal, and never a mutation.
@@ -196,6 +535,14 @@ impl SqliteStore {
         self.db.call(|db| {
             let (raw_rows, raw_bytes) = table_journal(db, "run_events")?;
             let (snapshot_rows, snapshot_bytes) = table_journal(db, "run_snapshots")?;
+            // A compressed fold's bytes live in its body, not in `payload`; the
+            // report's whole job is the real cost, so both are counted.
+            let body_bytes: i64 = db.query_row(
+                "SELECT coalesce(sum(length(body)),0) FROM run_snapshot_bodies",
+                [],
+                |row| row.get(0),
+            )?;
+            let snapshot_bytes = snapshot_bytes + body_bytes;
             let (pending_runs, pending_events, pending_bytes) = settled_uncompacted(db)?;
             let leftovers: (i64, i64) = db.query_row(
                 "SELECT count(*),coalesce(sum(n),0) FROM (
@@ -521,6 +868,134 @@ impl SqliteStore {
             }));
         }
 
+        // 3. Folds already published as plain JSON: same bytes, encoded. This is
+        // the only step that touches rows a previous build wrote, so it stays
+        // inside the operator-invoked sweep and never runs on open or idle.
+        let pending_bodies = self.db.call(|db| plan_snapshot_bodies(db))?;
+        let (encoded_bodies, bodies_before, bodies_after) =
+            if dry_run || pending_bodies.0 == 0 || started.elapsed() >= budget {
+                (0i64, 0i64, 0i64)
+            } else {
+                self.db
+                    .call_as("journal_reclaim", move |db| {
+                        compress_snapshot_bodies(db, SNAPSHOT_BODY_BATCH)
+                    })
+                    .unwrap_or((0, 0, 0))
+            };
+        let bodies_pending = self
+            .db
+            .call(|db| plan_snapshot_bodies(db))
+            .map(|plan| plan.0)
+            .unwrap_or(0);
+
+        // 4. Settled canonical runs: the same range the writer would have written
+        // had the fragments arrived in one batch. Readers see no difference, so
+        // this is bytes, not behaviour.
+        let pending_folds = self.db.call(|db| plan_settled_folds(db))?;
+        let (folded_runs, folds_before, folds_after) =
+            if dry_run || pending_folds.0 == 0 || started.elapsed() >= budget {
+                (0i64, 0i64, 0i64)
+            } else {
+                self.db
+                    .call_as("journal_reclaim", move |db| {
+                        fold_settled_journals(db, FOLD_BATCH_RUNS)
+                    })
+                    .unwrap_or_else(|error| {
+                        // A silent no-op here is exactly how a broken pass reads
+                        // as "nothing to fold"; say it once, keep the sweep going.
+                        tracing::warn!(%error, "settled-journal folding failed");
+                        (0, 0, 0)
+                    })
+            };
+        let folds_pending = self
+            .db
+            .call(|db| plan_settled_folds(db))
+            .map(|plan| plan.1)
+            .unwrap_or(0);
+
+        // 5. Bodies written one fragment per row: the same bytes, one row. Every
+        // reader addresses a byte range, so this changes no address and no byte.
+        let pending_segments = self.db.call(|db| super::content::rechunk::plan(db))?;
+        let (repacked, segments_before, segments_after) =
+            if dry_run || pending_segments.1 == 0 || started.elapsed() >= budget {
+                (0i64, 0i64, 0i64)
+            } else {
+                self.db
+                    .call_as("journal_reclaim", move |db| {
+                        super::content::rechunk::apply(db, RECHUNK_BATCH_OBJECTS)
+                    })
+                    .unwrap_or((0, 0, 0))
+            };
+        let segments_pending = self
+            .db
+            .call(|db| super::content::rechunk::plan(db))
+            .map(|plan| plan.1)
+            .unwrap_or(0);
+
+        // 6. Sealed bodies: same bytes, gzip. The marker is written with the
+        // chunks, so a reader never sees half an encoded body.
+        let pending_compress = self.db.call(|db| super::content::compress::plan(db))?;
+        let (compressed_objects, plain_bytes, stored_bytes) =
+            if dry_run || pending_compress.1 == 0 || started.elapsed() >= budget {
+                (0i64, 0i64, 0i64)
+            } else {
+                self.db
+                    .call_as("journal_reclaim", move |db| {
+                        super::content::compress::apply(db, COMPRESS_BATCH_OBJECTS)
+                    })
+                    .unwrap_or((0, 0, 0))
+            };
+        let compress_pending = self
+            .db
+            .call(|db| super::content::compress::plan(db))
+            .map(|plan| plan.1)
+            .unwrap_or(0);
+
+        // 7. Legacy blocks whose text or tool arguments are large: the body moves
+        //    to its own row and the projection hydrates it. Same bytes, same
+        //    read.
+        let pending_block_bodies = self.db.call(|db| plan_block_bodies(db))?;
+        let (compressed_blocks, block_bytes_before, block_bytes_after) =
+            if dry_run || pending_block_bodies.0 == 0 || started.elapsed() >= budget {
+                (0i64, 0i64, 0i64)
+            } else {
+                self.db
+                    .call_as("journal_reclaim", move |db| {
+                        compress_block_bodies(db, BLOCK_BODY_BATCH)
+                    })
+                    .unwrap_or_else(|error| {
+                        tracing::warn!(%error, "block body compression failed");
+                        (0, 0, 0)
+                    })
+            };
+        let blocks_pending = self
+            .db
+            .call(|db| plan_block_bodies(db))
+            .map(|plan| plan.1)
+            .unwrap_or(0);
+
+        // 8. Entry envelopes: same document, gzip. The column keeps `{}` because it
+        //    is NOT NULL; every projection prefers the stored body.
+        let pending_entry_bodies = self.db.call(|db| plan_entry_bodies(db))?;
+        let (compressed_entries, entry_bytes_before, entry_bytes_after) =
+            if dry_run || pending_entry_bodies.0 == 0 || started.elapsed() >= budget {
+                (0i64, 0i64, 0i64)
+            } else {
+                self.db
+                    .call_as("journal_reclaim", move |db| {
+                        compress_entry_bodies(db, ENTRY_BODY_BATCH)
+                    })
+                    .unwrap_or_else(|error| {
+                        tracing::warn!(%error, "entry body compression failed");
+                        (0, 0, 0)
+                    })
+            };
+        let entries_pending = self
+            .db
+            .call(|db| plan_entry_bodies(db))
+            .map(|plan| plan.1)
+            .unwrap_or(0);
+
         // `hasMore` promises *more work this sweep can do*, not "some settled run
         // still keeps a journal": a run that cannot be representationally
         // reclaimed (its last event is not `agent_end`, its envelope is unknown)
@@ -533,7 +1008,15 @@ impl SqliteStore {
             // (still undeleted) runs again.
             false
         } else {
-            stopped_early || candidates_truncated || leftovers_truncated
+            stopped_early
+                || candidates_truncated
+                || leftovers_truncated
+                || bodies_pending > 0
+                || folds_pending > 0
+                || segments_pending > 0
+                || compress_pending > 0
+                || blocks_pending > 0
+                || entries_pending > 0
         };
 
         // Fold freed pages back into the file where this database can do it
@@ -558,6 +1041,43 @@ impl SqliteStore {
             "reclaimedEvents": reclaimed_events,
             "leftoverRuns": leftover_runs,
             "leftoverEvents": leftover_events,
+            "snapshotBodies": {
+                "pendingRuns": bodies_pending,
+                "pendingBytes": pending_bodies.1,
+                "encodedRuns": encoded_bodies,
+                "bytesBefore": bodies_before,
+                "bytesAfter": bodies_after,
+            },
+            "settledFolds": {
+                "pendingRows": folds_pending,
+                "foldedRuns": folded_runs,
+                "rowsBefore": folds_before,
+                "rowsAfter": folds_after,
+            },
+            "bodySegments": {
+                "pendingRows": segments_pending,
+                "repackedObjects": repacked,
+                "rowsBefore": segments_before,
+                "rowsAfter": segments_after,
+            },
+            "bodyEncoding": {
+                "pendingBytes": compress_pending,
+                "compressedObjects": compressed_objects,
+                "bytesBefore": plain_bytes,
+                "bytesAfter": stored_bytes,
+            },
+            "blockEncoding": {
+                "pendingBytes": blocks_pending,
+                "compressedBlocks": compressed_blocks,
+                "bytesBefore": block_bytes_before,
+                "bytesAfter": block_bytes_after,
+            },
+            "entryEncoding": {
+                "pendingBytes": entries_pending,
+                "compressedEntries": compressed_entries,
+                "bytesBefore": entry_bytes_before,
+                "bytesAfter": entry_bytes_after,
+            },
             "hasMore": has_more,
             "quickCheck": quick_check,
             "database": {

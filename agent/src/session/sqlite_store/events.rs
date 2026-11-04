@@ -155,9 +155,8 @@ impl SqliteStore {
         let expected_run = run.clone();
         let (rows,snapshot) = self.db.read(move |db| {
             let tx = db.transaction()?;
-            let snapshot: Option<(i64,String)> = tx.query_row(
-                "SELECT cursor,payload FROM run_snapshots WHERE session_id=?1 AND run_id=?2 AND version=1",
-                params![session,run], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+            let snapshot: Option<(i64,String)> =
+                crate::session::journal_compaction::load_run_snapshot(&tx, &session, &run)?;
             let rows = if snapshot.is_some() {Vec::new()} else {
                 let sql = if run.is_empty() {
                     "SELECT session_id,run_id,epoch,idx,event_id,payload,sequence FROM run_events WHERE session_id=?1 AND run_id=?2 ORDER BY sequence"

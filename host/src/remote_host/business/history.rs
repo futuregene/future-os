@@ -3,8 +3,8 @@ use future_remote_server::services::ReplySink;
 use serde_json::{json, Value};
 
 use super::{
-    entries_vec, mark_short_backward_page, paginate_events, paginate_items_with_cap,
-    paginate_messages, prepare_backward_entries_page_with_cap, reply, DEFAULT_MESSAGE_PAGE_LIMIT,
+    mark_short_backward_page, paginate_events, paginate_items_with_cap,
+    prepare_backward_entries_page_with_cap, reply, DEFAULT_MESSAGE_PAGE_LIMIT,
 };
 
 /// The cursor meaning "the page at the end of the session". Clients open a
@@ -66,16 +66,26 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             // Serve history from the agent (source of truth for all sessions).
             // The GUI store only has message rows for GUI-native threads —
             // TUI/CLI sessions imported as thread stubs would show empty history.
+            //
+            // The page is the agent's, not ours: this used to fetch the whole
+            // transcript and slice it here, which made a 40-message page cost
+            // 249 ms on a 14,531-entry conversation (and a 25,000-entry reply
+            // exceeded the frame limit), because the cost was the conversation
+            // and not the page.
             let offset = cmd.offset.max(0) as usize;
             let limit = if cmd.limit > 0 {
                 cmd.limit as usize
             } else {
                 DEFAULT_MESSAGE_PAGE_LIMIT
             };
-            let messages = match crate::agent_bridge::get_session_messages(cmd.session_id.clone())
-                .await
+            let page = match crate::agent_bridge::get_session_messages_page(
+                cmd.session_id.clone(),
+                offset as i64,
+                limit as i64,
+            )
+            .await
             {
-                Ok(data) => super::messages_vec(data),
+                Ok(data) => data,
                 Err(agent_err) => {
                     reply(
                         sink,
@@ -89,7 +99,36 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                     return;
                 }
             };
-            reply(sink, true, paginate_messages(messages, offset, limit), None).await;
+            let messages = super::messages_vec(page.clone());
+            let total = page.get("total").and_then(Value::as_u64);
+            // The remote caps are the same ones the whole-list path applied; the
+            // slice below starts at zero because the Agent already resolved
+            // `offset`, and the absolute cursor is restated afterwards.
+            let mut value = paginate_items_with_cap(messages.clone(), 0, limit, "messages", true);
+            let kept = value["messages"].as_array().map(Vec::len).unwrap_or(0);
+            match total {
+                Some(total) => {
+                    value["offset"] = json!(offset);
+                    value["nextOffset"] = json!(offset + kept);
+                    value["total"] = json!(total);
+                    value["hasMore"] = json!((offset as u64 + kept as u64) < total);
+                }
+                // An Agent that answered without a total ignores the page it was
+                // asked for, so it sent the whole list: slice it here exactly the
+                // way this host used to, rather than reporting the first page as
+                // if it were the requested one.
+                None => {
+                    reply(
+                        sink,
+                        true,
+                        super::paginate_messages(messages, offset, limit),
+                        None,
+                    )
+                    .await;
+                    return;
+                }
+            }
+            reply(sink, true, value, None).await;
         }
         "get_session_entries" => {
             let offset = cmd.offset.max(0) as usize;
@@ -160,27 +199,53 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 }
                 return;
             }
-            match crate::agent_bridge::get_session_entries(cmd.session_id.clone()).await {
-                Ok(mut data) => {
+            match crate::agent_bridge::get_session_entries_at_offset(
+                cmd.session_id.clone(),
+                offset as i64,
+                limit as i64,
+            )
+            .await
+            {
+                Ok(page) => {
+                    // The Agent resolved `offset` against its `history_display`
+                    // key and sent only this page, so what is left here is the
+                    // same trim the whole-session path did: lean payloads (before
+                    // the byte budget measures them), then the remote caps.
+                    let mut data = json!(page.entries);
                     if crate::remote_host::lean::enabled() {
-                        if let Some(entries) = data.get_mut("entries") {
-                            crate::remote_host::lean::lean_entries(entries);
-                        }
+                        crate::remote_host::lean::lean_entries(&mut data);
                     }
-                    let entries = entries_vec(data);
-                    reply(
-                        sink,
-                        true,
-                        paginate_items_with_cap(
-                            entries,
-                            offset,
-                            limit,
-                            "entries",
-                            !cmd.chunked_read,
-                        ),
-                        None,
-                    )
-                    .await;
+                    let entries: Vec<Value> = data.as_array().cloned().unwrap_or_default();
+                    // An Agent that answered without a total ignored the offset
+                    // it was given and replayed the session, so the slice this
+                    // host used to make is the honest answer — locally, from the
+                    // list that came back.
+                    let Some(total) = page.total else {
+                        reply(
+                            sink,
+                            true,
+                            paginate_items_with_cap(
+                                entries,
+                                offset,
+                                limit,
+                                "entries",
+                                !cmd.chunked_read,
+                            ),
+                            None,
+                        )
+                        .await;
+                        return;
+                    };
+                    // The page already begins at `offset`, so the slice starts at
+                    // zero here; the absolute cursor is restated below.
+                    let mut value =
+                        paginate_items_with_cap(entries, 0, limit, "entries", !cmd.chunked_read);
+                    let kept = value["entries"].as_array().map(Vec::len).unwrap_or(0);
+                    value["offset"] = json!(offset);
+                    value["nextOffset"] = json!(offset + kept);
+                    value["total"] = json!(total);
+                    value["hasMore"] = json!((offset + kept) < total as usize);
+                    reply(sink, true, value, None).await;
                 }
                 Err(e) => reply(sink, false, Value::Null, Some(&e.to_string())).await,
             }

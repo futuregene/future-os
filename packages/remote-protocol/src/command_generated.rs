@@ -102,6 +102,18 @@ pub struct IncomingCmd {
     pub content_request: Option<serde_json::Value>,
     /// Host-owned Fusion settings patch with expected_revision.
     pub fusion_settings: serde_json::Value,
+    /// Embedded terminal: the session's id on the host that owns it (`terminal_list` / `terminal_read` / `terminal_write` / `terminal_update` / `terminal_delete`).
+    pub terminal_id: String,
+    /// Embedded terminal: the absolute output byte offset the client already applied; -1 tails from the current end.
+    pub terminal_cursor: i64,
+    /// Embedded terminal: base64 bytes — keyboard input on `terminal_write`.
+    pub terminal_data: String,
+    /// Embedded terminal tab title (`terminal_create` / `terminal_update`).
+    pub title: String,
+    /// Embedded terminal viewport width in cells (`terminal_create` / `terminal_update`).
+    pub cols: u32,
+    /// Embedded terminal viewport height in cells (`terminal_create` / `terminal_update`).
+    pub rows: u32,
 }
 impl Default for IncomingCmd {
     fn default() -> Self {
@@ -174,6 +186,12 @@ impl Default for IncomingCmd {
             reason: String::new(),
             content_request: None,
             fusion_settings: serde_json::Value::Null,
+            terminal_id: String::new(),
+            terminal_cursor: -1,
+            terminal_data: String::new(),
+            title: String::new(),
+            cols: 0,
+            rows: 0,
         }
     }
 }

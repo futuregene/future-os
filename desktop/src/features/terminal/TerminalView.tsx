@@ -12,15 +12,18 @@
  */
 import type { IDisposable } from "@xterm/xterm";
 import type { TerminalTab } from "./tabs";
+import type { TerminalLink, TerminalTransport } from "./transport";
 import type { TerminalFrameMeta } from "./types";
 import { FitAddon } from "@xterm/addon-fit";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { Terminal } from "@xterm/xterm";
 import { useEffect, useRef } from "react";
-import { connectTicket, connectUrl, TerminalApiError, terminalServer, updateTerminal } from "./client";
+import { TerminalApiError } from "./client";
 import { terminalKeyPolicy } from "./keyPolicy";
+import { localTransport } from "./localTransport";
 import { installMacInputWorkaround } from "./macInput";
 import { currentTerminalTheme, useTerminalTheme } from "./theme";
+import { AttachAborted, CLOSE_EXIT, CLOSE_LAGGED } from "./transport";
 import "@xterm/xterm/css/xterm.css";
 
 /** How long a resize waits for the drag to settle before telling the server. */
@@ -35,18 +38,15 @@ const SCROLLBACK = 10_000;
  * cannot exhaust the storage quota.
  */
 const PERSIST_SCROLLBACK = 1_000;
-/** Close code the server sends when a viewer fell too far behind. */
-const CLOSE_LAGGED = 4408;
-/**
- * The server's frame type bytes (`desktop/src-tauri/src/terminal/protocol.rs`).
- * Every server frame is one of these followed by its payload: output is the
- * PTY's bytes verbatim, control is UTF-8 JSON.
- */
-const FRAME_CONTROL = 0;
-const FRAME_DATA = 1;
 
 export interface TerminalViewProps {
   tab: TerminalTab;
+  /**
+   * How this view reaches its shell. A local tab uses the loopback WebSocket; a
+   * paired desktop's tab polls the control plane. Everything below the seam —
+   * cursor accounting, replay truncation, exit handling, retries — is shared.
+   */
+  transport?: TerminalTransport;
   autoFocus?: boolean;
   /** Attached and streaming. */
   onConnect?: () => void;
@@ -62,6 +62,7 @@ export interface TerminalViewProps {
 
 export function TerminalView(props: TerminalViewProps) {
   const { tab, autoFocus } = props;
+  const transport = props.transport ?? localTransport;
   const containerRef = useRef<HTMLDivElement | null>(null);
   // The xterm instance, so a theme switch can repaint an already-open terminal
   // without re-running the mount effect (which would drop the socket).
@@ -82,7 +83,10 @@ export function TerminalView(props: TerminalViewProps) {
     }
     const initial = tab;
     let disposed = false;
-    let socket: WebSocket | undefined;
+    let link: TerminalLink | undefined;
+    // An attach still waiting for its endpoint, ticket or first page is aborted
+    // on unmount instead of opening a connection nobody will read.
+    const abort = new AbortController();
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let resizeTimer: ReturnType<typeof setTimeout> | undefined;
     let fitFrame: number | undefined;
@@ -192,7 +196,7 @@ export function TerminalView(props: TerminalViewProps) {
       if (!previous) {
         // The first measurement goes out immediately so the shell starts with
         // the geometry the user actually sees.
-        void updateTerminal(id, { cols, rows }).catch(() => undefined);
+        void transport.resize(id, cols, rows).catch(() => undefined);
         return;
       }
       if (resizeTimer !== undefined) {
@@ -203,7 +207,7 @@ export function TerminalView(props: TerminalViewProps) {
         if (disposed || !lastSize) {
           return;
         }
-        void updateTerminal(id, lastSize).catch(() => undefined);
+        void transport.resize(id, lastSize.cols, lastSize.rows).catch(() => undefined);
       }, RESIZE_DEBOUNCE_MS);
     };
 
@@ -266,132 +270,107 @@ export function TerminalView(props: TerminalViewProps) {
       scheduleRetry(Math.min(RETRY_MIN_MS * 2 ** Math.min(tries, 4), RETRY_MAX_MS));
     };
 
+    // Which attachment is current. A retry that lands after a newer one started
+    // must not steal the link (or leave a second one open).
+    let generation = 0;
+
     async function open(): Promise<void> {
       if (disposed) {
         return;
       }
-      let ticket: string;
+      const mine = ++generation;
+      // A new attachment starts with a replay again.
+      replaying = true;
+      const decoder = new TextDecoder();
+      let next: TerminalLink;
       try {
-        ticket = await connectTicket(id);
+        next = await transport.open(id, seek ?? -1, {
+          onOpen: () => {
+            if (disposed || mine !== generation) {
+              return;
+            }
+            tries = 0;
+            lastSize = undefined;
+            pushSize(terminal.cols, terminal.rows);
+            handlersRef.current.onConnect?.();
+          },
+          onBytes: (payload) => {
+            if (disposed || mine !== generation) {
+              return;
+            }
+            // Live output advances the stored cursor as it is applied: the host
+            // counts the stream in bytes and reports that offset once per
+            // attachment (and again on exit), so without this the cursor
+            // persisted on unmount stays at the attach-time offset and the next
+            // mount replays output the restored screen already shows.
+            if (!replaying) {
+              cursor = (cursor ?? 0) + payload.length;
+            }
+            push(decoder.decode(payload, { stream: true }));
+          },
+          onMeta: (meta) => {
+            if (disposed || mine !== generation) {
+              return;
+            }
+            applyMeta(meta);
+          },
+          onText: (text) => {
+            if (disposed || mine !== generation) {
+              return;
+            }
+            // A transport that handed over something it could not classify:
+            // rendering it is strictly better than dropping output.
+            push(text);
+          },
+          onMissing: () => {
+            if (disposed || mine !== generation) {
+              return;
+            }
+            // The shell is gone (the app restarted, or the session was
+            // evicted). The tab keeps its final screen and offers a restart.
+            handlersRef.current.onMissing?.();
+          },
+          onClose: (code) => {
+            if (disposed || mine !== generation) {
+              return;
+            }
+            if (code === CLOSE_EXIT) {
+              // The shell exited: the final control frame already carried the
+              // code.
+              return;
+            }
+            if (code === CLOSE_LAGGED) {
+              // The host dropped this viewer to bound memory, or the link
+              // faltered. Come back with the cursor actually applied and replay
+              // only the difference.
+              seek = cursor;
+              scheduleRetry(0);
+              return;
+            }
+            retry(new Error(`terminal connection closed (${code})`));
+          },
+        }, abort.signal);
       }
       catch (cause) {
-        if (disposed) {
+        if (disposed || mine !== generation || cause instanceof AttachAborted) {
           return;
         }
         if (cause instanceof TerminalApiError && cause.code === "TERMINAL_NOT_FOUND") {
-          // The shell is gone (app restarted, or the session was evicted). The
-          // tab keeps its final screen and offers a restart.
           handlersRef.current.onMissing?.();
           return;
         }
         retry(cause);
         return;
       }
-      if (disposed) {
+      if (disposed || mine !== generation) {
+        next.close();
         return;
       }
-
-      let ws: WebSocket;
-      try {
-        const server = await terminalServer();
-        if (disposed) {
-          return;
-        }
-        ws = new WebSocket(connectUrl(server, id, seek, ticket));
-      }
-      catch (cause) {
-        retry(cause);
-        return;
-      }
-      ws.binaryType = "arraybuffer";
-      socket = ws;
-      // A new attachment starts with a replay again.
-      replaying = true;
-      const decoder = new TextDecoder();
-
-      // These listeners belong to this attachment's socket, which the effect
-      // closes on unmount, and every handler re-checks `disposed` — the rule
-      // cannot see either fact.
-      // eslint-disable-next-line react/web-api-no-leaked-event-listener
-      ws.addEventListener("open", () => {
-        if (disposed) {
-          ws.close();
-          return;
-        }
-        tries = 0;
-        lastSize = undefined;
-        pushSize(terminal.cols, terminal.rows);
-        handlersRef.current.onConnect?.();
-      });
-      // These listeners belong to this attachment's socket, which the effect
-      // closes on unmount, and every handler re-checks `disposed` — the rule
-      // cannot see either fact.
-      // eslint-disable-next-line react/web-api-no-leaked-event-listener
-      ws.addEventListener("message", (event: MessageEvent) => {
-        if (disposed) {
-          return;
-        }
-        if (typeof event.data === "string") {
-          // The server sends binary frames; rendering an unexpected text frame
-          // is strictly better than dropping output.
-          push(event.data);
-          return;
-        }
-        const bytes = new Uint8Array(event.data as ArrayBuffer);
-        // The type byte decides, never the payload: output legitimately starts
-        // with NUL (`printf '\0hello'`, `cat` of a binary file), and reading
-        // that as a control frame dropped the whole read however long it was.
-        if (bytes.length > 0 && bytes[0] === FRAME_CONTROL) {
-          applyMeta(decodeMeta(bytes.subarray(1)));
-          return;
-        }
-        if (bytes.length > 0 && bytes[0] !== FRAME_DATA) {
-          // A frame kind this client does not know: dropping it is the only
-          // reading that cannot type its header into the user's shell.
-          return;
-        }
-        const payload = bytes.subarray(1);
-        // Live output advances the stored cursor as it is applied: the host
-        // counts the stream in bytes and reports that offset once per
-        // attachment (and again on exit), so without this the cursor persisted
-        // on unmount stays at the attach-time offset and the next mount replays
-        // output the restored screen already shows. The count is the *payload*
-        // — the type byte is framing, not terminal output.
-        if (!replaying) {
-          cursor = (cursor ?? 0) + payload.length;
-        }
-        push(decoder.decode(payload, { stream: true }));
-      });
-      // These listeners belong to this attachment's socket, which the effect
-      // closes on unmount, and every handler re-checks `disposed` — the rule
-      // cannot see either fact.
-      // eslint-disable-next-line react/web-api-no-leaked-event-listener
-      ws.addEventListener("close", (event: CloseEvent) => {
-        if (socket === ws) {
-          socket = undefined;
-        }
-        if (disposed) {
-          return;
-        }
-        if (event.code === 1000) {
-          // The shell exited: the final control frame already carried the code.
-          return;
-        }
-        if (event.code === CLOSE_LAGGED) {
-          // The server dropped this viewer to bound memory. Come back with the
-          // cursor actually applied and replay only the difference.
-          seek = cursor;
-          scheduleRetry(0);
-          return;
-        }
-        retry(new Error(`terminal connection closed (${event.code})`));
-      });
+      link = next;
     }
 
     const onData = terminal.onData((data) => {
-      if (socket?.readyState === WebSocket.OPEN) {
-        socket.send(data);
-      }
+      link?.write(data);
     });
     disposables.push(onData);
     const onResize = terminal.onResize(size => pushSize(size.cols, size.rows));
@@ -420,6 +399,7 @@ export function TerminalView(props: TerminalViewProps) {
 
     return () => {
       disposed = true;
+      abort.abort();
       if (retryTimer !== undefined) {
         clearTimeout(retryTimer);
       }
@@ -435,9 +415,7 @@ export function TerminalView(props: TerminalViewProps) {
       for (const disposable of disposables.splice(0)) {
         disposable.dispose();
       }
-      if (socket && socket.readyState !== WebSocket.CLOSED && socket.readyState !== WebSocket.CLOSING) {
-        socket.close(1000);
-      }
+      link?.close();
       // Persist the *applied* screen: draining first guarantees the last chunk
       // of output is part of what the next mount restores.
       flush(() => {
@@ -469,23 +447,4 @@ export function TerminalView(props: TerminalViewProps) {
       className="h-full w-full overflow-hidden bg-surface px-3 py-2"
     />
   );
-}
-
-/**
- * Decode a control frame.
- *
- * A decoder of its own, deliberately: the streaming decoder that decodes PTY
- * output holds the bytes of a character split across two frames, and a
- * non-streaming `decode()` on the same instance flushes those bytes out as
- * U+FFFD — which used to eat the end of a replay (and with it the control frame
- * that reports the cursor) whenever the 64 KiB replay chunk boundary fell inside
- * a multi-byte character. Control payloads are ASCII JSON.
- */
-function decodeMeta(payload: Uint8Array): TerminalFrameMeta | undefined {
-  try {
-    return JSON.parse(new TextDecoder().decode(payload)) as TerminalFrameMeta;
-  }
-  catch {
-    return undefined;
-  }
 }
