@@ -242,15 +242,40 @@ describe("child sessions on the recency page", () => {
     expect(countOf(page, "earlierSection")!.count).toBe(2);
   });
 
-  it("keeps a running worker out of the active stretch", () => {
-    // A child is never a row of the page's own: filing a goal's worker under
-    // "Active" would show a session the page is supposed to leave to its
-    // conversation.
+  it("files a conversation under Active while its child session is still running", () => {
+    // The child is drawn inside the conversation's fold, so a page that looked
+    // only at the parent's own run filed a conversation that was visibly working
+    // under "Earlier" — the reader had to open rows until they found it.
     const rows = [
       row("goal", {}, now - 2 * minute),
       row("worker", { parentSessionId: "goal", streaming: true }, now - minute),
+      row("idle", {}, now - 3 * minute),
     ];
-    expect(captions(recentRows(rows, ""))).toEqual(["sessions.earlierSection"]);
+    const page = recentRows(rows, "");
+    expect(captions(page)).toEqual(["sessions.activeSection", "sessions.earlierSection"]);
+    // The running child is still not a row of the stretch: it sits in the fold.
+    expect(ids(page)).toEqual(["goal", "idle"]);
+    expect(countOf(page, "activeSection")!.count).toBe(1);
+    expect(countOf(page, "earlierSection")!.count).toBe(1);
+  });
+
+  it("follows a run two levels down, and lets go when it finishes", () => {
+    // A worker can start a worker: the lift is about the conversation having work
+    // in flight, not about its direct children.
+    const deep = recentRows([
+      row("goal", {}, now - 5 * minute),
+      row("worker", { parentSessionId: "goal" }, now - 4 * minute),
+      row("helper", { parentSessionId: "worker", status: "running" }, now - 3 * minute),
+    ], "");
+    expect(captions(deep)).toEqual(["sessions.activeSection"]);
+    expect(ids(deep)).toEqual(["goal"]);
+    // Finished children do not hold a conversation in the stretch: the page is
+    // about what is running now, not about who has children.
+    const done = recentRows([
+      row("goal", {}, now - 2 * minute),
+      row("worker", { parentSessionId: "goal", status: "completed" }, now - minute),
+    ], "");
+    expect(captions(done)).toEqual(["sessions.earlierSection"]);
   });
 
   it("draws the children under their conversation when it is opened", () => {
