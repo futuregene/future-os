@@ -13,7 +13,9 @@
 > `01-client-surface.md` 客户端真正发出什么命令、什么参数、什么时序 ·
 > `02-code-audit.md` 每条命令的 SQL / 索引 / 复杂度 ·
 > `03-measurements.md` 真实数据实测 · `04-scaling.md` 逐维度放大后的斜率 ·
-> `05-verification.md` 独立复核
+> `05-verification.md` 独立复核 ·
+> `06-read-path-fixes.md` **改造与复测**：四条超时命令改了什么、改完每条多快
+> （同一套 harness 的前后对照）
 >
 > **一句话结论**：新客户端打开一条会话会并发发出 `get_state` + 一页游标历史，因此等待 ≈ 较慢的那一条。
 > **其中只有 `get_state` 超过 100 ms**（最大会话首次触达 166 ms、中位会话 59 ms），原因是它每次调用都
