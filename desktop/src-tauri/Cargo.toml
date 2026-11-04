@@ -146,15 +146,14 @@ ignore = "0.4"
 fuzzy-matcher = "0.3"
 # Cross-platform native resource-manager clipboard paths (Finder/Explorer/Linux file managers).
 arboard = { version = "3.6", default-features = false, optional = true }
-# Embedded terminal (see docs/internals/desktop/embedded-terminal.md): a PTY session
-# registry served to the app's own webview over a loopback-only HTTP/WebSocket
-# listener — the opencode transport model. `portable-pty` is the cross-platform
-# PTY abstraction (wezterm); the WebSocket upgrade rides tokio-tungstenite, the
-# same version the workspace already pins for the channel bridges. The HTTP/1.1
-# control routes are parsed in-crate (no axum/hyper): the loopback listener
-# serves one request per connection and the repo already hand-rolls the web
-# client's HTTP in `remote/mod.rs`.
-portable-pty = "0.9"
+# Embedded terminal, Desktop half (see docs/internals/desktop/embedded-terminal.md):
+# the loopback-only HTTP/WebSocket listener the app's own webview talks to — the
+# opencode transport model. The PTY registry itself lives in `future-host`
+# (`host/src/terminal`), so `future host` serves the same shells. The WebSocket
+# upgrade rides tokio-tungstenite, the same version the workspace already pins
+# for the channel bridges. The HTTP/1.1 control routes are parsed in-crate (no
+# axum/hyper): the loopback listener serves one request per connection and the
+# repo already hand-rolls the web client's HTTP in `remote/mod.rs`.
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 libc = "0.2"
 
