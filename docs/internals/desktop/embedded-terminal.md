@@ -290,9 +290,15 @@ registry shows nothing rather than a button whose every press answers
 
 **It is a paged pull, not a stream.** Commands travel the ordinary control-plane
 lane: `terminal_list` / `terminal_create` / `terminal_update` / `terminal_delete`
-/ `terminal_read` / `terminal_write`. `terminal_read` returns the bytes *after*
-the cursor the client applied, plus that cursor — the same absolute-offset
-contract the loopback attachment has, so a client that reconnects asks for the
+/ `terminal_read` / `terminal_write`. Bytes travel as **URL-safe, unpadded
+base64** in `terminal_data` — the host's `URL_SAFE_NO_PAD`, not the browser's
+`btoa` alphabet: `-_8` is how `[0xFB, 0xFF]` is spelled, and both ends pin that
+literal in a test because a mismatch here is invisible until it is not (padded
+`bA==` is refused by the host, and `atob` throws on `-_`).
+
+`terminal_read` returns the bytes *after* the cursor the client applied, plus
+the cursor to ask from next time — the same absolute-offset contract the
+loopback attachment has, so a client that reconnects asks for the
 difference and is told when the retained tail no longer covers it
 (`start > cursor`). A page is capped at 64 KiB and a write at 256 KiB.
 

@@ -130,10 +130,26 @@ pub(crate) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                     // The page is bounded here as well as in the service: a
                     // command that floods (`cat` a big file) may hand back the
                     // whole retained tail, and one reply has to stay inside the
-                    // wire budget. The cursor is therefore recomputed from what
-                    // actually travels, so the client's next ask resumes exactly
-                    // after the last byte it received.
+                    // wire budget.
                     let take = page.bytes.len().min(READ_PAGE_BYTES);
+                    let cut = take < page.bytes.len();
+                    // Two different resume points, and they are not
+                    // interchangeable:
+                    //
+                    // * a page **cut** at the limit resumes right after the
+                    //   bytes it carried (`start + take`), or the rest of the
+                    //   page would be skipped;
+                    // * a **whole** page resumes where the registry says the
+                    //   stream ends (`page.cursor`). That is also the only
+                    //   right answer for a client whose stored cursor is past
+                    //   the tail — `start` is the *requested* offset there, and
+                    //   echoing it back left the tab polling a number the host
+                    //   would never reach, showing nothing while the shell ran.
+                    let cursor = if cut {
+                        page.start + take as u64
+                    } else {
+                        page.cursor
+                    };
                     reply(
                         sink,
                         true,
@@ -141,7 +157,7 @@ pub(crate) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                             "data": URL_SAFE_NO_PAD.encode(&page.bytes[..take]),
                             // Absolute end offset *after these bytes*, which is
                             // what the client stores and asks from next time.
-                            "cursor": page.start + take as u64,
+                            "cursor": cursor,
                             // Absolute offset of the first returned byte: a
                             // client that asked from further back than the
                             // retained tail is told so instead of shown a hole.
@@ -268,6 +284,8 @@ mod tests {
     #[derive(Default)]
     struct RecordingTerminals {
         calls: Mutex<Vec<String>>,
+        /// A page the next read returns instead of the fixture's hello/5/0.
+        page: Mutex<Option<TerminalPage>>,
     }
 
     impl RecordingTerminals {
@@ -335,6 +353,9 @@ mod tests {
 
         fn read(&self, id: &str, cursor: i64) -> Result<TerminalPage, TerminalError> {
             self.note(format!("read:{id}:{cursor}"));
+            if let Some(page) = self.page.lock().unwrap().take() {
+                return Ok(page);
+            }
             Ok(TerminalPage {
                 bytes: b"hello".to_vec(),
                 cursor: 5,
@@ -447,6 +468,87 @@ mod tests {
             .calls()
             .iter()
             .any(|call| call == "read:term_1:7"));
+    }
+
+    /// The resume cursor is the *session's* end, not "wherever the replay
+    /// started".
+    ///
+    /// `Session::attach(Some(cursor))` reports the requested offset as `start`
+    /// even when it is past the tail (an empty replay), and the session's own
+    /// end as `cursor`. A client whose stored cursor is ahead of the host — a
+    /// tab restored from `localStorage` whose id was reused by a new process is
+    /// the ordinary way — must be brought back to the end, or it asks from a
+    /// number the host will never reach and shows nothing while the shell
+    /// keeps running.
+    #[tokio::test]
+    async fn a_cursor_past_the_tail_is_pulled_back_to_the_end() {
+        let _home = fixture("terminal-read-ahead");
+        let registry = registry();
+        *registry.page.lock().unwrap() = Some(TerminalPage {
+            bytes: Vec::new(),
+            cursor: 0,
+            start: 900,
+            status: "running".into(),
+            exit_code: None,
+        });
+        let sink = RecordingSink::default();
+        let mut cmd = command("terminal_read");
+        cmd.terminal_id = "term_1".into();
+        cmd.terminal_cursor = 900;
+        execute(&cmd, &sink).await;
+        let data = sink.ok_data();
+        assert_eq!(
+            data["cursor"],
+            json!(0),
+            "the client must resume from the session's end, not from its own stale number"
+        );
+        assert_eq!(data["data"], json!(""));
+    }
+
+    /// A page cut at the reply limit resumes right after the bytes that were
+    /// sent, never at the page's own end (which would skip the rest).
+    #[tokio::test]
+    async fn a_page_cut_at_the_limit_resumes_after_the_bytes_it_carried() {
+        let _home = fixture("terminal-read-truncated");
+        let registry = registry();
+        let long = vec![b'x'; READ_PAGE_BYTES + 10];
+        *registry.page.lock().unwrap() = Some(TerminalPage {
+            bytes: long.clone(),
+            cursor: long.len() as u64,
+            start: 0,
+            status: "running".into(),
+            exit_code: None,
+        });
+        let sink = RecordingSink::default();
+        let mut cmd = command("terminal_read");
+        cmd.terminal_id = "term_1".into();
+        cmd.terminal_cursor = 0;
+        execute(&cmd, &sink).await;
+        let data = sink.ok_data();
+        assert_eq!(
+            data["cursor"],
+            json!(READ_PAGE_BYTES),
+            "the next ask must resume after the bytes this reply carried"
+        );
+    }
+
+    /// The bytes dialect is pinned, because the other end is JavaScript.
+    ///
+    /// `atob`/`btoa` speak standard padded base64; this side speaks URL-safe
+    /// unpadded. Both ends were written and tested against themselves, so the
+    /// seam was never crossed by a test and the mismatch was invisible: the
+    /// host's `-_` characters throw in `atob`, and a padded `bA==` from the
+    /// client is refused here. The literal below is what both ends must agree
+    /// on for the bytes `[0xFB, 0xFF]`.
+    #[test]
+    fn the_bytes_dialect_is_url_safe_and_unpadded() {
+        assert_eq!(URL_SAFE_NO_PAD.encode([0xFB, 0xFF]), "-_8");
+        assert_eq!(decode("-_8").unwrap(), vec![0xFB, 0xFF]);
+        // The client's standard alphabet must not be accepted silently: `=` is
+        // padding this dialect does not allow, and `+/` are not its symbols.
+        assert!(decode("bA==").is_err(), "padded standard base64");
+        assert!(decode("+/8=").is_err(), "standard alphabet");
+        assert!(decode("+/8").is_err(), "standard alphabet, unpadded");
     }
 
     #[tokio::test]
