@@ -46,9 +46,9 @@ const COMPRESS_BATCH_OBJECTS: i64 = 16;
 const BLOCK_BODY_BATCH: i64 = 32;
 /// A block smaller than this keeps its text inline: the body row costs more than
 /// the text saves.
-const BLOCK_BODY_MIN_BYTES: i64 = 2048;
+const BLOCK_BODY_MIN_BYTES: i64 = 512;
 /// An entry envelope smaller than this keeps its document inline.
-const ENTRY_BODY_MIN_BYTES: i64 = 1024;
+const ENTRY_BODY_MIN_BYTES: i64 = 512;
 /// Entry envelopes compressed per sweep call.
 const ENTRY_BODY_BATCH: i64 = 64;
 /// Settled streams retired per sweep call (each drains in its own slices).
