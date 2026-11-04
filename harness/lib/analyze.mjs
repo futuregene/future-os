@@ -556,14 +556,26 @@ export async function analyzeRun(runDir, { mode = "heuristic", model = null, onl
     // deterministic evidence outranks a reading of a single frame, and the
     // report says so rather than asking a human to arbitrate every one.
     const failedChecks = (result.checks ?? []).filter(check => !check.ok);
+    // A model reviewing its own evidence produces useful harness notes ("the
+    // screenshot did not cover the moment") that are not product findings. Keep
+    // those out of the defect list and out of issue drafts; they are recorded
+    // beside the case as harness observations.
+    const evidenceNoise = /^(截图|录像|读图|视觉证据|证据).*(未|没有|不足|不一致|无法|覆盖|时机)|未被用例真正验证|断言没有覆盖/;
+    const findings = [];
+    const harnessNotes = [];
     for (const finding of found) {
+      if (finding.source === "model" && ["low", "info"].includes(finding.severity) && evidenceNoise.test(finding.title)) {
+        harnessNotes.push(finding);
+        continue;
+      }
       if (finding.source === "model" && result.status === "pass" && !failedChecks.length && finding.category === "behaviour") {
         finding.severity = "low";
         finding.confidence = "low";
         finding.demoted = "用例断言全部通过；该结论仅来自读图，已降级为观察项，需人工复核";
       }
+      findings.push(finding);
     }
-    const findings = found.sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
+    findings.sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
 
     cases.push({
       id: result.id,
@@ -575,6 +587,7 @@ export async function analyzeRun(runDir, { mode = "heuristic", model = null, onl
       summary: synthesized?.summary ?? "",
       analysisError: synthesized?.error ?? null,
       vision: notes,
+      harnessNotes,
       findings,
       artifacts: result.artifacts,
     });
@@ -607,6 +620,7 @@ export async function analyzeRun(runDir, { mode = "heuristic", model = null, onl
         summary: item.summary,
         analysisError: item.analysisError,
         vision: (Array.isArray(item.vision) ? item.vision : []).map(note => ({ step: note.step, note: note.note, file: note.file, via: note.via ?? null, error: note.error ?? null })),
+        harnessNotes: item.harnessNotes ?? [],
         findings: item.findings,
         artifacts: item.artifacts,
       };
