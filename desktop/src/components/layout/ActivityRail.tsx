@@ -60,6 +60,9 @@ import { buildThreadTree, buildTree, threadParentIds, visibleThreadRows, visible
 
 export type ActivitySection = "chat" | "workspace" | "skill" | "tasks" | "remote" | "settings";
 
+/** Development builds only: a packaged app strips the controls gated on this. */
+const DEV = import.meta.env.DEV;
+
 interface ActivityRailProps {
   active: ActivitySection;
   expanded: boolean;
@@ -137,9 +140,9 @@ interface ActivityRailProps {
   /**
    * Show the archive guide again, from the archived view.
    *
-   * The guide is one-time by design, but "one-time" must not mean "lost": a
-   * reader who dismissed it before archiving anything has no way to learn the
-   * destination, so the view it explains offers to show it again.
+   * A development affordance only: the released build renders this link only
+   * when Vite's DEV flag is set, so a packaged app carries no control whose
+   * whole purpose is to replay onboarding.
    */
   onShowArchiveGuide?: () => void;
   /** Ask for a scope's first page (lazy workspace groups). */
@@ -1831,7 +1834,9 @@ export function ActivityRail({
                                         </button>
                                       )
                                     : null}
-                                  {onShowArchiveGuide
+                                  {/* Development only: a released build has no
+                                      "show the guide again" control. */}
+                                  {DEV && onShowArchiveGuide
                                     ? (
                                         <button
                                           className="mt-2 w-full rounded-md px-2 py-1 text-left text-xs text-ink-muted underline decoration-line-soft underline-offset-2 transition-colors hover:text-ink-soft"
