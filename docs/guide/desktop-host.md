@@ -141,9 +141,13 @@ Remote connection logic handles recovery.
 ### What the server maintains on its own
 
 The host serves the same backend as the window, so the phone sees the same
-sessions, settings, skills, models and tasks. Two steps the window's interface
-drives are performed by this entry point itself, because a server has no window
-to render them:
+sessions, settings, skills, models and tasks. The embedded terminal is served
+here too: a paired desktop opens a shell on this machine, in the conversation's
+own working directory, exactly as it does on a windowed Desktop
+(`docs/internals/desktop/embedded-terminal.md` §Remote).
+
+Two steps the window's interface drives are performed by this entry point
+itself, because a server has no window to render them:
 
 - **Model catalogue refresh.** The Future catalogue is fetched at startup and
 then every 24 hours, on the same schedule policy as the window's job. The Agent

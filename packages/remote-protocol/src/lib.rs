@@ -29,10 +29,13 @@ pub const REPLY_GZIP_FEATURE: &str = "reply_gzip_v1";
 /// Whether a host serves the embedded terminal over the control plane.
 ///
 /// Advertised by the *host*, not declared by a client: a paired desktop shows
-/// the terminal entry point only on a host that says it can open a shell. A
-/// host without a PTY registry (a headless `future host`, or a desktop build
-/// that never installed one) leaves it out, so the client hides the panel
-/// instead of collecting `Unsupported command` on every keystroke.
+/// the terminal entry point only on a host that says it can open a shell. Both
+/// entry points install the registry (`future_host::terminal::install_service`)
+/// — the window and `future host` on a box with no GUI — so what a client sees
+/// is a property of the build and of the process, not of the way the machine
+/// was started. A host that never installed one leaves the capability out, and
+/// the client hides the panel instead of collecting `Unsupported command` on
+/// every keystroke.
 ///
 /// Terminal commands travel the ordinary command lane (list/create/update/
 /// delete/read/write), which is why a client that never sends them needs no

@@ -280,11 +280,12 @@ impl Session {
     /// never delivers the master EOF the reader thread waits for. Returns
     /// whether the child was reaped before `timeout`.
     ///
-    /// Test-only: it answers the DSR query with `terminal::test_support`'s
-    /// fixture constants, and its two callers are test modules
-    /// (`terminal::manager`, `terminal::server`).
-    #[cfg(test)]
-    pub(crate) fn wait_for_child_exit(&self, timeout: Duration) -> bool {
+    /// Test-support only: it answers the DSR query with
+    /// `terminal::test_support`'s fixture constants, and its callers are test
+    /// modules (`terminal::manager`, and the Desktop's loopback transport
+    /// tests).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn wait_for_child_exit(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         let mut answered = false;
         while Instant::now() < deadline {
@@ -442,6 +443,11 @@ impl Session {
     /// transport tests drive it directly: a viewer mid-stream must be served the
     /// bytes the reader would have handed it, and the pump's delivery arms are
     /// only reachable by producing output on demand.
+    ///
+    /// A transport outside this crate reaches it through
+    /// [`Session::push_output_for_test`] instead, which exists only in test
+    /// builds: production output comes from the reader thread, never from a
+    /// caller.
     pub(crate) fn on_data(&self, bytes: &[u8]) {
         let mut inner = self.inner.lock().unwrap();
         inner.cursor += bytes.len() as u64;
@@ -535,6 +541,22 @@ impl Session {
 
     /// Terminate the shell, wait (bounded) for the tree to die, and end every
     /// attachment. Removing the session from the registry is the caller's job.
+    /// Drive output on demand, for a transport test in another crate.
+    ///
+    /// The same call the reader thread makes, so a viewer mid-stream is served
+    /// the bytes it would have been handed. Test-only: production output comes
+    /// from the PTY, and nothing else may inject bytes into a user's shell.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn push_output_for_test(&self, bytes: &[u8]) {
+        self.on_data(bytes);
+    }
+
+    /// Report the child's end of stream on demand, for the same reason.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn eof_for_test(&self) {
+        self.on_eof();
+    }
+
     pub fn close(&self, grace: Duration) {
         {
             let mut pty = self.pty.lock().unwrap();

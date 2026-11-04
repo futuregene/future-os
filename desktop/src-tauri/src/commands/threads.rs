@@ -1,9 +1,7 @@
 //! Tauri IPC adapter for shared application operations.
 use crate::store;
 pub(crate) fn close_thread_terminals(thread_id: &str) {
-    if let Some(manager) = crate::terminal::server::manager() {
-        manager.close_thread(thread_id);
-    }
+    crate::terminal::server::manager().close_thread(thread_id);
 }
 #[tauri::command]
 pub async fn fork_thread(

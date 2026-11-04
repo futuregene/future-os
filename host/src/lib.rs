@@ -82,6 +82,9 @@ mod remote_host;
 pub mod remote_peer;
 mod remote_platform;
 /// The embedded terminal a host entry point may expose to the control plane.
+/// The embedded terminal: this process's PTY registry, shared by every entry point.
+pub mod terminal;
+/// The surface the control plane sees; implemented by `terminal::service`.
 pub mod terminal_service;
 
 pub mod shutdown;

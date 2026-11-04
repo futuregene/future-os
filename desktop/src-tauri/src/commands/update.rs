@@ -1841,8 +1841,7 @@ async fn install_app_update_inner<R: tauri::Runtime>(
         text("installDefer"),
     );
     let (confirmed, stop_work_authorized) = tokio::task::spawn_blocking(move || {
-        let running_terminals =
-            crate::terminal::server::manager().map_or(0, |manager| manager.running_count());
+        let running_terminals = crate::terminal::server::manager().running_count();
         if crate::agent_host::host().owns_agent()
             && !update_needs_confirmation(
                 crate::agent_supervisor::active_work_count(),
@@ -1904,11 +1903,11 @@ async fn install_app_update_inner<R: tauri::Runtime>(
             || {
                 operation.stage("cleanup", None)?;
                 if !stop_work_authorized {
-                    let terminals = crate::terminal::server::manager().map(|manager| manager.reserve_idle());
-                    if matches!(terminals, Some(None)) || !crate::agent_host::host().reserve_idle_update()? {
+                    let terminals = crate::terminal::server::manager().reserve_idle();
+                    if terminals.is_none() || !crate::agent_host::host().reserve_idle_update()? {
                         return Err("New work arrived while preparing the update; current work was not stopped. Retry when idle.".into());
                     }
-                    if let Some(Some(reservation)) = terminals { reservation.commit(); }
+                    if let Some(reservation) = terminals { reservation.commit(); }
                 }
                 shutdown_began.set(true);
                 crate::desktop_shutdown::stop("update")?;
