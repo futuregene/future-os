@@ -129,7 +129,8 @@ WHITELIST = {
     # Directory layout guides; they sit beside the scripts they describe.
     "scripts/README.md",
     "scripts/README.zh-CN.md",
-    # Benchmark instructions accompany their executable runner and frozen suites.
+    # Benchmark companion instructions stay with the reproducible runner and
+    # datasets at the user's requested location. Keep this exception explicit.
     "benchmark/README.md",
     "benchmark/fusion/README.md",
     "benchmark/fusion/PROTOCOL.md",

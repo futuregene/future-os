@@ -1051,6 +1051,14 @@ pub trait LLMProvider: Send + Sync {
     fn snapshot(&self) -> Option<std::sync::Arc<dyn LLMProvider>> {
         None
     }
+
+    /// A run-local transport clone for a Host-owned inactivity watchdog. Never
+    /// changes the ordinary session's HTTP deadline or generation settings.
+    fn snapshot_without_request_deadline(
+        &self,
+    ) -> anyhow::Result<Option<std::sync::Arc<dyn LLMProvider>>> {
+        Ok(None)
+    }
 }
 
 // ─── Message ↔ AgentMessage conversion ────────────────────────────────────

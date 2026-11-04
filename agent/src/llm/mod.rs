@@ -625,6 +625,18 @@ impl crate::types::LLMProvider for Client {
         }))
     }
 
+    fn snapshot_without_request_deadline(
+        &self,
+    ) -> Result<Option<std::sync::Arc<dyn crate::types::LLMProvider>>> {
+        Ok(Some(std::sync::Arc::new(Self {
+            http: crate::http::client_builder().build()?,
+            target: RwLock::new(self.target.read().clone()),
+            generation: RwLock::new(self.generation.read().clone()),
+            live_model: self.live_model.clone(),
+            adapters: self.adapters.clone(),
+        })))
+    }
+
     fn update_thinking(&self, level: &str, budget: i32) {
         let mut generation = self.generation.write();
         generation.thinking_level = level.to_string();

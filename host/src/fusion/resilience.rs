@@ -7,12 +7,45 @@ use future_fusion::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::Semaphore;
 
 static HEALTH: LazyLock<Mutex<BTreeMap<String, Instant>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
 static COOLDOWN: LazyLock<Mutex<BTreeMap<String, (Instant, FailureKind)>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
+
+pub(super) struct IdleProgress {
+    last_content: Mutex<tokio::time::Instant>,
+    duration: Duration,
+}
+impl IdleProgress {
+    pub fn new(milliseconds: u64) -> Arc<Self> {
+        Arc::new(Self {
+            last_content: Mutex::new(tokio::time::Instant::now()),
+            duration: Duration::from_millis(milliseconds),
+        })
+    }
+    pub fn content_received(&self) {
+        *self.last_content.lock().unwrap_or_else(|e| e.into_inner()) = tokio::time::Instant::now();
+    }
+    pub async fn guard<T>(
+        &self,
+        future: impl std::future::Future<Output = Result<T>>,
+    ) -> Result<T> {
+        tokio::pin!(future);
+        loop {
+            let deadline =
+                *self.last_content.lock().unwrap_or_else(|e| e.into_inner()) + self.duration;
+            tokio::select! {
+                result = &mut future => return result,
+                _ = tokio::time::sleep_until(deadline) => {
+                    if self.last_content.lock().unwrap_or_else(|e| e.into_inner()).elapsed() >= self.duration {
+                        return Err(failure(FailureKind::IdleTimeout, format!("[IDLE_TIMEOUT] Fusion received no new reasoning or text for {} seconds", self.duration.as_secs())));
+                    }
+                }
+            }
+        }
+    }
+}
 
 pub(super) struct Runtime<'a> {
     pub store: &'a Store,
@@ -24,7 +57,6 @@ pub(super) struct Runtime<'a> {
     pub health_key: String,
     report: Mutex<ExecutionReport>,
     transport_failures: Mutex<BTreeMap<String, BTreeSet<String>>>,
-    permits: BTreeMap<String, Arc<Semaphore>>,
 }
 impl<'a> Runtime<'a> {
     pub fn new(
@@ -38,17 +70,6 @@ impl<'a> Runtime<'a> {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Missing Fusion configuration"))?;
         let health_key = format!("{scope}:{}", serde_json::to_string(&config.moderator)?);
-        let permits = config
-            .panel
-            .iter()
-            .chain([&config.moderator])
-            .map(|model| {
-                (
-                    provider(&model.model).to_owned(),
-                    Arc::new(Semaphore::new(2)),
-                )
-            })
-            .collect();
         Ok(Self {
             store,
             owner,
@@ -59,7 +80,6 @@ impl<'a> Runtime<'a> {
             health_key,
             report: Mutex::new(run.report.clone().unwrap_or_default()),
             transport_failures: Mutex::new(BTreeMap::new()),
-            permits,
         })
     }
     pub fn update(&self, f: impl FnOnce(&mut ExecutionReport)) -> Result<()> {
@@ -83,7 +103,7 @@ impl<'a> Runtime<'a> {
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
-    pub fn timeout(&self, phase: &str) -> Result<u64> {
+    pub fn timeout(&self, phase: &str) -> Result<Option<u64>> {
         ensure!(!self.store.get(&self.run.id)?.terminal(), "Fusion stopped");
         future_fusion::phase_timeout_ms(
             self.config,
@@ -92,9 +112,6 @@ impl<'a> Runtime<'a> {
                 .saturating_sub(self.run.created_at)
                 .max(0) as u64,
         )
-    }
-    pub fn permit(&self, model: &str) -> Arc<Semaphore> {
-        self.permits[provider(model)].clone()
     }
     fn provider_key(&self, model: &str) -> String {
         format!("{}:{}", self.scope, provider(model))
@@ -229,6 +246,40 @@ pub(super) fn safe_error(error: &anyhow::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test(start_paused = true)]
+    async fn reasoning_can_continue_far_past_the_inactivity_interval() {
+        let progress = IdleProgress::new(300_000);
+        let producer = progress.clone();
+        let started = tokio::time::Instant::now();
+        progress
+            .guard(async move {
+                for _ in 0..10 {
+                    tokio::time::sleep(Duration::from_secs(250)).await;
+                    producer.content_received();
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(started.elapsed(), Duration::from_secs(2500));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn status_notifications_do_not_keep_a_silent_request_alive() {
+        let progress = IdleProgress::new(300_000);
+        let notices = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sender = notices.clone();
+        let result: Result<()> = progress
+            .guard(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    sender.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            })
+            .await;
+        assert_eq!(failure_kind(&result.unwrap_err()), FailureKind::IdleTimeout);
+        assert!(notices.load(std::sync::atomic::Ordering::Relaxed) >= 4);
+    }
     #[test]
     fn health_and_circuit_are_scoped_and_repeated_one_model_is_not_an_outage() {
         let dir = tempfile::tempdir().unwrap();

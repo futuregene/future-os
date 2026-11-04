@@ -13,6 +13,7 @@ pub enum FailureKind {
     RateLimited,
     Transient,
     Timeout,
+    IdleTimeout,
     OutputLimit,
     InvalidOutput,
     ModelUnavailable,
@@ -25,7 +26,9 @@ impl FailureKind {
     /// Normalize the legacy Agent error boundary once; scheduling uses this enum.
     pub fn classify(message: &str) -> Self {
         let lower = message.to_lowercase();
-        if message.contains("[PROVIDER_QUOTA]")
+        if message.contains("[IDLE_TIMEOUT]") {
+            Self::IdleTimeout
+        } else if message.contains("[PROVIDER_QUOTA]")
             || lower.contains("insufficient_quota")
             || lower.contains("quota_exceeded")
             || lower.contains("billing_hard_limit_reached")
@@ -193,6 +196,9 @@ pub fn bounded_text(text: &str, max_bytes: usize) -> String {
 
 /// Reserve one summary plus its possible format/output retry, bounded for short runs.
 pub fn summary_reserve_ms(config: &crate::Configuration) -> u64 {
+    if config.inactivity_timeout_secs().is_some() {
+        return 0;
+    }
     config
         .step_timeout_secs
         .saturating_mul(2000)
@@ -203,7 +209,10 @@ pub fn phase_timeout_ms(
     config: &crate::Configuration,
     phase: &str,
     elapsed_ms: u64,
-) -> anyhow::Result<u64> {
+) -> anyhow::Result<Option<u64>> {
+    if config.inactivity_timeout_secs().is_some() {
+        return Ok(None);
+    }
     let remaining = config
         .run_timeout_secs
         .saturating_mul(1000)
@@ -224,7 +233,7 @@ pub fn phase_timeout_ms(
     } else {
         config.step_timeout_secs
     };
-    Ok(available.min(cap.saturating_mul(1000)))
+    Ok(Some(available.min(cap.saturating_mul(1000))))
 }
 
 impl crate::Consultation {
@@ -288,25 +297,43 @@ mod tests {
         );
     }
     #[test]
-    fn discussion_steps_get_ten_minutes_without_resetting_total_deadline() {
+    fn active_discussions_have_no_wall_deadline_or_synthesis_time_reserve() {
         let c = crate::Configuration::default();
-        for phase in ["analyzing", "issue_mapping", "reviewing", "synthesizing"] {
-            assert_eq!(phase_timeout_ms(&c, phase, 0).unwrap(), 600_000);
+        for phase in [
+            "preflight",
+            "analyzing",
+            "issue_mapping",
+            "reviewing",
+            "synthesizing",
+        ] {
+            assert_eq!(phase_timeout_ms(&c, phase, 0).unwrap(), None);
+            assert_eq!(phase_timeout_ms(&c, phase, 86_400_000).unwrap(), None);
         }
-        assert_eq!(phase_timeout_ms(&c, "preflight", 0).unwrap(), 120_000);
+        assert_eq!(summary_reserve_ms(&c), 0);
         assert_eq!(
-            phase_timeout_ms(&c, "synthesizing", c.run_timeout_secs * 1000 - 500).unwrap(),
-            500
+            FailureKind::classify("[IDLE_TIMEOUT] no content"),
+            FailureKind::IdleTimeout
         );
     }
 
     #[test]
-    fn summary_budget_is_not_available_to_earlier_phases() {
-        let c = crate::Configuration::default();
+    fn historical_deadline_policy_is_still_interpretable() {
+        let c = crate::Configuration {
+            version: 2,
+            step_timeout_secs: 600,
+            run_timeout_secs: 2700,
+            idle_timeout_secs: None,
+            ..Default::default()
+        };
         let elapsed = c.run_timeout_secs * 1000 - summary_reserve_ms(&c);
         assert!(phase_timeout_ms(&c, "reviewing", elapsed).is_err());
-        assert!(phase_timeout_ms(&c, "synthesizing", elapsed).unwrap() > 0);
-        assert!(phase_timeout_ms(&c, "synthesizing", c.run_timeout_secs * 1000).is_err());
+        assert!(
+            phase_timeout_ms(&c, "synthesizing", elapsed)
+                .unwrap()
+                .unwrap()
+                > 0
+        );
+        assert_eq!(phase_timeout_ms(&c, "analyzing", 0).unwrap(), Some(600_000));
     }
     #[test]
     fn public_previews_are_utf8_bounded_and_reasons_are_deduplicated() {

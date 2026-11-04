@@ -1824,6 +1824,10 @@ impl ServerSession {
     /// (except `activeRunGauge`, which is a point-in-time gauge) and are exposed
     /// through `get_runtime_metrics` for diagnostics and acceptance tests.
     pub fn get_runtime_metrics(&self) -> serde_json::Value {
+        // This extensible JSON field survives the shared typed RPC codec.
+        // Unknown top-level fields of RuntimeMetrics are intentionally dropped.
+        let mut journal = self.broadcaster.journal_metrics();
+        journal["modelOutputProgress"] = self.broadcaster.model_output_progress();
         serde_json::json!({
             "sessionId": self.session_id(),
             "activeRunGauge": self.runtime.active_task_count(),
@@ -1836,7 +1840,7 @@ impl ServerSession {
             "queuedBytes": self.scheduler.queued_bytes(),
             "eventJournalHealthy": self.broadcaster.persistence_error().is_none(),
             "eventJournalError": self.broadcaster.persistence_error(),
-            "eventJournal": self.broadcaster.journal_metrics(),
+            "eventJournal": journal,
         })
     }
 

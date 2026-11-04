@@ -3,7 +3,9 @@ use crate::{MODERATOR_MODEL, PANEL_MODELS};
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 
-pub const GENERATION_POLICY_VERSION: u32 = 2;
+pub const GENERATION_POLICY_VERSION: u32 = 3;
+pub const IDLE_TIMEOUT_SECS: u64 = 300;
+// Retained for decoding and inspecting historical deadline-based policies.
 pub const STEP_TIMEOUT_SECS: u64 = 600;
 pub const RUN_TIMEOUT_SECS: u64 = 2700;
 
@@ -36,6 +38,8 @@ pub struct Configuration {
     pub moderator: ModelConfig,
     pub step_timeout_secs: u64,
     pub run_timeout_secs: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_secs: Option<u64>,
 }
 
 impl Default for Configuration {
@@ -48,20 +52,29 @@ impl Default for Configuration {
                 ModelConfig::fixed(PANEL_MODELS[2], "medium"),
             ],
             moderator: ModelConfig::fixed(MODERATOR_MODEL, "medium"),
-            step_timeout_secs: STEP_TIMEOUT_SECS,
-            run_timeout_secs: RUN_TIMEOUT_SECS,
+            step_timeout_secs: 0,
+            run_timeout_secs: 0,
+            idle_timeout_secs: Some(IDLE_TIMEOUT_SECS),
         }
     }
 }
 
 impl Configuration {
-    /// Upgrade the retired default in saved settings, never historical run
-    /// snapshots or role thinking levels. Explicitly shorter total budgets and
-    /// other custom timeouts keep their existing behavior.
-    pub(crate) fn upgrade_legacy_timeout(&mut self) {
-        if self.step_timeout_secs == 300 && self.run_timeout_secs >= STEP_TIMEOUT_SECS {
-            self.step_timeout_secs = STEP_TIMEOUT_SECS;
+    /// Upgrade saved settings only; historical run snapshots remain unchanged.
+    /// Model identities and thinking levels are never substituted.
+    pub(crate) fn upgrade_generation_policy(&mut self) {
+        if self.version < GENERATION_POLICY_VERSION {
+            self.version = GENERATION_POLICY_VERSION;
+            self.step_timeout_secs = 0;
+            self.run_timeout_secs = 0;
+            self.idle_timeout_secs = Some(IDLE_TIMEOUT_SECS);
+        } else if self.version == GENERATION_POLICY_VERSION && self.idle_timeout_secs.is_none() {
+            self.idle_timeout_secs = Some(IDLE_TIMEOUT_SECS);
         }
+    }
+
+    pub fn inactivity_timeout_secs(&self) -> Option<u64> {
+        (self.version >= 3).then_some(self.idle_timeout_secs.unwrap_or(IDLE_TIMEOUT_SECS))
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -70,11 +83,10 @@ impl Configuration {
             "Unsupported Fusion generation policy"
         );
         ensure!(
-            self.step_timeout_secs > 0
-                && self.step_timeout_secs <= 3600
-                && self.run_timeout_secs >= self.step_timeout_secs
-                && self.run_timeout_secs <= 86_400,
-            "Invalid Fusion time budget"
+            self.step_timeout_secs == 0
+                && self.run_timeout_secs == 0
+                && (1..=3600).contains(&self.idle_timeout_secs.unwrap_or(IDLE_TIMEOUT_SECS)),
+            "Fusion uses a positive inactivity timeout and no step/run wall deadline"
         );
         ensure!(
             (2..=5).contains(&self.panel.len()),
@@ -107,6 +119,8 @@ pub struct StepSettings {
     #[serde(default)]
     pub report_revision: u32,
     pub timeout_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_reason: Option<String>,
 }
@@ -219,28 +233,34 @@ mod tests {
             assert_eq!(model.retry_max_output_tokens, 0);
         }
         assert_eq!(config.panel[1].thinking_level, "low");
-        // Four discussion phases fit at the new per-step ceiling. Retries
-        // still share the original run deadline and cannot extend it.
-        assert_eq!(config.step_timeout_secs, 600);
-        assert_eq!(config.run_timeout_secs, 2700);
-        assert!(config.run_timeout_secs > config.step_timeout_secs * 4);
+        assert_eq!(config.step_timeout_secs, 0);
+        assert_eq!(config.run_timeout_secs, 0);
+        assert_eq!(config.inactivity_timeout_secs(), Some(300));
     }
 
     #[test]
-    fn timeout_upgrade_preserves_custom_budgets_and_user_thinking() {
+    fn saved_policy_upgrade_preserves_models_and_thinking_without_rewriting_history() {
         let mut config = Configuration {
-            step_timeout_secs: 900,
+            version: 2,
+            step_timeout_secs: 300,
+            run_timeout_secs: 2700,
+            idle_timeout_secs: None,
             ..Default::default()
         };
         config.moderator.thinking_level = "high".into();
-        let before = config.clone();
-        config.upgrade_legacy_timeout();
-        assert_eq!(config, before);
-        config.step_timeout_secs = 300;
-        config.run_timeout_secs = 450;
-        let before = config.clone();
-        config.upgrade_legacy_timeout();
-        assert_eq!(config, before);
+        let historic = serde_json::to_value(&config).unwrap();
+        let panel = config.panel.clone();
+        let moderator = config.moderator.clone();
+        config.upgrade_generation_policy();
+        config.validate().unwrap();
+        assert_eq!(config.panel, panel);
+        assert_eq!(config.moderator, moderator);
+        assert_eq!(config.step_timeout_secs, 0);
+        assert_eq!(config.run_timeout_secs, 0);
+        assert_eq!(config.idle_timeout_secs, Some(300));
+        let old: Configuration = serde_json::from_value(historic.clone()).unwrap();
+        assert_eq!(old.inactivity_timeout_secs(), None);
+        assert_eq!(serde_json::to_value(old).unwrap(), historic);
     }
 
     #[test]
