@@ -365,11 +365,10 @@ v1 不新增独立 store，也不新增 agent 实例。
 | `desktop/src/features/bots/` | 机器人页、组视图、创建与"记住这个" |
 | `desktop/src/i18n/locales/{en,zh}/bots.json` | 文案 |
 | `desktop/src/components/layout/ActivityRail.tsx` | 导航与列表切换 |
-| `packages/remote-protocol/src/handshake.rs` | `bots_v1` 能力位（移动端接入时） |
 
 依赖方向：`future-bots` 不依赖 host/agent；host 是 `app.db` 既有写路径的拥有者；CLI 不自己拼 SQL。
 
-v1 不改 `packages/rpc/proto/future.proto`：会话、run、`permission_level`、`sandbox_tier` 都已有。只有以后新增权限 tier 或独立实例协议时才需要改。
+v1 不改 `packages/rpc/proto/future.proto`：会话、run、`permission_level`、`sandbox_tier` 都已有。v1 也不新增远程或移动端接入，`bots_v1` 不在本切片。
 
 ---
 
@@ -385,11 +384,11 @@ v1 不改 `packages/rpc/proto/future.proto`：会话、run、`permission_level`�
 4. 两台机器之间的成本归属；
 5. 对端掉线时，成员是"暂不可用"还是"回合失败"的明确语义。
 
-这些都没有现成实现，所以 v1 只做本机。非本机 bot 显示明确的不可用提示。
+这些都没有现成实现，所以 v1 只做本机，也不通过 relay 推进这项能力。非本机 bot 显示明确的不可用提示。
 
 ### 11.2 其他明确不做
 
-语音、浏览器与桌面操控、示范录屏、从 X 触发、接入 IM 桥、共享 bot 给团队、云端长跑。宿主不在跑时，本机 bot 也不会继续工作。
+语音、浏览器与桌面操控、示范录屏、从 X 触发、接入 IM 桥、共享 bot 给团队、经 relay 的跨用户调用与组、云端长跑。宿主不在跑时，本机 bot 也不会继续工作。
 
 ---
 
@@ -434,12 +433,11 @@ v1 不改 `packages/rpc/proto/future.proto`：会话、run、`permission_level`�
 | **P1** | Bot App 化：`bot.toml`、接口契约、本地调用与审计 |
 | **P2** | 记忆分类与进化提案：事实/偏好/技能、diff、试跑与回滚 |
 | **P3** | 模板与 fork 分享：装出来的 bot 不带原实例的记忆与凭据 |
-| **P4** | 同账号/团队内的授权调用：经 relay 的鉴权、配额、撤销与审计 |
-| **P5** | 跨用户组：relay 上的签名事件日志，成员变更分 epoch |
+
+**经 relay 的跨用户调用与跨用户组：不做，已完全撤回。** 这条线依赖一套尚未存在的多端加密与授权协议，评估后风险大于收益，不列入路线图。
 
 | 候选 | 什么时候再做 |
 |---|---|
-| 独立 agent 实例、独立 agent.db、第二套进程监督 | 要把 bot 提供给他人，或共享实例的隔离被真实事故证明不够时 |
 | 独立 `bots.db` | app.db 的写入热点或迁移成本被实测证明是问题时 |
 | 配置提库到 `~/.future/config/` | 确有第二个实例需要共享配置时；届时连同布局迁移、备份与硬拒路径一起做 |
 | `router` 判定器、`eager` 全员轻判定 | §13 证明用户频繁不想点名、且 `owner` 规则不够时；先测误判率与成本 |

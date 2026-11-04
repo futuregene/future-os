@@ -481,14 +481,13 @@ v1 has neither a separate store nor a separate agent instance.
 | `desktop/src/features/bots/` | bots surface, group view, creation and "remember this" |
 | `desktop/src/i18n/locales/{en,zh}/bots.json` | UI strings |
 | `desktop/src/components/layout/ActivityRail.tsx` | navigation and list switching |
-| `packages/remote-protocol/src/handshake.rs` | the `bots_v1` capability when mobile support lands |
 
 Dependency direction: `future-bots` depends on neither host nor agent; `host`
 owns the existing `app.db` write path; the CLI never assembles SQL itself.
 
 v1 does not change `packages/rpc/proto/future.proto`: sessions, runs,
-`permission_level` and `sandbox_tier` already exist. Only a later permission tier
-or a separate-instance protocol would require a change.
+`permission_level` and `sandbox_tier` already exist. v1 also adds no remote or
+mobile access; `bots_v1` is not part of this slice.
 
 ---
 
@@ -508,14 +507,16 @@ switch:
 5. defined semantics for whether a disconnected member is "temporarily
    unavailable" or a failed turn.
 
-None has an existing implementation, so v1 is local-only. A bot on another
-machine gets an explicit unavailable message.
+None has an existing implementation, so v1 is local-only and this capability is
+not pursued through the relay. A bot on another machine gets an explicit
+unavailable message.
 
 ### 11.2 Other explicit non-goals
 
 Voice, browser and desktop control, demonstration recording, triggering from X,
-IM-bridge integration, sharing bots with a team and cloud long-running work. If
-the host is not running, a local bot does not continue either.
+IM-bridge integration, sharing bots with a team, relay-based cross-user invocation
+and groups, and cloud long-running work. If the host is not running, a local bot
+does not continue either.
 
 ---
 
@@ -578,12 +579,14 @@ task, and no phase begins before the previous one's criteria are met.
 | **P1** | Bot as an app: `bot.toml`, interface contracts, local invocation and audit |
 | **P2** | Memory classes and evolution proposals: facts/preferences/skills, diff, trial run and rollback |
 | **P3** | Template and fork sharing: an installed bot carries neither the source instance's memory nor its credentials |
-| **P4** | Authorized invocation within an account or team: relay authentication, quota, revocation and audit |
-| **P5** | Cross-user groups: a signed event log on the relay, with membership changes per epoch |
+
+**Relay-based cross-user invocation and cross-user groups: not doing it, withdrawn
+entirely.** It depends on a multi-party encryption and authorization protocol that
+does not exist, and the assessed risk outweighs the benefit; it is not on the
+roadmap.
 
 | Candidate | When to build it |
 |---|---|
-| A separate agent instance, separate `agent.db` and a second supervision chain | when bots are offered to other people, or a real incident proves shared-instance isolation insufficient |
 | A separate `bots.db` | when measurement shows an `app.db` write hotspot or migration cost that justifies it |
 | Hoisting configuration into `~/.future/config/` | when a second instance really needs shared config; do layout migration, backup and hard-deny paths together |
 | A `router` judge or `eager` lightweight judging of every member | when §13 shows users frequently do not want to name speakers and `owner` is insufficient; measure accuracy and cost first |
