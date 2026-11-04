@@ -186,6 +186,20 @@ CREATE TABLE IF NOT EXISTS run_snapshot_cache (
     payload TEXT NOT NULL CHECK(json_valid(payload)),
     PRIMARY KEY(session_id,run_id)
 );
+-- Per-event pricing of a legacy run, kept after its replay storage goes away.
+--
+-- `run_snapshots.pricing_payloads` is the only place a legacy run's per-step
+-- usage lived, and the snapshot itself is replay storage the product no longer
+-- keeps. The retirement copies the elements here, one row per event, before it
+-- deletes the snapshot, so the usage projection answers what it answered before
+-- while the JSON wrapper, the fold and the raw journal all go.
+CREATE TABLE IF NOT EXISTS run_pricing (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    payload TEXT NOT NULL CHECK(json_valid(payload)),
+    PRIMARY KEY(session_id,run_id,sequence)
+);
 CREATE TABLE IF NOT EXISTS legacy_imports (
     session_id TEXT PRIMARY KEY NOT NULL,
     status TEXT NOT NULL CHECK(status IN ('imported', 'skipped', 'deleted')),
