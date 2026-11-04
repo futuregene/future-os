@@ -632,7 +632,7 @@ GUI 数据库（`~/.future/app/app.db`）包含以下业务对象表：
 - `review_file_changes`
 - `review_snapshots`
 - `artifacts`
-- `app_settings`（应用级设置键值表；缺键时取以下默认值，默认值定义在 `packages/app-settings/src/lib.rs:424-440` 的 `defaults()` 与 `:462-500` 的 `read()`）：`approval_tier`（默认 `off`，另可 `manual`/`sandbox`/`auto`；未知值收敛为 `off`）、`hidden_models`、`title_language`（`en`/`zh`，默认 `en`，由 Desktop UI 镜像给后台标题生成）、`auto_compact_first_turn`（保留的存储键名，用于「首个回答后生成标题」；默认 true，从不触发压缩）、`auto_upgrade_skills`（true）、`auto_connect_remote`（true——Remote 页自己的开关，存在这里使重启后仍对已配对设备提供服务；`host/src/remote/mod.rs` 的 `remember_switch`）、`bell_on_complete`（true）、`skill_recommend`（false，用户主动开启才生效）、`skill_guide_dismissed` / `skill_intro_dismissed`（false）、`community_edition`（false，仅呈现层）、`auto_resume_interrupted`（true，写穿到 Agent 的 `resume_interrupted_on_start`，见 `store/app_settings.rs` 的 `write_agent_resume_policy`）以及内部 `device_id`。全部走既有键值表与缺键默认，无需结构性迁移。已退役的 `show_thinking` 键允许留在旧数据库中，但不再读取、写入或通过设置 API 返回，无需破坏性迁移；旧 `remote_enabled` / `remote_nats_url` 键同样不再读取，运行状态驻内存、地址由平台环境派生。
+- `app_settings`（应用级设置键值表；缺键时取以下默认值，默认值定义在 `packages/app-settings/src/lib.rs:424-440` 的 `defaults()` 与 `:462-500` 的 `read()`）：`approval_tier`（默认 `off`，另可 `manual`/`sandbox`/`auto`；未知值收敛为 `off`）、`hidden_models`、`title_language`（`en`/`zh`，默认 `en`，由 Desktop UI 镜像给后台标题生成）、`auto_compact_first_turn`（保留的存储键名，用于「首个回答后生成标题」；默认 true，从不触发压缩）、`auto_upgrade_skills`（true）、`auto_connect_remote`（true——Remote 页自己的开关，存在这里使重启后仍对已配对设备提供服务；`host/src/remote/mod.rs` 的 `remember_switch`）、`bell_on_complete`（true）、`skill_recommend`（false，用户主动开启才生效）、`skill_guide_dismissed` / `skill_intro_dismissed`（false）、`community_edition`（三态：缺键/JSON null 为不确定，true 为明确社区版，false 为商业版；不确定时表现为社区版）、`auto_resume_interrupted`（true，写穿到 Agent 的 `resume_interrupted_on_start`，见 `store/app_settings.rs` 的 `write_agent_resume_policy`）以及内部 `device_id`。全部走既有键值表与缺键默认，无需结构性迁移。已退役的 `show_thinking` 键允许留在旧数据库中，但不再读取、写入或通过设置 API 返回，无需破坏性迁移；旧 `remote_enabled` / `remote_nats_url` 键同样不再读取，运行状态驻内存、地址由平台环境派生。
 - `agent_delete_outbox`（删除 Thread 时登记的 Agent 会话删除投递队列，后台重试直至 Agent 确认，见 `store/deletions.rs`）
 - `skill_reco_events`（每次真正展示给用户的技能推荐一行：`day`、`skill_id`、`message_hash`——回答「今天推荐了几次 / 该技能今天是否展示过 / 该消息是否已产生过推荐」；没有可推荐项的调用不写行，见 `store/skill_reco.rs` 与 `store/schema.rs:262-268` 的 DDL）
 - `approval_assessments`（不可变的模型审批结果，一个审批请求一行——见 §4.8「自动审批审计」）
@@ -725,7 +725,7 @@ Provider、模型与登录凭证不进 GUI 的 SQLite，而是读写 agent 的�
 - `~/.future/agent/auth.json`：按 provider id 存 API key（含内置 `future`）。
 - `~/.future/agent/models.json`：`providers.<id>` 自定义 provider 配置（`name` / `api` / `baseUrl` / `models` / `compat` …），合并在内置 catalog 之上。自定义 `models[].reasoning` 未填写时按 `true` 解析；GUI 保存时通过 Agent RPC 显式写入布尔值，目录补全不覆盖它。`ProviderModel.reasoning` 在 protobuf 中保留 presence，以便旧客户端未发送时仍默认开启；`ModelEntry.reasoning` 将有效能力传到会话选择器。此变化无需迁移 JSON 文件或 GUI SQLite。
 
-“社区版”仅是 GUI SQLite 的 `app_settings.community_edition` 展示偏好：它隐藏 footer/账号页的余额与充值入口，并把 Providers 页的 Future 操作收敛为普通内置供应商的手动密钥配置；不会迁移、清除或改写上述 agent 登录、密钥和模型配置。
+Desktop 版本保存在 GUI SQLite 的 `app_settings.community_edition`：缺键/JSON null 表示不确定，界面按社区版显示，但不写入默认值。仅在不确定时，Desktop 每次启动后台请求一次 `https://dl.future-os.cn/license`（5 秒超时）；网络失败、非成功 HTTP 状态、空白内容或去除首尾空白后为 `community` 均保留不确定状态，其他非空成功响应才写入 false（商业版）。明确的 true（手动社区版）和 false 均不请求；请求期间的手动选择优先于请求结果。现有布尔设置 API 将不确定映射为 true，无需修改 GUI。存储键与布尔格式不变，已有明确选择保留，无需结构性迁移。社区版的呈现行为：它隐藏 footer/账号页的余额与充值入口，并把 Providers 页的 Future 操作收敛为普通内置供应商的手动密钥配置；不会迁移、清除或改写上述 agent 登录、密钥和模型配置。
 - `~/.future/agent/settings.json`：`defaultModel`、`enabledModels`（模型可见白名单）等。
 
 关键取舍：
