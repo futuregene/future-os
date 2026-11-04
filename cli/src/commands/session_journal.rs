@@ -376,6 +376,13 @@ pub(super) async fn run(args: &[String], out: &Output) -> Result<(), String> {
             count(settled)
         ));
     }
+    let projections = number(&plan["historyProjections"], "pendingRows");
+    if projections > 0 {
+        out.log(&format!(
+            "  {} derived display rows to drop (rebuilt on next open)",
+            count(projections)
+        ));
+    }
     print_entries(&plan, true, out);
     if options.json {
         out.log(&serde_json::to_string_pretty(&plan).map_err(|e| e.to_string())?);
