@@ -5203,11 +5203,20 @@ mod driver_tests {
                 r#"{"sessionId":"s1","model":"future/old"}"#.into(),
             );
             driver.data("\x1b[1;2A");
+            // Both halves in one wait: a step onto a *cached* conversation files
+            // the one it leaves inside the step itself (see `take_cached`), so
+            // the cache hits before the read this step launched has even reached
+            // the agent. Waiting only for the cache samples one instant and then
+            // asserts about a task that may not have run yet — the flake that
+            // put this test on CI's list with `seen_sessions` empty for `s1`.
             assert!(
                 driver
                     .wait_for(Duration::from_secs(20), |driver| driver
                         .live
-                        .is_cached("s2"))
+                        .is_cached("s2")
+                        && driver.seen_sessions.lock().expect("seen").iter().any(
+                            |(command, session)| command == "get_state" && session == "s1"
+                        ))
                     .await,
                 "the step back never opened the conversation it landed on"
             );
@@ -5215,15 +5224,6 @@ mod driver_tests {
                 driver.session_id(),
                 "s1",
                 "the step back landed on the wrong conversation"
-            );
-            assert!(
-                driver
-                    .seen_sessions
-                    .lock()
-                    .expect("seen")
-                    .iter()
-                    .any(|(command, session)| command == "get_state" && session == "s1"),
-                "the step back asked the agent nothing about the conversation it opened"
             );
         }
 
