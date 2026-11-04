@@ -2,7 +2,7 @@
 //! the changed candidate set, write a tree, reuse-or-create a commit, pin a ref,
 //! and persist snapshot metadata.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::store::{self, CreateReviewSnapshotInput, ReviewSnapshotRecord};
@@ -261,7 +261,7 @@ fn check_ignore(
     index: &Path,
     paths: &[String],
     rules_only: bool,
-) -> Result<std::collections::HashMap<String, String>, Error> {
+) -> Result<HashMap<String, String>, Error> {
     let mut args: Vec<&str> = vec!["check-ignore", "-v", "-z", "--stdin"];
     if rules_only {
         args.insert(1, "--no-index");
@@ -1274,21 +1274,33 @@ mod tests {
         );
         assert_eq!(outcome.snapshot.status, "complete");
 
-        // What is missing, and because of which rule.
-        assert_eq!(outcome.snapshot.ignored_count, 1);
+        // What is missing, and because of which rule — read back from the row,
+        // because `ignored_count` alone cannot say which path was left out or
+        // which rule did it.
+        let stored = store::get_review_snapshot(&run, "before")
+            .unwrap()
+            .expect("the before snapshot row");
+        assert_eq!(stored.ignored_count, 1);
         let skipped: serde_json::Value = serde_json::from_str(
-            outcome
-                .snapshot
+            stored
                 .ignored_paths
                 .as_deref()
                 .expect("the snapshot names what it left out"),
         )
         .unwrap();
-        assert_eq!(skipped[0]["path"], "bugfind/h1/note.md", "{skipped}");
-        let rule = skipped[0]["rule"].as_str().unwrap_or_default();
+        let listed = skipped.as_array().expect("a list of excluded paths");
+        assert_eq!(listed.len(), 1, "{skipped}");
+        assert_eq!(listed[0]["path"], "bugfind/h1/note.md", "{skipped}");
+        let rule = listed[0]["rule"].as_str().unwrap_or_default();
         assert!(
             rule.starts_with("info/exclude:") && rule.ends_with(":/bugfind/"),
             "the metadata names the rule, not just the count: {skipped}"
+        );
+        // A path the ignore rules left alone is not reported as excluded, so
+        // the list cannot be "every candidate" wearing a different name.
+        assert!(
+            listed.iter().all(|entry| entry["path"] != "tracked.txt"),
+            "a snapshotted path must not be listed as excluded: {skipped}"
         );
     }
 

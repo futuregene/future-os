@@ -675,6 +675,7 @@ index / refs / objects / work tree. Design trade-offs in 6.8.
 | `commit_id` / `tree_id` | shadow-repo commit / tree (discardable cache, not the source of truth) |
 | `status` | `complete` / `partial` / `failed` |
 | `file_count` / `total_bytes` / `ignored_count` / `omitted_count` | snapshot statistics |
+| `ignored_paths` | JSON list of what `ignored_count` counts: each path the Workspace's ignore rules kept out, with the rule that did it (`info/exclude:12:/bugfind/`, `.gitignore:1:*.log`) |
 | `error_message` | failure reason |
 | `created_at` | creation time |
 
