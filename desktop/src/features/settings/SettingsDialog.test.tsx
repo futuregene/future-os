@@ -293,7 +293,7 @@ describe("settingsDialog dev-only environment tab", () => {
     const { container } = mount();
 
     expect(navLabels(container)).not.toContain("Environment");
-    expect(navLabels(container)).toEqual(["General", "Keyboard shortcuts", "Account", "Check for updates", "About", "Providers", "Models", "Fusion", "Reset"]);
+    expect(navLabels(container)).toEqual(["General", "Keyboard shortcuts", "Account", "Check for updates", "About", "Providers", "Models", "Reset"]);
   });
 
   it("shows the environment tab (and its community-edition section) on a dev build", () => {
@@ -327,7 +327,24 @@ describe("settingsDialog dev-only environment tab", () => {
     const { container } = mount();
 
     expect(navLabels(container)).not.toContain("Environment");
+    expect(navLabels(container)).not.toContain("Fusion");
     expect(container.textContent).not.toContain("Test build");
+  });
+});
+
+describe("settingsDialog Fusion entry", () => {
+  it("keeps Fusion reachable on a test build", () => {
+    const { container } = mount({ initialTab: "fusion" });
+    expect(navLabels(container)).toContain("Fusion");
+    expect(page(container)).toBe("fusion");
+  });
+
+  it.each([null, { version: "1.0.0", isRelease: true }])("does not open Fusion through initialTab without a test build (%s)", (buildInfo) => {
+    mocks.buildInfo = buildInfo;
+    const { container } = mount({ initialTab: "fusion" });
+    expect(navLabels(container)).not.toContain("Fusion");
+    expect(page(container)).toBe("general");
+    expect(container.querySelector("[data-page=fusion]")).toBeNull();
   });
 });
 

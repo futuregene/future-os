@@ -75,6 +75,20 @@ Run 'future <group> --help' for per-group details.
   future version --json      Build identity: version, commit, target
   future --version           Print version and exit"#;
 
+/// Hide experimental entry points in release help without removing commands.
+pub fn main_help() -> std::borrow::Cow<'static, str> {
+    if crate::version::is_release(crate::version::VERSION) {
+        MAIN_HELP
+            .lines()
+            .filter(|line| !line.starts_with("  fusion ") && !line.starts_with("  future fusion "))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .into()
+    } else {
+        MAIN_HELP.into()
+    }
+}
+
 /// `future init --help` output (index.ts).
 pub const INIT_HELP: &str = r#"future init — initialize Future OS
 
