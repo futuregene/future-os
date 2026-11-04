@@ -28,14 +28,17 @@ def main():
     download = commands.add_parser(
         "prepare", help="download pinned official data; no model calls"
     )
-    download.add_argument("--datasets", default="zebra,bbeh,omni,musr")
+    download.add_argument("--datasets", default="bbeh,omni")
     plan = commands.add_parser(
         "plan", help="freeze question IDs before observing model results"
     )
-    plan.add_argument("--datasets", default="zebra,bbeh,omni")
+    plan.add_argument("--datasets", default="bbeh,omni")
     plan.add_argument("--per-dataset", type=int, default=1)
+    plan.add_argument("--counts", help="per-dataset counts, e.g. bbeh=460,omni=540")
     plan.add_argument(
-        "--counts", help="per-dataset counts, e.g. zebra=100,bbeh=100,omni=200"
+        "--exclude",
+        default="",
+        help="comma-separated unusable case IDs excluded before sampling",
     )
     plan.add_argument("--seed", default="future-fusion-pilot-v1")
     plan.add_argument("--out", type=Path, default=ROOT / "suites/smoke.json")
@@ -43,11 +46,11 @@ def main():
         "check-suite",
         help="verify committed frozen questions without downloads or model calls",
     )
-    check.add_argument("--suite", type=Path, default=ROOT / "suites/dev-12.json")
+    check.add_argument("--suite", type=Path, default=ROOT / "suites/fusion-10.json")
     run = commands.add_parser(
         "run", help="execute selected arms or reuse a frozen baseline"
     )
-    run.add_argument("--suite", type=Path, default=ROOT / "suites/smoke.json")
+    run.add_argument("--suite", type=Path, default=ROOT / "suites/fusion-10.json")
     run.add_argument(
         "--binary", type=Path, default=ROOT.parent.parent / "target/debug/future"
     )
@@ -71,13 +74,25 @@ def main():
         type=Path,
         help="after a completed single baseline, freeze the 14-wrong/6-correct challenge",
     )
-    run.add_argument("--arms", choices=["both", "single", "fusion"], default="both")
+    run.add_argument("--arms", choices=["both", "single", "fusion"], default="fusion")
     run.add_argument(
         "--baseline",
         type=Path,
         help="completed single-arm run reused for Fusion comparison",
     )
     run.add_argument("--jobs", type=int, default=1, help="concurrent questions")
+    run.add_argument(
+        "--http-502-retries",
+        type=int,
+        default=3,
+        help="additional single-model attempts after a confirmed HTTP 502",
+    )
+    run.add_argument(
+        "--http-502-retry-delay",
+        type=float,
+        default=2,
+        help="initial backoff seconds, doubled up to 30 seconds",
+    )
     run.add_argument(
         "--resume",
         action="store_true",
@@ -89,6 +104,8 @@ def main():
     freeze.add_argument("--baseline", type=Path, required=True)
     freeze.add_argument("--seed", default="future-fusion-errors-v1")
     freeze.add_argument("--out", type=Path, required=True)
+    freeze.add_argument("--wrong", type=int, default=14)
+    freeze.add_argument("--correct", type=int, default=6)
     regrade = commands.add_parser(
         "regrade-baseline",
         help="create a new offline grading revision; preserve original answers and scores",
@@ -116,6 +133,9 @@ def main():
     if args.command == "prepare":
         prepare(args.datasets.split(","))
     elif args.command == "plan":
+        excluded = set(filter(None, args.exclude.split(",")))
+        if excluded and not args.counts:
+            parser.error("--exclude requires --counts")
         if args.per_dataset < 1:
             parser.error("--per-dataset must be positive")
         verify_data()
@@ -123,15 +143,23 @@ def main():
             counts = dict(item.split("=") for item in args.counts.split(","))
             if any(int(count) < 1 for count in counts.values()):
                 parser.error("--counts values must be positive")
-            if any(
-                int(count) > len(load_cases(name)) for name, count in counts.items()
-            ):
+            raw_pools = {name: load_cases(name) for name in counts}
+            known = {row["id"] for pool in raw_pools.values() for row in pool}
+            if excluded - known:
+                parser.error(
+                    "Unknown excluded case IDs: " + ", ".join(sorted(excluded - known))
+                )
+            pools = {
+                name: [row for row in pool if row["id"] not in excluded]
+                for name, pool in raw_pools.items()
+            }
+            if any(int(count) > len(pools[name]) for name, count in counts.items()):
                 parser.error("--counts exceeds eligible dataset size")
             rows = [
                 row
                 for name, count in counts.items()
                 for row in sorted(
-                    load_cases(name), key=lambda row: digest([args.seed, row["id"]])
+                    pools[name], key=lambda row: digest([args.seed, row["id"]])
                 )[: int(count)]
             ]
         else:
@@ -144,6 +172,7 @@ def main():
                 "schema": 1,
                 "purpose": "development pilot; not a headline capability claim",
                 "seed": args.seed,
+                "excluded_case_ids": sorted(excluded),
                 "sampling": "uniform hash ordering within each dataset"
                 if args.counts
                 else "round robin over dataset strata",
@@ -179,8 +208,12 @@ def main():
     elif args.command == "freeze":
         from baseline import freeze_challenge
 
-        freeze_challenge(args.baseline, args.out, args.seed)
+        freeze_challenge(args.baseline, args.out, args.seed, args.wrong, args.correct)
     elif args.command == "run":
+        if args.http_502_retries < 0 or not 0 <= args.http_502_retry_delay <= 30:
+            parser.error(
+                "HTTP 502 retries must be nonnegative; retry delay must be between 0 and 30 seconds"
+            )
         if args.freeze_out and (args.arms != "single" or args.repeats != 1):
             parser.error("--freeze-out requires --arms single and --repeats 1")
         if args.jobs < 1:
@@ -315,6 +348,8 @@ def main():
                     "arms": arms,
                     "baseline_reference": reference,
                     "jobs": args.jobs,
+                    "http_502_retries": args.http_502_retries,
+                    "http_502_retry_delay": args.http_502_retry_delay,
                     "timeout_seconds": args.timeout,
                     "protocol": "daily final answer primary; normal /fusion entry and automatic tool selection; report activation and kernel diagnostics separately; no external tools; no equal-budget claim",
                     "execution_profile": "daily",

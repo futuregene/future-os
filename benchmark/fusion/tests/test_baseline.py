@@ -16,6 +16,17 @@ from scoring import score  # noqa: E402
 
 
 class BaselineTests(unittest.TestCase):
+    def test_ten_case_challenge_accepts_eight_wrong_and_two_correct(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            baseline = self.fixture(root)
+            out = root / "challenge-10.json"
+            freeze_challenge(baseline, out, "fixed", wrong_count=8, correct_count=2)
+            suite = read_json(out)
+            _, cases = load_frozen_questions(out, suite)
+            self.assertEqual(len(cases), 10)
+            self.assertEqual(len(reference_for(baseline, suite, cases)["records"]), 10)
+
     def fixture(self, root):
         directory = root / "baseline"
         cases = [

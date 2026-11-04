@@ -37,3 +37,7 @@ jobs:
           benchmark/fusion/.venv/bin/python benchmark/fusion/bench.py check-suite --suite benchmark/fusion/suites/dev-12.json
       - name: Verify the frozen baseline sample
         run: benchmark/fusion/.venv/bin/python benchmark/fusion/bench.py check-suite --suite benchmark/fusion/suites/baseline-400.json
+      - name: Verify Fusion 10 and max 1000 frozen suites
+        run: |
+          benchmark/fusion/.venv/bin/python benchmark/fusion/bench.py check-suite --suite benchmark/fusion/suites/fusion-10.json
+          benchmark/fusion/.venv/bin/python benchmark/fusion/bench.py check-suite --suite benchmark/fusion/suites/max-1000.json

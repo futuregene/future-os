@@ -25,9 +25,9 @@ def load_baseline(directory, complete=True, verify_grades=True):
     suite = manifest["suite"]
     if suite["sources_lock_sha256"] != digest(read_json(ROOT / "sources.lock.json")):
         raise ValueError("Baseline source lock changed")
-    for name in (
-        ("scoring.py", "future_runner.py") if verify_grades else ("future_runner.py",)
-    ):
+    # Transport/retry code can evolve while the saved answers remain the baseline.
+    # Verify the actual recorded prompt below, rather than the entire runner file.
+    for name in ("scoring.py",) if verify_grades else ():
         if manifest["harness_sha256"].get(name) != digest((ROOT / name).read_bytes()):
             raise ValueError("Baseline prompt/scoring implementation changed: " + name)
     # Validate the saved question snapshot without depending on a mutable suite path.
@@ -124,7 +124,9 @@ def regrade_baseline(source, out):
     )
 
 
-def freeze_challenge(baseline, out, seed):
+def freeze_challenge(baseline, out, seed, wrong_count=14, correct_count=6):
+    if wrong_count < 0 or correct_count < 0 or wrong_count + correct_count == 0:
+        raise ValueError("Challenge counts must be nonnegative with a positive total")
     out = Path(out)
     if out.exists() or out.with_suffix(".cases.json").exists():
         raise ValueError("Frozen suite already exists; use a new path")
@@ -132,11 +134,11 @@ def freeze_challenge(baseline, out, seed):
     cohorts = {False: [], True: []}
     for identifier, (row, _) in rows.items():
         # Service failures and invalid answer formats are reported, but are not
-        # reasoning mistakes. Never fill the 14 wrong slots with those records.
+        # reasoning mistakes. Never fill wrong-answer slots with those records.
         if row["status"] == "completed" and row["grade"]["parsed"]:
             cohorts[row["grade"]["correct"]].append(identifier)
     selected = []
-    for correct, count in ((False, 14), (True, 6)):
+    for correct, count in ((False, wrong_count), (True, correct_count)):
         available = sorted(
             cohorts[correct], key=lambda identifier: digest([seed, identifier])
         )
@@ -154,8 +156,8 @@ def freeze_challenge(baseline, out, seed):
         "sources_lock_sha256": manifest["suite"]["sources_lock_sha256"],
         "selection": {
             "kind": "baseline_outcomes",
-            "wrong": 14,
-            "correct": 6,
+            "wrong": wrong_count,
+            "correct": correct_count,
             "baseline_manifest_sha256": digest(manifest),
             "baseline_suite_sha256": digest(manifest["suite"]),
             "baseline_result_sha256": {
@@ -178,7 +180,7 @@ def freeze_challenge(baseline, out, seed):
         },
     )
     load_frozen_questions(out, suite)
-    print(f"Frozen 14 wrong + 6 correct: {out}", flush=True)
+    print(f"Frozen {wrong_count} wrong + {correct_count} correct: {out}", flush=True)
 
 
 def reference_for(baseline, suite, cases):
@@ -188,16 +190,36 @@ def reference_for(baseline, suite, cases):
         "baseline_manifest_sha256"
     ] != digest(manifest):
         raise ValueError("Challenge was not frozen from this baseline")
-    if len(suite["cases"]) != 20 or len({row["id"] for row in suite["cases"]}) != 20:
-        raise ValueError("Challenge must contain 20 distinct questions")
-    if sum(rows[item["id"]][0]["grade"]["correct"] for item in suite["cases"]) != 6:
-        raise ValueError("Challenge must contain exactly 14 wrong and 6 correct")
+    wrong_count, correct_count = selection["wrong"], selection["correct"]
+    if (
+        not isinstance(wrong_count, int)
+        or not isinstance(correct_count, int)
+        or wrong_count < 0
+        or correct_count < 0
+        or wrong_count + correct_count == 0
+    ):
+        raise ValueError("Invalid challenge counts")
+    total = wrong_count + correct_count
+    if (
+        len(suite["cases"]) != total
+        or len({row["id"] for row in suite["cases"]}) != total
+    ):
+        raise ValueError(f"Challenge must contain {total} distinct questions")
+    if (
+        sum(rows[item["id"]][0]["grade"]["correct"] for item in suite["cases"])
+        != correct_count
+    ):
+        raise ValueError(
+            f"Challenge must contain exactly {wrong_count} wrong and {correct_count} correct"
+        )
     records = {}
     for planned in suite["cases"]:
         identifier = planned["id"]
         row, path = rows[identifier]
         if (
-            original_cases[identifier] != cases[identifier]
+            row["status"] != "completed"
+            or not row["grade"].get("parsed")
+            or original_cases[identifier] != cases[identifier]
             or digest(path.read_bytes())
             != selection["baseline_result_sha256"][identifier]
         ):
@@ -221,6 +243,8 @@ def validate_resume(directory, suite, configuration, args, arms, reference):
         "timeout_seconds": args.timeout,
         "baseline_reference": reference,
         "binary_sha256": digest(args.binary.read_bytes()),
+        "http_502_retries": args.http_502_retries,
+        "http_502_retry_delay": args.http_502_retry_delay,
     }.items():
         if manifest.get(key) != value:
             raise ValueError("Resume manifest mismatch: " + key)
@@ -268,16 +292,37 @@ def execute(client, args, suite, cases, configuration, arms):
             directory = args.out / f"r{repeat}-{planned['id'].replace(':', '-')}-{arm}"
             print(f"Running {planned['id']} repeat {repeat + 1}: {arm}", flush=True)
             already_recorded = (directory / "result.json").exists()
-            result = client.run_case(
-                cases[planned["id"]], arm, directory, args.timeout, resume=args.resume
-            )
+            if arm == "single":
+                from retry import run_single
+
+                result = run_single(
+                    client,
+                    cases[planned["id"]],
+                    directory,
+                    args.timeout,
+                    args.http_502_retries,
+                    args.http_502_retry_delay,
+                    args.resume,
+                )
+            else:
+                result = client.run_case(
+                    cases[planned["id"]],
+                    arm,
+                    directory,
+                    args.timeout,
+                    resume=args.resume,
+                )
             print(
                 f"  {planned['id']} {arm}: {result['status']}; correct={result['grade']['correct']}; seconds={result['elapsed_seconds']:.1f}"
                 + (f"; {result['error']}" if result.get("error") else ""),
                 flush=True,
             )
 
-            if result["status"] != "completed" and not already_recorded:
+            if (
+                result["status"] != "completed"
+                and not already_recorded
+                and result.get("http_status") != 502
+            ):
                 raise ValueError(
                     "Baseline/model execution failed; accepted questions retained. Inspect the recorded error before --resume: "
                     + planned["id"]

@@ -124,6 +124,7 @@ def generate(directory, public_out=None):
         combined_usage = sum_usage([parent_usage, kernel_usage])
         usage_incomplete = (
             any(row["status"] != "completed" for row in arm_rows)
+            or any(row.get("usage_incomplete_possible") for row in arm_rows)
             or len(arm_rows) < expected
             or any(row.get("step_attempt_failure_kinds") for row in arm_rows)
             or (
@@ -372,9 +373,11 @@ def generate(directory, public_out=None):
             "DeepSeek Flash max is a frozen historical baseline. Only Fusion was generated in this run. Baseline latency and usage belong to its original run, not this run's spend. This is not a simultaneous comparison.",
         ]
     if selected:
+        selection = manifest["suite"]["selection"]
+        wrong_count, correct_count = selection["wrong"], selection["correct"]
         lines += [
             "",
-            "This development challenge was deliberately selected from 14 baseline mistakes and 6 baseline successes (30% reference accuracy by construction). Report recovery on the 14 mistakes and regressions on the 6 successes. Do not infer overall capability gains from this selected sample; population confidence intervals are suppressed.",
+            f"This development challenge was deliberately selected from {wrong_count} baseline mistakes and {correct_count} baseline successes ({correct_count / (wrong_count + correct_count):.0%} reference accuracy by construction). Report recovery on the {wrong_count} mistakes and regressions on the {correct_count} successes. Do not infer overall capability gains from this selected sample; population confidence intervals are suppressed.",
         ]
     lines += [
         "",

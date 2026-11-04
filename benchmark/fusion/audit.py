@@ -122,6 +122,12 @@ def collect(directory, binary, runtime=None):
         if result["arm"] == "fusion":
             result["fusion_invocations"] = len(names)
         result["parent_usage"] = state.get("usage", {})
+        if result.get("attempt_count", 1) > 1:
+            result["final_attempt_parent_usage"] = state.get("usage", {})
+            result["parent_usage"] = sum_usage(
+                [state.get("usage", {})]
+                + [item.get("parent_usage", {}) for item in result["attempts"][:-1]]
+            )
         result["effective_parent_model"] = state.get("model")
         result["effective_parent_thinking"] = state.get("thinkingLevel")
         output = path.with_name("output.json")

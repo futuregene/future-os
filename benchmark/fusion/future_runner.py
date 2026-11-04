@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import subprocess
 import time
 from collections import Counter
@@ -299,6 +300,45 @@ class Future:
                 result.update(status="completed", grade=result["outer_grade"])
         except (RuntimeError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
             result["error"] = str(error)
+            # CLI wait errors can hide the upstream HTTP status. Use the accepted
+            # run's terminal ledger, never text from the model, to classify 502s.
+            if session and result.get("run_id"):
+                try:
+                    ledger = self.call(
+                        [
+                            "session",
+                            "transcript",
+                            "--session",
+                            session,
+                            "--runs",
+                            "--all",
+                            "--max-bytes",
+                            "0",
+                            "--json",
+                        ]
+                    )
+                    write_json(directory / "failure-ledger.json", ledger)
+                    result["parent_usage_ledger"] = ledger
+                    result["parent_usage"] = sum_usage(
+                        [item.get("usage") for item in ledger.get("ledger", [])]
+                    )
+                    for item in ledger.get("ledger", []):
+                        if (
+                            item.get("runId") == result["run_id"]
+                            and item.get("status") == "failed"
+                            and re.search(r"\bHTTP\s+502\b", item.get("error") or "")
+                        ):
+                            result.update(
+                                http_status=502,
+                                error_category="http_502",
+                                upstream_error=item["error"],
+                            )
+                except (
+                    RuntimeError,
+                    ValueError,
+                    subprocess.TimeoutExpired,
+                ) as ledger_error:
+                    result["failure_evidence_error"] = str(ledger_error)
             if session:
                 try:
                     self.call(["session", "abort", session], json_output=False)
