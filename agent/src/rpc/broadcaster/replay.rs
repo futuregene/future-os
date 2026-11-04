@@ -3,7 +3,7 @@ use super::{RunAttachment, RunProjectionSnapshot, SseBroadcaster, SseEvent};
 
 /// Snapshot capture copies shared references and a bounded tail under the lock.
 /// Body cloning/JSON materialization and argument folding happen after release.
-struct CapturedSnapshot {
+pub(super) struct CapturedSnapshot {
     run_id: String,
     epoch: i64,
     run_sequence: i64,
@@ -11,7 +11,7 @@ struct CapturedSnapshot {
     view: super::projection::ProjectionView,
 }
 impl CapturedSnapshot {
-    fn capture(run: &super::RunState) -> Self {
+    pub(super) fn capture(run: &super::RunState) -> Self {
         Self {
             run_id: run.run_id.clone(),
             epoch: run.epoch,
@@ -20,7 +20,7 @@ impl CapturedSnapshot {
             view: run.projection_events.view(),
         }
     }
-    fn materialize(self) -> RunProjectionSnapshot {
+    pub(super) fn materialize(self) -> RunProjectionSnapshot {
         RunProjectionSnapshot {
             run_id: self.run_id,
             epoch: self.epoch,
