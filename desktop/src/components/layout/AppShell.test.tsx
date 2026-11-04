@@ -16,6 +16,7 @@ type RailProps = Required<ComponentProps<typeof ActivityRail>>;
 
 /** The module-boundary spies the shell consumes, one entry per integration. */
 interface HookSpies {
+  archiveWorkspace: (workspaceId: string) => Promise<unknown>;
   createWorkspace: (input: unknown) => Promise<unknown>;
   installAgentEventListener: () => void;
   markThreadOpened: (threadId: string) => void;
@@ -31,6 +32,7 @@ interface HookSpies {
   refreshRemotePeers: ReturnType<typeof vi.fn>;
   refreshSkills: () => void;
   restoreThread: (threadId: string) => Promise<unknown>;
+  restoreWorkspace: (workspaceId: string) => Promise<unknown>;
   revalidateAgentState: (threadId: string) => void;
   saveComposerDraft: (key: string, draft: unknown) => void;
   setSelectedModelId: (modelId: string) => void;
@@ -457,11 +459,13 @@ vi.mock("../../integrations/skills/skillsClient", () => ({
 }));
 vi.mock("../../integrations/storage/files", () => ({ openExternalUrl: (url: string) => mocks.hooks.openExternalUrl?.(url) }));
 vi.mock("../../integrations/storage/threadStore", () => ({
+  archiveWorkspace: (workspaceId: string) => mocks.hooks.archiveWorkspace?.(workspaceId),
   createWorkspace: (input: { createDirectory: boolean; path: string }) => mocks.hooks.createWorkspace?.(input),
   markThreadOpened: (threadId: string) => mocks.hooks.markThreadOpened?.(threadId),
   pinThread: (input: unknown) => mocks.hooks.pinThread?.(input),
   pinWorkspace: (input: unknown) => mocks.hooks.pinWorkspace?.(input),
   restoreThreadTree: (threadId: string) => mocks.hooks.restoreThread?.(threadId),
+  restoreWorkspace: (workspaceId: string) => mocks.hooks.restoreWorkspace?.(workspaceId),
 }));
 vi.mock("../../integrations/tauri/invoke", () => ({
   invokeCommand: (command: string, args?: unknown) => mocks.invoke(command, args),
@@ -682,6 +686,7 @@ beforeEach(() => {
   mocks.isFullscreen = false;
   mocks.setFullscreen.mockClear();
   mocks.hooks = {
+    archiveWorkspace: vi.fn(async () => chatWorkspace),
     createWorkspace: vi.fn(async () => chatWorkspace),
     installAgentEventListener: vi.fn(),
     markThreadOpened: vi.fn(async () => {}),
@@ -697,6 +702,7 @@ beforeEach(() => {
     refreshBalance: vi.fn(),
     refreshSkills: vi.fn(async () => {}),
     restoreThread: vi.fn(async () => chatThread),
+    restoreWorkspace: vi.fn(async () => chatWorkspace),
     revalidateAgentState: vi.fn(),
     saveComposerDraft: vi.fn(),
     setSelectedModelId: vi.fn(),
@@ -2388,6 +2394,25 @@ describe("app shell dialogs wiring", () => {
     expect(workspaceDialogFns.openRename).toHaveBeenCalledWith(chatWorkspace);
     act(() => rail().onDeleteWorkspace(chatWorkspace));
     expect(workspaceDialogFns.openDelete).toHaveBeenCalledWith(chatWorkspace);
+    view.unmount();
+  });
+
+  /**
+   * Archiving a workspace has to name it to the refresh.
+   *
+   * The workspace archive changes only the container: every conversation inside
+   * keeps its status, so no listing ever reports that they left, and a plain
+   * refresh reads the open one as "open, just off this page" and keeps drawing
+   * it under a rail entry that just disappeared (the UI harness caught exactly
+   * that with `archive-workspace-with-open-chat`).
+   */
+  it("names the archived workspace on the refresh that follows it", async () => {
+    const view = mount(<AppShell />);
+    await act(async () => {
+      await rail().onArchiveWorkspace(chatWorkspace);
+    });
+    expect(mocks.hooks.archiveWorkspace).toHaveBeenCalledWith("w-t1");
+    expect(mocks.refreshStore).toHaveBeenCalledWith(undefined, { archivedWorkspaceIds: ["w-t1"] });
     view.unmount();
   });
 

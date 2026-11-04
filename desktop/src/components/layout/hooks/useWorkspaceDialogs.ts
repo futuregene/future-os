@@ -33,7 +33,8 @@ export interface WorkspaceDialogs {
 /**
  * Owns the rename/delete confirmation dialogs for a workspace: their
  * submitting/error state machines. Refreshes the store after a successful
- * mutation (which reconciles the active thread when its workspace is removed).
+ * mutation, and a delete names the workspace so the store takes its
+ * conversations with it (the active-thread reconciliation is the store's).
  */
 export function useWorkspaceDialogs({
   refreshStore,
@@ -84,8 +85,12 @@ export function useWorkspaceDialogs({
 
     setDeleteDialog(current => current ? { ...current, error: null, submitting: true } : current);
     try {
-      await deleteWorkspace(deleteDialog.workspace.id);
-      await refreshStore();
+      const { workspace } = deleteDialog;
+      await deleteWorkspace(workspace.id);
+      // Every conversation inside went with it, and the store cannot tell that
+      // from "not on this page": the open one would stay on screen as a row no
+      // list will ever return (see `RefreshStoreOptions.removedWorkspaceIds`).
+      await refreshStore(undefined, { removedWorkspaceIds: [workspace.id] });
       setDeleteDialog(null);
     }
     catch (error) {

@@ -221,6 +221,19 @@ export interface RefreshStoreOptions {
    * returns it, with the archived status that keeps it out of the active list.
    */
   archivedThreadIds?: readonly string[];
+  /**
+   * A workspace the caller just archived — its conversations leave with it.
+   *
+   * Archiving a workspace writes nothing on its members: every one of them keeps
+   * its own status, and it is the container that goes off the lists, so no
+   * listing can confirm that a row inside it left. Naming the workspace is what
+   * says so, and every conversation filed under it is then treated as off the
+   * list (the open one included) without being marked shelved — restoring the
+   * workspace re-lists them exactly as they were.
+   */
+  archivedWorkspaceIds?: readonly string[];
+  /** A workspace the caller just deleted — its conversations are gone with it. */
+  removedWorkspaceIds?: readonly string[];
 }
 
 /** When a conversation last did anything — the stamp its place in a list reads. */
@@ -563,6 +576,13 @@ export function useThreadStore(): ThreadStore {
     const generation = ++refreshStoreGenRef.current;
     const removed = new Set(options?.removedThreadIds ?? []);
     const archived = new Set(options?.archivedThreadIds ?? []);
+    // A workspace that left takes its conversations with it. Archived and
+    // deleted read the same here: either way the container is off every list,
+    // and no member row carries a status saying so.
+    const leftWorkspaces = new Set([
+      ...(options?.archivedWorkspaceIds ?? []),
+      ...(options?.removedWorkspaceIds ?? []),
+    ]);
     try {
       const [pinned, pinnedWs, allWorkspaces, active] = await Promise.all([
         listPinnedThreads("recent"),
@@ -625,13 +645,36 @@ export function useThreadStore(): ThreadStore {
       // racing this read brought in: the delete is the one fact no later
       // listing can contradict.
       for (const id of removed) byId.delete(id);
+      // A workspace the caller just archived (or deleted) takes its
+      // conversations out the same way. Without this they are the one case the
+      // rescue below cannot tell apart: their rows disappear from every list
+      // while their own status is untouched, so "not on this page" was read as
+      // "still open, just off this page" and the shelved workspace kept the
+      // column while its rail entry was gone.
+      if (leftWorkspaces.size > 0) {
+        for (const [id, row] of byId) {
+          if (row.workspaceId && leftWorkspaces.has(row.workspaceId))
+            byId.delete(id);
+        }
+      }
       // The conversation on screen stays addressable even when its scope no
       // longer returns it (an archived detail opened from the archived view
       // stays open, read-only) — but never one the caller just deleted or
       // archived, or the row survives the very reload that was meant to drop
       // it, and a shelved conversation keeps drawing as the open one.
       const currentId = activeThreadIdRef.current;
-      const leftTheList = (id: string) => removed.has(id) || archived.has(id);
+      const leftTheList = (id: string) => {
+        if (removed.has(id) || archived.has(id))
+          return true;
+        if (leftWorkspaces.size === 0)
+          return false;
+        // The row is very often already out of `byId` — that is what this
+        // refresh just did — so the store's held rows answer which workspace it
+        // belonged to.
+        const workspaceId = byId.get(id)?.workspaceId
+          ?? threadsRef.current.find(thread => thread.id === id)?.workspaceId;
+        return Boolean(workspaceId && leftWorkspaces.has(workspaceId));
+      };
       if (currentId && !byId.has(currentId) && !leftTheList(currentId)) {
         const stillKnown = threadsRef.current.find(thread => thread.id === currentId);
         if (stillKnown)
