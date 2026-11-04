@@ -15,6 +15,7 @@ import { useCopyState } from "./useCopyState";
 import { AttachmentChip } from "./AttachmentChip";
 import { AttachmentImage } from "./AttachmentImage";
 import { collapsedPromptHeight, isLongPrompt, promptPreview } from "./promptCollapse";
+import { formatSentAt } from "./sentAt";
 import { PromptReader } from "../components/PromptReader";
 import { StatusDivider } from "./MessageStatus";
 import { buildReplyBlocks, ProcessFold, ReplyBlockRow, splitFinalAnswer } from "./ReplyBlocks";
@@ -226,6 +227,11 @@ function TimelineCardView({
     // carries a few lines of it.
     const longPrompt = isLongPrompt(item.text);
     const preview = longPrompt ? promptPreview(item.text) : { head: item.text, truncated: false };
+    // The question's own send time, on the desktop's clock reading. A bubble
+    // this client minted carries the moment it handed the prompt over; a
+    // durable row carries the journal's, so a re-open still says when it was
+    // asked rather than when this phone read it.
+    const sentAt = item.createdAt ? formatSentAt(item.createdAt, i18n.language) : "";
     return (
       <View style={styles.userBlock}>
         {item.text.trim().length > 0 && (
@@ -287,6 +293,13 @@ function TimelineCardView({
             visible={promptOpen}
           />
         )}
+        {sentAt ? (
+          // Right-aligned under the bubble, the mirror of a reply's footer: the
+          // question is what the reader came for, its clock is the caption.
+          <Text accessibilityLabel={t("chat.sentAt", { time: sentAt })} style={styles.sentAt}>
+            {sentAt}
+          </Text>
+        ) : null}
       </View>
     );
   }

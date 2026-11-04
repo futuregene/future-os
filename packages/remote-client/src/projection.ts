@@ -95,6 +95,7 @@ export function messageToItems(message: AgentMessage): TimelineItem[] {
         kind: "message",
         role: "user",
         text,
+        ...(message.createdAt ? { createdAt: message.createdAt } : {}),
         ...(message.sourceEntryId ? { sourceEntryId: message.sourceEntryId } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
       },
@@ -456,6 +457,10 @@ function applyEvent(state: TimelineState, event: StreamEvent, batch?: {
         role: "user",
         text,
         runId: canonical?.runId ?? (event.runId || undefined),
+        // The prompt's own send time travels with the event: a client that
+        // joined after the fact still draws when it was asked, not when this
+        // phone happened to receive the mirror.
+        ...(canonical?.createdAt ? { createdAt: canonical.createdAt } : {}),
         ...(canonical?.sourceEntryId ? { sourceEntryId: canonical.sourceEntryId } : {}),
         ...(canonical?.attachments?.length
           ? { attachments: canonical.attachments.map(toHistoryAttachment) }
@@ -1010,6 +1015,9 @@ export function appendUserMessage(
         kind: "message",
         role: "user",
         text,
+        // A bubble this client just drew is its send time; the durable entry
+        // that replaces it carries the journal's own.
+        createdAt: new Date().toISOString(),
         ...(attachments?.length ? { attachments } : {}),
       },
     ],
@@ -1045,6 +1053,11 @@ export function commitAcknowledgedUserMessage(
     items[existingIndex] = {
       ...existing,
       runId: input.runId,
+      // The ack is the first moment this client knows the desktop owns the
+      // prompt. A time already on the row is the prompt's own (a live mirror,
+      // or a durable entry this update enriched) and stays; only a row with
+      // none is stamped here, so its bubble can still say when it was sent.
+      ...(existing.createdAt ? {} : { createdAt: new Date().toISOString() }),
       ...(input.attachments?.length ? { attachments: input.attachments } : {}),
     };
     return { ...state, items };
@@ -1059,6 +1072,7 @@ export function commitAcknowledgedUserMessage(
         role: "user",
         text: input.text,
         runId: input.runId,
+        createdAt: new Date().toISOString(),
         ...(input.attachments?.length ? { attachments: input.attachments } : {}),
       },
     ],

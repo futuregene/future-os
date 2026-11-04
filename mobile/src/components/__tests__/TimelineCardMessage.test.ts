@@ -171,6 +171,31 @@ describe("a user message is the user's own markdown, plus their attachments", ()
     expect(tree.root.findAll(node =>
       typeof node.type === "string" && node.props.children === "")).toHaveLength(0);
   });
+
+  test("the prompt says when it was sent, and says nothing when it has no send time", () => {
+    // The remote view had no clock on a question at all: a reader could not tell
+    // whether the prompt above was from ten minutes or ten days ago. The row now
+    // draws the prompt's own time under its bubble, from the persisted entry's
+    // creation time — not from the moment this phone read it.
+    const createdAt = new Date(2026, 10, 4, 22, 47).toISOString();
+    // The clock reading, asserted independently of the helper: today's stamps
+    // read as the reader's own time format, nothing more.
+    const clock = new Intl.DateTimeFormat(i18n.language, { hour: "2-digit", minute: "2-digit" })
+      .format(new Date(createdAt));
+    render(message({ role: "user", text: "when was this sent?", createdAt }));
+    // `Text` is a composite over a host node here, so both carry the label.
+    const stamp = tree.root.findAll(node => node.props.accessibilityLabel === `Sent ${clock}`);
+    expect(stamp).not.toHaveLength(0);
+    expect(hasText(clock)).toBe(true);
+
+    // A projection with no durable record (the model-context view) carries no
+    // time; an empty clock line would read as a bug, not as a missing fact.
+    act(() => tree.unmount());
+    render(message({ role: "user", text: "when was this sent?" }));
+    expect(tree.root.findAll(node =>
+      typeof node.props.accessibilityLabel === "string"
+      && node.props.accessibilityLabel.startsWith("Sent "))).toHaveLength(0);
+  });
 });
 
 describe("a prompt taller than the phone is read in a reader, never drawn whole", () => {
