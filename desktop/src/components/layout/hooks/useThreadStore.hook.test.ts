@@ -343,6 +343,66 @@ describe("useThreadStore", () => {
       expect(h.current.scopeRemaining("recent")).toBe(0);
       h.unmount();
     });
+
+    it("keeps a stream the reader opened while bootstrap was still running", async () => {
+      // A window restored on the recent view asks for its stream at mount, which
+      // is while bootstrap's own first pages are still in flight. The request
+      // must not be thrown away — the view asks once per mount, so losing it left
+      // the list on the chat page's rows until the reader switched views.
+      let finishBootstrap: () => void = () => {};
+      initializeAppStore.mockImplementation(() => new Promise<void>((resolve) => {
+        finishBootstrap = resolve;
+      }));
+      listThreadsPage.mockImplementation((scope: unknown) => Promise.resolve(
+        scope === "recent"
+          ? recentPage(RECENT_PAGE_SIZE, "cursor-1", 62)
+          : pageOf([thread("t1"), thread("t2")]),
+      ));
+
+      const h = renderHook(() => useThreadStore());
+      act(() => {
+        h.current.ensureScope("recent");
+      });
+      await flushAsync();
+      // Held, not asked: the database this page is read from is not open yet.
+      expect(listThreadsPage.mock.calls.filter(call => call[0] === "recent")).toHaveLength(0);
+
+      finishBootstrap();
+      await flushAsync();
+      await flushAsync();
+      await flushAsync();
+
+      // The view draws its own page, still knows how much it holds back, and the
+      // rows it read are in the store behind it.
+      expect(h.current.recentThreadIds?.size).toBe(RECENT_PAGE_SIZE);
+      expect(h.current.scopeRemaining("recent")).toBe(62 - RECENT_PAGE_SIZE);
+      expect(h.current.threads.filter(thread => thread.id.startsWith("r"))).toHaveLength(RECENT_PAGE_SIZE);
+      h.unmount();
+    });
+
+    it("keeps the rows a push brought in while bootstrap was still running", async () => {
+      // Bootstrap contributes its first pages; it does not get to drop what a
+      // refresh already merged (a `threads-updated` push lands during startup).
+      let finishBootstrap: (recent: StoredThread) => void = () => {};
+      getRecentOrCreateDefaultThread.mockImplementation(() => new Promise<StoredThread>((resolve) => {
+        finishBootstrap = resolve;
+      }));
+      // Consumed by the push's refresh, not by bootstrap's own read.
+      listPinnedThreads.mockResolvedValueOnce([thread("imported")]).mockResolvedValue([]);
+
+      const h = renderHook(() => useThreadStore());
+      await act(async () => {
+        await h.current.refreshStore();
+      });
+      expect(h.current.threads.map(thread => thread.id)).toContain("imported");
+
+      finishBootstrap(thread("t1"));
+      await flushAsync();
+      await flushAsync();
+
+      expect(h.current.threads.map(thread => thread.id)).toContain("imported");
+      h.unmount();
+    });
   });
 
   it("ensureScope starts a scope exactly once", async () => {

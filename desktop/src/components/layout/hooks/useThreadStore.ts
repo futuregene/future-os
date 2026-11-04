@@ -411,7 +411,26 @@ export function useThreadStore(): ThreadStore {
     }
   }, [requestPage]);
 
+  /**
+   * Whether bootstrap has finished, so a page can be read and kept.
+   *
+   * A view can ask for its scope at mount — a window restored on the recent
+   * view does — which is before `initialize_app_store` has opened the database
+   * that page is read from and before bootstrap writes its own first pages.
+   * Asking then either fails against a schema that does not exist yet or lands
+   * under that write, so the request waits here instead of being dropped: the
+   * view asks once per mount, and losing it left the list on the chat page's
+   * rows until the reader switched views and asked again.
+   */
+  const scopesReadyRef = useRef(false);
+  const waitingScopesRef = useRef<string[]>([]);
+
   const ensureScope = useCallback((scope: string) => {
+    if (!scopesReadyRef.current) {
+      if (!waitingScopesRef.current.includes(scope))
+        waitingScopesRef.current.push(scope);
+      return;
+    }
     const state = scopesRef.current[scope];
     if (state?.started)
       return;
@@ -420,6 +439,11 @@ export function useThreadStore(): ThreadStore {
       // the next `threads-updated` retries. The rail shows its own spinner.
     });
   }, [requestPage]);
+
+  // Read by bootstrap's tail, which runs once and must not re-run when a
+  // consumer re-creates these callbacks.
+  const ensureScopeRef = useRef(ensureScope);
+  ensureScopeRef.current = ensureScope;
 
   const selectThread = useCallback((thread: StoredThread) => {
     mergeThreads([thread]);
@@ -641,7 +665,11 @@ export function useThreadStore(): ThreadStore {
           return;
         }
         setWorkspaces([...pinnedWs, ...allWorkspaces]);
-        setScopes({
+        // Bootstrap contributes its own scope rather than replacing the record:
+        // the scope record is shared state, and bootstrap is not its only writer
+        // (a mutation or a push refreshes scopes too).
+        setScopes(previous => ({
+          ...previous,
           chat: {
             started: true,
             loadedRoots: PAGE_ROOTS,
@@ -649,17 +677,23 @@ export function useThreadStore(): ThreadStore {
             totalRoots: firstChat.totalRoots,
             loading: false,
           },
+        }));
+        setThreads((previous) => {
+          // Merge, for the same reason: a `threads-updated` push lands during
+          // startup and refreshes the store, and replacing the rows here would
+          // drop what that refresh brought in. Bootstrap's own rows win where
+          // both hold one.
+          const byId = new Map(previous.map(thread => [thread.id, thread] as const));
+          for (const thread of [...pinned, ...firstChat.threads, ...active]) {
+            byId.set(thread.id, thread);
+          }
+          // A restored session may live under a workspace or a chat page the
+          // reader will not open first; make sure the one we select is present.
+          if (!byId.has(recentThread.id)) {
+            byId.set(recentThread.id, recentThread);
+          }
+          return [...byId.values()];
         });
-        const byId = new Map<string, StoredThread>();
-        for (const thread of [...pinned, ...firstChat.threads, ...active]) {
-          byId.set(thread.id, thread);
-        }
-        // A restored session may live under a workspace or a chat page the
-        // reader will not open first; make sure the one we select is present.
-        if (!byId.has(recentThread.id)) {
-          byId.set(recentThread.id, recentThread);
-        }
-        setThreads([...byId.values()]);
         setActiveThreadId(recentThread.id);
         setStoreError(null);
       }
@@ -671,6 +705,14 @@ export function useThreadStore(): ThreadStore {
       finally {
         if (!cancelled) {
           setLoadingStore(false);
+          // The store is open: issue the scopes the rail asked for while this
+          // was still running (it can ask only once per mount, so a request
+          // dropped here would leave that list on the chat page until the
+          // reader switched views).
+          scopesReadyRef.current = true;
+          const waiting = waitingScopesRef.current;
+          waitingScopesRef.current = [];
+          for (const scope of waiting) ensureScopeRef.current(scope);
         }
       }
     }
