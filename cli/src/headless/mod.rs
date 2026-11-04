@@ -568,7 +568,20 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
         // is the user's decision: a server told to stop serving stays up and keeps
         // answering control requests — that is what lets `future remote enable`
         // turn it back on without a restart — instead of exiting as if it broke.
+        //
+        // The two values this verdict rests on are read here, as one observation,
+        // and the switch comes first: the phase must not be older than the switch
+        // that decides whether a stop is a fault. Reading them the other way
+        // round — the phase snapshotted at the end of the previous iteration, the
+        // switch read after this iteration's Agent supervision — is a window that
+        // a *successful* enable loses, because `future remote enable` starts
+        // serving first and stores the switch second. An enable landing in it is
+        // read as "switch on, phase stopped", the one combination this loop exits
+        // on. With the phase read after the switch, the phase already reflects
+        // that enable.
+        switch_read_rendezvous().await;
         let switch_on = remote_switch_on();
+        status = remote::status();
         let idle = matches!(status.phase, remote::RemotePhase::Stopped) && !switch_on;
         if idle {
             was_paired = false;
@@ -605,7 +618,6 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
             said_unpaired = true;
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
-        status = remote::status();
     }
 }
 
@@ -764,6 +776,32 @@ fn phase_action(
         | RemotePhase::Reconnecting
         | RemotePhase::Refreshing => PhaseAction::Keep,
     }
+}
+
+/// A test's rendezvous with the two reads below, which are one observation.
+///
+/// What the ordering closes is the window *between* them, and on an idle laptop
+/// the previous order measured ~1.1–2.2ms wide (the end of one iteration's phase
+/// read through the next iteration's Agent supervision). A test cannot land
+/// `future remote enable` inside a window that narrow by timing, so with
+/// `FUTURE_TEST_HOST_SWITCH_PAUSE_DIR` set the loop announces that it is at the
+/// read (`waiting` in that directory) and holds until `release` appears, which
+/// lets the test turn the switch on from another terminal in between. Absent the
+/// variable this is a no-op: this loop is the one place where a wrong order is
+/// invisible to inspection and unreachable by patience.
+async fn switch_read_rendezvous() {
+    let Ok(directory) = std::env::var("FUTURE_TEST_HOST_SWITCH_PAUSE_DIR") else {
+        return;
+    };
+    let directory = std::path::PathBuf::from(directory);
+    let _ = std::fs::create_dir_all(&directory);
+    let _ = std::fs::write(directory.join("waiting"), b"");
+    let release = directory.join("release");
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while !release.is_file() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let _ = std::fs::remove_file(directory.join("waiting"));
 }
 
 /// The remote desktop switch, as the user last set it. Defaults to on: a fresh
