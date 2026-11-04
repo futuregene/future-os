@@ -65,6 +65,10 @@ class BaselineTests(unittest.TestCase):
                 "cases": cases,
             },
         )
+        harness = directory / "harness"
+        harness.mkdir()
+        for name in ("scoring.py", "future_runner.py"):
+            (harness / name).write_bytes((ROOT / name).read_bytes())
         manifest = {
             "arms": ["single"],
             "repeats": 1,
