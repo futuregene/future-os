@@ -19,6 +19,37 @@ const MAX_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_EXTRACTED_BYTES: u64 = 256 * 1024 * 1024;
 const RECEIPT: &str = ".future-install.json";
 
+/// How long a fetched platform catalogue is served before a refresh starts in
+/// the background. The catalogue changes when the platform publishes a skill,
+/// so this is a freshness preference, not a correctness bound.
+const CATALOGUE_TTL: Duration = Duration::from_secs(300);
+const CATALOGUE_CACHE_FILE: &str = "skills-catalogue.json";
+
+/// Last good platform catalogue, keyed by the file it is cached in so one
+/// process can serve more than one agent home (and so a test's cache cannot
+/// shadow another's). Every command builds its own `SkillManager`; this map is
+/// what makes the cache outlive that.
+static CATALOGUE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, CatalogueCache>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+static REFRESH_GATES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, std::sync::Arc<std::sync::Mutex<()>>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CatalogueCache {
+    #[serde(rename = "fetchedAtMs")]
+    fetched_at_ms: i64,
+    skills: Vec<CatalogueSkill>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogueSkill {
@@ -143,8 +174,140 @@ impl SkillManager {
             .skills)
     }
 
+    /// The platform catalogue as a **read**.
+    ///
+    /// `catalogue` above is a synchronous HTTP GET, and calling it from
+    /// `list_available_skills` made a command that reads like a local listing
+    /// cost 86-99 ms (p95 120 ms) with a 60 s worst case decided by the network
+    /// alone — see `docs/testing/remote-latency/03-measurements.md`. The answer
+    /// changes when the platform publishes a skill, not when a client asks, so
+    /// it is cached: memory first, then the copy the last successful fetch wrote
+    /// beside the skills database. A copy older than [`CATALOGUE_TTL`] is served
+    /// anyway and refreshed on a background thread.
+    ///
+    /// A machine with **no** copy at all is the one case that still asks the
+    /// platform on this path, and it must: `list_available_skills` reports a
+    /// failure rather than pretending the catalogue is empty (a client cannot
+    /// tell a broken platform from a platform with no skills otherwise —
+    /// `platform_backed_skill_commands_fail_closed…`). That fetch usually starts
+    /// at `prewarm_catalogue`, so a read arriving later waits on it instead of
+    /// starting one.
+    pub fn catalogue_read(&self) -> Result<Vec<CatalogueSkill>> {
+        if let Some(cache) = self.cached_catalogue() {
+            if now_millis().saturating_sub(cache.fetched_at_ms) > CATALOGUE_TTL.as_millis() as i64 {
+                self.refresh_catalogue_in_background();
+            }
+            return Ok(cache.skills);
+        }
+        // Nothing cached: answer from the platform the same way `catalogue`
+        // does, under the same gate the prewarm uses so the two never fetch
+        // twice, and re-check the cache in case the prewarm just filled it.
+        let gate = self.refresh_gate();
+        let _held = gate.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(cache) = self.cached_catalogue() {
+            return Ok(cache.skills);
+        }
+        self.refresh_catalogue()
+    }
+
+    /// Fetch the catalogue now and cache it. Used by the background refresh and
+    /// by the one read that has nothing cached yet.
+    pub fn refresh_catalogue(&self) -> Result<Vec<CatalogueSkill>> {
+        let skills = self.catalogue()?;
+        self.store_catalogue(&skills);
+        Ok(skills)
+    }
+
+    /// Warm the cache at startup: load whatever the last fetch left on disk and
+    /// start a refresh if it is stale, so the first client to ask is answered
+    /// from memory.
+    pub fn prewarm_catalogue(&self) {
+        let cached = self.cached_catalogue();
+        let stale = cached.as_ref().is_none_or(|cache| {
+            now_millis().saturating_sub(cache.fetched_at_ms) > CATALOGUE_TTL.as_millis() as i64
+        });
+        if stale {
+            self.refresh_catalogue_in_background();
+        }
+    }
+
+    fn catalogue_cache_path(&self) -> PathBuf {
+        self.agent_dir.join(CATALOGUE_CACHE_FILE)
+    }
+
+    /// Memory, else the copy on disk. Both are bounded reads of a few
+    /// kilobytes; neither touches the network.
+    fn cached_catalogue(&self) -> Option<CatalogueCache> {
+        let cache_path = self.catalogue_cache_path();
+        if let Some(cache) = CATALOGUE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&cache_path)
+            .cloned()
+        {
+            return Some(cache);
+        }
+        let raw = fs::read(&cache_path).ok()?;
+        let cache: CatalogueCache = serde_json::from_slice(&raw).ok()?;
+        CATALOGUE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(cache_path, cache.clone());
+        Some(cache)
+    }
+
+    fn store_catalogue(&self, skills: &[CatalogueSkill]) {
+        let cache = CatalogueCache {
+            fetched_at_ms: now_millis(),
+            skills: skills.to_vec(),
+        };
+        let path = self.catalogue_cache_path();
+        CATALOGUE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(path.clone(), cache.clone());
+        // Best effort: the cache is an optimization, and a read-only home must
+        // still serve the in-memory copy rather than fail the command.
+        if let Ok(raw) = serde_json::to_vec(&cache) {
+            let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
+            if fs::write(&temporary, raw).is_ok() && fs::rename(&temporary, &path).is_err() {
+                let _ = fs::remove_file(&temporary);
+            }
+        }
+    }
+
+    /// One refresh at a time per cache, off the caller's thread; a reader with
+    /// nothing cached joins that refresh through the same gate.
+    fn refresh_gate(&self) -> std::sync::Arc<std::sync::Mutex<()>> {
+        let path = self.catalogue_cache_path();
+        let mut gates = REFRESH_GATES.lock().unwrap_or_else(|e| e.into_inner());
+        gates
+            .entry(path)
+            .or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(())))
+            .clone()
+    }
+
+    fn refresh_catalogue_in_background(&self) {
+        let gate = self.refresh_gate();
+        let agent_dir = self.agent_dir.clone();
+        let global_dir = self.global_dir.clone();
+        let platform_url = self.platform_url.clone();
+        std::thread::spawn(move || {
+            // Someone else is already fetching: their answer lands in the cache
+            // this read (or the next one) serves, so there is nothing to do.
+            let Ok(_held) = gate.try_lock() else {
+                return;
+            };
+            if let Ok(manager) = SkillManager::new(agent_dir, global_dir, platform_url) {
+                if let Err(error) = manager.refresh_catalogue() {
+                    tracing::debug!("skill catalogue refresh failed: {error:#}");
+                }
+            }
+        });
+    }
+
     pub fn catalogue_with_status(&self) -> Result<Vec<CatalogueSkill>> {
-        let mut catalogue = self.catalogue()?;
+        let mut catalogue = self.catalogue_read()?;
         self.locked(|db| {
             self.recover(db)?;
             self.reconcile_once(db)?;
@@ -1063,12 +1226,88 @@ mod tests {
         assert_eq!(version, "2.0.0");
     }
 
+    /// The catalogue is fetched once and then read from cache: a machine with no
+    /// copy still asks the platform (and reports its refusal), while a machine
+    /// that has one never does.
+    #[test]
+    fn the_catalogue_read_serves_the_cached_copy_instead_of_fetching() {
+        let root = tempfile::tempdir().unwrap();
+        // A closed local port: every fetch fails immediately, so a read that
+        // returned data can only have come from the cache.
+        let manager = manager(root.path(), "http://127.0.0.1:9".to_string());
+        assert!(
+            manager.catalogue_read().is_err(),
+            "with nothing cached the platform is asked and its failure is reported, \
+             not disguised as an empty catalogue"
+        );
+
+        manager.store_catalogue(&[CatalogueSkill {
+            id: "demo".into(),
+            latest_version: Some("1.0.0".into()),
+            builtin: false,
+            name: "Demo".into(),
+            description: "cached".into(),
+            name_zh: String::new(),
+            description_zh: String::new(),
+            category: "test".into(),
+            category_zh: String::new(),
+            upgrade_available: false,
+        }]);
+
+        // A second manager for the same home — what the next command builds —
+        // reads the copy the first one left on disk.
+        let next = manager_of(&root, "http://127.0.0.1:9".to_string());
+        let served = next.catalogue_read().unwrap();
+        assert_eq!(served.len(), 1);
+        assert_eq!(served[0].id, "demo");
+        assert_eq!(served[0].latest_version.as_deref(), Some("1.0.0"));
+        assert!(matches!(
+            next.catalogue_with_status(),
+            Ok(skills) if skills.len() == 1 && skills[0].id == "demo"
+        ));
+    }
+
+    #[test]
+    fn a_fetched_catalogue_is_served_without_asking_again() {
+        let root = tempfile::tempdir().unwrap();
+        // Exactly one request is served, then the listener is gone: a second
+        // fetch would fail instead of silently succeeding.
+        let url = server(
+            r#"{"skills":[{"id":"one","latest_version":"1.0.0"}]}"#,
+            Vec::new(),
+            1,
+        );
+        let manager = manager(root.path(), url);
+        let fetched = manager.refresh_catalogue().unwrap();
+        assert_eq!(fetched.len(), 1);
+        let served = manager.catalogue_read().unwrap();
+        assert_eq!(served.len(), 1);
+        assert_eq!(served[0].id, "one");
+        // And a fresh manager reads the same cached copy rather than the (now
+        // closed) platform.
+        assert_eq!(
+            manager_of(&root, manager.platform_url.clone())
+                .catalogue_read()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    fn manager_of(root: &tempfile::TempDir, url: String) -> SkillManager {
+        SkillManager::new(root.path().join("agent"), root.path().join("global"), url).unwrap()
+    }
+
     #[test]
     fn catalogue_marks_only_managed_newer_installations_for_upgrade() {
         let root = tempfile::tempdir().unwrap();
         let catalog = r#"{"skills":[{"id":"managed","latest_version":"2.0.0"},{"id":"external","latest_version":"2.0.0"}]}"#;
         let url = server(catalog, Vec::new(), 1);
         let manager = manager(root.path(), url);
+        // `catalogue_with_status` serves the cache and refreshes in the
+        // background, so the explicit fetch is what puts the catalogue there
+        // (a client reads the copy this leaves behind).
+        manager.refresh_catalogue().unwrap();
         for id in ["managed", "external"] {
             let dest = manager.app_dir().join(id);
             fs::create_dir_all(&dest).unwrap();
