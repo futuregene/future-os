@@ -585,6 +585,14 @@ pub struct WorkbenchData {
     pub notice: Option<String>,
     /// The agent's authoritative queued runs, in its queue order.
     pub queue: Vec<QueuedPrompt>,
+    /// Submissions this surface has handed over that the agent's queue does not
+    /// list yet, oldest first — the band's tail rows.
+    ///
+    /// The agent is the authority on its queue, but naming a run costs a round
+    /// trip, and the reader's line has already left the composer. Holding it
+    /// here keeps it in the band without claiming it is one of the agent's rows:
+    /// nothing here can be recalled, because there is no run to recall yet.
+    pub queued_awaiting: Vec<String>,
     /// Increases when transcript content changes; lets the view preserve a
     /// reader's position without guessing from activity labels.
     pub revision: u64,

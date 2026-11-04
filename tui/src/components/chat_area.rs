@@ -1519,6 +1519,57 @@ impl ChatArea {
         }
     }
 
+    /// Hold a submission back as waiting in the queue before its run is known.
+    ///
+    /// The card keeps the id the echo gave it — the acknowledgement is what
+    /// binds a run to it [`Self::bind_user_run`] — but it draws no rows from
+    /// this moment, because a prompt the agent is going to hold has not been
+    /// sent (see [`Self::waits_in_queue`]). Drawing it first and taking it back
+    /// when the `queued` ack lands put the reader's own line inside the
+    /// conversation it was waiting behind, and then moved it to the band above
+    /// the composer; a card that never paints there does not have to move.
+    pub fn hold_in_queue(&mut self, message_id: &str) {
+        let Some(index) = self.messages.iter().position(|m| m.id == message_id) else {
+            return;
+        };
+        if self.messages[index].run_state == Some(RunState::Queued) {
+            return;
+        }
+        self.messages[index].run_state = Some(RunState::Queued);
+        // Entering the state removes rows *and* the separator above them:
+        // rebuild rather than splice one message's lines.
+        self.rerender();
+    }
+
+    /// Is this card held in the queue with no run bound to it yet — a
+    /// submission whose acknowledgement has not come back?
+    pub fn awaits_queue(&self, message_id: &str) -> bool {
+        self.messages.iter().any(|message| {
+            message.id == message_id
+                && message.run_state == Some(RunState::Queued)
+                && message.run_id.is_none()
+        })
+    }
+
+    /// The cards this chat is holding back as waiting in the queue, oldest
+    /// first: `(run_id, text)`.
+    ///
+    /// `run_id` is `None` for a submission whose acknowledgement has not come
+    /// back yet — the agent names the run, and until it does this surface has no
+    /// id to ask about. The band above the composer draws these as its tail rows
+    /// (`workbench::live` drops the ones the agent's own queue already lists), and
+    /// the transcript draws none of them: a prompt the agent is holding has not
+    /// been sent.
+    pub fn held_queue_cards(&self) -> Vec<(Option<&str>, &str)> {
+        self.messages
+            .iter()
+            .filter(|message| {
+                message.role == ChatRole::User && message.run_state == Some(RunState::Queued)
+            })
+            .map(|message| (message.run_id.as_deref(), message.content.as_str()))
+            .collect()
+    }
+
     pub fn update_run_state(&mut self, run_id: &str, run_state: RunState) {
         let Some(index) = self
             .messages
@@ -1661,8 +1712,15 @@ impl ChatArea {
         let Some(index) = self.messages.iter().position(|m| m.id == message_id) else {
             return;
         };
+        let was_queued = self.messages[index].run_state == Some(RunState::Queued);
         self.messages[index].run_state = Some(run_state);
-        self.rerender_message(index);
+        // Leaving the queue gives the card rows back, and the separator above it
+        // with them: rebuild instead of splicing one message's lines.
+        if was_queued || run_state == RunState::Queued {
+            self.rerender();
+        } else {
+            self.rerender_message(index);
+        }
     }
 
     pub fn set_on_change(&mut self, cb: impl FnMut() + 'static) {

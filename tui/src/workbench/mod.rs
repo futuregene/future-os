@@ -13515,6 +13515,40 @@ mod tests {
         assert!(lines[header + 3].trim_start().starts_with('╰'));
     }
 
+    /// A submission the surface is still holding — handed over, not yet named by
+    /// an acknowledgement — is the band's tail row.
+    ///
+    /// It is already above the composer because it is *not* in the transcript
+    /// (the reader's line left the box and the agent is going to hold it), but it
+    /// opens nothing: a row this surface is holding has no run to recall yet, and
+    /// the agent's own row takes over the moment the ack names one.
+    #[test]
+    fn the_queue_band_carries_a_submission_the_agent_has_not_named_yet() {
+        use crate::workbench::i18n::{render, Key};
+        let mut data = demo::chat();
+        data.queue = vec![state::QueuedPrompt {
+            run_id: "q1".into(),
+            text: "先跑一遍测试".into(),
+        }];
+        data.queued_awaiting = vec!["然后再说这个".into()];
+        let (wb, rows) = frame(&data, 120, 38);
+        let text = plain(&rows);
+        // The count is the whole band: the agent's row and the held one.
+        let title = render(Language::Zh, Key::QueueBandTitle, &[&2]);
+        assert!(text.contains(&title), "no band header in:\n{text}");
+        assert!(text.contains("1. 先跑一遍测试"), "{text}");
+        assert!(text.contains("2. 然后再说这个"), "{text}");
+        // The agent's row is a control; the held one is not.
+        let ids: Vec<&str> = wb
+            .hits()
+            .regions()
+            .iter()
+            .map(|(_, id)| id.as_str())
+            .collect();
+        assert!(ids.contains(&"queue.band.0"), "{ids:?}");
+        assert!(!ids.contains(&"queue.band.1"), "{ids:?}");
+    }
+
     /// An empty queue has no band: the conversation keeps those rows.
     #[test]
     fn no_queue_means_no_band() {
