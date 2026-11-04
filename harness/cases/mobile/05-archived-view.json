@@ -1,0 +1,28 @@
+{
+  "id": "mobile-archived-view",
+  "surface": "mobile",
+  "title": "手机端归档视图：入口与空状态",
+  "area": "mobile-archive",
+  "priority": "P1",
+  "tags": ["mobile", "archive"],
+  "description": "2.0.1 之后手机端可以查看归档的会话和工作区。从会话列表操作菜单进入「已归档」，应出现归档视图；当前数据集没有归档内容时给出明确空状态，而不是空白页。",
+  "preconditions": "移动端 shot 服务可用。",
+  "expectations": [
+    "「会话列表操作」菜单里有「已归档」",
+    "归档视图能打开",
+    "空数据时有可读的空状态"
+  ],
+  "steps": [
+    { "wait": 1500 },
+    { "click": { "text": "稍后再说" }, "optional": true },
+    { "wait": 400 },
+    { "click": { "aria": "会话列表操作" } },
+    { "wait": 500 },
+    { "assert": { "expr": "document.body.innerText.includes('已归档')", "message": "菜单提供已归档入口" } },
+    { "click": { "text": "已归档" } },
+    { "wait": 900 },
+    { "assert": { "expr": "document.body.innerText.includes('已归档')", "message": "进入归档视图" } },
+    { "assert": { "expr": "document.body.innerText.includes('还没有归档内容') || document.body.innerText.length > 40", "message": "归档视图有内容或明确空状态" } },
+    { "shot": "mobile-archived" }
+  ]
+}

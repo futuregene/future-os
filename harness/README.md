@@ -225,3 +225,8 @@ with `gh`. Nothing is filed without that explicit flag.
   tasks without an agent; agent-backed commands need a fixture agent.
 - **Video is analyzed as a filmstrip, not as motion.** Six sampled frames catch
   obvious state changes; it is not a temporal model.
+
+- **Desktop send queue is not simulated.** Choosing "加入发送队列" is covered by a
+  TUI case, but the desktop path needs an agent-side queue fixture: the shot mock
+  answers `session_queue` but never enqueues, so a queued row cannot be observed.
+  Do not assert on it until the fixture owns the queue.
