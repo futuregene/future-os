@@ -372,7 +372,9 @@ fn run_event_batch_writer(
             return;
         }
     };
-    let window = if canonical.is_some() {
+    let window = if store.db.is_nfs() {
+        std::time::Duration::from_millis(250)
+    } else if canonical.is_some() {
         std::time::Duration::from_millis(25)
     } else {
         EVENT_BATCH_WINDOW

@@ -94,6 +94,8 @@ pub struct ServerSession {
     /// Stable unique session identifier (UUID v4).  Used as the JSONL filename
     /// on disk and as the key in `AppState::sessions`.
     pub session_id: String,
+    /// A private fresh session collects metadata before its first commit.
+    pub(crate) initializing: bool,
     pub(crate) service_work: Arc<crate::service::work::ServiceWork>,
     scheduler_task: parking_lot::Mutex<Option<tokio::task::AbortHandle>>,
     scheduler_done: Arc<std::sync::atomic::AtomicBool>,
@@ -286,7 +288,60 @@ impl ServerSession {
         model_registry: Arc<parking_lot::RwLock<crate::models::Registry>>,
         queue_budget: Arc<crate::runtime::GlobalQueueBudget>,
     ) -> Self {
-        if let Err(error) = broadcaster.configure_journal(session_id.clone(), &manager) {
+        Self::build_with_queue_budget(
+            session_id,
+            agent_loop,
+            manager,
+            cwd,
+            broadcaster,
+            approval_gate,
+            model_registry,
+            queue_budget,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_for_creation(
+        session_id: String,
+        agent_loop: Arc<tokio::sync::RwLock<crate::agent::Loop>>,
+        manager: Arc<Manager>,
+        cwd: &str,
+        broadcaster: Arc<SseBroadcaster>,
+        approval_gate: ApprovalGate,
+        model_registry: Arc<parking_lot::RwLock<crate::models::Registry>>,
+        queue_budget: Arc<crate::runtime::GlobalQueueBudget>,
+    ) -> Self {
+        Self::build_with_queue_budget(
+            session_id,
+            agent_loop,
+            manager,
+            cwd,
+            broadcaster,
+            approval_gate,
+            model_registry,
+            queue_budget,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_with_queue_budget(
+        session_id: String,
+        agent_loop: Arc<tokio::sync::RwLock<crate::agent::Loop>>,
+        manager: Arc<Manager>,
+        cwd: &str,
+        broadcaster: Arc<SseBroadcaster>,
+        approval_gate: ApprovalGate,
+        model_registry: Arc<parking_lot::RwLock<crate::models::Registry>>,
+        queue_budget: Arc<crate::runtime::GlobalQueueBudget>,
+        bind_journal: bool,
+    ) -> Self {
+        if let Err(error) = if bind_journal {
+            broadcaster.configure_journal(session_id.clone(), &manager)
+        } else {
+            Ok(())
+        } {
             tracing::error!(session_id, "failed to configure event journal: {error:#}");
         }
         // Clone token counter Arcs and queue senders from the agent loop for lock-free access
@@ -331,6 +386,7 @@ impl ServerSession {
             queue_budget,
             shell_cancel_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             session_id: session_id.clone(),
+            initializing: !bind_journal,
             agent_loop,
             messages: Arc::new(parking_lot::RwLock::new(vec![])),
             history_loaded: true,
@@ -965,7 +1021,7 @@ impl ServerSession {
         // Persist through the same ordered queue as run appends/finalization.
         // Brand-new sessions have no JSONL yet; their first accepted prompt
         // creates it with the selected model.
-        if self.session_manager.contains(&self.session_id)? {
+        if !self.initializing && self.session_manager.contains(&self.session_id)? {
             self.persistence
                 .update_info("model", serde_json::Value::String(self.model.clone()))?;
             if clamped_level != original_level {
@@ -1053,7 +1109,9 @@ impl ServerSession {
         // Keep metadata writes ordered with active-run persistence. This setter
         // predates fallible RPC setters, so report a durable error without
         // changing its public signature.
-        if !matches!(self.session_manager.contains(&self.session_id), Ok(false)) {
+        if !self.initializing
+            && !matches!(self.session_manager.contains(&self.session_id), Ok(false))
+        {
             if let Err(error) = self.persistence.update_info(
                 "thinking_level",
                 serde_json::Value::String(self.thinking_level.clone()),
@@ -1498,7 +1556,9 @@ impl ServerSession {
 
     pub fn set_auto_compaction(&mut self, enabled: bool) {
         self.auto_compaction = enabled;
-        if !matches!(self.session_manager.contains(&self.session_id), Ok(false)) {
+        if !self.initializing
+            && !matches!(self.session_manager.contains(&self.session_id), Ok(false))
+        {
             if let Err(error) = self
                 .persistence
                 .update_info("auto_compaction", serde_json::Value::Bool(enabled))
@@ -1525,7 +1585,9 @@ impl ServerSession {
         // Skip the write for a session with no record on disk yet: it stores
         // this with its first run's session_info, the same way a never-run
         // session stores a title or cwd.
-        if !matches!(self.session_manager.contains(&self.session_id), Ok(false)) {
+        if !self.initializing
+            && !matches!(self.session_manager.contains(&self.session_id), Ok(false))
+        {
             if let Err(error) = self.persistence.update_info(
                 "system_prompt",
                 serde_json::Value::String(self.custom_system_prompt.clone()),
@@ -1569,7 +1631,9 @@ impl ServerSession {
         // the write for a session with no record on disk yet: it stores this
         // with its first run's session_info, the same way a never-run session
         // stores a title or cwd.
-        if !matches!(self.session_manager.contains(&self.session_id), Ok(false)) {
+        if !self.initializing
+            && !matches!(self.session_manager.contains(&self.session_id), Ok(false))
+        {
             if let Err(error) = self.persistence.update_info(
                 "append_system_prompt",
                 serde_json::Value::String(self.append_system_prompt.clone()),
@@ -1760,6 +1824,10 @@ impl ServerSession {
     /// (except `activeRunGauge`, which is a point-in-time gauge) and are exposed
     /// through `get_runtime_metrics` for diagnostics and acceptance tests.
     pub fn get_runtime_metrics(&self) -> serde_json::Value {
+        // This extensible JSON field survives the shared typed RPC codec.
+        // Unknown top-level fields of RuntimeMetrics are intentionally dropped.
+        let mut journal = self.broadcaster.journal_metrics();
+        journal["modelOutputProgress"] = self.broadcaster.model_output_progress();
         serde_json::json!({
             "sessionId": self.session_id(),
             "activeRunGauge": self.runtime.active_task_count(),
@@ -1772,7 +1840,7 @@ impl ServerSession {
             "queuedBytes": self.scheduler.queued_bytes(),
             "eventJournalHealthy": self.broadcaster.persistence_error().is_none(),
             "eventJournalError": self.broadcaster.persistence_error(),
-            "eventJournal": self.broadcaster.journal_metrics(),
+            "eventJournal": journal,
         })
     }
 

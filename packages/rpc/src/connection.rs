@@ -242,6 +242,7 @@ pub fn validate_readiness(
 async fn read_readiness(
     inner: &mut proto::future_agent_client::FutureAgentClient<Channel>,
     timeout: Duration,
+    check_storage_mode: bool,
 ) -> Result<AgentReadinessPayload, ConnectionError> {
     let mut request = tonic::Request::new(proto::RpcCommand {
         id: "readiness-gate".into(),
@@ -261,8 +262,22 @@ async fn read_readiness(
             } else {
                 ConnectionError::Unverified(error.to_string())
             }
-        })?
-        .into_inner();
+        })?;
+    if response.get_ref().success
+        && check_storage_mode
+        && std::env::var_os(crate::storage::STORAGE_MODE_ENV).is_some()
+    {
+        let expected =
+            crate::storage::StorageMode::from_env().map_err(ConnectionError::Unverified)?;
+        let actual = response
+            .metadata()
+            .get(crate::storage::STORAGE_MODE_HEADER)
+            .and_then(|value| value.to_str().ok());
+        if !expected.accepts_reported(actual) {
+            return Err(ConnectionError::Incompatible { agent_version: None, reason: format!("storage mode mismatch: requested {expected}, Agent reports {}; restart future host/agent with --storage-mode {expected}", actual.unwrap_or("unknown")) });
+        }
+    }
+    let response = response.into_inner();
     if !response.success {
         if response.error_code == "agent_stopping" {
             return Err(ConnectionError::StartupBlocked(
@@ -290,6 +305,7 @@ pub struct VerifiedAgentClient {
     requirements: CompatibilityRequirements,
     readiness: AgentReadinessPayload,
     handshake_timeout: Duration,
+    check_storage_mode: bool,
 }
 
 impl VerifiedAgentClient {
@@ -298,7 +314,12 @@ impl VerifiedAgentClient {
     }
 
     pub async fn verify(&mut self) -> Result<(), ConnectionError> {
-        let info = read_readiness(&mut self.inner, self.handshake_timeout).await?;
+        let info = read_readiness(
+            &mut self.inner,
+            self.handshake_timeout,
+            self.check_storage_mode,
+        )
+        .await?;
         validate_readiness(&info, &self.requirements)?;
         if info.agent_instance_id != self.readiness.agent_instance_id
             || info.data_root_id != self.readiness.data_root_id
@@ -378,13 +399,19 @@ pub async fn connect_verified_with(
             .map_err(ConnectionError::Transport)?;
     let mut inner = transport::agent_client(connected.channel);
     let requirements = CompatibilityRequirements::for_endpoint(configured, version);
-    let readiness = read_readiness(&mut inner, handshake_timeout).await?;
+    // Storage selection belongs to this machine. A remote Agent may use a
+    // different policy from the client's local data root.
+    let check_storage_mode = requirements.expected_home.is_some()
+        || transport::parse_bind_addr(configured.strip_prefix("http://").unwrap_or(configured))
+            .is_ok_and(|addr| addr.ip().is_loopback());
+    let readiness = read_readiness(&mut inner, handshake_timeout, check_storage_mode).await?;
     validate_readiness(&readiness, &requirements)?;
     Ok(VerifiedAgentClient {
         inner,
         requirements,
         readiness,
         handshake_timeout,
+        check_storage_mode,
     })
 }
 

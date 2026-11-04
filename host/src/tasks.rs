@@ -220,10 +220,133 @@ fn candidates(store: &Store, now: i64) -> Result<Vec<(Task, ClaimReason)>, Strin
     Ok(out)
 }
 
+/// Identity of this process in the run ledger: `<pid>:<instance>`.
+///
+/// `pid` is for whoever reads the database afterwards ("the row says the host
+/// that never finished it was 5211"); the random part is what makes the token
+/// an *instance* rather than a number a later process can inherit. It is
+/// stamped on a run when the tick claims it, so a later tick can ask whether
+/// the process that claimed it is still there — see [`reap_orphaned_runs`].
+fn run_owner() -> &'static str {
+    static OWNER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    OWNER.get_or_init(|| format!("{}:{}", std::process::id(), future_tasks::new_run_id()))
+}
+
+fn live_run_ids() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static LIVE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    LIVE.get_or_init(Default::default)
+}
+
+/// Holds one claimed run open for as long as its executor is alive.
+///
+/// This is the in-process half of liveness: a row stamped with this process's
+/// owner is only "still running" while something here is actually running it.
+/// The registry is what the next tick consults, so an executor whose settle
+/// write failed (or that went away without one) does not keep its task skipped
+/// forever.
+struct LiveRun(String);
+impl LiveRun {
+    fn register(run_id: &str) -> Self {
+        live_run_ids()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(run_id.to_string());
+        Self(run_id.to_string())
+    }
+}
+impl Drop for LiveRun {
+    fn drop(&mut self) {
+        live_run_ids()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.0);
+    }
+}
+
+/// Error text of a run settled because the process that claimed it is gone.
+const ORPHANED_RUN_ERROR: &str =
+    "the host that claimed this run is gone; it was settled by a later tick";
+
+/// One line of evidence kept on a reclaimed run, next to its terminal status.
+const ORPHANED_RUN_NOTE: &str = "no live executor owned this run: its claim row was left in \
+     `running` when the host stopped (killed or crashed) mid-run, so its conversation is the only \
+     record left";
+
+/// Settle runs whose owner is no longer alive, so a leftover `running` row can
+/// never keep a task off the schedule.
+///
+/// `has_running_run` is the only overlap guard the tick has, and it counts rows
+/// — so a row whose process died mid-run reads as "still in flight" and every
+/// later tick skips that task. Startup reconciliation covers the rows a restart
+/// sees; this covers the ones a *live* loop meets, and it is the reason the
+/// ledger does not need a human (or an app restart) to move again.
+///
+/// Who counts as gone:
+/// - a row this process claimed, with no executor registered here: its future is
+///   gone and its settle write never landed (a failed write is retried here);
+/// - a row another instance claimed: the data directory admits one host at a
+///   time (`instance::InstanceGuard`), so that process is gone;
+/// - a row with no owner at all: written by a build that did not record one, and
+///   not by this process.
+///
+/// A wrong guess cannot hide a run: the executor rewrites its row when it
+/// settles (`execute`), so the real outcome replaces anything written here.
+fn reap_orphaned_runs(store: &Store, now: i64) -> Result<Vec<String>, String> {
+    let me = run_owner();
+    let live = live_run_ids()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let mut reaped = Vec::new();
+    for (id, owner) in store.running_run_owners().map_err(|e| e.to_string())? {
+        let orphaned = match owner.as_deref() {
+            Some(owner) if owner == me => !live.contains(&id),
+            Some(_) => true,
+            None => true,
+        };
+        if !orphaned {
+            continue;
+        }
+        match store.reap_running_run(
+            &id,
+            now,
+            ORPHANED_RUN_ERROR,
+            future_tasks::finish_reason::INTERRUPTED,
+            ORPHANED_RUN_NOTE,
+        ) {
+            // `false` = it settled on its own between the read and this write.
+            Ok(true) => {
+                tracing::warn!(
+                    event = "reap",
+                    run_id = %id,
+                    "FutureOS tasks: settled a run whose host is gone"
+                );
+                reaped.push(id);
+            }
+            Ok(false) => {}
+            Err(error) => tracing::warn!(
+                event = "reap",
+                run_id = %id,
+                error = %error,
+                "FutureOS tasks: could not settle an orphaned run: {error}"
+            ),
+        }
+    }
+    Ok(reaped)
+}
+
 /// One tick: claim due tasks and execute them. Sequential within one host; each
 /// task spawns its own run so a slow task does not block the next tick.
 async fn tick(notify: &Notifier) -> Result<(), String> {
     let store = Store::open(&future_home()).map_err(|e| e.to_string())?;
+    // Before asking whether a task is in flight: settle the rows nobody is
+    // carrying any more, so a dead run cannot hold its task back (and so a
+    // failed settle write is retried instead of waiting for a restart).
+    if let Err(error) = reap_orphaned_runs(&store, now_ms()) {
+        tracing::warn!(event = "tick", error = %error,
+            "FutureOS tasks: orphaned-run reconciliation failed: {error}");
+    }
     for (task, reason) in candidates(&store, now_ms())? {
         if STOPPING.load(std::sync::atomic::Ordering::Acquire) {
             break;
@@ -232,6 +355,9 @@ async fn tick(notify: &Notifier) -> Result<(), String> {
             continue; // overlap: skip this tick, the next one retries
         }
         let run = claim(&store, &task, reason)?;
+        // Registered before the spawn: the claim row exists now, so a tick that
+        // runs while this one is being set up must already see it as alive.
+        let live = LiveRun::register(&run.id);
         let notify = notify.clone();
         // Own finalization before the first poll, including rejected/aborted spawns.
         let interrupted = InterruptedTask {
@@ -240,6 +366,7 @@ async fn tick(notify: &Notifier) -> Result<(), String> {
         };
         crate::runtime::spawn(async move {
             let _interrupted = interrupted;
+            let _live = live;
             // A fresh store per run: `rusqlite::Connection` is not `Sync`, so
             // the tick's store cannot cross the spawn boundary.
             let store = match Store::open(&future_home()) {
@@ -258,7 +385,9 @@ async fn tick(notify: &Notifier) -> Result<(), String> {
 }
 
 /// Claim one due task: insert the run row (running), advance `next_due_at` and
-/// clear `pending_request_at`.
+/// clear `pending_request_at`. The row is stamped with this process, which is
+/// what lets a later tick decide whether the run it describes is still in
+/// flight.
 fn claim(store: &Store, task: &Task, reason: ClaimReason) -> Result<TaskRun, String> {
     let now = now_ms();
     // The reason picks the run's label: an explicit request keeps whatever
@@ -295,7 +424,9 @@ fn claim(store: &Store, task: &Task, reason: ClaimReason) -> Result<TaskRun, Str
         finish_reason: None,
         finish_note: None,
     };
-    store.insert_run(&run).map_err(|e| e.to_string())?;
+    store
+        .insert_run_owned(&run, Some(run_owner()))
+        .map_err(|e| e.to_string())?;
 
     // Advance schedule / clear pending.
     let mut t = task.clone();
@@ -2043,6 +2174,22 @@ mod tests {
         }
     }
 
+    /// Poll until the task has no run marked `running` — the tick's own overlap
+    /// gate, and the signal that the run it claimed has settled.
+    async fn wait_until_settled(home: &std::path::Path, task_id: &str) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            if !Store::open(home).unwrap().has_running_run(task_id).unwrap() {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the claimed run never settled"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
     // ─── the tick loop itself ─────────────────────────────────────────────
 
     /// `candidates` is the loop's per-tick admission decision: only a task that
@@ -2099,29 +2246,36 @@ mod tests {
         busy.pending_origin = Some(RunOrigin::Cli);
         store.insert_task(&busy).unwrap();
         let running = future_tasks::new_run_id();
+        // A run this process is actually carrying: the row carries this
+        // instance's owner *and* the executor is registered as alive, so the
+        // tick's liveness sweep has to leave it alone.
+        let _live = LiveRun::register(&running);
         store
-            .insert_run(&future_tasks::TaskRun {
-                id: running.clone(),
-                task_id: busy.id.clone(),
-                kind: RunKind::Manual,
-                origin: RunOrigin::Cli,
-                actor: None,
-                due_at: None,
-                status: RunStatus::Running,
-                thread_id: None,
-                session_id: None,
-                run_id: None,
-                prompt_version: Some(1),
-                result_summary: None,
-                feedback: None,
-                feedback_note: None,
-                started_at: Some(1),
-                finished_at: None,
-                error_message: None,
-                session_deleted: false,
-                finish_reason: None,
-                finish_note: None,
-            })
+            .insert_run_owned(
+                &future_tasks::TaskRun {
+                    id: running.clone(),
+                    task_id: busy.id.clone(),
+                    kind: RunKind::Manual,
+                    origin: RunOrigin::Cli,
+                    actor: None,
+                    due_at: None,
+                    status: RunStatus::Running,
+                    thread_id: None,
+                    session_id: None,
+                    run_id: None,
+                    prompt_version: Some(1),
+                    result_summary: None,
+                    feedback: None,
+                    feedback_note: None,
+                    started_at: Some(1),
+                    finished_at: None,
+                    error_message: None,
+                    session_deleted: false,
+                    finish_reason: None,
+                    finish_note: None,
+                },
+                Some(run_owner()),
+            )
             .unwrap();
 
         let notify: Notifier = std::sync::Arc::new(|_| {});
@@ -2749,6 +2903,306 @@ mod tests {
             finished.finish_reason.as_deref(),
             Some(future_tasks::finish_reason::PROVIDER_ERROR)
         );
+    }
+
+    /// REPRODUCTION, before the fix: this inserted the claim row the way every
+    /// build before it wrote one (no owner) and then ticked twice. Both ticks
+    /// read the leftover `running` row as "this task is in flight", skipped it,
+    /// and left the row `running` for good — the task could not run again until
+    /// a restart. The same fixture now asserts the fixed contract: the row a
+    /// stranded database carries is settled at the first tick, and the task runs
+    /// in that same tick.
+    ///
+    /// Falsify: restore `None => false` in `reap_orphaned_runs` (a row with no
+    /// owner is left alone) and the first assertion fails with the row still
+    /// `Running` and no second run.
+    #[tokio::test]
+    async fn a_stranded_running_row_is_settled_at_the_next_tick() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-stranded-row");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        std::env::set_var("FUTURE_HOME", dir.path());
+        crate::store::initialize_app_store().expect("app store");
+        reset_for_test();
+
+        let store = Store::open(dir.path()).unwrap();
+        let scheduled = scheduler(); // due now
+        store.insert_task(&scheduled).unwrap();
+        script_agent_setup(&mock, "sess_stranded_row");
+        mock.push_stream(crate::agent_bridge::test_support::StreamScript::Events(
+            vec![crate::agent_bridge::test_support::stream_event(
+                "@attach",
+                0,
+                "agent_end",
+                r#"{"reason":"complete"}"#,
+            )],
+            None,
+        ));
+
+        // The claim row a database stranded before runs recorded an owner:
+        // `running`, with nothing left that will ever write its end. Its slot is
+        // the one *before* the task's next, which is what a run claimed at
+        // 07:20 and never finished looks like an hour later.
+        let stranded = future_tasks::TaskRun {
+            id: future_tasks::new_run_id(),
+            task_id: scheduled.id.clone(),
+            kind: RunKind::Main,
+            origin: RunOrigin::Schedule,
+            actor: None,
+            due_at: scheduled.next_due_at.map(|due| due - 1),
+            status: RunStatus::Running,
+            thread_id: None,
+            session_id: None,
+            run_id: None,
+            prompt_version: Some(1),
+            result_summary: None,
+            feedback: None,
+            feedback_note: None,
+            started_at: Some(now_ms()),
+            finished_at: None,
+            error_message: None,
+            session_deleted: false,
+            finish_reason: None,
+            finish_note: None,
+        };
+        store.insert_run(&stranded).unwrap();
+        assert!(store.has_running_run(&scheduled.id).unwrap());
+
+        tick(&notifier()).await.expect("tick");
+
+        let store = Store::open(dir.path()).unwrap();
+        let settled = store.get_run(&stranded.id).unwrap().expect("row survives");
+        println!("stranded row after one tick: {settled:?}");
+        assert_eq!(
+            settled.status,
+            RunStatus::Failed,
+            "the audit row gets a terminal state, it is never deleted: {settled:?}"
+        );
+        assert!(settled.finished_at.is_some(), "{settled:?}");
+        assert_eq!(
+            settled.finish_reason.as_deref(),
+            Some(future_tasks::finish_reason::INTERRUPTED),
+            "{settled:?}"
+        );
+        assert_eq!(settled.started_at, stranded.started_at, "the start is kept");
+
+        // And the task it held back ran in that same tick. The run that is not
+        // the stranded row is the one the tick claimed for it.
+        wait_until_settled(dir.path(), &scheduled.id).await;
+        let runs = store.list_runs_for_task(&scheduled.id, 10).unwrap();
+        assert_eq!(runs.len(), 2, "the freed task ran at once: {runs:?}");
+        let claimed = runs
+            .iter()
+            .find(|row| row.id != stranded.id)
+            .expect("the task was claimed again");
+        assert_eq!(claimed.status, RunStatus::Completed, "{claimed:?}");
+
+        std::env::remove_var("FUTURE_HOME");
+        reset_for_test();
+    }
+
+    /// The child half of the test below: claim a run through the product's own
+    /// claim path, then die without a single drop guard running — the row a
+    /// `kill -9` of the host leaves behind.
+    ///
+    /// Runs only when the parent asks for it (by setting the env below), so a
+    /// normal suite run gets here and returns.
+    #[test]
+    fn claims_a_run_and_dies_child() {
+        let Ok(task_id) = std::env::var("FUTURE_TASKS_DEATH_CHILD_TASK") else {
+            return;
+        };
+        let home = std::path::PathBuf::from(
+            std::env::var("FUTURE_TASKS_DEATH_CHILD_HOME").expect("child home"),
+        );
+        let store = Store::open(&home).expect("child store");
+        let task = store.get_task(&task_id).unwrap().expect("child task");
+        let run = claim(&store, &task, ClaimReason::Schedule).expect("child claim");
+        println!("child claimed {} and will never settle it", run.id);
+        // No unwinding and no drop: this is what a hard kill looks like from
+        // the inside, which is the state the fixed sweep has to recover from.
+        std::process::abort();
+    }
+
+    /// A host killed mid-run leaves its claim row `running`, and the shipped
+    /// build (startup reconciliation only) had nothing to do about it until the
+    /// process was restarted: every tick read the row as "in flight" and skipped
+    /// the task. The next tick must settle it instead, from inside a live loop.
+    ///
+    /// This drives the real death: a child process claims the run and aborts.
+    #[tokio::test]
+    async fn a_run_left_running_by_a_killed_host_is_settled_on_the_next_tick() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-killed-host");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        std::env::set_var("FUTURE_HOME", dir.path());
+        crate::store::initialize_app_store().expect("app store");
+        reset_for_test();
+
+        let store = Store::open(dir.path()).unwrap();
+        let scheduled = scheduler();
+        store.insert_task(&scheduled).unwrap();
+        script_agent_setup(&mock, "sess_killed_host");
+        mock.push_stream(crate::agent_bridge::test_support::StreamScript::Events(
+            vec![crate::agent_bridge::test_support::stream_event(
+                "@attach",
+                0,
+                "agent_end",
+                r#"{"reason":"complete"}"#,
+            )],
+            None,
+        ));
+
+        let exe = std::env::current_exe().expect("test binary");
+        let output = std::process::Command::new(&exe)
+            .args([
+                "--exact",
+                "tasks::tests::claims_a_run_and_dies_child",
+                "--nocapture",
+            ])
+            .env("FUTURE_TASKS_DEATH_CHILD_TASK", &scheduled.id)
+            .env("FUTURE_TASKS_DEATH_CHILD_HOME", future_home())
+            .output()
+            .expect("spawn the child that dies mid-run");
+        assert!(
+            !output.status.success(),
+            "the child must die without settling its run: {:?}\n{}{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        // What the ledger holds now: a `running` row whose owner is gone.
+        let store = Store::open(dir.path()).unwrap();
+        let runs = store.list_runs_for_task(&scheduled.id, 10).unwrap();
+        assert_eq!(runs.len(), 1, "the dead host's claim is the only run");
+        let dead = runs[0].clone();
+        assert_eq!(dead.status, RunStatus::Running, "{dead:?}");
+        assert!(dead.finished_at.is_none(), "{dead:?}");
+        let (_, owner) = store
+            .running_run_owners()
+            .unwrap()
+            .into_iter()
+            .find(|(id, _)| *id == dead.id)
+            .expect("the dead run is still marked running");
+        let owner = owner.expect("the claim stamped its host");
+        assert_ne!(owner, run_owner(), "a different process claimed it");
+        assert_ne!(
+            owner.split(':').next(),
+            Some(std::process::id().to_string().as_str()),
+            "the row names the process that left it, not this test: {owner}"
+        );
+        // This is the pre-fix state that skipped every tick that followed.
+        assert!(store.has_running_run(&scheduled.id).unwrap());
+
+        // The slot it consumed comes round again (an hour later in production;
+        // here at once, since what the recovery depends on is the tick).
+        let mut after = store.get_task(&scheduled.id).unwrap().unwrap();
+        after.next_due_at = Some(now_ms());
+        store.update_task(&after).unwrap();
+
+        tick(&notifier()).await.expect("tick");
+
+        let store = Store::open(dir.path()).unwrap();
+        let settled = store.get_run(&dead.id).unwrap().expect("row survives");
+        println!("the dead host's row after one tick: {settled:?}");
+        assert_eq!(settled.status, RunStatus::Failed, "{settled:?}");
+        assert!(settled.finished_at.is_some(), "{settled:?}");
+        assert_eq!(
+            settled.finish_reason.as_deref(),
+            Some(future_tasks::finish_reason::INTERRUPTED),
+            "{settled:?}"
+        );
+        assert_eq!(settled.error_message.as_deref(), Some(ORPHANED_RUN_ERROR));
+
+        wait_until_settled(dir.path(), &scheduled.id).await;
+        let runs = store.list_runs_for_task(&scheduled.id, 10).unwrap();
+        assert_eq!(runs.len(), 2, "the task ran in the same tick: {runs:?}");
+        let claimed = runs
+            .iter()
+            .find(|row| row.id != dead.id)
+            .expect("the task was claimed again");
+        assert_eq!(claimed.status, RunStatus::Completed, "{claimed:?}");
+
+        std::env::remove_var("FUTURE_HOME");
+        reset_for_test();
+    }
+
+    /// A run cancelled in flight settles its row, and the task is free again
+    /// immediately: `has_running_run` is the tick's only overlap guard, so a
+    /// cancelled run left behind would hold the next slot back.
+    #[tokio::test]
+    async fn a_run_cancelled_in_flight_settles_its_row_and_frees_the_task() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-cancel-inflight");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        std::env::set_var("FUTURE_HOME", dir.path());
+        crate::store::initialize_app_store().expect("app store");
+        reset_for_test();
+
+        let store = Store::open(dir.path()).unwrap();
+        let mut running_task = task("cancelled-in-flight");
+        running_task.pending_request_at = Some(now_ms());
+        running_task.pending_origin = Some(RunOrigin::Cli);
+        store.insert_task(&running_task).unwrap();
+        script_agent_setup(&mock, "sess_cancel_inflight");
+        // The prompt never comes back: the run is genuinely in flight.
+        mock.push_stream(crate::agent_bridge::test_support::StreamScript::Hang);
+
+        let run = claim(&store, &running_task, ClaimReason::Explicit).unwrap();
+        let live = LiveRun::register(&run.id);
+        let notify = notifier();
+        let task_for_run = running_task.clone();
+        let run_for_executor = run.clone();
+        let home = dir.path().to_path_buf();
+        // The executor the tick would have spawned: cancelling it is the
+        // product's cancel path (the future is dropped, guards and all).
+        let executor = tokio::spawn(async move {
+            let _live = live;
+            let store = Store::open(&home).expect("store for the cancelled run");
+            let _ = execute(&notify, store, task_for_run, run_for_executor).await;
+        });
+
+        // Until the conversation exists, the run has not reached the Agent yet.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let in_flight = Store::open(dir.path())
+                .unwrap()
+                .get_run(&run.id)
+                .unwrap()
+                .and_then(|row| row.thread_id)
+                .is_some();
+            if in_flight {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the run never started"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        executor.abort();
+        let cancelled = executor.await.expect_err("the executor was cancelled");
+        assert!(cancelled.is_cancelled(), "{cancelled:?}");
+
+        let store = Store::open(dir.path()).unwrap();
+        let settled = store.get_run(&run.id).unwrap().expect("row survives");
+        println!("the cancelled run's row: {settled:?}");
+        assert_eq!(settled.status, RunStatus::Failed, "{settled:?}");
+        assert!(settled.finished_at.is_some(), "{settled:?}");
+        assert_eq!(
+            settled.finish_reason.as_deref(),
+            Some(future_tasks::finish_reason::INTERRUPTED),
+            "{settled:?}"
+        );
+        assert!(
+            !store.has_running_run(&running_task.id).unwrap(),
+            "a cancelled run must not hold its task back"
+        );
+
+        std::env::remove_var("FUTURE_HOME");
+        reset_for_test();
     }
 }
 

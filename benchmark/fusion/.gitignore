@@ -1,0 +1,3 @@
+# Full questions, reference answers, upstream files and download manifest.
+# Reproduce this ignored cache using datasets.py + sources.lock.json.
+/data/

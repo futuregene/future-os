@@ -59,7 +59,8 @@ struct DatabaseWorker {
     fence: parking_lot::Mutex<Option<Arc<readers::Readers>>>,
     fence_path: std::path::PathBuf,
     snapshots: snapshots::Readers,
-    wal: wal::Checkpointer,
+    wal: Option<wal::Checkpointer>,
+    nfs: bool,
     metrics: Arc<metrics::Metrics>,
     sender: parking_lot::Mutex<Option<mpsc::SyncSender<DatabaseJob>>>,
     thread: parking_lot::Mutex<Option<std::thread::JoinHandle<()>>>,
@@ -73,7 +74,9 @@ impl Drop for DatabaseWorker {
                 let _ = thread.join();
             }
         }
-        let _ = self.wal.shutdown();
+        if let Some(wal) = &self.wal {
+            let _ = wal.shutdown();
+        }
     }
 }
 
@@ -86,11 +89,13 @@ impl Database {
         path: &Path,
         cancellation: crate::service::StartupCancellation,
     ) -> Result<Self> {
+        let nfs = future_rpc::storage::StorageMode::from_env().map_err(anyhow::Error::msg)?
+            == future_rpc::storage::StorageMode::Nfs;
         let read_path = path.to_path_buf();
         let path = path.to_path_buf();
         let (sender, receiver) = mpsc::sync_channel::<DatabaseJob>(256);
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let reclaim_requested = Arc::new(AtomicBool::new(true));
+        let reclaim_requested = Arc::new(AtomicBool::new(!nfs));
         let worker_reclaim = reclaim_requested.clone();
         let metrics = Arc::new(metrics::Metrics::default());
         let worker_metrics = metrics.clone();
@@ -115,7 +120,7 @@ impl Database {
                         Ok(job) => job(&mut connection),
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                         Err(mpsc::RecvTimeoutError::Timeout) => {
-                            if worker_reclaim.load(Ordering::Acquire)
+                            if !nfs && worker_reclaim.load(Ordering::Acquire)
                                 && std::time::Instant::now() >= next_reclaim
                             {
                                 // Timed like a job: this slice runs on the same
@@ -168,15 +173,19 @@ impl Database {
                 return Err(error);
             }
         };
-        let wal = match wal::Checkpointer::open(&read_path, metrics.clone()) {
-            Ok(wal) => wal,
-            Err(error) => {
-                drop(snapshots);
-                drop(readers);
-                drop(sender);
-                let _ = thread.join();
-                return Err(error);
-            }
+        let wal = if nfs {
+            None
+        } else {
+            Some(match wal::Checkpointer::open(&read_path, metrics.clone()) {
+                Ok(wal) => wal,
+                Err(error) => {
+                    drop(snapshots);
+                    drop(readers);
+                    drop(sender);
+                    let _ = thread.join();
+                    return Err(error);
+                }
+            })
         };
         Ok(Self {
             inner: Arc::new(DatabaseWorker {
@@ -185,6 +194,7 @@ impl Database {
                 fence_path: read_path,
                 snapshots,
                 wal,
+                nfs,
                 metrics,
                 sender: parking_lot::Mutex::new(Some(sender)),
                 thread: parking_lot::Mutex::new(Some(thread)),
@@ -300,6 +310,10 @@ impl Database {
             .call("reader", name, self.inner.metrics.clone(), operation)
     }
 
+    pub(crate) fn is_nfs(&self) -> bool {
+        self.inner.nfs
+    }
+
     pub(crate) fn metrics(&self) -> serde_json::Value {
         self.inner.metrics.snapshot()
     }
@@ -323,7 +337,9 @@ impl Database {
                 .join()
                 .map_err(|_| anyhow!("SQLite worker panicked during shutdown"))?;
         }
-        self.inner.wal.shutdown()?;
+        if let Some(wal) = &self.inner.wal {
+            wal.shutdown()?;
+        }
         Ok(())
     }
 
@@ -366,9 +382,14 @@ impl Database {
     /// priority; startup may resume freed-page reclamation, never compaction
     /// or deletion of journal records.
     pub(crate) fn request_space_reclamation(&self) {
-        self.inner.reclaim_requested.store(true, Ordering::Release);
+        if !self.inner.nfs {
+            self.inner.reclaim_requested.store(true, Ordering::Release);
+        }
     }
 }
+
+#[cfg(all(test, not(target_os = "windows")))]
+mod nfs_tests;
 
 mod connection;
 mod metrics;

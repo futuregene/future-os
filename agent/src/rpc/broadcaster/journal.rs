@@ -39,7 +39,23 @@ impl SseBroadcaster {
         session_id: impl Into<String>,
         manager: &crate::session::Manager,
     ) -> anyhow::Result<()> {
-        let session_id = session_id.into();
+        self.configure_journal_inner(session_id.into(), manager, true)
+    }
+
+    pub(crate) fn configure_created_journal(
+        &self,
+        session_id: String,
+        manager: &crate::session::Manager,
+    ) -> anyhow::Result<()> {
+        self.configure_journal_inner(session_id, manager, false)
+    }
+
+    fn configure_journal_inner(
+        &self,
+        session_id: String,
+        manager: &crate::session::Manager,
+        reserve: bool,
+    ) -> anyhow::Result<()> {
         {
             let run = self.run.lock();
             let journal = self.journal.lock();
@@ -54,11 +70,11 @@ impl SseBroadcaster {
         }
         let result = (|| {
             let store = manager.storage()?.clone();
-            store.bind_events(&session_id)?;
-            let identity = store.storage_identity()?;
-            let (session_idx, loose_idx) = store.event_cursors(&session_id)?;
-            let segmented =
-                store.storage_format(&session_id)? == crate::session::content::FORMAT_VERSION;
+            if reserve {
+                store.bind_events(&session_id)?;
+            }
+            let (identity, (session_idx, loose_idx), segmented) =
+                store.journal_binding(&session_id)?;
             let writer = EventBatchWriter::new(
                 store.clone(),
                 session_id.clone(),

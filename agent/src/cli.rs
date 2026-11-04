@@ -137,6 +137,10 @@ pub struct Cli {
     #[arg(long)]
     grpc_addr: Option<String>,
 
+    /// Storage policy: wal (default, local disk) or nfs (rollback journal).
+    #[arg(long, value_name = "MODE")]
+    storage_mode: Option<future_rpc::storage::StorageMode>,
+
     /// Enable verbose logging (show gRPC requests, LLM calls, tool execution)
     #[arg(long, default_value_t = false)]
     verbose: bool,
@@ -223,7 +227,13 @@ pub fn run_from_args(args: &[String]) -> Result<()> {
         #[cfg(not(target_os = "linux"))]
         anyhow::bail!("Linux sandbox helper is unavailable on this platform");
     }
+    if let Some(mode) = cli.storage_mode {
+        mode.apply();
+    }
     apply_future_home()?;
+    future_rpc::storage::StorageMode::from_env()
+        .map_err(anyhow::Error::msg)?
+        .apply();
     if cli.probe_sandbox {
         let result = crate::sandbox::platform_sandbox_probe_product()?;
         console::println!("{}", serde_json::to_string(&result)?);

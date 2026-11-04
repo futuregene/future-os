@@ -26,8 +26,7 @@ impl Store {
             version <= 1,
             "Unsupported Fusion database version {version}"
         );
-        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
-            BEGIN IMMEDIATE;
+        db.execute_batch("BEGIN IMMEDIATE;
             CREATE TABLE IF NOT EXISTS fusion_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS fusion_runs(id TEXT PRIMARY KEY,parent_session TEXT NOT NULL,parent_run TEXT NOT NULL,tool_call TEXT NOT NULL,status TEXT NOT NULL,owner TEXT,data TEXT NOT NULL CHECK(json_valid(data)),UNIQUE(parent_session,parent_run,tool_call));
             CREATE INDEX IF NOT EXISTS fusion_queue ON fusion_runs(status);
@@ -79,7 +78,7 @@ impl Store {
             .map(|raw| serde_json::from_str(&raw))
             .transpose()?
             .unwrap_or_default();
-        settings.configuration.upgrade_legacy_timeout();
+        settings.configuration.upgrade_generation_policy();
         Ok(settings)
     }
 
@@ -101,7 +100,7 @@ impl Store {
         if let Some(configuration) = patch.configuration {
             settings.configuration = configuration;
         }
-        settings.configuration.upgrade_legacy_timeout();
+        settings.configuration.upgrade_generation_policy();
         settings.configuration.validate()?;
         settings.revision = settings
             .revision
@@ -114,7 +113,11 @@ impl Store {
     fn connect(&self) -> Result<Connection> {
         let db = Connection::open(self.root.join("fusion.db"))?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
-        db.pragma_update(None, "foreign_keys", "ON")?;
+        db.execute_batch(
+            future_rpc::storage::StorageMode::from_env()
+                .map_err(anyhow::Error::msg)?
+                .pragmas(),
+        )?;
         Ok(db)
     }
 
@@ -567,11 +570,14 @@ mod tests {
     }
 
     #[test]
-    fn saved_five_minute_default_upgrades_without_changing_thinking_or_history() {
+    fn saved_deadline_policy_upgrades_without_changing_thinking_or_history() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
         let mut saved = crate::Settings::default();
+        saved.configuration.version = 2;
         saved.configuration.step_timeout_secs = 300;
+        saved.configuration.run_timeout_secs = 2700;
+        saved.configuration.idle_timeout_secs = None;
         saved.configuration.moderator.thinking_level = "high".into();
         saved.configuration.panel[0].thinking_level = "low".into();
         saved.revision = 7;
@@ -601,9 +607,13 @@ mod tests {
         let (new, _) = store
             .prepare(parent.clone(), input.clone(), dir.path())
             .unwrap();
-        assert_eq!(new.configuration.as_ref().unwrap().step_timeout_secs, 600);
+        assert_eq!(new.configuration.as_ref().unwrap().step_timeout_secs, 0);
+        assert_eq!(
+            new.configuration.as_ref().unwrap().idle_timeout_secs,
+            Some(300)
+        );
         let mut historic = new.clone();
-        historic.configuration.as_mut().unwrap().step_timeout_secs = 300;
+        historic.configuration = Some(saved.configuration.clone());
         store
             .connect()
             .unwrap()
@@ -613,7 +623,7 @@ mod tests {
             )
             .unwrap();
         let loaded = store.settings().unwrap();
-        assert_eq!(loaded.configuration.step_timeout_secs, 600);
+        assert_eq!(loaded.configuration.step_timeout_secs, 0);
         assert_eq!(
             loaded.configuration.moderator,
             saved.configuration.moderator
@@ -630,7 +640,7 @@ mod tests {
                 configuration: Some(saved.configuration.clone()),
             })
             .unwrap();
-        assert_eq!(updated.configuration.step_timeout_secs, 600);
+        assert_eq!(updated.configuration.step_timeout_secs, 0);
         assert_eq!(
             updated.configuration.moderator,
             saved.configuration.moderator

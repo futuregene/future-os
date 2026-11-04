@@ -147,6 +147,7 @@ pub struct SseBroadcaster {
     lag_count: std::sync::Arc<std::sync::atomic::AtomicU64>,
     journal: std::sync::Arc<parking_lot::Mutex<EventJournalState>>,
     journal_health: std::sync::Arc<EventJournalHealth>,
+    model_output_progress: std::sync::Arc<parking_lot::Mutex<(String, u64)>>,
 }
 
 impl SseBroadcaster {
@@ -170,6 +171,7 @@ impl SseBroadcaster {
             lag_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             journal: std::sync::Arc::new(parking_lot::Mutex::new(EventJournalState::default())),
             journal_health: std::sync::Arc::new(EventJournalHealth::default()),
+            model_output_progress: Default::default(),
         }
     }
 
@@ -190,6 +192,13 @@ impl SseBroadcaster {
 
     pub fn current_run_id(&self) -> String {
         self.run.lock().run_id.clone()
+    }
+
+    /// Semantic model output only. Replay, heartbeats, usage and state changes
+    /// never advance this counter; ownership remains bound to the producing run.
+    pub fn model_output_progress(&self) -> serde_json::Value {
+        let progress = self.model_output_progress.lock();
+        serde_json::json!({"runId": progress.0, "bytes": progress.1})
     }
 
     /// Count of ring-truncation resyncs: times a consumer's cursor fell behind
@@ -329,6 +338,21 @@ impl SseBroadcaster {
         let mut wire = source.as_ref().map(|data| {
             crate::session::content::transport::prepare_wire_data(data, &event.event_type)
         });
+        let content_bytes = if matches!(
+            event.event_type.as_str(),
+            "text_chunk" | "thinking_delta" | "thinking_chunk"
+        ) {
+            if let Some(data) = &source {
+                data["text"].as_str().map(str::len).unwrap_or(0)
+            } else {
+                serde_json::from_str::<serde_json::Value>(&event.data)
+                    .ok()
+                    .and_then(|data| data["text"].as_str().map(str::len))
+                    .unwrap_or(0)
+            }
+        } else {
+            0
+        };
         let initial_tool_bytes = source
             .as_ref()
             .filter(|_| event.event_type == "tool_start")
@@ -449,6 +473,13 @@ impl SseBroadcaster {
         let bounded = journal.segmented || journal.memory_boundary.is_some();
         drop(journal);
         if !session_scoped {
+            if content_bytes > 0 {
+                let mut progress = self.model_output_progress.lock();
+                if progress.0 != event.run_id {
+                    *progress = (event.run_id.clone(), 0);
+                }
+                progress.1 = progress.1.saturating_add(content_bytes as u64);
+            }
             run.idx += 1;
             run.record_event(&event, bounded);
         }
