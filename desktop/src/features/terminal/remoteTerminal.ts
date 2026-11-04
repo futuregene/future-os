@@ -2,7 +2,7 @@ import type { TerminalLink, TerminalTransport } from "./transport";
 import type { CreateTerminalInput, TerminalInfo } from "./types";
 import { requestRemotePeer } from "../remote-peer/remotePeerClient";
 import { TerminalApiError } from "./client";
-import { AttachAborted, CLOSE_EXIT } from "./transport";
+import { AttachAborted, CLOSE_EXIT, CLOSE_LAGGED } from "./transport";
 
 /**
  * The embedded terminal as a *paired* desktop drives it.
@@ -43,6 +43,15 @@ const BUSY_POLL_MS = 16;
 const MAX_PAGES_PER_WAKE = 4;
 /** Consecutive failed reads before the attachment gives up and re-attaches. */
 const READ_FAILURES = 3;
+/**
+ * Bytes per `terminal_write`.
+ *
+ * The host refuses one write above 256 KiB, so a paste is split here rather
+ * than dropped: 32 KiB keeps a single command comfortably inside the wire
+ * budget and still turns a 1 MiB paste into 32 acknowledged round trips instead
+ * of one refusal.
+ */
+const WRITE_CHUNK_BYTES = 32 * 1024;
 
 /** A read page, as `terminal_read` answers it. */
 export interface RemoteTerminalPage {
@@ -53,8 +62,22 @@ export interface RemoteTerminalPage {
   exitCode: number | null;
 }
 
+/**
+ * Bytes on this wire are **URL-safe, unpadded** base64.
+ *
+ * Not a preference: the host encodes with `URL_SAFE_NO_PAD`
+ * (`host/src/remote_host/business/terminal.rs`), and `atob` throws on its `-`
+ * and `_` symbols while `btoa` emits the standard `+/` alphabet *with* padding,
+ * which that engine refuses. Both ends were written and tested against
+ * themselves, so a plain `btoa` looked right and failed only at the seam — for
+ * keyboard input (most batches pad) and for output whose bytes happen to land on
+ * the two symbols. This pair of helpers is that seam, and the tests pin the
+ * literal both sides must agree on.
+ */
 function decodeBase64(value: string): Uint8Array {
-  const binary = atob(value);
+  const standard = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = standard + "=".repeat((4 - (standard.length % 4)) % 4);
+  const binary = atob(padded);
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1)
     bytes[index] = binary.charCodeAt(index);
@@ -66,7 +89,7 @@ function encodeBase64(bytes: Uint8Array): string {
   // Chunked so a large paste cannot blow the argument limit of `String.fromCharCode`.
   for (let index = 0; index < bytes.length; index += 0x8000)
     binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
-  return btoa(binary);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 /**
@@ -150,7 +173,13 @@ export async function createRemoteTerminal(
       },
       sessionId,
     );
-    return info(reply?.terminal);
+    const created = info(reply?.terminal);
+    if (!created.id) {
+      // A tab whose id is empty cannot be attached, listed or closed: say so
+      // here, where the panel still has a place to show the failure.
+      throw new TerminalApiError("REQUEST_FAILED", "the host returned no terminal", 0);
+    }
+    return created;
   }
   catch (cause) {
     throw remoteTerminalError(cause);
@@ -336,13 +365,31 @@ export function remoteTerminalTransport(desktopId: string): TerminalTransport {
         pending = "";
         writing = true;
         try {
-          await writeRemoteTerminal(desktopId, terminalId, new TextEncoder().encode(batch));
+          // One `terminal_write` per chunk. A paste larger than the host's cap
+          // is refused outright (`TERMINAL_INPUT_TOO_LARGE`), and the refusal
+          // used to be swallowed, so a big paste simply vanished.
+          const bytes = new TextEncoder().encode(batch);
+          for (let offset = 0; offset < bytes.length; offset += WRITE_CHUNK_BYTES) {
+            await writeRemoteTerminal(
+              desktopId,
+              terminalId,
+              bytes.subarray(offset, Math.min(offset + WRITE_CHUNK_BYTES, bytes.length)),
+            );
+          }
         }
         catch (cause) {
-          // A shell that exited is reported by the reader (it has the exit
-          // code); anything else is retried with the next batch rather than
-          // raised here, where no one is waiting for the answer.
-          void remoteTerminalError(cause).code;
+          const error = remoteTerminalError(cause);
+          // A shell that exited reports its own exit through the reader, which
+          // has the code. Anything else means these keystrokes did **not** reach
+          // the shell: say so by re-attaching (lagged semantics) so the view
+          // shows it is reconnecting and resyncs, instead of a silently ignored
+          // typo.
+          if (!stopped && error.code !== "TERMINAL_CLOSED") {
+            pending = "";
+            writing = false;
+            stop(CLOSE_LAGGED);
+            return;
+          }
         }
         finally {
           writing = false;

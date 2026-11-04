@@ -220,7 +220,10 @@ shell，以 **ibus-libpinyin** 作为输入法，经 `WebKitWebDriver`——IME 
 
 **它是分页拉取，不是推流。** 命令走普通控制面通道：`terminal_list` /
 `terminal_create` / `terminal_update` / `terminal_delete` / `terminal_read` /
-`terminal_write`。`terminal_read` 返回客户端已应用游标**之后**的字节以及新游标
+`terminal_write`。字节以**URL-safe、无填充**的 base64 走在 `terminal_data` 里——是宿主的
+`URL_SAFE_NO_PAD`，不是浏览器的 `btoa` 字母表：`[0xFB, 0xFF]` 写作 `-_8`，两端都在测试里
+钉住这个字面量，因为这里不一致要到很晚才暴露（带填充的 `bA==` 宿主直接拒绝，而 `atob`
+遇到 `-_` 会抛异常）。`terminal_read` 返回客户端已应用游标**之后**的字节以及新游标
 ——与回环挂接同一套绝对偏移契约，所以重连的客户端只要差额，并且会在保留尾巴
 覆盖不到时被告知（`start > cursor`）。单页上限 64 KiB，单次写入上限 256 KiB。
 

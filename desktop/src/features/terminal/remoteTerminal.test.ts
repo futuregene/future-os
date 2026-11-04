@@ -22,9 +22,20 @@ vi.mock("../remote-peer/remotePeerClient", () => ({
 
 const request = hoisted.request;
 
+/**
+ * The wire's bytes dialect: URL-safe, unpadded base64.
+ *
+ * Deliberately *not* `btoa`: the whole point of the tests below is that this
+ * alphabet is not the browser's, and a fixture that quietly used the standard
+ * one made the seam look fine while it was broken (`-_` throws in `atob`,
+ * `bA==` is refused by the host).
+ */
 function base64(text: string): string {
-  return btoa(text);
+  return btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
+
+/** What the host answers with for the two bytes `[0xFB, 0xFF]`. */
+const DIALECT_LITERAL = "-_8";
 
 /** One `terminal_read` reply, as the host builds it. */
 function page(bytes: string, cursor: number, options: {
@@ -43,6 +54,8 @@ function page(bytes: string, cursor: number, options: {
 
 interface Recorded {
   bytes: string[];
+  /** The same pages as raw bytes: a page may be binary and not survive decode. */
+  raw: number[][];
   metas: Array<{ cursor: number; start: number; exitCode?: number }>;
   closes: number[];
   missing: number;
@@ -51,7 +64,7 @@ interface Recorded {
 }
 
 function handlers(): { handlers: TerminalTransportHandlers; record: Recorded } {
-  const record: Recorded = { bytes: [], metas: [], closes: [], missing: 0, opened: 0, texts: [] };
+  const record: Recorded = { bytes: [], raw: [], metas: [], closes: [], missing: 0, opened: 0, texts: [] };
   return {
     record,
     handlers: {
@@ -59,6 +72,7 @@ function handlers(): { handlers: TerminalTransportHandlers; record: Recorded } {
         record.opened += 1;
       },
       onBytes: (bytes: Uint8Array) => {
+        record.raw.push(Array.from(bytes));
         record.bytes.push(new TextDecoder().decode(bytes));
       },
       onMeta: (meta: { cursor: number; start: number; exitCode?: number } | undefined) => {
@@ -235,6 +249,93 @@ describe("remoteTerminalTransport", () => {
       remoteTerminalTransport("desk-b").open("term-1", 0, options, controller.signal),
     ).rejects.toBeInstanceOf(AttachAborted);
     expect(record.opened).toBe(0);
+  });
+});
+
+describe("the bytes dialect", () => {
+  it("decodes the host's URL-safe unpadded pages", async () => {
+    vi.useFakeTimers();
+    // `-_8` is how the host spells [0xFB, 0xFF]; `atob` rejects it outright, and
+    // a page containing those bytes used to stop the stream dead.
+    const bytes = Uint8Array.from([0xFB, 0xFF]);
+    script([{
+      data: DIALECT_LITERAL,
+      cursor: 2,
+      start: 0,
+      status: "running",
+      exitCode: null,
+    }]);
+    const { handlers: options, record } = handlers();
+    const link = await remoteTerminalTransport("desk-b").open("term-1", 0, options, new AbortController().signal);
+    expect(record.raw).toEqual([[0xFB, 0xFF]]);
+    expect(bytes.length).toBe(2);
+    link.close();
+    vi.useRealTimers();
+  });
+
+  it("writes input in that same alphabet, unpadded", async () => {
+    vi.useFakeTimers();
+    script([page("", 0, { start: 0 })]);
+    const { handlers: options } = handlers();
+    const link = await remoteTerminalTransport("desk-b").open("term-1", -1, options, new AbortController().signal);
+
+    // One character: standard base64 would be `bA==`, which the host refuses.
+    link.write("l");
+    await vi.advanceTimersByTimeAsync(20);
+    const write = request.mock.calls.find(call => call[1].type === "terminal_write");
+    expect(write?.[1].terminalData).toBe("bA");
+
+    link.write("ÿ");
+    await vi.advanceTimersByTimeAsync(20);
+    const writes = request.mock.calls.filter(call => call[1].type === "terminal_write");
+    expect(writes[writes.length - 1]?.[1].terminalData).toBe("w78");
+
+    link.close();
+    vi.useRealTimers();
+  });
+});
+
+describe("input", () => {
+  it("splits a paste at the host's per-write cap instead of losing it", async () => {
+    vi.useFakeTimers();
+    script([page("", 0, { start: 0 })]);
+    const { handlers: options } = handlers();
+    const link = await remoteTerminalTransport("desk-b").open("term-1", -1, options, new AbortController().signal);
+
+    // Larger than one write may be: the host refuses above 256 KiB, and this
+    // client sends at most 32 KiB per request.
+    link.write("x".repeat(100 * 1024));
+    await vi.advanceTimersByTimeAsync(60);
+    const writes = request.mock.calls.filter(call => call[1].type === "terminal_write");
+    expect(writes.length).toBeGreaterThan(1);
+    const total = writes.reduce(
+      (sum, call) => sum + atob(String(call[1].terminalData).replace(/-/g, "+").replace(/_/g, "/")).length,
+      0,
+    );
+    expect(total).toBe(100 * 1024);
+
+    link.close();
+    vi.useRealTimers();
+  });
+
+  it("re-attaches instead of silently dropping keystrokes the host refused", async () => {
+    vi.useFakeTimers();
+    script([page("", 0, { start: 0 })]);
+    const base = request.getMockImplementation()!;
+    request.mockImplementation(async (desktopId: string, command: { type: string }) => {
+      if (command.type === "terminal_write")
+        throw new Error("PTY_IO_FAILED: write: broken pipe");
+      return base(desktopId, command);
+    });
+    const { handlers: options, record } = handlers();
+    const link = await remoteTerminalTransport("desk-b").open("term-1", -1, options, new AbortController().signal);
+
+    link.write("a");
+    await vi.advanceTimersByTimeAsync(30);
+    expect(record.closes).toEqual([4408]);
+
+    link.close();
+    vi.useRealTimers();
   });
 });
 
