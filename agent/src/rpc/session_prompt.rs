@@ -747,7 +747,7 @@ impl ServerSession {
         // A cold handle may have loaded neither history nor its checkpoint.
         // Both are no-ops on the normal hot path.
         self.ensure_checkpoint_loaded()?;
-        let (system_prompt, verbose, mut run_loop) = if let Some(snapshot) = accepted_snapshot {
+        let (verbose, mut run_loop) = if let Some(snapshot) = accepted_snapshot {
             let mut run_loop = snapshot.run_loop;
             self.swap_token_counters_into_loop(&mut run_loop);
             self.wire_auto_compaction(&mut run_loop, run_auto_compaction, &run_model);
@@ -760,7 +760,7 @@ impl ServerSession {
             );
             run_loop.system_prompt = system_prompt.clone();
             run_loop.config.system_prompt = system_prompt.clone();
-            (system_prompt, run_loop.verbose, run_loop)
+            (run_loop.verbose, run_loop)
         } else {
             let mut shared = self
                 .agent_loop
@@ -792,7 +792,7 @@ impl ServerSession {
             let mut snapshot = shared.independent_copy();
             snapshot.context_manager = shared.context_manager.clone();
             snapshot.active_checkpoint = shared.active_checkpoint.clone();
-            (system_prompt, shared.verbose, snapshot)
+            (shared.verbose, snapshot)
         };
         // Every run snapshot updates the session-owned checkpoint cell directly.
         // A queued/accepted snapshot may predate the previous run's checkpoint,
@@ -1097,8 +1097,16 @@ impl ServerSession {
                                            // Fusion Host owns the bounded retry policy; do not multiply it here.
             run_loop.config.max_retries = 0;
             // Enforce capacity on every request, including accumulated tool turns.
+            let provider = if execution.settings.idle_timeout_ms.is_some() {
+                run_loop
+                    .provider
+                    .snapshot_without_request_deadline()?
+                    .unwrap_or_else(|| run_loop.provider.clone())
+            } else {
+                run_loop.provider.clone()
+            };
             run_loop.provider = Arc::new(crate::fusion::ContextProvider {
-                provider: run_loop.provider.clone(),
+                provider,
                 settings: execution.settings,
             });
             run_loop.parallel_tools = false;
@@ -1288,7 +1296,9 @@ impl ServerSession {
             // the model name, not the "provider/model" display format stored
             // on ServerSession.
             model: run_loop.model.clone(),
-            system_prompt,
+            // Include run-scoped additions (notably the Fusion discussion
+            // policy) made after the initial session prompt was built.
+            system_prompt: run_loop.system_prompt.clone(),
             on_tool_result: Some(save_closure.clone()),
             save_callback: Some(save_closure),
             on_checkpoint: (!is_ephemeral).then_some(checkpoint_callback),

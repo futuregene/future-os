@@ -177,18 +177,26 @@ fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
             }
             store.ready(&run.id)?;
         }
-        let timeout_ms = run
+        let deadline = if run
             .configuration
             .as_ref()
-            .map(|config| config.run_timeout_secs)
-            .unwrap_or(future_fusion::RUN_TIMEOUT_SECS)
-            .saturating_mul(1000);
-        let remaining_ms = timeout_ms.saturating_sub(
-            future_fusion::now_ms()
-                .saturating_sub(run.created_at)
-                .max(0) as u64,
-        );
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(remaining_ms);
+            .is_some_and(|config| config.inactivity_timeout_secs().is_some())
+        {
+            None
+        } else {
+            let timeout_ms = run
+                .configuration
+                .as_ref()
+                .map(|config| config.run_timeout_secs)
+                .unwrap_or(future_fusion::RUN_TIMEOUT_SECS)
+                .saturating_mul(1000);
+            let remaining = timeout_ms.saturating_sub(
+                future_fusion::now_ms()
+                    .saturating_sub(run.created_at)
+                    .max(0) as u64,
+            );
+            Some(tokio::time::Instant::now() + std::time::Duration::from_millis(remaining))
+        };
         loop {
             if cancelled.load(Ordering::Acquire) {
                 store.cancel(&run.id)?;
@@ -213,7 +221,9 @@ fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
                 current.status,
                 current.error.as_deref().unwrap_or("no final result")
             );
-            if tokio::time::Instant::now() >= deadline || !store.host_available() {
+            if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+                || !store.host_available()
+            {
                 store.fail(
                     &run.id,
                     None,
@@ -621,6 +631,7 @@ mod input_contract_tests {
                 max_public_bytes: 4096,
                 report_revision: 0,
                 timeout_ms: 1000,
+                idle_timeout_ms: None,
                 retry_reason: None,
             },
         };
@@ -671,6 +682,7 @@ mod input_contract_tests {
                 max_public_bytes: 1,
                 report_revision: 0,
                 timeout_ms: 300_000,
+                idle_timeout_ms: None,
                 retry_reason: None,
             },
         };
