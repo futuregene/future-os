@@ -3,7 +3,11 @@
   "title": "快速连续切换三个会话",
   "area": "conversation",
   "priority": "P2",
-  "tags": ["sequence", "navigation", "race"],
+  "tags": [
+    "sequence",
+    "navigation",
+    "race"
+  ],
   "description": "在很短的间隔里依次打开首屏可见的三个会话，最后停留在第三个。检查不会串台、没有未捕获异常；用可见行而不是数据库前 N 行，避免分页/分组变化让用例失效。",
   "preconditions": "首屏至少有三个会话。",
   "expectations": [
@@ -12,22 +16,61 @@
     "侧边栏选中态与主区域一致"
   ],
   "steps": [
-    { "wait": 900 },
     {
-      "eval": "window.__rows = [...document.querySelectorAll('[aria-label$=\" 的操作\"]')].map(el => el.getAttribute('aria-label').replace(/ 的操作$/, '')).slice(0, 3); window.__rows.length",
+      "wait": 900
+    },
+    {
+      "eval": "window.__rows = [...document.querySelectorAll('[aria-label$=\" 的操作\"]')].map(el => el.getAttribute('aria-label').replace(/ 的操作$/, '')).filter(title => title.length <= 16).slice(0, 3); window.__rows.length",
       "as": "rowCount"
     },
-    { "assert": { "expr": "window.__rows.length >= 3", "message": "首屏至少三行会话" } },
-    { "eval": "window.__rows[0]", "as": "a" },
-    { "eval": "window.__rows[1]", "as": "b" },
-    { "eval": "window.__rows[2]", "as": "c" },
-    { "click": { "aria": "{{a}}" } },
-    { "wait": 250 },
-    { "click": { "aria": "{{b}}" } },
-    { "wait": 250 },
-    { "click": { "aria": "{{c}}" } },
-    { "waitFor": { "text": "{{c}}" }, "timeout": 5000 },
-    { "wait": 900 },
+    {
+      "assert": {
+        "expr": "window.__rows.length >= 3",
+        "message": "首屏至少三行会话"
+      }
+    },
+    {
+      "eval": "window.__rows[0]",
+      "as": "a"
+    },
+    {
+      "eval": "window.__rows[1]",
+      "as": "b"
+    },
+    {
+      "eval": "window.__rows[2]",
+      "as": "c"
+    },
+    {
+      "click": {
+        "text": "{{a}}"
+      }
+    },
+    {
+      "wait": 250
+    },
+    {
+      "click": {
+        "text": "{{b}}"
+      }
+    },
+    {
+      "wait": 250
+    },
+    {
+      "click": {
+        "text": "{{c}}"
+      }
+    },
+    {
+      "waitFor": {
+        "text": "{{c}}"
+      },
+      "timeout": 5000
+    },
+    {
+      "wait": 900
+    },
     {
       "assert": {
         "expr": "document.querySelector('main')?.innerText.includes('{{c}}')",
@@ -40,6 +83,8 @@
         "message": "侧栏选中态没有停在旧会话（允许无 aria-selected 的实现）"
       }
     },
-    { "shot": "third-thread" }
+    {
+      "shot": "third-thread"
+    }
   ]
 }
