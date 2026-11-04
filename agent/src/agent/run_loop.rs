@@ -15,11 +15,7 @@ struct AccumulatedReasoningBlock {
     id: String,
     text: String,
     provider_metadata: crate::types::ProviderMetadata,
-    /// A `ReasoningEnd` for this block has already gone downstream. The
-    /// provider layer closes an open block when a stream ends without a
-    /// terminal frame, and a second close would be journaled as a new empty
-    /// block under an identity that is already sealed (`block_id` repeats per
-    /// message), which the durable journal refuses.
+    /// Tracks whether this block was closed before the message journal is sealed.
     closed: bool,
 }
 
@@ -945,7 +941,7 @@ impl Loop {
 
                 match model_event {
                     ModelStreamEvent::ReasoningStart { id } => {
-                        reasoning_block_mut(&mut reasoning_blocks, &id);
+                        reasoning_block_mut(&mut reasoning_blocks, &id).closed = false;
                         record_assistant_block(
                             &mut assistant_block_order,
                             AssistantBlockOrder::Reasoning(id),
@@ -955,9 +951,9 @@ impl Loop {
                         }
                     }
                     ModelStreamEvent::ReasoningDelta { id, text } => {
-                        reasoning_block_mut(&mut reasoning_blocks, &id)
-                            .text
-                            .push_str(&text);
+                        let block = reasoning_block_mut(&mut reasoning_blocks, &id);
+                        block.closed = false;
+                        block.text.push_str(&text);
                         record_assistant_block(
                             &mut assistant_block_order,
                             AssistantBlockOrder::Reasoning(id),
@@ -1266,6 +1262,17 @@ impl Loop {
             // placeholder tool-result messages, otherwise the LLM API rejects
             // the conversation on resume (HTTP 400: "assistant message with
             // tool_calls must be followed by tool messages").
+            // EOF/cancellation can omit a provider's end event. Close only
+            // unfinished blocks, before MessageEnd seals their durable bodies.
+            // Closing them again after that boundary would reopen offset zero
+            // against the already sealed prefix and poison the retry journal.
+            for block in reasoning_blocks.iter_mut().filter(|block| !block.closed) {
+                on_event(RunEvent::Model(ModelStreamEvent::ReasoningEnd {
+                    id: block.id.clone(),
+                    provider_metadata: block.provider_metadata.clone(),
+                }));
+                block.closed = true;
+            }
             if ctx.segmented_storage {
                 on_event(RunEvent::MessageEnd {
                     entry_id: stream_entry_id.clone(),
@@ -1371,22 +1378,6 @@ impl Loop {
                         target_path: None,
                         shell_result: None,
                     });
-                }
-                // Close a possibly unfinished reasoning display before the
-                // next attempt. No synthetic reasoning metadata is persisted.
-                //
-                // Only blocks still open: a stream that ended without a
-                // terminal frame has already been closed by the provider layer
-                // (`finish_stream`), and closing it twice would seal an empty
-                // body under a content identity that already holds the first
-                // attempt's bytes — a contradiction the journal refuses, which
-                // then fails every later batch of this session.
-                for block in reasoning_blocks.iter_mut().filter(|block| !block.closed) {
-                    block.closed = true;
-                    on_event(RunEvent::Model(ModelStreamEvent::ReasoningEnd {
-                        id: block.id.clone(),
-                        provider_metadata: block.provider_metadata.clone(),
-                    }));
                 }
                 retry_text = assistant_text;
                 stream_retry_attempt += 1;

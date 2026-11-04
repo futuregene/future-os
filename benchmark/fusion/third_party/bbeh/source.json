@@ -1,0 +1,10 @@
+{
+  "repo": "google-deepmind/bbeh",
+  "revision": "80d12ca916b7158f22293fcf3144f4d3d854d4be",
+  "files": {
+    "evaluate.py": "4b4f06e5babb015de2ba639bae995a5526182ffb5b5890af54dfcf038580eb34",
+    "LICENSE": "ed714919b09bcaee887dfed4bca3972041cac53453c3089f57a367e05a50704d"
+  },
+  "source_path": "bbeh/evaluate.py",
+  "changes": "Unmodified upstream files. Only function definitions are evaluated by scoring.py."
+}

@@ -375,7 +375,7 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
     // printHelp(): bare `future`, `--help`, `-h` and `help` print the main help
     // and succeed. Only these: everything above is a known group.
     if matches!(group, None | Some("--help" | "-h" | "help")) {
-        out.log(help::MAIN_HELP);
+        out.log(&help::main_help());
         return 0;
     }
     // An unknown group used to fall through to the same help with exit 0, which
@@ -486,7 +486,7 @@ mod tests {
     async fn no_args_prints_main_help() {
         let (code, stdout, stderr) = run(&[]).await;
         assert_eq!(code, 0);
-        assert_eq!(stdout, format!("{}\n", help::MAIN_HELP));
+        assert_eq!(stdout, format!("{}\n", help::main_help()));
         assert_eq!(stderr, "");
     }
 
@@ -496,7 +496,7 @@ mod tests {
         for args in [&["--help"][..], &["-h"][..], &["help"][..]] {
             let (code, stdout, stderr) = run(args).await;
             assert_eq!(code, 0, "{args:?}");
-            assert_eq!(stdout, format!("{}\n", help::MAIN_HELP), "{args:?}");
+            assert_eq!(stdout, format!("{}\n", help::main_help()), "{args:?}");
             assert_eq!(stderr, "", "{args:?}");
         }
     }
