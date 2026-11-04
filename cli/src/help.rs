@@ -217,6 +217,7 @@ Settable keys (camelCase, as the desktop API spells them):
   autoConnectRemote       true|false         Keep the remote desktop on after a restart
   skillGuideDismissed     true|false         Skills onboarding banner dismissed
   skillIntroDismissed     true|false         Skills intro bubble acknowledged
+  archiveGuideSeen        true|false         First-archive guide shown
   bellOnComplete          true|false         Bell when a run finishes
   autoTitleFirstTurn      true|false         Generate a title after the first answer
   titleLanguage           en|zh              Language used for generated titles

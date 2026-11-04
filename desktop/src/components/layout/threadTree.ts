@@ -140,6 +140,45 @@ export function threadParentIds(threads: StoredThread[]): Map<string, string> {
 }
 
 /**
+ * How many conversations one fork tree holds — the thread itself plus every
+ * descendant an archive would take with it.
+ *
+ * Lineage is keyed by agent session id (the same relation `threadParentIds`
+ * resolves), so the count matches what `archive_thread_tree` will archive. A
+ * malformed cycle terminates instead of recursing forever.
+ */
+export function treeMemberCount(threads: StoredThread[], threadId: string): number {
+  const sessionKey = (thread: StoredThread) => thread.agentSessionId || thread.id;
+  const bySession = new Map(threads.map(thread => [sessionKey(thread), thread] as const));
+  const childrenOf = new Map<string, StoredThread[]>();
+  for (const thread of threads) {
+    if (!thread.parentSessionId)
+      continue;
+    const parent = bySession.get(thread.parentSessionId);
+    if (!parent)
+      continue;
+    const list = childrenOf.get(parent.id) ?? [];
+    list.push(thread);
+    childrenOf.set(parent.id, list);
+  }
+  const root = threads.find(thread => thread.id === threadId);
+  if (!root)
+    return 0;
+  let count = 0;
+  const seen = new Set<string>();
+  const stack = [root];
+  while (stack.length > 0 && count < 512) {
+    const thread = stack.pop()!;
+    if (seen.has(thread.id))
+      continue;
+    seen.add(thread.id);
+    count += 1;
+    stack.push(...(childrenOf.get(thread.id) ?? []));
+  }
+  return count;
+}
+
+/**
  * This machine's conversation tree.
  *
  * Descendants follow their root's section. Pinned children become roots. A

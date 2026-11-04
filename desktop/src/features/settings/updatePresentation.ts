@@ -19,5 +19,11 @@ export function updatePresentation(result: MaintenanceStatus["update"]) {
         : ["failed", "interrupted", "not-installed"].includes(outcome ?? "")
             ? "update.installFailed"
             : null;
-  return { repair, ready, working, canRestart, problem };
+  // A failed pre-install cleanup records no installer handoff, so the journal
+  // accepts a new attempt (`Operation::begin` only refuses unconfirmed,
+  // repair-required and interrupted-mid-install records). The retryable flag
+  // separates "this is a problem" from "this problem blocks installing":
+  // cleanup-failed and failed-restored may retry, the rest may not.
+  const retryable = Boolean(outcome && ["cleanup-failed", "failed-restored"].includes(outcome));
+  return { repair, ready, working, canRestart, problem, retryable };
 }

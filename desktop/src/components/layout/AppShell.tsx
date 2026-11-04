@@ -61,11 +61,13 @@ import { getFutureEnvironment } from "../../integrations/agent/providers";
 import { refreshSkills } from "../../integrations/skills/skillsClient";
 import { openExternalUrl } from "../../integrations/storage/files";
 import {
+  archiveWorkspace,
   createWorkspace,
   markThreadOpened,
   pinThread,
   pinWorkspace,
-  restoreThread,
+  restoreThreadTree,
+  restoreWorkspace,
 } from "../../integrations/storage/threadStore";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 import { errorMessage } from "../../lib/errors";
@@ -157,6 +159,10 @@ function ReadyAppShell({
   const { t: tAgent } = useTranslation("agent");
   const [section, setSection] = useState<ActivitySection>("chat");
   const [centerMode, setCenterMode] = useState<"thread" | "new-chat">("thread");
+  /** The first-archive coachmark is on screen (one archive per installation). */
+  const [archiveGuideVisible, setArchiveGuideVisible] = useState(false);
+  /** The archive entry is pulsing: the row just left, and this says where it went. */
+  const [archivePulse, setArchivePulse] = useState(false);
   /**
    * Whether the Vibe panel has the screen.
    *
@@ -376,11 +382,18 @@ function ReadyAppShell({
     activeWorkspace,
     activeThreadId,
     setActiveThreadId,
+    selectThread,
     threadRunStatuses,
     threadStreamingStatuses,
     loadingStore,
     storeError,
     refreshStore,
+    ensureScope,
+    loadMore,
+    loadMoreWorkspaces,
+    scopeHasMore,
+    scopeLoading,
+    workspacesHasMore,
   } = useThreadStore();
 
   // Start observing the active thread's agent session for real-time
@@ -600,9 +613,11 @@ function ReadyAppShell({
     renameDialog,
     deleteDialog,
     batchDeleteDialog,
+    archiveDialog,
     setRenameDialog,
     setDeleteDialog,
     setBatchDeleteDialog,
+    setArchiveDialog,
     openRename,
     confirmRename,
     generateTitle,
@@ -610,7 +625,10 @@ function ReadyAppShell({
     confirmDelete,
     openBatchDelete,
     confirmBatchDelete,
-  } = useThreadDialogs({ activeThreadId, refreshStore });
+    requestArchive,
+    confirmArchive,
+    archiveThreads,
+  } = useThreadDialogs({ activeThreadId, onArchived: handleFirstArchive, refreshStore, threads });
   const {
     renameDialog: workspaceRenameDialog,
     deleteDialog: workspaceDeleteDialog,
@@ -1058,10 +1076,96 @@ function ReadyAppShell({
   }
 
   async function handleRestoreThread(thread: StoredThread) {
-    const restoredThread = await restoreThread(thread.id);
+    const restoredThread = await restoreThreadTree(thread.id);
+    // Re-read the archived view too: a restored row leaves it.
+    emitFutureEvent("archive-changed", undefined);
     await refreshStore(restoredThread.id);
     setSection(restoredThread.mode === "workspace" ? "workspace" : "chat");
     setCenterMode("thread");
+  }
+
+  /**
+   * Show the archive guide: the pulse on the entry plus its coachmark.
+   *
+   * One-time per installation, which the flag decides — but "one-time" must not
+   * mean "unrecoverable", so the archived view can ask for it again (see
+   * `onShowArchiveGuide` below). A manual re-show writes nothing: the flag is
+   * already set.
+   */
+  function showArchiveGuide() {
+    setArchiveGuideVisible(true);
+    setArchivePulse(true);
+    window.setTimeout(setArchivePulse, 2900, false);
+    window.setTimeout(setArchiveGuideVisible, 8000, false);
+  }
+
+  /**
+   * The first-archive trigger: teach it once, then never again.
+   *
+   * The flag is app settings (the same path `skillIntroDismissed` uses),
+   * written when the guide is shown rather than when it is dismissed, so a
+   * crash mid-bubble cannot teach it twice.
+   */
+  function handleFirstArchive() {
+    if (appSettings.archiveGuideSeen)
+      return;
+    void changeSettings({ archiveGuideSeen: true });
+    showArchiveGuide();
+  }
+
+  async function handleArchiveWorkspace(workspace: StoredWorkspace) {
+    try {
+      await archiveWorkspace(workspace.id);
+      handleFirstArchive();
+      emitFutureEvent("archive-changed", undefined);
+      await refreshStore();
+    }
+    catch (error) {
+      emitFutureEvent("toast", { message: errorMessage(error), tone: "error" });
+    }
+  }
+
+  async function handleRestoreWorkspace(workspace: StoredWorkspace) {
+    try {
+      await restoreWorkspace(workspace.id);
+      emitFutureEvent("archive-changed", undefined);
+      await refreshStore();
+    }
+    catch (error) {
+      emitFutureEvent("toast", { message: errorMessage(error), tone: "error" });
+    }
+  }
+
+  /**
+   * Restore a batch of archived conversations.
+   *
+   * Each selection is its own tree (the backend restores a tree from any
+   * member), so a batch is a loop of tree restores; the archived view is
+   * re-read once at the end, not once per row.
+   */
+  async function restoreArchivedThreads(threads: StoredThread[]) {
+    const failures: string[] = [];
+    for (const thread of threads) {
+      try {
+        await restoreThreadTree(thread.id);
+      }
+      catch (error) {
+        failures.push(`${thread.title}: ${errorMessage(error)}`);
+      }
+    }
+    emitFutureEvent("archive-changed", undefined);
+    await refreshStore();
+    if (failures.length > 0) {
+      emitFutureEvent("toast", { message: failures[0]!, tone: "error" });
+    }
+  }
+
+  /** Open a shelved conversation read-only (its banner carries the restore). */
+  function handleOpenArchivedThread(thread: StoredThread) {
+    selectThread(thread);
+    setSection(thread.mode === "workspace" ? "workspace" : "chat");
+    setCenterMode("thread");
+    setActiveRemote(null);
   }
 
   function handleToggleLeftPanel() {
@@ -1535,6 +1639,28 @@ function ReadyAppShell({
     onRenameWorkspace: openWorkspaceRename,
     onTogglePinWorkspace: handleTogglePinWorkspace,
     onRestoreThread: handleRestoreThread,
+    onArchiveThread: requestArchive,
+    onArchiveWorkspace: handleArchiveWorkspace,
+    onRestoreWorkspace: handleRestoreWorkspace,
+    onOpenArchivedThread: handleOpenArchivedThread,
+    onBatchArchiveThreads: archiveThreads,
+    onBatchRestoreThreads: restoreArchivedThreads,
+    archiveGuide: {
+      visible: archiveGuideVisible,
+      onDismiss: () => setArchiveGuideVisible(false),
+      onView: () => {
+        setArchiveGuideVisible(false);
+        setSection("chat");
+      },
+    },
+    archivePulse,
+    onShowArchiveGuide: showArchiveGuide,
+    ensureThreadScope: ensureScope,
+    loadMoreThreadScope: loadMore,
+    threadScopeHasMore: scopeHasMore,
+    threadScopeLoading: scopeLoading,
+    workspacesHasMore,
+    onLoadMoreWorkspaces: loadMoreWorkspaces,
     onSelectWorkspace: handleSelectWorkspace,
     onSelectThread: handleSelectThread,
     onTogglePinThread: handleTogglePinThread,
@@ -1920,6 +2046,7 @@ function ReadyAppShell({
                                       onThreadActivity={() => {
                                         void refreshStore(activeThread?.id ?? undefined);
                                       }}
+                                      onRestoreArchived={handleRestoreThread}
                                     />
                                   )}
                   </main>
@@ -1979,12 +2106,15 @@ function ReadyAppShell({
             </>
           )}
       <AppShellDialogs
+        archiveDialog={archiveDialog}
         batchDeleteDialog={batchDeleteDialog}
         deleteDialog={deleteDialog}
         renameDialog={renameDialog}
+        setArchiveDialog={setArchiveDialog}
         setBatchDeleteDialog={setBatchDeleteDialog}
         setDeleteDialog={setDeleteDialog}
         setRenameDialog={setRenameDialog}
+        onConfirmArchiveThread={() => void confirmArchive()}
         onConfirmBatchDeleteThread={() => void confirmBatchDelete()}
         onConfirmDeleteThread={() => void confirmDelete()}
         onConfirmRenameThread={() => void confirmRename()}

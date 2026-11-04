@@ -30,6 +30,10 @@ use crate::sandbox::{shell_invocation, ResolvedSandbox};
 static PREPARE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static ACTIVE_CAPABILITIES: OnceLock<Mutex<ActiveCapabilities>> = OnceLock::new();
 
+/// Pause between bounded-lock retries. Short enough to grab a lock the moment
+/// it frees, rare enough not to spin.
+const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(10);
+
 #[derive(Default)]
 struct ActiveCapabilities {
     states: HashMap<PathBuf, ActiveCapabilityState>,
@@ -52,6 +56,33 @@ struct CapabilityFileLock {
 unsafe impl Send for CapabilityFileLock {}
 
 impl CapabilityFileLock {
+    /// Acquire the cross-process capability lock, retrying until `deadline`
+    /// (`None` = try exactly once, the historical single-shot behavior at the
+    /// call sites that pass no budget).
+    fn acquire_bounded(
+        state_path: &Path,
+        deadline: Option<std::time::Instant>,
+    ) -> io::Result<Self> {
+        loop {
+            match Self::acquire(state_path) {
+                Ok(lock) => return Ok(lock),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    let Some(expires) = deadline else {
+                        return Err(error);
+                    };
+                    if std::time::Instant::now() >= expires {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            "Windows sandbox reset timed out waiting for the cross-process capability lock",
+                        ));
+                    }
+                    std::thread::sleep(LOCK_RETRY_INTERVAL);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     fn acquire(state_path: &Path) -> io::Result<Self> {
         let parent = state_path.parent().ok_or_else(|| {
             io::Error::new(
@@ -398,7 +429,7 @@ fn revoke_record(record: &CapabilityRecord) -> io::Result<()> {
     Ok(())
 }
 
-fn capability_state_path() -> io::Result<PathBuf> {
+pub(crate) fn capability_state_path() -> io::Result<PathBuf> {
     // The FutureOS home, not the raw user home: an isolated instance
     // (`FUTURE_HOME`) tracks its own granted ACEs and
     // must not revoke another instance's.
@@ -491,17 +522,50 @@ pub(crate) fn probe_host_with_command(
 /// tree is active. This is the backend primitive for Settings reset/uninstall;
 /// callers must surface `WouldBlock` rather than terminating user commands.
 pub(crate) fn reset_capabilities() -> io::Result<usize> {
-    reset_capabilities_at(&capability_state_path()?)
+    reset_capabilities_bounded(&capability_state_path()?, None)
 }
 
-fn reset_capabilities_at(state_path: &Path) -> io::Result<usize> {
-    let _guard = PREPARE_LOCK
-        .get_or_init(|| Mutex::new(()))
+/// Remove all persisted capability ACEs, waiting at most `budget` for the
+/// in-process preparation lock and cross-process capability file lock.
+///
+/// `None` waits unbounded, preserving the Settings reset/uninstall behavior.
+/// A bounded call that runs out of time returns `WouldBlock` naming the lock
+/// it waited on, so a shutdown drain can skip the revoke and let the next
+/// startup cleanup retry it instead of blowing its whole deadline on one step.
+pub(crate) fn reset_capabilities_bounded(
+    state_path: &Path,
+    budget: Option<Duration>,
+) -> io::Result<usize> {
+    let deadline = budget.map(|budget| std::time::Instant::now() + budget);
+    let prepare_lock = PREPARE_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = match deadline {
+        Some(expires) => loop {
+            match prepare_lock.try_lock() {
+                Ok(guard) => break guard,
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    if std::time::Instant::now() >= expires {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            "Windows sandbox reset timed out waiting for the capability preparation lock",
+                        ));
+                    }
+                    std::thread::sleep(LOCK_RETRY_INTERVAL);
+                }
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err(io::Error::other(
+                        "Windows capability preparation lock is poisoned",
+                    ))
+                }
+            }
+        },
+        None => prepare_lock
+            .lock()
+            .map_err(|_| io::Error::other("Windows capability preparation lock is poisoned"))?,
+    };
+    let active = active_capabilities()
         .lock()
-        .map_err(|_| io::Error::other("Windows capability preparation lock is poisoned"))?;
-    let state_is_active = active_capabilities()
-        .lock()
-        .map_err(|_| io::Error::other("active capability lock is poisoned"))?
+        .map_err(|_| io::Error::other("active capability lock is poisoned"))?;
+    let state_is_active = active
         .states
         .get(state_path)
         .is_some_and(|state| !state.names.is_empty());
@@ -511,7 +575,8 @@ fn reset_capabilities_at(state_path: &Path) -> io::Result<usize> {
             "Windows sandbox permissions are in use by an active command",
         ));
     }
-    let _process_lock = CapabilityFileLock::acquire(state_path)?;
+    drop(active);
+    let _process_lock = CapabilityFileLock::acquire_bounded(state_path, deadline)?;
     let mut state = match CapabilityState::load(state_path) {
         Ok(state) => state,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
@@ -541,6 +606,10 @@ fn reset_capabilities_at(state_path: &Path) -> io::Result<usize> {
         return Err(error);
     }
     Ok(before)
+}
+
+fn reset_capabilities_at(state_path: &Path) -> io::Result<usize> {
+    reset_capabilities_bounded(state_path, None)
 }
 
 #[cfg(test)]
@@ -603,6 +672,45 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
         drop(first);
         CapabilityFileLock::acquire(&state_path).unwrap();
+    }
+
+    /// The bounded reset exists so a shutdown drain can skip a contended lock
+    /// instead of blowing its whole deadline on the last cleanup step. It must
+    /// therefore time out with `WouldBlock` while the lock is held, and revoke
+    /// normally once the same lock frees — the next startup cleanup relies on
+    /// exactly that retry.
+    #[test]
+    fn a_bounded_reset_times_out_against_a_held_lock_and_succeeds_once_it_frees() {
+        let fixture = tempfile::tempdir().unwrap();
+        let state_path = fixture.path().join("capabilities.json");
+        let held = CapabilityFileLock::acquire(&state_path).unwrap();
+        let started = std::time::Instant::now();
+        let error =
+            reset_capabilities_bounded(&state_path, Some(Duration::from_millis(50))).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert!(error.to_string().contains("cross-process capability lock"));
+        assert!(
+            started.elapsed() >= Duration::from_millis(50),
+            "the bounded reset must wait out its budget, not fail immediately"
+        );
+        drop(held);
+        assert_eq!(
+            reset_capabilities_bounded(&state_path, Some(Duration::from_secs(2))).unwrap(),
+            0,
+            "no persisted records means nothing to revoke"
+        );
+    }
+
+    /// A zero budget never even waits once: it still observes the contended
+    /// lock as `WouldBlock`, which is the arm a shutdown drain takes when its
+    /// whole budget is already spent.
+    #[test]
+    fn a_zero_budget_reports_the_contended_lock_without_waiting() {
+        let fixture = tempfile::tempdir().unwrap();
+        let state_path = fixture.path().join("capabilities.json");
+        let _held = CapabilityFileLock::acquire(&state_path).unwrap();
+        let error = reset_capabilities_bounded(&state_path, Some(Duration::ZERO)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
     }
 
     #[test]

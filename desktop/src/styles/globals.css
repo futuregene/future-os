@@ -205,6 +205,47 @@
   animation: skill-entry-pulse 0.9s ease-in-out 3;
 }
 
+/* The archive entry's first-use pulse: the same ring, on the small icon button
+   beside the view switch, pointing at where a shelved conversation went. */
+@keyframes archive-entry-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+  50% {
+    box-shadow: 0 0 0 3px var(--color-accent-pulse);
+  }
+}
+
+.animate-archive-entry-pulse {
+  animation: archive-entry-pulse 0.9s ease-in-out 3;
+}
+
+/* A conversation row leaving the list on archive: it collapses and fades so the
+   eye follows it out, instead of the row vanishing between frames. */
+@keyframes thread-row-leave {
+  from {
+    max-height: 28px;
+    opacity: 1;
+  }
+  to {
+    max-height: 0;
+    opacity: 0;
+  }
+}
+
+.animate-thread-row-leave {
+  overflow: hidden;
+  animation: thread-row-leave 0.18s ease-in forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-archive-entry-pulse,
+  .animate-thread-row-leave {
+    animation: none;
+  }
+}
+
 /* Keep the selection toolbar on one row without sacrificing its checkbox
    label. At narrow rail widths the two self-explanatory actions collapse to
    icon buttons; their accessible names and title tooltips remain available. */

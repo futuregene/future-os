@@ -12,6 +12,7 @@ mod legacy_history;
 mod managed_cleanup;
 mod markdown_refs;
 mod migrations;
+mod paging;
 mod records;
 mod review_snapshots;
 mod runs;
@@ -67,6 +68,11 @@ pub use legacy_history::{
     legacy_session_id,
 };
 pub use markdown_refs::resolve_markdown_references;
+pub use paging::{
+    list_pinned_threads, list_pinned_workspaces, list_threads_page, list_workspaces_page,
+    search_threads, workspace_has_live_threads, ThreadScope, ThreadSearchResults, ThreadsPage,
+    WorkspacesPage,
+};
 pub use records::*;
 pub use review_snapshots::{
     create_review_snapshot, get_last_run_changeset, get_review_snapshot, get_run_changeset,
@@ -88,22 +94,23 @@ pub use skill_reco::{record_skill_reco, skill_reco_today, SkillRecoToday};
 pub use status::is_terminal_run_status;
 pub use thread_sources::{record_thread_source, thread_source};
 pub use threads::{
-    archive_thread, bind_thread_session_id, create_thread, delete_thread, delete_thread_tree,
-    delete_thread_trees, find_thread_by_agent_session, forget_thread_mirror,
-    get_or_create_thread_for_agent_session, get_recent_thread, get_thread,
-    inherit_thread_asset_root, list_threads, mark_thread_opened, pin_thread,
-    purge_soft_deleted_threads, record_thread_message_activity, rename_thread,
-    reseed_thread_auto_title, restore_thread, seed_thread_auto_title, sync_thread_parent_session,
-    sync_thread_title, thread_asset_root_id, thread_delete_closure, update_thread_model,
-    update_thread_thinking_level, ThreadRecord,
+    archive_thread, archive_thread_tree, batch_archive_threads, bind_thread_session_id,
+    create_thread, delete_thread, delete_thread_tree, delete_thread_trees,
+    find_thread_by_agent_session, forget_thread_mirror, get_or_create_thread_for_agent_session,
+    get_recent_thread, get_thread, inherit_thread_asset_root, list_active_threads, list_threads,
+    mark_thread_opened, pin_thread, purge_soft_deleted_threads, record_thread_message_activity,
+    rename_thread, reseed_thread_auto_title, restore_thread, restore_thread_tree,
+    seed_thread_auto_title, sync_thread_parent_session, sync_thread_title, thread_archive_closure,
+    thread_asset_root_id, thread_delete_closure, update_thread_model, update_thread_thinking_level,
+    ArchiveConflict, BatchArchiveResult, ThreadRecord,
 };
 pub use util::strip_verbatim_prefix;
 pub use util::{catalog_dirty_peek, create_id, create_run_id, now_millis, take_catalog_dirty};
 pub use workspace_files::{search_workspace_files, WorkspaceFileResult, WorkspaceFileSearchInput};
 pub use workspaces::{
-    create_workspace, delete_workspace, file_session_workspace, get_or_create_chat_workspace,
-    get_workspace, list_workspaces, pin_workspace, purge_soft_deleted_workspaces, rename_workspace,
-    WorkspaceRecord,
+    archive_workspace, create_workspace, delete_workspace, file_session_workspace,
+    get_or_create_chat_workspace, get_workspace, list_workspaces, pin_workspace,
+    purge_soft_deleted_workspaces, rename_workspace, restore_workspace, WorkspaceRecord,
 };
 
 pub fn app_data_path() -> Result<AppDataPath, crate::Error> {

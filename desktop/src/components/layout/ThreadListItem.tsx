@@ -38,6 +38,7 @@ function ThreadListItemImpl({
   onMenuOpenChange,
   onRenameThread,
   onRestoreThread,
+  onArchiveThread,
   onSelectThread,
   onTogglePinThread,
   onToggleSelection,
@@ -78,6 +79,8 @@ function ThreadListItemImpl({
   onMenuOpenChange: (thread: StoredThread, open: boolean) => void;
   onRenameThread: (thread: StoredThread) => void;
   onRestoreThread: (thread: StoredThread) => void;
+  /** Absent in a list that offers no archive action for its rows. */
+  onArchiveThread?: (thread: StoredThread) => void;
   onSelectThread: (thread: StoredThread) => void;
   onTogglePinThread: (thread: StoredThread) => void;
   onToggleSelection?: (thread: StoredThread) => void;
@@ -177,6 +180,7 @@ function ThreadListItemImpl({
         ? (
             <ThreadItemMenu
               archived={archived}
+              onArchive={onArchiveThread ? () => onArchiveThread(thread) : undefined}
               pinned={thread.pinned}
               onClose={() => onMenuOpenChange(thread, false)}
               onDelete={() => onDeleteThread(thread)}

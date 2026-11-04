@@ -63,6 +63,13 @@ export interface FutureEventMap {
   /** Emitted when a conversation finishes (agent_end stream event). */
   "agent_end": void;
   /**
+   * An archive/restore/delete changed what the archived view lists. The rail's
+   * archived streams re-read when they are (or become) loaded; a mutation from
+   * anywhere in the shell can therefore invalidate them without the shell owning
+   * their state.
+   */
+  "archive-changed": void;
+  /**
    * Put the caret back in the active thread's composer. Emitted when the
    * terminal panel collapses (shortcut or its ✕): the panel is gone from the
    * layout, so focus left on a hidden terminal would swallow the next

@@ -1,6 +1,8 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { StoredThread, ThreadCleanupSummary } from "../../integrations/storage/threadStore";
 import { useTranslation } from "react-i18next";
+import { Button } from "../ui/Button";
+import { Dialog } from "../ui/Dialog";
 import { ConfirmDeleteDialog, RenameDialog } from "./EntityDialogs";
 
 export interface DeleteDialogState {
@@ -29,27 +31,41 @@ export interface BatchDeleteDialogState {
   workspaceThreadCount: number;
 }
 
+/** Confirm shelving one fork tree; `members` is how many conversations go. */
+export interface ArchiveDialogState {
+  error: string | null;
+  submitting: boolean;
+  thread: StoredThread;
+  members: number;
+}
+
 interface AppShellDialogsProps {
+  archiveDialog: ArchiveDialogState | null;
   batchDeleteDialog: BatchDeleteDialogState | null;
   deleteDialog: DeleteDialogState | null;
+  onConfirmArchiveThread: () => void;
   onConfirmBatchDeleteThread: () => void;
   onConfirmDeleteThread: () => void;
   onConfirmRenameThread: () => void;
   onGenerateTitle: () => void;
   renameDialog: RenameDialogState | null;
+  setArchiveDialog: Dispatch<SetStateAction<ArchiveDialogState | null>>;
   setBatchDeleteDialog: Dispatch<SetStateAction<BatchDeleteDialogState | null>>;
   setDeleteDialog: Dispatch<SetStateAction<DeleteDialogState | null>>;
   setRenameDialog: Dispatch<SetStateAction<RenameDialogState | null>>;
 }
 
 export function AppShellDialogs({
+  archiveDialog,
   batchDeleteDialog,
   deleteDialog,
+  onConfirmArchiveThread,
   onConfirmBatchDeleteThread,
   onConfirmDeleteThread,
   onConfirmRenameThread,
   onGenerateTitle,
   renameDialog,
+  setArchiveDialog,
   setBatchDeleteDialog,
   setDeleteDialog,
   setRenameDialog,
@@ -57,6 +73,23 @@ export function AppShellDialogs({
   const { t } = useTranslation("layout");
   return (
     <>
+      <ConfirmDialog
+        description={archiveDialog ? t("threadDialogs.archiveDescription", { count: archiveDialog.members }) : undefined}
+        error={archiveDialog?.error ?? null}
+        onClose={() => setArchiveDialog(null)}
+        onConfirm={onConfirmArchiveThread}
+        open={Boolean(archiveDialog)}
+        submitting={archiveDialog?.submitting ?? false}
+        title={t("threadDialogs.archiveTitle")}
+      >
+        {archiveDialog
+          ? (
+              <div className="rounded-md border border-line-soft bg-surface-subtle p-3 text-sm text-ink">
+                {archiveDialog.thread.title}
+              </div>
+            )
+          : null}
+      </ConfirmDialog>
       <RenameDialog
         description={t("appShellDialogs.renameDescription")}
         error={renameDialog?.error ?? null}
@@ -149,6 +182,49 @@ export function AppShellDialogs({
           : null}
       </ConfirmDeleteDialog>
     </>
+  );
+}
+
+function ConfirmDialog({
+  children,
+  description,
+  error,
+  onClose,
+  onConfirm,
+  open,
+  submitting,
+  title,
+}: {
+  children?: React.ReactNode;
+  description?: string;
+  error: string | null;
+  onClose: () => void;
+  onConfirm: () => void;
+  open: boolean;
+  submitting: boolean;
+  title: string;
+}) {
+  const { t } = useTranslation("layout");
+  return (
+    <Dialog
+      description={description}
+      footer={(
+        <>
+          <Button disabled={submitting} onClick={onClose} type="button" variant="ghost">
+            {t("common:cancel")}
+          </Button>
+          <Button disabled={submitting} onClick={onConfirm} type="button" variant="primary">
+            {t("activityRail.archive")}
+          </Button>
+        </>
+      )}
+      onClose={onClose}
+      open={open}
+      title={title}
+    >
+      {children}
+      {error ? <div className="mt-2 text-xs leading-5 text-danger">{error}</div> : null}
+    </Dialog>
   );
 }
 
