@@ -603,6 +603,45 @@ describe("the recent view's stream", () => {
     view.unmount();
   });
 
+  /**
+   * A conversation the stream has not reached stays out of the list.
+   *
+   * Reported as "how does it jump from a day ago straight to twelve days ago":
+   * pinned conversations are fetched whole as shortcuts, so a pin from twelve
+   * days ago was drawn under yesterday's rows while everything between stayed
+   * behind "show the rest" — a hole in what is supposed to be one recency order.
+   * A pin the page *does* hold keeps its place and its marker.
+   */
+  it("does not slip a pinned conversation in ahead of the page it has not reached", () => {
+    const page = streamed(RECENT_PAGE_SIZE);
+    const inPage = thread("pinned-in-page", {
+      title: "Pinned in page",
+      pinned: true,
+      lastMessageAt: now - 2 * minute,
+    });
+    const far = thread("pinned-far", {
+      title: "Pinned twelve days ago",
+      pinned: true,
+      createdAt: now - 12 * 24 * hour,
+      lastMessageAt: now - 12 * 24 * hour,
+    });
+    const view = mount(
+      <ActivityRail {...props([...page, inPage, far], {
+        recentThreadIds: new Set([...page.map(row => row.id), inPage.id]),
+        threadScopeRemaining: () => 0,
+      })}
+      />,
+    );
+    showRecent(view.container);
+
+    const titles = drawnTitles(view.container);
+    expect(titles).toContain("Pinned in page");
+    expect(titles).not.toContain("Pinned twelve days ago");
+    // The page plus that one pin: nothing older slipped in.
+    expect(titles).toHaveLength(RECENT_PAGE_SIZE + 1);
+    view.unmount();
+  });
+
   it("asks for the stream when the view is opened, and not before", () => {
     const ensureThreadScope = vi.fn();
     const view = mount(<ActivityRail {...props([thread("a")], { ensureThreadScope })} />);

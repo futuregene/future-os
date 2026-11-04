@@ -88,6 +88,43 @@ export function RailRow({
 }
 
 /**
+ * The "load more" control that continues a list of conversations.
+ *
+ * It is the *next row* of the list, so it starts where those rows start: a
+ * control sitting at the section heading's left edge while the conversations
+ * above it are indented reads as a different list's button, and the one thing it
+ * must say is "more of these". `compact` picks the column the rows it continues
+ * use — the rail's own two (16 for a section's own conversations, 28 for the
+ * conversations inside a group), never a third value invented here.
+ */
+export function RailLoadMoreRow({
+  compact,
+  disabled,
+  label,
+  onClick,
+  testId,
+}: {
+  compact?: boolean;
+  disabled?: boolean;
+  label: string;
+  onClick: () => void;
+  testId?: string;
+}) {
+  return (
+    <button
+      className="flex h-7 w-full items-center rounded-md text-xs text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft disabled:opacity-50"
+      data-testid={testId}
+      disabled={disabled}
+      onClick={onClick}
+      style={{ paddingLeft: compact ? 28 : 16 }}
+      type="button"
+    >
+      {label}
+    </button>
+  );
+}
+
+/**
  * The leading tree toggle: a `+`/`−` tree node that folds a conversation's forks.
  *
  * Shared because both lists draw it and it is the same control in both — a

@@ -6,7 +6,7 @@ import { cn } from "../../lib/cn";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { ArchivedThreadMenu } from "./ActivityRailMenus";
 import { RailDisclosure } from "./RailChrome";
-import { RailRow, RailRowMenuButton, RailRowTitle } from "./RailRow";
+import { RailLoadMoreRow, RailRow, RailRowMenuButton, RailRowTitle } from "./RailRow";
 
 /**
  * One archived conversation tree's row in the archived view.
@@ -292,13 +292,12 @@ export function ArchivedWorkspaceContents({
       ))}
       {hasMore
         ? (
-            <button
-              className="w-full rounded-md px-2 py-1 text-left text-xs text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
-              onClick={onLoadMore}
-              type="button"
-            >
-              {t("activityRail.loadMore")}
-            </button>
+            <RailLoadMoreRow
+              compact
+              disabled={loading}
+              label={t("activityRail.loadMore")}
+              onClick={() => onLoadMore?.()}
+            />
           )
         : null}
     </div>

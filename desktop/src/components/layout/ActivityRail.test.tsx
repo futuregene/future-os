@@ -185,6 +185,45 @@ describe("activity rail conversation hierarchy", () => {
     }
   });
 
+  /**
+   * A list's "load more" is the next row of *that* list.
+   *
+   * Reported as "the load-more under the conversations is not indented like
+   * them": the control sat at the section heading's left edge (8px) while the
+   * conversations above it started at their own column, so it read as another
+   * list's button. It now takes the column of the rows it continues — 16 for a
+   * section's own conversations, 28 for the ones inside a workspace group.
+   */
+  it("puts each list's load-more on the column of the rows it continues", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const p: ComponentProps<typeof ActivityRail> = {
+      ...props([thread("chat-row"), { ...thread("group-row", "ws"), mode: "workspace", workspaceId: "ws" }]),
+      loadMoreThreadScope: vi.fn(async () => {}),
+      threadScopeHasMore: () => true,
+      workspaces: [{ id: "ws", name: "Workspace", kind: "user" as const, path: "/tmp/ws", cleanupStatus: "active" as const, createdAt: 0, updatedAt: 0 }],
+    };
+    act(() => root.render(<ActivityRail {...p} />));
+    await flushAsync();
+    try {
+      const moreRows = [...container.querySelectorAll<HTMLButtonElement>("button")]
+        .filter(button => button.textContent?.trim() === "Load more");
+      expect(moreRows).toHaveLength(2);
+      // The workspaces come first in this view, then the chat section: each
+      // control lines up with the rows above it, not with the heading above them.
+      const [groupMore, chatMore] = moreRows;
+      expect(Number.parseFloat(groupMore!.style.paddingLeft)).toBe(28);
+      expect(Number.parseFloat(chatMore!.style.paddingLeft)).toBe(16);
+      expect(container.querySelector<HTMLButtonElement>("button[aria-label=\"chat-row\"]")!.parentElement!.style.paddingLeft).toBe("16px");
+      expect(container.querySelector<HTMLButtonElement>("button[aria-label=\"group-row\"]")!.parentElement!.style.paddingLeft).toBe("28px");
+    }
+    finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
+
   it("keeps the workspace header's name on its first-level title column", async () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
