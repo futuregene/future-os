@@ -340,6 +340,10 @@ pub enum Key {
     ChatOlder,
     ChatOlderHint,
     ActivityThinking,
+    /// The reader's line is on its way to the agent and has not been
+    /// acknowledged yet. The clock is inside the label, like a compaction's:
+    /// the row's job here is to show that the wait is moving.
+    ActivitySending,
     ActivityTool,
     ActivityStreaming,
     ActivityTools,
@@ -801,6 +805,7 @@ fn pair(key: Key) -> (&'static str, &'static str) {
         ChatOlder => ("↑ 更早", "↑ older"),
         ChatOlderHint => ("↑ 更早 · page up", "↑ older · page up"),
         ActivityThinking => ("思考", "Thinking"),
+        ActivitySending => ("发送中 · {}s", "Sending · {}s"),
         ActivityTool => ("工具", "Tool"),
         ActivityStreaming => ("生成", "Writing"),
         ActivityTools => (" · {}s · {} 工具", " · {}s · {} tools"),
@@ -1536,7 +1541,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 382] = {
+    const ALL_KEYS: [Key; 383] = {
         use Key::*;
         [
             TabTodo,
@@ -1616,6 +1621,7 @@ mod tests {
             ChatOlder,
             ChatOlderHint,
             ActivityThinking,
+            ActivitySending,
             ActivityTool,
             ActivityStreaming,
             ActivityTools,

@@ -307,6 +307,15 @@ async fn event_loop(
             draw(terminal, workbench, live, &frame, &mut painted)?;
             clock.painted(workbench.spinner_frame(), Instant::now());
         }
+        // A line the reader submitted is echoed by the event that carried
+        // `enter` and handed over here, once the frame carrying it — the
+        // message, the cleared composer, the activity row's clock — is on
+        // screen. The agent's answer is the reply's wait, not the keystroke's.
+        if live.submit_pending() {
+            live.flush_submit().await;
+            paint = true;
+            continue;
+        }
         let open_due = pending_open.as_ref().map(|open| open.due);
 
         // `paint` belongs to the *next* frame: every arm below assigns it — an
@@ -1404,6 +1413,17 @@ async fn quit(
         // threw away the attachments — and when the session cannot be started
         // the reader's text has to survive so it can be sent again.
         //
+        // `enter` only does the local half of that, here, and leaves the round
+        // trips to the loop: it echoes the line, starts the clock and says so on
+        // the activity row, and `event_loop` paints that frame *before* it hands
+        // the prompt over. Doing both there is what made a loaded machine look
+        // like a dead composer — the first thing a submission does is a connect
+        // plus readiness handshake, and the reader's own text did not reach the
+        // screen until that came back.
+        if let WbAction::Submit(text) = &action {
+            live.begin_submit(text);
+            continue;
+        }
         // `SessionStep` is the rail's cursor moving between conversations: the
         // surface deferred the switch to us, so it is resolved here against the
         // data of *this* moment (the driver hands a whole burst of them over as
@@ -3590,6 +3610,18 @@ mod driver_tests {
             driver
         }
 
+        /// The same, against an agent that takes `delay_ms` to answer any
+        /// command: the loaded machine whose round trips are seconds long.
+        pub async fn attach_slow(pairs: &[(&str, &str)], delay_ms: u64) -> Self {
+            let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_slow(pairs, delay_ms);
+            let seen_sessions = mock.seen_sessions.clone();
+            let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+            let mut driver = Self::attach_at(&addr).await;
+            driver.seen = seen;
+            driver.seen_sessions = seen_sessions;
+            driver
+        }
+
         /// Attach with a rail of two conversations, the state a reader stepping
         /// through their recent work is in.
         pub async fn attach_sessions() -> Self {
@@ -3640,10 +3672,25 @@ mod driver_tests {
         /// with no such message above it, drops the text (measured — the copy
         /// then reports "nothing to copy" however much was streamed).
         pub async fn attach_conversation_holding(cwd: &std::path::Path, entries: &str) -> Self {
+            Self::attach_conversation_paced(cwd, entries, None).await
+        }
+
+        /// The same conversation, against an agent that takes `delay_ms` to
+        /// answer each command: the loaded machine, where a submission's first
+        /// round trip is long enough for the reader to think the key was lost.
+        pub async fn attach_conversation_slow(cwd: &std::path::Path, delay_ms: u64) -> Self {
+            Self::attach_conversation_paced(cwd, r#"{"entries":[]}"#, Some(delay_ms)).await
+        }
+
+        async fn attach_conversation_paced(
+            cwd: &std::path::Path,
+            entries: &str,
+            delay_ms: Option<u64>,
+        ) -> Self {
             let cwd =
                 serde_json::to_string(&cwd.to_string_lossy()).expect("a workspace path serialises");
             let state = format!(r#"{{"sessionId":"s1","model":"future/old","cwd":{cwd}}}"#);
-            Self::attach(&[
+            let pairs = [
                 ("get_state", state.as_str()),
                 ("get_session_entries", entries),
                 (
@@ -3663,8 +3710,11 @@ mod driver_tests {
                     "prompt",
                     r#"{"run_id":"r-1","run_epoch":1,"accepted_state":"running"}"#,
                 ),
-            ])
-            .await
+            ];
+            match delay_ms {
+                Some(delay) => Self::attach_slow(&pairs, delay).await,
+                None => Self::attach(&pairs).await,
+            }
         }
 
         pub async fn attach_at(addr: &str) -> Self {
@@ -3833,7 +3883,13 @@ mod driver_tests {
                 settings_path: &self.settings_path,
                 theme_explicit: &mut self.theme_explicit,
             };
-            quit(&mut self.workbench, &mut self.live, event, &frame, &mut io).await
+            let leave = quit(&mut self.workbench, &mut self.live, event, &frame, &mut io).await?;
+            // The loop hands a submission over on its next pass, after it has
+            // painted the echo (`event_loop`); a helper with no loop around it
+            // does the same, so a test that presses `enter` still sees the
+            // prompt the way it sees a painted frame.
+            self.live.flush_submit().await;
+            Ok(leave)
         }
 
         /// Type `text` key by key through the driver: what a reader typing into the
@@ -3928,6 +3984,39 @@ mod driver_tests {
                 "the draft did not take the keys: {text:?}"
             );
             assert!(frames(&painted) >= 2, "typing is a repaint: {painted:?}");
+        }
+
+        /// The complaint this exists for: on a loaded machine, `enter` looked
+        /// like a dead key for seconds. The echo — the reader's line, the
+        /// cleared composer, the clock on the activity row — is painted before
+        /// the first round trip, and the wait that follows belongs to the reply.
+        #[tokio::test]
+        async fn enter_paints_the_echo_before_the_agent_answers() {
+            // A second per command: the loaded machine, in miniature.
+            let mut driver = Driver::attach_conversation_slow(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
+                900,
+            )
+            .await;
+            driver.data("hello there");
+            driver.data("\r");
+            // Well inside the round trip: only what the echo painted is here.
+            let painted = driver.pump(Duration::from_millis(350)).await;
+            let text = text_of(&painted);
+            assert!(
+                text.contains("hello there"),
+                "the reader's line waited for the agent: {text:?}"
+            );
+            assert_eq!(
+                driver.live.activity_kind(),
+                crate::workbench::state::ActivityKind::Sending,
+                "the row does not say the line is on its way"
+            );
+            // The acknowledgement is what takes the row out of `Sending` (see
+            // `flush_submit`), so a frame that still says it here was painted
+            // before the answer — the echo did not wait for one. (`seen` cannot
+            // stand in: it logs the request reaching the agent, which happens on
+            // the way *in*, not when the answer comes back.)
         }
 
         /// `enter` on a non-empty draft is a `prompt` to the agent — the command the
@@ -5114,11 +5203,20 @@ mod driver_tests {
                 r#"{"sessionId":"s1","model":"future/old"}"#.into(),
             );
             driver.data("\x1b[1;2A");
+            // Both halves in one wait: a step onto a *cached* conversation files
+            // the one it leaves inside the step itself (see `take_cached`), so
+            // the cache hits before the read this step launched has even reached
+            // the agent. Waiting only for the cache samples one instant and then
+            // asserts about a task that may not have run yet — the flake that
+            // put this test on CI's list with `seen_sessions` empty for `s1`.
             assert!(
                 driver
                     .wait_for(Duration::from_secs(20), |driver| driver
                         .live
-                        .is_cached("s2"))
+                        .is_cached("s2")
+                        && driver.seen_sessions.lock().expect("seen").iter().any(
+                            |(command, session)| command == "get_state" && session == "s1"
+                        ))
                     .await,
                 "the step back never opened the conversation it landed on"
             );
@@ -5126,15 +5224,6 @@ mod driver_tests {
                 driver.session_id(),
                 "s1",
                 "the step back landed on the wrong conversation"
-            );
-            assert!(
-                driver
-                    .seen_sessions
-                    .lock()
-                    .expect("seen")
-                    .iter()
-                    .any(|(command, session)| command == "get_state" && session == "s1"),
-                "the step back asked the agent nothing about the conversation it opened"
             );
         }
 

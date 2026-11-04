@@ -386,6 +386,12 @@ fn floor_char_boundary(text: &str, mut at: usize) -> usize {
 pub enum ActivityKind {
     #[default]
     Idle,
+    /// The reader's line is on screen and on its way to the agent, and no
+    /// acknowledgement has come back yet. Distinct from `Thinking` because
+    /// nothing has started thinking at this point: what the row owes the
+    /// reader is the wait *it* caused, however long the machine takes to
+    /// answer.
+    Sending,
     Thinking,
     Tool,
     Streaming,
@@ -398,6 +404,7 @@ impl ActivityKind {
     pub fn label(self) -> &'static str {
         match self {
             Self::Idle => "idle",
+            Self::Sending => "sending",
             Self::Thinking => "thinking",
             Self::Tool => "tool",
             Self::Streaming => "streaming",
