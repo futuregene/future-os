@@ -206,6 +206,66 @@ describe("useThreadStore", () => {
     h.unmount();
   });
 
+  /**
+   * A row a page stops returning is not the same evidence as a deleted row.
+   *
+   * Archiving leaves the open conversation addressable (the detail stays on
+   * screen, read-only), which is why the store holds a row its scopes no longer
+   * return. The delete path is the one caller that says otherwise — without
+   * that distinction the two cases are indistinguishable, and the next two
+   * tests are the bug that distinction fixes.
+   */
+  it("keeps the open conversation addressable when a refresh only lost its page", async () => {
+    const h = await mountStore();
+    expect(h.current.activeThreadId).toBe("t1");
+    listThreadsPage.mockResolvedValue(pageOf([thread("t2")]));
+    await act(async () => {
+      await h.current.refreshStore();
+    });
+    expect(h.current.threads.map(t => t.id).sort()).toEqual(["t1", "t2"]);
+    expect(h.current.activeThreadId).toBe("t1");
+    h.unmount();
+  });
+
+  /**
+   * Deleting the conversation that is open.
+   *
+   * Reported as "deleting the conversation I am reading leaves its row in the
+   * sidebar and its history on screen": the delete removed the row in the
+   * database, and the refresh that followed put it back — the store read "the
+   * page does not return the open conversation" as "still open, just off this
+   * page" and revived the row it was told was deleted.
+   */
+  it("deleting the open conversation drops its row and opens the nearest remaining one", async () => {
+    const h = await mountStore();
+    expect(h.current.activeThreadId).toBe("t1");
+    // The page after the delete: t1 is gone. t9 is more recent but lives in
+    // another workspace, so the fallback stays where the reader was working.
+    listThreadsPage.mockResolvedValue(pageOf([
+      { ...thread("t2", "w1"), lastMessageAt: 10 } as StoredThread,
+      { ...thread("t9", "w2"), lastMessageAt: 99 } as StoredThread,
+    ]));
+    await act(async () => {
+      await h.current.refreshStore(undefined, { removedThreadIds: ["t1"] });
+    });
+    expect(h.current.threads.map(t => t.id).sort()).toEqual(["t2", "t9"]);
+    expect(h.current.activeThreadId).toBe("t2");
+    expect(h.current.activeThread?.id).toBe("t2");
+    h.unmount();
+  });
+
+  it("deleting the open conversation with nothing left opens nothing", async () => {
+    const h = await mountStore();
+    listThreadsPage.mockResolvedValue(pageOf([]));
+    await act(async () => {
+      await h.current.refreshStore(undefined, { removedThreadIds: ["t1", "t2"] });
+    });
+    expect(h.current.threads).toEqual([]);
+    expect(h.current.activeThreadId).toBeNull();
+    expect(h.current.activeThread).toBeNull();
+    h.unmount();
+  });
+
   it("drops a stale refreshStore response when a newer one is in flight", async () => {
     const h = await mountStore();
     let resolveSlow: ((value: unknown) => void) | null = null;
