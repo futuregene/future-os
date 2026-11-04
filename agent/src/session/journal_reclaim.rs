@@ -39,6 +39,9 @@ const FOLD_BATCH_RUNS: i64 = 8;
 /// Bodies repacked per sweep call. Each is a read of its fragments plus a delete
 /// and an insert, so the batch stays small enough to finish inside a slice.
 const RECHUNK_BATCH_OBJECTS: i64 = 64;
+/// Bodies compressed per sweep call. Each is a read of one body plus a gzip and
+/// a two-statement transaction, so a small batch keeps a slice responsive.
+const COMPRESS_BATCH_OBJECTS: i64 = 16;
 
 /// Runs one startup catch-up may fold. A completion notification already
 /// handles the normal case, so this only mops up what a crash or a stop left
@@ -729,6 +732,25 @@ impl SqliteStore {
             .map(|plan| plan.1)
             .unwrap_or(0);
 
+        // 6. Sealed bodies: same bytes, gzip. The marker is written with the
+        // chunks, so a reader never sees half an encoded body.
+        let pending_compress = self.db.call(|db| super::content::compress::plan(db))?;
+        let (compressed_objects, plain_bytes, stored_bytes) =
+            if dry_run || pending_compress.1 == 0 || started.elapsed() >= budget {
+                (0i64, 0i64, 0i64)
+            } else {
+                self.db
+                    .call_as("journal_reclaim", move |db| {
+                        super::content::compress::apply(db, COMPRESS_BATCH_OBJECTS)
+                    })
+                    .unwrap_or((0, 0, 0))
+            };
+        let compress_pending = self
+            .db
+            .call(|db| super::content::compress::plan(db))
+            .map(|plan| plan.1)
+            .unwrap_or(0);
+
         // `hasMore` promises *more work this sweep can do*, not "some settled run
         // still keeps a journal": a run that cannot be representationally
         // reclaimed (its last event is not `agent_end`, its envelope is unknown)
@@ -747,6 +769,7 @@ impl SqliteStore {
                 || bodies_pending > 0
                 || folds_pending > 0
                 || segments_pending > 0
+                || compress_pending > 0
         };
 
         // Fold freed pages back into the file where this database can do it
@@ -789,6 +812,12 @@ impl SqliteStore {
                 "repackedObjects": repacked,
                 "rowsBefore": segments_before,
                 "rowsAfter": segments_after,
+            },
+            "bodyEncoding": {
+                "pendingBytes": compress_pending,
+                "compressedObjects": compressed_objects,
+                "bytesBefore": plain_bytes,
+                "bytesAfter": stored_bytes,
             },
             "hasMore": has_more,
             "quickCheck": quick_check,

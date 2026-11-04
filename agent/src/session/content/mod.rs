@@ -20,6 +20,7 @@ const OBJECT_LENGTH: &str = "SELECT byte_length FROM content_objects WHERE id=?1
 pub(crate) mod checkpoint;
 mod checkpoint_retirement;
 pub(crate) mod compact;
+pub(crate) mod compress;
 pub(crate) mod entries;
 mod entry_stages;
 mod extensions;
@@ -459,7 +460,17 @@ pub(crate) fn read(db: &Connection, id: i64, offset: i64, max_bytes: usize) -> R
     let (total, sealed) = db.query_row(OBJECT_ROW, [id], |r| Ok((r.get(0)?, r.get(1)?)))?;
     ensure!(offset <= total, "content read starts past durable bytes");
     let end = offset.saturating_add(i64::try_from(max_bytes)?).min(total);
-    let mut stmt=db.prepare_cached("SELECT byte_offset,body FROM content_segments WHERE content_id=?1 AND byte_offset>=?2 AND byte_offset<?3 ORDER BY byte_offset")?;
+    // A body is gzip or plain for all of its segments; one marker per object
+    // decides which, once, per read.
+    let encoding: Option<String> = db
+        .query_row(
+            "SELECT encoding FROM content_compressed WHERE content_id=?1",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let compressed = encoding.as_deref() == Some("gzip");
+    let mut stmt=db.prepare_cached("SELECT byte_offset,CAST(body AS BLOB) FROM content_segments WHERE content_id=?1 AND byte_offset>=?2 AND byte_offset<?3 ORDER BY byte_offset")?;
     let mut rows = stmt.query(params![
         id,
         offset.saturating_sub(i64::try_from(SEGMENT_BYTES)?).max(0),
@@ -470,7 +481,12 @@ pub(crate) fn read(db: &Connection, id: i64, offset: i64, max_bytes: usize) -> R
     let mut utf8_cut = false;
     while let Some(row) = rows.next()? {
         let at: i64 = row.get(0)?;
-        let body: String = row.get(1)?;
+        let raw: Vec<u8> = row.get(1)?;
+        let body = if compressed {
+            compress::decompress(&raw)?
+        } else {
+            String::from_utf8(raw)?
+        };
         let last = at + i64::try_from(body.len())?;
         if last <= next {
             continue;

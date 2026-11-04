@@ -348,6 +348,13 @@ pub(super) async fn run(args: &[String], out: &Output) -> Result<(), String> {
             count(segments)
         ));
     }
+    let compressible = number(&plan["bodyEncoding"], "pendingBytes");
+    if compressible > 0 {
+        out.log(&format!(
+            "  {} of sealed body text to compress",
+            bytes(compressible)
+        ));
+    }
     print_entries(&plan, true, out);
     if options.json {
         out.log(&serde_json::to_string_pretty(&plan).map_err(|e| e.to_string())?);

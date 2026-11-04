@@ -687,3 +687,56 @@ fn a_repack_leaves_a_body_that_cannot_fit_one_row() {
         .unwrap();
     assert_eq!(rows_before, rows_after);
 }
+
+/// A sealed body stored gzipped must read back byte for byte: the marker is the
+/// only thing that changes about it.
+#[test]
+fn a_sealed_body_stored_gzipped_reads_back_identically() {
+    let mut db = connection();
+    let text = "中文内容".repeat(600);
+    let tx = db.transaction().unwrap();
+    let id = create(&tx).unwrap();
+    let mut digest = ContentDigest::default();
+    append(&tx, id, 0, &text).unwrap();
+    digest.push(&text).unwrap();
+    seal(&tx, id, digest).unwrap();
+    tx.commit().unwrap();
+    let before = read(&db, id, 0, text.len()).unwrap().text;
+    let window = read(&db, id, 12, 64).unwrap().text;
+    assert_eq!(before, text);
+    assert_eq!(super::compress::plan(&db).unwrap().0, 1);
+
+    assert_eq!(super::compress::apply(&mut db, 8).unwrap().0, 1);
+    let encoding: String = db
+        .query_row("SELECT encoding FROM content_compressed", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(encoding, "gzip");
+    let stored: i64 = db
+        .query_row(
+            "SELECT sum(length(CAST(body AS BLOB))) FROM content_segments",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        (stored as usize) < text.len() / 2,
+        "stored {stored} bytes for {} plaintext",
+        text.len()
+    );
+    assert_eq!(read(&db, id, 0, text.len()).unwrap().text, before);
+    // A windowed read lands on the same bytes as well.
+    assert_eq!(read(&db, id, 12, 64).unwrap().text, window);
+    assert_eq!(super::compress::plan(&db).unwrap(), (0, 0), "nothing left");
+}
+
+/// An unsealed body is still being appended to; the sweep must not touch it.
+#[test]
+fn an_unsealed_body_is_never_compressed() {
+    let mut db = connection();
+    let tx = db.transaction().unwrap();
+    let id = create(&tx).unwrap();
+    append(&tx, id, 0, &"x".repeat(8000)).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(super::compress::plan(&db).unwrap(), (0, 0));
+    assert_eq!(super::compress::apply(&mut db, 8).unwrap().0, 0);
+}

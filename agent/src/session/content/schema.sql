@@ -28,6 +28,19 @@ CREATE TABLE IF NOT EXISTS content_segments (
     body TEXT NOT NULL CHECK(length(CAST(body AS BLOB)) BETWEEN 1 AND 16384),
     PRIMARY KEY(content_id,byte_offset)
 ) WITHOUT ROWID;
+-- Bodies stored compressed.
+--
+-- The row is the only marker and it is all-or-nothing: a body either has one
+-- and every one of its segments holds gzip bytes, or it has none and they hold
+-- text. Writes never create it — compression happens in the operator-invoked
+-- sweep over *sealed* bodies, so the append path keeps every plaintext
+-- invariant it has (`append` re-reads a committed tail to prove a retry is
+-- identical). `content_segments.byte_offset` stays a plaintext offset, so every
+-- address a caller holds keeps its meaning.
+CREATE TABLE IF NOT EXISTS content_compressed (
+    content_id INTEGER PRIMARY KEY REFERENCES content_objects(id) ON DELETE CASCADE,
+    encoding TEXT NOT NULL CHECK(encoding IN ('gzip','text'))
+);
 -- References carry ownership; segments do not repeat session/run identifiers.
 -- Sharing a body never grants a caller access to the other session's records.
 CREATE TABLE IF NOT EXISTS content_references (
