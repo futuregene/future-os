@@ -1,6 +1,7 @@
 import type { RemoteSession, RemoteWorkspace } from "../../remote/types";
 import {
   activeWorkspaces,
+  archivedCatalogRows,
   isArchivedSession,
   isArchivedWorkspace,
   splitArchived,
@@ -121,6 +122,51 @@ describe("the archived shelf's rows", () => {
   it("shows both sections' empty case as an empty list", () => {
     expect(archivedRows([session("active")], [workspace("w")], () => true)).toEqual([]);
     expect(archivedRows([], [], never)).toEqual([]);
+  });
+});
+
+describe("the shelf across machines", () => {
+  it("draws each machine's half, stamped with the machine that owns it", () => {
+    const rows = archivedCatalogRows([
+      { desktopId: "desk-a", sessions: [session("a", { archived: true })], workspaces: [] },
+      {
+        desktopId: "desk-b",
+        sessions: [session("b", { mode: "workspace", workspaceId: "w-b", workspaceName: "B project", archived: true })],
+        workspaces: [],
+      },
+    ], new Set());
+
+    // The second machine's workspace list was never read, yet its shelved
+    // conversation still gets the heading named by its row — and both rows keep
+    // distinct keys, so one FlatList can hold them.
+    expect(rows.map(row => row.key)).toEqual(["desk-a::a", "archived-workspace:desk-b:w-b", "desk-b::b"]);
+    expect(rows.map(row => (row.kind === "section" ? undefined : row.desktopId)))
+      .toEqual(["desk-a", "desk-b", "desk-b"]);
+    const heading = rows[1];
+    expect(heading?.kind === "workspace" ? heading.workspace.name : null).toBe("B project");
+  });
+
+  it("prefers the machine's own workspace list when it has one", () => {
+    const rows = archivedCatalogRows([
+      {
+        desktopId: "desk-a",
+        sessions: [],
+        // A shelved workspace with nothing left inside it exists only here.
+        workspaces: [workspace("w-empty", { name: "Empty shelf", archived: true })],
+      },
+    ], new Set());
+    expect(rows.map(row => row.key)).toEqual(["archived-workspace:desk-a:w-empty"]);
+  });
+
+  it("honours the fold set by workspace id, as the active pages do", () => {
+    const rows = archivedCatalogRows([
+      {
+        desktopId: "desk-a",
+        sessions: [session("a", { mode: "workspace", workspaceId: "w", archived: true })],
+        workspaces: [workspace("w", { archived: true })],
+      },
+    ], new Set(["w"]));
+    expect(rows.map(row => row.kind)).toEqual(["workspace"]);
   });
 });
 

@@ -747,6 +747,77 @@ export function useSessionCatalog(
   );
 
   /**
+   * Shelve a conversation (and its forks) on the desktop, then re-read the
+   * catalogue.
+   *
+   * The host owns the refusal — a tree with a running member is not archived —
+   * so a rejected promise is the reason the UI shows. The follow-up read is what
+   * moves the row to the archived shelf here: the host pushes the new snapshot
+   * too, but a tap that visibly did nothing until the next push reads as a
+   * failed action.
+   */
+  const archiveSession = useCallback(
+    async (sessionId: string, threadId: string) => {
+      const client = clientRef.current;
+      if (!client || !sessionId || !threadId) throw new Error("Session unavailable");
+      const epoch = catalogEpoch.current;
+      await client.request({ type: "archive_session", sessionId, threadId }, sessionId);
+      if (clientRef.current !== client || catalogEpoch.current !== epoch) return;
+      await refreshSessions().catch(() => undefined);
+    },
+    [clientRef, refreshSessions],
+  );
+
+  /** Bring a shelved conversation's tree back, then re-read the catalogue. */
+  const restoreSession = useCallback(
+    async (sessionId: string, threadId: string) => {
+      const client = clientRef.current;
+      if (!client || !sessionId || !threadId) throw new Error("Session unavailable");
+      const epoch = catalogEpoch.current;
+      await client.request({ type: "restore_session", sessionId, threadId }, sessionId);
+      if (clientRef.current !== client || catalogEpoch.current !== epoch) return;
+      await refreshSessions().catch(() => undefined);
+    },
+    [clientRef, refreshSessions],
+  );
+
+  /**
+   * Shelve a workspace on the desktop. Its conversations leave the default
+   * pages with it (the host folds the workspace's marker into each row), so
+   * both lists are re-read rather than guessed at here.
+   */
+  const archiveWorkspace = useCallback(
+    async (workspaceId: string) => {
+      const client = clientRef.current;
+      if (!client || !workspaceId) throw new Error("Workspace unavailable");
+      const epoch = catalogEpoch.current;
+      await client.request({ type: "archive_workspace", workspaceId }, "list");
+      if (clientRef.current !== client || catalogEpoch.current !== epoch) return;
+      await Promise.all([
+        refreshSessions().catch(() => undefined),
+        refreshWorkspaces().catch(() => undefined),
+      ]);
+    },
+    [clientRef, refreshSessions, refreshWorkspaces],
+  );
+
+  /** Bring a shelved workspace, and the conversations it hid, back. */
+  const restoreWorkspace = useCallback(
+    async (workspaceId: string) => {
+      const client = clientRef.current;
+      if (!client || !workspaceId) throw new Error("Workspace unavailable");
+      const epoch = catalogEpoch.current;
+      await client.request({ type: "restore_workspace", workspaceId }, "list");
+      if (clientRef.current !== client || catalogEpoch.current !== epoch) return;
+      await Promise.all([
+        refreshSessions().catch(() => undefined),
+        refreshWorkspaces().catch(() => undefined),
+      ]);
+    },
+    [clientRef, refreshSessions, refreshWorkspaces],
+  );
+
+  /**
    * Register an existing directory on the desktop as a workspace — the same
    * store write as the desktop's own create-workspace dialog. The directory
    * must already exist (the phone has no folder picker for the host, so it
@@ -850,6 +921,10 @@ export function useSessionCatalog(
     createWorkspace,
     setSessionPinned,
     setWorkspacePinned,
+    archiveSession,
+    restoreSession,
+    archiveWorkspace,
+    restoreWorkspace,
     renameWorkspace,
     reset,
   };

@@ -256,8 +256,19 @@ export function archivedRows(
    * following the archive entry.
    */
   collapsed: ReadonlySet<string> = new Set(),
+  /**
+   * The machine these rows belong to, for a shelf that holds several.
+   *
+   * Stamped onto every row (the list's row renderer draws the machine's glyph
+   * and routes an action by it) and into the row keys: a session id is that
+   * machine's, so two machines can each hold a conversation called `s1`, and one
+   * FlatList cannot hold two rows with one key.
+   */
+  desktopId?: string,
 ): CatalogRow[] {
   const rows: CatalogRow[] = [];
+  const stamp = desktopId ? { desktopId } : {};
+  const rowKey = (sessionId: string) => (desktopId ? sessionKey(desktopId, sessionId) : sessionId);
   const archivedWorkspaces = workspaces.filter(workspace => workspace.archived === true);
   const byWorkspace = new Map<string, RemoteSession[]>();
   const loose: RemoteSession[] = [];
@@ -281,10 +292,11 @@ export function archivedRows(
     const children = byWorkspace.get(workspace.id) ?? [];
     rows.push({
       kind: "workspace",
-      key: `archived-workspace:${workspace.id}`,
+      key: `archived-workspace:${desktopId ? `${desktopId}:` : ""}${workspace.id}`,
       workspace,
       workspaceId: workspace.id,
       count: children.length,
+      ...stamp,
     });
     // A folded shelved workspace keeps its heading and its count, exactly as a
     // folded group does on the active pages.
@@ -292,22 +304,24 @@ export function archivedRows(
     for (const session of children) {
       rows.push({
         kind: "session",
-        key: session.sessionId,
+        key: rowKey(session.sessionId),
         session,
         depth: 1,
         hasChildren: false,
-        foldId: session.sessionId,
+        foldId: rowKey(session.sessionId),
+        ...stamp,
       });
     }
   }
   for (const session of loose) {
     rows.push({
       kind: "session",
-      key: session.sessionId,
+      key: rowKey(session.sessionId),
       session,
       depth: 0,
       hasChildren: false,
-      foldId: session.sessionId,
+      foldId: rowKey(session.sessionId),
+      ...stamp,
     });
   }
   return rows;
