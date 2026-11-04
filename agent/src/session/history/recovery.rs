@@ -13,7 +13,14 @@ use rusqlite::{params, Connection};
 /// empty string: the divider lost its numbers, its `phase` (which decides
 /// whether an in-turn checkpoint stays inside the exchange or splits it) and its
 /// identity. Those rows must be rebuilt, not patched — the shape is the input.
-pub(crate) const PROJECTION_VERSION: i64 = 2;
+///
+/// 3: a canonical session's rows are the *healed* rows too
+/// ([`super::update_display_index_from`]), not the stored ones. Version 2 copied
+/// a canonical session's shapes straight through, so a run cut off between a
+/// tool call and its result lost the `[Tool execution lost — …]` row a legacy
+/// session showed for the same journal — and converting the legacy session into
+/// the canon dropped the row. Rows built under 2 must be rebuilt once.
+pub(crate) const PROJECTION_VERSION: i64 = 3;
 
 /// Keep healthy reads on a read transaction. If reconstruction is needed,
 /// release that snapshot before reserving a writer and recheck under the lock.
@@ -96,7 +103,7 @@ pub(crate) fn ensure_history_index(db: &Connection, session: &str) -> Result<()>
             position = next;
         }
     }
-    super::update_display_index_from(db, session, 0)?;
+    super::project_history_index(db, session, 0)?;
     mark_history_index_ready(db, session)
 }
 
@@ -209,6 +216,9 @@ fn rebuild_batch(
     if rows.is_empty() {
         mark_history_index_ready(&tx, session)?;
     } else {
+        // The shape insert advances `next`; the projection only closes an
+        // exchange whose shapes are all on disk, and the next batch continues
+        // inside the exchange this one stopped in.
         super::update_display_index_from(&tx, session, after + 1)?;
     }
     tx.commit()?;

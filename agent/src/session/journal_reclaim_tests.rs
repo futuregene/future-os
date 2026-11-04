@@ -641,7 +641,8 @@ fn a_legacy_session_converts_through_the_writer() {
     let before = store.db.call(payload).unwrap();
     assert!(before.contains("hello world"));
 
-    let (converted, entries, bodies) = crate::session::content::legacy_migrate::apply(&store, 4).unwrap();
+    let (converted, entries, bodies) =
+        crate::session::content::legacy_migrate::apply(&store, 4).unwrap();
     assert_eq!(converted, 1);
     assert_eq!(entries, 1);
     assert_eq!(bodies, 0, "no block bodies remain for the session");
@@ -651,9 +652,11 @@ fn a_legacy_session_converts_through_the_writer() {
         .call(|db| {
             Ok((
                 db.query_row("SELECT count(*) FROM legacy_conversions", [], |r| r.get(0))?,
-                db.query_row("SELECT count(*) FROM session_formats WHERE format=2", [], |r| {
-                    r.get(0)
-                })?,
+                db.query_row(
+                    "SELECT count(*) FROM session_formats WHERE format=2",
+                    [],
+                    |r| r.get(0),
+                )?,
             ))
         })
         .unwrap();
@@ -664,6 +667,92 @@ fn a_legacy_session_converts_through_the_writer() {
     let after: serde_json::Value = serde_json::from_str(&store.db.call(payload).unwrap()).unwrap();
     let before: serde_json::Value = serde_json::from_str(&before).unwrap();
     assert_eq!(after, before, "same entries, rebuilt");
+}
+
+/// A legacy conversation whose run died between a tool call and its result shows
+/// the synthetic result that says so. Converting it must not take that row away:
+/// the reader sees the same conversation, byte for byte, before and after.
+///
+/// The rows themselves are not the entry list — the placeholder exists only in
+/// the display projection (`repair_dangling_tool_calls` builds it in memory), so
+/// a conversion that keeps every entry can still change what a reader is shown.
+#[test]
+fn converting_a_legacy_session_keeps_the_row_an_interrupted_call_displays() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = crate::session::Manager::new(dir.path().join("sessions"));
+    let store = manager.storage().unwrap().clone();
+    store
+        .db
+        .call(|db| {
+            db.execute("INSERT INTO sessions(id) VALUES ('s')", [])?;
+            db.execute(
+                "INSERT INTO entries(session_id,position,entry_id,entry_type,role,run_id,
+                                     timestamp_ms,metadata_json,content_json)
+                 VALUES ('s',0,'e0','user','user','run-1',1792576826574,
+                         '{\"timestamp\":\"2026-10-21T10:00:26.574Z\"}','[]')",
+                [],
+            )?;
+            db.execute(
+                "INSERT INTO entries(session_id,position,entry_id,entry_type,role,run_id,
+                                     timestamp_ms,metadata_json,content_json)
+                 VALUES ('s',1,'e1','assistant','assistant','run-1',1792576826574,
+                         '{\"timestamp\":\"2026-10-21T10:00:26.574Z\"}','[]')",
+                [],
+            )?;
+            db.execute(
+                "INSERT INTO entries(session_id,position,entry_id,entry_type,role,run_id,
+                                     timestamp_ms,metadata_json,content_json)
+                 VALUES ('s',2,'e2','user','user','run-2',1792576924496,
+                         '{\"timestamp\":\"2026-10-21T10:02:04.496Z\"}','[]')",
+                [],
+            )?;
+            // One block body, so the session is a conversion candidate at all.
+            db.execute(
+                "INSERT INTO message_blocks(session_id,entry_position,ordinal,kind,text,metadata_json)
+                 VALUES ('s',0,0,'text',NULL,'{}')",
+                [],
+            )?;
+            db.execute(
+                "INSERT INTO message_block_bodies(session_id,entry_position,ordinal,field,encoding,body)
+                 VALUES ('s',0,0,'text','gzip',?1)",
+                [gzip_text("hello")],
+            )?;
+            // The call that never got a result.
+            db.execute(
+                "INSERT INTO message_blocks(session_id,entry_position,ordinal,kind,
+                                            tool_call_id,tool_name,arguments_json,metadata_json)
+                 VALUES ('s',1,0,'tool_call','call-1','shell','{\"command\":\"ls\"}','{}')",
+                [],
+            )?;
+            db.execute(
+                "INSERT INTO message_blocks(session_id,entry_position,ordinal,kind,text,metadata_json)
+                 VALUES ('s',2,0,'text','next question','{}')",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let page = |manager: &crate::session::Manager| -> Vec<serde_json::Value> {
+        manager.history_page("s", None, Some(0), Some(100)).unwrap()["entries"]
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+    let before = page(&manager);
+    let shown = serde_json::to_string(&before).unwrap();
+    assert!(
+        shown.contains(crate::session::repair::TOOL_LOST_PLACEHOLDER_PREFIX),
+        "the interrupted call is displayed as lost: {shown}"
+    );
+
+    let (converted, entries, bodies) =
+        crate::session::content::legacy_migrate::apply(&store, 4).unwrap();
+    assert_eq!(converted, 1);
+    assert_eq!(entries, 3, "the entry list is rebuilt unchanged");
+    assert_eq!(bodies, 0, "no block bodies remain for the session");
+
+    let after = page(&manager);
+    assert_eq!(after, before, "the reader sees the same conversation");
 }
 
 /// A conversion interrupted after it recorded its payloads is finished by the
@@ -710,7 +799,12 @@ fn an_interrupted_conversion_is_finished_by_recovery() {
         })
         .unwrap();
     assert_eq!(
-        store.db.call(|db| Ok(db.query_row("SELECT count(*) FROM entries", [], |r| r.get::<_, i64>(0))?)).unwrap(),
+        store
+            .db
+            .call(
+                |db| Ok(db.query_row("SELECT count(*) FROM entries", [], |r| r.get::<_, i64>(0))?)
+            )
+            .unwrap(),
         0,
         "the session starts empty, as an interrupted conversion leaves it"
     );

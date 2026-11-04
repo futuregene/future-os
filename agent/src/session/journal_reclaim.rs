@@ -1056,21 +1056,20 @@ impl SqliteStore {
         // 11. Legacy sessions: the same entries, rebuilt through the session
         //     writer. The conversion records the payloads first, so an
         //     interruption is finished by the next start rather than losing them.
-        let pending_legacy_sessions =
-            self.db.call(|db| super::content::legacy_migrate::plan(db))?;
-        let (converted, converted_entries, converted_bodies) = if dry_run
-            || pending_legacy_sessions.0 == 0
-            || started.elapsed() >= budget
-        {
-            (0i64, 0i64, 0i64)
-        } else {
-            super::content::legacy_migrate::apply(self, LEGACY_MIGRATE_BATCH).unwrap_or_else(
-                |error| {
-                    tracing::warn!(%error, "legacy session conversion failed");
-                    (0, 0, 0)
-                },
-            )
-        };
+        let pending_legacy_sessions = self
+            .db
+            .call(|db| super::content::legacy_migrate::plan(db))?;
+        let (converted, converted_entries, converted_bodies) =
+            if dry_run || pending_legacy_sessions.0 == 0 || started.elapsed() >= budget {
+                (0i64, 0i64, 0i64)
+            } else {
+                super::content::legacy_migrate::apply(self, LEGACY_MIGRATE_BATCH).unwrap_or_else(
+                    |error| {
+                        tracing::warn!(%error, "legacy session conversion failed");
+                        (0, 0, 0)
+                    },
+                )
+            };
         let legacy_sessions_pending = self
             .db
             .call(|db| super::content::legacy_migrate::plan(db))

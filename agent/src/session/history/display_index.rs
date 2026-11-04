@@ -120,21 +120,23 @@ pub(crate) fn insert_entry_shape(
 fn affected_history_start(db: &Connection, session: &str, mut start: i64) -> Result<i64> {
     let stored_session = crate::session::identity::session_key(db, session)?;
     loop {
+        // Set-based on purpose: the correlated form re-ran the tail scan once per
+        // row, which is what made one lazy rebuild batch of a 14,000-entry
+        // conversation cost seconds. Both halves read an index.
         let run: Option<i64> = db.query_row(
-            "SELECT min((SELECT min(position) FROM entries old WHERE old.session_id=?1
-             AND old.run_id=tail.run_id AND old.position<?2))
-             FROM (SELECT run_id FROM entries WHERE session_id=?1 AND position>=?2
-                   ) tail",
+            "SELECT min(position) FROM entries
+              WHERE session_id=?1 AND run_id IN (
+                SELECT run_id FROM entries WHERE session_id=?1 AND position>=?2 AND run_id IS NOT NULL)",
             params![&stored_session, start],
             |r| r.get(0),
         )?;
         let tool: Option<i64> = db.query_row(
-            "SELECT min((SELECT min(entry_position) FROM message_blocks old WHERE old.session_id=?1
-             AND old.tool_call_id=tail.tool_call_id AND old.kind IN ('tool_call','tool_result')
-             AND old.entry_position<?2))
-             FROM (SELECT tool_call_id FROM message_blocks WHERE session_id=?1
+            "SELECT min(entry_position) FROM message_blocks
+              WHERE session_id=?1 AND kind IN ('tool_call','tool_result')
+                AND tool_call_id IN (
+                  SELECT tool_call_id FROM message_blocks WHERE session_id=?1
                    AND entry_position>=?2 AND kind IN ('tool_call','tool_result')
-                   ) tail",
+                   AND tool_call_id IS NOT NULL)",
             params![&stored_session, start],
             |r| r.get(0),
         )?;
@@ -177,15 +179,102 @@ pub(crate) fn refresh_session_metadata(db: &Connection, session: &str) -> Result
     Ok(())
 }
 
+/// Rebuild the display rows from `changed_position` on for a legacy session, and
+/// for exactly one exchange of a canonical one.
+///
+/// **The projection is the healed conversation, not the stored rows.**
+/// `Manager::load` repairs a transcript before anything reads it — an assistant
+/// that asked for a tool whose result never landed gains the synthetic
+/// `[Tool execution lost — …]` result, a duplicate result is dropped, an
+/// assistant left with no body is dropped — and a display page has to show the
+/// same conversation, or the two readers of one journal disagree. A canonical
+/// session used to skip this, on the assumption that the canon is already clean.
+/// It is not: an interrupted run writes the assistant and its call but never the
+/// result, so the same conversation showed the placeholder while it was legacy
+/// and lost it once it was converted — the conversion was visible to the reader
+/// even though every entry it wrote was byte-identical.
+///
+/// Returns the position this call indexed up to (exclusive), so a caller
+/// rebuilding a whole conversation walks it one exchange at a time instead of
+/// re-projecting the rest of it on every batch.
 pub(crate) fn update_display_index_from(
     db: &Connection,
     session: &str,
     changed_position: i64,
-) -> Result<()> {
+) -> Result<i64> {
     let stored_session = crate::session::identity::session_key(db, session)?;
-    if crate::session::content::format(db, session)? == crate::session::content::FORMAT_VERSION {
-        return append_segmented_index(db, session, changed_position);
+    let last: i64 = db.query_row(
+        "SELECT coalesce(max(position),-1) FROM history_shapes WHERE session_id=?1",
+        [&stored_session],
+        |r| r.get(0),
+    )?;
+    if crate::session::content::format(db, session)? != crate::session::content::FORMAT_VERSION {
+        // A legacy row carries its run annotation in the payload itself, so the
+        // window has to be projected with the markers around it: the tail from
+        // the affected boundary, once.
+        rewrite_legacy_tail(db, &stored_session, session, changed_position)?;
+        return Ok(last + 1);
     }
+    // Every exchange whose shapes are on disk is healed, then the rows nothing has
+    // indexed are appended. Both halves are bounded by `last`: a lazy rebuild
+    // projects the batch it just wrote, not the rest of the conversation, and the
+    // append is filtered in SQL — re-projecting the remainder on every batch is
+    // what turned a read of a 14,000-entry conversation into a timeout.
+    let first = affected_history_start(db, session, changed_position)?;
+    let session_end: i64 = db.query_row(
+        "SELECT coalesce(max(position)+1,0) FROM entries WHERE session_id=?1",
+        [&stored_session],
+        |r| r.get(0),
+    )?;
+    let mut boundaries: Vec<i64> = {
+        let mut query = db.prepare_cached(
+            "SELECT position FROM entries
+              WHERE session_id=?1 AND entry_type='user' AND position>?2 ORDER BY position",
+        )?;
+        let rows = query
+            .query_map(params![&stored_session, first], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<i64>>>()?;
+        rows
+    };
+    boundaries.push(last + 1);
+    let mut from = first;
+    for to in boundaries {
+        if from > last {
+            break;
+        }
+        // A window that runs past the shapes on disk is an exchange a batch
+        // stopped inside; the next batch walks back to its start and heals it once
+        // it is whole. The conversation's own end always counts as whole.
+        let complete = to <= last + 1 && (to < last + 1 || session_end <= last + 1);
+        let to = to.min(last + 1);
+        if to > from && complete {
+            rewrite_healed_window(db, &stored_session, from, to)?;
+        }
+        from = to;
+    }
+    append_plain_shapes(db, &stored_session, first, last + 1)?;
+    Ok(last + 1)
+}
+
+/// Project a whole conversation's display rows. A rewrite (conversion, reset,
+/// fork, compaction) needs the same projection a single append does; the name
+/// exists because the caller has no position to name.
+pub(crate) fn project_history_index(
+    db: &Connection,
+    session: &str,
+    changed_position: i64,
+) -> Result<()> {
+    update_display_index_from(db, session, changed_position).map(|_| ())
+}
+
+/// Today's legacy projection, unchanged: heal the tail from the boundary the
+/// change touches, and rewrite it.
+fn rewrite_legacy_tail(
+    db: &Connection,
+    stored_session: &crate::session::identity::StoredIdentity,
+    session: &str,
+    changed_position: i64,
+) -> Result<()> {
     let start = affected_history_start(db, session, changed_position)?;
     let ordinal: i64 = if start == 0 {
         0
@@ -194,7 +283,7 @@ pub(crate) fn update_display_index_from(
             "SELECT coalesce((SELECT min(ordinal) FROM history_display
             WHERE session_id=?1 AND source_position>=?2),
             (SELECT max(ordinal)+1 FROM history_display WHERE session_id=?1),0)",
-            params![&stored_session, start],
+            params![stored_session, start],
             |r| r.get(0),
         )?
     };
@@ -203,7 +292,7 @@ pub(crate) fn update_display_index_from(
         "SELECT position,payload FROM history_shapes WHERE session_id=?1 AND position>=?2 ORDER BY position",
     )?;
     let rows = stmt
-        .query_map(params![&stored_session, start], |r| {
+        .query_map(params![stored_session, start], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -227,7 +316,7 @@ pub(crate) fn update_display_index_from(
             .and_then(|id| positions.get(id))
             .copied();
         upsert.execute(params![
-            &stored_session,
+            stored_session,
             ordinal + index as i64,
             source,
             payload["role"] == "user",
@@ -236,24 +325,103 @@ pub(crate) fn update_display_index_from(
     }
     db.execute(
         "DELETE FROM history_display WHERE session_id=?1 AND ordinal>=?2",
-        params![&stored_session, ordinal + projected.len() as i64],
+        params![stored_session, ordinal + projected.len() as i64],
     )?;
     Ok(())
 }
 
-/// Canonical entries are already normalized and have stable tool/run identity.
-/// Append only their body-free shapes. Terminal annotations are joined from
-/// `runs` on bounded page reads, so closing a long run does no suffix rebuild.
-fn append_segmented_index(db: &Connection, session: &str, start: i64) -> Result<()> {
-    let stored_session = crate::session::identity::session_key(db, session)?;
+/// Replace the display rows of `[start, end)` when the healing projection
+/// differs from what the window stores, and leave them alone when it does not.
+fn rewrite_healed_window(
+    db: &Connection,
+    stored_session: &crate::session::identity::StoredIdentity,
+    start: i64,
+    end: i64,
+) -> Result<()> {
+    let ordinal: i64 = if start == 0 {
+        0
+    } else {
+        db.query_row(
+            "SELECT coalesce((SELECT min(ordinal) FROM history_display
+            WHERE session_id=?1 AND source_position>=?2),
+            (SELECT max(ordinal)+1 FROM history_display WHERE session_id=?1),0)",
+            params![stored_session, start],
+            |r| r.get(0),
+        )?
+    };
+    // An index with nothing at or after this position has to be rebuilt from its
+    // first row: writing a window into an empty index would place it at zero.
+    let start = if ordinal == 0 { 0 } else { start };
+    let mut stmt = db.prepare_cached(
+        "SELECT position,payload FROM history_shapes
+          WHERE session_id=?1 AND position>=?2 AND position<?3 ORDER BY position",
+    )?;
+    let rows = stmt
+        .query_map(params![stored_session, start, end], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut positions = std::collections::HashMap::new();
+    let mut entries = Vec::with_capacity(rows.len());
+    for (position, row) in rows {
+        let entry: SessionEntry = serde_json::from_str(&row)?;
+        positions.insert(entry.id.clone(), position);
+        entries.push(entry);
+    }
+    let plain = project_entries(&entries);
+    let mut healed = entries;
+    repair::strip_empty_assistants(&mut healed);
+    repair::dedupe_tool_entries(&mut healed);
+    repair::repair_dangling_tool_calls(&mut healed);
+    let projected = project_entries(&healed);
+    if projected == plain {
+        return Ok(());
+    }
+    let mut upsert = db.prepare_cached("INSERT INTO history_display(session_id,ordinal,source_position,is_user,payload) VALUES (?1,?2,?3,?4,?5)
+        ON CONFLICT(session_id,ordinal) DO UPDATE SET source_position=excluded.source_position,is_user=excluded.is_user,payload=excluded.payload
+        WHERE history_display.source_position IS NOT excluded.source_position OR history_display.payload<>excluded.payload")?;
+    for (index, payload) in projected.iter().enumerate() {
+        let source = payload["id"]
+            .as_str()
+            .and_then(|id| positions.get(id))
+            .copied();
+        upsert.execute(params![
+            stored_session,
+            ordinal + index as i64,
+            source,
+            payload["role"] == "user",
+            payload.to_string()
+        ])?;
+    }
+    // A repaired exchange can be longer or shorter than what it replaced; the
+    // rows after it are re-appended from their shapes by the next window.
+    db.execute(
+        "DELETE FROM history_display WHERE session_id=?1 AND ordinal>=?2",
+        params![stored_session, ordinal + projected.len() as i64],
+    )?;
+    Ok(())
+}
+
+/// Append the shapes in `[start, end)` that nothing has indexed yet, in position
+/// order. Terminal annotations are joined from `runs` on bounded page reads, so
+/// closing a long run does no suffix rebuild.
+fn append_plain_shapes(
+    db: &Connection,
+    stored_session: &crate::session::identity::StoredIdentity,
+    start: i64,
+    end: i64,
+) -> Result<()> {
     let mut ordinal: i64 = db.query_row(
         "SELECT coalesce(max(ordinal)+1,0) FROM history_display WHERE session_id=?1",
-        [&stored_session],
+        [stored_session],
         |row| row.get(0),
     )?;
-    let mut query=db.prepare_cached("SELECT h.position,h.payload FROM history_shapes h WHERE h.session_id=?1 AND h.position>=?2 AND NOT EXISTS(SELECT 1 FROM history_display d WHERE d.session_id=h.session_id AND d.source_position=h.position) ORDER BY h.position")?;
+    let mut query=db.prepare_cached("SELECT h.position,h.payload FROM history_shapes h WHERE h.session_id=?1 AND h.position>=?2 AND h.position<?3 AND NOT EXISTS(SELECT 1 FROM history_display d WHERE d.session_id=h.session_id AND d.source_position=h.position) ORDER BY h.position")?;
     let rows = query
-        .query_map(params![&stored_session, start], |row| {
+        .query_map(params![stored_session, start, end], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -262,7 +430,7 @@ fn append_segmented_index(db: &Connection, session: &str, start: i64) -> Result<
         let entry: SessionEntry = serde_json::from_str(&raw)?;
         if let Some(payload) = project_entries(&[entry]).pop() {
             insert.execute(params![
-                &stored_session,
+                stored_session,
                 ordinal,
                 position,
                 payload["role"] == "user",

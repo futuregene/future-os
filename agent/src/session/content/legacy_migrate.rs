@@ -117,8 +117,9 @@ fn read_payloads(store: &SqliteStore, session: &str) -> Result<Vec<Value>> {
     let session = session.to_owned();
     store.db.call(move |db| {
         let key = crate::session::identity::session_key(db, &session)?;
-        let mut statement =
-            db.prepare_cached("SELECT payload FROM entry_records WHERE session_id=?1 ORDER BY position")?;
+        let mut statement = db.prepare_cached(
+            "SELECT payload FROM entry_records WHERE session_id=?1 ORDER BY position",
+        )?;
         let rows = statement
             .query_map([&key], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -178,7 +179,10 @@ fn reserve(store: &SqliteStore, session: &str, payloads: &[Value]) -> Result<boo
             let sql = format!("DELETE FROM {table} WHERE session_id=?1");
             tx.execute(&sql, [&key])?;
         }
-        tx.execute("DELETE FROM history_index_state WHERE session_id=?1", [&key])?;
+        tx.execute(
+            "DELETE FROM history_index_state WHERE session_id=?1",
+            [&key],
+        )?;
         tx.commit()?;
         Ok(true)
     })

@@ -135,6 +135,55 @@ fn late_results_and_reused_tool_ids_expand_the_dirty_tail_to_their_old_owner() {
     assert_projection(&manager, &session.id);
 }
 
+/// A canonical conversation whose run was cut off between a tool call and its
+/// result displays the row that says the result is unknown — the same row a
+/// legacy conversation shows, because both are the healing projection of the
+/// same journal ([`assert_projection`] is that statement).
+#[test]
+fn an_interrupted_call_displays_its_placeholder_in_the_canonical_format() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = Manager::new(dir.path().join("sessions"));
+    let mut session = Session::new("/synthetic", "mock");
+    session
+        .entries
+        .push(SessionEntry::new_user("user", json!("run the tests")));
+    let mut assistant = SessionEntry::new_assistant(
+        serde_json::Value::Null,
+        vec![crate::types::ToolCall {
+            id: "call-1".into(),
+            call_type: "function".into(),
+            function: crate::types::ToolCallFn {
+                name: "shell".into(),
+                arguments: json!({"command": "cargo test"}),
+            },
+        }],
+    );
+    assistant.content = None;
+    session.entries.push(assistant);
+    // Nothing recorded the result: the process died mid-tool.
+    session
+        .entries
+        .push(SessionEntry::new_user("user", json!("carry on")));
+    // A new conversation is created in the canonical format; this is that
+    // reservation, so the fixture exercises the segment append path.
+    manager
+        .storage()
+        .unwrap()
+        .reserve_segmented(&session.id)
+        .unwrap();
+    manager.save(&session).unwrap();
+    assert_projection(&manager, &session.id);
+    let page = manager
+        .history_page(&session.id, None, Some(0), Some(100))
+        .unwrap();
+    assert!(
+        serde_json::to_string(&page)
+            .unwrap()
+            .contains(crate::session::repair::TOOL_LOST_PLACEHOLDER_PREFIX),
+        "the call without a result is displayed as lost: {page}"
+    );
+}
+
 #[test]
 fn replacing_history_with_no_visible_entries_clears_the_derived_index() {
     let dir = tempfile::tempdir().unwrap();
