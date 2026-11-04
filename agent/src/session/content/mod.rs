@@ -29,6 +29,7 @@ pub(crate) mod journal;
 pub(crate) mod metadata;
 pub(crate) mod operations;
 pub(crate) mod reader;
+pub(crate) mod legacy_migrate;
 pub(crate) mod rechunk;
 mod recovery;
 pub(crate) mod reset;
