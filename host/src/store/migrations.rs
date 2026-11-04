@@ -15,6 +15,7 @@ const STEPS: &[(i64, &str)] = &[
     (2, include_str!("thread_sources.sql")),
     (3, include_str!("delete_sources.sql")),
     (4, include_str!("retire_reference_caches.sql")),
+    (5, include_str!("workspace_archive.sql")),
 ];
 
 fn checksum(version: i64) -> String {
@@ -159,7 +160,12 @@ pub(super) fn initialize(conn: &Connection) -> Result<(), Error> {
                 conn,
                 rusqlite::TransactionBehavior::Immediate,
             )?;
-            tx.execute_batch(sql)?;
+            // Nightly 110 and fresh databases already have this column, but
+            // nightly 109's version-4 contract does not. Adopt either layout
+            // under the same transactional, checksummed migration.
+            if *step != 5 || !column_names(&tx, "workspaces")?.contains("archived_at") {
+                tx.execute_batch(sql)?;
+            }
             if *step == 1 {
                 tx.execute("INSERT INTO app_database_identity(id,database_id,restore_generation) VALUES ('main',?1,?2)",params![create_id("database"),create_id("restore")])?;
             }
@@ -288,6 +294,122 @@ mod tests {
     use super::*;
     use std::fs;
 
+    /// Reconstruct both released contract-4 layouts: nightly 109 lacks the
+    /// archive column, while nightly 110's fresh databases already have it.
+    fn workspace_archive_contract_four(conn: &Connection, has_archive_column: bool) {
+        legacy(conn);
+        initialize(conn).unwrap();
+        conn.execute_batch(
+            "DELETE FROM app_schema_migrations WHERE version>=5; PRAGMA user_version=4;",
+        )
+        .unwrap();
+        if has_archive_column {
+            conn.execute("UPDATE workspaces SET archived_at=123 WHERE id='w'", [])
+                .unwrap();
+        } else {
+            conn.execute_batch("ALTER TABLE workspaces DROP COLUMN archived_at")
+                .unwrap();
+        }
+        assert_eq!(admit(conn).unwrap(), 4);
+    }
+
+    #[test]
+    fn both_contract_four_archive_layouts_upgrade_without_losing_data() {
+        for has_archive_column in [false, true] {
+            let conn = Connection::open_in_memory().unwrap();
+            workspace_archive_contract_four(&conn, has_archive_column);
+            if !has_archive_column {
+                let error = validate_core(&conn).unwrap_err().to_string();
+                assert!(
+                    error.contains("workspaces.archived_at is missing"),
+                    "{error}"
+                );
+            }
+            let identity: (String, String) = conn
+                .query_row(
+                    "SELECT database_id,restore_generation FROM app_database_identity",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            // A current open must not replay the new ALTER or change existing
+            // archive state, history, identity, or released contract checksums.
+            initialize(&conn).unwrap();
+            initialize(&conn).unwrap();
+            validate_core(&conn).unwrap();
+            assert_eq!(
+                admit(&conn).unwrap(),
+                future_app_settings::APP_DB_SCHEMA_VERSION
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT archived_at FROM workspaces WHERE id='w'",
+                    [],
+                    |row| { row.get::<_, Option<i64>>(0) }
+                )
+                .unwrap(),
+                has_archive_column.then_some(123)
+            );
+            assert_eq!(
+                conn.query_row("SELECT title FROM threads WHERE id='t'", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap(),
+                "History"
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT content FROM legacy_messages WHERE id='u'",
+                    [],
+                    |row| { row.get::<_, String>(0) }
+                )
+                .unwrap(),
+                "保留历史"
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT database_id,restore_generation FROM app_database_identity",
+                    [],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .unwrap(),
+                identity
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_archive_upgrade_rolls_back_and_retries_with_its_ledger() {
+        let conn = Connection::open_in_memory().unwrap();
+        workspace_archive_contract_four(&conn, false);
+        conn.execute_batch(
+            "CREATE TRIGGER refuse_v5 BEFORE INSERT ON app_schema_migrations
+             WHEN NEW.version=5 BEGIN SELECT RAISE(ABORT,'injected'); END;",
+        )
+        .unwrap();
+        assert!(initialize(&conn).is_err());
+        assert_eq!(admit(&conn).unwrap(), 4);
+        assert!(!column_names(&conn, "workspaces")
+            .unwrap()
+            .contains("archived_at"));
+        assert_eq!(
+            conn.query_row(
+                "SELECT content FROM legacy_messages WHERE id='u'",
+                [],
+                |row| { row.get::<_, String>(0) }
+            )
+            .unwrap(),
+            "保留历史"
+        );
+        conn.execute_batch("DROP TRIGGER refuse_v5").unwrap();
+        initialize(&conn).unwrap();
+        assert_eq!(
+            admit(&conn).unwrap(),
+            future_app_settings::APP_DB_SCHEMA_VERSION
+        );
+        validate_core(&conn).unwrap();
+    }
+
     #[test]
     fn reference_cache_retirement_is_atomic_retryable_and_preserves_live_history() {
         let conn = Connection::open_in_memory().unwrap();
@@ -303,7 +425,7 @@ mod tests {
             INSERT INTO runs(id,thread_id,status,created_at,updated_at) VALUES('run','t','completed',1,1);
             INSERT INTO review_snapshots(id,workspace_id,thread_id,run_id,phase,status,created_at) VALUES('snapshot','w','t','run','before','complete',1);
             INSERT INTO artifacts(id,workspace_id,thread_id,title,artifact_type,content,created_at,updated_at) VALUES('artifact','w','t','Keep','markdown','original artifact',1,1);
-            DELETE FROM app_schema_migrations WHERE version=4; PRAGMA user_version=3;
+            DELETE FROM app_schema_migrations WHERE version>=4; PRAGMA user_version=3;
             CREATE TRIGGER refuse_v4 BEFORE INSERT ON app_schema_migrations WHEN NEW.version=4 BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
         let identity: String = conn
             .query_row("SELECT database_id FROM app_database_identity", [], |r| {
