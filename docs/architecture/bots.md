@@ -523,9 +523,9 @@ the host is not running, a local bot does not continue either.
 
 | Phase | Contents | Observable acceptance |
 |---|---|---|
-| **P1 Bot** | app.db migration, private bot chat, navigation and list isolation, one-line creation, explicit memory | create a bot, talk three turns, restart and both role and memory remain; its private chat is absent from Recent and Workspaces; `future session list` excludes it |
-| **P2 Group** | groups and members, routing kernel, one-shot turns, serial execution, group transcript, `@` menu | two bots and a person: `@`-ing one gets exactly one reply; with no `@`, the owner takes it; a bot-to-bot chain stops at depth 2; a 9-turn message is cut by the cap with a stated reason; failure and timeout are visible |
-| **P3 Permissions and metering** | group-turn workspace permission, the group-workspace allow rule, the token line, the startup sweep | the shared board is writable; writes elsewhere go to approval; usage matches the provider; killing the process between writes leaves an idempotent repair |
+| **M1 Bot** | app.db migration, private bot chat, navigation and list isolation, one-line creation, explicit memory | create a bot, talk three turns, restart and both role and memory remain; its private chat is absent from Recent and Workspaces; `future session list` excludes it |
+| **M2 Group** | groups and members, routing kernel, one-shot turns, serial execution, group transcript, `@` menu | two bots and a person: `@`-ing one gets exactly one reply; with no `@`, the owner takes it; a bot-to-bot chain stops at depth 2; a 9-turn message is cut by the cap with a stated reason; failure and timeout are visible |
+| **M3 Permissions and metering** | group-turn workspace permission, the group-workspace allow rule, the token line, the startup sweep | the shared board is writable; writes elsewhere go to approval; usage matches the provider; killing the process between writes leaves an idempotent repair |
 
 Land the phases separately; do not implement every candidate mechanism at once.
 
@@ -569,6 +569,17 @@ Go/no-go:
 ---
 
 ## 14. Only after validation (not in v1)
+
+The later order is recorded as order only, with no design; each phase starts as its own
+task, and no phase begins before the previous one's criteria are met.
+
+| Phase | One line |
+|---|---|
+| **P1** | Bot as an app: `bot.toml`, interface contracts, local invocation and audit |
+| **P2** | Memory classes and evolution proposals: facts/preferences/skills, diff, trial run and rollback |
+| **P3** | Template and fork sharing: an installed bot carries neither the source instance's memory nor its credentials |
+| **P4** | Authorized invocation within an account or team: relay authentication, quota, revocation and audit |
+| **P5** | Cross-user groups: a signed event log on the relay, with membership changes per epoch |
 
 | Candidate | When to build it |
 |---|---|
