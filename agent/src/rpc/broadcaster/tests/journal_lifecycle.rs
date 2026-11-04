@@ -575,3 +575,67 @@ fn an_append_past_the_pending_age_limit_kills_the_journal_and_it_never_recovers(
         "every later event stays dropped until the session is restarted"
     );
 }
+
+/// The terminal is the cheap moment to keep a run's projection: it is already
+/// folded in memory, so a later open reads it instead of folding the journal
+/// (4.1 s for 136k events). What is kept must be exactly what folding the same
+/// journal produces, or a cached open would answer differently from a cold one.
+#[test]
+fn a_settled_run_keeps_the_same_projection_the_journal_folds_to() {
+    let directory = tempfile::tempdir().unwrap();
+    let manager = crate::session::Manager::new(directory.path().to_path_buf());
+    let broadcaster = SseBroadcaster::new();
+    broadcaster
+        .configure_legacy_journal("session-settled", &manager)
+        .unwrap();
+    broadcaster.start_run("run-settled".to_string(), 1);
+    broadcaster.broadcast(SseEvent::new("agent_start", serde_json::json!({})));
+    for index in 0..40 {
+        broadcaster.broadcast(SseEvent::new(
+            "text_chunk",
+            serde_json::json!({"text": format!("t{index}")}),
+        ));
+    }
+    broadcaster.broadcast(SseEvent::new(
+        "tool_end",
+        serde_json::json!({"tool_name": "shell", "text": "ok", "exit_code": 0}),
+    ));
+    broadcaster.broadcast(SseEvent::new(
+        "agent_end",
+        serde_json::json!({"state": "completed"}),
+    ));
+
+    let store = manager.storage().unwrap();
+    let mut cached = None;
+    for _ in 0..300 {
+        cached = store
+            .cached_run_snapshot("session-settled", "run-settled", 1)
+            .unwrap();
+        if cached.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let cached = cached.expect("the terminal must keep the run's projection");
+
+    // A cached open answers with the wire projection: type, data and idx. The
+    // envelope the reply never sends is not part of the comparison, and the
+    // journal side is trimmed exactly as the cache is, so this still says the
+    // kept events are the fold's own.
+    let mut folded =
+        crate::rpc::run_snapshot::fold_events(broadcaster.read_journal("run-settled").unwrap());
+    crate::rpc::broadcaster::trim_projection(&mut folded);
+    assert_eq!(
+        serde_json::to_string(&cached.events).unwrap(),
+        serde_json::to_string(&folded).unwrap(),
+        "a cached open must answer with the journal's own fold"
+    );
+    assert!(
+        cached
+            .events
+            .iter()
+            .filter(|event| event.event_type == "tool_end")
+            .all(|event| !event.data.contains("text")),
+        "a tool result's captured text is not part of the projection"
+    );
+}

@@ -144,3 +144,22 @@ python3 scripts/measure/measure-sync-browser.py --test-binary <上一步test exe
 不要把 `offset_1000/5000/136277` 的数字当热路径性能引用——那是兼容分支的形状。
 真实的打开成本是首屏快照折叠（136k 事件的 run、没有已缓存折叠时 4.1 s），
 后续每页的成本是这一页自身的字节（debug 构建下约 120 ms / 1000 条事件）。
+
+## 这些数字不是什么
+
+仓库里关于重放的数字，背后有四个前提，每一个都曾经误导过一次读者。引用数字时要一起引用它们。
+
+- **探针不等于手机。** `remote_host::sync_measurement` 不声明 `lean_events_v1`，而 `lean::enabled()`
+  是按请求生效、默认 `false`，所以它报出的每个载荷都是**未裁剪**形状。手机在 lean 车道上收到的东西更少——
+  但也不是一点都收不到：lean 只裁剪 `events`，`projection` 里只对 dropped 类型打空，所以 `tool_end`
+  捕获的输出仍然搭着快照首包过来。因此「262 KB / 97 KB gzip」既不是手机的数，也不是裁剪后主机的数。
+- **4.1 秒是一次折叠，而且只发生在 run 不在 agent 内存里时。** 活跃 run 走
+  `CapturedSnapshot::capture`（`agent/src/rpc/broadcaster/replay.rs`），折叠结果会存在
+  `run_snapshot_cache` 里供下次打开使用。刚启动的 agent 上取的数是最坏情况、不是稳态：冷 4.1 s，命中后约 0.21 s。
+- **打开已结束的会话不重放，打开 streaming 中的会话会整条重放**（`sinceIdx=-1`）：
+  桌面 `desktop/src/features/remote-peer/useRemoteTimeline.ts:556/562`，手机
+  `packages/remote-client/src/syncEngine.ts:620`。造成「跑着的时候打开更慢」的是这个不对称，不是折叠。
+- **`content_refs` 不能用来回填工具输出。** 它只覆盖 `user_message`、`approval_request`、`error`、
+  `agent_end`、`compaction_committed`、`compaction_failed` 六种（见 `packages/rpc/src/content_body.rs`
+  与 `packages/thread-projection/src/contentBody.ts`）。挂在 `tool_end` 上的 `content_refs` 两端都会忽略，
+  发预览等于静默丢内容；要把它当回填通道是两端协议扩展，不是主机侧的裁剪。

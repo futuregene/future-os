@@ -667,12 +667,14 @@ fn a_cached_fold_is_byte_identical_to_folding_the_journal() {
         .cached_run_snapshot("s", "run", epoch)
         .unwrap()
         .expect("a stored fold is a hit");
+    // Envelope included on purpose: a replay event's `eventId` and `timestamp`
+    // are read by the client (`thread-projection/src/replay.ts`), so the cache
+    // must keep them exactly as the fold produced them.
     assert_eq!(
         serde_json::to_string(&cached).unwrap(),
         serde_json::to_string(&snapshot).unwrap(),
         "the cached fold must be the same bytes the fold produced"
     );
-    // And the same events the raw journal folds to, not merely the same row.
     assert_eq!(
         serde_json::to_string(&cached.events).unwrap(),
         serde_json::to_string(&folded).unwrap()

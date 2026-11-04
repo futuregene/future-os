@@ -15,6 +15,8 @@ mod replay;
 #[cfg(test)]
 pub(in crate::rpc) use projection::apply_to_projection;
 use projection::is_buffered_delta;
+pub(crate) use replay::trim_projection;
+use replay::CapturedSnapshot;
 
 /// Max buffered events per run (for `events_since` backfill). Oldest dropped.
 /// Only the *current* run is buffered (cleared on `start_run`), so this is a
@@ -450,6 +452,14 @@ impl SseBroadcaster {
             run.idx += 1;
             run.record_event(&event, bounded);
         }
+        // The run's terminal is the last moment its projection is free: it is
+        // already folded in memory, so keeping it costs a serialize instead of
+        // the whole-journal fold a later open would pay. Captured under the same
+        // lock that stamped the event, so the cursor is exactly this terminal's.
+        let settled = (!session_scoped && event.event_type == "agent_end").then(|| {
+            (run.projection_complete && !run.projection_events.over_budget())
+                .then(|| CapturedSnapshot::capture(&run))
+        });
         // Captured before the event is published: a refused durable write is
         // reported after `send` has already moved it.
         let (event_session, event_run, event_idx, event_type) = (
@@ -469,6 +479,9 @@ impl SseBroadcaster {
         // wait without holding either lock. User input and terminal transcript
         // markers are already committed by their owning async operation.
         drop(run);
+        if let Some(Some(captured)) = settled {
+            self.keep_settled_projection(&event_session, captured);
+        }
         if let Some(receipt) = receipt.filter(|_| wait) {
             match receipt.recv() {
                 Ok(Ok(())) => {}
@@ -492,6 +505,39 @@ impl SseBroadcaster {
                     .journal_health
                     .fail("event commit acknowledgment lost".into()),
             }
+        }
+    }
+
+    /// Keep a finished run's projection beside its journal.
+    ///
+    /// At the terminal the projection is already folded in memory, so this is a
+    /// serialize and an insert rather than the whole-journal fold a later open
+    /// would pay (4.1 s for a 136k-event run). Best effort: a failed write costs
+    /// the next open a fold, nothing else.
+    fn keep_settled_projection(&self, session: &str, captured: CapturedSnapshot) {
+        let Some(store) = self.journal.lock().store.clone() else {
+            return;
+        };
+        let mut snapshot = captured.materialize();
+        if snapshot.events.is_empty() {
+            return;
+        }
+        snapshot.events = crate::rpc::run_snapshot::strip_repeated_tool_arguments(snapshot.events);
+        trim_projection(&mut snapshot.events);
+        let keep = crate::session::journal_compaction::RunJournalSnapshot {
+            run_id: snapshot.run_id,
+            epoch: snapshot.epoch,
+            run_sequence: snapshot.run_sequence,
+            cursor: snapshot.cursor,
+            events: snapshot.events,
+        };
+        let session = session.to_owned();
+        // Written inline, not spawned: one insert of the folded projection
+        // (measured 3.5 ms for a 1.8 MB row) at the terminal, once per run, and
+        // no dependency on an ambient runtime — a spawned write is one a
+        // non-async caller silently loses.
+        if let Err(error) = store.store_run_snapshot_cache(&session, &keep) {
+            tracing::debug!(%error, run = %keep.run_id, "settled run snapshot cache write failed");
         }
     }
 
