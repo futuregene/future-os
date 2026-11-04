@@ -126,6 +126,7 @@ export async function runRemoteCases({ cases, runDir, desktopUrl, mobileUrl }) {
       description: testCase.description ?? null,
       preconditions: testCase.preconditions ?? null,
       expectations: testCase.expectations ?? [],
+      judge: testCase.judge ?? null,
       status,
       fatal,
       startedAt: new Date(startedAt).toISOString(),

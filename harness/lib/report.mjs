@@ -108,6 +108,19 @@ export function writeReport(runDir, { repoRoot = resolve(import.meta.dirname, ".
     lines.push("");
   }
 
+  const judgedCases = analysis?.cases?.filter(item => item.judge) ?? [];
+  if (judgedCases.length) {
+    lines.push("## 模型验收", "");
+    lines.push("| 用例 | 结论 | 置信度 | 判断 | 证据 |");
+    lines.push("|---|---|---|---|---|");
+    for (const item of judgedCases) {
+      const judge = item.judge;
+      const icon = judge.verdict === "issue" ? "❗ issue" : judge.verdict === "pass" ? "✅ pass" : "❔ unknown";
+      lines.push(`| ${item.id} | ${icon} | ${judge.confidence ?? "—"} | ${(judge.summary ?? "").replace(/\|/g, "\\|").slice(0, 200)} | ${judge.images?.length ?? 0} 张 + 时间线/日志 |`);
+    }
+    lines.push("");
+  }
+
   if (analysis?.findings?.length) {
     const grouped = groupFindings(analysis.findings);
     lines.push("## 发现的问题", "");

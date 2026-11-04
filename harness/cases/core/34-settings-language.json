@@ -1,0 +1,60 @@
+{
+  "id": "settings-language",
+  "title": "设置：切到 English 并刷新后保持",
+  "area": "settings",
+  "priority": "P1",
+  "tags": [
+    "settings",
+    "i18n"
+  ],
+  "description": "通用页的语言是原生 select；选中 English 后界面文案应立即变英文，刷新后仍英文。",
+  "preconditions": "应用已启动。",
+  "expectations": [
+    "切英文后界面变英文",
+    "刷新后仍英文"
+  ],
+  "steps": [
+    {
+      "wait": 900
+    },
+    {
+      "click": {
+        "text": "设置"
+      }
+    },
+    {
+      "wait": 700
+    },
+    {
+      "eval": "(() => { const s=[...document.querySelectorAll('select')].find(el=>[...el.options].some(o=>o.textContent.trim()==='English')); if(!s) throw new Error('no language select'); const o=[...s.options].find(o=>o.textContent.trim()==='English'); s.value=o.value; s.dispatchEvent(new Event('input',{bubbles:true})); s.dispatchEvent(new Event('change',{bubbles:true})); return s.value; })()",
+      "as": "lang"
+    },
+    {
+      "wait": 900
+    },
+    {
+      "assert": {
+        "expr": "document.body.innerText.toLowerCase().includes('new chat') || document.body.innerText.includes('Settings')",
+        "message": "界面切成英文"
+      }
+    },
+    {
+      "shot": "settings-english"
+    },
+    {
+      "reload": true
+    },
+    {
+      "waitFor": {
+        "expr": "document.body.innerText.toLowerCase().includes('new chat')"
+      },
+      "timeout": 10000
+    },
+    {
+      "shot": "settings-english-after-reload"
+    }
+  ],
+  "query": {
+    "prefs": "free"
+  }
+}

@@ -117,6 +117,7 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
   page.networkEntries = [];
   page.networkBytes = 0;
   let readyMs = null;
+  let bodyText = null;
   page.onEvent = event => {
     observations.push({ ...event, step: timeline.length });
     if (event.channel === "console" && event.type === "error")
@@ -459,6 +460,11 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
       note(entry);
     }
 
+    bodyText = null;
+    try {
+      bodyText = await page.evaluate("document.body.innerText.slice(0, 12000)");
+    }
+    catch {}
     const finalMetrics = await page.metrics();
     metrics.push({ at: "final", ts: Date.now(), ...finalMetrics, process: page.processStats() });
     if (status === "pass")
@@ -533,11 +539,13 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
     description: testCase.description ?? null,
     preconditions: testCase.preconditions ?? null,
     expectations: testCase.expectations ?? [],
+    judge: testCase.judge ?? null,
     status,
     fatal,
     startedAt: new Date(startedAt).toISOString(),
     stepsEndedAt: stepsEndedAt ? new Date(stepsEndedAt).toISOString() : null,
     durationMs,
+    bodyText,
     steps: timeline,
     checks,
     metrics,

@@ -27,7 +27,9 @@ Legend: ✅ two or more cases · ◐ one smoke case · — not covered.
 | Fold/unfold tool calls, fork, copy, question nav | — | next |
 | Approval card approve/reject | — | next |
 | Settings pages (models/skills/tasks/remote) | ✅ smoke | `side-panels-smoke`, `settings-page`, `remote-page` |
-| Theme/language/approval tier persistence | — | next |
+| Settings tabs (general/models/skills/tasks/remote) | ✅ | `settings-tabs`, `settings-page`, `remote-page` |
+| Language / theme persistence across reload | ✅ | `settings-language`, `settings-theme` |
+| Approval tier persistence | — | next |
 | Send queue while a reply runs | — | blocked: shot mock has no agent queue |
 | Fusion discussion | — | next |
 | Reload persistence | ✅ | `reload-persistence`, `thinking-level-high-persists`, `model-persists-after-reload` |

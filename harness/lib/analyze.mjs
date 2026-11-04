@@ -311,7 +311,7 @@ function visionTargets(result) {
   }).slice(0, 4);
 }
 
-async function filmstrip(videoPath, outPath) {
+async function filmstrip(videoPath, outPath, { frames = 12 } = {}) {
   if (!existsSync(videoPath))
     return null;
   if (existsSync(outPath))
@@ -326,12 +326,15 @@ async function filmstrip(videoPath, outPath) {
     // screen went blank".
     const seek = duration > 4 ? 0.8 : 0;
     const usable = duration > 4 ? Math.max(2, duration - seek - 1.2) : duration;
+    const columns = frames >= 12 ? 4 : 3;
+    const rows = Math.ceil(frames / columns);
+    const fps = Math.max(0.2, frames / Math.max(1, usable));
     await execFileAsync("ffmpeg", [
       "-y", "-loglevel", "error",
       "-ss", String(seek),
       "-t", String(usable),
       "-i", videoPath,
-      "-vf", "fps=1/2,scale=480:-1,tile=3x2:padding=6:margin=6",
+      "-vf", `fps=${fps.toFixed(3)},scale=320:-1,tile=${columns}x${rows}:padding=4:margin=4`,
       "-frames:v", "1",
       outPath,
     ], { timeout: 120_000 });
@@ -439,6 +442,103 @@ async function visionFindings(result, runDir, { limit = 3, native = false, model
   return notes;
 }
 
+/** Ordered evidence for one case: actions first, then the whole recording. */
+async function judgeEvidence(result, runDir, { limit = 8 } = {}) {
+  const images = [];
+  for (const step of result.steps ?? []) {
+    if (!step.shot && !step.failureShot)
+      continue;
+    const path = step.failureShot ?? step.shot;
+    if (!path || images.some(item => item.path === path))
+      continue;
+    images.push({ path, label: `第 ${step.index} 步 · ${step.action}${step.note ? ` · ${step.note}` : ""}${step.ok === false ? "（失败现场）" : ""}` });
+  }
+  const dir = join(runDir, "vision", result.id);
+  mkdirSync(dir, { recursive: true });
+  const videoPath = result.artifacts?.dir ? join(result.artifacts.dir, "video.mp4") : null;
+  const strip = videoPath ? await filmstrip(videoPath, join(dir, "judge-filmstrip.png"), { frames: 12 }) : null;
+  if (strip)
+    images.push({ path: strip, label: "整段操作录像的 12 帧拼图（从左到右、从上到下，按真实时间）" });
+  return images.slice(0, limit + 1);
+}
+
+function timelineText(result) {
+  return (result.steps ?? [])
+    .filter(step => step.action !== "note")
+    .map(step => `#${step.index} ${step.action}${step.target ? ` ${truncate(JSON.stringify(step.target), 120)}` : ""} ${step.ok === false ? `FAILED: ${step.error}` : "ok"}${step.note ? ` — ${step.note}` : ""}`)
+    .join("\n");
+}
+
+/**
+ * Model acceptance: the "is this actually a plausible product state?" gate.
+ *
+ * Deterministic assertions answer contract questions ("did the row disappear").
+ * They cannot answer "is this what a person would expect to see" — spacing,
+ * wrong content, a spinner stuck, a dynamic sequence that only looks wrong when
+ * played. This sends the ordered screenshots + the whole recording's frames +
+ * the runtime logs to a vision model and asks for a verdict in prose terms.
+ */
+async function judgeCase(result, runDir, { model = null } = {}) {
+  const criteria = result.judge?.criteria ?? result.expectations ?? [];
+  if (!criteria.length)
+    return null;
+  const images = await judgeEvidence(result, runDir, { limit: result.judge?.maxImages ?? 8 });
+  const logs = [];
+  if (result.console?.errors?.length)
+    logs.push(`console errors: ${result.console.errors.map(item => item.text).join(" | ").slice(0, 1500)}`);
+  if (result.exceptions?.length)
+    logs.push(`exceptions: ${result.exceptions.map(item => item.text).join(" | ").slice(0, 1500)}`);
+  if (result.network?.failures?.length)
+    logs.push(`network failures: ${result.network.failures.map(item => `${item.url} ${item.error}`).join(" | ").slice(0, 1000)}`);
+  if (result.cli?.runs?.length)
+    logs.push(`CLI runs:\n${result.cli.runs.map(run => `$ future ${(run.args ?? []).join(" ")} (exit ${run.exit})\n${run.stderr ?? ""}`).join("\n").slice(0, 3000)}`);
+
+  const prompt = [
+    "你是 FutureOS 的产品验收员，不是测试脚本执行器。",
+    "下面有一次真实操作的证据：按时间排列的截图、整段录像的帧拼图，以及运行时日志。",
+    "请判断实际结果是否像一个正常产品，是否符合这些用户可见的预期；不要只因为断言通过就判好，也不要报告证据里看不到的东西。",
+    "",
+    "用户可见预期：",
+    ...criteria.map(item => `- ${item}`),
+    "",
+    `用例：${result.title}`,
+    `说明：${result.description ?? ""}`,
+    `操作时间线：\n${timelineText(result)}`,
+    "",
+    logs.length ? `运行时信号：\n${logs.join("\n")}` : "运行时信号：无错误",
+    result.bodyText ? `\n页面文本快照（末尾时刻，截断；证明元素存在，不代表都在可视区）：\n${truncate(result.bodyText, 4000)}` : "",
+    "",
+    "请输出严格 JSON（不要 markdown 围栏）：",
+    `{"verdict":"pass|issue","confidence":"high|medium|low","summary":"一句话判断","findings":[{"severity":"high|medium|low","title":"简短标题","detail":"看到什么、为什么不符合预期","evidence":"哪一步/哪一帧"}]}`,
+    "规则：",
+    "- 只判断用户能看到/会遇到的问题；内部实现细节不报。",
+    "- 动态过程中的瞬时状态（生成中、加载中）不要当缺陷，除非它卡住或与操作明显不符。",
+    "- 如果画面正常但证据不足，verdict=pass、confidence=low，不要编造。",
+    "- 预期项出现在文本快照但截图里看不到时，说明它可能在滚动区之外，不要判成缺失；标记证据不足即可。",
+    "- 代码块/表格/长文本的排版、文案、空态、错位、遮挡都算。",
+  ].join("\n");
+
+  const promptPath = join(runDir, "analysis", `${result.id}.judge.md`);
+  mkdirSync(join(runDir, "analysis"), { recursive: true });
+  writeFileSync(promptPath, prompt);
+  try {
+    const { text } = await runPrompt(promptPath, { model, images: images.map(item => item.path) });
+    writeFileSync(join(runDir, "analysis", `${result.id}.judge-answer.md`), text);
+    const parsed = parseFindings(text) ?? {};
+    const verdict = parsed.verdict === "issue" ? "issue" : "pass";
+    return {
+      verdict,
+      confidence: parsed.confidence ?? "low",
+      summary: parsed.summary ?? truncate(text, 300),
+      findings: Array.isArray(parsed.findings) ? parsed.findings : [],
+      images: images.map(item => item.label),
+    };
+  }
+  catch (error) {
+    return { verdict: "unknown", confidence: "low", summary: "", findings: [], images: images.map(item => item.label), error: String(error?.message ?? error) };
+  }
+}
+
 function buildSynthesisPrompt(result, findings, notes) {
   const stepLines = (result.steps ?? [])
     .filter(step => step.action !== "note")
@@ -521,6 +621,7 @@ export async function analyzeRun(runDir, { mode = "heuristic", model = null, onl
     process.stdout.write(`  analyze ${result.id}… `);
     const deterministic = deterministicFindings(result, { runDir });
     const notes = mode === "full" ? await visionFindings(result, runDir, { native: nativeVision, model: visionModel }) : [];
+    const judged = mode === "full" ? await judgeCase(result, runDir, { model: visionModel }) : null;
     let synthesized = null;
     if (mode === "full") {
       const prompt = buildSynthesisPrompt(result, deterministic, notes);
@@ -538,8 +639,31 @@ export async function analyzeRun(runDir, { mode = "heuristic", model = null, onl
         synthesized = { summary: "", findings: [], error: String(error?.message ?? error) };
       }
     }
+    const judgeFindings = (judged?.findings ?? []).map((item, index) => ({
+      id: `${result.id}:judge:${index}`,
+      severity: item.severity ?? (judged?.verdict === "issue" ? "medium" : "info"),
+      category: item.category ?? "behaviour",
+      title: item.title ?? "（模型验收未命名）",
+      detail: item.detail ?? judged?.summary ?? "",
+      evidence: { caseId: result.id, quote: item.evidence ?? null, dir: result.artifacts?.dir },
+      source: "judge",
+      confidence: judged?.confidence ?? "medium",
+    }));
+    if (judged?.verdict === "issue" && !judgeFindings.length) {
+      judgeFindings.push({
+        id: `${result.id}:judge:summary`,
+        severity: "medium",
+        category: "behaviour",
+        title: judged.summary || "模型验收未通过",
+        detail: judged.summary || "模型认为实际结果与预期不符。",
+        evidence: { caseId: result.id, dir: result.artifacts?.dir },
+        source: "judge",
+        confidence: judged.confidence ?? "medium",
+      });
+    }
     const found = [
       ...deterministic,
+      ...judgeFindings,
       ...(synthesized?.findings ?? []).map((item, index) => ({
         id: `${result.id}:model:${index}`,
         severity: item.severity ?? "info",
@@ -588,6 +712,7 @@ export async function analyzeRun(runDir, { mode = "heuristic", model = null, onl
       summary: synthesized?.summary ?? "",
       analysisError: synthesized?.error ?? null,
       vision: notes,
+      judge: judged,
       harnessNotes,
       findings,
       artifacts: result.artifacts,
@@ -621,6 +746,7 @@ export async function analyzeRun(runDir, { mode = "heuristic", model = null, onl
         summary: item.summary,
         analysisError: item.analysisError,
         vision: (Array.isArray(item.vision) ? item.vision : []).map(note => ({ step: note.step, note: note.note, file: note.file, via: note.via ?? null, error: note.error ?? null })),
+        judge: item.judge ?? null,
         harnessNotes: item.harnessNotes ?? [],
         findings: item.findings,
         artifacts: item.artifacts,

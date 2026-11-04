@@ -31,6 +31,11 @@ const pins: Record<string, string> = {
 };
 
 for (const [key, value] of Object.entries(pins)) {
+  // `?prefs=free` leaves the stored preferences alone: a harness case that
+  // switches language/theme and reloads needs to observe persistence, and
+  // pinning on every load would overwrite exactly what it is testing.
+  if (params.get("prefs") === "free" && localStorage.getItem(key) != null)
+    continue;
   localStorage.setItem(key, value);
 }
 

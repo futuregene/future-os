@@ -1,0 +1,66 @@
+{
+  "id": "settings-theme",
+  "title": "设置：切深色外观并刷新后保持",
+  "area": "settings",
+  "priority": "P1",
+  "tags": [
+    "settings",
+    "theme"
+  ],
+  "description": "通用页的外观是原生 select；选中深色后根元素应进入 dark，刷新后仍深色。",
+  "preconditions": "应用已启动。",
+  "expectations": [
+    "切深色后界面变暗",
+    "刷新后仍深色"
+  ],
+  "steps": [
+    {
+      "wait": 900
+    },
+    {
+      "click": {
+        "text": "设置"
+      }
+    },
+    {
+      "wait": 700
+    },
+    {
+      "eval": "(() => { const s=[...document.querySelectorAll('select')].find(el=>[...el.options].some(o=>o.textContent.trim()==='深色')); if(!s) throw new Error('no appearance select'); const o=[...s.options].find(o=>o.textContent.trim()==='深色'); s.value=o.value; s.dispatchEvent(new Event('input',{bubbles:true})); s.dispatchEvent(new Event('change',{bubbles:true})); return s.value; })()",
+      "as": "appearance"
+    },
+    {
+      "wait": 800
+    },
+    {
+      "assert": {
+        "expr": "document.documentElement.classList.contains('dark')",
+        "message": "界面进入深色"
+      }
+    },
+    {
+      "shot": "settings-dark"
+    },
+    {
+      "reload": true
+    },
+    {
+      "waitFor": {
+        "text": "设置"
+      },
+      "timeout": 10000
+    },
+    {
+      "assert": {
+        "expr": "document.documentElement.classList.contains('dark')",
+        "message": "刷新后仍深色"
+      }
+    },
+    {
+      "shot": "settings-dark-after-reload"
+    }
+  ],
+  "query": {
+    "prefs": "free"
+  }
+}
