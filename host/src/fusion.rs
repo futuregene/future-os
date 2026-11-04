@@ -13,7 +13,7 @@ mod reports;
 mod resilience;
 mod review;
 use future_fusion::{failure, failure_kind, FailureKind};
-use resilience::Runtime;
+use resilience::{IdleProgress, Runtime};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -582,21 +582,32 @@ fn attempt_settings(
     retry: Option<RetryReason>,
     elapsed_ms: u64,
 ) -> Result<StepSettings> {
+    let idle_timeout_ms = config
+        .inactivity_timeout_secs()
+        .map(|seconds| seconds.saturating_mul(1000));
     let remaining_ms = config
         .run_timeout_secs
         .saturating_mul(1000)
         .saturating_sub(elapsed_ms);
-    ensure!(remaining_ms > 0, "Fusion total time budget exhausted");
+    ensure!(
+        idle_timeout_ms.is_some() || remaining_ms > 0,
+        "Fusion total time budget exhausted"
+    );
     Ok(StepSettings {
         thinking_level: model.thinking_level.clone(),
         max_output_tokens: 0, // Filled by per-attempt context allocation.
         context_window: 0,
         max_public_bytes: 0,
         report_revision: 0,
-        timeout_ms: config
-            .step_timeout_secs
-            .saturating_mul(1000)
-            .min(remaining_ms),
+        timeout_ms: if idle_timeout_ms.is_some() {
+            0
+        } else {
+            config
+                .step_timeout_secs
+                .saturating_mul(1000)
+                .min(remaining_ms)
+        },
+        idle_timeout_ms,
         retry_reason: retry.map(|reason| reason.code().into()),
     })
 }
@@ -621,28 +632,6 @@ async fn with_retry(
         )?;
         return Err(error);
     }
-    let semaphore = ctx.permit(&model.model);
-    let _permit = match tokio::time::timeout(
-        Duration::from_millis(ctx.timeout(phase)?),
-        semaphore.acquire(),
-    )
-    .await
-    {
-        Ok(permit) => permit?,
-        Err(_) => {
-            ctx.skip(
-                phase,
-                model,
-                participant,
-                "summary_budget_reserved",
-                FailureKind::BudgetReserved,
-            )?;
-            return Err(failure(
-                FailureKind::BudgetReserved,
-                "Fusion provider queue exceeded phase budget",
-            ));
-        }
-    };
     let mut last = failure(FailureKind::Unknown, "Fusion step not started");
     let mut retry_reason = None;
     for attempt in 0..2 {
@@ -679,7 +668,7 @@ async fn with_retry(
             retry_reason,
             now_ms().saturating_sub(ctx.run.created_at).max(0) as u64,
         )?;
-        settings.timeout_ms = timeout_ms;
+        settings.timeout_ms = timeout_ms.unwrap_or(0);
         ctx.budget
             .lock()
             .unwrap()
@@ -707,6 +696,7 @@ async fn with_retry(
             .as_ref()
             .context("Missing Fusion context budget")?
             .apply(&model.model, phase, &input, &mut settings)?;
+        let idle_progress = settings.idle_timeout_ms.map(IdleProgress::new);
         let mut step = Step {
             id: format!("{}-{phase}-{participant}-{attempt}", ctx.run.id),
             fusion_run_id: ctx.run.id.clone(),
@@ -728,22 +718,15 @@ async fn with_retry(
             report_quality: None,
         };
         ctx.store.record_step(&step)?;
-        let result = tokio::time::timeout(
-            Duration::from_millis(timeout_ms),
-            step_inner(ctx, &mut step, prompt),
-        )
-        .await;
-        let result = match result {
-            Ok(Ok(text)) => Ok(text),
-            Ok(Err(error)) => Err(error),
-            Err(_) => Err(failure(
-                if phase != "synthesizing" && ctx.timeout(phase).is_err() {
-                    FailureKind::BudgetReserved
-                } else {
-                    FailureKind::Timeout
-                },
-                "Fusion model timed out",
-            )),
+        let task = step_inner(ctx, &mut step, prompt, idle_progress.clone());
+        let result = if let Some(progress) = &idle_progress {
+            progress.guard(task).await
+        } else if let Some(milliseconds) = timeout_ms {
+            tokio::time::timeout(Duration::from_millis(milliseconds), task)
+                .await
+                .unwrap_or_else(|_| Err(failure(FailureKind::Timeout, "Fusion model timed out")))
+        } else {
+            task.await
         };
         step.finished_at = Some(now_ms());
         match result {
@@ -804,7 +787,10 @@ async fn with_retry(
                 retry_reason = reason;
                 if reason == Some(RetryReason::Transient) {
                     let delay = Duration::from_millis(1000 + rand::random::<u16>() as u64 % 500);
-                    if ctx.timeout(phase)? <= delay.as_millis() as u64 {
+                    if ctx
+                        .timeout(phase)?
+                        .is_some_and(|remaining| remaining <= delay.as_millis() as u64)
+                    {
                         return Err(failure(
                             FailureKind::BudgetReserved,
                             "Fusion retry would consume final summary reserve",
@@ -883,6 +869,7 @@ async fn step_inner(
     ctx: &Runtime<'_>,
     step: &mut Step,
     source_prompt: &str,
+    idle_progress: Option<std::sync::Arc<IdleProgress>>,
 ) -> Result<reports::Report> {
     let store = ctx.store;
     let run = ctx.run;
@@ -934,6 +921,7 @@ async fn step_inner(
         ctx,
         step,
         generation: 0,
+        idle_progress,
     };
     let report = reports::collect(&mut child, input, &phase, capacity, |text| {
         validate_step_output(&phase, text, ctx.config.panel.len())?;
@@ -974,6 +962,7 @@ struct ChildSession<'a, 'b, 'c> {
     ctx: &'a Runtime<'b>,
     step: &'c mut Step,
     generation: u32,
+    idle_progress: Option<std::sync::Arc<IdleProgress>>,
 }
 impl reports::ReportSession for ChildSession<'_, '_, '_> {
     async fn generate(&mut self, message: String, report_only: bool) -> Result<String> {
@@ -1004,6 +993,7 @@ impl reports::ReportSession for ChildSession<'_, '_, '_> {
         );
         step.status = "running".into();
         ctx.store.record_step(step)?;
+        let mut observed_bytes = 0;
         loop {
             if STOPPING.load(Ordering::Acquire) || ctx.store.get(&ctx.run.id)?.terminal() {
                 let _ = abort(step).await;
@@ -1014,6 +1004,24 @@ impl reports::ReportSession for ChildSession<'_, '_, '_> {
                 ..command("get_state", &step.session_id)
             })
             .await?;
+            if let Some(progress) = &self.idle_progress {
+                let metrics = rpc(command("get_runtime_metrics", &step.session_id)).await?;
+                ensure!(
+                    metrics["eventJournalError"].is_null(),
+                    "Fusion child persistence is unavailable"
+                );
+                let observed = &metrics["eventJournal"]["modelOutputProgress"];
+                ensure!(observed.is_object(), "Agent does not expose Fusion content progress; upgrade Host and Agent together");
+                if observed["runId"].as_str() == Some(&step.agent_run_id) {
+                    let bytes = observed["bytes"]
+                        .as_u64()
+                        .context("Invalid model content progress")?;
+                    if bytes > observed_bytes {
+                        progress.content_received();
+                        observed_bytes = bytes;
+                    }
+                }
+            }
             if let Some(status) = state["requestedRun"]["status"].as_str() {
                 // Session usage includes investigation and every report revision,
                 // including billed cost and cache categories.
@@ -1154,16 +1162,14 @@ mod tests {
     }
 
     #[test]
-    fn attempt_deadline_cannot_reset_the_discussion_budget() {
+    fn attempts_keep_inactivity_protection_without_a_wall_deadline() {
         let config = Configuration::default();
-        let limit = config.run_timeout_secs * 1000;
-        assert_eq!(
-            attempt_settings(&config, &config.panel[0], None, limit - 500)
-                .unwrap()
-                .timeout_ms,
-            500
-        );
-        assert!(attempt_settings(&config, &config.panel[0], None, limit).is_err());
+        for elapsed in [0, 600_000, 86_400_000] {
+            let settings = attempt_settings(&config, &config.panel[0], None, elapsed).unwrap();
+            assert_eq!(settings.timeout_ms, 0);
+            assert_eq!(settings.idle_timeout_ms, Some(300_000));
+        }
+        assert!(retry_for_kind(FailureKind::IdleTimeout).is_none());
     }
 
     #[test]
