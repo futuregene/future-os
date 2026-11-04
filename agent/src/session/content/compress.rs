@@ -13,7 +13,7 @@
 //! once gzip adds its header.
 
 use super::*;
-use flate2::read::GzDecoder;
+use flate2::read::MultiGzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use std::io::{Read, Write};
@@ -39,8 +39,12 @@ pub(crate) fn plan(db: &Connection) -> Result<(i64, i64)> {
     )?)
 }
 
+/// Decode one stored chunk. `MultiGzDecoder` reads a blob that holds more than
+/// one gzip member as the plaintext they describe, so a body whose members were
+/// ever stored in one row still reads as its whole text instead of losing every
+/// member after the first.
 pub(crate) fn decompress(blob: &[u8]) -> Result<String> {
-    let mut decoder = GzDecoder::new(blob);
+    let mut decoder = MultiGzDecoder::new(blob);
     let mut text = String::new();
     decoder.read_to_string(&mut text)?;
     Ok(text)

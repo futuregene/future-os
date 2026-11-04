@@ -688,6 +688,93 @@ fn a_repack_leaves_a_body_that_cannot_fit_one_row() {
     assert_eq!(rows_before, rows_after);
 }
 
+/// A gzipped body keeps one gzip member per segment, so its rows are not
+/// interchangeable with the body they encode. Collapsing them into one row used
+/// to make the tail unreadable: the reader decodes one member and `byte_length`
+/// still describes every member.
+#[test]
+fn a_repack_leaves_a_gzipped_body_alone() {
+    let mut db = connection();
+    let text = "中文内容".repeat(3500);
+    let tx = db.transaction().unwrap();
+    let id = create(&tx).unwrap();
+    let mut digest = ContentDigest::default();
+    append(&tx, id, 0, &text).unwrap();
+    digest.push(&text).unwrap();
+    seal(&tx, id, digest).unwrap();
+    tx.commit().unwrap();
+    assert!(super::compress::plan(&db).unwrap().0 >= 1);
+    assert_eq!(super::compress::apply(&mut db, 8).unwrap().0, 1);
+    let segments: i64 = db
+        .query_row("SELECT count(*) FROM content_segments", [], |r| r.get(0))
+        .unwrap();
+    let stored: i64 = db
+        .query_row(
+            "SELECT sum(length(CAST(body AS BLOB))) FROM content_segments",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(segments > 1, "one member per segment: {segments}");
+    assert!(
+        stored <= super::rechunk::RECHUNK_MAX_BODY_BYTES,
+        "stored {stored} bytes would have made this a repack candidate"
+    );
+
+    assert_eq!(super::rechunk::plan(&db).unwrap(), (0, 0));
+    assert_eq!(super::rechunk::apply(&mut db, 8).unwrap(), (0, 0, 0));
+    let rows: i64 = db
+        .query_row("SELECT count(*) FROM content_segments", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, segments, "not one member may be folded into another");
+    assert_eq!(read(&db, id, 0, text.len()).unwrap().text, text);
+}
+
+/// A store written before the repack learned to leave gzipped bodies alone still
+/// holds members concatenated in one row. Reading such a body must not stop at
+/// its first member: `decompress` decodes every member the row holds. (The
+/// canonical layout is still one member per row — a window that starts more
+/// than one segment past the merged row's offset finds nothing to walk — which
+/// is what the repack guard above preserves.)
+#[test]
+fn a_body_whose_members_were_stored_in_one_row_still_reads_whole() {
+    let mut db = connection();
+    let text = "中文内容".repeat(3500);
+    let tx = db.transaction().unwrap();
+    let id = create(&tx).unwrap();
+    let mut digest = ContentDigest::default();
+    append(&tx, id, 0, &text).unwrap();
+    digest.push(&text).unwrap();
+    seal(&tx, id, digest).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(super::compress::apply(&mut db, 8).unwrap().0, 1);
+
+    let bodies: Vec<Vec<u8>> = {
+        let mut statement = db
+            .prepare("SELECT CAST(body AS BLOB) FROM content_segments ORDER BY byte_offset")
+            .unwrap();
+        let rows = statement
+            .query_map([], |r| r.get::<_, Vec<u8>>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        rows
+    };
+    assert!(bodies.len() > 1);
+    let merged: Vec<u8> = bodies.concat();
+    db.execute("DELETE FROM content_segments", []).unwrap();
+    db.execute(
+        "INSERT INTO content_segments(content_id,byte_offset,body) VALUES (?1,0,CAST(?2 AS BLOB))",
+        params![id, merged],
+    )
+    .unwrap();
+
+    let whole = read(&db, id, 0, text.len()).unwrap();
+    assert_eq!(whole.text, text);
+    assert_eq!(whole.total_bytes, text.len() as i64);
+    assert_eq!(whole.next_offset, text.len() as i64);
+}
+
 /// A sealed body stored gzipped must read back byte for byte: the marker is the
 /// only thing that changes about it.
 #[test]
