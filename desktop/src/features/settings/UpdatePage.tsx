@@ -200,7 +200,7 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
           {presentation.repair && !downloading
             ? <Button onClick={() => void handleRepairAcknowledgement()} size="sm" variant="secondary">{t("update.confirmRepair")}</Button>
             : null}
-          {!downloading && (installError || presentation.repair || actionError || maintenanceError || recovery?.outcome === "cleanup-failed")
+          {!downloading && (installError || presentation.repair || actionError || maintenanceError || presentation.retryable)
             ? <Button onClick={() => void handleManualDownload()} size="sm" variant="secondary">{t("update.manualFallback")}</Button>
             : null}
           {checkError ? <p role="alert" className="text-xs text-danger">{t("update.checkFailed")}</p> : null}
@@ -246,7 +246,7 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
                                     : (
                                         <Button
                                           leftIcon={<Download className="size-3.5" />}
-                                          disabled={presentation.working || presentation.repair || recovery?.outcome === "cleanup-failed" || Boolean(maintenanceError)}
+                                          disabled={presentation.working || presentation.repair || Boolean(maintenanceError)}
                                           onClick={() => void handleInstall()}
                                           size="sm"
                                           variant="primary"

@@ -212,6 +212,8 @@ export function useRailSelection({
     selectedCount: selectedThreadIds.size + selectedRemoteKeys.size,
     selectedRemoteKeys,
     selectedThreadIds,
+    /** The scope the open batch belongs to (a workspace id, "chat", "archived"). */
+    selectionScope,
     selectionMode,
     toggleRemoteSelection,
     toggleThreadSelection,

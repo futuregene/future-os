@@ -113,6 +113,7 @@ mod tests {
             auto_connect_remote: Some(true),
             skill_guide_dismissed: Some(true),
             skill_intro_dismissed: Some(true),
+            archive_guide_seen: None,
             bell_on_complete: None,
             auto_title_first_turn: None,
             title_language: None,
@@ -320,6 +321,7 @@ mod tests {
         let updated = update_app_settings(UpdateAppSettingsInput {
             skill_guide_dismissed: Some(false),
             skill_intro_dismissed: Some(false),
+            archive_guide_seen: None,
             ..Default::default()
         })
         .expect("update");
@@ -361,6 +363,7 @@ mod tests {
         assert!(update_app_settings(UpdateAppSettingsInput {
             bell_on_complete: Some(false),
             skill_intro_dismissed: Some(true),
+            archive_guide_seen: None,
             title_language: Some("fr".to_string()),
             ..Default::default()
         })

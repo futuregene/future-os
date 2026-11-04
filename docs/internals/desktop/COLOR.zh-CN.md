@@ -55,8 +55,9 @@ Moon。若把 6 个浅色 + 6 个深色并成一份列表，系统外观一翻�
 ```
 
 - `[data-palette="nord"]` 既匹配根元素，也匹配任何带该属性的元素——设置里的选择器
-  就是靠这一条给每个主题画一张预览卡（见
-  `features/settings/ThemePalettePicker.tsx`），而应用本身仍停在生效的主题上。
+  就是靠这一条用**非当前**的主题画预览（见
+  `features/settings/ThemePalettePicker.tsx`）：这一行默认只显示当前主题的一小块色样，
+  点「展开全部」才列出每个主题各一张的完整清单。
 - 深色那段两个选择器都要：根元素同时带 `.dark` 和 `data-palette`，预览卡只在
   `.dark` 祖先下带 `data-palette`。两者都不能输给 `:root.dark`——前者特异性不低，
   后者靠所有主题块都排在 `:root.dark` **之后**。`styles/globals.test.ts` 钉住了这个

@@ -82,13 +82,14 @@ pub struct Workspace {
     pub last_opened_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
+    pub archived_at: Option<i64>,
     pub deleted_at: Option<i64>,
 }
 
 /// Comma-separated `SELECT` column list, in [`from_row`]'s order.
 pub const COLUMNS: &str = "id, name, kind, path, description, pinned, cleanup_status, \
                             cleanup_requested_at, cleaned_at, last_opened_at, created_at, \
-                            updated_at, deleted_at";
+                            updated_at, archived_at, deleted_at";
 
 /// Map a row selected with [`COLUMNS`] into a [`Workspace`].
 pub fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Workspace> {
@@ -105,7 +106,8 @@ pub fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Workspace> {
         last_opened_at: row.get(9)?,
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
-        deleted_at: row.get(12)?,
+        archived_at: row.get(12)?,
+        deleted_at: row.get(13)?,
     })
 }
 
@@ -130,6 +132,7 @@ pub fn ensure_table(conn: &Connection) -> Result<(), Error> {
              last_opened_at INTEGER,
              created_at INTEGER NOT NULL,
              updated_at INTEGER NOT NULL,
+             archived_at INTEGER,
              deleted_at INTEGER
          )",
     )?;
@@ -173,6 +176,41 @@ pub fn get(conn: &Connection, workspace_id: &str) -> Result<Option<Workspace>, E
             from_row,
         )
         .optional()?)
+}
+
+/// Shelve a user workspace: hidden from the default lists, containers and
+/// conversations untouched. Only `kind = 'user'` workspaces are archivable — a
+/// chat's temporary scratch workspace lives and dies with its conversation.
+pub fn archive(conn: &Connection, workspace_id: &str, now: i64) -> Result<Workspace, Error> {
+    let updated = conn.execute(
+        "UPDATE workspaces SET archived_at = ?1, updated_at = ?1
+         WHERE id = ?2 AND kind = 'user' AND deleted_at IS NULL",
+        params![now, workspace_id],
+    )?;
+    if updated == 0 {
+        return Err(Error::Invalid(
+            "Workspace is not available for archiving.".to_string(),
+        ));
+    }
+    get(conn, workspace_id)?
+        .ok_or_else(|| Error::Invalid("Workspace could not be loaded.".to_string()))
+}
+
+/// The inverse of [`archive`]: the workspace (and with it every conversation it
+/// was hiding) is back in the default lists.
+pub fn restore(conn: &Connection, workspace_id: &str, now: i64) -> Result<Workspace, Error> {
+    let updated = conn.execute(
+        "UPDATE workspaces SET archived_at = NULL, updated_at = ?1
+         WHERE id = ?2 AND deleted_at IS NULL",
+        params![now, workspace_id],
+    )?;
+    if updated == 0 {
+        return Err(Error::Invalid(
+            "Workspace could not be restored.".to_string(),
+        ));
+    }
+    get(conn, workspace_id)?
+        .ok_or_else(|| Error::Invalid("Workspace could not be loaded.".to_string()))
 }
 
 /// The user workspace that owns a directory, or `None` when it has none.
@@ -224,7 +262,12 @@ pub fn find_or_create_user(
     now: i64,
 ) -> Result<Workspace, Error> {
     if let Some(workspace) = find_user_by_path(conn, path)? {
-        return Ok(workspace);
+        // New work landing in an archived workspace means the directory is in
+        // use again: the container comes back. Archiving hides a workspace
+        // until something writes into it, never disables its directory.
+        wake_workspace(conn, &workspace.id, now)?;
+        return get(conn, &workspace.id)?
+            .ok_or_else(|| Error::Invalid("Workspace could not be loaded.".to_string()));
     }
 
     let workspace_id = new_id("ws");
@@ -244,6 +287,18 @@ pub fn find_or_create_user(
 
     get(conn, &workspace_id)?
         .ok_or_else(|| Error::Invalid("Created workspace could not be loaded.".to_string()))
+}
+
+/// Clear a workspace's archived marker. Idempotent; a no-op for a workspace
+/// that is not archived. The one place "the container is in use again" is
+/// recorded (a session filed into it, or a conversation created inside it).
+pub fn wake_workspace(conn: &Connection, workspace_id: &str, now: i64) -> Result<(), Error> {
+    conn.execute(
+        "UPDATE workspaces SET archived_at = NULL, updated_at = ?1
+         WHERE id = ?2 AND archived_at IS NOT NULL",
+        params![now, workspace_id],
+    )?;
+    Ok(())
 }
 
 /// The full create-workspace rule both writers share: `~` is expanded, the
@@ -480,7 +535,22 @@ pub fn file_session_for_cwd(
         _ => unreachable!("the chat and unimported cases returned above"),
     };
     move_thread_to_workspace(conn, &thread.id, &workspace_id)?;
+    // A conversation filed by cwd change is new work in that directory: an
+    // archived workspace is woken so the row does not end up JOIN-hidden.
+    wake_workspace(conn, &workspace_id, now)?;
     Ok(Some(filing))
+}
+
+/// The `archived_at` marker of a workspace, when it is archived.
+pub fn archived_at(conn: &Connection, workspace_id: &str) -> Result<Option<i64>, Error> {
+    Ok(conn
+        .query_row(
+            "SELECT archived_at FROM workspaces WHERE id = ?1",
+            params![workspace_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten())
 }
 
 /// Milliseconds since the epoch, the stamp every row write carries.
@@ -595,6 +665,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create test directory");
         dir
+    }
+
+    /// A workspace this crate creates has no archived marker, and archiving
+    /// hides it without touching its conversations' rows.
+    #[test]
+    fn archive_and_restore_round_trip() {
+        let conn = test_conn();
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                 VALUES ('ws', 'W', 'user', '/tmp/ws', 1, 1),
+                        ('chat', 'Chat', 'temporary', '/tmp/chat', 1, 1);",
+        )
+        .expect("seed");
+
+        let archived = archive(&conn, "ws", 5).expect("archive");
+        assert_eq!(archived.archived_at, Some(5));
+
+        let refused = archive(&conn, "chat", 6).expect_err("a chat workspace is not archivable");
+        assert!(refused.to_string().contains("not available"), "{refused}");
+
+        let restored = restore(&conn, "ws", 7).expect("restore");
+        assert_eq!(restored.archived_at, None);
+        assert!(restore(&conn, "ghost", 8).is_err());
     }
 
     /// The table this crate creates is the table the column list describes, so

@@ -40,6 +40,11 @@ export interface AppSettings {
    */
   skillIntroDismissed: boolean;
   /**
+   * The first-archive guide (button pulse + coachmark bubble) was shown. Off
+   * by default; once set, archiving never re-teaches the destination.
+   */
+  archiveGuideSeen: boolean;
+  /**
    * Play a completion bell and request window attention when an agent run
    * finishes. On by default.
    */
@@ -66,6 +71,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   autoConnectRemote: true,
   skillGuideDismissed: false,
   skillIntroDismissed: false,
+  archiveGuideSeen: false,
   bellOnComplete: true,
   autoTitleFirstTurn: true,
   titleLanguage: "en",
@@ -84,6 +90,7 @@ export async function updateAppSettings(input: {
   autoConnectRemote?: boolean;
   skillGuideDismissed?: boolean;
   skillIntroDismissed?: boolean;
+  archiveGuideSeen?: boolean;
   bellOnComplete?: boolean;
   autoTitleFirstTurn?: boolean;
   titleLanguage?: "en" | "zh";

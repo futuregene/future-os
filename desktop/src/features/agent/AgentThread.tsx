@@ -129,8 +129,19 @@ export interface AgentThreadProps {
    * read itself.
    */
   headerWorkspace?: ReactNode;
-  /** How much of the conversation's chrome to draw. See `AgentThreadChrome`. */
+  /**
+   * How much of the conversation's chrome to draw. See `AgentThreadChrome`.
+   */
   chrome?: AgentThreadChrome;
+  /**
+   * Restore a shelved conversation from the read-only banner.
+   *
+   * An archived conversation opens read-only: its history pages and reads like
+   * any other, but nothing can be sent into it until it is restored. The shell
+   * owns the archive state, so it owns the command; this view only knows it is
+   * showing a shelved row (`thread.status === "archived"`).
+   */
+  onRestoreArchived?: (thread: StoredThread) => void;
   /**
    * Whether this instance may claim the app-wide commands a conversation owns
    * (`chat.stop`).
@@ -206,6 +217,7 @@ export function AgentThread({
   inputFooter,
   composerControls,
   onQueue,
+  onRestoreArchived,
 }: AgentThreadProps) {
   const { t } = useTranslation("agent");
   const agentState = useCachedAgentState(thread?.id);
@@ -325,7 +337,8 @@ export function AgentThread({
   // thread, no history still loading, and a history the Agent can still continue.
   // The composer's own `disabled` and the send queue's flush both read it, so a
   // queue can never fire into a conversation that refuses to be written to.
-  const composerDisabled = !thread || loadingThread || loadingStore || historyStatus?.canContinue === false;
+  const archived = thread?.status === "archived";
+  const composerDisabled = archived || !thread || loadingThread || loadingStore || historyStatus?.canContinue === false;
 
   // ── Send while the reply streams ─────────────────────────────────────────
   // A message written while a reply is streaming leaves immediately and the
@@ -621,6 +634,29 @@ export function AgentThread({
             the one thing the eye is on. The reading layer holds it, and the target
             bar says one is waiting. */}
         {isInput ? null : approvalCard}
+        {archived && !isInput && thread
+          ? (
+              <div
+                className="pointer-events-auto mx-auto flex w-full max-w-3xl items-center justify-between gap-3 rounded-lg border border-line-soft bg-surface px-3.5 py-2.5 text-sm text-ink-soft shadow-panel"
+                role="status"
+              >
+                <span className="min-w-0 flex-1 truncate">
+                  {t("thread.archivedReadOnly")}
+                </span>
+                {onRestoreArchived
+                  ? (
+                      <button
+                        className="inline-flex h-7 shrink-0 items-center rounded-md bg-accent-fill px-3 text-sm font-medium text-white transition-colors hover:bg-accent-fill-hover"
+                        onClick={() => onRestoreArchived(thread)}
+                        type="button"
+                      >
+                        {t("thread.restoreArchived")}
+                      </button>
+                    )
+                  : null}
+              </div>
+            )
+          : null}
         {shouldShowAgentNotice(agentConnection)
           ? (
               <AgentConnectionNotice

@@ -61,6 +61,7 @@ export type CommandId
     | "rail.search"
     | "rail.view.recent"
     | "rail.view.workspace"
+    | "rail.view.archived"
     | "rail.device.next"
     | "panel.left"
     | "panel.right"
@@ -247,6 +248,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   // view is the layer *inside* a section, so it sits one notch deeper.
   { id: "rail.view.recent", category: "navigation", defaultBinding: "mod+alt+1", inTerminal: false },
   { id: "rail.view.workspace", category: "navigation", defaultBinding: "mod+alt+2", inTerminal: false },
+  { id: "rail.view.archived", category: "navigation", defaultBinding: "mod+alt+3", inTerminal: false },
   // The device filter, as one ring: all machines → this one → each paired
   // machine. `mod+shift+d` is the Vibe panel's own "which machine" key
   // (`vibe.device`, a scoped command); outside the panel the same keys ask the

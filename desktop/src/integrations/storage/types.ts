@@ -13,6 +13,8 @@ export interface StoredThread {
   lastOpenedAt?: number | null;
   createdAt: number;
   updatedAt: number;
+  /** Set when the user shelved this conversation (or its workspace); NULL means active. */
+  archivedAt?: number | null;
 }
 
 export interface StoredWorkspace {
@@ -30,6 +32,8 @@ export interface StoredWorkspace {
   createdAt: number;
   updatedAt: number;
   deletedAt?: number | null;
+  /** Set when the user shelved this workspace; its conversations are hidden with it. */
+  archivedAt?: number | null;
 }
 
 export interface StoredMessage {
