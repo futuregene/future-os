@@ -462,8 +462,30 @@ pub fn lean_replay_page(page: &mut Value, lean: bool) {
         .and_then(Value::as_array_mut)
     {
         for event in events {
-            if is_dropped(event["type"].as_str().unwrap_or_default()) {
+            let kind = event["type"].as_str().unwrap_or_default().to_owned();
+            if is_dropped(&kind) {
                 blank_folded_text(event);
+                continue;
+            }
+            // The same trim the live lane applies, for the same reason: the
+            // projection is the same run read once instead of token by token,
+            // so carrying what the stream drops makes the first page heavier
+            // than the run it stands in for. A `tool_end` keeps its outcome
+            // fields and loses the captured text no reader renders (the legacy
+            // shape keeps even that — the text is its only outcome signal); a
+            // `tool_start` keeps the label its row is drawn from and loses the
+            // bodies the row fetches when opened.
+            //
+            // Nothing is removed from the array: a dropped event is blanked in
+            // place, because the projection's length and `idx` sequence are
+            // what the client validates it against.
+            let Some(data) = event["data"].as_str().map(str::to_owned) else {
+                continue;
+            };
+            match lean_event_data(&kind, &data) {
+                None => blank_folded_text(event),
+                Some(Cow::Borrowed(_)) => {}
+                Some(Cow::Owned(trimmed)) => event["data"] = Value::String(trimmed),
             }
         }
     }
@@ -1158,8 +1180,12 @@ mod tests {
         assert_eq!(folded[0]["idx"], json!(10));
         let blanked: Value = serde_json::from_str(folded[0]["data"].as_str().unwrap()).unwrap();
         assert_eq!(blanked["text"], json!(""));
-        // Non-delta folded events are untouched.
-        assert!(folded[1]["data"].as_str().unwrap().contains("out"));
+        // Non-delta folded events are trimmed the way the live lane trims them,
+        // not left whole: the captured output goes, the outcome stays, and the
+        // array keeps its length and idx (the client validates against those).
+        let tool_end: Value = serde_json::from_str(folded[1]["data"].as_str().unwrap()).unwrap();
+        assert!(tool_end.get("text").is_none(), "{tool_end}");
+        assert_eq!(tool_end["exit_code"], json!(1));
     }
 
     #[test]
@@ -2105,3 +2131,7 @@ mod guard_arms_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "lean_projection_tests.rs"]
+mod lean_projection_tests;
