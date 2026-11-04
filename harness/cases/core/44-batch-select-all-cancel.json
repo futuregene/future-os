@@ -6,120 +6,105 @@
   "tags": ["batch", "cancel", "list"],
   "description": "从「对话」区的「…」菜单进入多选，先全选、再取消全选，最后用工具条上的「取消」退出。要验证的是计数文案说的就是列表里真实发生的事：全选后「已选择 N 个」里的 N 等于当前列表里带复选框的会话数，取消全选回到「全选」提示；退出多选后工具条消失、每行恢复「…」菜单，点一行是打开会话而不是勾选它。",
   "preconditions": "应用已启动；「对话」区首屏至少能渲染出 3 个会话。",
-  "expectations": [
-    "「对话」区菜单里的「选择聊天」进入多选，底部工具条先显示「全选」",
-    "全选后计数文案是「已选择 N 个」，N 与实际带复选框的会话数一致，且全部打勾",
-    "再点一次取消全选，文案回到「全选」，所有勾选清空",
-    "点工具条「取消」后退出多选：工具条消失，每行恢复「…」菜单",
-    "退出后点一行会打开该会话（而不是再次进入多选），主区域显示它的标题"
-  ],
+  "expectations": ["「对话」区菜单里的「选择聊天」进入多选，底部工具条先显示「全选」", "全选后计数文案是「已选择 N 个」，N 与实际带复选框的会话数一致，且全部打勾", "再点一次取消全选，文案回到「全选」，所有勾选清空", "点工具条「取消」后退出多选：工具条消失，每行恢复「…」菜单", "退出后点一行会打开该会话（而不是再次进入多选），主区域显示它的标题"],
   "steps": [
     { "wait": 1300 },
     {
       "eval": "(() => { const trigger = [...document.querySelectorAll('[aria-label]')].find(e => e.getAttribute('aria-label') === '对话区操作'); if (!trigger) return 0; const rows = [...document.querySelectorAll('[aria-label$=\" 的操作\"]')].filter(e => Boolean(trigger.compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING)); window.__chatRows = rows.map(e => e.getAttribute('aria-label').replace(/ 的操作$/, '')).filter(t => !/['\"]/.test(t)); return window.__chatRows.length; })()",
-      "as": "chatCount"
+      "as": "chatCount",
+      "capture": false
     },
-    {
-      "assert": {
-        "expr": "{{chatCount}} >= 3",
-        "message": "「对话」区首屏至少渲染出 3 个会话"
-      }
-    },
-    { "eval": "window.__chatRows[0]", "as": "row1" },
+    { "assert": {"expr": "{{chatCount}} >= 3", "message": "「对话」区首屏至少渲染出 3 个会话"}, "capture": false },
+    { "eval": "window.__chatRows[0]", "as": "row1", "capture": false },
     {
       "eval": "(() => { const main = document.querySelector('main'); window.__mainBefore = main ? main.innerText : ''; return window.__mainBefore.includes(window.__chatRows[0]) ? 0 : 1; })()",
-      "as": "coldMain"
+      "as": "coldMain",
+      "capture": false
     },
-    {
-      "assert": {
-        "expr": "{{coldMain}} === 1",
-        "message": "进入多选前主区域还没有打开这一行（后面「点行打开会话」的对照基线）"
-      }
-    },
+    { "assert": {"expr": "{{coldMain}} === 1", "message": "进入多选前主区域还没有打开这一行（后面「点行打开会话」的对照基线）"}, "capture": false },
     {
       "assert": {
         "expr": "[...document.querySelectorAll('[aria-label]')].some(e => e.getAttribute('aria-label') === window.__chatRows[0] + ' 的操作')",
         "message": "多选之前，会话行带的是「…」操作菜单"
-      }
+      },
+      "capture": false
     },
     { "shot": "before-selection" },
-    { "click": { "aria": "对话区操作" }, "note": "「对话」分组标题右侧的「…」菜单" },
+    { "click": {"aria": "对话区操作"}, "note": "「对话」分组标题右侧的「…」菜单" },
     { "wait": 350 },
     {
       "assert": {
         "expr": "[...document.querySelectorAll('[role=menuitem]')].some(e => e.innerText.trim() === '选择聊天')",
         "message": "「对话」区菜单提供「选择聊天」"
-      }
+      },
+      "capture": false
     },
-    { "click": { "selector": "[role=menuitem]", "text": "选择聊天" } },
+    { "click": {"selector": "[role=menuitem]", "text": "选择聊天"} },
     { "wait": 600 },
     {
       "assert": {
         "expr": "!!document.querySelector('[role=toolbar]') && document.querySelector('[role=toolbar]').innerText.trim() === '全选'",
         "message": "进入多选后工具条先提示「全选」"
-      }
+      },
+      "capture": false
     },
     { "shot": "selection-mode" },
-    { "click": { "selector": "[role=toolbar] input[type=checkbox]" }, "note": "工具条上的全选复选框" },
+    { "click": {"selector": "[role=toolbar] input[type=checkbox]"}, "note": "工具条上的全选复选框" },
     { "wait": 500 },
     {
       "assert": {
         "expr": "(() => { const n = document.querySelectorAll('[aria-label^=\"选择 \"]').length; const text = document.querySelector('[role=toolbar]').innerText.trim(); return n >= 3 && text === '已选择 ' + n + ' 个'; })()",
         "message": "全选后的计数与列表里带复选框的会话数一致"
-      }
+      },
+      "capture": false
     },
     {
       "assert": {
         "expr": "(() => { const boxes = [...document.querySelectorAll('[aria-label^=\"选择 \"]')]; return boxes.length >= 3 && boxes.every(e => e.checked); })()",
         "message": "全选后每一行都打勾了"
-      }
+      },
+      "capture": false
     },
     {
       "assert": {
         "expr": "(() => { const box = document.querySelector('[role=toolbar] input[type=checkbox]'); return !!box && box.checked && !box.indeterminate; })()",
         "message": "全选后工具条复选框是全选态（不是半选）"
-      }
+      },
+      "capture": false
     },
     { "shot": "select-all" },
-    { "click": { "selector": "[role=toolbar] input[type=checkbox]" }, "note": "再点一次 = 取消全选" },
+    { "click": {"selector": "[role=toolbar] input[type=checkbox]"}, "note": "再点一次 = 取消全选" },
     { "wait": 500 },
-    {
-      "assert": {
-        "expr": "document.querySelector('[role=toolbar]').innerText.trim() === '全选'",
-        "message": "取消全选后文案回到「全选」"
-      }
-    },
+    { "assert": {"expr": "document.querySelector('[role=toolbar]').innerText.trim() === '全选'", "message": "取消全选后文案回到「全选」"}, "capture": false },
     {
       "assert": {
         "expr": "(() => { const boxes = [...document.querySelectorAll('[aria-label^=\"选择 \"]')]; return boxes.length >= 3 && boxes.every(e => !e.checked); })()",
         "message": "取消全选后所有勾选清空"
-      }
+      },
+      "capture": false
     },
     { "shot": "deselect-all" },
-    { "click": { "aria": "取消" }, "note": "工具条上的取消（窄侧边栏时只有图标，靠无障碍名定位）" },
+    { "click": {"aria": "取消"}, "note": "工具条上的取消（窄侧边栏时只有图标，靠无障碍名定位）" },
     { "wait": 600 },
-    { "assert": { "expr": "![...document.querySelectorAll('[role=toolbar]')].length", "message": "取消后退出多选，工具条消失" } },
+    { "assert": {"expr": "![...document.querySelectorAll('[role=toolbar]')].length", "message": "取消后退出多选，工具条消失"}, "capture": false },
     {
       "assert": {
         "expr": "[...document.querySelectorAll('[aria-label]')].some(e => e.getAttribute('aria-label') === window.__chatRows[0] + ' 的操作')",
         "message": "退出后每行恢复「…」操作菜单"
-      }
+      },
+      "capture": false
     },
-    {
-      "assert": {
-        "expr": "![...document.querySelectorAll('[aria-label^=\"选择 \"]')].length",
-        "message": "退出后行内的复选框都不见了"
-      }
-    },
+    { "assert": {"expr": "![...document.querySelectorAll('[aria-label^=\"选择 \"]')].length", "message": "退出后行内的复选框都不见了"}, "capture": false },
     { "shot": "after-cancel" },
-    { "click": { "aria": "{{row1}}" }, "note": "退出多选后点一行 = 打开会话" },
+    { "click": {"aria": "{{row1}}"}, "note": "退出多选后点一行 = 打开会话" },
     { "wait": 1000 },
-    { "assert": { "expr": "![...document.querySelectorAll('[role=toolbar]')].length", "message": "点行不会把多选重新打开" } },
+    { "assert": {"expr": "![...document.querySelectorAll('[role=toolbar]')].length", "message": "点行不会把多选重新打开"}, "capture": false },
     {
       "assert": {
         "expr": "(() => { const main = document.querySelector('main'); return !!main && main.innerText.includes(window.__chatRows[0]); })()",
         "message": "点这一行打开的是这个会话，主区域显示它的标题"
-      }
+      },
+      "capture": false
     },
     { "shot": "opened-after-cancel" }
   ],
@@ -130,6 +115,6 @@
       "退出后点一行打开的是这个会话，而不是又开始勾选",
       "截图整体看起来像一个正常工作的产品（对齐、层级、文案一致），没有报错或残留弹层"
     ],
-    "maxImages": 8
+    "maxImages": 12
   }
 }
