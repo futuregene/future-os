@@ -472,3 +472,68 @@ fn a_sweep_leaves_the_conversation_untouched() {
     assert_eq!(raw_rows(&store), 0);
     assert_eq!(store.db.call(conversation).unwrap(), before);
 }
+
+/// A large legacy block moves its text into a compressed body; the projection
+/// still returns exactly that text.
+#[test]
+fn a_large_block_is_stored_compressed_and_projects_identically() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+    settled_run(&store, "run", 0);
+    let text = "工具输出内容".repeat(600);
+    let seeded = text.clone();
+    store
+        .db
+        .call(move |db| {
+            db.execute(
+                "INSERT INTO entries(session_id,position,entry_id,entry_type,role,run_id,
+                                     timestamp_ms,metadata_json,content_json)
+                 VALUES ('s',0,'e0','tool','tool','run',1,'{}',NULL)",
+                [],
+            )?;
+            db.execute(
+                "INSERT INTO message_blocks(session_id,entry_position,ordinal,kind,text,
+                                            arguments_json,metadata_json)
+                 VALUES ('s',0,0,'tool_result',?1,NULL,'{}')",
+                [seeded],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let projected = |db: &mut rusqlite::Connection| -> anyhow::Result<String> {
+        Ok(db.query_row(
+            "SELECT text FROM resolved_message_blocks WHERE session_id='s'",
+            [],
+            |row| row.get(0),
+        )?)
+    };
+    assert_eq!(store.db.call(projected).unwrap(), text);
+    assert_eq!(
+        store.db.call(|db| super::plan_block_bodies(db)).unwrap().0,
+        1
+    );
+    let (moved, before, after) = store
+        .db
+        .call(|db| super::compress_block_bodies(db, 8))
+        .unwrap();
+    assert_eq!(moved, 1);
+    assert!(after < before, "{after} bytes must be fewer than {before}");
+    let inline: Option<String> = store
+        .db
+        .call(|db| {
+            Ok(db.query_row("SELECT text FROM message_blocks", [], |r| {
+                r.get::<_, Option<String>>(0)
+            })?)
+        })
+        .unwrap();
+    assert_eq!(inline, None, "the inline copy is cleared");
+    assert_eq!(
+        store.db.call(projected).unwrap(),
+        text,
+        "same text, one row"
+    );
+    assert_eq!(
+        store.db.call(|db| super::plan_block_bodies(db)).unwrap().0,
+        0
+    );
+}

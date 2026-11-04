@@ -351,7 +351,7 @@ impl Snapshot {
             let mut blocks = std::collections::HashMap::<i64, Vec<Value>>::new();
             {
                 let mut query = tx.prepare_cached(
-                    "SELECT entry_position,ordinal,kind,text,tool_call_id,tool_name,arguments_json,is_error,metadata_json FROM message_blocks WHERE session_id=?1 AND entry_position>=?2 AND entry_position<=?3 ORDER BY entry_position,ordinal",
+                    "SELECT entry_position,ordinal,kind,\n                     coalesce(text,(SELECT future_gunzip(x.body) FROM message_block_bodies x\n                       WHERE x.session_id=message_blocks.session_id\n                         AND x.entry_position=message_blocks.entry_position\n                         AND x.ordinal=message_blocks.ordinal AND x.field='text')) AS text,\n                     tool_call_id,tool_name,\n                     coalesce(arguments_json,(SELECT future_gunzip(x.body) FROM message_block_bodies x\n                       WHERE x.session_id=message_blocks.session_id\n                         AND x.entry_position=message_blocks.entry_position\n                         AND x.ordinal=message_blocks.ordinal AND x.field='args')) AS arguments_json,\n                     is_error,metadata_json\n                     FROM message_blocks WHERE session_id=?1 AND entry_position>=?2 AND entry_position<=?3 ORDER BY entry_position,ordinal",
                 )?;
                 let mapped = query.query_map(params![scope.session, first, last], |row| {
                     Ok((
