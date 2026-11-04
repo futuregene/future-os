@@ -1,16 +1,17 @@
 //! The embedded terminal as a host service.
 //!
-//! The PTY registry belongs to the entry point that owns the shells — the
-//! Desktop window owns one (`desktop/src-tauri/src/terminal`), a headless host
-//! does not — while the remote control plane that has to reach it lives in this
-//! crate, which must not depend on a GUI. So the two meet here: an entry point
-//! installs an implementation once at startup, and everything above it
-//! (`host::remote_host::business::terminal`) talks to the trait.
+//! The registry itself lives beside this module (`crate::terminal`), shared by
+//! every entry point: a windowed Desktop and a headless `future host` serve the
+//! same shells, so which one started must not decide whether they exist. What is
+//! defined here is the *surface* the remote control plane sees — the trait, its
+//! wire types, and the one slot an entry point installs its registry into.
 //!
-//! Nothing here owns state. A process either installed a service or it did not,
-//! and that answer also decides whether the handshake advertises
-//! [`future_remote_protocol::TERMINAL_FEATURE`] — the capability a paired
-//! desktop reads before it offers the panel at all.
+//! Nothing here owns state beyond that slot. A process either installed a
+//! service or it did not, and that answer also decides whether the handshake
+//! advertises [`future_remote_protocol::TERMINAL_FEATURE`] — the capability a
+//! paired desktop reads before it offers the panel at all. The slot is also what
+//! lets a test drive `remote_host::business::terminal` with a registry that
+//! spawns no child at all.
 //!
 //! The shapes mirror the loopback HTTP routes the local webview already speaks
 //! (`docs/internals/desktop/embedded-terminal.md`), including the stable
