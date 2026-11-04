@@ -57,8 +57,8 @@ const h = vi.hoisted(() => ({
       refresh: vi.fn(),
       rows: [] as { acceptedAt: string; position: number; runId: string; state: string; text: string }[],
     },
-    cancel: vi.fn(async (_runId: string) => {}),
-    release: vi.fn(async (_runId: string) => {}),
+    cancel: vi.fn(async (_threadId: string, _runId: string) => {}),
+    release: vi.fn(async (_threadId: string, _runId: string) => {}),
   },
   store: { forkThread: vi.fn() },
   client: { compactThreadContext: vi.fn() },
@@ -153,8 +153,8 @@ vi.mock("./agentQueue", () => ({
   useAgentQueue: () => h.queue.value,
   agentQueueNoticeReason: (reason: string) =>
     ["merged", "cancelled", "superseded", "session_deleted"].includes(reason) ? reason : "other",
-  cancelAgentQueuedRun: (runId: string) => h.queue.cancel(runId),
-  releaseAgentQueuedRun: (runId: string) => h.queue.release(runId),
+  cancelAgentQueuedRun: (threadId: string, runId: string) => h.queue.cancel(threadId, runId),
+  releaseAgentQueuedRun: (threadId: string, runId: string) => h.queue.release(threadId, runId),
   isParkedRow: (row: { state: string }) => row.state.startsWith("stale"),
 }));
 vi.mock("./useMessagePaging", () => ({
@@ -1170,9 +1170,12 @@ describe("agentThread send while the reply streams", () => {
     await act(async () => {
       container.querySelector<HTMLButtonElement>("[data-queue-remove]")!.click();
       await Promise.resolve();
+      await Promise.resolve();
     });
-    // Addressed by run id: the queue belongs to the session, not to this panel.
-    expect(h.queue.cancel).toHaveBeenCalledWith("run-7");
+    // Addressed by conversation and run id: the queue belongs to the session,
+    // and a row the Agent accepted from somewhere else has no local run to look
+    // the conversation up from.
+    expect(h.queue.cancel).toHaveBeenCalledWith("T1", "run-7");
   });
 
   it("offers a parked row a start, because the Agent will not run it alone", async () => {
@@ -1187,8 +1190,9 @@ describe("agentThread send while the reply streams", () => {
     await act(async () => {
       container.querySelector<HTMLButtonElement>("[data-queue-release]")!.click();
       await Promise.resolve();
+      await Promise.resolve();
     });
-    expect(h.queue.release).toHaveBeenCalledWith("run-8");
+    expect(h.queue.release).toHaveBeenCalledWith("T1", "run-8");
   });
 
   /**
@@ -1229,6 +1233,7 @@ describe("agentThread send while the reply streams", () => {
     await act(async () => {
       container.querySelector<HTMLButtonElement>("[data-queue-remove]")!.click();
       await Promise.resolve();
+      await Promise.resolve();
     });
     expect(forget).toHaveBeenCalledWith("run-9");
 
@@ -1236,6 +1241,40 @@ describe("agentThread send while the reply streams", () => {
     // is named in the editor, before the save.
     act(() => container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
     expect(container.querySelector("[data-send-queue]")!.textContent).toContain("Saving sends the new text only");
+  });
+
+  /**
+   * A row can be the Agent's without this app ever having recorded a run for it
+   * (a goal-plane note, a CLI prompt into the same conversation). When taking it
+   * back fails, the row stays, and a click that leaves everything exactly as it
+   * was and says nothing reads as a dead button.
+   */
+  it("says why a waiting row could not be taken back, instead of nothing", async () => {
+    const forget = vi.fn();
+    h.queue.value = {
+      forget,
+      notice: null,
+      refresh: vi.fn(),
+      rows: [{ acceptedAt: "2026-11-03T10:00:00Z", position: 1, runId: "run-10", state: "queued", text: "waiting" }],
+    };
+    h.queue.cancel.mockRejectedValueOnce(new Error("That queued message could not be found."));
+    const toasts: { message: string; tone?: string }[] = [];
+    const off = onFutureEvent("toast", toast => void toasts.push(toast));
+    render();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("[data-queue-remove]")!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    off();
+
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0]?.tone).toBe("error");
+    expect(toasts[0]?.message).toContain("That queued message could not be found.");
+    // It is still in the queue, so whatever becomes of it later is still news.
+    expect(forget).not.toHaveBeenCalled();
   });
 
   it("hands one message per send to the Agent, never a joined one", async () => {

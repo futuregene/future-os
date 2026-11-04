@@ -105,13 +105,13 @@ describe("fetchAgentQueue", () => {
 });
 
 describe("queue mutations", () => {
-  it("addresses the row by run id through the Agent's own commands", async () => {
-    await cancelAgentQueuedRun("run-9");
-    await releaseAgentQueuedRun("run-9");
+  it("addresses the row by its conversation and run id through the Agent's own commands", async () => {
+    await cancelAgentQueuedRun("thread-1", "run-9");
+    await releaseAgentQueuedRun("thread-1", "run-9");
 
     expect(mocks.invokeCommand.mock.calls).toEqual([
-      ["cancel_queued_run", { runId: "run-9" }],
-      ["release_queued_run", { runId: "run-9" }],
+      ["cancel_queued_run", { runId: "run-9", threadId: "thread-1" }],
+      ["release_queued_run", { runId: "run-9", threadId: "thread-1" }],
     ]);
   });
 });

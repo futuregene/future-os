@@ -351,6 +351,16 @@ export function AgentThread({
   // "take it back" and "start it now" go; the panel is a view of that queue, not
   // a second copy of it.
   const agentQueue = useAgentQueue(thread?.id ?? null, isReplyStreaming);
+  // A row that could not be taken back or started is a failed action, not
+  // nothing: the Agent's sentence is what says why (a run it no longer holds, a
+  // session this machine cannot reach), and the row stays where it was.
+  const reportQueueFailure = useCallback((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error ?? "");
+    emitFutureEvent("toast", {
+      message: t("composer.queue.actionFailed", { message }),
+      tone: "error",
+    });
+  }, [t]);
   const handleEnqueueDraft = useCallback((payload: ComposerSendPayload) => {
     if (!thread?.id)
       return false;
@@ -358,28 +368,48 @@ export function AgentThread({
     return true;
   }, [agentQueue, handleQueuedSend, thread?.id]);
   const handleQueueRemove = useCallback((runId: string) => {
-    agentQueue.forget(runId);
-    void cancelAgentQueuedRun(runId).catch(() => {}).finally(() => agentQueue.refresh());
-  }, [agentQueue]);
+    if (!thread?.id)
+      return;
+    void cancelAgentQueuedRun(thread.id, runId)
+      // Only this window's own removal is uninteresting news; a failed one is
+      // still something that may leave the queue later, by another client.
+      .then(() => agentQueue.forget(runId))
+      .catch(reportQueueFailure)
+      .finally(() => agentQueue.refresh());
+  }, [agentQueue, reportQueueFailure, thread?.id]);
   const handleQueueRelease = useCallback((runId: string) => {
-    void releaseAgentQueuedRun(runId).catch(() => {}).finally(() => agentQueue.refresh());
-  }, [agentQueue]);
+    if (!thread?.id)
+      return;
+    void releaseAgentQueuedRun(thread.id, runId)
+      .catch(reportQueueFailure)
+      .finally(() => agentQueue.refresh());
+  }, [agentQueue, reportQueueFailure, thread?.id]);
   // Editing a waiting message: the Agent has no "update this row" command, so
   // the corrected text is a new prompt behind the same run boundary — take the
   // old row back first, or both would run. Attachments cannot be recovered from
   // the queue row (it carries text only), which is why the panel edits words and
   // says so in the editor rather than claiming a count of zero. A re-send that
   // the Agent refuses is not a lost message: the send pipeline puts the words in
-  // the thread as a failed bubble, which is where the retry lives.
+  // the thread as a failed bubble, which is where the retry lives. A *removal*
+  // the Agent refuses stops the edit: sending the corrected text while the old
+  // row stays queued would run both.
   const handleQueueUpdate = useCallback((runId: string, content: string) => {
+    if (!thread?.id)
+      return;
     void (async () => {
+      try {
+        await cancelAgentQueuedRun(thread.id, runId);
+      }
+      catch (error) {
+        reportQueueFailure(error);
+        return;
+      }
       agentQueue.forget(runId);
-      await cancelAgentQueuedRun(runId).catch(() => {});
       if (content.trim())
         await handleQueuedSend({ attachments: [], content });
       agentQueue.refresh();
     })();
-  }, [agentQueue, handleQueuedSend]);
+  }, [agentQueue, handleQueuedSend, reportQueueFailure, thread?.id]);
 
   // Settings → Keyboard: the same interrupt the send button turns into while a
   // reply streams. Registered only then, so the key is unclaimed whenever there

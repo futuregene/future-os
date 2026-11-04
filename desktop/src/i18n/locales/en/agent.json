@@ -207,6 +207,7 @@
       "remove": "Remove from the queue",
       "retry": "Try again",
       "release": "Send this one now",
+      "actionFailed": "That waiting message could not be changed: {{message}}",
       "full": "The send queue is full. Send or remove something first.",
       "notice": {
         "merged": "A waiting message was folded into the turn that just ran instead of running on its own.",
