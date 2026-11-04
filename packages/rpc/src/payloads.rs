@@ -170,6 +170,10 @@ pub struct SessionEntriesPage<Entry = SessionEntryPayload> {
     pub has_more: bool,
     #[serde(default, rename = "nextOffset")]
     pub next_offset: i64,
+    /// How many display rows the session has. Absent from a page an older
+    /// sender produced, in which case a reader cannot report a total.
+    #[serde(default, rename = "total", skip_serializing_if = "Option::is_none")]
+    pub total: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fragment: Option<HistoryEntryFragment>,
 }

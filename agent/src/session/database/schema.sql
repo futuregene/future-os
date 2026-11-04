@@ -70,7 +70,43 @@ CREATE TABLE IF NOT EXISTS message_blocks (
     FOREIGN KEY(session_id,entry_position) REFERENCES entries(session_id,position) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS message_blocks_tool ON message_blocks(session_id,tool_call_id,kind);
+-- Text and tool arguments stored compressed, for blocks written as plaintext.
+--
+-- `message_blocks.text`/`arguments_json` are the legacy representation of a
+-- message; sessions in the current format keep their bodies in
+-- `content_segments`. A row big enough to be worth it is moved here by the
+-- operator-invoked sweep and its column is left NULL, so the projections that
+-- read a block (`resolved_message_blocks`, `header_message_blocks`, the
+-- transcript reader) hydrate it through `future_gunzip`. The cascade is the only
+-- owner: a block that goes away takes its body with it.
+CREATE TABLE IF NOT EXISTS message_block_bodies (
+    session_id TEXT NOT NULL,
+    entry_position INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL,
+    field TEXT NOT NULL CHECK(field IN ('text','args')),
+    encoding TEXT NOT NULL CHECK(encoding='gzip'),
+    body BLOB NOT NULL,
+    PRIMARY KEY(session_id,entry_position,ordinal,field),
+    FOREIGN KEY(session_id,entry_position,ordinal)
+        REFERENCES message_blocks(session_id,entry_position,ordinal) ON DELETE CASCADE
+) WITHOUT ROWID;
 CREATE UNIQUE INDEX IF NOT EXISTS entries_identity_unique ON entries(session_id, entry_id);
+-- An entry's metadata document, stored compressed once it is big enough.
+--
+-- `entries.metadata_json` is the envelope every projection rebuilds a message
+-- from: on a real store it averages 607 bytes a row for 133 MiB. A row over
+-- 1 KiB moves its document here and the column is cleared, in one transaction;
+-- `entry_records` and the readers that select the column directly hydrate it
+-- through `future_gunzip`, so the projection is byte for byte what it was.
+CREATE TABLE IF NOT EXISTS entry_bodies (
+    session_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    field TEXT NOT NULL CHECK(field='metadata'),
+    encoding TEXT NOT NULL CHECK(encoding='gzip'),
+    body BLOB NOT NULL,
+    PRIMARY KEY(session_id,position,field),
+    FOREIGN KEY(session_id,position) REFERENCES entries(session_id,position) ON DELETE CASCADE
+) WITHOUT ROWID;
 DROP INDEX IF EXISTS entries_identity;
 CREATE INDEX IF NOT EXISTS entries_kind ON entries(session_id, entry_type, position);
 CREATE INDEX IF NOT EXISTS entries_run ON entries(session_id,run_id,position);
@@ -113,6 +149,27 @@ CREATE TABLE IF NOT EXISTS run_snapshots (
     PRIMARY KEY(session_id,run_id)
 );
 DROP INDEX IF EXISTS run_snapshots_cleanup;
+-- The folded body of a published snapshot, encoded.
+--
+-- `run_snapshots.payload` is the fold itself, and a published fold is hundreds
+-- of KiB of JSON that gzips about six times (measured on a real store: 7.4 MiB
+-- of sampled payloads fell to 1.2 MiB). This table is that same JSON in another
+-- encoding, never a second document: the publishing transaction writes both,
+-- and the marker row keeps a stub so `payload` stays valid JSON. A reader that
+-- finds a body decodes it; a reader that finds none reads `payload` exactly as
+-- before, so a store written by an older build still replays.
+CREATE TABLE IF NOT EXISTS run_snapshot_bodies (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL,
+    encoding TEXT NOT NULL CHECK(encoding='gzip'),
+    body BLOB NOT NULL,
+    PRIMARY KEY(session_id,run_id)
+);
+-- The marker row owns the body: nothing else can name that run's fold, so a
+-- transcript rewrite that drops the row must take the body with it.
+CREATE TRIGGER IF NOT EXISTS run_snapshot_body_removed AFTER DELETE ON run_snapshots BEGIN
+    DELETE FROM run_snapshot_bodies WHERE session_id=OLD.session_id AND run_id=OLD.run_id;
+END;
 -- A fold kept *beside* the raw journal, not instead of it.
 --
 -- `run_snapshots` above is the reclaim row: writing one marks the run

@@ -21,5 +21,6 @@
   "dismiss": "忽略",
   "createFailed": "无法启动终端",
   "serverUnavailable": "终端服务不可用",
-  "reconnecting": "正在重连…"
+  "reconnecting": "正在重连…",
+  "onHost": "在 {{host}} 上"
 }

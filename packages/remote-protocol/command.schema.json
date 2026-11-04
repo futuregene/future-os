@@ -529,6 +529,54 @@
       "default": null,
       "x-ts-type": "Record<string, unknown>",
       "description": "Host-owned Fusion settings patch with expected_revision."
+    },
+    "terminalId": {
+      "x-rust-name": "terminal_id",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "Embedded terminal: the session's id on the host that owns it (`terminal_list` / `terminal_read` / `terminal_write` / `terminal_update` / `terminal_delete`)."
+    },
+    "terminalCursor": {
+      "x-rust-name": "terminal_cursor",
+      "x-rust-type": "i64",
+      "default": -1,
+      "x-ts-type": "number",
+      "type": "integer",
+      "description": "Embedded terminal: the absolute output byte offset the client already applied; -1 tails from the current end."
+    },
+    "terminalData": {
+      "x-rust-name": "terminal_data",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "Embedded terminal: base64 bytes — keyboard input on `terminal_write`."
+    },
+    "title": {
+      "x-rust-name": "title",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "Embedded terminal tab title (`terminal_create` / `terminal_update`)."
+    },
+    "cols": {
+      "x-rust-name": "cols",
+      "x-rust-type": "u32",
+      "default": 0,
+      "x-ts-type": "number",
+      "type": "integer",
+      "description": "Embedded terminal viewport width in cells (`terminal_create` / `terminal_update`)."
+    },
+    "rows": {
+      "x-rust-name": "rows",
+      "x-rust-type": "u32",
+      "default": 0,
+      "x-ts-type": "number",
+      "type": "integer",
+      "description": "Embedded terminal viewport height in cells (`terminal_create` / `terminal_update`)."
     }
   },
   "$defs": {

@@ -1,3 +1,4 @@
+import type { TerminalApi } from "./api";
 import type { TerminalTab, TerminalTabsState } from "./tabs";
 /**
  * Tab controller for a conversation's terminal panel.
@@ -10,12 +11,8 @@ import type { TerminalTab, TerminalTabsState } from "./tabs";
  */
 import type { TerminalInfo } from "./types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  createTerminal,
-  listTerminals,
-  removeTerminal,
-  TerminalApiError,
-} from "./client";
+import { localTerminalApi } from "./api";
+import { TerminalApiError } from "./client";
 import {
   clearTabsState,
   loadTabsState,
@@ -120,7 +117,18 @@ export function reconcileTabs(stored: TerminalTabsState, live: readonly Terminal
   return { active, all };
 }
 
-export function useTerminalTabs(threadId: string | null): TerminalTabsController {
+/**
+ * The tab controller for one conversation, on whichever machine owns it.
+ *
+ * `scope` is both the `localStorage` key and the conversation the local API is
+ * asked about; a remote conversation passes `remote:…` (see
+ * `api.remoteTerminalScope`) and an API that already knows its host, so nothing
+ * below this hook has to know which kind it is looking at.
+ */
+export function useTerminalTabs(
+  threadId: string | null,
+  api: TerminalApi = localTerminalApi,
+): TerminalTabsController {
   const [state, setState] = useState<TerminalTabsState>(() => (threadId ? loadTabsState(threadId) : { all: [] }));
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -152,7 +160,7 @@ export function useTerminalTabs(threadId: string | null): TerminalTabsController
     let cancelled = false;
     void (async () => {
       try {
-        const live = await listTerminals(threadId);
+        const live = await api.list(threadId);
         if (cancelled || threadRef.current !== threadId)
           return;
         const merged = reconcileTabs(stateRef.current, live);
@@ -174,7 +182,10 @@ export function useTerminalTabs(threadId: string | null): TerminalTabsController
     return () => {
       cancelled = true;
     };
-  }, [threadId]);
+    // `api` is part of the identity: switching to another host's conversation
+    // must reconcile against *that* host, not leave the previous one's shells
+    // on screen.
+  }, [threadId, api]);
 
   const update = useCallback((mutate: (previous: TerminalTabsState) => TerminalTabsState) => {
     const next = mutate(stateRef.current);
@@ -194,7 +205,7 @@ export function useTerminalTabs(threadId: string | null): TerminalTabsController
     try {
       const previous = stateRef.current;
       const titleNumber = nextTitleNumber(previous.all);
-      const info = await createTerminal({ threadId: thread, title: defaultTitle(titleNumber) });
+      const info = await api.create(thread, { title: defaultTitle(titleNumber) });
       update((current) => {
         const tab: TerminalTab = { ...toTab(info, titleNumber), title: defaultTitle(titleNumber) };
         return { active: tab.id, all: [...current.all, tab] };
@@ -212,7 +223,7 @@ export function useTerminalTabs(threadId: string | null): TerminalTabsController
       creatingRef.current = false;
       setCreating(false);
     }
-  }, [update]);
+  }, [update, api]);
 
   const retry = useCallback(() => create(), [create]);
 
@@ -223,7 +234,7 @@ export function useTerminalTabs(threadId: string | null): TerminalTabsController
       return { active: active && all.some(tab => tab.id === active) ? active : all[0]?.id, all };
     });
     try {
-      await removeTerminal(id);
+      await api.remove(id);
     }
     catch {
       // The tab is gone from the UI either way: a session the server already
@@ -233,7 +244,7 @@ export function useTerminalTabs(threadId: string | null): TerminalTabsController
     const thread = threadRef.current;
     if (thread && stateRef.current.all.length === 0)
       clearTabsState(thread);
-  }, [update]);
+  }, [update, api]);
 
   const restart = useCallback(async (id: string) => {
     const thread = threadRef.current;
@@ -247,9 +258,8 @@ export function useTerminalTabs(threadId: string | null): TerminalTabsController
       // The old session is dead or missing; remove it first so the server does
       // not keep a poisoned entry around, then start a fresh shell with the
       // same label.
-      await removeTerminal(id).catch(() => undefined);
-      const info = await createTerminal({
-        threadId: thread,
+      await api.remove(id).catch(() => undefined);
+      const info = await api.create(thread, {
         title: tab.title || defaultTitle(tab.titleNumber || 1),
       });
       update(current => ({
@@ -265,7 +275,7 @@ export function useTerminalTabs(threadId: string | null): TerminalTabsController
         : new TerminalApiError("REQUEST_FAILED", cause instanceof Error ? cause.message : String(cause), 0);
       setCreateError(apiError);
     }
-  }, [update]);
+  }, [update, api]);
 
   const setActive = useCallback((id: string) => {
     update(current => ({ ...current, active: id }));

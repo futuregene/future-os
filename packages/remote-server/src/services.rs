@@ -26,6 +26,24 @@ pub trait BusinessHost: Send + Sync {
     fn execute<'a>(&'a self, command: IncomingCmd, reply: &'a dyn ReplySink) -> BoxFuture<'a, ()>;
 }
 
+/// Whether this process serves embedded terminals over the control plane.
+///
+/// Set once at startup by whichever host actually owns a PTY registry (the
+/// windowed Desktop does; `future host` does not), then read when the handshake
+/// answers a client with the capabilities this machine offers. Not a per-pair
+/// fact: a process either can open a shell or it cannot, and the answer is the
+/// same for every device it serves.
+static TERMINAL_AVAILABLE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_terminal_available(available: bool) {
+    TERMINAL_AVAILABLE.store(available, std::sync::atomic::Ordering::Release);
+}
+
+pub fn terminal_available() -> bool {
+    TERMINAL_AVAILABLE.load(std::sync::atomic::Ordering::Acquire)
+}
+
 pub trait StateHost: Send + Sync {
     fn catalog_epoch(&self) -> String;
     fn sessions(&self, pair: &str) -> Option<(Value, String)>;

@@ -23,6 +23,7 @@ import { CommandPalette } from "../../features/palette/CommandPalette";
 import { ShortcutCheatSheet } from "../../features/palette/ShortcutCheatSheet";
 import { DeviceChoiceDialog } from "../../features/remote-peer/DeviceChoiceDialog";
 import { PeerIconGlyph } from "../../features/remote-peer/PeerIconGlyph";
+import { peerBadgeText } from "../../features/remote-peer/peerIcons";
 import { peerDrivable, peerStatus } from "../../features/remote-peer/peerStatus";
 import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { rememberRemoteIdentities, remoteConversationIdentity } from "../../features/remote-peer/remoteConversationIdentity";
@@ -49,8 +50,8 @@ import { RemoteHubView } from "../../features/remote/RemoteHubView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { SkillsView } from "../../features/skills/SkillsView";
 import { TasksView } from "../../features/tasks/TasksView";
-import { terminalTarget } from "../../features/terminal/panelTarget";
-import { TerminalPanel } from "../../features/terminal/TerminalPanel";
+import { terminalScope } from "../../features/terminal/panelTarget";
+import { RemoteTerminalPanel, TerminalPanel } from "../../features/terminal/TerminalPanel";
 import { TerminalToggleButton } from "../../features/terminal/TerminalToggleButton";
 import { useTerminalPanel } from "../../features/terminal/useTerminalPanel";
 import { exitNativeFullscreen } from "../../features/vibe/fullscreen";
@@ -659,12 +660,31 @@ function ReadyAppShell({
       // before, which is not what the tasks view is about.
       || section === "tasks";
 
+  /** The paired machine this conversation is on, for its own label and capabilities. */
+  const activeRemotePeer = activeRemote
+    ? remotePeers.find(peer => peer.desktopId === activeRemote.desktopId)
+    : undefined;
   // The terminal belongs to a conversation: it is offered only while a real
-  // thread is on screen, so the shortcut and the panel state never apply to the
-  // new-chat / skills / phone-control views (see `terminalTarget`).
-  const terminalThreadId = terminalTarget({ section, centerMode, threadId: activeThread?.id });
-  const terminalPanel = useTerminalPanel(terminalThreadId);
-  const terminalHeaderAction = terminalThreadId
+  // conversation is on screen, so the shortcut and the panel state never apply
+  // to the new-chat / skills / phone-control views. A remote conversation's
+  // shells run on *its* machine, which is why the target names a host rather
+  // than a local thread id (see `terminalScope`).
+  const terminalTarget = terminalScope({
+    section,
+    centerMode,
+    threadId: activeThread?.id,
+    remote: activeRemote
+      ? {
+          desktopId: activeRemote.desktopId,
+          sessionId: activeRemote.sessionId,
+          terminalSupported: (activeRemotePeer?.features ?? []).includes("terminal_v1"),
+        }
+      : null,
+  });
+  // Preferences are per conversation, and a remote conversation's key is
+  // namespaced by host, so the two machines never share one panel state.
+  const terminalPanel = useTerminalPanel(terminalTarget?.key ?? null);
+  const terminalHeaderAction = terminalTarget
     ? (
         <TerminalToggleButton
           onToggle={terminalPanel.toggle}
@@ -1290,9 +1310,6 @@ function ReadyAppShell({
     remoteSkillReco.evaluate,
     installRecommended,
   ]);
-  const activeRemotePeer = activeRemote
-    ? remotePeers.find(peer => peer.desktopId === activeRemote.desktopId)
-    : undefined;
   /**
    * What the open conversation is called, and where it lives on its host.
    *
@@ -1993,6 +2010,7 @@ function ReadyAppShell({
                                       : undefined}
                                     peer={activeRemotePeer}
                                     persistedEntryIds={remoteTimeline.persistedEntryIds}
+                                    terminalAction={terminalHeaderAction}
                                     sessionId={activeRemote.sessionId}
                                     streaming={remoteTimeline.streaming}
                                     title={remoteDraft
@@ -2099,13 +2117,24 @@ function ReadyAppShell({
                 {/* The terminal spans the conversation *and* the right panel: it is a
             sibling of that row, not of the left rail. Collapsing it removes its
             height entirely, so the conversation keeps the full space. */}
-                {terminalThreadId && terminalPanel.open
-                  ? (
-                      <TerminalPanel
-                        panel={terminalPanel}
-                        threadId={terminalThreadId}
-                      />
-                    )
+                {terminalTarget && terminalPanel.open
+                  ? terminalTarget.kind === "remote"
+                    ? (
+                        <RemoteTerminalPanel
+                          desktopId={terminalTarget.desktopId}
+                          hostLabel={activeRemotePeer
+                            ? peerBadgeText(activeRemotePeer, terminalTarget.desktopId)
+                            : terminalTarget.desktopId}
+                          panel={terminalPanel}
+                          sessionId={terminalTarget.sessionId}
+                        />
+                      )
+                    : (
+                        <TerminalPanel
+                          panel={terminalPanel}
+                          threadId={terminalTarget.threadId}
+                        />
+                      )
                   : null}
               </div>
             </>

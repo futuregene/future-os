@@ -772,3 +772,120 @@ fn a_corrupt_cached_row_falls_back_instead_of_failing() {
         "an unreadable row must be a miss, never an error"
     );
 }
+
+/// A published fold big enough to encode is written as a body plus a stub, and
+/// the encoded row replays exactly like the plain row an older build wrote.
+#[test]
+fn an_encoded_fold_replays_identically_to_the_plain_row_it_replaces() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("agent.db");
+    let store = fixture(&path, "completed", 800);
+    store.compact_run("s", "run").unwrap();
+
+    let (payload_len, body_len, encoding): (i64, i64, String) = store
+        .db
+        .call(|db| {
+            Ok((
+                db.query_row(
+                    "SELECT length(CAST(payload AS BLOB)) FROM run_snapshots",
+                    [],
+                    |r| r.get(0),
+                )?,
+                db.query_row("SELECT length(body) FROM run_snapshot_bodies", [], |r| {
+                    r.get(0)
+                })?,
+                db.query_row("SELECT encoding FROM run_snapshot_bodies", [], |r| r.get(0))?,
+            ))
+        })
+        .unwrap();
+    assert_eq!(encoding, "gzip");
+    assert!(
+        (payload_len as usize) < SNAPSHOT_BODY_MIN_BYTES,
+        "the marker row keeps only a stub, got {payload_len} bytes"
+    );
+    assert!(body_len > 0);
+
+    let encoded: Vec<serde_json::Value> = store.typed_events("s", "run").unwrap();
+
+    // Rewrite the row the way a build without `run_snapshot_bodies` published it:
+    // the same JSON in `payload`, no body. Both representations must agree.
+    store
+        .db
+        .call(|db| {
+            let (_cursor, payload) = load_run_snapshot(db, "s", "run")?.expect("a published fold");
+            db.execute("UPDATE run_snapshots SET payload=?1", params![payload])?;
+            db.execute("DELETE FROM run_snapshot_bodies", [])?;
+            Ok(())
+        })
+        .unwrap();
+    let plain: Vec<serde_json::Value> = store.typed_events("s", "run").unwrap();
+    assert_eq!(encoded, plain, "the encoding must not change a replay");
+    assert!(!encoded.is_empty());
+}
+
+/// Deleting the marker row takes the body with it: nothing else can name a fold.
+#[test]
+fn dropping_a_snapshot_row_drops_its_body() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("agent.db");
+    let store = fixture(&path, "completed", 800);
+    store.compact_run("s", "run").unwrap();
+    let bodies = store
+        .db
+        .call(|db| {
+            db.execute("DELETE FROM run_snapshots", [])?;
+            Ok(
+                db.query_row("SELECT count(*) FROM run_snapshot_bodies", [], |r| {
+                    r.get::<_, i64>(0)
+                })?,
+            )
+        })
+        .unwrap();
+    assert_eq!(bodies, 0, "an orphan body would be unreachable bytes");
+}
+
+/// The retrofit an operator runs through the reclaim sweep: an older row is
+/// encoded once, and a second pass finds nothing left to do.
+#[test]
+fn the_sweep_encodes_a_fold_an_older_build_left_as_plain_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("agent.db");
+    let store = fixture(&path, "completed", 800);
+    store.compact_run("s", "run").unwrap();
+    store
+        .db
+        .call(|db| {
+            let (_cursor, payload) = load_run_snapshot(db, "s", "run")?.expect("a published fold");
+            db.execute("UPDATE run_snapshots SET payload=?1", params![payload])?;
+            db.execute("DELETE FROM run_snapshot_bodies", [])?;
+            Ok(())
+        })
+        .unwrap();
+
+    let (pending, pending_bytes) = store
+        .db
+        .call(|db| crate::session::journal_reclaim::plan_snapshot_bodies(db))
+        .unwrap();
+    assert_eq!(pending, 1);
+    assert!(pending_bytes as usize >= SNAPSHOT_BODY_MIN_BYTES);
+
+    let (runs, before, after) = store
+        .db
+        .call(|db| crate::session::journal_reclaim::compress_snapshot_bodies(db, 8))
+        .unwrap();
+    assert_eq!(runs, 1);
+    assert!(after < before, "{after} bytes must be fewer than {before}");
+
+    let (pending_after, _) = store
+        .db
+        .call(|db| crate::session::journal_reclaim::plan_snapshot_bodies(db))
+        .unwrap();
+    assert_eq!(pending_after, 0, "a second pass has nothing left to encode");
+    assert!(
+        store
+            .typed_events::<serde_json::Value>("s", "run")
+            .unwrap()
+            .len()
+            > 1
+    );
+}

@@ -6,9 +6,13 @@ use super::sqlite_store::SqliteStore;
 use crate::rpc::run_snapshot::{strip_repeated_tool_arguments, DeltaFolder};
 use crate::rpc::SseEvent;
 use anyhow::{ensure, Result};
+use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 // The size a *published* snapshot aims for: the delivered projection crosses
@@ -87,6 +91,108 @@ impl RunJournalSnapshot {
 /// is then a miss (the reader folds instead), never a stale projection served to
 /// a client that expects today's format.
 pub(crate) const SNAPSHOT_CACHE_VERSION: i64 = 1;
+
+/// Above this many bytes a published fold is stored encoded.
+///
+/// Below it the gzip header plus the stub costs more than it saves, and the
+/// fold stays directly readable with `sqlite3` — which is what an operator
+/// reaching for a one-off forensics query actually wants.
+pub(crate) const SNAPSHOT_BODY_MIN_BYTES: usize = 2048;
+/// The only encoding `run_snapshot_bodies` accepts. Versioning is the table's
+/// `encoding` CHECK: a future algorithm adds a value, never reinterprets gzip.
+const SNAPSHOT_BODY_ENCODING: &str = "gzip";
+
+fn encode_snapshot_body(payload: &str) -> Result<Vec<u8>> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(payload.as_bytes())?;
+    Ok(encoder.finish()?)
+}
+
+fn decode_snapshot_body(body: &[u8]) -> Result<String> {
+    let mut decoder = GzDecoder::new(body);
+    let mut decoded = String::new();
+    decoder.read_to_string(&mut decoded)?;
+    Ok(decoded)
+}
+
+/// What `run_snapshots.payload` holds once the body carries the fold.
+///
+/// Deliberately not a valid `RunJournalSnapshot`: `validate` refuses an empty
+/// event list, so a reader that somehow gets the stub without its body fails
+/// loudly instead of replaying an empty run as if the run had no events.
+fn snapshot_stub(run_id: &str, cursor: i64) -> Result<String> {
+    Ok(serde_json::to_string(&serde_json::json!({
+        "run_id": run_id,
+        "cursor": cursor,
+        "events": [],
+        "body": "run_snapshot_bodies",
+    }))?)
+}
+
+/// The fold published for this run, decoded whichever way its row stores it.
+///
+/// One read chooses the representation, so a row compressed by this build and a
+/// row written by an older one both answer the same call. `None` means "no
+/// snapshot for this run" — a body without its marker row is a read error, not
+/// a miss, because nothing can legitimately produce that state.
+/// One published fold as stored: `(cursor, payload, body encoding, body bytes)`.
+type StoredSnapshotRow = (i64, String, Option<String>, Option<Vec<u8>>);
+
+pub(crate) fn load_run_snapshot(
+    db: &rusqlite::Connection,
+    session: &str,
+    run: &str,
+) -> Result<Option<(i64, String)>> {
+    let row: Option<StoredSnapshotRow> = db
+        .query_row(
+            "SELECT s.cursor,s.payload,b.encoding,b.body
+               FROM run_snapshots s
+               LEFT JOIN run_snapshot_bodies b
+                 ON b.session_id=s.session_id AND b.run_id=s.run_id
+              WHERE s.session_id=?1 AND s.run_id=?2 AND s.version=1",
+            params![session, run],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    let Some((cursor, payload, encoding, body)) = row else {
+        return Ok(None);
+    };
+    match body {
+        Some(body) => {
+            ensure!(
+                encoding.as_deref() == Some(SNAPSHOT_BODY_ENCODING),
+                "snapshot body has an unsupported encoding"
+            );
+            Ok(Some((cursor, decode_snapshot_body(&body)?)))
+        }
+        None => Ok(Some((cursor, payload))),
+    }
+}
+
+/// Publish (or replace) the encoded body of a fold already written to
+/// `run_snapshots`, leaving a stub in `payload`. Callers run this in the same
+/// transaction as the marker row. The payload is encoded verbatim, so a fold
+/// published by an older build keeps its exact bytes.
+pub(crate) fn store_run_snapshot_body(
+    db: &rusqlite::Connection,
+    session: &str,
+    run: &str,
+    cursor: i64,
+    payload: &str,
+) -> Result<()> {
+    let body = encode_snapshot_body(payload)?;
+    db.execute(
+        "INSERT INTO run_snapshot_bodies(session_id,run_id,encoding,body) VALUES (?1,?2,?3,?4)
+         ON CONFLICT(session_id,run_id) DO UPDATE SET
+             encoding=excluded.encoding,body=excluded.body",
+        params![session, run, SNAPSHOT_BODY_ENCODING, body.as_slice()],
+    )?;
+    db.execute(
+        "UPDATE run_snapshots SET payload=?3 WHERE session_id=?1 AND run_id=?2",
+        params![session, run, snapshot_stub(run, cursor)?],
+    )?;
+    Ok(())
+}
 
 impl SqliteStore {
     /// The run's newest epoch, or `None` when it has no events left to fold.
@@ -378,8 +484,19 @@ impl SqliteStore {
         let (known,rows,snapshot)=self.db.read(move |db| {
             let tx=db.transaction()?;
             let snapshot: Option<(i64,Option<String>)> = if run.is_empty() { None } else {
-                tx.query_row("SELECT cursor,CASE WHEN cursor>?3 THEN payload END FROM run_snapshots WHERE session_id=?1 AND run_id=?2 AND version=1",
-                    params![session,run,since], |r| Ok((r.get(0)?,r.get(1)?))).optional()?
+                let cursor: Option<i64> = tx.query_row(
+                    "SELECT cursor FROM run_snapshots WHERE session_id=?1 AND run_id=?2 AND version=1",
+                    params![session,run], |r| r.get(0)).optional()?;
+                match cursor {
+                    // Only a fold that reaches past this cursor has anything to
+                    // say; the payload is decoded from its body when it does.
+                    Some(cursor) if cursor > since => Some((
+                        cursor,
+                        load_run_snapshot(&tx, &session, &run)?.map(|(_, payload)| payload),
+                    )),
+                    Some(cursor) => Some((cursor, None)),
+                    None => None,
+                }
             };
             if let Some(snapshot)=snapshot {
                 tx.commit()?;
@@ -584,6 +701,18 @@ impl SqliteStore {
         let payload = serde_json::to_string(&snapshot)?;
         let pricing = serde_json::to_string(&pricing)?;
         let snapshot_bytes = payload.len();
+        // A fold big enough to be worth encoding is published as a body, and the
+        // marker row keeps only a stub. Both are written in the publishing
+        // transaction, so a reader never sees one without the other.
+        let body = if payload.len() >= SNAPSHOT_BODY_MIN_BYTES {
+            Some(encode_snapshot_body(&payload)?)
+        } else {
+            None
+        };
+        let stored_payload = match body {
+            Some(_) => snapshot_stub(run, cursor)?,
+            None => payload.clone(),
+        };
         let oversize =
             snapshot_bytes > SNAPSHOT_BYTE_BUDGET || pricing.len() > SNAPSHOT_BYTE_BUDGET;
         if oversize {
@@ -625,8 +754,17 @@ impl SqliteStore {
                 tx.execute(
                     "INSERT INTO run_snapshots(session_id,run_id,version,cursor,payload,pricing_payloads)
                      VALUES (?1,?2,1,?3,?4,?5)",
-                    params![commit_session, commit_run, cursor, payload, pricing],
+                    params![commit_session, commit_run, cursor, stored_payload, pricing],
                 )?;
+                if let Some(body) = body {
+                    tx.execute(
+                        "INSERT INTO run_snapshot_bodies(session_id,run_id,encoding,body)
+                         VALUES (?1,?2,?3,?4)
+                         ON CONFLICT(session_id,run_id) DO UPDATE SET
+                             encoding=excluded.encoding,body=excluded.body",
+                        params![commit_session, commit_run, SNAPSHOT_BODY_ENCODING, body.as_slice()],
+                    )?;
+                }
                 #[cfg(test)]
                 crash_point("after_snapshot");
                 let deleted = delete_raw_rows(tx, &commit_session, &commit_run, RETIRE_CHUNK_ROWS)?;

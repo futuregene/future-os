@@ -21,5 +21,6 @@
   "dismiss": "Dismiss",
   "createFailed": "Could not start the terminal",
   "serverUnavailable": "Terminal server unavailable",
-  "reconnecting": "Reconnecting…"
+  "reconnecting": "Reconnecting…",
+  "onHost": "on {{host}}"
 }

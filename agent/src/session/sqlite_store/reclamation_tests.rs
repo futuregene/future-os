@@ -87,7 +87,18 @@ fn opening_old_database_preserves_layout_and_free_pages() {
     let before = pages_raw(&path);
     assert!(before.1 > 2_000, "fixture freelist: {}", before.1);
     let reopened = SqliteStore::open(&path).unwrap();
-    assert_eq!(pages(&reopened), before);
+    // A schema addition (`message_block_bodies`) is built from pages this file
+    // already had, so the free list can shrink by that page - but the file must
+    // not have been rebuilt or grown to fit it.
+    let after = pages(&reopened);
+    assert_eq!(
+        after.0, before.0,
+        "opening must not grow the file: {before:?} -> {after:?}"
+    );
+    assert!(
+        after.1 <= before.1 && after.1 + 4 >= before.1,
+        "opening must reuse this file's own free pages: {before:?} -> {after:?}"
+    );
     let mode: i64 = reopened
         .db
         .call(|db| Ok(db.pragma_query_value(None, "auto_vacuum", |row| row.get(0))?))

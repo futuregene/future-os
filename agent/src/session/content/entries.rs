@@ -646,11 +646,13 @@ SELECT raw.*,CASE WHEN encoding='shell_summary' THEN future_shell_summary(raw_bo
  ELSE raw_body END AS body FROM raw;
 CREATE VIEW resolved_message_blocks AS
 SELECT b.session_id,b.entry_position,b.ordinal,b.kind,
-coalesce(b.text,(SELECT r.body FROM resolved_content_references r
+coalesce(b.text,(SELECT future_gunzip(x.body) FROM message_block_bodies x
+ WHERE x.session_id=b.session_id AND x.entry_position=b.entry_position AND x.ordinal=b.ordinal AND x.field='text'),(SELECT r.body FROM resolved_content_references r
  WHERE r.session_id=b.session_id AND r.owner_kind='entry' AND r.owner_id=e.entry_id
  AND r.encoding IN ('text','shell_summary') AND r.field=printf('/content/%d/%s',b.ordinal,CASE WHEN b.kind='tool_result' THEN 'content' ELSE 'text' END))) AS text,
 b.tool_call_id,b.tool_name,
-CASE WHEN b.kind='tool_call' THEN coalesce(b.arguments_json,(SELECT r.body FROM resolved_content_references r
+CASE WHEN b.kind='tool_call' THEN coalesce(b.arguments_json,(SELECT future_gunzip(x.body) FROM message_block_bodies x
+ WHERE x.session_id=b.session_id AND x.entry_position=b.entry_position AND x.ordinal=b.ordinal AND x.field='args'),(SELECT r.body FROM resolved_content_references r
  WHERE r.session_id=b.session_id AND r.owner_kind='entry' AND r.owner_id=e.entry_id
  AND r.field=printf('/content/%d/args',b.ordinal))) ELSE b.arguments_json END AS arguments_json,
 b.is_error,
@@ -677,9 +679,15 @@ DROP VIEW IF EXISTS header_message_blocks;
 DROP VIEW IF EXISTS header_content_references;
 CREATE VIEW header_message_blocks AS
 SELECT b.session_id,b.entry_position,b.ordinal,b.kind,
-CASE WHEN b.text IS NULL AND EXISTS(SELECT 1 FROM content_references r WHERE r.session_id=b.session_id AND r.owner_kind='entry' AND r.owner_id=e.entry_id AND r.encoding IN ('text','shell_summary') AND r.field=printf('/content/%d/%s',b.ordinal,CASE WHEN b.kind='tool_result' THEN 'content' ELSE 'text' END)) THEN '' ELSE b.text END AS text,
+CASE WHEN b.text IS NOT NULL THEN b.text
+WHEN EXISTS(SELECT 1 FROM message_block_bodies x WHERE x.session_id=b.session_id AND x.entry_position=b.entry_position AND x.ordinal=b.ordinal AND x.field='text')
+THEN (SELECT future_gunzip(x.body) FROM message_block_bodies x WHERE x.session_id=b.session_id AND x.entry_position=b.entry_position AND x.ordinal=b.ordinal AND x.field='text')
+WHEN EXISTS(SELECT 1 FROM content_references r WHERE r.session_id=b.session_id AND r.owner_kind='entry' AND r.owner_id=e.entry_id AND r.encoding IN ('text','shell_summary') AND r.field=printf('/content/%d/%s',b.ordinal,CASE WHEN b.kind='tool_result' THEN 'content' ELSE 'text' END)) THEN '' ELSE b.text END AS text,
 b.tool_call_id,b.tool_name,
-CASE WHEN b.arguments_json IS NULL AND EXISTS(SELECT 1 FROM content_references r WHERE r.session_id=b.session_id AND r.owner_kind='entry' AND r.owner_id=e.entry_id AND r.field=printf('/content/%d/args',b.ordinal)) THEN '""' ELSE b.arguments_json END AS arguments_json,
+CASE WHEN b.arguments_json IS NOT NULL THEN b.arguments_json
+WHEN EXISTS(SELECT 1 FROM message_block_bodies x WHERE x.session_id=b.session_id AND x.entry_position=b.entry_position AND x.ordinal=b.ordinal AND x.field='args')
+THEN (SELECT future_gunzip(x.body) FROM message_block_bodies x WHERE x.session_id=b.session_id AND x.entry_position=b.entry_position AND x.ordinal=b.ordinal AND x.field='args')
+WHEN EXISTS(SELECT 1 FROM content_references r WHERE r.session_id=b.session_id AND r.owner_kind='entry' AND r.owner_id=e.entry_id AND r.field=printf('/content/%d/args',b.ordinal)) THEN '""' ELSE b.arguments_json END AS arguments_json,
 b.is_error,b.metadata_json FROM message_blocks b JOIN entries e ON e.session_id=b.session_id AND e.position=b.entry_position;
 "#,
     );

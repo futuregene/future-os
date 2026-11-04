@@ -185,6 +185,12 @@ pub(super) struct DisplayHistoryPage {
     pub(super) rows: Vec<DisplayPageRow>,
     has_more: bool,
     next_offset: i64,
+    /// How many display rows the session has, which is the denominator an
+    /// `offset` reader pages against. It is already read here (the range is
+    /// clamped to it), so the reply carries it instead of making a client
+    /// re-derive it by walking the session — see `host`'s offset paging, which
+    /// used to fetch every page for exactly this number.
+    total: i64,
     snapshot: Option<reader::Snapshot>,
 }
 
@@ -337,6 +343,7 @@ pub(super) fn read_display_page(
             next < total
         },
         next_offset: next,
+        total,
         snapshot,
     })
 }
@@ -352,6 +359,7 @@ fn materialize_display_page(
 ) -> Result<(Value, usize)> {
     let mut entries = Vec::new();
     let mut bytes = 64usize; // page envelope and commas
+    let total = page.total;
     let mut next = page.next_offset;
     let mut more = page.has_more;
     let row_count = page.rows.len();
@@ -461,6 +469,7 @@ fn materialize_display_page(
                 json!({"entries":[],
                 "hasMore":page.has_more || row_count > 1,
                 "nextOffset":if before.is_some() {ordinal} else {ordinal + 1},
+                "total":total,
                 "fragment":{"entryId":body.entry_id,"ordinal":ordinal,"offset":offset,
                     "totalBytes":body.len,"json":fragment,"sha256":body.sha256}}),
                 body.len.saturating_add(256),
@@ -481,7 +490,7 @@ fn materialize_display_page(
         scope.verify(store.ok_or_else(|| anyhow::anyhow!("canonical page has no reader"))?)?;
     }
     Ok((
-        json!({"entries":entries,"hasMore":more,"nextOffset":next}),
+        json!({"entries":entries,"hasMore":more,"nextOffset":next,"total":total}),
         bytes,
     ))
 }
