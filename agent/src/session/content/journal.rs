@@ -1008,9 +1008,9 @@ struct FoldRow {
 /// same body bytes. Only rows the writer itself would have merged are touched —
 /// same context, same delta kind, consecutive cursors, one contiguous body
 /// range, equal flags and equal metadata apart from the clock.
-pub(crate) fn fold_settled_run(
+pub(crate) fn fold_settled_run<S: rusqlite::ToSql + ?Sized>(
     tx: &Transaction<'_>,
-    session: &str,
+    session: &S,
     run: &str,
 ) -> Result<(i64, i64)> {
     let settled: bool = tx.query_row(
