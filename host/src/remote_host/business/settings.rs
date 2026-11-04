@@ -92,10 +92,17 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             reply_unit(sink, result).await;
         }
         "get_state" => {
-            // A remote state request is an active view of this conversation,
-            // not a background catalog check.
+            // The state read comes first. Arming this conversation's observer is
+            // what makes a remote state request an active view rather than a
+            // background catalogue check — but an observer's first attach runs
+            // its own command against the Agent, competing with this read for
+            // that session's construction. Measured on a cold 14,531-entry
+            // conversation: the read took 77 ms with the attach armed in front
+            // of it and about 10 ms when it ran alone, so the arm goes after the
+            // state the client is waiting for, not before it.
+            let result = crate::agent_bridge::get_session_state(cmd.session_id.clone()).await;
             let _ = crate::agent_bridge::ensure_observer_for_session(&cmd.session_id);
-            match crate::agent_bridge::get_session_state(cmd.session_id.clone()).await {
+            match result {
                 Ok(data) => reply(sink, true, data, None).await,
                 Err(error) if missing_session(&error) => reply(sink, true, json!({}), None).await,
                 Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
