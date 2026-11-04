@@ -183,14 +183,38 @@ let shotRunSeq = 0;
 let shotEventSeq = 0;
 let shotRuntimeRevision = 0;
 
+/**
+ * Whether this page's run calls a tool before it answers (`?toolRun=1`).
+ *
+ * Every other run here is thinking plus prose, so a settled reply's folded
+ * "process" row could only ever be captured carrying a thought count. This flag
+ * runs one completed `read` call instead of the reasoning, which is the row a
+ * reader of a real reply opens to see which tools produced it. It changes
+ * nothing unless asked for.
+ */
+function toolRunEnabled(): boolean {
+  return typeof window !== "undefined"
+    && new URLSearchParams(window.location.search).get("toolRun") === "1";
+}
+
+/** One completed `read` call: start then result, so the row settles. */
+const TOOL_RUN_FRAMES: Array<[string, Record<string, unknown>]> = [
+  ["tool_start", { tool_id: "shot_tool_1", tool_name: "read", tool_args: { path: "src/parser.ts" } }],
+  ["tool_end", { tool_id: "shot_tool_1", tool_name: "read", is_error: false }],
+];
+
 /** What this fixture's reply says, split into the frames a run writes. */
 function shotRunFrames(prompt: string): Array<[string, Record<string, unknown>]> {
   return [
     ["agent_start", { started_at_ms: Date.now() }],
-    ["thinking_start", {}],
-    ["thinking_delta", { text: "先看这一轮要回答什么：" }],
-    ["thinking_delta", { text: "把读者的问题读一遍，再决定动不动文件。" }],
-    ["thinking_end", {}],
+    ...(toolRunEnabled()
+      ? TOOL_RUN_FRAMES
+      : [
+          ["thinking_start", {}],
+          ["thinking_delta", { text: "先看这一轮要回答什么：" }],
+          ["thinking_delta", { text: "把读者的问题读一遍，再决定动不动文件。" }],
+          ["thinking_end", {}],
+        ] as Array<[string, Record<string, unknown>]>),
     ["text_chunk", { text: "好，我先把" }],
     ["text_chunk", { text: `「${prompt.slice(0, 16)}」` }],
     ["text_chunk", { text: "拆成两步：" }],

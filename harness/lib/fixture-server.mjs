@@ -164,31 +164,41 @@ function providerView(models) {
  * projection and clearly derived, so an opened conversation reads as a
  * conversation rather than as an empty pane. Marked in the case manifest as a
  * known fidelity gap.
+ *
+ * `fork` shortens that transcript to the point the fork was cut from: a fork
+ * carries the exchange it was cut at and nothing after it. Entry ids come from
+ * the thread the history belongs to (the source), because that is the id the
+ * desktop sends back as `sourceEntryId`.
  */
-function syntheticEntries(thread) {
+function syntheticEntries(thread, { fork = null } = {}) {
   if (!thread)
     return [];
+  const origin = fork?.sourceThread ?? thread;
   const created = thread.lastMessageAt ?? thread.updatedAt ?? now();
-  return [
+  const entries = [
     {
-      id: `harness_u_${thread.id}`,
+      id: `harness_u_${origin.id}`,
       kind: "message",
       role: "user",
       createdAtMs: created - 60_000,
-      blocks: [{ kind: "text", text: `继续处理「${thread.title}」这件事，先看一下工作区里现有的材料。` }],
+      blocks: [{ kind: "text", text: `继续处理「${origin.title}」这件事，先看一下工作区里现有的材料。` }],
       metadata: {},
     },
     {
-      id: `harness_a_${thread.id}`,
+      id: `harness_a_${origin.id}`,
       kind: "message",
       role: "assistant",
       createdAtMs: created,
       run: { status: "completed", durationMs: 42_000 },
       usage: { inputTokens: 12_400, outputTokens: 820, cacheReadTokens: 6_200 },
-      blocks: [{ kind: "text", text: `已读取工作区的文件。关于「${thread.title}」，我先把现状和下一步整理如下：\n\n1. 现有材料已经覆盖主线；\n2. 还需要一处交叉验证；\n3. 下一步我会补上验证并给出结论。` }],
+      blocks: [{ kind: "text", text: `已读取工作区的文件。关于「${origin.title}」，我先把现状和下一步整理如下：\n\n1. 现有材料已经覆盖主线；\n2. 还需要一处交叉验证；\n3. 下一步我会补上验证并给出结论。` }],
       metadata: {},
     },
   ];
+  if (!fork)
+    return entries;
+  const cut = entries.findIndex(entry => entry.id === fork.sourceEntryId);
+  return cut >= 0 ? entries.slice(0, cut + 1) : entries;
 }
 
 export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs = 0 }) {
@@ -203,6 +213,17 @@ export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs 
   const historyTransfers = new Map();
   const commandLog = [];
   const transferSeq = { value: 0 };
+  /** Threads this case created: they have no history yet, real or synthetic. */
+  const createdThreads = new Set();
+  /** Forked thread id → the exchange it was cut at, for its shortened history. */
+  const forks = new Map();
+
+  /** The history an opened conversation shows (see `syntheticEntries`). */
+  const entriesFor = (thread) => {
+    if (!thread || createdThreads.has(thread.id))
+      return [];
+    return syntheticEntries(thread, { fork: forks.get(thread.id) ?? null });
+  };
 
   const writeLog = entry => {
     commandLog.push(entry);
@@ -449,6 +470,7 @@ export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs 
             agent_session_id, asset_root_id, last_opened_at, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, 'active', 0, 0, ?, ?, ?, ?, ?)`)
           .run(id, workspace.id, mode, title, input.agentSessionId ? null : title, input.agentSessionId ?? `sess_${id}`, id, t, t, t);
+        createdThreads.add(id);
         db.exec("COMMIT");
         if (input.modelId)
           sessionState.set(id, {
@@ -461,6 +483,28 @@ export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs 
         throw error;
       }
       return threadById(id);
+    },
+    /**
+     * Fork a conversation at one persisted entry.
+     *
+     * The real fork asks the agent to cut a session; what a reader can see is
+     * reproduced here instead: a new thread row, named and parented the way the
+     * agent names a fork (`<name> (fork)`, parent session id), whose history
+     * stops at the entry the fork was cut from (`forks`, see `entriesFor`).
+     */
+    fork_thread: (args) => {
+      const source = threadById(args?.threadId);
+      if (!source)
+        throw new Error("thread not found");
+      const id = createId("thread");
+      const t = now();
+      const title = `${source.title} (fork)`;
+      db.prepare(`INSERT INTO threads (id, workspace_id, mode, title, title_seed, status, pinned, readonly,
+          agent_session_id, asset_root_id, parent_session_id, last_opened_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'active', 0, 0, ?, ?, ?, ?, ?, ?)`)
+        .run(id, source.workspaceId, source.mode, title, title, `sess_${id}`, id, source.agentSessionId ?? null, t, t, t);
+      forks.set(id, { sourceThread: source, sourceEntryId: String(args?.sourceEntryId ?? "") });
+      return id;
     },
     rename_thread: (args) => {
       db.prepare("UPDATE threads SET title = ?, updated_at = ? WHERE id = ?").run(args?.input?.title ?? "", now(), args?.input?.threadId);
@@ -550,17 +594,17 @@ export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs 
     // ── Agent transcript (synthetic but deterministic) ───────────────────
     get_session_entries: (args) => {
       const thread = threadById(args?.threadId);
-      const entries = syntheticEntries(thread);
+      const entries = entriesFor(thread);
       return { entries, hasMore: false, nextOffset: entries.length };
     },
     get_session_entries_page: (args) => {
       const thread = threadById(args?.threadId);
-      const entries = syntheticEntries(thread);
+      const entries = entriesFor(thread);
       return { entries, hasMore: false, nextOffset: entries.length };
     },
     begin_session_history_transfer: (args) => {
       const thread = threadById(args?.threadId);
-      const entries = syntheticEntries(thread);
+      const entries = entriesFor(thread);
       const payload = { entries, hasMore: false, nextOffset: entries.length };
       const bytes = Buffer.from(JSON.stringify(payload), "utf8");
       const id = `harness_transfer_${++transferSeq.value}`;

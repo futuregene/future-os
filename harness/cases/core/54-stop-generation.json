@@ -1,0 +1,164 @@
+{
+  "id": "stop-generation",
+  "title": "流式生成中点停止：生成真的停下并留下「已停止」",
+  "area": "conversation",
+  "priority": "P0",
+  "tags": [
+    "conversation",
+    "streaming",
+    "stop"
+  ],
+  "description": "发一句话，等回复开始流式输出（已经出现「好，我先把」这句），在它还没写完时点「停止」。停止必须真的结束这一轮：输入框回到「发送」，页面上不再有「生成中」加载指示和「正在思考」文案，已经生成的内容保留，并留下一条「你已停止本次回复」的说明。停止如果只是按钮消失而生成还在跑，读者会以为省了钱；如果加载态残留，输入框会一直停在停止按钮上，无法继续对话。",
+  "preconditions": "应用已启动；回复由 shot mock 分帧流式返回（约 4 秒写完，含一段思考与五段正文）。",
+  "expectations": [
+    "流式过程中输入框显示「停止」，回复区有「生成中」加载指示",
+    "点停止后出现「你已停止本次回复」，已生成的内容仍在",
+    "停止后不再有「生成中」指示、不再有「正在思考」，输入框回到「发送」",
+    "停止后 1.5 秒内回复不再增长（生成真的结束了）",
+    "回复末尾给出「重试 / 继续」的恢复入口"
+  ],
+  "steps": [
+    {
+      "wait": 900
+    },
+    {
+      "click": {
+        "aria": "新建对话"
+      },
+      "capture": false
+    },
+    {
+      "waitFor": {
+        "text": "欢迎使用"
+      },
+      "capture": false,
+      "timeout": 5000
+    },
+    {
+      "click": {
+        "selector": "[role=textbox]"
+      },
+      "capture": false
+    },
+    {
+      "type": "停止生成演示：写一段较长的说明",
+      "capture": false
+    },
+    {
+      "click": {
+        "aria": "发送"
+      },
+      "capture": false
+    },
+    {
+      "waitFor": {
+        "selector": "button[aria-label=\"停止\"]"
+      },
+      "capture": false,
+      "timeout": 8000
+    },
+    {
+      "assert": {
+        "expr": "!!document.querySelector('[aria-label=\"生成中\"]')",
+        "message": "流式过程中出现「生成中」加载指示"
+      },
+      "capture": false
+    },
+    {
+      "waitFor": {
+        "text": "好，我先把"
+      },
+      "capture": false,
+      "timeout": 8000
+    },
+    {
+      "shot": "streaming"
+    },
+    {
+      "click": {
+        "aria": "停止"
+      },
+      "capture": false
+    },
+    {
+      "waitFor": {
+        "text": "你已停止本次回复"
+      },
+      "capture": false,
+      "timeout": 8000
+    },
+    {
+      "wait": 400
+    },
+    {
+      "assert": {
+        "expr": "!document.querySelector('[aria-label=\"停止\"]') && !!document.querySelector('[aria-label=\"发送\"]')",
+        "message": "输入框从「停止」回到「发送」"
+      },
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "!document.querySelector('[aria-label=\"生成中\"]')",
+        "message": "「生成中」加载指示已消失"
+      },
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "!document.body.innerText.includes('正在思考')",
+        "message": "「正在思考」加载态没有残留"
+      },
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes('好，我先把')",
+        "message": "停止前已生成的内容被保留"
+      },
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "(() => { const a = [...document.querySelectorAll('main article')].at(-1); return !!a && a.innerText.includes('继续'); })()",
+        "message": "停止的回复给出「继续」恢复入口"
+      },
+      "capture": false
+    },
+    {
+      "eval": "(() => { const a = [...document.querySelectorAll('main article')].at(-1); window.__lastReply = a ? a.innerText : ''; return window.__lastReply; })()",
+      "as": "stoppedReply",
+      "capture": false
+    },
+    {
+      "shot": "stopped"
+    },
+    {
+      "wait": 1500
+    },
+    {
+      "assert": {
+        "expr": "(() => { const a = [...document.querySelectorAll('main article')].at(-1); return !!a && a.innerText === window.__lastReply; })()",
+        "message": "1.5 秒后回复内容没有继续增长（生成确实停了）"
+      },
+      "capture": false
+    },
+    {
+      "expectAbsent": "生成中",
+      "capture": false
+    },
+    {
+      "shot": "settled"
+    }
+  ],
+  "judge": {
+    "criteria": [
+      "停止后页面上有一条清楚的中文说明（你已停止本次回复），不是英文报错也不是「回复未完成」的失败提示",
+      "已经生成的内容仍在，且没有残留的加载指示（转圈/生成中/正在思考）",
+      "输入框回到可发送状态，没有卡在停止按钮上",
+      "整体对齐、层级、文案一致，看起来像一个正常工作的产品",
+      "回复正文是夹具固定的演示文案，是否切题不是本例判据；只看停止是否生效、加载态是否清干净"
+    ],
+    "maxImages": 8
+  }
+}
