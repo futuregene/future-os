@@ -1882,6 +1882,24 @@ impl Live {
                     text: row.display_text.clone(),
                 })
                 .collect(),
+            // The tail of the band: cards this surface is holding back as
+            // waiting, minus the ones the agent's own queue already lists (its
+            // row is the one to draw then, and drawing both would show the same
+            // prompt twice).
+            queued_awaiting: {
+                let listed: HashSet<&str> = self
+                    .state
+                    .queued_runs
+                    .iter()
+                    .map(|row| row.run_id.as_str())
+                    .collect();
+                self.chat
+                    .held_queue_cards()
+                    .into_iter()
+                    .filter(|(run_id, _)| run_id.is_none_or(|id| !listed.contains(id)))
+                    .map(|(_, text)| text.to_string())
+                    .collect()
+            },
             revision: self.revision,
             mouse_capture: self.mouse_capture,
             approval: self
@@ -2196,11 +2214,21 @@ impl Live {
         // keeps whatever it was showing when a run is already narrating (a
         // supplement sent mid-turn says nothing about that turn's progress),
         // and it only starts a clock of its own when there is nothing else.
+        //
+        // It is also the last moment the answer is this side's to guess: a send
+        // made while a turn is still going will be HELD by the agent, so its
+        // card is held back from the transcript here — before any frame paints
+        // it — and the composer's queue band is the only place it shows until
+        // its turn begins.
+        let waits_for_turn = self.turn_in_flight();
         if self.activity.kind == ActivityKind::Idle {
             self.mark(ActivityKind::Sending);
         }
         if !start_session {
             send.attachments = self.echo(&send.message_id, &send.typed);
+            if waits_for_turn {
+                self.chat.hold_in_queue(&send.message_id);
+            }
         }
         self.pending_submit = Some(send);
         true
@@ -2233,6 +2261,19 @@ impl Live {
             .collect();
         self.chat.add_message(sent);
         attachments
+    }
+
+    /// Is a turn (or a submission) in flight for this conversation — that is,
+    /// will a prompt handed over now have to WAIT for a boundary?
+    ///
+    /// Both halves answer the same question and either alone can lag: the
+    /// activity row is this surface's own reading of the events it has seen, and
+    /// `has_active_run` is what the agent last said in a `get_state`. A send
+    /// that guesses "idle" wrongly is caught by the acknowledgement (the card
+    /// goes back into the transcript), so the cost of a stale `true` here is a
+    /// band row that becomes a transcript row one round trip later.
+    fn turn_in_flight(&self) -> bool {
+        self.activity.is_busy() || self.client.has_active_run()
     }
 
     /// Is a submission waiting for the loop to hand it over?
@@ -2278,7 +2319,9 @@ impl Live {
                     // leaves the transcript until the agent starts the run (it
                     // is listed above the composer meanwhile), which is what
                     // keeps a submission that has not been sent from reading
-                    // like one that has.
+                    // like one that has. A send that knew it would wait is
+                    // already holding its card there (`hold_in_queue`); this is
+                    // the same state, now with the run the agent named.
                     self.chat.bind_user_run(
                         &message_id,
                         &ack.run_id,
@@ -2295,6 +2338,15 @@ impl Live {
                     } else {
                         self.begin_state_refresh();
                     }
+                } else if self.chat.awaits_queue(&message_id) && !ack.run_id.is_empty() {
+                    // The other answer to a send that expected to wait: the turn
+                    // it meant to queue behind had already finished, so the
+                    // agent started this run now. The card was held back from
+                    // the transcript and would stay invisible — the reply would
+                    // narrate under nothing — so it goes in here, bound to the
+                    // run that is answering it.
+                    self.chat
+                        .bind_user_run(&message_id, &ack.run_id, RunState::Running, None);
                 }
             }
             Err(error) => {
@@ -2304,6 +2356,11 @@ impl Live {
                 // and could send the same prompt twice. The marker says the
                 // acknowledgement never arrived, and the notice says to check
                 // before retrying.
+                //
+                // It also takes the card out of the queue band: a send that was
+                // held there (see `hold_in_queue`) has no run for the agent to
+                // list, and the marker below is the honest state — the line is
+                // in the transcript again, saying it may or may not have gone.
                 self.chat
                     .mark_message_run_state(&message_id, RunState::NotAcknowledged);
                 self.notice = Some(i18n::render(
@@ -5873,6 +5930,126 @@ mod tests {
             live.data(&frame()).queue.len(),
             1,
             "the band above the composer lists it"
+        );
+    }
+
+    /// The frame between `enter` and the agent's acknowledgement: the reader's
+    /// line has left the composer, and the queue band already carries it — while
+    /// the transcript has never drawn it.
+    ///
+    /// Drawing it in the conversation and taking it back when the `queued` ack
+    /// landed is what made a held prompt read as sent for a round trip: the card
+    /// appeared under the reply it was not answering, then jumped to the band.
+    /// A form of "not sent yet" that has to be retracted is not the form for a
+    /// prompt the agent is going to hold.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_submission_that_will_wait_never_paints_in_the_transcript() {
+        let _guard = crate::test_env::lock();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_env::EnvVarGuard::set("FUTURE_HOME", home.path());
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            (
+                "get_state",
+                r#"{"sessionId":"s1","isStreaming":true,"activeRun":{"runId":"r-1","epoch":1,"state":"running","lastEventIdx":0}}"#,
+            ),
+            ("get_session_entries", r#"{"entries":[]}"#),
+            (
+                "prompt",
+                r#"{"run_id":"r-2","run_epoch":0,"accepted_state":"queued","queue_position":1}"#,
+            ),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock.clone()).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+        mock.data_by_type.lock().unwrap().insert(
+            "get_state".into(),
+            r#"{"sessionId":"s1","isStreaming":true,"activeRun":{"runId":"r-1","epoch":1,"state":"running","lastEventIdx":0},"queuedRuns":[{"runId":"r-2","runSequence":2,"clientRequestId":"c-2","state":"queued","queuePosition":1,"acceptedAt":"now","displayText":"second"}],"queuedCount":1}"#.into(),
+        );
+
+        // The local half of the submission, with no agent answer yet: this is
+        // the exact frame the reader used to see the card in the transcript.
+        live.set_draft("second".into(), 6);
+        assert!(live.begin_submit("second"));
+        let painted = live.chat.render_all(80).join("\n");
+        assert!(
+            !painted.contains("second"),
+            "a prompt that is going to wait is not in the conversation: {painted}"
+        );
+        let data = live.data(&frame());
+        assert!(data.queue.is_empty(), "the agent has not listed it yet");
+        assert_eq!(
+            data.queued_awaiting,
+            vec!["second".to_string()],
+            "the band above the composer carries it meanwhile"
+        );
+
+        // The acknowledgement names the run: the agent's own row replaces ours,
+        // in the same frame, so the prompt is never listed twice.
+        live.flush_submit().await;
+        let data = live.data(&frame());
+        assert_eq!(data.queue.len(), 1, "the agent lists the run now");
+        assert!(data.queued_awaiting.is_empty(), "and our row stood down");
+        assert!(!live.chat.render_all(80).join("\n").contains("second"));
+
+        // The turn it waited behind ends and its own begins: the card goes into
+        // the conversation at that moment, carried by the agent's own run.
+        mock.data_by_type.lock().unwrap().insert(
+            "get_state".into(),
+            r#"{"sessionId":"s1","activeRun":{"runId":"r-2","epoch":1,"state":"running","lastEventIdx":0}}"#.into(),
+        );
+        live.refresh_state().await;
+        let painted = live.chat.render_all(80).join("\n");
+        assert!(
+            painted.contains("second"),
+            "its turn began, so it is in the conversation: {painted}"
+        );
+        assert!(
+            live.data(&frame()).queued_awaiting.is_empty(),
+            "band cleared"
+        );
+    }
+
+    /// Waiting is this surface's expectation, not the agent's answer: a send made
+    /// while a turn *looked* live but had already ended is run there and then,
+    /// and the card comes out of the band into the conversation.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn a_submission_the_agent_runs_now_leaves_the_band_for_the_transcript() {
+        let _guard = crate::test_env::lock();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_env::EnvVarGuard::set("FUTURE_HOME", home.path());
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            (
+                "get_state",
+                r#"{"sessionId":"s1","isStreaming":true,"activeRun":{"runId":"r-1","epoch":1,"state":"running","lastEventIdx":0}}"#,
+            ),
+            ("get_session_entries", r#"{"entries":[]}"#),
+            (
+                "prompt",
+                r#"{"run_id":"r-2","run_epoch":0,"accepted_state":"running"}"#,
+            ),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock.clone()).await;
+        let (mut live, _events) = Live::attach(&addr, None, false, None)
+            .await
+            .expect("attach to the test agent");
+
+        live.set_draft("go now".into(), 6);
+        live.apply(WbAction::Submit("go now".into())).await;
+
+        let painted = live.chat.render_all(80).join("\n");
+        assert!(
+            painted.contains("go now"),
+            "the agent ran it, so the card is in the conversation: {painted}"
+        );
+        let data = live.data(&frame());
+        assert!(data.queued_awaiting.is_empty(), "and out of the band");
+        assert_eq!(
+            live.chat.run_state("r-2"),
+            Some(RunState::Running),
+            "bound to the run that is answering it"
         );
     }
 

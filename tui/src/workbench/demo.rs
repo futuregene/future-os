@@ -193,6 +193,7 @@ fn base() -> WorkbenchData {
         compacting: false,
         notice: None,
         queue: Vec::new(),
+        queued_awaiting: Vec::new(),
         revision: 0,
         mouse_capture: true,
         approval: None,

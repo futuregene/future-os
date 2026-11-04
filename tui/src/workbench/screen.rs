@@ -1150,16 +1150,27 @@ fn queue_band(
     columns: usize,
     room: usize,
 ) -> Vec<(Option<String>, String)> {
+    // The agent's rows first, then the ones this surface is still holding: a
+    // submission the reader just handed over joins the queue at its tail, which
+    // is where it will be when the agent lists it. Held rows are not the
+    // agent's, so they take no hit — there is no run to recall yet.
+    let items: Vec<&str> = data
+        .queue
+        .iter()
+        .map(|item| item.text.as_str())
+        .chain(data.queued_awaiting.iter().map(String::as_str))
+        .collect();
+    let total = items.len();
     // Two rules, a title and at least one prompt row: below that there is no
     // box to draw, and `/queue` is still a keystroke away.
-    if data.queue.is_empty() || room < 3 || columns < 12 {
+    if total == 0 || room < 3 || columns < 12 {
         return Vec::new();
     }
     let lang = workbench.lang;
-    let title = i18n::render(lang, Key::QueueBandTitle, &[&data.queue.len()]);
+    let title = i18n::render(lang, Key::QueueBandTitle, &[&total]);
     // The count is the one word worth colour: it is what the reader came to
     // check, and the rest of the title only says when they go out.
-    let count = data.queue.len().to_string();
+    let count = total.to_string();
     let (before, after) = title
         .split_once(count.as_str())
         .map_or((title.as_str(), ""), |(before, after)| (before, after));
@@ -1183,32 +1194,34 @@ fn queue_band(
     ));
     // The box needs both rules before it can list anything.
     let item_room = room - 2;
-    let shown = if data.queue.len() <= item_room.min(QUEUE_BAND_ITEMS) {
-        data.queue.len()
+    let shown = if total <= item_room.min(QUEUE_BAND_ITEMS) {
+        total
     } else {
         // The `… more` row is one of the rows the list could have used, so the
         // band keeps promising a number that is true of what it does not show.
         item_room
             .saturating_sub(1)
             .min(QUEUE_BAND_ITEMS)
-            .min(data.queue.len() - 1)
+            .min(total - 1)
     };
-    for (index, item) in data.queue.iter().take(shown).enumerate() {
+    for (index, item) in items.iter().take(shown).enumerate() {
         // A queued prompt is shown as one line: the queue is a list of prompts,
         // not a second transcript. A draft that did include newlines keeps its
         // shape as a `↵` so the row still says where they are.
-        let text = item.text.replace('\n', " ↵ ");
+        let text = item.replace('\n', " ↵ ");
         let content = format!(
             " {}{}",
             palette.dim(&format!("{}. ", index + 1)),
             palette.body(&text)
         );
         rows.push((
-            Some(format!("queue.band.{index}")),
+            // The agent's own rows open the manager on that prompt; a row this
+            // surface is holding has nothing there to open.
+            (index < data.queue.len()).then(|| format!("queue.band.{index}")),
             widgets::box_row(palette, &content, columns),
         ));
     }
-    let rest = data.queue.len().saturating_sub(shown);
+    let rest = total.saturating_sub(shown);
     if rest > 0 {
         // Not a prompt: the count row is nobody's verb, so it takes no hit.
         rows.push((
