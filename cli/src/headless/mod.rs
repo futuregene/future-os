@@ -581,6 +581,7 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
         // that enable.
         switch_read_rendezvous().await;
         let switch_on = remote_switch_on();
+        status = remote::status();
         let idle = matches!(status.phase, remote::RemotePhase::Stopped) && !switch_on;
         if idle {
             was_paired = false;
@@ -617,7 +618,6 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
             said_unpaired = true;
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
-        status = remote::status();
     }
 }
 
