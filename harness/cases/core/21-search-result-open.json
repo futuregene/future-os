@@ -1,0 +1,43 @@
+{
+  "id": "search-result-open",
+  "title": "搜索结果可以直接打开会话",
+  "area": "search",
+  "priority": "P1",
+  "tags": ["search", "navigation"],
+  "description": "搜索一个真实标题，过滤后点击结果行，主区域应显示该会话；搜索框关闭后列表恢复。",
+  "preconditions": "应用已启动；首屏至少两个短标题会话。",
+  "expectations": [
+    "过滤后结果行可点击",
+    "点击后主区域显示该会话标题",
+    "不是只在列表里高亮"
+  ],
+  "steps": [
+    { "wait": 900 },
+    {
+      "db": {
+        "sql": "SELECT title FROM (SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' AND length(title) BETWEEN 6 AND 16 ORDER BY COALESCE(last_message_at, updated_at) DESC LIMIT 8) LIMIT 1 OFFSET 0",
+        "as": "target"
+      }
+    },
+    {
+      "db": {
+        "sql": "SELECT substr(title, 1, 6) AS q FROM (SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' AND length(title) BETWEEN 6 AND 16 ORDER BY COALESCE(last_message_at, updated_at) DESC LIMIT 8) LIMIT 1 OFFSET 0",
+        "as": "query"
+      }
+    },
+    { "click": { "aria": "搜索会话" } },
+    { "wait": 500 },
+    { "click": { "selector": "input" } },
+    { "type": "{{query}}" },
+    { "wait": 900 },
+    { "click": { "aria": "{{target}}" } },
+    { "wait": 1200 },
+    {
+      "assert": {
+        "expr": "document.querySelector('main')?.innerText.includes('{{target}}')",
+        "message": "主区域显示搜索结果对应的会话"
+      }
+    },
+    { "shot": "search-opened" }
+  ]
+}

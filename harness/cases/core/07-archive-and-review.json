@@ -22,6 +22,8 @@
     { "hover": { "aria": "{{target}}" } },
     { "click": { "aria": "{{target}} 的操作" } },
     { "click": { "selector": "[role=menuitem]", "text": "归档" } },
+    { "click": { "selector": "[role=dialog] button", "text": "归档" }, "optional": true },
+    { "wait": 900 },
     {
       "db": {
         "sql": "SELECT (archived_at IS NOT NULL AND status = 'archived') AS ok FROM threads WHERE title = '{{target}}' ORDER BY created_at DESC LIMIT 1",

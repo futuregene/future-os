@@ -76,12 +76,12 @@ export async function draftIssues(runDir, { create = false, repo = null } = {}) 
   if (!findings.length)
     return { message: "没有 high/medium 级别的问题，未生成 issue 草稿。" };
 
-  // One issue per case+category, not per finding: a failing flow usually
-  // produces several sentences about the same defect, and six issues for two
-  // bugs is how a tracker becomes noise.
+  // One issue per failing case: a flow usually produces several sentences
+  // about the same defect, and six issues for two bugs is how a tracker
+  // becomes noise.
   const groups = new Map();
   for (const finding of findings) {
-    const key = `${finding.evidence?.caseId ?? "unknown"}|${finding.category ?? "behaviour"}`;
+    const key = finding.evidence?.caseId ?? "unknown";
     const group = groups.get(key) ?? { findings: [], severity: finding.severity, caseId: finding.evidence?.caseId };
     group.findings.push(finding);
     if (finding.severity === "high")

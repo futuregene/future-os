@@ -1143,7 +1143,12 @@ function ReadyAppShell({
       await archiveWorkspace(workspace.id);
       handleFirstArchive();
       emitFutureEvent("archive-changed", undefined);
-      await refreshStore();
+      // The workspace takes its conversations with it, and none of them was
+      // archived itself — every member keeps its status, so no listing can say
+      // the open one is gone. Naming the workspace is what moves the column off
+      // a conversation whose rail entry just disappeared (see
+      // `RefreshStoreOptions.archivedWorkspaceIds`).
+      await refreshStore(undefined, { archivedWorkspaceIds: [workspace.id] });
     }
     catch (error) {
       emitFutureEvent("toast", { message: errorMessage(error), tone: "error" });
@@ -1154,6 +1159,8 @@ function ReadyAppShell({
     try {
       await restoreWorkspace(workspace.id);
       emitFutureEvent("archive-changed", undefined);
+      // No options: restoring re-lists the conversations it was hiding, and
+      // that page is the whole answer — nothing was ever marked shelved.
       await refreshStore();
     }
     catch (error) {

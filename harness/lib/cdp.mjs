@@ -143,7 +143,7 @@ export class CdpPage {
     this.onEvent = null;
   }
 
-  static async launch({ width = 1280, height = 860, scale = 2, userDataDir } = {}) {
+  static async launch({ width = 1280, height = 860, scale = 2, userDataDir, mobile = false, touch = false } = {}) {
     const profile = userDataDir ?? join(process.env.TMPDIR ?? "/tmp", `future-harness-${Date.now()}`);
     mkdirSync(profile, { recursive: true });
     const chrome = spawn(chromePath(), [
@@ -206,9 +206,12 @@ export class CdpPage {
       width,
       height,
       deviceScaleFactor: scale,
-      mobile: false,
+      mobile,
     });
-    page.viewport = { width, height, scale };
+    if (touch)
+      await page.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+    page.touch = touch;
+    page.viewport = { width, height, scale, mobile };
     page.installEventHandlers();
     return page;
   }
@@ -338,9 +341,16 @@ export class CdpPage {
     if (spot.w === 0 || spot.h === 0)
       throw new Error(`target is not visible: ${label ?? JSON.stringify(target)}`);
     await this.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: spot.x, y: spot.y, button: "none", buttons: 0 });
-    await this.send("Input.dispatchMouseEvent", { type: "mousePressed", x: spot.x, y: spot.y, button: "left", buttons: 1, clickCount: 1 });
-    await sleep(60);
-    await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: spot.x, y: spot.y, button: "left", buttons: 0, clickCount: 1 });
+    if (this.touch) {
+      await this.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: spot.x, y: spot.y, id: 1 }] });
+      await sleep(70);
+      await this.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    }
+    else {
+      await this.send("Input.dispatchMouseEvent", { type: "mousePressed", x: spot.x, y: spot.y, button: "left", buttons: 1, clickCount: 1 });
+      await sleep(60);
+      await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: spot.x, y: spot.y, button: "left", buttons: 0, clickCount: 1 });
+    }
     await sleep(120);
     return spot;
   }

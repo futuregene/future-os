@@ -1,0 +1,64 @@
+{
+  "id": "cli-workspace-add-duplicate",
+  "surface": "cli",
+  "title": "CLI 重复添加同一工作区：应复用而不是重复插入",
+  "area": "cli-workspace",
+  "priority": "P1",
+  "tags": [
+    "cli",
+    "workspace",
+    "idempotency"
+  ],
+  "description": "同一个目录连续 add 两次：第二次应返回 created=false 并复用原 id，数据库里只保留一行。",
+  "preconditions": "隔离 home；目录存在。",
+  "expectations": [
+    "第一次 created=true，第二次 created=false",
+    "两次返回同一个 workspace id",
+    "数据库里该 path 只有一行"
+  ],
+  "steps": [
+    {
+      "mkdir": "/tmp/future-harness-cli/cli-workspace-add-duplicate"
+    },
+    {
+      "run": [
+        "workspace",
+        "add",
+        "/tmp/future-harness-cli/cli-workspace-add-duplicate",
+        "--name",
+        "dup-ws",
+        "--json"
+      ],
+      "expectExit": 0
+    },
+    {
+      "expectJson": {
+        "path": "created",
+        "equals": true
+      }
+    },
+    {
+      "run": [
+        "workspace",
+        "add",
+        "/tmp/future-harness-cli/cli-workspace-add-duplicate",
+        "--name",
+        "dup-ws-2",
+        "--json"
+      ],
+      "expectExit": 0
+    },
+    {
+      "expectJson": {
+        "path": "created",
+        "equals": false
+      }
+    },
+    {
+      "db": {
+        "sql": "SELECT COUNT(*) AS n FROM workspaces WHERE path LIKE '%cli-workspace-add-duplicate' AND deleted_at IS NULL",
+        "expect": 1
+      }
+    }
+  ]
+}

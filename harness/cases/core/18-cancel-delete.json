@@ -1,0 +1,44 @@
+{
+  "id": "cancel-delete-conversation",
+  "title": "取消删除：会话与数据库都不变",
+  "area": "conversation",
+  "priority": "P1",
+  "tags": ["delete", "cancel"],
+  "description": "打开删除确认框后点取消，会话必须保留：侧边栏行还在，deleted_at 仍为空，主区域不被清空。",
+  "preconditions": "应用已启动。",
+  "expectations": [
+    "取消后侧边栏行仍在",
+    "数据库没有写 deleted_at",
+    "取消按钮不会误触发删除"
+  ],
+  "steps": [
+    { "wait": 800 },
+    { "click": { "aria": "新建对话" } },
+    { "waitFor": { "text": "欢迎使用" }, "timeout": 5000 },
+    { "click": { "selector": "[role=textbox]" } },
+    { "type": "取消删除的会话" },
+    { "click": { "aria": "发送" } },
+    { "waitFor": { "text": "取消删除的会话" }, "timeout": 8000 },
+    { "db": { "sql": "SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' ORDER BY created_at DESC LIMIT 1", "as": "target" } },
+    { "hover": { "aria": "{{target}}" } },
+    { "click": { "aria": "{{target}} 的操作" } },
+    { "click": { "selector": "[role=menuitem]", "text": "删除" } },
+    { "waitFor": { "selector": "[role=dialog]" }, "timeout": 3000 },
+    { "click": { "selector": "[role=dialog] button", "text": "取消" } },
+    { "wait": 700 },
+    {
+      "db": {
+        "sql": "SELECT deleted_at IS NULL AS ok FROM threads WHERE title = '{{target}}' ORDER BY created_at DESC LIMIT 1",
+        "expect": 1,
+        "message": "取消后数据库没有软删除"
+      }
+    },
+    {
+      "assert": {
+        "expr": "!!document.querySelector('[aria-label=\"{{target}}\"]')",
+        "message": "取消后侧边栏行仍在"
+      }
+    },
+    { "shot": "after-cancel-delete" }
+  ]
+}

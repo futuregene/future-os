@@ -1,0 +1,20 @@
+{
+  "id": "mobile-settings",
+  "surface": "mobile",
+  "title": "手机端设置页：入口与内容",
+  "area": "mobile-settings",
+  "priority": "P2",
+  "tags": ["mobile", "settings"],
+  "description": "从首页进入设置，确认页面有内容而不是空白；设置项由 mock 数据提供。",
+  "preconditions": "移动端 shot 服务在 8099 运行。",
+  "expectations": ["设置入口可点开", "设置页有明显内容"],
+  "steps": [
+    { "wait": 1500 },
+    { "click": { "text": "稍后再说" }, "optional": true },
+    { "wait": 500 },
+    { "click": { "aria": "设置" } },
+    { "wait": 1000 },
+    { "assert": { "expr": "document.body.innerText.trim().length > 80", "message": "设置页有内容" } },
+    { "shot": "mobile-settings" }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "id": "cli-workspace-add-list-archive",
+  "surface": "cli",
+  "title": "CLI 工作区：add → list → archive → restore",
+  "area": "cli-workspace",
+  "priority": "P0",
+  "tags": ["cli", "workspace"],
+  "description": "在真实 app.db 副本上通过 CLI 添加一个工作区，列表能看到，归档写入 archived_at，恢复后清除。全程不需要桌面端或 agent。",
+  "preconditions": "隔离 home 内含真实 app.db 副本。",
+  "expectations": [
+    "add 返回 created=true 且写入 user 工作区",
+    "list --json 包含刚添加的工作区",
+    "archive 写入 archived_at，restore 清除"
+  ],
+  "steps": [
+    { "mkdir": "/tmp/future-harness-cli/cli-workspace-add-list-archive" },
+    { "run": ["workspace", "list", "--json"], "expectExit": 0 },
+    { "expectJson": { "path": "", "lengthMin": 10, "message": "真实库里有 10+ 个用户工作区" } },
+    {
+      "run": ["workspace", "add", "/tmp/future-harness-cli/cli-workspace-add-list-archive", "--name", "harness-cli", "--json"],
+      "expectExit": 0
+    },
+    { "expectJson": { "path": "created", "equals": true } },
+    { "db": { "sql": "SELECT COUNT(*) AS n FROM workspaces WHERE name = 'harness-cli' AND deleted_at IS NULL", "expect": 1 } },
+    { "run": ["workspace", "list", "--json"], "expectExit": 0 },
+    { "expectJson": { "path": "", "contains": "harness-cli" } },
+    { "run": ["workspace", "archive", "harness-cli", "--json"], "expectExit": 0 },
+    { "db": { "sql": "SELECT archived_at IS NOT NULL AS ok FROM workspaces WHERE name = 'harness-cli'", "expect": 1 } },
+    { "run": ["workspace", "restore", "harness-cli", "--json"], "expectExit": 0 },
+    { "db": { "sql": "SELECT archived_at IS NULL AS ok FROM workspaces WHERE name = 'harness-cli'", "expect": 1 } }
+  ]
+}

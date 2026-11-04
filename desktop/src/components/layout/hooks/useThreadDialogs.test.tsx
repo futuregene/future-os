@@ -6,6 +6,8 @@ import { renderHook } from "../../../test/renderHook";
 import { useThreadDialogs } from "./useThreadDialogs";
 
 const mocks = vi.hoisted(() => ({
+  archiveThreadTree: vi.fn(),
+  batchArchiveThreads: vi.fn(),
   batchDelete: vi.fn(),
   deleteThread: vi.fn(),
   generateTitle: vi.fn(),
@@ -17,6 +19,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../../../integrations/storage/threadStore", () => ({
+  archiveThreadTree: (...args: unknown[]) => mocks.archiveThreadTree(...args),
+  batchArchiveThreads: (...args: unknown[]) => mocks.batchArchiveThreads(...args),
   batchDeleteThreads: (...args: unknown[]) => mocks.batchDelete(...args),
   deleteThread: (...args: unknown[]) => mocks.deleteThread(...args),
   generateThreadTitle: (...args: unknown[]) => mocks.generateTitle(...args),
@@ -45,11 +49,12 @@ function thread(id: string, overrides: Partial<StoredThread> = {}): StoredThread
   };
 }
 
-function mount(activeThreadId: string | null = "t1") {
+function mount(activeThreadId: string | null = "t1", rows: StoredThread[] = []) {
   const ref = { current: activeThreadId };
   const harness = renderHook(() => useThreadDialogs({
     activeThreadId: ref.current,
     refreshStore: mocks.refreshStore,
+    threads: rows,
   }));
   return { harness, ref };
 }
@@ -66,6 +71,8 @@ function deferred<T = { artifactCount: number }>() {
 
 describe("useThreadDialogs", () => {
   beforeEach(() => {
+    mocks.archiveThreadTree.mockReset().mockResolvedValue(undefined);
+    mocks.batchArchiveThreads.mockReset().mockResolvedValue({ archivedCount: 1, skipped: [] });
     mocks.batchDelete.mockReset().mockResolvedValue(undefined);
     mocks.deleteThread.mockReset().mockResolvedValue(undefined);
     mocks.generateTitle.mockReset().mockResolvedValue({ title: "Generated" });
@@ -737,6 +744,66 @@ describe("useThreadDialogs", () => {
     });
     expect(mocks.batchDelete).toHaveBeenCalledTimes(1);
     expect(harness.current.batchDeleteDialog).toBeNull();
+    harness.unmount();
+  });
+
+  /**
+   * Archiving reports which conversations left the active list.
+   *
+   * The store cannot tell "archived, still open" from "off this page" on its
+   * own — that ambiguity is what keeps an archived detail readable — so the
+   * caller says which rows it archived. Without it the shelved conversation
+   * kept drawing as the open one while its sidebar row was gone.
+   */
+  it("tells the store which conversation an archive removed", async () => {
+    const { harness } = mount("t1", [thread("t1")]);
+    await act(async () => {
+      await harness.current.requestArchive(thread("t1"));
+    });
+    expect(mocks.archiveThreadTree).toHaveBeenCalledWith("t1");
+    expect(mocks.refreshStore).toHaveBeenCalledWith(undefined, { archivedThreadIds: ["t1"] });
+    harness.unmount();
+  });
+
+  it("reports every member of an archived tree, so an open child moves too", async () => {
+    // A fork hangs off its parent by agent session id; archiving the parent
+    // takes the child, so the column must leave a child that was open.
+    const parent = thread("parent");
+    const child = thread("child", { parentSessionId: "parent" });
+    const { harness } = mount("child", [parent, child]);
+    act(() => harness.current.setArchiveDialog({ error: null, submitting: false, thread: parent, members: 2 }));
+    await act(async () => {
+      await harness.current.confirmArchive();
+    });
+    expect(mocks.archiveThreadTree).toHaveBeenCalledWith("parent");
+    expect(mocks.refreshStore).toHaveBeenCalledWith(undefined, {
+      archivedThreadIds: expect.arrayContaining(["parent", "child"]),
+    });
+    expect(harness.current.archiveDialog).toBeNull();
+    harness.unmount();
+  });
+
+  it("does not report a tree the batch kept back as archived", async () => {
+    mocks.batchArchiveThreads.mockResolvedValue({
+      archivedCount: 1,
+      skipped: [{ threadId: "running", title: "running" }],
+    });
+    const { harness } = mount("t1", [thread("t1"), thread("running")]);
+    await act(async () => {
+      await harness.current.archiveThreads([thread("t1"), thread("running")]);
+    });
+    expect(mocks.refreshStore).toHaveBeenCalledWith(undefined, { archivedThreadIds: ["t1"] });
+    harness.unmount();
+  });
+
+  it("reports an archived conversation the store rows do not hold", async () => {
+    // A rail row can outlive the store's copy of it; the tree walk then knows
+    // nothing, and the archived conversation's own id is still the answer.
+    const { harness } = mount("t9", []);
+    await act(async () => {
+      await harness.current.requestArchive(thread("t9"));
+    });
+    expect(mocks.refreshStore).toHaveBeenCalledWith(undefined, { archivedThreadIds: ["t9"] });
     harness.unmount();
   });
 });

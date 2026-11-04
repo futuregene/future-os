@@ -8,6 +8,19 @@ issue 草稿。
 [`harness/README.md`](../../harness/README.md) 为准。本页只说明它和现有工具的关系，
 以及怎么在一台已经装好应用的机器上跑起来。
 
+## Surface
+
+| Surface | 运行什么 | 数据 |
+|---|---|---|
+| `desktop` | 真实桌面前端，headless Chrome | 真实 `app.db` 副本 |
+| `mobile` | 真实手机端 UI（Expo web），触摸输入 | 手机 shot mock |
+| `tui` | 真实 `future tui`，跑在 pty 里 | 脚本化 `demo_agent` |
+| `cli` | 真实 `future` 二进制，隔离 `FUTURE_HOME` | 真实 `app.db` + 设置快照 |
+| `remote` | 同一个用例里同时开桌面端和手机端 | 两端 shot mock |
+
+`remote` 证明两端对同一段会话的渲染一致，不是真实中继联调；`tui`/`mobile` 验证交互行为，
+不验证模型或网络保真；`desktop` 和 `cli` 跑在真实数据库快照上。
+
 ## 它处在哪里
 
 [截图工具](screenshots.zh-CN.md) 也渲染同一个前端，但它回答的是「这个界面长什么样」：

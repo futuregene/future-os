@@ -525,6 +525,14 @@ const handlers: Record<string, (args: any) => unknown> = {
 
   // ── Workspaces & threads ───────────────────────────────────────────────
   list_workspaces: () => workspaceList,
+  list_workspaces_page: (args) => {
+    const archived = Boolean(args?.archived);
+    const all = archived
+      ? []
+      : workspaceList.filter(workspace => workspace.pinned !== true);
+    return { workspaces: all.slice(0, Number(args?.limit ?? 50)), nextCursor: null };
+  },
+  list_pinned_workspaces: () => workspaceList.filter(workspace => workspace.pinned === true),
   pin_workspace: (args) => {
     const target = workspaceList.find(workspace => workspace.id === args?.input?.workspaceId);
     if (target)
@@ -556,6 +564,25 @@ const handlers: Record<string, (args: any) => unknown> = {
     }
     return threadList;
   },
+  list_threads_page: (args) => {
+    const scope = String(args?.scope ?? "recent");
+    const all = threadList.filter((thread) => {
+      if (thread.status === "archived")
+        return false;
+      if (scope === "chat")
+        return thread.mode === "chat";
+      if (scope.startsWith("workspace:"))
+        return thread.workspaceId === scope.slice("workspace:".length);
+      return true;
+    });
+    const limit = Number(args?.limit ?? 50);
+    return { threads: all.slice(0, limit), nextCursor: null, totalRoots: all.length };
+  },
+  list_pinned_threads: (args) => {
+    const scope = String(args?.scope ?? "recent");
+    return threadList.filter(thread => thread.pinned && (scope !== "chat" || thread.mode === "chat"));
+  },
+  list_active_threads: () => threadList.filter(thread => runs.some(run => run.threadId === thread.id && (run.status === "running" || run.status === "waiting_approval"))),
   get_recent_thread: () => threadList.find(thread => thread.id === (requestedThread() ?? "th_review")) ?? null,
   mark_thread_opened: () => null,
   pin_thread: (args) => {

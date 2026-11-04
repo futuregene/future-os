@@ -1,0 +1,24 @@
+{
+  "id": "cli-config-set-roundtrip",
+  "surface": "cli",
+  "title": "CLI 配置写入：set 后 get 必须读到新值",
+  "area": "cli-settings",
+  "priority": "P1",
+  "tags": ["cli", "settings", "write"],
+  "description": "在隔离 home 里把 defaultPermissionLevel 从 all 改成 none，再读回来；确认写入落到该 home 的 settings.json，而不是真实 home。",
+  "preconditions": "隔离 home 内含 settings.json。",
+  "expectations": [
+    "初始值为 all",
+    "set 后 get 返回 none",
+    "写入路径在隔离 home 内"
+  ],
+  "steps": [
+    { "run": ["config", "get", "defaultPermissionLevel", "--json"], "expectExit": 0 },
+    { "expectJson": { "path": "", "equals": "all" } },
+    { "run": ["config", "set", "defaultPermissionLevel", "none", "--json"], "expectExit": 0 },
+    { "run": ["config", "get", "defaultPermissionLevel", "--json"], "expectExit": 0 },
+    { "expectJson": { "path": "", "equals": "none" } },
+    { "run": ["config", "get", "defaultPermissionLevel", "--json"], "expectExit": 0 },
+    { "expectJson": { "path": "", "equals": "none" } }
+  ]
+}

@@ -72,16 +72,17 @@ export function writeReport(runDir, { repoRoot = resolve(import.meta.dirname, ".
   }
 
   lines.push("## 用例结果", "");
-  lines.push("| 结果 | 用例 | 检查 | 耗时 | 录像 |");
-  lines.push("|---|---|---|---|---|");
+  lines.push("| 结果 | 界面 | 用例 | 检查 | 耗时 | 录像 |");
+  lines.push("|---|---|---|---|---|---|");
   for (const item of cases) {
     const checks = item.checks ?? [];
     const passed = checks.filter(check => check.ok).length;
     const dir = relative(runDir, item.artifacts?.dir ?? "");
+    const surface = item.surface ?? "desktop";
     const video = existsSync(join(item.artifacts?.dir ?? "", "video.mp4"))
       ? `[mp4](${relative(runDir, join(item.artifacts.dir, "video.mp4"))})`
       : "—";
-    lines.push(`| ${statusIcon(item.status)} ${item.status} | ${item.title}<br><code>${item.id}</code> | ${checks.length ? `${passed}/${checks.length}` : "—"} | ${(item.durationMs / 1000).toFixed(1)}s | ${video} |`);
+    lines.push(`| ${statusIcon(item.status)} ${item.status} | ${surface} | ${item.title}<br><code>${item.id}</code> | ${checks.length ? `${passed}/${checks.length}` : "—"} | ${(item.durationMs / 1000).toFixed(1)}s | ${video} |`);
   }
   lines.push("");
 
@@ -118,6 +119,7 @@ export function writeReport(runDir, { repoRoot = resolve(import.meta.dirname, ".
   lines.push("每个用例目录里包含：", "");
   lines.push("- `shots/*.png`：每一步操作后的截图，以及失败现场；`shots/shot-*.png` 为显式关键帧");
   lines.push("- `video.mp4`：真实时间的操作录像（CDP screencast，帧间隔按真实停顿编码）");
+  lines.push("  - 播放器里的暂停/快进按钮是播放器叠加的，不在文件里；分析读的是帧图与 ffmpeg 抽取的拼图，不会把播放控件当成界面元素。");
   lines.push("- `timeline.jsonl`：动作、目标、耗时、指标、DB 查询结果");
   lines.push("- `server.jsonl`：UI 发出的每个 IPC 命令、参数摘要、耗时、是否由夹具处理");
   lines.push("- `console-errors.log` + `result.json`：控制台、异常、网络失败、性能序列");

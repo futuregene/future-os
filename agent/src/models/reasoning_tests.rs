@@ -668,3 +668,67 @@ fn every_registered_model_at_every_level_sends_only_declared_values() {
         "walked too few vocabulary models: {declared}"
     );
 }
+
+// ─── always-thinking models (compat.alwaysThinking) ───────────────────────
+
+/// A catalogue entry shaped like the Future platform's `glm-5.3`: it still
+/// declares `off` although the access path rejects a disabled thinking toggle.
+fn always_thinking_model(id: &str) -> Model {
+    configured_model(
+        "openai-completions",
+        json!({
+            "id": id,
+            "thinkingLevels": ["off", "low", "medium", "high", "max"],
+            "compat": {"thinkingFormat": "zai", "alwaysThinking": true}
+        }),
+    )
+}
+
+#[test]
+fn an_always_thinking_model_never_offers_off() {
+    let model = always_thinking_model("glm-5.3");
+    assert!(model.always_thinking());
+    assert_eq!(
+        levels(&model),
+        vec!["default", "low", "medium", "high", "max"],
+        "a model that always reasons must not advertise a disabled toggle"
+    );
+    // The declared list itself is untouched: the fact is a property of the
+    // access path, not a rewrite of the catalogue.
+    assert_eq!(model.thinking_levels[0], "off");
+}
+
+#[test]
+fn another_models_levels_keep_off() {
+    let model = configured_model(
+        "openai-completions",
+        json!({
+            "id": "deepseek-flash",
+            "thinkingLevels": ["off", "low", "high"],
+            "compat": {"thinkingFormat": "deepseek"}
+        }),
+    );
+    assert!(!model.always_thinking());
+    assert_eq!(levels(&model), vec!["default", "off", "low", "high"]);
+}
+
+/// The archive case: a level persisted while `off` was still offered must run
+/// at a supported level, not fail the request with the provider 400.
+#[test]
+fn a_stored_off_level_runs_at_the_fallback_on_an_always_thinking_model() {
+    let model = always_thinking_model("glm-5.3");
+    let applied = model.clamp_thinking_level("off");
+    assert_eq!(applied, DEFAULT_THINKING_LEVEL);
+    let body = request_at_level(&model, &applied);
+    assert!(
+        body.get("enable_thinking").is_none(),
+        "the fallback must send no thinking switch at all: {body}"
+    );
+    assert!(body.get("reasoning_effort").is_none(), "{body}");
+    // No other level is affected: a level the model offers still travels.
+    assert_eq!(model.clamp_thinking_level("low"), "low");
+    assert_eq!(
+        request_at_level(&model, "low")["enable_thinking"],
+        json!(true)
+    );
+}

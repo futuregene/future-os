@@ -1,0 +1,50 @@
+{
+  "id": "archive-open-conversation",
+  "title": "归档当前打开的会话：应离开活跃列表并回退",
+  "area": "conversation",
+  "priority": "P0",
+  "tags": ["archive", "edge", "active"],
+  "description": "先打开一个会话，再从它自己的行菜单归档。归档成功后该行应离开活跃列表，主区域应回退到另一个会话或新对话页，不能停留在被归档内容上。",
+  "preconditions": "至少两个活跃会话。",
+  "expectations": [
+    "归档写库（archived_at 非空）",
+    "侧边栏不再有该会话行",
+    "主区域不再显示被归档会话的内容"
+  ],
+  "steps": [
+    { "wait": 900 },
+    {
+      "db": {
+        "sql": "SELECT title FROM (SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' AND archived_at IS NULL AND pinned = 0 AND title NOT IN (SELECT name FROM workspaces) ORDER BY COALESCE(last_message_at, updated_at) DESC LIMIT 8) WHERE length(title) <= 16 LIMIT 1",
+        "as": "target"
+      }
+    },
+    { "click": { "aria": "{{target}}" } },
+    { "waitFor": { "text": "{{target}}" }, "timeout": 5000 },
+    { "hover": { "aria": "{{target}}" } },
+    { "click": { "aria": "{{target}} 的操作" } },
+    { "click": { "selector": "[role=menuitem]", "text": "归档" } },
+    { "click": { "selector": "[role=dialog] button", "text": "归档" }, "optional": true },
+    { "wait": 1200 },
+    {
+      "db": {
+        "sql": "SELECT archived_at IS NOT NULL AS ok FROM threads WHERE title = '{{target}}' ORDER BY created_at DESC LIMIT 1",
+        "expect": 1,
+        "message": "归档写库"
+      }
+    },
+    {
+      "assert": {
+        "expr": "!document.querySelector('[aria-label=\"{{target}}\"]')",
+        "message": "归档后侧边栏不再有该会话行"
+      }
+    },
+    {
+      "assert": {
+        "expr": "!document.body.innerText.includes('{{target}}')",
+        "message": "主区域不再显示被归档会话的内容"
+      }
+    },
+    { "shot": "after-archive-active" }
+  ]
+}

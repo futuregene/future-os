@@ -1,0 +1,27 @@
+{
+  "id": "mobile-compose-draft",
+  "surface": "mobile",
+  "title": "手机端输入框：打开会话后可以起草消息",
+  "area": "mobile-compose",
+  "priority": "P1",
+  "tags": ["mobile", "compose"],
+  "description": "打开一条会话，在底部输入框输入文字，确认草稿留在输入框里、发送按钮可用。手机端的键盘/输入框是远程桌面最常用的入口。",
+  "preconditions": "移动端 shot 服务在 8099 运行。",
+  "expectations": [
+    "输入框可用并接受文字",
+    "输入后草稿仍在输入框里",
+    "发送按钮存在"
+  ],
+  "steps": [
+    { "wait": 1500 },
+    { "click": { "text": "稍后再说" }, "optional": true },
+    { "wait": 500 },
+    { "click": { "text": "整理两篇文献的结论对比表" } },
+    { "wait": 1200 },
+    { "eval": "document.querySelector('textarea[aria-label=\"给 FutureOS 发消息\"]').focus()" },
+    { "type": "手机端自动化测试" },
+    { "expectText": "手机端自动化测试" },
+    { "assert": { "expr": "!!document.querySelector('[aria-label=\"发送\"]') || !!document.querySelector('button[aria-label=\"发送\"]')", "message": "发送按钮存在" } },
+    { "shot": "mobile-compose" }
+  ]
+}

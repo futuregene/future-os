@@ -197,7 +197,9 @@ describe("useWorkspaceDialogs", () => {
       await harness.current.confirmDelete();
     });
     expect(mocks.deleteWorkspace).toHaveBeenCalledWith("ws-1");
-    expect(mocks.refreshStore).toHaveBeenCalledWith();
+    // The workspace takes its conversations with it: a plain refresh cannot say
+    // so (no member row changed), and the open one would keep the column.
+    expect(mocks.refreshStore).toHaveBeenCalledWith(undefined, { removedWorkspaceIds: ["ws-1"] });
     expect(harness.current.deleteDialog).toBeNull();
 
     mocks.deleteWorkspace.mockRejectedValue(new Error("locked"));

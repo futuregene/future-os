@@ -1,0 +1,16 @@
+{
+  "id": "cli-workspace-archive-missing",
+  "surface": "cli",
+  "title": "CLI 归档不存在的工作区：应报错而不是成功",
+  "area": "cli-workspace",
+  "priority": "P1",
+  "tags": ["cli", "error", "workspace"],
+  "description": "归档一个不存在的 id/名称/路径，必须非零退出并说明如何查看现有工作区；不能返回成功空对象。",
+  "preconditions": "隔离 home。",
+  "expectations": ["退出码 1", "stderr 说明没有匹配项并指向 workspace list"],
+  "steps": [
+    { "run": ["workspace", "archive", "does-not-exist-xyz"], "expectExit": 1 },
+    { "expectStderr": "No workspace matches" },
+    { "expectStderr": "future workspace list" }
+  ]
+}

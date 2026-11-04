@@ -266,6 +266,137 @@ describe("useThreadStore", () => {
     h.unmount();
   });
 
+  /**
+   * Archiving the conversation that is open.
+   *
+   * The archive leaves the row in the database, so no listing contradicts the
+   * refresh — and the store's own rule for that ambiguity ("not on this page,
+   * still open") held the shelved conversation as the current one: its row
+   * stayed in the active list and its history stayed on screen while nothing in
+   * the sidebar pointed at it any more. The caller that archives has to say so.
+   */
+  it("archiving the open conversation drops its row and opens the nearest remaining one", async () => {
+    const h = await mountStore();
+    expect(h.current.activeThreadId).toBe("t1");
+    // The pages after the archive: t1 is off them. t9 is more recent but lives
+    // in another workspace, so the column stays where the reader was working.
+    listThreadsPage.mockResolvedValue(pageOf([
+      { ...thread("t2", "w1"), lastMessageAt: 10 } as StoredThread,
+      { ...thread("t9", "w2"), lastMessageAt: 99 } as StoredThread,
+    ]));
+    await act(async () => {
+      await h.current.refreshStore(undefined, { archivedThreadIds: ["t1"] });
+    });
+    expect(h.current.threads.map(t => t.id).sort()).toEqual(["t2", "t9"]);
+    expect(h.current.activeThreads.map(t => t.id)).not.toContain("t1");
+    expect(h.current.activeThreadId).toBe("t2");
+    expect(h.current.activeThread?.id).toBe("t2");
+    h.unmount();
+  });
+
+  it("archiving the open conversation moves off it even when a listing still returns it", async () => {
+    // A conversation kept in the active stretch by a run another client started
+    // is returned by `listActiveThreads` with its archived status. It is still
+    // off the list the reader is reading, so the column must not stay on it.
+    listActiveThreads.mockResolvedValue([thread("t1", "w1", "archived")]);
+    const h = await mountStore();
+    listThreadsPage.mockResolvedValue(pageOf([thread("t2")]));
+    await act(async () => {
+      await h.current.refreshStore(undefined, { archivedThreadIds: ["t1"] });
+    });
+    expect(h.current.threads.find(t => t.id === "t1")?.status).toBe("archived");
+    expect(h.current.activeThreadId).toBe("t2");
+    h.unmount();
+  });
+
+  it("archiving the open conversation with nothing left opens nothing", async () => {
+    const h = await mountStore();
+    listThreadsPage.mockResolvedValue(pageOf([]));
+    await act(async () => {
+      await h.current.refreshStore(undefined, { archivedThreadIds: ["t1", "t2"] });
+    });
+    expect(h.current.threads).toEqual([]);
+    expect(h.current.activeThreadId).toBeNull();
+    expect(h.current.activeThread).toBeNull();
+    h.unmount();
+  });
+
+  /**
+   * Archiving the workspace that holds the open conversation.
+   *
+   * Found by the UI harness: archiving a workspace from the rail removed its row
+   * and wrote `archived_at`, left the rail's active workspaces correct — and the
+   * conversation inside it kept the main area. The members' own statuses never
+   * change (the *container* leaves the lists, by JOIN filter), so the refresh
+   * that followed found exactly the "not on this page" evidence it treats as
+   * "still open, read-only" and held the row it should have dropped. Nothing in
+   * a listing can contradict that, so the caller names the workspace.
+   */
+  it("archiving a workspace takes its conversations off the list and moves the column off them", async () => {
+    const h = await mountStore();
+    expect(h.current.threads.map(t => t.id).sort()).toEqual(["t1", "t2"]);
+    expect(h.current.activeThreadId).toBe("t1");
+    // After the archive no listing returns the workspace's rows; the most recent
+    // survivor lives in another one, which is where the column goes.
+    listThreadsPage.mockResolvedValue(pageOf([
+      { ...thread("t9", "w2"), lastMessageAt: 99 } as StoredThread,
+    ]));
+    await act(async () => {
+      await h.current.refreshStore(undefined, { archivedWorkspaceIds: ["w1"] });
+    });
+    expect(h.current.threads.map(t => t.id)).toEqual(["t9"]);
+    expect(h.current.activeThreads.map(t => t.id)).toEqual(["t9"]);
+    expect(h.current.activeThreadId).toBe("t9");
+    expect(h.current.activeThread?.workspaceId).toBe("w2");
+    h.unmount();
+  });
+
+  it("archiving a workspace drops its rows even when a listing still returns one", async () => {
+    // The active stretch (and a pinned shortcut) is the one place a row can come
+    // back from a listing for reasons of its own; the workspace it is filed in
+    // still went away, so the row goes with it.
+    const h = await mountStore();
+    listActiveThreads.mockResolvedValue([thread("t1", "w1")]);
+    listThreadsPage.mockResolvedValue(pageOf([]));
+    await act(async () => {
+      await h.current.refreshStore(undefined, { archivedWorkspaceIds: ["w1"] });
+    });
+    expect(h.current.threads.map(t => t.id)).not.toContain("t1");
+    expect(h.current.activeThreadId).toBeNull();
+    h.unmount();
+  });
+
+  it("restoring a workspace lists its conversations again without re-opening one", async () => {
+    const h = await mountStore();
+    listThreadsPage.mockResolvedValue(pageOf([thread("t9", "w2")]));
+    await act(async () => {
+      await h.current.refreshStore(undefined, { archivedWorkspaceIds: ["w1"] });
+    });
+    expect(h.current.activeThreadId).toBe("t9");
+
+    // The restore writes nothing either: the pages simply return the rows that
+    // were being filtered out, which is all the store needs to draw them again.
+    // The column stays where the archive put it rather than jumping back.
+    listThreadsPage.mockResolvedValue(pageOf([thread("t1", "w1"), thread("t9", "w2")]));
+    await act(async () => {
+      await h.current.refreshStore();
+    });
+    expect(h.current.threads.map(t => t.id).sort()).toEqual(["t1", "t9"]);
+    expect(h.current.activeThreadId).toBe("t9");
+    h.unmount();
+  });
+
+  it("deleting a workspace takes its conversations off the list too", async () => {
+    const h = await mountStore();
+    listThreadsPage.mockResolvedValue(pageOf([]));
+    await act(async () => {
+      await h.current.refreshStore(undefined, { removedWorkspaceIds: ["w1"] });
+    });
+    expect(h.current.threads).toEqual([]);
+    expect(h.current.activeThreadId).toBeNull();
+    h.unmount();
+  });
+
   it("drops a stale refreshStore response when a newer one is in flight", async () => {
     const h = await mountStore();
     let resolveSlow: ((value: unknown) => void) | null = null;
