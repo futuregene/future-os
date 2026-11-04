@@ -141,8 +141,11 @@ describe("live projection repairs", () => {
       // showed for minutes: a running row, then the model already reasoning again.
       () => events(runId, [
         ["thinking_start", {}],
+        // The end names no call, so this window cannot prove which call reported
+        // and settles nothing but the row it resolves — the stale row survives
+        // it, and only a rebuild can show what really happened to "a".
         ["tool_start", shell("b")],
-        ["tool_end", { tool_id: "b", text: "ok" }],
+        ["tool_end", { tool_name: "shell", text: "ok" }],
       ], 2),
       // The journal knows the completion, so the repair is what fixes the row.
       () => events(runId, [
@@ -166,6 +169,32 @@ describe("live projection repairs", () => {
     // paying another full read for a reply that still looks stale.
     await upsertStreamingPreview(runId, 1000, setMessages);
     expect(cursors()).toEqual([-1, 0, -1, 4]);
+  });
+
+  it("settles a lost completion from the next call's result instead of re-reading the log", async () => {
+    const runId = "run-lost-completion-settled";
+    resetRunProjection(runId);
+    scripted([
+      () => events(runId, [["tool_start", shell("a")]]),
+      // Calls run in order, so "b" reporting proves "a" had stopped. Its own end
+      // is missing from this window; the row is settled where it stopped rather
+      // than left pulsing under the work that came after it.
+      () => events(runId, [
+        ["thinking_start", {}],
+        ["tool_start", shell("b")],
+        ["tool_end", { tool_id: "b", text: "ok" }],
+      ], 2),
+    ]);
+    const { setMessages, state } = collect([]);
+
+    await upsertStreamingPreview(runId, 1000, setMessages);
+    await upsertStreamingPreview(runId, 1000, setMessages);
+
+    // No rebuild: one read of the tail was enough, so the run's cursor is the
+    // only one ever asked for.
+    expect(cursors()).toEqual([-1, 0]);
+    expect(runningIds(bubbleSegments(state()))).toEqual([]);
+    expect(bubbleSegments(state())[0]).toMatchObject({ item: { id: "a", status: "interrupted" } });
   });
 
   it("leaves a call that is still the live tail alone", async () => {

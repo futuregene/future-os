@@ -77,6 +77,18 @@ function failedEntry(id: string, runId: string | null): SessionEntry {
   };
 }
 
+/** The agent's result entry for a call — what makes a row read as ran, not running. */
+function toolResultEntry(id: string, toolCallId: string, runId = "run_1"): SessionEntry {
+  return {
+    id,
+    kind: "tool",
+    role: "tool",
+    runId,
+    createdAtMs: 2_001,
+    blocks: [{ kind: "tool_result", toolCallId, isError: false }],
+  };
+}
+
 /** A pending approval the host is waiting on, as `useRemoteApprovals` builds it. */
 function approval(overrides: Partial<RemoteApproval> = {}): RemoteApproval {
   return {
@@ -253,7 +265,9 @@ it("reads a shell row's command only when that row is opened", async () => {
     return {};
   });
 
-  const view = await mount({ entries: [entry("u1", "user", "run it"), shellEntry("a1", "call_1")] });
+  const view = await mount({
+    entries: [entry("u1", "user", "run it"), shellEntry("a1", "call_1"), toolResultEntry("t1", "call_1")],
+  });
 
   expect(view.container.textContent).toContain("Ran a command");
   expect(commands).toEqual([]);
@@ -683,7 +697,14 @@ it("shows every tool call of a turn, not just the first", async () => {
       { kind: "tool_call", toolCallId: "c2", name: "shell" },
     ],
   };
-  const view = await mount({ entries: [entry("u1", "user", "do it"), twoTools] });
+  const view = await mount({
+    entries: [
+      entry("u1", "user", "do it"),
+      twoTools,
+      toolResultEntry("t1", "c1"),
+      toolResultEntry("t2", "c2"),
+    ],
+  });
 
   // Rendered by the local transcript, which groups a turn's calls: the count is
   // the local summary ("Tool calls 2×"), and expanding it is where each call —

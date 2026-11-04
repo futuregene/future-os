@@ -505,11 +505,15 @@ describe("entry reducer", () => {
     expect(state.items).toHaveLength(2);
     expect(state.items[1]).toMatchObject({
       runId: "r1", failed: true, error: "interrupted", durationMs: 100,
+      // None of the three calls reported, so none of them collapsed into a
+      // "ran 2 commands" summary: a burst summary claims the calls ran, and an
+      // unreported call is `interrupted`, which keeps its own row.
       segments: [
         { kind: "compaction", id: "seg_cp1_compaction" },
-        { kind: "tool", tool: { count: 2 } },
+        { kind: "tool", tool: { status: "interrupted" } },
+        { kind: "tool", tool: { status: "interrupted" } },
         { kind: "compaction", id: "seg_cp2_compaction" },
-        { kind: "tool" },
+        { kind: "tool", tool: { status: "interrupted" } },
       ],
     });
   });

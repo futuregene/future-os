@@ -23,6 +23,7 @@
     "runCompleted": "已运行",
     "writeCompleted": "已写入",
     "editCompleted": "已编辑",
+    "interrupted": "已中断",
     "failed": {
       "shell": "运行失败",
       "edit": "编辑失败",

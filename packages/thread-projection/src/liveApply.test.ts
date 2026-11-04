@@ -488,6 +488,48 @@ describe("tool activity", () => {
     expect(projection.segments[0]).toMatchObject({ item: { id: "t1", target: "b.md" } });
   });
 
+  it("keeps a call's report when its start is replayed", () => {
+    const projection = buildAssistantRunProjection([
+      event("tool_start", { tool_args: { command: "ls" }, tool_id: "t1", tool_name: "shell" }),
+      event("tool_end", { tool_id: "t1" }),
+      // The same window read again: a settled row keeps its result instead of
+      // reopening as the live row it was before. Re-arming it left "running"
+      // wedged in the middle of work that came after it, for good.
+      event("tool_start", { tool_args: { command: "ls" }, tool_id: "t1", tool_name: "shell" }),
+    ]);
+    expect(shape(projection)).toEqual(["activity(shell,completed)"]);
+  });
+
+  it("keeps a failed call failed when its end is replayed", () => {
+    const projection = buildAssistantRunProjection([
+      event("tool_start", { tool_args: { command: "false" }, tool_id: "t1", tool_name: "shell" }),
+      event("tool_end", { error: "boom", tool_id: "t1" }),
+      event("tool_end", { tool_id: "t1", tool_name: "shell" }),
+    ]);
+    expect(shape(projection)).toEqual(["activity(shell,failed)"]);
+  });
+
+  it("settles a call whose end never arrived when a later call reports by id", () => {
+    // Calls run strictly in order, so t2 reporting proves t1 had stopped. Its
+    // own end was lost; leaving it "running" would show live progress in the
+    // middle of work that already came after it.
+    const projection = buildAssistantRunProjection([
+      event("tool_start", { tool_args: { command: "sleep 30" }, tool_id: "t1", tool_name: "shell" }),
+      event("tool_start", { tool_args: { command: "ls" }, tool_id: "t2", tool_name: "shell" }),
+      event("tool_end", { tool_id: "t2" }),
+    ]);
+    expect(shape(projection)).toEqual(["activity(shell,interrupted)", "activity(shell,completed)"]);
+  });
+
+  it("settles a call that never reported when the run ends", () => {
+    const projection = buildAssistantRunProjection([
+      event("tool_start", { tool_args: { command: "sleep 30" }, tool_id: "t1", tool_name: "shell" }),
+      event("text_chunk", { text: "moved on" }),
+      event("agent_end", {}),
+    ]);
+    expect(shape(projection)).toEqual(["activity(shell,interrupted)", "text(moved on)"]);
+  });
+
   it("clears the active tool only when the result belongs to it", () => {
     // Both results omit the tool name, so each is resolved by its explicit id:
     // the first is for the older tool (not the active one), the second for it.
