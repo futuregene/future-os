@@ -71,6 +71,15 @@ impl StorageMode {
             Self::Nfs => "nfs",
         }
     }
+    /// Agents predating storage selection always used WAL. Missing metadata is
+    /// compatible only with WAL; NFS must be explicitly confirmed by the owner.
+    pub fn accepts_reported(self, reported: Option<&str>) -> bool {
+        match reported {
+            Some(mode) => mode == self.as_str(),
+            None => self == Self::Wal,
+        }
+    }
+
     pub fn journal_mode(self) -> &'static str {
         match self {
             Self::Wal => "WAL",
@@ -106,6 +115,17 @@ impl fmt::Display for StorageMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_readiness_is_wal_only_and_explicit_mismatches_are_refused() {
+        assert!(StorageMode::Wal.accepts_reported(None));
+        assert!(!StorageMode::Nfs.accepts_reported(None));
+        assert!(StorageMode::Wal.accepts_reported(Some("wal")));
+        assert!(StorageMode::Nfs.accepts_reported(Some("nfs")));
+        assert!(!StorageMode::Wal.accepts_reported(Some("nfs")));
+        assert!(!StorageMode::Nfs.accepts_reported(Some("wal")));
+        assert!(!StorageMode::Wal.accepts_reported(Some("unknown")));
+    }
+
     #[test]
     fn saved_policy_defaults_to_wal_and_rejects_invalid_content() {
         let directory = tempfile::tempdir().unwrap();

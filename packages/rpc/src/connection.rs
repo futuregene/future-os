@@ -273,7 +273,7 @@ async fn read_readiness(
             .metadata()
             .get(crate::storage::STORAGE_MODE_HEADER)
             .and_then(|value| value.to_str().ok());
-        if actual != Some(expected.as_str()) {
+        if !expected.accepts_reported(actual) {
             return Err(ConnectionError::Incompatible { agent_version: None, reason: format!("storage mode mismatch: requested {expected}, Agent reports {}; restart future host/agent with --storage-mode {expected}", actual.unwrap_or("unknown")) });
         }
     }
