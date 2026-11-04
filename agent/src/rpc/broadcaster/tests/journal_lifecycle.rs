@@ -625,15 +625,9 @@ fn a_settled_run_keeps_the_same_projection_the_journal_folds_to() {
     let mut folded =
         crate::rpc::run_snapshot::fold_events(broadcaster.read_journal("run-settled").unwrap());
     crate::rpc::broadcaster::trim_projection(&mut folded);
-    let wire = |events: &[SseEvent]| {
-        events
-            .iter()
-            .map(|event| (event.event_type.clone(), event.data.clone(), event.idx))
-            .collect::<Vec<_>>()
-    };
     assert_eq!(
-        wire(&cached.events),
-        wire(&folded),
+        serde_json::to_string(&cached.events).unwrap(),
+        serde_json::to_string(&folded).unwrap(),
         "a cached open must answer with the journal's own fold"
     );
     assert!(

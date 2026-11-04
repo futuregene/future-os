@@ -2153,3 +2153,57 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod replay_payload_envelope_tests {
+    use super::*;
+
+    /// Every field of a replay event reaches the wire, and the host forwards the
+    /// payload as the agent built it (`host/src/agent_bridge/queries.rs::
+    /// get_run_snapshot` returns the reply unchanged). `eventId` and `timestamp`
+    /// are read by the client (`packages/thread-projection/src/replay.ts:104-107`)
+    /// and `epoch`/`idx`/`runSequence` are the run's identity, which is why a
+    /// replay cache must keep them: dropping them is not a smaller reply, it is a
+    /// reply that de-duplicates and orders wrongly.
+    ///
+    /// Destructured exhaustively on purpose — adding or removing a field here
+    /// stops the test compiling, which is the moment to ask whether a replay
+    /// reader needs it before a cache stops storing it.
+    #[test]
+    fn a_replay_payload_carries_the_whole_envelope() {
+        let event = SseEvent {
+            event_type: "tool_end".into(),
+            data: "{\"ok\":true}".into(),
+            run_id: "run-1".into(),
+            epoch: 3,
+            idx: 7,
+            session_id: "session-1".into(),
+            event_id: "session-1:run-1:3:7".into(),
+            timestamp: "2026-11-04T00:00:00Z".into(),
+            session_idx: -1,
+            run_sequence: 42,
+        };
+        let payloads::ReplayEventPayload {
+            event_type,
+            data,
+            run_id,
+            idx,
+            session_id,
+            epoch,
+            event_id,
+            timestamp,
+            session_idx,
+            run_sequence,
+        } = replay_event_payload(&event);
+        assert_eq!(event_type, "tool_end");
+        assert_eq!(data, "{\"ok\":true}");
+        assert_eq!(run_id, "run-1");
+        assert_eq!(idx, 7);
+        assert_eq!(session_id, "session-1");
+        assert_eq!(epoch, 3);
+        assert_eq!(event_id, "session-1:run-1:3:7");
+        assert_eq!(timestamp, "2026-11-04T00:00:00Z");
+        assert_eq!(session_idx, -1);
+        assert_eq!(run_sequence, 42);
+    }
+}
