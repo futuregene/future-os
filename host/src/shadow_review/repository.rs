@@ -235,6 +235,13 @@ impl ShadowRepo {
         Ok(())
     }
 
+    /// Whether `path` lies inside this shadow repository's own config area —
+    /// that is, a rule this capture derived for itself rather than one the
+    /// Workspace carries.
+    pub fn owns_path(&self, path: &Path) -> bool {
+        path.starts_with(&self.git_dir)
+    }
+
     /// Real repo's `info/exclude` content, if the Workspace is a git repo.
     pub fn real_repo_info_exclude(&self) -> Option<String> {
         if !self.is_git_workspace {
