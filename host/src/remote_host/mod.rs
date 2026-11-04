@@ -5,6 +5,8 @@ pub(crate) mod business;
 pub(crate) mod catalog;
 mod command_diagnostics;
 pub(crate) mod files;
+#[cfg(test)]
+mod latency_probe;
 pub(crate) mod lean;
 pub(crate) mod pairing;
 mod read_pages;

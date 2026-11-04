@@ -1,9 +1,10 @@
 //! Atomic attachment, replay cursors and run snapshots.
 use super::{RunAttachment, RunProjectionSnapshot, SseBroadcaster, SseEvent};
+use serde_json::Value;
 
 /// Snapshot capture copies shared references and a bounded tail under the lock.
 /// Body cloning/JSON materialization and argument folding happen after release.
-struct CapturedSnapshot {
+pub(super) struct CapturedSnapshot {
     run_id: String,
     epoch: i64,
     run_sequence: i64,
@@ -11,7 +12,7 @@ struct CapturedSnapshot {
     view: super::projection::ProjectionView,
 }
 impl CapturedSnapshot {
-    fn capture(run: &super::RunState) -> Self {
+    pub(super) fn capture(run: &super::RunState) -> Self {
         Self {
             run_id: run.run_id.clone(),
             epoch: run.epoch,
@@ -20,7 +21,7 @@ impl CapturedSnapshot {
             view: run.projection_events.view(),
         }
     }
-    fn materialize(self) -> RunProjectionSnapshot {
+    pub(super) fn materialize(self) -> RunProjectionSnapshot {
         RunProjectionSnapshot {
             run_id: self.run_id,
             epoch: self.epoch,
@@ -369,6 +370,12 @@ impl SseBroadcaster {
     /// active projection and cursor are cloned under the stamping lock. For an
     /// older run, one SQLite transaction supplies a consistent immutable prefix.
     pub(crate) fn run_snapshot(&self, run_id: &str) -> anyhow::Result<RunProjectionSnapshot> {
+        let mut snapshot = self.uncaptured_run_snapshot(run_id)?;
+        trim_projection(&mut snapshot.events);
+        Ok(snapshot)
+    }
+
+    fn uncaptured_run_snapshot(&self, run_id: &str) -> anyhow::Result<RunProjectionSnapshot> {
         anyhow::ensure!(!run_id.is_empty(), "snapshot requires a run id");
         let run = self.run.lock();
         if run.run_id == run_id {
@@ -424,13 +431,16 @@ impl SseBroadcaster {
         let last = events
             .last()
             .ok_or_else(|| anyhow::anyhow!("run snapshot is empty"))?;
-        let snapshot = RunProjectionSnapshot {
+        let mut snapshot = RunProjectionSnapshot {
             run_id: run_id.to_owned(),
             epoch: last.epoch,
             run_sequence: last.run_sequence,
             cursor: last.idx,
             events: crate::rpc::run_snapshot::fold_events(events),
         };
+        // Trimmed before it is kept, so the cache holds what a reply serves
+        // rather than a fatter copy the next open would parse and re-trim.
+        trim_projection(&mut snapshot.events);
         // Keep the fold for the next open, off this request: the write is a
         // ~260 KB row and the reply must not wait for it.
         if let Some(store) = store {
@@ -464,4 +474,52 @@ pub(super) fn covers_prefix(events: &[SseEvent], run: &str) -> bool {
         next = event.idx.saturating_add(1);
     }
     true
+}
+
+/// Drop what no replay reader uses from a run's folded projection.
+///
+/// Two bodies ride it as dead weight. A tool result's captured text is never
+/// rendered: readers take the row's label from `tool_start`'s arguments and its
+/// outcome from the structured fields (`exit_code`, `is_soft_fail`, `error`,
+/// `shell_result`). And reasoning text is already blanked for every remote
+/// connection by the lean feed, so keeping it here only costs storage and a
+/// parse. Measured on a 136k-event run: 449 KiB and 269 KiB of a 1.35 MB
+/// payload.
+///
+/// The one payload that keeps its text is the legacy tool result: without an
+/// outcome field the client derives pass/fail by parsing an `[exit: N]` footer
+/// out of that text, so removing it would invent a result.
+pub(crate) fn trim_projection(events: &mut [SseEvent]) {
+    for event in events {
+        match event.event_type.as_str() {
+            "tool_end" | "tool_result" => {
+                let Ok(Value::Object(mut fields)) = serde_json::from_str::<Value>(&event.data)
+                else {
+                    continue;
+                };
+                let has_outcome = ["exit_code", "exitCode", "is_soft_fail", "is_error", "error"]
+                    .iter()
+                    .any(|key| fields.contains_key(*key));
+                if !has_outcome {
+                    continue;
+                }
+                if fields.remove("text").is_some() | fields.remove("result").is_some() {
+                    event.data = Value::Object(fields).to_string();
+                }
+            }
+            "thinking_delta" => {
+                let Ok(Value::Object(mut fields)) = serde_json::from_str::<Value>(&event.data)
+                else {
+                    continue;
+                };
+                if let Some(text) = fields.get_mut("text") {
+                    if text.as_str().is_some_and(|text| !text.is_empty()) {
+                        *text = Value::String(String::new());
+                        event.data = Value::Object(fields).to_string();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
