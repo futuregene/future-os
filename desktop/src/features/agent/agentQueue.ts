@@ -135,14 +135,21 @@ export async function fetchAgentQueue(threadId: string): Promise<AgentQueueSnaps
   };
 }
 
-/** Take one waiting message back out, before it leaves. */
-export function cancelAgentQueuedRun(runId: string): Promise<void> {
-  return invokeCommand<void>("cancel_queued_run", { runId });
+/**
+ * Take one waiting message back out, before it leaves.
+ *
+ * The conversation travels with the run: a row can be in the Agent's queue that
+ * this app never recorded a run for — a goal-plane note, a prompt another client
+ * sent straight to the Agent — and the conversation is then the only thing that
+ * says which session to take it back from.
+ */
+export function cancelAgentQueuedRun(threadId: string, runId: string): Promise<void> {
+  return invokeCommand<void>("cancel_queued_run", { threadId, runId });
 }
 
 /** Start a parked (or any waiting) row now, because the reader asked for it. */
-export function releaseAgentQueuedRun(runId: string): Promise<void> {
-  return invokeCommand<void>("release_queued_run", { runId });
+export function releaseAgentQueuedRun(threadId: string, runId: string): Promise<void> {
+  return invokeCommand<void>("release_queued_run", { threadId, runId });
 }
 
 /**

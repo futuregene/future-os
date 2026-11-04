@@ -67,15 +67,20 @@ pub async fn session_queue(thread_id: String) -> Result<serde_json::Value, crate
 }
 
 /// Take one held message back out of the queue before it leaves.
+///
+/// The conversation travels with the run id because the queue is the Agent's:
+/// a row can be there without this app ever having recorded a run for it (a goal
+/// note, a CLI prompt), and the conversation the panel is showing is then the
+/// only thing that can address it.
 #[tauri::command]
-pub async fn cancel_queued_run(run_id: String) -> Result<(), crate::AppError> {
-    future_host::application::queue::cancel_queued_run(&run_id).await
+pub async fn cancel_queued_run(thread_id: String, run_id: String) -> Result<(), crate::AppError> {
+    future_host::application::queue::cancel_queued_run(&thread_id, &run_id).await
 }
 
 /// Send one held message now, because the reader asked for it.
 #[tauri::command]
-pub async fn release_queued_run(run_id: String) -> Result<(), crate::AppError> {
-    future_host::application::queue::release_queued_run(&run_id).await
+pub async fn release_queued_run(thread_id: String, run_id: String) -> Result<(), crate::AppError> {
+    future_host::application::queue::release_queued_run(&thread_id, &run_id).await
 }
 
 #[tauri::command]
