@@ -1,0 +1,134 @@
+{
+  "phase": "warm",
+  "agentAddress": "http://127.0.0.1:58349",
+  "home": "/Users/geilige/future-os/.worktrees/perf-remote-scale/target/remote-latency/scale/homes/dirs-100",
+  "machine": {
+    "os": "macos",
+    "arch": "aarch64",
+    "cpus": 32
+  },
+  "cargoProfile": "--release",
+  "builtAt": "2026-11-04T09:23:38",
+  "results": [
+    {
+      "label": "list_session_files",
+      "command": "list_session_files",
+      "parseError": null,
+      "scale": {
+        "files": 100,
+        "workspace": "/Users/geilige/future-os/.worktrees/perf-remote-scale/target/remote-latency/scale/homes/dirs-100/workspace-roots/files-100"
+      },
+      "iterations": 10,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 4.746,
+        "parseMs": 0.01,
+        "encodeMs": 0.038,
+        "replyBytes": 20218,
+        "jsonBytes": 20218,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 4.63,
+          "parseMs": 0.002,
+          "encodeMs": 0.026,
+          "replyBytes": 20218,
+          "jsonBytes": 20218,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 4.631,
+          "parseMs": 0.002,
+          "encodeMs": 0.026,
+          "replyBytes": 20218,
+          "jsonBytes": 20218,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 4.585,
+          "parseMs": 0.002,
+          "encodeMs": 0.026,
+          "replyBytes": 20218,
+          "jsonBytes": 20218,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 4.652,
+          "parseMs": 0.005,
+          "encodeMs": 0.024,
+          "replyBytes": 20218,
+          "jsonBytes": 20218,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 7.327,
+          "parseMs": 0.002,
+          "encodeMs": 0.027,
+          "replyBytes": 20218,
+          "jsonBytes": 20218,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 6.113,
+          "parseMs": 0.003,
+          "encodeMs": 0.026,
+          "replyBytes": 20218,
+          "jsonBytes": 20218,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 4.54,
+          "parseMs": 0.002,
+          "encodeMs": 0.024,
+          "replyBytes": 20218,
+          "jsonBytes": 20218,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 4.544,
+          "parseMs": 0.002,
+          "encodeMs": 0.025,
+          "replyBytes": 20218,
+          "jsonBytes": 20218,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 4.588,
+          "parseMs": 0.002,
+          "encodeMs": 0.027,
+          "replyBytes": 20218,
+          "jsonBytes": 20218,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 4.44,
+          "parseMs": 0.002,
+          "encodeMs": 0.025,
+          "replyBytes": 20218,
+          "jsonBytes": 20218,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 4.588,
+      "p95Ms": 7.327,
+      "maxMs": 7.327,
+      "minMs": 4.44,
+      "encodeP50Ms": 0.026,
+      "replyBytes": 20218,
+      "jsonBytes": 20218,
+      "replies": 10
+    }
+  ]
+}
