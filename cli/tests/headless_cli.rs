@@ -1193,6 +1193,112 @@ fn a_switched_off_remote_desktop_stays_up_and_comes_back_without_a_restart() {
     );
 }
 
+/// The same pair as the test above, with the window between them made explicit:
+/// an enable that lands *after* this loop has snapshotted the phase and *before*
+/// it reads the switch must not look like a bridge that stopped on its own.
+///
+/// The window is real but tiny — with the old order the phase was snapshotted at
+/// the end of an iteration and the switch was read after the next iteration's
+/// Agent supervision, which measures ~1.1–2.2ms on an idle laptop and stretches
+/// on a loaded runner. That is the whole CI flake: a `future remote enable` from
+/// another terminal lands in that window and the host exits on the enable that
+/// was meant to keep it serving. The rendezvous makes the ordering a fact
+/// instead of a probability: the loop holds at the read that judges the pair
+/// until the test has turned the switch on from another terminal, so what it
+/// judges is always "switch on, phase as snapshotted before the enable".
+#[cfg(unix)]
+#[test]
+fn an_enable_that_lands_between_the_phase_and_the_switch_read_does_not_stop_the_host() {
+    use std::time::Duration;
+
+    let home = tempfile::tempdir().unwrap();
+    let platform = FakePlatform::start(Platform::PairingDown);
+    signed_in_home(home.path(), &platform.url);
+
+    // The switch off, as the user set it, with no Desktop running yet.
+    let off = second_terminal(home.path(), &["remote", "disable"]);
+    assert!(
+        off.status.success(),
+        "`remote disable` must store the switch without a Desktop: {}",
+        String::from_utf8_lossy(&off.stderr)
+    );
+
+    let pause = home.path().join("switch-pause");
+    std::fs::create_dir_all(&pause).unwrap();
+    let mut guard = ChildGuard(
+        foreground(home.path())
+            .env("FUTURE_TEST_HOST_SWITCH_PAUSE_DIR", &pause)
+            .spawn()
+            .unwrap(),
+    );
+    let child = &mut guard.0;
+    let mut log = Stderr::take(child);
+
+    // The loop has reached the top of an iteration and is holding there. Its
+    // phase snapshot — the one the stop check judges — was taken just before,
+    // while the switch was still off.
+    wait_for_path(&pause.join("waiting"), Duration::from_secs(300));
+
+    // The other terminal turns the switch on. `remote enable` starts serving
+    // *before* it stores the switch (the switch is remembered only for an enable
+    // that came up), so from here on a phase read cannot be `Stopped`.
+    let on = second_terminal(home.path(), &["remote", "enable"]);
+    assert!(
+        on.status.success(),
+        "`remote enable` must be accepted by the running host: {}\n{}",
+        String::from_utf8_lossy(&on.stdout),
+        String::from_utf8_lossy(&on.stderr)
+    );
+
+    // Release the loop: it reads the switch it just saw turned on, and the phase
+    // it must judge is the one from before that enable.
+    std::fs::write(pause.join("release"), b"").unwrap();
+
+    // The host has to serve that enable. Exiting is the failure this test
+    // exists for, so the wait names which of the two happened.
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            log.drain();
+            panic!(
+                "an enable from another terminal stopped the host ({status}):\n{}",
+                log.collected
+            );
+        }
+        if std::time::Instant::now() >= deadline {
+            log.drain();
+            panic!("the host never reported the enable:\n{}", log.collected);
+        }
+        if let Ok(line) = log.lines.recv_timeout(Duration::from_millis(50)) {
+            log.collected.push_str(&line);
+            log.collected.push('\n');
+            if line.contains("Remote: Reconnecting") {
+                break;
+            }
+        }
+    }
+
+    signal(child, "-INT");
+    let exit = wait_for_exit(child, &mut log, &platform, Duration::from_secs(120));
+    assert!(
+        exit.success(),
+        "SIGINT must stop the run cleanly ({exit}):\n{}",
+        log.collected
+    );
+}
+
+/// Wait for a file another process creates, with a deadline that names the wait.
+#[cfg(unix)]
+fn wait_for_path(path: &Path, budget: std::time::Duration) {
+    let deadline = std::time::Instant::now() + budget;
+    while !path.is_file() {
+        if std::time::Instant::now() >= deadline {
+            panic!("{} was never written", path.display());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 /// A login that arrives while the switch is **off** is adopted, and the entry
 /// still does not start serving: the switch is the user's decision, so the
 /// adopted account changes what this run *could* serve and nothing more.
