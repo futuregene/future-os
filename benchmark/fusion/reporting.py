@@ -53,6 +53,12 @@ def generate(directory, public_out=None):
         rows.append(row)
     expected = len(manifest["suite"]["cases"]) * manifest["repeats"]
     daily = manifest.get("execution_profile") == "daily"
+    active_arms = manifest.get("arms", ["fusion", "single"])
+    report_arms = set(active_arms) | (
+        {"single"} if manifest.get("baseline_reference") else set()
+    )
+    selected = manifest["suite"].get("selection", {}).get("kind") == "baseline_outcomes"
+    expected_total = len(report_arms) * expected
     fusion_rows = [row for row in rows if row["arm"] == "fusion"]
     fusion_usage = {
         "recorded": len(fusion_rows),
@@ -94,6 +100,7 @@ def generate(directory, public_out=None):
     groups = {}
     for arm in ("fusion", "single"):
         arm_rows = [row for row in rows if row["arm"] == arm]
+        scheduled = expected if arm in report_arms else 0
         correct = sum(
             row["grade"]["correct"] and row["status"] == "completed" for row in arm_rows
         )
@@ -117,6 +124,7 @@ def generate(directory, public_out=None):
         combined_usage = sum_usage([parent_usage, kernel_usage])
         usage_incomplete = (
             any(row["status"] != "completed" for row in arm_rows)
+            or any(row.get("usage_incomplete_possible") for row in arm_rows)
             or len(arm_rows) < expected
             or any(row.get("step_attempt_failure_kinds") for row in arm_rows)
             or (
@@ -137,12 +145,12 @@ def generate(directory, public_out=None):
                 combined_usage.pop(key)
         groups[arm] = {
             "correct": correct,
-            "scheduled": expected,
+            "scheduled": scheduled,
             "recorded": len(arm_rows),
-            "missing_results": expected - len(arm_rows),
-            "accuracy": correct / expected,
-            "wilson_95": interval(correct, expected)
-            if manifest["repeats"] == 1
+            "missing_results": scheduled - len(arm_rows),
+            "accuracy": correct / scheduled if scheduled else None,
+            "wilson_95": interval(correct, scheduled)
+            if scheduled and manifest["repeats"] == 1 and not selected
             else None,
             "errors": sum(row["status"] != "completed" for row in arm_rows),
             "error_categories": dict(
@@ -157,7 +165,8 @@ def generate(directory, public_out=None):
                     "scheduled": sum(
                         case["dataset"] == name for case in manifest["suite"]["cases"]
                     )
-                    * manifest["repeats"],
+                    * manifest["repeats"]
+                    * int(arm in report_arms),
                     "recorded": sum(row["dataset"] == name for row in arm_rows),
                     "correct": sum(
                         row["dataset"] == name
@@ -283,10 +292,15 @@ def generate(directory, public_out=None):
         "manifest_sha256": digest(manifest),
         "arms": groups,
         "paired": outcomes,
-        "paired_delta_95_question_bootstrap": paired_interval(by_case),
+        "paired_delta_95_question_bootstrap": None
+        if selected
+        else paired_interval(by_case),
+        "selection": manifest["suite"].get("selection"),
+        "baseline_reference": manifest.get("baseline_reference"),
+        "active_arms": active_arms,
         "paired_interval_note": "suppressed below 20 distinct questions; formal sample size still requires power analysis",
         "diagnostics": diagnostics,
-        "complete": len(rows) == 2 * expected,
+        "complete": len(rows) == expected_total,
         "invalid_exercise": (directory / "INVALID.md").exists(),
         "report_generator_sha256": digest(Path(__file__).read_bytes()),
     }
@@ -299,6 +313,7 @@ def generate(directory, public_out=None):
                 "dataset",
                 "repeat",
                 "arm",
+                "result_source",
                 "status",
                 "correct",
                 "parsed",
@@ -314,6 +329,9 @@ def generate(directory, public_out=None):
                     row["dataset"],
                     row["repeat"],
                     row["arm"],
+                    "historical baseline"
+                    if row.get("reused_baseline")
+                    else "generated",
                     row["status"],
                     int(row["grade"]["correct"] and row["status"] == "completed"),
                     row["grade"].get("parsed"),
@@ -329,7 +347,7 @@ def generate(directory, public_out=None):
         "",
         "Status: complete."
         if summary["complete"]
-        else f"Status: INCOMPLETE ({len(rows)}/{2 * expected} model arms recorded). Pending results are not final failures; all aggregates below are provisional.",
+        else f"Status: INCOMPLETE ({len(rows)}/{expected_total} model arms recorded). Pending results are not final failures; all aggregates below are provisional.",
         "",
         f"Frozen suite: `{digest(manifest['suite'])}`; repeats: {manifest['repeats']}.",
         "",
@@ -341,12 +359,26 @@ def generate(directory, public_out=None):
         "| --- | --- | --- | --- | --- | --- |",
     ]
     for arm, values in groups.items():
+        if arm not in report_arms:
+            continue
         latency = values["mean_answer_seconds"]
         lines.append(
-            f"| {arm} | {values['correct']}/{expected} | {values['accuracy']:.1%} | {values['errors']} | {values['parse_failures']} | {latency:.1f} |"
+            f"| {arm} | {values['correct']}/{values['scheduled']} | {values['accuracy']:.1%} | {values['errors']} | {values['parse_failures']} | {latency:.1f} |"
             if latency is not None
-            else f"| {arm} | 0/{expected} | 0% | - | - | - |"
+            else f"| {arm} | 0/{values['scheduled']} | pending / not scheduled | - | - | - |"
         )
+    if manifest.get("baseline_reference"):
+        lines += [
+            "",
+            "DeepSeek Flash max is a frozen historical baseline. Only Fusion was generated in this run. Baseline latency and usage belong to its original run, not this run's spend. This is not a simultaneous comparison.",
+        ]
+    if selected:
+        selection = manifest["suite"]["selection"]
+        wrong_count, correct_count = selection["wrong"], selection["correct"]
+        lines += [
+            "",
+            f"This development challenge was deliberately selected from {wrong_count} baseline mistakes and {correct_count} baseline successes ({correct_count / (wrong_count + correct_count):.0%} reference accuracy by construction). Report recovery on the {wrong_count} mistakes and regressions on the {correct_count} successes. Do not infer overall capability gains from this selected sample; population confidence intervals are suppressed.",
+        ]
     lines += [
         "",
         "Errors, absent results and unparseable answers count as incorrect in the scheduled denominator.",
@@ -471,6 +503,9 @@ def generate(directory, public_out=None):
                     "dataset": row["dataset"],
                     "repeat": row["repeat"],
                     "arm": row["arm"],
+                    "result_source": "historical baseline"
+                    if row.get("reused_baseline")
+                    else "generated",
                     "status": row["status"],
                     "correct": row["grade"]["correct"] and row["status"] == "completed",
                     "parsed": row["grade"].get("parsed", False),

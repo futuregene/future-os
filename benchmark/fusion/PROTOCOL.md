@@ -49,10 +49,52 @@ limit is an upper bound, not evidence that equal computation was used.
 
 ## Data selection
 
+The current user decision on 2026-11-04 supersedes the earlier 20-case and
+7-BBEH-plus-7-Omni plans. Pause the previous baseline sweeps and freeze:
+
+- **Fusion 10**: the seven locked BBEH mistakes plus `omni:2617`, and one
+  previously correct control from each dataset. The two controls use a fixed
+  hash ordering over completed, parsed correct responses. Preserve these exact
+  ten historical baseline records; no new generation is used to assemble them.
+- **Max 1000**: all 460 BBEH mini cases plus 540 Omni-MATH integer-answer cases
+  sampled without replacement using seed `future-deepseek-max-1000-20261104-v1`.
+  Before sampling, exclude `omni:383` (disputed premise/reference) and `omni:2865`
+  (missing required figure); record these exclusions in the frozen manifest.
+
+Use the ten-case suite for Fusion optimization first. Start the new thousand-case
+single-model baseline only when requested; preparing its inputs does not start
+model generation. Its run must not rewrite the Fusion suite or cached baseline.
+ZebraLogic is retired from both workflows. Old question bundles and outputs are
+historical evidence, not active selection defaults. The full BBEH split overlaps
+the development suite, so the thousand-case baseline is not an untouched holdout.
+
 Freeze upstream revisions and content hashes, eligible subsets, sampling seed,
 question IDs, final-answer requirements, scorer version, repeats and timeout
-before generating any model outputs. Do not select examples after seeing either
-model's answer. Synthetic generated tasks require independent solution validation.
+before generating any model outputs for an unselected capability evaluation.
+Synthetic generated tasks require independent solution validation.
+
+The historical first development run deliberately selected by **baseline** outcome:
+freeze a uniform random sample of 100 ZebraLogic, 100 BBEH mini and 200 Omni-MATH
+integer-answer cases first, then run DeepSeek Flash max once on all 400. Keep its
+full scores, outputs, failures, usage and provenance. Once all records exist,
+select 14 parsed wrong answers and 6 parsed correct answers using a fixed hash
+ordering within each outcome. Exclude service and parse failures from these
+selection pools, but keep them in the original baseline denominator. If either
+pool is too small, report that and stop; do not retry or replace cases.
+
+Freeze those 20 cases and hashes of their original baseline results **before any
+Fusion generation**. Subsequent runs generate only Fusion and reuse the exact
+historical baseline. Label historical usage and latency separately. Verify source,
+question, reference, prompt, scorer, effective model/effort and result hashes before
+spending on the comparison. Never query historical sessions on a different Host.
+The 6/20 baseline score is fixed by selection, not an estimate of model ability.
+Report recovered mistakes and newly corrupted successes; suppress population
+confidence intervals for this selected challenge. It is development evidence,
+not a representative holdout or a broad capability claim. The 400-case baseline
+report remains the evidence of unselected single-model performance.
+
+Outside this explicitly labelled outcome-selected development challenge, do not
+select examples after observing either model's outputs.
 
 The smoke suite has one task from each of ZebraLogic, BBEH mini and Omni-MATH.
 Only the integer-answer subset of Omni-MATH is eligible in this version. BBEH mini
@@ -81,6 +123,19 @@ the scheduled denominator and are also reported separately. A diagnostic rerun
 is a new run; keep the original. If an infrastructure bug invalidates an exercise,
 write the reason and rerun the entire frozen suite, not just the losing examples.
 Do not retry a wrong answer until it becomes correct.
+
+The new single-model baseline explicitly permits additional attempts only after
+an accepted run's terminal ledger confirms HTTP 502. Default: three additional
+attempts, with 2/4/8-second backoff (configurable, capped at 30 seconds per wait).
+Keep each attempt's original response, ledger, IDs and usage. A failed attempt is
+not another independent question. Successful retries use the final attempt as the
+case result; keep all earlier failures and mark potentially incomplete usage.
+After the retry budget is exhausted, retain the failure in the denominator and
+continue the remaining questions. Non-502 execution errors still stop new
+submissions for inspection. Do not reinterpret answer errors or unknown submission
+outcomes as 502s. Resuming an acknowledged run means waiting on that same run;
+resuming a terminal case never generates another answer. This new retry policy
+does not rewrite or regenerate the ten-case historical baseline.
 
 Report accuracy, parse success, error rate, paired wins/losses, full/partial
 participation, mean and preferably median/tail latency, tokens and available

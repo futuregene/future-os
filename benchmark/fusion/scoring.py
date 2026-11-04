@@ -60,12 +60,23 @@ def score(case, text):
             def canonical(grid):
                 header, rows = grid["header"], grid["rows"]
                 if (
-                    len(header) != len(set(header))
+                    not isinstance(header, list)
+                    or not all(isinstance(column, str) for column in header)
+                    or len(header) != len(set(header))
+                    or not isinstance(rows, list)
                     or not rows
-                    or any(len(row) != len(header) for row in rows)
                 ):
                     raise ValueError("invalid grid dimensions")
-                return sorted(tuple(sorted(zip(header, map(str, row)))) for row in rows)
+                values = []
+                for row in rows:
+                    if isinstance(row, dict) and set(row) == set(header):
+                        row = [row[column] for column in header]
+                    if not isinstance(row, list) or len(row) != len(header):
+                        raise ValueError("grid row must match its header")
+                    if any(not isinstance(value, (str, int)) for value in row):
+                        raise ValueError("grid cells must be strings or integers")
+                    values.append(tuple(sorted(zip(header, map(str, row)))))
+                return sorted(values)
 
             correct = canonical(prediction) == canonical(reference)
         elif case["scorer"] == "integer":

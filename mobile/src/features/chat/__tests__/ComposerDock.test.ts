@@ -130,6 +130,44 @@ test("the recommendation wait locks the input and spins the send button", () => 
   }
 });
 
+test("an archived conversation locks the composer and says where to undo it", () => {
+  const send = jest.fn(async () => {});
+  const props = {
+    message: "one more question", setMessage: jest.fn(), attachments: [], setAttachments: jest.fn(),
+    supportsImages: true, activeModelLabel: "model", t: (key: string) => key,
+    remote: { draft: false, selectedSessionId: "s1", desktopOnline: true,
+      connectionPresentation: { level: "connected" }, models: [], modelId: "model",
+      streaming: false, busy: false, abort: jest.fn() },
+    openAttachmentMenu: jest.fn(), send, atLatest: true, scrollToLatest: jest.fn(),
+    pendingApprovals: [], approvalSubmitting: null, approvalError: null,
+    decideApproval: jest.fn(), selector: null, setSelector: jest.fn(),
+  } as unknown as ComponentProps<typeof ComposerDock>;
+  let tree!: ReactTestRenderer;
+  act(() => { tree = create(createElement(ComposerDock, { ...props, archived: true })); });
+  const input = () => tree.root.findByType(TextInput);
+  const button = (label: string) => tree.root.findAll(node => node.props.accessibilityLabel === label && node.props.onPress)[0];
+  try {
+    // The desktop refuses a prompt into an archived session, so the phone does
+    // not offer one: no editing, no send, and a line saying where to undo it.
+    expect(input().props.editable).toBe(false);
+    expect(button("chat.send")!.props.disabled).toBe(true);
+    act(() => button("chat.send")!.props.onPress());
+    act(() => input().props.onSubmitEditing());
+    expect(send).not.toHaveBeenCalled();
+    expect(tree.root.findAll(node => node.props.testID === "composer-archived-banner")
+      .length).toBeGreaterThan(0);
+
+    act(() => tree.update(createElement(ComposerDock, { ...props, archived: false })));
+    expect(input().props.editable).toBe(true);
+    act(() => button("chat.send")!.props.onPress());
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(tree.root.findAll(node => node.props.testID === "composer-archived-banner")
+      .length).toBe(0);
+  } finally {
+    act(() => tree.unmount());
+  }
+});
+
 test("streaming keeps the next draft through updates and completion without submitting it", () => {
   const send = jest.fn(async () => {});
   const props = {
