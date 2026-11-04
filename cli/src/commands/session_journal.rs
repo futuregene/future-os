@@ -362,6 +362,13 @@ pub(super) async fn run(args: &[String], out: &Output) -> Result<(), String> {
             bytes(block_text)
         ));
     }
+    let entry_text = number(&plan["entryEncoding"], "pendingBytes");
+    if entry_text > 0 {
+        out.log(&format!(
+            "  {} of entry metadata to store compressed",
+            bytes(entry_text)
+        ));
+    }
     print_entries(&plan, true, out);
     if options.json {
         out.log(&serde_json::to_string_pretty(&plan).map_err(|e| e.to_string())?);

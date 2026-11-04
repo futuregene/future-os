@@ -91,6 +91,22 @@ CREATE TABLE IF NOT EXISTS message_block_bodies (
         REFERENCES message_blocks(session_id,entry_position,ordinal) ON DELETE CASCADE
 ) WITHOUT ROWID;
 CREATE UNIQUE INDEX IF NOT EXISTS entries_identity_unique ON entries(session_id, entry_id);
+-- An entry's metadata document, stored compressed once it is big enough.
+--
+-- `entries.metadata_json` is the envelope every projection rebuilds a message
+-- from: on a real store it averages 607 bytes a row for 133 MiB. A row over
+-- 1 KiB moves its document here and the column is cleared, in one transaction;
+-- `entry_records` and the readers that select the column directly hydrate it
+-- through `future_gunzip`, so the projection is byte for byte what it was.
+CREATE TABLE IF NOT EXISTS entry_bodies (
+    session_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    field TEXT NOT NULL CHECK(field='metadata'),
+    encoding TEXT NOT NULL CHECK(encoding='gzip'),
+    body BLOB NOT NULL,
+    PRIMARY KEY(session_id,position,field),
+    FOREIGN KEY(session_id,position) REFERENCES entries(session_id,position) ON DELETE CASCADE
+) WITHOUT ROWID;
 DROP INDEX IF EXISTS entries_identity;
 CREATE INDEX IF NOT EXISTS entries_kind ON entries(session_id, entry_type, position);
 CREATE INDEX IF NOT EXISTS entries_run ON entries(session_id,run_id,position);

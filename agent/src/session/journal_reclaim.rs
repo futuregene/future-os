@@ -47,6 +47,10 @@ const BLOCK_BODY_BATCH: i64 = 32;
 /// A block smaller than this keeps its text inline: the body row costs more than
 /// the text saves.
 const BLOCK_BODY_MIN_BYTES: i64 = 2048;
+/// An entry envelope smaller than this keeps its document inline.
+const ENTRY_BODY_MIN_BYTES: i64 = 1024;
+/// Entry envelopes compressed per sweep call.
+const ENTRY_BODY_BATCH: i64 = 64;
 
 /// Runs one startup catch-up may fold. A completion notification already
 /// handles the normal case, so this only mops up what a crash or a stop left
@@ -457,6 +461,71 @@ pub(crate) fn compress_block_bodies(db: &mut Connection, limit: i64) -> Result<(
         }
     }
     Ok((blocks, before, after))
+}
+
+/// Entries whose metadata document is big enough to store compressed:
+/// `(rows, bytes)`.
+pub(crate) fn plan_entry_bodies(db: &Connection) -> Result<(i64, i64)> {
+    Ok(db.query_row(
+        &format!(
+            "SELECT count(*),coalesce(sum(length(CAST(metadata_json AS BLOB))),0)
+               FROM entries
+              WHERE length(CAST(metadata_json AS BLOB))>={ENTRY_BODY_MIN_BYTES}
+                AND NOT EXISTS(SELECT 1 FROM entry_bodies x
+                                WHERE x.session_id=entries.session_id AND x.position=entries.position)"
+        ),
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?)
+}
+
+/// Compress up to `limit` entry envelopes, largest first.
+///
+/// `entries.metadata_json` is NOT NULL, so the column keeps `{}` rather than
+/// NULL; every projection prefers the stored body over the column, and a row
+/// that does not pay for itself is left exactly as it was.
+pub(crate) fn compress_entry_bodies(db: &mut Connection, limit: i64) -> Result<(i64, i64, i64)> {
+    let candidates: Vec<(rusqlite::types::Value, i64, String)> = {
+        let mut statement = db.prepare_cached(&format!(
+            "SELECT session_id,position,metadata_json FROM entries
+              WHERE length(CAST(metadata_json AS BLOB))>={ENTRY_BODY_MIN_BYTES}
+                AND NOT EXISTS(SELECT 1 FROM entry_bodies x
+                                WHERE x.session_id=entries.session_id AND x.position=entries.position)
+              ORDER BY length(CAST(metadata_json AS BLOB)) DESC LIMIT ?1"
+        ))?;
+        let rows = statement
+            .query_map(params![limit], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let (mut entries, mut before, mut after) = (0i64, 0i64, 0i64);
+    for (session, position, metadata) in candidates {
+        let moved = super::database::try_maintenance_transaction(db, |tx| {
+            let body = super::content::compress::encode(metadata.as_bytes())?;
+            if body.len() * 10 >= metadata.len() * 9 {
+                return Ok(None);
+            }
+            tx.execute(
+                "INSERT INTO entry_bodies(session_id,position,field,encoding,body)
+                 VALUES (?1,?2,'metadata','gzip',?3)
+                 ON CONFLICT(session_id,position,field) DO UPDATE SET body=excluded.body",
+                params![session, position, body.as_slice()],
+            )?;
+            tx.execute(
+                "UPDATE entries SET metadata_json='{}' WHERE session_id=?1 AND position=?2",
+                params![session, position],
+            )?;
+            Ok(Some((metadata.len() as i64, body.len() as i64)))
+        })?;
+        if let Some((plain, stored)) = moved {
+            entries += 1;
+            before += plain;
+            after += stored;
+        }
+    }
+    Ok((entries, before, after))
 }
 
 impl SqliteStore {
@@ -905,6 +974,28 @@ impl SqliteStore {
             .map(|plan| plan.1)
             .unwrap_or(0);
 
+        // 8. Entry envelopes: same document, gzip. The column keeps `{}` because it
+        //    is NOT NULL; every projection prefers the stored body.
+        let pending_entry_bodies = self.db.call(|db| plan_entry_bodies(db))?;
+        let (compressed_entries, entry_bytes_before, entry_bytes_after) =
+            if dry_run || pending_entry_bodies.0 == 0 || started.elapsed() >= budget {
+                (0i64, 0i64, 0i64)
+            } else {
+                self.db
+                    .call_as("journal_reclaim", move |db| {
+                        compress_entry_bodies(db, ENTRY_BODY_BATCH)
+                    })
+                    .unwrap_or_else(|error| {
+                        tracing::warn!(%error, "entry body compression failed");
+                        (0, 0, 0)
+                    })
+            };
+        let entries_pending = self
+            .db
+            .call(|db| plan_entry_bodies(db))
+            .map(|plan| plan.1)
+            .unwrap_or(0);
+
         // `hasMore` promises *more work this sweep can do*, not "some settled run
         // still keeps a journal": a run that cannot be representationally
         // reclaimed (its last event is not `agent_end`, its envelope is unknown)
@@ -925,6 +1016,7 @@ impl SqliteStore {
                 || segments_pending > 0
                 || compress_pending > 0
                 || blocks_pending > 0
+                || entries_pending > 0
         };
 
         // Fold freed pages back into the file where this database can do it
@@ -979,6 +1071,12 @@ impl SqliteStore {
                 "compressedBlocks": compressed_blocks,
                 "bytesBefore": block_bytes_before,
                 "bytesAfter": block_bytes_after,
+            },
+            "entryEncoding": {
+                "pendingBytes": entries_pending,
+                "compressedEntries": compressed_entries,
+                "bytesBefore": entry_bytes_before,
+                "bytesAfter": entry_bytes_after,
             },
             "hasMore": has_more,
             "quickCheck": quick_check,
