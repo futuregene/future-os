@@ -57,6 +57,19 @@ def collect(directory, binary, runtime=None):
     records = []
     for path in sorted(directory.glob("r*-*/result.json")):
         result = read_json(path)
+        if result.get("reused_baseline"):
+            original = path.parent / "baseline-result-original.json"
+            if digest(original.read_bytes()) != result["baseline_result_sha256"]:
+                raise ValueError("Reused baseline evidence changed")
+            records.append(
+                {
+                    "case": result["case_id"],
+                    "arm": result["arm"],
+                    "audited": False,
+                    "source": "frozen historical baseline",
+                }
+            )
+            continue
         session = result.get("session_id")
         if not session:
             records.append(
@@ -115,6 +128,12 @@ def collect(directory, binary, runtime=None):
         if result["arm"] == "fusion":
             result["fusion_invocations"] = len(names)
         result["parent_usage"] = state.get("usage", {})
+        if result.get("attempt_count", 1) > 1:
+            result["final_attempt_parent_usage"] = state.get("usage", {})
+            result["parent_usage"] = sum_usage(
+                [state.get("usage", {})]
+                + [item.get("parent_usage", {}) for item in result["attempts"][:-1]]
+            )
         result["effective_parent_model"] = state.get("model")
         result["effective_parent_thinking"] = state.get("thinkingLevel")
         output = path.with_name("output.json")

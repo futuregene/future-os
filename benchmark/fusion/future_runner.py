@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import subprocess
 import time
 from collections import Counter
@@ -40,9 +41,9 @@ class Future:
             )
         return json.loads(proc.stdout) if json_output else proc.stdout
 
-    def preflight(self):
+    def preflight(self, single_only=False):
         settings = self.call(["fusion", "settings", "--json"])
-        if not settings["enabled"]:
+        if not single_only and not settings["enabled"]:
             raise ValueError(
                 "Local Fusion is disabled; enable it explicitly before this comparison"
             )
@@ -52,10 +53,11 @@ class Future:
             for provider, rows in models["models"].items()
             for row in rows
         }
-        profiles = settings["configuration"]["panel"] + [
-            settings["configuration"]["moderator"],
-            {"model": BASE_MODEL, "thinking_level": BASE_THINKING},
-        ]
+        profiles = [{"model": BASE_MODEL, "thinking_level": BASE_THINKING}]
+        if not single_only:
+            profiles += settings["configuration"]["panel"] + [
+                settings["configuration"]["moderator"]
+            ]
         for profile in profiles:
             model = found.get(profile["model"])
             if (
@@ -129,12 +131,21 @@ class Future:
                 # Never abort the parent or submit a replacement generation just
                 # to make it obey a benchmark-only consultation protocol.
 
-    def run_case(self, case, arm, directory, timeout):
+    def run_case(self, case, arm, directory, timeout, resume=False):
         directory = Path(directory)
-        directory.mkdir(parents=True, exist_ok=False)
+        existing = directory.exists()
+        if existing and not resume:
+            raise ValueError("Case directory already exists")
+        if existing and (directory / "result.json").exists():
+            return read_json(directory / "result.json")
+        if existing and not (directory / "ack.json").exists():
+            raise ValueError(
+                "Interrupted submission without an acknowledgement; inspect manually, never resubmit"
+            )
+        directory.mkdir(parents=True, exist_ok=resume)
         (directory / ".gitignore").write_text("*\n", encoding="utf-8")
         workspace = directory / "workspace"
-        workspace.mkdir()
+        workspace.mkdir(exist_ok=resume)
         prompt = prompt_for(case)
         (directory / "prompt.txt").write_text(
             ("/fusion " if arm == "fusion" else "") + prompt, encoding="utf-8"
@@ -151,34 +162,39 @@ class Future:
         session = None
         answer_received = False
         try:
-            created = self.call(
-                ["session", "new", "--cwd", str(workspace.resolve()), "--json"]
-            )
-            session = created["sessionId"]
-            self.call(["session", "set", session, "--context-files", "off", "--json"])
-            write_json(directory / "session-created.json", created)
-            args = [
-                "run",
-                "--session",
-                session,
-                "--model",
-                BASE_MODEL,
-                "--thinking",
-                BASE_THINKING,
-                "--no-tools",
-                "--no-title",
-                "--permission",
-                "all",
-                "--mode",
-                "json",
-                "--no-wait",
-                "--cwd",
-                str(workspace.resolve()),
-                "--message-file",
-                str((directory / "prompt.txt").resolve()),
-            ]
-            ack = self.call(args)
-            write_json(directory / "ack.json", ack)
+            if existing:
+                ack = read_json(directory / "ack.json")
+            else:
+                created = self.call(
+                    ["session", "new", "--cwd", str(workspace.resolve()), "--json"]
+                )
+                session = created["sessionId"]
+                self.call(
+                    ["session", "set", session, "--context-files", "off", "--json"]
+                )
+                write_json(directory / "session-created.json", created)
+                args = [
+                    "run",
+                    "--session",
+                    session,
+                    "--model",
+                    BASE_MODEL,
+                    "--thinking",
+                    BASE_THINKING,
+                    "--no-tools",
+                    "--no-title",
+                    "--permission",
+                    "all",
+                    "--mode",
+                    "json",
+                    "--no-wait",
+                    "--cwd",
+                    str(workspace.resolve()),
+                    "--message-file",
+                    str((directory / "prompt.txt").resolve()),
+                ]
+                ack = self.call(args)
+                write_json(directory / "ack.json", ack)
             session = ack["sessionId"]
             result.update(session_id=session, run_id=ack["runId"])
             output = self.wait(session, ack["runId"], timeout, fusion=arm == "fusion")
@@ -210,6 +226,13 @@ class Future:
             result["parent_usage"] = state.get("usage", {})
             result["effective_parent_model"] = state.get("model")
             result["effective_parent_thinking"] = state.get("thinkingLevel")
+            if (
+                state.get("model") != BASE_MODEL
+                or state.get("thinkingLevel") != BASE_THINKING
+            ):
+                raise ValueError(
+                    "Effective model/thinking differs from DeepSeek Flash max"
+                )
             if ledger.get("hasMore") or parent_transcript.get("hasMore"):
                 raise ValueError("Incomplete parent transcript or usage ledger")
             calls = tool_calls(parent_transcript)
@@ -279,6 +302,45 @@ class Future:
                 result.update(status="completed", grade=result["outer_grade"])
         except (RuntimeError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
             result["error"] = str(error)
+            # CLI wait errors can hide the upstream HTTP status. Use the accepted
+            # run's terminal ledger, never text from the model, to classify 502s.
+            if session and result.get("run_id"):
+                try:
+                    ledger = self.call(
+                        [
+                            "session",
+                            "transcript",
+                            "--session",
+                            session,
+                            "--runs",
+                            "--all",
+                            "--max-bytes",
+                            "0",
+                            "--json",
+                        ]
+                    )
+                    write_json(directory / "failure-ledger.json", ledger)
+                    result["parent_usage_ledger"] = ledger
+                    result["parent_usage"] = sum_usage(
+                        [item.get("usage") for item in ledger.get("ledger", [])]
+                    )
+                    for item in ledger.get("ledger", []):
+                        if (
+                            item.get("runId") == result["run_id"]
+                            and item.get("status") == "failed"
+                            and re.search(r"\bHTTP\s+502\b", item.get("error") or "")
+                        ):
+                            result.update(
+                                http_status=502,
+                                error_category="http_502",
+                                upstream_error=item["error"],
+                            )
+                except (
+                    RuntimeError,
+                    ValueError,
+                    subprocess.TimeoutExpired,
+                ) as ledger_error:
+                    result["failure_evidence_error"] = str(ledger_error)
             if session and not answer_received:
                 try:
                     self.call(["session", "abort", session], json_output=False)
