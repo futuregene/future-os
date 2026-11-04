@@ -1652,10 +1652,13 @@ impl ChatArea {
         self.rerender_message(index);
     }
 
-    /// Mark the newest message — the one a submission just appended — after an
-    /// acknowledgement that never arrived.
-    pub fn mark_last_message_run_state(&mut self, run_state: RunState) {
-        let Some(index) = self.messages.len().checked_sub(1) else {
+    /// Mark one message after an acknowledgement that never arrived: a
+    /// submission is owed its marker by id, because the round trip is no longer
+    /// the only way a message can reach the transcript (an event can land
+    /// between the echo and the answer, and "the newest message" would then be
+    /// somebody else's).
+    pub fn mark_message_run_state(&mut self, message_id: &str, run_state: RunState) {
+        let Some(index) = self.messages.iter().position(|m| m.id == message_id) else {
             return;
         };
         self.messages[index].run_state = Some(run_state);
