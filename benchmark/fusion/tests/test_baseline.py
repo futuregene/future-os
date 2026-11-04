@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from baseline import freeze_challenge, reference_for  # noqa: E402
+from baseline import freeze_challenge, reference_for, regrade_baseline  # noqa: E402
 from datasets import ROOT, digest, load_frozen_questions, read_json, write_json  # noqa: E402
 from future_runner import BASE_MODEL, BASE_THINKING, Future, prompt_for  # noqa: E402
 from reporting import generate  # noqa: E402
@@ -162,6 +162,27 @@ class BaselineTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "never resubmit"):
                     client.run_case({}, "single", Path(temporary), 0, resume=True)
             call.assert_not_called()
+
+    def test_regrading_preserves_original_run_and_does_not_generate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = self.fixture(root)
+            original = (source / "r0-omni-0-single/result.json").read_bytes()
+            out = root / "regraded"
+            with patch.object(Future, "call") as call:
+                regrade_baseline(source, out)
+            call.assert_not_called()
+            self.assertEqual(
+                (source / "r0-omni-0-single/result.json").read_bytes(), original
+            )
+            self.assertEqual(
+                (out / "r0-omni-0-single/result-before-regrading.json").read_bytes(),
+                original,
+            )
+            self.assertEqual(
+                read_json(out / "manifest.json")["regrading"]["source_manifest_sha256"],
+                digest(read_json(source / "manifest.json")),
+            )
 
 
 if __name__ == "__main__":

@@ -105,6 +105,18 @@ python benchmark/fusion/bench.py run --suite benchmark/fusion/suites/baseline-40
 python benchmark/fusion/bench.py freeze --baseline benchmark/fusion/runs/deepseek-max-400 --out benchmark/fusion/suites/fusion-challenge-20.json
 ```
 
+若需要修正评分器，先停止控制进程的新题提交，等已接受请求结束，再建立离线评分修订：
+
+```sh
+python benchmark/fusion/bench.py regrade-baseline --source benchmark/fusion/runs/deepseek-max-400 --out benchmark/fusion/runs/deepseek-max-400-v2
+```
+
+它不调用模型，原运行目录、原成绩和原脚本快照保持不动；新目录保存修订后的判分及原始证据哈希。
+若原基线尚未完成，对新目录使用 `run ... --out ...-v2 --resume`，复用已有回答并继续剩余题目。
+2026-11-04 首次运行发现 ZebraLogic 允许的 JSON 对象行被错误地按字段名比较；
+修正后同时接受数组行和以列名为键的对象行，未知/缺少列仍报解析失败。
+本次修订没有改变题目、提示词、模型或回答，不把格式误判列入推理错题。
+
 20 题选择清单固定原基线清单和每个结果的 SHA-256；完整模型输出与成绩仍保存在被忽略的
 `runs/`，不能提交。后续比较只跑 Fusion：
 

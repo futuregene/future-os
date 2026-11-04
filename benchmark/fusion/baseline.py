@@ -9,7 +9,7 @@ from future_runner import BASE_MODEL, BASE_THINKING, prompt_for
 from scoring import score
 
 
-def load_baseline(directory, complete=True):
+def load_baseline(directory, complete=True, verify_grades=True):
     directory = Path(directory)
     manifest = read_json(directory / "manifest.json")
     if (directory / "INVALID.md").exists():
@@ -25,7 +25,9 @@ def load_baseline(directory, complete=True):
     suite = manifest["suite"]
     if suite["sources_lock_sha256"] != digest(read_json(ROOT / "sources.lock.json")):
         raise ValueError("Baseline source lock changed")
-    for name in ("scoring.py", "future_runner.py"):
+    for name in (
+        ("scoring.py", "future_runner.py") if verify_grades else ("future_runner.py",)
+    ):
         if manifest["harness_sha256"].get(name) != digest((ROOT / name).read_bytes()):
             raise ValueError("Baseline prompt/scoring implementation changed: " + name)
     # Validate the saved question snapshot without depending on a mutable suite path.
@@ -64,7 +66,7 @@ def load_baseline(directory, complete=True):
                 or row.get("effective_parent_thinking") != BASE_THINKING
             ):
                 raise ValueError("Baseline effective model/effort mismatch")
-            if row["grade"] != score(cases[identifier], row["text"]):
+            if verify_grades and row["grade"] != score(cases[identifier], row["text"]):
                 raise ValueError("Baseline score differs from frozen answer/scorer")
             if (path.parent / "prompt.txt").read_text(encoding="utf-8") != prompt_for(
                 cases[identifier]
@@ -74,6 +76,52 @@ def load_baseline(directory, complete=True):
     if complete and set(rows) != set(cases):
         raise ValueError(f"Baseline is incomplete: {len(rows)}/{len(cases)} results")
     return manifest, bundle, cases, rows
+
+
+def regrade_baseline(source, out):
+    """A new, traceable grade revision; never replace the original run evidence."""
+    source, out = Path(source), Path(out)
+    manifest, _, cases, rows = load_baseline(
+        source, complete=False, verify_grades=False
+    )
+    if out.exists():
+        raise ValueError("Regraded output already exists")
+    shutil.copytree(source, out)
+    shutil.copyfile(source / "manifest.json", out / "manifest-before-regrading.json")
+    (out / "harness").rename(out / "harness-before-regrading")
+    harness = out / "harness"
+    harness.mkdir()
+    files = list(ROOT.glob("*.py")) + [
+        ROOT / "requirements.txt",
+        ROOT / "sources.lock.json",
+    ]
+    for path in files:
+        shutil.copyfile(path, harness / path.name)
+    manifest["harness_sha256"] = {
+        path.name: digest(path.read_bytes()) for path in files
+    }
+    manifest["regrading"] = {
+        "source_manifest_sha256": digest(read_json(source / "manifest.json")),
+        "reason": "accept equivalent ZebraLogic JSON object rows; no question or model output changes",
+        "original_result_sha256": {},
+    }
+    for identifier, (row, path) in rows.items():
+        destination = out / path.relative_to(source)
+        shutil.copyfile(path, destination.with_name("result-before-regrading.json"))
+        manifest["regrading"]["original_result_sha256"][identifier] = digest(
+            path.read_bytes()
+        )
+        if row["status"] == "completed":
+            row["grade"] = row["outer_grade"] = score(cases[identifier], row["text"])
+        write_json(destination, row)
+    write_json(out / "manifest.json", manifest)
+    from reporting import generate
+
+    generate(out)
+    print(
+        f"Regraded {len(rows)} retained responses without model calls: {out}",
+        flush=True,
+    )
 
 
 def freeze_challenge(baseline, out, seed):

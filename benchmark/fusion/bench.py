@@ -89,6 +89,12 @@ def main():
     freeze.add_argument("--baseline", type=Path, required=True)
     freeze.add_argument("--seed", default="future-fusion-errors-v1")
     freeze.add_argument("--out", type=Path, required=True)
+    regrade = commands.add_parser(
+        "regrade-baseline",
+        help="create a new offline grading revision; preserve original answers and scores",
+    )
+    regrade.add_argument("--source", type=Path, required=True)
+    regrade.add_argument("--out", type=Path, required=True)
     report = commands.add_parser(
         "report", help="offline paired comparison, no model calls"
     )
@@ -166,6 +172,10 @@ def main():
         print(
             f"Verified {len(cases)} frozen questions and scoring sources: {args.suite}"
         )
+    elif args.command == "regrade-baseline":
+        from baseline import regrade_baseline
+
+        regrade_baseline(args.source, args.out)
     elif args.command == "freeze":
         from baseline import freeze_challenge
 

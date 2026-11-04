@@ -98,6 +98,19 @@ class ReasoningProtocolTests(unittest.TestCase):
         self.assertFalse(result["correct"])
         self.assertFalse(result["parsed"])
 
+    def test_grid_object_rows_are_compared_by_values_not_keys(self):
+        case = {
+            "scorer": "grid",
+            "answer": {
+                "header": ["House", "Name"],
+                "rows": [["1", "Alice"], ["2", "Bob"]],
+            },
+        }
+        text = 'FINAL_ANSWER: {"header":["Name","House"],"rows":[{"House":2,"Name":"Bob"},{"Name":"Alice","House":1}]}'
+        self.assertTrue(score(case, text)["correct"])
+        malformed = text.replace('"House":2', '"Unexpected":2')
+        self.assertFalse(score(case, malformed)["parsed"])
+
     def test_sampling_does_not_depend_on_answers(self):
         rows = [{"id": str(i), "stratum": str(i % 3), "answer": i} for i in range(15)]
         with patch("datasets.load_cases", return_value=rows):
