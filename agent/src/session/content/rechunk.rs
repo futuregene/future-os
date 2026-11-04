@@ -20,13 +20,22 @@ pub(crate) const RECHUNK_MAX_BODY_BYTES: i64 = 16_384;
 
 /// Bodies stored as more than one segment that a repack can collapse:
 /// `(objects, rows)`.
+///
+/// A body marked in `content_compressed` is never a candidate. Its stored bytes
+/// are not the body: each segment holds one gzip member, and a reader decodes a
+/// member at a time (`compress::decompress`). Collapsing those rows into one
+/// concatenates members, so the row is still not the body, the plaintext
+/// offsets after the first member no longer exist, and every read of the tail
+/// fails once the object's `byte_length` says the body is longer.
 pub(crate) fn plan(db: &Connection) -> Result<(i64, i64)> {
     Ok(db.query_row(
         &format!(
             "SELECT count(*),coalesce(sum(n),0) FROM (
-                 SELECT content_id,count(*) n
-                   FROM content_segments GROUP BY content_id
-                  HAVING count(*)>1 AND sum(length(CAST(body AS BLOB)))<={RECHUNK_MAX_BODY_BYTES})"
+                 SELECT s.content_id,count(*) n
+                   FROM content_segments s
+                  WHERE NOT EXISTS(SELECT 1 FROM content_compressed c WHERE c.content_id=s.content_id)
+                  GROUP BY s.content_id
+                  HAVING count(*)>1 AND sum(length(CAST(s.body AS BLOB)))<={RECHUNK_MAX_BODY_BYTES})"
         ),
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
@@ -41,8 +50,10 @@ pub(crate) fn plan(db: &Connection) -> Result<(i64, i64)> {
 pub(crate) fn apply(db: &mut Connection, limit: i64) -> Result<(i64, i64, i64)> {
     let candidates: Vec<i64> = {
         let mut statement = db.prepare_cached(&format!(
-            "SELECT content_id FROM content_segments GROUP BY content_id
-              HAVING count(*)>1 AND sum(length(CAST(body AS BLOB)))<={RECHUNK_MAX_BODY_BYTES}
+            "SELECT s.content_id FROM content_segments s
+              WHERE NOT EXISTS(SELECT 1 FROM content_compressed c WHERE c.content_id=s.content_id)
+              GROUP BY s.content_id
+              HAVING count(*)>1 AND sum(length(CAST(s.body AS BLOB)))<={RECHUNK_MAX_BODY_BYTES}
               ORDER BY count(*) DESC LIMIT ?1"
         ))?;
         let rows = statement
