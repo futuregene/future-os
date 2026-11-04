@@ -203,7 +203,25 @@ fn read_entry_rows(db: &Connection, session: &str) -> Result<Vec<String>> {
 pub(crate) fn read_run_marker_headers(db: &Connection, session: &str) -> Result<Vec<Value>> {
     let stored_session = crate::session::identity::session_key(db, session)?;
     if crate::session::content::format(db, session)? != crate::session::content::FORMAT_VERSION {
-        return run_marker_rows(db, session, "entry_records");
+        // Legacy bodies are assembled by the `entry_records` view, which is
+        // deep enough that asking it for every marker meant walking the whole
+        // transcript: 7 ms of the 23 ms a warm `get_state` spent on one
+        // 14,531-entry conversation. The marker *positions* come from the
+        // header index instead, so only those bodies are assembled — and the
+        // set of rows is unchanged, so admission still sees every marker.
+        let mut query = db.prepare_cached(
+            "SELECT payload FROM entry_records WHERE session_id=?1 AND position IN (
+               SELECT position FROM entries WHERE session_id=?1
+                 AND entry_type IN ('run_started','run_terminal','run_stop_requested'))
+             ORDER BY position",
+        )?;
+        let rows = query
+            .query_map([&stored_session], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        return rows
+            .into_iter()
+            .map(|row| Ok(serde_json::from_str(&row)?))
+            .collect();
     }
     // The latest start supersedes earlier runs. Only its latest start, stop
     // and terminal can affect admission/resume; bodies and old runs are skipped.
@@ -216,17 +234,6 @@ pub(crate) fn read_run_marker_headers(db: &Connection, session: &str) -> Result<
         .collect::<rusqlite::Result<Vec<_>>>()?;
     rows.into_iter()
         .map(|raw| Ok(serde_json::from_str(&raw)?))
-        .collect()
-}
-
-fn run_marker_rows(db: &Connection, session: &str, source: &str) -> Result<Vec<Value>> {
-    let stored_session = crate::session::identity::session_key(db, session)?;
-    let mut statement=db.prepare_cached(&format!("SELECT payload FROM {source} WHERE session_id=?1 AND entry_type IN ('run_started','run_terminal','run_stop_requested') ORDER BY position"))?;
-    let rows = statement
-        .query_map([&stored_session], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    rows.into_iter()
-        .map(|row| Ok(serde_json::from_str(&row)?))
         .collect()
 }
 

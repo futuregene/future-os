@@ -32,6 +32,8 @@ mod compactor_lifecycle;
 mod display_cache;
 mod encoding;
 mod fork_validation;
+mod legacy_state;
+mod message_page;
 mod metadata;
 mod run_recovery;
 mod storage;

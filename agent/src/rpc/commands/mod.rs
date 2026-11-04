@@ -430,31 +430,42 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
 
     // Metadata and event observers must not pull LLM context into memory.
     // All other commands retain their existing fully hydrated semantics.
-    if !matches!(
-        cmd_type.as_str(),
-        "get_state"
-            | "get_events_since"
-            | "get_run_snapshot"
-            | "get_session_events_since"
-            | "get_runtime_metrics"
-            | "abort"
-            | "abort_session"
-            | "cancel_queued_run"
-            | "release_queued_run"
-            | "approval_decision"
-            | "prune_run_events"
-            | "set_session_name"
-            | "set_cwd"
-            | "set_permission_level"
-            | "set_sandbox_policy"
-            | "set_auto_retry"
-            | "set_auto_compaction"
-            | "set_thinking_level"
-            | "cycle_thinking_level"
-            | "set_tools"
-            | "disable_tools"
-            | "disable_builtin_tools"
-    ) {
+    //
+    // A **paged** `get_messages` joins them: it resolves its `offset` against the
+    // transcript and hydrates only that page, so loading the whole conversation
+    // first is exactly the work it exists to avoid. It used to pay that load on
+    // its first call per session — measured 384 ms of the 40-message page of a
+    // 14,531-entry conversation while the page itself cost 14 ms. A `get_messages`
+    // without a page still reads the in-memory list and still hydrates.
+    let paged_messages =
+        cmd_type == "get_messages" && (cmd.offset.is_some() || cmd.limit.is_some());
+    if !paged_messages
+        && !matches!(
+            cmd_type.as_str(),
+            "get_state"
+                | "get_events_since"
+                | "get_run_snapshot"
+                | "get_session_events_since"
+                | "get_runtime_metrics"
+                | "abort"
+                | "abort_session"
+                | "cancel_queued_run"
+                | "release_queued_run"
+                | "approval_decision"
+                | "prune_run_events"
+                | "set_session_name"
+                | "set_cwd"
+                | "set_permission_level"
+                | "set_sandbox_policy"
+                | "set_auto_retry"
+                | "set_auto_compaction"
+                | "set_thinking_level"
+                | "cycle_thinking_level"
+                | "set_tools"
+                | "disable_tools"
+                | "disable_builtin_tools"
+        )
+    {
         if let Err(error) = ServerSession::ensure_history_loaded_unlocked(&session) {
             return RpcResponse::build_fail(
                 id,
@@ -477,7 +488,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "approval_decision" => run_control::handle_approval_decision(state, &cmd, id),
         "get_state" => observability::handle_get_state(state, &cmd, id),
         "get_system_prompt" => observability::handle_get_system_prompt(&session, id),
-        "get_messages" => observability::handle_get_messages(&session, id),
+        "get_messages" => observability::handle_get_messages(&session, &cmd, id),
         "get_events_since" => observability::handle_get_events_since(&session, &cmd, id),
         "get_run_snapshot" => observability::handle_get_run_snapshot(&session, &cmd, id),
         "get_session_events_since" => {
