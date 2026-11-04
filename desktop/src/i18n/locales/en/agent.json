@@ -198,6 +198,7 @@
       "title": "Send queue",
       "count": "{{count}} waiting",
       "hint": "Sent as one message when this reply ends",
+      "hintParked": "Waited too long — press “Send this one now”",
       "attachments": "Attachments: {{count}}",
       "attachmentsOnly": "Attachments only",
       "edit": "Edit queued message",
