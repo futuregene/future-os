@@ -257,7 +257,7 @@ Writer   · 10:04 · <正文>
 | `router` | 1 次轻判定 + K 次真实 run | 接近"它自己接了" | ≈1× |
 | `eager` | N 次轻判定（并行）+ K 次真实 run | 与"让它们自己决定"一致 | ≈1×，N ≤ 6 |
 
-关键差别在量级：真实 run 带身份段、工具定义、技能清单、记忆索引，是数十 KB 级；判定请求只带"一句职责 + 最近 3 条 + 这条消息"，几百 token，且不带工具。因此 `eager` 把每个成员都问一遍，总代价仍远小于"每个成员跑一次完整 run"——这正是 Grok Bot 的群聊成本来源（[ANTIPATTERNS §35](https://github.com/unicodef1wn/grokbot-field-notes/blob/main/ANTIPATTERNS.md)）。具体倍率要实测（§15）。
+关键差别在量级：真实 run 带身份段、工具定义、技能清单、记忆索引，是数十 KB 级；判定请求只带"一句职责 + 最近 3 条 + 这条消息"，几百 token，且不带工具。因此 `eager` 把每个成员都问一遍，总代价仍远小于"每个成员跑一次完整 run"——这正是 Grok Bot 的群聊成本来源（[ANTIPATTERNS §35](https://github.com/unicodef1wn/grokbot-field-notes/blob/main/ANTIPATTERNS.md)）。具体倍率要实测（§16）。
 
 **默认是 `router`。** 新建频道默认把总管计入成员（§9.2），由它判定；用户拒绝创建总管时退到 `mention_only`，不会在没有判定器的情况下假装 `router`。`eager` 默认关闭，作为频道级选项保留。
 
@@ -527,7 +527,7 @@ bot 会话创建时 `permission_level='all'`，且**不传 `sandbox_tier`**。�
 | 1 | **权限默认全开**：bot 会话不传 `sandbox_tier`，`permission_level='all'`（§10.1） | 执行者就是这台机器的主人，改坏配置的代价是重装一次；而一条必须长期维护的策略层是持续成本 | 把 bot 开放给主人以外的人使用时，换成"仅层 0"（不许改模型配置与密钥） |
 | 2 | **配置先"指过去"，后提库**：v1 加一个配置目录覆盖，让 bot 实例读用户那份 `models.json`、`auth.json`、app 作用域技能；把它们整体提到 `~/.future/config/` 是独立的后续任务 | 覆盖是一处改动，行为与提库一致；而提库改动已发布的数据布局，要同时动迁移、备份清单、沙箱硬拒路径与文档 | 第二个实例稳定运行后，按独立任务提库；届时两边自然共享，覆盖字段作废 |
 | 3 | **`settings.json` 每实例一份** | 里面有默认模型、审批档位、压缩阈值；bot 想用便宜模型、你想用强的，而且 bot 改它不该改到你 | 若发现两边设置长期完全一致且维护成本成为负担，再评估共享其中的只读字段 |
-| 4 | **默认发言策略 `router`**（有总管）；无总管退 `mention_only`；`eager` 默认关（§5） | 一次几百 token 的判定换掉了"每回合都要人做路由"这个最大摩擦，成本几乎不变 | 判定器的误判率实测（§15 第 6 条）高到用户宁可变频点名时 |
+| 4 | **默认发言策略 `router`**（有总管）；无总管退 `mention_only`；`eager` 默认关（§5） | 一次几百 token 的判定换掉了"每回合都要人做路由"这个最大摩擦，成本几乎不变 | 判定器的误判率实测（§16 第 6 条）高到用户宁可变频点名时 |
 | 5 | **`eager` 最多 6 个成员，判官用便宜模型**（§5） | 群聊的价值是几个视角而不是人多；判官只需判断职责相关，不需强推理 | 实测发现便宜判官误判明显高于强模型，且用户频繁开 `eager` 时 |
 | 6 | **机器人与频道里 `@` 只列机器人**（§11.3） | 在频道里 `@` 的动作就是叫人；让人先想"这个 `@` 现在指什么"比少一个菜单组贵 | 用户在机器人表面频繁需要引用文件、而拖拽/路径不足以覆盖时，再加回文件组 |
 | 7 | **频道里默认不能引用私聊上下文**，频道级开关（§4.4） | 这个泄漏是静默的：群里其他人只看到一句话，不会知道它来自私聊 | 用户抱怨每次都要重新交代背景、且能接受在转录里标注引用来源时 |
@@ -550,7 +550,58 @@ bot 会话创建时 `permission_level='all'`，且**不传 `sandbox_tier`**。�
 
 ---
 
-## 14. 分阶段与验收
+## 14. 代码落点
+
+一句话：**内核一个 crate，执行器在宿主，界面在桌面**；与 goal / tasks / fusion 同构，不新增顶层目录。
+
+| 位置 | 放什么 | 同构对象 |
+|---|---|---|
+| `orchestration/bots/` | 数据模型、`bots.db` 的 store、纯函数路由内核、应用服务、说话规则与固定骨架（crate `future-bots`） | `orchestration/tasks/`、`orchestration/fusion/` |
+| `host/src/bots/` | 执行器（tick、同频道串行）、启动扫描修复、`bots-updated` | `host/src/tasks.rs`、`host/src/tasks/service.rs` |
+| `cli/src/commands/bot.rs`、`channel.rs` | `future bot …`、`future channel …` | `cli/src/commands/` 下的既有子命令 |
+| `desktop/src-tauri/src/commands/bots.rs` | Tauri 薄适配，只转调 host service | `commands/tasks.rs` |
+| `desktop/src/features/bots/` | 机器人页、频道视图、`useBots`、后端桥接 | `features/tasks/` |
+| `desktop/src/i18n/locales/{en,zh}/bots.json` | 界面文案 | `tasks.json` |
+| `ActivityRail.tsx` 与 `ActivitySection` | 导航按钮，以及视图枚举新增 `"bots"` | 现有的 tasks / remote 按钮 |
+| `packages/remote-protocol/src/handshake.rs` | 能力位 `bots_v1`（手机与另一台桌面） | `tasks_v1` |
+| 根 `Cargo.toml` 的 `members` | 一行 `"orchestration/bots"`；`default-members` 不动 | 现有三条 orchestration |
+
+运行时数据不属于代码：`~/.future/bots/{bots.db, agent-home/, workspaces/}`（§3.3、§8.3）。
+
+```
+orchestration/bots/
+  Cargo.toml            # name = "future-bots"
+  src/lib.rs
+  src/model.rs          # Bot / Channel / Binding / Turn
+  src/store.rs          # bots.db：schema、migrate、open
+  src/kernel.rs         # 纯函数：mentions / enqueue / judge / should_stop
+  src/service.rs        # 应用服务：host 与 CLI 共用
+  src/rules.rs          # 说话规则与固定骨架
+  tests/
+host/src/bots/
+  mod.rs
+  executor.rs           # 每频道串行，跨频道 ≤ 2 并行
+  sweep.rs              # 启动扫描：孤儿回收、悬空引用降级
+  notify.rs             # bots-updated
+```
+
+依赖方向只有一条：
+
+```
+orchestration/bots  ←── host ──→ desktop/src-tauri ←── desktop(TS)
+        ↑                ↑
+       cli ──────────────┘   （只调 service，不自己拼 SQL）
+```
+
+`future-bots` 不依赖 `host`，也不依赖 `agent`：它是纯逻辑加自己的库，所以内核可单测、可在别处复用。`host` 是 `bots.db` 的唯一写者，与 tasks 的假设相同。
+
+不在顶层新建 `bots/`：workspace 成员按"它是什么"分组——`host` 共享后端、`agent` 进程、`channels` IM 桥、`orchestration/*` 控制面、`packages/*` 共享库、`tui`、`cli`、`desktop/*`。顶层的 `bots/` 会与 `channels/` 平级撞名，两个名字都要额外解释；放进 `orchestration/` 则与 goal / tasks / fusion 是同一种东西。
+
+协议：v1 不改 `packages/rpc/proto/future.proto`。bot 的动作全部走既有的 `prompt` / `new_session` / `set_session` / `list_sessions`，其余在 `bots.db` 与 CLI；只有 §10.3 的"仅层 0"tier 才需要动 proto。手机端只加能力位，不改消息。
+
+---
+
+## 15. 分阶段与验收
 
 | 阶段 | 交付 | 可观测的验收 |
 |---|---|---|
@@ -563,7 +614,7 @@ bot 会话创建时 `permission_level='all'`，且**不传 `sandbox_tier`**。�
 
 ---
 
-## 15. 应当由代码验证、而不是由本文承诺的点
+## 16. 应当由代码验证、而不是由本文承诺的点
 
 每条都是本设计的**假设**，纸上无法定论，需要一次实测或一个测试钉住。
 
