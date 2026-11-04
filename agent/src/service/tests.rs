@@ -720,9 +720,11 @@ async fn an_expired_shutdown_deadline_reports_failed_stopping_and_stops_waiting(
 /// the capability locks while another thread prepares a sandbox. The drain
 /// skips that revoke after a short bounded wait instead of reporting the whole
 /// shutdown failed: the granted ACEs are harmless while the process exits, and
-/// the next startup cleanup revokes them. On non-Windows the bounded call
-/// returns `Unsupported`, which takes the same skip arm.
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+/// the next startup cleanup revokes them.
+///
+/// Windows only: the drain step itself is a Windows arm, so a run on any other
+/// platform would exercise a call production never makes.
+#[cfg(windows)]
 #[test]
 fn a_sandbox_cleanup_timeout_does_not_fail_the_drain() {
     use crate::sandbox::reset_windows_sandbox_capabilities_bounded;
