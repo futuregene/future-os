@@ -65,8 +65,9 @@ const SQL_INSERT_RUN: &str = "
     INSERT INTO task_runs (
         id, task_id, kind, origin, actor, due_at, status, thread_id, session_id,
         run_id, prompt_version, result_summary, feedback, feedback_note,
-        started_at, finished_at, error_message, session_deleted, finish_reason, finish_note
-    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)";
+        started_at, finished_at, error_message, session_deleted, finish_reason, finish_note,
+        owner
+    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)";
 
 const SQL_UPDATE_RUN: &str = "
     UPDATE task_runs SET
@@ -84,8 +85,27 @@ const SQL_RUNS_FOR_TASK: &str = "
 /// so nothing that is not the task's own work can be pending here.)
 const SQL_COUNT_RUNNING: &str =
     "SELECT COUNT(*) FROM task_runs WHERE task_id = ?1 AND status = 'running'";
+
+/// Every run still marked `running`, with the host process that claimed it.
+///
+/// This is the input to liveness reconciliation: `status` alone says a run has
+/// not settled, never whether anyone is still carrying it. See
+/// [`Store::reap_running_run`] for what settling one looks like.
+const SQL_RUNNING_RUN_OWNERS: &str =
+    "SELECT id, owner FROM task_runs WHERE status = 'running' ORDER BY started_at";
+
+/// Settle one run that no live executor owns. Guarded on `status = 'running'`
+/// so it can never rewrite a row that settled in the meantime (a run that came
+/// back and finished between the liveness check and this write keeps its own
+/// outcome).
+const SQL_REAP_RUN: &str = "
+    UPDATE task_runs SET status = 'failed', finished_at = ?2, error_message = ?3,
+        finish_reason = ?4, finish_note = ?5
+    WHERE id = ?1 AND status = 'running'";
+
 const SQL_INTERRUPT_RUNNING: &str = "
-    UPDATE task_runs SET status = 'failed', finished_at = ?1, error_message = 'interrupted'
+    UPDATE task_runs SET status = 'failed', finished_at = ?1, error_message = 'interrupted',
+        finish_reason = ?2, finish_note = ?3
     WHERE status = 'running'";
 
 const SQL_INSERT_REVISION: &str = "
@@ -186,6 +206,15 @@ const MIGRATIONS: &[Migration] = &[
         "timezone",
         "ALTER TABLE tasks ADD COLUMN timezone TEXT",
     ),
+    // Which host process claimed a run — the column that makes a leftover
+    // `running` row decidable. Rows written before it existed keep NULL, which
+    // a tick reads as "not this process's, and this process is the only host"
+    // (see `host::tasks::reap_orphaned_runs`).
+    Add(
+        "task_runs",
+        "owner",
+        "ALTER TABLE task_runs ADD COLUMN owner TEXT",
+    ),
 ];
 
 /// The full schema. Single source of truth for a fresh database (see the
@@ -278,6 +307,11 @@ CREATE TABLE IF NOT EXISTS task_runs (
   -- kept for runs that produced nothing usable so a deleted conversation is
   -- not the end of the story.
   finish_note     TEXT,
+  -- The host process that claimed this run (`<pid>:<instance>`). NULL = a row
+  -- written before this was recorded, or an insert that is not a claim. It is
+  -- how a later tick tells a run that is still in flight from one whose process
+  -- is gone — see `Store::running_run_owners`.
+  owner           TEXT,
   UNIQUE(task_id, due_at)
 );
 
@@ -488,7 +522,17 @@ impl Store {
 
     // ─── runs ─────────────────────────────────────────────────────────────
 
+    /// Record a run row. `owner` is who claimed it — the host process that will
+    /// execute and settle it — and `None` for a row that is not a claim (a
+    /// fixture, an imported record). The tick stamps its own instance so a later
+    /// tick can tell a run still in flight from one whose process is gone; see
+    /// [`Store::running_run_owners`].
     pub fn insert_run(&self, run: &TaskRun) -> Result<()> {
+        self.insert_run_owned(run, None)
+    }
+
+    /// [`Store::insert_run`], stamped with the claiming host.
+    pub fn insert_run_owned(&self, run: &TaskRun, owner: Option<&str>) -> Result<()> {
         let values = params![
             run.id,
             run.task_id,
@@ -510,6 +554,7 @@ impl Store {
             run.session_deleted as i64,
             run.finish_reason,
             run.finish_note,
+            owner,
         ];
         self.conn.execute(SQL_INSERT_RUN, values)?;
         Ok(())
@@ -607,8 +652,57 @@ impl Store {
         Ok(n > 0)
     }
 
+    /// Every run still marked `running`, paired with the host that claimed it
+    /// (`None` for a row written before the column existed).
+    ///
+    /// A running row says only that nobody settled it. This is what a caller
+    /// needs to decide whether anyone is still carrying it — the tick does that
+    /// with [`Store::reap_running_run`] when a run's owner is no longer alive.
+    pub fn running_run_owners(&self) -> Result<Vec<(String, Option<String>)>> {
+        let mut stmt = self.conn.prepare(SQL_RUNNING_RUN_OWNERS)?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    /// Settle one run nobody is carrying any more, as `failed` with the given
+    /// reason and note.
+    ///
+    /// An audit row is not thrown away to unblock a schedule: it keeps its id,
+    /// its start, its conversation, and gains the terminal state plus
+    /// `finished_at` that whoever claimed it could not write. Returns whether a
+    /// row changed — `false` means it settled on its own in the meantime, and
+    /// that outcome is left alone.
+    pub fn reap_running_run(
+        &self,
+        run_id: &str,
+        at_ms: i64,
+        error: &str,
+        finish_reason: &str,
+        finish_note: &str,
+    ) -> Result<bool> {
+        let n = self.conn.execute(
+            SQL_REAP_RUN,
+            params![run_id, at_ms, error, finish_reason, finish_note],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Startup reconciliation: a tasks loop began, so every run still marked
+    /// `running` was left by a process that is gone.
+    ///
+    /// The data directory admits one host process at a time
+    /// (`instance::InstanceGuard`), so this cannot fail a run that someone is
+    /// actually working on. It stays here as the one sweep that also settles
+    /// rows written before runs recorded an owner; from then on the tick
+    /// reconciles by owner, without needing a restart.
     pub fn mark_interrupted_runs(&self, at_ms: i64) -> Result<usize> {
-        let values = params![at_ms];
+        let values = params![
+            at_ms,
+            crate::types::finish_reason::INTERRUPTED,
+            "the tasks loop started and found this run still marked `running`: the process that \
+             claimed it is gone, so its conversation is the only record left"
+        ];
         let n = self.conn.execute(SQL_INTERRUPT_RUNNING, values)?;
         Ok(n)
     }
@@ -1696,6 +1790,125 @@ mod tests {
             RunStatus::Completed
         );
         assert_eq!(s.mark_interrupted_runs(1_000).unwrap(), 0);
+    }
+
+    // ─── run ownership and liveness ───────────────────────────────────────
+
+    /// Every unsettled run is listed with the host that claimed it, which is
+    /// what a tick needs to tell "in flight" from "its process is gone".
+    #[test]
+    fn running_runs_are_listed_with_the_host_that_claimed_them() {
+        let (_dir, s) = store();
+        let t = task("owners");
+        s.insert_task(&t).unwrap();
+
+        let owned = run_row(&t.id, RunStatus::Running, 100);
+        let legacy = run_row(&t.id, RunStatus::Running, 200);
+        let settled = run_row(&t.id, RunStatus::Completed, 300);
+        s.insert_run_owned(&owned, Some("1234:abc")).unwrap();
+        s.insert_run(&legacy).unwrap(); // a row from before owners were recorded
+        s.insert_run(&settled).unwrap();
+
+        let mut got = s.running_run_owners().unwrap();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                (legacy.id.clone(), None),
+                (owned.id.clone(), Some("1234:abc".to_string())),
+            ],
+            "only unsettled runs, each with its host"
+        );
+    }
+
+    /// Settling an orphaned run is an audit write, not a cleanup: the row keeps
+    /// everything it had and gains its terminal state, its end, and a reason.
+    /// A run that settled on its own in the meantime keeps its own outcome.
+    #[test]
+    fn a_reaped_run_keeps_its_facts_and_only_running_rows_move() {
+        let (_dir, s) = store();
+        let t = task("reap");
+        s.insert_task(&t).unwrap();
+        let orphan = run_row(&t.id, RunStatus::Running, 100);
+        s.insert_run_owned(&orphan, Some("1234:abc")).unwrap();
+
+        assert!(s
+            .reap_running_run(
+                &orphan.id,
+                2_000,
+                "the host that claimed this run is gone",
+                crate::types::finish_reason::INTERRUPTED,
+                "no live executor owned this run",
+            )
+            .unwrap());
+
+        let got = s.get_run(&orphan.id).unwrap().unwrap();
+        assert_eq!(got.status, RunStatus::Failed);
+        assert_eq!(got.finished_at, Some(2_000));
+        assert_eq!(
+            got.finish_reason.as_deref(),
+            Some(crate::types::finish_reason::INTERRUPTED)
+        );
+        assert_eq!(
+            got.error_message.as_deref(),
+            Some("the host that claimed this run is gone")
+        );
+        assert_eq!(
+            got.finish_note.as_deref(),
+            Some("no live executor owned this run")
+        );
+        assert_eq!(got.started_at, orphan.started_at, "the start is kept");
+        assert_eq!(got.task_id, orphan.task_id);
+
+        // Idempotent: a row that is no longer `running` is not rewritten, so a
+        // run that settled in between keeps its real outcome.
+        assert!(!s
+            .reap_running_run(
+                &orphan.id,
+                3_000,
+                "second sweep",
+                crate::types::finish_reason::INTERRUPTED,
+                "second sweep",
+            )
+            .unwrap());
+        let after = s.get_run(&orphan.id).unwrap().unwrap();
+        assert_eq!(after.finished_at, Some(2_000));
+        assert_eq!(
+            after.error_message.as_deref(),
+            Some("the host that claimed this run is gone")
+        );
+        assert!(!s.has_running_run(&t.id).unwrap(), "the task is free again");
+    }
+
+    /// A database written before runs recorded an owner opens with the column,
+    /// and its existing rows read as "no owner" rather than failing.
+    #[test]
+    fn a_database_that_predates_the_owner_column_gains_it() {
+        let dir = TempDir::new().unwrap();
+        let t;
+        let run;
+        {
+            let s = Store::open(dir.path()).unwrap();
+            t = task("ownerless");
+            s.insert_task(&t).unwrap();
+            run = run_row(&t.id, RunStatus::Running, 100);
+            s.insert_run(&run).unwrap();
+            s.conn
+                .execute_batch("ALTER TABLE task_runs DROP COLUMN owner")
+                .unwrap();
+            assert!(!s.has_column("task_runs", "owner").unwrap());
+        }
+
+        let reopened = Store::open(dir.path()).unwrap();
+        assert!(
+            reopened.has_column("task_runs", "owner").unwrap(),
+            "opening adds the column rather than failing on the missing one"
+        );
+        assert_eq!(
+            reopened.running_run_owners().unwrap(),
+            vec![(run.id.clone(), None)],
+            "a row from before the column reads as ownerless, not unreadable"
+        );
     }
 
     // ─── enum decoding ────────────────────────────────────────────────────
