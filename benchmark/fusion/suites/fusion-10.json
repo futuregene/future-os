@@ -1,0 +1,114 @@
+{
+  "schema": 1,
+  "purpose": "baseline-outcome-selected development challenge; not representative capability evaluation",
+  "seed": "future-fusion-dev10-v1",
+  "sources_lock_sha256": "7cacf4a2d56b34da931c63cc2ab50d89a739d644cee480b989dd0b6310f98f71",
+  "selection": {
+    "kind": "baseline_outcomes",
+    "wrong": 8,
+    "correct": 2,
+    "baseline_manifest_sha256": "2959fafcfae3118991bf3cf712b0f79edafbaaac2e3dde6f40a8b9b0c02e449b",
+    "baseline_suite_sha256": "cb8614f66be7c0d85448d30a8e96ea3450e725a86725d9e2d26592acd6bc4756",
+    "baseline_result_sha256": {
+      "bbeh:235": "465997c2a6c7dfb15a8364b1ae0465cf6b8bbbb2dd408a0e56048f48f09dead4",
+      "bbeh:71": "9d5b41cb52d2941ebe84f158bc8e98ea9f69f843f37030f7403776b400a87f9e",
+      "omni:2617": "ad62cf9b904242cf9f4d50b8d134d379c738491d05fb155261f1607b52fa6aa5",
+      "omni:1649": "c22e4067215dd239db451dc9637c7bd5634ba8c8ccf32935dcbd33249d82e85b",
+      "bbeh:347": "b02066360c5f269eee13d78af5ce22b7deeef055f1adbfdd8c529fce890cce9c",
+      "bbeh:112": "58ce4bff5354fe6a8b98e4a2e78ed813160108340f9672bbd777d5453989bdc0",
+      "bbeh:153": "0e42773e80cd80cc79a5214cbf258af3997eebebd661309634a1ec99ad8a9042",
+      "bbeh:11": "4a9a72373dbca4783d5c28c6d365e381b25180654da2937be2d9caf89c2766d0",
+      "bbeh:254": "aff074eb0cbe21537eee940d446e09dd128f001f6a9f7d4dec0c37947430bd2d",
+      "bbeh:294": "e3bd2ec11f9cdd95ea35b37cab782701088986c7e674a939ce492259b35c26a9"
+    },
+    "eligibility": "completed and parsed only; SHA256(seed, id) within each outcome; no Fusion outputs used",
+    "composition": {
+      "bbeh": {
+        "wrong": 7,
+        "correct": 1
+      },
+      "omni": {
+        "wrong": 1,
+        "correct": 1
+      }
+    },
+    "correct_selection_rule": "minimum SHA256([future-fusion-dev10-v1, id]) among completed parsed correct answers in each paused source run",
+    "exclusions": [
+      "zebra",
+      "omni:383 (disputed reference)",
+      "omni:2865 (missing diagram)"
+    ]
+  },
+  "cases": [
+    {
+      "id": "bbeh:235",
+      "dataset": "bbeh",
+      "stratum": "mini",
+      "question_sha256": "8eb10de906b8247c32c2dd640d0882f60ed50c4059290f979190b06f0255f93d",
+      "answer_sha256": "66804d12743756eb85fb3115e558e09a95661b3d0f176ac5318ac90dd6fe7811"
+    },
+    {
+      "id": "bbeh:71",
+      "dataset": "bbeh",
+      "stratum": "mini",
+      "question_sha256": "c547bb4b7f8bc602e3dffa65ccc76c9e237889bc713e667f24d04324a9f009fa",
+      "answer_sha256": "dedfa2d2c35cf98f8ad2be44d0eb4d879a39cf386e9687b90ceba516078737f4"
+    },
+    {
+      "id": "omni:2617",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "f75290e14a48147ac869ff83abe1a410a7a9c00d62651deaa39810767656b921",
+      "answer_sha256": "3269eee5d2f67f12897d4fb8a8b5250d99098c9377984b90d78a90ff3f51609b"
+    },
+    {
+      "id": "omni:1649",
+      "dataset": "omni",
+      "stratum": "6.0",
+      "question_sha256": "68c2288f000a95fdb2b8d3cc7b30c7eaf6c18f0034b10662191d02856339390d",
+      "answer_sha256": "d26d7e0f75a792fd6c4988a06198147b86ee4391428779795c6fbfed1a8f1bc2"
+    },
+    {
+      "id": "bbeh:347",
+      "dataset": "bbeh",
+      "stratum": "mini",
+      "question_sha256": "643981b91c74dca27e02c99663ff59e6ea45d5640f7b03117e6dddb984e9ae48",
+      "answer_sha256": "5b9fb3e7b59278aa3ef434535acf90cef33b43569a9aadcc4ac579b23c91fa42"
+    },
+    {
+      "id": "bbeh:112",
+      "dataset": "bbeh",
+      "stratum": "mini",
+      "question_sha256": "bc80ef35706eea396fa4b0770eca84aa1aacd1a09e08ade21abf03b475e52a66",
+      "answer_sha256": "5129ad1abe9eea738b3b1f08aebc5d18f807ef9a825378f467154ad3da50a538"
+    },
+    {
+      "id": "bbeh:153",
+      "dataset": "bbeh",
+      "stratum": "mini",
+      "question_sha256": "2d28fcf6e2a39071aa8ecf3ee2170e7d410b230cd45375d16cb1a7d5b67c4519",
+      "answer_sha256": "7499c53b80350db62e05439f0f86a5c1b9eae4c23d649cc6e0822c990d866384"
+    },
+    {
+      "id": "bbeh:11",
+      "dataset": "bbeh",
+      "stratum": "mini",
+      "question_sha256": "dc8d0e88a677774cd7444e4cf7108a5483c47f328363dbe994b40242df46efd0",
+      "answer_sha256": "cb52232e4bf29588623c77e3ab28e5797694354b744f093860fa86df949184cf"
+    },
+    {
+      "id": "bbeh:254",
+      "dataset": "bbeh",
+      "stratum": "mini",
+      "question_sha256": "d7b25c9f3319d8b4ee0c419f66bf5ef3de2bef27b9ec622967d1a567b86cfeac",
+      "answer_sha256": "e4605871d40822acf6b7b9523d5083fe885871ca96d148bd2b0d61a446bce56f"
+    },
+    {
+      "id": "bbeh:294",
+      "dataset": "bbeh",
+      "stratum": "mini",
+      "question_sha256": "870f9ef6e3feb46343f867bd78a7d279c05dcbf5b11ee5e5435c315e484a98c7",
+      "answer_sha256": "cc11310c456c3690d5a74c23aa31cc25b4e74cdae146c71e54ad9dbc1d109fde"
+    }
+  ]
+}

@@ -24,6 +24,8 @@ mod git_review;
 mod host_environment;
 mod instance;
 pub mod launch;
+#[cfg(feature = "gui")]
+mod license;
 #[cfg(all(test, windows, feature = "gui"))]
 mod test_process;
 /// Test-only seams; absent from a default build (`test-support` is not in `default`).
@@ -1324,6 +1326,7 @@ mod gui {
             // macOS and can leave the detached start task without a live
             // connection. `Ready` is emitted once the process runtime is live.
             tauri::RunEvent::Ready => {
+                crate::runtime::spawn(crate::license::refresh());
                 future_host::startup::global().enter("agent");
                 let handle = app_handle.clone();
                 crate::runtime::spawn_native(move || {

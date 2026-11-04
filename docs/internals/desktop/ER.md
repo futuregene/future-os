@@ -929,7 +929,8 @@ The GUI database (`~/.future/app/app.db`) holds these business-object tables:
   `remember_switch`),
   `bell_on_complete` (true), `skill_recommend` (false — off until the user opts
   in), `skill_guide_dismissed` / `skill_intro_dismissed` (false),
-  `community_edition` (false; presentation only), `auto_resume_interrupted`
+  `community_edition` (tri-state: absent/JSON null = unknown, true = explicit
+  community, false = commercial; unknown displays as community), `auto_resume_interrupted`
   (true; written through to the Agent's `resume_interrupted_on_start`, see
   `store/app_settings.rs` `write_agent_resume_policy`) and the internal
   `device_id`. The defaults are `packages/app-settings/src/lib.rs:424-440`
@@ -1110,8 +1111,18 @@ read from and written to the agent's config files (shared with the CLI):
   on; `ModelEntry.reasoning` carries the effective capability into the session
   picker. This change needs no JSON file or GUI SQLite migration.
 
-The "community edition" is only a GUI SQLite `app_settings.community_edition`
-display preference: it hides the balance/recharge entries in the footer and
+Desktop edition is stored in GUI SQLite `app_settings.community_edition`.
+Missing/JSON null means unknown and is presented as community without writing a
+default. Only unknown installations request `https://dl.future-os.cn/license`
+once at Desktop startup, in the background (5-second timeout). Failed requests,
+non-success HTTP statuses, empty/whitespace bodies and the trimmed text
+`community` leave the stored state unknown. Any other nonempty success body
+stores false (commercial). Explicit true (manual community) and false skip the
+request; a manual choice made during a request wins over its result. The existing
+boolean settings API projects unknown to true, so no GUI changes are required.
+The key and its boolean storage format are unchanged; existing explicit choices
+remain intact and no structural migration is needed. Community presentation
+hides the balance/recharge entries in the footer and
 account page and converges the Providers page's Future actions into ordinary
 built-in provider manual-key configuration; it never migrates, clears, or
 rewrites the agent login, key, and model config above.

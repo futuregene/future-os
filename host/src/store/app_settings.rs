@@ -135,7 +135,7 @@ mod tests {
         assert!(settings.auto_connect_remote);
         assert!(!settings.skill_guide_dismissed);
         assert!(!settings.skill_intro_dismissed);
-        assert!(!settings.community_edition);
+        assert!(settings.community_edition);
         // PRD v1.6 §3 / integration-plan rule 1: recommendation is off unless
         // the user opts in.
         assert!(!settings.skill_recommend);

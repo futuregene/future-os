@@ -1,0 +1,1410 @@
+{
+  "schema": 1,
+  "purpose": "Omni-first continuation of original baseline-400; no resampling",
+  "seed": "future-deepseek-baseline-400-20261104-v1",
+  "sampling": "uniform hash ordering within each dataset",
+  "sources_lock_sha256": "7cacf4a2d56b34da931c63cc2ab50d89a739d644cee480b989dd0b6310f98f71",
+  "cases": [
+    {
+      "id": "omni:1137",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "a292d00771fdae37fe9300ce150a9e03aa1c9154ad2c9b069392b9823592a326",
+      "answer_sha256": "b1fbd21fe47dfaa552c3d85d8f7fff69243026a49546407f2884f7baf880595f"
+    },
+    {
+      "id": "omni:867",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "0fcbcd90a5baf1b3658a4850f6d063efdb6e99c4ca73e8147965ca472a1fce02",
+      "answer_sha256": "33c8cbbbc2d5a4764b7517827d816e870759797db632613fe744accfa4ce1513"
+    },
+    {
+      "id": "omni:2395",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "3e2526ccedcbe8544b65b702f0ed4af1e8246454623edf6c1318cc8accd5d1cb",
+      "answer_sha256": "e2c12ced32a8b293970470669fd8126006164845681059ba18add951f3d81a7b"
+    },
+    {
+      "id": "omni:1999",
+      "dataset": "omni",
+      "stratum": "4.5",
+      "question_sha256": "97fe8e4c718556a93be99b29e3f6b44cc6385fadf965957e487699f2e30a6cc9",
+      "answer_sha256": "a5009944cc0deb7463d9f0040b6ca1f1685dee27016ab51c86adfd07492c3494"
+    },
+    {
+      "id": "omni:1115",
+      "dataset": "omni",
+      "stratum": "4.5",
+      "question_sha256": "dfdb1577a89e3ec81b167047cc2ae84da820636c913b95059728c0c9b13c3a27",
+      "answer_sha256": "bc8754734f14c2c579461e6497c395a0990bc01ca76021010cd73d0c0394503f"
+    },
+    {
+      "id": "omni:398",
+      "dataset": "omni",
+      "stratum": "5.25",
+      "question_sha256": "a1c4367fc5b39d310a473ed484881819150d75a07970b6bf9623da487c3d098d",
+      "answer_sha256": "ac984015ace67ebd8788f9e1744a98d8424ab5fa589b59d3377bda420d87c110"
+    },
+    {
+      "id": "omni:3073",
+      "dataset": "omni",
+      "stratum": "1.0",
+      "question_sha256": "0d659bcdfccfba54e101de6c20c5e09c33a574aa11d5e38d93153bd436dd7352",
+      "answer_sha256": "92e9e7e5922d26e17e48f0869ab25cc99499fdab722c065de8e0965c96c68e86"
+    },
+    {
+      "id": "omni:3331",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "516b07e09f85fcf7496537c5b15d492caf1fc43fc7fccd58163a8196ceef197d",
+      "answer_sha256": "21cee27a52b79f89fa2ccbfe8436f7fd5285a4f88027d07fc9a591f7a3178e80"
+    },
+    {
+      "id": "omni:909",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "e6627125c5ac69a78f24ed52c530ae02a211648e11cef9207c7984394c8afccc",
+      "answer_sha256": "79f649bcd303918cb14dc1d5238a74abf288f8ccf29fd89f422023d885cf5d47"
+    },
+    {
+      "id": "omni:150",
+      "dataset": "omni",
+      "stratum": "8.0",
+      "question_sha256": "0d12450abb981bd2507f3197283f6a4d10ea7926bd15611d31fd9397e7e07d92",
+      "answer_sha256": "98089e6d36f78e9766c9ea34d5acb3611f3a92cd81c5eb102095d924ffc7d08b"
+    },
+    {
+      "id": "omni:1300",
+      "dataset": "omni",
+      "stratum": "2.0",
+      "question_sha256": "9fa9ec43c6580bb9eac1e5b30ddf10a24ee839d007fe27c4f57fdbb483facbd4",
+      "answer_sha256": "3b989a851d61bae100a4bdee00e4a6fd22b47752e955af4db46823e082d62ce5"
+    },
+    {
+      "id": "omni:1661",
+      "dataset": "omni",
+      "stratum": "4.5",
+      "question_sha256": "5713d7fd4568f89b01160a64b9dc2268f901ef4d16fd59b562091aa208c59643",
+      "answer_sha256": "bbfe62b956805288c96e1d94b6899589274bb5c71fb698abe831d2c0f128bea4"
+    },
+    {
+      "id": "omni:2889",
+      "dataset": "omni",
+      "stratum": "1.5",
+      "question_sha256": "a21481022c07e7b1a508bcefda000bbbcfeda11964e47d1464823f056513d674",
+      "answer_sha256": "21f101951d583e2d2fb9908abdacc71a014c2b9f9d22d24139842c50202d0701"
+    },
+    {
+      "id": "omni:1462",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "4c9f2d64fda554f88af1f307b83a4b01e0c7fad36f05e958c47dd4854ef5d41c",
+      "answer_sha256": "a4aab3f1f08004e907d2357fafe74cab56359bcb32e23f52e7eb1d3a9c0a2ad3"
+    },
+    {
+      "id": "omni:2267",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "72d2b8c57142f8c22403e5f7727830a6dfa6e9db1198241d5d239037e9d96899",
+      "answer_sha256": "d8193a30972ab6daf68dc19c40407232f583ca1fa1768207607273c89a304e13"
+    },
+    {
+      "id": "omni:2087",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "277bd1796fc2e20b25bf78d69777791d3449b75b388c281a78c66ec346d496fe",
+      "answer_sha256": "266aa5886067fbbc1a3a39fe432fc5bbf561abc90e4b8a322215ac17df6ce012"
+    },
+    {
+      "id": "omni:3558",
+      "dataset": "omni",
+      "stratum": "7.0",
+      "question_sha256": "8ecb1387af20b7c6a8e655327fa8b72902fe0ff521cd45db9939fd97e9c6ca50",
+      "answer_sha256": "0fe9d210e9a2b48d40af858d5edbc92e1fcc022110a68a19b4fc55377e6a9de2"
+    },
+    {
+      "id": "omni:1718",
+      "dataset": "omni",
+      "stratum": "4.5",
+      "question_sha256": "cfaceae3063324479f657b835c9981f3567bd823723508488f5cda0aeedec0c6",
+      "answer_sha256": "5315ba3d9a6d599ea092521d7fefef376aeb04d855176d006013ec30adc15138"
+    },
+    {
+      "id": "omni:2100",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "a6c26e73415a375d39ec791f639b7b535c1da573258bfa9966e13adc2aadaf92",
+      "answer_sha256": "046419ca5ecebeb34fdfe9dde8106ccee5ce39f8e4dd115e8ef20b869f8bed82"
+    },
+    {
+      "id": "omni:2926",
+      "dataset": "omni",
+      "stratum": "1.5",
+      "question_sha256": "a266f1ed31c6c1d93cd469ca2c5de174e183760bd5f587ac551b13faa1e470fa",
+      "answer_sha256": "d10a4bc9e0c1fa4e8f3d7ce2512b8756e47ca5fa451f373c39a1431bb88db49f"
+    },
+    {
+      "id": "omni:2653",
+      "dataset": "omni",
+      "stratum": "6.0",
+      "question_sha256": "801ea3f0eb036d4967ce9cf99bc0a4955076e562460d5b8d51684c4349d633b6",
+      "answer_sha256": "98103ff4154823b74345efdd1b91ede46d5a36c5f144c8d10173f87b0b4d2e6e"
+    },
+    {
+      "id": "omni:761",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "fd68a796b5f6c85c5f8ae0900498ca514e1ea813bf4c4221d7c46d6336d2de60",
+      "answer_sha256": "dd2738b6b5cf5fa37d8cde8141a6f9d9624db216b5b90dee288ed583b67df309"
+    },
+    {
+      "id": "omni:1266",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "96c8346ecc5b6c29656ef1c51209ef25d14075ff88c93109a5d41d8706f616f3",
+      "answer_sha256": "3a1ed30a0a052eac0fba65f39d259efdc7d587ef00c36a9f30cf21256cb50f4b"
+    },
+    {
+      "id": "omni:1153",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "7bba8458c499bd39dc4d605406e4533d1f784bcd8d720164b0e233b71462dcd2",
+      "answer_sha256": "92e9e7e5922d26e17e48f0869ab25cc99499fdab722c065de8e0965c96c68e86"
+    },
+    {
+      "id": "omni:1082",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "45dbb1f5740e73a5abb42ca437f4bf97cad7b9273dc29f2f87e23b9f8f977e4a",
+      "answer_sha256": "17eed2c0e7c9788d0b46fafdf328b3e955aa0a22132c16cde72aa4f32dcd5282"
+    },
+    {
+      "id": "omni:619",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "64c018c40de4c9acdd7bb0bc0c0dd5e4f44b2efe4f6f18e53d6114d701c0c40b",
+      "answer_sha256": "7297deee0467bc0286c464411bc0f19dd5baed4bad52f79cb721d7a6e595fdd6"
+    },
+    {
+      "id": "omni:1299",
+      "dataset": "omni",
+      "stratum": "5.25",
+      "question_sha256": "21c741f25c03d4958b05b76a1335baff0ad3ade63e95575740a7e2bdf478ac95",
+      "answer_sha256": "f326bd84707ed76597becb832280595d1a5aaceb0905dc40e3553ebb861bde80"
+    },
+    {
+      "id": "omni:383",
+      "dataset": "omni",
+      "stratum": "3.5",
+      "question_sha256": "723b6f14fc05a1a1a221d77dc0b9461261b09e17f9b418e54181a654b45485e1",
+      "answer_sha256": "92e9e7e5922d26e17e48f0869ab25cc99499fdab722c065de8e0965c96c68e86"
+    },
+    {
+      "id": "omni:2617",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "f75290e14a48147ac869ff83abe1a410a7a9c00d62651deaa39810767656b921",
+      "answer_sha256": "3269eee5d2f67f12897d4fb8a8b5250d99098c9377984b90d78a90ff3f51609b"
+    },
+    {
+      "id": "omni:2578",
+      "dataset": "omni",
+      "stratum": "4.5",
+      "question_sha256": "d7e6c5289752f1072e44f470ce3c5999f6b237f734b05fc2c6f4e9b88afa07f2",
+      "answer_sha256": "94d47899a8ab278f64a65ae0198916fda8add8d5b470f378da3ac0a2bcaa9e4d"
+    },
+    {
+      "id": "omni:2495",
+      "dataset": "omni",
+      "stratum": "3.5",
+      "question_sha256": "b668f222803930897ae554395f313dad505777b60694fa88f026d50b0fc30f9a",
+      "answer_sha256": "78cee6c1e2eb2e74f8a3eb06342910344c22b2c264a3e21cbe03a6cc70868e7e"
+    },
+    {
+      "id": "omni:3443",
+      "dataset": "omni",
+      "stratum": "1.0",
+      "question_sha256": "5b50e82ecda7fd99d374f294337b502f5583320815069e907168cbefccab4861",
+      "answer_sha256": "17eed2c0e7c9788d0b46fafdf328b3e955aa0a22132c16cde72aa4f32dcd5282"
+    },
+    {
+      "id": "omni:2772",
+      "dataset": "omni",
+      "stratum": "2.5",
+      "question_sha256": "179a372eea3801ba6b53be5b2be7ab8e9d06bac1e336d15bd897e9359d767002",
+      "answer_sha256": "e23f8f39182c82127c1bef3cbfd9b54e30e1df4916da81dcfc2a801c23f3bf01"
+    },
+    {
+      "id": "omni:3001",
+      "dataset": "omni",
+      "stratum": "1.0",
+      "question_sha256": "598f7762fc93501d72be1e0da043c4adcaac54f4ed23f30be3082c0d81d2fd93",
+      "answer_sha256": "49f65dc5d4333e3ed1ba4c9bbea03134a985509541efa8a4955542d50dea45f0"
+    },
+    {
+      "id": "omni:2098",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "5405ad9d109647d7505fd634c688b4d306fea09e4e3e0fdc3dc49cc31a088249",
+      "answer_sha256": "ec1222ce9c7c365231224452297cd46b41f91e7ecbc50d1aeb683ccdd5852d45"
+    },
+    {
+      "id": "omni:3321",
+      "dataset": "omni",
+      "stratum": "3.5",
+      "question_sha256": "a7c98fecf48bf82eeee75521a9553f56920b3a9b7ac2dae2b053df89ed0a2195",
+      "answer_sha256": "266aa5886067fbbc1a3a39fe432fc5bbf561abc90e4b8a322215ac17df6ce012"
+    },
+    {
+      "id": "omni:1930",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "fa0936ebd354249ef3260bb13f0e95b9723009e37eb66caa282cc5f2078421f1",
+      "answer_sha256": "8cf21d049885625b4239bebb9f4d26ddb60e22cc392c1436cd4560dab978f56c"
+    },
+    {
+      "id": "omni:672",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "c9aa1575bb79e1948ac41b5a22db88a9ff9707d6a407629fbd391589567ce863",
+      "answer_sha256": "9df59c3d4c39c130062ef9655dac0f0c4179a19c69f40b8db0c0d0ff2c0cc11b"
+    },
+    {
+      "id": "omni:1260",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "09c98e5422d8f67b82caeed0e240a86d9352f3ce5d8adf78a527339103647dd7",
+      "answer_sha256": "391552c099c101b131feaf24c5795a6a15bc8ec82015424e0d2b4274a369a0bf"
+    },
+    {
+      "id": "omni:3481",
+      "dataset": "omni",
+      "stratum": "1.5",
+      "question_sha256": "79e118be21e2383cb5adb00f565c82368fbf4b92be823a775a221943b46a2f15",
+      "answer_sha256": "e23f8f39182c82127c1bef3cbfd9b54e30e1df4916da81dcfc2a801c23f3bf01"
+    },
+    {
+      "id": "omni:1131",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "8ba58c6614ebc82bc3a5c277bd6a9831a8d155c9499a4864b5e9b5e3ebb901e0",
+      "answer_sha256": "0234a350f4d56ae45c5ece57b08c54496f372bc570bd83a465fb6d2d85531479"
+    },
+    {
+      "id": "omni:771",
+      "dataset": "omni",
+      "stratum": "4.5",
+      "question_sha256": "0154fffc607ee7ce4a70abb3cb3a6da22823bc00f046c5e1973a5c7274923ad3",
+      "answer_sha256": "a9c01e9039fd3a8142384fb844f2248575acb09c3b8b5bcffe34577b3fe51ce0"
+    },
+    {
+      "id": "omni:1649",
+      "dataset": "omni",
+      "stratum": "6.0",
+      "question_sha256": "68c2288f000a95fdb2b8d3cc7b30c7eaf6c18f0034b10662191d02856339390d",
+      "answer_sha256": "d26d7e0f75a792fd6c4988a06198147b86ee4391428779795c6fbfed1a8f1bc2"
+    },
+    {
+      "id": "omni:2027",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "dba89468fc80bd3bfe8e418a9c12beab411ee3dc532849c1430e1d650fb3e244",
+      "answer_sha256": "6b54ef0f2b5a5ef8e655f3ee42f1630f4f098d1007decc5ca13855879dd63657"
+    },
+    {
+      "id": "omni:917",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "f08e8621f40380f752427c871067d54674ee63ea963d675c903167f564dea280",
+      "answer_sha256": "8f20f355bdf39eec0d7fadef1542985bf298ca5f7c7b9e0033b7c334698ec0a7"
+    },
+    {
+      "id": "omni:3617",
+      "dataset": "omni",
+      "stratum": "7.0",
+      "question_sha256": "99fefd4b13445335525d61c25d45dbad2fe65d2d4fabc33075dd46af8d9e092e",
+      "answer_sha256": "68fec0473e988a1ef1c13c4f9b9a15cc67de203de8be796ce82ae4fd7b158e64"
+    },
+    {
+      "id": "omni:2865",
+      "dataset": "omni",
+      "stratum": "1.5",
+      "question_sha256": "9aa5506c23099ab57a949e0dc0e0bca226b5eb9cd13f1aca7cc5d77878740f9d",
+      "answer_sha256": "9df59c3d4c39c130062ef9655dac0f0c4179a19c69f40b8db0c0d0ff2c0cc11b"
+    },
+    {
+      "id": "omni:1520",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "13149d548b802af689b5258b6dd84be2015669d583d72ca1453e36c5529b2db0",
+      "answer_sha256": "9d52f6f34b763d3a6ff7f719c6f960d1944ea8b6111be8508848671ce37dfae2"
+    },
+    {
+      "id": "omni:502",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "5834d653a36e9a0a7fa9b12964075307479fb55ce9f4a4cf20e9e2bff9584161",
+      "answer_sha256": "1452bf701b395618d79d9e1805d811517e33a4a677371deb1cb489ff13770fd5"
+    },
+    {
+      "id": "omni:793",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "e1c3979660593b21e7131b8a2edcc37bfe33291a6759e3b6209187a852358015",
+      "answer_sha256": "b9a5d146ec18886f3cbc524b70837cef28744eda4d601ab2e17ba93799d5d109"
+    },
+    {
+      "id": "omni:3828",
+      "dataset": "omni",
+      "stratum": "6.5",
+      "question_sha256": "70b58c35de97b1893fa86a48252e563f3f09e853085e28dae5998dc221bdf947",
+      "answer_sha256": "c3d0c1981fd4d3a7bb2eb93b0c417453d711aa4a1b258efdd0e87418b43d709e"
+    },
+    {
+      "id": "omni:1644",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "d4932dfce6776f807abd42c549a407cbb45f4937db7e991898190488e688e785",
+      "answer_sha256": "c470156de4cb3620b0749c19d984d0666924d83d0ec37998dd6b637a87a2ec3b"
+    },
+    {
+      "id": "omni:1982",
+      "dataset": "omni",
+      "stratum": "4.5",
+      "question_sha256": "60b201f9b4fd367dcd0360d2f4c90f0dd6be0228add5f5eb9d10033f9daed8b7",
+      "answer_sha256": "7aab2b02a05b2763b3e055ca7b18c4248899377d2462a624e1c75fe10bf0dbcf"
+    },
+    {
+      "id": "omni:1320",
+      "dataset": "omni",
+      "stratum": "4.5",
+      "question_sha256": "22a9d7d0a6e6ff3777af7dfa291cd6be4b49c3e772a5bf76754d66977cdbd9f4",
+      "answer_sha256": "789d9e7dc67f986660d9b28f5946cce995f9b145e4c2ef61828679cee07bb316"
+    },
+    {
+      "id": "omni:1101",
+      "dataset": "omni",
+      "stratum": "5.5",
+      "question_sha256": "b27ef043d79962421d0a64dc7b9d26cd6031e093c72e8d08a7bc5dd2fe42ee78",
+      "answer_sha256": "b16781f85251cf7a5bab973eb0927776b89a75f8def28c649ae65e01b3db5e28"
+    },
+    {
+      "id": "omni:880",
+      "dataset": "omni",
+      "stratum": "3.5",
+      "question_sha256": "d5590e9d3d8be7c833981d9a7a160f7926869f376ef5b8a14d68b02c8c7b6ada",
+      "answer_sha256": "f8470ba0f42eead25baed64184d175166e77b157f71965b8b475d945f40a42b9"
+    },
+    {
+      "id": "omni:2785",
+      "dataset": "omni",
+      "stratum": "2.5",
+      "question_sha256": "8fd2f398a60b2f753bb53b9ef43020a406b9bef44e2e188475baf68d2a2ecdc8",
+      "answer_sha256": "fda986670fb6a19243276a695af584678b074256977b0ce280b7866c8456ab06"
+    },
+    {
+      "id": "omni:778",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "1fb91f73dac60467fe7b18be20f61ab09544314f741fc92bb3c7fb691489326a",
+      "answer_sha256": "20e606ef32951810b4110dfb6cc2908dadeabecd9252d5661e0f59fbaf5ec077"
+    },
+    {
+      "id": "omni:1720",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "e9d6de7ae1f145fcb86031428ce34ae01a2990a278f5b06ceee33fa5bc75367e",
+      "answer_sha256": "21f101951d583e2d2fb9908abdacc71a014c2b9f9d22d24139842c50202d0701"
+    },
+    {
+      "id": "omni:2760",
+      "dataset": "omni",
+      "stratum": "1.5",
+      "question_sha256": "026578d497b4aa1ed09fd37f5bf700ce8bef87394b65144371b72e81b41e43bb",
+      "answer_sha256": "4ec621b227e30e8a72d97865785a0bf20b5032024c589a56e1a6b18a099bdb7c"
+    },
+    {
+      "id": "omni:1480",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "3d13673c44221fd9dfeeb6490740364d197def3c370ed85de6ca3d183840f485",
+      "answer_sha256": "06998a9f7c3bd27271effa6f37d89ba0f60a00fb32f5f48b1d1309c30fade120"
+    },
+    {
+      "id": "omni:2745",
+      "dataset": "omni",
+      "stratum": "2.0",
+      "question_sha256": "48eaee17a476e2cc7b887a724f84e633089e515820147faa7cd1f0896c58349e",
+      "answer_sha256": "06024be3089840dc57375f951f67e195b31c37b7e819c63a15dcba31e894aa50"
+    },
+    {
+      "id": "omni:1561",
+      "dataset": "omni",
+      "stratum": "5.25",
+      "question_sha256": "065425d14a33ce9f61409dd2379fb21fae729b10e5a108c18784533e8bde01b4",
+      "answer_sha256": "7a7cf17d69de528cbf351d0f63b7d281b45ae7e13df5eefb47c02d64cd076c79"
+    },
+    {
+      "id": "omni:2155",
+      "dataset": "omni",
+      "stratum": "4.5",
+      "question_sha256": "f797c036749039af17e5c633be6ce830e911b6f7e83e752753ada77f630f4576",
+      "answer_sha256": "7d7dc43039c7ebde57538fa32f963f87003448ffc6d5c8666eaa6c515e1539c9"
+    },
+    {
+      "id": "omni:3107",
+      "dataset": "omni",
+      "stratum": "1.5",
+      "question_sha256": "10cb30adc49476fedea0fde17063fdc538e2f84ea76c64ec7cf3154e9f1184c7",
+      "answer_sha256": "227e4918add1d7964e1745439f5cf44f3e3aba15de6f570942d418510b022b9d"
+    },
+    {
+      "id": "omni:1307",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "6e5601b3a642890ed391e056cb68d91797d7bc0abe77f4f0fbd060ea1058a78d",
+      "answer_sha256": "1b369dda85ce3b39b3b82cbdaa8f0884bf1a0ea686ca34eb86e87ed25a45aa5a"
+    },
+    {
+      "id": "omni:1794",
+      "dataset": "omni",
+      "stratum": "4.5",
+      "question_sha256": "5a9749440e576e307a857af68bf1370afa1e4f285a1580ef5d6165015077af25",
+      "answer_sha256": "4ed39c44a26d6cc42e8f0af019fd6148aa1a1523662fe39fa4b8c40e5efb567b"
+    },
+    {
+      "id": "omni:2734",
+      "dataset": "omni",
+      "stratum": "2.5",
+      "question_sha256": "8a815b9de1e8370d57591073ea41cf8ec6e56225eaada890812d384198174e75",
+      "answer_sha256": "21f101951d583e2d2fb9908abdacc71a014c2b9f9d22d24139842c50202d0701"
+    },
+    {
+      "id": "omni:2700",
+      "dataset": "omni",
+      "stratum": "1.0",
+      "question_sha256": "7239e0ff314b00967fc878f19da715e053cb3f53b92fccd2372bc0677cfba737",
+      "answer_sha256": "0234a350f4d56ae45c5ece57b08c54496f372bc570bd83a465fb6d2d85531479"
+    },
+    {
+      "id": "omni:839",
+      "dataset": "omni",
+      "stratum": "3.5",
+      "question_sha256": "65f43b6942ed94d6be75d87153fba8be3f4f49dbe0e7c2d704158499b766be3a",
+      "answer_sha256": "92e9e7e5922d26e17e48f0869ab25cc99499fdab722c065de8e0965c96c68e86"
+    },
+    {
+      "id": "omni:3573",
+      "dataset": "omni",
+      "stratum": "8.0",
+      "question_sha256": "5c0cd2c1b7b2d880cfeaebfc8e43531db5d5745dfac36f019c14857823c80445",
+      "answer_sha256": "7f1beedac54ec4f7aca19b37061d1375a651a4f0dba430edc5d392985cc0be14"
+    },
+    {
+      "id": "omni:2548",
+      "dataset": "omni",
+      "stratum": "5.25",
+      "question_sha256": "c1a04032cfe24057c53af96dc71dacf6495da5ad17a2f85a336b375efa9e0be8",
+      "answer_sha256": "1bd79791b3889e8629555f1c37b1da1b9959290517f2d25db041d2a28bf73b3f"
+    },
+    {
+      "id": "omni:3047",
+      "dataset": "omni",
+      "stratum": "1.5",
+      "question_sha256": "697ca7d8f595d00bac6ebcb8338c3152a1301535c4aba764fa4c21a7fccd1276",
+      "answer_sha256": "5defc92d11f38e34facc727521e1d9b596052c3a5e3ba1375fab31609f1edc3a"
+    },
+    {
+      "id": "omni:2253",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "d51c72de0758c849f85281f9878055a13dbd2294004b5c0d1e233c05cecf0bdb",
+      "answer_sha256": "772b814564dc952353b817a0863a75910dfa47c8ce907e9cc67466acf07eca1a"
+    },
+    {
+      "id": "omni:2727",
+      "dataset": "omni",
+      "stratum": "2.0",
+      "question_sha256": "5dc4f47127eb3f351040c9f1a9f6a7cc3d7100b4bab3b9473b63907f70325d73",
+      "answer_sha256": "227e4918add1d7964e1745439f5cf44f3e3aba15de6f570942d418510b022b9d"
+    },
+    {
+      "id": "omni:1048",
+      "dataset": "omni",
+      "stratum": "4.5",
+      "question_sha256": "f03490b60cb9c45fd51819c68b77c7249beae1fa7f61df7223fad2385313a754",
+      "answer_sha256": "7a7cf17d69de528cbf351d0f63b7d281b45ae7e13df5eefb47c02d64cd076c79"
+    },
+    {
+      "id": "omni:2769",
+      "dataset": "omni",
+      "stratum": "2.0",
+      "question_sha256": "d16913b970d1b9a332dbc181e8870f00a91580c4340872e2a9afa3bea1f1b354",
+      "answer_sha256": "7df2c0defdd4d9aa281c757d21ea6b826b6bf2d57945749463cb066cde34e2b1"
+    },
+    {
+      "id": "omni:1618",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "f40aab1f330052e4e04a97da38be5eb135864368be7f4812e1d2007799199de0",
+      "answer_sha256": "8e7ca68a1b707ee1fde97c432ffc66c639c1690cd1655abafc34b9ca70301929"
+    },
+    {
+      "id": "omni:2015",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "0ad0eb324518f974d7c1d07f7e64f87c3beba6a7d37976f69d0ae94fcafb4502",
+      "answer_sha256": "30f1bada5c16158b8f7ba5c8f0b53a4e49c300fc3bad42d6521378278b0d62f0"
+    },
+    {
+      "id": "omni:3229",
+      "dataset": "omni",
+      "stratum": "7.0",
+      "question_sha256": "336873f43b37505075ac341539f99143eb6b1e94c5e16df4ef5dcaf2d167dc8e",
+      "answer_sha256": "a4aab3f1f08004e907d2357fafe74cab56359bcb32e23f52e7eb1d3a9c0a2ad3"
+    },
+    {
+      "id": "omni:3993",
+      "dataset": "omni",
+      "stratum": "9.0",
+      "question_sha256": "2adc116e8644a5b8a4d0094646d99c06c55d62618965ad06f92be07b2eb5f7e2",
+      "answer_sha256": "a4aab3f1f08004e907d2357fafe74cab56359bcb32e23f52e7eb1d3a9c0a2ad3"
+    },
+    {
+      "id": "omni:2890",
+      "dataset": "omni",
+      "stratum": "1.0",
+      "question_sha256": "e68d967b04bc5b0a238a496382a968baef1f51c4d2672a764c56637826b9f7ff",
+      "answer_sha256": "789d9e7dc67f986660d9b28f5946cce995f9b145e4c2ef61828679cee07bb316"
+    },
+    {
+      "id": "omni:1409",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "9574a6bff43d2ccb5a017aeece8ce3ce07bc229b0d97a25e46e3d652ccb7d2a1",
+      "answer_sha256": "7a725fb94bc930a7ccae9ca2ea0b5bfbf8568b5b2ddb16426d59ba70cd2b1cd4"
+    },
+    {
+      "id": "omni:919",
+      "dataset": "omni",
+      "stratum": "6.0",
+      "question_sha256": "c9f19ae152074fd423253448230027ab3e8bd49398d1e375d08e825491a90a30",
+      "answer_sha256": "a4aab3f1f08004e907d2357fafe74cab56359bcb32e23f52e7eb1d3a9c0a2ad3"
+    },
+    {
+      "id": "omni:3615",
+      "dataset": "omni",
+      "stratum": "3.5",
+      "question_sha256": "73b72491fd8adcb617b9cd2126f71c22951c2be52f3954e636ddc4769f746496",
+      "answer_sha256": "98089e6d36f78e9766c9ea34d5acb3611f3a92cd81c5eb102095d924ffc7d08b"
+    },
+    {
+      "id": "omni:2126",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "9d96a974bca159adfba3b46b5be60fc3353f56c395c376feb78a2f8232ebdad7",
+      "answer_sha256": "346947ad3b3d96545b9d95c2ad7ee921ae167a65985db6e718445047bab1ae91"
+    },
+    {
+      "id": "omni:3020",
+      "dataset": "omni",
+      "stratum": "1.0",
+      "question_sha256": "37a83084c3be39c50355e2d00ac4466e37b9b04571913da0020381d7e768df34",
+      "answer_sha256": "6ce1ced1ac1f56f8cd7ee5c55d117fe99c805b89a603e36c41852fea49853068"
+    },
+    {
+      "id": "omni:101",
+      "dataset": "omni",
+      "stratum": "6.5",
+      "question_sha256": "23ea14f804883ad3eae2198e5f4c0385d9b634bd7760a99d1b5c60b1df120444",
+      "answer_sha256": "266aa5886067fbbc1a3a39fe432fc5bbf561abc90e4b8a322215ac17df6ce012"
+    },
+    {
+      "id": "omni:3005",
+      "dataset": "omni",
+      "stratum": "2.0",
+      "question_sha256": "c63df353d89b0d9bf9390500f3902e376443281d6f13bf18af03fbb148cc5f47",
+      "answer_sha256": "49f65dc5d4333e3ed1ba4c9bbea03134a985509541efa8a4955542d50dea45f0"
+    },
+    {
+      "id": "omni:2857",
+      "dataset": "omni",
+      "stratum": "2.5",
+      "question_sha256": "63bd28e45fd83bea579aa3ae28020545eafaf50a691a1f41e1f831f5f8755b65",
+      "answer_sha256": "266aa5886067fbbc1a3a39fe432fc5bbf561abc90e4b8a322215ac17df6ce012"
+    },
+    {
+      "id": "omni:1849",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "15f4b0cc3965a3349e0c63dedbbc6397f6a08cc7678d8199ae2aa083130a7e7e",
+      "answer_sha256": "06f886d030164644fb79f299f185ca500e1e0c1886bebdc66e098fcf04a5384e"
+    },
+    {
+      "id": "omni:2176",
+      "dataset": "omni",
+      "stratum": "4.5",
+      "question_sha256": "b61f11c4421cbb4eae39e84bc5db15bd6d0f74da247f42ae93658dd9900b136a",
+      "answer_sha256": "536549599ec6c3b859cd3970025779a13d061783c73e663fea7f963e98379aa8"
+    },
+    {
+      "id": "omni:451",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "4543556a1bf22ee3bf4e79509fc2a711932dce5848c745246e0ab7bf640e0976",
+      "answer_sha256": "f9cacf3cb91a12e03bc4546834f95a50a4c5fe02276ac260148ea9296c442d39"
+    },
+    {
+      "id": "omni:849",
+      "dataset": "omni",
+      "stratum": "5.25",
+      "question_sha256": "69c41910892b16bd169bc38a49678a6d138eda7a5fe3a36b471f7877b7195fd6",
+      "answer_sha256": "d41be9ad11f483bd49cf05e5624e93b769de2b603a77185630c6427f8cc5cb3c"
+    },
+    {
+      "id": "omni:2220",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "f76aeec8b0fceab2b9f516f4bf7a71b990b4b0794def58c55d30cc3e4a04939d",
+      "answer_sha256": "ade516f85ff9f88e2ed3ff0977e2ed8081386b6ed660552f8f4d54736babad99"
+    },
+    {
+      "id": "omni:937",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "70325a43fdf04530dc7038b7c42bdbe36bfd7cfb472b2968aadda96a8f19b8b3",
+      "answer_sha256": "592e71f19e777e38d154c1787e1f36657c7a8da81db4e297a7c63507e9043bfc"
+    },
+    {
+      "id": "omni:2521",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "e0314969a8910b131c4b922a55f6acaa0d546d46e33b048898175a4f0c3ee258",
+      "answer_sha256": "960b6186c59cc4775955e08800aaa011c3d8942ad0414c32a6cffca7bac953d4"
+    },
+    {
+      "id": "omni:2689",
+      "dataset": "omni",
+      "stratum": "1.0",
+      "question_sha256": "e71235efffb22437b7222ca468a89fa0524914b225dc7657a0afa763ec8aab63",
+      "answer_sha256": "a5009944cc0deb7463d9f0040b6ca1f1685dee27016ab51c86adfd07492c3494"
+    },
+    {
+      "id": "omni:2714",
+      "dataset": "omni",
+      "stratum": "2.5",
+      "question_sha256": "e4a7cbe6d278ffb9cc1cd92a71f123c3bc57093a4133fca809f67bc0143b36a1",
+      "answer_sha256": "79f649bcd303918cb14dc1d5238a74abf288f8ccf29fd89f422023d885cf5d47"
+    },
+    {
+      "id": "omni:2853",
+      "dataset": "omni",
+      "stratum": "2.5",
+      "question_sha256": "f25c80aeab3407648c31c04560f1b7a6d0bb755c836631e471becff1d2de65f2",
+      "answer_sha256": "200baec47c61ff565118fa2ec9074b63a4ff98bce0c2dbb911ee69397b4745de"
+    },
+    {
+      "id": "omni:1956",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "d80ec01cb4c2a5ee240217780cf6dcfbe1be71872844704dedb5578d7d429d6e",
+      "answer_sha256": "df670395119858e314f571f5f49d485acfb969a18ffcddf95539a666c63a9e08"
+    },
+    {
+      "id": "omni:2959",
+      "dataset": "omni",
+      "stratum": "2.0",
+      "question_sha256": "c7d68968665037290dcc12cbde1d6eb2020ae108654cd2bf30cab9772e768dc0",
+      "answer_sha256": "bc855b713402120bf0c74426aea399eac2fd6ab1c3d9b8670993e0df4f607f72"
+    },
+    {
+      "id": "omni:2358",
+      "dataset": "omni",
+      "stratum": "4.5",
+      "question_sha256": "1c3ef0bc65a82303cc23f3666168ff461c9d3d337934de5c560f437ef04b4875",
+      "answer_sha256": "536549599ec6c3b859cd3970025779a13d061783c73e663fea7f963e98379aa8"
+    },
+    {
+      "id": "omni:1282",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "b3cdc65d7660b6d043014dee136426add3026bb26e811945a635d16742a55561",
+      "answer_sha256": "e6457cad63895e03968ef37d90448a7d33f3ca21179027ba08cc7fc046295bd8"
+    },
+    {
+      "id": "omni:1116",
+      "dataset": "omni",
+      "stratum": "6.0",
+      "question_sha256": "5e043db4eabb208b4b0b0ff0bd37c9a3f6dfe26daeaa2c5eabd7f11dd6283025",
+      "answer_sha256": "8e315e391ade2e03f21531095600cdf75643899f3897898ef10f3f8fb8543fea"
+    },
+    {
+      "id": "omni:385",
+      "dataset": "omni",
+      "stratum": "3.5",
+      "question_sha256": "f22ed50f1607589ec1dc6537e3fce6ce63431f54ba6f176e65dafe27bd0bb69b",
+      "answer_sha256": "391552c099c101b131feaf24c5795a6a15bc8ec82015424e0d2b4274a369a0bf"
+    },
+    {
+      "id": "omni:1166",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "07dc7fa50225969418ddb1abcc02df502b707abe61e3bfb44574296902a13167",
+      "answer_sha256": "f67f3acf93c88794ffa2c4cc1a58d7db932a8dffa6bb4ca228a5aa9b288dae9d"
+    },
+    {
+      "id": "omni:2518",
+      "dataset": "omni",
+      "stratum": "5.25",
+      "question_sha256": "ae03feb7b22dfd35b029a05c62d60a90a791167889fb4c4081f558af2d45624d",
+      "answer_sha256": "47cea6234e51694af3ba37750e249b15a6cd79dce68ac582e3075bb28393b5ea"
+    },
+    {
+      "id": "omni:274",
+      "dataset": "omni",
+      "stratum": "8.0",
+      "question_sha256": "141a31b808ecd819455b297b3407bf55993d93025b38ec8b50d315703a8ebd30",
+      "answer_sha256": "d3a53ed24c73250d85eddd0a5ea96db3abaee85d6cd3b77f6e25c9d322a176f0"
+    },
+    {
+      "id": "omni:1374",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "8dfaeb808642f98c3404c478c2a318c0c7290bfb53faa63947d9f79a8f5b0dbb",
+      "answer_sha256": "8be13c81ac497232a96221a069b568f26f5f6b771a360a76fcfef0fe1de4becd"
+    },
+    {
+      "id": "omni:378",
+      "dataset": "omni",
+      "stratum": "3.5",
+      "question_sha256": "9d89f7c4b78108b44e8c40b467398f886b15f0c3820249a25364e67af265bcc6",
+      "answer_sha256": "a4aab3f1f08004e907d2357fafe74cab56359bcb32e23f52e7eb1d3a9c0a2ad3"
+    },
+    {
+      "id": "omni:447",
+      "dataset": "omni",
+      "stratum": "3.0",
+      "question_sha256": "e53334e60c2e0fe79d6bae0d4d20d8317e9c17ae0cef985fe89002801b6cc79b",
+      "answer_sha256": "98089e6d36f78e9766c9ea34d5acb3611f3a92cd81c5eb102095d924ffc7d08b"
+    },
+    {
+      "id": "omni:3483",
+      "dataset": "omni",
+      "stratum": "1.5",
+      "question_sha256": "35d04d1bbe74e5052d94c3256f34502de0975c02f7fa92ea1d602763d8a2797a",
+      "answer_sha256": "986b79d4b69dffb1d19836f47b27073d95bf55201b3385aceb7e0687a21d8667"
+    },
+    {
+      "id": "omni:1818",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "7d3edb54bed60d0c286f0a4a3dc18cda48de364f1f73d19bc55fe5ac61332028",
+      "answer_sha256": "47cea6234e51694af3ba37750e249b15a6cd79dce68ac582e3075bb28393b5ea"
+    },
+    {
+      "id": "omni:2409",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "d365fef871f71a823ea45e8b13ee40026d3f7fb2cf5ee460b8c80a933fdb711f",
+      "answer_sha256": "1452bf701b395618d79d9e1805d811517e33a4a677371deb1cb489ff13770fd5"
+    },
+    {
+      "id": "omni:1002",
+      "dataset": "omni",
+      "stratum": "5.25",
+      "question_sha256": "49825002799ba8ece09c5e30d019b8ac73ae0d8e330bf54f735a7d8daf3b4af6",
+      "answer_sha256": "68532901129cb7fbbe390254245a5cded2afbafd24f8a4c5aaf120dc696cc51e"
+    },
+    {
+      "id": "omni:3945",
+      "dataset": "omni",
+      "stratum": "7.0",
+      "question_sha256": "72eea0824517704c32cba7b65f87037469430ff5ccf529c81d19298d9719e89a",
+      "answer_sha256": "5f17b63889e820006ddaefd7f413602fd0174b0a5cacb8ee61207580339a0834"
+    },
+    {
+      "id": "omni:3494",
+      "dataset": "omni",
+      "stratum": "2.0",
+      "question_sha256": "8c394ae7ad64835caf5dbd601fda3a72a89b31c368c30507b159622e68907af9",
+      "answer_sha256": "47cea6234e51694af3ba37750e249b15a6cd79dce68ac582e3075bb28393b5ea"
+    },
+    {
+      "id": "omni:3409",
+      "dataset": "omni",
+      "stratum": "2.0",
+      "question_sha256": "9a690747fe322c8a761d382591177fad78392315c5424e9bf8c8d077903dd8ed",
+      "answer_sha256": "13b718d3b9fac107e9e173e7fd59c893058ac69ce239617e9a73dbc9ea8e409c"
+    },
+    {
+      "id": "omni:597",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "17a824a1c8e4cea8144d8145f46e078ac5dbdaf795818dff65ec03218db48e96",
+      "answer_sha256": "9df59c3d4c39c130062ef9655dac0f0c4179a19c69f40b8db0c0d0ff2c0cc11b"
+    },
+    {
+      "id": "omni:552",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "f0c6e6a55c2a57344dbd236d8181d0159ddb6b1b3268ea5fa38e130bafeb0919",
+      "answer_sha256": "2209c12466a4ecd1908149821867a21b6cb79b8501c3208661ffce5397111802"
+    },
+    {
+      "id": "omni:2703",
+      "dataset": "omni",
+      "stratum": "1.0",
+      "question_sha256": "8990417a34751874e09b8b171845ac9ec5697af3cfeab3804deed010b6f2bcaa",
+      "answer_sha256": "391552c099c101b131feaf24c5795a6a15bc8ec82015424e0d2b4274a369a0bf"
+    },
+    {
+      "id": "omni:3811",
+      "dataset": "omni",
+      "stratum": "7.0",
+      "question_sha256": "64cdb5ff8b1426efb18cb3e95849ff345217abea91390a538c7ac0e6d761d1e2",
+      "answer_sha256": "227e4918add1d7964e1745439f5cf44f3e3aba15de6f570942d418510b022b9d"
+    },
+    {
+      "id": "omni:480",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "0f564e92b0283fc6606e2eaa1dce27bfe2231b1f024164c2c06a6a2418646662",
+      "answer_sha256": "0234a350f4d56ae45c5ece57b08c54496f372bc570bd83a465fb6d2d85531479"
+    },
+    {
+      "id": "omni:2570",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "3b9df46b78a3da7b79a4c66030393c1d8a56c9fffc46b92e25932b6a1d13e70b",
+      "answer_sha256": "22f8a295ea5e81be8508a1728669acb65417fef7b400e0006226e5236e8d2ca3"
+    },
+    {
+      "id": "omni:631",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "5d3a45b6bf9413324ccd4482952b3d18c476fcdf11c1775e87047edd69493bd3",
+      "answer_sha256": "2bf175f9655e7bb7357b9f0a7c6051465a5ae701104ffe741b98e852c0e4d460"
+    },
+    {
+      "id": "omni:499",
+      "dataset": "omni",
+      "stratum": "4.75",
+      "question_sha256": "f0c1a5075d6f871cc7e6bd5d22933db521860523ffe90617780539847b718ee2",
+      "answer_sha256": "80388864653d9f8dc6a776d83d5d3e7200ccfc28c5d749d9eac2ace4e4482623"
+    },
+    {
+      "id": "omni:922",
+      "dataset": "omni",
+      "stratum": "5.25",
+      "question_sha256": "d77f9c8c2b790804b4414c03d76e66cfa35bedad57362e4646ecdfd392aa7713",
+      "answer_sha256": "3b4714f532a15df6751054cc887f27f37c09df0e5a67ccab6c21e94d5fb70da1"
+    },
+    {
+      "id": "omni:2592",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "7cfd0ed657eb05ca58070611950f6729b2ee09cde85317ef7ffaa9f45890732f",
+      "answer_sha256": "266aa5886067fbbc1a3a39fe432fc5bbf561abc90e4b8a322215ac17df6ce012"
+    },
+    {
+      "id": "omni:2641",
+      "dataset": "omni",
+      "stratum": "3.5",
+      "question_sha256": "8bea0b34455473c349d37f9c6ce8909ea8fae48b88deaec9581da81a200973e0",
+      "answer_sha256": "266aa5886067fbbc1a3a39fe432fc5bbf561abc90e4b8a322215ac17df6ce012"
+    },
+    {
+      "id": "omni:2475",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "c9bdb115f806f920e18017b9cea60eba2e42c80fc3678119fff0c297c3dd88f8",
+      "answer_sha256": "d8193a30972ab6daf68dc19c40407232f583ca1fa1768207607273c89a304e13"
+    },
+    {
+      "id": "omni:1543",
+      "dataset": "omni",
+      "stratum": "6.0",
+      "question_sha256": "08319f9801407a3a773906817f7c987c8e4adb8c75ccdb03ad396989dc7907b3",
+      "answer_sha256": "2bf175f9655e7bb7357b9f0a7c6051465a5ae701104ffe741b98e852c0e4d460"
+    },
+    {
+      "id": "omni:466",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "ebc4d7f6a9ef793e8aa53e63cbd416a317b75b2927ce6fd0ff0ce92de1c492c1",
+      "answer_sha256": "2eecac45827ede372449b7bd78a82139db639d810ebce98caef91e5d1a2fe422"
+    },
+    {
+      "id": "omni:1892",
+      "dataset": "omni",
+      "stratum": "4.5",
+      "question_sha256": "6cc1f377592e14b216131840b7880d71e908323ec1da0d392699a47b92a10e18",
+      "answer_sha256": "4c499ccd2dc21ac5299b0b1d323e5812beda1e508f9acf0e4a5aeefae61d9fbe"
+    },
+    {
+      "id": "omni:2699",
+      "dataset": "omni",
+      "stratum": "2.0",
+      "question_sha256": "a028a816cccea3277da5dfaf5fd4a38b5818b5807c6a57074bacb63ed43de728",
+      "answer_sha256": "1f8c1cafb24e0497eb72c9ceaba5a5c10aee315bd62acfeebbdcecce1f792292"
+    },
+    {
+      "id": "omni:2459",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "d6abd63d3c7ed59d63540f5862b4ae5c7aa01d9f9bd9eda432273b8d7e824a93",
+      "answer_sha256": "6d344e2afcdf5d5898942ccf3099ee2817ceb676e89c88c071bcca5586b6465a"
+    },
+    {
+      "id": "omni:2309",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "5e50bc436ad147e3e42cb0ace901d05142ecd1ae9e07320a4fc9dc244969357e",
+      "answer_sha256": "c116c838040f676d887fc856d8fbf4e143f70ce5c91f78e66de880fb35be356d"
+    },
+    {
+      "id": "omni:1896",
+      "dataset": "omni",
+      "stratum": "4.5",
+      "question_sha256": "605a91f4fa698592a4ab8a0ab7830eaf793f94d5ecffc5da6323b61c4c2aa811",
+      "answer_sha256": "6423edae1c30a1488ef5f410fef5c9964778c5911e39e4c63ae363d417fb7b91"
+    },
+    {
+      "id": "omni:3527",
+      "dataset": "omni",
+      "stratum": "1.5",
+      "question_sha256": "b757e6ec970dfc5c91a00e06913091525dd4d860f1a82ba40e36f16995b15ebd",
+      "answer_sha256": "94d16fa9d29e8ce22b2c001db1d587cae77f291f83cc8efee008ab3fcfb0bb0d"
+    },
+    {
+      "id": "omni:2633",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "5526e6a37f9fb3e9cc355e2cce621157294775ccd77db8733991ece4b762f3ee",
+      "answer_sha256": "6f8f349216adc47cfd723001f3dfbfc11179e1b36c31ce51c85056026f3d85b9"
+    },
+    {
+      "id": "omni:2083",
+      "dataset": "omni",
+      "stratum": "4.5",
+      "question_sha256": "e2beea1e1cbd4cd9f0a9f8af65de00f5bbd0e0e6f4834b436cda0d3918f530f9",
+      "answer_sha256": "17eed2c0e7c9788d0b46fafdf328b3e955aa0a22132c16cde72aa4f32dcd5282"
+    },
+    {
+      "id": "omni:893",
+      "dataset": "omni",
+      "stratum": "3.5",
+      "question_sha256": "abf7b71a888c060971ff201c143b0bef302aa8422086dacde7fc69b70a62dce8",
+      "answer_sha256": "f36a66ac3e9bb80acf6678849764f4b67f8241e26db436974cb5557c402ffe39"
+    },
+    {
+      "id": "omni:978",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "9a065609913280dc24a6988df4ebb7fb632687bce37cfc74fa1423119b08a6fe",
+      "answer_sha256": "266aa5886067fbbc1a3a39fe432fc5bbf561abc90e4b8a322215ac17df6ce012"
+    },
+    {
+      "id": "omni:3277",
+      "dataset": "omni",
+      "stratum": "1.0",
+      "question_sha256": "dee74a6b3067e4cde99d5efc5a5d091045528f7693d2d1e3119c7108e875bab9",
+      "answer_sha256": "536549599ec6c3b859cd3970025779a13d061783c73e663fea7f963e98379aa8"
+    },
+    {
+      "id": "omni:1513",
+      "dataset": "omni",
+      "stratum": "5.25",
+      "question_sha256": "63f40b30ec574744bf772aec98c9b165b8595ea7b54eb7b315b82ab5f17b85ff",
+      "answer_sha256": "ade1a1c2a61af0f279a4978dfddcdb6acd33f5a8b61e62c5fd881e8a88a387bc"
+    },
+    {
+      "id": "omni:3462",
+      "dataset": "omni",
+      "stratum": "2.0",
+      "question_sha256": "d1f039179377a8e0dc492d08e5eee1108a731f2a5471b1dc8439bf5b4e8b508f",
+      "answer_sha256": "789d9e7dc67f986660d9b28f5946cce995f9b145e4c2ef61828679cee07bb316"
+    },
+    {
+      "id": "omni:1750",
+      "dataset": "omni",
+      "stratum": "4.5",
+      "question_sha256": "1cd52181fa277e77f46044886de0919f7c0749da80335ec672e14622a8e2c8bd",
+      "answer_sha256": "2bf175f9655e7bb7357b9f0a7c6051465a5ae701104ffe741b98e852c0e4d460"
+    },
+    {
+      "id": "omni:3032",
+      "dataset": "omni",
+      "stratum": "2.0",
+      "question_sha256": "123982ca57d9695983cfd0e2c60c9cee4055eff8e0a3a1ffc53a807bbb56208d",
+      "answer_sha256": "a4aab3f1f08004e907d2357fafe74cab56359bcb32e23f52e7eb1d3a9c0a2ad3"
+    },
+    {
+      "id": "omni:454",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "bfe720484310d80e9c1951b0d5ae321f62cfaa12caa89371c788029ce10ae501",
+      "answer_sha256": "e3a534c81abf0641d823da24a2ab681479dfd964d1a423be59a550ec62593fbb"
+    },
+    {
+      "id": "omni:1531",
+      "dataset": "omni",
+      "stratum": "4.5",
+      "question_sha256": "bd73bb757eab5e84c39fafa8e8bdab3d946af8bb4eb18c98aa3ab830ee2ccb77",
+      "answer_sha256": "2a4ce103a8d22d2363445e39bb8f4535452c503fb55168d4602ab440828966fe"
+    },
+    {
+      "id": "omni:3575",
+      "dataset": "omni",
+      "stratum": "8.0",
+      "question_sha256": "fad7c3459af15f4cff9a88228a9842d9a37e529c091aaf99f23f75ee9d724423",
+      "answer_sha256": "911d92c9038a0dd7893d780bec0c4d9d3c6d69fb5b2cdff3f7f31a6b2fc80a90"
+    },
+    {
+      "id": "omni:3982",
+      "dataset": "omni",
+      "stratum": "9.0",
+      "question_sha256": "a714fbad60e1a97ffc0805615fe7372cb91df9dc15ec7f1a5de70baa6e137cb4",
+      "answer_sha256": "2bf175f9655e7bb7357b9f0a7c6051465a5ae701104ffe741b98e852c0e4d460"
+    },
+    {
+      "id": "omni:3917",
+      "dataset": "omni",
+      "stratum": "9.0",
+      "question_sha256": "84038e0c8efbb9bdf064704d16b142b8fd27fe0d1bafd54dc664af518abfd3bc",
+      "answer_sha256": "b7eaca01f5e137c475a58e62dc1dcf634bce98a33930cc4e6e4d9e63e3645ff9"
+    },
+    {
+      "id": "omni:3613",
+      "dataset": "omni",
+      "stratum": "5.5",
+      "question_sha256": "0042603b87ffb1397a9d122a305ad2d0a10d0ac7b9753b12fbbd88185778c351",
+      "answer_sha256": "1f8c1cafb24e0497eb72c9ceaba5a5c10aee315bd62acfeebbdcecce1f792292"
+    },
+    {
+      "id": "omni:2194",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "40931700fcd35d8479443eda610b2bf9a182487f8e636b42293214eb8baffcfc",
+      "answer_sha256": "f20e4586c63ba3b2c06a97c4e585acea4a2977c3d8d81dc2d1f2275439ad90a7"
+    },
+    {
+      "id": "omni:2591",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "8bdb2bcdc98ec2f9a32c4ec4139274a24815db4a13122715ba742dc240a99581",
+      "answer_sha256": "eda39d188fe44f158e8950258e9f8a51e037a379a5d01a9d8432fc352b611fb0"
+    },
+    {
+      "id": "omni:404",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "2db64d6b63594e143ec5559ae3ed7e1094b6041b55a58e2756f3a380e819bc8a",
+      "answer_sha256": "789d9e7dc67f986660d9b28f5946cce995f9b145e4c2ef61828679cee07bb316"
+    },
+    {
+      "id": "omni:2679",
+      "dataset": "omni",
+      "stratum": "2.5",
+      "question_sha256": "dcb61973044cb66febe6c781492459e2c79727ac09b4a4a4d199b41166322aa4",
+      "answer_sha256": "30dd0b27194598d33febe5b5e4e7068d0da2dbf71ae37f968ea77dca2b4a8a69"
+    },
+    {
+      "id": "omni:2931",
+      "dataset": "omni",
+      "stratum": "2.0",
+      "question_sha256": "7db5841e1e184c336baccfce16a7223510d6277bf7c71217207d44c3c06733ce",
+      "answer_sha256": "2453bb209731b60335d6d7880940ac295b5a6697fcdc3dad62f955e69243f2d0"
+    },
+    {
+      "id": "omni:2248",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "e9f6064612a6c3e1ef404e0af950caeb2d69edfb0b2cd6b1cd27ddb057cc28fe",
+      "answer_sha256": "4ec621b227e30e8a72d97865785a0bf20b5032024c589a56e1a6b18a099bdb7c"
+    },
+    {
+      "id": "omni:916",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "bf2eb23b4f879f236b3278d77cb806a3df86045644ec9279d2a2be3c07d1b6b4",
+      "answer_sha256": "0abfc142d280830ea6d7421aa18fc6bd5fc54951a5f2f30e80cca7dac94c18ed"
+    },
+    {
+      "id": "omni:2471",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "efda37a8cc6203b16cd07033d1c3d073439f19d3d508c29983a21e4578b0655b",
+      "answer_sha256": "8950e13ae318d1388e11f0486ab310123e6cae153e38f13471d72a779552fbb2"
+    },
+    {
+      "id": "omni:1539",
+      "dataset": "omni",
+      "stratum": "5.5",
+      "question_sha256": "e0f1bd1fecd3da4393364fb1392ab5ccb187cb48f003b1ec3117b71575986004",
+      "answer_sha256": "8edc9c529d4e05856226f2c04e26e31182322fb9371de33bdbe38aba706cfe08"
+    },
+    {
+      "id": "omni:539",
+      "dataset": "omni",
+      "stratum": "5.25",
+      "question_sha256": "6423acb2488403e36b415b19e51d825d5bd91867ad8b3ac93e8cca9ecd4142af",
+      "answer_sha256": "f9cacf3cb91a12e03bc4546834f95a50a4c5fe02276ac260148ea9296c442d39"
+    },
+    {
+      "id": "omni:2137",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "2f08f122a6fac83c0bb6de29cb013feeab4399feddb5aa3dbeb0dad437172b2f",
+      "answer_sha256": "afc21edad3e1050cde1bde655014dd5929845485b589a66c8a1b744f731b5d50"
+    },
+    {
+      "id": "omni:638",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "9ed587986d57311189a3b6e2403eb73afa496039496ca8791bede55f0a80497d",
+      "answer_sha256": "66cd253200e185c78dd12f56ce5b2cd6ff5477b405e11a77d1d060cb8cb4d675"
+    },
+    {
+      "id": "omni:2231",
+      "dataset": "omni",
+      "stratum": "4.5",
+      "question_sha256": "1cc5ba8499f9ba824fa3dbbfb652e6d9bffc5d07ab625cabf164e591342a6fef",
+      "answer_sha256": "b1c3088da3f16d99f1ebd85b2e36042a77af98b92ba5b04548ace740e7210c20"
+    },
+    {
+      "id": "omni:2467",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "abf9ba195d308a4c3a9e81ad756136ae6527980836647b595bc6b99971179767",
+      "answer_sha256": "6143e504d3e018c98b7d778a5a2195703e4dae21e6738586d264b333697181e4"
+    },
+    {
+      "id": "omni:2707",
+      "dataset": "omni",
+      "stratum": "1.5",
+      "question_sha256": "d8901cbe6474b94d261ccc12135eaeac76fb6bf726cfe7235570da1914dd2499",
+      "answer_sha256": "cc11310c456c3690d5a74c23aa31cc25b4e74cdae146c71e54ad9dbc1d109fde"
+    },
+    {
+      "id": "omni:2968",
+      "dataset": "omni",
+      "stratum": "1.5",
+      "question_sha256": "f09d84cb87e7caa4ffd185de875a9084550cac298b7f475af2e3d7552943066c",
+      "answer_sha256": "06024be3089840dc57375f951f67e195b31c37b7e819c63a15dcba31e894aa50"
+    },
+    {
+      "id": "omni:2221",
+      "dataset": "omni",
+      "stratum": "8.0",
+      "question_sha256": "50f4e2eebf3643cc69b04f7cb792c0b6f9a5ea47812c39ecfbc0917adb77a29b",
+      "answer_sha256": "391552c099c101b131feaf24c5795a6a15bc8ec82015424e0d2b4274a369a0bf"
+    },
+    {
+      "id": "omni:1782",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "8f3e9f0816417aa446eee0824700322fae80dde36ec2b9f68ed6d979132d7a14",
+      "answer_sha256": "ca30de1c42bd3e0fdbeb7fb612cbf42e8e757b6948b7a51a67827df28b65107b"
+    },
+    {
+      "id": "omni:3278",
+      "dataset": "omni",
+      "stratum": "7.0",
+      "question_sha256": "16022c6a4d81787c6950a32614ca48c99e120a1d5cfbf286fd943db3dc5b3e61",
+      "answer_sha256": "a4aab3f1f08004e907d2357fafe74cab56359bcb32e23f52e7eb1d3a9c0a2ad3"
+    },
+    {
+      "id": "omni:3992",
+      "dataset": "omni",
+      "stratum": "6.0",
+      "question_sha256": "068e938ebe1c9a5b371561b9443676870129773cde31db55665876d68c72ddf1",
+      "answer_sha256": "f20e4586c63ba3b2c06a97c4e585acea4a2977c3d8d81dc2d1f2275439ad90a7"
+    },
+    {
+      "id": "omni:2151",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "3b5220a498d0bfa94f256a4dfe9592ea468ade3e57bf34d6c21340274f71153d",
+      "answer_sha256": "84bdb62f5c4b331700636ac3c43e4fa4960860ff1b09e3950454ff8719a6feb4"
+    },
+    {
+      "id": "omni:1239",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "35714d802ef3da3955d81b44d98086e24e35098346a281bd8920657021ade721",
+      "answer_sha256": "5315ba3d9a6d599ea092521d7fefef376aeb04d855176d006013ec30adc15138"
+    },
+    {
+      "id": "omni:1805",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "e62f5f5e5fe300b9e0518e1ac3ea698b2aeca54eda925d5b5c48f8cf774fec0a",
+      "answer_sha256": "06024be3089840dc57375f951f67e195b31c37b7e819c63a15dcba31e894aa50"
+    },
+    {
+      "id": "omni:2528",
+      "dataset": "omni",
+      "stratum": "4.5",
+      "question_sha256": "86d611f96a9fc9b79436a715c1ea14e0f8697862a5862e1e0ebf060e36d2564c",
+      "answer_sha256": "eac60a5152716b6377491cf9aa41e386994918eb24847475ac7f7345577cf29a"
+    },
+    {
+      "id": "omni:3063",
+      "dataset": "omni",
+      "stratum": "2.0",
+      "question_sha256": "ffde22c696bce4264b691d43c72e049d2a2ac9783a0abe6168a43509875f4ce4",
+      "answer_sha256": "92e9e7e5922d26e17e48f0869ab25cc99499fdab722c065de8e0965c96c68e86"
+    },
+    {
+      "id": "omni:1335",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "7a05b7b29a63ec25b60093bebe2dee08a55e9c388a4a08f0df95c0861d8d9224",
+      "answer_sha256": "cc11310c456c3690d5a74c23aa31cc25b4e74cdae146c71e54ad9dbc1d109fde"
+    },
+    {
+      "id": "omni:2576",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "6a38c50a102bf2aac3b45ba291aca2386e693e5f0a3d2e87931a03242f5eb86f",
+      "answer_sha256": "1452bf701b395618d79d9e1805d811517e33a4a677371deb1cb489ff13770fd5"
+    },
+    {
+      "id": "omni:2950",
+      "dataset": "omni",
+      "stratum": "1.5",
+      "question_sha256": "5adde8b6d3497b313898c5cdbceb0e7f800b015e822399fb35f4f65dd9b2ecae",
+      "answer_sha256": "9df59c3d4c39c130062ef9655dac0f0c4179a19c69f40b8db0c0d0ff2c0cc11b"
+    },
+    {
+      "id": "omni:2925",
+      "dataset": "omni",
+      "stratum": "2.0",
+      "question_sha256": "933d84b4eab55fd9e1939b0c7b1e3ba79d3037791eb0dfb5f8966962aae23b59",
+      "answer_sha256": "b08eab77f8e1fded9209737f000550f19ae422a6b83a26fdfcc517d57e4ba117"
+    },
+    {
+      "id": "omni:984",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "34141267f2f4dd95f648d2442a3dd34871d5729fee9295053a44437341b05092",
+      "answer_sha256": "536549599ec6c3b859cd3970025779a13d061783c73e663fea7f963e98379aa8"
+    },
+    {
+      "id": "omni:2794",
+      "dataset": "omni",
+      "stratum": "3.0",
+      "question_sha256": "396cf5813dd0d8d7dfafcbb2e6006e2cd970eb2774da238b633fd0a5c1e20821",
+      "answer_sha256": "2bf175f9655e7bb7357b9f0a7c6051465a5ae701104ffe741b98e852c0e4d460"
+    },
+    {
+      "id": "omni:2502",
+      "dataset": "omni",
+      "stratum": "4.5",
+      "question_sha256": "6a6d5be99e6699484885b7e9c466e6ad9047251de404a357a7aaee33fa9ffb72",
+      "answer_sha256": "2bf175f9655e7bb7357b9f0a7c6051465a5ae701104ffe741b98e852c0e4d460"
+    },
+    {
+      "id": "omni:1341",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "ac0a64ad183c0ba8941ec2f441da63984672f7dc328b3e9168a3ee7e9c0bda47",
+      "answer_sha256": "d058be5ad9f15da3d6b7d50d470427c3aae7880214ffb1b8a5f31be64416cd10"
+    },
+    {
+      "id": "omni:1770",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "d58defee6ddc022266e9067e3b925044698599b22096a2cd7cfa1679a3162eae",
+      "answer_sha256": "cc11310c456c3690d5a74c23aa31cc25b4e74cdae146c71e54ad9dbc1d109fde"
+    },
+    {
+      "id": "omni:2418",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "ed16bae2bc5a2a7b9912cefe8d81af1f7b03ccb3496e2a2e039977709b67864c",
+      "answer_sha256": "a7ea91aca0db041c2010f1f31e99e75faaa253db77093e7096be42793f3faa51"
+    },
+    {
+      "id": "omni:2807",
+      "dataset": "omni",
+      "stratum": "3.0",
+      "question_sha256": "68ccacd379617d75f47d31ad4545dd3efd45236c2ba5c7bf8e6ddfbfadcb73bb",
+      "answer_sha256": "f326bd84707ed76597becb832280595d1a5aaceb0905dc40e3553ebb861bde80"
+    },
+    {
+      "id": "omni:1238",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "a2445f73c79ce5abdabf8f5d00616ab44b0fae506ac8ac47f7d44741af53fdab",
+      "answer_sha256": "d8b23bccffd8507d9d0429a3f8ad9262c9f054766a6830d795702d143fa0c9f8"
+    },
+    {
+      "id": "omni:2717",
+      "dataset": "omni",
+      "stratum": "2.0",
+      "question_sha256": "63b4ac17621c126caea6abe4e93f7c63fc6619e2b00b9192f69a30a469acf95a",
+      "answer_sha256": "a04908f573e7a1c9b9f62563bb9a5188334fd250d76875e845de3f24c895eb4b"
+    },
+    {
+      "id": "omni:2044",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "b079b8a1c3b31c2a208630f8e478e8f9b277dbfe7d9369bc4698b10682b7e935",
+      "answer_sha256": "f0c42069ab6ac26820fb7787a78c995ab23498122a99f699c725efc81fbea49f"
+    },
+    {
+      "id": "omni:2954",
+      "dataset": "omni",
+      "stratum": "1.0",
+      "question_sha256": "61cc2723e6550cea0a116d3a7f6ad1a6307816358186c08ae53a7b3f71965dc5",
+      "answer_sha256": "d10a4bc9e0c1fa4e8f3d7ce2512b8756e47ca5fa451f373c39a1431bb88db49f"
+    },
+    {
+      "id": "omni:907",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "e764becd54d383ca4a9c19bcfc9fcd22b4e980460af415d164f828af1f9c5752",
+      "answer_sha256": "c5e5f9ef81358a464869b204ddec38bb7380dfa2757d766c078b4e5df6d946d8"
+    },
+    {
+      "id": "omni:1040",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "c028c27470bf0781a456f7f7eec9298378847953338a10e0cff4ac04d5f2a8aa",
+      "answer_sha256": "5defc92d11f38e34facc727521e1d9b596052c3a5e3ba1375fab31609f1edc3a"
+    },
+    {
+      "id": "omni:459",
+      "dataset": "omni",
+      "stratum": "4.5",
+      "question_sha256": "b12c166da430a5357ebabd134bc77dc584de69fb1417b7fc938b40ffcbb5235c",
+      "answer_sha256": "491a3f847b1a8e255fe39c4f508f5089568c71c532a10e33f7fed5de59b6bd74"
+    },
+    {
+      "id": "omni:779",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "70d0c52ff60fadb10b4625d93dc480ea47829a38556cc2069e27781dfe6c0ce6",
+      "answer_sha256": "b06f8b0dba42b3126ea00abf9bf6ca500ce95dea627608149109c8c1f355e85a"
+    },
+    {
+      "id": "omni:3200",
+      "dataset": "omni",
+      "stratum": "1.0",
+      "question_sha256": "07c767dfdc67cdb846f9a629121e0fbdd81abb79da3517b0f3dd0954aab96ed0",
+      "answer_sha256": "49f65dc5d4333e3ed1ba4c9bbea03134a985509541efa8a4955542d50dea45f0"
+    },
+    {
+      "id": "omni:1549",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "1c41b183707057139ab2b3e6c22e008db6880b003a08d6b13752cc3b901c9091",
+      "answer_sha256": "e8a550c1f4384a94e1d31f832430decac584ee4fad8052d060689613e538e448"
+    }
+  ],
+  "parent_suite_sha256": "a573c8b1739e66c5393cfa05dba4f31189daeea3c4797d278ed6666a405f70c8"
+}
