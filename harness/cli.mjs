@@ -15,7 +15,7 @@ import { mkdirSync, writeFileSync, readdirSync, readFileSync, existsSync, rmSync
 import { join, resolve } from "node:path";
 import { loadCases, listCases, CASES_DIR } from "./lib/cases.mjs";
 import { prepare, BASE_DB, MODELS_COPY, DATA_DIR } from "./lib/data.mjs";
-import { ensureDevServer, ensureMobileServer, DEFAULT_URL } from "./lib/dev-server.mjs";
+import { ensureDevServer, ensureMobileServer, ensureAssetServer, DEFAULT_URL } from "./lib/dev-server.mjs";
 import { runCase } from "./lib/run.mjs";
 import { runCliCase } from "./lib/cli-driver.mjs";
 import { CdpPage } from "./lib/cdp.mjs";
@@ -143,7 +143,9 @@ async function main() {
       const mobile = bySurface("mobile");
       if (mobile.length) {
         const server = await ensureMobileServer({ reuse: flag("reuse-server") });
+        const assets = await ensureAssetServer();
         closers.push(() => server.stop());
+        closers.push(() => assets.stop());
         const page = await CdpPage.launch({
           width: 390,
           height: 844,
@@ -189,8 +191,10 @@ async function main() {
         const { runRemoteCases } = await import("./lib/remote-driver.mjs");
         const server = await ensureDevServer({ reuse: flag("reuse-server") });
         const mobileServer = await ensureMobileServer({ reuse: flag("reuse-server") });
+        const assets = await ensureAssetServer();
         closers.push(() => server.stop());
         closers.push(() => mobileServer.stop());
+        closers.push(() => assets.stop());
         for (const result of await runRemoteCases({ cases: remote, runDir, desktopUrl: server.url, mobileUrl: mobileServer.url }))
           record(result);
       }
