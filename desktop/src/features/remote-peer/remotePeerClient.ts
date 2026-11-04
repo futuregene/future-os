@@ -256,6 +256,10 @@ interface RawCatalog {
   desktopId?: string;
   pairId?: string;
   sessions?: unknown;
+  /** Where this page of a windowed catalogue ends; absent on a whole list. */
+  nextCursor?: unknown;
+  /** How many conversation roots the host holds in total. */
+  totalRoots?: unknown;
 }
 
 /**
@@ -335,9 +339,31 @@ export function normalizeRemoteSessionRows(raw: unknown): RemoteSessionRow[] {
   });
 }
 
-export async function fetchRemoteSessions(desktopId: string): Promise<RemoteCatalog> {
-  const raw = await invokeCommand<RawCatalog>("remote_peer_sessions", { desktopId });
-  return { desktopId, sessions: normalizeRemoteSessionRows(raw?.sessions) };
+/**
+ * One page of a host's conversations: `cursor == null` is the first page.
+ *
+ * A host that speaks `catalog_window_v1` answers with its newest conversations
+ * (each with its forks) and names both where the page ends and how many roots it
+ * holds, so the caller can offer the rest; a host that does not page ignores the
+ * cursor and answers with the whole list, which leaves both facts absent.
+ */
+export async function fetchRemoteSessions(
+  desktopId: string,
+  cursor: string | null = null,
+): Promise<RemoteCatalog> {
+  const raw = await invokeCommand<RawCatalog>("remote_peer_sessions", {
+    desktopId,
+    ...(cursor ? { cursor } : {}),
+  });
+  return {
+    desktopId,
+    sessions: normalizeRemoteSessionRows(raw?.sessions),
+    // Named only when the host named them: a host that does not page sends its
+    // whole list, and "no cursor" and "no such field" mean the same thing to a
+    // reader — there is nothing more to ask for.
+    ...(typeof raw?.nextCursor === "string" ? { nextCursor: raw.nextCursor } : {}),
+    ...(typeof raw?.totalRoots === "number" ? { totalRoots: raw.totalRoots } : {}),
+  };
 }
 
 /**

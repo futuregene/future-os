@@ -31,6 +31,8 @@ export interface RemoteCommand {
   toolCallId?: string;
   /** get_session_entries backward cursor (mobile lazy history) */
   before?: number;
+  /** list_sessions windowed page: the previous page's nextCursor. Absent asks for the whole catalogue, which is what a client that cannot page still receives. */
+  cursor?: string;
   /** set_model / set_thinking_level */
   modelId?: string;
   providerId?: string;

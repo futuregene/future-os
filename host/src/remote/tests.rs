@@ -3698,6 +3698,135 @@ mod runtime_tests {
         handle.abort();
     }
 
+    /// The window lane, end to end.
+    ///
+    /// A client that declared `catalog_window_v1` is sent the newest
+    /// conversations, not every one the host owns: the packet carries the window,
+    /// the cursor that reaches the rest and the scope's whole root count. The
+    /// remainder is then one page read away — which is the promise the
+    /// declaration makes, and the reason the host may send fewer rows than it
+    /// holds.
+    #[tokio::test]
+    async fn catalogue_window_lane_sends_the_newest_rows_and_names_the_rest() {
+        let _home = HomeGuard::new("remote-catalog-window");
+        init_store();
+        let nats = FakeNats::start().await;
+        let client = nats_connect_once(&nats).await;
+        let pair = unique("pairwindow");
+        SUPERVISOR.restore_active(Some(pair.clone()));
+
+        // A handful past one window, so the page is full and the rest non-empty.
+        let window = future_remote_protocol::CATALOG_WINDOW_ROOTS as usize;
+        let total = window + 5;
+        for index in 0..total {
+            crate::store::create_thread(crate::store::CreateThreadInput {
+                mode: "chat".to_string(),
+                title: Some(format!("Windowed thread {index}")),
+                workspace_id: None,
+                workspace_path: None,
+                workspace_name: None,
+                agent_session_id: Some(unique(&format!("sesswindow{index}"))),
+            })
+            .unwrap();
+        }
+
+        let creds = pairing_creds(&pair);
+        let _shared = shared_runtime(&creds, true, false);
+        declare_features(
+            &creds,
+            &pair,
+            &[
+                future_remote_protocol::CATALOG_WINDOW_FEATURE,
+                future_remote_protocol::CATALOG_DELTA_FEATURE,
+            ],
+        );
+        let handle = spawn_presence_heartbeat(client.clone(), pair.clone(), "bridge_window".into());
+        let mut tap = nats.tap();
+        let subject = format!("p.{pair}.state.sessions");
+
+        let baseline = await_publish(&mut tap, &subject, Duration::from_secs(5)).await;
+        let body = baseline.json();
+        assert_eq!(body["full"], json!(true));
+        let rows = body["rows"].as_array().expect("a delta packet names rows");
+        assert_eq!(
+            rows.len(),
+            window,
+            "the window, not the whole list of {total}"
+        );
+        assert_eq!(
+            body["totalRoots"],
+            json!(total),
+            "the reader is told how many there are, not how many it was sent"
+        );
+        let cursor = body["nextCursor"]
+            .as_str()
+            .expect("the window names the cursor for the rest")
+            .to_owned();
+
+        // The rest: what the client's own "show more" asks for, through the same
+        // read the command handler calls.
+        let page = crate::remote_host::catalog::sessions_catalog_window(
+            "",
+            Some(&cursor),
+            future_remote_protocol::CATALOG_WINDOW_ROOTS,
+        )
+        .expect("the next page reads");
+        let rest = page.payload["sessions"].as_array().expect("rows").len();
+        assert_eq!(rest, total - window, "exactly the conversations left over");
+        assert_eq!(page.payload["totalRoots"], json!(total));
+        assert_eq!(
+            page.payload["nextCursor"],
+            json!(null),
+            "the remainder is exhausted by this page"
+        );
+
+        // A conversation appears and the window shifts: the row it pushed out is
+        // still a conversation of this host, so it is *not* named as removed —
+        // a reader that had loaded it (or the pages after it) would otherwise
+        // watch it disappear from a list it can no longer re-reach.
+        let pushed_out = rows.first().map(|row| row["sessionId"].clone());
+        crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("Born after the window".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some(unique("sesswindowborn")),
+        })
+        .unwrap();
+        let shifted = await_publish(&mut tap, &subject, Duration::from_secs(5)).await;
+        let body = shifted.json();
+        assert_eq!(body["full"], json!(false));
+        assert_eq!(
+            body["removed"],
+            json!([]),
+            "a row that merely left the window is still a conversation: {body}"
+        );
+        assert_eq!(
+            body["rows"].as_array().map(Vec::len),
+            Some(1),
+            "only the new conversation travels"
+        );
+        assert!(pushed_out.is_some(), "the baseline had rows to push out");
+
+        // A conversation that is really gone is still named, window or not.
+        let doomed = body["rows"][0]["sessionId"].as_str().unwrap().to_owned();
+        let thread = crate::store::list_threads()
+            .unwrap()
+            .into_iter()
+            .find(|thread| thread.agent_session_id.as_deref() == Some(doomed.as_str()))
+            .expect("the doomed thread exists");
+        crate::store::delete_thread(&thread.id).unwrap();
+        let removed = await_publish(&mut tap, &subject, Duration::from_secs(5)).await;
+        assert_eq!(
+            removed.json()["removed"],
+            json!([doomed]),
+            "a deleted conversation is named, not left to be inferred"
+        );
+
+        handle.abort();
+    }
+
     #[tokio::test]
     async fn heartbeat_workspaces_publish_failure_exits() {
         let _home = HomeGuard::new("remote-hb-workspaces-fail");

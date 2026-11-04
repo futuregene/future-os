@@ -1178,6 +1178,37 @@ catalog tick and only advances when the visible content changes, a *stale*
 advertised revision is impossible — a missed push is therefore always
 observable, and heals in one heartbeat instead of a timer.
 
+**A window instead of the whole list (`catalog_window_v1`).** Every snapshot
+above is the *whole* list, and on a machine with hundreds of conversations that
+is hundreds of rows on every connect — 276 KB of JSON for 604 conversations
+before the 50-root window below. A client that declares `catalog_window_v1`
+promises it can page, and in exchange the host sends only what the local rail
+would draw first:
+
+| Field / command | Meaning under the declaration |
+| --- | --- |
+| `state.sessions` rows | the newest 50 conversation **roots** (`CATALOG_WINDOW_ROOTS`), each with its fork tree, plus the pinned conversations |
+| `nextCursor` | where that window ends; `null` once there is nothing more |
+| `totalRoots` | how many roots the host holds in total — what "show the other N" counts |
+| `list_sessions {limit, cursor}` | one page of the same stream (newest activity first), for a reader that asked for the rest |
+
+The shelved conversations ride along **whole** on the first page, whichever
+half shelved them (the conversation, or the workspace holding it). They are not
+the list this page bounds: the archived view draws what it is sent and has no
+"show more" of its own, so a truncated shelf would be a shelf the reader cannot
+reach the rest of — and it is not what the window is for, since the window's
+saving is measured against the live conversations it leaves out.
+
+The window is a *page*, not a filter: `totalRoots` and the cursor are restated
+on every snapshot and on the delta packet (`state.sessions` with `full: false`
+when only they moved), so a reader never has to guess whether there is more.
+The desktop walks the cursor to the end in one click, and keeps the loaded pages
+across the five-second poll — they are outside the window the host restates, and
+they are what its own "load more" row promised. A host that does not receive the
+declaration — the phone, and every older build — keeps receiving the whole list,
+byte for byte as before: a window a client did not ask for is conversations it
+can no longer reach.
+
 The publisher records a snapshot's signature only once `secure::publish`
 reports the payload actually left the endpoint. Sealing yields no message while
 the secure channel has no established key yet (before the client's handshake,

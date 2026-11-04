@@ -239,6 +239,15 @@ pub fn apply_declared_features(handshake: &HandshakeState, pair_id: &str, featur
         .runtime
         .catalog_delta(pair_id)
         .store(delta, Ordering::Release);
+    // A windowed catalogue: the newest conversations now, the rest on request.
+    // Declared by the reader that can page; a client that cannot is sent every
+    // row, because a window it did not ask for is rows it can never reach.
+    handshake.runtime.catalog_window(pair_id).store(
+        features
+            .iter()
+            .any(|feature| feature == future_remote_protocol::CATALOG_WINDOW_FEATURE),
+        Ordering::Release,
+    );
     // The declared lane is reported by `future remote status`: the two lanes are
     // indistinguishable from outside (same commands, no log line), so "did the
     // capability take" had no answer anywhere before this.
@@ -1586,6 +1595,13 @@ pub(crate) trait CommandRuntime: crate::secure::HandshakeHost {
     /// publisher reads before deciding what a `state.sessions` packet carries.
     /// A runtime that does not answer keeps sending whole snapshots.
     fn catalog_delta(&self, _pair: &str) -> Arc<AtomicBool> {
+        Arc::new(AtomicBool::new(false))
+    }
+    /// Whether this client reads the catalogue as a window of the newest
+    /// conversations and pages the rest, which the event publisher reads before
+    /// deciding how much of the list a `state.sessions` packet carries. A runtime
+    /// that does not answer sends the whole catalogue, exactly as before.
+    fn catalog_window(&self, _pair: &str) -> Arc<AtomicBool> {
         Arc::new(AtomicBool::new(false))
     }
     /// Record the catalogue lane a connection is declared on, so status can
