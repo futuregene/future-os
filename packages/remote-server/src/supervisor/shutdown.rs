@@ -442,7 +442,28 @@ impl Supervisor {
         }
     }
     pub async fn re_pair(self: &Arc<Self>) -> Result<RemoteStatus, crate::Error> {
-        self.unpair().await?;
+        // What re-pairing replaces is what this machine serves, and how it is
+        // taken down has to match. A device in the book is a whole-machine
+        // replacement: `unpair` stops the runtime, clears `start_requested` and
+        // moves the access epoch. A slot the book no longer holds has no device
+        // behind it — an invitation nobody claimed, or a pairing a terminal
+        // removed while this process kept serving it — so those are revoked and
+        // stopped one by one instead.
+        //
+        // The whole-machine stop is what must not happen when there is no device
+        // to replace: it publishes `Stopped` while the switch still says on, the
+        // one combination a headless host reads as a fault, for as long as the
+        // replacement code takes to mint — so it would exit on the very request
+        // that asked for an invitation, and answer that request with "the
+        // invitation was not issued".
+        if self.host.load_slots().is_empty() {
+            for pair_id in self.unclaimed_invitations() {
+                let _ = self.host.queue_revoke_invitation(&pair_id);
+                self.stop_slot(&pair_id);
+            }
+        } else {
+            self.unpair().await?;
+        }
         // `unpair` only queues the revoke: it is also the Remote page's button and
         // must not wait on HTTP. Here the queue cannot be left for the compensation
         // loop, because the platform gives a desktop it already knows the *same*
