@@ -164,6 +164,14 @@ impl Manager {
             startup::step(&database, "recover_segmented_runs", || {
                 store.recover_segmented_runs_cancellable(cancellation)
             })?;
+            // A settled run replays its transcript, not its token stream, so its
+            // journal is retired automatically once it has been settled for a
+            // while: the sweep handles the bulk, this keeps a long-running store
+            // from collecting weeks of journals between sweeps. Bounded to three
+            // seconds and 64 streams so a start never waits on maintenance.
+            startup::step(&database, "retire_settled_streams", || {
+                store.auto_retire_settled_streams().map(|_| ())
+            })?;
             cancellation.check()?;
             let _ = self.store.set(store);
             tracing::info!("session storage: ready");
