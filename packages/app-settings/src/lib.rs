@@ -53,8 +53,9 @@ pub struct AppSettings {
     pub auto_title_first_turn: bool,
     /// UI language mirrored for title generation when the webview is suspended.
     pub title_language: String,
-    /// Use the community-edition UI: Future is configured like another
-    /// built-in provider and account/billing details stay out of the footer.
+    /// Effective UI mode. The stored value is tri-state: absent/null means
+    /// unknown (displayed as community), true is explicit community, and false
+    /// is commercial. Use `read_community_edition` for startup authorization.
     pub community_edition: bool,
     /// Recommend at most one uninstalled skill when the user sends a message
     /// (PRD v1.6 §3). **Off by default**, per the integration plan's rule 1; the
@@ -101,6 +102,7 @@ pub const KEY_BELL_ON_COMPLETE: &str = "bell_on_complete";
 // This preference now generates titles only; it never requests compaction.
 pub const KEY_AUTO_TITLE_FIRST_TURN: &str = "auto_compact_first_turn";
 pub const KEY_TITLE_LANGUAGE: &str = "title_language";
+/// Absent/JSON null = unknown, true = explicit community, false = commercial.
 pub const KEY_COMMUNITY_EDITION: &str = "community_edition";
 pub const KEY_SKILL_RECOMMEND: &str = "skill_recommend";
 /// Reserved, read-only: the agent has no auto-resume implementation behind it
@@ -411,6 +413,18 @@ pub fn read_value(conn: &Connection, key: &str) -> Result<Option<String>, Error>
     .map_err(Error::from)
 }
 
+/// Preserve the distinction between an undecided installation and an explicit
+/// choice. Missing, empty, JSON null, and invalid rows remain undecided.
+pub fn read_community_edition(conn: &Connection) -> Result<Option<bool>, Error> {
+    Ok(
+        read_value(conn, KEY_COMMUNITY_EDITION)?.and_then(|value| match value.trim() {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        }),
+    )
+}
+
 /// Upsert one settings row. `now` is a Unix-millis timestamp supplied by the
 /// caller so this module stays clock-free and testable.
 pub fn write_value(conn: &Connection, key: &str, value: &str, now: i64) -> Result<(), Error> {
@@ -445,7 +459,7 @@ pub fn defaults() -> AppSettings {
         bell_on_complete: true,
         auto_title_first_turn: true,
         title_language: "en".to_string(),
-        community_edition: false,
+        community_edition: true,
         skill_recommend: false,
         auto_resume_interrupted: true,
     }
@@ -503,9 +517,7 @@ pub fn read(conn: &Connection) -> Result<AppSettings, Error> {
     let title_language = read_value(conn, KEY_TITLE_LANGUAGE)?
         .filter(|value| matches!(value.as_str(), "en" | "zh"))
         .unwrap_or_else(|| "en".to_string());
-    let community_edition = read_value(conn, KEY_COMMUNITY_EDITION)?
-        .map(|value| value == "true")
-        .unwrap_or(false);
+    let community_edition = read_community_edition(conn)?.unwrap_or(true);
     let skill_recommend = read_value(conn, KEY_SKILL_RECOMMEND)?
         .map(|value| value == "true")
         .unwrap_or(false); // Off by default (PRD v1.6 §3, integration plan rule 1); the Settings toggle opts in.
@@ -670,6 +682,30 @@ fn parse_models(raw: &str) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edition_preserves_unknown_separately_from_manual_choices() {
+        let conn = conn();
+        assert_eq!(read_community_edition(&conn).unwrap(), None);
+        assert!(read(&conn).unwrap().community_edition);
+        assert!(defaults().community_edition);
+        for (value, expected) in [
+            ("null", None),
+            ("", None),
+            ("invalid", None),
+            ("true", Some(true)),
+            ("false", Some(false)),
+        ] {
+            write_value(&conn, KEY_COMMUNITY_EDITION, value, 1).unwrap();
+            let settings = apply(&conn, &UpdateAppSettingsInput::default(), 2).unwrap();
+            assert_eq!(read_community_edition(&conn).unwrap(), expected);
+            assert_eq!(settings.community_edition, expected.unwrap_or(true));
+            assert_eq!(
+                read_value(&conn, KEY_COMMUNITY_EDITION).unwrap().as_deref(),
+                Some(value)
+            );
+        }
+    }
 
     fn conn() -> Connection {
         let conn = Connection::open_in_memory().expect("in-memory database");

@@ -248,6 +248,12 @@ CREATE INDEX idx_workspaces_page ON workspaces(
 existing `idx_threads_recent` overlaps the new index; evaluate keeping only one
 during migration.
 
+`workspaces.last_opened_at` has exactly **one writer**: `store::mark_thread_opened`.
+Opening a conversation records its user workspace as the one last used (a chat's
+`temporary` container is not a list item and is left alone). Without that writer
+the key is just the workspace's creation time, and the cursor degenerates into
+"oldest-created last" — the folder used every day sinks past the first page.
+
 ## 6. Backend interfaces (host layer)
 
 ```rust

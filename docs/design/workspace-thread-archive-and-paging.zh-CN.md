@@ -152,6 +152,8 @@ CREATE INDEX idx_workspaces_page ON workspaces(
 
 `threads` 无需结构变更（`status`/`archived_at` 已有）。现有 `idx_threads_recent` 与新索引有重叠，迁移时评估保留其一。
 
+`workspaces.last_opened_at` 的**唯一写入点**是 `store::mark_thread_opened`：打开某个会话即把它所属用户工作区记为"最后使用"（`temporary` 聊天容器不算列表项，不写）。没有这个写入点，该键恒等于工作区创建时间，游标就退化成"按创建天数排序"——常用的老目录必然沉到第一页之后。
+
 ## 6. 后端接口（host 层）
 
 ```rust

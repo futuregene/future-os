@@ -8,6 +8,73 @@ DeepSeek Flash 的本机目录没有 `xhigh`，经用户确认使用最高可用
 这是无外部工具的推理评测。模型不能浏览、读文件、运行代码或查询标准答案。
 评分程序在生成结束后读取标准答案，不向模型反馈正确性。
 
+## 当前题库与执行顺序（2026-11-04）
+
+用户已暂停此前的基线采集，取消未完成请求，固定以下两个独立题包。
+后续不再使用 ZebraLogic；原有题包与成绩保留为历史证据。
+此前的“14 错 + 6 对”及“7 道 BBEH 错题 + 7 道 Omni 错题”选题方案已被下面的 10 题方案替代。
+
+| 题包 | BBEH mini | Omni-MATH | 用途 |
+| --- | --- | --- | --- |
+| `suites/fusion-10.json` | 7 道基线错题 + 1 道对题 | 1 道基线错题 + 1 道对题 | 固定 8 错 + 2 对，先用于 Fusion 优化 |
+| `suites/max-1000.json` | 完整 mini 460 题 | 随机 540 题 | 后续另起 DeepSeek Flash max 基准 |
+
+执行顺序是**先用 10 题优化 Fusion，再启动新的 1,000 题基线**。
+创建题包不会调用模型，不会启动夜间评测。两个题包及其运行目录分别保留，
+重跑 1,000 题不修改 10 题的题目、答案、选择清单或历史基线。
+
+10 题的题目和原成绩哈希已经冻结；本机历史基线由此前两次运行的原始记录离线组合为
+`runs/2026-11-04-fusion-10-baseline`，未重新生成答案。正确对照题按固定种子
+`future-fusion-dev10-v1` 的哈希顺序在每个数据集已完成且答对的记录中各取一道。
+具体选题与暂停记录保存在被忽略的 `.local/challenge-selection.json`。
+原成绩和回答保留在本地，不随 Git 提交。
+
+1,000 题题包使用固定种子 `future-deepseek-max-1000-20261104-v1`。
+BBEH mini 的 460 个 ID 全部纳入；Omni 从整数答案子集的 1,962 题中，先排除已发现的
+`omni:383`（题面/参考解答有疑点）与 `omni:2865`（依赖缺失题图），再无放回随机取 540 题。
+排除发生在这轮生成任何答案之前，ID 记录在选择清单中；不根据本轮成绩换题。
+
+## 当前题包的运行命令
+
+先按安装章节准备 Python 环境，并使用已构建的 CLI 启动隔离 Host。
+`--binary` 及 `--source-root` 应指向实际二进制和对应的源码树；下例使用本机保留的二进制副本。
+在一个终端运行：
+
+```sh
+python3 benchmark/fusion/runtime.py --binary benchmark/fusion/.local/bin/future
+```
+
+然后在另一个终端，只运行 10 题的 Fusion，引用固定历史基线：
+
+```sh
+python3 benchmark/fusion/bench.py run --suite benchmark/fusion/suites/fusion-10.json --arms fusion --baseline benchmark/fusion/runs/2026-11-04-fusion-10-baseline --binary benchmark/fusion/.local/bin/future --runtime benchmark/fusion/.local/runtime.json --out benchmark/fusion/runs/fusion-10-v1
+```
+
+优化完成后，另起 1,000 题单模型基线。以下命令需主动执行，准备题包时不会自动运行：
+
+```sh
+python3 benchmark/fusion/bench.py run --suite benchmark/fusion/suites/max-1000.json --arms single --jobs 4 --http-502-retries 3 --binary benchmark/fusion/.local/bin/future --runtime benchmark/fusion/.local/runtime.json --out benchmark/fusion/runs/deepseek-max-1000-v1
+```
+
+每次 `--out` 使用新目录；中断后用原参数与原输出目录加 `--resume`，不重跑已完成题目。
+默认题包是 Fusion 10，默认 arm 是 `fusion`；运行单模型基线应显式传 `--arms single`。
+
+**502 重试策略**：仅当已接受 run 的终态账本确认上游 HTTP 502 时，才在新会话中
+重新提交同一道原题。默认最多追加 3 次，等待 2、4、8 秒；可通过 `--http-502-retries`
+调整次数，`--http-502-retry-delay` 调整初始等待，指数退避最多等待 30 秒。
+答错、解析失败、HTTP 400 等其他结果不会触发这项重试。
+
+每题的每次尝试保存在 `attempts/attempt-N/`，汇总结果位于该题目录的 `result.json`。
+所有失败、回答、会话/运行 ID 与用量均保留；最终结果累计已记录的尝试用量，并标记
+失败尝试可能存在未返回的用量。502 次数用尽后，保留该题失败并继续余下题目；
+其他类型的执行错误仍暂停补新题供排查。模型自身的重试也保留在实际调用记录中。
+
+重新建立同一范围的 1,000 题题包时使用新的输出路径：
+
+```sh
+python3 benchmark/fusion/bench.py plan --counts bbeh=460,omni=540 --exclude omni:383,omni:2865 --seed future-deepseek-max-1000-20261104-v1 --out benchmark/fusion/suites/max-1000-reproduced.json
+```
+
 ## 安装
 
 在仓库根目录执行（Python 3.9+）：
@@ -69,6 +136,71 @@ Fusion 的 `data/` 下载缓存由本目录 `.gitignore` 排除。
 新运行目录还会生成忽略全部内容的本地标记，即使 `--out` 误填到其他位置也不会混入普通提交。
 仓库内的汇总导出仅允许放在被忽略的 `reports/`，也可以导出到仓库外。
 
+## 历史首轮：基线先跑，冻结错题，再单跑 Fusion
+
+2026-11-04 首轮使用两阶段开发流程。第一阶段随机抽取 ZebraLogic 100 题、BBEH mini
+100 题、Omni-MATH **整数答案子集** 200 题，共 400 题。各数据集独立按
+`SHA256(seed, question_id)` 排序后取前 N 题，无放回；这一路径不做难度分层配额。
+`baseline-400.json` 及配套题目文件已经冻结，种子为
+`future-deepseek-baseline-400-20261104-v1`。不纳入 MuSR。
+
+```sh
+# 仅在建立一个全新题包时执行；已有题包禁止覆盖。
+python benchmark/fusion/bench.py plan --counts zebra=100,bbeh=100,omni=200 --seed future-deepseek-baseline-400-20261104-v1 --out benchmark/fusion/suites/baseline-400.json
+
+# 使用上文隔离 Host，只生成 DeepSeek Flash max 的回答。
+python benchmark/fusion/bench.py run --suite benchmark/fusion/suites/baseline-400.json --arms single --jobs 4 --runtime benchmark/fusion/.local/runtime.json --out benchmark/fusion/runs/deepseek-max-400 --freeze-out benchmark/fusion/suites/fusion-challenge-20.json
+```
+
+每个回答结束后写入逐题证据并更新 `summary.json`、`results.csv`、`report.md`。
+这轮只调单模型，不生成 Fusion 回答。四路并发不会改变总题数；若需顺序运行，使用
+`--jobs 1`。可用 `--binary` 指定固定二进制，`--source-root` 指定该二进制对应的源码树；
+运行清单会保留二进制哈希、源码快照及源码树是否存在未提交改动。
+
+`--resume` 配合原来的参数和 `--out` 续跑：已有最终成绩（包括失败成绩）原样保留；
+有 `ack.json` 的未完成题只重新等待同一个 run，不重新提交。已经创建目录却没有
+`ack.json` 的题要求人工检查，避免在提交结果未知时重复调用。
+续跑会验证题包、二进制、执行脚本、模型能力和运行参数未变；Fusion 还校验讨论配置。
+服务或协议错误会停止继续提交新题，已接受的题继续落盘。排查后才执行续跑。
+
+全部 400 题都有终态记录后，`--freeze-out` 自动按固定种子从**已完成且成功解析**的
+回答中抽取 **14 道错误 + 6 道正确**，再冻结 20 题的顺序。服务失败、超时及解析失败
+保留在基线总成绩的分母中，但不用于填补“推理错题”名额。若不足 14 错或 6 对，
+命令会报告不足，保留全部基线，不偷偷换题或重跑回答。也可单独执行：
+
+```sh
+python benchmark/fusion/bench.py freeze --baseline benchmark/fusion/runs/deepseek-max-400 --out benchmark/fusion/suites/fusion-challenge-20.json
+```
+
+若需要修正评分器，先停止控制进程的新题提交，等已接受请求结束，再建立离线评分修订：
+
+```sh
+python benchmark/fusion/bench.py regrade-baseline --source benchmark/fusion/runs/deepseek-max-400 --out benchmark/fusion/runs/deepseek-max-400-v2
+```
+
+它不调用模型，原运行目录、原成绩和原脚本快照保持不动；新目录保存修订后的判分及原始证据哈希。
+若原基线尚未完成，对新目录使用 `run ... --out ...-v2 --resume`，复用已有回答并继续剩余题目。
+2026-11-04 首次运行发现 ZebraLogic 允许的 JSON 对象行被错误地按字段名比较；
+修正后同时接受数组行和以列名为键的对象行，未知/缺少列仍报解析失败。
+本次修订没有改变题目、提示词、模型或回答，不把格式误判列入推理错题。
+
+20 题选择清单固定原基线清单和每个结果的 SHA-256；完整模型输出与成绩仍保存在被忽略的
+`runs/`，不能提交。后续比较只跑 Fusion：
+
+```sh
+python benchmark/fusion/bench.py run --suite benchmark/fusion/suites/fusion-challenge-20.json --arms fusion --baseline benchmark/fusion/runs/deepseek-max-400 --runtime benchmark/fusion/.local/runtime.json --out benchmark/fusion/runs/fusion-challenge-v1
+```
+
+`--baseline` 在任何模型生成前验证题干、标准答案、提示词、评分器、实际模型/思考等级和
+冻结结果哈希。报告引用原有 DeepSeek 成绩，明确标记为历史基线，不再调用单模型；
+基线原始用量和耗时也标记为历史数据，不算本轮新增花费。审计跳过历史会话，避免到新 Host
+查询旧会话。新的单独基线只允许一遍，引用比较也只允许一次 Fusion 回答。
+
+这 20 题是专门寻找改进空间的开发题库：基线 **6/20（30%）由选题规则决定**。
+主要关注 14 道错题中修复多少，以及 6 道对题中退步多少；不把这个题库的正确率差异
+解释为总体能力提升。报告抑制该选题样本的总体置信区间。判断基线原有能力应看第一阶段
+400 题总体和分数据集成绩。
+
 ## 小测试
 
 已冻结的 `suites/smoke.json` 包含三道题：ZebraLogic、BBEH mini、Omni-MATH 各一题。
@@ -122,11 +254,13 @@ benchmark/fusion/.venv/bin/python benchmark/fusion/bench.py run --runtime benchm
 
 也可省略 `--runtime`，直接连接已启动的 Host；这种方式会在该实例中创建评测会话。
 `--binary` 可指定其他已构建的 CLI。每次 `--out` 必须是新目录，不覆盖旧结果。
-评测脚本不重新提交失败题目；Agent/Host 自身的阶段修正和上游重试仍按实际策略执行，
+当前单模型基线按上文策略重试已确认的 HTTP 502；历史运行及 Fusion 不因此回填成绩。
+Agent/Host 自身的阶段修正和上游重试仍按实际策略执行，
 这些尝试应保留在运行证据中。`--repeats 3` 可运行三次，重复次数不会被统计成更多独立题目。
 
 运行前冻结配置、模型能力目录、二进制版本、脚本副本、Python/平台信息和数据清单。
-每题启动新的会话，两组在同一道题上并发；进入下一题前两组都必须结束。
+每题每组启动新的会话。`--arms single` 只运行基线；`--arms fusion --baseline ...`
+只生成 Fusion 回答。兼容的 `--arms both` 顺序执行同题两组；`--jobs` 控制题目并发。
 每个题对开始前检查 Fusion 配置是否漂移。
 
 本次本机设置：
@@ -259,5 +393,7 @@ benchmark/fusion/.venv/bin/ruff format --check benchmark/fusion
 ```
 
 遵守仓库约定，本机不运行单元测试；这项工作的真实模型试跑属于手工集成评测。
-`.github/workflows/benchmark-fusion.yml` 在相关 PR 中运行静态检查和 `tests/` 中的
-离线协议回归；这些 CI 检查不联网下载题库、不使用凭据，也不调用付费模型。
+仓库不再提供 benchmark 专用 GitHub Actions 工作流；静态检查、题包校验及真实模型评测
+通过本机命令手动执行。`tests/` 中的离线回归文件保留。
+常规 `ci.yml` 的规则保持不变：纯 `benchmark/` 改动不会安排 Rust、TypeScript、Android
+或 iOS 编译和测试，仍保留轻量的影响范围检测与主干必需的 `CI result` 汇总检查。
