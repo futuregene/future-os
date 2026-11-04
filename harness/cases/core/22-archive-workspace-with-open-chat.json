@@ -1,0 +1,54 @@
+{
+  "id": "archive-workspace-with-open-chat",
+  "title": "归档工作区：其中的会话与主区域应一起离开",
+  "area": "workspace",
+  "priority": "P1",
+  "tags": ["workspace", "archive", "edge"],
+  "description": "创建一个工作区并在里面开会话，然后从工作区头的菜单归档它。工作区应离开活跃列表，当前打开的工作区会话也不应继续占据主区域。",
+  "preconditions": "应用已启动；harness 已准备空目录。",
+  "expectations": [
+    "归档后数据库 workspaces.archived_at 非空",
+    "侧边栏活跃工作区不再有它",
+    "主区域不再显示该工作区里的会话"
+  ],
+  "steps": [
+    { "wait": 800 },
+    { "click": { "aria": "新建工作区" } },
+    { "waitFor": { "selector": "button[aria-label='选择工作区']" }, "timeout": 5000 },
+    { "click": { "aria": "选择工作区" } },
+    { "waitFor": { "text": "工作区路径：" }, "timeout": 5000 },
+    { "click": { "selector": "button", "text": "打开" } },
+    { "waitFor": { "text": "使用此项目文件夹及其工作区资源" }, "timeout": 8000 },
+    { "wait": 900 },
+    { "click": { "selector": "[role=textbox]" } },
+    { "type": "工作区归档前的会话" },
+    { "click": { "aria": "发送" } },
+    { "waitFor": { "text": "工作区归档前的会话" }, "timeout": 8000 },
+    { "hover": { "aria": "workspace-pick 的操作" } },
+    { "click": { "aria": "workspace-pick 的操作" } },
+    { "shot": "workspace-menu", "note": "工作区菜单" },
+    { "click": { "selector": "[role=menuitem]", "text": "归档" } },
+    { "click": { "selector": "[role=dialog] button", "text": "归档" }, "optional": true },
+    { "wait": 1500 },
+    {
+      "db": {
+        "sql": "SELECT archived_at IS NOT NULL AS ok FROM workspaces WHERE path LIKE '%workspace-pick' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1",
+        "expect": 1,
+        "message": "工作区已归档写库"
+      }
+    },
+    {
+      "assert": {
+        "expr": "!document.querySelector('nav').innerText.includes('workspace-pick')",
+        "message": "侧边栏活跃工作区不再显示它"
+      }
+    },
+    {
+      "assert": {
+        "expr": "!document.body.innerText.includes('工作区归档前的会话')",
+        "message": "主区域不再显示该工作区的会话"
+      }
+    },
+    { "shot": "after-archive-workspace" }
+  ]
+}
