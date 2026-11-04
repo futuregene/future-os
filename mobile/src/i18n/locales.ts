@@ -387,6 +387,10 @@ export const resources = {
         search: "Search conversations",
         clearSearch: "Clear search",
         noResults: "No matching conversations",
+        archived: "Archived",
+        backToActive: "Back to active",
+        archivedEmpty:
+          "Nothing archived yet. Conversations and workspaces archived on the desktop show up here.",
         reference: "Reference a conversation",
         referenceHint: "Insert a reference to this conversation",
         select: "Select conversations",
@@ -628,6 +632,8 @@ export const resources = {
         truncated:
           "The beginning of this run is no longer available in the live buffer.",
         backToLatest: "Back to latest",
+        archivedReadOnly:
+          "This conversation is archived. Restore it on the desktop to keep chatting.",
         previousQuestion: "Previous question",
         questionNext: "Next question",
         runStopped: "Stopped",
@@ -1529,6 +1535,9 @@ export const resources = {
         search: "搜索会话",
         clearSearch: "清除搜索",
         noResults: "没有匹配的会话",
+        archived: "已归档",
+        backToActive: "返回活跃",
+        archivedEmpty: "还没有归档内容。在桌面端归档的会话和工作区会显示在这里。",
         reference: "引用会话",
         referenceHint: "插入对该会话的引用",
         select: "多选会话",
@@ -1749,6 +1758,7 @@ export const resources = {
         save: "保存",
         truncated: "本轮开头已超出实时缓冲，无法回放。",
         backToLatest: "回到最新",
+        archivedReadOnly: "该会话已归档。在桌面端恢复后即可继续对话。",
         previousQuestion: "上一个提问",
         questionNext: "下一个提问",
         runStopped: "已停止",

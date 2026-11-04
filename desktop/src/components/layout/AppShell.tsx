@@ -139,6 +139,9 @@ function StartingAppShell() {
   return <ReadyAppShell initialAuth={startup.auth} initialProviders={startup.providers} />;
 }
 
+/** Development builds only: a packaged app strips the controls gated on this. */
+const DEV = import.meta.env.DEV;
+
 function ReadyAppShell({
   initialAuth,
   initialProviders,
@@ -1671,7 +1674,9 @@ function ReadyAppShell({
       },
     },
     archivePulse,
-    onShowArchiveGuide: showArchiveGuide,
+    // Development only: the rail renders the link only when Vite's DEV flag is
+    // set, so a released build cannot reach this handler.
+    onShowArchiveGuide: DEV ? showArchiveGuide : undefined,
     ensureThreadScope: ensureScope,
     loadMoreThreadScope: loadMore,
     threadScopeHasMore: scopeHasMore,
