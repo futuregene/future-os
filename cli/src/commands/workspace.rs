@@ -410,6 +410,21 @@ mod tests {
         String::from_utf8(captured.lock().unwrap().clone()).expect("utf8")
     }
 
+    /// The listed row for `dir`, if the view printed one.
+    ///
+    /// The table prints the stored absolute path, so the row is found by that
+    /// path's last component in front of the host's separator: a hard-coded `/`
+    /// matches nothing on Windows, where the same row reads `…\active`.
+    fn row<'a>(printed: &'a str, dir: &std::path::Path) -> Option<&'a str> {
+        let name = dir
+            .file_name()
+            .expect("a named directory")
+            .to_str()
+            .expect("utf8");
+        let needle = format!("{sep}{name}", sep = std::path::MAIN_SEPARATOR);
+        printed.lines().find(|line| line.contains(&needle))
+    }
+
     /// `add` writes the desktop app's own table, in the desktop app's database,
     /// with the directory's name unless one is given — and `list` reads it back.
     #[tokio::test]
@@ -864,30 +879,24 @@ mod tests {
         let (out, captured) = Output::memory();
         list(&[], &out).unwrap();
         let printed = text(captured.out);
-        assert!(printed.contains("/active"), "{printed}");
+        assert!(row(&printed, &active).is_some(), "{printed}");
         assert!(
-            !printed.contains("/shelved"),
+            row(&printed, &shelved).is_none(),
             "the default list is the active shelf: {printed}"
         );
 
         let (out, captured) = Output::memory();
         list(&args(&["--archived"]), &out).unwrap();
         let printed = text(captured.out);
-        assert!(printed.contains("/shelved"), "{printed}");
-        assert!(!printed.contains("/active"), "{printed}");
+        assert!(row(&printed, &shelved).is_some(), "{printed}");
+        assert!(row(&printed, &active).is_none(), "{printed}");
 
         let (out, captured) = Output::memory();
         list(&args(&["--all"]), &out).unwrap();
         let printed = text(captured.out);
-        let shelved_line = printed
-            .lines()
-            .find(|line| line.contains("/shelved"))
-            .expect("the shelved row is in --all");
+        let shelved_line = row(&printed, &shelved).expect("the shelved row is in --all");
         assert!(shelved_line.ends_with("(archived)"), "{shelved_line}");
-        let active_line = printed
-            .lines()
-            .find(|line| line.contains("/active"))
-            .expect("the active row is in --all");
+        let active_line = row(&printed, &active).expect("the active row is in --all");
         assert!(!active_line.contains("(archived)"), "{active_line}");
 
         // `--json` follows the same shelf, so a script cannot see a shelved row
