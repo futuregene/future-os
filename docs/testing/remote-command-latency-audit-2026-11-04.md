@@ -1,115 +1,115 @@
 # 远端桌面命令打开延迟：审计与优化报告（2026-11-04）
 
-> **这份报告要回答的问题**：手机 / 桌面客户端连接远端桌面时，真正会发出的每一条命令，用真实数据
-> （本机 `agent.db` 2.5 GB / 713 个会话行、其中 355 个有内容，`app.db` 54 MB / 682 线程、`tasks.db` 4 MB）打开要多久；
-> 哪些超过 100 ms；这些超过 100 ms 的命令**是不是因为在读数据库时做了非 O(1) 的操作**；
-> 它们的延迟**会不会随数据规模一起上涨**。最后给出一份可以直接开工的优化清单，
-> 目标是**最差情况下每条命令都在 100 ms 以内打开，并且延迟不随数据量增长**。
+> **范围：只看新客户端。** 本文只统计**当前版本**的手机（`mobile/src/remote/`）与桌面客户端
+> （`desktop/src/features/remote-peer/` + `packages/remote-client/`）**真正会发出**的命令与参数。
+> 只有老客户端才会发的两条（`get_messages`、`get_session_entries` 的 `offset` 分页）**不在优化范围**，
+> 其数字完整保留在**附录 A**——因为它们的处置是"退役"，不是"提速"，混进排序会把预算花在
+> 新客户端根本走不到的代码上。
 >
-> **配套章节**（同一目录，报告的数字都能从那里回溯）：
+> **数据**：本机 `agent.db` 2.5 GB / 713 个会话行（其中 355 个有内容）、`app.db` 54 MB / 682 线程、
+> `tasks.db` 4 MB；release 构建、冷热分离、10 次采样。方法见 §1.3 与 `03-measurements.md`。
+>
+> **配套章节**（同一目录，每个数字都能回溯）：
 > `01-client-surface.md` 客户端真正发出什么命令、什么参数、什么时序 ·
 > `02-code-audit.md` 每条命令的 SQL / 索引 / 复杂度 ·
-> `03-measurements.md` 真实数据的冷热实测 ·
-> `04-scaling.md` 逐维度放大数据后的斜率 ·
-> `05-verification.md` 独立复核（对前四章与本报告的抽查与纠正）
+> `03-measurements.md` 真实数据实测 · `04-scaling.md` 逐维度放大后的斜率 ·
+> `05-verification.md` 独立复核
 >
-> **一句话结论**：当前数据下 **7 个组合超过 100 ms、落在 4 条命令上**，其中只有一条在手机的真实打开
-> 路径上（`get_state` 冷开 166 ms）；但把数据放大之后，**会越线的是 7 条命令**，最严重的一条
-> （`get_messages`）在约 19,000 条之后不是变慢，而是**直接失败**。两条真正的病根是
-> **把"整段历史 / 整个会话"当成一次读取的粒度**（offset 分页 698 ms→2.3 s、`get_messages` 249 ms→失败）
-> 和**一个本该 O(1) 的元数据读退化成整会话加载**（`get_state` 每次调用都载入整个 legacy 会话，
-> 22 ms 随会话线性到 72 ms）。
+> **一句话结论**：新客户端打开一条会话会并发发出 `get_state` + 一页游标历史，因此等待 ≈ 较慢的那一条。
+> **其中只有 `get_state` 超过 100 ms**（最大会话首次触达 166 ms、中位会话 59 ms），原因是它每次调用都
+> 对 legacy 会话做**两处整段读**（§3.1）。此外只有 `list_available_skills`（114/120 ms，同步 HTTP，
+> 无上界）单独超预算，但它在技能页/`/` 菜单，不在打开路径上。
+> 老客户端那两条（offset 页 698 ms、`get_messages` 249 ms→2.3 s 并撞 32 MiB 失败）数字更大，
+> 但新客户端一条都不发——见附录 A。
 >
-> **如果只做三件事**：①把 `get_state` 的**两处**整段读改回真正的 O(1)（P0-1，最安全）；
-> ②退役 `get_session_entries` 的 offset 路径与 `get_messages`（P0-2/P0-3，它们今天已经超预算，
-> 放大后失效）；③给 `list_session_files` 加分页（P1-4，一个 `node_modules` 就能把这条命令推到 229 ms）。
-> 三件做完，剩下五条全部落在 100 ms 以内且斜率≈0。
+> **如果只做三件事**：①`get_state` 的**两处**整段读改回 O(1)（P0-1，唯一在打开路径上超预算的命令，
+> 且随会话线性涨到 50,000 条的 72 ms）；②`list_available_skills` 离开网络路径（P0-2，唯一没有
+> 上界保证的命令）；③`list_session_files` 加分页（P1-3，一个 `node_modules` 就能把它推到 229 ms）。
+> 三件做完，新客户端在新数据与 50,000 条的放大档位上都在 100 ms 以内且斜率≈0。
 
 ---
 
 ## 0 先看结论
 
-### 0.1 超 100 ms 的全部组合（实测，M3 Ultra / release 构建 / 真实快照）
+### 0.1 新客户端打开一条会话：一次等待由两条并发读决定
 
-| 命令 | 数据规模 | cold | p50 | p95 | 在谁的打开路径上 | 根因 |
-| --- | --- | ---: | ---: | ---: | --- | --- |
-| `get_session_entries`（`offset` 分页） | 会话 14,531 条目，offset=7,265 | 589 ms | **698 ms** | **721 ms** | 老客户端 / 桌面接管路径 | Agent 侧 `before=None` 时从头数到第 n 条：代价 ∝ offset |
-| `get_session_entries`（`offset` 分页） | 会话 3,145 条目，offset=1,572 | 133 ms | **147 ms** | **162 ms** | 同上 | 同上 |
-| `get_messages`（首页） | 会话 14,531 条目 | **562 ms** | **249 ms** | **256 ms** | 仅老客户端（当前手机不发） | 先取回**整段**历史再在内存切片：代价 ∝ 会话总条目 |
-| `get_messages`（深页 offset=7,265） | 会话 14,531 条目 | **241 ms** | **235 ms** | **239 ms** | 同上 | 同上（深页不比首页便宜） |
-| `get_messages`（首页） | 会话 3,145 条目 | **177 ms** | 57 ms | 58 ms | 同上 | 同上 |
-| `get_state` | 会话 14,531 条目（**进程内首次**） | **166 ms** | 24 ms | 25 ms | **手机开会话的第一个命令** | 两个独立成因：cold 是**首次 hydrate**（读全量转写成 `Session`，每会话一次）；温路径是**两处 legacy 专属的全量读**（详见 §3.1） |
-| `list_available_skills` | 平台目录 47 KB | 68 ms | **114 ms** | **120 ms** | `/` 菜单、技能页 | Agent 每次调用都**同步 HTTP GET** 平台目录 |
+手机打开会话（`packages/remote-client/src/syncEngine.ts:596-615`）：`get_state` 与第一页历史
+**同时在途**——源码原话是"这是读者全部的等待"。所以等待 ≈ `max(两条)` + 分块补读，不是两者之和。
 
-其余 34 个组合全部 ≤ 25 ms；其中**必须保持不动**的平坦样板：游标历史页 11.5 ms、
-事件回放 2.0–2.4 ms（含快照与定位页）、工具参数 0.6 ms、任务面板 ≤ 3 ms、设置读取 ≤ 0.1 ms。
-
-### 0.1b 现在没超、但「数据变大就会超」的（这才是本次审计最该看的表）
-
-当前数据只代表这一个用户的历史。把某一个维度放大、其余留在真实值（`04-scaling.md`）：
-
-| 命令 | 随哪个维度 | 当前 | 放大后 | 首次越过 100 ms |
+| 阶段 | 命令（实填参数） | 最大会话（14,531 条） | 中位会话（236 条） | 判定 |
 | --- | --- | ---: | ---: | --- |
-| `get_session_entries`（offset 页） | 会话条目 | 14,531→698 ms | 50,000→**2,264 ms** | **2,200 条**（实测） |
-| `get_messages`（首页/深页） | 会话条目 | 14,531→249 ms | 25,000/50,000→**直接失败**（gRPC 回复 44/74 MB，撞 32 MiB 上限） | **5,600 条**（实测）；**18,885–22,636 条**之间撞上 32 MiB 上限，此后不再有「慢」这个状态，只有「错」 |
-| `list_session_files` | 目录条目数 | 10→0.59 ms | 1,000→**45.6 ms**，5,000→**229 ms** | **2,200 个文件**（实测） |
-| `get_events_since` + `preferSnapshot` | 单 run 事件数 | 10,855→2.0 ms | 25,000→**41.5 ms**，50,000→**81 ms** | 约 61,600 事件（外推）；超预算后仍先做一次整段投影再丢掉 |
-| `get_state` | 会话条目 | 14,531→24 ms | 25,000→36.7，50,000→**72.1 ms**（重跑 64.5） | 约 71,100 条（外推） |
-| `list_sessions` | 线程数 | 682→21 ms | 2,000→31 ms，5,000→**43–72 ms（双峰：目录快照命中/未命中）** | 约 7,100–11,000 线程（外推） |
-| `list_tasks` | 任务数 | 33→2.6 ms | 500→15.9 ms | 约 3,400 个任务（外推） |
+| 状态 | `get_state(sessionId)`，进程内首次 | **166.1 ms** | **58.6 ms** | **超预算** |
+| 状态 | 同上，温 | 24.4 ms | 4.5 ms | ok |
+| 首屏历史 | `get_session_entries(before=尾游标, limit=3, chunkedRead)` | 38.8 cold / 11.5 warm | 14.3 cold / 6.1 warm | ok |
+| 分块补读 | `get_read_chunk(offset=0,192K,…)`，回复 >192 KB 时 1–2 次、并发 4 | 未测（见 §7） | 通常不发 | 未知 |
+| 活跃 run | `get_events_since(runId, sinceIdx=-1, limit=1000, preferSnapshot)` | 2.0–2.4 ms | 2.0–2.4 ms | ok |
 
-反向对照同样重要：**同一条 `get_session_entries` 的游标路径在 41→50,000 条之间一直是 1.4–15.8 ms**
-（平坦），事件首页/深页、`get_tool_call_args`、任务面板在每一档都是平的。
-所以「随数据上涨」不是必然，是**分页方式与读取粒度**的选择。
+⇒ 新客户端打开一条会话：**最大会话首开 166 ms（超 66 ms），中位会话 59 ms**。
+两个数字都是"进程内首次触达该会话"，它同时包含该会话的首次 hydrate（每会话一次）。
+冷热两条路要分开优化，见 §3.1 与 §6.1 第 6 条。
 
-### 0.2 用户问的两个问题
+### 0.2 新客户端会发、且超 100 ms 的命令
+
+| 命令 | 触发 | p50 | p95 | 在打开路径上 | 根因 |
+| --- | --- | ---: | ---: | --- | --- |
+| `get_state` | 打开会话（第一个命令）、余额面板、compaction 等待中 5 s 轮询 | **166（首开）/ 24（温）** | 25 | **是** | §3.1：对 legacy 会话每次调用做两处整段读 |
+| `list_available_skills` | `/` 菜单、技能页、每连接一次 | **114** | **120** | 否 | Agent 每次调用都同步 `GET` 平台技能目录（超时 10 s / 60 s） |
+
+其余新客户端会发的命令（`get_session_entries` 游标页、`get_read_chunk`、`get_events_since`、
+`get_tool_call_args`、`get_event_content_range`、`get_fusion`、`list_session_files`、`get_queue`、
+`list_sessions`、`list_workspaces`、`list_models`、`list_skills`、`get_settings`/`get_desktop_settings`/
+`get_fusion_settings`、`list_providers`、`list_tasks`/`get_task`/`list_task_runs`、`get_prompt_receipt`、
+`skill_reco_today`）在当前数据上**全部 ≤ 25 ms**，逐条见 §2——表里除标〔老〕/〔无〕的行之外，
+其余都是新客户端会发的。
+
+### 0.3 新客户端会发、现在没超但「数据变大就会严重越线」的
+
+| 命令 | 随哪个维度 | 当前 | 放大后 | 首次越过 100 ms | 在新客户端哪里 |
+| --- | --- | ---: | ---: | --- | --- |
+| `list_session_files` | 目录条目数 | 10→0.59 ms | 1,000→**45.6**，5,000→**229 ms** | **2,200 个文件**（实测） | 文件面板进目录（含 `node_modules`） |
+| `get_state`（温） | 会话条目 | 14,531→24 ms | 25,000→36.7，50,000→**72.1 ms** | 约 71,100 条（外推） | 打开会话 / 余额面板 / 5 s 轮询 |
+| `get_events_since` + `preferSnapshot` | 单 run 事件数 | 10,855→2.0 ms | 25,000→**41.5**，50,000→**81 ms** | 约 61,600 事件（外推） | 打开一个还有活跃 run 的会话 |
+| `list_sessions` | 线程数 | 682→21 ms | 2,000→31，5,000→**43–72 ms**（双峰） | 约 7,100–11,000 线程（外推） | 桌面端**每台主机每 60 s** 轮询；手机 10 min 自愈 |
+| `list_tasks` | 任务数 | 33→2.6 ms | 500→**15.9 ms** | 约 3,400 个任务（外推） | 任务页 |
+
+反向对照同样重要：**同一类读取里，走游标的一条都不涨**——`get_session_entries` 游标页从 41 条到
+50,000 条一直是 1.4–15.8 ms，`get_events_since` 首页/深页 2.06–2.15 ms，`get_tool_call_args` 0.55–0.71 ms。
+所以"随数据上涨"不是必然，是**分页方式与读取粒度**的选择；这也说明新客户端选对了分页方式，
+它剩下的问题只有 `get_state` 一个。
+
+### 0.4 用户问的两个问题（按新客户端口径）
 
 **问题一：读数据库的时候是不是 O(1)？**
 
-不是。按主键/唯一索引点查的命令确实是 O(1)（`get_tool_call_args`、`get_event_content_range`、
-`get_read_chunk`、`get_desktop_settings`、`list_task_deps`…），但**有 6 处读路径不是**（归为 5 类错误），它们分属两种不同的毛病：
+不是。新客户端会走到的路径上有 **4 处**不是 O(1)：
 
-| 类型 | 具体位置 | 复杂度 | 是否在关键路径 |
+| 类型 | 位置 | 复杂度 | 在新客户端哪里 |
 | --- | --- | --- | --- |
-| **整段加载冒充元数据读**（两处，都只在 legacy 会话上触发） | ①`agent/src/session/manager/loading.rs:13` `state_metadata()` → `:68` `load_metadata()`：`SELECT payload FROM history_shapes WHERE session_id=? ORDER BY position` **全部行**读出并逐行 `serde_json::from_str`，只为数出「用户消息几条」和取一个 `parent_session_id`（占温路径超额 **68%**）。②`agent/src/session/manager/mod.rs:321` `unterminated_run_id()` → `transcript.rs:203` `read_run_marker_headers()` 的 legacy 分支走 `run_marker_rows(db, session, "entry_records")`，而 **`entry_records` 是一个视图**——SQLite 必须先把该会话的行摊出来再过滤（占 **30%**） | O(会话条目) | **是**（`get_state` 每次调用都走两条，且①的结果在已加载会话上根本没被用到） |
-| **假分页（先全取再切）** | `host/src/remote_host/business/history.rs:65` `get_messages`：`get_session_messages()` 取**整段**再 `paginate_messages()` 内存切片；`:96-160` `get_session_entries` 的 offset 路径：`fetch_all_session_entries_with_client()` 以 250 条/页**串行拉完整段**（最大会话 59 次 gRPC）再丢掉 99% | O(会话条目) + O(条目/250) 次往返 | 否（当前手机走游标路径），但同一条命令发得出去 |
-| **offset 分页** | `agent/src/session/history/paging.rs:215-219`：`before=None` 时 `start = offset`，SQL 仍然是 `ordinal BETWEEN start AND end`，要靠索引走到第 n 条 | O(offset) | 否（同上） |
-| **全表扫描 + 窗口函数**（同一次读里做了两遍） | `host/src/store/threads.rs:49`（682 行 threads，表达式排序）、`host/src/store/runs.rs:305`（`ROW_NUMBER() OVER (PARTITION BY thread_id)`）、`packages/app-workspaces`（每行一个相关子查询）。注意：窗口函数那条**本来就是一条查询**，不是 N+1（复核已纠正，见 05 §7.1） | O(threads + runs)。02 章的合成标定：20,000 线程时 `list_threads` 21 ms + `latest_run_infos` 43 ms | 是（桌面端每 60 s/台、手机 10 min） |
-| **`LIMIT` 不省成本** | `tasks` 的 `task_runs` 上无 `(task_id, started_at)` 索引，`ORDER BY started_at DESC LIMIT 20` 先排序再截断（`LIMIT 1` 与 `LIMIT 20` 同价） | O(该任务运行次数) | 否（任务面板） |
+| **整段加载冒充元数据读**（两处，只对 legacy 会话） | ① `agent/src/session/manager/loading.rs:13` `state_metadata()` → `:68` `load_metadata()`：`SELECT payload FROM history_shapes …` 全部行 + 逐行解码，只为数出用户消息数与 parent id（占超额 **68%**，会话已 hydrate 时结果被丢弃）<br>② `agent/src/session/manager/mod.rs:321` `unterminated_run_id()` → `transcript.rs:203` 的 legacy 分支扫 **`entry_records` 视图**（不可索引，占 **30%**） | O(会话条目) | **`get_state`，每次调用** |
+| **全表扫描 + 窗口函数**（一次读里做两遍） | `host/src/store/threads.rs:49` 682 行 threads + 表达式排序、`host/src/store/runs.rs:305` 窗口函数（**单条**查询，不是 N+1）、`packages/app-workspaces` 每行一个相关子查询 | O(threads + runs) | `list_sessions`（桌面 60 s/台） |
+| **`LIMIT` 不省成本** | `task_runs` 上无 `(task_id, started_at)` 索引，`ORDER BY … LIMIT 20` 先排序后截断（`LIMIT 1` 与 `LIMIT 20` 同价） | O(该任务运行次数) | `list_task_runs`、`get_task`、`list_tasks` |
+| **逐项系统调用** | `session_files.rs:56-105`：每个目录项都 `canonicalize()` + 权限检查 + `metadata()` | O(目录项 × 路径深度) | `list_session_files` |
 
-一句话：**"库有多大"不影响任何命令，"这个会话/这个 run/这个任务有多长"决定了一批命令的延迟**。
+（老客户端那条"先全取再内存切片"的假分页不在上表——见附录 A。）
+
+一句话：**"库有多大"不影响任何命令，"这个会话/这个 run/这个目录有多长"决定了一批命令的延迟**。
 大表读取基本都靠 `(session_id, …)` 前缀索引定位；出问题的不是索引缺失，而是**读取的粒度选错了**。
 
 **问题二：延迟会不会随数据规模同步上涨？**
 
-会，而且是**线性上涨、没有拐点**，已在三个维度上测出斜率：
+会，线性、无拐点，新客户端会走到的有 5 条：`list_session_files`（目录 5,000 → 229 ms）、
+`get_state`（会话 50,000 条 → 72 ms）、`get_events_since`+`preferSnapshot`（50,000 事件 → 81 ms）、
+`list_sessions`（5,000 线程 → 43–72 ms）、`list_tasks`（500 任务 → 15.9 ms）。
+斜率与实测点见 §4，逐维度扫描见 `04-scaling.md`。
 
-| 维度 | 受影响命令 | 实测（真实数据） | 斜率 |
-| --- | --- | --- | --- |
-| 单会话条目数 | `get_messages` | 41→1.3 ms，236→6.5，3,145→57.1，14,531→**249** | ≈0.017 ms/条目，**深页与首页同价** |
-| 单会话条目数 | `get_session_entries`（offset 路径） | 118→5.7 ms，1,572→**147**，7,265→**698** | ≈0.096 ms/offset 位 |
-| 单会话条目数 | `get_state`（热） | 236→4.5 ms，14,531→24 ms | ≈1.4 µs/条目 |
-| 线程数 | `list_sessions` | 682→21 ms；SQL 部分 682→0.70 ms，2,000→1.92，5,000→5.20，20,000→21.1 | ≈1.05 µs/线程（+ `latest_run_infos` ≈2.1 µs/线程） |
-| 单任务运行数 | `list_task_runs` / `get_task` | 20→0.022 ms，356→0.095，5,000→0.99，20,000→3.29 | ≈0.16 µs/运行，`LIMIT` 无效 |
-
-对照：**用游标（`before`）分页的同一条命令完全不涨**——14,531 条目会话首屏 11.5 ms，与 236 条目
-会话的 6.1 ms 同量级。这说明"随规模上涨"不是必然的，**是分页方式的选择问题**，同一个 handler
-里两种写法差 60 倍。
-
-> 逐维度的放大扫描（线程 5,000、条目 50,000、run_events 50,000、task_runs 2,000 等）见
-> `04-scaling.md`；本报告 §4 用的是它的结论。
-
----
-
-### 0.3 这份报告被独立复核过
+### 0.5 这份报告被独立复核过
 
 `05-verification.md` 由一个独立工作流重算了 03 的 40 行、04 的 85 行、四条越线交叉点与两个字节数
-（全部原样复现），并用四个构建变体定位了 `get_state` 的归因（§4.3）。它同时**否证**了三处判断，
-本报告已按复核结论订正：① `get_state` 的成因是**两处**整段读而不是一处（68%/30%），
-只改一处不达标；② 多出来的时间在**命令体内部**，不在 `verify_session_database`/observer 的装配上；
-③ `list_sessions` 的 `latest_run_infos` **本来就是单条窗口函数查询**，不是 N+1，
-按"每线程一次查询"去改会改到已经正确的实现上；以及 5,000 线程的耗时是 **43–72 ms 双峰**
-而不是"至少 71 ms"。凡本报告与前面各章冲突处，以本报告（已订正）与 `05-verification.md` 为准。
+（全部原样复现），并用四个构建变体定位了 `get_state` 的归因。它同时**否证**了三处判断，本报告已订正：
+① `get_state` 的成因是**两处**整段读而不是一处（68%/30%），只改一处不达标；② 多出来的时间在
+**命令体内部**，不在 `verify_session_database`/observer 的装配上；③ `list_sessions` 的
+`latest_run_infos` **本来就是单条窗口函数查询**，不是 N+1，按"每线程一次查询"去改会改到已经正确的
+实现上；以及 5,000 线程是 **43–72 ms 双峰**而不是"至少 71 ms"。
 
 ---
 
@@ -128,10 +128,18 @@
 
 **结论**：仓库里**没有一个地方收拢了完整列表**。本次以 `route()` + 桥层命令为骨架，再用客户端源码
 （`mobile/src/remote/`、`packages/remote-client/src/`、`desktop/src/features/remote-peer/`）逐条核对
-实际发出的命令与实填参数，得到 26 条读命令 × 41 个规模组合的实测面。顺带发现两处**规格漂移**（不在
-本报告的优化范围内，但会让后续工作踩空）：`PHONE_COMMANDS` 漏登记 6 条手机正在发的命令
-（`get_queue`、`cancel_queued_run`、`release_queued_run`、`get_fusion`、`get_event_content_range`、
-`rename_workspace`），其中 `get_queue` 是 2 s 轮询。
+实际发出的命令与实填参数，得到 26 条读命令 × 41 个规模组合的实测面。
+
+**这 26 条里有 2 条没有新客户端在发**：`get_messages`（只在 `desktop/src/features/remote-peer/remotePeerClient.ts:1381`
+的"走原生分块读的名字白名单"里出现，没有任何调用点构造它）与 `get_session_entries` 的 `offset` 分页分支
+（新客户端手机/桌面一律传 `before` 游标：`mobile/src/remote/timeline/historyPaging.ts:26`、
+`useOlderHistory.ts:86`、`desktop/src/features/remote-peer/useRemoteTimeline.ts:447`）。
+另有 `get_available_models`、`apply_task_revision`、`list_task_revisions` 与三条 `*_task_dep*` 过渡期命令
+无新客户端发送。本报告把它们移到附录 A 与 §2 的〔老〕标记下，不参与排序。
+
+顺带发现两处**规格漂移**（不在本报告的优化范围内，但会让后续工作踩空）：`PHONE_COMMANDS` 漏登记 6 条
+手机正在发的命令（`get_queue`、`cancel_queued_run`、`release_queued_run`、`get_fusion`、
+`get_event_content_range`、`rename_workspace`），其中 `get_queue` 是 2 s 轮询。
 
 ### 1.2 "打开一条会话"到底发几条命令
 
@@ -142,9 +150,11 @@
   → 有活跃 run 时 `get_events_since(sinceIdx=-1, limit=1000)` 逐页回放。
   **最少 3 个往返**。
 - **桌面作为客户端**（串行）：`get_session_entries` → `get_state` →（有活跃 run）`get_events_since`。
-  串行是桌面侧独有的缺陷，手机已经并发。
+  串行是桌面侧独有的缺陷（手机已经并发），所以桌面打开一条会话的等待是**两者之和**而不是较大者；
+  在最大会话上这意味着 11.5 + 166 ≈ 178 ms 而不是 166 ms。这是一条客户端侧就能改的 P2（§5 P2-10）。
 
-所以"每条命令 <100 ms"是必要条件而不是充分条件；§6 的验收判据按**打开序列的总和**给出。
+所以"每条命令 <100 ms"是必要条件而不是充分条件；§6 的验收判据按**打开序列的实际等待**给出
+（手机取并发口径 max，桌面取串行口径 sum）。
 
 ### 1.3 测量方法（为什么这些数字可信）
 
@@ -167,6 +177,8 @@
 ## 2 完整实测表（41 个组合）
 
 `ok` = 不超过 100 ms 预算；**粗体** = 超出。数据规模锚点见 `03-measurements.md` §4。
+〔老〕= 只有老客户端会发（数字保留，见附录 A，不参与排序）；〔无〕= 没有任何新客户端发送。
+**未标记者都是新客户端会发的行**，也就是本报告的优化范围。
 
 | 命令 | 规模锚 | cold | p50 | p95 | 回复字节 | 判定 |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
@@ -175,17 +187,17 @@
 | `get_state` | largest | **166.1** | 24.4 | 24.6 | 1,475 | **超预算（冷）** |
 | `get_state` | median | 58.6 | 4.5 | 4.6 | 1,488 | ok |
 | `get_state` | small | 55.6 | 4.3 | 4.7 | 1,475 | ok |
-| `get_messages` 首页 | largest | **561.6** | **249.0** | **255.5** | 76,814 | **超预算** |
-| `get_messages` 深页 | largest @7,265 | **240.6** | **234.6** | **238.9** | 35,340 | **超预算** |
-| `get_messages` 首页 | mid | **177.0** | 57.1 | 57.6 | 58,597 | **超预算（冷）** |
-| `get_messages` 首页 | median | 17.0 | 6.5 | 6.7 | 38,527 | ok |
-| `get_messages` 首页 | small | 5.9 | 1.3 | 1.4 | 23,856 | ok |
+| 〔老〕`get_messages` 首页 | largest | **561.6** | **249.0** | **255.5** | 76,814 | **超预算** |
+| 〔老〕`get_messages` 深页 | largest @7,265 | **240.6** | **234.6** | **238.9** | 35,340 | **超预算** |
+| 〔老〕`get_messages` 首页 | mid | **177.0** | 57.1 | 57.6 | 58,597 | **超预算（冷）** |
+| 〔老〕`get_messages` 首页 | median | 17.0 | 6.5 | 6.7 | 38,527 | ok |
+| 〔老〕`get_messages` 首页 | small | 5.9 | 1.3 | 1.4 | 23,856 | ok |
 | `get_session_entries` 首屏（游标） | largest | 38.8 | 11.5 | 11.6 | 87,009 | ok |
 | `get_session_entries` 深页（游标） | largest @7,265 | 26.6 | 11.5 | 11.7 | 121,851 | ok |
 | `get_session_entries` 首屏（游标） | median | 14.3 | 6.1 | 6.2 | 28,605 | ok |
-| `get_session_entries` **offset 页** | largest @7,265 | **589.3** | **698.4** | **720.8** | 14,510 | **超预算** |
-| `get_session_entries` **offset 页** | mid @1,572 | **132.9** | **147.4** | **161.7** | 13,349 | **超预算** |
-| `get_session_entries` offset 页 | median @118 | 14.0 | 5.7 | 5.8 | 21,722 | ok |
+| 〔老〕`get_session_entries` **offset 页** | largest @7,265 | **589.3** | **698.4** | **720.8** | 14,510 | **超预算** |
+| 〔老〕`get_session_entries` **offset 页** | mid @1,572 | **132.9** | **147.4** | **161.7** | 13,349 | **超预算** |
+| 〔老〕`get_session_entries` offset 页 | median @118 | 14.0 | 5.7 | 5.8 | 21,722 | ok |
 | `get_session_entries` 深页（游标） | median @118 | 8.1 | 3.6 | 3.7 | 10,303 | ok |
 | `get_events_since` 快照 | heaviest run | 45.1 | 2.0 | 2.2 | 31,264 | ok |
 | `get_events_since` 首页 | heaviest run | 2.5 | 2.3 | 2.4 | 15,642 | ok |
@@ -201,7 +213,7 @@
 | `get_settings` | — | 0.0 | 0.0 | 0.0 | 102 | ok |
 | `list_settings_models` | — | 22.1 | 21.0 | 21.4 | 2,032 | ok |
 | `list_models` | — | 21.3 | 21.1 | 21.2 | 1,425 | ok |
-| `get_available_models` | — | 21.4 | 21.1 | 27.6 | 1,425 | ok |
+| 〔无〕`get_available_models` | — | 21.4 | 21.1 | 27.6 | 1,425 | ok |
 | `list_skills` | — | 2.2 | 1.6 | 1.8 | 12,633 | ok |
 | `list_available_skills` | 平台目录 | 67.5 | **113.7** | **119.5** | 47,024 | **超预算** |
 | `skill_reco_today` | — | 0.2 | 0.0 | 0.0 | 91 | ok |
@@ -209,8 +221,8 @@
 | `list_tasks` | 33 任务 | 5.6 | 2.6 | 3.0 | 9,123 | ok |
 | `get_task` | 356 次运行 | 2.1 | 1.4 | 1.5 | 24,813 | ok |
 | `list_task_runs` | 356 次运行 | 2.4 | 1.7 | 1.7 | 11,708 | ok |
-| `list_task_revisions` | 36 版本 | 2.5 | 1.6 | 1.6 | 329,914 | ok |
-| `list_task_deps` | — | 0.0 | 0.0 | 0.0 | 48 | ok |
+| 〔无〕`list_task_revisions` | 36 版本 | 2.5 | 1.6 | 1.6 | 329,914 | ok |
+| 〔无〕`list_task_deps` | — | 0.0 | 0.0 | 0.0 | 48 | ok |
 
 ---
 
@@ -248,7 +260,11 @@ SELECT payload FROM history_shapes WHERE session_id=?1 ORDER BY position   -- �
 这一条是"读数据库时不是 O(1)"最典型的例子：**粒度错了**（为了一个计数读整个会话），
 **时机错了**（无条件执行），**位置错了**（在最热的命令上）。
 
-### 3.2 假分页：`get_messages` 与 `get_session_entries` 的 offset 路径
+### 3.2 〔老客户端〕假分页：`get_messages` 与 `get_session_entries` 的 offset 路径
+
+> 这一节只影响老客户端。新客户端两条分页都走游标（`before`），因此这里的代价落在预算之外；
+> 处置是**退役**而不是提速，见附录 A。之所以留在正文，是因为它示范了同一位点上游标与 offset
+> 相差 60 倍，这个对照正是新客户端那条路径『为什么达标』的证据。
 
 | 位置 | 写法 | 后果 |
 | --- | --- | --- |
@@ -322,18 +338,20 @@ SELECT payload FROM history_shapes WHERE session_id=?1 ORDER BY position   -- �
 **会上涨，而且是线性、没有拐点。** 14 个隔离 home、每个只放大一个维度、每个档位冷热两相
 （`04-scaling.md` §2）。逐维度的结论：
 
-### 4.1 八条确定在涨的曲线
+### 4.1 八条确定在涨的曲线（新客户端会走 5 条，另 3 条只属老客户端）
 
 | 命令 | 维度 | 实测（p50） | 形状 | 斜率 |
 | --- | --- | --- | --- | --- |
-| `get_messages` 首页 | 会话条目 | 3,145→62.5 → 14,531→**251 ms**（25,000/50,000 直接失败） | 线性 | ≈+118 ms/10× |
-| `get_messages` 深页 | 会话条目 | 14,531→**253 ms** | 线性 | ≈+120 ms/10× |
-| `get_session_entries` offset 页 | 会话条目 | 3,145→**136** → 14,531→**682** → 50,000→**2,264 ms** | 线性 | ≈+592 ms/10× |
+| 〔老〕`get_messages` 首页 | 会话条目 | 3,145→62.5 → 14,531→**251 ms**（25,000/50,000 直接失败） | 线性 | ≈+118 ms/10× |
+| 〔老〕`get_messages` 深页 | 会话条目 | 14,531→**253 ms** | 线性 | ≈+120 ms/10× |
+| 〔老〕`get_session_entries` offset 页 | 会话条目 | 3,145→**136** → 14,531→**682** → 50,000→**2,264 ms** | 线性 | ≈+592 ms/10× |
 | `list_session_files` | 目录条目数 | 1,000→**45.6** → 5,000→**229 ms** | 线性（文件系统，非数据库） | ≈+92 ms/10× |
 | `get_events_since` + `preferSnapshot` | 单 run 事件数 | 10,000→1.29 → 25,000→**41.5** → 50,000→**81 ms** | 10,000 处跳变后线性 | ≈+34 ms/10× |
 | `get_state`（热） | 会话条目 | 3,145→7.8 → 14,531→23.2 → 50,000→**72.1 ms** | 线性 | ≈+17 ms/10× |
-| `list_sessions` | 线程数 | 682→18.1 → 2,000→31.1 → 5,000→**70.8 ms** | 线性 | ≈+27 ms/10× |
+| `list_sessions` | 线程数 | 682→18.1 → 2,000→31.1 → 5,000→**70.8 ms**（重测 43–72 双峰） | 线性 | ≈+27 ms/10× |
 | `list_tasks` | 任务数 | 33→2.3 → 500→**15.9 ms** | 线性 | ≈+5.9 ms/10× |
+
+上表标〔老〕的三行不在本报告的优化范围（见附录 A）；**新客户端真正要处理的是其余 5 行**。
 
 ### 4.2 反向对照：同样是分页，游标路径一条都不涨
 
@@ -383,15 +401,20 @@ hydrate 在语义上就是 O(条目)、每会话只付一次，要压只能压 h
 
 ---
 
-## 5 优化清单（按收益排序）
+## 5 优化清单（只列新客户端会走的路径，按收益排序）
 
-每条都写明：**现状 → 改法 → 预期 → 验收判据**。验收判据都是可以机械复测的数字，
-复测方法见 §6.2。
+每条都写明：**现状 → 改法 → 预期 → 验收判据**。所有判据都可以用 §6.2 的脚本机械复测。
+排序依据不是"谁的数字最大"，而是"谁在新客户端的真实路径上、被多少人碰到"——老客户端那两条
+数字最大的命令（698 ms / 249 ms）不在本表，它们在附录 A 里等退役。
 
-### P0-1 `get_state` 的两处整段读改回真正的 O(1)（收益最大且最安全）
+### P0-1 `get_state` 的两处整段读改回真正的 O(1)
 
-- **现状**：legacy 格式会话（本机 392/713）每次调用都做两处全量读，温路径 24 ms（最大会话）、
-  50,000 条 72 ms，斜率 1.19 µs/条目。分成 **68% / 30%** 两半（复核 A/B 实验，§4.3）。
+**唯一一条在打开路径上超过 100 ms 的命令**，也是唯一一条让"打开一条会话"这条链路超预算的原因。
+
+- **现状**：legacy 格式会话（本机 392/713）每次调用都做两处全量读，温路径最大会话 24 ms、
+  50,000 条 72 ms，斜率 1.19 µs/条目，**68% / 30%** 各一半（复核 A/B 实验，§4.3）。
+  冷态（首次触达该会话）最大会话 166 ms——但**冷态与温态不是同一根因**：复核实测把两处读都摘掉
+  之后，50,000 条的冷值只从 173.7 降到 127.8 ms（约 25%），其余是首次 hydrate 该会话本身。
 - **改法（两处都必须改，只改一处不达标）**：
   1. `state_metadata()` 的 legacy fallback：计数改走已有的 `history_display` 投影
      （`SELECT count(*) ... WHERE session_id=? AND is_user=1` 命中 `history_users(session_id,is_user,ordinal)`）
@@ -404,142 +427,141 @@ hydrate 在语义上就是 O(条目)、每会话只付一次，要压只能压 h
      （`entries_kind(session_id, entry_type, position)` 已经覆盖）。
 - **预期**：两处都改后与 canonical 同值 —— 复核 A+B 实测 **4.18–4.64 ms，41 条与 50,000 条同值**
   （Δ = −0.22 / 0.05 ms）。只改第 1 处会在 50,000 条留下 **19 ms**，不达标。
-- **验收判据**（照抄复核给的）：legacy 会话 50,000 条 p50 ≤ 6 ms，**且** Δ(50k − 41) ≤ 0.5 ms；
-  41 条目 legacy 与 2,043 条目 canonical 的 p50 差 ≤ 0.5 ms。
-- **不在本条范围内**：cold（首次 hydrate）。它每会话付一次、且语义上就是 O(条目)，
-  目标见 §6.1 第 7 条。
+- **验收判据**：legacy 会话 50,000 条 p50 ≤ 6 ms，**且** Δ(50k − 41) ≤ 0.5 ms；
+  41 条目 legacy 与 2,043 条目 canonical 的 p50 差 ≤ 0.5 ms；
+  打开一条会话（并发口径）在最大会话上 p95 ≤ 100 ms。
+- **不在本条范围内**：冷态里的首次 hydrate。它每会话付一次、语义上就是 O(条目)，
+  目标见 §6.1 第 6 条。
 
-### P0-2 退役或重写 `get_session_entries` 的 offset 路径
+### P0-2 `list_available_skills` 离开网络路径
 
-- **现状**：offset=7,265 时 698 ms（p95 721），且要多发 59 次串行 gRPC。
-- **改法**：二选一——（a）让 Agent 侧 `read_history_page` 在 `before=None` 时用 `LIMIT/OFFSET` 直接
-  取页（SQLite 仍需数过前 n 行，但对 14k 行是毫秒级，可接受），并把桌面侧的
-  `fetch_all_session_entries_with_client` 循环彻底删掉，只转发一页；（b）**推荐**：把 `offset`
-  从路由表退役，老客户端改用它已有的 `before` 语义（`before=end` 即可表达"从第 n 条往前一页"），
-  让线上只留一条分页实现。
-- **预期**：698 ms → **与游标页同级（≈12 ms）**。
-- **验收判据**：14,531 条目、offset=7,265 时 < 20 ms；条目 50,000 时 < 25 ms；
-  且该命令的 gRPC 次数 = 1（可用 `command_diagnostics` 计数）。
+**唯一一条没有上界保证的命令**：它的延迟由平台服务与网络决定，100 ms 预算在这里无法用代码保证。
 
-### P0-3 `get_messages` 改成按页读，或直接下线
+- **现状**：p50 114 / p95 120 ms，全部花在 `agent/src/skills/manager.rs:130` 的同步
+  `GET {platform_url}/client/v1/skills`（连接超时 10 s、总超时 60 s，回复 47 KB）。
+  触发点：手机 `/` 菜单、技能页、每连接一次的中文名回退。
+- **改法**：Agent 侧加 TTL 缓存（例如 10 min）+ 后台刷新；读路径只返回缓存，
+  缓存缺失时**返回上一次成功结果而不是同步等待**（首次无缓存也异步预热、先回空目录）。
+- **预期**：p99 ≤ 5 ms，且与网络状况无关。
+- **验收判据**：断网状态下该命令仍 ≤ 20 ms 且返回上一份目录；连续 10 次调用的 p95 ≤ 5 ms。
 
-- **现状**：14,531 条目会话 249 ms 热 / 562 ms 冷，回复 77 KB，深页与首页同价；**5,600 条起越过
-  100 ms**，**约 19,000 条起直接失败**（25,000 条时一条 gRPC 回复 44.4 MB、50,000 条时 74.1 MB，
-  撞 32 MiB 上限，返回 `OutOfRange`）。也就是说会话足够长之后这条命令不再有"慢"这个状态，只有"错"。
-- **改法**：当前手机与桌面**都已不发 `get_messages`**（`01-client-surface.md` §1.2）。优先
-  **从路由表退役并保留一个迁移期错误码**，把流量引到 `get_session_entries`（游标）；若必须保留，
-  则让 Agent 按 `(offset, limit)` 返回页，桌面不再取整段，并加字节预算。
-- **预期**：退役即消失；若保留，249 ms → **≤15 ms** 且与会话长度无关。
-- **验收判据**：退役后路由表无此命令且老客户端收到明确的升级错误；保留则 14,531 与 50,000 条目
-  会话耗时相差 ≤ 20%，且 50,000 条时不再失败。
+### P1-3 `list_session_files` 改成按页列
 
-### P1-4 `list_session_files` 改成按页列
-
-- **现状**：5,000 个文件 **229 ms**（2,200 个文件即越过 100 ms），≈0.046 ms/项，全部在文件系统：
-  每个目录项都 `canonicalize()` + 判权限 + `metadata()`（`host/src/remote_host/session_files.rs:56-105`）。
-  带 `node_modules` 的工作区就是这种规模。
+- **现状**：本机会话根 1.1 ms，但 5,000 个文件 **229 ms**（2,200 个即越过 100 ms），
+  ≈0.046 ms/项，全部在文件系统：每个目录项都 `canonicalize()` + 判权限 + `metadata()`
+  （`host/src/remote_host/session_files.rs:56-105`）。带 `node_modules` / 构建产物的目录就是这种规模。
 - **改法**：（a）默认页大小（如 200）+ `hasMore` 游标；（b）只在 `symlink_metadata` 报告是符号链接时
   才 `canonicalize()`，普通文件用 `symlink_metadata` 一次拿到类型与大小；
   （c）`ensure_path_allowed` 对同一父目录结果缓存。
 - **预期**：首屏与页大小成正比（200 项 ≈ 9 ms），与目录总量无关。
-- **验收判据**：5,000 项目录首屏 < 20 ms，且 10 项与 5,000 项的耗时比 ≤ 3。
+- **验收判据**：5,000 项目录首屏 p95 < 20 ms，且 10 项与 5,000 项的耗时比 ≤ 3。
 
-### P1-5 `preferSnapshot` 不要先整段投影再丢弃
+### P1-4 `preferSnapshot` 不要先整段投影再丢弃
 
-- **现状**：`get_events_since` 带 `preferSnapshot` 时，Agent 先把整个 run 折成快照（O(事件数)），
-  然后才检查体积；超预算（>10,000 事件）就返回 `run_snapshot_too_large`，host 当 `None` 回落到分页读。
-  **于是每次打开都白做一次整段投影再丢掉**：25,000 事件 41.5 ms、50,000 事件 81 ms，
-  而真正的分页读只要 2 ms。
+- **现状**：新客户端打开一个**还有活跃 run** 的会话时，首页 `get_events_since` 带 `preferSnapshot`；
+  Agent 先把整个 run 折成快照（O(事件数)），**然后**才检查体积，超预算就回 `run_snapshot_too_large`，
+  host 当 `None` 回落到分页读。于是每次打开都白做一次整段投影再丢掉：25,000 事件 41.5 ms、
+  50,000 事件 81 ms，而真正的分页读只要 2 ms。
+- **阈值**：8 MiB 预算按**每事件 `data.len()+512`** 计，因此**任何 ≥ 约 16,100 事件的 run 永远不可能
+  产出快照**——客户端侧可以按水位直接不请求。
 - **改法**：折叠之前先按事件数/字节水位判规模直接拒绝；或把投影缓存住（run 不可变，天然可缓存）；
-  或让客户端在超预算时不请求快照。复核补上了阈值的确切形状：8 MiB 预算按**每事件
-  `data.len()+512`** 计，因此**任何 ≥ 约 16,100 事件的 run 永远不可能产出快照**——
-  也就是说这个『优化项』对长 run 从一开始就是纯浪费，客户端侧可以按水位直接不请求。
-- **验收判据**：50,000 事件的 run 上该命令 ≤ 5 ms（与首页同级）。
+  或客户端在超预算时不请求快照。
+- **验收判据**：50,000 事件的 run 上该命令 p95 ≤ 5 ms（与首页同级）。
 
-### P1-6 `list_available_skills` 离开网络路径
+### P1-5 `get_queue` 合成一次往返
 
-- **现状**：p95 120 ms，取决于平台服务与网络，无上界（连接超时 10 s、总超时 60 s）。
-- **改法**：Agent 侧加 TTL 缓存（例如 10 min）+ 后台刷新；读路径只返回缓存，缓存缺失时返回
-  上一次成功结果而不是同步等待。
-- **预期**：p99 ≤ 5 ms。
-- **验收判据**：断网状态下该命令仍 ≤ 20 ms 且返回上一份目录。
-
-### P1-7 `get_queue` 合成一次往返
-
-- **现状**：21.6 ms / 93 字节 = 一次 preflight + 一次完整 `get_state`，2 s 轮询。
+- **现状**：21.6 ms / 93 字节 = 一次 `verify_session_database`（2 次 app.db 点查 + **一次额外 gRPC**）
+  + 一次完整 `get_state`，只为从状态里取队列字段；队列面板打开且非空时 **2 s 轮询**。
 - **改法**：复用桌面对该会话已有的 `get_state` 结果（同一次请求内缓存），或去掉 preflight
-  （队列是只读展示，删掉的那条安全栅栏在写命令上才必需）。
+  （队列是只读展示，那条安全栅栏在写命令上才必需）。
 - **预期**：21.6 ms → 与命中缓存的 `get_state` 同级（≤1 ms）。
 - **验收判据**：2 s 轮询下每 10 s 的 Agent RPC 次数从 10 降到 ≤1。
 
-### P1-8 `list_sessions` / `list_workspaces` 省掉"每条命令都重算"
+### P1-6 `list_sessions` / `list_workspaces` 省掉"没人看也算一遍"
 
-- **现状**：682 线程 p50 21 ms（回复 70 KB）；合成到 5,000 线程是**双峰 43–72 ms**
-  （命中 1 s 目录快照时 ≈43 ms，未命中走完整读时 ≈72 ms），≈0.009–0.014 ms/线程。
-  把这条命令的 SQL 拆开量：`threads` 7.0 ms + `latest_run_infos` 8.6 ms + `workspaces` 0.3 ms ≈ **15.9 ms**，
-  **其余 27–56 ms 在装配与回复构造**。全程持 `CATALOG` 全局锁。
+- **现状**：682 线程 p50 21 ms（回复 70 KB）；5,000 线程 **43–72 ms 双峰**
+  （命中 1 s 目录快照 ≈43 / 未命中 ≈72）。SQL 拆开：`threads` 7.0 + `latest_run_infos` 8.6
+  + `workspaces` 0.3 ≈ **15.9 ms**，其余 27–56 ms 在装配与回复构造。全程持 `CATALOG` 全局锁。
+  触发点：**桌面端每台主机每 60 s**（`useRemotePeers.ts:31,349-365`）、手机 10 min 自愈。
 - **改法**：
   - **不要**去"合并 per-thread 查询"——`latest_run_infos` **本来就是一条**窗口函数查询
-    （`host/src/store/runs.rs:297-320`，`ROW_NUMBER() OVER (PARTITION BY thread_id ...)`）；
-    复核已证否"每线程查一次"这个判断（`05-verification.md` §7.1 第 5 条）。改它会改到已经正确的实现上。
-  - 真正该做的是：① 把 `active_run_sessions()` 与 `latest_run_infos()` 合成一次 `runs` 扫描
-    （现在是两次扫同一张表）；② **把序列化与结构签名移到锁外**，锁内只取快照并按 revision 判断
-    是否真要重算；③ 桌面端 60 s/台的轮询改成事件驱动（手机已经是推送驱动）——这条命令的
-    p50 里有一半是"没人看也要算一次"。
-- **预期**：SQL 部分 15.9 ms 可压到 ≈12 ms；真正的收益在装配与锁（27–56 ms），
-  目标是 682 线程 p95 ≤ 12 ms、5,000 线程 p95 ≤ 40 ms。
-- **验收判据**：线程数 10 与 5,000 的耗时比 ≤ 4（当前 ≈18–30×）；同一进程内连续两次调用的
-  耗时不得相差 60%（消除双峰）；`list_sessions` 期间其它命令的 p95 不上升（锁外化）。
+    （`host/src/store/runs.rs:297-320`）；复核已证否那个判断（05 §7.1 第 5 条）。
+  - 真正该做的：① `active_run_sessions()` 与 `latest_run_infos()` 合成一次 `runs` 扫描；
+    ② **把序列化与结构签名移到锁外**，锁内只取快照并按 revision 判断是否真要重算；
+    ③ 桌面端 60 s/台的轮询改成事件驱动（手机已经是推送驱动，两端不对称是这块成本的主因）。
+- **验收判据**：682 线程 p95 ≤ 12 ms、5,000 线程 p95 ≤ 40 ms；同进程连续两次调用耗时不得相差 60%
+  （消除双峰）；`list_sessions` 期间其它命令的 p95 不上升（锁外化）。
 
-### P2-9 内容读的 preflight 每会话一次
+### P2-7 内容读的 preflight 每会话一次
 
-- **现状**：`verify_session_database` 被每条内容读调用（2 次点查 + 1 次 gRPC）。
-- **改法**：按 `(session, database_id, restore_generation)` 缓存校验结果，`session_presence`
-  变化时失效；或在建立连接/打开会话时校验一次。
-- **预期**：所有内容读各减一个往返（≈2–4 ms），`get_state` 底噪从 4.5 ms → 2 ms 级。
+- **现状**：`verify_session_database`（`host/src/agent_bridge/presence.rs:118`）被 `get_state`、
+  `get_session_entries`、`get_events_since`、`get_event_content_range`、`get_queue` 等**每条内容读**
+  各调一次：2 次 app.db 点查 + 一次 `get_session_presence` gRPC。`get_state` 还额外调
+  `ensure_observer_for_session`（又一次 `find_thread_by_agent_session`）。
+- **改法**：按 `(session, database_id, restore_generation)` 缓存校验结果，presence 变化时失效；
+  或在打开会话/建立连接时校验一次。
+- **预期**：所有内容读各减一个往返；`get_state` 底噪从 4.5 ms → 2 ms 级。
 - **验收判据**：`get_state` 在 236 条目会话上 p50 ≤ 2 ms，Agent RPC 次数 3 → 1。
 
-### P2-10 任务面板的索引
+### P2-8 任务面板的索引
 
 - `task_runs` 加 `(task_id, started_at DESC)` 索引，`list_task_runs` 的 `LIMIT` 才真的省成本
   （5,000 运行 0.99 ms → 亚毫秒；实测 `LIMIT 1` 与 `LIMIT 20` 同价，说明排序发生在截断之前）。
-  判据：`LIMIT 1` 与 `LIMIT 20` 的差距 > 10×，2,000 次运行 ≤ 0.3 ms。
+- **验收判据**：`LIMIT 1` 与 `LIMIT 20` 的差距 > 10×，2,000 次运行 ≤ 0.3 ms。
 
-### P2-11 `list_models` 的 O(目录) 常数
+### P2-9 `list_models` 的 O(目录) 常数
 
-- 把 `is_model_available(format!("provider/id"))` 的逐项全目录解析改成一次索引化的可用集合，
-  并在注册表更新时缓存。判据：21 ms → ≤2 ms。
+- 21 ms 一条、回复只有 1.4 KB：Agent 侧对**整个内置模型目录**（约 3.8k）逐个
+  `is_model_available("provider/id")`（`agent/src/rpc/commands/providers.rs:180-186`，文件自己的注释称其
+  "by far the most expensive test here"），再排序去重。
+- **改法**：把逐项全目录解析改成一次索引化的可用集合，注册表更新时缓存。
+- **验收判据**：21 ms → ≤2 ms。
+
+### P2-10 桌面客户端把状态读与历史页并发
+
+- **现状**：新客户端里只有桌面是串行的（`desktop/src/features/remote-peer/useRemoteTimeline.ts:438-452`
+  先读历史页，`:591-635` 再读 `get_state`），手机已经是并发（`syncEngine.ts:596-615`）。
+  串行意味着桌面打开一条会话要等**两者之和**：最大会话 11.5 + 166 ≈ 178 ms。
+- **改法**：照手机的形态把两条读同时发出（历史页已有自己的取消语义，状态读失败时丢弃历史结果即可）。
+- **预期**：桌面打开一条会话的等待从 sum 变成 max，即从 ~178 ms 降到 ~166 ms，
+  并且与 P0-1 叠加后两者都在 6 ms / 12 ms 量级，不再有可感知差异。
+- **验收判据**：桌面打开一条会话的命令序列在 trace 里重叠（`get_state` 的发出时间早于
+  `get_session_entries` 的回复时间），且总等待 ≤ max + 10 ms。
 
 ---
 
 ## 6 验收：怎样证明"最差情况 < 100 ms 且不随数据规模上涨"
 
-### 6.1 验收标准（建议写进任务的完成定义）
+### 6.1 验收标准（新客户端口径，建议写进任务的完成定义）
 
-1. **单命令（当前数据）**：§2 表的 41 个组合在 release 构建下 p95 ≤ 100 ms；cold ≤ 150 ms
-   （cold 不含磁盘冷读，真实冷盘只会更慢，所以留出余量）。
-2. **单命令（放大后）**：`04-scaling.md` 的每个档位都必须达标，重点是已经越线的四档和逼近的两档：
+1. **打开一条会话**（最重要的一条）：手机取并发口径（`get_state` ‖ 一页游标历史 + 分块补读），
+   在**最大会话**（14,531 条）与**首次触达**这两个最差条件下，**p95 ≤ 100 ms**；中位会话 p95 ≤ 30 ms。
+   今天的数字是 166 / 59 ms，所以这一条现在不达标，P0-1 是它唯一的阻塞项。
+2. **单命令（当前数据）**：§2 表里除〔老〕/〔无〕之外的每一行，p95 ≤ 100 ms。今天只有
+   `get_state`（冷 166）与 `list_available_skills`（120）不达标。
+3. **单命令（放大后）**：新客户端会走的每个命令在 `04-scaling.md` 的每个档位都达标——
+   重点是已经越线或逼近的这几档：
 
    | 命令 | 必须达标的档位 | 当前 | 目标 |
    | --- | --- | ---: | ---: |
-   | `get_session_entries` offset 页 | 会话 50,000 条 | 2,264 ms | ≤ 25 ms |
-   | `get_messages` | 会话 50,000 条 | **失败** | 退役，或 ≤ 20 ms 且不失败 |
    | `list_session_files` | 目录 5,000 项 | 229 ms | ≤ 20 ms |
+   | `get_state` | 会话 50,000 条 | 72 ms | ≤ 6 ms |
    | `get_events_since` + `preferSnapshot` | run 50,000 事件 | 81 ms | ≤ 5 ms |
-   | `get_state` | 会话 50,000 条 | 72 ms | ≤ 5 ms |
-   | `list_sessions` | 线程 5,000 | 71 ms | ≤ 25 ms |
+   | `list_sessions` | 线程 5,000 | 43–72 ms | ≤ 25 ms |
+   | `list_tasks` | 任务 500 | 15.9 ms | ≤ 20 ms（含回归余量） |
 
-3. **打开一条会话**：手机 3 个往返的总和 p95 ≤ 250 ms（`get_state` + 游标历史页 + `get_read_chunk`）；
-   桌面串行路径同样 ≤ 300 ms，或改成与手机一致的并发。
 4. **平坦性**：对每个随规模变化的命令，在"条目 10×、线程 10×、运行 10×"三档上复测，
-   **耗时比 ≤ 1.5**（当前 `get_messages` 是 190×，offset 页是 1,600×，`list_session_files` 是 390×）。
-5. **无上界项**：`list_available_skills` 这类外部依赖必须在断网/超时下仍 ≤ 20 ms（缓存兜底）。
-6. **不许回退**：游标页、事件首页/深页、`get_tool_call_args`、任务面板、设置读取在每一档上都必须是平的
-   （§4.2 是它们的基线）。任何一条开始随规模增长即为回退。
-7. **`get_state` 的 cold 单独定标**：cold 的主体是"首次 hydrate 一个会话"，语义上 O(条目)、
-   每会话一次（复核：50,000 条 173.7 ms，摘掉两处温路径读后仍 127.8 ms）。它的目标不是
-   "与会话长度无关"，而是**冷开一条会话整体 ≤ 150 ms**；若要进一步压低，必须分片 hydrate
-   或把首屏所需的最小状态单独读出来，那是另一项工作，不与 P0-1 混谈。
+   **耗时比 ≤ 1.5**。今天 `list_session_files` 是 390×、`get_state`（温）在 41→50,000 之间是 15×、
+   `preferSnapshot` 在 10,000→50,000 之间是 63×。
+5. **不许回退**：游标页（1.4–15.8 ms 跨 41→50,000 条）、事件首页/深页（2.06–2.15 ms）、
+   `get_tool_call_args`（0.55–0.71 ms）、任务面板（≤3 ms）、设置读取（≤0.1 ms）在每一档上都必须是平的。
+   任何一条开始随规模增长即为回退——**这是新客户端今天唯一做对的地方**。
+6. **`get_state` 的冷态单独定标**：冷态主体是"首次 hydrate 一个会话"，语义上 O(条目)、每会话一次
+   （复核：50,000 条 173.7 ms，摘掉两处温路径读后仍 127.8 ms）。它的目标不是"与会话长度无关"，
+   而是**冷开一条会话整体 ≤ 100 ms**（第 1 条）；若要进一步压低，必须分片 hydrate 或把首屏所需的
+   最小状态单独读出来——那是另一项工作，不与 P0-1 混谈。
+7. **退场项（附录 A）**：`get_messages` 与 `get_session_entries` 的 `offset` 从路由表消失，
+   老客户端收到明确的升级错误；不要求任何延迟目标，只要求删除后第 5 条不回归。
 
 ### 6.2 复测方法（已就位，直接跑）
 
@@ -561,9 +583,11 @@ python3 scripts/perf/remote-commands/scale/summarize_scaling.py --write   # 重�
 
 ## 7 未测出与不确定（不要当成已证明）
 
-- **`get_event_content_range` 未测出**：它要求客户端拿着 `content_refs` 引用，而 Agent 只为超过
-  16 KiB 的正文生成引用；本快照最大的单条正文字段是 14,077 B，低于阈值，探针取不到任何真实引用。
-  它的成本目前只有代码级判定（O(取回字节)）。
+- **新客户端路径上有两条没测出，它们都在打开链路里**：`get_read_chunk`（回复超过 192 KB 时手机
+  必须补读，`readPages.ts:85` 并发 4、单页上限 16 MB）与 `get_event_content_range`（回放里带
+  `content_refs` 的事件）。前者在桥层是一次内存切片 + 重新编码，代码判定 O(chunk)，但**没有实测数字**；
+  后者要求正文超过 16 KiB 才会有引用，本快照最大的单条正文字段只有 14,077 B，测不到真实引用。
+  这两条的"便宜"目前只有代码级证据，跟 §2 里那些有实测的行不是一个强度。
 - **`get_fusion` 只测到"没有融合运行"这一支**（快照里 `fusion_runs` 为 0）。有数据时的
   `fusion_events` 分页没测；带 `step_id` 的那一支会整段载入子会话（`02-code-audit.md` §3.8），
   属于同类问题，但未实测。
@@ -578,7 +602,50 @@ python3 scripts/perf/remote-commands/scale/summarize_scaling.py --write   # 重�
 
 ---
 
-## 8 附录：本次审计顺带发现的两处规格漂移（不属于性能，但会让后续工作踩空）
+## 附录 A：只有老客户端才会发、因此**退役**而不是提速的两条
+
+它们曾经是这份审计里数字最大的两条，现在**没有任何新客户端会发**（§1.1 的核对），
+所以它们不进 §5 的排序。处置判据只有一条：**删干净，并让老客户端拿到一个明确的升级错误**。
+
+### A-1 `get_messages`：249 ms，且长会话直接失败
+
+| 规模 | cold | p50 | p95 | 回复 |
+| --- | ---: | ---: | ---: | ---: |
+| 41 条 | 5.9 | 1.3 | 1.4 | 23,856 B |
+| 236 条 | 17.0 | 6.5 | 6.7 | 38,527 B |
+| 3,145 条 | **177.0** | 57.1 | 57.6 | 58,597 B |
+| 14,531 条 | **561.6** | **249.0** | **255.5** | 76,814 B |
+| 25,000 / 50,000 条 | — | **失败** | — | 44,420,183 B / 74,118,580 B（撞 32 MiB 上限） |
+
+根因是"先取回整段历史再在内存切片"（`business/history.rs:65`），代价 ∝ 会话总条目，**深页不比首页便宜**。
+触顶区间 **18,885–22,636 条**。
+
+**处置**：从 `route()` 退役，返回一个明确的升级错误；`remotePeerClient.ts:1381` 的白名单里那一项一并删掉。
+
+### A-2 `get_session_entries` 的 `offset` 分页：698 ms → 2.3 s
+
+| 会话条目 | offset | cold | p50 | p95 |
+| --- | ---: | ---: | ---: | ---: |
+| 236 | 118 | 14.0 | 5.7 | 5.8 |
+| 3,145 | 1,572 | **132.9** | **147.4** | **161.7** |
+| 14,531 | 7,265 | **589.3** | **698.4** | **720.8** |
+| 50,000 | — | — | **2,264** | 2,459 |
+
+根因两层：桌面侧 `fetch_all_session_entries_with_client()`（`agent_bridge/queries.rs:466`）以 250 条/页
+**串行拉完整段**（最大会话 59 次 gRPC）再丢掉 99%；Agent 侧 `before=None` 时靠索引数到第 n 条
+（`paging.rs:215-219`）。
+
+**处置**：退役 `offset`（`before=end` 已经能表达"从第 n 条往前一页"），或把 Agent 侧改为 `LIMIT/OFFSET`
+直接取页并删掉那个循环。**判据**：路由表不再接受 `offset`；老客户端收到升级错误；游标页不回归（§6.1 第 5 条）。
+
+### A-3 顺带说明
+
+另有 `get_available_models`、`apply_task_revision`、`list_task_revisions` 与三条 `*_task_dep*` 过渡期命令
+同属"无新客户端发送"。它们当前都很快（≤ 22 ms），留着无害，但同样不该出现在"给新客户端做优化"的清单里。
+
+---
+
+## 附录 B：本次审计顺带发现的两处规格漂移（不属于性能，但会让后续工作踩空）
 
 1. **`PHONE_COMMANDS`（`business/mod.rs:254-315`）滞后于真实客户端 6 条命令**，其中 `get_queue`
    是 2 s 轮询。这意味着"手机发的每条命令都被路由"这个守卫测试对它们是盲的。
