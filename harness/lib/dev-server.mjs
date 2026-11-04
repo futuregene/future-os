@@ -51,6 +51,32 @@ function freePort() {
   });
 }
 
+/**
+ * Stop a server we started, and the process group it may have spawned.
+ *
+ * `npm exec` is a wrapper: killing it leaves the real `vite`/`expo` node process
+ * running as an orphan, and repeated runs then pile up servers nobody can
+ * attribute (measured: three Expo instances and a Vite on the machine at once,
+ * after which a mobile run looked up a contended Metro cache and never became
+ * ready). Everything is spawned detached so the whole group can be signalled.
+ */
+function stopServer(child) {
+  if (!child || child.exitCode != null)
+    return;
+  try {
+    if (process.platform === "win32")
+      child.kill("SIGTERM");
+    else
+      process.kill(-child.pid, "SIGTERM");
+  }
+  catch {
+    try {
+      child.kill("SIGTERM");
+    }
+    catch {}
+  }
+}
+
 export async function ensureDevServer({ port = null, reuse = false } = {}) {
   const chosen = reuse ? (port ?? 5299) : (port ?? await freePort());
   const url = `http://localhost:${chosen}/shot/`;
@@ -64,20 +90,22 @@ export async function ensureDevServer({ port = null, reuse = false } = {}) {
   const child = spawn("npm", ["exec", "--", "vite", "--config", "vite.shot.config.ts", "--port", String(chosen)], {
     cwd: desktop,
     stdio: ["ignore", "pipe", "pipe"],
+    detached: process.platform !== "win32",
     env: { ...process.env, SHOT_PORT: String(chosen) },
   });
   let output = "";
   child.stdout.on("data", chunk => (output += chunk));
   child.stderr.on("data", chunk => (output += chunk));
+  process.once("exit", () => stopServer(child));
 
   for (let i = 0; i < 150; i += 1) {
     if (await reachable(url))
-      return { url, port: chosen, reused: false, stop: async () => child.kill("SIGTERM") };
+      return { url, port: chosen, reused: false, stop: async () => stopServer(child) };
     if (child.exitCode != null)
       throw new Error(`shot dev server exited early:\n${output.slice(-2000)}`);
     await sleep(200);
   }
-  child.kill("SIGTERM");
+  stopServer(child);
   throw new Error(`shot dev server did not become ready at ${url}\n${output.slice(-2000)}`);
 }
 
@@ -93,21 +121,27 @@ export async function ensureMobileServer({ port = null, reuse = false, root = MO
   const child = spawn("npm", ["exec", "--", "expo", "start", "--web", "--port", String(chosen)], {
     cwd: root,
     stdio: ["ignore", "pipe", "pipe"],
+    detached: process.platform !== "win32",
     env: { ...process.env, SHOT_WEB: "1" },
   });
   let output = "";
   child.stdout.on("data", chunk => (output += chunk));
   child.stderr.on("data", chunk => (output += chunk));
+  process.once("exit", () => stopServer(child));
 
-  for (let i = 0; i < 600; i += 1) {
-    if (await reachable(url, 2000))
-      return { url, port: chosen, reused: false, stop: async () => child.kill("SIGTERM") };
+  // A bounded wait with a short probe. The old loop could sit for 20 minutes:
+  // 600 iterations of a 2s probe plus a 200ms sleep, on a Metro that was never
+  // going to answer, and reported nothing until the caller's own timeout fired.
+  const deadline = Date.now() + 180_000;
+  while (Date.now() < deadline) {
+    if (await reachable(url, 800))
+      return { url, port: chosen, reused: false, stop: async () => stopServer(child) };
     if (child.exitCode != null)
       throw new Error(`mobile dev server exited early:\n${output.slice(-3000)}`);
-    await sleep(200);
+    await sleep(300);
   }
-  child.kill("SIGTERM");
-  throw new Error(`mobile dev server did not become ready at ${url}\n${output.slice(-3000)}`);
+  stopServer(child);
+  throw new Error(`mobile dev server did not become ready at ${url} within 180s\n${output.slice(-3000)}`);
 }
 
 /**
