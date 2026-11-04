@@ -3,6 +3,7 @@ import type { RemoteApprovalSettings, RemotePeer } from "./remotePeerClient";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Select } from "../../components/ui/Select";
+import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { RemoteFusionSettingsPage } from "../settings/FusionSettingsPage";
 import { SettingsLinkRow, SettingsList, SettingsPage, SettingsRow, SettingsSection, Switch } from "../settings/SettingsPrimitives";
 import { PeerIconChip } from "./PeerIconChip";
@@ -59,6 +60,8 @@ export function RemotePeerSettings({
   peer: RemotePeer;
 }) {
   const { t } = useTranslation("remotePeer");
+  const build = useBuildInfo();
+  const showFusionEntry = build.data?.isRelease === false;
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
   const [approval, setApproval] = useState<RemoteApprovalSettings | null>(null);
   const [busy, setBusy] = useState(false);
@@ -192,7 +195,7 @@ export function RemotePeerSettings({
     content: React.ReactNode;
     title: string;
   }> = {
-    fusion: { title: "Fusion", content: <RemoteFusionSettingsPage peer={peer} /> },
+    fusion: { title: "Fusion", content: showFusionEntry ? <RemoteFusionSettingsPage peer={peer} /> : null },
     models: {
       title: t("models"),
       content: (
@@ -332,7 +335,7 @@ export function RemotePeerSettings({
             onClick={() => setPage("models")}
             title={t("models")}
           />
-          <SettingsLinkRow ariaLabel={`Fusion · ${machine}`} title="Fusion" description={t("fusionHint")} disabled={!available || !peer.features.includes("fusion_settings_v1")} onClick={() => setPage("fusion")} />
+          {showFusionEntry ? <SettingsLinkRow ariaLabel={`Fusion · ${machine}`} title="Fusion" description={t("fusionHint")} disabled={!available || !peer.features.includes("fusion_settings_v1")} onClick={() => setPage("fusion")} /> : null}
           <SettingsLinkRow
             ariaLabel={`${t("skills")} · ${machine}`}
             description={t("skillsHint")}
