@@ -1,0 +1,41 @@
+{
+  "id": "perf-memory-switching",
+  "title": "性能：连续会话切换的堆与 RSS 增长",
+  "area": "perf",
+  "priority": "P1",
+  "tags": ["perf", "memory"],
+  "description": "连续切换 10 个会话（不截图），检查 JS 堆与 Chrome 进程 RSS 的增长，抓列表/转录缓存的明显泄漏。",
+  "preconditions": "首屏至少 10 行会话。",
+  "expectations": [
+    "10 次切换堆增长 < 100MB",
+    "10 次切换 RSS 增长 < 350MB"
+  ],
+  "steps": [
+    { "wait": 900 },
+    { "eval": "window.__rows = [...document.querySelectorAll('[aria-label$=\" 的操作\"]')].map(el => el.getAttribute('aria-label').replace(/ 的操作$/, '')).filter(t => t.length <= 16).slice(0, 10); window.__rows.length", "as": "rowCount" },
+    { "assert": { "expr": "window.__rows.length >= 10", "message": "至少 10 行" } },
+    { "eval": "window.__rows[0]", "as": "a0" },
+    { "eval": "window.__rows[1]", "as": "a1" },
+    { "eval": "window.__rows[2]", "as": "a2" },
+    { "eval": "window.__rows[3]", "as": "a3" },
+    { "eval": "window.__rows[4]", "as": "a4" },
+    { "eval": "window.__rows[5]", "as": "a5" },
+    { "eval": "window.__rows[6]", "as": "a6" },
+    { "eval": "window.__rows[7]", "as": "a7" },
+    { "eval": "window.__rows[8]", "as": "a8" },
+    { "eval": "window.__rows[9]", "as": "a9" },
+    { "click": { "text": "{{a0}}" } },
+    { "click": { "text": "{{a1}}" } },
+    { "click": { "text": "{{a2}}" } },
+    { "click": { "text": "{{a3}}" } },
+    { "click": { "text": "{{a4}}" } },
+    { "click": { "text": "{{a5}}" } },
+    { "click": { "text": "{{a6}}" } },
+    { "click": { "text": "{{a7}}" } },
+    { "click": { "text": "{{a8}}" } },
+    { "click": { "text": "{{a9}}" } },
+    { "assertPerf": { "metric": "heapGrowth", "max": 100, "message": "堆增长 < 100MB" } },
+    { "assertPerf": { "metric": "rssGrowth", "max": 350, "message": "RSS 增长 < 350MB" } },
+    { "shot": "memory" }
+  ]
+}

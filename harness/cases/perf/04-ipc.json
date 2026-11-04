@@ -1,0 +1,19 @@
+{
+  "id": "perf-ipc",
+  "title": "性能：IPC 命令延迟",
+  "area": "perf",
+  "priority": "P1",
+  "tags": ["perf", "ipc"],
+  "description": "从夹具服务日志统计 UI 发出的 IPC 命令耗时，重点看会话分页读取的 p95 与最大值。",
+  "preconditions": "桌面 shot 服务与夹具服务可用。",
+  "expectations": [
+    "list_threads_page p95 < 300ms",
+    "所有 IPC 最大 < 800ms"
+  ],
+  "steps": [
+    { "wait": 900 },
+    { "assertPerf": { "metric": "ipcP95", "command": "list_threads_page", "max": 300, "message": "分页读取 p95 < 300ms" } },
+    { "assertPerf": { "metric": "ipcMax", "max": 800, "message": "IPC 最大 < 800ms" } },
+    { "shot": "ipc" }
+  ]
+}

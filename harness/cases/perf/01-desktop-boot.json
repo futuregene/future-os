@@ -1,0 +1,47 @@
+{
+  "id": "perf-desktop-boot",
+  "title": "性能：桌面首屏启动与网络预算",
+  "area": "perf",
+  "priority": "P1",
+  "tags": [
+    "perf",
+    "boot",
+    "network"
+  ],
+  "description": "测量从导航到应用可交互的启动时间、首屏网络请求数与传输字节。阈值按本机现状留出余量，用来抓明显回退。",
+  "preconditions": "桌面 shot 服务可用；真实 app.db 快照。",
+  "expectations": [
+    "启动到可交互 < 8s",
+    "首屏 IPC 请求数 < 200",
+    "首屏 IPC 传输 < 5 MB"
+  ],
+  "steps": [
+    {
+      "wait": 500
+    },
+    {
+      "assertPerf": {
+        "metric": "bootMs",
+        "max": 8000,
+        "message": "启动到可交互 < 8s"
+      }
+    },
+    {
+      "assertPerf": {
+        "metric": "invokeRequests",
+        "max": 200,
+        "message": "首屏 IPC 请求数 < 200"
+      }
+    },
+    {
+      "assertPerf": {
+        "metric": "invokeBytes",
+        "max": 5000000,
+        "message": "首屏 IPC 传输 < 5MB"
+      }
+    },
+    {
+      "shot": "boot"
+    }
+  ]
+}

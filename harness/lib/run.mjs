@@ -114,6 +114,9 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
   page.exceptions = [];
   page.networkFailures = [];
   page.networkRequests = new Map();
+  page.networkEntries = [];
+  page.networkBytes = 0;
+  let readyMs = null;
   page.onEvent = event => {
     observations.push({ ...event, step: timeline.length });
     if (event.channel === "console" && event.type === "error")
@@ -133,6 +136,66 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
     return file;
   };
 
+  const percentile = (values, p) => {
+    if (!values.length)
+      return null;
+    const sorted = [...values].sort((a, b) => a - b);
+    const index = Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1);
+    return sorted[Math.max(0, index)];
+  };
+
+  /** One number for an `assertPerf` step, or null when the evidence is absent. */
+  const perfValue = (spec) => {
+    const metric = spec.metric;
+    if (metric === "bootMs")
+      return readyMs;
+    if (metric === "networkBytes")
+      return page.networkBytes;
+    if (metric === "networkRequests")
+      return page.networkRequests.size;
+    if (metric === "invokeRequests")
+      return (page.networkEntries ?? []).filter(entry => entry.url.includes("/invoke")).length;
+    if (metric === "invokeBytes")
+      return (page.networkEntries ?? []).filter(entry => entry.url.includes("/invoke")).reduce((sum, entry) => sum + entry.bytes, 0);
+    if (metric === "caseMs")
+      return Date.now() - startedAt;
+    if (metric === "measure") {
+      const values = timeline
+        .filter(entry => entry.perfMs !== undefined && (!spec.label || entry.label === spec.label || entry.label?.startsWith(`${spec.label}-`)))
+        .map(entry => entry.perfMs);
+      if (!values.length)
+        return null;
+      if (spec.stat === "avg")
+        return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+      if (spec.stat === "p95")
+        return percentile(values, 95);
+      return Math.max(...values);
+    }
+    if (metric?.startsWith("ipc")) {
+      const entries = (fixture?.log ?? [])
+        .filter(entry => !spec.command || entry.command === spec.command)
+        .map(entry => entry.ms)
+        .filter(value => typeof value === "number");
+      if (!entries.length)
+        return null;
+      if (metric === "ipcAvg")
+        return Math.round(entries.reduce((sum, value) => sum + value, 0) / entries.length);
+      if (metric === "ipcP95")
+        return percentile(entries, 95);
+      return Math.max(...entries);
+    }
+    if (metric === "heapGrowth" || metric === "rssGrowth") {
+      const baseline = metrics.find(item => item.at === "baseline");
+      const last = metrics.at(-1);
+      if (!baseline || !last)
+        return null;
+      return metric === "heapGrowth"
+        ? Math.round((last.jsHeapUsed - baseline.jsHeapUsed) / 1024 / 1024)
+        : Math.round(((last.process?.rssKb ?? 0) - (baseline.process?.rssKb ?? 0)) / 1024);
+    }
+    return null;
+  };
+
   const params = new URLSearchParams({
     ...(fixture ? { fixture: fixture.url } : {}),
     lang: testCase.lang ?? "zh",
@@ -140,6 +203,20 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
     ...(testCase.query ?? {}),
   });
   const url = `${testCase.baseUrl ?? "http://localhost:5299/shot/"}?${params.toString()}`;
+
+  // A case may pin its own window size (the narrow-window context panel is a
+  // different layout, not a different page). The next case restores the run's
+  // viewport in `finally`.
+  const originalViewport = { ...page.viewport };
+  if (testCase.viewport) {
+    await page.send("Emulation.setDeviceMetricsOverride", {
+      width: testCase.viewport.width,
+      height: testCase.viewport.height,
+      deviceScaleFactor: testCase.viewport.scale ?? 2,
+      mobile: false,
+    });
+    page.viewport = { ...testCase.viewport, mobile: false };
+  }
 
   // The folder picker in the workspace form is a native dialog, mocked to a
   // canned path. Give each case a directory that exists, so "create workspace"
@@ -162,7 +239,9 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
   try {
     if (recordVideo)
       await page.startScreencast(framesDir);
+    const navStart = Date.now();
     await page.navigate(url, { ready: READY, settle: 700 });
+    readyMs = Date.now() - navStart;
 
     const baseline = await page.metrics();
     metrics.push({ at: "baseline", ts: Date.now(), ...baseline, process: page.processStats() });
@@ -305,6 +384,40 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
               throw new Error(`IPC expectation failed: ${spec.command} expected ${spec.expect}, got ${matches.length}`);
           }
         }
+        else if (action === "measure") {
+          const spec = step.measure;
+          const inner = Object.keys(spec).find(key => key !== "label");
+          await page.evaluate("window.__harnessMeasureStart = performance.now()");
+          if (inner === "click")
+            await page.click(spec.click, { label: spec.label });
+          else if (inner === "press")
+            await page.press(spec.press);
+          else if (inner === "type")
+            await page.type(spec.type);
+          else
+            throw new Error(`measure supports click/press/type, not ${inner}`);
+          const perfMs = await page.evaluate(
+            "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(performance.now() - window.__harnessMeasureStart))))",
+          );
+          entry.label = spec.label;
+          entry.perfMs = Math.round(Number(perfMs));
+        }
+        else if (action === "assertPerf") {
+          const spec = step.assertPerf;
+          const value = perfValue(spec);
+          const ok = value !== null && Number(value) <= Number(spec.max);
+          checks.push({
+            kind: "perf",
+            step: index + 1,
+            message: spec.message ?? `${spec.metric}${spec.label ? `/${spec.label}` : ""} <= ${spec.max}`,
+            ok,
+            expected: spec.max,
+            actual: value,
+          });
+          entry.value = value;
+          if (!ok)
+            throw new Error(`performance expectation failed: ${spec.metric}${spec.label ? `/${spec.label}` : ""} = ${value}, expected <= ${spec.max}`);
+        }
         else if (action === "shot") {
           entry.shot = await capture(step.shot);
         }
@@ -381,12 +494,36 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
     }
     if (!recordVideo)
       rmSync(framesDir, { recursive: true, force: true });
+    if (testCase.viewport) {
+      await page.send("Emulation.setDeviceMetricsOverride", {
+        width: originalViewport.width,
+        height: originalViewport.height,
+        deviceScaleFactor: originalViewport.scale ?? 2,
+        mobile: Boolean(originalViewport.mobile),
+      }).catch(() => {});
+      page.viewport = originalViewport;
+    }
     if (fixture)
       await fixture.close();
   }
 
   const durationMs = Date.now() - startedAt;
   const serverLog = fixture?.log ?? [];
+  const ipcTimes = serverLog.map(entry => entry.ms).filter(value => typeof value === "number");
+  const baseline = metrics.find(item => item.at === "baseline");
+  const final = metrics.at(-1);
+  const perf = {
+    bootMs: readyMs,
+    networkBytes: page.networkBytes,
+    networkRequests: page.networkRequests.size,
+    invokeRequests: (page.networkEntries ?? []).filter(entry => entry.url.includes("/invoke")).length,
+    invokeBytes: (page.networkEntries ?? []).filter(entry => entry.url.includes("/invoke")).reduce((sum, entry) => sum + entry.bytes, 0),
+    ipcP95: percentile(ipcTimes, 95),
+    ipcMax: ipcTimes.length ? Math.max(...ipcTimes) : null,
+    heapGrowthMb: baseline && final ? Math.round((final.jsHeapUsed - baseline.jsHeapUsed) / 1024 / 1024) : null,
+    rssGrowthMb: baseline && final ? Math.round(((final.process?.rssKb ?? 0) - (baseline.process?.rssKb ?? 0)) / 1024) : null,
+    measures: timeline.filter(entry => entry.perfMs !== undefined).map(entry => ({ label: entry.label, ms: entry.perfMs })),
+  };
   const result = {
     id: testCase.id,
     title: testCase.title,
@@ -404,6 +541,7 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
     steps: timeline,
     checks,
     metrics,
+    perf,
     observations,
     console: {
       errors: page.consoleMessages.filter(m => m.type === "error"),

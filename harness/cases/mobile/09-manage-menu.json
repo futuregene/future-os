@@ -1,0 +1,23 @@
+{
+  "id": "mobile-manage-menu",
+  "surface": "mobile",
+  "title": "手机端会话管理菜单：重命名 / 删除 / 取消",
+  "area": "mobile-manage",
+  "priority": "P1",
+  "tags": ["mobile", "manage"],
+  "description": "打开一条会话的管理菜单，确认提供重命名与删除，取消后不产生变化。",
+  "preconditions": "移动端 shot 服务可用。",
+  "expectations": ["管理菜单打开", "有重命名与删除", "取消可关闭"],
+  "steps": [
+    { "wait": 1500 },
+    { "click": { "text": "稍后再说" }, "optional": true },
+    { "wait": 400 },
+    { "click": { "aria": "管理「整理两篇文献的结论对比表」" } },
+    { "wait": 500 },
+    { "assert": { "expr": "document.body.innerText.includes('重命名')", "message": "菜单有重命名" } },
+    { "assert": { "expr": "document.body.innerText.includes('删除')", "message": "菜单有删除" } },
+    { "shot": "mobile-manage" },
+    { "click": { "text": "取消" } },
+    { "wait": 400 }
+  ]
+}

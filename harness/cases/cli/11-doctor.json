@@ -1,0 +1,16 @@
+{
+  "id": "cli-doctor",
+  "surface": "cli",
+  "title": "CLI 环境诊断：doctor 有结论且不崩溃",
+  "area": "cli-doctor",
+  "priority": "P1",
+  "tags": ["cli", "doctor"],
+  "description": "在隔离 home 运行 doctor，确认输出诊断标题与若干检查项，退出码 0；不要求所有检查都通过。",
+  "preconditions": "隔离 home；future 二进制可用。",
+  "expectations": ["退出码 0", "输出 Future Doctor", "至少一个检查项"],
+  "steps": [
+    { "run": ["doctor"], "expectExit": 0, "timeout": 120000 },
+    { "expectStdout": "Future Doctor" },
+    { "expectStdout": { "regex": "Login|Agent|OS sandbox" } }
+  ]
+}

@@ -37,9 +37,13 @@ node harness/cli.mjs run --case cli-workspace-add-list-archive   # CLI
 node harness/cli.mjs run --case tui-help                     # TUI
 node harness/cli.mjs run --case mobile-home-list             # mobile
 node harness/cli.mjs run --case remote-parser-pair           # desktop + mobile
+node harness/cli.mjs run --tag perf                          # latency/CPU/memory/network
 node harness/cli.mjs analyze --run harness/runs/<id> --mode full
 node harness/cli.mjs report  --run harness/runs/<id>
 ```
+
+`COVERAGE.md` is the honest matrix of what the library exercises and what it
+does not; add a row there when adding a case.
 
 `run` starts only the servers the selected cases need: Vite for desktop, Expo
 for mobile, `demo_agent` for TUI, nothing for CLI. Artifacts go to

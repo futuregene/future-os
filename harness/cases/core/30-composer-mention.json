@@ -1,0 +1,25 @@
+{
+  "id": "composer-mention-menu",
+  "title": "输入框提及：@ 文件与 # 会话",
+  "area": "composer",
+  "priority": "P1",
+  "tags": ["composer", "mention"],
+  "description": "输入 @ 打开文件提及，Esc 后输入 # 打开会话提及；两次都应出现可选项而不是无反应。",
+  "preconditions": "应用已启动。",
+  "expectations": ["@ 打开文件菜单", "# 打开会话菜单", "Esc 能关闭"],
+  "steps": [
+    { "wait": 800 },
+    { "click": { "aria": "新建对话" } },
+    { "waitFor": { "text": "欢迎使用" }, "timeout": 5000 },
+    { "click": { "selector": "[role=textbox]" } },
+    { "type": "@" },
+    { "wait": 600 },
+    { "assert": { "expr": "document.body.innerText.includes('文件') || document.body.innerText.includes('引用')", "message": "@ 菜单出现" } },
+    { "press": "Escape" },
+    { "wait": 400 },
+    { "type": "#" },
+    { "wait": 600 },
+    { "assert": { "expr": "document.body.innerText.includes('会话')", "message": "# 菜单出现" } },
+    { "shot": "mention-menu" }
+  ]
+}

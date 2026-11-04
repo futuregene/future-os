@@ -1,0 +1,20 @@
+{
+  "id": "cli-mcp-add-remove",
+  "surface": "cli",
+  "title": "CLI MCP：add → list → remove 往返",
+  "area": "cli-mcp",
+  "priority": "P1",
+  "tags": ["cli", "mcp"],
+  "description": "在隔离 home 添加一个 stdio MCP 服务器，列表能看到，remove 后列表恢复空；写入只落到隔离 home 的 mcp.json。",
+  "preconditions": "隔离 home 内没有 mcp.json。",
+  "expectations": ["add 成功并写入配置", "list 包含 demo", "remove 后为空"],
+  "steps": [
+    { "run": ["mcp", "add", "demo", "--command", "/bin/echo", "--arg", "hi"], "expectExit": 0 },
+    { "expectStdout": "Added MCP server 'demo'" },
+    { "run": ["mcp", "list", "--json"], "expectExit": 0 },
+    { "expectJson": { "path": "servers", "contains": "demo" } },
+    { "run": ["mcp", "remove", "demo"], "expectExit": 0 },
+    { "run": ["mcp", "list", "--json"], "expectExit": 0 },
+    { "expectJson": { "path": "servers", "equals": [] } }
+  ]
+}
