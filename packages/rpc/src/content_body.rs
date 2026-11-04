@@ -6,6 +6,14 @@ use serde_json::Value;
 type Client = crate::connection::VerifiedAgentClient;
 const MAX_MATERIALIZED_BYTES: usize = 16 * 1024 * 1024;
 
+/// Event kinds whose `content_refs` a client is expected to materialize.
+///
+/// Deliberately excludes `tool_end`: a tool's captured output is *not* a
+/// backfillable body anywhere today (no client hydrates it, and no remote
+/// command serves it), so putting `content_refs` on a `tool_end` produces a
+/// preview every reader ignores — silent loss, not lazy loading. Adding it here
+/// is one half of a protocol change; the other half is
+/// `packages/thread-projection/src/contentBody.ts`.
 pub fn required_inline(kind: &str) -> bool {
     matches!(
         kind,

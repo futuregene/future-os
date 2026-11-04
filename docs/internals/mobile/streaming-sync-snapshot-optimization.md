@@ -256,3 +256,34 @@ Do not quote `offset_1000/5000/136277` timings as hot-path numbers: they are the
 compatibility branch's shape. The real first-open cost is the snapshot fold
 (4.1 s on a 136k-event run with no cached fold), and a later page costs its own
 bytes (~120 ms per 1000 events in a debug build).
+
+## What these numbers are not
+
+Four premises behind the replay numbers in this repository, each of which has
+already misled a reader once. Quote them with the figures.
+
+- **The probe is not the phone.** `remote_host::sync_measurement` does not
+  declare `lean_events_v1`, and `lean::enabled()` is per-request with a `false`
+  default, so every payload it reports is the **untrimmed** shape. A phone on the
+  lean lane receives less — but not none of it: the lean rewrite trims `events`
+  and only blanks dropped types inside `projection`, so a `tool_end`'s captured
+  output still rides the snapshot bootstrap. "262 KB / 97 KB gzip" is therefore
+  neither the phone's number nor a trimmed host's.
+- **4.1 s is a fold, and only for a run that is not in the agent's memory.** An
+  active run is served from `CapturedSnapshot::capture`
+  (`agent/src/rpc/broadcaster/replay.rs`), and a folded result is kept beside the
+  journal (`run_snapshot_cache`) for the next open. Numbers taken from a freshly
+  started agent are the worst case, not the steady state: 4.1 s cold, ~0.21 s
+  once cached.
+- **Opening a finished conversation replays nothing; opening a streaming one
+  replays the whole run** from `sinceIdx=-1`
+  (`desktop/src/features/remote-peer/useRemoteTimeline.ts:556/562`; mobile
+  `packages/remote-client/src/syncEngine.ts:620`). That asymmetry — not the fold —
+  is why "open while running" feels slower than "open after it finished".
+- **`content_refs` is not a backfill channel for tool output.** It covers exactly
+  `user_message`, `approval_request`, `error`, `agent_end`,
+  `compaction_committed`, `compaction_failed` (`packages/rpc/src/content_body.rs`
+  and `packages/thread-projection/src/contentBody.ts`). A `content_refs` on a
+  `tool_end` is ignored by both ends, so shipping a preview would turn a lazy
+  fetch into silent loss. Extending it is a protocol change on both sides, not a
+  host-only trim.

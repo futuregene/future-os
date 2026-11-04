@@ -91,6 +91,15 @@ export async function readContentField(
   current(isCurrent);
   return result;
 }
+/**
+ * Which kinds a reader must materialize before using them.
+ *
+ * The list is closed on purpose and does **not** include `tool_end`: a tool
+ * output is not a backfillable body in any client today, so a `content_refs` on
+ * one would be ignored and the preview would be all the user ever sees.
+ * Extending it here is half a protocol change; the other half is
+ * `packages/rpc/src/content_body.rs`.
+ */
 export function needsContentHydration(kind: string, data: unknown): boolean {
   return ["user_message", "approval_request", "error", "agent_end", "compaction_committed", "compaction_failed"].includes(kind)
     && !!data && typeof data === "object" && "content_refs" in data
