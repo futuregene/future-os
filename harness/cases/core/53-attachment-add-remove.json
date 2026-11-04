@@ -1,0 +1,64 @@
+{
+  "id": "attachment-add-remove",
+  "title": "在输入框添加附件卡片并移除",
+  "area": "compose",
+  "priority": "P1",
+  "tags": ["conversation", "attachment", "composer"],
+  "description": "打开一条会话，用输入框的回形针（添加附件）选一个本地文本文件：输入框上方应出现一张带文件名的附件卡片，标题是可读的完整文件名；点卡片上的移除按钮，卡片立刻消失，不发消息、不留提示。文件选择走的是 harness 的对话框桩（每个用例拿到自己目录下一个真实存在的 attachment.txt），所以这条用例验证的是选择之后的分类、卡片与移除，而不是系统文件对话框本身。",
+  "preconditions": "应用已启动；已打开一条会话；对话框桩为本次用例提供一个真实存在的文件 attachment.txt。",
+  "expectations": [
+    "点「添加附件」后输入框上方出现一张附件卡片",
+    "卡片显示文件名 attachment.txt（标题是完整文件名）",
+    "初始没有附件卡片",
+    "点「移除 attachment.txt」后卡片消失，页面上不再出现该文件名",
+    "全程没有「无法读取 / 已忽略」之类的错误提示"
+  ],
+  "steps": [
+    { "wait": 1200 },
+    {
+      "eval": "window.__rows = [...document.querySelectorAll('[aria-label$=\" 的操作\"]')].map(el => el.getAttribute('aria-label').replace(/ 的操作$/, '')); window.__rows.length",
+      "as": "rowCount",
+      "capture": false
+    },
+    { "assert": { "expr": "window.__rows.length >= 1", "message": "首屏至少一行会话" } },
+    { "eval": "window.__rows[0]", "as": "target", "capture": false },
+    { "click": { "aria": "{{target}}" } },
+    { "wait": 1500 },
+    { "assert": { "expr": "!document.querySelector('[aria-label=\"移除 attachment.txt\"]')", "message": "初始没有附件卡片" } },
+    { "click": { "aria": "添加附件" } },
+    { "waitFor": { "selector": "[aria-label=\"移除 attachment.txt\"]" }, "timeout": 8000 },
+    {
+      "assert": {
+        "expr": "(() => { const b = document.querySelector('[aria-label=\"移除 attachment.txt\"]'); const chip = b ? b.closest('span[title]') : null; return !!chip && chip.getAttribute('title') === 'attachment.txt'; })()",
+        "message": "附件卡片带着完整文件名"
+      }
+    },
+    { "shot": "attachment-added" },
+    { "click": { "aria": "移除 attachment.txt" } },
+    { "wait": 500 },
+    {
+      "assert": {
+        "expr": "!document.querySelector('[aria-label=\"移除 attachment.txt\"]')",
+        "message": "移除后卡片消失"
+      }
+    },
+    {
+      "assert": {
+        "expr": "!document.body.innerText.includes('attachment.txt')",
+        "message": "移除后页面上不再有该文件名"
+      }
+    },
+    { "expectAbsent": "无法读取" },
+    { "expectAbsent": "已忽略" },
+    { "shot": "attachment-removed" }
+  ],
+  "judge": {
+    "criteria": [
+      "附件卡片出现在输入框上方、文字输入区之外，图标与文件名对齐正常，没有被裁切或叠到按钮上",
+      "移除后卡片消失，输入框恢复原样，没有留下空白行、错位或残留的小图标",
+      "全程没有错误提示或警告横幅",
+      "整体看起来像一个正常工作的产品（对齐、层级、文案一致）"
+    ],
+    "maxImages": 8
+  }
+}
