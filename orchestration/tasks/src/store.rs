@@ -124,10 +124,6 @@ fn with_columns(template: &str, columns: &str) -> String {
     template.replace("%COLUMNS%", columns)
 }
 
-const PRAGMAS: &str = "PRAGMA busy_timeout = 5000;
-             PRAGMA journal_mode = WAL;
-             PRAGMA foreign_keys = ON;";
-
 const SQL_SET_SCHEMA_VERSION: &str = "
     INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
     ON CONFLICT(key) DO NOTHING";
@@ -349,7 +345,11 @@ impl Store {
         std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
         let path = store_path(home);
         let conn = Connection::open(&path).with_context(|| format!("open {}", path.display()))?;
-        conn.execute_batch(PRAGMAS)?;
+        conn.execute_batch(
+            future_rpc::storage::StorageMode::from_env()
+                .map_err(anyhow::Error::msg)?
+                .pragmas(),
+        )?;
         let store = Self { conn };
         store.apply_schema()?;
         Ok(store)
@@ -1810,15 +1810,14 @@ mod tests {
         s.insert_run(&settled).unwrap();
 
         let mut got = s.running_run_owners().unwrap();
+        let mut expected = vec![
+            (legacy.id.clone(), None),
+            (owned.id.clone(), Some("1234:abc".to_string())),
+        ];
+        // Run IDs are random: compare both complete mappings in the same order.
         got.sort();
-        assert_eq!(
-            got,
-            vec![
-                (legacy.id.clone(), None),
-                (owned.id.clone(), Some("1234:abc".to_string())),
-            ],
-            "only unsettled runs, each with its host"
-        );
+        expected.sort();
+        assert_eq!(got, expected, "only unsettled runs, each with its host");
     }
 
     /// Settling an orphaned run is an audit write, not a cleanup: the row keeps

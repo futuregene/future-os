@@ -34,7 +34,9 @@ pub(super) struct Readers {
 
 impl Readers {
     pub(super) fn open(path: &Path) -> Result<Self> {
-        Self::open_with(path, READ_WORKERS)
+        let nfs = future_rpc::storage::StorageMode::from_env().map_err(anyhow::Error::msg)?
+            == future_rpc::storage::StorageMode::Nfs;
+        Self::open_with(path, if nfs { 1 } else { READ_WORKERS })
     }
 
     /// One warm connection for fence reads: small queries whose answer decides

@@ -179,6 +179,7 @@ impl AgentService<'_> {
             config.future_home.join("agent").join("agent-instance.lock"),
         )?;
         let guard = file.acquire(&config.future_home)?;
+        future_rpc::storage::StorageMode::record_selection(&config.future_home)?;
         let service = AgentService {
             config,
             preparation_started: AtomicBool::new(false),

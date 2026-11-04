@@ -50,7 +50,13 @@ fn a_long_reader_can_delay_checkpointing_without_joining_the_ordered_commit_queu
         "the reader must actually hold back checkpoint progress"
     );
     assert_eq!(
-        db.inner.wal.truncate_after_import().unwrap().0,
+        db.inner
+            .wal
+            .as_ref()
+            .unwrap()
+            .truncate_after_import()
+            .unwrap()
+            .0,
         1,
         "startup truncation must report a pinned reader instead of hiding busy"
     );
@@ -85,7 +91,15 @@ fn a_long_reader_can_delay_checkpointing_without_joining_the_ordered_commit_queu
     reader.execute_batch("ROLLBACK").unwrap();
     let (_, frames, copied) = db.checkpoint_for_test().unwrap();
     assert_eq!(frames, copied);
-    assert_eq!(db.inner.wal.truncate_after_import().unwrap(), (0, 0, 0));
+    assert_eq!(
+        db.inner
+            .wal
+            .as_ref()
+            .unwrap()
+            .truncate_after_import()
+            .unwrap(),
+        (0, 0, 0)
+    );
     assert_eq!(
         std::fs::metadata(path.with_file_name("agent.db-wal"))
             .unwrap()
