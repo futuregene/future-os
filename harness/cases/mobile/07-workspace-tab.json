@@ -1,0 +1,20 @@
+{
+  "id": "mobile-workspace-tab",
+  "surface": "mobile",
+  "title": "手机端工作区视图：按工作区分组",
+  "area": "mobile-list",
+  "priority": "P1",
+  "tags": ["mobile", "workspaces"],
+  "description": "从「最近」切到「工作区」，确认工作区分组出现，而不是空白。",
+  "preconditions": "移动端 shot 服务可用。",
+  "expectations": ["工作区标签可点击", "出现工作区分组名"],
+  "steps": [
+    { "wait": 1500 },
+    { "click": { "text": "稍后再说" }, "optional": true },
+    { "wait": 400 },
+    { "click": { "text": "工作区" } },
+    { "wait": 800 },
+    { "assert": { "expr": "document.body.innerText.includes('多巴胺与决策') || document.body.innerText.includes('稀疏注意力复现')", "message": "工作区分组出现" } },
+    { "shot": "mobile-workspaces" }
+  ]
+}

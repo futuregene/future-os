@@ -1,0 +1,18 @@
+{
+  "id": "remote-page",
+  "title": "远程页：单机状态下不空白",
+  "area": "remote",
+  "priority": "P1",
+  "tags": ["remote", "settings"],
+  "description": "从左侧导航打开远程页。夹具报告没有配对设备，页面应给出本机/配对状态的说明，而不是空白。",
+  "preconditions": "应用已启动；remote_peer_list 为空。",
+  "expectations": ["远程页可打开", "页面有状态说明", "没有错误提示"],
+  "steps": [
+    { "wait": 900 },
+    { "click": { "selector": "button", "text": "远程" } },
+    { "wait": 900 },
+    { "assert": { "expr": "document.querySelector('main')?.innerText.trim().length > 20", "message": "远程页有内容" } },
+    { "assert": { "expr": "!document.body.innerText.includes('本地存储初始化失败')", "message": "没有初始化错误" } },
+    { "shot": "remote-page" }
+  ]
+}

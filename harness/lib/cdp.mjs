@@ -173,6 +173,8 @@ export class CdpPage {
     this.exceptions = [];
     this.networkFailures = [];
     this.networkRequests = new Map();
+    this.networkEntries = [];
+    this.networkBytes = 0;
     this.onEvent = null;
   }
 
@@ -300,6 +302,14 @@ export class CdpPage {
       if (params.response?.status >= 400) {
         this.networkFailures.push({ ...request, error: `HTTP ${params.response.status}` });
         this.emitObservation({ channel: "network", ...request, error: `HTTP ${params.response.status}` });
+      }
+    });
+    this.on("Network.loadingFinished", (params) => {
+      const bytes = Number(params.encodedDataLength ?? 0);
+      const request = this.networkRequests.get(params.requestId);
+      if (Number.isFinite(bytes)) {
+        this.networkBytes += bytes;
+        this.networkEntries.push({ url: request?.url ?? "", bytes });
       }
     });
     this.on("Network.loadingFailed", (params) => {

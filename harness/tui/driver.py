@@ -202,6 +202,8 @@ def main() -> int:
         wait_port(port)
         session = Session(future_bin(), str(agent), port, args.cols, args.rows, home)
         session.drain(1.8)
+        startup_ms = round((time.time() - started) * 1000)
+        before = session.text()
         for index, step in enumerate(spec["steps"], start=1):
             action = next((key for key in step if key not in ("note", "optional", "timeout")), "note")
             entry = {"index": index, "action": action, "note": step.get("note"), "ok": True}
@@ -236,6 +238,42 @@ def main() -> int:
                     checks.append({"kind": action, "step": index, "message": f"屏幕不包含「{wanted}」", "ok": ok})
                     if not ok:
                         raise RuntimeError(f"text should be absent: {wanted}")
+                elif action == "measure":
+                    measure_spec = step["measure"]
+                    inner = next((key for key in measure_spec if key != "label"), None)
+                    if inner not in ("press", "type", "keys"):
+                        raise RuntimeError(f"measure supports press/type/keys, not {inner}")
+                    before = session.text()
+                    t0 = time.time()
+                    if inner == "press":
+                        key = str(measure_spec["press"]).lower()
+                        session.send(KEYS.get(key, key.encode() if len(key) == 1 else b""))
+                    elif inner == "type":
+                        session.send(str(measure_spec["type"]).encode())
+                    else:
+                        session.send(str(measure_spec["keys"]).encode())
+                    deadline = t0 + 3
+                    while time.time() < deadline and session.text() == before:
+                        session.drain(0.05)
+                    entry["label"] = measure_spec.get("label")
+                    entry["perfMs"] = round((time.time() - t0) * 1000)
+                elif action == "assertPerf":
+                    perf_spec = step["assertPerf"]
+                    metric = perf_spec.get("metric")
+                    if metric == "startupMs":
+                        value = startup_ms if "startup_ms" in locals() else None
+                    elif metric == "durationMs":
+                        value = round((time.time() - started) * 1000)
+                    elif metric == "measure":
+                        values = [e["perfMs"] for e in timeline if e.get("perfMs") is not None and (not perf_spec.get("label") or e.get("label") == perf_spec.get("label"))]
+                        value = (round(sum(values) / len(values)) if perf_spec.get("stat") == "avg" else max(values)) if values else None
+                    else:
+                        value = None
+                    ok = value is not None and value <= perf_spec["max"]
+                    checks.append({"kind": "perf", "step": index, "message": perf_spec.get("message") or f"{metric} <= {perf_spec['max']}", "ok": ok, "expected": perf_spec["max"], "actual": value})
+                    entry["value"] = value
+                    if not ok:
+                        raise RuntimeError(f"TUI performance expectation failed: {metric} = {value}, expected <= {perf_spec['max']}")
                 elif action == "shot":
                     entry["shot"] = session.shot(out_dir / "shots" / f"{index:02d}-{step['shot']}.png")
                 else:
@@ -288,6 +326,10 @@ def main() -> int:
         "network": {"failures": [], "count": 0},
         "server": {"commands": [], "fallbacks": [], "errors": []},
         "metrics": [],
+        "perf": {
+            "startupMs": startup_ms if "startup_ms" in locals() else None,
+            "measures": [{"label": e.get("label"), "ms": e["perfMs"]} for e in timeline if e.get("perfMs") is not None],
+        },
         "artifacts": {"dir": str(out_dir), "shots": [e["shot"] for e in timeline if e.get("shot")], "timeline": str(out_dir / "timeline.jsonl")},
     }
     (out_dir / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")

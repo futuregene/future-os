@@ -1,0 +1,18 @@
+{
+  "id": "perf-cli-startup",
+  "surface": "cli",
+  "title": "性能：CLI 启动与本地命令延迟",
+  "area": "perf",
+  "priority": "P1",
+  "tags": ["perf", "cli"],
+  "description": "测量 future version 与 workspace list 的墙钟耗时；隔离 home，不触发网络。",
+  "preconditions": "future 二进制可用。",
+  "expectations": ["version < 800ms", "workspace list < 2000ms"],
+  "steps": [
+    { "run": ["version"], "expectExit": 0 },
+    { "assertPerf": { "metric": "maxMs", "max": 800, "message": "version < 800ms" } },
+    { "run": ["workspace", "list", "--json"], "expectExit": 0 },
+    { "assertPerf": { "metric": "maxMs", "max": 2000, "message": "workspace list < 2s" } },
+    { "assertPerf": { "metric": "durationMs", "max": 5000, "message": "两条命令总计 < 5s" } }
+  ]
+}
