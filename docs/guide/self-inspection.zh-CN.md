@@ -379,8 +379,11 @@ future desktop settings set hiddenModels "future/glm-5.3, future/kimi-k3"
 ```sh
 future workspace list                 # 用户自己的工作区
 future workspace list --json
+future workspace list --archived      # 已归档视图
 future workspace add ~/projects/demo  # 把一个已存在的目录登记为工作区
 future workspace add /srv/app --name "Service"
+future workspace archive ~/projects/demo   # 归档它和它下面的会话
+future workspace restore ws-1a2b3c         # 取消归档，连同它藏起来的东西
 ```
 
 目录必须已存在——工作区指向一个目录，不会创建它。路径已经对应某个工作区时直接复用，
@@ -389,6 +392,13 @@ future workspace add /srv/app --name "Service"
 （`--json` 下是 `"created": true|false`），这也是它为什么可以安全地重复执行。
 
 写入不需要桌面端在运行，正在运行的桌面端会在下次读取时看到它。
+
+`archive` 和 `restore` 就是桌面端「已归档」视图的命令行版本，两层都是：工作区连同它下面
+的会话一起离开侧栏（取消归档时正好把藏起来的东西放回来，因为每条会话仍保留自己的状态），
+`future session archive <session-id>` 则归档一条会话连同它的 fork 树。两者在内部还有会话
+正在运行时都会拒绝——归档一个仍在跑的 run 会把它的审批请求藏起来——并且会清掉置顶。所以
+`future workspace list` 默认只列未归档的那一层，`--archived` 是已归档视图，`--all` 两层都
+列并标出来；桌面端从未导入过的会话没有可归档的会话记录，命令会直说，而不是假装归档成功。
 
 工作区也会自己出现：`future session set <id> --cwd <dir>` 会把该会话归档到该目录对应的
 工作区，和桌面端观察到 cwd 变化时做的事完全一样——因此这条桌面侧记录不再依赖「改 cwd 的

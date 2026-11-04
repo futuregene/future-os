@@ -30,6 +30,8 @@ Usage:
   future session clone <id>                          Copy a session at its latest settled point
   future session title <id>                          Generate a title (a model call)
   future session export <id> [--out <path>]          Write the session to an HTML file
+  future session archive <id> [--json]               Shelve a conversation in the desktop app
+  future session restore <id> [--json]               Bring a shelved conversation back
   future session abort <id>                          Stop the active run and clear the queue
   future session cancel <id> --run <run-id>            Cancel one queued run
   future session wait <id> [--run <run-id>]            Wait for a run to finish and print its answer
@@ -1495,6 +1497,13 @@ pub async fn session(
 
     if subcommand == "new" {
         return new_session_command(args, out).await;
+    }
+
+    // Shelving is the desktop app's record, not the Agent's: the id is the Agent
+    // session the CLI already takes everywhere, and the conversation bound to it
+    // is what moves to (or off) the app's Archived shelf.
+    if matches!(subcommand, "archive" | "restore" | "unarchive") {
+        return super::archive::session_command(subcommand != "archive", args, out).await;
     }
 
     if subcommand == "list" {
