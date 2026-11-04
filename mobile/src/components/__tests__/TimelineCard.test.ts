@@ -28,6 +28,7 @@ jest.mock("react-i18next", () => {
     "chat.compactedTokens": "Context compacted · {{formattedCount}} tokens",
     "chat.compactedTokensDelta": "Context compacted · {{before}} → {{after}} tokens (estimated)",
     "chat.manuallyCompactedTokensDelta": "Manually compacted · {{before}} → {{after}} tokens (estimated)",
+    "chat.compactionInterrupted": "Context compaction did not finish",
   };
   return {
     useTranslation: () => ({
@@ -634,6 +635,15 @@ test("a manual compaction divider reports both counts too", () => {
     segments: [compaction({ tokensBefore: 33_064, tokensAfter: 9_250, trigger: "manual" })],
   }));
   expect(hasText("Manually compacted · 33,064 → 9,250 tokens (estimated)")).toBe(true);
+});
+
+test("a stranded manual compaction says it did not finish, not that it is running", () => {
+  // The client never saw this compaction's terminal frame (the agent restarted
+  // mid-summary) and settled it from the session state. The divider must not
+  // keep reading "compacting" under a finished reply.
+  render(reply({ segments: [compaction({ trigger: "manual", status: "interrupted" })] }));
+  expect(hasText("Context compaction did not finish")).toBe(true);
+  expect(countText("chat.manuallyCompacting")).toBe(0);
 });
 
 /**

@@ -81,7 +81,10 @@ export type TimelineSegment =
        */
       tokensAfter?: number;
       trigger?: string;
-      status?: "running" | "completed" | "failed";
+      /** `interrupted` is a manual compaction this client never saw finish —
+       * the session stopped compacting without a terminal frame (see
+       * `settleInterruptedStandaloneCompactions`). */
+      status?: "running" | "completed" | "failed" | "interrupted";
       error?: string;
     };
 

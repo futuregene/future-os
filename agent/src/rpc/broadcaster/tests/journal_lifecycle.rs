@@ -265,6 +265,71 @@ fn an_event_the_journal_refuses_is_dropped_without_taking_the_session_down() {
     );
 }
 
+/// A manual compaction's terminal frame between runs.
+///
+/// A manual compaction only ever starts between turns, and the broadcaster
+/// still holds the run that just settled — whose journal compaction has
+/// already retired. `broadcast` stamps that run, the store refuses the append
+/// ("cannot append to a compacted settled run") and the rejection drops the
+/// frame before any subscriber sees it, so a client's "compacting" divider
+/// never settled and the conversation kept showing a compaction in flight.
+/// Session scope is what the rest of that lifecycle uses, and it is what
+/// survives a retired run: durable, delivered, and naming no run.
+#[test]
+fn a_manual_compaction_terminal_survives_a_retired_run_only_at_session_scope() {
+    let directory = tempfile::tempdir().unwrap();
+    let manager = crate::session::Manager::new(directory.path().to_path_buf());
+    let b = SseBroadcaster::new();
+    b.configure_legacy_journal("session-compaction", &manager)
+        .unwrap();
+    b.start_run("run-settled".to_string(), 1);
+    b.broadcast(SseEvent::new("agent_end", serde_json::json!({"n": 1})));
+    b.flush_journal().unwrap();
+    // What run completion does on its own thread: publish the snapshot and
+    // retire the run's raw rows.
+    manager.test_execute(
+        "INSERT INTO runs(session_id,run_id,status,completed_at_ms) \
+         VALUES ('session-compaction','run-settled','completed',1)",
+    );
+    manager
+        .storage()
+        .unwrap()
+        .compact_run("session-compaction", "run-settled")
+        .unwrap();
+
+    let mut subscriber = b.subscribe();
+    // Run-stamped, as the oversized manual-compaction terminals used to be.
+    b.broadcast(SseEvent::new(
+        "compaction_unchanged",
+        serde_json::json!({"operation_id": "op-run-stamped", "phase": "standalone"}),
+    ));
+    assert!(
+        subscriber.try_recv().is_err(),
+        "a frame the retired journal refuses is dropped before delivery"
+    );
+    assert!(
+        b.session_events_since(-1).unwrap().is_empty(),
+        "and it is not durable either"
+    );
+    assert_eq!(b.persistence_error(), None, "the refusal is not an outage");
+
+    // Session-scoped, as the fix sends it.
+    b.broadcast_session(SseEvent::new(
+        "compaction_unchanged",
+        serde_json::json!({"operation_id": "op-session", "phase": "standalone"}),
+    ));
+    let delivered = subscriber
+        .try_recv()
+        .expect("the terminal must reach the client");
+    assert_eq!(delivered.event_type, "compaction_unchanged");
+    assert!(delivered.run_id.is_empty());
+    assert_eq!(delivered.idx, -1);
+    let durable = b.session_events_since(-1).unwrap();
+    assert_eq!(durable.len(), 1);
+    assert_eq!(durable[0].event_type, "compaction_unchanged");
+    assert_eq!(durable[0].run_id, "");
+}
+
 /// A refused event is not a session-wide outage. The writer already drops the
 /// one event the journal refuses, but `broadcast` recorded that refusal as a
 /// journal health failure — and health is only cleared by a successful

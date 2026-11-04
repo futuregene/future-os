@@ -7,7 +7,9 @@ import { useStyles } from "./messageStyles";
 // (history summarized to fit the context window). A hairline rule with a small
 // muted label — the only surfacing of compaction in the UI, since the agent
 // otherwise continues silently. Shows the pre-compaction token count and the
-// agent's estimate for the next turn when known.
+// agent's estimate for the next turn when known. A manual compaction whose
+// terminal frame never reached this client settles as `interrupted` (the
+// session stopped compacting); it is reported, never dressed up as a result.
 export function CompactionDivider({
   tokensBefore,
   tokensAfter,
@@ -16,7 +18,7 @@ export function CompactionDivider({
 }: {
   tokensBefore?: number;
   tokensAfter?: number;
-  status?: "running" | "completed" | "failed";
+  status?: "running" | "completed" | "failed" | "interrupted";
   trigger?: string;
 }) {
   const { t, i18n } = useTranslation();
@@ -33,17 +35,19 @@ export function CompactionDivider({
       ? manual
         ? t("chat.manuallyCompacting")
         : t("chat.compacting")
-      : status === "failed"
-        ? manual
-          ? t("chat.manualCompactionFailed")
-          : t("chat.compactionFailed")
-        : delta
-          ? t(manual ? "chat.manuallyCompactedTokensDelta" : "chat.compactedTokensDelta", delta)
-          : manual
-            ? t("chat.manuallyCompacted")
-            : tokensBefore && tokensBefore > 0
-              ? t("chat.compactedTokens", { formattedCount: format(tokensBefore) })
-              : t("chat.compacted");
+      : status === "interrupted"
+        ? t("chat.compactionInterrupted")
+        : status === "failed"
+          ? manual
+            ? t("chat.manualCompactionFailed")
+            : t("chat.compactionFailed")
+          : delta
+            ? t(manual ? "chat.manuallyCompactedTokensDelta" : "chat.compactedTokensDelta", delta)
+            : manual
+              ? t("chat.manuallyCompacted")
+              : tokensBefore && tokensBefore > 0
+                ? t("chat.compactedTokens", { formattedCount: format(tokensBefore) })
+                : t("chat.compacted");
   return <StatusDivider failed={status === "failed"} label={label} />;
 }
 
