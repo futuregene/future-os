@@ -44,6 +44,12 @@ fn fields(value: &Value) -> Vec<(String, String)> {
     result
 }
 
+pub(crate) fn inline_initial(entry: &Value) -> bool {
+    entry["type"] == "session_info"
+        && super::metadata::validate_thin(&entry["content"]).is_ok()
+        && super::extensions::fields(entry).is_empty()
+}
+
 pub(crate) fn prepare(
     store: &SqliteStore,
     session: &str,

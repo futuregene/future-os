@@ -151,7 +151,12 @@ impl Snapshot {
     }
 
     pub(crate) fn use_read_snapshot(&mut self, snapshot: crate::session::database::ReadSnapshot) {
-        self.read_snapshot = Some(snapshot);
+        // Rollback-journal readers release their transaction before returning
+        // to application code. The existing unpinned reader validates storage
+        // identity and history generation on every range and before delivery.
+        if snapshot.pins_transaction() {
+            self.read_snapshot = Some(snapshot);
+        }
     }
 
     /// Count this page's round trips into `tally`.

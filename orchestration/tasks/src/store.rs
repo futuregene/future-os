@@ -104,10 +104,6 @@ fn with_columns(template: &str, columns: &str) -> String {
     template.replace("%COLUMNS%", columns)
 }
 
-const PRAGMAS: &str = "PRAGMA busy_timeout = 5000;
-             PRAGMA journal_mode = WAL;
-             PRAGMA foreign_keys = ON;";
-
 const SQL_SET_SCHEMA_VERSION: &str = "
     INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
     ON CONFLICT(key) DO NOTHING";
@@ -315,7 +311,11 @@ impl Store {
         std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
         let path = store_path(home);
         let conn = Connection::open(&path).with_context(|| format!("open {}", path.display()))?;
-        conn.execute_batch(PRAGMAS)?;
+        conn.execute_batch(
+            future_rpc::storage::StorageMode::from_env()
+                .map_err(anyhow::Error::msg)?
+                .pragmas(),
+        )?;
         let store = Self { conn };
         store.apply_schema()?;
         Ok(store)

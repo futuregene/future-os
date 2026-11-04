@@ -130,7 +130,10 @@ impl super::Database {
     /// Startup-only reclamation, serialized with the periodic checkpoint so
     /// SQLite's checkpoint lock cannot be held by our own PASSIVE worker.
     pub(crate) fn checkpoint_after_import(&self) -> Result<()> {
-        let (busy, _, _) = self.inner.wal.truncate_after_import()?;
+        let Some(wal) = &self.inner.wal else {
+            return Ok(());
+        };
+        let (busy, _, _) = wal.truncate_after_import()?;
         if busy != 0 {
             tracing::warn!(
                 "legacy import checkpoint is busy; committed data remains durable in WAL"
@@ -143,7 +146,11 @@ impl super::Database {
 #[cfg(test)]
 impl super::Database {
     pub(crate) fn checkpoint_for_test(&self) -> Result<(i64, i64, i64)> {
-        self.inner.wal.observe()
+        self.inner
+            .wal
+            .as_ref()
+            .context("WAL is disabled in NFS mode")?
+            .observe()
     }
 }
 

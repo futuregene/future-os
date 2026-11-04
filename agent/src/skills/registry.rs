@@ -192,7 +192,8 @@ pub(crate) fn open_registry(path: &Path) -> Result<Connection> {
         // recognition/version checks are repeated under the write lock below.
         connection.pragma_update(None, "auto_vacuum", 2)?;
     }
-    connection.pragma_update(None, "journal_mode", "WAL")?;
+    let mode = future_rpc::storage::StorageMode::from_env().map_err(anyhow::Error::msg)?;
+    connection.execute_batch(mode.pragmas())?;
     // Settled registries are also opened by list queries. Do not reserve the
     // writer lock unless tables/indexes or the v3 stamp actually need updating.
     if initial.fresh || initial.version == 3 || !initial.schema_ready {

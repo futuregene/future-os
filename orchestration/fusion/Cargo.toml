@@ -5,6 +5,7 @@ edition = "2021"
 description = "Durable, focused, read-only multi-model consultations"
 
 [dependencies]
+future-rpc = { path = "../../packages/rpc" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

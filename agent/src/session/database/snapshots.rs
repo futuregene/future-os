@@ -22,12 +22,15 @@ struct Pool {
     state: parking_lot::Mutex<State>,
     available: parking_lot::Condvar,
     metrics: Arc<super::metrics::Metrics>,
+    pinned: bool,
 }
 pub(super) struct Readers(Arc<Pool>);
 
 impl Readers {
     pub(super) fn open(path: &Path, metrics: Arc<super::metrics::Metrics>) -> Result<Self> {
-        let idle = (0..CONNECTIONS)
+        let pinned = future_rpc::storage::StorageMode::from_env().map_err(anyhow::Error::msg)?
+            != future_rpc::storage::StorageMode::Nfs;
+        let idle = (0..if pinned { CONNECTIONS } else { 1 })
             .map(|_| super::readers::open_connection(path))
             .collect::<Result<Vec<_>>>()?;
         Ok(Self(Arc::new(Pool {
@@ -38,6 +41,7 @@ impl Readers {
             }),
             available: parking_lot::Condvar::new(),
             metrics,
+            pinned,
         })))
     }
 
@@ -70,7 +74,9 @@ impl Readers {
                     request.as_ref(),
                 );
                 snapshot.read(|db| {
-                    db.execute_batch("BEGIN DEFERRED")?;
+                    if self.0.pinned {
+                        db.execute_batch("BEGIN DEFERRED")?;
+                    }
                     Ok(())
                 })?;
                 return Ok(snapshot);
@@ -123,6 +129,9 @@ struct Lease {
     deadline: Instant,
 }
 impl ReadSnapshot {
+    pub(crate) fn pins_transaction(&self) -> bool {
+        self.0.pool.pinned
+    }
     #[track_caller]
     pub(crate) fn read<T>(&self, read: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
         ensure!(
