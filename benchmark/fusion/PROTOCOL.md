@@ -62,6 +62,15 @@ dataset scope; a challenge containing ZebraLogic is not eligible for future Fusi
 comparison. Historical suite names and reproduction instructions below do not
 override this decision.
 
+The user further fixed the mistake allocation to **7 BBEH mini + 7 Omni-MATH**.
+Keep the already locked seven BBEH result IDs and hashes; resume with the original
+200 frozen Omni cases rather than resampling or filling more slots from BBEH.
+The local ignored `.local/challenge-selection.json` records the fixed evidence.
+Lock the first seven completed, parsed Omni mistakes by completion time (case ID
+breaks ties). Service failures do not fill those slots. The authorized 200-case
+Omni baseline may continue after the mistake quota is met. Its extracted suite
+pins the parent 400-case suite hash, so the input questions remain unchanged.
+
 Freeze upstream revisions and content hashes, eligible subsets, sampling seed,
 question IDs, final-answer requirements, scorer version, repeats and timeout
 before generating any model outputs for an unselected capability evaluation.
