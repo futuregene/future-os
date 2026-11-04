@@ -17,6 +17,7 @@ import {
 } from "../../../integrations/storage/threadStore";
 import { errorMessage } from "../../../lib/errors";
 import { usePolling } from "../../../lib/usePolling";
+import { RECENT_PAGE_SIZE } from "../recentOrder";
 
 export interface ThreadRunInfo {
   status: StoredRun["status"];
@@ -45,6 +46,13 @@ interface ScopeState {
   loadedRoots: number;
   /** Cursor for the next page; null once the scope is exhausted. */
   nextCursor: string | null;
+  /**
+   * How many roots the whole scope holds, as its last page reported.
+   *
+   * A cursor says "there is more", not "how much"; the count behind "show the
+   * other N" comes from here, and it counts the scope, not the loaded part.
+   */
+  totalRoots: number;
   loading: boolean;
 }
 
@@ -55,8 +63,51 @@ interface ScopeState {
  * click away is cheaper than scrolling past rows the reader did not ask for.
  */
 const PAGE_ROOTS = 10;
-/** Workspace list page size — the same ten, for the same reason. */
-const PAGE_WORKSPACES = 10;
+/** Workspace list page size — one request asks for the host's whole clamp. */
+const PAGE_WORKSPACES = 100;
+
+/**
+ * The recent view's own stream, spelled the way `list_threads_page` takes it.
+ *
+ * Its rows are the view's, not the tree's: the tree pages per workspace, the
+ * recent view one conversation stream across every workspace (see
+ * `docs/design/workspace-thread-archive-and-paging.md` §4.4).
+ */
+const RECENT_SCOPE = "recent";
+
+/**
+ * How many roots one page of `scope` asks for.
+ *
+ * The recent view pages by the size its own control promises ("show 30 more"),
+ * so a page is exactly what a click draws; a workspace group and the chat
+ * section are one screenful plus a little, and `PAGE_ROOTS` is what the rail
+ * shows before its own "load more".
+ */
+/**
+ * Every workspace row of the *active* list, not one page of it.
+ *
+ * The rail draws the workspaces the reader owns, all of them: paging that list
+ * ten at a time hid most of it behind a "load more" under the last group, which
+ * is the same complaint the conversations had. The list holds user workspaces
+ * only (temporary ones never appear in it), so reading it whole is one or two
+ * requests; the cursor walk is there so a bigger list is still complete.
+ */
+async function readAllWorkspaces(): Promise<StoredWorkspace[]> {
+  const workspaces: StoredWorkspace[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < 100; page += 1) {
+    const answered = await listWorkspacesPage(false, cursor, PAGE_WORKSPACES);
+    workspaces.push(...answered.workspaces);
+    cursor = answered.nextCursor;
+    if (cursor === null)
+      break;
+  }
+  return workspaces;
+}
+
+function pageSizeFor(scope: ThreadScopeKey): number {
+  return scope === RECENT_SCOPE ? RECENT_PAGE_SIZE : PAGE_ROOTS;
+}
 
 export function reduceThreadRunStatus(
   previous: ThreadRunStatuses,
@@ -160,16 +211,32 @@ export interface ThreadStore {
   threadStreamingStatuses: ThreadStreamingStatuses;
   loadingStore: boolean;
   storeError: string | null;
+  /**
+   * The conversations the recent view's own paged stream holds.
+   *
+   * The view draws these, not every row any scope has loaded: its page is what
+   * the reader asked for when they opened it, and it advances on its own
+   * "show more" (`loadMore("recent")`) rather than inheriting whatever a
+   * workspace group happened to fetch. `undefined` until that stream has been
+   * started at all (the view asks for it when it is first shown), so the list is
+   * never emptied by a stream nobody requested.
+   */
+  recentThreadIds: ReadonlySet<string> | undefined;
   /** Which scopes have more roots than the rail currently holds. */
   scopeHasMore: (scope: string) => boolean;
-  /** Whether the workspace list has another page. */
-  workspacesHasMore: boolean;
-  /** Fetch the next page of the workspace list. */
-  loadMoreWorkspaces: () => Promise<void>;
+  /** How many roots `scope` still holds back; 0 when it has none or is unknown. */
+  scopeRemaining: (scope: string) => number;
   /** Whether a scope's first page is still in flight. */
   scopeLoading: (scope: string) => boolean;
   /** Fetch the next page of `scope` (or its first page). */
   loadMore: (scope: string) => Promise<void>;
+  /**
+   * Fetch every remaining page of `scope`.
+   *
+   * The other half of `scopeRemaining`: a control that names "the other 476"
+   * must load 476, not the next page of 30.
+   */
+  loadRemaining: (scope: string) => Promise<void>;
   /** Make sure `scope` has been requested at least once (lazy workspace groups). */
   ensureScope: (scope: string) => void;
   /**
@@ -199,7 +266,10 @@ export interface ThreadStore {
  * Bootstrap loads only what the first screen needs: pinned conversations,
  * pinned workspaces, one page of the workspace list, and one page of the chat
  * section. A workspace group's conversations load when the group is first
- * expanded; the archived view loads when the entry is opened.
+ * expanded; the archived view loads when the entry is opened; the recent view
+ * loads its own `recent` stream (30 conversations a page) when that view is
+ * opened, so it ranks the whole store page by page instead of only what other
+ * scopes happen to hold.
  *
  * Run status is driven primarily by the `thread-runtime-updated` push event; a
  * low-frequency (30s) reconciliation pass backstops lost events / backend
@@ -215,7 +285,10 @@ export function useThreadStore(): ThreadStore {
   const [loadingStore, setLoadingStore] = useState(true);
   const [storeError, setStoreError] = useState<string | null>(null);
   const [scopes, setScopes] = useState<Record<ThreadScopeKey, ScopeState>>({});
-  const [workspacesMore, setWorkspacesMore] = useState(false);
+  // The recent view's own rows, by id: rows are merged into `threads` (one
+  // array, so a row never has two copies), but which of them the recent view
+  // draws is a fact about that stream, not about the store's contents.
+  const [recentIds, setRecentIds] = useState<ReadonlySet<string>>(() => new Set<string>());
 
   // Mirror the active id into a ref so `refreshStore` can read the latest value
   // without listing it as a dependency — that kept it stable-free, recreating
@@ -262,48 +335,56 @@ export function useThreadStore(): ThreadStore {
   }, []);
 
   /**
-   * Fetch one page of `scope` and merge it.
+   * Request one page of `scope` from `cursor` (null = the first page) and merge
+   * it.
    *
-   * `reset` re-reads the scope from its first page (mutation path); otherwise
-   * the scope's cursor advances. Both keep `nextCursor` truthful, so "load
-   * more" appears exactly while the scope has more.
+   * Returns the page so a caller walking a cursor keeps its own copy of it: the
+   * scope state is read on the next render, and a loop that awaited a render to
+   * learn "the next cursor" could re-ask for a page it already has.
    */
-  const fetchPage = useCallback(async (scope: ThreadScopeKey, reset: boolean) => {
-    const current = scopesRef.current[scope];
-    if (!reset && current && (!current.started || current.nextCursor === null))
-      return;
-    if (!reset && current?.loading)
-      return;
+  const requestPage = useCallback(async (scope: ThreadScopeKey, cursor: string | null) => {
+    const size = pageSizeFor(scope);
     setScopes(previous => ({
       ...previous,
       [scope]: {
         started: true,
-        loadedRoots: reset ? 0 : (previous[scope]?.loadedRoots ?? 0),
-        nextCursor: reset ? null : (previous[scope]?.nextCursor ?? null),
+        loadedRoots: previous[scope]?.loadedRoots ?? 0,
+        nextCursor: previous[scope]?.nextCursor ?? null,
+        totalRoots: previous[scope]?.totalRoots ?? 0,
         loading: true,
       },
     }));
     try {
-      const cursor = reset ? null : (scopesRef.current[scope]?.nextCursor ?? null);
-      const page = await listThreadsPage(scope, cursor, PAGE_ROOTS);
+      const page = await listThreadsPage(scope, cursor, size);
       mergeThreads(page.threads);
+      if (scope === RECENT_SCOPE) {
+        setRecentIds(previous => new Set([
+          ...previous,
+          ...page.threads.map(thread => thread.id),
+        ]));
+      }
       setScopes(previous => ({
         ...previous,
         [scope]: {
           started: true,
-          loadedRoots: (previous[scope]?.loadedRoots ?? 0) + PAGE_ROOTS,
+          loadedRoots: (previous[scope]?.loadedRoots ?? 0) + size,
           nextCursor: page.nextCursor,
+          totalRoots: page.totalRoots,
           loading: false,
         },
       }));
+      return page;
     }
     catch (error) {
+      // The cursor is not advanced, so the next attempt asks for the page that
+      // failed rather than skipping it.
       setScopes(previous => ({
         ...previous,
         [scope]: {
-          started: previous[scope]?.started ?? false,
+          started: previous[scope]?.started ?? true,
           loadedRoots: previous[scope]?.loadedRoots ?? 0,
-          nextCursor: previous[scope]?.nextCursor ?? null,
+          nextCursor: cursor,
+          totalRoots: previous[scope]?.totalRoots ?? 0,
           loading: false,
         },
       }));
@@ -311,19 +392,48 @@ export function useThreadStore(): ThreadStore {
     }
   }, [mergeThreads]);
 
+  /**
+   * The next page of `scope`, or its first page when it has not started.
+   *
+   * One page per call: the tree's groups load ten conversations at a time, which
+   * is what their "load more" asks for.
+   */
   const loadMore = useCallback(async (scope: string) => {
-    await fetchPage(scope, false);
-  }, [fetchPage]);
+    const state = scopesRef.current[scope];
+    if (state?.loading)
+      return;
+    await requestPage(scope, state?.started ? state.nextCursor : null);
+  }, [requestPage]);
+
+  /**
+   * Every remaining page of `scope`, for a control that names a count.
+   *
+   * "Show the other 476" must produce 476 conversations, so this walks the
+   * cursor to its end instead of advancing one page and leaving the label a lie.
+   * The bound is a cursor that refuses to move, not an expected list size.
+   */
+  const loadRemaining = useCallback(async (scope: string) => {
+    const state = scopesRef.current[scope];
+    if (!state?.started || state.nextCursor === null || state.loading)
+      return;
+    let cursor: string | null = state.nextCursor;
+    for (let page = 0; cursor !== null && page < 500; page += 1) {
+      const answered = await requestPage(scope, cursor);
+      if (answered.nextCursor === cursor)
+        return;
+      cursor = answered.nextCursor;
+    }
+  }, [requestPage]);
 
   const ensureScope = useCallback((scope: string) => {
     const state = scopesRef.current[scope];
     if (state?.started)
       return;
-    void fetchPage(scope, false).catch(() => {
+    void requestPage(scope, null).catch(() => {
       // A failed first page leaves the scope unstarted; the next expansion or
       // the next `threads-updated` retries. The rail shows its own spinner.
     });
-  }, [fetchPage]);
+  }, [requestPage]);
 
   const selectThread = useCallback((thread: StoredThread) => {
     mergeThreads([thread]);
@@ -338,19 +448,25 @@ export function useThreadStore(): ThreadStore {
     [scopes],
   );
 
-  const scopeLoading = useCallback((scope: string) => scopes[scope]?.loading ?? false, [scopes]);
+  /**
+   * How many roots `scope` still holds back.
+   *
+   * Read from the scope's own count, never from "rows I happen to hold": a
+   * control offering to show the rest must name the list's remainder, and the
+   * loaded part is exactly the wrong number to quote. Clamped at 0 because
+   * `loadedRoots` counts requested pages.
+   */
+  const scopeRemaining = useCallback(
+    (scope: string) => {
+      const state = scopes[scope];
+      if (!state?.started)
+        return 0;
+      return Math.max(0, state.totalRoots - state.loadedRoots);
+    },
+    [scopes],
+  );
 
-  /** The workspace list's next page (the first one is loaded at bootstrap). */
-  const workspaceCursorRef = useRef<string | null>(null);
-  const loadMoreWorkspaces = useCallback(async () => {
-    const cursor = workspaceCursorRef.current;
-    if (cursor === null)
-      return;
-    const page = await listWorkspacesPage(false, cursor, PAGE_WORKSPACES);
-    setWorkspaces(previous => [...previous, ...page.workspaces]);
-    workspaceCursorRef.current = page.nextCursor;
-    setWorkspacesMore(page.nextCursor !== null);
-  }, []);
+  const scopeLoading = useCallback((scope: string) => scopes[scope]?.loading ?? false, [scopes]);
 
   // Guard against overlapping refreshes (rapid deletes/creates, each calling
   // refreshStore): a slow page landing after a newer one would revive a stale
@@ -369,17 +485,15 @@ export function useThreadStore(): ThreadStore {
   const refreshStore = useCallback(async (nextActiveThreadId?: string) => {
     const generation = ++refreshStoreGenRef.current;
     try {
-      const [pinned, pinnedWs, firstWorkspaces, active] = await Promise.all([
+      const [pinned, pinnedWs, allWorkspaces, active] = await Promise.all([
         listPinnedThreads("recent"),
         listPinnedWorkspaces(),
-        listWorkspacesPage(false, null, PAGE_WORKSPACES),
+        readAllWorkspaces(),
         listActiveThreads(),
       ]);
       if (generation !== refreshStoreGenRef.current)
         return;
-      setWorkspaces([...pinnedWs, ...firstWorkspaces.workspaces]);
-      workspaceCursorRef.current = firstWorkspaces.nextCursor;
-      setWorkspacesMore(firstWorkspaces.nextCursor !== null);
+      setWorkspaces([...pinnedWs, ...allWorkspaces]);
 
       // Re-read every scope the reader has opened at the depth it held, and
       // rebuild the row set from the answers instead of merging into it: a row
@@ -387,25 +501,45 @@ export function useThreadStore(): ThreadStore {
       // store, which merging alone can never express.
       const rows: StoredThread[] = [...pinned, ...active];
       const open = Object.entries(scopesRef.current).filter(([, state]) => state.started);
+      let recentRows: Set<string> | null = null;
       for (const [scope, state] of open) {
-        const wanted = Math.max(state.loadedRoots, PAGE_ROOTS);
+        const size = pageSizeFor(scope);
+        const wanted = Math.max(state.loadedRoots, size);
+        const streamed = new Set<string>();
         let cursor: string | null = null;
         let roots = 0;
+        // The scope's own count comes back with every page; the last one read is
+        // the scope's size, not the page's.
+        let totalRoots = state.totalRoots;
         for (;;) {
-          const page = await listThreadsPage(scope, cursor, PAGE_ROOTS);
+          const page = await listThreadsPage(scope, cursor, size);
           if (generation !== refreshStoreGenRef.current)
             return;
           rows.push(...page.threads);
-          roots += PAGE_ROOTS;
+          for (const thread of page.threads) streamed.add(thread.id);
+          roots += size;
+          totalRoots = page.totalRoots;
           cursor = page.nextCursor;
           if (cursor === null || roots >= wanted)
             break;
         }
+        if (scope === RECENT_SCOPE)
+          recentRows = streamed;
         setScopes(previous => ({
           ...previous,
-          [scope]: { started: true, loadedRoots: roots, nextCursor: cursor, loading: false },
+          [scope]: {
+            started: true,
+            loadedRoots: roots,
+            nextCursor: cursor,
+            totalRoots,
+            loading: false,
+          },
         }));
       }
+      // The recent stream is rebuilt, not merged: a conversation it no longer
+      // returns (archived or deleted elsewhere) must leave the view with it.
+      if (recentRows)
+        setRecentIds(recentRows);
 
       const byId = new Map(rows.map(thread => [thread.id, thread] as const));
       // The conversation on screen stays addressable even when its scope no
@@ -510,24 +644,23 @@ export function useThreadStore(): ThreadStore {
       try {
         await initializeAppStore();
         const recentThread = await getRecentOrCreateDefaultThread(i18n.t("common:newChat"));
-        const [pinned, pinnedWs, firstWorkspaces, firstChat, active] = await Promise.all([
+        const [pinned, pinnedWs, allWorkspaces, firstChat, active] = await Promise.all([
           listPinnedThreads("recent"),
           listPinnedWorkspaces(),
-          listWorkspacesPage(false, null, PAGE_WORKSPACES),
+          readAllWorkspaces(),
           listThreadsPage("chat", null, PAGE_ROOTS),
           listActiveThreads(),
         ]);
         if (cancelled) {
           return;
         }
-        setWorkspaces([...pinnedWs, ...firstWorkspaces.workspaces]);
-        workspaceCursorRef.current = firstWorkspaces.nextCursor;
-        setWorkspacesMore(firstWorkspaces.nextCursor !== null);
+        setWorkspaces([...pinnedWs, ...allWorkspaces]);
         setScopes({
           chat: {
             started: true,
             loadedRoots: PAGE_ROOTS,
             nextCursor: firstChat.nextCursor,
+            totalRoots: firstChat.totalRoots,
             loading: false,
           },
         });
@@ -660,11 +793,13 @@ export function useThreadStore(): ThreadStore {
     activeWorkspace,
     ensureScope,
     loadMore,
-    loadMoreWorkspaces,
+    loadRemaining,
     loadingStore,
+    recentThreadIds: scopes[RECENT_SCOPE]?.started ? recentIds : undefined,
     refreshStore,
     scopeHasMore,
     scopeLoading,
+    scopeRemaining,
     selectThread,
     setActiveThreadId,
     storeError,
@@ -672,6 +807,5 @@ export function useThreadStore(): ThreadStore {
     threadStreamingStatuses,
     threads,
     workspaces,
-    workspacesHasMore: workspacesMore,
   };
 }

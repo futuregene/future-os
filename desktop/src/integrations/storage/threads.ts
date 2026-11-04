@@ -119,6 +119,8 @@ export async function searchThreads(query: string, limit = 100) {
 export interface ThreadsPage {
   threads: StoredThread[];
   nextCursor: string | null;
+  /** How many roots the whole scope holds, not just this page. */
+  totalRoots: number;
 }
 
 export interface ThreadSearchResults {

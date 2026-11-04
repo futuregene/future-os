@@ -208,7 +208,39 @@ describe("activity rail navigation", () => {
     view.unmount();
   });
 
-  it("collapses and re-expands each list section independently", () => {
+  /**
+   * An open group asks for its conversations.
+   *
+   * Reported as "after a restart most of my conversations are gone": a group
+   * starts expanded, and the only thing that ever requested a workspace's page
+   * was the disclosure toggle — so the default state drew headings with nothing
+   * under them, and folding a group open was the reader's only way to make its
+   * conversations appear.
+   */
+  it("asks for the first page of every expanded group, and for none of the folded ones", () => {
+    const ensureThreadScope = vi.fn();
+    localStorage.setItem("future.collapsedWorkspaces", JSON.stringify(["ws-folded"]));
+    const threads = [
+      thread("open-thread", { mode: "workspace", workspaceId: "ws-open" }),
+      thread("folded-thread", { mode: "workspace", workspaceId: "ws-folded" }),
+    ];
+    const workspaces: StoredWorkspace[] = [
+      { ...alpha, id: "ws-open", name: "Open" },
+      { ...alpha, id: "ws-folded", name: "Folded" },
+    ];
+    const view = mount(<ActivityRail {...props(threads, { ensureThreadScope, workspaces })} />);
+
+    const asked = ensureThreadScope.mock.calls.map(call => call[0]);
+    expect(asked).toContain("workspace:ws-open");
+    expect(asked).not.toContain("workspace:ws-folded");
+    view.unmount();
+  });
+
+  it("folds the chat section, and never folds the workspaces away", () => {
+    // The workspace section is not foldable: every workspace the reader owns gets
+    // a heading, which is the only honest answer to "where did my workspaces go".
+    // The chat section keeps its own fold — it is a list of one kind of
+    // conversation, not a container for the workspaces.
     const p = props([thread("root"), thread("ws-thread", { mode: "workspace", workspaceId: "ws-a" })]);
     const view = mount(<ActivityRail {...p} />);
     const has = (title: string) => view.container.querySelector(`button[aria-label="${title}"]`) !== null;
@@ -217,14 +249,13 @@ describe("activity rail navigation", () => {
     expect(has("ws-thread")).toBe(true);
     act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Collapse chat list\"]")!.click());
     expect(has("root")).toBe(false);
-    // Workspace section is independent — its rows stay.
+    // The workspaces are unaffected by the chat section's fold.
     expect(has("ws-thread")).toBe(true);
     act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Expand chat list\"]")!.click());
     expect(has("root")).toBe(true);
 
-    act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Collapse workspace list\"]")!.click());
-    expect(has("ws-thread")).toBe(false);
-    expect(has("root")).toBe(true);
+    expect(view.container.querySelector("button[aria-label=\"Collapse workspace list\"]")).toBeNull();
+    expect(view.container.querySelector("button[aria-label=\"Expand workspace list\"]")).toBeNull();
     view.unmount();
   });
 });

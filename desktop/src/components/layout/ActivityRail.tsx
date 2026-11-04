@@ -54,7 +54,7 @@ import { useRailView } from "./hooks/useRailView";
 import { MergedRows } from "./MergedRows";
 import { RailDisclosure, RailHeaderButton } from "./RailChrome";
 import { RailViewSwitch } from "./RailViewSwitch";
-import { expandRecent, isActiveRun, RECENT_PAGE_SIZE, recentSplit, recentTree } from "./recentOrder";
+import { expandRecent, isActiveRun, recentSplit, recentTree } from "./recentOrder";
 import { ThreadListItem } from "./ThreadListItem";
 import { buildThreadTree, buildTree, threadParentIds, visibleThreadRows, visibleTreeRows } from "./threadTree";
 
@@ -67,6 +67,17 @@ interface ActivityRailProps {
   activeThreadId: string | null;
   hasUpdate?: boolean;
   threads: StoredThread[];
+  /**
+   * The conversations the recent view's own paged stream holds.
+   *
+   * The recent view draws these rather than every row some scope happens to
+   * have loaded: its page is what its own "show more" advances, so a reader who
+   * never opened a workspace group still sees the history the view pages
+   * through, and a group opened earlier does not inflate the list. Absent (a
+   * fixture, a host-only list) means "no stream to respect": the view draws
+   * every row it is handed.
+   */
+  recentThreadIds?: ReadonlySet<string>;
   threadRunStatuses: Record<string, ThreadRunInfo | undefined>;
   threadStreamingStatuses: Record<string, boolean>;
   unreadThreadIds: Set<string>;
@@ -146,10 +157,12 @@ interface ActivityRailProps {
   ensureThreadScope?: (scope: string) => void;
   /** Fetch the next page of a scope. */
   loadMoreThreadScope?: (scope: string) => Promise<void>;
+  /** Fetch every remaining page of a scope, for a control that names a count. */
+  loadRemainingThreadScope?: (scope: string) => Promise<void>;
   threadScopeHasMore?: (scope: string) => boolean;
+  /** How many roots a scope still holds back — the count its control offers. */
+  threadScopeRemaining?: (scope: string) => number;
   threadScopeLoading?: (scope: string) => boolean;
-  workspacesHasMore?: boolean;
-  onLoadMoreWorkspaces?: () => Promise<void>;
   onToggleExpanded: () => void;
   /** Remote bridge connection state for the nav indicator dot. */
   remoteIndicator?: RemoteIndicator;
@@ -227,6 +240,7 @@ export function ActivityRail({
   floating,
   hasUpdate,
   threads,
+  recentThreadIds,
   threadRunStatuses,
   threadStreamingStatuses,
   unreadThreadIds,
@@ -255,10 +269,10 @@ export function ActivityRail({
   onShowArchiveGuide,
   ensureThreadScope,
   loadMoreThreadScope,
+  loadRemainingThreadScope,
   threadScopeHasMore,
+  threadScopeRemaining,
   threadScopeLoading,
-  workspacesHasMore,
-  onLoadMoreWorkspaces,
   activeWorkspaceId,
   onSelectWorkspace,
   onSelectThread,
@@ -369,7 +383,6 @@ export function ActivityRail({
   const { collapsedWorkspaces, toggleWorkspaceCollapsed } = useCollapsedWorkspaces();
   // Collapse state for the two top-level list sections (Workspace / Chat),
   // independent of the per-workspace group collapse above.
-  const [workspaceSectionCollapsed, setWorkspaceSectionCollapsed] = useState(false);
   const [chatSectionCollapsed, setChatSectionCollapsed] = useState(false);
   // The archived view's two sections fold like the active ones (one click each,
   // no need to fold every workspace heading by hand).
@@ -820,25 +833,39 @@ export function ActivityRail({
   );
 
   /**
-   * How much of the recent view's "earlier" stretch is drawn.
+   * Ask for the recent view's own stream the first time that view is shown.
    *
-   * Held here rather than in the list because the keyboard walk steps the same
-   * order the list draws: two copies of "how far down the list goes" would be
-   * two answers to "which row is next". It starts over when the view is left and
-   * returned to, since coming back to "the recent ones" means the recent ones.
+   * The view's page is its own (`recent` scope, 30 conversations a page), not
+   * whatever the tree's scopes happen to have loaded: a reader who opens it on a
+   * fresh window sees the last 30 conversations and can page back from there,
+   * instead of the handful of rows the chat section's first page happened to
+   * hold.
    */
-  const [recentLimit, setRecentLimit] = useState(RECENT_PAGE_SIZE);
+  useEffect(() => {
+    if (railView === "recent")
+      ensureThreadScope?.("recent");
+  }, [ensureThreadScope, railView]);
 
   /**
-   * The recent view's rows: every conversation the device filter admits, in one
-   * list, with the two facts it is ordered and split by.
+   * The recent view's rows: every conversation its own stream holds (plus the
+   * running ones, which are read whole), in one list, with the two facts it is
+   * ordered and split by.
    *
    * `remoteRows` already holds this machine's threads and every listed host's
-   * sessions, under the same filter the tree draws with — so the two views cannot
-   * disagree about *which* conversations exist, only about how they are ranked.
+   * sessions, under the same filter the tree draws with. The local half is then
+   * narrowed to the rows the `recent` stream has actually paged in — otherwise
+   * the list would rank whatever a workspace group was expanded earlier, which
+   * is neither the view's page nor the whole store. A row the view must never
+   * drop: one whose run is in flight (the active stretch is read whole from
+   * `list_active_threads`) and a pinned one (fetched whole as a shortcut, and a
+   * pin is a marker here, not a place). Hosts' rows are not paged this way.
    * A run's state is read per row: this machine's threads from the rail's own
    * per-thread run statuses (the same source the row's indicator uses), a host's
    * from what it reports on its row.
+   *
+   * How much of the "earlier" stretch is drawn is the stream's business, not
+   * this list's: a page is the size its "show more" promises, so nothing here
+   * windows it a second time.
    *
    * A child — a fork, or a session an agent started for one piece of work — is
    * not ranked here: the stretches rank the conversations that have no parent in
@@ -847,20 +874,28 @@ export function ActivityRail({
    * tree folds with, so the two views cannot disagree about whether a row is open.
    */
   const recent = useMemo(() => {
-    const rows = remoteRows.filter(rowMatchesQuery).map(row => ({
-      ...row,
-      active: row.desktopId === null
-        ? isActiveRun(
-            threadRunStatuses[row.id]?.status,
-            threadStreamingStatuses[row.id],
-          )
-        : isActiveRun(row.runStatus, row.streaming),
-      createdAt: row.createdAt ?? null,
-      lastActivityAt: row.lastMessageAt,
-      parentKey: row.parentKey ?? null,
-    }));
+    const rows = remoteRows
+      .filter(rowMatchesQuery)
+      .map(row => ({
+        ...row,
+        active: row.desktopId === null
+          ? isActiveRun(
+              threadRunStatuses[row.id]?.status,
+              threadStreamingStatuses[row.id],
+            )
+          : isActiveRun(row.runStatus, row.streaming),
+        createdAt: row.createdAt ?? null,
+        lastActivityAt: row.lastMessageAt,
+        parentKey: row.parentKey ?? null,
+      }))
+      .filter(row =>
+        row.desktopId !== null
+        || !recentThreadIds
+        || recentThreadIds.has(row.id)
+        || row.active
+        || row.pinned);
     const tree = recentTree(rows);
-    const split = recentSplit(tree.roots, recentLimit);
+    const split = recentSplit(tree.roots, -1);
     // One fold state, in the list's vocabulary: a local row's own expansion is
     // keyed by thread id and a host's by row key, so the local half is translated
     // into the key its merged row carries — the same translation the tree makes.
@@ -874,8 +909,19 @@ export function ActivityRail({
       for (const [key, root] of expansion.roots) roots.set(key, root);
       return { ...section, rows: expansion.rows };
     });
-    return { meta, more: split.more, roots, rows: sections.flatMap(section => section.rows), sections };
-  }, [expandedRemoteThreads, expandedThreads, recentLimit, remoteRows, rowMatchesQuery, threadRunStatuses, threadStreamingStatuses]);
+    return { meta, roots, rows: sections.flatMap(section => section.rows), sections };
+  }, [expandedRemoteThreads, expandedThreads, recentThreadIds, remoteRows, rowMatchesQuery, threadRunStatuses, threadStreamingStatuses]);
+
+  /**
+   * What the view still holds back, and the control that reveals it.
+   *
+   * The count is the scope's own remainder — the stream reports how many
+   * conversations it holds, so the number under the list is the real one, not
+   * the size of the page behind it. Clicking it reveals all of them: a control
+   * that says "476 more" and loads 30 is a lie in the other direction.
+   */
+  const recentMore = railView === "recent" ? (threadScopeRemaining?.("recent") ?? 0) : 0;
+  const recentLoading = threadScopeLoading?.("recent") ?? false;
 
   /**
    * The age each recent row shows, by row key.
@@ -907,10 +953,17 @@ export function ActivityRail({
    * and joins the batch — the opposite of the tree, where a pin lifts a row out
    * of its group (see `useRailSelection`).
    */
-  const recentThreadScopes = useMemo(
-    () => new Map(visibleThreads.map(thread => [thread.id, "recent"] as const)),
-    [visibleThreads],
-  );
+  const recentThreadScopes = useMemo(() => {
+    // Only what the view actually lists: its own stream's page (and the rows it
+    // never drops), not every row some scope loaded — a selection here must not
+    // reach a conversation the reader cannot see.
+    const listed = new Set(recent.rows.filter(row => row.desktopId === null).map(row => row.id));
+    return new Map(
+      visibleThreads
+        .filter(thread => listed.has(thread.id))
+        .map(thread => [thread.id, "recent"] as const),
+    );
+  }, [recent.rows, visibleThreads]);
   const recentRemoteScopes = useMemo(
     () => new Map(remoteRows.filter(row => row.desktopId !== null).map(row => [row.key, "recent"] as const)),
     [remoteRows],
@@ -1027,6 +1080,26 @@ export function ActivityRail({
       }));
   }, [workspaceRoots, workspaces, expandedThreads, visibleThreads, threadMatchesQuery, normalizedQuery, threadScopeHasMore, threadScopeLoading]);
 
+  /**
+   * Ask for the first page of every group the reader can see.
+   *
+   * A group's conversations live in their own page (`workspace:<id>`), and the
+   * disclosure used to be the only thing that asked for one — so a group that
+   * started *expanded* (which is the default, and every group after a restart)
+   * drew no rows at all until the reader folded and unfolded it by hand. The
+   * tree is the list's primary shape; a group that is open and empty is a
+   * missing conversation, not a lazy one. Collapsing still saves the fetch, and
+   * this effect asks again for whatever is open.
+   */
+  useEffect(() => {
+    if (railView === "archived")
+      return;
+    for (const group of workspaceGroups) {
+      if (!collapsedWorkspaces.has(group.workspace.id))
+        ensureThreadScope?.(`workspace:${group.workspace.id}`);
+    }
+  }, [collapsedWorkspaces, ensureThreadScope, railView, workspaceGroups]);
+
   const filteredPinnedThreads = useMemo(
     () => pinnedThreads.filter(({ thread }) => threadMatchesQuery(thread)),
     [pinnedThreads, threadMatchesQuery],
@@ -1039,10 +1112,7 @@ export function ActivityRail({
   // Memoized rather than computed inline: these three are dependencies of the
   // walkable-row list below (and of the row builders), and a fresh array every
   // render would rebuild all of it on every keystroke elsewhere in the app.
-  const visibleWorkspaceGroups = useMemo(
-    () => (workspaceSectionCollapsed ? [] : workspaceGroups),
-    [workspaceSectionCollapsed, workspaceGroups],
-  );
+  const visibleWorkspaceGroups = workspaceGroups;
   const visiblePinnedThreads = filteredPinnedThreads;
   const visibleChatThreads = useMemo(
     () => (chatSectionCollapsed ? [] : filteredChatThreads),
@@ -1876,7 +1946,6 @@ export function ActivityRail({
                                   onToggleChatSection={() => setChatSectionCollapsed(value => !value)}
                                   onToggleRemoteExpanded={toggleRemoteThreadExpanded}
                                   onToggleWorkspace={toggleWorkspaceCollapsed}
-                                  onToggleWorkspaceSection={() => setWorkspaceSectionCollapsed(value => !value)}
                                   peers={remotePeers}
                                   remoteSelection={{
                                     selectable: isRemoteRowSelectable,
@@ -1891,15 +1960,15 @@ export function ActivityRail({
                                     return found ? renderWorkspaceHeader(found.workspace, found.threads) : null;
                                   }}
                                   renderLocalRow={renderLocalRow}
-                                  recentMore={railView === "recent" ? recent.more : undefined}
+                                  recentMore={railView === "recent" ? recentMore : undefined}
+                                  recentMoreBusy={recentLoading}
                                   recentSections={railView === "recent" ? recent.sections : undefined}
                                   rows={railView === "recent" ? recent.rows : mergedRowTree.rows}
                                   selectionMode={selectionMode}
                                   threadById={threadById}
                                   view={railView === "recent" ? "recent" : "tree"}
-                                  workspaceSectionCollapsed={workspaceSectionCollapsed}
                                   workspaces={mergedWorkspaces}
-                                  onShowMoreRecent={() => setRecentLimit(current => current + RECENT_PAGE_SIZE)}
+                                  onShowMoreRecent={() => void loadRemainingThreadScope?.("recent")}
                                 />
                               )
                             : null}
@@ -1947,13 +2016,6 @@ export function ActivityRail({
                                   <div className="sticky top-0 z-20 flex h-6 items-center justify-between bg-surface px-2 text-xs font-medium text-ink-muted">
                                     <span>{t("activityRail.workspace")}</span>
                                     <div className="flex items-center gap-0.5">
-                                      <SectionToggle
-                                        collapsed={workspaceSectionCollapsed}
-                                        label={workspaceSectionCollapsed
-                                          ? t("activityRail.expandWorkspaceSection")
-                                          : t("activityRail.collapseWorkspaceSection")}
-                                        onToggle={() => setWorkspaceSectionCollapsed(value => !value)}
-                                      />
                                       <button
                                         aria-label={t("activityRail.newWorkspace")}
                                         className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
@@ -1965,7 +2027,7 @@ export function ActivityRail({
                                       </button>
                                     </div>
                                   </div>
-                                  {!workspaceSectionCollapsed && workspaceGroups.length === 0 && (filteredChatThreads.length === 0 || chatSectionCollapsed)
+                                  {workspaceGroups.length === 0 && (filteredChatThreads.length === 0 || chatSectionCollapsed)
                                     ? (
                                         <div className="px-2 py-1 text-xs text-ink-muted" data-testid="no-matches-workspace">{noMatchesText}</div>
                                       )
@@ -2025,17 +2087,6 @@ export function ActivityRail({
                                     );
                                   })}
                                 </div>
-                                {workspacesHasMore && !workspaceSectionCollapsed
-                                  ? (
-                                      <button
-                                        className="mb-2 w-full rounded-md px-2 py-1 text-left text-xs text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
-                                        onClick={() => void onLoadMoreWorkspaces?.()}
-                                        type="button"
-                                      >
-                                        {t("activityRail.loadMoreWorkspaces")}
-                                      </button>
-                                    )
-                                  : null}
                                 <div className="mt-3 flex flex-1 flex-col space-y-0.5">
                                   <div className="sticky top-0 z-20 flex h-6 items-center justify-between bg-surface px-2 text-xs font-medium text-ink-muted">
                                     <span>{t("activityRail.chatHeader")}</span>

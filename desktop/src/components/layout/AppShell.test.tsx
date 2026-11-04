@@ -601,6 +601,9 @@ function resetStore(overrides: Record<string, unknown> = {}) {
       loadMore: vi.fn(async () => {}),
       loadMoreWorkspaces: vi.fn(async () => {}),
       refreshStore: mocks.refreshStore,
+      // No recent stream in the mock store: the view draws the rows it is handed
+      // (see `ActivityRailProps.recentThreadIds`).
+      recentThreadIds: undefined,
       scopeHasMore: () => false,
       scopeLoading: () => false,
       selectThread: vi.fn(),

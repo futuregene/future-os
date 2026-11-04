@@ -82,6 +82,13 @@ pub struct ThreadsPage {
     pub threads: Vec<super::ThreadRecord>,
     /// `None` when this page is the last one in the scope.
     pub next_cursor: Option<String>,
+    /// How many roots the whole scope holds, not just this page.
+    ///
+    /// A cursor answers "what comes next", never "how much is left", so a
+    /// reader offering to show the rest has no honest number without this. It
+    /// counts *roots* under the same filter the page does (pinned rows are
+    /// outside every page, so they are outside this count too).
+    pub total_roots: i64,
 }
 
 /// One page of workspace rows, plus the cursor for the next one.
@@ -223,9 +230,23 @@ pub fn list_threads_page(
     let mut threads: Vec<super::ThreadRecord> =
         rows.into_iter().map(|(thread, _)| thread).collect();
     threads.extend(descendants_of(&conn, &root_ids, &filter)?);
+    // The scope's whole root count — what a "show the rest" control can honestly
+    // promise. Same filter, same root rule, no cursor: it describes the list, not
+    // the page.
+    let total_roots: i64 = conn.query_row(
+        &format!(
+            "SELECT COUNT(*)
+               FROM threads t JOIN workspaces w ON w.id = t.workspace_id
+              WHERE {filter} AND t.pinned = 0 AND {root_predicate}",
+            root_predicate = root_predicate(&filter)
+        ),
+        [],
+        |row| row.get(0),
+    )?;
     Ok(ThreadsPage {
         threads,
         next_cursor,
+        total_roots,
     })
 }
 
@@ -488,6 +509,56 @@ mod tests {
         assert!(ids.contains(&"root"), "{ids:?}");
         assert!(ids.contains(&"child"), "{ids:?}");
         assert!(ids.contains(&"grandchild"), "{ids:?}");
+    }
+
+    /// A page reports the scope's whole size, not its own.
+    ///
+    /// The recent view's "show the other N" is read from this: a cursor answers
+    /// "there is more", never "how much", so a count taken from the page would
+    /// name the loaded part instead of the list's remainder.
+    #[test]
+    fn a_page_reports_the_scopes_whole_root_count() {
+        let (_home, conn) = guarded_conn("page_total");
+        workspace(&conn, "ws", false);
+        workspace(&conn, "other", false);
+        for (id, updated) in [("a", 10), ("b", 30), ("c", 20)] {
+            seed(&conn, "ws", id, updated, None);
+        }
+        // A fork's child is not a root, so it is not part of the count.
+        seed(&conn, "ws", "child", 40, Some("a"));
+        // Another workspace's conversation still belongs to the recent stream.
+        seed(&conn, "other", "elsewhere", 15, None);
+        drop(conn);
+
+        let first = list_threads_page(&ThreadScope::Recent, None, 2).expect("first page");
+        let ids: Vec<&str> = first.threads.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["b", "c"], "the two newest roots");
+        assert_eq!(
+            first.total_roots, 4,
+            "every root of the scope, across workspaces"
+        );
+        let cursor = first.next_cursor.expect("a full page has a cursor");
+
+        let last = list_threads_page(&ThreadScope::Recent, Some(&cursor), 2).expect("second page");
+        let ids: Vec<&str> = last.threads.iter().map(|t| t.id.as_str()).collect();
+        // The rest of the roots, and the fork child that rides with its root.
+        assert_eq!(ids, vec!["elsewhere", "a", "child"]);
+        // A full page carries a cursor even when the list ends there (the host
+        // cannot know without asking again), so the end is the empty page.
+        if let Some(cursor) = last.next_cursor {
+            let empty =
+                list_threads_page(&ThreadScope::Recent, Some(&cursor), 2).expect("beyond the end");
+            assert!(empty.threads.is_empty());
+            assert_eq!(empty.total_roots, 4);
+        }
+        // The count describes the list, so it is the same on every page of it.
+        assert_eq!(last.total_roots, 4);
+        // And a narrower scope counts its own rows only.
+        let chat = list_threads_page(&ThreadScope::Chat, None, 50).expect("chat page");
+        assert_eq!(chat.total_roots, 4);
+        let one = list_threads_page(&ThreadScope::Workspace("other".into()), None, 50)
+            .expect("workspace page");
+        assert_eq!(one.total_roots, 1);
     }
 
     #[test]

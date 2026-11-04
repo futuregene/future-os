@@ -502,34 +502,115 @@ describe("child conversations in the recent view", () => {
   });
 });
 
-describe("the recent view's window", () => {
-  it("draws one window of the finished rows and opens the rest on request", () => {
-    const many = [
-      thread("busy", { title: "Busy", lastMessageAt: now }),
-      ...Array.from({ length: RECENT_PAGE_SIZE + 12 }, (_, index) =>
-        thread(`idle-${index}`, {
-          title: `Idle ${index}`,
-          createdAt: now - (index + 2) * minute,
-          lastMessageAt: now - (index + 1) * minute,
-        })),
-    ];
+/**
+ * The recent view pages its own stream.
+ *
+ * Reported as "after a restart the recent list lost most of my conversations":
+ * the view used to rank whatever rows some other scope had loaded — the chat
+ * section's first page of ten, plus whichever workspace group happened to be
+ * expanded — and never asked for the one stream that spans the store. These
+ * cases pin the contract down: the rows drawn are the stream's page (not every
+ * loaded row), the number under the list is the stream's real remainder, and one
+ * click reveals exactly that many.
+ */
+describe("the recent view's stream", () => {
+  /** `count` conversations of a stream, from `offset`. */
+  function streamed(count: number, offset = 0) {
+    return Array.from({ length: count }, (_, index) => thread(`idle-${offset + index}`, {
+      title: `Idle ${offset + index}`,
+      createdAt: now - (offset + index + 2) * minute,
+      lastMessageAt: now - (offset + index + 1) * minute,
+    }));
+  }
+
+  it("draws everything the stream has loaded, with no second window on top", () => {
+    // Two pages are in (60 conversations, six times the tree's ten). The list
+    // draws all sixty: "how much of the earlier stretch is shown" is the
+    // stream's business now, and a client-side window applied here as well would
+    // hide rows that are already paid for — and hide them from the keyboard walk
+    // that steps this same order.
+    const loaded = streamed(2 * RECENT_PAGE_SIZE);
     const view = mount(
-      <ActivityRail {...props(many, {
-        threadRunStatuses: { busy: { status: "running", endedAt: null } },
+      <ActivityRail {...props(loaded, {
+        recentThreadIds: new Set(loaded.map(row => row.id)),
+        threadScopeRemaining: scope => (scope === "recent" ? 300 - 2 * RECENT_PAGE_SIZE : 0),
       })}
       />,
     );
     showRecent(view.container);
 
-    expect(drawnTitles(view.container)).toHaveLength(RECENT_PAGE_SIZE + 1);
+    expect(drawnTitles(view.container)).toHaveLength(2 * RECENT_PAGE_SIZE);
+    expect(captions(view.container)).toEqual([`earlier:Earlier:${2 * RECENT_PAGE_SIZE}`]);
+    view.unmount();
+  });
+
+  it("draws the stream's rows only, not every row another scope loaded", () => {
+    // Twenty rows are in the store because their workspace group was opened;
+    // the stream's page holds ten of them. Drawing the other ten would make the
+    // list's order depend on which groups the reader visited.
+    const loaded = streamed(20);
+    const page = loaded.slice(0, 10);
+    const view = mount(
+      <ActivityRail {...props(loaded, {
+        recentThreadIds: new Set(page.map(row => row.id)),
+        threadScopeRemaining: () => 10,
+      })}
+      />,
+    );
+    showRecent(view.container);
+
+    expect(drawnTitles(view.container)).toEqual(page.map(row => row.title));
+    view.unmount();
+  });
+
+  it("names the stream's real remainder and reveals all of it in one go", () => {
+    // 476 behind the page: the control says 476, and one click asks for all of
+    // them (the store walks the cursor). A control that names the page size, or
+    // that loads one page after naming the remainder, is the defect this fixes.
+    const page = streamed(RECENT_PAGE_SIZE);
+    const loadRemainingThreadScope = vi.fn(async () => {});
+    const view = mount(
+      <ActivityRail {...props(page, {
+        loadRemainingThreadScope,
+        recentThreadIds: new Set(page.map(row => row.id)),
+        threadScopeRemaining: scope => (scope === "recent" ? 476 : 0),
+      })}
+      />,
+    );
+    showRecent(view.container);
+
     const more = view.container.querySelector<HTMLButtonElement>("[data-testid=\"recent-show-more\"]")!;
-    expect(more.textContent).toContain("12");
-    expect(more.getAttribute("aria-label")).toContain("12");
+    expect(more.textContent).toContain("476");
+    expect(more.getAttribute("aria-label")).toContain("476");
 
     act(() => more.click());
-    expect(drawnTitles(view.container)).toHaveLength(RECENT_PAGE_SIZE + 13);
-    // Nothing left to offer, so the control goes with it.
+    expect(loadRemainingThreadScope).toHaveBeenCalledWith("recent");
+    view.unmount();
+  });
+
+  it("offers nothing when the stream has no remainder", () => {
+    const page = streamed(RECENT_PAGE_SIZE);
+    const view = mount(
+      <ActivityRail {...props(page, {
+        recentThreadIds: new Set(page.map(row => row.id)),
+        threadScopeRemaining: () => 0,
+      })}
+      />,
+    );
+    showRecent(view.container);
+
     expect(view.container.querySelector("[data-testid=\"recent-show-more\"]")).toBeNull();
+    view.unmount();
+  });
+
+  it("asks for the stream when the view is opened, and not before", () => {
+    const ensureThreadScope = vi.fn();
+    const view = mount(<ActivityRail {...props([thread("a")], { ensureThreadScope })} />);
+    // The tree is the first screen; nothing has asked for the recent stream.
+    expect(ensureThreadScope).not.toHaveBeenCalled();
+
+    showRecent(view.container);
+    expect(ensureThreadScope).toHaveBeenCalledWith("recent");
     view.unmount();
   });
 });
