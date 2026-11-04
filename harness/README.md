@@ -45,6 +45,11 @@ node harness/cli.mjs report  --run harness/runs/<id>
 for mobile, `demo_agent` for TUI, nothing for CLI. Artifacts go to
 `harness/runs/<run-id>/<case-id>/`.
 
+Each run gets its **own free port** for Vite/Expo. A fixed port is how a run
+ends up testing another worktree's code: `:5299` may already be a dev server
+from a different branch. Pass `--reuse-server` when you deliberately want to
+attach to the conventional ports (5299 / 8099).
+
 ## What is real, what is substituted
 
 | Real | Substituted |
