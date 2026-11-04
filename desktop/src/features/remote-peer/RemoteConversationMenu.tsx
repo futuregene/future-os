@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { MergedConversation } from "./mergeConversations";
-import { Pencil, Pin, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, Pencil, Pin, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useDropUpMenu } from "../../components/layout/hooks/useDropUpMenu";
@@ -8,8 +8,10 @@ import { MenuPanel } from "../../components/ui/MenuPanel";
 import { cn } from "../../lib/cn";
 import { useKeyboardOwner } from "../../lib/keyboardOwners";
 import {
+  archiveRemoteConversation,
   deleteRemoteConversation,
   pinRemoteConversation,
+  restoreRemoteConversation,
 } from "./remotePeerClient";
 
 /**
@@ -26,12 +28,33 @@ import {
  * command.
  */
 export function RemoteConversationMenu({
+  archived = false,
+  canArchive = false,
   conversation,
   onChanged,
   onClose,
   onDeleted,
   onOpenRename,
 }: {
+  /**
+   * This row is drawn by the archived view.
+   *
+   * The one item whose meaning flips: an active row is shelved, a shelved row is
+   * brought back. The pin goes away there because archiving clears it — a pin
+   * item on a row only the archived view draws would offer a state the host
+   * cannot be in.
+   */
+  archived?: boolean;
+  /**
+   * Whether the host answered `archive_v1`.
+   *
+   * A host that predates the commands refuses them, so the item is withheld
+   * rather than offered and then answered with an error — the rule every
+   * optional remote control follows here. The catalogue has reported `archived`
+   * longer than this flag has existed, which is why the flag gates the *action*
+   * and not the archived list.
+   */
+  canArchive?: boolean;
   conversation: MergedConversation;
   /** Re-read the host's catalogue once the change has landed. */
   onChanged: () => void;
@@ -65,8 +88,10 @@ export function RemoteConversationMenu({
 
   const address = { sessionId: conversation.id, threadId: conversation.threadId };
   // A host that never reported a thread id: pin and delete have nothing to
-  // address, and the session id is not a substitute for one.
-  const pinnable = Boolean(conversation.threadId);
+  // address, and the session id is not a substitute for one. Archive is the same
+  // store route, so it needs the same id.
+  const addressable = Boolean(conversation.threadId);
+  const showArchive = canArchive && addressable;
 
   /**
    * The items are `disabled` while a command is outstanding, so this needs no
@@ -100,13 +125,42 @@ export function RemoteConversationMenu({
       <Item icon={<Pencil className="size-3.5" />} onClick={onOpenRename}>
         {t("activityRail.rename")}
       </Item>
-      <Item
-        icon={<Pin className="size-3.5" />}
-        onClick={() => void run(() => pinRemoteConversation(desktopId, address, !conversation.pinned))}
-        disabled={busy || !pinnable}
-      >
-        {conversation.pinned ? t("activityRail.unpin") : t("activityRail.pin")}
-      </Item>
+      {archived
+        ? (
+            showArchive
+              ? (
+                  <Item
+                    icon={<ArchiveRestore className="size-3.5" />}
+                    onClick={() => void run(() => restoreRemoteConversation(desktopId, address))}
+                    disabled={busy}
+                  >
+                    {t("activityRail.restore")}
+                  </Item>
+                )
+              : null
+          )
+        : (
+            <>
+              <Item
+                icon={<Pin className="size-3.5" />}
+                onClick={() => void run(() => pinRemoteConversation(desktopId, address, !conversation.pinned))}
+                disabled={busy || !addressable}
+              >
+                {conversation.pinned ? t("activityRail.unpin") : t("activityRail.pin")}
+              </Item>
+              {showArchive
+                ? (
+                    <Item
+                      icon={<Archive className="size-3.5" />}
+                      onClick={() => void run(() => archiveRemoteConversation(desktopId, address))}
+                      disabled={busy}
+                    >
+                      {t("activityRail.archive")}
+                    </Item>
+                  )
+                : null}
+            </>
+          )}
       <Item
         danger
         icon={<Trash2 className="size-3.5" />}
@@ -114,7 +168,7 @@ export function RemoteConversationMenu({
           await deleteRemoteConversation(desktopId, address);
           onDeleted();
         })}
-        disabled={busy || !pinnable}
+        disabled={busy || !addressable}
       >
         {t("activityRail.delete")}
       </Item>

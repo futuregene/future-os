@@ -33,6 +33,7 @@
   "heldTitle": "已被 {{name}} 接管",
   "heldTitleUnknown": "已被另一台设备接管",
   "heldCannotSend": "这里发出的内容不会送达。要在这段会话里继续，先把这台电脑接管回来。",
+  "archivedReadOnly": "这个会话已归档，恢复后才能继续对话。",
   "heldSendBlocked": "已被另一台设备接管 —— 接管回来之前不能发送",
   "heldApprovalBlocked": "这个审批不能在这里回答，请先接管这台电脑。",
   "peersSummary": "已连接 {{connected}}/{{total}} 台",

@@ -1353,6 +1353,20 @@ function ReadyAppShell({
       : []),
     [remoteCatalogs, activeRemote],
   );
+  /**
+   * Whether the open conversation is shelved on its host.
+   *
+   * Read from that host's catalogue row, which carries the flag for the
+   * conversation itself and for its workspace. `false` when there is no row (a
+   * draft, or a catalogue round that has not landed): the composer stays as it
+   * was, and the host's own refusal is the backstop.
+   */
+  const activeRemoteArchived = useMemo(() => {
+    if (!activeRemote)
+      return false;
+    const catalog = remoteCatalogs.find(entry => entry.desktopId === activeRemote.desktopId);
+    return catalog?.sessions.find(session => session.sessionId === activeRemote.sessionId)?.archived === true;
+  }, [activeRemote, remoteCatalogs]);
 
   /**
    * Ask a host to compact a conversation's context.
@@ -1919,6 +1933,7 @@ function ReadyAppShell({
                                       <div className="pointer-events-auto mx-auto w-full max-w-3xl">
                                         <RemoteComposer
                                           key={`remote-composer:${activeRemote.desktopId}:${activeRemote.sessionId}`}
+                                          archived={activeRemoteArchived}
                                           canCompact={remoteTimeline.canCompact}
                                           // The conversation frame places the composer: the
                                           // band over the transcript's foot, at the same

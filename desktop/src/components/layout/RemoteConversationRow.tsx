@@ -27,6 +27,8 @@ import { RailRow, RailRowIndicator, RailRowMenuButton, RailRowSpacer, RailRowTit
 export function RemoteConversationRow({
   active,
   ageLabel,
+  archived = false,
+  canArchive = false,
   compact,
   conversation,
   depth = 0,
@@ -44,6 +46,10 @@ export function RemoteConversationRow({
   unread,
 }: {
   active: boolean;
+  /** Whether the row sits in the archived view (its menu offers Restore). */
+  archived?: boolean;
+  /** Whether the host accepts the archive commands (see `RemoteConversationMenu`). */
+  canArchive?: boolean;
   /** How old this conversation is — the recent view's second column. */
   ageLabel?: string;
   /** Whether this row sits inside a workspace group, as the local row does. */
@@ -173,6 +179,8 @@ export function RemoteConversationRow({
       {menuOpen
         ? (
             <RemoteConversationMenu
+              archived={archived}
+              canArchive={canArchive}
               conversation={conversation}
               onChanged={onChanged}
               onClose={() => setMenuOpen(false)}

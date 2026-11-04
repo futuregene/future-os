@@ -9,6 +9,7 @@ import { useTranslation } from "react-i18next";
 import { groupMergedRows } from "../../features/remote-peer/mergeConversations";
 import { PeerIconGlyph } from "../../features/remote-peer/PeerIconGlyph";
 import { peerBadgeText } from "../../features/remote-peer/peerIcons";
+import { peerCanArchive } from "../../features/remote-peer/peerStatus";
 import { RemoteWorkspaceMenu } from "../../features/remote-peer/RemoteWorkspaceMenu";
 import { ChatSectionMenu } from "./ActivityRailMenus";
 import { RailGroupHeader, RailHeaderButton, RailSectionHeader, RailSectionToggle } from "./RailChrome";
@@ -321,10 +322,12 @@ export function MergedRows({
     }
     const selectable = remoteSelection?.selectable(conversation) === true;
     const meta = rowMeta.get(conversation.key);
+    const peer = peers.find(entry => entry.desktopId === conversation.desktopId);
     return (
       <RemoteConversationRow
         active={activeKey === conversation.key}
         ageLabel={recent?.age}
+        canArchive={peerCanArchive(peer)}
         compact={compact}
         conversation={conversation}
         depth={meta?.depth ?? 0}
@@ -345,7 +348,7 @@ export function MergedRows({
         onOpenRename={onRenameRemote}
         onToggleExpanded={row => onToggleRemoteExpanded(row.key)}
         onToggleSelection={conversation => remoteSelection?.toggle(conversation)}
-        peer={peers.find(peer => peer.desktopId === conversation.desktopId)}
+        peer={peer}
         selected={remoteSelection?.selected(conversation) === true}
         selectionMode={selectable}
       />
@@ -487,6 +490,7 @@ export function MergedRows({
                                 the actions menu first, then the way to start a
                                 conversation in it. */}
                         <RemoteWorkspaceMenu
+                          canArchive={peerCanArchive(peers.find(peer => peer.desktopId === desktopId))}
                           desktopId={desktopId}
                           name={group.label ?? t("activityRail.workspace")}
                           onChanged={onChangedRemote}

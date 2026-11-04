@@ -1,4 +1,4 @@
-import type { StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
+import type { StoredThread } from "../../integrations/storage/threadStore";
 import { Archive, ChevronDown, ChevronRight, Folder } from "lucide-react";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -126,31 +126,43 @@ export function ArchivedThreadRow({
 export function ArchivedWorkspaceGroup({
   children,
   count,
+  deviceIcon,
   expanded,
   menu,
+  name,
   onOpenMenu,
   onToggle,
-  workspace,
 }: {
   children?: React.ReactNode;
   count: number | null;
+  /**
+   * The machine's glyph, when the shelf is another host's.
+   *
+   * Drawn after the name, in the slot the active list's own group heading puts
+   * it: with two machines' shelves in one section the name alone does not say
+   * whose folder it is. Absent for this machine, exactly as in the active list.
+   */
+  deviceIcon?: React.ReactNode;
   expanded: boolean;
   /** The heading's actions menu (rendered by the owner, which knows the commands). */
   menu: React.ReactNode;
+  /** The folder's name, from whichever machine owns it. */
+  name: string;
   /** Right-click on the heading asks the owner to open that same menu. */
-  onOpenMenu: () => void;
+  onOpenMenu?: () => void;
   onToggle: () => void;
-  workspace: StoredWorkspace;
 }) {
   const { t } = useTranslation("layout");
   return (
     <div className="space-y-0.5">
       <div
         className="group/workspace flex h-7 w-full items-center gap-1 rounded-md px-2 text-left transition-colors hover:bg-surface-subtle"
-        onContextMenu={(event) => {
-          event.preventDefault();
-          onOpenMenu();
-        }}
+        onContextMenu={onOpenMenu
+          ? (event) => {
+              event.preventDefault();
+              onOpenMenu();
+            }
+          : undefined}
       >
         {/* The same disclosure the active list's workspace headings fold with:
             a +/− pair read as a different control from the chevron one row
@@ -158,9 +170,10 @@ export function ArchivedWorkspaceGroup({
             in. */}
         <RailDisclosure collapsed={!expanded} label={expanded ? t("activityRail.collapseWorkspace") : t("activityRail.expandWorkspace")} onToggle={onToggle} />
         <Folder className="size-4 shrink-0 text-ink-soft" />
-        <span className="min-w-0 flex-1 truncate text-13 font-semibold text-ink" title={workspace.name}>
-          {workspace.name}
+        <span className="min-w-0 flex-1 truncate text-13 font-semibold text-ink" title={name}>
+          {name}
         </span>
+        {deviceIcon}
         {count !== null
           ? <span className="shrink-0 text-2xs tabular-nums text-ink-muted">{count}</span>
           : null}

@@ -1243,6 +1243,7 @@ pub fn advertised_features(terminal: bool) -> Vec<&'static str> {
         "selective_events_v1",
         "workspace_pinning_v1",
         "workspace_create_v1",
+        "archive_v1",
         "desktop_settings_v1",
         "skill_management_v1",
         "compaction_v1",

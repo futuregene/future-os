@@ -25,8 +25,10 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useCommand } from "../../features/keyboard/commands";
-import { groupMergedRows, mergeConversations, rowKey } from "../../features/remote-peer/mergeConversations";
-import { peersDotState } from "../../features/remote-peer/peerStatus";
+import { archivedRemoteShelves, filterArchivedRemoteShelves, groupMergedRows, mergeConversations, rowKey } from "../../features/remote-peer/mergeConversations";
+import { PeerIconGlyph } from "../../features/remote-peer/PeerIconGlyph";
+import { peerCanArchive, peersDotState } from "../../features/remote-peer/peerStatus";
+import { RemoteWorkspaceMenu } from "../../features/remote-peer/RemoteWorkspaceMenu";
 import { SkillIntroBubble } from "../../features/skills/SkillIntroBubble";
 import { listInstalledSkills } from "../../integrations/skills/skillsClient";
 import { openPath } from "../../integrations/storage/files";
@@ -56,6 +58,7 @@ import { RailDisclosure, RailHeaderButton } from "./RailChrome";
 import { RailLoadMoreRow } from "./RailRow";
 import { RailViewSwitch } from "./RailViewSwitch";
 import { expandRecent, isActiveRun, recentSplit, recentTree } from "./recentOrder";
+import { RemoteConversationRow } from "./RemoteConversationRow";
 import { ThreadListItem } from "./ThreadListItem";
 import { buildThreadTree, buildTree, threadParentIds, visibleThreadRows, visibleTreeRows } from "./threadTree";
 
@@ -674,7 +677,20 @@ export function ActivityRail({
     ),
     [visibleThreads, remoteCatalogs, deviceFilter, workspaces, workspaceOrder, pinnedWorkspaceIds, threadParents],
   );
-  const hasRemoteRows = remoteRows.some(row => row.desktopId !== null);
+  /**
+   * The rows the *active* lists draw.
+   *
+   * A host keeps shelved conversations in the same catalogue (the phone reads
+   * them back from there too), so the merge holds both. Splitting here rather
+   * than in the merge keeps one list of rows with one order; what the active
+   * lists must not draw is the other machine's shelf — that content belongs to
+   * the archived view, exactly as this machine's archived threads do.
+   */
+  const activeRemoteRows = useMemo(
+    () => remoteRows.filter(row => !row.archived),
+    [remoteRows],
+  );
+  const hasRemoteRows = remoteRows.some(row => row.desktopId !== null && !row.archived);
   /**
    * The merged mode, and the one rule that turns it on.
    *
@@ -705,7 +721,11 @@ export function ActivityRail({
       if (deviceFilter.kind === "device" && deviceFilter.desktopId !== catalog.desktopId)
         continue;
       const rows = catalog.workspaces?.filter(workspace =>
-        !queryActive || workspace.name.toLowerCase().includes(normalizedQuery));
+        // A shelved workspace belongs to the archived view, not to a heading in
+        // the active list: its conversations are hidden from that list by the
+        // same rule, and an empty heading for it would be the one trace left.
+        !workspace.archived
+        && (!queryActive || workspace.name.toLowerCase().includes(normalizedQuery)));
       if (rows && rows.length > 0)
         shown.set(catalog.desktopId, rows);
     }
@@ -724,8 +744,8 @@ export function ActivityRail({
   }, [normalizedQuery, queryActive]);
 
   const visibleRemoteRows = useMemo(
-    () => (mergedMode ? remoteRows : []),
-    [mergedMode, remoteRows],
+    () => (mergedMode ? activeRemoteRows : []),
+    [mergedMode, activeRemoteRows],
   );
   /**
    * Which batch each listed remote row belongs to.
@@ -744,8 +764,8 @@ export function ActivityRail({
   );
 
   const filteredRemoteRows = useMemo(
-    () => (mergedMode ? remoteRows.filter(row => rowMatchesQuery(row)) : []),
-    [mergedMode, remoteRows, rowMatchesQuery],
+    () => (mergedMode ? activeRemoteRows.filter(row => rowMatchesQuery(row)) : []),
+    [mergedMode, activeRemoteRows, rowMatchesQuery],
   );
 
   /**
@@ -823,6 +843,37 @@ export function ActivityRail({
     [archiveView.workspaces, archiveView.workspaceThreads, archivedMatches, archivedQuery],
   );
 
+  /**
+   * The archived view's remote half.
+   *
+   * A host's shelved rows are already in its catalogue — the list is split on
+   * this side, exactly as it is on the phone — so the archived view draws them
+   * without a second read. The device picker narrows it here the same way it
+   * narrows the merged list: a machine the user filtered out does not keep a
+   * shelf on screen.
+   *
+   * The search is applied with the local half's rule through
+   * `filterArchivedRemoteShelves`: a shelf survives on its own name (keeping its
+   * conversations) or because one of them matches.
+   */
+  const archivedRemote = useMemo(
+    () => filterArchivedRemoteShelves(
+      archivedRemoteShelves(remoteCatalogs, deviceFilter),
+      archivedQuery,
+    ),
+    [remoteCatalogs, deviceFilter, archivedQuery],
+  );
+
+  /**
+   * Whether a shelved group is open. A search opens every group: a match hidden
+   * inside a folded shelf is a match the reader cannot see, which is the rule the
+   * phone's archived view and the active lists' search both follow.
+   */
+  const archivedGroupExpanded = useCallback(
+    (key: string) => archivedQuery.length > 0 || expandedArchivedWorkspaces.has(key),
+    [archivedQuery, expandedArchivedWorkspaces],
+  );
+
   const threadMatchesQuery = useCallback((thread: StoredThread): boolean => {
     if (!queryActive)
       return true;
@@ -883,7 +934,7 @@ export function ActivityRail({
    * tree folds with, so the two views cannot disagree about whether a row is open.
    */
   const recent = useMemo(() => {
-    const rows = remoteRows
+    const rows = activeRemoteRows
       .filter(rowMatchesQuery)
       .map(row => ({
         ...row,
@@ -922,7 +973,7 @@ export function ActivityRail({
       return { ...section, rows: expansion.rows };
     });
     return { meta, roots, rows: sections.flatMap(section => section.rows), sections };
-  }, [expandedRemoteThreads, expandedThreads, recentThreadIds, remoteRows, rowMatchesQuery, threadRunStatuses, threadStreamingStatuses]);
+  }, [expandedRemoteThreads, expandedThreads, recentThreadIds, activeRemoteRows, rowMatchesQuery, threadRunStatuses, threadStreamingStatuses]);
 
   /**
    * What the view still holds back, and the control that reveals it.
@@ -977,8 +1028,8 @@ export function ActivityRail({
     );
   }, [recent.rows, visibleThreads]);
   const recentRemoteScopes = useMemo(
-    () => new Map(remoteRows.filter(row => row.desktopId !== null).map(row => [row.key, "recent"] as const)),
-    [remoteRows],
+    () => new Map(activeRemoteRows.filter(row => row.desktopId !== null).map(row => [row.key, "recent"] as const)),
+    [activeRemoteRows],
   );
   /** This machine's threads the recent view lists — the batch's local half. */
   const recentThreads = useMemo(() => {
@@ -1138,6 +1189,15 @@ export function ActivityRail({
     // folds away is still a row here.
     if (railView === "recent")
       return recent.rows.length > 0;
+    // The archived view draws its own streams, not the active lists', so it too
+    // answers from what it filtered — both machines' halves, and a shelved
+    // workspace whose name matched counts even with no rows under it.
+    if (railView === "archived") {
+      return filteredArchivedThreads.length > 0
+        || filteredArchivedWorkspaces.length > 0
+        || archivedRemote.rows.length > 0
+        || archivedRemote.workspaces.length > 0;
+    }
     if (mergedMode) {
       return filteredRemoteRows.length > 0
         // An empty workspace heading is a hit too: its name matched, and the
@@ -1157,6 +1217,9 @@ export function ActivityRail({
     filteredChatThreads,
     mergedWorkspaces,
     workspaceGroups,
+    filteredArchivedThreads,
+    filteredArchivedWorkspaces,
+    archivedRemote,
   ]);
 
   /**
@@ -1800,7 +1863,7 @@ export function ActivityRail({
                                   />
                                   {archivedWorkspacesCollapsed
                                     ? null
-                                    : filteredArchivedWorkspaces.length === 0
+                                    : filteredArchivedWorkspaces.length === 0 && archivedRemote.workspaces.length === 0
                                       ? (
                                           <ArchivedEmpty
                                             label={archivedQuery.length > 0
@@ -1808,46 +1871,121 @@ export function ActivityRail({
                                               : t("activityRail.archivedWorkspacesEmpty")}
                                           />
                                         )
-                                      : filteredArchivedWorkspaces.map(workspace => (
-                                          <ArchivedWorkspaceGroup
-                                            count={null}
-                                            expanded={expandedArchivedWorkspaces.has(workspace.id)}
-                                            key={workspace.id}
-                                            menu={(
-                                              <ArchivedWorkspaceMenu
-                                                open={openArchivedWorkspaceMenuId === workspace.id}
-                                                onDelete={onDeleteWorkspace}
-                                                onOpenChange={open => setOpenArchivedWorkspaceMenuId(open ? workspace.id : null)}
-                                                onRename={onRenameWorkspace}
-                                                onRestore={restoreArchivedWorkspace}
-                                                onReveal={() => void openPath(workspace.path).catch(() => {})}
-                                                onSelectConversations={() => enterSelectionMode(`archived-workspace:${workspace.id}`)}
-                                                workspace={workspace}
-                                              />
-                                            )}
-                                            onOpenMenu={() => setOpenArchivedWorkspaceMenuId(workspace.id)}
-                                            onToggle={() => {
-                                              const next = !expandedArchivedWorkspaces.has(workspace.id);
-                                              if (next)
-                                                archiveView.ensureWorkspaceThreads(workspace.id);
-                                              toggleArchivedWorkspace(workspace.id);
-                                            }}
-                                            workspace={workspace}
-                                          >
-                                            <ArchivedWorkspaceContents
-                                              hasMore={archiveView.workspaceNextCursor[workspace.id] !== null
-                                                && archiveView.workspaceNextCursor[workspace.id] !== undefined}
-                                              loading={archiveView.loading}
-                                              onLoadMore={() => void archiveView.loadAllWorkspaceThreads(workspace.id)}
-                                              remaining={archiveView.workspaceRemaining[workspace.id] ?? 0}
-                                              onOpen={onOpenArchivedThread ?? onSelectThread}
-                                              onToggleSelection={toggleThreadSelection}
-                                              selectedIds={selectedThreadIds}
-                                              selectionMode={selectionMode && selectionScope === `archived-workspace:${workspace.id}`}
-                                              threads={archiveView.workspaceThreads[workspace.id]}
-                                            />
-                                          </ArchivedWorkspaceGroup>
-                                        ))}
+                                      : (
+                                          <>
+                                            {filteredArchivedWorkspaces.map(workspace => (
+                                              <ArchivedWorkspaceGroup
+                                                count={null}
+                                                expanded={expandedArchivedWorkspaces.has(workspace.id)}
+                                                key={workspace.id}
+                                                menu={(
+                                                  <ArchivedWorkspaceMenu
+                                                    open={openArchivedWorkspaceMenuId === workspace.id}
+                                                    onDelete={onDeleteWorkspace}
+                                                    onOpenChange={open => setOpenArchivedWorkspaceMenuId(open ? workspace.id : null)}
+                                                    onRename={onRenameWorkspace}
+                                                    onRestore={restoreArchivedWorkspace}
+                                                    onReveal={() => void openPath(workspace.path).catch(() => {})}
+                                                    onSelectConversations={() => enterSelectionMode(`archived-workspace:${workspace.id}`)}
+                                                    workspace={workspace}
+                                                  />
+                                                )}
+                                                name={workspace.name}
+                                                onOpenMenu={() => setOpenArchivedWorkspaceMenuId(workspace.id)}
+                                                onToggle={() => {
+                                                  const next = !expandedArchivedWorkspaces.has(workspace.id);
+                                                  if (next)
+                                                    archiveView.ensureWorkspaceThreads(workspace.id);
+                                                  toggleArchivedWorkspace(workspace.id);
+                                                }}
+                                              >
+                                                <ArchivedWorkspaceContents
+                                                  hasMore={archiveView.workspaceNextCursor[workspace.id] !== null
+                                                    && archiveView.workspaceNextCursor[workspace.id] !== undefined}
+                                                  loading={archiveView.loading}
+                                                  onLoadMore={() => void archiveView.loadAllWorkspaceThreads(workspace.id)}
+                                                  remaining={archiveView.workspaceRemaining[workspace.id] ?? 0}
+                                                  onOpen={onOpenArchivedThread ?? onSelectThread}
+                                                  onToggleSelection={toggleThreadSelection}
+                                                  selectedIds={selectedThreadIds}
+                                                  selectionMode={selectionMode && selectionScope === `archived-workspace:${workspace.id}`}
+                                                  threads={archiveView.workspaceThreads[workspace.id]}
+                                                />
+                                              </ArchivedWorkspaceGroup>
+                                            ))}
+                                            {/* A host's shelves, drawn with the same
+                                                heading and the machine's glyph:
+                                                the archived view is where both
+                                                machines' hidden work lives, and a
+                                                shelf that only appeared on the
+                                                other machine's own screen would
+                                                be the one thing this list could
+                                                not reach. */}
+                                            {archivedRemote.workspaces.map((group) => {
+                                              const desktopId = group.desktopId;
+                                              if (!desktopId)
+                                                return null;
+                                              const peer = remotePeers.find(entry => entry.desktopId === desktopId);
+                                              const name = group.label ?? t("activityRail.workspace");
+                                              const workspaceId = group.workspaceId ?? "";
+                                              return (
+                                                <ArchivedWorkspaceGroup
+                                                  count={group.rows.length}
+                                                  deviceIcon={(
+                                                    <span aria-hidden className="pointer-events-none shrink-0" data-testid="remote-source-icon">
+                                                      <PeerIconGlyph className="size-3" id={peer?.icon} />
+                                                    </span>
+                                                  )}
+                                                  expanded={archivedGroupExpanded(group.key)}
+                                                  key={group.key}
+                                                  menu={(
+                                                    <RemoteWorkspaceMenu
+                                                      archived
+                                                      canArchive={peerCanArchive(peer)}
+                                                      desktopId={desktopId}
+                                                      name={name}
+                                                      onChanged={() => onRemoteConversationsChanged?.()}
+                                                      onRename={onRenameRemoteWorkspace
+                                                        ? () => onRenameRemoteWorkspace({ desktopId, name: group.label ?? "", workspaceId })
+                                                        : undefined}
+                                                      pinned={false}
+                                                      workspaceId={workspaceId}
+                                                    />
+                                                  )}
+                                                  name={name}
+                                                  onToggle={() => toggleArchivedWorkspace(group.key)}
+                                                >
+                                                  {group.rows.length === 0
+                                                    ? (
+                                                        <div className="px-4 py-1 text-xs text-ink-muted">
+                                                          {t("activityRail.archivedThreadsEmpty")}
+                                                        </div>
+                                                      )
+                                                    : (
+                                                        <div className="space-y-0.5 pl-2">
+                                                          {group.rows.map(row => (
+                                                            <RemoteConversationRow
+                                                              active={row.key === activeRemoteKey}
+                                                              archived
+                                                              canArchive={peerCanArchive(peer)}
+                                                              compact
+                                                              conversation={row}
+                                                              depth={1}
+                                                              key={row.key}
+                                                              onChanged={() => onRemoteConversationsChanged?.()}
+                                                              onDeletedRemote={conversation => onRemoteConversationDeleted(conversation)}
+                                                              onOpen={conversation => onOpenRemoteConversation?.(conversation)}
+                                                              onOpenRename={conversation => onRenameRemoteConversation?.(conversation)}
+                                                              peer={peer}
+                                                            />
+                                                          ))}
+                                                        </div>
+                                                      )}
+                                                </ArchivedWorkspaceGroup>
+                                              );
+                                            })}
+                                          </>
+                                        )}
                                   {!archivedWorkspacesCollapsed && archiveView.hasMoreWorkspaces && archivedQuery.length === 0
                                     ? (
                                         <button
@@ -1880,7 +2018,7 @@ export function ActivityRail({
                                   />
                                   {archivedThreadsCollapsed
                                     ? null
-                                    : filteredArchivedThreads.length === 0
+                                    : filteredArchivedThreads.length === 0 && archivedRemote.rows.length === 0
                                       ? (
                                           <ArchivedEmpty
                                             label={archivedQuery.length > 0
@@ -1888,21 +2026,51 @@ export function ActivityRail({
                                               : t("activityRail.archivedThreadsEmpty")}
                                           />
                                         )
-                                      : filteredArchivedThreads.map(thread => (
-                                          <ArchivedThreadRow
-                                            active={thread.id === activeThreadId}
-                                            key={thread.id}
-                                            members={archivedTreeMembers(thread)}
-                                            onDelete={onDeleteThread}
-                                            onOpen={onOpenArchivedThread ?? onSelectThread}
-                                            onRename={onRenameThread}
-                                            onRestore={onRestoreThread}
-                                            onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
-                                            selected={selectedThreadIds.has(thread.id)}
-                                            selectionMode={threadSelectionMode(thread)}
-                                            thread={thread}
-                                          />
-                                        ))}
+                                      : (
+                                          <>
+                                            {filteredArchivedThreads.map(thread => (
+                                              <ArchivedThreadRow
+                                                active={thread.id === activeThreadId}
+                                                key={thread.id}
+                                                members={archivedTreeMembers(thread)}
+                                                onDelete={onDeleteThread}
+                                                onOpen={onOpenArchivedThread ?? onSelectThread}
+                                                onRename={onRenameThread}
+                                                onRestore={onRestoreThread}
+                                                onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
+                                                selected={selectedThreadIds.has(thread.id)}
+                                                selectionMode={threadSelectionMode(thread)}
+                                                thread={thread}
+                                              />
+                                            ))}
+                                            {/* Conversations a host shelved on
+                                                their own (a chat, or one its
+                                                workspace list no longer covers),
+                                                drawn as plain rows with the
+                                                machine's glyph. A shelved
+                                                workspace's conversations stay
+                                                under its heading above. */}
+                                            {archivedRemote.rows.map((row) => {
+                                              const peer = row.desktopId
+                                                ? remotePeers.find(entry => entry.desktopId === row.desktopId)
+                                                : undefined;
+                                              return (
+                                                <RemoteConversationRow
+                                                  active={row.key === activeRemoteKey}
+                                                  archived
+                                                  canArchive={peerCanArchive(peer)}
+                                                  conversation={row}
+                                                  key={row.key}
+                                                  onChanged={() => onRemoteConversationsChanged?.()}
+                                                  onDeletedRemote={conversation => onRemoteConversationDeleted(conversation)}
+                                                  onOpen={conversation => onOpenRemoteConversation?.(conversation)}
+                                                  onOpenRename={conversation => onRenameRemoteConversation?.(conversation)}
+                                                  peer={peer}
+                                                />
+                                              );
+                                            })}
+                                          </>
+                                        )}
                                   {!archivedThreadsCollapsed && archiveView.hasMoreThreads
                                     ? (
                                         <RailLoadMoreRow

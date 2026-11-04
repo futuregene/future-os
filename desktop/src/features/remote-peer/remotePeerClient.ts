@@ -318,6 +318,11 @@ export function normalizeRemoteSessionRows(raw: unknown): RemoteSessionRow[] {
       ...(typeof row.parentSessionId === "string" && row.parentSessionId
         ? { parentSessionId: row.parentSessionId }
         : {}),
+      // Whether the host has shelved this conversation (or the workspace it is
+      // in — the host folds that into the row). Absent on a host that predates
+      // the field, and absent here for a row it reports as active: the two read
+      // the same, exactly as they did on such a host's own list.
+      ...(row.archived === true ? { archived: true } : {}),
       pinned: row.pinned === true,
       streaming: row.streaming === true,
       ...(typeof row.status === "string" ? { status: row.status } : {}),
@@ -391,6 +396,30 @@ export async function deleteRemoteConversation(
 ): Promise<unknown> {
   const threadId = requireThreadId(address);
   return requestRemotePeer(desktopId, { type: "delete_session", threadId }, address.sessionId);
+}
+
+/**
+ * Shelve a conversation (and the forks archived with it) on its host.
+ *
+ * The host refuses while any member is still running, and that refusal is the
+ * answer the caller shows — the guard is the host's, because only it can see the
+ * runs another client started.
+ */
+export async function archiveRemoteConversation(
+  desktopId: string,
+  address: RemoteSessionAddress,
+): Promise<unknown> {
+  const threadId = requireThreadId(address);
+  return requestRemotePeer(desktopId, { type: "archive_session", threadId }, address.sessionId);
+}
+
+/** Bring a shelved conversation’s tree back into the host’s active lists. */
+export async function restoreRemoteConversation(
+  desktopId: string,
+  address: RemoteSessionAddress,
+): Promise<unknown> {
+  const threadId = requireThreadId(address);
+  return requestRemotePeer(desktopId, { type: "restore_session", threadId }, address.sessionId);
 }
 
 /**
@@ -1213,6 +1242,10 @@ export function hostWorkspaceRows(items: unknown): RemoteWorkspaceRow[] {
       // neither timestamp has not said "now".
       ...(row.kind === "temporary" || row.kind === "user" ? { kind: row.kind } : {}),
       ...(orderedAt === null ? {} : { orderedAt }),
+      // Whether the host has shelved this workspace. Named here so the archived
+      // view can draw its heading without a second read; absent for an active
+      // one, like every other optional field this parser passes through.
+      ...(row.archived === true ? { archived: true } : {}),
     }];
   });
 }
@@ -1247,6 +1280,28 @@ export async function setRemoteWorkspacePinned(
   pinned: boolean,
 ): Promise<void> {
   await requestRemotePeer(desktopId, { type: "set_workspace_pinned", workspaceId, pinned }, "list");
+}
+
+/**
+ * Shelve a workspace on its host: it and its conversations leave that machine’s
+ * default lists, and every client’s catalogue marks them archived.
+ *
+ * The host refuses while anything inside is still running, so the rejection is
+ * the one the user sees rather than a second, weaker check here.
+ */
+export async function archiveRemoteWorkspace(
+  desktopId: string,
+  workspaceId: string,
+): Promise<void> {
+  await requestRemotePeer(desktopId, { type: "archive_workspace", workspaceId }, "list");
+}
+
+/** Bring a shelved workspace (and the conversations it was hiding) back. */
+export async function restoreRemoteWorkspace(
+  desktopId: string,
+  workspaceId: string,
+): Promise<void> {
+  await requestRemotePeer(desktopId, { type: "restore_workspace", workspaceId }, "list");
 }
 
 /**

@@ -76,11 +76,15 @@ pub(crate) fn route(cmd_type: &str) -> Option<Route> {
         | "set_session_name"
         | "set_session_pinned"
         | "delete_session"
+        | "archive_session"
+        | "restore_session"
         | "fork_session"
         | "create_workspace"
         | "set_workspace_pinned"
         | "rename_workspace"
-        | "delete_workspace" => Route::Catalog,
+        | "delete_workspace"
+        | "archive_workspace"
+        | "restore_workspace" => Route::Catalog,
         "list_tasks"
         | "get_task"
         | "create_task"

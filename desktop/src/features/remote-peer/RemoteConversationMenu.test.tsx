@@ -15,10 +15,14 @@ import { RemoteConversationMenu } from "./RemoteConversationMenu";
 const pin = vi.fn<(desktopId: string, address: unknown, pinned: boolean) => Promise<unknown>>();
 const remove = vi.fn<(desktopId: string, address: unknown) => Promise<unknown>>();
 const rename = vi.fn<(desktopId: string, address: unknown, name: string) => Promise<unknown>>();
+const archive = vi.fn<(desktopId: string, address: unknown) => Promise<unknown>>();
+const restore = vi.fn<(desktopId: string, address: unknown) => Promise<unknown>>();
 vi.mock("./remotePeerClient", () => ({
+  archiveRemoteConversation: (...args: Parameters<typeof archive>) => archive(...args),
   deleteRemoteConversation: (...args: Parameters<typeof remove>) => remove(...args),
   pinRemoteConversation: (...args: Parameters<typeof pin>) => pin(...args),
   renameRemoteConversation: (...args: Parameters<typeof rename>) => rename(...args),
+  restoreRemoteConversation: (...args: Parameters<typeof restore>) => restore(...args),
 }));
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -40,6 +44,8 @@ function conversation(overrides: Partial<MergedConversation> = {}): MergedConver
 }
 
 async function mount(row: MergedConversation, handlers: {
+  archived?: boolean;
+  canArchive?: boolean;
   onChanged?: () => void;
   onClose?: () => void;
   onDeleted?: () => void;
@@ -55,6 +61,8 @@ async function mount(row: MergedConversation, handlers: {
   await act(async () => {
     root.render(
       <RemoteConversationMenu
+        archived={handlers.archived}
+        canArchive={handlers.canArchive}
         conversation={row}
         onChanged={changed}
         onClose={closed}
@@ -89,6 +97,8 @@ async function settle(): Promise<void> {
 }
 
 beforeEach(() => {
+  archive.mockReset().mockResolvedValue(undefined);
+  restore.mockReset().mockResolvedValue(undefined);
   pin.mockReset().mockResolvedValue(undefined);
   remove.mockReset().mockResolvedValue(undefined);
   rename.mockReset().mockResolvedValue(undefined);
@@ -204,5 +214,44 @@ it("ignores a second action while one is in flight", async () => {
     release?.();
   });
   await settle();
+  await view.unmount();
+});
+
+/**
+ * Shelving is offered only by a host that answered `archive_v1`, and it goes
+ * through the host thread id the other store routes take.
+ */
+it("archives with the host thread id when the host advertises it", async () => {
+  const view = await mount(conversation(), { canArchive: true });
+
+  await act(async () => view.item("Archive")!.click());
+  await settle();
+
+  expect(archive).toHaveBeenCalledWith("desktop_a", { sessionId: "sess_1", threadId: "thread_1" });
+  expect(view.changed).toHaveBeenCalledTimes(1);
+  expect(view.closed).toHaveBeenCalledTimes(1);
+  await view.unmount();
+});
+
+it("withholds archive from a host that never declared it", async () => {
+  const view = await mount(conversation(), { canArchive: false });
+  expect(view.item("Archive")).toBeUndefined();
+  await view.unmount();
+});
+
+/**
+ * In the archived view the one item that flips is the archive one: a shelved
+ * conversation is restored, not pinned — shelving cleared the pin, so an item
+ * offering one would present a state the host cannot be in.
+ */
+it("offers restore, not pin, for a shelved conversation", async () => {
+  const view = await mount(conversation(), { archived: true, canArchive: true });
+
+  expect(view.item("Pin")).toBeUndefined();
+  await act(async () => view.item("Restore")!.click());
+  await settle();
+
+  expect(restore).toHaveBeenCalledWith("desktop_a", { sessionId: "sess_1", threadId: "thread_1" });
+  expect(view.changed).toHaveBeenCalledTimes(1);
   await view.unmount();
 });
