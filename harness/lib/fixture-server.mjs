@@ -448,7 +448,7 @@ export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs 
         db.prepare(`INSERT INTO threads (id, workspace_id, mode, title, title_seed, status, pinned, readonly,
             agent_session_id, asset_root_id, last_opened_at, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, 'active', 0, 0, ?, ?, ?, ?, ?)`)
-          .run(id, workspace.id, mode, title, input.agentSessionId ? null : title, input.agentSessionId ?? null, id, t, t, t);
+          .run(id, workspace.id, mode, title, input.agentSessionId ? null : title, input.agentSessionId ?? `sess_${id}`, id, t, t, t);
         db.exec("COMMIT");
         if (input.modelId)
           sessionState.set(id, {

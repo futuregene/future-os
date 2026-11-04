@@ -1,0 +1,27 @@
+{
+  "id": "tui-queue-during-run",
+  "surface": "tui",
+  "title": "TUI 生成中再提交：第二条进入队列",
+  "area": "tui",
+  "priority": "P1",
+  "tags": ["tui", "queue"],
+  "description": "第一条已提交并处于生成状态时再输入第二条回车。第二条应被保留为排队消息（而不是丢弃或立刻打断），生成结束后再发出。",
+  "preconditions": "future 与 demo_agent 已构建。",
+  "expectations": [
+    "第一条提交后进入生成",
+    "第二次提交的文本保留在界面里（队列）",
+    "没有丢失第二条"
+  ],
+  "steps": [
+    { "wait": 1500 },
+    { "type": "第一条排队测试" },
+    { "press": "enter" },
+    { "wait": 400 },
+    { "assertText": "生成" },
+    { "type": "第二条排队测试" },
+    { "press": "enter" },
+    { "wait": 900 },
+    { "assertText": "第二条排队测试" },
+    { "shot": "tui-queued" }
+  ]
+}
