@@ -1,0 +1,108 @@
+{
+  "id": "workspace-rename",
+  "title": "重命名工作区：侧边栏标题与会话头一起更新，刷新后仍在",
+  "area": "workspace",
+  "priority": "P1",
+  "tags": ["workspace", "rename", "persistence", "reload"],
+  "description": "打开一个真实工作区里的会话，再从工作区头的「…」菜单重命名它。工作区名同时出现在两处：侧边栏的工作区分组标题，和会话标题右侧的工作区标签。改名后两处都要跟着变，刷新页面后仍然是新名字——这证明写入落库，而不是只改了内存里的一个字符串。",
+  "preconditions": "应用已启动；侧边栏工作区列表里至少有一个名字不重复、并且里面有会话的工作区。",
+  "expectations": ["工作区菜单里提供「重命名」，对话框标题是「重命名工作区」，输入框预填当前名字", "保存后数据库里该工作区的 name 变成新名字", "侧边栏的分组标题换成新名字，旧名字不再出现在工作区列表里", "打开着的会话标题右侧的工作区标签也显示新名字", "刷新页面后侧边栏仍是新名字，没有回到旧名字"],
+  "steps": [
+    { "wait": 1200 },
+    {
+      "db": {
+        "sql": "SELECT w.name FROM workspaces w WHERE w.deleted_at IS NULL AND w.archived_at IS NULL AND EXISTS (SELECT 1 FROM threads t WHERE t.workspace_id = w.id AND t.deleted_at IS NULL AND t.status != 'deleted') GROUP BY w.name HAVING COUNT(*) = 1"
+      },
+      "capture": false
+    },
+    {
+      "eval": "const uniq = new Set((window.__harnessLastDb||[]).map(r => r.name)); window.__pick = ''; window.__row = ''; for (const h of [...document.querySelectorAll('[data-testid=local-group-heading]')]) { const name = h.textContent.trim(); if (!uniq.has(name) || /['\"]/.test(name)) continue; const g = h.closest('div.space-y-0\\\\.5'); const rows = g ? [...g.querySelectorAll('[aria-label$=\" 的操作\"]')].map(e => e.getAttribute('aria-label').replace(/ 的操作$/, '')).filter(t => t !== name && !/['\"]/.test(t)) : []; if (rows.length) { window.__pick = name; window.__row = rows[0]; break; } } window.__pick ? 1 : 0",
+      "as": "found",
+      "capture": false
+    },
+    { "assert": {"expr": "{{found}} === 1", "message": "首屏有一个名字唯一、并且带会话的工作区可以作为重命名对象"}, "capture": false },
+    { "eval": "window.__pick", "as": "ws", "capture": false },
+    { "eval": "window.__row", "as": "row", "capture": false },
+    { "db": {"sql": "SELECT id FROM workspaces WHERE name = '{{ws}}' AND deleted_at IS NULL", "as": "wsId"}, "capture": false },
+    { "click": {"aria": "{{row}}"}, "note": "打开该工作区里的一个会话" },
+    { "wait": 1000 },
+    {
+      "assert": {
+        "expr": "[...document.querySelectorAll('[data-testid=thread-workspace]')].some(e => e.textContent.trim() === '{{ws}}')",
+        "message": "会话头右侧的工作区标签显示它所属的工作区名"
+      },
+      "capture": false
+    },
+    { "shot": "workspace-conversation-open" },
+    { "hover": {"aria": "{{ws}} 的操作"} },
+    { "click": {"aria": "{{ws}} 的操作"}, "note": "工作区分组标题右侧的「…」菜单" },
+    { "wait": 350 },
+    { "shot": "workspace-menu" },
+    {
+      "assert": {
+        "expr": "[...document.querySelectorAll('[role=menuitem]')].some(e => e.innerText.trim() === '重命名')",
+        "message": "工作区菜单提供「重命名」"
+      },
+      "capture": false
+    },
+    { "click": {"selector": "[role=menuitem]", "text": "重命名"} },
+    { "waitFor": {"selector": "[role=dialog] input"}, "timeout": 4000 },
+    { "assert": {"expr": "document.querySelector('[role=dialog]').innerText.includes('重命名工作区')", "message": "对话框标题是「重命名工作区」"}, "capture": false },
+    { "assert": {"expr": "document.querySelector('[role=dialog] input').value === '{{ws}}'", "message": "重命名对话框预填当前工作区名"}, "capture": false },
+    { "shot": "rename-dialog" },
+    { "eval": "document.querySelector('[role=dialog] input').focus(); document.querySelector('[role=dialog] input').select()", "capture": false },
+    { "type": "重命名验证工作区" },
+    { "click": {"selector": "[role=dialog] button", "text": "保存"} },
+    { "wait": 1200 },
+    { "db": {"sql": "SELECT name FROM workspaces WHERE id = '{{wsId}}'", "expect": "重命名验证工作区", "message": "数据库里该工作区的名字已更新"}, "capture": false },
+    { "assert": {"expr": "![...document.querySelectorAll('[role=dialog]')].length", "message": "保存后对话框已关闭"}, "capture": false },
+    {
+      "assert": {
+        "expr": "[...document.querySelectorAll('[data-testid=local-group-heading]')].some(e => e.textContent.trim() === '重命名验证工作区')",
+        "message": "侧边栏的工作区分组用新名字显示"
+      },
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "![...document.querySelectorAll('[data-testid=local-group-heading]')].some(e => e.textContent.trim() === '{{ws}}')",
+        "message": "侧边栏不再出现旧名字"
+      },
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "[...document.querySelectorAll('[data-testid=thread-workspace]')].some(e => e.textContent.trim() === '重命名验证工作区')",
+        "message": "打开着的会话头显示新的工作区名"
+      },
+      "capture": false
+    },
+    { "shot": "renamed" },
+    { "reload": true },
+    { "wait": 900 },
+    {
+      "assert": {
+        "expr": "[...document.querySelectorAll('[data-testid=local-group-heading]')].some(e => e.textContent.trim() === '重命名验证工作区')",
+        "message": "刷新后侧边栏仍是新名字"
+      },
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "![...document.querySelectorAll('[data-testid=local-group-heading]')].some(e => e.textContent.trim() === '{{ws}}')",
+        "message": "刷新后旧名字没有回来"
+      },
+      "capture": false
+    },
+    { "shot": "after-reload" }
+  ],
+  "judge": {
+    "criteria": [
+      "重命名后侧边栏的工作区名和会话头里的工作区标签是同一个新名字，旧名字不再出现",
+      "刷新页面后仍是新名字，没有回退",
+      "整个过程没有残留的加载态、空列表、报错文案或关不掉的对话框",
+      "截图整体看起来像一个正常工作的产品（对齐、层级、文案一致）"
+    ],
+    "maxImages": 12
+  }
+}

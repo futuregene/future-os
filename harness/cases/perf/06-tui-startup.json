@@ -7,12 +7,12 @@
   "tags": ["perf", "tui"],
   "description": "测量 TUI 从启动到首屏可读的时间，以及按 ? 后画面更新的延迟。",
   "preconditions": "future 与 demo_agent 已构建。",
-  "expectations": ["启动 < 6s", "帮助面板 < 500ms"],
+  "expectations": ["启动 ≤ 基线 +30%（基线约 2.3s）", "帮助面板 ≤ 基线 +50%（基线约 366ms）"],
   "steps": [
     { "wait": 1500 },
-    { "assertPerf": { "metric": "startupMs", "max": 6000, "message": "TUI 启动 < 6s" } },
+    { "assertPerf": { "metric": "startupMs", "tolerance": 0.3, "max": 6000, "message": "TUI 启动 ≤ 基线 +30%" } },
     { "measure": { "label": "help", "press": "?" } },
-    { "assertPerf": { "metric": "measure", "label": "help", "max": 500, "message": "帮助面板 < 500ms" } },
+    { "assertPerf": { "metric": "measure", "label": "help", "tolerance": 0.5, "max": 800, "message": "帮助面板 ≤ 基线 +50%" } },
     { "shot": "tui-perf" }
   ]
 }

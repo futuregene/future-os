@@ -86,6 +86,60 @@ export function writeReport(runDir, { repoRoot = resolve(import.meta.dirname, ".
   }
   lines.push("");
 
+  const perfCases = cases.filter(item => item.perf && item.id.startsWith("perf-"));
+  if (perfCases.length) {
+    lines.push("## 性能观测", "");
+    lines.push("| 用例 | 启动/总耗时 | 交互延迟 | 堆 / RSS | IPC p95 / max | 首屏 IPC |");
+    lines.push("|---|---|---|---|---|---|");
+    for (const item of perfCases) {
+      const perf = item.perf ?? {};
+      const measures = perf.measures ?? [];
+      const measureText = measures.length
+        ? `${Math.min(...measures.map(m => m.ms))}–${Math.max(...measures.map(m => m.ms))}ms (${measures.length} 次)`
+        : "—";
+      const boot = perf.bootMs != null ? `${perf.bootMs}ms` : perf.startupMs != null ? `${perf.startupMs}ms` : `${(item.durationMs / 1000).toFixed(2)}s`;
+      const memory = perf.heapGrowthMb != null || perf.rssGrowthMb != null
+        ? `${perf.heapGrowthMb ?? "—"}MB / ${perf.rssGrowthMb ?? "—"}MB`
+        : "—";
+      const ipc = perf.ipcP95 != null ? `${perf.ipcP95}ms / ${perf.ipcMax}ms` : "—";
+      const first = perf.invokeRequests != null ? `${perf.invokeRequests} 次 / ${Math.round((perf.invokeBytes ?? 0) / 1024)}KB` : "—";
+      lines.push(`| ${item.id} | ${boot} | ${measureText} | ${memory} | ${ipc} | ${first} |`);
+    }
+    lines.push("");
+
+    // The headroom column is the answer to "can this threshold ever fail?".
+    // Anything sitting at a large multiple of its limit is a threshold that only
+    // catches a catastrophe; it should be visible, not buried in a JSON file.
+    const perfChecks = cases.flatMap(item => (item.checks ?? []).filter(check => check.kind === "perf").map(check => ({ ...check, id: item.id })));
+    if (perfChecks.length) {
+      lines.push("### 阈值与实际值", "");
+      lines.push("| 用例 | 指标 | 实测 | 基线 | 限制 | 实测/限 | 判定依据 |");
+      lines.push("|---|---|---|---|---|---|---|");
+      for (const check of perfChecks) {
+        const headroom = check.expected ? (check.actual / check.expected) : null;
+        lines.push(`| ${check.id} | ${check.message} | ${check.actual ?? "—"} | ${check.baseline ?? "—"} | ${Math.round(check.expected ?? 0)} | ${headroom === null ? "—" : `${headroom.toFixed(2)}×`} | ${(check.limitReason ?? "").replace(/\|/g, "\\|")} ${check.ok ? "" : "**FAILED**"} |`);
+      }
+      lines.push("");
+      const loose = perfChecks.filter(check => check.expected && check.actual / check.expected < 0.4);
+      if (loose.length)
+        lines.push(`> 有 ${loose.length} 条阈值实测只用到限制的 40% 以下，它们只能拦住灾难级回退；`);
+      lines.push("");
+    }
+  }
+
+  const judgedCases = analysis?.cases?.filter(item => item.judge) ?? [];
+  if (judgedCases.length) {
+    lines.push("## 模型验收", "");
+    lines.push("| 用例 | 结论 | 置信度 | 判断 | 证据 |");
+    lines.push("|---|---|---|---|---|");
+    for (const item of judgedCases) {
+      const judge = item.judge;
+      const icon = judge.verdict === "issue" ? "❗ issue" : judge.verdict === "pass" ? "✅ pass" : "❔ unknown";
+      lines.push(`| ${item.id} | ${icon} | ${judge.confidence ?? "—"} | ${(judge.summary ?? "").replace(/\|/g, "\\|").slice(0, 200)} | ${judge.images?.length ?? 0} 张 + 时间线/日志 |`);
+    }
+    lines.push("");
+  }
+
   if (analysis?.findings?.length) {
     const grouped = groupFindings(analysis.findings);
     lines.push("## 发现的问题", "");

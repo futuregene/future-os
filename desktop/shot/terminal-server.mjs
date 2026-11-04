@@ -93,6 +93,27 @@ const server = createServer((request, response) => {
     json(response, 200, { ticket: "shot-ticket", expiresIn: 60 });
     return;
   }
+  if (/^\/terminal\/[^/]+$/.test(url.pathname) && request.method === "PATCH") {
+    const session = sessions.get(url.pathname.split("/")[2]);
+    if (!session) {
+      json(response, 404, { error: { code: "NOT_FOUND", message: "no such terminal" } });
+      return;
+    }
+    // Resize: the client sends cols/rows; the canned transcript does not reflow,
+    // but the request must succeed or the panel shows a connection error.
+    let body = "";
+    request.on("data", (chunk) => (body += chunk));
+    request.on("end", () => {
+      try {
+        const patch = JSON.parse(body || "{}");
+        if (Number.isFinite(patch.cols)) session.cols = Number(patch.cols);
+        if (Number.isFinite(patch.rows)) session.rows = Number(patch.rows);
+      }
+      catch {}
+      json(response, 200, session);
+    });
+    return;
+  }
   if (/^\/terminal\/[^/]+$/.test(url.pathname) && request.method === "GET") {
     const session = sessions.get(url.pathname.split("/")[2]);
     if (!session) {

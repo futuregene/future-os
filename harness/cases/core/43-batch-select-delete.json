@@ -1,0 +1,123 @@
+{
+  "id": "batch-select-delete",
+  "title": "多选删除：选中 3 个会话，确认后一起消失并退出多选",
+  "area": "batch",
+  "priority": "P0",
+  "tags": ["batch", "delete", "list"],
+  "description": "在一个有多个会话的工作区里进入多选（工作区菜单 →「选择聊天」），勾选 3 个会话，用底部的批量删除按钮删掉。要点是这条链路没有半途而废：计数从「全选」变成「已选择 3 个」，确认框如实列出这 3 个会话和它们的工作区身份，确认后 3 行一起消失、多选态自动退出、主区域不会停在刚被删掉的会话上。",
+  "preconditions": "应用已启动；侧边栏里至少有一个工作区，且它下面首屏能渲染出 3 个以上会话。",
+  "expectations": ["工作区菜单里的「选择聊天」进入多选，底部出现选择工具条（全选 / 取消 / 删除）", "每勾选一行，计数文案 +1：勾选 3 个后显示「已选择 3 个」，工具条复选框是半选态", "批量删除的确认框写明「已选择 3 个对话」并列出这 3 个标题，且说明工作区文件不会被删", "确认后这 3 行从侧边栏消失，数据库里对应的会话被软删除", "确认后自动退出多选：工具条消失，主区域停在别的内容上，不是空白"],
+  "steps": [
+    { "wait": 1300 },
+    {
+      "db": {
+        "sql": "SELECT w.name FROM workspaces w WHERE w.deleted_at IS NULL AND w.archived_at IS NULL AND (SELECT COUNT(*) FROM threads t WHERE t.workspace_id = w.id AND t.deleted_at IS NULL AND t.status != 'deleted' AND t.pinned = 0) >= 3 GROUP BY w.name HAVING COUNT(*) = 1"
+      },
+      "capture": false
+    },
+    {
+      "eval": "const uniq = new Set((window.__harnessLastDb||[]).map(r => r.name)); window.__pick = ''; window.__rows = []; for (const h of [...document.querySelectorAll('[data-testid=local-group-heading]')]) { const name = h.textContent.trim(); if (!uniq.has(name) || /['\"]/.test(name)) continue; const g = h.closest('div.space-y-0\\\\.5'); const rows = g ? [...g.querySelectorAll('[aria-label$=\" 的操作\"]')].map(e => e.getAttribute('aria-label').replace(/ 的操作$/, '')).filter(t => t !== name && !/['\"]/.test(t)) : []; if (rows.length >= 3) { window.__pick = name; window.__rows = rows; break; } } window.__pick ? 1 : 0",
+      "as": "found",
+      "capture": false
+    },
+    { "assert": {"expr": "{{found}} === 1", "message": "首屏有一个工作区，它下面渲染出至少 3 个会话可以多选"}, "capture": false },
+    { "eval": "window.__pick", "as": "ws", "capture": false },
+    { "eval": "window.__rows[0]", "as": "row1", "capture": false },
+    { "eval": "window.__rows[1]", "as": "row2", "capture": false },
+    { "eval": "window.__rows[2]", "as": "row3", "capture": false },
+    { "db": {"sql": "SELECT COUNT(*) AS n FROM threads WHERE deleted_at IS NOT NULL", "as": "delBefore"}, "capture": false },
+    { "shot": "before-selection" },
+    { "hover": {"aria": "{{ws}} 的操作"} },
+    { "click": {"aria": "{{ws}} 的操作"} },
+    { "wait": 350 },
+    {
+      "assert": {
+        "expr": "[...document.querySelectorAll('[role=menuitem]')].some(e => e.innerText.trim() === '选择聊天')",
+        "message": "工作区菜单提供「选择聊天」"
+      },
+      "capture": false
+    },
+    { "click": {"selector": "[role=menuitem]", "text": "选择聊天"} },
+    { "wait": 600 },
+    { "assert": {"expr": "!!document.querySelector('[role=toolbar]')", "message": "进入多选后底部出现选择工具条"}, "capture": false },
+    { "assert": {"expr": "document.querySelector('[role=toolbar]').innerText.trim() === '全选'", "message": "还没勾选时工具条提示「全选」"}, "capture": false },
+    {
+      "assert": {
+        "expr": "['{{row1}}', '{{row2}}', '{{row3}}'].every(t => !!document.querySelector('[aria-label=\"选择 ' + t + '\"]'))",
+        "message": "多选态下这几行各自带一个可勾选的复选框"
+      },
+      "capture": false
+    },
+    { "shot": "selection-mode" },
+    { "click": {"aria": "选择 {{row1}}"} },
+    { "wait": 350 },
+    {
+      "assert": {
+        "expr": "document.querySelector('[role=toolbar]').innerText.includes('已选择 1 个')",
+        "message": "勾选 1 行后计数文案跟着变成「已选择 1 个」"
+      },
+      "capture": false
+    },
+    { "click": {"aria": "选择 {{row2}}"} },
+    { "click": {"aria": "选择 {{row3}}"} },
+    { "wait": 450 },
+    {
+      "assert": {
+        "expr": "document.querySelector('[role=toolbar]').innerText.includes('已选择 3 个')",
+        "message": "勾选 3 行后计数是「已选择 3 个」"
+      },
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "(() => { const box = document.querySelector('[role=toolbar] input[type=checkbox]'); return !!box && !box.checked && box.indeterminate; })()",
+        "message": "只选了其中一部分时，工具条的复选框是半选态"
+      },
+      "capture": false
+    },
+    { "shot": "three-selected" },
+    { "click": {"aria": "删除"}, "note": "工具条上的批量删除（窄侧边栏时只有图标，靠无障碍名定位）" },
+    { "waitFor": {"selector": "[role=dialog]"}, "timeout": 4000 },
+    { "shot": "batch-delete-dialog" },
+    { "assert": {"expr": "document.querySelector('[role=dialog]').innerText.includes('已选择 3 个对话')", "message": "确认框写明这次会删除 3 个对话"}, "capture": false },
+    {
+      "assert": {
+        "expr": "['{{row1}}', '{{row2}}', '{{row3}}'].every(t => document.querySelector('[role=dialog]').innerText.includes(t))",
+        "message": "确认框把要删的 3 个标题都列出来了"
+      },
+      "capture": false
+    },
+    { "assert": {"expr": "document.querySelector('[role=dialog]').innerText.includes('磁盘上的文件不会被删除')", "message": "确认框说明工作区文件不受影响"}, "capture": false },
+    { "click": {"selector": "[role=dialog] button", "text": "删除"} },
+    { "wait": 1400 },
+    { "assert": {"expr": "![...document.querySelectorAll('[role=dialog]')].length", "message": "确认后对话框关闭"}, "capture": false },
+    { "assert": {"expr": "![...document.querySelectorAll('[role=toolbar]')].length", "message": "删除后自动退出多选（选择工具条消失）"}, "capture": false },
+    {
+      "assert": {
+        "expr": "['{{row1}}', '{{row2}}', '{{row3}}'].every(t => ![...document.querySelectorAll('[aria-label]')].some(e => e.getAttribute('aria-label') === t + ' 的操作'))",
+        "message": "这 3 行都从侧边栏消失了"
+      },
+      "capture": false
+    },
+    { "db": {"sql": "SELECT COUNT(*) AS n FROM threads WHERE deleted_at IS NOT NULL", "as": "delAfter"}, "capture": false },
+    { "assert": {"expr": "{{delAfter}} >= {{delBefore}} + 3", "message": "数据库里至少这 3 个会话变成了已删除（列表不是只改了显示）"}, "capture": false },
+    {
+      "assert": {
+        "expr": "(() => { const main = document.querySelector('main'); return !!main && main.innerText.trim().length > 10; })()",
+        "message": "主区域没有空成一片（落到了别的内容上）"
+      },
+      "capture": false
+    },
+    { "shot": "after-batch-delete" }
+  ],
+  "judge": {
+    "criteria": [
+      "多选态一眼能看出来：每行有复选框，底部有计数与批量动作",
+      "计数文案与实际勾选的行数一致，半选状态表达正确",
+      "确认框如实列出被删的 3 个会话，删完这 3 行从侧边栏消失，其余会话不受影响",
+      "删除后多选态退出、界面回到正常列表，没有空白、残留工具条或报错",
+      "截图整体看起来像一个正常工作的产品（对齐、层级、文案一致）"
+    ],
+    "maxImages": 12
+  }
+}

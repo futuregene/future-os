@@ -4,12 +4,12 @@
   "area": "perf",
   "priority": "P1",
   "tags": ["perf", "latency", "memory"],
-  "description": "连续切换 5 个会话，测量从点击到下一帧的延迟（两次 requestAnimationFrame），并检查 JS 堆增长。",
+  "description": "连续切换 5 个会话，测量从点击到下一帧的延迟（两次 requestAnimationFrame），并检查 JS 堆增长。判定相对基线，max 只作灾难上限。",
   "preconditions": "首屏至少 5 行会话。",
   "expectations": [
-    "单次切换 < 800ms",
-    "平均切换 < 400ms",
-    "5 次切换堆增长 < 80MB"
+    "单次切换不超过基线 25%（基线约 376ms）",
+    "平均切换不超过基线 20%（基线约 294ms）",
+    "5 次切换堆增长不超过基线 +40MB（基线约 13MB）"
   ],
   "steps": [
     { "wait": 900 },
@@ -25,9 +25,17 @@
     { "measure": { "label": "switch-3", "click": { "text": "{{t2}}" } } },
     { "measure": { "label": "switch-4", "click": { "text": "{{t3}}" } } },
     { "measure": { "label": "switch-5", "click": { "text": "{{t4}}" } } },
-    { "assertPerf": { "metric": "measure", "label": "switch", "stat": "max", "max": 800, "message": "单次切换 < 800ms" } },
-    { "assertPerf": { "metric": "measure", "label": "switch", "stat": "avg", "max": 400, "message": "平均切换 < 400ms" } },
-    { "assertPerf": { "metric": "heapGrowth", "max": 80, "message": "堆增长 < 80MB" } },
+    { "assertPerf": { "metric": "measure", "label": "switch", "stat": "max", "tolerance": 0.25, "max": 800, "message": "单次切换 ≤ 基线 +25%" } },
+    { "assertPerf": { "metric": "measure", "label": "switch", "stat": "avg", "tolerance": 0.2, "max": 500, "message": "平均切换 ≤ 基线 +20%" } },
+    { "assertPerf": { "metric": "heapGrowth", "toleranceAbs": 40, "max": 100, "message": "堆增长 ≤ 基线 +40MB" } },
     { "shot": "switches" }
-  ]
+  ],
+  "judge": {
+    "criteria": [
+      "每次点击后主区域立即换成对应会话，没有短暂显示上一个会话的内容再跳变",
+      "切换过程中侧边栏高亮行与主区域标题一致",
+      "性能数字与常识相符：一次纯本地切换 300ms 上下偏慢，请结合各次数值判断是否是某一步（大列表渲染/转录加载）导致，而不是均匀开销"
+    ],
+    "maxImages": 4
+  }
 }

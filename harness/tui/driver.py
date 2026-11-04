@@ -32,6 +32,45 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts" / "screenshots"))
 from tui_terminal import render, screen_from_stream  # noqa: E402
 
+BASELINES_PATH = ROOT / "harness" / "perf" / "baseline.json"
+
+
+def perf_limit(case_id: str, spec: dict) -> tuple[float | None, str, float | None]:
+    """The same limit resolution the JS drivers use (`harness/lib/perf.mjs`).
+
+    Duplicated here because this driver has no Node dependency, but it must stay
+    arithmetically identical: a threshold that means one thing on the desktop and
+    another in the TUI is a threshold nobody can reason about.
+    """
+    try:
+        metrics = json.loads(BASELINES_PATH.read_text(encoding="utf-8")).get("metrics", {})
+    except Exception:  # noqa: BLE001 - a missing baseline falls back to `max`
+        metrics = {}
+    parts = [case_id, spec.get("metric", "")]
+    if spec.get("label"):
+        parts.append(spec["label"])
+    if spec.get("stat"):
+        parts.append(spec["stat"])
+    key = spec.get("baselineKey") or ":".join(parts)
+    base = (metrics.get(key) or {}).get("median")
+    reasons = []
+    limit = None
+    if base is not None:
+        if spec.get("toleranceAbs"):
+            candidate = base + abs(spec["toleranceAbs"])
+            reasons.append(f"baseline {base} + {abs(spec['toleranceAbs'])}")
+        else:
+            tolerance = spec.get("tolerance", 0.25)
+            candidate = base * (1 + tolerance)
+            reasons.append(f"baseline {base} x (1 + {tolerance})")
+        if spec.get("floor") is not None:
+            candidate = max(candidate, spec["floor"])
+        limit = candidate
+    if isinstance(spec.get("max"), (int, float)):
+        limit = spec["max"] if limit is None else min(limit, spec["max"])
+        reasons.append(f"ceiling {spec['max']}")
+    return limit, " &".join(reasons).replace(",", " &") if reasons else "no bound", base
+
 
 def future_bin() -> str:
     if os.environ.get("FUTURE_BIN"):
@@ -269,11 +308,12 @@ def main() -> int:
                         value = (round(sum(values) / len(values)) if perf_spec.get("stat") == "avg" else max(values)) if values else None
                     else:
                         value = None
-                    ok = value is not None and value <= perf_spec["max"]
-                    checks.append({"kind": "perf", "step": index, "message": perf_spec.get("message") or f"{metric} <= {perf_spec['max']}", "ok": ok, "expected": perf_spec["max"], "actual": value})
+                    limit, reason, baseline_median = perf_limit(spec["id"], perf_spec)
+                    ok = value is not None and limit is not None and value <= limit
+                    checks.append({"kind": "perf", "step": index, "message": perf_spec.get("message") or f"{metric} <= {round(limit) if limit is not None else '?'}", "ok": ok, "expected": limit, "actual": value, "baseline": baseline_median, "limitReason": reason})
                     entry["value"] = value
                     if not ok:
-                        raise RuntimeError(f"TUI performance expectation failed: {metric} = {value}, expected <= {perf_spec['max']}")
+                        raise RuntimeError(f"TUI performance expectation failed: {metric} = {value}, expected <= {limit} ({reason})")
                 elif action == "shot":
                     entry["shot"] = session.shot(out_dir / "shots" / f"{index:02d}-{step['shot']}.png")
                 else:
@@ -315,10 +355,12 @@ def main() -> int:
         "description": spec.get("description"),
         "preconditions": spec.get("preconditions"),
         "expectations": spec.get("expectations", []),
+        "judge": spec.get("judge"),
         "status": status,
         "fatal": fatal,
         "startedAt": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(started)),
         "durationMs": round((time.time() - started) * 1000),
+        "bodyText": (next((e.get("text") for e in reversed(timeline) if e.get("text")), "") or "")[:12000],
         "steps": timeline,
         "checks": checks,
         "console": {"errors": [], "warnings": [], "all": []},

@@ -15,7 +15,7 @@ import { mkdirSync, writeFileSync, readdirSync, readFileSync, existsSync, rmSync
 import { join, resolve } from "node:path";
 import { loadCases, listCases, CASES_DIR } from "./lib/cases.mjs";
 import { prepare, BASE_DB, MODELS_COPY, DATA_DIR } from "./lib/data.mjs";
-import { ensureDevServer, ensureMobileServer, ensureAssetServer, DEFAULT_URL } from "./lib/dev-server.mjs";
+import { ensureDevServer, ensureMobileServer, ensureAssetServer, ensureTerminalServer, DEFAULT_URL } from "./lib/dev-server.mjs";
 import { runCase } from "./lib/run.mjs";
 import { runCliCase } from "./lib/cli-driver.mjs";
 import { CdpPage } from "./lib/cdp.mjs";
@@ -124,7 +124,9 @@ async function main() {
       const desktop = bySurface("desktop");
       if (desktop.length) {
         const server = await ensureDevServer({ reuse: flag("reuse-server") });
+        const terminal = await ensureTerminalServer();
         closers.push(() => server.stop());
+        closers.push(() => terminal.stop());
         const page = await CdpPage.launch({ ...viewport, userDataDir: join(runDir, "chrome-profile") });
         closers.push(() => page.close());
         for (const testCase of desktop) {
@@ -192,6 +194,8 @@ async function main() {
         const server = await ensureDevServer({ reuse: flag("reuse-server") });
         const mobileServer = await ensureMobileServer({ reuse: flag("reuse-server") });
         const assets = await ensureAssetServer();
+        const terminal = await ensureTerminalServer();
+        closers.push(() => terminal.stop());
         closers.push(() => server.stop());
         closers.push(() => mobileServer.stop());
         closers.push(() => assets.stop());

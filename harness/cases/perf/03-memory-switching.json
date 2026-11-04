@@ -7,8 +7,8 @@
   "description": "连续切换 10 个会话（不截图），检查 JS 堆与 Chrome 进程 RSS 的增长，抓列表/转录缓存的明显泄漏。",
   "preconditions": "首屏至少 10 行会话。",
   "expectations": [
-    "10 次切换堆增长 < 100MB",
-    "10 次切换 RSS 增长 < 350MB"
+    "10 次切换堆增长不超过基线 +40MB（基线约 -6MB，即基本不涨）",
+    "10 次切换 RSS 增长不超过基线 +60MB（基线约 5MB）"
   ],
   "steps": [
     { "wait": 900 },
@@ -34,8 +34,8 @@
     { "click": { "text": "{{a7}}" } },
     { "click": { "text": "{{a8}}" } },
     { "click": { "text": "{{a9}}" } },
-    { "assertPerf": { "metric": "heapGrowth", "max": 100, "message": "堆增长 < 100MB" } },
-    { "assertPerf": { "metric": "rssGrowth", "max": 350, "message": "RSS 增长 < 350MB" } },
+    { "assertPerf": { "metric": "heapGrowth", "toleranceAbs": 40, "max": 120, "message": "堆增长 ≤ 基线 +40MB" } },
+    { "assertPerf": { "metric": "rssGrowth", "toleranceAbs": 60, "max": 200, "message": "RSS 增长 ≤ 基线 +60MB" } },
     { "shot": "memory" }
   ]
 }

@@ -7,13 +7,13 @@
   "description": "从夹具服务日志统计 UI 发出的 IPC 命令耗时，重点看会话分页读取的 p95 与最大值。",
   "preconditions": "桌面 shot 服务与夹具服务可用。",
   "expectations": [
-    "list_threads_page p95 < 300ms",
-    "所有 IPC 最大 < 800ms"
+    "list_threads_page p95 ≤ 基线 +150%（基线约 5ms；下限 25ms 吸收小值噪声）",
+    "所有 IPC 最大 < 250ms（基线约 9ms，但实测有 110ms 的 GC 尖尖，不使用基线占比）"
   ],
   "steps": [
     { "wait": 900 },
-    { "assertPerf": { "metric": "ipcP95", "command": "list_threads_page", "max": 300, "message": "分页读取 p95 < 300ms" } },
-    { "assertPerf": { "metric": "ipcMax", "max": 800, "message": "IPC 最大 < 800ms" } },
+    { "assertPerf": { "metric": "ipcP95", "command": "list_threads_page", "baselineKey": "perf-ipc:ipcP95:list_threads_page", "tolerance": 1.5, "floor": 25, "max": 60, "message": "分页读取 p95 ≤ 基线 +150%" } },
+    { "assertPerf": { "metric": "ipcMax", "max": 250, "message": "IPC 最大 < 250ms" } },
     { "shot": "ipc" }
   ]
 }

@@ -3,45 +3,27 @@
   "title": "性能：桌面首屏启动与网络预算",
   "area": "perf",
   "priority": "P1",
-  "tags": [
-    "perf",
-    "boot",
-    "network"
-  ],
-  "description": "测量从导航到应用可交互的启动时间、首屏网络请求数与传输字节。阈值按本机现状留出余量，用来抓明显回退。",
+  "tags": ["perf", "boot", "network"],
+  "description": "测量从导航到应用可交互的启动时间、首屏 IPC 请求数与传输字节。判定相对 harness/perf/baseline.json 的记录值（余量按实测噪声给），max 只作灾难上限。",
   "preconditions": "桌面 shot 服务可用；真实 app.db 快照。",
   "expectations": [
-    "启动到可交互 < 8s",
-    "首屏 IPC 请求数 < 200",
-    "首屏 IPC 传输 < 5 MB"
+    "启动到可交互不超过基线 25%（基线约 2.1s）",
+    "首屏 IPC 请求数不超过基线 15%（基线 120 个）",
+    "首屏 IPC 传输不超过基线 25%（基线约 114KB）"
   ],
   "steps": [
-    {
-      "wait": 500
-    },
-    {
-      "assertPerf": {
-        "metric": "bootMs",
-        "max": 8000,
-        "message": "启动到可交互 < 8s"
-      }
-    },
-    {
-      "assertPerf": {
-        "metric": "invokeRequests",
-        "max": 200,
-        "message": "首屏 IPC 请求数 < 200"
-      }
-    },
-    {
-      "assertPerf": {
-        "metric": "invokeBytes",
-        "max": 5000000,
-        "message": "首屏 IPC 传输 < 5MB"
-      }
-    },
-    {
-      "shot": "boot"
-    }
-  ]
+    { "wait": 500 },
+    { "assertPerf": { "metric": "bootMs", "tolerance": 0.25, "max": 4000, "message": "启动到可交互 ≤ 基线 +25%" } },
+    { "assertPerf": { "metric": "invokeRequests", "tolerance": 0.15, "max": 200, "message": "首屏 IPC 请求数 ≤ 基线 +15%" } },
+    { "assertPerf": { "metric": "invokeBytes", "tolerance": 0.3, "max": 400000, "message": "首屏 IPC 传输 ≤ 基线 +30%" } },
+    { "shot": "boot" }
+  ],
+  "judge": {
+    "criteria": [
+      "首屏直接进入可用的会话列表，没有长时间白屏或骨架屏卡住（注意：这个页面由 Vite 开发服务器逐模块提供，首屏会加载数百个模块，骨架屏时长会比打包后的桌面应用长，不要单凭这一点判缺陷，只在它明显超过启动耗时时报）",
+      "首屏内容完整（侧边栏分组、会话行、输入区都在），没有明显错位或空块",
+      "性能数字与常识相符：本地启动 2 秒左右可以接受，首屏 IPC 上百次属于偏多，请判断是否存在可以合并的重复请求"
+    ],
+    "maxImages": 4
+  }
 }

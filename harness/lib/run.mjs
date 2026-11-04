@@ -8,12 +8,13 @@
  * command log, and DB queries — so a later analysis step can reason about what
  * happened without re-running anything.
  */
-import { mkdirSync, writeFileSync, appendFileSync, rmSync, cpSync } from "node:fs";
+import { mkdirSync, writeFileSync, appendFileSync, rmSync, cpSync, existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { CdpPage } from "./cdp.mjs";
 import { copyDatabase, BASE_DB } from "./data.mjs";
 import { createFixtureServer } from "./fixture-server.mjs";
 import { muxVideo } from "./video.mjs";
+import { percentile, resolveLimit, readBaseline, baselineKey, drift, slope, mean } from "./perf.mjs";
 
 const sleep = ms => new Promise(done => setTimeout(done, ms));
 
@@ -99,6 +100,9 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
     }));
 
   const startedAt = Date.now();
+  // Recorded baselines turn an absolute ceiling into a regression bound; a
+  // missing file just means every spec falls back to its own `max`.
+  const baselines = readBaseline(join(import.meta.dirname, "..", "perf", "baseline.json"), { existsSync, readFileSync });
   const timelinePath = join(caseDir, "timeline.jsonl");
   const timeline = [];
   const checks = [];
@@ -117,6 +121,7 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
   page.networkEntries = [];
   page.networkBytes = 0;
   let readyMs = null;
+  let bodyText = null;
   page.onEvent = event => {
     observations.push({ ...event, step: timeline.length });
     if (event.channel === "console" && event.type === "error")
@@ -136,13 +141,7 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
     return file;
   };
 
-  const percentile = (values, p) => {
-    if (!values.length)
-      return null;
-    const sorted = [...values].sort((a, b) => a - b);
-    const index = Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1);
-    return sorted[Math.max(0, index)];
-  };
+  const percentileOf = percentile;
 
   /** One number for an `assertPerf` step, or null when the evidence is absent. */
   const perfValue = (spec) => {
@@ -168,7 +167,13 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
       if (spec.stat === "avg")
         return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
       if (spec.stat === "p95")
-        return percentile(values, 95);
+        return percentileOf(values, 95);
+      // Repetition cost, not absolute cost: `drift` compares the last third of a
+      // repeated interaction with the first, `slope` is the per-step trend.
+      if (spec.stat === "drift")
+        return drift(values);
+      if (spec.stat === "slope")
+        return Math.round(slope(values) * 100) / 100;
       return Math.max(...values);
     }
     if (metric?.startsWith("ipc")) {
@@ -181,7 +186,7 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
       if (metric === "ipcAvg")
         return Math.round(entries.reduce((sum, value) => sum + value, 0) / entries.length);
       if (metric === "ipcP95")
-        return percentile(entries, 95);
+        return percentileOf(entries, 95);
       return Math.max(...entries);
     }
     if (metric === "heapGrowth" || metric === "rssGrowth") {
@@ -405,18 +410,23 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
         else if (action === "assertPerf") {
           const spec = step.assertPerf;
           const value = perfValue(spec);
-          const ok = value !== null && Number(value) <= Number(spec.max);
+          const key = spec.baselineKey ?? baselineKey(testCase.id, spec);
+          const base = baselines.metrics?.[key] ?? null;
+          const { limit, reason } = resolveLimit(spec, base);
+          const ok = value !== null && limit !== null && Number(value) <= limit;
           checks.push({
             kind: "perf",
             step: index + 1,
-            message: spec.message ?? `${spec.metric}${spec.label ? `/${spec.label}` : ""} <= ${spec.max}`,
+            message: spec.message ?? `${spec.metric}${spec.label ? `/${spec.label}` : ""} <= ${Math.round(limit ?? NaN)}`,
             ok,
-            expected: spec.max,
+            expected: limit === null ? null : Math.round(limit * 100) / 100,
             actual: value,
+            baseline: base?.median ?? null,
+            limitReason: reason,
           });
           entry.value = value;
           if (!ok)
-            throw new Error(`performance expectation failed: ${spec.metric}${spec.label ? `/${spec.label}` : ""} = ${value}, expected <= ${spec.max}`);
+            throw new Error(`performance expectation failed: ${spec.metric}${spec.label ? `/${spec.label}` : ""} = ${value}, expected <= ${Math.round(limit ?? NaN)} (${reason})`);
         }
         else if (action === "shot") {
           entry.shot = await capture(step.shot);
@@ -459,6 +469,11 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
       note(entry);
     }
 
+    bodyText = null;
+    try {
+      bodyText = await page.evaluate("document.body.innerText.slice(0, 12000)");
+    }
+    catch {}
     const finalMetrics = await page.metrics();
     metrics.push({ at: "final", ts: Date.now(), ...finalMetrics, process: page.processStats() });
     if (status === "pass")
@@ -524,6 +539,25 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
     rssGrowthMb: baseline && final ? Math.round(((final.process?.rssKb ?? 0) - (baseline.process?.rssKb ?? 0)) / 1024) : null,
     measures: timeline.filter(entry => entry.perfMs !== undefined).map(entry => ({ label: entry.label, ms: entry.perfMs })),
   };
+  // The series, not just the summary: a repeated interaction that gets slower
+  // each pass is invisible in a max/avg, and it is exactly what a person
+  // looking over the numbers would notice.
+  const measureSeries = Object.entries(
+    perf.measures.reduce((groups, item) => {
+      const group = item.label?.replace(/-\d+$/, "") ?? "measure";
+      (groups[group] ??= []).push(item.ms);
+      return groups;
+    }, {}),
+  ).map(([label, values]) => ({
+    label,
+    n: values.length,
+    values,
+    drift: drift(values),
+    slope: values.length > 1 ? Math.round(slope(values) * 100) / 100 : null,
+    mean: values.length ? Math.round(mean(values)) : null,
+  }));
+  if (measureSeries.length)
+    perf.series = measureSeries;
   const result = {
     id: testCase.id,
     title: testCase.title,
@@ -533,11 +567,13 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
     description: testCase.description ?? null,
     preconditions: testCase.preconditions ?? null,
     expectations: testCase.expectations ?? [],
+    judge: testCase.judge ?? null,
     status,
     fatal,
     startedAt: new Date(startedAt).toISOString(),
     stepsEndedAt: stepsEndedAt ? new Date(stepsEndedAt).toISOString() : null,
     durationMs,
+    bodyText,
     steps: timeline,
     checks,
     metrics,
