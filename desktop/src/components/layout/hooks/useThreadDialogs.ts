@@ -16,7 +16,7 @@ import {
 } from "../../../integrations/storage/threadStore";
 import { errorMessage } from "../../../lib/errors";
 import { emitFutureEvent } from "../../../lib/futureEvents";
-import { treeMemberCount } from "../threadTree";
+import { treeMemberCount, treeMemberIds } from "../threadTree";
 
 interface UseThreadDialogsParams {
   activeThreadId: string | null;
@@ -264,7 +264,12 @@ export function useThreadDialogs({ activeThreadId, onArchived, refreshStore, thr
         await archiveThreadTree(thread.id);
         onArchived?.();
         emitFutureEvent("archive-changed", undefined);
-        await refreshStore();
+        // The tree left the active list. Saying so is what moves the column off
+        // it when the open conversation was the one archived — the row is
+        // otherwise held as "still open, just off this page", which drew a
+        // shelved conversation as the current one under a sidebar row nobody
+        // could see any more.
+        await refreshStore(undefined, { archivedThreadIds: archivedIdsFor(lineage, thread.id) });
       }
       catch (error) {
         emitArchiveError(errorMessage(error));
@@ -282,7 +287,9 @@ export function useThreadDialogs({ activeThreadId, onArchived, refreshStore, thr
       await archiveThreadTree(archiveDialog.thread.id);
       onArchived?.();
       emitFutureEvent("archive-changed", undefined);
-      await refreshStore();
+      await refreshStore(undefined, {
+        archivedThreadIds: archivedIdsFor(threadsRef.current, archiveDialog.thread.id),
+      });
       setArchiveDialog(null);
     }
     catch (error) {
@@ -298,11 +305,18 @@ export function useThreadDialogs({ activeThreadId, onArchived, refreshStore, thr
   async function archiveThreads(threads: StoredThread[]) {
     if (threads.length === 0)
       return;
+    const wanted = threads.flatMap(thread => archivedIdsFor(threadsRef.current, thread.id));
     try {
       const result = await batchArchiveThreads(threads.map(thread => thread.id));
       onArchived?.();
       emitFutureEvent("archive-changed", undefined);
-      await refreshStore();
+      // A tree a running member kept back is still on the active list, so it is
+      // not reported as archived: the open conversation must not be moved off
+      // one that stayed.
+      const skipped = new Set(result.skipped.map(item => item.threadId));
+      await refreshStore(undefined, {
+        archivedThreadIds: wanted.filter(id => !skipped.has(id)),
+      });
       if (result.skipped.length > 0) {
         emitArchiveSkipped(result.skipped);
       }
@@ -332,6 +346,18 @@ export function useThreadDialogs({ activeThreadId, onArchived, refreshStore, thr
     confirmArchive,
     archiveThreads,
   };
+}
+
+/**
+ * The conversation ids an archive of `threadId`'s tree takes off the active list.
+ *
+ * The rail's rows are the tree's source, but a row the store does not hold (a
+ * stale rail row, a conversation archived from another surface) still archives
+ * itself, so its own id is always part of the answer.
+ */
+function archivedIdsFor(rows: StoredThread[], threadId: string): string[] {
+  const ids = treeMemberIds(rows, threadId);
+  return ids.length > 0 ? ids : [threadId];
 }
 
 /** Surface an archive refusal as a toast (the rail's own affordance). */

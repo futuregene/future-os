@@ -266,6 +266,61 @@ describe("useThreadStore", () => {
     h.unmount();
   });
 
+  /**
+   * Archiving the conversation that is open.
+   *
+   * The archive leaves the row in the database, so no listing contradicts the
+   * refresh — and the store's own rule for that ambiguity ("not on this page,
+   * still open") held the shelved conversation as the current one: its row
+   * stayed in the active list and its history stayed on screen while nothing in
+   * the sidebar pointed at it any more. The caller that archives has to say so.
+   */
+  it("archiving the open conversation drops its row and opens the nearest remaining one", async () => {
+    const h = await mountStore();
+    expect(h.current.activeThreadId).toBe("t1");
+    // The pages after the archive: t1 is off them. t9 is more recent but lives
+    // in another workspace, so the column stays where the reader was working.
+    listThreadsPage.mockResolvedValue(pageOf([
+      { ...thread("t2", "w1"), lastMessageAt: 10 } as StoredThread,
+      { ...thread("t9", "w2"), lastMessageAt: 99 } as StoredThread,
+    ]));
+    await act(async () => {
+      await h.current.refreshStore(undefined, { archivedThreadIds: ["t1"] });
+    });
+    expect(h.current.threads.map(t => t.id).sort()).toEqual(["t2", "t9"]);
+    expect(h.current.activeThreads.map(t => t.id)).not.toContain("t1");
+    expect(h.current.activeThreadId).toBe("t2");
+    expect(h.current.activeThread?.id).toBe("t2");
+    h.unmount();
+  });
+
+  it("archiving the open conversation moves off it even when a listing still returns it", async () => {
+    // A conversation kept in the active stretch by a run another client started
+    // is returned by `listActiveThreads` with its archived status. It is still
+    // off the list the reader is reading, so the column must not stay on it.
+    listActiveThreads.mockResolvedValue([thread("t1", "w1", "archived")]);
+    const h = await mountStore();
+    listThreadsPage.mockResolvedValue(pageOf([thread("t2")]));
+    await act(async () => {
+      await h.current.refreshStore(undefined, { archivedThreadIds: ["t1"] });
+    });
+    expect(h.current.threads.find(t => t.id === "t1")?.status).toBe("archived");
+    expect(h.current.activeThreadId).toBe("t2");
+    h.unmount();
+  });
+
+  it("archiving the open conversation with nothing left opens nothing", async () => {
+    const h = await mountStore();
+    listThreadsPage.mockResolvedValue(pageOf([]));
+    await act(async () => {
+      await h.current.refreshStore(undefined, { archivedThreadIds: ["t1", "t2"] });
+    });
+    expect(h.current.threads).toEqual([]);
+    expect(h.current.activeThreadId).toBeNull();
+    expect(h.current.activeThread).toBeNull();
+    h.unmount();
+  });
+
   it("drops a stale refreshStore response when a newer one is in flight", async () => {
     const h = await mountStore();
     let resolveSlow: ((value: unknown) => void) | null = null;

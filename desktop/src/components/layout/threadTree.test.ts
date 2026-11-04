@@ -1,6 +1,6 @@
 import type { StoredThread } from "../../integrations/storage/threadStore";
 import { describe, expect, it } from "vitest";
-import { buildThreadTree, buildTree, threadParentIds, visibleThreadRows, visibleTreeRows } from "./threadTree";
+import { buildThreadTree, buildTree, threadParentIds, treeMemberIds, visibleThreadRows, visibleTreeRows } from "./threadTree";
 
 function thread(id: string, parentSessionId?: string, pinned = false): StoredThread {
   return { id, agentSessionId: id, parentSessionId, pinned, mode: "chat", workspaceId: id, title: id, status: "active", readonly: false, createdAt: 0, updatedAt: 0 };
@@ -75,5 +75,19 @@ describe("conversation tree", () => {
       .toEqual([["h::a", 0]]);
     expect(visibleTreeRows(tree, row => row.key, new Set(["h::a", "h::b"])).map(r => [r.item.key, r.depth, r.hasChildren]))
       .toEqual([["h::a", 0, true], ["h::b", 1, true], ["h::c", 2, false]]);
+  });
+
+  /**
+   * Which conversations an archive of one row takes with it.
+   *
+   * The tree is the archive's unit, so the ids have to cover every descendant —
+   * an open child of the archived fork must leave the column too — and a row the
+   * list does not hold must not invent any: the caller knows that one id itself.
+   */
+  it("names every member of the fork tree an archive would take", () => {
+    const rows = [thread("a"), thread("b", "a"), thread("c", "b"), thread("d")];
+    expect(new Set(treeMemberIds(rows, "a"))).toEqual(new Set(["a", "b", "c"]));
+    expect(treeMemberIds(rows, "d")).toEqual(["d"]);
+    expect(treeMemberIds(rows, "missing")).toEqual([]);
   });
 });
