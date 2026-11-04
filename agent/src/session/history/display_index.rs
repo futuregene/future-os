@@ -238,14 +238,30 @@ pub(crate) fn update_display_index_from(
     };
     boundaries.push(last + 1);
     let mut from = first;
+    // Nothing more can join the exchange that just ended when the shapes stop
+    // exactly on the entry that opens the next one: a rebuild batch filling its
+    // slice just before a user message leaves the trailing exchange whole, and
+    // the next batch does not walk back into it (its entries start a new run, so
+    // `affected_history_start` has no reason to). Without this the last exchange
+    // of such a batch is only ever appended plain - a call whose result never
+    // landed keeps no `[Tool execution lost — …]` row.
+    let shapes_end_at_exchange_boundary: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM entries WHERE session_id=?1 AND position=?2 AND entry_type='user')",
+        params![&stored_session, last + 1],
+        |row| row.get(0),
+    )?;
     for to in boundaries {
         if from > last {
             break;
         }
         // A window that runs past the shapes on disk is an exchange a batch
         // stopped inside; the next batch walks back to its start and heals it once
-        // it is whole. The conversation's own end always counts as whole.
-        let complete = to <= last + 1 && (to < last + 1 || session_end <= last + 1);
+        // it is whole. The conversation's own end always counts as whole, and so
+        // does a stop on an exchange boundary.
+        let complete = to <= last + 1
+            && (to < last + 1
+                || session_end <= last + 1
+                || (to == last + 1 && shapes_end_at_exchange_boundary));
         let to = to.min(last + 1);
         if to > from && complete {
             rewrite_healed_window(db, &stored_session, from, to)?;
