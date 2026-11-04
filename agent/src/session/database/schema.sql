@@ -113,6 +113,27 @@ CREATE TABLE IF NOT EXISTS run_snapshots (
     PRIMARY KEY(session_id,run_id)
 );
 DROP INDEX IF EXISTS run_snapshots_cleanup;
+-- The folded body of a published snapshot, encoded.
+--
+-- `run_snapshots.payload` is the fold itself, and a published fold is hundreds
+-- of KiB of JSON that gzips about six times (measured on a real store: 7.4 MiB
+-- of sampled payloads fell to 1.2 MiB). This table is that same JSON in another
+-- encoding, never a second document: the publishing transaction writes both,
+-- and the marker row keeps a stub so `payload` stays valid JSON. A reader that
+-- finds a body decodes it; a reader that finds none reads `payload` exactly as
+-- before, so a store written by an older build still replays.
+CREATE TABLE IF NOT EXISTS run_snapshot_bodies (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL,
+    encoding TEXT NOT NULL CHECK(encoding='gzip'),
+    body BLOB NOT NULL,
+    PRIMARY KEY(session_id,run_id)
+);
+-- The marker row owns the body: nothing else can name that run's fold, so a
+-- transcript rewrite that drops the row must take the body with it.
+CREATE TRIGGER IF NOT EXISTS run_snapshot_body_removed AFTER DELETE ON run_snapshots BEGIN
+    DELETE FROM run_snapshot_bodies WHERE session_id=OLD.session_id AND run_id=OLD.run_id;
+END;
 -- A fold kept *beside* the raw journal, not instead of it.
 --
 -- `run_snapshots` above is the reclaim row: writing one marks the run

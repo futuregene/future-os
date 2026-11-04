@@ -13,7 +13,9 @@
 //!   resumable legacy command. Normal startup/completion never schedules it.
 //!   Canonical conversations are excluded; upgrades never sweep old bodies.
 
-use super::journal_compaction::{bump_meta, delete_raw_rows, RETIRE_CHUNK_ROWS};
+use super::journal_compaction::{
+    bump_meta, delete_raw_rows, RETIRE_CHUNK_ROWS, SNAPSHOT_BODY_MIN_BYTES,
+};
 use super::sqlite_store::SqliteStore;
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -27,6 +29,10 @@ use std::time::{Duration, Instant};
 pub(crate) const SWEEP_WORK_BUDGET: Duration = Duration::from_secs(20);
 /// Runs examined per call, so one call cannot queue an unbounded plan.
 const SWEEP_BATCH_RUNS: i64 = 64;
+/// Folds encoded per sweep call. Each one is a read, a gzip and a two-statement
+/// transaction, so the batch is smaller than the journal plan's: the point is a
+/// pass that finishes its slices, not one that holds the worker.
+const SNAPSHOT_BODY_BATCH: i64 = 32;
 
 /// Runs one startup catch-up may fold. A completion notification already
 /// handles the normal case, so this only mops up what a crash or a stop left
@@ -189,6 +195,74 @@ fn skip_counters(connection: &Connection) -> Result<Value> {
     Ok(Value::Object(counters))
 }
 
+/// Published folds still stored as plain JSON: how many, and the bytes they hold.
+///
+/// Read-only and cheap (one index probe per candidate row's size), so the
+/// report can print it on every run without touching a payload.
+pub(crate) fn plan_snapshot_bodies(db: &Connection) -> Result<(i64, i64)> {
+    Ok(db.query_row(
+        "SELECT count(*),coalesce(sum(length(CAST(s.payload AS BLOB))),0)
+           FROM run_snapshots s
+          WHERE length(CAST(s.payload AS BLOB)) >= ?1
+            AND NOT EXISTS(SELECT 1 FROM run_snapshot_bodies b
+                            WHERE b.session_id=s.session_id AND b.run_id=s.run_id)",
+        params![SNAPSHOT_BODY_MIN_BYTES as i64],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?)
+}
+
+/// Encode up to `limit` published folds, biggest first.
+///
+/// Returns `(runs, bytes before, bytes after)`. Each fold is rewritten in its
+/// own maintenance transaction, so an interruption leaves the remaining rows
+/// exactly as they were and the next pass continues from what is left.
+pub(crate) fn compress_snapshot_bodies(db: &mut Connection, limit: i64) -> Result<(i64, i64, i64)> {
+    let candidates: Vec<(String, String, i64, String)> = {
+        let mut statement = db.prepare_cached(
+            "SELECT s.session_id,s.run_id,s.cursor,s.payload
+               FROM run_snapshots s
+              WHERE length(CAST(s.payload AS BLOB)) >= ?1
+                AND NOT EXISTS(SELECT 1 FROM run_snapshot_bodies b
+                                WHERE b.session_id=s.session_id AND b.run_id=s.run_id)
+              ORDER BY length(CAST(s.payload AS BLOB)) DESC LIMIT ?2",
+        )?;
+        let rows = statement
+            .query_map(params![SNAPSHOT_BODY_MIN_BYTES as i64, limit], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let (mut runs, mut before, mut after) = (0i64, 0i64, 0i64);
+    for (session, run, cursor, payload) in candidates {
+        let row_before = payload.len() as i64;
+        let written = super::database::try_maintenance_transaction(db, |tx| {
+            super::journal_compaction::store_run_snapshot_body(tx, &session, &run, cursor, &payload)
+        });
+        match written {
+            Ok(()) => {}
+            Err(error) => {
+                // One unencodable fold must not end the pass; it stays as it is
+                // and the next sweep tries again.
+                tracing::debug!(%session, %run, %error, "snapshot body left as plain JSON");
+                continue;
+            }
+        }
+        let now: i64 = db.query_row(
+            "SELECT coalesce((SELECT length(body) FROM run_snapshot_bodies
+                               WHERE session_id=?1 AND run_id=?2),0)
+                    + length(CAST((SELECT payload FROM run_snapshots
+                                    WHERE session_id=?1 AND run_id=?2) AS BLOB))",
+            params![session, run],
+            |row| row.get(0),
+        )?;
+        runs += 1;
+        before += row_before;
+        after += now;
+    }
+    Ok((runs, before, after))
+}
+
 impl SqliteStore {
     /// Everything `future session journal` prints. Read-only, cheap enough to
     /// run whenever someone suspects the journal, and never a mutation.
@@ -196,6 +270,14 @@ impl SqliteStore {
         self.db.call(|db| {
             let (raw_rows, raw_bytes) = table_journal(db, "run_events")?;
             let (snapshot_rows, snapshot_bytes) = table_journal(db, "run_snapshots")?;
+            // A compressed fold's bytes live in its body, not in `payload`; the
+            // report's whole job is the real cost, so both are counted.
+            let body_bytes: i64 = db.query_row(
+                "SELECT coalesce(sum(length(body)),0) FROM run_snapshot_bodies",
+                [],
+                |row| row.get(0),
+            )?;
+            let snapshot_bytes = snapshot_bytes + body_bytes;
             let (pending_runs, pending_events, pending_bytes) = settled_uncompacted(db)?;
             let leftovers: (i64, i64) = db.query_row(
                 "SELECT count(*),coalesce(sum(n),0) FROM (
@@ -521,6 +603,26 @@ impl SqliteStore {
             }));
         }
 
+        // 3. Folds already published as plain JSON: same bytes, encoded. This is
+        // the only step that touches rows a previous build wrote, so it stays
+        // inside the operator-invoked sweep and never runs on open or idle.
+        let pending_bodies = self.db.call(|db| plan_snapshot_bodies(db))?;
+        let (encoded_bodies, bodies_before, bodies_after) =
+            if dry_run || pending_bodies.0 == 0 || started.elapsed() >= budget {
+                (0i64, 0i64, 0i64)
+            } else {
+                self.db
+                    .call_as("journal_reclaim", move |db| {
+                        compress_snapshot_bodies(db, SNAPSHOT_BODY_BATCH)
+                    })
+                    .unwrap_or((0, 0, 0))
+            };
+        let bodies_pending = self
+            .db
+            .call(|db| plan_snapshot_bodies(db))
+            .map(|plan| plan.0)
+            .unwrap_or(0);
+
         // `hasMore` promises *more work this sweep can do*, not "some settled run
         // still keeps a journal": a run that cannot be representationally
         // reclaimed (its last event is not `agent_end`, its envelope is unknown)
@@ -533,7 +635,7 @@ impl SqliteStore {
             // (still undeleted) runs again.
             false
         } else {
-            stopped_early || candidates_truncated || leftovers_truncated
+            stopped_early || candidates_truncated || leftovers_truncated || bodies_pending > 0
         };
 
         // Fold freed pages back into the file where this database can do it
@@ -558,6 +660,13 @@ impl SqliteStore {
             "reclaimedEvents": reclaimed_events,
             "leftoverRuns": leftover_runs,
             "leftoverEvents": leftover_events,
+            "snapshotBodies": {
+                "pendingRuns": bodies_pending,
+                "pendingBytes": pending_bodies.1,
+                "encodedRuns": encoded_bodies,
+                "bytesBefore": bodies_before,
+                "bytesAfter": bodies_after,
+            },
             "hasMore": has_more,
             "quickCheck": quick_check,
             "database": {

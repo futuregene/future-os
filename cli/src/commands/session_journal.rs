@@ -324,6 +324,16 @@ pub(super) async fn run(args: &[String], out: &Output) -> Result<(), String> {
         "  {} leftover rows from earlier interruptions",
         count(number(&plan, "leftoverEvents"))
     ));
+    // Folds published before this build stored plain JSON; the sweep encodes them
+    // in the same pass, so the plan says how much is still that way.
+    let plain_folds = number(&plan["snapshotBodies"], "pendingRuns");
+    if plain_folds > 0 {
+        out.log(&format!(
+            "  {} published folds still plain JSON · {} to encode",
+            count(plain_folds),
+            bytes(number(&plan["snapshotBodies"], "pendingBytes"))
+        ));
+    }
     print_entries(&plan, true, out);
     if options.json {
         out.log(&serde_json::to_string_pretty(&plan).map_err(|e| e.to_string())?);

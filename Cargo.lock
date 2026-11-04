@@ -1837,6 +1837,7 @@ dependencies = [
  "dhat",
  "dirs",
  "fd-lock",
+ "flate2",
  "fs2",
  "future-fusion",
  "future-http",
