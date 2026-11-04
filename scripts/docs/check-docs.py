@@ -134,6 +134,9 @@ WHITELIST = {
     "benchmark/README.md",
     "benchmark/fusion/README.md",
     "benchmark/fusion/PROTOCOL.md",
+    # UI harness guide: it sits beside the case library it documents, so a
+    # reader editing a case has the schema and the fidelity boundary at hand.
+    "harness/README.md",
 }
 
 # Bilingual pairing also applies to these paths outside docs/.

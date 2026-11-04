@@ -33,6 +33,7 @@
 | [Self-inspection](guide/self-inspection.md) ([中文](guide/self-inspection.zh-CN.md)) | Reading an agent's own state (settings, skills, tools, sessions) and the user–agent record, and changing global settings from the CLI |
 | [Mobile latency diagnosis](guide/mobile-latency-diagnosis.md) ([中文](guide/mobile-latency-diagnosis.zh-CN.md)) | Mobile end-to-end latency measurement and diagnosis |
 | [Screenshot harness](guide/screenshots.md) ([中文](guide/screenshots.zh-CN.md)) | Rendering the real desktop/mobile UI against demo data to produce screenshots, feature diagrams and illustrated documents without a display |
+| [UI harness](guide/ui-harness.md) ([中文](guide/ui-harness.zh-CN.md)) | Driving the real desktop UI against a real `app.db` snapshot: recorded operations, multi-channel observations, model-assisted findings, reports and approved issue drafts |
 
 The repo-root [README](../README.md) ([中文](../README.zh-CN.md)) is the
 entry point; the [wiki](wiki/en/Home.md) is the user-facing app guide.

@@ -1,0 +1,90 @@
+{
+  "id": "create-chat-and-delete",
+  "title": "新建会话 → 发送 → 删除会话",
+  "area": "conversation",
+  "priority": "P0",
+  "tags": ["smoke", "create", "delete"],
+  "description": "从空草稿创建一次真实对话：点「新建对话」，输入一句话并发送，列表应立即出现新会话；随后通过会话行的操作菜单删除它，列表与数据库都应消失。",
+  "preconditions": "应用已启动并停在会话列表；数据库是真实副本。",
+  "expectations": [
+    "发送后新会话出现在列表顶部并被选中",
+    "新会话标题来自发送内容，而不是固定的占位文案",
+    "删除后该会话从列表消失，数据库软删除，且不会残留空白主区域"
+  ],
+  "steps": [
+    { "wait": 800 },
+    {
+      "db": {
+        "sql": "SELECT COUNT(*) AS n FROM threads WHERE deleted_at IS NULL AND status != 'deleted'",
+        "as": "startCount"
+      },
+      "note": "记录起点行数；后面的 delta 与它比较"
+    },
+    { "click": { "aria": "新建对话" }, "note": "打开新对话草稿" },
+    { "waitFor": { "text": "欢迎使用" }, "timeout": 5000 },
+    {
+      "click": { "selector": "[role=textbox]" },
+      "note": "输入框是可编辑的富文本区域，不是 textarea"
+    },
+    { "type": "测试自动化框架：创建与删除" },
+    { "shot": "draft-typed", "note": "草稿有内容、发送按钮可用" },
+    { "click": { "aria": "发送" }, "note": "发送时才真正创建会话" },
+    { "waitFor": { "text": "测试自动化框架" }, "timeout": 8000 },
+    {
+      "db": {
+        "sql": "SELECT COUNT(*) AS n FROM threads WHERE deleted_at IS NULL AND status != 'deleted'",
+        "delta": 1,
+        "message": "发送后数据库多了一个会话"
+      }
+    },
+    {
+      "db": {
+        "sql": "SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' ORDER BY created_at DESC LIMIT 1",
+        "as": "created"
+      }
+    },
+    {
+      "assert": {
+        "expr": "!!document.querySelector(`[aria-label=\"${window.__harnessLastDb[0].title}\"]`)",
+        "message": "新会话以自身标题出现在侧边栏"
+      }
+    },
+    { "shot": "created", "note": "新会话在列表顶部" },
+    {
+      "db": {
+        "sql": "SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' AND title != '{{created}}' ORDER BY COALESCE(last_message_at, updated_at) DESC LIMIT 1",
+        "as": "other"
+      },
+      "note": "先打开另一个会话，避免踩到「删除当前会话」的独立缺陷（用例 08 覆盖）"
+    },
+    { "click": { "aria": "{{other}}" } },
+    { "waitFor": { "text": "{{other}}" }, "timeout": 5000 },
+    { "hover": { "aria": "{{created}}" }, "note": "行内操作按钮只在悬停后可见" },
+    { "click": { "aria": "{{created}} 的操作" } },
+    { "click": { "selector": "[role=menuitem]", "text": "删除" } },
+    { "shot": "delete-confirm", "note": "删除确认对话框" },
+    { "click": { "selector": "[role=dialog] button", "text": "删除" } },
+    {
+      "db": {
+        "sql": "SELECT COUNT(*) AS n FROM threads WHERE deleted_at IS NULL AND status != 'deleted'",
+        "delta": -1,
+        "message": "删除后数据库恢复到起始行数"
+      }
+    },
+    {
+      "db": {
+        "sql": "SELECT deleted_at IS NOT NULL AS ok FROM threads WHERE title = '{{created}}' ORDER BY created_at DESC LIMIT 1",
+        "expect": 1,
+        "message": "删除是软删除，记录仍在但 deleted_at 已写入"
+      }
+    },
+    { "wait": 1200, "note": "列表刷新/退场动画" },
+    {
+      "assert": {
+        "expr": "!document.querySelector('[aria-label=\"{{created}}\"]')",
+        "message": "侧边栏不再有该会话行"
+      }
+    },
+    { "shot": "after-delete" }
+  ]
+}

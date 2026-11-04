@@ -1,0 +1,49 @@
+{
+  "id": "create-workspace",
+  "title": "创建 Workspace 并切换到该工作区",
+  "area": "workspace",
+  "priority": "P0",
+  "tags": ["workspace", "create"],
+  "description": "从会话列表点「新建工作区」，用目录选择器挑一个真实存在的空目录并打开。工作区应立刻出现在侧边栏，新对话界面切换到「工作区」模式。",
+  "preconditions": "应用已启动；本机存在一个可用的空目录（harness 为每个用例准备）。",
+  "expectations": [
+    "目录选择后弹窗显示完整路径与「工作区路径：」预览",
+    "打开后数据库多一个 user 工作区，名称取目录名",
+    "侧边栏出现该工作区，新对话界面切换到工作区模式"
+  ],
+  "steps": [
+    { "wait": 800 },
+    {
+      "db": {
+        "sql": "SELECT COUNT(*) AS n FROM workspaces WHERE deleted_at IS NULL",
+        "as": "startCount"
+      }
+    },
+    { "click": { "aria": "新建工作区" }, "note": "侧边栏工作区区的 +" },
+    { "waitFor": { "selector": "button[aria-label='选择工作区']" }, "timeout": 5000 },
+    { "shot": "workspace-form-empty", "note": "空路径时「打开」应不可用" },
+    { "click": { "aria": "选择工作区" }, "note": "打开目录选择器（shot 环境是注入路径）" },
+    { "waitFor": { "text": "工作区路径：" }, "timeout": 5000 },
+    { "shot": "workspace-form-picked", "note": "路径已选中" },
+    { "click": { "selector": "button", "text": "打开" } },
+    { "waitFor": { "text": "workspace-pick" }, "timeout": 8000 },
+    {
+      "db": {
+        "sql": "SELECT COUNT(*) AS n FROM workspaces WHERE deleted_at IS NULL",
+        "delta": 1,
+        "message": "数据库新增一个工作区"
+      }
+    },
+    {
+      "db": {
+        "sql": "SELECT kind || '|' || name FROM workspaces WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 1",
+        "expect": "user|workspace-pick",
+        "message": "新工作区是 user 类型，名称取目录名"
+      }
+    },
+    { "assert": { "expr": "document.body.innerText.includes('workspace-pick')", "message": "新对话界面显示新工作区" } },
+    { "assert": { "expr": "(() => { const nav = document.querySelector('nav'); return !!nav && nav.innerText.includes('workspace-pick'); })()", "message": "侧边栏工作区列表同步出现新工作区" } },
+    { "assert": { "expr": "document.body.innerText.includes('使用此项目文件夹及其工作区资源')", "message": "对话模式已切到工作区模式" } },
+    { "shot": "workspace-created" }
+  ]
+}

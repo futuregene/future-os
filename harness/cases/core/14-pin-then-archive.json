@@ -1,0 +1,42 @@
+{
+  "id": "pin-then-archive",
+  "title": "置顶后归档：置顶应自动取消",
+  "area": "conversation",
+  "priority": "P2",
+  "tags": ["sequence", "pin", "archive"],
+  "description": "先置顶一个会话，再把它归档。产品文案写明「归档会取消置顶」，数据库与界面都应体现这一点：pinned 归零、会话离开置顶区和活跃列表。",
+  "preconditions": "至少一个未置顶会话。",
+  "expectations": [
+    "归档已置顶的会话时不会把它留在置顶区",
+    "数据库 pinned=0 且 archived_at 非空",
+    "归档视图能找到该会话"
+  ],
+  "steps": [
+    { "wait": 800 },
+    {
+      "db": {
+        "sql": "SELECT title FROM (SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' AND pinned = 0 AND archived_at IS NULL ORDER BY COALESCE(last_message_at, updated_at) DESC LIMIT 8) WHERE length(title) <= 16 LIMIT 1",
+        "as": "target"
+      }
+    },
+    { "hover": { "aria": "{{target}}" } },
+    { "click": { "aria": "{{target}} 的操作" } },
+    { "click": { "selector": "[role=menuitem]", "text": "置顶" } },
+    { "wait": 500 },
+    { "hover": { "aria": "{{target}}" } },
+    { "click": { "aria": "{{target}} 的操作" } },
+    { "click": { "selector": "[role=menuitem]", "text": "归档" } },
+    {
+      "db": {
+        "sql": "SELECT (pinned = 0 AND archived_at IS NOT NULL) AS ok FROM threads WHERE title = '{{target}}' ORDER BY created_at DESC LIMIT 1",
+        "expect": 1,
+        "message": "归档后 pinned 归零且 archived_at 写入"
+      }
+    },
+    { "wait": 700 },
+    { "shot": "after-archive-pinned" },
+    { "click": { "aria": "已归档的会话" } },
+    { "waitFor": { "text": "{{target}}" }, "timeout": 5000 },
+    { "shot": "archived-view" }
+  ]
+}

@@ -1,0 +1,70 @@
+{
+  "id": "search-conversation",
+  "title": "搜索真实会话标题：结果收窄且能打开",
+  "area": "search",
+  "priority": "P1",
+  "tags": ["search", "list"],
+  "description": "取两个都在首屏的会话：输入其中一个的标题片段后，它仍在结果里，另一个必须消失。只断言「目标出现」是不够的——目标本来就在列表上；必须证明过滤真的发生了。",
+  "preconditions": "应用已启动；首屏至少有两个短标题会话。",
+  "expectations": [
+    "搜索框能输入并实时过滤",
+    "匹配的会话仍在结果里",
+    "不匹配的会话从结果里消失",
+    "Escape 关闭搜索后列表恢复"
+  ],
+  "steps": [
+    { "wait": 900 },
+    {
+      "db": {
+        "sql": "SELECT title FROM (SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' AND length(title) BETWEEN 6 AND 16 ORDER BY COALESCE(last_message_at, updated_at) DESC LIMIT 8) LIMIT 1 OFFSET 0",
+        "as": "target"
+      }
+    },
+    {
+      "db": {
+        "sql": "SELECT substr(title, 1, 6) AS q FROM (SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' AND length(title) BETWEEN 6 AND 16 ORDER BY COALESCE(last_message_at, updated_at) DESC LIMIT 8) LIMIT 1 OFFSET 0",
+        "as": "query"
+      }
+    },
+    {
+      "db": {
+        "sql": "SELECT title FROM (SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' AND length(title) BETWEEN 6 AND 16 ORDER BY COALESCE(last_message_at, updated_at) DESC LIMIT 8) LIMIT 1 OFFSET 1",
+        "as": "other"
+      }
+    },
+    {
+      "assert": {
+        "expr": "!!document.querySelector('[aria-label=\"{{other}}\"]')",
+        "message": "过滤前另一个会话确实在首屏"
+      }
+    },
+    { "click": { "aria": "搜索会话" } },
+    { "wait": 500 },
+    { "shot": "search-open" },
+    { "click": { "selector": "input" } },
+    { "type": "{{query}}" },
+    { "wait": 900 },
+    {
+      "assert": {
+        "expr": "!!document.querySelector('[aria-label=\"{{target}}\"]')",
+        "message": "匹配的会话保留在结果里"
+      }
+    },
+    {
+      "assert": {
+        "expr": "!document.querySelector('[aria-label=\"{{other}}\"]')",
+        "message": "不匹配的会话被过滤掉"
+      }
+    },
+    { "shot": "search-results" },
+    { "press": "Escape" },
+    { "wait": 600 },
+    {
+      "assert": {
+        "expr": "!!document.querySelector('[aria-label=\"{{other}}\"]')",
+        "message": "关闭搜索后列表恢复（另一个会话回来）"
+      }
+    },
+    { "shot": "search-closed" }
+  ]
+}

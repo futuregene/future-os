@@ -1,0 +1,72 @@
+{
+  "id": "create-two-switch-delete-recreate",
+  "title": "连续两次新建 → 切换 → 删除非当前会话 → 再新建",
+  "area": "conversation",
+  "priority": "P1",
+  "tags": ["sequence", "create", "delete"],
+  "description": "把新建、切换、删除、再新建串成一条链，检查列表计数与选中状态在多次变更后仍然一致。每一步都用真实输入触发，不直接操作存储。",
+  "preconditions": "应用已启动。",
+  "expectations": [
+    "第二次新建不会覆盖第一个会话",
+    "删除非当前会话只减少一行，当前会话保持不变",
+    "之后再新建，计数与列表都能正确恢复"
+  ],
+  "steps": [
+    { "wait": 800 },
+    {
+      "db": {
+        "sql": "SELECT COUNT(*) AS n FROM threads WHERE deleted_at IS NULL AND status != 'deleted'",
+        "as": "startCount"
+      }
+    },
+    { "click": { "aria": "新建对话" } },
+    { "waitFor": { "text": "欢迎使用" }, "timeout": 5000 },
+    { "click": { "selector": "[role=textbox]" } },
+    { "type": "序列用例-甲" },
+    { "click": { "aria": "发送" } },
+    { "waitFor": { "text": "序列用例-甲" }, "timeout": 8000 },
+    { "wait": 600 },
+    { "click": { "aria": "新建对话" } },
+    { "waitFor": { "text": "欢迎使用" }, "timeout": 5000 },
+    { "click": { "selector": "[role=textbox]" } },
+    { "type": "序列用例-乙" },
+    { "click": { "aria": "发送" } },
+    { "waitFor": { "text": "序列用例-乙" }, "timeout": 8000 },
+    {
+      "db": {
+        "sql": "SELECT COUNT(*) AS n FROM threads WHERE deleted_at IS NULL AND status != 'deleted'",
+        "delta": 2,
+        "message": "两次发送产生两个会话"
+      }
+    },
+    { "db": { "sql": "SELECT title FROM threads WHERE title = '序列用例-甲' AND deleted_at IS NULL LIMIT 1", "as": "first" } },
+    { "click": { "aria": "{{first}}" }, "note": "切回第一个会话" },
+    { "waitFor": { "text": "{{first}}" }, "timeout": 5000 },
+    { "shot": "switched-back" },
+    { "db": { "sql": "SELECT title FROM threads WHERE title = '序列用例-乙' AND deleted_at IS NULL LIMIT 1", "as": "second" } },
+    { "hover": { "aria": "{{second}}" } },
+    { "click": { "aria": "{{second}} 的操作" } },
+    { "click": { "selector": "[role=menuitem]", "text": "删除" } },
+    { "click": { "selector": "[role=dialog] button", "text": "删除" } },
+    {
+      "db": {
+        "sql": "SELECT COUNT(*) AS n FROM threads WHERE deleted_at IS NULL AND status != 'deleted'",
+        "delta": -1,
+        "message": "删除第二个会话后只剩一个新增会话"
+      }
+    },
+    { "click": { "aria": "新建对话" } },
+    { "waitFor": { "text": "欢迎使用" }, "timeout": 5000 },
+    { "click": { "selector": "[role=textbox]" } },
+    { "type": "序列用例-丙" },
+    { "click": { "aria": "发送" } },
+    { "waitFor": { "text": "序列用例-丙" }, "timeout": 8000 },
+    {
+      "db": {
+        "sql": "SELECT COUNT(*) AS n FROM threads WHERE deleted_at IS NULL AND status != 'deleted'",
+        "delta": 1
+      }
+    },
+    { "shot": "final" }
+  ]
+}
