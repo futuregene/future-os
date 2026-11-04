@@ -1,0 +1,19 @@
+{
+  "id": "cli-unknown-command",
+  "surface": "cli",
+  "title": "CLI 错误路径：未知命令应失败并给出引导",
+  "area": "cli",
+  "priority": "P1",
+  "tags": ["cli", "error"],
+  "description": "未知子命令必须非零退出，并提示如何查看帮助；不能静默成功。",
+  "preconditions": "隔离 home。",
+  "expectations": [
+    "退出码非 0",
+    "stderr 指明未知命令并给出 future --help"
+  ],
+  "steps": [
+    { "run": ["definitely-not-a-command"], "expectExit": 1 },
+    { "expectStderr": "Unknown group" },
+    { "expectStderr": "future --help" }
+  ]
+}

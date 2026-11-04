@@ -1,0 +1,19 @@
+{
+  "id": "cli-task-list",
+  "surface": "cli",
+  "title": "CLI 定时任务：列表返回真实任务库",
+  "area": "cli-tasks",
+  "priority": "P2",
+  "tags": ["cli", "tasks"],
+  "description": "从真实 tasks.db 快照读取任务列表，确认 CLI 返回数组且至少包含本机已有的定时任务；空库与坏库不能伪装成成功。",
+  "preconditions": "隔离 home 内含 tasks.db 快照。",
+  "expectations": [
+    "退出码 0，输出是数组",
+    "至少有一个任务（快照里存在 dev 分支 PR 合并）"
+  ],
+  "steps": [
+    { "run": ["task", "list", "--json"], "expectExit": 0 },
+    { "expectJson": { "path": "", "lengthMin": 1 } },
+    { "expectJson": { "path": "", "contains": "dev 分支 PR 合并" } }
+  ]
+}

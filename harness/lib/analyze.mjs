@@ -539,6 +539,7 @@ export async function analyzeRun(runDir, { mode = "heuristic", model = null, onl
       return {
         id: item.id,
         title: item.title,
+        surface: item.surface ?? "desktop",
         status: item.status,
         durationMs: item.durationMs,
         checks: checks.length,

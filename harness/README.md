@@ -1,30 +1,49 @@
 # UI harness — end-to-end tests that watch the product like a person
 
-A browser-driven harness for the FutureOS desktop UI. It opens the **real
-frontend**, renders the **real database snapshot**, performs the same clicks a
-tester would, records what happened on every channel available (screenshots,
-video, console, network, IPC, database, CPU/memory), then has a vision model and
-a text model look for defects. Findings become a report; high-severity ones
-become issue drafts that a human approves before anything is filed.
+A multi-surface harness for FutureOS. It drives the **real desktop UI**, the
+**real mobile UI (Expo web)**, the **real TUI (in a pty)** and the **real CLI**,
+renders the desktop against a **real database snapshot**, records what happened
+on every channel available (screenshots, video, console, network, IPC, database,
+CPU/memory, stdout/stderr), then has a vision model and a text model look for
+defects. Findings become a report; high-severity ones become issue drafts that a
+human approves before anything is filed.
 
 The goal is not "a test suite that passes". It is a case library that keeps
 finding real problems as the product changes — every case is readable enough to
 replay by hand, and every run leaves evidence a person can check.
 
+## Surfaces
+
+| Surface | What it drives | Data | Case field |
+|---|---|---|---|
+| `desktop` | real desktop frontend in headless Chrome (1280×860) | copy of the real `app.db`, via the fixture server | default |
+| `mobile` | real mobile app via Expo web (`SHOT_WEB=1`, 390×844, touch) | the mobile shot mocks (synthetic fleet/parser data) | `"surface": "mobile"` |
+| `tui` | real `future tui` in a pty, rendered through the terminal cell model | `demo_agent` (scripted gRPC) | `"surface": "tui"` |
+| `cli` | real `future` binary in an isolated `FUTURE_HOME` | copy of the real `app.db` + settings/tasks snapshot | `"surface": "cli"` |
+| `remote` | desktop and mobile clients at the same time | shot mocks on both sides | `"surface": "remote"` |
+
+Two boundaries stated up front: `mobile`/`remote` use the screenshot harness's
+synthetic remote dataset (the pair check proves both clients render the same
+session, not a live NATS link), and `tui` uses `demo_agent` rather than a real
+model. `desktop` and `cli` run against real database snapshots.
+
 ## Quick start
 
 ```bash
 node harness/cli.mjs prepare              # snapshot ~/.future/app/app.db (once)
-node harness/cli.mjs list                 # the case library
-node harness/cli.mjs run --case create-chat-and-delete
+node harness/cli.mjs list                 # the case library, all surfaces
+node harness/cli.mjs run --case create-chat-and-delete      # desktop
+node harness/cli.mjs run --case cli-workspace-add-list-archive   # CLI
+node harness/cli.mjs run --case tui-help                     # TUI
+node harness/cli.mjs run --case mobile-home-list             # mobile
+node harness/cli.mjs run --case remote-parser-pair           # desktop + mobile
 node harness/cli.mjs analyze --run harness/runs/<id> --mode full
 node harness/cli.mjs report  --run harness/runs/<id>
-node harness/cli.mjs issues  --run harness/runs/<id>        # drafts only
 ```
 
-`run` starts its own Vite dev server (or reuses one on `:5299`), one headless
-Chrome, one database copy per case, and one fixture server per case. Artifacts go
-to `harness/runs/<run-id>/<case-id>/`.
+`run` starts only the servers the selected cases need: Vite for desktop, Expo
+for mobile, `demo_agent` for TUI, nothing for CLI. Artifacts go to
+`harness/runs/<run-id>/<case-id>/`.
 
 ## What is real, what is substituted
 
@@ -45,17 +64,21 @@ deliberately the fastest way to exercise the desktop UI against realistic data.
 ```
 harness/
   cli.mjs                 prepare | list | serve | run | analyze | report | issues
-  cases/**/*.json         the case library (data, not code)
+  cases/{core,mobile,tui,cli,remote}/  the case library (data, not code)
   lib/
-    data.mjs              SQLite backup of the real app.db → .data/base.db
+    data.mjs              SQLite backup + CLI home snapshot
     fixture-server.mjs    Tauri command surface over a per-case DB copy
-    cdp.mjs               Chrome DevTools driver + observations
-    run.mjs               case execution and evidence bundle
+    cdp.mjs               Chrome DevTools driver + observations (desktop/mobile)
+    run.mjs               desktop/mobile case execution and evidence bundle
+    cli-driver.mjs        real `future` in an isolated FUTURE_HOME
+    tui-driver.mjs        TUI case marshalling + result folding
+    remote-driver.mjs     desktop + mobile clients in one case
     video.mjs             screencast frames → mp4 (real timing)
     analyze.mjs           deterministic signals → vision → synthesis
     report.mjs            report.md
     issues.mjs            GitHub issue drafts (human approval by default)
-  .data/                  base.db + models.json (gitignored)
+  tui/driver.py           pty driver, terminal cell model, PNG frames
+  .data/                  base.db + models.json + cli snapshot (gitignored)
   runs/                   per-run evidence (gitignored)
 ```
 
@@ -64,9 +87,13 @@ forwards every `invoke` to the fixture server, and **falls back to the in-page
 demo mock** for commands the server does not implement. That is why settings
 panels and remote screens still work while the data surface is real.
 
-Each case gets its own database file (`harness/runs/<id>/<case>/app.db`), so a
-case that deletes a conversation cannot affect the next one. The base snapshot
-is made with SQLite's backup API, so the WAL is folded in.
+Each desktop case gets its own database file (`harness/runs/<id>/<case>/app.db`),
+so a case that deletes a conversation cannot affect the next one. The base
+snapshot is made with SQLite's backup API, so the WAL is folded in. A CLI case
+gets a whole isolated `FUTURE_HOME` (`<case>/home/`) instead: a copy of the same
+`app.db` plus snapshotted settings, skills catalogue and tasks database, with
+`FUTURE_AGENT_GRPC_ADDR` pointed at a closed port so an offline command can never
+reach the user's running agent.
 
 ## A case is data
 
@@ -105,6 +132,19 @@ Steps: `click` / `clickText` / `hover` / `type` / `press` / `scroll` / `wait` /
 - Every non-wait step takes a screenshot automatically; explicit `shot` steps
   are the ones the vision model reads.
 
+Other surfaces use the same case file shape with their own verbs:
+
+- `surface: "tui"`: `wait`, `press`, `type`, `assertText` / `expectAbsent`,
+  `shot`. `press` accepts named keys (`enter`, `esc`, `tab`, `up`, `ctrl+d`,
+  `shift+right`, …) or a single character.
+- `surface: "cli"`: `run` (argument array), `expectExit`, `expectStdout`,
+  `expectStderr`, `expectJson` (`path`/`equals`/`lengthMin`/`contains`/`exists`),
+  `db`, `mkdir`. One case gets one isolated `FUTURE_HOME`.
+- `surface: "remote"`: `pages` maps each client to a query string, and every
+  step names `surface: "desktop" | "mobile"`.
+- `surface: "mobile"`: the desktop verbs, dispatched as touch input at a
+  390×844 viewport.
+
 ## Observation channels
 
 | Channel | Where | What it catches |
@@ -117,6 +157,13 @@ Steps: `click` / `clickText` / `hover` / `type` / `press` / `scroll` / `wait` /
 | Database | case `app.db` | writes that did not happen, soft-delete semantics |
 | Performance | `metrics[]` | JS heap, DOM nodes, main-thread task time, Chrome RSS |
 | Server fallbacks | `server.fallbacks` | surfaces still answered by the demo mock (known boundary) |
+| TUI screen text | `result.json` / timeline | clipped rows, wrong panel, missing shortcut |
+| CLI stdout/stderr/exit | `run-*.stdout.log`, `result.json` | wrong JSON shape, misleading success, missing guidance |
+
+The player's own controls (pause / skip back / skip forward) are not part of the
+file: the recording is Chrome's screencast of the page. The analysis never
+screenshots a player — it reads the per-step PNGs and a filmstrip that `ffmpeg`
+extracts from the mp4 — so those controls cannot leak into a finding.
 
 ## Analysis
 
@@ -154,13 +201,19 @@ with `gh`. Nothing is filed without that explicit flag.
 
 ## Known gaps (next iterations)
 
-- **Transcripts are synthetic.** Real history lives in the 1 GB `agent.db`
-  projection layer; only thread metadata is wired to real data today.
+- **Transcripts are synthetic on desktop too.** Real history lives in the 1 GB
+  `agent.db` projection layer; only thread metadata is wired to real data today.
 - **Store queries are reimplemented.** A bug in `host/src/store/*.rs` cannot be
   found here; the harness proves UI behaviour against real-shaped data.
 - **`agent_prompt` is still mocked.** Sending does not call a model, so reply
   content and streaming states are out of scope for now.
-- **Mobile** is not driven yet; the same CDP driver can attach to
-  `serve-mobile` when a mobile case library is worth the runtime.
-- **Video is not yet fed to the model** — only stills are; keyframe sampling is
-  the next cheap step.
+- **Mobile and remote use the shot mocks.** They exercise the real mobile UI and
+  both layouts, but not a live NATS link; a two-host relay harness is the next
+  step.
+- **TUI uses `demo_agent`.** It verifies the terminal UI's behaviour, not a real
+  model answer; pointing it at a real agent is a flag away once an agent home
+  fixture exists.
+- **CLI cases are offline.** They cover commands that read `app.db`/settings/
+  tasks without an agent; agent-backed commands need a fixture agent.
+- **Video is analyzed as a filmstrip, not as motion.** Six sampled frames catch
+  obvious state changes; it is not a temporal model.

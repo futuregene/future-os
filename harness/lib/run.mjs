@@ -77,7 +77,7 @@ async function queryFixture(fixture, sql) {
 /**
  * Run one case. Returns the result record; artifacts are written beside it.
  */
-export async function runCase({ page, testCase, runDir, modelsPath, viewport, recordVideo = true }) {
+export async function runCase({ page, testCase, runDir, modelsPath, viewport, recordVideo = true, fixture: providedFixture }) {
   const caseDir = join(runDir, slug(testCase.id));
   mkdirSync(caseDir, { recursive: true });
   const shotsDir = join(caseDir, "shots");
@@ -86,11 +86,16 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
 
   const dbPath = copyDatabase(join(caseDir, "app.db"));
   const serverLogPath = join(caseDir, "server.jsonl");
-  const fixture = await createFixtureServer({
-    dbPath: dbPath || BASE_DB,
-    modelsPath,
-    logPath: serverLogPath,
-  });
+  // `fixture: null` means the page has its own mock backend (mobile shots); a
+  // fixture server would be dead weight and its DB would describe no state the
+  // page can change.
+  const fixture = providedFixture === null
+    ? null
+    : (providedFixture ?? await createFixtureServer({
+      dbPath: dbPath || BASE_DB,
+      modelsPath,
+      logPath: serverLogPath,
+    }));
 
   const startedAt = Date.now();
   const timelinePath = join(caseDir, "timeline.jsonl");
@@ -128,7 +133,7 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
   };
 
   const params = new URLSearchParams({
-    fixture: fixture.url,
+    ...(fixture ? { fixture: fixture.url } : {}),
     lang: testCase.lang ?? "zh",
     ...(testCase.theme ? { theme: testCase.theme } : {}),
   });
@@ -230,6 +235,8 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
             throw new Error(`text should be absent: ${text}`);
         }
         else if (action === "db") {
+          if (!fixture)
+            throw new Error("db step needs a fixture server; this surface has its own mock backend");
           const spec = typeof step.db === "string" ? { sql: step.db } : step.db;
           const rows = await queryFixture(fixture, spec.sql);
           entry.rows = rows;
@@ -266,6 +273,8 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
           await page.navigate(url, { ready: READY, settle: 700 });
         }
         else if (action === "server") {
+          if (!fixture)
+            throw new Error("server step needs a fixture server; this surface has its own mock backend");
           const spec = typeof step.server === "string" ? { command: step.server } : step.server;
           const matches = fixture.log.filter((row) => {
             if (row.command !== spec.command)
@@ -303,8 +312,13 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
       catch (error) {
         entry.ok = false;
         entry.error = String(error?.message ?? error);
-        status = "fail";
-        fatal ??= entry.error;
+        if (step.optional) {
+          entry.optional = true;
+        }
+        else {
+          status = "fail";
+          fatal ??= entry.error;
+        }
         try {
           entry.failureShot = join(shotsDir, `failure-${index + 1}.png`);
           await page.screenshot(entry.failureShot);
@@ -363,11 +377,12 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
     }
     if (!recordVideo)
       rmSync(framesDir, { recursive: true, force: true });
-    await fixture.close();
+    if (fixture)
+      await fixture.close();
   }
 
   const durationMs = Date.now() - startedAt;
-  const serverLog = fixture.log;
+  const serverLog = fixture?.log ?? [];
   const result = {
     id: testCase.id,
     title: testCase.title,

@@ -1,0 +1,32 @@
+{
+  "id": "remote-parser-pair",
+  "surface": "remote",
+  "title": "远程双端：桌面端与手机端打开同一个会话",
+  "area": "remote",
+  "priority": "P1",
+  "tags": ["remote", "desktop", "mobile"],
+  "description": "同时打开桌面端和手机端，指向同一段脚本化远程会话（两篇文献对比）。两端都应显示同一标题和同一段转录，证明远程会话在桌面与移动两种布局上都能被正确投影。注意：这是双端渲染一致性，不是真实 NATS 链路联调。",
+  "preconditions": "桌面 shot 服务（5299）与移动 shot 服务（8099）均可用。",
+  "pages": {
+    "desktop": "?lang=zh",
+    "mobile": ""
+  },
+  "expectations": [
+    "桌面端默认打开同一段会话并显示标题",
+    "手机端从列表打开同一会话并显示同一标题",
+    "两端截图都能看到转录内容"
+  ],
+  "steps": [
+    { "surface": "desktop", "wait": 1500 },
+    { "surface": "desktop", "assertText": "整理两篇文献的结论对比表" },
+    { "surface": "desktop", "shot": "desktop-session" },
+    { "surface": "mobile", "wait": 1500 },
+    { "surface": "mobile", "click": { "text": "稍后再说" } },
+    { "surface": "mobile", "wait": 500 },
+    { "surface": "mobile", "click": { "text": "整理两篇文献的结论对比表" } },
+    { "surface": "mobile", "wait": 1200 },
+    { "surface": "mobile", "assertText": "整理两篇文献的结论对比表" },
+    { "surface": "mobile", "assertText": "结论对比" },
+    { "surface": "mobile", "shot": "mobile-session" }
+  ]
+}

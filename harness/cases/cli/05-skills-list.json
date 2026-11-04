@@ -1,0 +1,15 @@
+{
+  "id": "cli-skills-list",
+  "surface": "cli",
+  "title": "CLI 技能目录：skills list --json",
+  "area": "cli-skills",
+  "priority": "P1",
+  "tags": ["cli", "skills"],
+  "description": "技能目录来自快照的 catalogue，至少应返回 10 个条目；用于确认 CLI 没有把空目录当成成功。",
+  "preconditions": "隔离 home 内含 skills-catalogue.json。",
+  "expectations": ["退出码 0，skills 数组至少 10 项"],
+  "steps": [
+    { "run": ["skills", "list", "--json"], "expectExit": 0 },
+    { "expectJson": { "path": "skills", "lengthMin": 10 } }
+  ]
+}

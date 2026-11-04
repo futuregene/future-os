@@ -1,0 +1,25 @@
+{
+  "id": "mobile-home-list",
+  "surface": "mobile",
+  "title": "手机端首页：最近会话与活跃分组",
+  "area": "mobile-home",
+  "priority": "P0",
+  "tags": ["mobile", "smoke"],
+  "description": "打开 Expo web 渲染的真实手机端界面，关掉更新提示，确认最近会话、活跃分组与工作区标签都来自 mock 数据并可见。",
+  "preconditions": "移动端 shot 服务在 8099 运行。",
+  "expectations": [
+    "首页显示 5 条最近会话",
+    "活跃分组显示 1 条运行中的会话",
+    "更新提示可以关闭"
+  ],
+  "steps": [
+    { "wait": 1500 },
+    { "click": { "text": "稍后再说" }, "note": "关闭开发版更新提示", "optional": true },
+    { "wait": 600 },
+    { "expectText": "最近" },
+    { "expectText": "活跃" },
+    { "expectText": "跑通 Longformer 的 baseline" },
+    { "expectText": "整理两篇文献的结论对比表" },
+    { "shot": "mobile-home" }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "id": "mobile-open-conversation",
+  "surface": "mobile",
+  "title": "手机端打开会话：转录与输入框",
+  "area": "mobile-chat",
+  "priority": "P0",
+  "tags": ["mobile", "chat"],
+  "description": "从首页点开一条真实会话（mock 数据），确认转录、图片、用量与输入框都渲染出来；这是手机端最核心的阅读路径。",
+  "preconditions": "移动端 shot 服务在 8099 运行。",
+  "expectations": [
+    "点开会话后标题与工作区信息出现",
+    "转录里能看到对比表与消息",
+    "输入框可用（给 FutureOS 发消息）"
+  ],
+  "steps": [
+    { "wait": 1500 },
+    { "click": { "text": "稍后再说" }, "optional": true },
+    { "wait": 500 },
+    { "click": { "text": "整理两篇文献的结论对比表" } },
+    { "wait": 1200 },
+    { "expectText": "结论对比" },
+    { "expectText": "Frank 等 (2024)" },
+    { "assert": { "expr": "!!document.querySelector('textarea[aria-label=\"给 FutureOS 发消息\"]')", "message": "输入框可定位" } },
+    { "shot": "mobile-conversation" }
+  ]
+}

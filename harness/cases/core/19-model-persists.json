@@ -1,0 +1,33 @@
+{
+  "id": "model-persists-after-reload",
+  "title": "切换模型后刷新：会话仍使用所选模型",
+  "area": "model",
+  "priority": "P1",
+  "tags": ["model", "reload", "persistence"],
+  "description": "新建会话时选 deepseek-flash 并发送，刷新页面后打开同一会话，模型控件应仍显示 deepseek-flash，而不是回落到默认模型。",
+  "preconditions": "至少两个可见模型。",
+  "expectations": [
+    "发送后模型控件显示 deepseek-flash",
+    "刷新后同一会话仍显示 deepseek-flash"
+  ],
+  "steps": [
+    { "wait": 800 },
+    { "click": { "aria": "新建对话" } },
+    { "waitFor": { "text": "欢迎使用" }, "timeout": 5000 },
+    { "click": { "selector": "button[title='模型']" } },
+    { "waitFor": { "text": "deepseek-flash" }, "timeout": 5000 },
+    { "click": { "selector": "button", "text": "deepseek-flash" } },
+    { "assert": { "expr": "document.querySelector(\"button[title='模型']\").innerText.includes('deepseek-flash')", "message": "发送前模型控件已切换" } },
+    { "click": { "selector": "[role=textbox]" } },
+    { "type": "模型持久化检查" },
+    { "click": { "aria": "发送" } },
+    { "waitFor": { "text": "模型持久化检查" }, "timeout": 8000 },
+    { "db": { "sql": "SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' ORDER BY created_at DESC LIMIT 1", "as": "created" } },
+    { "reload": true },
+    { "waitFor": { "text": "{{created}}" }, "timeout": 10000 },
+    { "click": { "aria": "{{created}}" } },
+    { "wait": 1200 },
+    { "assert": { "expr": "document.querySelector(\"button[title='模型']\").innerText.includes('deepseek-flash')", "message": "刷新后仍显示 deepseek-flash" } },
+    { "shot": "after-reload-model" }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "id": "cli-config-get",
+  "surface": "cli",
+  "title": "CLI 配置读取：config get --json",
+  "area": "cli-settings",
+  "priority": "P1",
+  "tags": ["cli", "settings"],
+  "description": "读取隔离 home 中的有效配置，确认 JSON 结构包含默认权限等级与压缩设置，且不会写到真实 home。",
+  "preconditions": "隔离 home 内含 settings.json。",
+  "expectations": [
+    "退出码 0，输出是合法 JSON",
+    "包含 defaultPermissionLevel 与 compaction 字段"
+  ],
+  "steps": [
+    { "run": ["config", "get", "--json"], "expectExit": 0 },
+    { "expectJson": { "path": "defaultPermissionLevel", "exists": true } },
+    { "expectJson": { "path": "compaction.enabled", "exists": true } }
+  ]
+}

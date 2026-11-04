@@ -1,0 +1,25 @@
+{
+  "id": "tui-palette",
+  "surface": "tui",
+  "title": "TUI 命令面板：/ 打开并过滤",
+  "area": "tui",
+  "priority": "P1",
+  "tags": ["tui", "palette"],
+  "description": "按 / 打开命令面板，确认面板出现；输入 usage 过滤，确认过滤后的列表仍显示命令条目。",
+  "preconditions": "future 与 demo_agent 已构建。",
+  "expectations": [
+    "/ 打开命令面板",
+    "输入 usage 后面板仍可读且包含命令",
+    "画面没有错位或空白"
+  ],
+  "steps": [
+    { "wait": 1500 },
+    { "press": "/" },
+    { "wait": 700 },
+    { "assertText": "命令" },
+    { "type": "usage" },
+    { "wait": 500 },
+    { "assertText": "usage" },
+    { "shot": "tui-palette" }
+  ]
+}

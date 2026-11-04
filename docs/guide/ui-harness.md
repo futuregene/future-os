@@ -11,6 +11,20 @@ fidelity boundaries and current gaps — is
 file cannot: where the harness sits among the existing tools, and how to run it
 on a machine that already has the app installed.
 
+## Surfaces
+
+| Surface | What runs | Data |
+|---|---|---|
+| `desktop` | real desktop frontend in headless Chrome | copy of the real `app.db` |
+| `mobile` | real mobile UI via Expo web, touch input | mobile shot mocks |
+| `tui` | real `future tui` in a pty | scripted `demo_agent` |
+| `cli` | real `future` binary, isolated `FUTURE_HOME` | real `app.db` + settings snapshot |
+| `remote` | desktop and mobile clients in one case | shot mocks on both sides |
+
+`remote` proves the two clients render the same session consistently; it is not
+a live relay test. `tui` and `mobile` verify behaviour, not model or network
+fidelity. `desktop` and `cli` run against real database snapshots.
+
 ## Where it fits
 
 The [screenshot harness](screenshots.md) renders the same frontend for

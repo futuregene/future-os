@@ -15,8 +15,9 @@ import { mkdirSync, writeFileSync, readdirSync, readFileSync, existsSync, rmSync
 import { join, resolve } from "node:path";
 import { loadCases, listCases, CASES_DIR } from "./lib/cases.mjs";
 import { prepare, BASE_DB, MODELS_COPY, DATA_DIR } from "./lib/data.mjs";
-import { ensureDevServer, DEFAULT_URL } from "./lib/dev-server.mjs";
+import { ensureDevServer, ensureMobileServer, DEFAULT_URL } from "./lib/dev-server.mjs";
 import { runCase } from "./lib/run.mjs";
+import { runCliCase } from "./lib/cli-driver.mjs";
 import { CdpPage } from "./lib/cdp.mjs";
 import { analyzeRun } from "./lib/analyze.mjs";
 import { writeReport } from "./lib/report.mjs";
@@ -93,46 +94,117 @@ async function main() {
     if (!cases.length)
       throw new Error(`no cases matched (library: ${CASES_DIR})`);
 
-    const server = await ensureDevServer();
     const runId = arg("name") ?? stamp();
     const runDir = join(RUNS_DIR, runId);
     mkdirSync(runDir, { recursive: true });
     const viewport = { width: Number(arg("w", 1280)), height: Number(arg("h", 860)), scale: Number(arg("scale", 2)) };
-
-    const page = await CdpPage.launch({ ...viewport, userDataDir: join(runDir, "chrome-profile") });
     const results = [];
+    const closers = [];
+
+    const record = (result) => {
+      results.push(result);
+      const checks = result.checks ?? [];
+      const passed = checks.filter(check => check.ok).length;
+      console.log(`  ${result.status.toUpperCase()}  ${checks.length ? `${passed}/${checks.length} checks` : "no explicit checks"}  ${(result.durationMs / 1000).toFixed(1)}s  → ${result.artifacts.dir}`);
+      if (result.fatal)
+        console.log(`  ↳ ${String(result.fatal).split("\n")[0]}`);
+      writeFileSync(join(runDir, "run.json"), JSON.stringify({
+        id: runId,
+        startedAt: results[0]?.startedAt,
+        surfaces: [...new Set(results.map(item => item.surface ?? "desktop"))],
+        cases: results.map(r => ({
+          id: r.id, title: r.title, surface: r.surface ?? "desktop", status: r.status, durationMs: r.durationMs,
+          checks: (r.checks ?? []).length, fatal: r.fatal, dir: r.artifacts.dir,
+        })),
+      }, null, 2));
+    };
+
+    const bySurface = surface => cases.filter(testCase => (testCase.surface ?? "desktop") === surface);
     try {
-      for (const testCase of cases) {
-        process.stdout.write(`\n▶ ${testCase.id} — ${testCase.title}\n`);
-        const result = await runCase({
-          page,
-          testCase: { ...testCase, baseUrl: `${server.url}` },
-          runDir,
-          modelsPath: MODELS_COPY,
-          viewport,
-          recordVideo: !flag("no-video"),
+      const desktop = bySurface("desktop");
+      if (desktop.length) {
+        const server = await ensureDevServer({ reuse: flag("reuse-server") });
+        closers.push(() => server.stop());
+        const page = await CdpPage.launch({ ...viewport, userDataDir: join(runDir, "chrome-profile") });
+        closers.push(() => page.close());
+        for (const testCase of desktop) {
+          process.stdout.write(`\n▶ ${testCase.id} — ${testCase.title}\n`);
+          record(await runCase({
+            page,
+            testCase: { ...testCase, baseUrl: server.url },
+            runDir,
+            modelsPath: MODELS_COPY,
+            viewport,
+            recordVideo: !flag("no-video"),
+          }));
+        }
+      }
+
+      const mobile = bySurface("mobile");
+      if (mobile.length) {
+        const server = await ensureMobileServer({ reuse: flag("reuse-server") });
+        closers.push(() => server.stop());
+        const page = await CdpPage.launch({
+          width: 390,
+          height: 844,
+          scale: 2,
+          mobile: true,
+          touch: true,
+          userDataDir: join(runDir, "mobile-profile"),
         });
-        results.push(result);
-        const checks = result.checks;
-        const passed = checks.filter(check => check.ok).length;
-        console.log(`  ${result.status.toUpperCase()}  ${checks.length ? `${passed}/${checks.length} checks` : "no explicit checks"}  ${(result.durationMs / 1000).toFixed(1)}s  → ${result.artifacts.dir}`);
-        if (result.fatal)
-          console.log(`  ↳ ${result.fatal.split("\n")[0]}`);
-        writeFileSync(join(runDir, "run.json"), JSON.stringify({
-          id: runId,
-          startedAt: results[0]?.startedAt,
-          url: DEFAULT_URL,
-          cases: results.map(r => ({
-            id: r.id, title: r.title, status: r.status, durationMs: r.durationMs,
-            checks: r.checks.length, fatal: r.fatal, dir: r.artifacts.dir,
-          })),
-        }, null, 2));
+        await page.send("Emulation.setLocaleOverride", { locale: "zh-CN" });
+        await page.send("Emulation.setUserAgentOverride", {
+          userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+          acceptLanguage: "zh-CN",
+        });
+        closers.push(() => page.close());
+        for (const testCase of mobile) {
+          process.stdout.write(`\n▶ ${testCase.id} — ${testCase.title}\n`);
+          record(await runCase({
+            page,
+            testCase: { ...testCase, surface: "mobile", baseUrl: server.url },
+            runDir,
+            modelsPath: MODELS_COPY,
+            viewport: { width: 390, height: 844, scale: 2 },
+            recordVideo: !flag("no-video"),
+            fixture: null,
+          }));
+        }
+      }
+
+      for (const testCase of bySurface("cli")) {
+        process.stdout.write(`\n▶ ${testCase.id} — ${testCase.title}\n`);
+        record(await runCliCase({ testCase, runDir }));
+      }
+
+      const tui = bySurface("tui");
+      if (tui.length) {
+        const { runTuiCases } = await import("./lib/tui-driver.mjs");
+        for (const result of await runTuiCases({ cases: tui, runDir }))
+          record(result);
+      }
+
+      const remote = bySurface("remote");
+      if (remote.length) {
+        const { runRemoteCases } = await import("./lib/remote-driver.mjs");
+        const server = await ensureDevServer({ reuse: flag("reuse-server") });
+        const mobileServer = await ensureMobileServer({ reuse: flag("reuse-server") });
+        closers.push(() => server.stop());
+        closers.push(() => mobileServer.stop());
+        for (const result of await runRemoteCases({ cases: remote, runDir, desktopUrl: server.url, mobileUrl: mobileServer.url }))
+          record(result);
       }
     }
     finally {
-      await page.close();
-      if (!flag("keep-server"))
-        await server.stop();
+      for (const close of closers.reverse()) {
+        try {
+          await close();
+        }
+        catch {}
+      }
+      if (!flag("keep-server")) {
+        // pages/servers already stopped above
+      }
     }
 
     const analyze = arg("analyze", "heuristic");

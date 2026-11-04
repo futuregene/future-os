@@ -1,0 +1,20 @@
+{
+  "id": "cli-version-and-help",
+  "surface": "cli",
+  "title": "CLI 基础契约：version 与 --help",
+  "area": "cli",
+  "priority": "P0",
+  "tags": ["cli", "smoke"],
+  "description": "在隔离 home 里运行 future version 与 future --help，确认二进制可执行、版本格式稳定、帮助入口存在。",
+  "preconditions": "已构建与当前代码一致的 future 二进制。",
+  "expectations": [
+    "version 退出码 0，输出形如 future vX.Y.Z",
+    "顶层 --help 退出码 0 并给出 Usage"
+  ],
+  "steps": [
+    { "run": ["version"], "expectExit": 0 },
+    { "expectStdout": { "regex": "^future v\\d+\\.\\d+\\.\\d+" } },
+    { "run": ["--help"], "expectExit": 0 },
+    { "expectStdout": "Usage:" }
+  ]
+}

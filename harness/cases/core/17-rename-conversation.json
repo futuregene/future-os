@@ -1,0 +1,47 @@
+{
+  "id": "rename-conversation",
+  "title": "重命名会话：列表与数据库同步",
+  "area": "conversation",
+  "priority": "P1",
+  "tags": ["rename", "conversation"],
+  "description": "新建一个会话，从行菜单重命名，确认对话框预填旧标题；保存后侧边栏行与数据库标题都更新，旧标题不再出现在列表。",
+  "preconditions": "应用已启动。",
+  "expectations": [
+    "重命名对话框预填当前标题",
+    "保存后数据库 title 更新",
+    "侧边栏用新标题显示，旧标题消失"
+  ],
+  "steps": [
+    { "wait": 800 },
+    { "click": { "aria": "新建对话" } },
+    { "waitFor": { "text": "欢迎使用" }, "timeout": 5000 },
+    { "click": { "selector": "[role=textbox]" } },
+    { "type": "重命名前的标题" },
+    { "click": { "aria": "发送" } },
+    { "waitFor": { "text": "重命名前的标题" }, "timeout": 8000 },
+    { "db": { "sql": "SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' ORDER BY created_at DESC LIMIT 1", "as": "old" } },
+    { "hover": { "aria": "{{old}}" } },
+    { "click": { "aria": "{{old}} 的操作" } },
+    { "click": { "selector": "[role=menuitem]", "text": "重命名" } },
+    { "waitFor": { "selector": "[role=dialog] input" }, "timeout": 3000 },
+    { "assert": { "expr": "document.querySelector('[role=dialog] input').value === '{{old}}'", "message": "重命名对话框预填当前标题" } },
+    { "eval": "document.querySelector('[role=dialog] input').focus(); document.querySelector('[role=dialog] input').select()" },
+    { "type": "重命名后的标题" },
+    { "click": { "selector": "[role=dialog] button", "text": "保存" } },
+    { "wait": 900 },
+    {
+      "db": {
+        "sql": "SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' ORDER BY created_at DESC LIMIT 1",
+        "expect": "重命名后的标题",
+        "message": "数据库标题已更新"
+      }
+    },
+    {
+      "assert": {
+        "expr": "!!document.querySelector('[aria-label=\"重命名后的标题\"]')",
+        "message": "侧边栏使用新标题"
+      }
+    },
+    { "shot": "after-rename" }
+  ]
+}

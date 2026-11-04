@@ -1,0 +1,26 @@
+{
+  "id": "tui-help",
+  "surface": "tui",
+  "title": "TUI 帮助：? 打开快捷键面板",
+  "area": "tui",
+  "priority": "P1",
+  "tags": ["tui", "help"],
+  "description": "按下 ? 打开帮助层，确认帮助内容出现且可以用 esc 关闭回到会话。",
+  "preconditions": "future 与 demo_agent 已构建。",
+  "expectations": [
+    "? 打开帮助层，出现「帮助」文案",
+    "帮助层说明 esc 返回",
+    "esc 关闭后回到输入框"
+  ],
+  "steps": [
+    { "wait": 1500 },
+    { "press": "?" },
+    { "wait": 700 },
+    { "assertText": "帮助" },
+    { "assertText": "esc" },
+    { "shot": "tui-help" },
+    { "press": "esc" },
+    { "wait": 500 },
+    { "assertText": "描述你要做的事" }
+  ]
+}

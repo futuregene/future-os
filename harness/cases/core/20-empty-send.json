@@ -1,0 +1,31 @@
+{
+  "id": "empty-send-noop",
+  "title": "空输入点发送：不创建会话、不离开新对话页",
+  "area": "compose",
+  "priority": "P2",
+  "tags": ["compose", "edge"],
+  "description": "在新对话页什么都不输入就点发送。必须是无操作：数据库行数不变、仍停在新对话页、没有错误提示。",
+  "preconditions": "应用已启动。",
+  "expectations": [
+    "发送空输入不创建会话",
+    "仍停留在新对话页",
+    "没有错误提示"
+  ],
+  "steps": [
+    { "wait": 800 },
+    { "db": { "sql": "SELECT COUNT(*) AS n FROM threads WHERE deleted_at IS NULL AND status != 'deleted'", "as": "before" } },
+    { "click": { "aria": "新建对话" } },
+    { "waitFor": { "text": "欢迎使用" }, "timeout": 5000 },
+    { "click": { "aria": "发送" }, "optional": true },
+    { "wait": 800 },
+    {
+      "db": {
+        "sql": "SELECT COUNT(*) AS n FROM threads WHERE deleted_at IS NULL AND status != 'deleted'",
+        "delta": 0,
+        "message": "空发送没有创建会话"
+      }
+    },
+    { "expectText": "欢迎使用" },
+    { "shot": "empty-send" }
+  ]
+}

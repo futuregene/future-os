@@ -1,0 +1,22 @@
+{
+  "id": "tui-open-chat",
+  "surface": "tui",
+  "title": "TUI 启动：会话正文、输入框与状态栏",
+  "area": "tui",
+  "priority": "P0",
+  "tags": ["tui", "smoke"],
+  "description": "在真实 pty 里启动 future tui，连到脚本化 demo_agent。确认首屏有会话正文、输入框提示、空闲状态与模型信息；整屏按 130x40 渲染。",
+  "preconditions": "future 与 demo_agent 已构建。",
+  "expectations": [
+    "首屏显示输入框提示「描述你要做的事」",
+    "状态栏显示「空闲」与模型名",
+    "画面是 130x40 的完整终端布局"
+  ],
+  "steps": [
+    { "wait": 1500 },
+    { "assertText": "描述你要做的事" },
+    { "assertText": "空闲" },
+    { "assertText": "future/deepseek-flash" },
+    { "shot": "tui-chat" }
+  ]
+}

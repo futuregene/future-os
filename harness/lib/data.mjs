@@ -7,7 +7,7 @@
  * folded in and the file is a single consistent snapshot; every case then gets
  * its own copy of that snapshot.
  */
-import { copyFileSync, existsSync, mkdirSync, statSync, writeFileSync, readFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, statSync, writeFileSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -17,6 +17,7 @@ export const DATA_DIR = resolve(import.meta.dirname, "..", ".data");
 export const BASE_DB = join(DATA_DIR, "base.db");
 export const BASE_META = join(DATA_DIR, "base.json");
 export const MODELS_COPY = join(DATA_DIR, "models.json");
+export const CLI_SNAPSHOT = join(DATA_DIR, "cli");
 
 export function defaultSource() {
   return join(homedir(), ".future", "app", "app.db");
@@ -63,8 +64,44 @@ export async function prepare({ source = defaultSource(), force = false } = {}) 
   if (existsSync(modelsSource))
     copyFileSync(modelsSource, MODELS_COPY);
 
+  // The CLI surface needs the agent's settings/catalogue (read-only) and, when
+  // present, the scheduled-task database. Snapshotted here so a CLI run is not
+  // affected by the user editing those files mid-run.
+  mkdirSync(CLI_SNAPSHOT, { recursive: true });
+  for (const name of ["settings.json", "models.json", "skills-catalogue.json"]) {
+    const from = join(homedir(), ".future", "agent", name);
+    if (existsSync(from))
+      copyFileSync(from, join(CLI_SNAPSHOT, name));
+  }
+  const skillsDir = join(homedir(), ".future", "agent", "skills");
+  if (existsSync(skillsDir))
+    cpSync(skillsDir, join(CLI_SNAPSHOT, "skills"), { recursive: true });
+  const tasksDb = join(homedir(), ".future", "tasks", "tasks.db");
+  if (existsSync(tasksDb))
+    copyFileSync(tasksDb, join(CLI_SNAPSHOT, "tasks.db"));
+
   writeFileSync(BASE_META, JSON.stringify(meta, null, 2));
   return { path: BASE_DB, meta, reused: false };
+}
+
+/** An isolated FutureOS home for one CLI case; the real app.db copy plus config. */
+export function createCliHome(target) {
+  const home = resolve(target);
+  mkdirSync(join(home, "app"), { recursive: true });
+  mkdirSync(join(home, "agent"), { recursive: true });
+  mkdirSync(join(home, "tasks"), { recursive: true });
+  mkdirSync(join(home, "run"), { recursive: true });
+  copyDatabase(join(home, "app", "app.db"));
+  for (const name of ["settings.json", "models.json", "skills-catalogue.json"]) {
+    const from = join(CLI_SNAPSHOT, name);
+    if (existsSync(from))
+      copyFileSync(from, join(home, "agent", name));
+  }
+  if (existsSync(join(CLI_SNAPSHOT, "skills")))
+    cpSync(join(CLI_SNAPSHOT, "skills"), join(home, "agent", "skills"), { recursive: true });
+  if (existsSync(join(CLI_SNAPSHOT, "tasks.db")))
+    copyFileSync(join(CLI_SNAPSHOT, "tasks.db"), join(home, "tasks", "tasks.db"));
+  return { home, appDb: join(home, "app", "app.db") };
 }
 
 /** A private copy of the snapshot for one case, so writes cannot leak. */
