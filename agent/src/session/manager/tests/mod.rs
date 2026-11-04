@@ -31,6 +31,7 @@ fn temp_manager(tag: &str) -> (std::path::PathBuf, Manager) {
 mod compactor_lifecycle;
 mod display_cache;
 mod encoding;
+mod equivalence;
 mod fork_validation;
 mod legacy_state;
 mod message_page;
