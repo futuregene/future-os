@@ -469,6 +469,7 @@ Review File Change 表示某个文件或 artifact 的具体变更。
 | `commit_id` / `tree_id` | 影子仓 commit / tree（可丢弃缓存，非真源） |
 | `status` | `complete` / `partial` / `failed` |
 | `file_count` / `total_bytes` / `ignored_count` / `omitted_count` | 快照统计 |
+| `ignored_paths` | `ignored_count` 计的是什么：被 Workspace 忽略规则挡住的每条路径，连同挡住它的规则（`info/exclude:12:/bugfind/`、`.gitignore:1:*.log`） |
 | `error_message` | 失败原因 |
 | `created_at` | 创建时间 |
 
