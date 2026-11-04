@@ -408,7 +408,17 @@ vi.mock("./hooks/useWorkspaceDialogs", () => ({ useWorkspaceDialogs: () => mocks
 vi.mock("../../features/terminal/useTerminalPanel", () => ({
   useTerminalPanel: () => ({ open: Boolean(mocks.store.terminalOpen), shortcut: "mod+j", toggle: mocks.hooks.toggleTerminal }),
 }));
-vi.mock("../../features/terminal/panelTarget", () => ({ terminalTarget: () => mocks.terminalTarget }));
+vi.mock("../../features/terminal/panelTarget", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../features/terminal/panelTarget")>();
+  // The rule itself is unit-tested (`panelTarget.test.ts`); this suite pins what
+  // the shell does with its answer, so only the answer is stubbed.
+  return {
+    ...actual,
+    terminalScope: () => (mocks.terminalTarget
+      ? { kind: "local", threadId: mocks.terminalTarget, key: mocks.terminalTarget }
+      : null),
+  };
+});
 
 // ── integration layer ───────────────────────────────────────────────────────
 vi.mock("../../integrations/agent/agentStateCache", () => ({

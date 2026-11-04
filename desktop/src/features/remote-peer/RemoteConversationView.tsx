@@ -103,6 +103,7 @@ export function RemoteConversationView({
   title,
   workspaceName,
   sessionId,
+  terminalAction,
   chrome = "full",
   selectiveEvents = true,
 }: {
@@ -111,6 +112,14 @@ export function RemoteConversationView({
   approvalPending: string | null;
   /** The host this conversation lives on, for reads that address it. */
   desktopId: string;
+  /**
+   * The header's terminal toggle, when this host can run shells.
+   *
+   * Passed in rather than built here: the panel, its shortcut binding and its
+   * state live at the shell (`AppShell`), exactly as they do for this machine's
+   * own conversations, and the header is only where the button is drawn.
+   */
+  terminalAction?: React.ReactNode;
   composer: React.ReactNode;
   messages: AgentMessage[];
   /**
@@ -386,6 +395,7 @@ export function RemoteConversationView({
             header is for the conversation, and a figure that changes every turn
             draws the eye away from it. */}
               <div className="flex items-center gap-2">
+                {terminalAction}
                 <IconButton
                   aria-haspopup="dialog"
                   // The local header's own size and spacing (`ThreadHeader`): the button

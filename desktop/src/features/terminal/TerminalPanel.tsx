@@ -7,13 +7,19 @@ import type { ErrorInfo, ReactNode } from "react";
  * collapsing the panel serializes the screen into the tab store and closes the
  * socket, while the shell keeps running on the Rust side.
  */
+import type { TerminalApi } from "./api";
+import type { TerminalTransport } from "./transport";
 import type { TerminalPanelController } from "./useTerminalPanel";
+import type { TerminalTabsController } from "./useTerminalTabs";
 import { Loader2, Plus, RotateCcw, X } from "lucide-react";
-import { Component, lazy, Suspense, useEffect, useRef, useState } from "react";
+import { Component, lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { IconButton } from "../../components/ui/IconButton";
 import { cn } from "../../lib/cn";
+import { remoteTerminalApi, remoteTerminalScope } from "./api";
+import { localTransport } from "./localTransport";
 import { terminalPanelLabel } from "./panelLabel";
+import { remoteTerminalTransport } from "./remoteTerminal";
 import { defaultTitle, useTerminalTabs } from "./useTerminalTabs";
 
 /** xterm is heavy; the panel is the only consumer, so it loads on first open. */
@@ -22,11 +28,60 @@ const TerminalView = lazy(() => import("./TerminalView").then(module => ({ defau
 export interface TerminalPanelProps {
   threadId: string;
   panel: TerminalPanelController;
+  /** Which machine owns the shells. Defaults to this one. */
+  transport?: TerminalTransport;
+  /** The host's name, shown while the shell is not on this machine. */
+  hostLabel?: string;
 }
 
-export function TerminalPanel({ threadId, panel }: TerminalPanelProps) {
-  const { t } = useTranslation("terminal");
+/** This machine's terminal panel: the app's own shells over loopback. */
+export function TerminalPanel({ threadId, panel, transport, hostLabel }: TerminalPanelProps) {
   const tabs = useTerminalTabs(threadId);
+  return (
+    <TerminalPanelShell
+      hostLabel={hostLabel}
+      panel={panel}
+      tabs={tabs}
+      transport={transport ?? localTransport}
+    />
+  );
+}
+
+export interface RemoteTerminalPanelProps {
+  desktopId: string;
+  sessionId: string;
+  panel: TerminalPanelController;
+  /** The host's name, so a tab strip never reads as this machine's. */
+  hostLabel: string;
+}
+
+/**
+ * A paired desktop's terminal panel.
+ *
+ * Same panel, same tab controller, different owner: the shells run on that
+ * machine, in that conversation's directory, and closing the conversation here
+ * only detaches this view. The tab state is namespaced per host and session so
+ * switching machines cannot adopt another conversation's tabs.
+ */
+export function RemoteTerminalPanel({ desktopId, sessionId, panel, hostLabel }: RemoteTerminalPanelProps) {
+  const api = useMemo<TerminalApi>(() => remoteTerminalApi(desktopId, sessionId), [desktopId, sessionId]);
+  const transport = useMemo(
+    () => remoteTerminalTransport(desktopId),
+    [desktopId],
+  );
+  const tabs = useTerminalTabs(remoteTerminalScope(desktopId, sessionId), api);
+  return <TerminalPanelShell hostLabel={hostLabel} panel={panel} tabs={tabs} transport={transport} />;
+}
+
+interface TerminalPanelShellProps {
+  panel: TerminalPanelController;
+  tabs: TerminalTabsController;
+  transport: TerminalTransport;
+  hostLabel?: string;
+}
+
+function TerminalPanelShell({ panel, tabs, transport, hostLabel }: TerminalPanelShellProps) {
+  const { t } = useTranslation("terminal");
   // Transient transport notice per tab, cleared when it reconnects.
   const [notices, setNotices] = useState<Record<string, string | undefined>>({});
   const autoCreatedRef = useRef(false);
@@ -126,6 +181,16 @@ export function TerminalPanel({ threadId, panel }: TerminalPanelProps) {
             onClick={() => void tabs.create()}
           />
         </div>
+        {hostLabel
+          ? (
+              <span
+                className="shrink-0 rounded border border-line px-1.5 py-0.5 text-2xs text-ink-muted"
+                title={t("onHost", { host: hostLabel })}
+              >
+                {t("onHost", { host: hostLabel })}
+              </span>
+            )
+          : null}
         <IconButton
           className="size-7 shrink-0"
           icon={<X className="size-3.5" />}
@@ -213,6 +278,7 @@ export function TerminalPanel({ threadId, panel }: TerminalPanelProps) {
                       <TerminalView
                         autoFocus
                         key={activeTab.id}
+                        transport={transport}
                         onConnect={() => setNotice(setNotices, activeTab.id, undefined)}
                         onDisconnected={() => setNotice(setNotices, activeTab.id, "disconnected")}
                         onExit={code => tabs.markExit(activeTab.id, code)}
@@ -232,7 +298,7 @@ export function TerminalPanel({ threadId, panel }: TerminalPanelProps) {
 }
 
 /** Create failures render as a bar so an existing tab stays visible. */
-function ErrorBar({ tabs }: { tabs: ReturnType<typeof useTerminalTabs> }) {
+function ErrorBar({ tabs }: { tabs: TerminalTabsController }) {
   const { t } = useTranslation("terminal");
   const error = tabs.createError;
   if (!error)
