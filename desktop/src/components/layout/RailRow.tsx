@@ -99,27 +99,35 @@ export function RailRow({
  */
 export function RailLoadMoreRow({
   compact,
+  count,
   disabled,
-  label,
   onClick,
-  testId,
 }: {
   compact?: boolean;
+  /**
+   * How many rows this click will add — the list's real remainder.
+   *
+   * Passed in rather than read here because only the list's own store knows it,
+   * and rendered here because it is the same sentence in every list: a control
+   * that says "476" must load 476, so the caller pairs this count with a walk to
+   * the end of its cursor.
+   */
+  count: number;
   disabled?: boolean;
-  label: string;
   onClick: () => void;
-  testId?: string;
 }) {
+  const { t } = useTranslation("layout");
   return (
     <button
       className="flex h-7 w-full items-center rounded-md text-xs text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft disabled:opacity-50"
-      data-testid={testId}
+      data-load-more={count}
+      data-testid="rail-load-more"
       disabled={disabled}
       onClick={onClick}
       style={{ paddingLeft: compact ? 28 : 16 }}
       type="button"
     >
-      {label}
+      {t("activityRail.showMore", { count })}
     </button>
   );
 }

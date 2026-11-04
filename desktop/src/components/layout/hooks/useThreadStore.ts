@@ -228,13 +228,12 @@ export interface ThreadStore {
   scopeRemaining: (scope: string) => number;
   /** Whether a scope's first page is still in flight. */
   scopeLoading: (scope: string) => boolean;
-  /** Fetch the next page of `scope` (or its first page). */
-  loadMore: (scope: string) => Promise<void>;
   /**
    * Fetch every remaining page of `scope`.
    *
-   * The other half of `scopeRemaining`: a control that names "the other 476"
-   * must load 476, not the next page of 30.
+   * The other half of `scopeRemaining`, and the only way a list pages now: every
+   * control that offers more names its remainder, so it must load that many —
+   * not the next page of 30.
    */
   loadRemaining: (scope: string) => Promise<void>;
   /** Make sure `scope` has been requested at least once (lazy workspace groups). */
@@ -391,19 +390,6 @@ export function useThreadStore(): ThreadStore {
       throw error;
     }
   }, [mergeThreads]);
-
-  /**
-   * The next page of `scope`, or its first page when it has not started.
-   *
-   * One page per call: the tree's groups load ten conversations at a time, which
-   * is what their "load more" asks for.
-   */
-  const loadMore = useCallback(async (scope: string) => {
-    const state = scopesRef.current[scope];
-    if (state?.loading)
-      return;
-    await requestPage(scope, state?.started ? state.nextCursor : null);
-  }, [requestPage]);
 
   /**
    * Every remaining page of `scope`, for a control that names a count.
@@ -792,7 +778,6 @@ export function useThreadStore(): ThreadStore {
     activeThreads,
     activeWorkspace,
     ensureScope,
-    loadMore,
     loadRemaining,
     loadingStore,
     recentThreadIds: scopes[RECENT_SCOPE]?.started ? recentIds : undefined,

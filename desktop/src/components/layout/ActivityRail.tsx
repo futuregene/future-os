@@ -159,9 +159,13 @@ interface ActivityRailProps {
   onShowArchiveGuide?: () => void;
   /** Ask for a scope's first page (lazy workspace groups). */
   ensureThreadScope?: (scope: string) => void;
-  /** Fetch the next page of a scope. */
-  loadMoreThreadScope?: (scope: string) => Promise<void>;
-  /** Fetch every remaining page of a scope, for a control that names a count. */
+  /**
+   * Fetch every remaining page of a scope.
+   *
+   * One page per click would make every "show the rest" control a lie, so the
+   * lists ask for the remainder they just named, in pages of the store's own
+   * size.
+   */
   loadRemainingThreadScope?: (scope: string) => Promise<void>;
   threadScopeHasMore?: (scope: string) => boolean;
   /** How many roots a scope still holds back — the count its control offers. */
@@ -272,7 +276,6 @@ export function ActivityRail({
   archivePulse,
   onShowArchiveGuide,
   ensureThreadScope,
-  loadMoreThreadScope,
   loadRemainingThreadScope,
   threadScopeHasMore,
   threadScopeRemaining,
@@ -1835,7 +1838,8 @@ export function ActivityRail({
                                               hasMore={archiveView.workspaceNextCursor[workspace.id] !== null
                                                 && archiveView.workspaceNextCursor[workspace.id] !== undefined}
                                               loading={archiveView.loading}
-                                              onLoadMore={() => void archiveView.loadMoreWorkspaceThreads(workspace.id)}
+                                              onLoadMore={() => void archiveView.loadAllWorkspaceThreads(workspace.id)}
+                                              remaining={archiveView.workspaceRemaining[workspace.id] ?? 0}
                                               onOpen={onOpenArchivedThread ?? onSelectThread}
                                               onToggleSelection={toggleThreadSelection}
                                               selectedIds={selectedThreadIds}
@@ -1903,8 +1907,9 @@ export function ActivityRail({
                                     ? (
                                         <RailLoadMoreRow
                                           compact
-                                          label={t("activityRail.loadMore")}
-                                          onClick={() => void archiveView.loadMoreThreads()}
+                                          count={archiveView.threadsRemaining}
+                                          disabled={archiveView.loading}
+                                          onClick={() => void archiveView.loadAllThreads()}
                                         />
                                       )
                                     : null}
@@ -2081,9 +2086,9 @@ export function ActivityRail({
                                                   ? (
                                                       <RailLoadMoreRow
                                                         compact
+                                                        count={threadScopeRemaining?.(`workspace:${workspace.id}`) ?? 0}
                                                         disabled={loading}
-                                                        label={t("activityRail.loadMore")}
-                                                        onClick={() => void loadMoreThreadScope?.(`workspace:${workspace.id}`)}
+                                                        onClick={() => void loadRemainingThreadScope?.(`workspace:${workspace.id}`)}
                                                       />
                                                     )
                                                   : null}
@@ -2135,9 +2140,9 @@ export function ActivityRail({
                                     {(threadScopeHasMore?.("chat") ?? false)
                                       ? (
                                           <RailLoadMoreRow
+                                            count={threadScopeRemaining?.("chat") ?? 0}
                                             disabled={threadScopeLoading?.("chat") ?? false}
-                                            label={t("activityRail.loadMore")}
-                                            onClick={() => void loadMoreThreadScope?.("chat")}
+                                            onClick={() => void loadRemainingThreadScope?.("chat")}
                                           />
                                         )
                                       : null}

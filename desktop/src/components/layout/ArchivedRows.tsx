@@ -247,6 +247,7 @@ export function ArchivedWorkspaceContents({
   onLoadMore,
   onOpen,
   onToggleSelection,
+  remaining,
   selectedIds,
   selectionMode,
   threads,
@@ -255,6 +256,8 @@ export function ArchivedWorkspaceContents({
   hasMore?: boolean;
   loading: boolean;
   onLoadMore?: () => void;
+  /** Conversations this group still holds back (the control's count). */
+  remaining?: number;
   onOpen: (thread: StoredThread) => void;
   onToggleSelection?: (thread: StoredThread) => void;
   /** Ids of the rows ticked in a batch. */
@@ -294,8 +297,8 @@ export function ArchivedWorkspaceContents({
         ? (
             <RailLoadMoreRow
               compact
+              count={remaining ?? 0}
               disabled={loading}
-              label={t("activityRail.loadMore")}
               onClick={() => onLoadMore?.()}
             />
           )
