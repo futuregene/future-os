@@ -4,12 +4,12 @@
 
 ## 常规检查
 
-[`ci.yml`](../../.github/workflows/ci.yml) 在 PR、merge group 和 main push 时运行，
-按改动范围选择项目；手动 dispatch 默认执行全部常规项目。
+[`ci.yml`](../../.github/workflows/ci.yml) 在 PR 和 merge group 时运行，
+按改动范围选择项目；main push 不再触发重复运行。手动 dispatch 默认执行全部常规项目。
 手动入口的可选 `projects` 参数接受逗号分隔的 Cargo/npm workspace 项目名，
 例如 `future-host,future-tui,future-cli`，沿用现有 runner 分组，只执行明确选择的项目，
 不自动扩展消费者。原生任务使用 `android`、`ios`；仅选择 `@future-os/mobile` 时执行 JS 检查。
-未知项目名会使计划失败。PR、merge group 和 main push 始终自动判断改动和依赖，
+未知项目名会使计划失败。PR 和 merge group 始终自动判断改动和依赖，
 包含删除及重命名前的路径，手动选择不会限制这些事件。
 
 | Job | Runner | 内容 |
@@ -195,8 +195,9 @@ Rust check 仍只检查 Host 一次。affected 继续按 crate/依赖决定是�
 
 Desktop 的 Clippy 额外检查 CLI/GUI 组合特性解析；Remote client/server 的 Clippy
 覆盖 `test-support`；Linux Host 使用隔离 broker，其他平台执行 Host 自有套件。
-Core 分组共享每个操作系统的一份缓存，由 main CLI test job 单独写入；Desktop
-使用独立 GUI 缓存，由 main Desktop test job 写入。PR/check/Misc 不写入大型私有缓存。
+Core 分组共享每个操作系统的一份缓存，在 main 手动 dispatch CI 时由 CLI test job
+单独写入；Desktop 使用独立 GUI 缓存，由该次运行的 Desktop test job 写入。
+PR/check/Misc 不写入大型私有缓存。共享缓存需要刷新时，在 main 手动 dispatch CI。
 
 ## 专项验证
 
