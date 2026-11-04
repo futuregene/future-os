@@ -6,7 +6,7 @@ use super::{
 };
 use crate::session::sqlite_store::SqliteStore;
 use anyhow::{ensure, Context, Result};
-use rusqlite::OptionalExtension;
+use rusqlite::{params, OptionalExtension, Transaction};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -978,4 +978,156 @@ impl SqliteStore {
             snapshot: None,
         })
     }
+}
+
+/// One row a settled run's journal still holds, as folding reads it.
+struct FoldRow {
+    id: i64,
+    event_type: String,
+    first_cursor: i64,
+    last_cursor: i64,
+    content_id: i64,
+    byte_offset: i64,
+    byte_length: i64,
+    flags: i64,
+    metadata: Value,
+}
+
+/// Coalesce the delta rows a settled run still holds into the ranges a single
+/// batch would have written.
+///
+/// `Writer::push` already collapses consecutive deltas inside one batch; a
+/// journal written across many batches keeps one row per fragment, and those
+/// rows are the same facts that rule merges. This applies that rule again at
+/// rest, so what survives is exactly the row the writer would have produced:
+/// the first fragment's row, spanning the whole range, carrying the last
+/// fragment's metadata with `content_offset`/`content_bytes`/`content_first_idx`
+/// rewritten to the merged span.
+///
+/// Readers see no difference: the surviving row covers the same cursors and the
+/// same body bytes. Only rows the writer itself would have merged are touched —
+/// same context, same delta kind, consecutive cursors, one contiguous body
+/// range, equal flags and equal metadata apart from the clock.
+pub(crate) fn fold_settled_run(
+    tx: &Transaction<'_>,
+    session: &str,
+    run: &str,
+) -> Result<(i64, i64)> {
+    let settled: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM runs WHERE session_id=?1 AND run_id=?2
+                        AND status IN ('completed','failed','cancelled','interrupted'))",
+        params![session, run],
+        |row| row.get(0),
+    )?;
+    ensure!(settled, "run is not settled");
+    let rows: Vec<FoldRow> = {
+        let mut statement = tx.prepare_cached(
+            "SELECT c.id,c.event_type,c.first_cursor,c.last_cursor,c.content_id,
+                    c.byte_offset,c.byte_length,c.flags,c.metadata_json
+               FROM stream_changes c JOIN stream_runs r ON r.id=c.stream_id
+              WHERE r.session_id=?1 AND r.run_id=?2
+                AND c.content_id IS NOT NULL
+                AND NOT EXISTS(SELECT 1 FROM stream_change_content x WHERE x.change_id=c.id)
+                AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=r.id)
+              ORDER BY r.id,c.context_id,c.event_kind,c.last_cursor",
+        )?;
+        let mut rows = statement
+            .query_map(params![session, run], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, String>(8)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.drain(..)
+            .map(|row| {
+                Ok(FoldRow {
+                    id: row.0,
+                    event_type: row.1,
+                    first_cursor: row.2,
+                    last_cursor: row.3,
+                    content_id: row.4,
+                    byte_offset: row.5,
+                    byte_length: row.6,
+                    flags: row.7,
+                    metadata: serde_json::from_str(&row.8)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
+    let before = rows.len() as i64;
+    let mut deleted = 0i64;
+    let mut run_of_rows: Vec<FoldRow> = Vec::new();
+    for row in rows {
+        let merges = run_of_rows.last().is_some_and(|prior| {
+            // The writer's own rule, applied across batches instead of within one.
+            prior.event_type == row.event_type
+                && matches!(
+                    row.event_type.as_str(),
+                    "text_chunk" | "thinking_delta" | "tool_delta"
+                )
+                && prior.content_id == row.content_id
+                && prior.flags == row.flags
+                && prior.last_cursor + 1 == row.first_cursor
+                && prior.byte_offset + prior.byte_length == row.byte_offset
+                && prior.metadata["data"]["snapshot"] != true
+                && row.metadata["data"]["snapshot"] != true
+                && same_delta_metadata(&prior.metadata, &row.metadata)
+        });
+        if !merges {
+            deleted += collapse(tx, &mut run_of_rows)?;
+        }
+        run_of_rows.push(row);
+    }
+    deleted += collapse(tx, &mut run_of_rows)?;
+    Ok((before, before - deleted))
+}
+
+/// Write one coalesced range back, or nothing when only one row was collected.
+fn collapse(tx: &Transaction<'_>, rows: &mut Vec<FoldRow>) -> Result<i64> {
+    let mut rows = std::mem::take(rows);
+    if rows.len() < 2 {
+        return Ok(0);
+    }
+    let last = rows.pop().expect("at least two rows");
+    let survivor = &rows[0];
+    let span = last.byte_offset + last.byte_length - survivor.byte_offset;
+    let first_cursor = survivor.first_cursor;
+    let mut metadata = last.metadata;
+    if let Some(data) = metadata
+        .get_mut("data")
+        .and_then(|data| data.as_object_mut())
+    {
+        data.insert("content_offset".into(), json!(survivor.byte_offset));
+        data.insert("content_bytes".into(), json!(span));
+        data.insert("content_first_idx".into(), json!(first_cursor));
+    }
+    // The range takes over the last fragment's cursor, so the rows it absorbs
+    // must be gone first: `UNIQUE(stream_id,last_cursor)` would otherwise refuse
+    // the update.
+    for row in rows.iter().skip(1) {
+        tx.execute("DELETE FROM stream_changes WHERE id=?1", params![row.id])?;
+    }
+    // The row that carried the range's last cursor is the one this update takes
+    // the cursor from, so it goes too — `UNIQUE(stream_id,last_cursor)` would
+    // otherwise refuse the update while it still holds that cursor.
+    tx.execute("DELETE FROM stream_changes WHERE id=?1", params![last.id])?;
+    tx.execute(
+        "UPDATE stream_changes SET last_cursor=?2,byte_length=?3,metadata_json=?4,flags=flags&~7
+          WHERE id=?1",
+        params![
+            survivor.id,
+            last.last_cursor,
+            span,
+            serde_json::to_string(&metadata)?
+        ],
+    )?;
+    Ok(rows.len() as i64)
 }

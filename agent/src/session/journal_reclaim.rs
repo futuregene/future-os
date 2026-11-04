@@ -33,6 +33,9 @@ const SWEEP_BATCH_RUNS: i64 = 64;
 /// transaction, so the batch is smaller than the journal plan's: the point is a
 /// pass that finishes its slices, not one that holds the worker.
 const SNAPSHOT_BODY_BATCH: i64 = 32;
+/// Runs folded per sweep call. One run is a read of its whole journal plus one
+/// write transaction, so the batch is small enough to finish inside a slice.
+const FOLD_BATCH_RUNS: i64 = 8;
 
 /// Runs one startup catch-up may fold. A completion notification already
 /// handles the normal case, so this only mops up what a crash or a stop left
@@ -259,6 +262,67 @@ pub(crate) fn compress_snapshot_bodies(db: &mut Connection, limit: i64) -> Resul
         runs += 1;
         before += row_before;
         after += now;
+    }
+    Ok((runs, before, after))
+}
+
+/// Settled runs whose canonical journal still holds one row per delta fragment:
+/// `(runs, rows, bytes)` those rows occupy.
+pub(crate) fn plan_settled_folds(db: &Connection) -> Result<(i64, i64, i64)> {
+    Ok(db.query_row(
+        &format!(
+            "SELECT count(*),coalesce(sum(n),0),coalesce(sum(b),0) FROM (
+                 SELECT r.session_id,r.run_id,count(*) n,
+                        coalesce(sum(length(c.metadata_json)+coalesce(c.byte_length,0)),0) b
+                   FROM stream_changes c
+                   JOIN stream_runs r ON r.id=c.stream_id
+                   JOIN runs u ON u.session_id=r.session_id AND u.run_id=r.run_id
+                  WHERE u.status IN {SETTLED}
+                  GROUP BY 1,2)"
+        ),
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?)
+}
+
+/// Coalesce the delta rows of up to `limit` settled runs, largest first.
+///
+/// Returns `(runs, rows before, rows after)`. Each run is its own maintenance
+/// transaction: an interruption leaves the remaining runs exactly as they were,
+/// and folding is idempotent, so the next pass simply continues.
+pub(crate) fn fold_settled_journals(db: &mut Connection, limit: i64) -> Result<(i64, i64, i64)> {
+    let candidates: Vec<(String, String)> = {
+        let mut statement = db.prepare_cached(&format!(
+            "SELECT r.session_id,r.run_id
+               FROM stream_changes c
+               JOIN stream_runs r ON r.id=c.stream_id
+               JOIN runs u ON u.session_id=r.session_id AND u.run_id=r.run_id
+              WHERE u.status IN {SETTLED}
+              GROUP BY 1,2 ORDER BY count(*) DESC LIMIT ?1"
+        ))?;
+        let rows = statement
+            .query_map(params![limit], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let (mut runs, mut before, mut after) = (0i64, 0i64, 0i64);
+    for (session, run) in candidates {
+        let folded = super::database::try_maintenance_transaction(db, |tx| {
+            super::content::journal::fold_settled_run(tx, &session, &run)
+        });
+        match folded {
+            Ok((b, a)) if a < b => {
+                runs += 1;
+                before += b;
+                after += a;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                // One unfoldable run must not end the pass; its rows stay as they
+                // are and a later sweep tries again.
+                tracing::debug!(%session, %run, %error, "settled journal left unfolded");
+            }
+        }
     }
     Ok((runs, before, after))
 }
@@ -623,6 +687,26 @@ impl SqliteStore {
             .map(|plan| plan.0)
             .unwrap_or(0);
 
+        // 4. Settled canonical runs: the same range the writer would have written
+        // had the fragments arrived in one batch. Readers see no difference, so
+        // this is bytes, not behaviour.
+        let pending_folds = self.db.call(|db| plan_settled_folds(db))?;
+        let (folded_runs, folds_before, folds_after) =
+            if dry_run || pending_folds.0 == 0 || started.elapsed() >= budget {
+                (0i64, 0i64, 0i64)
+            } else {
+                self.db
+                    .call_as("journal_reclaim", move |db| {
+                        fold_settled_journals(db, FOLD_BATCH_RUNS)
+                    })
+                    .unwrap_or((0, 0, 0))
+            };
+        let folds_pending = self
+            .db
+            .call(|db| plan_settled_folds(db))
+            .map(|plan| plan.1)
+            .unwrap_or(0);
+
         // `hasMore` promises *more work this sweep can do*, not "some settled run
         // still keeps a journal": a run that cannot be representationally
         // reclaimed (its last event is not `agent_end`, its envelope is unknown)
@@ -635,7 +719,11 @@ impl SqliteStore {
             // (still undeleted) runs again.
             false
         } else {
-            stopped_early || candidates_truncated || leftovers_truncated || bodies_pending > 0
+            stopped_early
+                || candidates_truncated
+                || leftovers_truncated
+                || bodies_pending > 0
+                || folds_pending > 0
         };
 
         // Fold freed pages back into the file where this database can do it
@@ -666,6 +754,12 @@ impl SqliteStore {
                 "encodedRuns": encoded_bodies,
                 "bytesBefore": bodies_before,
                 "bytesAfter": bodies_after,
+            },
+            "settledFolds": {
+                "pendingRows": folds_pending,
+                "foldedRuns": folded_runs,
+                "rowsBefore": folds_before,
+                "rowsAfter": folds_after,
             },
             "hasMore": has_more,
             "quickCheck": quick_check,

@@ -334,6 +334,13 @@ pub(super) async fn run(args: &[String], out: &Output) -> Result<(), String> {
             bytes(number(&plan["snapshotBodies"], "pendingBytes"))
         ));
     }
+    let foldable = number(&plan["settledFolds"], "pendingRows");
+    if foldable > 0 {
+        out.log(&format!(
+            "  {} settled-run journal rows to coalesce into ranges",
+            count(foldable)
+        ));
+    }
     print_entries(&plan, true, out);
     if options.json {
         out.log(&serde_json::to_string_pretty(&plan).map_err(|e| e.to_string())?);
