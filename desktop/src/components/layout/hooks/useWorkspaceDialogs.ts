@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { StoredWorkspace } from "../../../integrations/storage/threadStore";
+import type { RefreshStoreOptions } from "./useThreadStore";
 import { useState } from "react";
 import i18n from "../../../i18n";
 import { deleteWorkspace, renameWorkspace } from "../../../integrations/storage/threadStore";
@@ -37,7 +38,7 @@ export interface WorkspaceDialogs {
 export function useWorkspaceDialogs({
   refreshStore,
 }: {
-  refreshStore: (nextActiveThreadId?: string) => Promise<void>;
+  refreshStore: (nextActiveThreadId?: string | null, options?: RefreshStoreOptions) => Promise<void>;
 }): WorkspaceDialogs {
   const [renameDialog, setRenameDialog] = useState<WorkspaceRenameDialogState | null>(null);
   const [deleteDialog, setDeleteDialog] = useState<WorkspaceDeleteDialogState | null>(null);
