@@ -6,7 +6,8 @@
  * the port it is reused and left running, which is the normal interactive case.
  */
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { resolve } from "node:path";
 
@@ -15,6 +16,7 @@ const sleep = ms => new Promise(done => setTimeout(done, ms));
 export const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
 export const DEFAULT_URL = "http://localhost:5299/shot/";
 export const MOBILE_URL = "http://localhost:8099/";
+export const ASSETS_PORT = 7392;
 /** The mobile workspace, overridable because a worktree may not have node_modules. */
 export const MOBILE_ROOT = process.env.FUTURE_MOBILE_ROOT || resolve(REPO_ROOT, "mobile");
 
@@ -105,4 +107,45 @@ export async function ensureMobileServer({ port = null, reuse = false, root = MO
   }
   child.kill("SIGTERM");
   throw new Error(`mobile dev server did not become ready at ${url}\n${output.slice(-3000)}`);
+}
+
+/**
+ * Demo figures for the mobile mocks.
+ *
+ * `mobile/shot/mock` hardcodes `http://127.0.0.1:7392/<figure>.png`; without
+ * this server every in-message image renders as "reload image" and a vision
+ * pass reads that as a product defect. Desktop figures are served by Vite's
+ * `/shot/assets/`, so only the mobile/remote surfaces need it.
+ */
+export async function ensureAssetServer({ port = ASSETS_PORT } = {}) {
+  const probe = `http://127.0.0.1:${port}/effect-size.png`;
+  if (await reachable(probe))
+    return { url: `http://127.0.0.1:${port}`, reused: true, stop: async () => {} };
+
+  const root = resolve(REPO_ROOT, "desktop", "shot", "assets");
+  if (!existsSync(root))
+    throw new Error(`demo assets missing: ${root}`);
+
+  const server = createHttpServer((req, res) => {
+    const name = decodeURIComponent(String(req.url ?? "/").split("?")[0]).replace(/^\/+/, "");
+    if (!/^[\w.-]+\.png$/.test(name)) {
+      res.writeHead(404);
+      res.end("not found");
+      return;
+    }
+    try {
+      const body = readFileSync(resolve(root, name));
+      res.writeHead(200, { "content-type": "image/png", "cache-control": "no-store" });
+      res.end(body);
+    }
+    catch {
+      res.writeHead(404);
+      res.end("not found");
+    }
+  });
+  await new Promise((done, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", done);
+  });
+  return { url: `http://127.0.0.1:${port}`, reused: false, stop: () => new Promise(done => server.close(done)) };
 }
