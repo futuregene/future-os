@@ -1,7 +1,7 @@
 # 远端桌面命令打开延迟：审计与优化报告（2026-11-04）
 
 > **这份报告要回答的问题**：手机 / 桌面客户端连接远端桌面时，真正会发出的每一条命令，用真实数据
-> （本机 `agent.db` 2.5 GB / 712 会话、`app.db` 54 MB / 682 线程、`tasks.db` 4 MB）打开要多久；
+> （本机 `agent.db` 2.5 GB / 713 个会话行、其中 355 个有内容，`app.db` 54 MB / 682 线程、`tasks.db` 4 MB）打开要多久；
 > 哪些超过 100 ms；这些超过 100 ms 的命令**是不是因为在读数据库时做了非 O(1) 的操作**；
 > 它们的延迟**会不会随数据规模一起上涨**。最后给出一份可以直接开工的优化清单，
 > 目标是**最差情况下每条命令都在 100 ms 以内打开，并且延迟不随数据量增长**。
@@ -38,7 +38,7 @@
 | `get_messages`（首页） | 会话 14,531 条目 | **562 ms** | **249 ms** | **256 ms** | 仅老客户端（当前手机不发） | 先取回**整段**历史再在内存切片：代价 ∝ 会话总条目 |
 | `get_messages`（深页 offset=7,265） | 会话 14,531 条目 | **241 ms** | **235 ms** | **239 ms** | 同上 | 同上（深页不比首页便宜） |
 | `get_messages`（首页） | 会话 3,145 条目 | **177 ms** | 57 ms | 58 ms | 同上 | 同上 |
-| `get_state` | 会话 14,531 条目，**进程内首次** | **166 ms** | 24 ms | 25 ms | **手机开会话的第一个命令** | 首次触达会话存储 ~110 ms + 每次调用载入整个 legacy 会话 |
+| `get_state` | 会话 14,531 条目（**进程内首次**） | **166 ms** | 24 ms | 25 ms | **手机开会话的第一个命令** | 两个独立成因：cold 是**首次 hydrate**（读全量转写成 `Session`，每会话一次）；温路径是**两处 legacy 专属的全量读**（详见 §3.1） |
 | `list_available_skills` | 平台目录 47 KB | 68 ms | **114 ms** | **120 ms** | `/` 菜单、技能页 | Agent 每次调用都**同步 HTTP GET** 平台目录 |
 
 其余 34 个组合全部 ≤ 25 ms；其中**必须保持不动**的平坦样板：游标历史页 11.5 ms、
@@ -51,11 +51,11 @@
 | 命令 | 随哪个维度 | 当前 | 放大后 | 首次越过 100 ms |
 | --- | --- | ---: | ---: | --- |
 | `get_session_entries`（offset 页） | 会话条目 | 14,531→698 ms | 50,000→**2,264 ms** | **2,200 条**（实测） |
-| `get_messages`（首页/深页） | 会话条目 | 14,531→249 ms | 25,000/50,000→**直接失败**（gRPC 回复 44/74 MB，撞 32 MiB 上限） | **5,600 条**（实测）；约 19,000 条起不再有「慢」这个状态，只有「错」 |
+| `get_messages`（首页/深页） | 会话条目 | 14,531→249 ms | 25,000/50,000→**直接失败**（gRPC 回复 44/74 MB，撞 32 MiB 上限） | **5,600 条**（实测）；**18,885–22,636 条**之间撞上 32 MiB 上限，此后不再有「慢」这个状态，只有「错」 |
 | `list_session_files` | 目录条目数 | 10→0.59 ms | 1,000→**45.6 ms**，5,000→**229 ms** | **2,200 个文件**（实测） |
 | `get_events_since` + `preferSnapshot` | 单 run 事件数 | 10,855→2.0 ms | 25,000→**41.5 ms**，50,000→**81 ms** | 约 61,600 事件（外推）；超预算后仍先做一次整段投影再丢掉 |
-| `get_state` | 会话条目 | 14,531→24 ms | 25,000→36.7，50,000→**72.1 ms** | 约 71,100 条（外推） |
-| `list_sessions` | 线程数 | 682→21 ms | 2,000→31 ms，5,000→**70.8 ms** | 约 7,100 线程（外推） |
+| `get_state` | 会话条目 | 14,531→24 ms | 25,000→36.7，50,000→**72.1 ms**（重跑 64.5） | 约 71,100 条（外推） |
+| `list_sessions` | 线程数 | 682→21 ms | 2,000→31 ms，5,000→**43–72 ms（双峰：目录快照命中/未命中）** | 约 7,100–11,000 线程（外推） |
 | `list_tasks` | 任务数 | 33→2.6 ms | 500→15.9 ms | 约 3,400 个任务（外推） |
 
 反向对照同样重要：**同一条 `get_session_entries` 的游标路径在 41→50,000 条之间一直是 1.4–15.8 ms**
@@ -72,7 +72,7 @@
 
 | 类型 | 具体位置 | 复杂度 | 是否在关键路径 |
 | --- | --- | --- | --- |
-| **整段加载冒充元数据读** | `agent/src/session/manager/loading.rs:13` `state_metadata()` → `:68` `load_metadata()`：legacy 格式会话把 `SELECT payload FROM history_shapes WHERE session_id=? ORDER BY position` **全部行**读出并逐行 `serde_json::from_str`，只为数出「用户消息几条」和取一个 `parent_session_id` | O(会话条目) | **是**（`get_state` 每次调用都走，且结果在已加载会话上根本没被用到） |
+| **整段加载冒充元数据读**（两处，都只在 legacy 会话上触发） | ①`agent/src/session/manager/loading.rs:13` `state_metadata()` → `:68` `load_metadata()`：`SELECT payload FROM history_shapes WHERE session_id=? ORDER BY position` **全部行**读出并逐行 `serde_json::from_str`，只为数出「用户消息几条」和取一个 `parent_session_id`（占温路径超额 **68%**）。②`agent/src/session/manager/mod.rs:321` `unterminated_run_id()` → `transcript.rs:203` `read_run_marker_headers()` 的 legacy 分支走 `run_marker_rows(db, session, "entry_records")`，而 **`entry_records` 是一个视图**——SQLite 必须先把该会话的行摊出来再过滤（占 **30%**） | O(会话条目) | **是**（`get_state` 每次调用都走两条，且①的结果在已加载会话上根本没被用到） |
 | **假分页（先全取再切）** | `host/src/remote_host/business/history.rs:65` `get_messages`：`get_session_messages()` 取**整段**再 `paginate_messages()` 内存切片；`:96-160` `get_session_entries` 的 offset 路径：`fetch_all_session_entries_with_client()` 以 250 条/页**串行拉完整段**（最大会话 59 次 gRPC）再丢掉 99% | O(会话条目) + O(条目/250) 次往返 | 否（当前手机走游标路径），但同一条命令发得出去 |
 | **offset 分页** | `agent/src/session/history/paging.rs:215-219`：`before=None` 时 `start = offset`，SQL 仍然是 `ordinal BETWEEN start AND end`，要靠索引走到第 n 条 | O(offset) | 否（同上） |
 | **全表扫描 + 窗口函数** | `host/src/store/threads.rs:49`（682 行 threads，表达式排序）、`host/src/store/runs.rs:305`（`ROW_NUMBER() OVER (PARTITION BY thread_id)`）、`packages/app-workspaces`（每行一个相关子查询） | O(threads + runs)，实测已随规模放大（见 02 表 B：20,000 线程 21 ms + 43 ms） | 是（桌面端每 60 s/台、手机 10 min） |
@@ -99,6 +99,18 @@
 
 > 逐维度的放大扫描（线程 5,000、条目 50,000、run_events 50,000、task_runs 2,000 等）见
 > `04-scaling.md`；本报告 §4 用的是它的结论。
+
+---
+
+### 0.3 这份报告被独立复核过
+
+`05-verification.md` 由一个独立工作流重算了 03 的 40 行、04 的 85 行、四条越线交叉点与两个字节数
+（全部原样复现），并用四个构建变体定位了 `get_state` 的归因（§4.3）。它同时**否证**了三处判断，
+本报告已按复核结论订正：① `get_state` 的成因是**两处**整段读而不是一处（68%/30%），
+只改一处不达标；② 多出来的时间在**命令体内部**，不在 `verify_session_database`/observer 的装配上；
+③ `list_sessions` 的 `latest_run_infos` **本来就是单条窗口函数查询**，不是 N+1，
+按"每线程一次查询"去改会改到已经正确的实现上；以及 5,000 线程的耗时是 **43–72 ms 双峰**
+而不是"至少 71 ms"。凡本报告与前面各章冲突处，以本报告（已订正）与 `05-verification.md` 为准。
 
 ---
 
@@ -231,7 +243,7 @@ SELECT payload FROM history_shapes WHERE session_id=?1 ORDER BY position   -- �
 更糟的是两个放大器：
 
 - **结果在已加载会话上被直接丢弃**（`history_loaded` 为真时用的是内存计数），但查询照做不误；
-- 本机 **712 个会话里 392 个是 legacy 格式**（只有 320 个是 canonical，`session_formats.format=2`），
+- 本机 **713 个会话行里 392 个是 legacy 格式**（只有 321 个是 canonical，`session_formats.format=2`），
   也就是**过半会话每次都付这个成本**。
 
 这一条是"读数据库时不是 O(1)"最典型的例子：**粒度错了**（为了一个计数读整个会话），
@@ -335,31 +347,40 @@ SELECT payload FROM history_shapes WHERE session_id=?1 ORDER BY position   -- �
 （游标页 1,000→3,145 的小幅回落来自"一页的行数与字节"，不是会话长度：它的成本 = 页内内容，
 不是历史总长。）
 
-### 4.3 `get_state` 为什么会随会话长度线性上涨（04 留空的那一格，这里补上）
+### 4.3 `get_state` 为什么会随会话长度线性上涨（04 留空的那一格，已由复核用对照实验定位）
 
-`04-scaling.md` §4.3 实测出 `get_state` 线性（≈1.4 µs/条目，50,000 条 72.1 ms），并明确写
-"归因未完成"；而 `02-code-audit.md` §3.12 的代码判定是温路径 O(1)。两者并不矛盾——
-**代码判定漏了一条 O(E) 的前置调用**：
+`04-scaling.md` §4.3 实测出 `get_state` 线性（≈1.4 µs/条目，50,000 条 72.1 ms）并写"归因未完成"；
+`02-code-audit.md` §3.12 的代码判定是温路径 O(1)；`04` 自己又猜"多出来的时间在命令体之前
+（`verify_session_database` 的额外 gRPC、`ensure_observer_for_session`、会话装配）"。
+`05-verification.md` §3 用**四个构建变体**（baseline / A / B / A+B）在同一份数据上把这三方一次性判完：
 
-```rust
-// agent/src/rpc/mod.rs  get_state_internal
-let stored_metadata = sess.session_manager.state_metadata(&session_id).ok();  // ← 无条件执行
-let query_count = if sess.history_loaded { /* 用内存计数 */ } else { /* 用 stored_metadata */ };
-```
+| 变体 | Δ@41 | Δ@3,145 | Δ@14,531 | Δ@25,000 | Δ@50,000 | 斜率 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| baseline | 0.24 | 4.42 | **17.61** | **29.76** | **59.80** | **1.19 µs/条目** |
+| A：摘掉 `state_metadata` 的整段读 | −0.02 | 1.33 | 5.96 | 8.91 | **19.35** | 0.39 µs/条目 |
+| B：摘掉 `read_run_marker_headers` 的视图扫描 | 0.00 | 2.62 | 11.88 | 20.88 | **41.92** | 0.84 µs/条目 |
+| **A+B** | −0.22 | **−0.14** | **−0.12** | **0.06** | **0.05** | **0.01 µs/条目** |
 
-- `state_metadata()`（`agent/src/session/manager/loading.rs:13`）先取两条便宜查询；
-  **若 `session_formats.format != 2` 就 fall through 到 `load_metadata()`（`:68`）**，后者执行
-  `SELECT payload FROM history_shapes WHERE session_id=?1 ORDER BY position`（**全部行**，
-  本机最大会话 14,531 行 / 4.5 MB）并逐行 `serde_json::from_str`，拼出完整 `Session`，
-  只为返回 `(用户消息数, parent_session_id)`。
-- 本机实测：该 SQL **6.0 ms**（14,531 行）+ JSON 解码（Python 27 ms，Rust 同量级下更快）；
-  canonical 路径的同名函数 **0.011 ms**。斜率与 1.4 µs/条目对得上。
-- 两个放大器：结果在已加载会话上**被丢弃**但查询照做；本机 **392/712 个会话是 legacy 格式**
-  （只有 320 个 canonical），即过半会话每次都付。
+（Δ = p50 减去同一次运行里 canonical 会话的地板值，用来消掉机器快慢的漂移。）
 
-这条归因把"测量 vs 代码"的分歧变成了一条可执行的 P0（§5 P0-1）。
-`05-verification.md` 用"canonical 会话 vs legacy 会话同规模对比 + 局部删去该调用"做了独立复核，
-结论见该章。
+三条结论，都要写进优化任务的定义里：
+
+1. **成因是两处，不是一处**，而且都在**命令体内部**（`agent/src/rpc/mod.rs` 的 `get_state_internal`），
+   不是命令体之前的装配：
+   - ① `state_metadata()` → `load_metadata()`：legacy 会话把 `history_shapes` 的**全部行**读出并逐行
+     JSON 解码，只为数出「用户消息几条」和一个 `parent_session_id`（**占 68%**）；
+   - ② `unterminated_run_id()` → `read_run_marker_headers()` 的 legacy 分支扫 **`entry_records` 视图**
+     （视图不可索引，SQLite 必须把该会话的行先摊出来再过滤，**占 30%**）。
+2. 两处都可加性地摘掉（合起来 58.33 ≈ baseline 59.80，无重叠），**A+B 之后 41 条与 50,000 条同值**
+   （4.18~4.64 ms），即真正与会话长度无关。**只改 ① 会在 50,000 条留下 19 ms，不达标。**
+3. **canonical 会话本身就是平的**（同一份数据里的 321 个真实 `format=2` 会话：1 条 3.58 ms →
+   2,043 条 3.94 ms，跨 2,043 条只动 0.36 ms），同规模对照 legacy 2,159 条 **6.74 ms**。
+   这就是"同一份数据、只差一个 format 标记"的因果对照。
+
+**cold 与温路径是两条独立的优化项。** 冷态（进程内首次）里面主要是**首次 hydrate 该会话**
+（`typed_entries` 读全量转写并构造 `Session`），A+B 只拿掉其中约 25%（50,000 条 173.7 → 127.8 ms）。
+hydrate 在语义上就是 O(条目)、每会话只付一次，要压只能压 hydrate 本身（分片 hydrate，
+或把首屏所需的最小状态单独读出来）。所以 P0-1 的判据只针对温路径，cold 的目标另列（§6.1）。
 
 ---
 
@@ -368,16 +389,26 @@ let query_count = if sess.history_loaded { /* 用内存计数 */ } else { /* 用
 每条都写明：**现状 → 改法 → 预期 → 验收判据**。验收判据都是可以机械复测的数字，
 复测方法见 §6.2。
 
-### P0-1 `get_state` 的元数据读改回 O(1)（收益最大且最安全）
+### P0-1 `get_state` 的两处整段读改回真正的 O(1)（收益最大且最安全）
 
-- **现状**：legacy 格式会话每次都整段加载（本机最大会话 24 ms 热、166 ms 冷；392/712 会话受影响）。
-- **改法**：（a）计数改走已有的 `history_display` 投影——`SELECT count(*) FROM history_display
-  WHERE session_id=? AND is_user=1` 命中 `history_users(session_id,is_user,ordinal)` 索引，
-  索引内范围扫描几百行；（b）`parent_session_id` 直接读 `sessions.current_metadata_json`；
-  （c）**把调用改成惰性**：只在 `!sess.history_loaded` 时才查，并把结果缓存在会话对象上，
-  加载完成后不再查；（d）顺带确认 `user` 计数的语义（是否含内部 tool 消息）在两代格式上一致。
-- **预期**：legacy 会话 `get_state` 热态 24 ms → **≤2 ms**，且与会话条目数无关。
-- **验收判据**：14,531 条目会话 `get_state` p95 ≤ 5 ms，且 50,000 条目会话与之相差 ≤ 20%（斜率≈0）。
+- **现状**：legacy 格式会话（本机 392/713）每次调用都做两处全量读，温路径 24 ms（最大会话）、
+  50,000 条 72 ms，斜率 1.19 µs/条目。分成 **68% / 30%** 两半（复核 A/B 实验，§4.3）。
+- **改法（两处都必须改，只改一处不达标）**：
+  1. `state_metadata()` 的 legacy fallback：计数改走已有的 `history_display` 投影
+     （`SELECT count(*) ... WHERE session_id=? AND is_user=1` 命中 `history_users(session_id,is_user,ordinal)`）
+     或直接 `SELECT count(*) FROM entries WHERE session_id=? AND entry_type='user'`（实测 0.006–0.021 ms）；
+     `parent_session_id` 直接读 `sessions.current_metadata_json`；并**把调用改成惰性**——
+     只在 `!sess.history_loaded` 时才查，结果缓存在会话对象上。
+  2. `read_run_marker_headers()` 的 legacy 分支不要再扫 `entry_records` **视图**
+     （视图不可索引是这条成本的来源）：改成从 `entries`/`entry_header_records` 按
+     `(session_id, entry_type, position)` 的索引定点读那三条 marker
+     （`entries_kind(session_id, entry_type, position)` 已经覆盖）。
+- **预期**：两处都改后与 canonical 同值 —— 复核 A+B 实测 **4.18–4.64 ms，41 条与 50,000 条同值**
+  （Δ = −0.22 / 0.05 ms）。只改第 1 处会在 50,000 条留下 **19 ms**，不达标。
+- **验收判据**（照抄复核给的）：legacy 会话 50,000 条 p50 ≤ 6 ms，**且** Δ(50k − 41) ≤ 0.5 ms；
+  41 条目 legacy 与 2,043 条目 canonical 的 p50 差 ≤ 0.5 ms。
+- **不在本条范围内**：cold（首次 hydrate）。它每会话付一次、且语义上就是 O(条目)，
+  目标见 §6.1 第 7 条。
 
 ### P0-2 退役或重写 `get_session_entries` 的 offset 路径
 
@@ -421,7 +452,9 @@ let query_count = if sess.history_loaded { /* 用内存计数 */ } else { /* 用
   **于是每次打开都白做一次整段投影再丢掉**：25,000 事件 41.5 ms、50,000 事件 81 ms，
   而真正的分页读只要 2 ms。
 - **改法**：折叠之前先按事件数/字节水位判规模直接拒绝；或把投影缓存住（run 不可变，天然可缓存）；
-  或让客户端在超预算时不请求快照。
+  或让客户端在超预算时不请求快照。复核补上了阈值的确切形状：8 MiB 预算按**每事件
+  `data.len()+512`** 计，因此**任何 ≥ 约 16,100 事件的 run 永远不可能产出快照**——
+  也就是说这个『优化项』对长 run 从一开始就是纯浪费，客户端侧可以按水位直接不请求。
 - **验收判据**：50,000 事件的 run 上该命令 ≤ 5 ms（与首页同级）。
 
 ### P1-6 `list_available_skills` 离开网络路径
@@ -440,15 +473,24 @@ let query_count = if sess.history_loaded { /* 用内存计数 */ } else { /* 用
 - **预期**：21.6 ms → 与命中缓存的 `get_state` 同级（≤1 ms）。
 - **验收判据**：2 s 轮询下每 10 s 的 Agent RPC 次数从 10 降到 ≤1。
 
-### P1-8 `list_sessions` / `list_workspaces` 合并成一次读
+### P1-8 `list_sessions` / `list_workspaces` 省掉"每条命令都重算"
 
-- **现状**：682 线程 21 ms，20,000 线程 SQL 已 21+43 ms；全程持 `CATALOG` 全局锁。
-- **改法**：（a）`active_run_sessions` 与 `latest_run_infos` 合一次窗口函数查询；
-  （b）`latest_run_infos` 改为每线程 `ORDER BY created_at DESC LIMIT 1` 的 index-only 形式，
-  或直接用 `runs(thread_id, created_at)` 上的子查询；（c）把序列化与签名放到锁外，
-  锁内只取快照；（d）桌面端的 60 s/台轮询改成事件驱动（手机已经是推送驱动，两端不对称）。
-- **预期**：682 线程 21 ms → ≈8 ms；20,000 线程从 64 ms → ≈20 ms。
-- **验收判据**：线程数 10 与 5,000 的耗时比 ≤ 2（当前 ≈1.05 µs/线程是线性的）。
+- **现状**：682 线程 p50 21 ms（回复 70 KB）；合成到 5,000 线程是**双峰 43–72 ms**
+  （命中 1 s 目录快照时 ≈43 ms，未命中走完整读时 ≈72 ms），≈0.009–0.014 ms/线程。
+  把这条命令的 SQL 拆开量：`threads` 7.0 ms + `latest_run_infos` 8.6 ms + `workspaces` 0.3 ms ≈ **15.9 ms**，
+  **其余 27–56 ms 在装配与回复构造**。全程持 `CATALOG` 全局锁。
+- **改法**：
+  - **不要**去"合并 per-thread 查询"——`latest_run_infos` **本来就是一条**窗口函数查询
+    （`host/src/store/runs.rs:297-320`，`ROW_NUMBER() OVER (PARTITION BY thread_id ...)`）；
+    复核已证否"每线程查一次"这个判断（`05-verification.md` §7.1 第 5 条）。改它会改到已经正确的实现上。
+  - 真正该做的是：① 把 `active_run_sessions()` 与 `latest_run_infos()` 合成一次 `runs` 扫描
+    （现在是两次扫同一张表）；② **把序列化与结构签名移到锁外**，锁内只取快照并按 revision 判断
+    是否真要重算；③ 桌面端 60 s/台的轮询改成事件驱动（手机已经是推送驱动）——这条命令的
+    p50 里有一半是"没人看也要算一次"。
+- **预期**：SQL 部分 15.9 ms 可压到 ≈12 ms；真正的收益在装配与锁（27–56 ms），
+  目标是 682 线程 p95 ≤ 12 ms、5,000 线程 p95 ≤ 40 ms。
+- **验收判据**：线程数 10 与 5,000 的耗时比 ≤ 4（当前 ≈18–30×）；同一进程内连续两次调用的
+  耗时不得相差 60%（消除双峰）；`list_sessions` 期间其它命令的 p95 不上升（锁外化）。
 
 ### P2-9 内容读的 preflight 每会话一次
 
@@ -495,6 +537,10 @@ let query_count = if sess.history_loaded { /* 用内存计数 */ } else { /* 用
 5. **无上界项**：`list_available_skills` 这类外部依赖必须在断网/超时下仍 ≤ 20 ms（缓存兜底）。
 6. **不许回退**：游标页、事件首页/深页、`get_tool_call_args`、任务面板、设置读取在每一档上都必须是平的
    （§4.2 是它们的基线）。任何一条开始随规模增长即为回退。
+7. **`get_state` 的 cold 单独定标**：cold 的主体是"首次 hydrate 一个会话"，语义上 O(条目)、
+   每会话一次（复核：50,000 条 173.7 ms，摘掉两处温路径读后仍 127.8 ms）。它的目标不是
+   "与会话长度无关"，而是**冷开一条会话整体 ≤ 150 ms**；若要进一步压低，必须分片 hydrate
+   或把首屏所需的最小状态单独读出来，那是另一项工作，不与 P0-1 混谈。
 
 ### 6.2 复测方法（已就位，直接跑）
 
