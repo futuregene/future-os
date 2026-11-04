@@ -52,6 +52,12 @@ export interface SendPipelineDeps {
    * Agent `BusyPolicy` value, or absent for the Agent's own default. Set only by
    * the queued-send path (`useSendMessage.handleQueuedSend`); a plain send never
    * races another run of its own conversation.
+   *
+   * It also says the send is expected to WAIT — the composer only queues behind
+   * a reply it is watching stream — so this send draws no optimistic bubble in
+   * the transcript: what the Agent is holding is the queue's row above the
+   * composer, not a transcript turn. See the ack branch below for the one case
+   * that owes one back.
    */
   busyPolicy?: string;
 }
@@ -121,11 +127,25 @@ export async function runSendPipeline(
     modelId,
     runStartedAt: runStartAnchorMs,
   };
+  // A send that expects to WAIT behind the running reply (`busyPolicy`) draws no
+  // optimistic pair. The Agent is going to hold this prompt, so the row above
+  // the composer is where it belongs from the first frame; drawing it in the
+  // transcript and pulling it back out when the `run_queued` ack lands is the
+  // same claim with a visible retraction in between — the reader's message
+  // appears under the reply it was not answered by, then jumps to the queue.
+  //
+  // What the pair would have carried is not lost by leaving it out: the queue
+  // row holds the text until the run starts, the run's own `user_message` event
+  // puts the real bubble (with the Agent's entry id) in at that moment, and
+  // re-attach paints the reply from there. The ack branch below still has the
+  // other ending covered — a queued-intent send the Agent ran immediately draws
+  // its pair there, before anything tries to patch it.
+  const echoOptimistically = !busyPolicy;
   // Guarded like every later view write: the attachment import above awaits,
   // and a thread switch landing in that window must not append this send's
   // optimistic pair to the new thread's view (the run still proceeds — the
   // origin thread picks it up via the observer/reattach on return).
-  if (isCurrentSend()) {
+  if (echoOptimistically && isCurrentSend()) {
     setMessages(current => [...current, optimisticUserMessage, assistantMessage]);
   }
 
@@ -202,6 +222,22 @@ export async function runSendPipeline(
     acknowledge();
     await finalizeTemporaryAttachmentSources(preparedAttachments.temporarySources);
     clearStreamUpdates();
+
+    // The ack's other ending: the reply this send meant to wait behind had
+    // already finished, so the Agent ran this prompt here and now. Nothing was
+    // drawn on the way out, and every branch below settles the pair's assistant
+    // bubble in place — so the pair goes in here, with the run id, instead of
+    // letting a real answer (or a real failure) land with no bubble to render
+    // it. The `run_queued` ack is the case that stays out of the transcript.
+    if (!echoOptimistically && !isQueuedRunKind(reply.terminationKind) && isCurrentSend()) {
+      setMessages(current => current.some(message => message.id === pendingId)
+        ? current
+        : [
+            ...current,
+            { ...optimisticUserMessage, runId: run?.id ?? null },
+            { ...assistantMessage, runId: run?.id ?? null },
+          ]);
+    }
 
     // Non-image files remain live references. Pasted/downloaded images now use
     // their promoted thread-owned path, and their temp source was deleted only
@@ -288,12 +324,12 @@ export async function runSendPipeline(
       if (isCurrentSend()) {
         // Nothing has been sent: the Agent is HOLDING this prompt, and its own
         // queue row (`session_queue`, drawn above the composer) is where a
-        // message that has not left yet belongs. The optimistic pair was this
-        // view's guess that the prompt went out; the ack is that guess being
-        // answered, so the pair comes back OUT. Left in, the transcript claims
-        // the message was sent — the question above a reply that does not answer
-        // it, and an empty assistant bubble ticking a duration for a run that
-        // has not begun — while the queue says it is still waiting.
+        // message that has not left yet belongs. A queued-intent send never
+        // drew a pair (see `echoOptimistically`), so for the path this project
+        // is normally on there is nothing on screen to take back. This filter is
+        // the other entry: a plain send of this view's that the Agent queued
+        // anyway — another client's run owned the session — where the pair was
+        // drawn in good faith before the ack contradicted it.
         //
         // Nothing is lost by taking it out: the row carries the text until the
         // run starts, the run's own `user_message` event puts the real bubble

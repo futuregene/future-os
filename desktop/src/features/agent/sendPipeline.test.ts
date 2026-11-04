@@ -98,10 +98,23 @@ type MockedSetMessages = ReturnType<typeof vi.fn<(value: SetStateAction<AgentMes
  * the client-generated ids.
  */
 function foldMessages(setMessages: MockedSetMessages): AgentMessage[] {
-  return setMessages.mock.calls.reduce<AgentMessage[]>((messages, call) => {
+  const states = foldedStates(setMessages);
+  return states.length > 0 ? states[states.length - 1]! : [];
+}
+
+/**
+ * Every list the pipeline put on screen, in order.
+ *
+ * `foldMessages` answers what the reader ends up with; this answers what they
+ * saw on the way there, which is what a transient bubble is about.
+ */
+function foldedStates(setMessages: MockedSetMessages): AgentMessage[][] {
+  let messages: AgentMessage[] = [];
+  return setMessages.mock.calls.map((call) => {
     const updater = call[0] as (previous: AgentMessage[]) => AgentMessage[];
-    return updater(messages);
-  }, []);
+    messages = updater(messages);
+    return messages;
+  });
 }
 
 function makeDeps(setMessages: MockedSetMessages) {
@@ -699,6 +712,10 @@ describe("runSendPipeline queued behind a running reply", () => {
     // empty assistant bubble ticking a duration for a run that had not begun,
     // while the panel said the same message was still waiting. The run's own
     // `user_message` event puts the real bubble in when it starts.
+    //
+    // This is the PLAIN send path: it drew the pair before the ack existed and
+    // has to take it back. A queued-intent send never draws one at all — see
+    // below.
     vi.mocked(getRun).mockResolvedValue(storedRun());
     vi.mocked(sendPromptToFutureAgent).mockResolvedValue(queuedReply());
     const setMessages = vi.fn();
@@ -707,6 +724,53 @@ describe("runSendPipeline queued behind a running reply", () => {
     await runSendPipeline(deps, { content: "is it done yet?", attachments: [] });
 
     expect(foldMessages(setMessages)).toEqual([]);
+  });
+
+  it("draws nothing in the transcript for a send the reader made mid-reply", async () => {
+    // The composer queues behind the reply it is watching stream, so this send
+    // is expected to WAIT (`busyPolicy`). What the Agent holds belongs in the
+    // queue row above the composer — and only there, from the first frame. The
+    // pair used to be drawn optimistically and pulled back out on the ack, which
+    // the reader saw as their message appearing under a reply that does not
+    // answer it and then jumping to the queue.
+    vi.mocked(getRun).mockResolvedValue(storedRun());
+    vi.mocked(sendPromptToFutureAgent).mockResolvedValue(queuedReply());
+    const setMessages = vi.fn();
+    const deps = { ...makeDeps(setMessages), busyPolicy: "enqueue_coalescing" };
+
+    await runSendPipeline(deps, { content: "and then?", attachments: [] });
+
+    // Not "the transcript ends up empty" (that was true of the old flow too,
+    // after the retraction) but "no frame ever carried the pair".
+    expect(foldedStates(setMessages).filter(state => state.length > 0)).toEqual([]);
+  });
+
+  it("gives a queued-intent send its pair back when the Agent ran it immediately", async () => {
+    // `busyPolicy` is this client's expectation, not the Agent's answer: the
+    // reply the reader was watching can end between the composer's decision and
+    // this prompt landing, and then the run really does start now. Nothing was
+    // drawn on the way out, so the pair has to go in before the settle branches
+    // patch its assistant bubble — otherwise a real answer lands with no bubble
+    // to render it and the reader waits for a reload.
+    vi.mocked(getRun).mockResolvedValue(storedRun());
+    vi.mocked(sendPromptToFutureAgent).mockResolvedValue({
+      content: "the answer",
+      complete: true,
+      sessionId: "session-1",
+    });
+    const setMessages = vi.fn();
+    const deps = { ...makeDeps(setMessages), busyPolicy: "enqueue_coalescing" };
+
+    await runSendPipeline(deps, { content: "and then?", attachments: [] });
+
+    const messages = foldMessages(setMessages);
+    const user = messages.find(message => message.role === "user");
+    expect(user?.content).toBe("and then?");
+    expect(user?.runId).toBe("run-1");
+    const assistant = messages.find(message => message.role === "assistant");
+    expect(assistant?.content).toBe("the answer");
+    expect(assistant?.status).toBe("complete");
+    expect(messages[0]?.role).toBe("user");
   });
 
   it("hands the queued run to the re-attach path without a final render", async () => {
