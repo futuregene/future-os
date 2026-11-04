@@ -258,7 +258,18 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
    */
   createWorkspace(path: string, name: string): Promise<import("./types").RemoteWorkspace>;
   setSessionPinned(sessionId: string, threadId: string, pinned: boolean): Promise<void>;
+  /**
+   * Shelve a conversation on the connected desktop. The host refuses while the
+   * tree still has a running member, and that refusal is the rejection.
+   */
+  archiveSession(sessionId: string, threadId: string): Promise<void>;
+  /** Bring a shelved conversation's tree back. */
+  restoreSession(sessionId: string, threadId: string): Promise<void>;
   setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void>;
+  /** Shelve a workspace and hide its conversations on the connected desktop. */
+  archiveWorkspace(workspaceId: string): Promise<void>;
+  /** Bring a shelved workspace, and the conversations it hid, back. */
+  restoreWorkspace(workspaceId: string): Promise<void>;
   /**
    * Rename a workspace on the connected desktop. The host applies its own name
    * rules and answers the fresh catalogue, so a resolved promise means the new
@@ -609,6 +620,10 @@ function machineSurface(
     }),
     setSessionPinned: runtime?.catalog.setSessionPinned ?? noop,
     setWorkspacePinned: runtime?.catalog.setWorkspacePinned ?? noop,
+    archiveSession: runtime?.catalog.archiveSession ?? noop,
+    restoreSession: runtime?.catalog.restoreSession ?? noop,
+    archiveWorkspace: runtime?.catalog.archiveWorkspace ?? noop,
+    restoreWorkspace: runtime?.catalog.restoreWorkspace ?? noop,
     renameWorkspace: runtime?.catalog.renameWorkspace ?? noop,
     forkConversation: runtime?.conversation.forkConversation ?? noop,
     decideApproval: runtime?.conversation.decideApproval ?? noop,
@@ -899,6 +914,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       // but the merged list does not draw it (see `CatalogEntry.status`).
       status: machineStatusOf(entry),
       sessions: entry.catalog.sessions,
+      workspaces: entry.catalog.workspaces,
     }));
     // The open machine contributes through its own runtime rather than a second
     // fetch: its catalogue is the same state the screens are reading.
@@ -911,6 +927,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         // header contradicts.
         status: machineStatusOf(activeRuntime),
         sessions: activeRuntime.catalog.sessions,
+        workspaces: activeRuntime.catalog.workspaces,
       });
     const machines: MachineSummary[] = others.map((entry) => ({
       desktopId: entry.desktopId,
@@ -1005,6 +1022,22 @@ export function RemoteProvider({ children }: PropsWithChildren) {
             await client()?.request({ type: "delete_session", sessionId, threadId }, sessionId);
             await accepted();
           },
+          archiveSession: async (sessionId, threadId) => {
+            await client()?.request({ type: "archive_session", sessionId, threadId }, sessionId);
+            await accepted();
+          },
+          restoreSession: async (sessionId, threadId) => {
+            await client()?.request({ type: "restore_session", sessionId, threadId }, sessionId);
+            await accepted();
+          },
+          archiveWorkspace: async (workspaceId) => {
+            await client()?.request({ type: "archive_workspace", workspaceId }, "list");
+            await accepted();
+          },
+          restoreWorkspace: async (workspaceId) => {
+            await client()?.request({ type: "restore_workspace", workspaceId }, "list");
+            await accepted();
+          },
           renameWorkspace: async (workspaceId, name) => {
             await client()?.request(
               { type: "rename_workspace", workspaceId, name: name.trim() }, "list");
@@ -1038,6 +1071,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   }, [
     activeDesktopId,
     activeRuntime?.catalog.sessions,
+    activeRuntime?.catalog.workspaces,
     activeRuntime?.desktopId,
     activeRuntime?.label,
     pairedIds,

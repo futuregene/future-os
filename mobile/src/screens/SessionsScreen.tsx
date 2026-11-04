@@ -1,4 +1,6 @@
 import {
+  Archive,
+  ArrowLeft,
   ChevronLeft,
   ChevronRight,
   Folder,
@@ -138,6 +140,27 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     [catalogs.catalogs, scopedFilter],
   );
   /**
+   * Every shown machine's catalogue in the shape the archived shelf groups.
+   *
+   * The shelf used to read the open connection alone, so a conversation shelved
+   * on another pairing — or a phone whose open desktop held none — saw an empty
+   * archived page while the desktop app listed those rows. The same filter the
+   * picker applies narrows it here: a machine the reader filtered out does not
+   * keep a shelf on screen, and a machine that is not answering contributes
+   * nothing (its cached rows are not a list this phone may draw).
+   */
+  const archivedCatalogs = useMemo(
+    () => catalogs.catalogs
+      .filter(entry => entry.status === "connected")
+      .filter(entry => scopedFilter.kind !== "desktop" || entry.desktopId === scopedFilter.desktopId)
+      .map(entry => ({
+        desktopId: entry.desktopId,
+        sessions: entry.sessions,
+        workspaces: entry.workspaces ?? [],
+      })),
+    [catalogs.catalogs, scopedFilter],
+  );
+  /**
    * The machine the picker names that the phone is not reading, if any.
    *
    * It is the one case the ordinary workspace tree cannot draw: its rows come
@@ -189,6 +212,10 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     renameWorkspace: remote.renameWorkspace,
     setWorkspacePinned: remote.setWorkspacePinned,
     deleteWorkspace: remote.deleteWorkspace,
+    archiveSession: remote.archiveSession,
+    restoreSession: remote.restoreSession,
+    archiveWorkspace: remote.archiveWorkspace,
+    restoreWorkspace: remote.restoreWorkspace,
   }), [
     remote.capabilities,
     remote.deleteSession,
@@ -198,6 +225,10 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     remote.renameWorkspace,
     remote.setSessionPinned,
     remote.setWorkspacePinned,
+    remote.archiveSession,
+    remote.restoreSession,
+    remote.archiveWorkspace,
+    remote.restoreWorkspace,
   ]);
   /** How every other paired machine stands, by desktop id. */
   const peerReady = useMemo(
@@ -634,6 +665,21 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
    * machine that owns the row, so that machine is what speaks for it.
    */
   const canManage = menuSession !== null && canCommand(menuSession.desktopId);
+  /** The open conversation's own machine's commands, for the shelf item. */
+  const menuSessionCommands = menuSession ? commandsFor(menuSession.desktopId) : null;
+  /** Whether the open conversation sits on the archived shelf. */
+  const menuSessionArchived = menuSession?.session.archived === true;
+  /**
+   * Whether that machine answered the archive commands.
+   *
+   * Reading a shelf never needed the flag — the catalogue has carried
+   * `archived` for longer — but changing one does, and a host that predates the
+   * commands answers "Unsupported command". So the item is withheld there rather
+   * than offered and then refused.
+   */
+  const menuSessionCanArchive = canManage
+    && Boolean(menuSessionCommands?.capabilities.has("archive_v1"))
+    && Boolean(menuSession?.session.threadId);
   /**
    * Every paired machine, the active one first.
    *
@@ -968,7 +1014,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
    * The page matters as much as on the list: pinned conversations are shortcuts
    * only on the tree pages, so a catalogue of nothing but pins can be selected
    * from the recency page and not from the other two. The archived shelf has no
-   * batch at all — restoring is the desktop's — so the item goes away there.
+   * batch at all — a batch is a delete, and the shelf offers restore instead —\n   * so the item goes away there.
    */
   const canSelect = !archivedOpen && selectableTargets(
     listTargets(showMerged ? mergedRows : undefined, remote.sessions),
@@ -1000,7 +1046,30 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
                 heading: true,
               }]
               : []),
-            { label: t(menuSession.session.pinned ? "sessions.unpin" : "sessions.pin"), icon: <Pin size={18} color={colors.inkSoft} />, disabled: !canManage, onPress: () => togglePin(menuSession) },
+            ...(menuSessionArchived
+              ? []
+              : [{ label: t(menuSession.session.pinned ? "sessions.unpin" : "sessions.pin"), icon: <Pin size={18} color={colors.inkSoft} />, disabled: !canManage, onPress: () => togglePin(menuSession) }]),
+            // The shelf item flips with the row: shelf it from the active list,
+            // restore it from the archived one. Addressed to the machine that
+            // owns the conversation, like every other row action here.
+            ...(menuSessionCanArchive
+              ? [{
+                label: t(menuSessionArchived ? "sessions.restore" : "sessions.archive"),
+                icon: menuSessionArchived
+                  ? <ArrowLeft size={18} color={colors.inkSoft} />
+                  : <Archive size={18} color={colors.inkSoft} />,
+                disabled: !canManage,
+                onPress: () => {
+                  const commands = menuSessionCommands;
+                  if (!commands) return;
+                  setMenuSession(null);
+                  void (menuSessionArchived
+                    ? commands.restoreSession(menuSession.session.sessionId, menuSession.session.threadId)
+                    : commands.archiveSession(menuSession.session.sessionId, menuSession.session.threadId))
+                    .catch(() => Alert.alert(t("common.error"), t("sessions.archiveFailed")));
+                },
+              }]
+              : []),
             { label: t("chat.rename"), icon: <Pencil size={18} color={colors.inkSoft} />, disabled: !canManage, onPress: () => openRename(menuSession) },
             { label: t("sessions.delete"), icon: <Trash2 size={18} color={colors.danger} />, destructive: true, disabled: !canManage, onPress: () => confirmDelete(menuSession) },
           ] : []}
@@ -1072,6 +1141,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           ref={listRef}
           key={archivedOpen ? `archived:${tab}` : tab}
           archived={archivedOpen}
+          archivedCatalogs={archivedCatalogs}
           tab={tab}
           active={active}
           onTabChange={setTab}

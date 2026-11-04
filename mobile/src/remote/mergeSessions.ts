@@ -1,5 +1,5 @@
 import type { MachineStatus } from "./desktopStatus";
-import type { RemoteSession } from "./types";
+import type { RemoteSession, RemoteWorkspace } from "./types";
 
 /**
  * The merged conversation list: every paired desktop's sessions in one list,
@@ -44,6 +44,16 @@ export interface CatalogEntry {
    */
   status: MachineStatus;
   sessions: RemoteSession[];
+  /**
+   * That machine's workspaces, for the archived shelf.
+   *
+   * The active list needs sessions alone, which is why this is optional here —
+   * but a shelved workspace with nothing left in it exists only as this row, and
+   * the archived view has to draw it to offer "restore". A caller with no
+   * workspace list still gets shelves whose conversations name their workspace
+   * (the row carries `workspaceName`).
+   */
+  workspaces?: RemoteWorkspace[];
 }
 
 export interface MergedSessionRow {

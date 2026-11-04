@@ -68,6 +68,10 @@ const mockRemote = {
   reconnect: jest.fn(),
   takeControl: jest.fn(async () => {}),
   setSessionPinned: jest.fn(async (_sessionId: string, _threadId: string, _pinned: boolean) => {}),
+  archiveSession: jest.fn(async (_sessionId: string, _threadId: string) => {}),
+  restoreSession: jest.fn(async (_sessionId: string, _threadId: string) => {}),
+  archiveWorkspace: jest.fn(async (_workspaceId: string) => {}),
+  restoreWorkspace: jest.fn(async (_workspaceId: string) => {}),
   unpair: jest.fn(async () => {}),
   rename: jest.fn(async () => {}),
   generateTitle: jest.fn(async () => {}),
@@ -1138,17 +1142,25 @@ const moduleDisconnected = () => tree.root.findAllByType(DisconnectedScreen)[0];
 describe("conversations on other machines", () => {
   const session = { sessionId: "elsewhere", threadId: "t-elsewhere", title: "Elsewhere", streaming: false };
   const peerCommands = {
+    capabilities: new Set<string>(),
     renameSession: jest.fn(async (_sessionId: string, _name: string) => {}),
     generateTitle: jest.fn(async (_sessionId: string, _language: string) => "Generated"),
     setSessionPinned: jest.fn(async (_sessionId: string, _threadId: string, _pinned: boolean) => {}),
     deleteSession: jest.fn(async (_sessionId: string, _threadId: string) => {}),
+    archiveSession: jest.fn(async (_sessionId: string, _threadId: string) => {}),
+    restoreSession: jest.fn(async (_sessionId: string, _threadId: string) => {}),
     renameWorkspace: jest.fn(async (_workspaceId: string, _name: string) => {}),
     setWorkspacePinned: jest.fn(async (_workspaceId: string, _pinned: boolean) => {}),
+    archiveWorkspace: jest.fn(async (_workspaceId: string) => {}),
+    restoreWorkspace: jest.fn(async (_workspaceId: string) => {}),
     deleteWorkspace: jest.fn(async (_workspaceId: string) => {}),
   };
 
   beforeEach(() => {
-    for (const command of Object.values(peerCommands)) command.mockClear();
+    for (const command of Object.values(peerCommands)) {
+      if (typeof command === "function") command.mockClear();
+    }
+    peerCommands.capabilities = new Set<string>();
     mockCatalogs.commandsFor = jest.fn(() => peerCommands);
   });
 
@@ -1203,6 +1215,30 @@ describe("conversations on other machines", () => {
     await act(async () => { await tree.root.findByType(RenameModal).props.submitRename(); });
     expect(peerCommands.renameSession).toHaveBeenCalledWith("elsewhere", "New name");
     expect(mockRemote.rename).not.toHaveBeenCalled();
+  });
+
+  test("a conversation is shelved and restored through the machine that owns it", async () => {
+    peerCommands.capabilities = new Set(["archive_v1"]);
+    mockCatalogs.machines = [
+      { desktopId: "desktop_2", label: "Office", active: false, status: "connected" },
+    ];
+    act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
+    openMenu();
+    act(() => button("sessions.archive").props.onPress());
+    await act(async () => { visibleMenu().findByType(Modal).props.onDismiss(); });
+    expect(peerCommands.archiveSession).toHaveBeenCalledWith("elsewhere", "t-elsewhere");
+    expect(mockRemote.archiveSession).not.toHaveBeenCalled();
+
+    // The row the host has since shelved flips the item, and the pin goes: the
+    // host clears it when it shelves, so offering one would present a state the
+    // machine cannot be in.
+    act(() => tree.root.findByType(SessionList).props.onMenu({ ...session, archived: true }, "desktop_2"));
+    const labels = actions().map((action: { label: string }) => action.label);
+    expect(labels).toContain("sessions.restore");
+    expect(labels).not.toContain("sessions.pin");
+    act(() => button("sessions.restore").props.onPress());
+    await act(async () => { visibleMenu().findByType(Modal).props.onDismiss(); });
+    expect(peerCommands.restoreSession).toHaveBeenCalledWith("elsewhere", "t-elsewhere");
   });
 
   test("a machine that cannot answer offers no menu at all", () => {

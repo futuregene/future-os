@@ -156,8 +156,12 @@ function machineCommands(capabilities: string[] = []) {
     generateTitle: jest.fn(async (_sessionId: string, _language: string) => "Generated"),
     setSessionPinned: jest.fn(async (_sessionId: string, _threadId: string, _pinned: boolean) => {}),
     deleteSession: jest.fn(async (_sessionId: string, _threadId: string) => {}),
+    archiveSession: jest.fn(async (_sessionId: string, _threadId: string) => {}),
+    restoreSession: jest.fn(async (_sessionId: string, _threadId: string) => {}),
     renameWorkspace: jest.fn(async (_workspaceId: string, _name: string) => {}),
     setWorkspacePinned: jest.fn(async (_workspaceId: string, _pinned: boolean) => {}),
+    archiveWorkspace: jest.fn(async (_workspaceId: string) => {}),
+    restoreWorkspace: jest.fn(async (_workspaceId: string) => {}),
     deleteWorkspace: jest.fn(async (_workspaceId: string) => {}),
   } satisfies DesktopCommands;
 }
@@ -2643,11 +2647,11 @@ test("a fork stays beside a pinned conversation in the shortcut section", () => 
 /**
  * The archived shelf, drawn in place of the pages.
  *
- * The phone shows the shelf and lets the reader open a conversation from it;
- * archiving and restoring stay on the desktop, so this view is read-only. These
- * tests are about the two things that follow from that: the shelf draws the
- * other half of the catalogue — grouped the same way the active pages group
- * theirs — and none of the writes those pages offer are reachable here.
+ * The phone draws the shelf, opens a conversation from it, and offers the same
+ * shelf item the desktop does — restore — plus the row's other commands. These
+ * tests are about what follows from that: the shelf draws the other half of the
+ * catalogue, grouped the same way the active pages group theirs, every row names
+ * the machine that owns it, and a batch still has nothing to hold here.
  */
 function renderArchived(sessions: RemoteSession[], workspaces: RemoteWorkspace[]): void {
   mockRemote.sessions = sessions;
@@ -2689,21 +2693,72 @@ test("the shelf draws a shelved workspace with its conversations, then the loose
   expect(mergedTitles()).toEqual(["Inside the shelf", "On its own"]);
 });
 
-test("the shelf offers no per-row actions, and opens a conversation on tap", () => {
+test("the shelf's row opens on tap and offers its own actions menu", () => {
+  onMenu.mockClear();
+  mockRemote.selectSession.mockClear();
   renderArchived(
     [{ sessionId: "a1", threadId: "ta1", title: "Shelved", streaming: false, archived: true }],
     [],
   );
-  // Restoring, renaming and deleting are the desktop's: a menu here would offer
-  // writes this view cannot make.
-  expect(tree.root.findAll(node =>
-    node.props.accessibilityLabel === "sessions.actions:Shelved")).toHaveLength(0);
-  const body = sessionBody("Shelved");
-  // Nor does a long press — the same sheet would open the same items.
-  act(() => body.props.onLongPress());
-  expect(onMenu).not.toHaveBeenCalled();
-  act(() => body.props.onPress());
+  // A shelved conversation is still a conversation: its menu is the way to the
+  // restore the desktop now answers, and the sheet itself decides which items
+  // the owning machine can take.
+  const actions = tree.root.findAll(node =>
+    node.props.accessibilityLabel === "sessions.actions:Shelved");
+  expect(actions.length).toBeGreaterThan(0);
+  act(() => actions[0]!.props.onPress());
+  expect(onMenu).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "a1" }), null);
+  act(() => sessionBody("Shelved").props.onPress());
   expect(mockRemote.selectSession).toHaveBeenCalledWith("a1");
+});
+
+test("the shelf draws every shown machine's archived rows, each with its machine", () => {
+  mockRemote.sessions = [];
+  mockRemote.workspaces = [];
+  act(() => tree.update(createElement(SessionList, {
+    tab: "chat",
+    archived: true,
+    empty: null,
+    onMenu,
+    onTabChange,
+    commandsFor: testCommandsFor,
+    ref: listRef,
+    archivedCatalogs: [
+      {
+        desktopId: "desk-a",
+        sessions: [{ sessionId: "a1", threadId: "ta1", title: "A shelved", streaming: false, archived: true }],
+        workspaces: [],
+      },
+      {
+        desktopId: "desk-b",
+        sessions: [{
+          sessionId: "b1",
+          threadId: "tb1",
+          title: "B shelved",
+          mode: "workspace",
+          workspaceId: "w-b",
+          workspaceName: "B project",
+          streaming: false,
+          archived: true,
+        }],
+        // This machine's workspace list has not been read; the heading is
+        // derived from the conversation that names it.
+        workspaces: [],
+      },
+    ],
+  })));
+  const rows = tree.root.findByType(FlatList).props.data;
+  // The open connection's catalogue is empty, so anything drawn here came from
+  // another machine — which is what the shelf used to omit.
+  expect(rows.filter((row: { kind: string }) => row.kind === "session")
+    .map((row: { session: { title: string } }) => row.session.title))
+    .toEqual(["A shelved", "B shelved"]);
+  const heading = rows.find((row: { kind: string }) => row.kind === "workspace");
+  expect(heading.workspace.name).toBe("B project");
+  // Every row names its machine: the glyph and the restore both read it.
+  expect(heading.desktopId).toBe("desk-b");
+  expect(rows.find((row: { session?: { title: string } }) => row.session?.title === "B shelved").desktopId)
+    .toBe("desk-b");
 });
 
 test("a batch cannot be entered from the shelf, and its tabs are replaced by a caption", () => {
