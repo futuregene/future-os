@@ -32,7 +32,7 @@ const DESKTOP_PRAGMAS: &str =
     "PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;";
 
 /// `future workspace <command> [args]`.
-pub fn workspace(command: Option<&str>, rest: &[String], out: &Output) -> Result<()> {
+pub async fn workspace(command: Option<&str>, rest: &[String], out: &Output) -> Result<()> {
     match command {
         None | Some("--help" | "-h") => {
             out.log(help::WORKSPACE_HELP);
@@ -40,24 +40,52 @@ pub fn workspace(command: Option<&str>, rest: &[String], out: &Output) -> Result
         }
         Some("list") => list(rest, out),
         Some("add") => add(rest, out),
+        // Shelving is the desktop app's own Archived view, so it lives with the
+        // rest of that store's operations in `archive`. No running app is needed.
+        Some("archive") => super::archive::workspace_command(false, rest, out).await,
+        Some("restore" | "unarchive") => {
+            super::archive::workspace_command(true, rest, out).await
+        }
         Some(other) => Err(format!(
-            "Unknown argument: {other}\nUsage: future workspace [list | add <path>]\nRun `future workspace --help` for details."
+            "Unknown argument: {other}\nUsage: future workspace [list | add <path> | archive <path|id|name> | restore <path|id|name>]\nRun `future workspace --help` for details."
         )),
     }
 }
 
-/// `future workspace list [--json]`
+/// Which shelf `future workspace list` reports.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shelf {
+    /// The default list: what the sidebar shows.
+    Active,
+    /// The archived view.
+    Archived,
+    /// Both, for finding an id to restore.
+    All,
+}
+
+/// `future workspace list [--archived | --all] [--json]`
 fn list(args: &[String], out: &Output) -> Result<()> {
-    let json_flag = reject_arguments(args)?;
+    let (json_flag, shelf) = parse_list_arguments(args)?;
 
     // A database the desktop app has never created means the user has no
     // workspaces, not that the read failed — and listing must not create one.
     let Some(conn) = open_existing()? else {
-        return report_empty(json_flag, out);
+        return report_empty(shelf, json_flag, out);
     };
-    let workspaces = user_workspaces(&conn)?;
+    // The archived marker is the shelf itself, so the default view hides the
+    // rows the app's sidebar hides. `list` used to show them as ordinary
+    // workspaces because nothing could shelve one; the archive command makes
+    // that a lie worth not telling.
+    let workspaces: Vec<workspaces::Workspace> = user_workspaces(&conn)?
+        .into_iter()
+        .filter(|workspace| match shelf {
+            Shelf::Active => workspace.archived_at.is_none(),
+            Shelf::Archived => workspace.archived_at.is_some(),
+            Shelf::All => true,
+        })
+        .collect();
     if workspaces.is_empty() {
-        return report_empty(json_flag, out);
+        return report_empty(shelf, json_flag, out);
     }
 
     if json_flag {
@@ -65,20 +93,31 @@ fn list(args: &[String], out: &Output) -> Result<()> {
         return Ok(());
     }
     for workspace in &workspaces {
+        // Only the `--all` view mixes the two shelves, so it is the only one
+        // that has to say which shelf a row is on; the archived view is all
+        // archived rows and the default view is none of them.
+        let marker = if shelf == Shelf::All && workspace.archived_at.is_some() {
+            "  (archived)"
+        } else {
+            ""
+        };
         out.log(&format!(
-            "{:<24} {:<48} {}",
+            "{:<24} {:<48} {}{marker}",
             workspace.name, workspace.path, workspace.id
         ));
     }
     Ok(())
 }
 
-fn report_empty(json_flag: bool, out: &Output) -> Result<()> {
+fn report_empty(shelf: Shelf, json_flag: bool, out: &Output) -> Result<()> {
     if json_flag {
         out.log("[]");
-    } else {
-        out.log("No workspaces. Add one with `future workspace add <path>`.");
+        return Ok(());
     }
+    out.log(match shelf {
+        Shelf::Archived => "No archived workspaces.",
+        Shelf::Active | Shelf::All => "No workspaces. Add one with `future workspace add <path>`.",
+    });
     Ok(())
 }
 
@@ -166,7 +205,7 @@ fn add(args: &[String], out: &Output) -> Result<()> {
 
 /// The user's own workspaces, most recently opened first. The chat scratch
 /// directories the app manages live in the same table and are not the user's.
-fn user_workspaces(conn: &Connection) -> Result<Vec<workspaces::Workspace>> {
+pub(crate) fn user_workspaces(conn: &Connection) -> Result<Vec<workspaces::Workspace>> {
     Ok(workspaces::list(conn)
         .map_err(|error| error.to_string())?
         .into_iter()
@@ -174,20 +213,25 @@ fn user_workspaces(conn: &Connection) -> Result<Vec<workspaces::Workspace>> {
         .collect())
 }
 
-/// Reject anything but `--json`, so a typo is reported instead of ignored.
-fn reject_arguments(args: &[String]) -> Result<bool> {
+/// Reject anything but the shelf flags, so a typo is reported instead of
+/// silently ignored — `--archive` meaning `--archived` would be a quiet way to
+/// read the wrong list.
+fn parse_list_arguments(args: &[String]) -> Result<(bool, Shelf)> {
     let mut json_flag = false;
+    let mut shelf = Shelf::Active;
     for argument in args {
         match argument.as_str() {
             "--json" => json_flag = true,
+            "--archived" => shelf = Shelf::Archived,
+            "--all" => shelf = Shelf::All,
             other => return Err(format!("unknown option: {other}")),
         }
     }
-    Ok(json_flag)
+    Ok((json_flag, shelf))
 }
 
 /// `~/.future/app/app.db`, or `None` when the desktop app has never created it.
-fn open_existing() -> Result<Option<Connection>> {
+pub(crate) fn open_existing() -> Result<Option<Connection>> {
     let path = future_app_settings::app_db_path().map_err(|error| error.to_string())?;
     if !path.exists() {
         return Ok(None);
@@ -558,7 +602,7 @@ mod tests {
         assert!(add(&args(&["/tmp", "--nope"]), &out)
             .unwrap_err()
             .contains("unknown option"));
-        assert!(list(&args(&["--all"]), &out)
+        assert!(list(&args(&["--every"]), &out)
             .unwrap_err()
             .contains("unknown option"));
         assert!(!home.database().exists());
@@ -597,14 +641,14 @@ mod tests {
     #[tokio::test]
     async fn group_dispatch_prints_help_and_refuses_unknown_subcommands() {
         let (out, captured) = Output::memory();
-        workspace(None, &[], &out).unwrap();
+        workspace(None, &[], &out).await.unwrap();
         assert_eq!(text(captured.out).trim_end(), help::WORKSPACE_HELP);
 
         let (out, _) = Output::memory();
-        let error = workspace(Some("remove"), &[], &out).unwrap_err();
+        let error = workspace(Some("remove"), &[], &out).await.unwrap_err();
         assert!(error.contains("Unknown argument: remove"), "{error}");
         assert!(
-            error.contains("future workspace [list | add <path>]"),
+            error.contains("archive <path|id|name> | restore <path|id|name>"),
             "{error}"
         );
     }
@@ -794,6 +838,81 @@ mod tests {
         // No workspace was invented for the scratch path.
         let conn = Connection::open(home.database()).unwrap();
         assert_eq!(user_workspaces(&conn).unwrap().len(), 1);
+    }
+
+    /// The default list is the sidebar's: a shelved workspace leaves it,
+    /// `--archived` is the archived view, and `--all` is how an id to restore is
+    /// found — marked, because that view mixes two shelves.
+    #[tokio::test]
+    async fn archived_workspaces_leave_the_default_list() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let active = home.dir("active");
+        let shelved = home.dir("shelved");
+        let (out, _) = Output::memory();
+        add(&args(&[active.to_str().unwrap()]), &out).unwrap();
+        add(&args(&[shelved.to_str().unwrap()]), &out).unwrap();
+        {
+            let conn = Connection::open(home.database()).unwrap();
+            conn.execute(
+                "UPDATE workspaces SET archived_at = 7 WHERE name = 'shelved'",
+                [],
+            )
+            .unwrap();
+        }
+
+        let (out, captured) = Output::memory();
+        list(&[], &out).unwrap();
+        let printed = text(captured.out);
+        assert!(printed.contains("/active"), "{printed}");
+        assert!(
+            !printed.contains("/shelved"),
+            "the default list is the active shelf: {printed}"
+        );
+
+        let (out, captured) = Output::memory();
+        list(&args(&["--archived"]), &out).unwrap();
+        let printed = text(captured.out);
+        assert!(printed.contains("/shelved"), "{printed}");
+        assert!(!printed.contains("/active"), "{printed}");
+
+        let (out, captured) = Output::memory();
+        list(&args(&["--all"]), &out).unwrap();
+        let printed = text(captured.out);
+        let shelved_line = printed
+            .lines()
+            .find(|line| line.contains("/shelved"))
+            .expect("the shelved row is in --all");
+        assert!(shelved_line.ends_with("(archived)"), "{shelved_line}");
+        let active_line = printed
+            .lines()
+            .find(|line| line.contains("/active"))
+            .expect("the active row is in --all");
+        assert!(!active_line.contains("(archived)"), "{active_line}");
+
+        // `--json` follows the same shelf, so a script cannot see a shelved row
+        // in the default view either.
+        let (out, captured) = Output::memory();
+        list(&args(&["--json"]), &out).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text(captured.out)).unwrap();
+        assert_eq!(parsed.as_array().unwrap().len(), 1);
+        assert_eq!(parsed[0]["name"], "active");
+    }
+
+    /// An empty archived view says so instead of reusing the "add one" advice,
+    /// which is about the active shelf.
+    #[tokio::test]
+    async fn an_empty_archived_view_says_there_is_nothing_archived() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let project = home.dir("demo");
+        let (out, _) = Output::memory();
+        add(&args(&[project.to_str().unwrap()]), &out).unwrap();
+
+        let (out, captured) = Output::memory();
+        list(&args(&["--archived"]), &out).unwrap();
+        let printed = text(captured.out);
+        assert!(printed.contains("No archived workspaces."), "{printed}");
     }
 
     /// A store the CLI cannot read is a refusal carrying the store's own reason:

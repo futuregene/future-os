@@ -454,8 +454,11 @@ tick).
 ```sh
 future workspace list                 # the user's own workspaces
 future workspace list --json
+future workspace list --archived      # the archived view
 future workspace add ~/projects/demo  # register an existing directory
 future workspace add /srv/app --name "Service"
+future workspace archive ~/projects/demo   # shelve it and its conversations
+future workspace restore ws-1a2b3c         # bring it, and what it hid, back
 ```
 
 The directory must already exist — a workspace points at a directory, it does
@@ -468,6 +471,17 @@ safe to run twice.
 
 The write needs no running desktop app, and a running one sees it on its next
 read.
+
+`archive` and `restore` are the app's Archived view from the terminal, at both
+scopes: a workspace leaves the sidebar with the conversations filed under it
+(restoring brings back exactly what it hid, because each conversation keeps its
+own status), and `future session archive <session-id>` shelves one conversation
+together with its forked tree. Both refuse while anything inside is still
+running — a shelved run would hide its approval request — and clear the pin.
+`future workspace list` therefore shows the active shelf by default, with
+`--archived` for the archived view and `--all` for both, marked; a session the
+desktop app has never imported has no conversation to shelve, and says so
+instead of pretending it archived something.
 
 Workspaces also appear without `add`: `future session set <id> --cwd <dir>`
 files that conversation under the directory's workspace, exactly as the desktop

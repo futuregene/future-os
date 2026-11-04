@@ -284,7 +284,11 @@ future desktop settings                       # every effective desktop setting
 future desktop settings get approvalTier      # one value, for scripts
 future desktop settings set approvalTier auto # off | manual | sandbox | auto
 future workspace list                         # workspaces, with their conversations
+future workspace list --archived              # the archived view
 future workspace add ~/projects/demo --name Demo
+future workspace archive ~/projects/demo      # shelve it and its conversations
+future workspace restore ws-1a2b3c            # bring it, and what it hid, back
+future session archive <session-id>           # shelve one conversation (and its forks)
 ```
 
 These read and write the desktop app's database (`~/.future/app/app.db`), not the
@@ -296,7 +300,9 @@ is needed: a running app picks the change up the next time it reads the settings
 inert: the Agent never continues an interrupted run by itself — the next run starts
 from a prompt somebody sends). A workspace added
 here appears in the app's sidebar (and on a paired phone) once the app publishes
-its catalogue; the directory must already exist.
+its catalogue; the directory must already exist. `archive`/`restore` are the app's
+Archived view at both scopes — a workspace takes the conversations under it, a
+session takes its fork tree — and refuse while anything inside is still running.
 
 ### `remote` — paired devices and remote desktops
 

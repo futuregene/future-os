@@ -257,7 +257,11 @@ future desktop settings                       # 桌面应用的全部生效设�
 future desktop settings get approvalTier      # 单个值，便于脚本
 future desktop settings set approvalTier auto # off | manual | sandbox | auto
 future workspace list                         # workspace 列表及其会话
+future workspace list --archived              # 已归档视图
 future workspace add ~/projects/demo --name Demo
+future workspace archive ~/projects/demo      # 归档它和它下面的会话
+future workspace restore ws-1a2b3c            # 取消归档，连同它藏起来的东西
+future session archive <session-id>           # 归档一条会话（连同它的 fork）
 ```
 
 读写的是桌面应用自己的数据库（`~/.future/app/app.db`），不是 agent 的设置文档——
@@ -266,7 +270,9 @@ future workspace add ~/projects/demo --name Demo
 `autoUpgradeSkills`、`autoConnectRemote`、`bellOnComplete`、`titleLanguage`、
 `skillRecommend` 与 `autoResumeInterrupted`（最后一项现在已无作用：Agent 不会自己续跑被中断的运行，
 下一轮由某个地方发出的 prompt 开始）。这里添加的 workspace 会在应用发布目录后
-出现在左栏（以及已配对手机上）；目录必须已存在。
+出现在左栏（以及已配对手机上）；目录必须已存在。`archive`/`restore` 是桌面端「已归档」
+视图的命令行版本，两层都支持——工作区连同它下面的会话，会话连同它的 fork 树——内部还有
+东西在运行时会拒绝归档。
 
 ### `remote` —— 已配对设备与远程桌面
 
