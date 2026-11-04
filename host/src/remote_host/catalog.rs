@@ -234,13 +234,20 @@ fn read_sessions(pair_id: &str) -> Option<Value> {
     // on every poll, and a group exists only where a row does. Best-effort: a
     // thread whose workspace row is gone still lists, under its peer's name,
     // un-pinned, and ordered as if its place were unknown.
-    let workspaces: std::collections::HashMap<String, (String, bool, i64)> =
+    // The workspace's archived marker rides here too: a shelved workspace hides
+    // its conversations without rewriting their own status (see the archive
+    // design), so a session row is archived when either half says so — which is
+    // the same rule the desktop's own list queries apply.
+    let workspaces: std::collections::HashMap<String, (String, bool, i64, bool)> =
         crate::store::list_workspaces()
             .map(|rows| {
                 rows.into_iter()
                     .map(|row| {
                         let ordered_at = row.last_opened_at.unwrap_or(row.updated_at);
-                        (row.id, (row.name, row.pinned, ordered_at))
+                        (
+                            row.id,
+                            (row.name, row.pinned, ordered_at, row.archived_at.is_some()),
+                        )
                     })
                     .collect()
             })
@@ -272,20 +279,27 @@ fn read_sessions(pair_id: &str) -> Option<Value> {
             "title": t.title,
             "mode": t.mode,
             "workspaceId": t.workspace_id,
-            "workspaceName": workspace.map(|(name, _, _)| name.clone()),
+            "workspaceName": workspace.map(|(name, _, _, _)| name.clone()),
             // Whether this conversation's workspace is pinned *here*. Optional by
             // contract: a client built before this field simply orders by recency,
             // which is what it did before.
-            "workspacePinned": workspace.map(|(_, pinned, _)| *pinned),
+            "workspacePinned": workspace.map(|(_, pinned, _, _)| *pinned),
             // When that workspace itself was last opened or touched, in the same
             // coalesce `future_app_workspaces::list` orders its own rows by. A
             // merged list ranks a group by *its* place rather than by its
             // conversations' timestamps, so this is what keeps a group from
             // moving while the user works in it. Optional by contract: without
             // it a client orders that group last, not as if it were just used.
-            "workspaceOrderedAt": workspace.map(|(_, _, ordered_at)| *ordered_at),
+            "workspaceOrderedAt": workspace.map(|(_, _, ordered_at, _)| *ordered_at),
             "parentSessionId": t.parent_session_id,
             "pinned": t.pinned,
+            // Shelved: the conversation itself, or the workspace holding it. The
+            // desktop's default lists hide both, and a client must agree or the
+            // same conversation sits in two different places depending on which
+            // device is looking. Optional by contract: a client that predates the
+            // field lists the row as active, which is what it did before.
+            "archived": t.status == "archived"
+                || workspace.is_some_and(|(_, _, _, archived)| *archived),
             "streaming": streaming,
             "status": status,
             // Last-activity timestamp, in the *same* coalesce the store's own
@@ -321,7 +335,10 @@ fn read_workspaces() -> Option<Value> {
         if w.kind != "user" {
             continue;
         }
-        if let Ok(value) = serde_json::to_value(w) {
+        if let Ok(mut value) = serde_json::to_value(w) {
+            // A plain boolean beside the record's own `archivedAt`: a client
+            // should not have to know that "archived" is spelled as a timestamp.
+            value["archived"] = serde_json::json!(w.archived_at.is_some());
             workspace_values.push(value);
         }
     }
@@ -344,6 +361,27 @@ mod tests {
             agent_session_id: Some(session.into()),
         })
         .expect("create thread under the test HOME")
+    }
+
+    /// A conversation filed under a *user* workspace, which is the only kind that
+    /// can be shelved (a chat's temporary workspace cannot).
+    fn new_workspace_thread(
+        session: &str,
+        title: &str,
+    ) -> (crate::store::WorkspaceRecord, crate::store::ThreadRecord) {
+        let thread = create_thread(CreateThreadInput {
+            mode: "workspace".into(),
+            title: Some(title.into()),
+            workspace_id: None,
+            workspace_path: Some("/tmp/catalog-workspace".into()),
+            workspace_name: Some("Catalog Project".into()),
+            agent_session_id: Some(session.into()),
+        })
+        .expect("create a workspace conversation under the test HOME");
+        let workspace = crate::store::get_workspace(&thread.workspace_id)
+            .expect("read the workspace")
+            .expect("the workspace create_thread made");
+        (workspace, thread)
     }
 
     /// The number behind the cache: how a pull behaves with it and without it.
@@ -657,6 +695,113 @@ mod tests {
             .expect("session in snapshot");
         assert_eq!(row["workspaceId"], json!(workspace_id));
         assert_eq!(row["workspacePinned"], json!(true));
+    }
+
+    /// A shelved conversation says so on its own row, and stays in the snapshot.
+    ///
+    /// The phone draws its archived view from this same catalogue (`list_threads`
+    /// returns everything but deleted rows), so archiving must not remove the row
+    /// — it marks it. The desktop's default lists hide it; a client that reads
+    /// the flag can hide it too, and one that predates the field lists the row as
+    /// active, which is what it did before.
+    #[test]
+    fn sessions_snapshot_marks_an_archived_conversation() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-thread-archived");
+        crate::remote::test_support::init_store();
+
+        let thread = new_thread("sess-archived", "Shelved");
+        let archived = |payload: &serde_json::Value| {
+            payload["sessions"]
+                .as_array()
+                .expect("sessions array")
+                .iter()
+                .find(|row| row["sessionId"] == json!("sess-archived"))
+                .map(|row| row["archived"].clone())
+                .expect("the row stays in the catalogue after archiving")
+        };
+
+        let (payload, _signature) = sessions("pair_test").expect("snapshot");
+        assert_eq!(archived(&payload), json!(false));
+
+        crate::store::archive_thread_tree(&thread.id, &[]).expect("archive the conversation");
+
+        let (payload, _signature) = sessions("pair_test").expect("snapshot");
+        assert_eq!(archived(&payload), json!(true));
+
+        crate::store::restore_thread(&thread.id).expect("restore the conversation");
+
+        let (payload, _signature) = sessions("pair_test").expect("snapshot");
+        assert_eq!(archived(&payload), json!(false));
+    }
+
+    /// A shelved workspace's conversations are marked on their rows.
+    ///
+    /// Archiving a workspace leaves its conversations' own status alone — that is
+    /// what makes restoring it exact — so the flag has to come from the workspace
+    /// row. Without this a client's default list would show the conversations of
+    /// a workspace it had already hidden: rows under no heading, in a list that
+    /// no longer draws the heading.
+    #[test]
+    fn sessions_snapshot_marks_conversations_of_an_archived_workspace() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-workspace-archived");
+        crate::remote::test_support::init_store();
+
+        let (workspace, thread) = new_workspace_thread("sess-in-shelf", "Inside the shelf");
+        // Its own status stays active throughout: only the container is shelved.
+        assert_ne!(thread.status, "archived");
+
+        crate::store::archive_workspace(&workspace.id, &[]).expect("archive the workspace");
+
+        let (payload, _signature) = sessions("pair_test").expect("snapshot");
+        let row = payload["sessions"]
+            .as_array()
+            .expect("sessions array")
+            .iter()
+            .find(|row| row["sessionId"] == json!("sess-in-shelf"))
+            .expect("session in snapshot");
+        assert_eq!(
+            row["archived"],
+            json!(true),
+            "a workspace's shelf covers its conversations"
+        );
+        assert_eq!(
+            crate::store::get_thread(&thread.id)
+                .expect("read the thread")
+                .expect("the thread")
+                .status,
+            "active",
+            "archiving a workspace must not rewrite its conversations"
+        );
+    }
+
+    /// The workspace snapshot carries the flag as a boolean beside `archivedAt`.
+    ///
+    /// A client should not have to know that "archived" is spelled as a
+    /// timestamp, and the phone pairs a shelved workspace heading with the
+    /// conversations the sessions snapshot marks for it.
+    #[test]
+    fn workspaces_snapshot_marks_an_archived_workspace() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-workspace-flag");
+        crate::remote::test_support::init_store();
+
+        let (workspace, _thread) = new_workspace_thread("sess-shelf-flag", "Flagged");
+        let archived = |payload: &serde_json::Value| {
+            payload["workspaces"]
+                .as_array()
+                .expect("workspaces array")
+                .iter()
+                .find(|row| row["id"] == json!(workspace.id))
+                .map(|row| row["archived"].clone())
+                .expect("the workspace in the snapshot")
+        };
+
+        let (payload, _signature) = workspaces().expect("snapshot");
+        assert_eq!(archived(&payload), json!(false));
+
+        crate::store::archive_workspace(&workspace.id, &[]).expect("archive");
+
+        let (payload, _signature) = workspaces().expect("snapshot");
+        assert_eq!(archived(&payload), json!(true));
     }
 
     /// A thread without an agent session is not a remote session at all, and a

@@ -87,6 +87,7 @@ jest.mock("@react-native-async-storage/async-storage", () => ({
 jest.mock("lucide-react-native", () =>
   Object.fromEntries(
     [
+      "Archive",
       "Check",
       "CheckCheck",
       "ChevronDown",
@@ -2637,4 +2638,141 @@ test("a fork stays beside a pinned conversation in the shortcut section", () => 
   act(() => button("sessions.expandChildren").props.onPress());
   expect(mergedTitles()).toEqual(["Pinned parent", "Fork of pinned", "Remote parent"]);
   expect(rowInset("Fork of pinned")).toBe(ROW_INSET + TOGGLE_WIDTH + TOGGLE_GAP);
+});
+
+/**
+ * The archived shelf, drawn in place of the pages.
+ *
+ * The phone shows the shelf and lets the reader open a conversation from it;
+ * archiving and restoring stay on the desktop, so this view is read-only. These
+ * tests are about the two things that follow from that: the shelf draws the
+ * other half of the catalogue — grouped the same way the active pages group
+ * theirs — and none of the writes those pages offer are reachable here.
+ */
+function renderArchived(sessions: RemoteSession[], workspaces: RemoteWorkspace[]): void {
+  mockRemote.sessions = sessions;
+  mockRemote.workspaces = workspaces;
+  act(() => tree.update(createElement(SessionList, {
+    tab: "chat",
+    archived: true,
+    empty: null,
+    onMenu,
+    onTabChange,
+    commandsFor: testCommandsFor,
+    ref: listRef,
+  })));
+}
+const archivedHeadingNames = (): string[] =>
+  tree.root.findByType(FlatList).props.data
+    .filter((row: { kind: string }) => row.kind === "workspace")
+    .map((row: { workspace: RemoteWorkspace }) => row.workspace.name);
+
+test("the shelf draws a shelved workspace with its conversations, then the loose ones", () => {
+  renderArchived(
+    [
+      {
+        sessionId: "in-shelf",
+        threadId: "t1",
+        title: "Inside the shelf",
+        mode: "workspace",
+        workspaceId: "w-shut",
+        streaming: false,
+        archived: true,
+      },
+      { sessionId: "loose", threadId: "t2", title: "On its own", streaming: false, archived: true },
+      { sessionId: "active", threadId: "t3", title: "Still going", streaming: false },
+    ],
+    [{ id: "w-shut", name: "Shut project", path: "/tmp/shut", archived: true }],
+  );
+  expect(archivedHeadingNames()).toEqual(["Shut project"]);
+  // The active conversation is the pages' — nothing on this shelf shows it.
+  expect(mergedTitles()).toEqual(["Inside the shelf", "On its own"]);
+});
+
+test("the shelf offers no per-row actions, and opens a conversation on tap", () => {
+  renderArchived(
+    [{ sessionId: "a1", threadId: "ta1", title: "Shelved", streaming: false, archived: true }],
+    [],
+  );
+  // Restoring, renaming and deleting are the desktop's: a menu here would offer
+  // writes this view cannot make.
+  expect(tree.root.findAll(node =>
+    node.props.accessibilityLabel === "sessions.actions:Shelved")).toHaveLength(0);
+  const body = sessionBody("Shelved");
+  // Nor does a long press — the same sheet would open the same items.
+  act(() => body.props.onLongPress());
+  expect(onMenu).not.toHaveBeenCalled();
+  act(() => body.props.onPress());
+  expect(mockRemote.selectSession).toHaveBeenCalledWith("a1");
+});
+
+test("a batch cannot be entered from the shelf, and its tabs are replaced by a caption", () => {
+  renderArchived(
+    [{ sessionId: "a1", threadId: "ta1", title: "Shelved", streaming: false, archived: true }],
+    [],
+  );
+  // No batch entry at all: every row here would be refused by it.
+  expect(tree.root.findAll(node =>
+    node.props.accessibilityLabel === "sessions.selectVisible")).toHaveLength(0);
+  // The tab row would invite a swipe between a shelf and the pages it replaced.
+  expect(pageTabs()).toHaveLength(0);
+  expect(tree.root.findAll(node =>
+    typeof node.props.children === "string" && node.props.children === "sessions.archived")
+    .length).toBeGreaterThan(0);
+});
+
+test("the shelf's search keeps matching conversations and drops empty shelves", () => {
+  renderArchived(
+    [
+      {
+        sessionId: "keep",
+        threadId: "t1",
+        title: "Quarterly plan",
+        mode: "workspace",
+        workspaceId: "w-1",
+        streaming: false,
+        archived: true,
+      },
+      {
+        sessionId: "drop",
+        threadId: "t2",
+        title: "Something else",
+        mode: "workspace",
+        workspaceId: "w-1",
+        streaming: false,
+        archived: true,
+      },
+    ],
+    [{ id: "w-1", name: "Project", path: "/tmp/p", archived: true }],
+  );
+  enterSearch();
+  act(() => tree.root.findByType(TextInput).props.onChangeText("quarterly"));
+  expect(mergedTitles()).toEqual(["Quarterly plan"]);
+  expect(archivedHeadingNames()).toEqual(["Project"]);
+  act(() => tree.root.findByType(TextInput).props.onChangeText("nothing matches this"));
+  expect(mergedTitles()).toEqual([]);
+  expect(archivedHeadingNames()).toEqual([]);
+});
+
+test("an empty shelf says so instead of showing the pages' own empty state", () => {
+  renderArchived([], []);
+  expect(tree.root.findAll(node =>
+    typeof node.props.children === "string"
+    && node.props.children === "sessions.archivedEmpty")).not.toHaveLength(0);
+});
+
+test("the shelf holds ten conversations until the footer is asked for more", () => {
+  renderArchived(
+    Array.from({ length: 12 }, (_, index) => ({
+      sessionId: `s${index}`,
+      threadId: `t${index}`,
+      title: `Shelved ${index}`,
+      streaming: false,
+      archived: true,
+    })),
+    [],
+  );
+  expect(mergedTitles()).toHaveLength(10);
+  act(() => button("sessions.showMore").props.onPress());
+  expect(mergedTitles()).toHaveLength(12);
 });
