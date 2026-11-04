@@ -866,6 +866,69 @@ describe("user message mirror", () => {
     ]);
   });
 
+  test("the row the desktop wrote keeps the copy of the picture this device holds", () => {
+    // The phone painted the photo from its own picker file when the desktop
+    // acknowledged the prompt…
+    const accepted = commitAcknowledgedUserMessage(emptyTimeline(), {
+      id: "local:prompt-1",
+      runId: "run-1",
+      text: "look",
+      attachments: [{ path: "file:///picked/photo.jpg", name: "photo.jpg", kind: "image" }],
+    });
+    // …and the live mirror of that same prompt names the host's copy of the file.
+    const mirrored = applyStreamEvent(accepted, {
+      type: "user_message",
+      runId: "run-1",
+      data: JSON.stringify({
+        entry_id: "e1",
+        run_id: "run-1",
+        text: "look",
+        created_at_ms: 1,
+        attachments: [{ path: "/home/me/.future/agent/images/photo.jpg", name: "photo.jpg", kind: "image" }],
+      }),
+    });
+
+    // Taking the host path would unmount the picture under a name this device
+    // has no bytes for: the bubble drops to a name chip and the photo returns a
+    // transfer later, which on a phone reads as the image blinking out.
+    expect(mirrored.items).toHaveLength(1);
+    expect(mirrored.items[0]).toMatchObject({
+      kind: "message",
+      role: "user",
+      attachments: [{ path: "file:///picked/photo.jpg", name: "photo.jpg", kind: "image" }],
+    });
+  });
+
+  test("an attachment this device never held keeps the desktop's path", () => {
+    const accepted = commitAcknowledgedUserMessage(emptyTimeline(), {
+      id: "local:prompt-1",
+      runId: "run-1",
+      text: "look",
+      attachments: [{ path: "file:///picked/one.jpg", name: "one.jpg", kind: "image" }],
+    });
+    const mirrored = applyStreamEvent(accepted, {
+      type: "user_message",
+      runId: "run-1",
+      data: JSON.stringify({
+        entry_id: "e1",
+        run_id: "run-1",
+        text: "look",
+        created_at_ms: 1,
+        attachments: [
+          { path: "file:///picked/one.jpg", name: "one.jpg", kind: "image" },
+          { path: "/home/me/.future/agent/images/two.jpg", name: "two.jpg", kind: "image" },
+        ],
+      }),
+    });
+
+    expect(mirrored.items[0]).toMatchObject({
+      attachments: [
+        { path: "file:///picked/one.jpg", name: "one.jpg" },
+        { path: "/home/me/.future/agent/images/two.jpg", name: "two.jpg" },
+      ],
+    });
+  });
+
   test("acknowledgement enriches an early live mirror instead of duplicating it", () => {
     const mirrored = applyStreamEvent(emptyTimeline(), {
       type: "user_message",

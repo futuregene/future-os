@@ -187,6 +187,44 @@ export function timelineFromHistory(messages: HistoryMessage[]): TimelineState {
   return { ...emptyTimeline(), items };
 }
 
+/** A path this device can open by itself — a picker copy — not the host's. */
+const LOCAL_ATTACHMENT_PATH = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+/**
+ * Keep the copy of an attachment this device already holds.
+ *
+ * A prompt sent from a phone is drawn from that phone's own picker file the
+ * moment the desktop acknowledges it. The desktop's record of the same prompt
+ * names *its* path for the file, and it arrives a moment later — the live
+ * `user_message` mirror, then durable history (which is authoritative on every
+ * reconcile). Replacing the path unmounts the picture under a name this device
+ * has no copy for, so the bubble falls back to a name chip and the photo comes
+ * back one transfer later: on a phone that reads as "the image showed, then
+ * vanished, then showed again".
+ *
+ * Matching is by name — the same identity the transcript uses everywhere else
+ * for "this attachment" — and only a local path from the row being replaced is
+ * carried. Nothing is persisted by this: a conversation opened later is built
+ * from durable history alone, so a picker file the OS has since purged can
+ * never leave a permanently blank picture behind.
+ */
+export function keepLocalAttachmentPaths(
+  attachments: HistoryAttachment[] | undefined,
+  previous: HistoryAttachment[] | undefined,
+): HistoryAttachment[] | undefined {
+  if (!attachments?.length || !previous?.length) return attachments;
+  let changed = false;
+  const next = attachments.map(attachment => {
+    const local = previous.find(
+      candidate => candidate.name === attachment.name && LOCAL_ATTACHMENT_PATH.test(candidate.path),
+    );
+    if (!local || local.path === attachment.path) return attachment;
+    changed = true;
+    return { ...attachment, path: local.path };
+  });
+  return changed ? next : attachments;
+}
+
 /** Merge durable attachment metadata into text-only live user events. */
 export function mergeHistoryAttachments(
   live: TimelineState,
@@ -515,7 +553,20 @@ function applyEvent(state: TimelineState, event: StreamEvent, batch?: {
           ? { attachments: canonical.attachments.map(toHistoryAttachment) }
           : {}),
       };
-      items = upsertUserMessage<TimelineItem>(items, user);
+      const mirrored = items.find(
+        item =>
+          item.kind === "message" &&
+          item.role === "user" &&
+          (item.id === user.id || (!!user.runId && item.runId === user.runId)),
+      );
+      const attachments = keepLocalAttachmentPaths(
+        user.attachments,
+        mirrored?.kind === "message" ? mirrored.attachments : undefined,
+      );
+      items = upsertUserMessage<TimelineItem>(
+        items,
+        attachments === user.attachments ? user : { ...user, attachments },
+      );
       break;
     }
     case "approval_request": {

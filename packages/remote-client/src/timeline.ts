@@ -11,6 +11,7 @@ export {
   foldLiveCompactionPlaceholdersIntoHistory,
   settleInterruptedStandaloneCompactions,
   emptyTimeline,
+  keepLocalAttachmentPaths,
   markApprovalDecision,
   mergeHistoryAttachments,
   normalizeReplayEvents,
