@@ -1,0 +1,60 @@
+{
+  "id": "mobile-device-picker",
+  "surface": "mobile",
+  "title": "手机端选设备：桌面选择浮层列出配对的机器，选中后进入该机器的会话列表",
+  "area": "mobile-device",
+  "priority": "P1",
+  "tags": ["mobile", "desktops", "multi-device"],
+  "description": "手机配对了五台桌面（?fleet=1 的多设备夹具）。点首页顶部的「全部桌面」打开设备浮层：里面要说清手机与桌面的连接状态，并列出五台机器与「管理已配对的桌面…」。点「办公室主机」后列表只剩这台机器的会话，首页顶部也改名为办公室主机；再从顶部浮层选回「全部桌面」，合并列表回来。这块界面决定手机在看哪台机器的会话，选错了整页都是别的机器的内容。",
+  "preconditions": "移动端 shot 服务可用；用例带 ?fleet=1，夹具里有五台已连接、各有自己会话的桌面。",
+  "expectations": [
+    "首页顶部显示「全部桌面」，点开出现「桌面选择」浮层",
+    "浮层里能看到连接状态文案与「重新连接全部」，以及五台机器的名字和「已连接」",
+    "浮层底部有「管理已配对的桌面…」",
+    "点「办公室主机」后顶部变为该机器名，列表只剩它的会话（把 40MB 的日志 / 跑一遍全量覆盖率 等别的机器的会话消失）",
+    "再选回「全部桌面」，合并列表（含 跑一遍全量覆盖率）回来"
+  ],
+  "query": { "fleet": "1" },
+  "steps": [
+    { "wait": 1500 },
+    { "click": { "text": "稍后再说" }, "note": "关闭开发版更新提示", "optional": true },
+    { "wait": 600 },
+    { "expectText": "全部桌面" },
+    { "click": { "text": "全部桌面" }, "note": "打开设备选择浮层" },
+    { "wait": 1000 },
+    { "expectText": "桌面选择" },
+    { "expectText": "手机已连接到桌面端" },
+    { "expectText": "重新连接全部" },
+    { "expectText": "实验室的 MacBook Pro" },
+    { "expectText": "办公室主机" },
+    { "expectText": "家里工作站" },
+    { "expectText": "楼下的服务器" },
+    { "expectText": "云端构建机" },
+    { "expectText": "管理已配对的桌面…" },
+    { "shot": "mobile-device-picker" },
+    { "click": { "text": "办公室主机" }, "note": "切换到这台机器" },
+    { "wait": 1500 },
+    { "expectText": "办公室主机" },
+    { "expectText": "把这个 PR 的 diff 拉下来" },
+    { "expectAbsent": "跑一遍全量覆盖率", "note": "别的机器的会话不该还在列表里" },
+    { "shot": "mobile-device-office" },
+    { "click": { "text": "办公室主机" }, "note": "再打开浮层" },
+    { "wait": 1000 },
+    { "expectText": "全部桌面" },
+    { "click": { "text": "全部桌面" }, "note": "切回合并列表" },
+    { "wait": 1500 },
+    { "expectText": "跑一遍全量覆盖率", "note": "五台机器的会话又都在了" },
+    { "expectText": "全部桌面" },
+    { "shot": "mobile-device-all-again" }
+  ],
+  "judge": {
+    "criteria": [
+      "设备浮层里五台机器的名字、图标与「已连接」状态都清晰可读，没有空白行",
+      "选中办公室主机后，首页顶部与列表内容一致地属于这台机器，列表不是空的或占位符",
+      "切回全部桌面后合并列表恢复，行数与之前一致",
+      "浮层与列表没有被遮挡、溢出或截断的文案",
+      "整体看起来像一个正常工作的手机端产品"
+    ],
+    "maxImages": 8
+  }
+}

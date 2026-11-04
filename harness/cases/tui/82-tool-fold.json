@@ -1,0 +1,48 @@
+{
+  "id": "tui-tool-fold",
+  "surface": "tui",
+  "title": "TUI 工具调用折叠：tab 走到折叠行，enter 展开再收起",
+  "area": "tui",
+  "priority": "P1",
+  "tags": ["tui", "fold", "transcript"],
+  "description": "会话正文里一次回复的工具调用 / 思考被折成一行「▸ 工具调用 3 次 · 思考 2 次」。用 tab 把正文光标走到这一行（空输入框时 tab 是正文里的步进），enter 展开成逐条明细，再按 enter 收回去。要点：折叠行与展开后的内容都在画面里说明清楚，展开不会把正文弄乱，收起后明细确实不见了。",
+  "preconditions": "future 与 demo_agent 已构建；demo_agent 的脚本会话里有一段三次工具调用的回复。",
+  "expectations": [
+    "初始状态折叠行显示「▸ 工具调用 3 次 · 思考 2 次」，看不到明细（没有 edit src/args.rs）",
+    "tab 两次后 enter：折叠行变成「▾ 工具调用 3 次 ...」，下面列出思考与工具调用明细",
+    "再按 enter：折叠行回到「▸」，明细重新收起",
+    "两次切换都不影响正文其余部分（结论段落仍在）"
+  ],
+  "steps": [
+    { "wait": 1500 },
+    { "assertText": "▸ 工具调用 3 次", "note": "折叠态：箭头朝右" },
+    { "expectAbsent": "edit src/args.rs", "note": "明细还收着" },
+    { "shot": "tui-fold-collapsed" },
+    { "press": "tab", "note": "正文光标：空输入框时 tab 是正文里的步进" },
+    { "wait": 500 },
+    { "press": "tab" },
+    { "wait": 500 },
+    { "press": "enter", "note": "展开折叠行" },
+    { "wait": 1000 },
+    { "assertText": "▾ 工具调用 3 次", "note": "展开态：箭头朝下" },
+    { "assertText": "edit src/args.rs", "note": "工具调用明细" },
+    { "assertText": "$ cargo test -p parser", "note": "同一组里的命令明细" },
+    { "assertText": "分成 两个 commit 落地", "note": "正文其余部分仍在" },
+    { "shot": "tui-fold-expanded" },
+    { "press": "enter", "note": "收起同一行" },
+    { "wait": 1000 },
+    { "assertText": "▸ 工具调用 3 次" },
+    { "expectAbsent": "edit src/args.rs", "note": "明细重新收起" },
+    { "assertText": "分成 两个 commit 落地" },
+    { "shot": "tui-fold-collapsed-again" }
+  ],
+  "judge": {
+    "criteria": [
+      "折叠态的明细行不可见，展开态能看到思考与工具调用的逐条条目",
+      "两种状态下正文其余段落都完整、没有被截断或错位",
+      "展开后的明细缩进、分隔符与正文排版一致，看不出错行",
+      "画面里没有残留的加载态或报错文案"
+    ],
+    "maxImages": 8
+  }
+}

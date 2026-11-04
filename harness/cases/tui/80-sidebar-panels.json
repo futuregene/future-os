@@ -1,0 +1,57 @@
+{
+  "id": "tui-sidebar-panels",
+  "surface": "tui",
+  "title": "TUI 侧栏：最近 / 工作区两个页签都能打开、切换回来",
+  "area": "tui",
+  "priority": "P1",
+  "tags": ["tui", "sidebar"],
+  "description": "ctrl+d 打开侧栏，用 shift+→ / shift+← 在「最近」（全部会话，最近刷新在前）和「工作区」（按工作区分组的会话）两个页签之间来回切。当前版本的侧栏只有这两个页签：用量在状态栏、技能在命令面板，早期的用量 / 技能 / 待办面板已经不在了。要点是两边都渲染出真实列表（不是空白或占位符），切回来时列表还在，ctrl+d 能再收起。",
+  "preconditions": "future 与 demo_agent 已构建；demo_agent 提供脚本化的会话列表（43 个 future-os 工作区会话）。",
+  "expectations": [
+    "ctrl+d 打开侧栏，页签条上有「最近」和「工作区」",
+    "「最近」是平铺列表：没有工作区分组标题，底部有选择 / 翻页提示",
+    "shift+→ 后出现「工作区」分组标题（▾future-os 这一行）",
+    "再按 shift+→ 绕回「最近」，分组标题消失、平铺列表回来",
+    "shift+← 能再回到「工作区」",
+    "ctrl+d 收起侧栏后列表与页脚提示一起消失"
+  ],
+  "steps": [
+    { "wait": 1500 },
+    { "press": "ctrl+d", "note": "打开侧栏" },
+    { "wait": 900 },
+    { "assertText": "最近" },
+    { "assertText": "工作区" },
+    { "assertText": "shift+↑↓ 选择", "note": "侧栏页脚：列表真的画出来了" },
+    { "expectAbsent": "▾future-os", "note": "「最近」是平铺列表，没有工作区分组" },
+    { "assertText": "表达式解析器里", "note": "最近列表里的真实会话行" },
+    { "shot": "tui-sidebar-recent" },
+    { "press": "shift+right", "note": "切到「工作区」" },
+    { "wait": 900 },
+    { "assertText": "工作区 ─", "note": "工作区面板自己的分节标题" },
+    { "assertText": "▾future-os", "note": "按工作区分组的标题行" },
+    { "assertText": "shift+↑↓ 选择" },
+    { "shot": "tui-sidebar-workspaces" },
+    { "press": "shift+right", "note": "再切一次：两个页签绕回「最近」" },
+    { "wait": 900 },
+    { "assertText": "shift+↑↓ 选择" },
+    { "expectAbsent": "▾future-os", "note": "分组标题跟着页签一起走了" },
+    { "shot": "tui-sidebar-recent-again" },
+    { "press": "shift+left", "note": "回到「工作区」" },
+    { "wait": 900 },
+    { "assertText": "▾future-os" },
+    { "press": "ctrl+d", "note": "收起侧栏" },
+    { "wait": 700 },
+    { "expectAbsent": "shift+↑↓ 选择", "note": "侧栏整块收起来了" },
+    { "assertText": "描述你要做的事", "note": "输入框还在" }
+  ],
+  "judge": {
+    "criteria": [
+      "侧栏里「最近」和「工作区」两态都渲染出真实会话内容，没有空白或占位符",
+      "「工作区」态能看到工作区分组标题，且与「最近」的平铺列表明显不同",
+      "两种状态下的文字都没有被截断成半个字或错位",
+      "画面里没有残留的加载态、报错文案或空面板",
+      "整体看起来像一个正常工作的终端产品"
+    ],
+    "maxImages": 8
+  }
+}

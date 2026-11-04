@@ -1,0 +1,58 @@
+{
+  "id": "mobile-chat-panels",
+  "surface": "mobile",
+  "title": "手机端会话内的面板：会话文件与用量能打开，关掉回到消息",
+  "area": "mobile-chat",
+  "priority": "P1",
+  "tags": ["mobile", "chat", "files", "usage"],
+  "description": "打开一条会话，用顶栏的文件按钮展开「会话文件」面板（会话根目录、目录项与文件大小），再用用量按钮打开「Token 用量与金额」浮层（分类 token 数与金额、合计）。两个面板都能看到真实内容，关掉之后消息流回到原样 —— 这条路径是手机端唯一能确认「这台桌面上的文件」和「这条会话花了多少」的地方。",
+  "preconditions": "移动端 shot 服务可用；夹具会话「整理两篇文献的结论对比表」带有文件列表与用量数据。",
+  "expectations": [
+    "会话顶栏有「会话文件」与「Token 用量与金额」两个按钮",
+    "点「会话文件」展开面板：会话根目录路径、data / figures / notes 目录、draft-v3.md 与 README.md 及其大小",
+    "点「Token 用量与金额」打开浮层：输入 / 输出 / 缓存读取 / 缓存写入 的行与合计金额，末尾有「各类别金额按模型价格估算」的说明",
+    "关掉用量浮层后它消失，再点「会话文件」收起文件面板，消息流回到原样"
+  ],
+  "steps": [
+    { "wait": 1500 },
+    { "click": { "text": "稍后再说" }, "note": "关闭开发版更新提示", "optional": true },
+    { "wait": 600 },
+    { "click": { "text": "整理两篇文献的结论对比表" } },
+    { "wait": 1400 },
+    { "expectText": "结论对比" },
+    { "click": { "aria": "会话文件" }, "note": "展开会话文件面板" },
+    { "wait": 1100 },
+    { "expectText": "会话根目录" },
+    { "expectText": "/Users/lixin/Research/dopamine-decision" },
+    { "expectText": "draft-v3.md" },
+    { "expectText": "README.md" },
+    { "expectText": "返回上级" },
+    { "shot": "mobile-chat-files" },
+    { "click": { "aria": "Token 用量与金额" }, "note": "打开用量浮层" },
+    { "wait": 1200 },
+    { "expectText": "合计" },
+    { "expectText": "缓存读取" },
+    { "expectText": "¥1.3904" },
+    { "expectText": "各类别金额按模型价格估算" },
+    { "shot": "mobile-chat-usage" },
+    { "click": { "aria": "关闭" }, "note": "关掉用量浮层" },
+    { "wait": 1000 },
+    { "expectAbsent": "各类别金额按模型价格估算" },
+    { "expectText": "结论对比", "note": "消息流还在" },
+    { "click": { "aria": "会话文件" }, "note": "收起文件面板" },
+    { "wait": 1000 },
+    { "expectAbsent": "会话根目录", "note": "文件面板收起来了" },
+    { "expectText": "结论对比" },
+    { "shot": "mobile-chat-panels-closed" }
+  ],
+  "judge": {
+    "criteria": [
+      "会话文件面板里的目录与文件条目排版整齐、大小信息完整，不是空白或占位符",
+      "用量浮层里每一类 token 数与金额都对得上，合计行醒目，说明文案完整",
+      "两个面板都没有遮住顶栏或输入框，没有被截断的文案",
+      "关掉面板后消息流完整回到原样，没有残留的半透明遮罩或错位",
+      "整体看起来像一个正常工作的手机端产品"
+    ],
+    "maxImages": 8
+  }
+}
