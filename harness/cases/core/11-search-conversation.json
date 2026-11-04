@@ -4,8 +4,8 @@
   "area": "search",
   "priority": "P1",
   "tags": ["search", "list"],
-  "description": "取两个都在首屏的会话：输入其中一个的标题片段后，它仍在结果里，另一个必须消失。只断言「目标出现」是不够的——目标本来就在列表上；必须证明过滤真的发生了。",
-  "preconditions": "应用已启动；首屏至少有两个短标题会话。",
+  "description": "取首屏实际可见的两行会话：输入其中一行的标题片段后，它仍在结果里，另一行必须消失。用可见行而不是数据库前 N 行，避免分页/分组变化让用例失效。",
+  "preconditions": "应用已启动；首屏至少两行会话。",
   "expectations": [
     "搜索框能输入并实时过滤",
     "匹配的会话仍在结果里",
@@ -15,29 +15,13 @@
   "steps": [
     { "wait": 900 },
     {
-      "db": {
-        "sql": "SELECT title FROM (SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' AND length(title) BETWEEN 6 AND 16 ORDER BY COALESCE(last_message_at, updated_at) DESC LIMIT 8) LIMIT 1 OFFSET 0",
-        "as": "target"
-      }
+      "eval": "window.__rows = [...document.querySelectorAll('[aria-label$=\" 的操作\"]')].map(el => el.getAttribute('aria-label').replace(/ 的操作$/, '')); window.__rows.length",
+      "as": "rowCount"
     },
-    {
-      "db": {
-        "sql": "SELECT substr(title, 1, 6) AS q FROM (SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' AND length(title) BETWEEN 6 AND 16 ORDER BY COALESCE(last_message_at, updated_at) DESC LIMIT 8) LIMIT 1 OFFSET 0",
-        "as": "query"
-      }
-    },
-    {
-      "db": {
-        "sql": "SELECT title FROM (SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' AND length(title) BETWEEN 6 AND 16 ORDER BY COALESCE(last_message_at, updated_at) DESC LIMIT 8) LIMIT 1 OFFSET 1",
-        "as": "other"
-      }
-    },
-    {
-      "assert": {
-        "expr": "!!document.querySelector('[aria-label=\"{{other}}\"]')",
-        "message": "过滤前另一个会话确实在首屏"
-      }
-    },
+    { "assert": { "expr": "window.__rows.length >= 2", "message": "首屏至少两行会话" } },
+    { "eval": "window.__rows[0]", "as": "target" },
+    { "eval": "window.__rows[1]", "as": "other" },
+    { "eval": "window.__rows[0].slice(0, 6)", "as": "query" },
     { "click": { "aria": "搜索会话" } },
     { "wait": 500 },
     { "shot": "search-open" },
@@ -62,7 +46,7 @@
     {
       "assert": {
         "expr": "!!document.querySelector('[aria-label=\"{{other}}\"]')",
-        "message": "关闭搜索后列表恢复（另一个会话回来）"
+        "message": "关闭搜索后列表恢复"
       }
     },
     { "shot": "search-closed" }
