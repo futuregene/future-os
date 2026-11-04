@@ -468,13 +468,15 @@ pub(crate) fn derive_capability_sid(name: &str) -> io::Result<OwnedSid> {
     let mut bytes = Vec::with_capacity(28);
     bytes.extend_from_slice(&[1, 5, 0, 0, 0, 0, 0, 5]);
     bytes.extend_from_slice(&21u32.to_le_bytes());
-    for chunk in digest[..16].chunks_exact(4) {
+    for chunk in digest[..16].as_chunks::<4>().0 {
         bytes.extend_from_slice(chunk);
     }
     Ok(OwnedSid(
         bytes
-            .chunks_exact(4)
-            .map(|chunk| u32::from_ne_bytes(chunk.try_into().expect("four-byte SID word")))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| u32::from_ne_bytes(*chunk))
             .collect(),
     ))
 }

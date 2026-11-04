@@ -43,6 +43,34 @@ export async function pinWorkspace(input: {
   return invokeCommand<StoredWorkspace>("pin_workspace", { input });
 }
 
+/** Shelve a user workspace; refuses (with the running members named) while any conversation inside runs. */
+export async function archiveWorkspace(workspaceId: string) {
+  return invokeCommand<StoredWorkspace>("archive_workspace", { workspaceId });
+}
+
+export async function restoreWorkspace(workspaceId: string) {
+  return invokeCommand<StoredWorkspace>("restore_workspace", { workspaceId });
+}
+
+/** One page of the workspace list; `archived: true` is the archived view. */
+export async function listWorkspacesPage(
+  archived: boolean,
+  cursor: string | null = null,
+  limit = 50,
+) {
+  return invokeCommand<WorkspacesPage>("list_workspaces_page", { archived, cursor, limit });
+}
+
+/** The pinned user workspaces, whole. */
+export async function listPinnedWorkspaces() {
+  return invokeCommand<StoredWorkspace[]>("list_pinned_workspaces");
+}
+
+export interface WorkspacesPage {
+  workspaces: StoredWorkspace[];
+  nextCursor: string | null;
+}
+
 // ─── Threads ─────────────────────────────────────────────────────────────
 
 export async function getRecentThread() {
@@ -56,6 +84,46 @@ export async function markThreadOpened(threadId: string) {
 
 export async function listThreads() {
   return invokeCommand<StoredThread[]>("list_threads");
+}
+
+/**
+ * One page of a conversation list.
+ *
+ * `scope` is `chat`, `recent`, `archived` or `workspace:<id>`; a page is a set
+ * of complete fork trees (roots plus their descendants), so `threads` may hold
+ * more rows than the `limit` of roots.
+ */
+export async function listThreadsPage(
+  scope: string,
+  cursor: string | null = null,
+  limit = 50,
+) {
+  return invokeCommand<ThreadsPage>("list_threads_page", { scope, cursor, limit });
+}
+
+/** The pinned conversations of a scope, whole (the rail's shortcut section). */
+export async function listPinnedThreads(scope: string) {
+  return invokeCommand<StoredThread[]>("list_pinned_threads", { scope });
+}
+
+/** Every conversation whose run has not finished, for the recent view. */
+export async function listActiveThreads() {
+  return invokeCommand<StoredThread[]>("list_active_threads");
+}
+
+/** Server-side title/workspace search, split into active and archived results. */
+export async function searchThreads(query: string, limit = 100) {
+  return invokeCommand<ThreadSearchResults>("search_threads", { query, limit });
+}
+
+export interface ThreadsPage {
+  threads: StoredThread[];
+  nextCursor: string | null;
+}
+
+export interface ThreadSearchResults {
+  active: StoredThread[];
+  archived: StoredThread[];
 }
 
 // `defaultTitle` is supplied by the UI-layer caller (localized there) so this
@@ -134,6 +202,31 @@ export async function pinThread(input: { threadId: string; pinned: boolean }) {
 
 export async function restoreThread(threadId: string) {
   return invokeCommand<StoredThread>("restore_thread", { threadId });
+}
+
+/**
+ * Archive one fork tree (the conversation plus every descendant).
+ *
+ * Refused while any member is running or waiting for approval; the error names
+ * the member, so the UI can surface it without its own judgement of activity.
+ */
+export async function archiveThreadTree(threadId: string) {
+  return invokeCommand<StoredThread>("archive_thread_tree", { threadId });
+}
+
+/** Bring a shelved tree back; archived members become active. */
+export async function restoreThreadTree(threadId: string) {
+  return invokeCommand<StoredThread>("restore_thread_tree", { threadId });
+}
+
+/** Archive each selected tree, reporting the ones a running member kept back. */
+export async function batchArchiveThreads(threadIds: string[]) {
+  return invokeCommand<BatchArchiveResult>("batch_archive_threads", { threadIds });
+}
+
+export interface BatchArchiveResult {
+  archivedCount: number;
+  skipped: Array<{ threadId: string; title: string }>;
 }
 
 export async function deleteThread(input: {

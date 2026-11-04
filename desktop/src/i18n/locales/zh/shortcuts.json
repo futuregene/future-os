@@ -48,7 +48,8 @@
       "search": "筛选对话列表",
       "view": {
         "recent": "列表切到最近的对话",
-        "workspace": "列表切到工作区"
+        "workspace": "列表切到工作区",
+        "archived": "列表切到已归档的会话"
       },
       "device": {
         "next": "切换到下一台设备"

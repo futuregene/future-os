@@ -53,6 +53,13 @@ const LISTENER_GRACE: Duration = Duration::from_millis(500);
 /// steps together are what actually exhausts the budget.
 const SLOW_SHUTDOWN_STEP: Duration = Duration::from_millis(250);
 
+/// How long the drain waits for the Windows capability locks before skipping
+/// the revoke. Well above the 10 ms retry interval a contended lock needs once
+/// its holder finishes, far below the five-second stop budget, so the last
+/// drain step always leaves room for the rest of shutdown to run.
+#[cfg(windows)]
+const SANDBOX_RESET_BUDGET: Duration = Duration::from_millis(500);
+
 pub(super) struct ShutdownShared {
     started: AtomicBool,
     pub(super) server_running: AtomicBool,
@@ -422,8 +429,15 @@ impl AgentHandle {
         }
         *self.shutdown.stage.lock() = "Windows sandbox permissions";
         #[cfg(windows)]
-        if let Err(error) = crate::sandbox::reset_windows_sandbox_capabilities() {
-            errors.push(format!("Windows sandbox cleanup: {error:#}"));
+        if let Err(error) =
+            crate::sandbox::reset_windows_sandbox_capabilities_bounded(SANDBOX_RESET_BUDGET)
+        {
+            // A contended capability lock must not consume the drain: the ACEs
+            // it would revoke are harmless while the process is exiting, and
+            // the next startup cleanup revokes them. Record and move on so
+            // shutdown finishes inside its budget instead of timing out into
+            // an unrecoverable update state.
+            tracing::warn!(%error, "Skipping Windows sandbox cleanup at shutdown; startup will retry");
         }
         errors
     }
