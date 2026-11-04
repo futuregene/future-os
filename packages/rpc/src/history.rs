@@ -207,6 +207,7 @@ mod tests {
             entries: Vec::new(),
             has_more: false,
             next_offset: 1,
+            total: None,
             fragment: Some(HistoryEntryFragment {
                 entry_id: "large".into(),
                 ordinal: 0,
@@ -280,6 +281,7 @@ mod tests {
             entries,
             has_more,
             next_offset,
+            total: None,
             fragment,
         }
     }
