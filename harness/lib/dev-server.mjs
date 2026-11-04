@@ -8,7 +8,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
-import { createServer } from "node:net";
+import { createServer, Socket } from "node:net";
 import { resolve } from "node:path";
 
 const sleep = ms => new Promise(done => setTimeout(done, ms));
@@ -17,6 +17,7 @@ export const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
 export const DEFAULT_URL = "http://localhost:5299/shot/";
 export const MOBILE_URL = "http://localhost:8099/";
 export const ASSETS_PORT = 7392;
+export const TERMINAL_PORT = 7391;
 /** The mobile workspace, overridable because a worktree may not have node_modules. */
 export const MOBILE_ROOT = process.env.FUTURE_MOBILE_ROOT || resolve(REPO_ROOT, "mobile");
 
@@ -148,4 +149,42 @@ export async function ensureAssetServer({ port = ASSETS_PORT } = {}) {
     server.listen(port, "127.0.0.1", done);
   });
   return { url: `http://127.0.0.1:${port}`, reused: false, stop: () => new Promise(done => server.close(done)) };
+}
+
+/** TCP probe for the terminal stand-in (it answers raw PTY bytes, not HTTP). */
+function tcpOpen(port, timeout = 300) {
+  return new Promise((done) => {
+    const client = new Socket();
+    client.setTimeout(timeout);
+    client.once("connect", () => { client.destroy(); done(true); });
+    client.once("timeout", () => { client.destroy(); done(false); });
+    client.once("error", () => done(false));
+    client.connect(port, "127.0.0.1");
+  });
+}
+
+/**
+ * The embedded terminal's stand-in PTY server.
+ *
+ * `desktop/shot/mock/backend.ts` reports `http://127.0.0.1:7391` as the terminal
+ * endpoint. Without it, opening the terminal panel records three connection
+ * failures and the vision pass reads a real product defect; the panel itself
+ * falls back to a canned frame, hiding the gap.
+ */
+export async function ensureTerminalServer({ port = TERMINAL_PORT } = {}) {
+  if (await tcpOpen(port))
+    return { url: `http://127.0.0.1:${port}`, reused: true, stop: async () => {} };
+  const script = resolve(REPO_ROOT, "desktop", "shot", "terminal-server.mjs");
+  if (!existsSync(script))
+    throw new Error(`terminal server missing: ${script}`);
+  const child = spawn("node", [script, String(port)], { stdio: ["ignore", "pipe", "pipe"] });
+  for (let i = 0; i < 50; i += 1) {
+    if (await tcpOpen(port))
+      return { url: `http://127.0.0.1:${port}`, reused: false, stop: async () => child.kill("SIGTERM") };
+    if (child.exitCode != null)
+      throw new Error("terminal server exited early");
+    await sleep(100);
+  }
+  child.kill("SIGTERM");
+  throw new Error(`terminal server did not listen on ${port}`);
 }
