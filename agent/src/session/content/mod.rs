@@ -32,6 +32,7 @@ pub(crate) mod reader;
 pub(crate) mod rechunk;
 mod recovery;
 pub(crate) mod reset;
+pub(crate) mod retire;
 pub(crate) mod stream;
 mod stream_body;
 pub(crate) mod stream_entry;

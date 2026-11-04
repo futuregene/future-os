@@ -1190,3 +1190,71 @@ fn folding_a_settled_run_coalesces_fragments_the_writer_would_have_merged() {
         .unwrap();
     assert_eq!(again, (1, 1));
 }
+
+/// A settled run's journal is retired; its transcript and bodies stay.
+#[test]
+fn retiring_a_settled_stream_drops_the_journal_and_keeps_the_transcript() {
+    let (_root, store) = store();
+    let mut writer = Writer::default();
+    let chunk = event(
+        0,
+        "text_chunk",
+        json!({"entry_id":"m","content_key":"m:text:0","content_offset":0,"content_bytes":7,"text":"retired"}),
+    );
+    writer.persist(&store, "s", [&chunk]).unwrap();
+    store
+        .db
+        .call(|db| {
+            db.execute(
+                "INSERT INTO runs(session_id,run_id,status,started_at_ms,completed_at_ms)
+                 VALUES ('s','r','completed',1,2)",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let (streams, rows) = store.db.call(|db| super::retire::plan(db)).unwrap();
+    assert_eq!(streams, 1);
+    assert!(rows >= 1, "the journal has rows to retire");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let (retired, deleted) = store
+        .db
+        .call(move |db| super::retire::apply(db, 8, deadline))
+        .unwrap();
+    assert_eq!(retired, 1);
+    assert!(deleted >= 1);
+    let leftover: (i64, i64, i64, i64) = store
+        .db
+        .call(|db| {
+            Ok((
+                db.query_row("SELECT count(*) FROM stream_changes", [], |r| r.get(0))?,
+                db.query_row("SELECT count(*) FROM stream_runs", [], |r| r.get(0))?,
+                db.query_row("SELECT count(*) FROM retired_streams", [], |r| r.get(0))?,
+                db.query_row("SELECT count(*) FROM content_segments", [], |r| r.get(0))?,
+            ))
+        })
+        .unwrap();
+    assert_eq!(leftover.0, 0, "no journal rows left");
+    assert_eq!(leftover.1, 0, "the stream itself is gone");
+    assert_eq!(leftover.2, 0, "the retirement marker is cleared");
+    assert!(leftover.3 > 0, "the transcript body must survive");
+    assert_eq!(
+        store.db.call(|db| super::retire::plan(db)).unwrap(),
+        (0, 0),
+        "nothing left to retire"
+    );
+    // The transcript still reads even though the run's stream is gone.
+    let text: String = store
+        .db
+        .call(|db| {
+            Ok(db.query_row(
+                "SELECT coalesce(group_concat(body,''),'') FROM
+                   (SELECT body FROM content_segments ORDER BY byte_offset)",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(text, "retired", "the body is still the text it was");
+}
