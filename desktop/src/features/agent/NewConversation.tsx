@@ -167,8 +167,11 @@ export function NewConversation({
     setMode("workspace");
   }, [initialWorkspaceId, workspaceOptions]);
 
-  // Block sending until the model catalog actually loads — the initial
-  // modelId is empty and would fall back to the agent default (v4-flash).
+  // The model catalog decides what a send would carry. Until it lands the
+  // initial modelId is empty and a send would fall back to the agent default
+  // (v4-flash), so submission is held — but the *editor* stays usable: typing
+  // the first message while the list loads is normal, and a locked editor drops
+  // those keystrokes without a trace (see Composer's `preparing`).
   const catalogLoading = modelOptions.length === 0;
   const [guideStarting, setGuideStarting] = useState(false);
   // Inline "tutorial entry hidden" notice shown in the banner's slot for a
@@ -241,6 +244,11 @@ export function NewConversation({
   );
 
   function handleSend({ attachments, content }: ComposerSendPayload) {
+    // Belt and braces: the composer refuses to submit while `preparing` (the
+    // same `catalogLoading`), and an onStart that resolved without creating a
+    // thread would make the composer drop the draft for nothing. Returning here
+    // is therefore unreachable from the UI — keep it so a future call site
+    // cannot send with the wrong model.
     if (catalogLoading)
       return;
     // Return onStart's promise so the composer clears only after the thread is
@@ -308,7 +316,7 @@ export function NewConversation({
               futureSessionStatus={futureSessionStatus}
               onChangeApprovalTier={onChangeApprovalTier}
               onSend={handleSend}
-              disabled={catalogLoading}
+              preparing={catalogLoading}
               skillRecommendation={{
                 card: recommendation.state.recommendation,
                 onEvaluate: recommendation.evaluate,

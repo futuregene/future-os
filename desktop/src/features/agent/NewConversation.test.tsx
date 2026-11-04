@@ -28,7 +28,8 @@ vi.mock("./Composer", () => ({
   Composer: (props: Record<string, unknown>) => (
     <div
       data-composer=""
-      data-disabled={String(props.disabled)}
+      data-disabled={String(Boolean(props.disabled))}
+      data-preparing={String(Boolean(props.preparing))}
       data-draft-key={String(props.draftKey)}
       data-session-mentions={String((props.sessionMentions as unknown[] | undefined)?.length ?? 0)}
       data-workspace-id={props.workspaceId == null ? "" : String(props.workspaceId)}
@@ -348,14 +349,23 @@ describe("newConversation workspace menu", () => {
 });
 
 describe("newConversation sending", () => {
-  it("refuses to send until the model catalog has loaded", async () => {
+  it("prepares instead of locking the composer until the model catalog has loaded", async () => {
     // error-path: the initial modelId is empty and would silently fall back to
-    // the agent default, so the composer is disabled instead.
+    // the agent default, so submission is held. The *editor* stays usable — a
+    // locked one drops what the reader types without a trace, which is how the
+    // first message of a conversation used to vanish.
     render({ modelOptions: [] });
-    expect(composer().getAttribute("data-disabled")).toBe("true");
+    expect(composer().dataset.preparing).toBe("true");
+    expect(composer().getAttribute("data-disabled")).toBe("false");
 
     await click("[data-send]");
     expect(props.onStart).not.toHaveBeenCalled();
+
+    // The catalog arrives: the same draft-carrying screen can send.
+    rerender({ modelOptions: models });
+    expect(composer().dataset.preparing).toBe("false");
+    await click("[data-send]");
+    expect(props.onStart).toHaveBeenCalledTimes(1);
   });
 
   it("starts a workspace conversation with the active workspace", async () => {
