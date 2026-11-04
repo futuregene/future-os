@@ -388,6 +388,7 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
   const result = {
     id: testCase.id,
     title: testCase.title,
+    surface: testCase.surface ?? "desktop",
     area: testCase.area ?? null,
     priority: testCase.priority ?? null,
     description: testCase.description ?? null,

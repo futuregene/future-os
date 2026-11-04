@@ -166,6 +166,10 @@ export function deterministicFindings(result, { runDir }) {
   for (const failure of result.network?.failures ?? []) {
     if (/favicon/.test(failure.url ?? ""))
       continue;
+    // Demo-asset URLs from the shot fixtures (figures served by the screenshot
+    // harness's little asset server) are not product requests.
+    if (/(effect-size|forest-plot|parser-throughput)\.png/.test(failure.url ?? ""))
+      continue;
     // Requests after the last step are the harness tearing the page down, not
     // the product failing.
     if (result.stepsEndedAt && failure.start > Date.parse(result.stepsEndedAt))
