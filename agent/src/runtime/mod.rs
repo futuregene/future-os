@@ -14,9 +14,9 @@ pub(crate) use run_state::CancellationCause;
 pub(crate) use run_state::RunControl;
 pub use run_state::{RunLease, RunPhase, RunSnapshot};
 pub use scheduler_queue::{
-    GlobalQueueBudget, InMemoryRunQueue, ParkReason, ParkedRun, QueuedCancellationReason,
-    RunQueueError, ScheduledRunRequest, TerminalRunAck, DEFAULT_GLOBAL_QUEUE_BYTES,
-    DEFAULT_GLOBAL_QUEUE_CAPACITY, DEFAULT_REQUEST_BYTES, DEFAULT_SESSION_QUEUE_BYTES,
-    DEFAULT_SESSION_QUEUE_CAPACITY, QUEUED_RUN_STALE_AFTER,
+    GlobalQueueBudget, InMemoryRunQueue, ParkReason, ParkedRun, QueueBoundary,
+    QueuedCancellationReason, RunQueueError, ScheduledRunRequest, TerminalRunAck,
+    DEFAULT_GLOBAL_QUEUE_BYTES, DEFAULT_GLOBAL_QUEUE_CAPACITY, DEFAULT_REQUEST_BYTES,
+    DEFAULT_SESSION_QUEUE_BYTES, DEFAULT_SESSION_QUEUE_CAPACITY, QUEUED_RUN_STALE_AFTER,
 };
 pub use session_runtime::SessionRuntime;

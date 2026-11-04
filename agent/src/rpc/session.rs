@@ -520,10 +520,14 @@ impl ServerSession {
             return;
         }
         while let Some(next) = self.scheduler.next_startable() {
-            match self.start_next_scheduled() {
+            // The turn boundary: whatever waited behind the run that just ended
+            // is drained here, and its wait was that run's — a long turn does not
+            // age out the messages written into it.
+            match self.start_next_scheduled_after_run() {
                 Ok(_) => return,
                 Err(error) => {
-                    // Parked because it waited too long: not a failure, and not
+                    // Parked rather than failed (an unreadable acceptance time is
+                    // the one case left at this boundary): not a failure, and not
                     // something to cancel — it stays queued for the reader. Any
                     // prompt behind it may still be startable.
                     if self.scheduler.is_held(&next.run_id) {

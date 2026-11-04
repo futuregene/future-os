@@ -502,6 +502,23 @@ impl ServerSession {
     }
 
     pub(super) fn start_next_scheduled(&mut self) -> Result<crate::runtime::RunAck> {
+        self.start_next_scheduled_at(crate::runtime::QueueBoundary::Idle)
+    }
+
+    /// The turn boundary: a run just ended, and what waited behind it is what
+    /// runs next.
+    ///
+    /// The distinction is the staleness rule's, not a convenience: a row queued
+    /// into a long turn was waiting for *that run*, so the run's length never
+    /// makes it stale (see [`crate::runtime::QueueBoundary`]).
+    pub(super) fn start_next_scheduled_after_run(&mut self) -> Result<crate::runtime::RunAck> {
+        self.start_next_scheduled_at(crate::runtime::QueueBoundary::AfterRun)
+    }
+
+    fn start_next_scheduled_at(
+        &mut self,
+        boundary: crate::runtime::QueueBoundary,
+    ) -> Result<crate::runtime::RunAck> {
         let _admission = self.service_work.enter()?;
         if let Some(error) = self
             .broadcaster
@@ -513,7 +530,7 @@ impl ServerSession {
         // Anything that has waited too long stops being automatic here, at the
         // one moment it could start by itself. It stays queued and visible; a
         // person releasing it is the only way it runs.
-        let parked = self.scheduler.park_stale();
+        let parked = self.scheduler.park_stale(boundary);
         if !parked.is_empty() {
             tracing::info!(
                 event = "queued_runs_parked",
