@@ -49,12 +49,25 @@ limit is an upper bound, not evidence that equal computation was used.
 
 ## Data selection
 
+Dataset decision confirmed by the user on 2026-11-04: **retire ZebraLogic from
+subsequent Fusion benchmarks**, because it provides insufficient discrimination
+for the current DeepSeek Flash max baseline. New baselines and development suites
+use BBEH mini and the Omni-MATH integer-answer subset. Both the 14-wrong and the
+6-correct selection pools must exclude ZebraLogic; do not use it to fill the
+correct-answer quota. Preserve its completed baseline and frozen assets as
+historical evidence. Keep the current 400-case run intact and finish its remaining
+BBEH/Omni cases without regenerating existing responses. Before using any challenge
+automatically frozen by the earlier workflow, verify that it satisfies this new
+dataset scope; a challenge containing ZebraLogic is not eligible for future Fusion
+comparison. Historical suite names and reproduction instructions below do not
+override this decision.
+
 Freeze upstream revisions and content hashes, eligible subsets, sampling seed,
 question IDs, final-answer requirements, scorer version, repeats and timeout
 before generating any model outputs for an unselected capability evaluation.
 Synthetic generated tasks require independent solution validation.
 
-The current development workflow deliberately selects by **baseline** outcome:
+The first development run deliberately selects by **baseline** outcome:
 freeze a uniform random sample of 100 ZebraLogic, 100 BBEH mini and 200 Omni-MATH
 integer-answer cases first, then run DeepSeek Flash max once on all 400. Keep its
 full scores, outputs, failures, usage and provenance. Once all records exist,
