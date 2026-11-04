@@ -184,6 +184,77 @@ fn an_interrupted_call_displays_its_placeholder_in_the_canonical_format() {
     );
 }
 
+/// A window the healing leaves alone must not be skipped: the next window that
+/// *is* healed is written behind everything already indexed, so the skipped one
+/// would be appended at the end of the transcript and the reader would get the
+/// conversation out of order. Measured on a real 2,287-entry conversation, the
+/// eleven entries that ended one run came back after a window twenty user turns
+/// later — same entries, same count, wrong sequence.
+#[test]
+fn a_window_the_healing_leaves_alone_still_keeps_its_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = Manager::new(dir.path().join("sessions"));
+    let mut session = Session::new("/synthetic", "mock");
+    // A canonical conversation: this is the path the rebuild takes after a
+    // legacy conversion.
+    manager
+        .storage()
+        .unwrap()
+        .reserve_segmented(&session.id)
+        .unwrap();
+    let dangling = |call: &str, answer: &str| {
+        let mut assistant = SessionEntry::new_assistant(
+            serde_json::Value::Null,
+            vec![crate::types::ToolCall {
+                id: call.into(),
+                call_type: "function".into(),
+                function: crate::types::ToolCallFn {
+                    name: "shell".into(),
+                    arguments: json!({"command": "…"}),
+                },
+            }],
+        );
+        assistant.content = None;
+        let _ = answer;
+        assistant
+    };
+    // turn 1: healed (the call's result never landed)
+    session
+        .entries
+        .push(SessionEntry::new_user("user", json!("turn 1")));
+    session.entries.push(dangling("call-1", ""));
+    // turn 2: nothing to heal, and it is *between* two healed turns
+    session
+        .entries
+        .push(SessionEntry::new_user("user", json!("turn 2")));
+    session
+        .entries
+        .push(SessionEntry::new_assistant(json!("answer 2"), Vec::new()));
+    // turn 3: healed again, so it is written after the index as it stands
+    session
+        .entries
+        .push(SessionEntry::new_user("user", json!("turn 3")));
+    session.entries.push(dangling("call-3", ""));
+    // turn 4: nothing to heal, and it closes the conversation
+    session
+        .entries
+        .push(SessionEntry::new_user("user", json!("turn 4")));
+    session
+        .entries
+        .push(SessionEntry::new_assistant(json!("answer 4"), Vec::new()));
+    manager.save(&session).unwrap();
+    assert_projection(&manager, &session.id);
+    // The same index again, this time built the way a session that lost its
+    // projection rebuilds it: lazily, from the shapes on disk.
+    manager.test_execute(
+        "DELETE FROM history_display;
+         DELETE FROM history_shapes;
+         DELETE FROM history_index_state;
+         INSERT INTO history_index_state(session_id,projection_version) SELECT id,0 FROM sessions;",
+    );
+    assert_projection(&manager, &session.id);
+}
+
 #[test]
 fn replacing_history_with_no_visible_entries_clears_the_derived_index() {
     let dir = tempfile::tempdir().unwrap();

@@ -264,7 +264,16 @@ pub(crate) fn update_display_index_from(
                 || (to == last + 1 && shapes_end_at_exchange_boundary));
         let to = to.min(last + 1);
         if to > from && complete {
-            rewrite_healed_window(db, &stored_session, from, to)?;
+            // A window the healing leaves alone still has to reach the index
+            // where it belongs. The next healed window is written *after*
+            // everything already indexed, so a skipped window is not merely
+            // deferred: it becomes a hole that the final append fills in at the
+            // end of the transcript, and the reader gets the conversation out of
+            // order. Indexing it here keeps ordinals contiguous in position
+            // order, and costs exactly what the append would have.
+            if !rewrite_healed_window(db, &stored_session, from, to)? {
+                append_plain_shapes(db, &stored_session, from, to)?;
+            }
         }
         from = to;
     }
@@ -348,12 +357,15 @@ fn rewrite_legacy_tail(
 
 /// Replace the display rows of `[start, end)` when the healing projection
 /// differs from what the window stores, and leave them alone when it does not.
+///
+/// Returns whether it wrote: a window it left alone is still unindexed, and the
+/// caller has to place those rows or they end up behind a later window.
 fn rewrite_healed_window(
     db: &Connection,
     stored_session: &crate::session::identity::StoredIdentity,
     start: i64,
     end: i64,
-) -> Result<()> {
+) -> Result<bool> {
     let ordinal: i64 = if start == 0 {
         0
     } else {
@@ -378,7 +390,7 @@ fn rewrite_healed_window(
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     if rows.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
     let mut positions = std::collections::HashMap::new();
     let mut entries = Vec::with_capacity(rows.len());
@@ -394,7 +406,7 @@ fn rewrite_healed_window(
     repair::repair_dangling_tool_calls(&mut healed);
     let projected = project_entries(&healed);
     if projected == plain {
-        return Ok(());
+        return Ok(false);
     }
     let mut upsert = db.prepare_cached("INSERT INTO history_display(session_id,ordinal,source_position,is_user,payload) VALUES (?1,?2,?3,?4,?5)
         ON CONFLICT(session_id,ordinal) DO UPDATE SET source_position=excluded.source_position,is_user=excluded.is_user,payload=excluded.payload
@@ -418,7 +430,7 @@ fn rewrite_healed_window(
         "DELETE FROM history_display WHERE session_id=?1 AND ordinal>=?2",
         params![stored_session, ordinal + projected.len() as i64],
     )?;
-    Ok(())
+    Ok(true)
 }
 
 /// Append the shapes in `[start, end)` that nothing has indexed yet, in position

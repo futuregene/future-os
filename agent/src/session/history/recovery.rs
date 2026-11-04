@@ -27,7 +27,14 @@ use rusqlite::{params, Connection};
 /// the exchange the previous batch ended on and its rows stayed unhealed — the
 /// same placeholder lost, but only for conversations where a batch boundary
 /// landed there.
-pub(crate) const PROJECTION_VERSION: i64 = 4;
+///
+/// 5: every exchange window reaches the index in position order. Under 4 a
+/// window the healing left alone was skipped, and the next healed window was
+/// written behind everything already indexed, so the skipped window's rows were
+/// appended at the end of the transcript: the same entries, in the wrong order
+/// (measured on a 2,287-entry conversation: the eleven entries that ended one
+/// run were displayed after a window twenty user turns later).
+pub(crate) const PROJECTION_VERSION: i64 = 5;
 
 /// Keep healthy reads on a read transaction. If reconstruction is needed,
 /// release that snapshot before reserving a writer and recheck under the lock.
