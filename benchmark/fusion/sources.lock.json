@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "sources": {
+    "bbeh": {
+      "kind": "github",
+      "repo": "google-deepmind/bbeh",
+      "revision": "80d12ca916b7158f22293fcf3144f4d3d854d4be",
+      "files": [
+        "bbeh/mini/data.json",
+        "bbeh/evaluate.py",
+        "LICENSE",
+        "README.md"
+      ]
+    },
+    "zebra": {
+      "kind": "huggingface",
+      "repo": "WildEval/ZebraLogic",
+      "revision": "0a473f5a0054835754ed156d5a79c6ce27178bb1",
+      "files": [
+        "grid_mode/test-00000-of-00001.parquet",
+        "README.md"
+      ]
+    },
+    "omni": {
+      "kind": "huggingface",
+      "repo": "KbsdJames/Omni-MATH",
+      "revision": "40ba231d8f16e29ecd40e6407e2c8640145a8f62",
+      "files": [
+        "test.jsonl",
+        "README.md"
+      ]
+    },
+    "musr": {
+      "kind": "github",
+      "repo": "Zayne-sprague/MuSR",
+      "revision": "b1f4d4168a9cfc6760e8b74d728e4516023dfaa5",
+      "files": [
+        "datasets/murder_mystery.json",
+        "datasets/object_placements.json",
+        "datasets/team_allocation.json",
+        "README.md"
+      ]
+    }
+  }
+}

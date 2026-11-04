@@ -1,0 +1,13 @@
+# Local execution artifacts across every benchmark. Never commit model outputs.
+**/runs/
+**/results/
+**/reports/
+**/.local/
+**/*.log
+
+# Environments and Python tooling caches.
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.ruff_cache/
+**/*.py[cod]

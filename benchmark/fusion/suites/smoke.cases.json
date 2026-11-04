@@ -1,0 +1,128 @@
+{
+  "schema": 1,
+  "suite_sha256": "beb7f5dedcb63dacb7f981e89d6ccb6c3dbefac3063b94943c5fbff315a13914",
+  "sources_lock_sha256": "7cacf4a2d56b34da931c63cc2ab50d89a739d644cee480b989dd0b6310f98f71",
+  "upstream_files": [
+    {
+      "dataset": "zebra",
+      "file": "grid_mode/test-00000-of-00001.parquet",
+      "url": "https://huggingface.co/datasets/WildEval/ZebraLogic/resolve/0a473f5a0054835754ed156d5a79c6ce27178bb1/grid_mode/test-00000-of-00001.parquet",
+      "sha256": "545cd5cce9c54575c7f74769b8f1250b8bb94f5745519c83b99b8db01f95924d",
+      "bytes": 345826
+    },
+    {
+      "dataset": "zebra",
+      "file": "README.md",
+      "url": "https://huggingface.co/datasets/WildEval/ZebraLogic/resolve/0a473f5a0054835754ed156d5a79c6ce27178bb1/README.md",
+      "sha256": "92f0571c0b475c3333026835601b035555a5b4022eb1830fedff9d8e172f8ccc",
+      "bytes": 1900
+    },
+    {
+      "dataset": "bbeh",
+      "file": "bbeh/mini/data.json",
+      "url": "https://raw.githubusercontent.com/google-deepmind/bbeh/80d12ca916b7158f22293fcf3144f4d3d854d4be/bbeh/mini/data.json",
+      "sha256": "14e77b3d6be68faa008d268abf53b1f8d2420ffdd762504a304dafc3f8d43026",
+      "bytes": 1798615
+    },
+    {
+      "dataset": "bbeh",
+      "file": "bbeh/evaluate.py",
+      "url": "https://raw.githubusercontent.com/google-deepmind/bbeh/80d12ca916b7158f22293fcf3144f4d3d854d4be/bbeh/evaluate.py",
+      "sha256": "4b4f06e5babb015de2ba639bae995a5526182ffb5b5890af54dfcf038580eb34",
+      "bytes": 3701
+    },
+    {
+      "dataset": "bbeh",
+      "file": "LICENSE",
+      "url": "https://raw.githubusercontent.com/google-deepmind/bbeh/80d12ca916b7158f22293fcf3144f4d3d854d4be/LICENSE",
+      "sha256": "ed714919b09bcaee887dfed4bca3972041cac53453c3089f57a367e05a50704d",
+      "bytes": 30393
+    },
+    {
+      "dataset": "bbeh",
+      "file": "README.md",
+      "url": "https://raw.githubusercontent.com/google-deepmind/bbeh/80d12ca916b7158f22293fcf3144f4d3d854d4be/README.md",
+      "sha256": "86d16ad213c64a4777a5368ae1a76664d1152b9316c04dede597b8e8cbedf56c",
+      "bytes": 7541
+    },
+    {
+      "dataset": "omni",
+      "file": "test.jsonl",
+      "url": "https://huggingface.co/datasets/KbsdJames/Omni-MATH/resolve/40ba231d8f16e29ecd40e6407e2c8640145a8f62/test.jsonl",
+      "sha256": "7c87be8ee41ac7c7a597ef5a5500e84bd2b639a85a06db3da7f69bf9a32ef168",
+      "bytes": 7504961
+    },
+    {
+      "dataset": "omni",
+      "file": "README.md",
+      "url": "https://huggingface.co/datasets/KbsdJames/Omni-MATH/resolve/40ba231d8f16e29ecd40e6407e2c8640145a8f62/README.md",
+      "sha256": "2688bd0d51f329de3647c540dc1df4fa699681d029068ae575bb2eb1eb8515f0",
+      "bytes": 2450
+    }
+  ],
+  "cases": [
+    {
+      "id": "bbeh:189",
+      "dataset": "bbeh",
+      "question": "Alice, Bob, Claire, Dave, Eve, Fred, and Gertrude are playing a game. At the start of the game, they are each holding a ball: Alice has a green ball, Bob has a black ball, Claire has a orange ball, Dave has a purple ball, Eve has a brown ball, Fred has a pink ball, and Gertrude has a blue ball.\nAs the game progresses, pairs of players trade balls. First, Alice and Fred swap balls. Then, Alice and Claire swap balls. Then, Claire and Bob swap balls. Then, Bob and Claire swap balls. Then, Claire and Alice swap balls. Then, Dave and Gertrude swap balls. Then, Dave and Gertrude discuss something. Then, Dave and Gertrude swap balls. Then, nothing happens for a while. Then, Alice and Fred swap balls. Then, Alice and Fred discuss something. Then, Alice and Fred swap balls. Then, Eve and Alice swap balls. Then, Alice and Eve swap balls. Then, nothing happens for a while. Then, nothing happens for a while. Then, Eve and Fred swap balls. Then, Fred and Bob swap balls. Then, Bob and Fred swap balls. Then, Fred and Eve swap balls. Then, Alice and Claire swap balls. Then, Claire and Alice swap balls. Then, nothing happens for a while. Then, nothing happens for a while. Then, Eve and Claire swap balls. Then, Claire and Gertrude swap balls. Then, Gertrude and Claire swap balls. Then, Claire and Eve swap balls. Then, Eve and Claire swap balls. Then, Claire and Eve swap balls. Then, nothing happens for a while. Then, Gertrude and Claire swap balls. Then, Claire and Gertrude swap balls. Then, Alice and Bob swap balls. Then, Bob and Alice swap balls. Then, Eve and Dave swap balls. Then, Dave and Gertrude swap balls. Then, Gertrude and Dave swap balls. Then, Dave and Eve swap balls. Then, Eve and Alice swap balls. Then, Eve and Alice discuss something. Then, Eve and Alice swap balls. Then, nothing happens for a while. Then, Dave and Alice swap balls. Then, Alice and Dave swap balls. Then, Gertrude and Dave swap balls. Then, Dave and Claire swap balls. Then, Claire and Dave swap balls. Then, Dave and Gertrude swap balls. Then, nothing happens for a while. Then, Gertrude and Alice swap balls. Then, Alice and Gertrude swap balls. Then, nothing happens for a while. Then, Fred and Eve swap balls. Then, Eve and Fred swap balls. Then, Claire and Eve swap balls. Then, Claire and Eve discuss something. Then, Claire and Eve swap balls. Then, Alice and Bob swap balls. Then, Bob and Alice swap balls. Then, Claire and Eve swap balls. Then, Claire and Eve discuss something. Then, Claire and Eve swap balls. Then, Fred and Gertrude swap balls. Then, Gertrude and Fred swap balls. Then, nothing happens for a while. Then, nothing happens for a while. Then, Claire and Dave swap balls. Then, Dave and Claire swap balls. Then, Eve and Claire swap balls. Then, Claire and Eve swap balls. Then, nothing happens for a while. Then, nothing happens for a while. Then, Fred and Alice swap balls. Then, Alice and Fred swap balls. Then, nothing happens for a while. Then, Claire and Gertrude swap balls. Then, Gertrude and Alice swap balls. Then, Alice and Gertrude swap balls. Then, Gertrude and Claire swap balls. Then, Dave and Gertrude swap balls. Then, Dave and Gertrude discuss something. Then, Dave and Gertrude swap balls. Then, Claire and Dave swap balls. Then, Dave and Fred swap balls. Then, Fred and Dave swap balls. Then, Dave and Claire swap balls. Then, Gertrude and Bob swap balls. Then, Gertrude and Bob discuss something. Then, Gertrude and Bob swap balls. Then, Bob and Dave swap balls. Then, Bob and Dave discuss something. Then, Bob and Dave swap balls. Then, Alice and Eve swap balls. Then, Eve and Alice swap balls. Then, Alice and Gertrude swap balls. Then, Gertrude and Bob swap balls. Then, Bob and Gertrude swap balls. Then, Gertrude and Alice swap balls. Then, Bob and Fred swap balls. Then, Bob and Fred discuss something. Then, Bob and Fred swap balls. Then, Claire and Eve swap balls. Then, Alice and Fred swap balls. Then, Alice and Fred discuss something. Then, Alice and Fred swap balls. Then, Eve and Gertrude swap balls. Then, Gertrude and Eve swap balls. Then, nothing happens for a while. Then, Claire and Eve swap balls. Then, Eve and Alice swap balls. Then, Alice and Eve swap balls. Then, Eve and Claire swap balls. Then, Eve and Dave swap balls. Then, Eve and Dave discuss something. Then, Eve and Dave swap balls. Then, Gertrude and Bob swap balls. Then, Bob and Gertrude swap balls. Then, Bob and Eve swap balls. Then, Eve and Fred swap balls. Then, Fred and Eve swap balls. Then, Eve and Bob swap balls. Then, nothing happens for a while. Then, Alice and Fred swap balls. Then, Fred and Dave swap balls. Then, Dave and Fred swap balls. Then, Fred and Alice swap balls. Then, Dave and Fred swap balls. Then, Fred and Alice swap balls. Then, Alice and Fred swap balls. Then, Fred and Dave swap balls. Then, Dave and Eve swap balls. Then, Eve and Bob swap balls. Then, Bob and Eve swap balls. Then, Eve and Dave swap balls. Then, Gertrude and Fred swap balls. Then, Fred and Alice swap balls. Then, Alice and Fred swap balls. Then, Fred and Gertrude swap balls. Then, Gertrude and Fred swap balls. Then, Fred and Alice swap balls. Then, Alice and Fred swap balls. Then, Fred and Gertrude swap balls. Then, Alice and Eve swap balls. Then, Eve and Bob swap balls. Then, Bob and Eve swap balls. Then, Eve and Alice swap balls. Then, Bob and Gertrude swap balls. Then, Gertrude and Bob swap balls. Then, Eve and Claire swap balls. Then, Eve and Claire discuss something. Then, Eve and Claire swap balls. Then, nothing happens for a while. Then, Dave and Alice swap balls. Then, Alice and Fred swap balls. Then, Fred and Alice swap balls. Then, Alice and Dave swap balls. Then, Gertrude and Dave swap balls. Then, Dave and Gertrude swap balls. Then, Bob and Alice swap balls. Then, Bob and Alice discuss something. Then, Bob and Alice swap balls. Then, Bob and Fred swap balls. Then, Fred and Bob swap balls. Then, nothing happens for a while. Then, Claire and Bob swap balls. Then, Claire and Bob discuss something. Then, Claire and Bob swap balls. Then, Dave and Claire swap balls. Then, Dave and Claire discuss something. Then, Dave and Claire swap balls. Then, Bob and Eve swap balls. Then, Eve and Bob swap balls. Then, Bob and Eve swap balls. Then, Eve and Bob swap balls. Then, Fred and Dave swap balls. Then, Dave and Fred swap balls. Then, Eve and Alice swap balls. Then, Alice and Fred swap balls. Then, Fred and Alice swap balls. Then, Alice and Eve swap balls. Then, nothing happens for a while. Then, nothing happens for a while. Then, Eve and Alice swap balls. Then, Alice and Eve swap balls. Then, Claire and Gertrude swap balls. Then, Gertrude and Alice swap balls. Then, Alice and Gertrude swap balls. Then, Gertrude and Claire swap balls. Then, Bob and Eve swap balls. Then, Eve and Bob swap balls. Then, Bob and Dave swap balls. Then, Dave and Bob swap balls. Then, nothing happens for a while. Then, Dave and Gertrude swap balls. Then, Alice and Bob swap balls. Then, Alice and Bob discuss something. Then, Alice and Bob swap balls. Then, nothing happens for a while. Then, Bob and Dave swap balls. Then, Dave and Gertrude swap balls. Then, Gertrude and Dave swap balls. Then, Dave and Bob swap balls. Then, Eve and Fred swap balls. Then, Fred and Eve swap balls. Then, nothing happens for a while. Then, Gertrude and Eve swap balls. Then, Gertrude and Eve discuss something. Then, Gertrude and Eve swap balls. Then, Eve and Bob swap balls. Then, Bob and Eve swap balls. Then, Dave and Bob swap balls. Then, Dave and Bob discuss something. Then, Dave and Bob swap balls. Then, Alice and Gertrude swap balls. Then, Gertrude and Alice swap balls. Then, Dave and Claire swap balls. Then, Claire and Dave swap balls. Then, Alice and Gertrude swap balls. Then, Alice and Gertrude discuss something. Then, Alice and Gertrude swap balls. Then, Bob and Eve swap balls. Then, Eve and Bob swap balls. Then, Bob and Dave swap balls. Then, Dave and Bob swap balls. Then, Dave and Claire swap balls. Then, Claire and Dave swap balls. Then, Gertrude and Eve swap balls. Then, Gertrude and Eve discuss something. Then, Gertrude and Eve swap balls. Then, Claire and Alice swap balls. Then, Alice and Claire swap balls. Then, Bob and Dave swap balls. Then, Dave and Gertrude swap balls. Then, Gertrude and Dave swap balls. Then, Dave and Bob swap balls. Then, Fred and Alice swap balls. Then, Fred and Alice discuss something. Then, Fred and Alice swap balls. Then, nothing happens for a while. Then, Gertrude and Claire swap balls. Then, Claire and Gertrude swap balls. Then, nothing happens for a while. Then, Eve and Claire swap balls. Then, Claire and Bob swap balls. Then, Bob and Claire swap balls. Then, Claire and Eve swap balls. Then, Claire and Dave swap balls. Then, Dave and Bob swap balls. Then, Bob and Dave swap balls. Then, Dave and Claire swap balls. Then, nothing happens for a while. Then, Gertrude and Claire swap balls. Then, Claire and Eve swap balls. Then, Eve and Claire swap balls. Then, Claire and Gertrude swap balls. Then, Eve and Fred swap balls. Then, Eve and Fred discuss something. Then, Eve and Fred swap balls. Then, Dave and Bob swap balls. Then, Bob and Dave swap balls. Then, Gertrude and Bob swap balls. Then, Bob and Alice swap balls. Then, Alice and Bob swap balls. Then, Bob and Gertrude swap balls. Then, Claire and Alice swap balls. Then, Alice and Gertrude swap balls. Then, Gertrude and Alice swap balls. Then, Alice and Claire swap balls. Then, Bob and Fred swap balls. Then, Fred and Gertrude swap balls. Then, Gertrude and Fred swap balls. Then, Fred and Bob swap balls. Then, Gertrude and Fred swap balls. Then, Fred and Gertrude swap balls. Then, Claire and Gertrude swap balls. Then, Claire and Gertrude discuss something. Then, Claire and Gertrude swap balls. Then, Dave and Alice swap balls. Then, Alice and Dave swap balls. Then, Claire and Bob swap balls. Then, Bob and Claire swap balls. Then, Alice and Bob swap balls. Then, Bob and Alice swap balls. Then, Eve and Dave swap balls. Then, Dave and Eve swap balls. Then, Fred and Alice swap balls. Then, Alice and Fred swap balls. Then, Gertrude and Alice swap balls. Then, Alice and Gertrude swap balls. Then, nothing happens for a while. Then, Bob and Alice swap balls. Then, Alice and Fred swap balls. Then, Fred and Alice swap balls. Then, Alice and Bob swap balls. Then, Dave and Alice swap balls. Then, Dave and Alice discuss something. Then, Dave and Alice swap balls. Then, nothing happens for a while. Then, Alice and Eve swap balls. Then, Eve and Claire swap balls. Then, Claire and Eve swap balls. Then, Eve and Alice swap balls. Then, Alice and Bob swap balls. Then, Bob and Alice swap balls. Then, nothing happens for a while. Then, Bob and Eve swap balls. Then, Eve and Bob swap balls. Then, Fred and Bob swap balls. Then, Bob and Dave swap balls. Then, Dave and Bob swap balls. Then, Bob and Fred swap balls. Then, Dave and Fred swap balls. Then, Dave and Fred discuss something. Then, Dave and Fred swap balls. Then, Eve and Dave swap balls. Then, nothing happens for a while. Then, nothing happens for a while. Then, nothing happens for a while. Then, Gertrude and Alice swap balls. Then, Alice and Gertrude swap balls. Then, Gertrude and Eve swap balls. Then, Gertrude and Eve discuss something. Then, Gertrude and Eve swap balls. Then, Bob and Claire swap balls. Then, Claire and Fred swap balls. Then, Fred and Claire swap balls. Then, Claire and Bob swap balls. Then, Gertrude and Alice swap balls. Then, Alice and Fred swap balls. Then, Fred and Alice swap balls. Then, Alice and Gertrude swap balls. Then, Bob and Claire swap balls. Then, Bob and Claire discuss something. Then, Bob and Claire swap balls. Then, nothing happens for a while. Then, Fred and Alice swap balls. Then, Alice and Fred swap balls. Then, nothing happens for a while. Then, Gertrude and Fred swap balls. Then, Fred and Gertrude swap balls. Then, nothing happens for a while. Then, nothing happens for a while. Then, Bob and Dave swap balls. Then, Dave and Fred swap balls. Then, Fred and Dave swap balls. Then, Dave and Bob swap balls. Then, nothing happens for a while. Then, Eve and Bob swap balls. Then, Bob and Eve swap balls. Then, Dave and Fred swap balls. Then, Fred and Bob swap balls. Then, Bob and Fred swap balls. Then, Fred and Dave swap balls. Then, Alice and Gertrude swap balls. Then, Gertrude and Alice swap balls. Then, Dave and Claire swap balls. Then, Dave and Claire discuss something. Then, Dave and Claire swap balls. Then, Fred and Bob swap balls. Then, Bob and Fred swap balls. Then, nothing happens for a while. Then, nothing happens for a while. Then, nothing happens for a while. Then, Bob and Eve swap balls. Then, Eve and Dave swap balls. Then, Dave and Eve swap balls. Then, Eve and Bob swap balls. Then, Fred and Bob swap balls. Then, Bob and Fred swap balls. Then, Dave and Fred swap balls. Then, Fred and Claire swap balls. Finally, Claire and Bob swap balls. At the end of the game, Gertrude has the\nOptions:\n(A) green ball\n(B) black ball\n(C) orange ball\n(D) purple ball\n(E) brown ball\n(F) pink ball\n(G) blue ball",
+      "answer": "(D)",
+      "scorer": "bbeh",
+      "stratum": "mini"
+    },
+    {
+      "id": "omni:3792",
+      "dataset": "omni",
+      "question": "Turbo the snail plays a game on a board with $2024$ rows and $2023$ columns. There are hidden monsters in $2022$ of the cells. Initially, Turbo does not know where any of the monsters are, but he knows that there is exactly one monster in each row except the first row and the last row, and that each column contains at most one monster.\n\nTurbo makes a series of attempts to go from the first row to the last row. On each attempt, he chooses to start on any cell in the first row, then repeatedly moves to an adjacent cell sharing a common side. (He is allowed to return to a previously visited cell.) If he reaches a cell with a monster, his attempt ends and he is transported back to the first row to start a new attempt. The monsters do not move, and Turbo remembers whether or not each cell he has visited contains a monster. If he reaches any cell in the last row, his attempt ends and the game is over.\n\nDetermine the minimum value of $n$ for which Turbo has a strategy that guarantees reaching the last row on the $n$-th attempt or earlier, regardless of the locations of the monsters.\n\n[i]",
+      "answer": "3",
+      "scorer": "integer",
+      "stratum": "9.0"
+    },
+    {
+      "id": "zebra:lgp-test-3x6-35",
+      "dataset": "zebra",
+      "question": "There are 3 houses, numbered 1 to 3 from left to right, as seen from across the street. Each house is occupied by a different person. Each house has a unique attribute for each of the following characteristics:\n - Each person has a unique name: `Eric`, `Arnold`, `Peter`\n - Each person prefers a unique type of vacation: `mountain`, `city`, `beach`\n - People have unique heights: `very short`, `average`, `short`\n - They all have a unique favorite flower: `carnations`, `daffodils`, `lilies`\n - People have unique hair colors: `brown`, `black`, `blonde`\n - Each person has a unique level of education: `associate`, `bachelor`, `high school`\n\n## Clues:\n1. Peter is the person who has an average height.\n2. The person who loves a bouquet of daffodils is Arnold.\n3. The person who is very short is not in the second house.\n4. The person who loves beach vacations is in the first house.\n5. The person with a high school diploma is in the third house.\n6. The person who is short is somewhere to the right of the person who is very short.\n7. The person who loves the boquet of lilies is Eric.\n8. The person who loves the boquet of lilies is the person with a bachelor's degree.\n9. The person who prefers city breaks is somewhere to the right of Peter.\n10. The person who has blonde hair is in the third house.\n11. The person who loves beach vacations is the person who has brown hair.\n",
+      "answer": {
+        "header": [
+          "House",
+          "Name",
+          "Vacation",
+          "Height",
+          "Flower",
+          "HairColor",
+          "Education"
+        ],
+        "rows": [
+          [
+            "1",
+            "Eric",
+            "beach",
+            "very short",
+            "lilies",
+            "brown",
+            "bachelor"
+          ],
+          [
+            "2",
+            "Peter",
+            "mountain",
+            "average",
+            "carnations",
+            "black",
+            "associate"
+          ],
+          [
+            "3",
+            "Arnold",
+            "city",
+            "short",
+            "daffodils",
+            "blonde",
+            "high school"
+          ]
+        ]
+      },
+      "scorer": "grid",
+      "stratum": "3*6"
+    }
+  ]
+}
