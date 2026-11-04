@@ -1,4 +1,4 @@
-import { CheckSquare, MoreHorizontal, Pencil, Pin, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, CheckSquare, MoreHorizontal, Pencil, Pin, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useDropUpMenu } from "../../components/layout/hooks/useDropUpMenu";
@@ -6,7 +6,7 @@ import { MenuPanel } from "../../components/ui/MenuPanel";
 import { cn } from "../../lib/cn";
 import { useKeyboardOwner } from "../../lib/keyboardOwners";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
-import { deleteRemoteWorkspace, setRemoteWorkspacePinned } from "./remotePeerClient";
+import { archiveRemoteWorkspace, deleteRemoteWorkspace, restoreRemoteWorkspace, setRemoteWorkspacePinned } from "./remotePeerClient";
 
 /**
  * The actions a workspace on another machine supports.
@@ -29,6 +29,8 @@ import { deleteRemoteWorkspace, setRemoteWorkspacePinned } from "./remotePeerCli
  * that produced it is no message at all.
  */
 export function RemoteWorkspaceMenu({
+  archived = false,
+  canArchive = false,
   desktopId,
   name,
   onChanged,
@@ -37,6 +39,23 @@ export function RemoteWorkspaceMenu({
   pinned,
   workspaceId,
 }: {
+  /**
+   * This heading is drawn by the archived view.
+   *
+   * The item whose meaning flips is the archive one; the pin goes away there
+   * because shelving clears it, so a pin item would offer a state the host
+   * cannot be in while the workspace is on the shelf.
+   */
+  archived?: boolean;
+  /**
+   * Whether the host answered `archive_v1`.
+   *
+   * An old host refuses these commands, so the item is withheld rather than
+   * offered and answered with an error. `archived` on the catalogue predates the
+   * flag: it is what the archived view *reads*, while this flag gates the
+   * command that changes it.
+   */
+  canArchive?: boolean;
   desktopId: string;
   name: string;
   /** Re-read the host's catalogue once the change has landed. */
@@ -122,13 +141,41 @@ export function RemoteWorkspaceMenu({
                     </Item>
                   )
                 : null}
-              <Item
-                disabled={busy}
-                icon={<Pin className="size-3.5" />}
-                onClick={() => void run(() => setRemoteWorkspacePinned(desktopId, workspaceId, !pinned))}
-              >
-                {pinned ? t("activityRail.unpin") : t("activityRail.pin")}
-              </Item>
+              {archived && canArchive
+                ? (
+                    <Item
+                      disabled={busy}
+                      icon={<ArchiveRestore className="size-3.5" />}
+                      onClick={() => void run(() => restoreRemoteWorkspace(desktopId, workspaceId))}
+                    >
+                      {t("activityRail.restore")}
+                    </Item>
+                  )
+                : null}
+              {archived
+                ? null
+                : (
+                    <>
+                      <Item
+                        disabled={busy}
+                        icon={<Pin className="size-3.5" />}
+                        onClick={() => void run(() => setRemoteWorkspacePinned(desktopId, workspaceId, !pinned))}
+                      >
+                        {pinned ? t("activityRail.unpin") : t("activityRail.pin")}
+                      </Item>
+                      {canArchive
+                        ? (
+                            <Item
+                              disabled={busy}
+                              icon={<Archive className="size-3.5" />}
+                              onClick={() => void run(() => archiveRemoteWorkspace(desktopId, workspaceId))}
+                            >
+                              {t("activityRail.archive")}
+                            </Item>
+                          )
+                        : null}
+                    </>
+                  )}
               {/* The same item the local heading's menu carries, in the same
                   place. Offered only outside selection mode, as there: the
                   action is *entering* it. */}

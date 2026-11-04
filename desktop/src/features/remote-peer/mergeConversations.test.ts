@@ -7,8 +7,10 @@ import type {
 } from "./mergeConversations";
 import { describe, expect, it } from "vitest";
 import {
+  archivedRemoteShelves,
   compareConversations,
   compareSource,
+  filterArchivedRemoteShelves,
   groupMergedRows,
   localTimestamp,
   mergeConversations,
@@ -878,5 +880,129 @@ describe("mergeRemoteSessionDelta", () => {
     expect(merged[0]?.workspaceName).toBe("新名字");
     expect(merged[0]?.workspacePinned).toBe(true);
     expect(merged[0]?.workspaceOrderedAt).toBe(42);
+  });
+});
+
+/**
+ * The archived half of a host's catalogue.
+ *
+ * The host marks a conversation archived when its own thread was shelved and
+ * when the workspace holding it was; either way the row it sends says so, and
+ * this side has to read the flag onto the merged row rather than letting a
+ * shelved conversation sit in the active list.
+ */
+describe("archived rows", () => {
+  it("carries a host's archived flag onto its merged row", () => {
+    const rows = mergeConversations(
+      [thread({ id: "local_shelved", status: "archived" })],
+      [catalog("desktop_a", [
+        { archived: true, sessionId: "a_shelved", title: "shelved" },
+        { archived: false, sessionId: "a_live", title: "live" },
+        // A host that predates the field says nothing, which reads as active.
+        { sessionId: "a_old", title: "old host" },
+      ])],
+      ALL,
+    );
+
+    const byId = new Map(rows.map(row => [row.id, row.archived]));
+    expect(byId.get("local_shelved")).toBe(true);
+    expect(byId.get("a_shelved")).toBe(true);
+    expect(byId.get("a_live")).toBe(false);
+    expect(byId.get("a_old")).toBe(false);
+  });
+
+  it("groups a host's shelved conversations under the shelved workspace heading", () => {
+    const shelves = archivedRemoteShelves([
+      {
+        desktopId: "desktop_a",
+        sessions: [
+          {
+            archived: true,
+            mode: "workspace",
+            sessionId: "a_shelved",
+            title: "shelved conversation",
+            workspaceId: "ws_9",
+            workspaceName: "Remote project",
+          },
+          { archived: false, sessionId: "a_live", title: "active conversation" },
+        ],
+        workspaces: [
+          { archived: true, id: "ws_9", name: "Remote project", path: "/r", pinned: false },
+          { archived: false, id: "ws_live", name: "Active project", path: "/a", pinned: false },
+        ],
+      },
+    ], ALL);
+
+    expect(shelves.workspaces).toHaveLength(1);
+    expect(shelves.workspaces[0]!.label).toBe("Remote project");
+    expect(shelves.workspaces[0]!.rows.map(row => row.id)).toEqual(["a_shelved"]);
+    // The active conversation and its workspace stay out of the archived view.
+    expect(shelves.rows).toEqual([]);
+  });
+
+  it("still draws a shelved workspace nobody has written in", () => {
+    const shelves = archivedRemoteShelves([
+      {
+        desktopId: "desktop_a",
+        sessions: [],
+        workspaces: [{ archived: true, id: "ws_empty", name: "Empty shelf", path: "/e", pinned: false }],
+      },
+    ], ALL);
+
+    expect(shelves.workspaces.map(group => group.label)).toEqual(["Empty shelf"]);
+    expect(shelves.workspaces[0]!.rows).toEqual([]);
+  });
+
+  it("shows only the machines the device picker names", () => {
+    const catalogs: RemoteCatalog[] = [
+      {
+        desktopId: "desktop_a",
+        sessions: [{ archived: true, mode: "workspace", sessionId: "a", title: "a", workspaceId: "ws_9" }],
+        workspaces: [{ archived: true, id: "ws_9", name: "A shelf", path: "/a", pinned: false }],
+      },
+      {
+        desktopId: "desktop_b",
+        sessions: [{ archived: true, mode: "workspace", sessionId: "b", title: "b", workspaceId: "ws_10" }],
+        workspaces: [{ archived: true, id: "ws_10", name: "B shelf", path: "/b", pinned: false }],
+      },
+    ];
+
+    const onlyB = archivedRemoteShelves(catalogs, { desktopId: "desktop_b", kind: "device" });
+    expect(onlyB.workspaces.map(group => group.label)).toEqual(["B shelf"]);
+    expect(onlyB.workspaces[0]!.rows.map(row => row.id)).toEqual(["b"]);
+  });
+
+  it("keeps a shelf whose name matches, and a shelf one of whose conversations matches", () => {
+    const shelves = archivedRemoteShelves([
+      {
+        desktopId: "desktop_a",
+        sessions: [
+          {
+            archived: true,
+            mode: "workspace",
+            sessionId: "a_shelved",
+            title: "alpha task",
+            workspaceId: "ws_9",
+            workspaceName: "Remote project",
+          },
+        ],
+        workspaces: [
+          { archived: true, id: "ws_9", name: "Remote project", path: "/r", pinned: false },
+          { archived: true, id: "ws_10", name: "beta project", path: "/b", pinned: false },
+        ],
+      },
+    ], ALL);
+
+    const byTitle = filterArchivedRemoteShelves(shelves, "alpha");
+    expect(byTitle.workspaces.map(group => group.label)).toEqual(["Remote project"]);
+    // The shelf was kept, so the reader sees what is in it.
+    expect(byTitle.workspaces[0]!.rows.map(row => row.id)).toEqual(["a_shelved"]);
+
+    const byName = filterArchivedRemoteShelves(shelves, "beta");
+    expect(byName.workspaces.map(group => group.label)).toEqual(["beta project"]);
+
+    const none = filterArchivedRemoteShelves(shelves, "gamma");
+    expect(none.workspaces).toEqual([]);
+    expect(none.rows).toEqual([]);
   });
 });

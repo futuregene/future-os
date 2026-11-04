@@ -86,6 +86,19 @@ export function peerHeld(peer: RemotePeer): boolean {
 }
 
 /**
+ * Whether this host answered the archive capability.
+ *
+ * The catalogue has reported `archived` on its rows for longer than this flag
+ * has existed, so the archived *view* is drawn from the rows either way. What
+ * the flag gates is the command that changes the state: an older host refuses
+ * `archive_session` / `archive_workspace`, and an item that ends in "Unsupported
+ * command" is worse than an item that is not offered.
+ */
+export function peerCanArchive(peer: RemotePeer | undefined): boolean {
+  return peer?.features.includes("archive_v1") === true;
+}
+
+/**
  * Whether the platform says this pairing no longer exists.
  *
  * A host can be unpaired on the *other* computer, and this machine keeps its half

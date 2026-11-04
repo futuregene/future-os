@@ -203,6 +203,7 @@ export interface RemoteSkillRecommendation {
  * and stopping a run that is in flight.
  */
 export function RemoteComposer({
+  archived = false,
   canCompact = false,
   className,
   controls,
@@ -219,6 +220,16 @@ export function RemoteComposer({
   streaming = false,
   workspaceId = null,
 }: {
+  /**
+   * This conversation is shelved on its host.
+   *
+   * The host refuses a prompt into an archived conversation, so the composer is
+   * closed here instead of on the wire: the same rule `held` applies for a
+   * machine another device drives. The transcript stays readable — opening a
+   * shelved conversation from the archived view is the point — and restoring it
+   * is a row action, not something to hunt for in the composer.
+   */
+  archived?: boolean;
   /**
    * Extra controls for the control row, before the machine hint and the send
    * button: the host's own model and thinking level, which this app's composer
@@ -297,6 +308,9 @@ export function RemoteComposer({
    * as everywhere else.
    */
   const held = peer?.control === "standby";
+  // Every write path below closes for either reason; they differ only in the
+  // sentence that explains it (the notice above the field).
+  const locked = held || archived;
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const ime = useImeEnterGuard();
   const [busy, setBusy] = useState(false);
@@ -441,7 +455,7 @@ export function RemoteComposer({
   async function attach() {
     // Staging a file writes to the host, so a machine another device drives is
     // closed here for the same reason sending is (`held`, above).
-    if (held)
+    if (locked)
       return;
     setUploading(true);
     setError(null);
@@ -472,7 +486,7 @@ export function RemoteComposer({
    */
   async function pasteFiles(event: React.ClipboardEvent<HTMLTextAreaElement>) {
     const data = event.clipboardData;
-    if (!data || busy || uploading || held)
+    if (!data || busy || uploading || locked)
       return;
     const files = [...data.files];
     const text = data.getData("text/plain");
@@ -732,7 +746,7 @@ export function RemoteComposer({
     // the reply and let the queue start — and the send button's menu asks it.
     // Enter reaches this function too, so the choice is asked here, where both
     // paths meet.
-    if ((!message && uploads.length === 0) || busy || evaluating || held)
+    if ((!message && uploads.length === 0) || busy || evaluating || locked)
       return;
     if (streaming) {
       setQueueChoiceOpen(true);
@@ -833,7 +847,7 @@ export function RemoteComposer({
    */
   async function handOff(interrupt: boolean) {
     setQueueChoiceOpen(false);
-    if (busy || held || evaluating)
+    if (busy || locked || evaluating)
       return;
     const message = text.trim();
     if (!message && uploads.length === 0)
@@ -878,7 +892,7 @@ export function RemoteComposer({
     // A compact request is a command to the host too, and a host another device
     // drives refuses it. Left out of the menu rather than drawn disabled: a
     // slash menu is a list of things you can ask for.
-    canCompact: canCompact && !busy && !evaluating && !held,
+    canCompact: canCompact && !busy && !evaluating && !locked,
     canReference: referenceOptions.length > 0,
     onCompact: () => onCompact?.(),
   });
@@ -1064,6 +1078,16 @@ export function RemoteComposer({
           )
         : null}
       {error ? <p className="mb-2 text-xs text-danger">{error}</p> : null}
+      {/* Why this conversation cannot be written in. Above the field, in the same
+          place the queue notices sit: the reader is looking at the box they
+          cannot use, and the reason belongs there rather than in the header. */}
+      {archived
+        ? (
+            <p className="mb-2 text-xs text-ink-muted" data-testid="composer-archived-notice">
+              {t("archivedReadOnly")}
+            </p>
+          )
+        : null}
       {pendingPrompt
         ? (
             <p className="mb-2 text-xs text-warning">
@@ -1180,6 +1204,10 @@ export function RemoteComposer({
             composers look like two different products. */}
       <textarea
         aria-label={t("composerLabel")}
+        // A shelved conversation is read-only: its host refuses the prompt, and
+        // a field that accepted the words first would offer a send that ends in
+        // an error over text the reader had already written.
+        readOnly={archived}
         // A bare textarea holds no placeholder attribute to carry this, and the
         // empty state is what decides whether the transcript behind may answer
         // an arrow key (see `lib/editableTarget`): the field autofocuses, so
@@ -1286,9 +1314,9 @@ export function RemoteComposer({
           <button
             aria-label={t("attach")}
             className="inline-flex size-7 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
-            disabled={uploading || held}
+            disabled={uploading || locked}
             onClick={() => void attach()}
-            title={held ? t("heldSendBlocked") : t("attach")}
+            title={held ? t("heldSendBlocked") : archived ? t("archivedReadOnly") : t("attach")}
             type="button"
           >
             <Paperclip className="size-3.5" />
@@ -1310,7 +1338,7 @@ export function RemoteComposer({
               local composer's size and colour: the same two controls in the same
               place on both screens. */}
           {streaming
-            ? ((text.trim() || uploads.length > 0) && !held
+            ? ((text.trim() || uploads.length > 0) && !locked
                 ? (
                     <SelectMenu
                       align="right"
@@ -1375,8 +1403,8 @@ export function RemoteComposer({
                   // `held` is not a state the button is briefly in (busy): it is the
                   // machine being someone else's, and the reason travels with the
                   // closed control rather than only in the banner above it.
-                  disabled={(!text.trim() && uploads.length === 0) || busy || uploading || evaluating || held}
-                  title={held ? t("heldSendBlocked") : busy ? t("sending") : t("send")}
+                  disabled={(!text.trim() && uploads.length === 0) || busy || uploading || evaluating || locked}
+                  title={held ? t("heldSendBlocked") : archived ? t("archivedReadOnly") : busy ? t("sending") : t("send")}
                   type="submit"
                 >
                   {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ArrowUp className="size-3.5" />}

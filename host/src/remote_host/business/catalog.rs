@@ -136,6 +136,50 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
             }
         }
+        // Shelving a conversation from another machine, the same tree operation
+        // the desktop's own Archive performs. Addressed by the host **thread**
+        // id, like delete/pin: the session id is not what the store's archive
+        // routes take.
+        //
+        // The streaming set is reconciled here rather than read from this
+        // process's observers: a run another client started has no local `runs`
+        // row, and an archived `waiting_approval` conversation would hide the
+        // request nobody can see. An unreachable Agent answers empty, matching
+        // the sidebar's own tolerance.
+        "archive_session" => {
+            if cmd.thread_id.is_empty() {
+                reply(sink, false, Value::Null, Some("missing thread_id")).await;
+            } else {
+                let streaming = crate::agent_bridge::reconcile_streaming_observers()
+                    .await
+                    .unwrap_or_default();
+                match crate::store::archive_thread_tree(&cmd.thread_id, &streaming) {
+                    Ok(_) => {
+                        // The host's own list and every client's catalogue draw
+                        // the row from the store; the first re-lists, the second
+                        // is pushed the new snapshot.
+                        crate::emit_threads_updated();
+                        crate::emit_remote_activity(&cmd.thread_id);
+                        reply(sink, true, json!({}), None).await
+                    }
+                    Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+                }
+            }
+        }
+        "restore_session" => {
+            if cmd.thread_id.is_empty() {
+                reply(sink, false, Value::Null, Some("missing thread_id")).await;
+            } else {
+                match crate::store::restore_thread_tree(&cmd.thread_id) {
+                    Ok(_) => {
+                        crate::emit_threads_updated();
+                        crate::emit_remote_activity(&cmd.thread_id);
+                        reply(sink, true, json!({}), None).await
+                    }
+                    Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+                }
+            }
+        }
         "delete_session" => {
             if cmd.thread_id.is_empty() {
                 reply(sink, false, Value::Null, Some("missing thread_id")).await;
@@ -262,6 +306,37 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 reply(sink, false, Value::Null, Some("missing workspace_id")).await;
             } else {
                 match crate::workspaces::delete_workspace(cmd.workspace_id.clone()).await {
+                    Ok(_) => {
+                        crate::emit_threads_updated();
+                        reply(sink, true, json!({}), None).await
+                    }
+                    Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+                }
+            }
+        }
+        // Shelve a workspace from another machine: it and its conversations
+        // leave the default lists (the host's JOIN filter, not a rewrite of
+        // each conversation's status), which is what the catalogue reports as
+        // `archived` on both halves. The host's own function is the authority
+        // for the running-member refusal and the `kind='user'` rule.
+        "archive_workspace" => {
+            if cmd.workspace_id.is_empty() {
+                reply(sink, false, Value::Null, Some("missing workspace_id")).await;
+            } else {
+                match crate::workspaces::archive_workspace(cmd.workspace_id.clone()).await {
+                    Ok(_) => {
+                        crate::emit_threads_updated();
+                        reply(sink, true, json!({}), None).await
+                    }
+                    Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+                }
+            }
+        }
+        "restore_workspace" => {
+            if cmd.workspace_id.is_empty() {
+                reply(sink, false, Value::Null, Some("missing workspace_id")).await;
+            } else {
+                match crate::workspaces::restore_workspace(cmd.workspace_id.clone()) {
                     Ok(_) => {
                         crate::emit_threads_updated();
                         reply(sink, true, json!({}), None).await
@@ -986,6 +1061,138 @@ mod dispatch_tests {
                 .is_some(),
             "the refused delete must leave the row in place"
         );
+    }
+
+    /// Shelving a conversation from another machine is the host's own tree
+    /// archive, addressed by thread id — and restoring it brings the tree back.
+    ///
+    /// The catalogue already reported `archived` before this command existed;
+    /// what this pins is that the command changes the same store state, so the
+    /// next snapshot describes what the client asked for.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // mock_agent_lock serializes this family
+    async fn archive_session_shelves_the_conversation_and_restore_revives_it() {
+        let _lock = crate::remote::test_support::mock_agent_lock();
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-archive-session");
+        crate::remote::test_support::init_store();
+        let _agent = crate::remote::test_support::ensure_mock_agent();
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("Shelve me".to_string()),
+            workspace_id: None,
+            workspace_path: Some("/tmp/catalog-archive".to_string()),
+            workspace_name: Some("catalog".to_string()),
+            agent_session_id: Some("sess-archive-me".to_string()),
+        })
+        .expect("seed the conversation");
+
+        let sink = crate::remote::test_support::RecordingSink::default();
+        execute(
+            &IncomingCmd {
+                cmd_type: "archive_session".into(),
+                thread_id: thread.id.clone(),
+                ..Default::default()
+            },
+            &sink,
+        )
+        .await;
+        let (success, _, error) = sink.last();
+        assert!(success, "archive must succeed: {error:?}");
+        assert_eq!(
+            crate::store::get_thread(&thread.id)
+                .expect("read the archived thread")
+                .expect("the thread still exists")
+                .status,
+            "archived"
+        );
+
+        let sink = crate::remote::test_support::RecordingSink::default();
+        execute(
+            &IncomingCmd {
+                cmd_type: "restore_session".into(),
+                thread_id: thread.id.clone(),
+                ..Default::default()
+            },
+            &sink,
+        )
+        .await;
+        let (success, _, error) = sink.last();
+        assert!(success, "restore must succeed: {error:?}");
+        assert_eq!(
+            crate::store::get_thread(&thread.id)
+                .expect("read the restored thread")
+                .expect("the thread still exists")
+                .status,
+            "active"
+        );
+    }
+
+    /// A workspace is shelved and restored through the host's own functions, so
+    /// the `kind='user'` rule and the running-member refusal are not restated
+    /// here. What the client sees is the same `archived_at` its catalogue reads.
+    #[tokio::test]
+    async fn archive_workspace_shelves_it_and_restore_brings_it_back() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-archive-workspace");
+        crate::remote::test_support::init_store();
+        let dir = std::env::temp_dir().join(format!(
+            "futureos-catalog-archive-workspace-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("make the host directory");
+
+        let sink = crate::remote::test_support::RecordingSink::default();
+        execute(
+            &IncomingCmd {
+                cmd_type: "create_workspace".into(),
+                path: dir.display().to_string(),
+                name: "Shelved".into(),
+                ..Default::default()
+            },
+            &sink,
+        )
+        .await;
+        let workspace_id = sink.last().1["workspace"]["id"]
+            .as_str()
+            .expect("created id")
+            .to_string();
+
+        let sink = crate::remote::test_support::RecordingSink::default();
+        execute(
+            &IncomingCmd {
+                cmd_type: "archive_workspace".into(),
+                workspace_id: workspace_id.clone(),
+                ..Default::default()
+            },
+            &sink,
+        )
+        .await;
+        let (success, _, error) = sink.last();
+        assert!(success, "archive must succeed: {error:?}");
+        assert!(crate::store::get_workspace(&workspace_id)
+            .expect("read the workspace")
+            .expect("the workspace still exists")
+            .archived_at
+            .is_some());
+
+        let sink = crate::remote::test_support::RecordingSink::default();
+        execute(
+            &IncomingCmd {
+                cmd_type: "restore_workspace".into(),
+                workspace_id: workspace_id.clone(),
+                ..Default::default()
+            },
+            &sink,
+        )
+        .await;
+        let (success, _, error) = sink.last();
+        assert!(success, "restore must succeed: {error:?}");
+        assert!(crate::store::get_workspace(&workspace_id)
+            .expect("read the workspace")
+            .expect("the workspace still exists")
+            .archived_at
+            .is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// This handler only ever sees the names the business dispatcher routes to

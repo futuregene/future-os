@@ -129,6 +129,7 @@ const conversations = [
 ];
 
 async function mount(props: {
+  archived?: boolean;
   canCompact?: boolean;
   conversations?: typeof conversations;
   desktopId?: string;
@@ -148,6 +149,7 @@ async function mount(props: {
   // What one render is given, before any per-render override: a re-render (the
   // streaming tests need one) must not silently drop the other props.
   const resolved = {
+    archived: props.archived ?? false,
     canCompact: props.canCompact ?? false,
     conversations: props.conversations ?? [],
     desktopId: props.desktopId ?? "desktop_a",
@@ -1870,6 +1872,26 @@ describe("a send made behind a running reply", () => {
     await view.rerender({ streaming: true });
     await settle();
     expect(prompt).toHaveBeenCalledTimes(1);
+    await view.unmount();
+  });
+});
+
+/**
+ * A shelved conversation is read-only on its host, so the composer is closed
+ * here rather than on the wire: the field takes no text, the send control is
+ * disabled, and the reason is stated where the box is.
+ */
+describe("an archived conversation", () => {
+  it("is read-only and says why", async () => {
+    const view = await mount({ archived: true });
+
+    expect(view.input.readOnly).toBe(true);
+    expect(view.text()).toContain("This conversation is archived. Restore it to keep working in it.");
+    expect(view.button("Send")?.disabled).toBe(true);
+
+    await view.press("Enter");
+    await settle();
+    expect(prompt).not.toHaveBeenCalled();
     await view.unmount();
   });
 });
