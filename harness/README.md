@@ -176,20 +176,51 @@ extracts from the mp4 — so those controls cannot leak into a finding.
 
 ## Analysis
 
+Three layers, cheapest first, each answering a question the one before it cannot.
+
 1. **Deterministic** (`--mode heuristic`): failed checks, exceptions, console
    errors, network failures, IPC errors, heap/main-thread growth, slow steps.
-2. **Vision** (`--mode full`): up to three key screenshots per case are read with
-   the case's own expectations as the question. If the analysis model accepts
-   image input (its `models.json` entry lists `image`), the screenshots are
-   attached to that model directly (`future run --image`); otherwise the
-   `read_image` tool is the fallback. This is where "the page is blank", "the
-   text is clipped" or "the dialog is empty" get found without an assertion
-   having encoded them.
+   Answers "did the contract hold" — precise, but it can only see what someone
+   wrote down in advance.
+2. **Model acceptance** (`--mode full`, `judge` in a case): the ordered step
+   screenshots, a 12-frame filmstrip cut from the recording, the final page text,
+   console/exception/network logs, CLI runs **and the performance numbers with
+   their per-repetition series** go to the model, against natural-language
+   criteria ("a person clicking this should see …"). Answers "does this look like
+   a working product, and are these numbers plausible" — including the dynamic
+   and layout problems no assertion encoded.
 3. **Synthesis** (`--mode full`): `future run --mode json` reads the timeline,
-   deterministic signals and vision notes, and returns findings as strict JSON.
+   deterministic signals and the per-case verdicts, and returns findings as
+   strict JSON.
+
+The judge is told **which deterministic checks already passed on the live DOM**
+and not to re-litigate them. Without that instruction a filmstrip misread
+produced a medium "the panel does not show the thread you clicked" finding on a
+case whose assertion had just proved the opposite; with it, the same evidence
+came back as "视觉证据不足" and severity low.
+
+If the analysis model accepts image input (its `models.json` entry lists
+`image`), screenshots are attached to it directly (`future run --image`);
+otherwise the `read_image` tool is the fallback.
 
 Analysis is resumable and non-fatal: a missing CLI or a failed vision call is
 recorded and the remaining evidence still becomes a report.
+
+### Performance judgement
+
+Perf cases carry numbers, not just pass/fail. `perfDigest` hands the model the
+summary, each measured series (values, mean, drift, slope) and how close every
+assertion came to its limit, with instructions to reason about **trend and
+magnitude** — a repeated interaction whose cost climbs per repetition means
+something is retained, a monotonic heap means a leak, an operation in the
+seconds range is out of class for local work. The model is also told that noise
+in small values is not a defect, so it argues about the shape rather than
+reacting to a single spike.
+
+Demonstrated: from the numbers alone it flagged the boot skeleton as long, and
+correctly read a 20-repeat switch series (drift 0.97, slope 0.02 ms/step) as
+"no accumulation" — the leak class it was asked to look for was absent, and it
+said so.
 
 ## Report and issues
 
@@ -227,7 +258,7 @@ with `gh`. Nothing is filed without that explicit flag.
   fixture exists.
 - **CLI cases are offline.** They cover commands that read `app.db`/settings/
   tasks without an agent; agent-backed commands need a fixture agent.
-- **Video is analyzed as a filmstrip, not as motion.** Six sampled frames catch
+- **Video is analyzed as a filmstrip, not as motion.** A 12-frame strip catches
   obvious state changes; it is not a temporal model.
 
 - **Desktop send queue is not simulated.** Choosing "加入发送队列" is covered by a
