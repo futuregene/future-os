@@ -44,6 +44,7 @@ import {
   foldLiveCompactionPlaceholdersIntoHistory,
   settleInterruptedStandaloneCompactions,
   emptyTimeline,
+  keepLocalAttachmentPaths,
   stripRunItems,
   upsertTruncationNotice,
   type TimelineState,
@@ -1324,8 +1325,24 @@ function mergeLiveInto(
     item.kind === "message" && item.role === "assistant" && item.runId && !item.streaming
       ? [[item.runId, item] as const] : [],
   ));
+  // The picture a prompt was sent with lives on this device under its picker
+  // path; the durable row names the host's copy of the same file. Drawing the
+  // prompt from the row below however is what keeps the photo on screen instead
+  // of blinking out to a download — see `keepLocalAttachmentPaths`.
+  const liveUserAttachments = new Map(liveItems.flatMap(item =>
+    item.kind === "message" && item.role === "user" && item.runId && item.attachments?.length
+      ? [[item.runId, item.attachments] as const] : [],
+  ));
   const items = dropSupersededCompactionDividers(historyItems, liveItems).map(item => {
-    if (item.kind !== "message" || item.role !== "assistant" || !item.runId) return item;
+    if (item.kind !== "message" || !item.runId) return item;
+    if (item.role === "user") {
+      const attachments = keepLocalAttachmentPaths(
+        item.attachments,
+        liveUserAttachments.get(item.runId),
+      );
+      return attachments === item.attachments ? item : { ...item, attachments };
+    }
+    if (item.role !== "assistant") return item;
     const cached = settledReplies.get(item.runId);
     if (!cached) return item;
     // The entry page can arrive before its terminal metadata is attached.
