@@ -272,19 +272,27 @@ pub(crate) fn compress_snapshot_bodies(db: &mut Connection, limit: i64) -> Resul
     Ok((runs, before, after))
 }
 
-/// Settled runs whose canonical journal still holds one row per delta fragment:
-/// `(runs, rows, bytes)` those rows occupy.
+/// Settled runs that still hold fragments a sweep can actually merge, and what
+/// those fragments cost: `(groups, removable rows, bytes)`.
+///
+/// A settled journal holds far more rows than this count: the writer already
+/// coalesced everything inside a batch, and what is left across batches is
+/// separated by other contexts' cursors. Counting every settled row (as this
+/// did at first) advertised 2.8 M rows a sweep could never fold, which read as
+/// a broken pass rather than as nothing to do.
 pub(crate) fn plan_settled_folds(db: &Connection) -> Result<(i64, i64, i64)> {
     Ok(db.query_row(
         &format!(
-            "SELECT count(*),coalesce(sum(n),0),coalesce(sum(b),0) FROM (
-                 SELECT r.session_id,r.run_id,count(*) n,
-                        coalesce(sum(length(c.metadata_json)+coalesce(c.byte_length,0)),0) b
-                   FROM stream_changes c
-                   JOIN stream_runs r ON r.id=c.stream_id
-                   JOIN runs u ON u.session_id=r.session_id AND u.run_id=r.run_id
-                  WHERE u.status IN {SETTLED}
-                  GROUP BY 1,2)"
+            "SELECT count(DISTINCT a.stream_id||':'||a.context_id),count(*),
+                    coalesce(sum(length(b.metadata_json)+coalesce(b.byte_length,0)),0)
+               FROM stream_changes a
+               JOIN stream_changes b
+                 ON b.stream_id=a.stream_id AND b.context_id=a.context_id
+                AND b.event_kind=a.event_kind AND b.last_cursor=a.last_cursor+1
+                AND b.byte_offset=a.byte_offset+a.byte_length AND a.content_id=b.content_id
+               JOIN stream_runs r ON r.id=a.stream_id
+               JOIN runs u ON u.session_id=r.session_id AND u.run_id=r.run_id
+              WHERE u.status IN {SETTLED}"
         ),
         [],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
@@ -297,7 +305,10 @@ pub(crate) fn plan_settled_folds(db: &Connection) -> Result<(i64, i64, i64)> {
 /// transaction: an interruption leaves the remaining runs exactly as they were,
 /// and folding is idempotent, so the next pass simply continues.
 pub(crate) fn fold_settled_journals(db: &mut Connection, limit: i64) -> Result<(i64, i64, i64)> {
-    let candidates: Vec<(String, String)> = {
+    // The stored session key is bound verbatim: it is text for older sessions
+    // and raw bytes for the ones the desktop created, and both must reach the
+    // same rows here. `String` would refuse the second kind outright.
+    let candidates: Vec<(rusqlite::types::Value, String)> = {
         let mut statement = db.prepare_cached(&format!(
             "SELECT r.session_id,r.run_id
                FROM stream_changes c
@@ -326,7 +337,7 @@ pub(crate) fn fold_settled_journals(db: &mut Connection, limit: i64) -> Result<(
             Err(error) => {
                 // One unfoldable run must not end the pass; its rows stay as they
                 // are and a later sweep tries again.
-                tracing::debug!(%session, %run, %error, "settled journal left unfolded");
+                tracing::debug!(session = ?session, %run, %error, "settled journal left unfolded");
             }
         }
     }
@@ -705,7 +716,12 @@ impl SqliteStore {
                     .call_as("journal_reclaim", move |db| {
                         fold_settled_journals(db, FOLD_BATCH_RUNS)
                     })
-                    .unwrap_or((0, 0, 0))
+                    .unwrap_or_else(|error| {
+                        // A silent no-op here is exactly how a broken pass reads
+                        // as "nothing to fold"; say it once, keep the sweep going.
+                        tracing::warn!(%error, "settled-journal folding failed");
+                        (0, 0, 0)
+                    })
             };
         let folds_pending = self
             .db
