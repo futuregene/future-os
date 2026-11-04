@@ -16,6 +16,17 @@ const STEPS: &[(i64, &str)] = &[
     (3, include_str!("delete_sources.sql")),
     (4, include_str!("retire_reference_caches.sql")),
     (5, include_str!("workspace_archive.sql")),
+    (6, include_str!("review_snapshot_ignored_paths.sql")),
+];
+
+/// Contract steps that add exactly one column. A fresh database already has
+/// every `schema::SCHEMA` column, and a database written by a build that
+/// shipped the column before its contract step has it too, so the step runs
+/// only when the column is missing — under the same transactional, checksummed
+/// record either way.
+const ADDITIVE_COLUMN_STEPS: &[(i64, &str, &str)] = &[
+    (5, "workspaces", "archived_at"),
+    (6, "review_snapshots", "ignored_paths"),
 ];
 
 fn checksum(version: i64) -> String {
@@ -160,10 +171,20 @@ pub(super) fn initialize(conn: &Connection) -> Result<(), Error> {
                 conn,
                 rusqlite::TransactionBehavior::Immediate,
             )?;
-            // Nightly 110 and fresh databases already have this column, but
-            // nightly 109's version-4 contract does not. Adopt either layout
-            // under the same transactional, checksummed migration.
-            if *step != 5 || !column_names(&tx, "workspaces")?.contains("archived_at") {
+            // A fresh database already has every `SCHEMA` column, and a
+            // database written by a build that shipped a column before its
+            // contract step has it too (nightly 109's version-4 contract, for
+            // instance, lacks `workspaces.archived_at` while nightly 110 has
+            // it). Adopt either layout under the same transactional,
+            // checksummed migration.
+            let column_present = match ADDITIVE_COLUMN_STEPS
+                .iter()
+                .find(|(additive_step, ..)| additive_step == step)
+            {
+                Some((_, table, column)) => column_names(&tx, table)?.contains(*column),
+                None => false,
+            };
+            if !column_present {
                 tx.execute_batch(sql)?;
             }
             if *step == 1 {
@@ -403,6 +424,110 @@ mod tests {
         );
         conn.execute_batch("DROP TRIGGER refuse_v5").unwrap();
         initialize(&conn).unwrap();
+        assert_eq!(
+            admit(&conn).unwrap(),
+            future_app_settings::APP_DB_SCHEMA_VERSION
+        );
+        validate_core(&conn).unwrap();
+    }
+
+    /// The released contract-5 layout: snapshots count the paths their
+    /// Workspace's ignore rules kept out (`ignored_count`) but cannot say which
+    /// ones — the column arrived after the contract shipped. Nightly builds in
+    /// between wrote both layouts, so a current open must adopt either.
+    fn contract_five_without_snapshot_ignored_paths(conn: &Connection) {
+        legacy(conn);
+        initialize(conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO runs(id,thread_id,status,created_at,updated_at) VALUES('run','t','completed',1,1);
+             INSERT INTO review_snapshots(id,workspace_id,thread_id,run_id,phase,status,file_count,total_bytes,ignored_count,ignored_paths,created_at)
+                 VALUES('snapshot','w','t','run','before','complete',3,100,1,'[{\"path\":\"bugfind/h1.md\"}]',7);
+             DELETE FROM app_schema_migrations WHERE version>=6; PRAGMA user_version=5;
+             ALTER TABLE review_snapshots DROP COLUMN ignored_paths;",
+        )
+        .unwrap();
+        assert_eq!(admit(conn).unwrap(), 5);
+    }
+
+    #[test]
+    fn contract_five_upgrade_adds_the_snapshot_ignore_record() {
+        for wrote_the_column_early in [false, true] {
+            let conn = Connection::open_in_memory().unwrap();
+            contract_five_without_snapshot_ignored_paths(&conn);
+            if wrote_the_column_early {
+                // A nightly build that shipped the column before its contract:
+                // the step records itself without replaying the ALTER, and the
+                // values it already wrote survive.
+                conn.execute_batch(
+                    "ALTER TABLE review_snapshots ADD COLUMN ignored_paths TEXT;
+                     UPDATE review_snapshots SET ignored_paths='kept' WHERE id='snapshot';",
+                )
+                .unwrap();
+                validate_core(&conn).unwrap();
+            } else {
+                let error = validate_core(&conn).unwrap_err().to_string();
+                assert!(
+                    error.contains("review_snapshots.ignored_paths is missing"),
+                    "{error}"
+                );
+            }
+            initialize(&conn).unwrap();
+            initialize(&conn).unwrap();
+            validate_core(&conn).unwrap();
+            assert_eq!(
+                admit(&conn).unwrap(),
+                future_app_settings::APP_DB_SCHEMA_VERSION
+            );
+            // The snapshot written before the column existed keeps its counts;
+            // only the paths it could not name yet are NULL.
+            let row: (i64, i64, Option<String>) = conn
+                .query_row(
+                    "SELECT ignored_count,total_bytes,ignored_paths FROM review_snapshots WHERE id='snapshot'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(row, (1, 100, wrote_the_column_early.then(|| "kept".into())));
+            assert_eq!(
+                conn.query_row(
+                    "SELECT content FROM legacy_messages WHERE id='u'",
+                    [],
+                    |row| { row.get::<_, String>(0) }
+                )
+                .unwrap(),
+                "保留历史"
+            );
+        }
+    }
+
+    #[test]
+    fn contract_six_upgrade_rolls_back_and_retries_with_its_ledger() {
+        let conn = Connection::open_in_memory().unwrap();
+        contract_five_without_snapshot_ignored_paths(&conn);
+        conn.execute_batch(
+            "CREATE TRIGGER refuse_v6 BEFORE INSERT ON app_schema_migrations
+             WHEN NEW.version=6 BEGIN SELECT RAISE(ABORT,'injected'); END;",
+        )
+        .unwrap();
+        assert!(initialize(&conn).is_err());
+        assert_eq!(admit(&conn).unwrap(), 5);
+        assert!(!column_names(&conn, "review_snapshots")
+            .unwrap()
+            .contains("ignored_paths"));
+        assert_eq!(
+            conn.query_row(
+                "SELECT ignored_count FROM review_snapshots WHERE id='snapshot'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        conn.execute_batch("DROP TRIGGER refuse_v6").unwrap();
+        initialize(&conn).unwrap();
+        assert!(column_names(&conn, "review_snapshots")
+            .unwrap()
+            .contains("ignored_paths"));
         assert_eq!(
             admit(&conn).unwrap(),
             future_app_settings::APP_DB_SCHEMA_VERSION

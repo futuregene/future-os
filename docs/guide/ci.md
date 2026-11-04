@@ -4,13 +4,13 @@
 
 ## Regular checks
 
-[`ci.yml`](../../.github/workflows/ci.yml) runs on pull requests, merge groups,
-and pushes to main. A manual dispatch runs every regular project by default.
+[`ci.yml`](../../.github/workflows/ci.yml) runs on pull requests and merge groups;
+pushes to main do not trigger another run. A manual dispatch runs every regular project by default.
 Its optional `projects` input accepts comma-separated Cargo/npm workspace names,
 for example `future-host,future-tui,future-cli`. It selects exactly those projects
 using the existing runner groups; consumers are not added. Use `android` or `ios`
 for native jobs (selecting `@future-os/mobile` alone runs the JS checks).
-Unknown names fail planning. PRs, merge groups and main pushes always use automatic
+Unknown names fail planning. PRs and merge groups always use automatic
 change/dependency detection, including deletions and rename sources; manual
 selection never restricts those events.
 
@@ -223,9 +223,10 @@ host credential persistence, Store, files and shutdown integration stay in Host.
 Desktop Clippy also checks the combined CLI/GUI feature resolution.
 Remote client/server Clippy covers `test-support`. Linux Host tests use an
 isolated broker. Other native platforms run the Host crate's own suite.
-Core groups share one cache per OS; the main CLI test job is its sole writer.
-Desktop has a separate GUI cache written by main Desktop test jobs. PR/check/Misc
-jobs do not write large private Rust cache copies.
+Core groups share one cache per OS; the CLI test job can write it when CI is
+manually dispatched on main. Desktop has a separate GUI cache written by Desktop
+test jobs in that dispatch. PR/check/Misc jobs do not write large private Rust
+cache copies. Dispatch CI on main when shared caches need refreshing.
 
 ## Specialty validation
 
