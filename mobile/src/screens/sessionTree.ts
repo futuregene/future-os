@@ -231,6 +231,188 @@ export function groupMergedRows(
  * indistinguishable from a conversation of its own, with no way to fold a
  * conversation that had thirty of them.
  */
+/**
+ * The archived view's rows, as one flat list of two sections.
+ *
+ * Deliberately not a tree: an archived workspace and an archived conversation are
+ * two shelves, and the desktop's archived view draws them that way — a workspace
+ * heading with its conversations under it, then the shelved conversations that own
+ * no archived workspace. Filing them back into the normal workspace tree would
+ * make "archived" look like a status of the tree rather than a place the reader
+ * goes to.
+ *
+ * The rows come from the same catalogue the default pages read (the host keeps
+ * archived rows in it), narrowed by the caller to the archived half.
+ */
+export function archivedRows(
+  sessions: RemoteSession[],
+  workspaces: RemoteWorkspace[],
+  onThisMachine: (session: RemoteSession) => boolean,
+  /**
+   * The fold set, shared with the default pages' workspace headings.
+   *
+   * One workspace folds the same whichever shelf it is sitting on: a reader who
+   * closed "future-os" in the active list does not find it open again after
+   * following the archive entry.
+   */
+  collapsed: ReadonlySet<string> = new Set(),
+): CatalogRow[] {
+  const rows: CatalogRow[] = [];
+  const archivedWorkspaces = workspaces.filter(workspace => workspace.archived === true);
+  const byWorkspace = new Map<string, RemoteSession[]>();
+  const loose: RemoteSession[] = [];
+  for (const session of sessions) {
+    if (!onThisMachine(session)) continue;
+    // A conversation is archived with its workspace even when its own thread is
+    // still active; the host marks the row, so this is one comparison.
+    if (session.archived !== true) continue;
+    const workspaceId = session.mode === "workspace" ? session.workspaceId ?? "" : "";
+    const shelved = archivedWorkspaces.find(workspace => workspace.id === workspaceId);
+    if (shelved) {
+      const list = byWorkspace.get(shelved.id) ?? [];
+      list.push(session);
+      byWorkspace.set(shelved.id, list);
+    }
+    else {
+      loose.push(session);
+    }
+  }
+  for (const workspace of archivedWorkspaces) {
+    const children = byWorkspace.get(workspace.id) ?? [];
+    rows.push({
+      kind: "workspace",
+      key: `archived-workspace:${workspace.id}`,
+      workspace,
+      workspaceId: workspace.id,
+      count: children.length,
+    });
+    // A folded shelved workspace keeps its heading and its count, exactly as a
+    // folded group does on the active pages.
+    if (collapsed.has(workspace.id)) continue;
+    for (const session of children) {
+      rows.push({
+        kind: "session",
+        key: session.sessionId,
+        session,
+        depth: 1,
+        hasChildren: false,
+        foldId: session.sessionId,
+      });
+    }
+  }
+  for (const session of loose) {
+    rows.push({
+      kind: "session",
+      key: session.sessionId,
+      session,
+      depth: 0,
+      hasChildren: false,
+      foldId: session.sessionId,
+    });
+  }
+  return rows;
+}
+
+/**
+ * The archived rows, narrowed to a search query.
+ *
+ * A shelved workspace survives on a match of its own name (then keeps all its
+ * conversations, since the reader asked for the shelf) or because some of its
+ * conversations match; a loose conversation is judged on its own name. Folded
+ * shelves are already open by the time this runs — the caller drops the fold set
+ * while searching — because a match hidden inside a closed group is a match the
+ * reader cannot see.
+ */
+export function filterArchivedRows(rows: CatalogRow[], query: string): CatalogRow[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return rows;
+  const matches = (title: string | undefined) =>
+    (title ?? "").toLowerCase().includes(needle);
+  const out: CatalogRow[] = [];
+  const loose: Extract<CatalogRow, { kind: "session" }>[] = [];
+  let index = 0;
+  while (index < rows.length) {
+    const head = rows[index];
+    if (!head) break;
+    if (head.kind === "session") {
+      // A depth-0 row belongs to no shelf: it is one of the loose ones, and is
+      // judged on its own name below.
+      if (head.depth === 0) loose.push(head);
+      index += 1;
+      continue;
+    }
+    // A section caption belongs to the recency page, never to this shelf.
+    if (head.kind !== "workspace") {
+      index += 1;
+      continue;
+    }
+    // The shelf's own conversations are the depth-1 rows after it, up to the
+    // next heading — exactly the block `archivedRows` put there.
+    const children: Extract<CatalogRow, { kind: "session" }>[] = [];
+    let cursor = index + 1;
+    for (; cursor < rows.length; cursor += 1) {
+      const child = rows[cursor];
+      if (!child || child.kind !== "session" || child.depth === 0) break;
+      children.push(child);
+    }
+    index = cursor;
+    const kept = matches(head.workspace.name)
+      ? children
+      : children.filter(child => matches(child.session.title));
+    // A shelf with no conversation left is not drawn: a heading over nothing
+    // reads as a shelf that was emptied, which is a different statement from
+    // "nothing here matches".
+    if (kept.length > 0) out.push(head, ...kept);
+  }
+  for (const row of loose) {
+    if (matches(row.session.title)) out.push(row);
+  }
+  return out;
+}
+
+/**
+ * The archived view's window: at most `limit` conversations, whole shelves.
+ *
+ * Paged by conversations rather than by rows because a shelf's heading is not
+ * something the reader is reading — it is what the conversations under it are
+ * filed under — and a window that cut between a heading and its own contents
+ * would show a shelf holding nothing. So a block (a heading and its
+ * conversations, or one loose conversation) is either entirely in or entirely
+ * out. The first block is always drawn, however large: a page that showed
+ * nothing would leave the reader no footer to open.
+ */
+export function pageArchivedRows(
+  rows: CatalogRow[],
+  limit: number,
+): { rows: CatalogRow[]; more: number } {
+  let shown = 0;
+  let cut = 0;
+  let index = 0;
+  while (index < rows.length) {
+    const head = rows[index];
+    if (!head) break;
+    let end = index + 1;
+    let size = head.kind === "session" ? 1 : 0;
+    for (; end < rows.length; end += 1) {
+      const child = rows[end];
+      if (!child || child.kind !== "session" || child.depth === 0) break;
+      size += 1;
+    }
+    // A shelf holding no conversations is passed over rather than drawn as an
+    // empty heading; it has nothing to page.
+    if (size === 0 && head.kind === "workspace") {
+      index = end;
+      continue;
+    }
+    if (shown > 0 && shown + size > limit) break;
+    shown += size;
+    cut = end;
+    index = end;
+  }
+  const more = rows.slice(cut).filter(row => row.kind === "session").length;
+  return { rows: rows.slice(0, cut), more };
+}
+
 export function mergedRows(
   rows: readonly MergedSessionRow[],
   query: string,
