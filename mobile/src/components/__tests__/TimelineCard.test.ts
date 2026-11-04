@@ -515,6 +515,15 @@ test("a settled reply's unfinished call reads as interrupted, not running", () =
   expect(hasText("chat.runningCommand")).toBe(false);
 });
 
+test("a call the projection reports as interrupted reads as interrupted while the reply still streams", () => {
+  // The projection knows this one stopped without reporting (a later call
+  // reported, or the run ended), so the row must not wait for the whole reply to
+  // settle before it says so.
+  render(reply({ segments: [tool("c1", { complete: true, status: "interrupted" })] }));
+  expect(hasText("chat.toolInterrupted")).toBe(true);
+  expect(hasText("chat.runCompleted")).toBe(false);
+});
+
 test("a streaming reply's unfinished call is the one that is running", () => {
   render(reply({ streaming: true, segments: [tool("c1", { complete: false, status: "running" })] }));
   expect(hasText("chat.runningCommand")).toBe(true);

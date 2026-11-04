@@ -100,6 +100,11 @@ describe("entriesToTurns — exchanges", () => {
           toolCall("e3", "edit", { path: "/repo/b.md" }),
         ],
       }),
+      // Only calls that reported are completed, and only completed calls fold
+      // into a burst — so every call here carries its result.
+      ...["s1", "s2", "s3", "e1", "e2", "e3"].map((id) =>
+        entry(`${id}r`, "tool", { blocks: [{ kind: "tool_result", toolCallId: id }] }),
+      ),
     ]);
 
     const activity = (turn.assistant?.segments ?? []).filter((segment) => segment.kind === "activity");
@@ -121,6 +126,7 @@ describe("entriesToTurns — exchanges", () => {
         ],
       }),
       entry("a2", "assistant", { blocks: [{ kind: "text", text: "   " }, textBlock("done")] }),
+      entry("e1r", "tool", { blocks: [{ isError: false, kind: "tool_result", toolCallId: "e1" }] }),
       entry("e2r", "tool", { blocks: [{ isError: true, kind: "tool_result", toolCallId: "e2" }] }),
     ]);
 
@@ -252,12 +258,37 @@ describe("entriesToTurns — attachments and entry text", () => {
       entry("a1", "assistant", { blocks: [{ arguments: { path: "a.md" }, kind: "tool_call" }, textBlock("done")] }),
     ]);
     // An unnamed tool is treated as a shell command and the segment id stands in
-    // for the missing tool-call id.
+    // for the missing tool-call id. Nothing reported for it, so it is not
+    // completed — it is still the row that started.
     expect(turn.assistant?.segments?.[0]).toEqual({
       id: "seg_a1_0",
-      item: { detail: undefined, id: "seg_a1_0", kind: "shell", status: "completed", target: undefined },
+      item: { detail: undefined, id: "seg_a1_0", kind: "shell", status: "running", target: undefined },
       kind: "activity",
     });
+  });
+
+  it("reports a call that never got a result as interrupted once its run is over", () => {
+    const turn = turnOf([
+      entry("u1", "user", { blocks: [textBlock("go")], runId: "r1" }),
+      entry("a1", "assistant", {
+        blocks: [toolCall("t1", "shell", { command: "sleep 99" }), textBlock("gave up on it")],
+        runId: "r1",
+      }),
+      entry("a2", "assistant", { blocks: [], run: { status: "completed" }, runId: "r1" }),
+    ]);
+    // Nothing reported for t1, so the row is neither running (the turn is over)
+    // nor completed (nothing said it finished): it is what it is — interrupted.
+    expect(turn.assistant?.segments?.[0]).toMatchObject({
+      item: { id: "t1", kind: "shell", status: "interrupted" },
+    });
+  });
+
+  it("keeps a call that has not reported running while its run is still going", () => {
+    const turn = turnOf([
+      entry("u1", "user", { blocks: [textBlock("go")], runId: "r1" }),
+      entry("a1", "assistant", { blocks: [toolCall("t1", "shell", { command: "sleep 99" })], runId: "r1" }),
+    ]);
+    expect(turn.assistant?.segments?.[0]).toMatchObject({ item: { status: "running" } });
   });
 
   it("uses only the first text block of a user entry but all of an assistant's", () => {

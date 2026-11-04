@@ -27,6 +27,7 @@
     "runCompleted": "Ran a command",
     "writeCompleted": "Wrote a file",
     "editCompleted": "Edited a file",
+    "interrupted": "Interrupted",
     "failed": {
       "shell": "Command failed",
       "edit": "Edit failed",

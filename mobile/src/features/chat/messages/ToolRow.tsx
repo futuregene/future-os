@@ -83,11 +83,15 @@ function StandardToolRow({
       .catch(() => undefined)
       .finally(() => setFetching(false));
   };
+  // A call that started and never reported is neither running, nor completed,
+  // nor failed. The projection says so when it knows (the run moved on without
+  // a result for it); failing that, the reply being over is the evidence — a
+  // settled reply's unfinished call was interrupted.
+  const interrupted = tool.status === "interrupted"
+    || (tool.status === "running" && !replyStreaming);
   const label = failed
     ? failedToolLabel(t, kind)
-    : tool.status === "running" && !replyStreaming
-      // The reply is over and this call never reported: it was cut off with the
-      // run, so it is neither "running" nor "completed"/"failed".
+    : interrupted
       ? t("chat.toolInterrupted")
       : tool.count != null && tool.count > 1
       ? t("chat.stepSummary", {

@@ -53,3 +53,36 @@ describe("folding a settled reply onto its final answer", () => {
     expect(result.process).toHaveLength(1);
   });
 });
+
+describe("folding work that did not report back", () => {
+  const completed = (id: string): TimelineSegment => ({
+    id,
+    kind: "tool",
+    tool: { name: "read", complete: true, status: "completed" },
+  });
+  const running = (id: string): TimelineSegment => ({
+    id,
+    kind: "tool",
+    tool: { name: "shell", complete: false, status: "running" },
+  });
+  const interrupted = (id: string): TimelineSegment => ({
+    id,
+    kind: "tool",
+    tool: { name: "shell", complete: true, status: "interrupted" },
+  });
+  const blocks = (segments: TimelineSegment[]) =>
+    buildReplyBlocks(segments).map(block =>
+      block.kind === "steps" ? `steps:${block.segments.map(segment => segment.id).join(",")}` : block.segment.id);
+
+  test("a call still running keeps its own row", () => {
+    expect(blocks([completed("a"), running("b"), completed("c"), completed("d")]))
+      .toEqual(["a", "b", "steps:c,d"]);
+  });
+
+  test("an interrupted call keeps its own row instead of joining a summary", () => {
+    // A folded run is summarised as work that ran ("Ran 3 commands"), which is
+    // exactly the claim an interrupted call cannot back up.
+    expect(blocks([completed("a"), completed("b"), interrupted("c"), completed("d")]))
+      .toEqual(["steps:a,b", "c", "d"]);
+  });
+});

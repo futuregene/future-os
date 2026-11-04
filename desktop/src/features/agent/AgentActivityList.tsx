@@ -34,7 +34,7 @@ interface AgentActivityListProps {
 }
 
 export function AgentActivityList({ items, resolveTarget, workspacePath, runId }: AgentActivityListProps) {
-  const visibleItems = items?.filter(item => item.status === "running" || item.status === "completed" || item.status === "failed") ?? [];
+  const visibleItems = items?.filter(item => item.status === "running" || item.status === "completed" || item.status === "failed" || item.status === "interrupted") ?? [];
   if (visibleItems.length === 0)
     return null;
 
@@ -361,6 +361,13 @@ function labelForActivity(item: AgentActivityItem) {
   const count = item.count ?? 0;
   if (item.status === "failed")
     return failedLabel(item.kind);
+
+  // A call that started and never reported: the run ended (or a later call did,
+  // which proves this one had stopped) without a result for it. Not "Running…",
+  // which is what the row said for the rest of the turn, and not the past-tense
+  // label below, which would claim work it never finished.
+  if (item.status === "interrupted")
+    return i18n.t("agent:activity.interrupted");
 
   // Collapsed bursts only ever group completed calls, so group labels are
   // always past tense and self-contained ("Edited 3 files") — a shared

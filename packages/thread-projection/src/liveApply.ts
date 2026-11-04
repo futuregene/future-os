@@ -268,6 +268,14 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
           slot.error = "compaction interrupted before completion";
         }
       }
+      // The run is over, so no call can still be working: one left without a
+      // result was cut off with the run. Left "running" it kept the row pulsing
+      // under an answer that had already been written.
+      for (const [id, activity] of toolActivities) {
+        if (activity.status === "running")
+          toolActivities.set(id, { ...activity, status: "interrupted" });
+      }
+      activeToolCallId = null;
       if (isRecord(payload)) {
         if (payload.reason === "incomplete")
           truncated = true;
@@ -443,8 +451,18 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
       const tool = toolFromPayload(payload, event.sequence, event.runId);
       if (tool) {
         activeToolCallId = tool.id;
+        const started = toolActivities.get(tool.id);
+        // The same call's start can arrive twice — a replayed window, a realigned
+        // event log — and its row keeps the slot it was given the first time. A
+        // call that already reported therefore keeps that report: spreading a
+        // fresh start over it would put a settled call back to "running" in the
+        // middle of work that came after it, which the row can never leave again.
+        if (started && started.status !== "running") {
+          activeToolCallId = null;
+          return;
+        }
         toolActivities.set(tool.id, {
-          ...toolActivities.get(tool.id),
+          ...started,
           ...tool,
           status: "running",
         });
@@ -508,11 +526,19 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
           return;
         if (activeToolCallId === toolId)
           activeToolCallId = null;
-        toolActivities.set(toolId, {
-          ...existing,
-          shellResult: shellResult(isRecord(payload) ? payload.shell_result : undefined),
-          status: hasToolError(payload, existing.detail) ? "failed" : "completed",
-        });
+        // A result for a call that already reported is a replay: keep the
+        // report it has rather than flipping a failed call to completed.
+        if (existing.status === "running")
+          toolActivities.set(toolId, {
+            ...existing,
+            shellResult: shellResult(isRecord(payload) ? payload.shell_result : undefined),
+            status: hasToolError(payload, existing.detail) ? "failed" : "completed",
+          });
+        // Only an end that names the call proves the calls before it stopped; a
+        // result resolved by "latest running of this kind" says nothing about
+        // which one it belonged to, so it settles nothing but its own row.
+        if (explicitId)
+          settleEarlierRunning(toolActivities, existing.order);
         sawVisibleWork = true;
         return;
       }
@@ -524,7 +550,11 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
         ...tool,
         id: toolId,
         shellResult: shellResult(isRecord(payload) ? payload.shell_result : undefined),
-        status: hasToolError(payload, existing?.detail ?? tool.detail) ? "failed" : "completed",
+        // A call that already reported keeps that report: this is a replay of
+        // its end, and a failed call must not be turned into a completed one.
+        status: existing && existing.status !== "running"
+          ? existing.status
+          : hasToolError(payload, existing?.detail ?? tool.detail) ? "failed" : "completed",
         order: existing?.order ?? tool.order,
         // The end event carries the result, not the args, so `tool.target` is
         // usually undefined here — keep the target/detail captured while the
@@ -532,6 +562,14 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
         target: tool.target ?? existing?.target,
         detail: tool.detail ?? existing?.detail,
       });
+      // The agent executes a step's calls strictly in order, so a call that
+      // reports by id proves every call started before it has already stopped.
+      // One that is still "running" there lost its own end: settle it now, at the
+      // place it stopped, instead of leaving a live row wedged in the middle of
+      // the work that came after it (see `settleEarlierRunning`). A result only
+      // found by "latest running of this kind" names no call and proves nothing.
+      if (explicitId)
+        settleEarlierRunning(toolActivities, existing?.order ?? tool.order);
       // A result without a preceding start still deserves a slot.
       if (!slottedToolIds.has(toolId)) {
         slots.push({ type: "tool", id: toolId });
@@ -766,6 +804,25 @@ function latestRunningToolId(
     .filter(item => item.kind === kind && item.status === "running")
     .sort((a, b) => b.order - a.order);
   return latestRunning[0]?.id;
+}
+
+/**
+ * Settle the calls that started before a call that just reported and never
+ * reported themselves.
+ *
+ * The agent runs a step's calls strictly in order (`execute_tools_sequential` is
+ * its only mode, because parallel tools would need write-conflict semantics it
+ * does not have), so a call that reported proves everything started before it
+ * has already stopped. One still marked "running" there is not live progress; it
+ * lost its own end — a replayed window, a realigned log, an interrupted call
+ * whose result was never written. It is reported as `interrupted`, which is what
+ * the row is: neither running, nor completed, nor failed.
+ */
+function settleEarlierRunning(toolActivities: Map<string, ToolActivity>, order: number) {
+  for (const [id, activity] of toolActivities) {
+    if (activity.status === "running" && activity.order < order)
+      toolActivities.set(id, { ...activity, status: "interrupted" });
+  }
 }
 
 function collapseToolActivities(tools: ToolActivity[]): AgentActivityItem[] {

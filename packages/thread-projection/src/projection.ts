@@ -280,7 +280,10 @@ function foldAssistantEntry(acc: ExchangeAcc, entry: SessionEntry) {
       const item: AgentActivityItem = {
         id: block.toolCallId || id,
         kind,
-        status: "completed",
+        // Started, not finished: the result entry is what settles this row, and
+        // `turnFromAcc` reports a call that never got one as `interrupted`
+        // rather than this default claiming it ran.
+        status: "running",
         target,
         detail: target,
         // Identity for a row whose target is absent: a lean page omits a shell
@@ -305,16 +308,28 @@ function foldToolEntry(acc: ExchangeAcc | null, entry: SessionEntry) {
     if (index < 0) continue;
     const [item] = acc.pendingTools.splice(index, 1);
     const facts = shellResult(entry.metadata?.shell_result);
-    if (facts && item) {
+    if (!item) continue;
+    if (facts) {
       item.shellResult = facts;
       item.status = facts.is_error ? "failed" : "completed";
-    } else if (block.isError && item) item.status = "failed";
+    } else {
+      // A result without shell facts still reported: it completed unless it
+      // came back as an error. Leaving the row as it started would make every
+      // such call read `interrupted`.
+      item.status = block.isError ? "failed" : "completed";
+    }
   }
 }
 
 /** Finalize one user-led exchange without losing a reply-less terminal run. */
 function turnFromAcc(acc: ExchangeAcc): SessionTurn | null {
   if (!acc.userMessage) return null;
+  // A call that never reported cannot claim to have run. Its exchange's terminal
+  // is what decides: once the run is over the call was cut off with it
+  // (`interrupted`); while the run is still going it is still running and the
+  // live lane is what shows it.
+  for (const item of acc.pendingTools)
+    item.status = acc.outcome ? "interrupted" : "running";
   const textSegments = acc.segments.filter((s) => s.kind === "text") as {
     kind: "text";
     id: string;
