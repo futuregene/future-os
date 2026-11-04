@@ -66,6 +66,7 @@ function ComposerDockView({
   onQueueUpdate,
   onQueueRemove,
   onQueueRelease,
+  archived = false,
 }: {
   message: string;
   setMessage: Dispatch<SetStateAction<string>>;
@@ -113,6 +114,14 @@ function ComposerDockView({
    */
   queueItems?: readonly SendQueuePanelItem[];
   /**
+   * This conversation is archived (read-only).
+   *
+   * The desktop refuses a prompt into an archived session, so the phone does not
+   * offer one: the editor and its controls lock, and a banner says where to undo
+   * it. Display-only, matching the desktop's read-only detail.
+   */
+  archived?: boolean;
+  /**
    * One sentence about a row that left the queue without running.
    *
    * Drawn outside the panel because it matters most when the panel is empty: the
@@ -142,9 +151,9 @@ function ComposerDockView({
   // acknowledgement cannot clear edits.
   // The recommendation wait locks drafting too (see `skillEvaluating`): the
   // message that goes out must be the one the recommender was asked about.
-  const editable = !remote.busy && !skillEvaluating && !skillInstalling && !draftRestoring;
+  const editable = !remote.busy && !skillEvaluating && !skillInstalling && !draftRestoring && !archived;
   const compacting = compactionPending || remote.compacting;
-  const canSend = !skillInstalling && !draftRestoring && !skillEvaluating && !compacting && !remote.busy && remote.desktopOnline &&
+  const canSend = !archived && !skillInstalling && !draftRestoring && !skillEvaluating && !compacting && !remote.busy && remote.desktopOnline &&
     (!!message.trim() || attachments.length > 0);
   // A run in flight rejects compaction, so the tool stays hidden rather than
   // offering an action the Agent will refuse (desktop parity).
@@ -270,6 +279,11 @@ function ComposerDockView({
           onPress={scrollToLatest}
           style={styles.backToLatest}
         />
+      )}
+      {archived && (
+        <Text style={styles.archivedBanner} testID="composer-archived-banner">
+          {t("chat.archivedReadOnly")}
+        </Text>
       )}
       {!remote.draft &&
         remote.desktopOnline &&

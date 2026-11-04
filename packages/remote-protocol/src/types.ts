@@ -23,6 +23,17 @@ export interface RemoteSession {
   parentSessionId?: string | null;
   /** Pinned to the top of the session list (desktop `threads.pinned`). */
   pinned?: boolean;
+  /**
+   * Shelved: the conversation (or the workspace holding it) is archived, so the
+   * desktop's own lists hide it.
+   *
+   * Optional by contract: a desktop older than the field omits it, and a client
+   * that does not read it lists the conversation as active — which is what such
+   * a desktop still did. The desktop's archived rows stay in the catalogue
+   * (rather than being filtered out) so a phone can show them in an archived
+   * view without a second round trip.
+   */
+  archived?: boolean;
   streaming: boolean;
   status?: string;
   /**
@@ -60,6 +71,11 @@ export interface RemoteWorkspace {
   description?: string;
   /** Pinned to the top of the workspace list (desktop `workspaces.pinned`). */
   pinned?: boolean;
+  /**
+   * Shelved: the workspace is archived, so the desktop hides it and every
+   * conversation inside it. Optional by contract, like `RemoteSession.archived`.
+   */
+  archived?: boolean;
 }
 
 export interface PresenceSession {
