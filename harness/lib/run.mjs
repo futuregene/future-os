@@ -207,6 +207,8 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
         }
         else if (action === "eval") {
           entry.value = await page.evaluate(step.eval);
+          if (step.as && entry.value !== undefined)
+            variables[step.as] = entry.value;
         }
         else if (action === "assert") {
           const spec = typeof step.assert === "string" ? { expr: step.assert } : step.assert;
