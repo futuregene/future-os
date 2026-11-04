@@ -32,7 +32,40 @@ export function chromePath() {
   return found;
 }
 
-/** Element matching, ranked — same rules as `scripts/screenshots/cdp.mjs`. */
+/** Mobile transcript: react-native-web flips an inverted list twice; a refresh
+ * control adds a third flip, so the transcript reads upside down. Neutralize the
+ * outer wrapper (same rule as the screenshot harness). */
+const UNFLIP_INVERTED_LIST = `
+(() => {
+  const MARK = 'data-harness-unflip';
+  const verticalMirror = (el) => {
+    const parts = getComputedStyle(el).transform.match(/^matrix\\(([^)]+)\\)$/);
+    if (!parts) return false;
+    const [a, b, c, d, e, f] = parts[1].split(',').map(Number);
+    return a === 1 && b === 0 && c === 0 && d === -1 && e === 0 && f === 0;
+  };
+  const scrolls = (el) => {
+    const overflow = getComputedStyle(el).overflowY;
+    return overflow === 'auto' || overflow === 'scroll';
+  };
+  const extraInversion = (el) => {
+    if (!verticalMirror(el)) return false;
+    const children = [...el.children];
+    return children.length === 1 && verticalMirror(children[0]) && scrolls(children[0]);
+  };
+  const sweep = () => {
+    for (const el of document.querySelectorAll('div')) {
+      if (!extraInversion(el)) continue;
+      el.setAttribute(MARK, '1');
+      el.style.transform = 'none';
+    }
+  };
+  new MutationObserver(sweep).observe(document, {
+    childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style'],
+  });
+  sweep();
+})()`;
+
 const MATCH_FN = `
 function __harnessMatch(wanted, root) {
   const INTERACTIVE = 'button,[role=button],[role=menuitem],[role=tab],[role=switch],[role=checkbox],a[href],input,textarea';
@@ -140,6 +173,8 @@ export class CdpPage {
     this.exceptions = [];
     this.networkFailures = [];
     this.networkRequests = new Map();
+    this.networkEntries = [];
+    this.networkBytes = 0;
     this.onEvent = null;
   }
 
@@ -210,6 +245,8 @@ export class CdpPage {
     });
     if (touch)
       await page.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+    if (mobile)
+      await page.send("Page.addScriptToEvaluateOnNewDocument", { source: UNFLIP_INVERTED_LIST });
     page.touch = touch;
     page.viewport = { width, height, scale, mobile };
     page.installEventHandlers();
@@ -265,6 +302,14 @@ export class CdpPage {
       if (params.response?.status >= 400) {
         this.networkFailures.push({ ...request, error: `HTTP ${params.response.status}` });
         this.emitObservation({ channel: "network", ...request, error: `HTTP ${params.response.status}` });
+      }
+    });
+    this.on("Network.loadingFinished", (params) => {
+      const bytes = Number(params.encodedDataLength ?? 0);
+      const request = this.networkRequests.get(params.requestId);
+      if (Number.isFinite(bytes)) {
+        this.networkBytes += bytes;
+        this.networkEntries.push({ url: request?.url ?? "", bytes });
       }
     });
     this.on("Network.loadingFailed", (params) => {

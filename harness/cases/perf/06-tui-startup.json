@@ -1,0 +1,18 @@
+{
+  "id": "perf-tui-startup",
+  "surface": "tui",
+  "title": "性能：TUI 启动与帮助面板响应",
+  "area": "perf",
+  "priority": "P1",
+  "tags": ["perf", "tui"],
+  "description": "测量 TUI 从启动到首屏可读的时间，以及按 ? 后画面更新的延迟。",
+  "preconditions": "future 与 demo_agent 已构建。",
+  "expectations": ["启动 < 6s", "帮助面板 < 500ms"],
+  "steps": [
+    { "wait": 1500 },
+    { "assertPerf": { "metric": "startupMs", "max": 6000, "message": "TUI 启动 < 6s" } },
+    { "measure": { "label": "help", "press": "?" } },
+    { "assertPerf": { "metric": "measure", "label": "help", "max": 500, "message": "帮助面板 < 500ms" } },
+    { "shot": "tui-perf" }
+  ]
+}

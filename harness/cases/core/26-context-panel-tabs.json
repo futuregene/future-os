@@ -1,0 +1,84 @@
+{
+  "id": "context-panel-tabs",
+  "title": "上下文面板：文件 / 运行 / 审查三个页签",
+  "area": "context-panel",
+  "priority": "P1",
+  "tags": [
+    "panel",
+    "files",
+    "review"
+  ],
+  "description": "打开会话右侧的上下文面板，依次切到文件、运行、审查，确认每个页签都有内容、面板可关闭。",
+  "preconditions": "应用已启动并打开一个会话。",
+  "expectations": [
+    "面板打开后默认显示文件页",
+    "运行与审查页可切换",
+    "关闭按钮把面板收起"
+  ],
+  "steps": [
+    {
+      "wait": 900
+    },
+    {
+      "click": {
+        "aria": "展开上下文面板"
+      }
+    },
+    {
+      "wait": 800
+    },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes('上下文面板视图')",
+        "message": "面板已打开"
+      }
+    },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes('文件')",
+        "message": "文件页签存在"
+      }
+    },
+    {
+      "click": {
+        "selector": "button",
+        "text": "运行"
+      }
+    },
+    {
+      "wait": 500
+    },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes('运行')",
+        "message": "运行页可切换"
+      }
+    },
+    {
+      "click": {
+        "selector": "button",
+        "text": "审查"
+      }
+    },
+    {
+      "wait": 500
+    },
+    {
+      "shot": "context-panel-review"
+    },
+    {
+      "click": {
+        "aria": "收起上下文面板"
+      }
+    },
+    {
+      "wait": 400
+    },
+    {
+      "assert": {
+        "expr": "!document.body.innerText.includes('上下文面板视图')",
+        "message": "面板已关闭"
+      }
+    }
+  ]
+}

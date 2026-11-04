@@ -14,18 +14,46 @@ pub const DEFAULT_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 pub const DEFAULT_GLOBAL_QUEUE_CAPACITY: usize = 4_096;
 pub const DEFAULT_GLOBAL_QUEUE_BYTES: usize = 512 * 1024 * 1024;
 
-/// How old a queued prompt may get and still start by itself.
+/// How long a queued prompt may wait *with nothing running in front of it* and
+/// still start by itself.
 ///
 /// A queue entry is a message written against a run that was in flight. While
-/// that run is finishing, running it is what the writer asked for. An hour later
-/// it is not: the conversation has moved on, the reader is elsewhere, and the
-/// Agent spending their credits on it is the expensive kind of being wrong. Past
-/// this age a queued prompt is parked as `stale` — still listed, still theirs,
-/// started only when they say so.
+/// that run is finishing, running it is what the writer asked for — however
+/// long the run takes. An hour of *silence* is a different thing: the
+/// conversation has moved on, the reader is elsewhere, and the Agent spending
+/// their credits on it is the expensive kind of being wrong. Past this age,
+/// measured only over time the session spent idle, a queued prompt is parked as
+/// `stale` — still listed, still theirs, started only when they say so.
+///
+/// The distinction is the whole rule (see [`QueueBoundary`]): a message queued
+/// into a 57-minute turn is fresh when that turn ends, because that wait is the
+/// wait it signed up for. A message left behind by a session that stopped
+/// without draining it is not.
 ///
 /// One definition, read by the dequeue path; clients never keep their own copy
 /// of the rule.
 pub const QUEUED_RUN_STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Which boundary is draining the queue, because it decides what "too old" means.
+///
+/// The age of a queued prompt is only evidence of abandonment when nothing was
+/// running in front of it. Measured from acceptance alone it says something
+/// else entirely: a long turn — the normal shape of an Agent working session,
+/// where an hour is unremarkable — ages out everything written into it, so the
+/// messages a reader sent *while the work was going* are exactly the ones that
+/// never run. That is backwards, and it is what the first version of this rule
+/// did: a 57-minute run parked four reports in a row at its own turn boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueBoundary {
+    /// A run just ended and what waited behind it is starting right now. Every
+    /// row's wait was served by that run (or by the stretch of work it belongs
+    /// to), so nothing here is stale: the writer asked for exactly this.
+    AfterRun,
+    /// Nothing was running in front of the queue: a send arriving on an idle
+    /// session, a reader releasing a parked row, recovery after a restart. Age
+    /// now means what the rule intends — it waited while nothing happened.
+    Idle,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScheduledRunRequest {
@@ -705,24 +733,32 @@ impl InMemoryRunQueue {
         cancelled
     }
 
-    /// Park every queued prompt that has waited longer than `stale_after`.
+    /// Park every queued prompt that has waited longer than `stale_after` while
+    /// nothing ran in front of it.
     ///
-    /// Called at the turn boundary, right before something is picked to run:
-    /// that is the only moment a queued prompt would start by itself, so it is
-    /// the only moment the rule has to be applied. Parked prompts keep their
-    /// place in the order the reader sees and their quota, but the dequeue path
-    /// no longer sees them — they move back only through [`Self::release_held`].
+    /// Called at the boundary, right before something is picked to run: that is
+    /// the only moment a queued prompt would start by itself, so it is the only
+    /// moment the rule has to be applied. Parked prompts keep their place in the
+    /// order the reader sees and their quota, but the dequeue path no longer
+    /// sees them — they move back only through [`Self::release_held`].
     ///
-    /// A prompt whose timestamp cannot be read is parked too, as `UnknownAge`.
-    /// The two mistakes do not cost the same: parking wrongly costs the reader
-    /// one press, while letting an unknown-age prompt through spends their money
-    /// on a run written days ago. "I cannot tell how old this is" is therefore a
-    /// reason to ask, not a reason to proceed — and it is loud, because an
-    /// unreadable timestamp is a data problem somebody has to look at.
+    /// `boundary` decides whether the queue has been waiting or working (see
+    /// [`QueueBoundary`]): at a boundary that follows a run, every row's wait
+    /// was served by that run and no age is charged — the length of a turn is
+    /// not evidence that its queue was abandoned. Only a boundary with nothing
+    /// in front of it charges time, which is the silence the rule is about.
+    ///
+    /// A prompt whose timestamp cannot be read is parked either way, as
+    /// `UnknownAge`. The two mistakes do not cost the same: parking wrongly
+    /// costs the reader one press, while letting an unknown-age prompt through
+    /// spends their money on a run written days ago. "I cannot tell how old this
+    /// is" is therefore a reason to ask, not a reason to proceed — and it is
+    /// loud, because an unreadable timestamp is a data problem somebody has to
+    /// look at.
     ///
     /// Returns what was parked now, so the caller can tell clients the queue
     /// changed shape.
-    pub fn park_stale(&self) -> Vec<ParkedRun> {
+    pub fn park_stale(&self, boundary: QueueBoundary) -> Vec<ParkedRun> {
         let now = chrono::Utc::now();
         let mut state = self.state.lock();
         let mut parked = Vec::new();
@@ -730,6 +766,9 @@ impl InMemoryRunQueue {
         let mut held = Vec::new();
         for request in state.queued.drain(..) {
             let reason = match chrono::DateTime::parse_from_rfc3339(&request.accepted_at) {
+                // A row that waited behind live work is not stale, however long
+                // that work took; only an idle boundary charges the wait.
+                Ok(_) if boundary == QueueBoundary::AfterRun => None,
                 Ok(at) => {
                     let age = now.signed_duration_since(at.with_timezone(&chrono::Utc));
                     (age.num_seconds() >= self.stale_after.as_secs() as i64)
@@ -981,48 +1020,52 @@ mod tests {
 
     /// A prompt whose age cannot be read is parked, not let through: the two
     /// mistakes are not equally expensive, and "I cannot tell how old this is"
-    /// is a reason to ask rather than a reason to proceed.
+    /// is a reason to ask rather than a reason to proceed. That holds at either
+    /// boundary — an unreadable timestamp is a data problem, not a wait.
     #[test]
     fn a_prompt_with_no_readable_age_is_parked_rather_than_let_through() {
-        let queue = queue();
-        queue
-            .accept(
-                "request-1",
-                Some("run-unknown"),
-                BusyPolicy::EnqueueCoalescing,
-                serde_json::json!({"message":"age unknown"}),
-            )
-            .unwrap();
-        queue.test_stamp_queued_at("run-unknown", "not a timestamp");
+        for boundary in [QueueBoundary::AfterRun, QueueBoundary::Idle] {
+            let queue = queue();
+            queue
+                .accept(
+                    "request-1",
+                    Some("run-unknown"),
+                    BusyPolicy::EnqueueCoalescing,
+                    serde_json::json!({"message":"age unknown"}),
+                )
+                .unwrap();
+            queue.test_stamp_queued_at("run-unknown", "not a timestamp");
 
-        let parked = queue.park_stale();
-        assert_eq!(
-            parked,
-            vec![ParkedRun {
-                run_id: "run-unknown".to_string(),
-                reason: ParkReason::UnknownAge,
-            }]
-        );
-        assert_eq!(
-            queue.held_reason("run-unknown"),
-            Some(ParkReason::UnknownAge),
-            "the reason travels with the row, so the reader is not told 'long ago'"
-        );
-        // Not startable, still listed, still theirs.
-        assert_eq!(queue.next_startable(), None);
-        assert_eq!(queue.queued().len(), 1);
-        // And releasing it makes it runnable again, with a timestamp now.
-        queue.release_held("run-unknown").expect("release");
-        assert!(!queue.is_held("run-unknown"));
-        assert_eq!(
-            queue.next_startable().map(|run| run.run_id),
-            Some("run-unknown".to_string())
-        );
+            let parked = queue.park_stale(boundary);
+            assert_eq!(
+                parked,
+                vec![ParkedRun {
+                    run_id: "run-unknown".to_string(),
+                    reason: ParkReason::UnknownAge,
+                }],
+                "{boundary:?} parks a row whose age nobody can read"
+            );
+            assert_eq!(
+                queue.held_reason("run-unknown"),
+                Some(ParkReason::UnknownAge),
+                "the reason travels with the row, so the reader is not told 'long ago'"
+            );
+            // Not startable, still listed, still theirs.
+            assert_eq!(queue.next_startable(), None);
+            assert_eq!(queue.queued().len(), 1);
+            // And releasing it makes it runnable again, with a timestamp now.
+            queue.release_held("run-unknown").expect("release");
+            assert!(!queue.is_held("run-unknown"));
+            assert_eq!(
+                queue.next_startable().map(|run| run.run_id),
+                Some("run-unknown".to_string())
+            );
+        }
     }
 
-    /// A prompt that waited past the window stops being automatic: it keeps its
-    /// place in the list the reader sees, and the dequeue path no longer reaches
-    /// it until someone releases it.
+    /// A prompt that waited past the window with nothing running in front of it
+    /// stops being automatic: it keeps its place in the list the reader sees, and
+    /// the dequeue path no longer reaches it until someone releases it.
     #[test]
     fn a_prompt_past_the_window_is_parked_but_keeps_its_place() {
         use std::time::Duration;
@@ -1047,7 +1090,7 @@ mod tests {
         queue.test_backdate("run-old", Duration::from_secs(3_600));
 
         assert_eq!(
-            queue.park_stale(),
+            queue.park_stale(QueueBoundary::Idle),
             vec![ParkedRun {
                 run_id: "run-old".to_string(),
                 reason: ParkReason::TooOld,
@@ -1075,6 +1118,49 @@ mod tests {
             Some("run-old".to_string())
         );
         assert!(!queue.has_pending() || queue.next_startable().is_some());
+    }
+
+    /// The boundary that follows a run charges no age: a message written into a
+    /// long turn was waiting for exactly that turn, and its length is not
+    /// evidence that the reader walked away. Measured on this machine
+    /// (2026-11-05): four child-session reports queued into a 57-minute run were
+    /// parked by that run's own boundary, and nothing ran at all.
+    #[test]
+    fn a_prompt_written_into_a_long_run_runs_when_that_run_ends() {
+        use std::time::Duration;
+
+        let queue = queue();
+        queue
+            .accept(
+                "req-first",
+                Some("run-first"),
+                BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({"message":"first"}),
+            )
+            .unwrap();
+        queue.start_next(1).unwrap();
+        queue
+            .accept(
+                "req-report",
+                Some("run-report"),
+                BusyPolicy::EnqueueCoalescing,
+                serde_json::json!({"message":"a child session reporting back"}),
+            )
+            .unwrap();
+        // It grew old while the turn it was waiting for kept working.
+        queue.test_backdate("run-report", Duration::from_secs(3_600));
+
+        queue.finish_active("run-first").unwrap();
+        assert!(
+            queue.park_stale(QueueBoundary::AfterRun).is_empty(),
+            "a long turn is not the reader walking away"
+        );
+        assert!(!queue.is_held("run-report"));
+        assert_eq!(
+            queue.next_startable().map(|run| run.run_id),
+            Some("run-report".to_string()),
+            "it is what runs next"
+        );
     }
 
     /// Two devices queueing inside the same turn: the boundary must run the
@@ -1149,7 +1235,7 @@ mod tests {
                 serde_json::json!({"message":"hi"}),
             )
             .unwrap();
-        assert!(queue.park_stale().is_empty());
+        assert!(queue.park_stale(QueueBoundary::Idle).is_empty());
         assert!(!queue.is_held("run-1"));
         assert_eq!(
             queue.next_startable().map(|run| run.run_id),
@@ -1173,7 +1259,7 @@ mod tests {
             )
             .unwrap();
         queue.test_backdate("run-old", Duration::from_secs(3_600));
-        queue.park_stale();
+        queue.park_stale(QueueBoundary::Idle);
 
         let cancelled = queue
             .cancel_queued("run-old", QueuedCancellationReason::Cancelled)

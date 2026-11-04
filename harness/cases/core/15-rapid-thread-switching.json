@@ -3,41 +3,74 @@
   "title": "快速连续切换三个会话",
   "area": "conversation",
   "priority": "P2",
-  "tags": ["sequence", "navigation", "race"],
-  "description": "在很短的间隔里依次打开三个真实会话，最后停留在第三个。检查不会串台（主区域显示最后一个标题）、没有未捕获异常，切换后侧栏选中态跟随。",
-  "preconditions": "至少三个可见的短标题会话。",
+  "tags": [
+    "sequence",
+    "navigation",
+    "race"
+  ],
+  "description": "在很短的间隔里依次打开首屏可见的三个会话，最后停留在第三个。检查不会串台、没有未捕获异常；用可见行而不是数据库前 N 行，避免分页/分组变化让用例失效。",
+  "preconditions": "首屏至少有三个会话。",
   "expectations": [
     "最后打开哪个会话，主区域就显示哪个",
     "切换过程中不出现异常或空白",
     "侧边栏选中态与主区域一致"
   ],
   "steps": [
-    { "wait": 900 },
     {
-      "db": {
-        "sql": "SELECT title FROM (SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' AND archived_at IS NULL ORDER BY COALESCE(last_message_at, updated_at) DESC LIMIT 10) WHERE length(title) <= 16 LIMIT 1 OFFSET 0",
-        "as": "a"
+      "wait": 900
+    },
+    {
+      "eval": "window.__rows = [...document.querySelectorAll('[aria-label$=\" 的操作\"]')].map(el => el.getAttribute('aria-label').replace(/ 的操作$/, '')).filter(title => title.length <= 16).slice(0, 3); window.__rows.length",
+      "as": "rowCount"
+    },
+    {
+      "assert": {
+        "expr": "window.__rows.length >= 3",
+        "message": "首屏至少三行会话"
       }
     },
     {
-      "db": {
-        "sql": "SELECT title FROM (SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' AND archived_at IS NULL ORDER BY COALESCE(last_message_at, updated_at) DESC LIMIT 10) WHERE length(title) <= 16 LIMIT 1 OFFSET 1",
-        "as": "b"
+      "eval": "window.__rows[0]",
+      "as": "a"
+    },
+    {
+      "eval": "window.__rows[1]",
+      "as": "b"
+    },
+    {
+      "eval": "window.__rows[2]",
+      "as": "c"
+    },
+    {
+      "click": {
+        "text": "{{a}}"
       }
     },
     {
-      "db": {
-        "sql": "SELECT title FROM (SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' AND archived_at IS NULL ORDER BY COALESCE(last_message_at, updated_at) DESC LIMIT 10) WHERE length(title) <= 16 LIMIT 1 OFFSET 2",
-        "as": "c"
+      "wait": 250
+    },
+    {
+      "click": {
+        "text": "{{b}}"
       }
     },
-    { "click": { "aria": "{{a}}" } },
-    { "wait": 250 },
-    { "click": { "aria": "{{b}}" } },
-    { "wait": 250 },
-    { "click": { "aria": "{{c}}" } },
-    { "waitFor": { "text": "{{c}}" }, "timeout": 5000 },
-    { "wait": 900 },
+    {
+      "wait": 250
+    },
+    {
+      "click": {
+        "text": "{{c}}"
+      }
+    },
+    {
+      "waitFor": {
+        "text": "{{c}}"
+      },
+      "timeout": 5000
+    },
+    {
+      "wait": 900
+    },
     {
       "assert": {
         "expr": "document.querySelector('main')?.innerText.includes('{{c}}')",
@@ -50,6 +83,8 @@
         "message": "侧栏选中态没有停在旧会话（允许无 aria-selected 的实现）"
       }
     },
-    { "shot": "third-thread" }
+    {
+      "shot": "third-thread"
+    }
   ]
 }

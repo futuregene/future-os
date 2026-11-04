@@ -1,0 +1,33 @@
+{
+  "id": "perf-thread-switch",
+  "title": "性能：会话切换延迟与内存增量",
+  "area": "perf",
+  "priority": "P1",
+  "tags": ["perf", "latency", "memory"],
+  "description": "连续切换 5 个会话，测量从点击到下一帧的延迟（两次 requestAnimationFrame），并检查 JS 堆增长。",
+  "preconditions": "首屏至少 5 行会话。",
+  "expectations": [
+    "单次切换 < 800ms",
+    "平均切换 < 400ms",
+    "5 次切换堆增长 < 80MB"
+  ],
+  "steps": [
+    { "wait": 900 },
+    { "eval": "window.__rows = [...document.querySelectorAll('[aria-label$=\" 的操作\"]')].map(el => el.getAttribute('aria-label').replace(/ 的操作$/, '')).filter(t => t.length <= 16).slice(0, 5); window.__rows.length", "as": "rowCount" },
+    { "assert": { "expr": "window.__rows.length >= 5", "message": "至少 5 行" } },
+    { "eval": "window.__rows[0]", "as": "t0" },
+    { "eval": "window.__rows[1]", "as": "t1" },
+    { "eval": "window.__rows[2]", "as": "t2" },
+    { "eval": "window.__rows[3]", "as": "t3" },
+    { "eval": "window.__rows[4]", "as": "t4" },
+    { "measure": { "label": "switch-1", "click": { "text": "{{t0}}" } } },
+    { "measure": { "label": "switch-2", "click": { "text": "{{t1}}" } } },
+    { "measure": { "label": "switch-3", "click": { "text": "{{t2}}" } } },
+    { "measure": { "label": "switch-4", "click": { "text": "{{t3}}" } } },
+    { "measure": { "label": "switch-5", "click": { "text": "{{t4}}" } } },
+    { "assertPerf": { "metric": "measure", "label": "switch", "stat": "max", "max": 800, "message": "单次切换 < 800ms" } },
+    { "assertPerf": { "metric": "measure", "label": "switch", "stat": "avg", "max": 400, "message": "平均切换 < 400ms" } },
+    { "assertPerf": { "metric": "heapGrowth", "max": 80, "message": "堆增长 < 80MB" } },
+    { "shot": "switches" }
+  ]
+}

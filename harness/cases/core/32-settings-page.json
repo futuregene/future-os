@@ -1,0 +1,18 @@
+{
+  "id": "settings-page",
+  "title": "设置页：常用开关可见",
+  "area": "settings",
+  "priority": "P1",
+  "tags": ["settings"],
+  "description": "打开设置页，确认自动升级技能、智能技能推荐等开关渲染出来，页面不是空白。",
+  "preconditions": "应用已启动。",
+  "expectations": ["设置页有开关项", "没有初始化错误"],
+  "steps": [
+    { "wait": 900 },
+    { "click": { "text": "设置" } },
+    { "wait": 900 },
+    { "assert": { "expr": "document.body.innerText.includes('自动升级技能') || document.body.innerText.includes('智能技能推荐')", "message": "设置项可见" } },
+    { "assert": { "expr": "!document.body.innerText.includes('本地存储初始化失败')", "message": "没有初始化错误" } },
+    { "shot": "settings-page" }
+  ]
+}

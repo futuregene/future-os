@@ -1,0 +1,28 @@
+{
+  "id": "paged-conversation-list",
+  "title": "分页会话列表：再显示更多",
+  "area": "conversation-list",
+  "priority": "P1",
+  "tags": ["list", "paging"],
+  "description": "2.0.1 之后会话列表改为分页读取。首屏只显示一部分，点「再显示 N 个」应追加行，而不是替换或卡住。",
+  "preconditions": "真实数据库里有超过首屏数量的会话。",
+  "expectations": [
+    "首屏渲染部分会话",
+    "点击「再显示」后行数增加",
+    "列表不重复、不回到顶部"
+  ],
+  "steps": [
+    { "wait": 900 },
+    { "eval": "window.__rowsBefore = document.querySelectorAll('[aria-label$=\" 的操作\"]').length" },
+    { "assert": { "expr": "window.__rowsBefore > 5", "message": "首屏至少 6 行" } },
+    { "clickText": "再显示" },
+    { "wait": 1200 },
+    {
+      "assert": {
+        "expr": "document.querySelectorAll('[aria-label$=\" 的操作\"]').length > window.__rowsBefore",
+        "message": "点击后行数增加"
+      }
+    },
+    { "shot": "paged-list" }
+  ]
+}

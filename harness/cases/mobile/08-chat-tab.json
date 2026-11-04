@@ -1,0 +1,20 @@
+{
+  "id": "mobile-chat-tab",
+  "surface": "mobile",
+  "title": "手机端对话视图：普通对话分组",
+  "area": "mobile-list",
+  "priority": "P1",
+  "tags": ["mobile", "conversations"],
+  "description": "切到「对话」标签，确认普通对话列表出现。",
+  "preconditions": "移动端 shot 服务可用。",
+  "expectations": ["对话标签可点击", "普通对话出现"],
+  "steps": [
+    { "wait": 1500 },
+    { "click": { "text": "稍后再说" }, "optional": true },
+    { "wait": 400 },
+    { "click": { "text": "对话" } },
+    { "wait": 800 },
+    { "assert": { "expr": "document.body.innerText.includes('解释一下 p 值的常见误用')", "message": "普通对话列表出现" } },
+    { "shot": "mobile-chats" }
+  ]
+}

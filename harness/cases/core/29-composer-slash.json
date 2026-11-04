@@ -1,0 +1,23 @@
+{
+  "id": "composer-slash-menu",
+  "title": "输入框斜杠菜单：/ 打开技能与命令",
+  "area": "composer",
+  "priority": "P1",
+  "tags": ["composer", "skills"],
+  "description": "在新对话输入框输入 /，应打开技能/命令菜单；Esc 关闭后草稿不丢。",
+  "preconditions": "应用已启动。",
+  "expectations": ["/ 打开菜单", "菜单包含技能或命令入口", "Esc 关闭后草稿仍在"],
+  "steps": [
+    { "wait": 800 },
+    { "click": { "aria": "新建对话" } },
+    { "waitFor": { "text": "欢迎使用" }, "timeout": 5000 },
+    { "click": { "selector": "[role=textbox]" } },
+    { "type": "/" },
+    { "wait": 600 },
+    { "assert": { "expr": "document.body.innerText.includes('技能') || document.body.innerText.includes('命令')", "message": "斜杠菜单打开" } },
+    { "shot": "slash-menu" },
+    { "press": "Escape" },
+    { "wait": 400 },
+    { "assert": { "expr": "document.querySelector('[role=textbox]').innerText.includes('/')", "message": "Esc 后草稿仍在" } }
+  ]
+}

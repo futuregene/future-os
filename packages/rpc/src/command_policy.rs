@@ -126,6 +126,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "prune_run_events",
     "refresh_skills",
     "reclaim_run_journals",
+    "release_queued_run",
     "reload_auth",
     "reload_config",
     "request_future_models_refresh",
@@ -158,7 +159,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
 pub fn command_policy(command: &str) -> Option<CommandPolicy> {
     let value = match command {
         "abort" | "abort_retry" | "abort_session" | "approval_decision" | "cancel_queued_run"
-        | "shutdown" => policy(
+        | "release_queued_run" | "shutdown" => policy(
             CONTROL_TIMEOUT,
             RetryPolicy::Never,
             ExecutionKind::Immediate,

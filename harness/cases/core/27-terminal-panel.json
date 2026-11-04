@@ -1,0 +1,20 @@
+{
+  "id": "terminal-panel",
+  "title": "内嵌终端：展开、有输出、收起",
+  "area": "terminal",
+  "priority": "P2",
+  "tags": ["terminal", "panel"],
+  "description": "打开会话底部的内嵌终端，确认有 shell 输出；再收起，确认主区域恢复。",
+  "preconditions": "应用已启动。",
+  "expectations": ["终端面板能展开", "终端里有输出文本", "收起后不遮挡会话"],
+  "steps": [
+    { "wait": 900 },
+    { "click": { "aria": "展开终端（⌘J）" } },
+    { "wait": 900 },
+    { "assert": { "expr": "document.body.innerText.includes('git status') || document.body.innerText.includes('passed') || document.body.innerText.includes('➜')", "message": "终端有 shell 输出" } },
+    { "shot": "terminal-open" },
+    { "press": "Escape" },
+    { "wait": 500 },
+    { "shot": "terminal-closed" }
+  ]
+}

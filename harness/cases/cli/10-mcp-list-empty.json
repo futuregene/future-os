@@ -1,0 +1,20 @@
+{
+  "id": "cli-mcp-list-empty",
+  "surface": "cli",
+  "title": "CLI MCP：未配置服务器时列表为空且给出配置路径",
+  "area": "cli-mcp",
+  "priority": "P2",
+  "tags": ["cli", "mcp"],
+  "description": "2.0.1 之后 CLI 支持 MCP（stdio / Streamable HTTP）。空配置下 mcp list --json 应返回 servers=[] 和该 home 的 mcp.json 路径，而不是报错或回落到用户真实配置。",
+  "preconditions": "隔离 home 内没有 mcp.json。",
+  "expectations": [
+    "退出码 0",
+    "servers 是空数组",
+    "configPath 指向隔离 home"
+  ],
+  "steps": [
+    { "run": ["mcp", "list", "--json"], "expectExit": 0 },
+    { "expectJson": { "path": "servers", "equals": [] } },
+    { "expectJson": { "path": "configPath", "exists": true } }
+  ]
+}

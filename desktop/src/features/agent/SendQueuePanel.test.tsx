@@ -79,6 +79,32 @@ it("takes a message back out of the queue", () => {
   }
 });
 
+it("stops promising the merge once a row is parked", () => {
+  // A parked row never runs when the reply ends — it waits for the person reading
+  // it — so the header that says the queue is merged and sent at the boundary is
+  // simply wrong about it, and leaves the reader wondering why nothing went out.
+  const fresh = renderPanel({ items: [{ content: "will run by itself", id: "a" }] });
+  try {
+    expect(fresh.host.textContent).toContain("Sent as one message when this reply ends");
+  }
+  finally {
+    fresh.cleanup();
+  }
+  const parked = renderPanel({
+    items: [
+      { content: "will run by itself", id: "a" },
+      { content: "held row", id: "b", parked: true },
+    ],
+  });
+  try {
+    expect(parked.host.textContent).not.toContain("Sent as one message when this reply ends");
+    expect(parked.host.textContent).toContain("press “Send this one now”");
+  }
+  finally {
+    parked.cleanup();
+  }
+});
+
 it("offers a retry instead of the hint after a failed automatic send", () => {
   const panel = renderPanel({ failed: true });
   try {

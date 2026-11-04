@@ -996,6 +996,41 @@ test("the queue panel shows what is waiting and its three verbs reach the screen
 });
 
 /**
+ * The header states what will happen to these rows. Rows that run at the turn
+ * boundary are sent as one message when the reply ends; a row the session parked
+ * never will be, so promising the merge there would explain nothing about why the
+ * queue is still sitting there (measured 2026-11-05: four parked rows under a
+ * header saying they would be merged and sent).
+ */
+test("the queue header promises the merge only while nothing is parked", () => {
+  const hint = (tree: ReturnType<typeof mountDock>["tree"]) =>
+    tree.root.findAllByProps({ testID: "send-queue-hint" })[0]!.props.children;
+
+  const fresh = mountDock({
+    message: "",
+    queueItems: [{ content: "held", id: "run_a" }],
+  });
+  try {
+    expect(hint(fresh.tree)).toBe("chat.queue.hint");
+  } finally {
+    fresh.unmount();
+  }
+
+  const parked = mountDock({
+    message: "",
+    queueItems: [
+      { content: "held", id: "run_a" },
+      { content: "", id: "run_b", parked: true },
+    ],
+  });
+  try {
+    expect(hint(parked.tree)).toBe("chat.queue.hintParked");
+  } finally {
+    parked.unmount();
+  }
+});
+
+/**
  * A row can leave the desktop's queue without this screen asking; the sentence
  * about it is drawn by the dock, not the panel, because it matters most once the
  * panel is empty and gone.

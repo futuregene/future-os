@@ -852,8 +852,10 @@ folds into **one** turn (their texts joined in order, one paragraph each, their
 attachments together) at the run boundary, and the row is the session's — the
 same row every other client on that conversation reads from `get_state`'s
 `queuedRuns`. It therefore outlives the window that wrote it (a reload, a
-renderer crash, a second client), and waiting rows longer than ten minutes are
-parked for the reader to start rather than spent automatically. The waiting rows
+renderer crash, a second client), and a row is parked for the reader to start —
+rather than spent automatically — only once it has waited ten minutes with
+nothing running in front of it. A row written into a long turn is not parked when
+that turn ends: the wait it signed up for *was* the turn, however long it ran. The waiting rows
 are listed above the composer, read from the Agent: taking one back cancels it
 (editing it cancels and re-sends the corrected text, since the Agent has no
 update-in-place), and a parked row offers to start now. Interrupting

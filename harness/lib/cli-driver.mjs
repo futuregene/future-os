@@ -167,6 +167,18 @@ export async function runCliCase({ testCase, runDir, bin = cliBin() }) {
         if (!ok)
           throw new Error(`JSON expectation failed: ${JSON.stringify(spec)}\nactual: ${JSON.stringify(actual).slice(0, 1000)}`);
       }
+      else if (action === "assertPerf") {
+        const spec = step.assertPerf;
+        const runs = timeline.filter(item => item.action === "run").map(item => item.ms ?? 0);
+        const value = spec.metric === "maxMs"
+          ? Math.max(0, ...runs)
+          : spec.metric === "durationMs" ? Date.now() - startedAt : null;
+        const ok = value !== null && value <= spec.max;
+        checks.push({ kind: "perf", step: index + 1, message: spec.message ?? `${spec.metric} <= ${spec.max}`, ok, expected: spec.max, actual: value });
+        entry.value = value;
+        if (!ok)
+          throw new Error(`CLI performance expectation failed: ${spec.metric} = ${value}, expected <= ${spec.max}`);
+      }
       else if (action === "db") {
         const spec = typeof step.db === "string" ? { sql: step.db } : step.db;
         const rows = queryDb(spec.sql);
@@ -221,6 +233,11 @@ export async function runCliCase({ testCase, runDir, bin = cliBin() }) {
     server: { commands: [], fallbacks: [], errors: [] },
     metrics: [],
     cli: { bin, home, runs: timeline.filter(entry => entry.action === "run").map(entry => ({ args: entry.args, exit: entry.exit, stderr: entry.stderr })) },
+    perf: {
+      durationMs: Date.now() - startedAt,
+      commands: timeline.filter(entry => entry.action === "run").map(entry => ({ args: entry.args, ms: entry.ms })),
+      maxMs: Math.max(0, ...timeline.filter(entry => entry.action === "run").map(entry => entry.ms ?? 0)),
+    },
     artifacts: {
       dir: caseDir,
       timeline: logPath,

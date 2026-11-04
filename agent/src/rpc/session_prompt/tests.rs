@@ -1344,13 +1344,20 @@ async fn queued_follow_ups_keep_independent_runs() {
     session.abort_run(Some(&started.run_id)).unwrap();
 }
 
+/// A message written into a turn that then runs long is what the queue is for:
+/// when that turn ends, the message is what runs next. Its age is the turn's, so
+/// a 57-minute run must not age out a message written at its first minute.
+///
+/// Measured on this machine (2026-11-05): four child-session reports queued into
+/// a 57-minute parent turn were all parked at that turn's own boundary, so the
+/// conversation went silent with four messages waiting in it.
 #[tokio::test(flavor = "current_thread")]
-async fn a_prompt_that_waited_too_long_is_parked_and_starts_only_when_released() {
+async fn a_prompt_written_into_a_long_turn_runs_when_the_turn_ends() {
     let provider = ScriptedProvider::new(vec![
         Script::Stall(vec![text_event("stalled")]),
-        text_turn("the held question"),
+        text_turn("the report"),
     ]);
-    let fixture = run_fixture(provider, "stale-queued-prompt");
+    let fixture = run_fixture(provider, "long-turn-queued-prompt");
     let mut session = fixture.session;
 
     let first = session.prompt("first", &[], &[], None, None).unwrap();
@@ -1363,11 +1370,11 @@ async fn a_prompt_that_waited_too_long_is_parked_and_starts_only_when_released()
 
     let held = session
         .enqueue_prompt(
-            "written an hour ago",
+            "written in the first minute",
             &[],
             &[],
             None,
-            "req-old",
+            "req-report",
             crate::runtime::BusyPolicy::EnqueueCoalescing,
         )
         .unwrap();
@@ -1375,13 +1382,16 @@ async fn a_prompt_that_waited_too_long_is_parked_and_starts_only_when_released()
         held.accepted_state,
         crate::runtime::RunAcceptedState::Queued
     );
-    // One hour of nobody looking, without waiting an hour.
+    // The turn it waits behind keeps working for an hour, without waiting an
+    // hour here.
     session
         .scheduler
         .test_backdate(&held.run_id, std::time::Duration::from_secs(3_600));
 
-    // The run ahead ends. The boundary is the moment a queued prompt would have
-    // started by itself — and this one must not.
+    // The turn ends: the run is stopped and settles, then the queue is released
+    // for the next start. In a running Agent the scheduler worker does both
+    // (`on_scheduled_run_finished`); here they are driven directly, because the
+    // worker needs a spawned runtime the fixture does not have.
     session.abort_run(Some(&first.run_id)).unwrap();
     for _ in 0..500 {
         if session.runtime.snapshot().is_none() {
@@ -1389,23 +1399,105 @@ async fn a_prompt_that_waited_too_long_is_parked_and_starts_only_when_released()
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    assert!(session.runtime.snapshot().is_none());
+    assert!(session.runtime.snapshot().is_none(), "the turn has ended");
+    if let Some((active, _)) = session.scheduler.active() {
+        session.scheduler.finish_active(&active.run_id).unwrap();
+    }
+
+    // This is the moment a queued prompt starts by itself — the point of the
+    // queue — and an hour of waiting behind the turn must not change it. The
+    // same row at a boundary with nothing in front of it is parked; that is the
+    // idle case, covered below.
+    let started = session
+        .start_next_scheduled_after_run()
+        .expect("the turn boundary starts what waited behind the turn");
+    assert_eq!(started.run_id, held.run_id);
     assert!(
-        session.start_next_scheduled().is_err(),
-        "an aged prompt is not started by a turn boundary"
+        !session.scheduler.is_held(&held.run_id),
+        "the wait was the turn's, not the reader walking away"
     );
+    assert!(
+        session
+            .messages
+            .read()
+            .iter()
+            .any(|m| m.role == "user" && m.text() == "written in the first minute"),
+        "the message written into the turn runs when the turn ends"
+    );
+    if let Some((active, _)) = session.scheduler.active() {
+        session.abort_run(Some(&active.run_id)).unwrap();
+    }
+}
+
+/// A parked row stays parked until the reader says so, and saying so runs it.
+///
+/// Parking happens at a boundary with nothing running in front of the queue
+/// (here: the session stopped with the row still waiting), and a later run
+/// ending does not quietly start it — the question the parking asked is the
+/// reader's to answer.
+#[tokio::test(flavor = "current_thread")]
+async fn a_parked_prompt_starts_only_when_released() {
+    let provider = ScriptedProvider::new(vec![
+        Script::Stall(vec![text_event("stalled")]),
+        text_turn("the held question"),
+    ]);
+    let fixture = run_fixture(provider, "parked-queued-prompt");
+    let mut session = fixture.session;
+
+    let first = session.prompt("first", &[], &[], None, None).unwrap();
+    for _ in 0..200 {
+        if session.runtime.snapshot().is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    let held = session
+        .enqueue_prompt(
+            "left behind when the session stopped",
+            &[],
+            &[],
+            None,
+            "req-left",
+            crate::runtime::BusyPolicy::EnqueueCoalescing,
+        )
+        .unwrap();
+    // One hour of nobody looking, without waiting an hour.
+    session
+        .scheduler
+        .test_backdate(&held.run_id, std::time::Duration::from_secs(3_600));
+    // The idle boundary: nothing is running in front of the queue any more.
+    assert_eq!(
+        session
+            .scheduler
+            .park_stale(crate::runtime::QueueBoundary::Idle)
+            .len(),
+        1,
+        "a row that outlived the work in front of it is parked"
+    );
+    assert!(session.scheduler.is_held(&held.run_id));
+
+    // The run ahead ends. The boundary does not start a parked row, and it does
+    // not take the row's place away either.
+    session.abort_run(Some(&first.run_id)).unwrap();
+    for _ in 0..500 {
+        if session.runtime.snapshot().is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
     assert!(
         session.scheduler.is_held(&held.run_id),
         "it is parked, not dropped"
     );
-    // Still the reader's: listed, and the user's text is not in the transcript
-    // as something that ran.
+    // Still the reader's: listed, and the text is not in the transcript as
+    // something that ran.
     assert_eq!(session.scheduler.queued().len(), 1);
     assert!(!session
         .messages
         .read()
         .iter()
-        .any(|m| m.role == "user" && m.text() == "written an hour ago"));
+        .any(|m| m.role == "user" && m.text() == "left behind when the session stopped"));
 
     // Releasing it is the reader answering the question the parking asked.
     session.release_queued_run(&held.run_id).unwrap();
@@ -1415,7 +1507,7 @@ async fn a_prompt_that_waited_too_long_is_parked_and_starts_only_when_released()
             .messages
             .read()
             .iter()
-            .any(|m| m.role == "user" && m.text() == "written an hour ago")
+            .any(|m| m.role == "user" && m.text() == "left behind when the session stopped")
         {
             break;
         }
@@ -1426,7 +1518,7 @@ async fn a_prompt_that_waited_too_long_is_parked_and_starts_only_when_released()
             .messages
             .read()
             .iter()
-            .any(|m| m.role == "user" && m.text() == "written an hour ago"),
+            .any(|m| m.role == "user" && m.text() == "left behind when the session stopped"),
         "a released prompt runs"
     );
     if let Some((active, _)) = session.scheduler.active() {

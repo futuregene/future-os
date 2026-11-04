@@ -336,3 +336,75 @@ fn every_registered_command_reaches_a_dispatch_arm() {
         );
     }
 }
+
+/// Dispatch completeness, the other direction: an arm the dispatcher has, but
+/// the shared policy registry does not know, can never run.
+///
+/// The registry is checked *above* the match (`handle_command_internal` answers
+/// `unknown command` before dispatch, because a client needs a deadline for
+/// every command it may send), so an arm added without a policy is dead code
+/// that fails at the far end of a round trip. `release_queued_run` lived there
+/// for two days: implemented, wired through the host and both clients, and
+/// answering "unknown command: release_queued_run" the moment a reader pressed
+/// "send this one now" on a parked queued message — the one control that could
+/// take it out of the queue. The reverse sweep above could not see it, because
+/// it starts from the registry.
+///
+/// The names are read off the dispatcher's own source rather than a list kept
+/// here: a list would be one more thing to forget to update. What it reads is
+/// the two shapes the dispatcher is written in — `"name" => …` arms and
+/// `cmd_type == "name"` checks — so a command added some other way (a
+/// `matches!(cmd_type.as_str(), …)` gate) is not covered by this sweep.
+#[test]
+fn every_dispatch_arm_is_a_registered_command() {
+    const SOURCE: &str = include_str!("mod.rs");
+
+    fn quoted_names(text: &str) -> Vec<&str> {
+        let mut names = Vec::new();
+        let mut rest = text;
+        while let Some(start) = rest.find('"') {
+            let after = &rest[start + 1..];
+            let Some(end) = after.find('"') else { break };
+            let name = &after[..end];
+            if !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+            {
+                names.push(name);
+            }
+            rest = &after[end + 1..];
+        }
+        names
+    }
+
+    let mut arms: Vec<&str> = Vec::new();
+    for line in SOURCE.lines() {
+        // `"name" => handler`, or several names before one arrow.
+        if let Some((head, _)) = line.split_once("=>") {
+            if head.trim_start().starts_with('"') {
+                arms.extend(quoted_names(head));
+            }
+        }
+        // `if cmd_type == "name"`.
+        if let Some(at) = line.find("cmd_type == ") {
+            arms.extend(quoted_names(&line[at + "cmd_type == ".len()..]));
+        }
+    }
+    // The sweep must be reading the dispatcher, or it proves nothing — and the
+    // command that was missing is named here, so a refactor that stops matching
+    // the file's shape fails loudly instead of passing empty.
+    assert!(
+        arms.len() >= 60 && arms.contains(&"release_queued_run") && arms.contains(&"prompt"),
+        "the sweep did not read the dispatcher ({} names)",
+        arms.len()
+    );
+
+    for cmd_type in arms {
+        assert!(
+            future_rpc::command_policy::command_policy(cmd_type).is_some(),
+            "{cmd_type} has a dispatch arm but no entry in the shared command \
+             policy, so every client asking for it is refused before dispatch"
+        );
+    }
+}

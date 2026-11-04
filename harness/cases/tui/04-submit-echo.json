@@ -1,0 +1,24 @@
+{
+  "id": "tui-submit-echo",
+  "surface": "tui",
+  "title": "TUI 提交：自己写的行先回显，再进入生成",
+  "area": "tui",
+  "priority": "P1",
+  "tags": ["tui", "compose"],
+  "description": "2.0.1 之后 TUI 在 agent 被调用前就先回显用户提交的行。输入「你好」回车，屏幕上必须先出现这行字，并进入生成状态；不能等 agent 回复后才出现。",
+  "preconditions": "future 与 demo_agent 已构建。",
+  "expectations": [
+    "回车后用户行立即出现在会话里",
+    "界面进入生成状态",
+    "没有把转义字符画进正文"
+  ],
+  "steps": [
+    { "wait": 1500 },
+    { "type": "你好" },
+    { "press": "enter" },
+    { "wait": 700 },
+    { "assertText": "你好" },
+    { "assertText": "生成" },
+    { "shot": "tui-submitted" }
+  ]
+}

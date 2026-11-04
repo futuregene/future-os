@@ -1,0 +1,20 @@
+{
+  "id": "narrow-context-panel",
+  "title": "窄窗口：上下文面板不挤坏会话",
+  "area": "layout",
+  "priority": "P2",
+  "tags": ["layout", "panel", "narrow"],
+  "viewport": { "width": 900, "height": 800, "scale": 2 },
+  "description": "900px 宽窗口下打开上下文面板，确认面板出现而不是把会话挤没；截图供视觉复核。",
+  "preconditions": "应用已启动。",
+  "expectations": ["面板能打开", "会话区域仍有内容", "布局不横向溢出"],
+  "steps": [
+    { "wait": 900 },
+    { "click": { "aria": "展开上下文面板" } },
+    { "wait": 800 },
+    { "assert": { "expr": "document.body.innerText.includes('上下文面板视图')", "message": "窄窗口下面板出现" } },
+    { "assert": { "expr": "document.querySelector('main')?.innerText.trim().length > 10", "message": "会话区域仍有内容" } },
+    { "assert": { "expr": "document.documentElement.scrollWidth <= window.innerWidth + 1", "message": "没有横向溢出" } },
+    { "shot": "narrow-context-panel" }
+  ]
+}

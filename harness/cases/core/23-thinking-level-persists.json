@@ -1,0 +1,38 @@
+{
+  "id": "thinking-level-high-persists",
+  "title": "思考等级：切到 high 并刷新后保持",
+  "area": "model",
+  "priority": "P1",
+  "tags": ["model", "thinking", "reload"],
+  "description": "2.0.1 之后思考等级改成按模型声明的 thinkingLevels 渲染。选择 deepseek-flash 后把等级切到 high，发送并刷新，会话仍应显示 high，而不是回落到模型默认值。",
+  "preconditions": "至少一个支持多思考等级的模型。",
+  "expectations": [
+    "思考强度菜单列出 off/low/medium/high/xhigh/max",
+    "选择 high 后控件立即显示 high",
+    "刷新后同一会话仍显示 high"
+  ],
+  "steps": [
+    { "wait": 800 },
+    { "click": { "aria": "新建对话" } },
+    { "waitFor": { "text": "欢迎使用" }, "timeout": 5000 },
+    { "click": { "selector": "button[title='模型']" } },
+    { "waitFor": { "text": "deepseek-flash" }, "timeout": 5000 },
+    { "click": { "selector": "button", "text": "deepseek-flash" } },
+    { "wait": 400 },
+    { "click": { "aria": "思考强度" } },
+    { "waitFor": { "text": "xhigh" }, "timeout": 3000 },
+    { "click": { "selector": "button", "text": "high" } },
+    { "assert": { "expr": "document.querySelector(\"[aria-label='思考强度']\").innerText.trim().toLowerCase().includes('high')", "message": "控件显示 high" } },
+    { "click": { "selector": "[role=textbox]" } },
+    { "type": "思考等级持久化检查" },
+    { "click": { "aria": "发送" } },
+    { "waitFor": { "text": "思考等级持久化检查" }, "timeout": 8000 },
+    { "db": { "sql": "SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' ORDER BY created_at DESC LIMIT 1", "as": "created" } },
+    { "reload": true },
+    { "waitFor": { "text": "{{created}}" }, "timeout": 10000 },
+    { "click": { "aria": "{{created}}" } },
+    { "wait": 1200 },
+    { "assert": { "expr": "document.querySelector(\"[aria-label='思考强度']\").innerText.trim().toLowerCase().includes('high')", "message": "刷新后仍显示 high" } },
+    { "shot": "thinking-high-after-reload" }
+  ]
+}

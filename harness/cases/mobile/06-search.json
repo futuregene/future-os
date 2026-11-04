@@ -1,0 +1,67 @@
+{
+  "id": "mobile-search",
+  "surface": "mobile",
+  "title": "手机端搜索：输入标题片段并看到结果",
+  "area": "mobile-search",
+  "priority": "P1",
+  "tags": [
+    "mobile",
+    "search"
+  ],
+  "description": "从首页搜索入口输入「整理」，确认目标会话仍在结果里。",
+  "preconditions": "移动端 shot 服务可用。",
+  "expectations": [
+    "搜索框可输入",
+    "匹配会话出现在结果里"
+  ],
+  "steps": [
+    {
+      "wait": 1500
+    },
+    {
+      "click": {
+        "text": "稍后再说"
+      },
+      "optional": true
+    },
+    {
+      "wait": 400
+    },
+    {
+      "click": {
+        "aria": "会话列表操作"
+      }
+    },
+    {
+      "wait": 400
+    },
+    {
+      "click": {
+        "text": "搜索会话"
+      }
+    },
+    {
+      "wait": 500
+    },
+    {
+      "click": {
+        "selector": "input"
+      }
+    },
+    {
+      "type": "整理"
+    },
+    {
+      "wait": 800
+    },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes('整理两篇文献的结论对比表')",
+        "message": "搜索结果包含目标会话"
+      }
+    },
+    {
+      "shot": "mobile-search"
+    }
+  ]
+}

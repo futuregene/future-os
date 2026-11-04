@@ -37,9 +37,13 @@ node harness/cli.mjs run --case cli-workspace-add-list-archive   # CLI
 node harness/cli.mjs run --case tui-help                     # TUI
 node harness/cli.mjs run --case mobile-home-list             # mobile
 node harness/cli.mjs run --case remote-parser-pair           # desktop + mobile
+node harness/cli.mjs run --tag perf                          # latency/CPU/memory/network
 node harness/cli.mjs analyze --run harness/runs/<id> --mode full
 node harness/cli.mjs report  --run harness/runs/<id>
 ```
+
+`COVERAGE.md` is the honest matrix of what the library exercises and what it
+does not; add a row there when adding a case.
 
 `run` starts only the servers the selected cases need: Vite for desktop, Expo
 for mobile, `demo_agent` for TUI, nothing for CLI. Artifacts go to
@@ -174,10 +178,13 @@ extracts from the mp4 — so those controls cannot leak into a finding.
 
 1. **Deterministic** (`--mode heuristic`): failed checks, exceptions, console
    errors, network failures, IPC errors, heap/main-thread growth, slow steps.
-2. **Vision** (`--mode full`): up to three key screenshots per case are read by
-   `future tools call read_image`, with the case's own expectations as the
-   question. This is where "the page is blank", "the text is clipped" or "the
-   dialog is empty" get found without an assertion having encoded them.
+2. **Vision** (`--mode full`): up to three key screenshots per case are read with
+   the case's own expectations as the question. If the analysis model accepts
+   image input (its `models.json` entry lists `image`), the screenshots are
+   attached to that model directly (`future run --image`); otherwise the
+   `read_image` tool is the fallback. This is where "the page is blank", "the
+   text is clipped" or "the dialog is empty" get found without an assertion
+   having encoded them.
 3. **Synthesis** (`--mode full`): `future run --mode json` reads the timeline,
    deterministic signals and vision notes, and returns findings as strict JSON.
 
@@ -222,3 +229,8 @@ with `gh`. Nothing is filed without that explicit flag.
   tasks without an agent; agent-backed commands need a fixture agent.
 - **Video is analyzed as a filmstrip, not as motion.** Six sampled frames catch
   obvious state changes; it is not a temporal model.
+
+- **Desktop send queue is not simulated.** Choosing "加入发送队列" is covered by a
+  TUI case, but the desktop path needs an agent-side queue fixture: the shot mock
+  answers `session_queue` but never enqueues, so a queued row cannot be observed.
+  Do not assert on it until the fixture owns the queue.
