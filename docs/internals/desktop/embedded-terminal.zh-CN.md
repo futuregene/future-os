@@ -78,8 +78,11 @@ socket 上：
 * 来源不是应用自身（或回环 dev server）的请求即使持票也拒绝。来源检查是纵深防御：
   秘密与票据才是真正的门。
 * 监听器每连接只服务一个请求并限制并发连接数；不接受 keep-alive，也不接受流水线。
-* 终端输出永远不进 agent、RPC 桥接、远程控制面、日志或 SQLite。子进程环境是用户
-  自身环境减去应用的私有管道（`FUTURE_AGENT_GRPC_ADDR`）。
+* 终端输出永远不进 agent、RPC 桥接、日志或 SQLite。子进程环境是用户自身环境减去
+  应用的私有管道（`FUTURE_AGENT_GRPC_ADDR`）。
+* 已配对的桌面可以驱动这些 shell，且只在密封的遥控信封内（§[远程](#远程)）。
+  那不是第二条传输通道：同一个注册表、同一套稳定错误码、同一条通往会话缓冲尾巴
+  的路由。
 
 ## 生命周期
 
@@ -192,6 +195,47 @@ shell，以 **ibus-libpinyin** 作为输入法，经 `WebKitWebDriver`——IME 
    删除后必须留下干净的一行（无残留副本、无多余退格）。预编辑必须用终端自己的
    颜色渲染，而不是黑框。
 
+## 远程
+
+已配对的桌面驱动的是本机用户看到的**同一批** shell：同一个注册表、同一个会话
+作用域、同一条拆除规则（删除会话会关闭它的 shell，无论删除来自哪一端）。
+
+| 层 | 位置 |
+| --- | --- |
+| 注册表在控制面眼中的样子 | `host/src/terminal_service.rs`（trait + 安装槽） |
+| 桌面端对它的实现 | `desktop/src-tauri/src/terminal/service.rs` |
+| wire 命令 | `host/src/remote_host/business/terminal.rs` |
+| 能力位 | `future_remote_protocol::TERMINAL_FEATURE`（`terminal_v1`） |
+| 客户端一半 | `desktop/src/features/terminal/remoteTerminal.ts` |
+| 传输接缝 | `desktop/src/features/terminal/transport.ts` |
+
+**是公布，不是假定。** 握手只在安装了注册表的进程里列出 `terminal_v1`
+（`services::set_terminal_available`）。已配对桌面只在公布了该能力的宿主上显示
+面板；没有 PTY 的宿主（`future host`）因此不会给出一个只会回
+`Unsupported command` 的按钮。
+
+**它是分页拉取，不是推流。** 命令走普通控制面通道：`terminal_list` /
+`terminal_create` / `terminal_update` / `terminal_delete` / `terminal_read` /
+`terminal_write`。`terminal_read` 返回客户端已应用游标**之后**的字节以及新游标
+——与回环挂接同一套绝对偏移契约，所以重连的客户端只要差额，并且会在保留尾巴
+覆盖不到时被告知（`start > cursor`）。单页上限 64 KiB，单次写入上限 256 KiB。
+
+**顺序是正确性，不是体验。** 宿主并发派发命令（一条慢命令不能挡住其他），键击
+否则可能乱序抵达 shell。所以客户端**同一时刻只有一个写入在飞**：输入先攒约
+10 ms，发出去，下一批等这一批的确认。这也是为什么没有交错写入需要合并，以及
+下面这条代价为什么成立。
+
+**已配对设备能做什么。** trait 允许的全部：起 shell、往里打字、改尺寸、杀掉它。
+这刻意比 agent 自身的面更宽——prompt 要过审批规则，shell 不过。仍在的门是*
+控制权*：`commands.rs` 在进入 handler 之前就拒绝待命设备的一切业务命令，所以
+只有用户把机器交出去的那台设备能开 shell 或打字。
+
+**代价说清楚。** 输出每页一次往返（有产出时 16 ms 轮询、空闲时 250 ms——客户端
+只在面板打开时轮询），一次键击在 shell 收到前要一次往返，回显再来一次。经中继
+那样就是"看着构建跑"的终端：`make`、`git log`、`tail -f` 好用，200 ms 下
+`vim` 不好用。推流通道（`p.{pair}.term.{id}`，同一套游标契约）是这套设计留出的
+升级位——落点是传输接缝——但要让功能正确并不需要它。
+
 ## 与 opencode 的差异
 
 架构相同；以下是有意为之的偏差，免得未来读者把它们当事故：
@@ -208,6 +252,7 @@ shell，以 **ibus-libpinyin** 作为输入法，经 `WebKitWebDriver`——IME 
 
 * UI 里没有拖拽排序、重命名、shell 选择器（服务端已暴露 `GET /terminal/shells`）。
 * 还没有终端内搜索、链接处理、粘贴确认。
-* 远程（手机遥控）与移动端界面按设计看不到终端。
+* 已配对的**桌面**能看到本机的终端（§[远程](#远程)）；手机遥控界面与移动端应用
+  看不到，而且手机端根本没有终端渲染器。
 * 面板的打开/高度偏好与 tab 视图状态在 `localStorage` 里；清掉存储丢的是*视图*，
   永远不会丢 shell。

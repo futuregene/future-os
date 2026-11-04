@@ -90,9 +90,13 @@ replays). A detached viewer never grows memory without bound.
   and the ticket are the real gates.
 * The listener serves one request per connection and caps concurrent
   connections; it accepts no keep-alive and no pipelining.
-* Terminal output never reaches the agent, the RPC bridge, the remote control
-  plane, logs or SQLite. The child environment is the user's own environment
-  minus the app's private plumbing (`FUTURE_AGENT_GRPC_ADDR`).
+* Terminal output never reaches the agent, the RPC bridge, logs or SQLite. The
+  child environment is the user's own environment minus the app's private
+  plumbing (`FUTURE_AGENT_GRPC_ADDR`).
+* A paired desktop may drive these shells, and only inside the sealed remote
+  envelope (§[Remote](#remote)). Nothing about that path is a second transport:
+  it is the same registry, the same stable error codes, and the same routing to
+  the shell's own buffered tail.
 
 ## Lifecycle
 
@@ -258,6 +262,58 @@ policy relies only on `KeyboardEvent.isComposing`, which every engine sets.
    Shift+3 character and a Caps Lock letter, then switch back to Chinese
    composition and repeat step 8.
 
+## Remote
+
+A paired desktop drives the *same* shells the person at this machine sees:
+one registry, one conversation scope, one teardown rule (deleting a conversation
+closes its shells, wherever the delete came from).
+
+| Layer | Where |
+| --- | --- |
+| The registry, as the control plane sees it | `host/src/terminal_service.rs` (trait + install slot) |
+| The Desktop's implementation of it | `desktop/src-tauri/src/terminal/service.rs` |
+| The wire commands | `host/src/remote_host/business/terminal.rs` |
+| The capability | `future_remote_protocol::TERMINAL_FEATURE` (`terminal_v1`) |
+| The client half | `desktop/src/features/terminal/remoteTerminal.ts` |
+| The transport seam | `desktop/src/features/terminal/transport.ts` |
+
+**Advertised, not assumed.** The handshake lists `terminal_v1` only from a
+process that installed a registry (`services::set_terminal_available`). A paired
+desktop shows the panel only on a host that advertised it, so a host with no PTY
+— `future host` — never presents a button that could only produce
+`Unsupported command`.
+
+**It is a paged pull, not a stream.** Commands travel the ordinary control-plane
+lane: `terminal_list` / `terminal_create` / `terminal_update` / `terminal_delete`
+/ `terminal_read` / `terminal_write`. `terminal_read` returns the bytes *after*
+the cursor the client applied, plus that cursor — the same absolute-offset
+contract the loopback attachment has, so a client that reconnects asks for the
+difference and is told when the retained tail no longer covers it
+(`start > cursor`). A page is capped at 64 KiB and a write at 256 KiB.
+
+**Order is a correctness property, not a nicety.** Commands are dispatched
+concurrently on the host (one slow command must not block the rest), so
+keystrokes could otherwise reach the shell out of order. The client therefore
+keeps **one write in flight at a time**: input is batched for ~10 ms, sent, and
+the next batch waits for the ack. That is why there are no interleaved writes to
+merge — and why the cost below is what it is.
+
+**What a paired device may do.** Anything the trait allows: spawn a shell, type
+into it, resize it, kill it. That is deliberately wider than the agent's own
+surface — a prompt passes through approval rules, a shell does not. The gate
+that stays is *control*: `commands.rs` refuses every business command from a
+standby device before a handler sees it, so only the device the user handed the
+machine to can open or type into a shell.
+
+**Cost, stated plainly.** Output costs one round trip per page (polled at 16 ms
+while a shell is producing and 250 ms while it is idle — the client only polls
+while its panel is open), and a keystroke costs one round trip before the shell
+sees it and another before its echo arrives. On a relay that is a "watch the
+build" terminal: fine for `make`, `git log`, `tail -f`; not `vim` at 200 ms.
+A push lane (`p.{pair}.term.{id}` with the same cursor contract) is the upgrade
+this design leaves room for — the transport seam is where it lands — and it is
+not needed to make the feature correct.
+
 ## Differences from opencode
 
 Same architecture; the deliberate deviations, so a future reader does not treat
@@ -276,6 +332,8 @@ them as accidents:
 * No drag-to-reorder, no rename, no shell picker in the UI (the server already
   exposes `GET /terminal/shells`).
 * No terminal search, no link handling, no paste confirmation yet.
-* Remote (phone-control) and mobile surfaces do not see terminals by design.
+* A paired **desktop** sees this machine's terminals (§[Remote](#remote)); the
+  phone surface and the mobile app do not, and the phone has no terminal
+  renderer at all.
 * The panel's open/height preferences and the tab view state live in
   `localStorage`; a cleared store loses the *view*, never the shell.
