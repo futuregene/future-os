@@ -17,15 +17,15 @@ Legend: ✅ two or more cases · ◐ one smoke case · — not covered.
 | Delete current / non-current / cancel | ✅ | `delete-open-conversation`, `create-chat-and-delete`, `cancel-delete-conversation` |
 | Rename, pin/unpin, archive/restore | ✅ | `rename-conversation`, `pin-and-unpin-conversation`, `pin-then-archive`, `archive-and-review`, `archive-open-conversation` |
 | Workspace create / chat inside / archive | ✅ | `create-workspace`, `workspace-chat`, `archive-workspace-with-open-chat` |
-| Workspace rename / pin / delete / restore | — | next |
-| Batch select, batch archive/delete | — | next |
-| Attachments (file/image), paste, remove | — | next |
+| Workspace rename / pin / delete / restore | ✅ | `workspace-rename`, `workspace-pin-unpin`, `workspace-delete` |
+| Batch select, batch archive/delete | ✅ | `batch-select-delete`, `batch-select-all-cancel` |
+| Attachments (file/image), paste, remove | ◐ | `attachment-add-remove` |
 | Skill `/` and mention `@`/`#` menus | ✅ | `composer-slash-menu`, `composer-mention-menu` |
 | Skill recommendation, guide banner | — | next |
 | Context panel (files/run/review), narrow window | ✅ | `context-panel-tabs`, `narrow-context-panel` |
 | Terminal panel | ✅ | `terminal-panel` |
-| Fold/unfold tool calls, fork, copy, question nav | — | next |
-| Approval card approve/reject | — | next |
+| Fold/unfold tool calls, fork, copy | ✅ | `tool-call-fold-expand`, `fork-conversation`, `copy-message-feedback` |
+| Approval card approve/reject | — | next (fixture answers `list_pending_approval_requests`) |
 | Settings pages (models/skills/tasks/remote) | ✅ smoke | `side-panels-smoke`, `settings-page`, `remote-page` |
 | Settings tabs (general/models/skills/tasks/remote) | ✅ | `settings-tabs`, `settings-page`, `remote-page` |
 | Language / theme persistence across reload | ✅ | `settings-language`, `settings-theme` |
@@ -44,7 +44,9 @@ Legend: ✅ two or more cases · ◐ one smoke case · — not covered.
 | Search | ✅ | `mobile-search` |
 | Manage menu (rename/delete/cancel) | ✅ | `mobile-manage-menu` |
 | Settings, archived view | ✅ | `mobile-settings`, `mobile-archived-view` |
-| Device picker / fleet, task reminders, share intent | — | next |
+| Device picker / fleet | ✅ | `mobile-device-picker` |
+| Chat panels (files, token usage) | ✅ | `mobile-chat-panels` |
+| Task reminders, share intent | — | next |
 | Mobile send queue, attachment download | — | next |
 
 ## TUI
@@ -54,7 +56,7 @@ Legend: ✅ two or more cases · ◐ one smoke case · — not covered.
 | Startup, chat, composer | ✅ | `tui-open-chat` |
 | Help, palette | ✅ | `tui-help`, `tui-palette` |
 | Submit echo, queue while running | ✅ | `tui-submit-echo`, `tui-queue-during-run` |
-| Sidebar panels (sessions/usage/skills/todo), preferences | — | next |
+| Sidebar panels (sessions/workspaces), preferences, tool fold | ✅ | `tui-sidebar-panels`, `tui-preferences`, `tui-tool-fold` |
 | Theme/language, launchpad, workspace picker, stop, fold, search, git/files panels | — | next |
 
 ## CLI

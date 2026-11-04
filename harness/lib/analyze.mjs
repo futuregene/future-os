@@ -444,22 +444,47 @@ async function visionFindings(result, runDir, { limit = 3, native = false, model
 
 /** Ordered evidence for one case: actions first, then the whole recording. */
 async function judgeEvidence(result, runDir, { limit = 8 } = {}) {
-  const images = [];
+  const all = [];
   for (const step of result.steps ?? []) {
     if (!step.shot && !step.failureShot)
       continue;
     const path = step.failureShot ?? step.shot;
-    if (!path || images.some(item => item.path === path))
+    if (!path || all.some(item => item.path === path))
       continue;
-    images.push({ path, label: `第 ${step.index} 步 · ${step.action}${step.note ? ` · ${step.note}` : ""}${step.ok === false ? "（失败现场）" : ""}` });
+    all.push({ path, label: `第 ${step.index} 步 · ${step.action}${step.note ? ` · ${step.note}` : ""}${step.ok === false ? "（失败现场）" : ""}` });
+  }
+  // Keep the final state, always.
+  //
+  // A case can take 20+ screenshots; slicing to the first N dropped the one that
+  // shows how things ended, and the filmstrip alone was too coarse to read a
+  // closing overlay from — the model reported "the picker is still covering the
+  // list" on a case whose last screenshot showed it closed. Sampling now keeps
+  // the first frame, evenly spaced middle frames, and the last one, labelled.
+  let images = all;
+  if (all.length > limit) {
+    const picked = [all[0]];
+    const middle = Math.max(1, limit - 2);
+    for (let i = 1; i <= middle; i++)
+      picked.push(all[Math.round((i * (all.length - 1)) / (middle + 1))]);
+    picked.push(all.at(-1));
+    images = picked.filter((item, index, list) => list.findIndex(other => other.path === item.path) === index);
+    images[images.length - 1] = { ...images.at(-1), label: `最终状态 · ${images.at(-1).label}` };
+  }
+  else if (images.length) {
+    images[images.length - 1] = { ...images.at(-1), label: `最终状态 · ${images.at(-1).label}` };
   }
   const dir = join(runDir, "vision", result.id);
   mkdirSync(dir, { recursive: true });
   const videoPath = result.artifacts?.dir ? join(result.artifacts.dir, "video.mp4") : null;
   const strip = videoPath ? await filmstrip(videoPath, join(dir, "judge-filmstrip.png"), { frames: 12 }) : null;
-  if (strip)
-    images.push({ path: strip, label: "整段操作录像的 12 帧拼图（从左到右、从上到下，按真实时间）" });
-  return images.slice(0, limit + 1);
+  // The filmstrip goes just before the final-state screenshot, so the image the
+  // model reads last is unambiguously "how the run ended".
+  if (strip) {
+    const final = images.at(-1);
+    const head = images.slice(0, -1);
+    images = [...head, { path: strip, label: "整段操作录像的 12 帧拼图（从左到右、从上到下，按真实时间；抽帧可能与最终状态帧不同步，以标有「最终状态」的那张为准）" }, ...(final ? [final] : [])];
+  }
+  return images;
 }
 
 /**
@@ -558,6 +583,10 @@ async function judgeCase(result, runDir, { model = null } = {}) {
         "数字本身要与量级相符（本地首屏、本地命令应是毫秒到一两秒量级，不该以十秒计）",
       ];
 
+  const surfaceNote = result.surface === "mobile" || result.surface === "remote"
+    ? "重要边界：手机/远程界是通过 react-native-web 渲染的，不是真机。Modal / Alert 遮罩层的透明度、系统状态栏与安全区、原生滚动物理都与真机不同，因此「对话框背景半透、底层列表透出、弹层与列表文字重叠」这类现象是 Web 渲染的差，不要把它们判成产品缺陷（可以写成 low 级观察并注明来源）。真正与平台无关的问题（文案错、数据不加和、按钮无响应、内容缺失、层级遮挡、布局错位）照常报。"
+    : null;
+
   const prompt = [
     "你是 FutureOS 的产品验收员，不是测试脚本执行器。",
     "下面有一次真实操作的证据：按时间排列的截图、整段录像的帧拼图，以及运行时日志。",
@@ -570,6 +599,7 @@ async function judgeCase(result, runDir, { model = null } = {}) {
     `用例：${result.title}`,
     `说明：${result.description ?? ""}`,
     `操作时间线：\n${timelineText(result)}`,
+    surfaceNote ? `\n${surfaceNote}` : "",
     "",
     logs.length ? `运行时信号：\n${logs.join("\n")}` : "运行时信号：无错误",
     provenText ? `\n已由确定性断言在真实 DOM 上验证通过的事实（不要把这些当缺陷重复怀疑；如果截图看起来相反，优先认为是截图时机/滚动位置造成的证据不足）：\n${provenText}` : "",
@@ -623,7 +653,8 @@ function buildSynthesisPrompt(result, findings, notes) {
     `说明：${result.description ?? ""}`,
     `前置：${result.preconditions ?? ""}`,
     `期望：\n${(result.expectations ?? []).map(item => `- ${item}`).join("\n")}`,
-    `状态：${result.status}（${result.durationMs}ms）`,
+    `状态：${result.status}（用例总耗时 ${result.durationMs}ms——这是整条用例跑了多久，不是任何单项性能指标）`,
+    perfDigest(result) ? `\n性能断言（实测 / 允许上限 / 基线）：\n${perfDigest(result)}\n` : "",
     "",
     "步骤时间线：",
     stepLines,
@@ -645,6 +676,8 @@ function buildSynthesisPrompt(result, findings, notes) {
     "- 不要仅凭一帧判断某个分组/入口「不存在」：它可能被滚动、折叠或浮层挡住。",
     "- 若截图/录像处于生成中（状态栏有“生成”），代码块或 markdown 的瞬时错位不要报为缺陷，除非稳定后的帧仍然如此。",
     "- 用例本身通过时，不要把「界面看起来没变」直接判成缺陷；说明它为什么没有被断言捕捉到。",
+    "- 引用任何数字（耗时、MB、请求数、金额）必须是上面证据里出现过的原文；拼不准就写「约」或不要引数字。编造一个数字会让整份报告失去可信度。",
+    "- 如果确定性检查带着基线与限值（如 baseline 2065 × 1.25 = 2581），先看“实测/限”再下结论；不要自己重算或估一个值。",
   ].join("\n");
 }
 
