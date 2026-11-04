@@ -683,18 +683,30 @@ describe("runSendPipeline queued behind a running reply", () => {
 
     await runSendPipeline(deps, { content: "is it done yet?", attachments: [] });
 
-    // The run is alive on the Agent: never settled as a failure.
+    // The run is alive on the Agent: never settled as a failure, and nothing left
+    // on screen carries a failure presentation either.
     expect(updateRunStatus).not.toHaveBeenCalled();
-    // Still driven by the re-attach path, so the bubble stays streaming and
-    // carries no failure presentation.
-    const assistant = foldMessages(setMessages).filter(message => message.role === "assistant").pop();
-    expect(assistant?.status).toBe("streaming");
-    expect(assistant?.terminationNotice).toBeUndefined();
-    expect(assistant?.terminationTitle).toBeUndefined();
-    expect(assistant?.runError).toBeUndefined();
-    expect(assistant?.content).toBe("");
-    // Not "thinking" either: waiting for a queue slot is not this run's work.
-    expect(assistant?.thinkingActive).toBe(false);
+    const messages = foldMessages(setMessages);
+    expect(messages.some(message => message.stopped === true)).toBe(false);
+    expect(messages.some(message => message.terminationNotice !== undefined)).toBe(false);
+    expect(messages.some(message => message.runError !== undefined)).toBe(false);
+  });
+
+  it("takes the waiting message back out of the transcript", async () => {
+    // A message the Agent is HOLDING has not been sent: the queue row is where it
+    // waits (the panel above the composer), so the transcript must not also show
+    // it — that drew the question above a reply that did not answer it, plus an
+    // empty assistant bubble ticking a duration for a run that had not begun,
+    // while the panel said the same message was still waiting. The run's own
+    // `user_message` event puts the real bubble in when it starts.
+    vi.mocked(getRun).mockResolvedValue(storedRun());
+    vi.mocked(sendPromptToFutureAgent).mockResolvedValue(queuedReply());
+    const setMessages = vi.fn();
+    const deps = makeDeps(setMessages);
+
+    await runSendPipeline(deps, { content: "is it done yet?", attachments: [] });
+
+    expect(foldMessages(setMessages)).toEqual([]);
   });
 
   it("hands the queued run to the re-attach path without a final render", async () => {
@@ -711,11 +723,26 @@ describe("runSendPipeline queued behind a running reply", () => {
 
     expect(deps.refreshRecentRun).not.toHaveBeenCalled();
     expect(deps.onThreadActivity).toHaveBeenCalledTimes(2);
-    // The optimistic pair is left in place (the run's events are not read for a
-    // final render), so the conversation keeps the message the user sent.
+  });
+
+  it("leaves a superseded view's transcript to whoever owns it now", async () => {
+    // concurrency: the ack lands after a thread switch, so this send no longer
+    // owns the view. The pair it drew belongs to the conversation it left; the
+    // new view's messages are not this send's to edit.
+    vi.mocked(getRun).mockResolvedValue(storedRun());
+    let current = true;
+    vi.mocked(sendPromptToFutureAgent).mockImplementation(async () => {
+      current = false;
+      return queuedReply();
+    });
+    const setMessages = vi.fn();
+    const deps = { ...makeDeps(setMessages), isCurrentSend: () => current };
+
+    await runSendPipeline(deps, { content: "is it done yet?", attachments: [] });
+
+    // Only the initial insertion of the optimistic pair, never the removal.
     const messages = foldMessages(setMessages);
-    expect(messages.filter(message => message.role === "user").map(message => message.content))
-      .toEqual(["is it done yet?"]);
+    expect(messages).toHaveLength(2);
   });
 });
 

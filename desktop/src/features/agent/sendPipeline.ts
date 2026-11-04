@@ -283,16 +283,24 @@ export async function runSendPipeline(
     // the backend keeps its row non-terminal and hands the projection to the
     // session observer once the run starts. So do NOT settle it as a failure
     // (that cancelled the user's real answer and painted "response did not
-    // complete"), and do not tear the view down either — leave the streaming
-    // bubble in place and let the re-attach path paint the run's output when it
-    // starts and reload the persisted reply when it ends.
+    // complete").
     if (isQueuedRunKind(reply.terminationKind)) {
       if (isCurrentSend()) {
-        // Nothing is generating yet — this run waits for its turn behind the one
-        // already executing — so drop the "thinking…" hint the optimistic bubble
-        // started with. The bubble itself stays streaming: re-attach paints this
-        // run's output once it starts and reloads the persisted reply when it ends.
-        patchMessage(setMessages, pendingId, { thinkingActive: false });
+        // Nothing has been sent: the Agent is HOLDING this prompt, and its own
+        // queue row (`session_queue`, drawn above the composer) is where a
+        // message that has not left yet belongs. The optimistic pair was this
+        // view's guess that the prompt went out; the ack is that guess being
+        // answered, so the pair comes back OUT. Left in, the transcript claims
+        // the message was sent — the question above a reply that does not answer
+        // it, and an empty assistant bubble ticking a duration for a run that
+        // has not begun — while the queue says it is still waiting.
+        //
+        // Nothing is lost by taking it out: the row carries the text until the
+        // run starts, the run's own `user_message` event puts the real bubble
+        // (with the Agent's entry id) in at that moment, and re-attach paints
+        // the reply from there.
+        setMessages(current => current.filter(message =>
+          message.id !== optimisticUserId && message.id !== pendingId));
         onThreadActivity();
       }
       return;
