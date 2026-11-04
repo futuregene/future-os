@@ -34,7 +34,11 @@ pub(crate) fn plan(db: &Connection) -> Result<(i64, i64)> {
 /// `history_index_state` for every session touched, so a partially purged session
 /// is rebuilt from its entries rather than read as a gap.
 pub(crate) fn apply(db: &mut Connection, limit: i64) -> Result<(i64, i64)> {
-    let measured: Vec<(String, i64)> = {
+    // The stored session key is bound verbatim: older sessions store text, the
+    // ones the desktop created store raw bytes, and both must reach their rows.
+    // `String` refuses the second kind, which is how this pass once failed 473
+    // times on a real store while reporting nothing.
+    let measured: Vec<(rusqlite::types::Value, i64)> = {
         let mut statement = db.prepare_cached(
             "SELECT session_id,sum(b) FROM (
                  SELECT session_id,coalesce(sum(length(CAST(payload AS BLOB))),0) b
@@ -149,5 +153,47 @@ mod tests {
             before,
             "the rebuild reproduces the projection"
         );
+    }
+}
+
+#[cfg(test)]
+mod blob_key_tests {
+    use super::*;
+    use crate::session::sqlite_store::SqliteStore;
+    use rusqlite::params;
+
+    /// A desktop-created session stores its id as raw bytes. Binding that key as
+    /// text is refused by `String`, which made this pass report success while
+    /// deleting nothing on a real store.
+    #[test]
+    fn the_purge_reaches_a_session_whose_key_is_stored_as_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+        let key: Vec<u8> = (0u8..16).collect();
+        store
+            .db
+            .call(move |db| {
+                db.execute("INSERT INTO sessions(id) VALUES (?1)", params![key])?;
+                db.execute(
+                    "INSERT INTO history_display(session_id,ordinal,source_position,is_user,payload)
+                     VALUES (?1,0,0,0,'{}')",
+                    params![key],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let (rows, _bytes) = store.db.call(|db| apply(db, 4)).unwrap();
+        assert_eq!(rows, 1, "the row belongs to the byte-keyed session");
+        let left: i64 = store
+            .db
+            .call(|db| {
+                Ok(db.query_row(
+                    "SELECT (SELECT count(*) FROM history_display)+(SELECT count(*) FROM history_shapes)",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(left, 0);
     }
 }
