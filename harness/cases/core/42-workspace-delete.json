@@ -1,0 +1,124 @@
+{
+  "id": "workspace-delete",
+  "title": "删除工作区：确认框讲清后果，确认后侧边栏与里面的会话一起消失",
+  "area": "workspace",
+  "priority": "P1",
+  "tags": ["workspace", "delete", "edge"],
+  "description": "删除工作区是不可撤销的操作，所以确认框必须先说清代价：工作区**连同里面的对话**一起从侧边栏移除，磁盘上的文件不动。取一个名字不重复、并且里面确实有会话的工作区来删，确认后检查三件事——侧边栏没有这个分组了、它下面的会话行也不在了、数据库里工作区和它的会话都被软删除。",
+  "preconditions": "应用已启动；侧边栏里至少有一个名字不重复、并且里面有会话的工作区。",
+  "expectations": [
+    "工作区菜单里提供「删除」，点开的是「删除工作区」确认框",
+    "确认框说明该工作区「及其对话将从侧边栏移除」，并显示工作区名字",
+    "确认后数据库里该工作区 deleted_at 非空，它那些会话也不再是活跃状态",
+    "侧边栏不再有这个工作区分组，它下面的会话行也一并消失",
+    "确认框关闭，剩下的列表还能正常操作（没有空白、没有卡住的加载态）"
+  ],
+  "steps": [
+    { "wait": 1300 },
+    {
+      "db": {
+        "sql": "SELECT w.name FROM workspaces w WHERE w.deleted_at IS NULL AND w.archived_at IS NULL AND EXISTS (SELECT 1 FROM threads t WHERE t.workspace_id = w.id AND t.deleted_at IS NULL AND t.status != 'deleted') GROUP BY w.name HAVING COUNT(*) = 1"
+      }
+    },
+    {
+      "eval": "const uniq = new Set((window.__harnessLastDb||[]).map(r => r.name)); window.__pick = ''; window.__row = ''; for (const h of [...document.querySelectorAll('[data-testid=local-group-heading]')]) { const name = h.textContent.trim(); if (!uniq.has(name) || /['\"]/.test(name)) continue; const g = h.closest('div.space-y-0\\\\.5'); const rows = g ? [...g.querySelectorAll('[aria-label$=\" 的操作\"]')].map(e => e.getAttribute('aria-label').replace(/ 的操作$/, '')).filter(t => t !== name && !/['\"]/.test(t)) : []; if (rows.length) { window.__pick = name; window.__row = rows[0]; break; } } window.__pick ? 1 : 0",
+      "as": "found"
+    },
+    {
+      "assert": {
+        "expr": "{{found}} === 1",
+        "message": "首屏有一个名字唯一、里面有会话的工作区可以删除"
+      }
+    },
+    { "eval": "window.__pick", "as": "ws" },
+    { "eval": "window.__row", "as": "row" },
+    { "db": { "sql": "SELECT id FROM workspaces WHERE name = '{{ws}}' AND deleted_at IS NULL", "as": "wsId" } },
+    {
+      "db": {
+        "sql": "SELECT COUNT(*) AS n FROM threads WHERE workspace_id = '{{wsId}}' AND deleted_at IS NULL"
+      }
+    },
+    {
+      "assert": {
+        "expr": "!!document.querySelector('nav') && document.querySelector('nav').innerText.includes('{{ws}}')",
+        "message": "删除前侧边栏里有这个工作区（对照基线）"
+      }
+    },
+    { "shot": "before-delete" },
+    { "hover": { "aria": "{{ws}} 的操作" } },
+    { "click": { "aria": "{{ws}} 的操作" } },
+    { "wait": 350 },
+    {
+      "assert": {
+        "expr": "[...document.querySelectorAll('[role=menuitem]')].some(e => e.innerText.trim() === '删除')",
+        "message": "工作区菜单提供「删除」"
+      }
+    },
+    { "click": { "selector": "[role=menuitem]", "text": "删除" } },
+    { "waitFor": { "selector": "[role=dialog]" }, "timeout": 4000 },
+    {
+      "assert": {
+        "expr": "document.querySelector('[role=dialog]').innerText.includes('删除工作区')",
+        "message": "确认框标题是「删除工作区」"
+      }
+    },
+    {
+      "assert": {
+        "expr": "document.querySelector('[role=dialog]').innerText.includes('及其对话将从侧边栏移除')",
+        "message": "确认框文案说明里面的对话会一起移除"
+      }
+    },
+    {
+      "assert": {
+        "expr": "document.querySelector('[role=dialog]').innerText.includes('{{ws}}')",
+        "message": "确认框里显示被删的工作区名，别的不会误删"
+      }
+    },
+    { "shot": "delete-dialog" },
+    { "click": { "selector": "[role=dialog] button", "text": "删除" } },
+    { "wait": 1300 },
+    {
+      "db": {
+        "sql": "SELECT deleted_at IS NOT NULL AS ok FROM workspaces WHERE id = '{{wsId}}'",
+        "expect": 1,
+        "message": "工作区已从数据库软删除"
+      }
+    },
+    {
+      "db": {
+        "sql": "SELECT COUNT(*) AS n FROM threads WHERE workspace_id = '{{wsId}}' AND deleted_at IS NULL",
+        "expect": 0,
+        "message": "它里面的会话也一起被删除，不会有孤儿会话留在列表里"
+      }
+    },
+    { "assert": { "expr": "![...document.querySelectorAll('[role=dialog]')].length", "message": "确认框已关闭" } },
+    {
+      "assert": {
+        "expr": "![...document.querySelectorAll('[data-testid=local-group-heading]')].some(e => e.textContent.trim() === '{{ws}}')",
+        "message": "侧边栏不再有这个工作区分组"
+      }
+    },
+    {
+      "assert": {
+        "expr": "[...document.querySelectorAll('[aria-label]')].every(e => e.getAttribute('aria-label') !== window.__row + ' 的操作')",
+        "message": "它下面的会话行也从侧边栏消失了"
+      }
+    },
+    {
+      "assert": {
+        "expr": "(() => { const heads = document.querySelectorAll('[data-testid=local-group-heading]').length; const rows = document.querySelectorAll('[aria-label$=\" 的操作\"]').length; return heads > 0 && rows > 0; })()",
+        "message": "剩下的列表还在，不是被删空或卡在加载态"
+      }
+    },
+    { "shot": "after-delete" }
+  ],
+  "judge": {
+    "criteria": [
+      "确认框出现时，文案明确说明工作区连里面的对话会一起从侧边栏移除，且显示的是要删的那个工作区",
+      "确认后侧边栏里没有这个工作区，也没有它残留的会话行",
+      "剩下的列表正常可用，没有空白区域、残留的加载态或关不掉的确认框",
+      "截图整体看起来像一个正常工作的产品（对齐、层级、文案一致）"
+    ],
+    "maxImages": 8
+  }
+}

@@ -1,0 +1,107 @@
+{
+  "id": "workspace-pin-unpin",
+  "title": "置顶工作区排到最前 → 取消置顶回到原来的位置",
+  "area": "workspace",
+  "priority": "P1",
+  "tags": ["workspace", "pin", "list"],
+  "description": "工作区的置顶不是独立的「置顶」分组，而是把这些分组排到工作区列表最前面，并在分组标题上留下一个强调色的图钉。取一个排在中间的工作区：置顶后它必须变成列表第一项，取消置顶后必须回到原来的位置（不是留在最前，也不是掉到别处）。",
+  "preconditions": "应用已启动；侧边栏工作区列表里至少有两个未置顶的工作区，且其中一个是名字不重复的。",
+  "expectations": [
+    "工作区菜单里提供「置顶」，置顶后数据库 pinned=1",
+    "置顶后该工作区成为工作区列表的第一项，分组标题上出现图钉标记",
+    "已置顶时菜单显示「取消置顶」，取消后 pinned=0、图钉消失",
+    "取消置顶后该工作区回到它置顶之前的位置"
+  ],
+  "steps": [
+    { "wait": 1300 },
+    {
+      "db": {
+        "sql": "SELECT w.name FROM workspaces w WHERE w.deleted_at IS NULL AND w.archived_at IS NULL AND w.pinned = 0 GROUP BY w.name HAVING COUNT(*) = 1"
+      }
+    },
+    {
+      "eval": "const uniq = new Set((window.__harnessLastDb||[]).map(r => r.name)); window.__pick = ''; window.__before = -1; [...document.querySelectorAll('[data-testid=local-group-heading]')].forEach((h, i) => { const n = h.textContent.trim(); if (!window.__pick && i > 0 && uniq.has(n) && !/['\"]/.test(n)) { window.__pick = n; window.__before = i; } }); window.__pick ? 1 : 0",
+      "as": "found"
+    },
+    {
+      "assert": {
+        "expr": "{{found}} === 1",
+        "message": "首屏有一个排在中间、名字不重复的未置顶工作区"
+      }
+    },
+    { "eval": "window.__pick", "as": "ws" },
+    { "eval": "window.__before", "as": "before" },
+    { "shot": "before-pin" },
+    { "hover": { "aria": "{{ws}} 的操作" } },
+    { "click": { "aria": "{{ws}} 的操作" } },
+    { "wait": 350 },
+    {
+      "assert": {
+        "expr": "[...document.querySelectorAll('[role=menuitem]')].some(e => e.innerText.trim() === '置顶')",
+        "message": "未置顶时工作区菜单提供「置顶」"
+      }
+    },
+    { "click": { "selector": "[role=menuitem]", "text": "置顶" } },
+    { "wait": 900 },
+    {
+      "db": {
+        "sql": "SELECT pinned FROM workspaces WHERE name = '{{ws}}' AND deleted_at IS NULL",
+        "expect": 1,
+        "message": "数据库里该工作区已置顶"
+      }
+    },
+    {
+      "assert": {
+        "expr": "(() => { const heads = [...document.querySelectorAll('[data-testid=local-group-heading]')]; return heads.length > 0 && heads[0].textContent.trim() === '{{ws}}'; })()",
+        "message": "置顶后它成为工作区列表的第一项"
+      }
+    },
+    {
+      "assert": {
+        "expr": "(() => { const h = [...document.querySelectorAll('[data-testid=local-group-heading]')].find(e => e.textContent.trim() === '{{ws}}'); return !!h && !!h.closest('div').querySelector('svg.lucide-pin'); })()",
+        "message": "置顶后分组标题上出现图钉标记"
+      }
+    },
+    { "shot": "pinned" },
+    { "hover": { "aria": "{{ws}} 的操作" } },
+    { "click": { "aria": "{{ws}} 的操作" } },
+    { "wait": 350 },
+    {
+      "assert": {
+        "expr": "[...document.querySelectorAll('[role=menuitem]')].some(e => e.innerText.trim() === '取消置顶')",
+        "message": "已置顶时菜单提供「取消置顶」"
+      }
+    },
+    { "click": { "selector": "[role=menuitem]", "text": "取消置顶" } },
+    { "wait": 900 },
+    {
+      "db": {
+        "sql": "SELECT pinned FROM workspaces WHERE name = '{{ws}}' AND deleted_at IS NULL",
+        "expect": 0,
+        "message": "取消后数据库 pinned 回到 0"
+      }
+    },
+    {
+      "assert": {
+        "expr": "(() => { const h = [...document.querySelectorAll('[data-testid=local-group-heading]')].find(e => e.textContent.trim() === '{{ws}}'); return !!h && !h.closest('div').querySelector('svg.lucide-pin'); })()",
+        "message": "取消置顶后图钉标记消失"
+      }
+    },
+    {
+      "assert": {
+        "expr": "(() => [...document.querySelectorAll('[data-testid=local-group-heading]')].map(e => e.textContent.trim()).indexOf('{{ws}}'))() === {{before}}",
+        "message": "取消置顶后它回到置顶之前的位置"
+      }
+    },
+    { "shot": "unpinned" }
+  ],
+  "judge": {
+    "criteria": [
+      "置顶后该工作区确实排在工作区列表最前面，并且能看到置顶标记",
+      "取消置顶后它回到原来的位置，列表顺序看起来自然、没有重复项或错位",
+      "菜单文案与当前状态一致（置顶/取消置顶不会同时出现）",
+      "截图整体看起来像一个正常工作的产品（对齐、层级、文案一致），没有报错或残留弹层"
+    ],
+    "maxImages": 8
+  }
+}
