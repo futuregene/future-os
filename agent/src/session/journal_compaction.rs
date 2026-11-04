@@ -86,7 +86,35 @@ impl RunJournalSnapshot {
 /// Bump it when `fold_events` changes shape: a row written by an older algorithm
 /// is then a miss (the reader folds instead), never a stale projection served to
 /// a client that expects today's format.
-pub(crate) const SNAPSHOT_CACHE_VERSION: i64 = 1;
+pub(crate) const SNAPSHOT_CACHE_VERSION: i64 = 2;
+
+/// The cache's own shape: the wire's three fields per event, with the envelope
+/// the reply never sends (`event_id`, `session_id`, `timestamp`, `epoch`, …)
+/// left out. On a 136k-event run that envelope was 539 KiB of the row's
+/// 1.89 MB, and every byte of it had to be parsed back for nothing.
+#[derive(Serialize, Deserialize)]
+struct CachedProjection {
+    #[serde(rename = "r")]
+    run_id: String,
+    #[serde(rename = "e")]
+    epoch: i64,
+    #[serde(rename = "s")]
+    run_sequence: i64,
+    #[serde(rename = "c")]
+    cursor: i64,
+    #[serde(rename = "v")]
+    events: Vec<CachedEvent>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CachedEvent {
+    #[serde(rename = "t")]
+    event_type: String,
+    #[serde(rename = "d")]
+    data: String,
+    #[serde(rename = "i")]
+    idx: i64,
+}
 
 impl SqliteStore {
     /// The run's newest epoch, or `None` when it has no events left to fold.
@@ -134,8 +162,30 @@ impl SqliteStore {
         if version != SNAPSHOT_CACHE_VERSION || stored_epoch != epoch {
             return Ok(None);
         }
-        let Ok(snapshot) = serde_json::from_str::<RunJournalSnapshot>(&payload) else {
+        let Ok(projection) = serde_json::from_str::<CachedProjection>(&payload) else {
             return Ok(None);
+        };
+        let snapshot = RunJournalSnapshot {
+            run_id: projection.run_id,
+            epoch: projection.epoch,
+            run_sequence: projection.run_sequence,
+            cursor: projection.cursor,
+            events: projection
+                .events
+                .into_iter()
+                .map(|event| SseEvent {
+                    event_type: event.event_type,
+                    data: event.data,
+                    run_id: run.to_owned(),
+                    epoch: projection.epoch,
+                    idx: event.idx,
+                    session_id: String::new(),
+                    event_id: String::new(),
+                    timestamp: String::new(),
+                    session_idx: -1,
+                    run_sequence: projection.run_sequence,
+                })
+                .collect(),
         };
         if snapshot.validate(run, cursor).is_err() {
             return Ok(None);
@@ -151,7 +201,21 @@ impl SqliteStore {
         session: &str,
         snapshot: &RunJournalSnapshot,
     ) -> Result<()> {
-        let payload = serde_json::to_string(snapshot)?;
+        let payload = serde_json::to_string(&CachedProjection {
+            run_id: snapshot.run_id.clone(),
+            epoch: snapshot.epoch,
+            run_sequence: snapshot.run_sequence,
+            cursor: snapshot.cursor,
+            events: snapshot
+                .events
+                .iter()
+                .map(|event| CachedEvent {
+                    event_type: event.event_type.clone(),
+                    data: event.data.clone(),
+                    idx: event.idx,
+                })
+                .collect(),
+        })?;
         let (session, run) = (session.to_owned(), snapshot.run_id.clone());
         let (version, epoch, cursor) = (SNAPSHOT_CACHE_VERSION, snapshot.epoch, snapshot.cursor);
         self.db.call_as("run_snapshot_cache", move |db| {
