@@ -1,0 +1,52 @@
+{
+  "phase": "cold",
+  "agentAddress": "http://127.0.0.1:59248",
+  "home": "/Users/geilige/future-os/.worktrees/perf-remote-scale/target/remote-latency/scale/homes/tasks-500",
+  "machine": {
+    "os": "macos",
+    "arch": "aarch64",
+    "cpus": 32
+  },
+  "cargoProfile": "--release",
+  "builtAt": "2026-11-04T09:25:54",
+  "results": [
+    {
+      "label": "list_tasks",
+      "command": "list_tasks",
+      "parseError": null,
+      "scale": {
+        "tasks": 500
+      },
+      "iterations": 1,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 19.521,
+        "parseMs": 0.012,
+        "encodeMs": 0.334,
+        "replyBytes": 11382,
+        "jsonBytes": 143031,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 16.477,
+          "parseMs": 0.002,
+          "encodeMs": 0.283,
+          "replyBytes": 11382,
+          "jsonBytes": 143031,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 16.477,
+      "p95Ms": 16.477,
+      "maxMs": 16.477,
+      "minMs": 16.477,
+      "encodeP50Ms": 0.283,
+      "replyBytes": 11382,
+      "jsonBytes": 143031,
+      "replies": 1
+    }
+  ]
+}

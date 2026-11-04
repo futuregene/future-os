@@ -1,0 +1,134 @@
+{
+  "phase": "warm",
+  "agentAddress": "http://127.0.0.1:58357",
+  "home": "/Users/geilige/future-os/.worktrees/perf-remote-scale/target/remote-latency/scale/homes/dirs-5000",
+  "machine": {
+    "os": "macos",
+    "arch": "aarch64",
+    "cpus": 32
+  },
+  "cargoProfile": "--release",
+  "builtAt": "2026-11-04T09:23:39",
+  "results": [
+    {
+      "label": "list_session_files",
+      "command": "list_session_files",
+      "parseError": null,
+      "scale": {
+        "files": 5000,
+        "workspace": "/Users/geilige/future-os/.worktrees/perf-remote-scale/target/remote-latency/scale/homes/dirs-5000/workspace-roots/files-5000"
+      },
+      "iterations": 10,
+      "spacingMs": 0,
+      "cold": {
+        "ms": 230.453,
+        "parseMs": 0.012,
+        "encodeMs": 1.667,
+        "replyBytes": 49035,
+        "jsonBytes": 1005322,
+        "success": true,
+        "error": null
+      },
+      "samples": [
+        {
+          "ms": 229.487,
+          "parseMs": 0.004,
+          "encodeMs": 1.478,
+          "replyBytes": 49035,
+          "jsonBytes": 1005322,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 227.17,
+          "parseMs": 0.004,
+          "encodeMs": 1.433,
+          "replyBytes": 49035,
+          "jsonBytes": 1005322,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 238.894,
+          "parseMs": 0.005,
+          "encodeMs": 1.547,
+          "replyBytes": 49035,
+          "jsonBytes": 1005322,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 246.629,
+          "parseMs": 0.005,
+          "encodeMs": 1.61,
+          "replyBytes": 49035,
+          "jsonBytes": 1005322,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 269.068,
+          "parseMs": 0.005,
+          "encodeMs": 1.424,
+          "replyBytes": 49035,
+          "jsonBytes": 1005322,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 223.304,
+          "parseMs": 0.004,
+          "encodeMs": 1.588,
+          "replyBytes": 49035,
+          "jsonBytes": 1005322,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 231.009,
+          "parseMs": 0.005,
+          "encodeMs": 1.632,
+          "replyBytes": 49035,
+          "jsonBytes": 1005322,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 229.391,
+          "parseMs": 0.006,
+          "encodeMs": 1.446,
+          "replyBytes": 49035,
+          "jsonBytes": 1005322,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 226.768,
+          "parseMs": 0.005,
+          "encodeMs": 1.555,
+          "replyBytes": 49035,
+          "jsonBytes": 1005322,
+          "success": true,
+          "error": null
+        },
+        {
+          "ms": 226.552,
+          "parseMs": 0.005,
+          "encodeMs": 1.465,
+          "replyBytes": 49035,
+          "jsonBytes": 1005322,
+          "success": true,
+          "error": null
+        }
+      ],
+      "p50Ms": 229.391,
+      "p95Ms": 269.068,
+      "maxMs": 269.068,
+      "minMs": 223.304,
+      "encodeP50Ms": 1.478,
+      "replyBytes": 49035,
+      "jsonBytes": 1005322,
+      "replies": 10
+    }
+  ]
+}
