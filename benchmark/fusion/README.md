@@ -393,5 +393,7 @@ benchmark/fusion/.venv/bin/ruff format --check benchmark/fusion
 ```
 
 遵守仓库约定，本机不运行单元测试；这项工作的真实模型试跑属于手工集成评测。
-`.github/workflows/benchmark-fusion.yml` 在相关 PR 中运行静态检查和 `tests/` 中的
-离线协议回归；这些 CI 检查不联网下载题库、不使用凭据，也不调用付费模型。
+仓库不再提供 benchmark 专用 GitHub Actions 工作流；静态检查、题包校验及真实模型评测
+通过本机命令手动执行。`tests/` 中的离线回归文件保留。
+常规 `ci.yml` 的规则保持不变：纯 `benchmark/` 改动不会安排 Rust、TypeScript、Android
+或 iOS 编译和测试，仍保留轻量的影响范围检测与主干必需的 `CI result` 汇总检查。
