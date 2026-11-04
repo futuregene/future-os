@@ -1,0 +1,128 @@
+{
+  "$comment": "Recorded medians, measured on this machine over the runs named in `sources`. `median` is the middle of those runs, `min`/`max` bound the noise actually observed, and `noise` is max/median — the tolerance a case may use without flaking. Regenerate with `node harness/cli.mjs perf-baseline --from <run>...`; see perf.mjs for how a limit is resolved. 20 次切换的堆增长数据点还少（n=3），噪声大，先用 -6~34MB 观察，绝对值上限 150MB 兜底。",
+  "unit": "ms unless the metric says otherwise",
+  "sources": [
+    "perf-check",
+    "perf-check2",
+    "perf-check3",
+    "parallel-a"
+  ],
+  "metrics": {
+    "perf-desktop-boot:bootMs": {
+      "median": 2065,
+      "min": 1969,
+      "max": 2168,
+      "n": 6,
+      "noise": 1.05
+    },
+    "perf-desktop-boot:invokeRequests": {
+      "median": 120,
+      "min": 120,
+      "max": 121,
+      "n": 5,
+      "noise": 1.01,
+      "unit": "count"
+    },
+    "perf-desktop-boot:invokeBytes": {
+      "median": 114277,
+      "min": 114277,
+      "max": 121210,
+      "n": 5,
+      "noise": 1.06,
+      "unit": "bytes"
+    },
+    "perf-desktop-boot:networkRequests": {
+      "median": 647,
+      "min": 647,
+      "max": 649,
+      "n": 6,
+      "noise": 1.003,
+      "unit": "count"
+    },
+    "perf-ipc:ipcP95:list_threads_page": {
+      "median": 5.4,
+      "min": 2.1,
+      "max": 8.1,
+      "n": 6,
+      "noise": 1.5
+    },
+    "perf-thread-switch:measure:switch:avg": {
+      "median": 294,
+      "min": 288,
+      "max": 296,
+      "n": 5,
+      "noise": 1.01
+    },
+    "perf-thread-switch:heapGrowth": {
+      "median": 13,
+      "min": 13,
+      "max": 14,
+      "n": 6,
+      "noise": 1.08,
+      "unit": "MB",
+      "signed": true
+    },
+    "perf-memory-switching:heapGrowth": {
+      "median": -6,
+      "min": -8,
+      "max": 25,
+      "n": 6,
+      "noise": 1.5,
+      "unit": "MB",
+      "signed": true
+    },
+    "perf-memory-switching:rssGrowth": {
+      "median": 4.5,
+      "min": 0,
+      "max": 12,
+      "n": 6,
+      "noise": 2.7,
+      "unit": "MB",
+      "signed": true
+    },
+    "perf-cli-startup:version": {
+      "median": 8,
+      "min": 7,
+      "max": 13,
+      "n": 8,
+      "noise": 1.6
+    },
+    "perf-cli-startup:workspaceList": {
+      "median": 22,
+      "min": 21,
+      "max": 34,
+      "n": 8,
+      "noise": 1.6
+    },
+    "perf-tui-startup:startupMs": {
+      "median": 2341,
+      "min": 2310,
+      "max": 2360,
+      "n": 3,
+      "noise": 1.02
+    },
+    "perf-tui-startup:measure:help": {
+      "median": 366,
+      "min": 364,
+      "max": 366,
+      "n": 3,
+      "noise": 1.01
+    },
+    "perf-thread-switch:measure:switch:max": {
+      "median": 376,
+      "min": 363,
+      "max": 385,
+      "n": 5,
+      "noise": 1.02
+    },
+    "perf-switch-scaling:heapGrowth": {
+      "median": 20,
+      "min": 3,
+      "max": 34,
+      "n": 3,
+      "noise": 2.0,
+      "unit": "MB",
+      "signed": true
+    }
+  }
+}

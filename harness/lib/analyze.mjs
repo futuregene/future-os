@@ -462,6 +462,54 @@ async function judgeEvidence(result, runDir, { limit = 8 } = {}) {
   return images.slice(0, limit + 1);
 }
 
+/**
+ * The performance numbers, written the way a person reviewing a profile would
+ * want them: the summary, then the series with its trend, then how close each
+ * assertion came to its limit.
+ *
+ * The series is the part that makes a complexity or leak judgement possible at
+ * all. A mean of 320ms says nothing; twenty values that climb 260, 280, 300, …
+ * 900 say "something accumulates per iteration".
+ */
+function perfDigest(result) {
+  const perf = result.perf;
+  if (!perf)
+    return "";
+  const lines = [];
+  const summary = [
+    ["readyMs", perf.bootMs],
+    ["invokeRequests", perf.invokeRequests],
+    ["invokeBytes", perf.invokeBytes],
+    ["networkRequests", perf.networkRequests],
+    ["ipcP95", perf.ipcP95],
+    ["ipcMax", perf.ipcMax],
+    ["heapGrowthMb", perf.heapGrowthMb],
+    ["rssGrowthMb", perf.rssGrowthMb],
+    ["startupMs", perf.startupMs],
+    ["maxMs", perf.maxMs],
+    ["durationMs", perf.durationMs],
+  ].filter(([, value]) => value !== null && value !== undefined);
+  if (summary.length)
+    lines.push(summary.map(([key, value]) => `${key}=${value}`).join("  "));
+  for (const series of perf.series ?? []) {
+    const shown = series.values.length > 12
+      ? [...series.values.slice(0, 6), "…", ...series.values.slice(-6)]
+      : series.values;
+    lines.push(`${series.label}: n=${series.n} 每次(ms)=${shown.join(",")} 均值=${series.mean} 漂移=${series.drift} 斜率=${series.slope}ms/次`);
+  }
+  // Which assertion was closest to its limit is the most useful single fact for
+  // a reviewer: everything else has slack, that one is where a regression lands.
+  const perfChecks = (result.checks ?? []).filter(check => check.kind === "perf");
+  if (perfChecks.length) {
+    lines.push("断言与余量：");
+    for (const check of perfChecks) {
+      const ratio = check.expected ? (check.actual / check.expected).toFixed(2) : "?";
+      lines.push(`  ${check.message}: 实测 ${check.actual} / 限 ${Math.round(check.expected ?? 0)} (${ratio}× 限制)${check.baseline !== null && check.baseline !== undefined ? `，基线 ${check.baseline}` : ""} ${check.ok ? "ok" : "FAILED"}`);
+    }
+  }
+  return lines.join("\n");
+}
+
 function timelineText(result) {
   return (result.steps ?? [])
     .filter(step => step.action !== "note")
@@ -480,7 +528,7 @@ function timelineText(result) {
  */
 async function judgeCase(result, runDir, { model = null } = {}) {
   const criteria = result.judge?.criteria ?? result.expectations ?? [];
-  if (!criteria.length)
+  if (!criteria.length && !result.perf)
     return null;
   const images = await judgeEvidence(result, runDir, { limit: result.judge?.maxImages ?? 8 });
   const logs = [];
@@ -493,6 +541,23 @@ async function judgeCase(result, runDir, { model = null } = {}) {
   if (result.cli?.runs?.length)
     logs.push(`CLI runs:\n${result.cli.runs.map(run => `$ future ${(run.args ?? []).join(" ")} (exit ${run.exit})\n${run.stderr ?? ""}`).join("\n").slice(0, 3000)}`);
 
+  const perfText = perfDigest(result);
+  // What the deterministic layer already proved. Handing this to the judge stops
+  // the most common false positive: "the screen does not show what was clicked"
+  // asserted about a frame that proves nothing, when a check on the live DOM at
+  // that step already confirmed the opposite. A model may still disagree — but
+  // it has to say so explicitly, not restate the claim as a fresh finding.
+  const provenChecks = (result.checks ?? []).filter(check => check.ok && check.kind !== "perf");
+  const provenText = provenChecks.length
+    ? provenChecks.slice(0, 20).map(check => `- ${check.message}${check.actual !== undefined ? `（实测 ${truncate(JSON.stringify(check.actual), 80)}）` : ""}`).join("\n")
+    : "";
+  const perfCriteria = result.judge?.criteria?.length
+    ? []
+    : [
+        "性能与资源占用符合常识：同一操作重复执行时单次耗时不随次数上升，内存不单调增长",
+        "数字本身要与量级相符（本地首屏、本地命令应是毫秒到一两秒量级，不该以十秒计）",
+      ];
+
   const prompt = [
     "你是 FutureOS 的产品验收员，不是测试脚本执行器。",
     "下面有一次真实操作的证据：按时间排列的截图、整段录像的帧拼图，以及运行时日志。",
@@ -500,12 +565,15 @@ async function judgeCase(result, runDir, { model = null } = {}) {
     "",
     "用户可见预期：",
     ...criteria.map(item => `- ${item}`),
+    ...perfCriteria.map(item => `- ${item}`),
     "",
     `用例：${result.title}`,
     `说明：${result.description ?? ""}`,
     `操作时间线：\n${timelineText(result)}`,
     "",
     logs.length ? `运行时信号：\n${logs.join("\n")}` : "运行时信号：无错误",
+    provenText ? `\n已由确定性断言在真实 DOM 上验证通过的事实（不要把这些当缺陷重复怀疑；如果截图看起来相反，优先认为是截图时机/滚动位置造成的证据不足）：\n${provenText}` : "",
+    perfText ? `\n性能与资源数据：\n${perfText}` : "",
     result.bodyText ? `\n页面文本快照（末尾时刻，截断；证明元素存在，不代表都在可视区）：\n${truncate(result.bodyText, 4000)}` : "",
     "",
     "请输出严格 JSON（不要 markdown 围栏）：",
@@ -514,8 +582,12 @@ async function judgeCase(result, runDir, { model = null } = {}) {
     "- 只判断用户能看到/会遇到的问题；内部实现细节不报。",
     "- 动态过程中的瞬时状态（生成中、加载中）不要当缺陷，除非它卡住或与操作明显不符。",
     "- 如果画面正常但证据不足，verdict=pass、confidence=low，不要编造。",
+    "- 对「上面已通过断言的事实」不要再提反面结论；你只能补充断言没盖住的、画面里真实可见的问题。",
     "- 预期项出现在文本快照但截图里看不到时，说明它可能在滚动区之外，不要判成缺失；标记证据不足即可。",
     "- 代码块/表格/长文本的排版、文案、空态、错位、遮挡都算。",
+    "- 性能数据要按常识审：看的是趋势与量级，不是单个绝对值。重复 N 次同一操作时，单次耗时应基本恒定；若随次数上升（累计型），说明每次留下未回收的东西，报出来并指出可能的机制（监听器未解绑、缓存无上限、节点累积）。",
+    "- 内存随交互线性增长、或单次本地操作达到秒级、或首屏 IPC 请求数异常多，都属于系统性问题；用一句话说明你的推断依据（哪几个数字、什么趋势）。",
+    "- 但如果数字在噪声范围内（小值波动、单次尖尖），不要当缺陷；也不要因为数字大就报缺陷，先判断它相对量级是否合理。",
   ].join("\n");
 
   const promptPath = join(runDir, "analysis", `${result.id}.judge.md`);

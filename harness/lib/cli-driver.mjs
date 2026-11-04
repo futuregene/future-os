@@ -13,6 +13,7 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 import { createCliHome } from "./data.mjs";
+import { resolveLimit, readBaseline, baselineKey } from "./perf.mjs";
 
 const execFileAsync = promisify(execFile);
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
@@ -44,6 +45,7 @@ export async function runCliCase({ testCase, runDir, bin = cliBin() }) {
   const { home, appDb } = createCliHome(join(caseDir, "home"));
   mkdirSync(caseDir, { recursive: true });
   const startedAt = Date.now();
+  const baselines = readBaseline(join(import.meta.dirname, "..", "perf", "baseline.json"), { existsSync, readFileSync });
   const timeline = [];
   const checks = [];
   let status = "pass";
@@ -172,12 +174,15 @@ export async function runCliCase({ testCase, runDir, bin = cliBin() }) {
         const runs = timeline.filter(item => item.action === "run").map(item => item.ms ?? 0);
         const value = spec.metric === "maxMs"
           ? Math.max(0, ...runs)
-          : spec.metric === "durationMs" ? Date.now() - startedAt : null;
-        const ok = value !== null && value <= spec.max;
-        checks.push({ kind: "perf", step: index + 1, message: spec.message ?? `${spec.metric} <= ${spec.max}`, ok, expected: spec.max, actual: value });
+          : spec.metric === "lastMs" ? (runs.at(-1) ?? null)
+            : spec.metric === "durationMs" ? Date.now() - startedAt : null;
+        const key = spec.baselineKey ?? baselineKey(testCase.id, spec);
+        const { limit, reason } = resolveLimit(spec, baselines.metrics?.[key] ?? null);
+        const ok = value !== null && limit !== null && value <= limit;
+        checks.push({ kind: "perf", step: index + 1, message: spec.message ?? `${spec.metric} <= ${Math.round(limit ?? NaN)}`, ok, expected: limit, actual: value, baseline: baselines.metrics?.[key]?.median ?? null, limitReason: reason });
         entry.value = value;
         if (!ok)
-          throw new Error(`CLI performance expectation failed: ${spec.metric} = ${value}, expected <= ${spec.max}`);
+          throw new Error(`CLI performance expectation failed: ${spec.metric} = ${value}, expected <= ${Math.round(limit ?? NaN)} (${reason})`);
       }
       else if (action === "db") {
         const spec = typeof step.db === "string" ? { sql: step.db } : step.db;

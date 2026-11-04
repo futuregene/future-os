@@ -106,6 +106,25 @@ export function writeReport(runDir, { repoRoot = resolve(import.meta.dirname, ".
       lines.push(`| ${item.id} | ${boot} | ${measureText} | ${memory} | ${ipc} | ${first} |`);
     }
     lines.push("");
+
+    // The headroom column is the answer to "can this threshold ever fail?".
+    // Anything sitting at a large multiple of its limit is a threshold that only
+    // catches a catastrophe; it should be visible, not buried in a JSON file.
+    const perfChecks = cases.flatMap(item => (item.checks ?? []).filter(check => check.kind === "perf").map(check => ({ ...check, id: item.id })));
+    if (perfChecks.length) {
+      lines.push("### 阈值与实际值", "");
+      lines.push("| 用例 | 指标 | 实测 | 基线 | 限制 | 实测/限 | 判定依据 |");
+      lines.push("|---|---|---|---|---|---|---|");
+      for (const check of perfChecks) {
+        const headroom = check.expected ? (check.actual / check.expected) : null;
+        lines.push(`| ${check.id} | ${check.message} | ${check.actual ?? "—"} | ${check.baseline ?? "—"} | ${Math.round(check.expected ?? 0)} | ${headroom === null ? "—" : `${headroom.toFixed(2)}×`} | ${(check.limitReason ?? "").replace(/\|/g, "\\|")} ${check.ok ? "" : "**FAILED**"} |`);
+      }
+      lines.push("");
+      const loose = perfChecks.filter(check => check.expected && check.actual / check.expected < 0.4);
+      if (loose.length)
+        lines.push(`> 有 ${loose.length} 条阈值实测只用到限制的 40% 以下，它们只能拦住灾难级回退；`);
+      lines.push("");
+    }
   }
 
   const judgedCases = analysis?.cases?.filter(item => item.judge) ?? [];

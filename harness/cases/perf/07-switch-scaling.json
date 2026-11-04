@@ -1,0 +1,59 @@
+{
+  "id": "perf-switch-scaling",
+  "title": "性能：重复 20 次切换是否越来越慢（泄漏/隐性 O(n)）",
+  "area": "perf",
+  "priority": "P1",
+  "tags": ["perf", "complexity", "memory"],
+  "description": "在同一个会话列表里来回切换 20 次，记录每次从点击到下一帧的延迟。绝对延迟只说明机器快慢，重复操作的漂移（后三分之一 / 前三分之一）和逐步斜率才说明每次切换是否留下了东西：监听器未解绑、转录缓存无上限、列表节点累积，都会让同一次操作越做越慢。",
+  "preconditions": "首屏至少 6 行会话。",
+  "expectations": [
+    "后三分之一切换的平均延迟不超过前三分之一的 1.4 倍",
+    "每次切换的延迟斜率 < 10ms（不随次数单调上升）",
+    "20 次切换的堆增长 ≤ 基线 +30MB"
+  ],
+  "steps": [
+    { "wait": 900 },
+    { "eval": "window.__rows = [...document.querySelectorAll('[aria-label$=\" 的操作\"]')].map(el => el.getAttribute('aria-label').replace(/ 的操作$/, '')).filter(t => t.length <= 16).slice(0, 6); window.__rows.length", "as": "rowCount" },
+    { "assert": { "expr": "window.__rows.length >= 6", "message": "至少 6 行" } },
+    { "eval": "window.__rows[0]", "as": "s0" },
+    { "eval": "window.__rows[1]", "as": "s1" },
+    { "eval": "window.__rows[2]", "as": "s2" },
+    { "eval": "window.__rows[3]", "as": "s3" },
+    { "eval": "window.__rows[4]", "as": "s4" },
+    { "eval": "window.__rows[5]", "as": "s5" },
+    { "measure": { "label": "switch-01", "click": { "text": "{{s0}}" } } },
+    { "measure": { "label": "switch-02", "click": { "text": "{{s1}}" } } },
+    { "measure": { "label": "switch-03", "click": { "text": "{{s2}}" } } },
+    { "measure": { "label": "switch-04", "click": { "text": "{{s3}}" } } },
+    { "measure": { "label": "switch-05", "click": { "text": "{{s4}}" } } },
+    { "measure": { "label": "switch-06", "click": { "text": "{{s5}}" } } },
+    { "measure": { "label": "switch-07", "click": { "text": "{{s0}}" } } },
+    { "measure": { "label": "switch-08", "click": { "text": "{{s1}}" } } },
+    { "measure": { "label": "switch-09", "click": { "text": "{{s2}}" } } },
+    { "measure": { "label": "switch-10", "click": { "text": "{{s3}}" } } },
+    { "measure": { "label": "switch-11", "click": { "text": "{{s4}}" } } },
+    { "measure": { "label": "switch-12", "click": { "text": "{{s5}}" } } },
+    { "measure": { "label": "switch-13", "click": { "text": "{{s0}}" } } },
+    { "measure": { "label": "switch-14", "click": { "text": "{{s1}}" } } },
+    { "measure": { "label": "switch-15", "click": { "text": "{{s2}}" } } },
+    { "measure": { "label": "switch-16", "click": { "text": "{{s3}}" } } },
+    { "measure": { "label": "switch-17", "click": { "text": "{{s4}}" } } },
+    { "measure": { "label": "switch-18", "click": { "text": "{{s5}}" } } },
+    { "measure": { "label": "switch-19", "click": { "text": "{{s0}}" } } },
+    { "measure": { "label": "switch-20", "click": { "text": "{{s1}}" } } },
+    { "eval": "(document.querySelector('main')?.innerText ?? '').split('\\n')[0].trim()", "as": "finalTitle" },
+    { "assert": { "expr": "(document.querySelector('main')?.innerText ?? '').split('\\n')[0].includes('{{s1}}')", "message": "最后一次点击后主区域显示的就是该会话（不是上一个会话）" } },
+    { "assertPerf": { "metric": "measure", "label": "switch", "stat": "drift", "max": 1.4, "message": "20 次切换的延迟漂移 < 1.4×" } },
+    { "assertPerf": { "metric": "measure", "label": "switch", "stat": "slope", "max": 10, "message": "每次切换的延迟斜率 < 10ms" } },
+    { "assertPerf": { "metric": "heapGrowth", "toleranceAbs": 30, "max": 150, "message": "20 次切换堆增长 ≤ 基线 +30MB" } },
+    { "shot": "scaling" }
+  ],
+  "judge": {
+    "criteria": [
+      "20 次来回切换后界面仍正常：每次都能切到对应会话，没有白屏、重复渲染的残影或卡住的加载态",
+      "切换耗时序列没有持续上升的趋势（先快后慢说明每次留下回收不了的状态）",
+      "堆/内存随次数增长的幅度与常识相符：反复打开同一批会话不应线性吃掉内存；如果线性上升，请指出可能的原因"
+    ],
+    "maxImages": 5
+  }
+}

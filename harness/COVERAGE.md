@@ -81,16 +81,38 @@ Legend: ✅ two or more cases · ◐ one smoke case · — not covered.
 | Metric | Case | Current baseline (this machine) |
 |---|---|---|
 | Desktop boot to interactive | `perf-desktop-boot` | ~2.1 s |
-| Thread switch (click → 2×rAF) | `perf-thread-switch` | 230–360 ms |
-| 10 switches: JS heap / RSS growth | `perf-memory-switching` | ~ -5 MB / +12 MB |
-| IPC p95 / max | `perf-ipc` | 1.5 ms / ~110 ms |
-| CLI version / workspace list | `perf-cli-startup` | 13 ms / 21 ms |
-| TUI startup / help panel | `perf-tui-startup` | 2.4 s / 366 ms |
-| First-screen IPC requests / bytes | `perf-desktop-boot` | 121 / 121 KB |
+| Thread switch (click → 2×rAF) | `perf-thread-switch` | 290–380 ms |
+| 10 switches: JS heap / RSS growth | `perf-memory-switching` | ~ -6 MB / +5 MB |
+| 20 repeated switches: latency drift / slope / heap | `perf-switch-scaling` | drift ~1.0 / ~0 ms per step / +3–34 MB |
+| IPC p95 / max | `perf-ipc` | 2–8 ms / 7–110 ms |
+| CLI version / workspace list (warm) | `perf-cli-startup` | 6–9 ms / 21–24 ms |
+| TUI startup / help panel | `perf-tui-startup` | 2.3 s / 366–410 ms |
+| First-screen IPC requests / bytes | `perf-desktop-boot` | 120 / 114 KB |
 
-Thresholds are deliberately loose (2–3× the observed baseline) so a real
-regression fails while machine noise does not. Tighten them as the baseline
-becomes stable across machines.
+Thresholds are **relative to a recorded baseline** (`harness/perf/baseline.json`),
+not bare absolute ceilings:
+
+```
+limit = max(baseline × (1 + tolerance), baseline + floor, floor)
+        then min(limit, max)          # `max` is the catastrophe guard only
+```
+
+Measured noise decides the tolerance: the metrics above vary by 1.00–1.1×
+between runs, so a case may use 15–30% and still not flake; the ones that vary
+more (IPC max, RSS growth) get an additive floor or stay a pure ceiling and are
+marked as such in the report. The report prints actual / limit / baseline per
+assertion, so a threshold that has drifted loose is visible instead of hidden.
+
+`node --test harness/lib/perf.test.mjs` proves both directions: observed noise
+passes, a 30% regression fails, and a missing baseline degrades to the ceiling
+instead of turning a fresh clone red.
+
+`perf-switch-scaling` is the complexity probe: it repeats the same interaction
+20 times and asserts on **drift** (last third ÷ first third) and **slope**
+(ms per repetition), because a leak or an accidental O(n) inside a repeated
+path shows up as growth over repetitions, which no max/avg can see. The series
+is also handed to the vision model with the numbers, so it can argue about the
+trend in prose (and call out superlinear growth) rather than only fail a bound.
 
 ## Adding coverage
 

@@ -1,18 +1,32 @@
 {
   "id": "perf-cli-startup",
   "surface": "cli",
-  "title": "性能：CLI 启动与本地命令延迟",
+  "title": "性能：CLI 本地命令延迟",
   "area": "perf",
   "priority": "P1",
   "tags": ["perf", "cli"],
-  "description": "测量 future version 与 workspace list 的墙钟耗时；隔离 home，不触发网络。",
+  "description": "测量 future version 与 workspace list 的墙钟耗时；隔离 home，不触发网络。每次先跑一次热机再测量：冷启动含二进制与数据库从磁盘首次读入（实测 176ms vs 热态 22ms），把两者混在一个阈值里会让用例在冷机器上假红、在热机器上宽到没用。冷启动单独由 max 上限兜住。",
   "preconditions": "future 二进制可用。",
-  "expectations": ["version < 800ms", "workspace list < 2000ms"],
+  "expectations": [
+    "热态 version ≤ 基线 +50%（基线约 8ms）",
+    "热态 workspace list ≤ 基线 +80%（基线约 22ms）",
+    "任何一次调用 < 300ms（含冷启动的灾难上限）"
+  ],
   "steps": [
     { "run": ["version"], "expectExit": 0 },
-    { "assertPerf": { "metric": "maxMs", "max": 800, "message": "version < 800ms" } },
+    { "run": ["version"], "expectExit": 0 },
+    { "assertPerf": { "metric": "lastMs", "baselineKey": "perf-cli-startup:version", "tolerance": 0.5, "max": 200, "message": "version ≤ 基线 +50%" } },
     { "run": ["workspace", "list", "--json"], "expectExit": 0 },
-    { "assertPerf": { "metric": "maxMs", "max": 2000, "message": "workspace list < 2s" } },
-    { "assertPerf": { "metric": "durationMs", "max": 5000, "message": "两条命令总计 < 5s" } }
-  ]
+    { "run": ["workspace", "list", "--json"], "expectExit": 0 },
+    { "assertPerf": { "metric": "lastMs", "baselineKey": "perf-cli-startup:workspaceList", "tolerance": 0.8, "max": 300, "message": "workspace list ≤ 基线 +80%" } },
+    { "assertPerf": { "metric": "maxMs", "max": 400, "message": "任何一次调用 < 400ms（含冷启动）" } }
+  ],
+  "judge": {
+    "criteria": [
+      "本地命令应立即返回（毫秒级），同一命令第二次不比第一次慢",
+      "命令输出完整、无警告噪声或重复打印",
+      "冷启动与热态的数量级差异如果过大（例如十倍以上），说明启动路径做了本可避免的重复工作，请指出"
+    ],
+    "maxImages": 0
+  }
 }
