@@ -148,6 +148,43 @@ export interface RemoteCatalog {
    * invented one.
    */
   workspaces?: RemoteWorkspaceRow[];
+  /**
+   * Where the host's window of conversations ends, or `null` when it sent the
+   * whole list.
+   *
+   * A host that speaks `catalog_window_v1` sends its newest conversations and
+   * names the cursor for the next page; this is that cursor, as the last
+   * snapshot or delta packet stated it. Absent on a host that predates the
+   * window — which sent everything, so there is nothing more to ask for.
+   */
+  nextCursor?: string | null;
+  /**
+   * How many conversation roots the host's list holds in total, its own count.
+   *
+   * The number behind "show the other N": the window can hold fewer rows than
+   * this, and the reader's `pageCursor` walks the difference. Absent on a host
+   * that does not page, where the rows it sent *are* the list.
+   */
+  totalRoots?: number | null;
+  /**
+   * The cursor the *reader* has reached, which outlives the polls.
+   *
+   * `nextCursor` is restated by every snapshot ("the window ends here"), while a
+   * reader who asked for more has moved past it. Kept per host so a five-second
+   * poll does not silently throw the loaded pages away and re-offer them:
+   * `undefined` means the reader has not asked, and `null` that there is nothing
+   * left to ask for.
+   */
+  pageCursor?: string | null;
+  /**
+   * The sessions this catalogue holds *beyond* the host's first page.
+   *
+   * The host's own window says nothing about them (they are outside it), so a
+   * fresh snapshot of the window must not drop them: this is the record of which
+   * rows were loaded by paging rather than delivered by the window, and it is
+   * what `mergeWindowPage` carries across a poll.
+   */
+  pagedIds?: string[];
 }
 
 /**
@@ -446,6 +483,92 @@ export function mergeRemoteSessionDelta(
       return rank;
     return a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0;
   });
+}
+
+/**
+ * A host's first-page answer applied over what this machine already holds.
+ *
+ * A windowed catalogue is replaced by every snapshot and every five-second poll,
+ * and the rows a reader asked for beyond it are *outside* the window by
+ * definition: replacing the list with the window alone would throw them away and
+ * re-offer them every few seconds. So the window wins for every row it names,
+ * and a row that was loaded by paging — `pagedIds` — is carried across unless the
+ * window has since reached it.
+ *
+ * Where the reader had got to survives too: `pageCursor` is theirs, and a poll
+ * restating the window's edge must not move it back. Only a catalogue nobody has
+ * paged follows the host's own cursor, so a list that shrank says "no more" the
+ * moment the host does.
+ */
+export function mergeRemoteCatalogWindow(
+  answer: RemoteCatalog,
+  previous: RemoteCatalog | undefined,
+): RemoteCatalog {
+  const firstAnswer: RemoteCatalog = {
+    ...answer,
+    pagedIds: [],
+    pageCursor: answer.nextCursor ?? null,
+  };
+  if (!previous)
+    return firstAnswer;
+  const answered = new Set(answer.sessions.map(row => row.sessionId));
+  const held = new Map(previous.sessions.map(row => [row.sessionId, row] as const));
+  const carried: RemoteSessionRow[] = [];
+  for (const id of previous.pagedIds ?? []) {
+    const row = held.get(id);
+    if (row && !answered.has(id))
+      carried.push(row);
+  }
+  const paged = (previous.pagedIds ?? []).length > 0;
+  return {
+    ...answer,
+    sessions: [...answer.sessions, ...carried],
+    pagedIds: carried.map(row => row.sessionId),
+    // A reader who asked for more keeps their place — including the end of the
+    // list, which is `null` and must not be re-opened by a fresh window.
+    pageCursor: paged ? (previous.pageCursor ?? null) : (answer.nextCursor ?? null),
+  };
+}
+
+/**
+ * One more page of a host's conversations merged into what this machine holds.
+ *
+ * The page is a continuation, so its rows are appended rather than applied: a row
+ * the window already delivered is the same conversation and keeps the copy the
+ * list has been drawing, while a new one is recorded as *paged* so the next
+ * window snapshot carries it across (`mergeRemoteCatalogWindow`).
+ */
+export function appendRemoteCatalogPage(
+  catalog: RemoteCatalog,
+  page: RemoteCatalog,
+): RemoteCatalog {
+  const held = new Set(catalog.sessions.map(row => row.sessionId));
+  const added = page.sessions.filter(row => !held.has(row.sessionId));
+  return {
+    ...catalog,
+    sessions: [...catalog.sessions, ...added],
+    pagedIds: [...(catalog.pagedIds ?? []), ...added.map(row => row.sessionId)],
+    pageCursor: page.nextCursor ?? null,
+    totalRoots: page.totalRoots ?? catalog.totalRoots ?? null,
+  };
+}
+
+/**
+ * How many conversations that host holds beyond the ones this machine has.
+ *
+ * Counted in roots, the unit the host's own count is in: a fork's child rides
+ * with its root and must not be counted twice. The control that shows this also
+ * shows itself while any host still names a next page, so a host that counts
+ * differently can never hide a page that exists.
+ */
+export function remoteCatalogRemaining(catalog: RemoteCatalog): number {
+  if (typeof catalog.totalRoots !== "number")
+    return 0;
+  const ids = new Set(catalog.sessions.map(row => row.sessionId));
+  const held = catalog.sessions
+    .filter(row => !row.parentSessionId || !ids.has(row.parentSessionId))
+    .length;
+  return Math.max(0, catalog.totalRoots - held);
 }
 
 export function mergeConversations(

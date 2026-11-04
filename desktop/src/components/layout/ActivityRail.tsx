@@ -181,6 +181,15 @@ interface ActivityRailProps {
   remotePeers?: RemotePeer[];
   /** Each connected remote desktop's session snapshot. */
   remoteCatalogs?: import("../../features/remote-peer/mergeConversations").RemoteCatalog[];
+  /**
+   * Conversations the paired machines hold beyond the window each sent.
+   *
+   * The merged list draws what it was sent; this is the honest remainder behind
+   * its own "show the rest" row (`onLoadMoreRemoteSessions` fetches it).
+   */
+  remoteSessionsRemaining?: number;
+  /** Walk every host's remaining pages to the end (one click, the whole rest). */
+  onLoadMoreRemoteSessions?: () => Promise<void>;
   /** Which machines the conversation list shows. */
   deviceFilter?: DeviceFilter;
   onChangeDeviceFilter?: (filter: DeviceFilter) => void;
@@ -291,6 +300,8 @@ export function ActivityRail({
   remoteIndicator,
   remotePeers = [],
   remoteCatalogs = [],
+  remoteSessionsRemaining = 0,
+  onLoadMoreRemoteSessions,
   deviceFilter = { kind: "all" },
   onChangeDeviceFilter,
   onOpenRemoteConversation,
@@ -2144,6 +2155,10 @@ export function ActivityRail({
                                   renderLocalRow={renderLocalRow}
                                   recentMore={railView === "recent" ? recentMore : undefined}
                                   recentMoreBusy={recentLoading}
+                                  remoteMore={remoteSessionsRemaining}
+                                  onShowMoreRemote={onLoadMoreRemoteSessions
+                                    ? () => void onLoadMoreRemoteSessions()
+                                    : undefined}
                                   recentSections={railView === "recent" ? recent.sections : undefined}
                                   rows={railView === "recent" ? recent.rows : mergedRowTree.rows}
                                   selectionMode={selectionMode}

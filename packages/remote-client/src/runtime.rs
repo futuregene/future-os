@@ -2938,10 +2938,34 @@ impl Client {
     /// The stamp is added here rather than derived by the caller: a merged list is
     /// built from several hosts' snapshots, and a row that cannot name its host
     /// would be routed to the wrong machine on click.
+    ///
+    /// The first page of a *windowed* host: this client declares
+    /// `catalog_window_v1`, so the host sends the newest conversations and the
+    /// rest come one `sessions_page` at a time. `nextCursor` and `totalRoots` in
+    /// the answer are what the caller offers as "show the rest".
     pub async fn sessions(&self, desktop_id: &str) -> Result<Value, crate::Error> {
-        let data = self
-            .request(desktop_id, json!({ "type": "list_sessions" }), "list")
-            .await?;
+        self.sessions_page(desktop_id, None).await
+    }
+
+    /// One page of a host's conversations: `cursor == None` is the first page.
+    ///
+    /// The host pages newest activity first, one complete fork tree per root, and
+    /// carries the next cursor and the whole scope's root count in the answer.
+    /// A host that does not page the catalogue ignores the fields and sends the
+    /// whole list, so the caller reads the cursor out of the answer either way.
+    pub async fn sessions_page(
+        &self,
+        desktop_id: &str,
+        cursor: Option<&str>,
+    ) -> Result<Value, crate::Error> {
+        let mut command = json!({
+            "type": "list_sessions",
+            "limit": future_remote_protocol::CATALOG_WINDOW_ROOTS,
+        });
+        if let Some(cursor) = cursor.filter(|cursor| !cursor.is_empty()) {
+            command["cursor"] = json!(cursor);
+        }
+        let data = self.request(desktop_id, command, "list").await?;
         self.stamp_live(desktop_id, data).await
     }
     pub async fn workspaces(&self, desktop_id: &str) -> Result<Value, crate::Error> {

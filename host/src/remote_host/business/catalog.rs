@@ -6,14 +6,27 @@ use super::reply;
 
 pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
     match cmd.cmd_type.as_str() {
-        // A pull, not a tick: served from the snapshot the publisher's last tick
-        // computed when it is under a second old (see `sessions_catalog_cached`).
-        "list_sessions" => match crate::remote_host::catalog::sessions_catalog_cached("")
-            .map(|catalog| (catalog.payload, catalog.signature))
-        {
-            Some((payload, _)) => reply(sink, true, payload, None).await,
-            None => reply(sink, false, Value::Null, Some("catalog_unavailable")).await,
-        },
+        // A pull, not a tick: a plain read is served from the snapshot the
+        // publisher's last tick computed when it is under a second old (see
+        // `sessions_catalog_cached`), while a pull that names a `limit` is one
+        // page of the newest-first stream — what a reader behind a window asks
+        // for when it wants the rest of the list.
+        "list_sessions" => {
+            let cursor = cmd.cursor.trim();
+            let read = if cmd.limit > 0 {
+                crate::remote_host::catalog::sessions_catalog_window(
+                    "",
+                    (!cursor.is_empty()).then_some(cursor),
+                    cmd.limit,
+                )
+            } else {
+                crate::remote_host::catalog::sessions_catalog_cached("")
+            };
+            match read.map(|catalog| (catalog.payload, catalog.signature)) {
+                Some((payload, _)) => reply(sink, true, payload, None).await,
+                None => reply(sink, false, Value::Null, Some("catalog_unavailable")).await,
+            }
+        }
         "list_workspaces" => match crate::remote_host::catalog::workspaces_cached() {
             Some((payload, _)) => reply(sink, true, payload, None).await,
             None => reply(sink, false, Value::Null, Some("catalog_unavailable")).await,

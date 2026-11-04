@@ -104,6 +104,12 @@ impl CommandRuntime for Context {
             .map(|server| server.catalog_delta(pair))
             .unwrap_or_default()
     }
+    fn catalog_window(&self, pair: &str) -> Arc<AtomicBool> {
+        self.server
+            .upgrade()
+            .map(|server| server.catalog_window(pair))
+            .unwrap_or_default()
+    }
     fn set_catalogue_lane(&self, pair: &str, lane: u8) {
         if let Some(server) = self.server.upgrade() {
             server.set_catalogue_lane(pair, lane);

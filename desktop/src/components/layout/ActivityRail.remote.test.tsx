@@ -1007,3 +1007,38 @@ describe("the device filter from the keyboard", () => {
     view.unmount();
   });
 });
+
+/**
+ * A host sends its newest conversations and keeps the rest a page away, so the
+ * merged list has to offer the remainder the way its own list does.
+ */
+describe("a windowed host's remainder", () => {
+  it("draws the load-more row and asks for the rest when clicked", async () => {
+    const onLoadMoreRemoteSessions = vi.fn(async () => {});
+    const view = await mountRail({
+      remoteCatalogs: [catalogRow("sess_a")],
+      remoteSessionsRemaining: 12,
+      onLoadMoreRemoteSessions,
+    });
+
+    const row = view.container.querySelector<HTMLButtonElement>("[data-testid='rail-load-more']");
+    expect(row).not.toBeNull();
+    expect(row?.getAttribute("data-load-more")).toBe("12");
+    expect(row?.textContent).toContain("12");
+
+    act(() => row?.click());
+    expect(onLoadMoreRemoteSessions).toHaveBeenCalledTimes(1);
+    view.unmount();
+  });
+
+  it("draws nothing when every host sent everything it holds", async () => {
+    const onLoadMoreRemoteSessions = vi.fn(async () => {});
+    const view = await mountRail({
+      remoteCatalogs: [catalogRow("sess_a")],
+      remoteSessionsRemaining: 0,
+      onLoadMoreRemoteSessions,
+    });
+    expect(view.container.querySelector("[data-testid='rail-load-more']")).toBeNull();
+    view.unmount();
+  });
+});

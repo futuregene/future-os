@@ -33,6 +33,8 @@ pub struct IncomingCmd {
     pub tool_call_id: String,
     /// get_session_entries backward cursor (mobile lazy history)
     pub before: Option<i64>,
+    /// list_sessions windowed page: the previous page's nextCursor. Absent asks for the whole catalogue, which is what a client that cannot page still receives.
+    pub cursor: String,
     /// set_model / set_thinking_level
     pub model_id: String,
     pub provider_id: String,
@@ -139,6 +141,7 @@ impl Default for IncomingCmd {
             limit: 0,
             tool_call_id: String::new(),
             before: None,
+            cursor: String::new(),
             model_id: String::new(),
             provider_id: String::new(),
             level: String::new(),

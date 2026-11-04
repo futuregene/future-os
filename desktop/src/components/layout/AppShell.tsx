@@ -322,6 +322,8 @@ function ReadyAppShell({
     refresh: refreshRemotePeers,
     refreshPeers: refreshRemotePeerLabels,
     reconnectAll: reconnectRemotePeers,
+    sessionsRemaining: remoteSessionsRemaining,
+    loadMoreSessions: loadMoreRemoteSessions,
   } = useRemotePeers(true);
   useAutoUpgradeSkills(appSettings.autoUpgradeSkills);
   useAgentDoneBell(appSettings.bellOnComplete);
@@ -1628,6 +1630,8 @@ function ReadyAppShell({
     activeThreadId,
     remotePeers,
     remoteCatalogs,
+    remoteSessionsRemaining,
+    onLoadMoreRemoteSessions: loadMoreRemoteSessions,
     deviceFilter,
     onChangeDeviceFilter: setDeviceFilter,
     onOpenRemoteConversation: openRemoteConversation,

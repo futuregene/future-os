@@ -16,7 +16,7 @@ import { useRemotePeers } from "./useRemotePeers";
 
 const listRemotePeers = vi.fn<() => Promise<RemotePeer[]>>();
 const listRemoteWorkspaces = vi.fn<(desktopId: string) => Promise<RemoteWorkspaceRow[]>>();
-const fetchRemoteSessions = vi.fn<(desktopId: string) => Promise<unknown>>();
+const fetchRemoteSessions = vi.fn<(desktopId: string, cursor?: string | null) => Promise<unknown>>();
 const connectAllRemotePeers = vi.fn<() => Promise<RemotePeer[]>>();
 const connectRemotePeer = vi.fn<(desktopId: string) => Promise<RemotePeer>>();
 const unpairRemotePeer = vi.fn<(desktopId: string) => Promise<string | null>>();
@@ -169,6 +169,71 @@ describe("holding every paired host", () => {
     // the one call allowed to overrule it.
     expect(connectAllRemotePeers).toHaveBeenCalledTimes(1);
     expect(connectRemotePeer).not.toHaveBeenCalled();
+    hook.unmount();
+  });
+});
+
+/**
+ * The window a host sends is its newest conversations; the rest is one page
+ * away. These assert the two halves that make that honest: one click loads the
+ * whole remainder, and a poll that answers with the window alone does not throw
+ * the loaded pages away.
+ */
+describe("paging a windowed catalogue", () => {
+  /** A host that holds three conversations, two of them beyond the window. */
+  const windowed = async (_desktopId: string, cursor?: string | null) => {
+    if (!cursor)
+      return { desktopId: "desktop_a", sessions: [{ sessionId: "a" }], nextCursor: "100:a", totalRoots: 3 };
+    if (cursor === "100:a")
+      return { desktopId: "desktop_a", sessions: [{ sessionId: "b" }], nextCursor: "90:b", totalRoots: 3 };
+    return { desktopId: "desktop_a", sessions: [{ sessionId: "c" }], nextCursor: null, totalRoots: 3 };
+  };
+
+  it("loads the whole remainder in one click and counts what is left", async () => {
+    fetchRemoteSessions.mockImplementation(windowed);
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+
+    expect(hook.current.catalogs[0]?.sessions.map(row => row.sessionId)).toEqual(["a"]);
+    expect(hook.current.sessionsRemaining).toBe(2);
+
+    await act(async () => {
+      await hook.current.loadMoreSessions();
+    });
+
+    expect(hook.current.catalogs[0]?.sessions.map(row => row.sessionId)).toEqual(["a", "b", "c"]);
+    expect(hook.current.sessionsRemaining).toBe(0);
+    hook.unmount();
+  });
+
+  it("keeps the loaded pages when a poll answers with the window alone", async () => {
+    fetchRemoteSessions.mockImplementation(windowed);
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+    await act(async () => {
+      await hook.current.loadMoreSessions();
+    });
+
+    // The five-second poll re-reads the first page and nothing else.
+    await act(async () => {
+      await hook.current.refresh();
+    });
+
+    expect(hook.current.catalogs[0]?.sessions.map(row => row.sessionId)).toEqual(["a", "b", "c"]);
+    hook.unmount();
+  });
+
+  it("offers nothing to load when the host sent its whole list", async () => {
+    fetchRemoteSessions.mockResolvedValue({ desktopId: "desktop_a", sessions: [{ sessionId: "a" }] });
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+
+    expect(hook.current.sessionsRemaining).toBe(0);
+    await act(async () => {
+      await hook.current.loadMoreSessions();
+    });
+    // One read (the first page), and no follow-up pages were asked for.
+    expect(fetchRemoteSessions).toHaveBeenCalledTimes(1);
     hook.unmount();
   });
 });

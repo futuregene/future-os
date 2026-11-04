@@ -51,11 +51,42 @@ pub trait StateHost: Send + Sync {
     /// publisher tells apart, so deciding between a whole snapshot and a
     /// recency packet never costs a second store read.
     fn sessions_catalog(&self, pair: &str) -> Option<SessionsCatalog>;
+    /// One catalogue read: the whole list (`limit == 0`), or one page of the
+    /// newest-first stream (`limit > 0`, `cursor` = the previous page's
+    /// `nextCursor`).
+    ///
+    /// The publisher asks for a page for a client that declared
+    /// `catalog_window_v1`, and the pull path asks for whatever a command named.
+    /// A host that keeps no paging answers with the whole catalogue, which is
+    /// what every host did before this existed.
+    fn sessions_catalog_page(
+        &self,
+        pair: &str,
+        cursor: Option<&str>,
+        limit: i64,
+    ) -> Option<SessionsCatalog> {
+        let _ = (cursor, limit);
+        self.sessions_catalog(pair)
+    }
     fn workspaces(&self) -> Option<(Value, String)>;
     /// `(epoch, sessions revision, workspaces revision)` as last computed.
     /// Must not touch the store: the presence heartbeat calls it every tick.
     fn catalog_revisions(&self) -> (String, u64, u64);
     fn catalog_dirty(&self) -> bool;
+    /// Whether a conversation this host had already told the client about still
+    /// exists here.
+    ///
+    /// The publisher asks only about rows that left a *windowed* catalogue
+    /// packet. With a window, a row leaving the packet is usually still there —
+    /// a newer conversation pushed it out of the newest page — and a reader that
+    /// loaded the rest of the list must not have it deleted from under them.
+    /// Only a conversation this host really no longer has is named as removed.
+    ///
+    /// A host that cannot answer says `false`, which is the pre-window rule: a
+    /// row that left the packet is treated as gone.
+    fn session_still_exists(&self, _session_id: &str) -> bool {
+        false
+    }
     fn agent_available(&self) -> bool;
     fn monitor_agent(&self) -> BoxFuture<'_, ()>;
     /// The desktop-side `takeover` moved control: the windowed desktop raises

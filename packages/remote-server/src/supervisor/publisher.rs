@@ -34,8 +34,7 @@ impl PublisherTiming {
 }
 
 /// Split a catalogue snapshot into the rows a delta packet carries and the
-/// workspace dictionary they name.
-///
+/// workspace dictionary they name.///
 /// A row on this lane names its workspace by id alone: the name, the pin and the
 /// place are properties of the *workspace*, and repeating them on every
 /// conversation was most of what a snapshot cost (70 KB of 283 KB on a machine
@@ -327,6 +326,14 @@ impl Supervisor {
     async fn catalog_snapshot(&self, epoch: u64, pair: &str) -> Option<CatalogRead> {
         let host = self.host.clone();
         let access = self.access.clone();
+        // A client that reads the catalogue as a window gets the newest roots
+        // now and the rest on request; a client that does not is sent every row,
+        // exactly as before. Read once per tick, like the other declarations.
+        let window = if self.catalog_window(pair).load(Ordering::Acquire) {
+            future_remote_protocol::CATALOG_WINDOW_ROOTS
+        } else {
+            0
+        };
         let pair = pair.to_owned();
         let (tx, rx) = tokio::sync::oneshot::channel();
         // Register atomically with invalidation. Already-running native reads
@@ -336,7 +343,7 @@ impl Supervisor {
                 if access.current() == epoch && !tx.is_closed() {
                     let snapshot = (
                         host.catalog_dirty(),
-                        host.sessions_catalog(&pair),
+                        host.sessions_catalog_page(&pair, None, window),
                         host.workspaces(),
                     );
                     let _ = tx.send(snapshot);
@@ -388,6 +395,10 @@ impl Supervisor {
         let mut delivered_rows: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
         let mut delivered_dictionary: Option<String> = None;
+        // Where the window ends, as the delta lane last told this connection:
+        // the cursor and the scope's size. Cheap enough to restate in one small
+        // packet when they move, and stale forever otherwise.
+        let mut delivered_window: Option<String> = None;
         let mut last_workspaces_sig = String::new();
         loop {
             interval.tick().await;
@@ -402,6 +413,7 @@ impl Supervisor {
                 delivered_activity.clear();
                 delivered_rows.clear();
                 delivered_dictionary = None;
+                delivered_window = None;
                 continue;
             }
             // Read once per tick: the declaration belongs to the connection, and
@@ -444,16 +456,60 @@ impl Supervisor {
                         }
                         next_rows.insert(session, signature);
                     }
+                    // Where the window ends is content a delta packet names
+                    // explicitly: a reader offering "show the rest" needs the
+                    // cursor and the size, and neither is derivable from the rows
+                    // it already holds. It moves only when a conversation leaves
+                    // or joins the list — not while one of them streams — and it
+                    // exists only for a client that asked for a window, so every
+                    // other connection's packet stays byte for byte what it was.
+                    let windowed = catalog
+                        .payload
+                        .get("windowed")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
                     // Deletion is always named. Nothing here relies on a row
-                    // being absent to mean it went away.
-                    let removed: Vec<String> = delivered_rows
-                        .keys()
-                        .filter(|session| !next_rows.contains_key(*session))
-                        .cloned()
+                    // being absent to mean it went away — and with a window, a row
+                    // that left the packet is usually still there, because a newer
+                    // conversation pushed it out of the newest page. Naming it as
+                    // removed would delete a conversation the reader had already
+                    // loaded (and, once it is behind the window, could not easily
+                    // get back), so with a window the host is asked which departed
+                    // rows it still has. A conversation that is genuinely gone is
+                    // still named, exactly as before.
+                    let departed: Vec<(String, String)> = delivered_rows
+                        .iter()
+                        .filter(|(session, _)| !next_rows.contains_key(*session))
+                        .map(|(session, signature)| (session.clone(), signature.clone()))
                         .collect();
+                    let mut removed: Vec<String> = Vec::new();
+                    for (session, signature) in departed {
+                        if windowed && self.host.session_still_exists(&session) {
+                            // Keep it tracked as told: the row is still the client's,
+                            // and re-asking on every tick would cost a store read
+                            // per shift for an answer that does not change.
+                            next_rows.insert(session, signature);
+                            continue;
+                        }
+                        removed.push(session);
+                    }
                     let dictionary_moved =
                         delivered_dictionary.as_deref() != Some(dictionary_sig.as_str());
-                    if full || !changed.is_empty() || !removed.is_empty() || dictionary_moved {
+                    let window = serde_json::json!({
+                        "nextCursor": catalog.payload.get("nextCursor").cloned()
+                            .unwrap_or(serde_json::Value::Null),
+                        "totalRoots": catalog.payload.get("totalRoots").cloned()
+                            .unwrap_or(serde_json::Value::Null),
+                    });
+                    let window_sig = window.to_string();
+                    let window_moved =
+                        windowed && delivered_window.as_deref() != Some(window_sig.as_str());
+                    if full
+                        || !changed.is_empty()
+                        || !removed.is_empty()
+                        || dictionary_moved
+                        || window_moved
+                    {
                         let mut body = serde_json::json!({
                             "pairId": pair_id,
                             "full": full,
@@ -463,6 +519,10 @@ impl Supervisor {
                         });
                         if dictionary_moved {
                             body["workspaces"] = dictionary;
+                        }
+                        if window_moved {
+                            body["nextCursor"] = window["nextCursor"].clone();
+                            body["totalRoots"] = window["totalRoots"].clone();
                         }
                         let bytes =
                             serde_json::to_vec(&body).expect("a delta Value always serializes");
@@ -482,6 +542,9 @@ impl Supervisor {
                                 delivered_rows = next_rows;
                                 if dictionary_moved {
                                     delivered_dictionary = Some(dictionary_sig);
+                                }
+                                if window_moved {
+                                    delivered_window = Some(window_sig);
                                 }
                                 self.note_catalogue_packet(&pair_id, sealed);
                             }

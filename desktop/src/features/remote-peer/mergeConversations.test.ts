@@ -7,6 +7,7 @@ import type {
 } from "./mergeConversations";
 import { describe, expect, it } from "vitest";
 import {
+  appendRemoteCatalogPage,
   archivedRemoteShelves,
   compareConversations,
   compareSource,
@@ -14,7 +15,9 @@ import {
   groupMergedRows,
   localTimestamp,
   mergeConversations,
+  mergeRemoteCatalogWindow,
   mergeRemoteSessionDelta,
+  remoteCatalogRemaining,
   rowKey,
 } from "./mergeConversations";
 
@@ -1004,5 +1007,112 @@ describe("archived rows", () => {
     const none = filterArchivedRemoteShelves(shelves, "gamma");
     expect(none.workspaces).toEqual([]);
     expect(none.rows).toEqual([]);
+  });
+});
+
+/**
+ * The windowed catalogue: a host sends its newest conversations and keeps the
+ * rest a page away, so the reader's own cursor and the rows behind it have to
+ * survive every snapshot the host restates.
+ */
+describe("windowed catalogues", () => {
+  const row = (sessionId: string, extra: Partial<RemoteSessionRow> = {}): RemoteSessionRow => ({
+    sessionId,
+    title: `Title ${sessionId}`,
+    streaming: false,
+    lastMessageAt: 100,
+    ...extra,
+  });
+
+  it("takes the window's own cursor until the reader asks for more", () => {
+    const answer: RemoteCatalog = {
+      desktopId: "desktop_a",
+      sessions: [row("a"), row("b")],
+      nextCursor: "100:b",
+      totalRoots: 12,
+    };
+    const merged = mergeRemoteCatalogWindow(answer, undefined);
+    expect(merged.pageCursor).toBe("100:b");
+    expect(merged.totalRoots).toBe(12);
+    expect(merged.pagedIds).toEqual([]);
+  });
+
+  it("carries the pages a reader loaded across a fresh window snapshot", () => {
+    const held: RemoteCatalog = {
+      desktopId: "desktop_a",
+      sessions: [row("a"), row("b"), row("older")],
+      nextCursor: "100:b",
+      totalRoots: 12,
+      pageCursor: "50:older",
+      pagedIds: ["older"],
+    };
+    // The poll answers with the window alone — exactly what it always sends.
+    const answer: RemoteCatalog = {
+      desktopId: "desktop_a",
+      sessions: [row("a"), row("b")],
+      nextCursor: "100:b",
+      totalRoots: 12,
+    };
+    const merged = mergeRemoteCatalogWindow(answer, held);
+    expect(merged.sessions.map(item => item.sessionId)).toEqual(["a", "b", "older"]);
+    expect(merged.pagedIds).toEqual(["older"]);
+    // The reader's place is theirs: the window's edge would move it back.
+    expect(merged.pageCursor).toBe("50:older");
+  });
+
+  it("follows the host when a list nobody paged has nothing more", () => {
+    const held: RemoteCatalog = {
+      desktopId: "desktop_a",
+      sessions: [row("a")],
+      nextCursor: "100:a",
+      pageCursor: "100:a",
+      pagedIds: [],
+    };
+    const merged = mergeRemoteCatalogWindow(
+      { desktopId: "desktop_a", sessions: [row("a")], nextCursor: null },
+      held,
+    );
+    expect(merged.pageCursor).toBeNull();
+  });
+
+  it("appends a page, records what came from it, and advances the cursor", () => {
+    const held: RemoteCatalog = {
+      desktopId: "desktop_a",
+      sessions: [row("a"), row("b")],
+      nextCursor: "100:b",
+      pageCursor: "100:b",
+      totalRoots: 4,
+      pagedIds: [],
+    };
+    const next = appendRemoteCatalogPage(held, {
+      desktopId: "desktop_a",
+      // A row the window already delivered is the same conversation, not a second.
+      sessions: [row("b"), row("c")],
+      nextCursor: "20:c",
+      totalRoots: 4,
+    });
+    expect(next.sessions.map(item => item.sessionId)).toEqual(["a", "b", "c"]);
+    expect(next.pagedIds).toEqual(["c"]);
+    expect(next.pageCursor).toBe("20:c");
+
+    const last = appendRemoteCatalogPage(next, {
+      desktopId: "desktop_a",
+      sessions: [row("d")],
+      nextCursor: null,
+      totalRoots: 4,
+    });
+    expect(last.pageCursor).toBeNull();
+  });
+
+  it("counts the remainder in roots, so a fork is not counted twice", () => {
+    const held: RemoteCatalog = {
+      desktopId: "desktop_a",
+      // A root and its fork child: one conversation of the four the host holds.
+      sessions: [row("a"), row("child", { parentSessionId: "a" })],
+      totalRoots: 4,
+    };
+    expect(remoteCatalogRemaining(held)).toBe(3);
+    // A host that does not count (no window) has nothing to promise.
+    expect(remoteCatalogRemaining({ desktopId: "desktop_a", sessions: [row("a")] })).toBe(0);
   });
 });
