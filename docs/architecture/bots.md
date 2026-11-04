@@ -345,6 +345,11 @@ group-chat cost comes from
 ([ANTIPATTERNS §35](https://github.com/unicodef1wn/grokbot-field-notes/blob/main/ANTIPATTERNS.md)).
 The exact ratio needs measurement (§15).
 
+**The default is `router`.** A new channel includes the chief as a member (§9.2)
+and lets it judge; when the user declines to create a chief the channel falls back
+to `mention_only` rather than pretending to have a judge. `eager` is off by
+default and stays available as a channel-level option.
+
 The judge's contract:
 
 - Input only: the machine's roster (name plus one-line job), this channel's
@@ -465,8 +470,8 @@ but **not co-located** — the only structural answer to requirement 3.
   `scope <> 'user'`. One place satisfies requirements 1 and 2.
 - `#` session mentions are **disabled entirely** on the bot and channel surfaces
   (the landing point for requirement 2; bots address each other with `@`, so the
-  semantics do not collide). The `@` menu in a channel never includes the user's
-  conversations.
+  semantics do not collide). The `@` menu in a channel lists bots only and never includes
+  the user's conversations.
 - `scope` is not a derived field: every thread recorded in `bots.dm_thread_id` or
   `channel_bindings` must carry the matching `scope`, backed by the consistency
   sweep in §3.3.
@@ -500,13 +505,18 @@ independently, so a crash loop in one does not take the other down.
 **Configuration sharing** (the only place this design needs an agent change):
 `models.json`, `auth.json` and the skill directories all live under
 `<home>/agent/`, and `FUTURE_HOME` moves them, so adding a provider, signing out
-or installing a skill would have to happen twice. The answer is a **configuration
+or installing a skill would have to happen twice. v1 adds a **configuration
 directory override** (pointing at the user's `agent/` config) that affects reads
 only and moves no data. Not a symlink (Windows needs a privilege or Developer
-Mode), and not a copy (two copies drift). On skills:
-`~/.future/agent/skills` moves with the home while `~/.agents/skills` already
-lives under the real user home and is unaffected — the same override points both
-instances at the same paths, so bots and the user see one skill set.
+Mode), and not a copy (two copies drift). On skills: `~/.future/agent/skills`
+moves with the home while `~/.agents/skills` already lives under the real user
+home and is unaffected — the same override points both instances at the same
+paths, so bots and the user see one skill set. The target shape after that is
+`~/.future/config/` holding `models.json`, `auth.json` and `skills/`, shared by
+construction with the override field retired; that is a task on a released layout
+(migration, backup manifest, the sandbox's hard-deny paths, docs) and is
+scheduled separately from the bot feature (§12 item 2). `settings.json` never
+joins the shared set: each instance keeps its own (§12 item 3).
 
 ### 8.4 The shape of that instance
 
@@ -677,113 +687,46 @@ No deadlock, but a silent stall is possible, and the two must not be conflated.
 
 ### 11.3 The `@` change and existing file references
 
-Today `@` in the editor mentions **workspace files**
+Today, in a user conversation's editor, `@` mentions **workspace files**
 (`desktop/src/features/agent/MentionEditor.tsx`; a file pill serialises to
-`[name](./path)`), and `#` mentions sessions.
+`[name](./path)`), and `#` mentions sessions. **On the bot and channel surfaces
+exactly one thing differs: `@` calls people, not files.**
 
 | Existing behaviour | After the change | Verdict |
 |---|---|---|
 | File pills in stored drafts and messages | They serialise to markdown links and never go through mention parsing | Unaffected |
-| `#` session mentions | unchanged in user conversations; disabled entirely on the bot and channel surfaces | Satisfies the isolation requirement |
-| `@` in a channel editor | three groups: channel members → other bots → files | Files stay mentionable, third |
+| `#` session mentions | unchanged in user conversations; disabled entirely on the bot and channel surfaces | Satisfies the isolation requirement (§8.2) |
+| `@` in a user conversation | unchanged: still mentions workspace files | The two surfaces stay independent |
+| `@` in the bot and channel editors | **bots only**: channel members → other bots | No file group in that menu (§12 item 6) |
+| Giving a file to a bot | drag it in, or type its path | Files are a tool-layer concern, not a way to call someone |
 | Hand-typed `@./src/main.rs` | matches no roster name, treated as plain text | No error, no wake |
 | A bot writing `@Writer` as plain text | parsed by the kernel | Required: the CLI, the phone and bot-authored messages are all plain text |
 | A machine and a file sharing a name (a bot called `docs`) | the roster match wins | Warn about the clash when the bot is created |
 
-No data migration: no existing data carries the meaning "`@name` is a bot".
+No data migration: no existing data carries the meaning "`@name` is a bot", and
+`@` inside user conversations is untouched.
 
 ---
 
-## 12. Decisions that need a human answer
+## 12. Decisions taken
 
-Each item gives both options, what each changes and costs, and the recommendation
-with its reason.
+Every item below is settled. It is written down so a later reader knows **why**,
+and under what condition it should be reopened — not to recount how it was
+reached.
 
-### 12.1 Permission default: full access, or layer 0 only
+| # | Decision | Reasoning | Reopen when |
+|---|---|---|---|
+| 1 | **Full access by default**: bot sessions carry no `sandbox_tier` and `permission_level='all'` (§10.1) | The person running the bot owns the machine; breaking a config costs a reinstall, while a policy layer that must be maintained forever costs continuously | The day bots are offered to someone other than the machine's owner: switch to "layer 0 only" (no touching model config or credentials) |
+| 2 | **Point at the config first, hoist later**: v1 adds a config-directory override so the bot instance reads the user's `models.json`, `auth.json` and app-scope skills; moving all three into `~/.future/config/` is a separate follow-up task | The override is one change with the same behaviour as hoisting, while hoisting touches a released data layout and drags in migration, the backup manifest, the sandbox's hard-deny paths and the docs | Once the second instance has run stably, hoist as its own task; the two then share by construction and the override field retires |
+| 3 | **`settings.json` stays per instance** | It carries the default model, the approval tier and compaction thresholds; a bot may want a cheaper model than you, and a bot editing it must not edit yours | If the two sides turn out to be identical for a long time and the upkeep becomes a burden, revisit sharing the read-only fields |
+| 4 | **Default speaking policy `router`** (with a chief); `mention_only` without one; `eager` off by default (§5) | One judgement of a few hundred tokens removes the largest friction — the human doing the routing every turn — at almost no cost | The measured misjudgement rate (§15 item 6) is high enough that a user would rather name speakers |
+| 5 | **`eager` is capped at 6 members and judged by a cheap model** (§5) | A group's value is a few viewpoints, not a crowd; the judge only needs to know whether a job is involved, not to reason hard | Measurement shows a cheap judge misjudges far more than a strong one *and* users turn `eager` on often |
+| 6 | **`@` on the bot and channel surfaces lists bots only** (§11.3) | In a channel, `@` means "call someone"; making a person first think about what `@` points at now costs more than one missing menu group | Users need to cite files there often enough that dragging and typed paths are not enough, and the file group comes back |
+| 7 | **Private-chat context is off by default inside a channel**, with a per-channel switch (§4.4) | The leak is silent: others in the group see a sentence and never learn it came from a private chat | Users complain about re-explaining background every time and accept a visible "this turn cited private context" mark |
+| 8 | **The chief confirms before creating a bot**, switchable off (§9.2) | A roster that only grows is this system's characteristic disease; one confirmation is far cheaper than the cleanup | A user creates several bots a day and confirmation becomes the burden: then confirm only batch creation |
 
-- **Option 1 (full access, current design)**: no `sandbox_tier`, no rule
-  evaluation. Zero changes; `future bot new` and channel reads/writes are
-  frictionless. Cost: a bot can rewrite `models.json` and its own rule file, and
-  the file boundary exists only in the prompt.
-- **Option 2 (layer 0 only)**: a new tier that keeps only the hard denies. One
-  more agent change and three-platform verification in exchange for "cannot
-  rewrite model config and credentials".
-- **Recommendation: option 1.** The person running the bot is the machine's
-  owner, so breaking config costs a reinstall, while a policy layer that must be
-  maintained forever costs continuously. Switch to option 2 the day bots are
-  offered to someone other than the machine's owner.
-
-### 12.2 How the bot instance shares configuration
-
-A separate instance puts `models.json`, `auth.json` and the skill directories
-under another home.
-
-- **Option 1 (config directory override)**: one field or environment variable
-  makes the bot instance read the user's `agent/` config (models, credentials,
-  app-scope skills). Reads only, no data moved, platform-safe. Requires one agent
-  change.
-- **Option 2 (copy)**: copy at creation and sync later. No agent change, but the
-  two copies drift — the user adds a provider or signs out, the bot still has the
-  old state, and the failure is silent.
-- **Option 3 (symlink)**: no agent change, but Windows needs a privilege or
-  Developer Mode, which conflicts with the three-platform promise.
-- **Recommendation: option 1.** It is the only agent change this design needs,
-  and it buys one config, one set of credentials and one skill set; option 2's
-  drift is hardest to diagnose exactly when "the provider I just added does not
-  exist for the bot".
-
-### 12.3 Default speaking policy
-
-- **Option 1 (`router`)**: a new channel gets a chief judgement, so it feels like
-  "it answered on its own" at almost no cost. Cost: one cheap judgement, which
-  can misjudge.
-- **Option 2 (`mention_only`)**: fully predictable, never misjudges, but the user
-  must decide whom to call.
-- **Recommendation: option 1.** One judgement of a few hundred tokens removes the
-  largest usage friction — the human doing the routing every turn. Keep
-  `mention_only` as a channel-level "silent" setting.
-
-### 12.4 The `eager` cap and the judge's model
-
-- **Option 1 (N ≤ 6, judge on a cheap model)**: the same group size Grok Bot uses,
-  with judgement cost pressed to the floor.
-- **Option 2 (no cap, judge on the same model as the bots)**: more accurate, with
-  cost rising linearly with membership.
-- **Recommendation: option 1.** A group's value is a few viewpoints, not a crowd;
-  the judge only needs to know whether a message touches a job, not to reason
-  hard. The two escape hatches (`maybe` and "this was not my job") already cover
-  accuracy.
-
-### 12.5 `@` semantics inside a channel
-
-- **Option 1**: `@` matches bots first, and files move to the third group of the
-  same menu.
-- **Option 2**: `@` keeps the file meaning and bots get another symbol.
-- **Recommendation: option 1.** In a person's intuition `@` means "call someone",
-  and it is this feature's main path; option 2 turns the most common action into
-  something that has to be taught. The cost is that `@` behaves differently in
-  different editors, which the menu groups must express rather than the docs.
-
-### 12.6 May a bot use its private-chat context inside a channel
-
-- **Option 1 (off by default, per-channel switch)**: Grok Bot defaults to
-  allowing it ([source](https://docs.x.ai/grok-bot/bots): "In a group chat, your
-  Bot can use what you told it in your private chat").
-- **Option 2 (on by default, matching it)**: one less background to repeat.
-- **Recommendation: option 1.** This leak is silent: others in the group see a
-  sentence and never learn it came from a private chat. When it is needed, turn it
-  on and mark the turn as having used private context.
-
-### 12.7 Must the chief confirm before creating a bot
-
-- **Option 1 (confirm by default)**: the chief restates the job and waits for
-  "create".
-- **Option 2 (create directly)**: zero friction, and sixteen bots before long.
-- **Recommendation: option 1, switchable off.** A roster that only grows is this
-  system's characteristic disease; one confirmation is far cheaper than the
-  cleanup afterwards.
-
----
+Only the second item carries real work (one config override); the rest are
+parameter choices over mechanisms that already exist.
 
 ## 13. Cross-machine bots: not doing it, and what is missing
 
@@ -821,7 +764,7 @@ one explicit message instead of pretending it can participate.
 | **P1 Bot** | `bots.db` and its schema, **the bot's own agent instance and config override**, the private thread, navigation entry, bot list, one-click chief, `future bot` CLI | create a bot, talk three turns, restart and both name and memory are intact; its private conversation is absent from Recent and Workspace; **the user-side `future session list` does not contain it at all**; the bot can use the user's configured models and installed skills; `future data` backs up `bots/bots.db` and the bot `agent-home` |
 | **P2 Channel** | `channels` / `members` / `bindings` / `turns`, `threads.scope`, routing kernel, three policies, executor, channel view, startup sweep | two bots and me: `@`-ing one gets exactly one reply; a bot `@`-ing another stops at chain depth 2; a 9-turn message is cut by the budget with a stated reason; under `router`, nobody @-ed still yields the right speaker with a visible reason; all nine entry points of §8.5 pass; deleting a bot's thread by hand degrades the bot to "conversation deleted, can be recreated" instead of erroring |
 | **P3 Memory and routines** | observable memory writes, channel summary, routines bound to a bot, growth from a conversation | ask a bot to remember a preference and it holds in a new channel the next day; create a daily routine for a bot and read its run ledger; a conversation turned into a bot shows up on the roster |
-| **P4 Optional tightening** | layer-0-only tier, cross-channel handoff, duplication and sharing | a bot cannot read `models.json`; A hands a result to B and B's answer lands where expected; a duplicated bot carries no memory |
+| **P4 Optional tightening** | hoisting config into `~/.future/config/` (a separate task), the layer-0-only tier (only if bots are offered to others), cross-channel handoff, duplication and sharing | both instances read one config and the override field is gone; a bot cannot read `models.json`; A hands a result to B and B's answer lands where expected; a duplicated bot carries no memory |
 
 **Not doing** (stated so it is not asked again): voice calls, browser/desktop
 control, `@bot` from X, wiring a channel into an IM bridge, cross-machine bots.
