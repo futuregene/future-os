@@ -2962,9 +2962,16 @@ fn nfs_new_session_is_durable_before_it_is_announced_and_can_be_deleted() {
     }
     future_rpc::storage::StorageMode::Nfs.apply();
     let state = make_app_state();
-    let response = parse_response(&handle_command_internal(&state, make_cmd("new_session")));
+    // make_cmd targets the fixture's already reserved "default" session.
+    // This case must create a fresh identity, as a real new-session caller does.
+    let mut command = make_cmd("new_session");
+    command.session_id = uuid::Uuid::new_v4().to_string();
+    let expected_id = command.session_id.clone();
+    assert!(!state.session_manager.contains(&expected_id).unwrap());
+    let response = parse_response(&handle_command_internal(&state, command));
     assert_eq!(response["success"], true, "{response}");
     let id = response["data"]["sessionId"].as_str().unwrap();
+    assert_eq!(id, expected_id);
     assert!(state.session_manager.contains(id).unwrap());
     let entries = state
         .session_manager
