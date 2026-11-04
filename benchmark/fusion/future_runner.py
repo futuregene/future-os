@@ -149,6 +149,7 @@ class Future:
             "primary_endpoint": "daily_final_answer",
         }
         session = None
+        answer_received = False
         try:
             created = self.call(
                 ["session", "new", "--cwd", str(workspace.resolve()), "--json"]
@@ -181,6 +182,7 @@ class Future:
             session = ack["sessionId"]
             result.update(session_id=session, run_id=ack["runId"])
             output = self.wait(session, ack["runId"], timeout, fusion=arm == "fusion")
+            answer_received = True
             write_json(directory / "output.json", output)
             result["answer_wall_seconds"] = time.monotonic() - started
             result["text"] = output["text"]
@@ -277,7 +279,7 @@ class Future:
                 result.update(status="completed", grade=result["outer_grade"])
         except (RuntimeError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
             result["error"] = str(error)
-            if session:
+            if session and not answer_received:
                 try:
                     self.call(["session", "abort", session], json_output=False)
                 except (RuntimeError, ValueError, subprocess.TimeoutExpired):
@@ -295,6 +297,10 @@ class Future:
         write_json(directory / f"discussion-{index}.json", discussion)
         if index == 0:
             write_json(directory / "discussion.json", discussion)
+        if "run" not in discussion:
+            return unexecuted_consultation(
+                discussion, tool_id, self.transcript(session)
+            )
         run = discussion["run"]
         if run["input"].get("read_scope"):
             raise ValueError("Fusion received a nonempty read_scope")
@@ -366,6 +372,38 @@ class Future:
             "kernel_grade": score(case, conclusion) if whole_question else None,
             "stage_grades": stages,
         }
+
+
+def unexecuted_consultation(discussion, tool_id, transcript):
+    """A truncated tool call can have a terminal result without a durable run."""
+    results = [
+        block.get("text", "")
+        for entry in transcript.get("entries", [])
+        for block in entry.get("blocks", [])
+        if block.get("kind") == "tool_result" and block.get("toolCallId") == tool_id
+    ]
+    if discussion.get("pending") is not True or not any(
+        "fusion was not executed due to connection interruption" in text
+        for text in results
+    ):
+        raise ValueError("Missing Fusion record without an unexecuted tool receipt")
+    return {
+        "id": None,
+        "tool_call_id": tool_id,
+        "status": "not_started",
+        "error_category": "tool_not_executed",
+        "tool_result": "\n".join(results),
+        "configuration": None,
+        "completeness": "none",
+        "report": None,
+        "whole_question_verbatim": False,
+        "wall_seconds": None,
+        "usage": {},
+        "step_attempt_failure_kinds": {},
+        "kernel_text": "",
+        "kernel_grade": None,
+        "stage_grades": [],
+    }
 
 
 def prompt_for(case):

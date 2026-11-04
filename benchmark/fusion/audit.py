@@ -6,7 +6,13 @@ from collections import Counter
 from pathlib import Path
 
 from datasets import digest, read_json, write_json
-from future_runner import BASE_MODEL, BASE_THINKING, Future, tool_calls
+from future_runner import (
+    BASE_MODEL,
+    BASE_THINKING,
+    Future,
+    tool_calls,
+    unexecuted_consultation,
+)
 from scoring import sum_usage
 
 
@@ -133,6 +139,20 @@ def collect(directory, binary, runtime=None):
                 write_json(path.parent / f"discussion-audited-{index}.json", discussion)
                 if len(calls) == 1:
                     write_json(path.parent / "discussion-audited.json", discussion)
+                if "run" not in discussion:
+                    if not daily:
+                        raise ValueError(
+                            "Legacy consultation is missing its run record"
+                        )
+                    item = unexecuted_consultation(
+                        discussion, call["toolCallId"], transcript
+                    )
+                    consulted.append(item)
+                    if len(calls) == 1:
+                        result.update(fusion_status="not_started", completeness="none")
+                    if result.get("error") == "'run'":
+                        result.setdefault("error_category", "evidence_collection")
+                    continue
                 run = discussion["run"]
                 if digest(run["configuration"]) != digest(
                     manifest["configuration"]["fusion"]["configuration"]

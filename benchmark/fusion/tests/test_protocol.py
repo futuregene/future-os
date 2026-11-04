@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from datasets import ROOT, load_frozen_questions, read_json, sample_cases, write_json  # noqa: E402
 from audit import collect  # noqa: E402
-from future_runner import Future  # noqa: E402
+from future_runner import Future, unexecuted_consultation  # noqa: E402
 from reporting import generate  # noqa: E402
 from scoring import score  # noqa: E402
 
@@ -65,6 +65,101 @@ class ReasoningProtocolTests(unittest.TestCase):
                     self.assertEqual(observed["error_category"], "fusion_not_invoked")
                     self.assertFalse(observed["protocol_valid"])
                 self.assertTrue((directory / "result-observed.json").exists())
+
+    def test_unexecuted_tool_receipt_does_not_imply_a_completed_consultation(self):
+        transcript = {
+            "entries": [
+                {
+                    "blocks": [
+                        {
+                            "kind": "tool_result",
+                            "toolCallId": "truncated",
+                            "text": "[Tool execution cancelled — fusion was not executed due to connection interruption (retrying)]",
+                        }
+                    ]
+                }
+            ]
+        }
+        item = unexecuted_consultation({"pending": True}, "truncated", transcript)
+        self.assertEqual(item["status"], "not_started")
+        self.assertEqual(item["kernel_text"], "")
+        self.assertIsNone(item["configuration"])
+        result = self.daily_case_with_consultations(1, item)
+        self.assertEqual(result["status"], "completed")
+        self.assertTrue(result["grade"]["correct"])
+        self.assertEqual(result["fusion_invocations"], 1)
+        self.assertEqual(result["completed_consultations"], 0)
+        self.assertEqual(result["routing_outcome"], "no_conclusion")
+        with self.assertRaisesRegex(ValueError, "Missing Fusion record"):
+            unexecuted_consultation({"pending": True}, "other-call", transcript)
+        with self.assertRaisesRegex(ValueError, "Missing Fusion record"):
+            unexecuted_consultation({}, "truncated", transcript)
+
+    def test_audit_keeps_grade_when_a_tool_call_was_cancelled_before_execution(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            directory = root / "r0-demo-1-fusion"
+            directory.mkdir()
+            (root / "harness").mkdir()
+            write_json(root / "manifest.json", {"execution_profile": "daily"})
+            grade = {"correct": False, "parsed": False}
+            write_json(
+                directory / "result.json",
+                {
+                    "case_id": "demo:1",
+                    "arm": "fusion",
+                    "session_id": "original",
+                    "run_id": "accepted",
+                    "status": "error",
+                    "error": "'run'",
+                    "grade": grade,
+                },
+            )
+            transcript = {
+                "entries": [
+                    {
+                        "blocks": [
+                            {
+                                "kind": "tool_call",
+                                "name": "fusion",
+                                "toolCallId": "truncated",
+                            },
+                            {
+                                "kind": "tool_result",
+                                "toolCallId": "truncated",
+                                "text": "fusion was not executed due to connection interruption",
+                            },
+                        ]
+                    }
+                ]
+            }
+
+            def response(args, **kwargs):
+                if args[:2] == ["session", "status"]:
+                    return {
+                        "model": "future/deepseek-flash",
+                        "thinkingLevel": "max",
+                        "contextFilesEnabled": False,
+                    }
+                if args[:2] == ["fusion", "show"]:
+                    return {"pending": True}
+                self.fail(f"Unexpected mutation or call: {args}")
+
+            with patch("audit.Future") as factory:
+                client = factory.return_value
+                client.call.side_effect = response
+                client.transcript.return_value = transcript
+                collect(root, "unused-binary")
+            observed = read_json(directory / "result.json")
+            self.assertEqual(observed["grade"], grade)
+            self.assertEqual(observed["status"], "error")
+            self.assertEqual(observed["error_category"], "evidence_collection")
+            self.assertEqual(observed["fusion_invocations"], 1)
+            self.assertEqual(observed["completed_consultations"], 0)
+            self.assertEqual(observed["consultations"][0]["status"], "not_started")
+            self.assertEqual(
+                read_json(directory / "result-observed.json")["grade"], grade
+            )
 
     def test_modified_frozen_question_is_rejected_before_generation(self):
         suite = read_json(ROOT / "suites/dev-12.json")
@@ -164,7 +259,7 @@ class ReasoningProtocolTests(unittest.TestCase):
                     result["routing_outcome"], "completed" if count else "not_invoked"
                 )
 
-    def daily_case_with_consultations(self, count):
+    def daily_case_with_consultations(self, count, consultation=None):
         client = Future("unused-binary")
 
         def response(args, **kwargs):
@@ -190,7 +285,7 @@ class ReasoningProtocolTests(unittest.TestCase):
                 ]
             }
         ]
-        consultation = {
+        consultation = consultation or {
             "status": "completed",
             "kernel_text": "FINAL_ANSWER: 7",
             "usage": {},
