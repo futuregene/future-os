@@ -404,3 +404,31 @@ async fn a_drained_application_fixture_reset_invalidates_every_old_context() {
         .is_none());
     server.shutdown(Duration::from_secs(1)).await.unwrap();
 }
+
+/// Re-pairing replaces what this machine serves, and stopping the runtime is how
+/// it takes the old bridges down first.
+///
+/// With an empty book and nothing served there is nothing to replace, so that
+/// stop would buy nothing and cost the machine-wide teardown: the epoch is
+/// bumped and `start_requested` cleared on the request that is about to mint the
+/// new code. What that looks like from outside is a host that stops itself on
+/// `future remote devices add` — a headless entry reads `Stopped` with the
+/// switch still on as a fault and exits before it can answer (measured in
+/// `cli/tests/remote_start_refusal.rs`, which answers with "the invitation was
+/// not issued" instead of the invitation or the broker's own refusal).
+#[tokio::test]
+async fn re_pairing_a_machine_with_nothing_to_replace_does_not_stop_it() {
+    let supervisor = Supervisor::new(Arc::new(MemoryHost::default()), Arc::new(TokioExecutor));
+    assert!(supervisor.host.load_slots().is_empty());
+    assert!(supervisor.state.lock().unwrap().is_empty());
+    let epoch = supervisor.access.current();
+    // The fixture host mints nothing, so the answer is that failure; the road
+    // there — no machine-wide stop — is what this pins.
+    let _ = supervisor.re_pair().await;
+    assert_eq!(
+        supervisor.access.current(),
+        epoch,
+        "re-pairing an empty book stopped the machine it was about to pair"
+    );
+    supervisor.shutdown(Duration::from_secs(1)).await.unwrap();
+}
