@@ -174,10 +174,13 @@ extracts from the mp4 — so those controls cannot leak into a finding.
 
 1. **Deterministic** (`--mode heuristic`): failed checks, exceptions, console
    errors, network failures, IPC errors, heap/main-thread growth, slow steps.
-2. **Vision** (`--mode full`): up to three key screenshots per case are read by
-   `future tools call read_image`, with the case's own expectations as the
-   question. This is where "the page is blank", "the text is clipped" or "the
-   dialog is empty" get found without an assertion having encoded them.
+2. **Vision** (`--mode full`): up to three key screenshots per case are read with
+   the case's own expectations as the question. If the analysis model accepts
+   image input (its `models.json` entry lists `image`), the screenshots are
+   attached to that model directly (`future run --image`); otherwise the
+   `read_image` tool is the fallback. This is where "the page is blank", "the
+   text is clipped" or "the dialog is empty" get found without an assertion
+   having encoded them.
 3. **Synthesis** (`--mode full`): `future run --mode json` reads the timeline,
    deterministic signals and vision notes, and returns findings as strict JSON.
 

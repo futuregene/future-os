@@ -28,6 +28,44 @@ export function futureBin() {
   return existsSync(local) ? local : "future";
 }
 
+/** The model the analysis uses when `--model` is not given. */
+export function defaultAnalyzerModel() {
+  const settingsPath = join(REPO_ROOT, "harness", ".data", "cli", "settings.json");
+  try {
+    return JSON.parse(readFileSync(settingsPath, "utf8")).defaultModel ?? null;
+  }
+  catch {
+    return null;
+  }
+}
+
+/**
+ * Whether a model accepts image input, from the snapshot of the agent's model
+ * registry. A model id may be provider-qualified (`provider/id`); the registry
+ * is matched by the bare id when the provider differs, which is what the agent
+ * itself does when resolving a bare id.
+ */
+export function supportsVision(modelId) {
+  if (!modelId)
+    return false;
+  const modelsPath = join(REPO_ROOT, "harness", ".data", "models.json");
+  try {
+    const providers = JSON.parse(readFileSync(modelsPath, "utf8")).providers ?? {};
+    const bare = String(modelId).split("/").pop();
+    for (const [provider, config] of Object.entries(providers)) {
+      for (const model of config.models ?? []) {
+        if (`${provider}/${model.id}` !== modelId && model.id !== bare)
+          continue;
+        return Array.isArray(model.modalities) && model.modalities.includes("image");
+      }
+    }
+  }
+  catch {
+    // No snapshot: fall back to the image tool.
+  }
+  return false;
+}
+
 function cleanOutput(text) {
   return String(text)
     .split("\n")
@@ -56,10 +94,12 @@ export async function readImage(input, question, { timeout = 300_000 } = {}) {
 }
 
 /** `future run` with the prompt in a file (no argv length limits, no quoting). */
-export async function runPrompt(promptPath, { model = null, timeout = 300_000 } = {}) {
+export async function runPrompt(promptPath, { model = null, timeout = 300_000, images = [] } = {}) {
   const args = ["run", "--no-session", "--no-tools", "--no-title", "--thinking", "off", "--mode", "json"];
   if (model)
     args.push("--model", model);
+  for (const image of images)
+    args.push("--image", image);
   args.push("--message-file", promptPath);
   const { stdout } = await runCommand(futureBin(), args, { timeout });
   let payload = null;
@@ -359,7 +399,7 @@ async function mapPool(items, size, worker) {
   return results;
 }
 
-async function visionFindings(result, runDir, { limit = 3 } = {}) {
+async function visionFindings(result, runDir, { limit = 3, native = false, model = null } = {}) {
   const notes = [];
   const dir = join(runDir, "vision", result.id);
   mkdirSync(dir, { recursive: true });
@@ -373,10 +413,23 @@ async function visionFindings(result, runDir, { limit = 3 } = {}) {
       return;
     try {
       const thumb = await shrinkImage(target.path, join(dir, `input-${String(target.step).padStart(2, "0")}.png`));
-      const answer = await readImage(thumb, visionQuestion(result, target));
+      const question = visionQuestion(result, target);
+      let answer;
+      let via;
+      if (native) {
+        const promptPath = join(dir, `prompt-${String(target.step).padStart(2, "0")}.md`);
+        writeFileSync(promptPath, `${question}\n\n图片已作为附件随本消息提供。`);
+        const { text } = await runPrompt(promptPath, { model, images: [thumb] });
+        answer = text || "（模型没有返回文字）";
+        via = "native";
+      }
+      else {
+        answer = await readImage(thumb, question);
+        via = "read_image";
+      }
       const file = join(dir, `${String(target.step).padStart(2, "0")}-${target.path.split("/").pop().replace(/\.png$/, "")}.md`);
       writeFileSync(file, `# 第 ${target.step} 步 · ${target.note}\n\n![shot](${target.path})\n\n${answer}\n`);
-      notes.push({ step: target.step, note: target.note, file, answer });
+      notes.push({ step: target.step, note: target.note, file, answer, via });
     }
     catch (error) {
       notes.push({ step: target.step, note: target.note, error: String(error?.message ?? error) });
@@ -460,11 +513,13 @@ export async function analyzeRun(runDir, { mode = "heuristic", model = null, onl
   });
 
   const results = caseDirs.map(name => JSON.parse(readFileSync(join(runDir, name, "result.json"), "utf8")));
+  const visionModel = model || defaultAnalyzerModel();
+  const nativeVision = supportsVision(visionModel);
   const cases = [];
   for (const result of results) {
     process.stdout.write(`  analyze ${result.id}… `);
     const deterministic = deterministicFindings(result, { runDir });
-    const notes = mode === "full" ? await visionFindings(result, runDir) : [];
+    const notes = mode === "full" ? await visionFindings(result, runDir, { native: nativeVision, model: visionModel }) : [];
     let synthesized = null;
     if (mode === "full") {
       const prompt = buildSynthesisPrompt(result, deterministic, notes);
@@ -551,7 +606,7 @@ export async function analyzeRun(runDir, { mode = "heuristic", model = null, onl
         expectations: item.expectations ?? [],
         summary: item.summary,
         analysisError: item.analysisError,
-        vision: (Array.isArray(item.vision) ? item.vision : []).map(note => ({ step: note.step, note: note.note, file: note.file, error: note.error ?? null })),
+        vision: (Array.isArray(item.vision) ? item.vision : []).map(note => ({ step: note.step, note: note.note, file: note.file, via: note.via ?? null, error: note.error ?? null })),
         findings: item.findings,
         artifacts: item.artifacts,
       };
