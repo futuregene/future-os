@@ -51,9 +51,40 @@ shared × situational); waking there is a **model judgement** rather than a kern
 rule; isolation lives at the **memory and conversation** layer, never at the
 filesystem.
 
+**External material**
+
+- Launch discussion (334 comments, including a month-long user and an architecture recap): <https://news.ycombinator.com/item?id=49261514>
+- Two-week hands-on review (the good parts and "what they are not telling you"): <https://www.youtube.com/watch?v=d9c5gloGPMU>
+- First-hand record of the limit change: <https://www.youtube.com/watch?v=IULY-h-KwrI>; reporting <https://techcrunch.com/2026/11/02/elon-musk-throttles-grok-bot-limits-due-to-unsustainably-high-costs/>, <https://www.gadgetreview.com/grok-bot-throttled-after-xai-costs-outpaced-subscription-revenue>
+- Running a bot fleet ("agent chats do not scale"): <https://granda.org/en/2026/09/06/how-i-run-grok-bot/>
+- The cross-bot leak: <https://www.techdirt.com/2026/10/19/whoops-grok-bot-spills-tech-ceos-bank-data-in-public-slack/>
+- How the loop works (queues, durable workflows, helpers): <https://www.peterp.me/articles/what-actually-happens-when-you-message-grok-bot/>
+
 ---
 
-## 2. Three trade-offs against Grok Bot
+## 2. What users praise, and what we trade away
+
+### 2.1 The eight things users praise, and whether we have them
+
+Each of the eight points that trial users and reviewers keep raising, checked
+against this design (sources at the end of §1):
+
+| # | What users praise in Grok Bot | This design | Gap |
+|---|---|---|---|
+| 1 | Install it and go; there is essentially no setup | a one-click chief plus one-line bot creation (§9.4) | still needs a running host and agent; no "install and talk" onboarding |
+| 2 | Authorize a tool once and every bot can use it | skills, models and credentials are shared (§8.3, §9.2) | no connector catalogue and no one-click authorization |
+| 3 | Close the laptop and it keeps working | **not available** | execution is local; the host must be running (the D1 cost in §2.2) |
+| 4 | Split bots by domain; they hand work to each other | one workspace per bot; in-group `@` handoffs; an auditable transcript | cross-*group* handoffs are explicit by design |
+| 5 | You stop ferrying context yourself | group transcript + group workspace + the bot's own memory | none |
+| 6 | Teach it once and it can do it again | **not available** | no demonstration recording; the substitute is letting a bot write its own skills and memory, visible in the UI (§9.5) |
+| 7 | It reviews itself and fixes its own skill | **partial**: the capability exists (write tools + memory discipline); the trigger and the display do not | the "recently learned" view in §9.5 turns it into observable behaviour |
+| 8 | It finishes work that spans several systems | local shell plus MCP covers API-shaped work | browser and desktop control are out of scope |
+
+In one line: **for anything this machine's tools and MCP can finish, the design is
+not behind on what users praise; for anything that needs "a cloud computer", it
+deliberately does not compete.**
+
+### 2.2 Three trade-offs
 
 | # | Trade-off | Grok Bot | This design | Cost |
 |---|---|---|---|---|
@@ -61,9 +92,11 @@ filesystem.
 | D2 | Waking is decided by the kernel | The participating bots decide; in practice they talk over each other | Three speaking policies; `eager` uses a **cheap judge** instead of a full run per member | Needs a judge, and judges are not always right (§5) |
 | D3 | Memory is files | Server-side, no screen for it, only "what do you remember?" in chat | `FUTURE.md` plus `.future/memory/*.md`: greppable, diffable, hand-editable | Files do not summarise themselves; missed entries need a human |
 
-**The one thing we do not copy**: sharing a single computer. It trades isolation
-for convenience, while a FutureOS workspace *is* the unit of permission and
-context; copying it would throw away the only structural advantage we have.
+### 2.3 The one thing we do not copy
+
+Sharing a single computer. It trades isolation for convenience, while a FutureOS
+workspace *is* the unit of permission and context; copying it would throw away
+the only structural advantage we have.
 
 ---
 
@@ -116,6 +149,7 @@ bots(
   is_primary INTEGER NOT NULL DEFAULT 0,        -- at most one per home
   created_by_bot_id TEXT REFERENCES bots(id),   -- audit only, grants nothing
   pinned INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0,
+  daily_budget_tokens INTEGER,                    -- past it: answers, no initiative
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, deleted_at INTEGER
 );
 CREATE UNIQUE INDEX bots_one_primary ON bots(is_primary) WHERE is_primary = 1;
@@ -130,6 +164,9 @@ bot_groups(
   allow_private_context INTEGER NOT NULL DEFAULT 0,
   max_turns INTEGER NOT NULL DEFAULT 8,
   max_depth INTEGER NOT NULL DEFAULT 2,
+  budget_tokens INTEGER, budget_runs INTEGER,     -- group budget; NULL = no gate
+  budget_window TEXT NOT NULL DEFAULT 'day',      -- day | week | month
+  budget_action TEXT NOT NULL DEFAULT 'ask',      -- stop | ask
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, archived_at INTEGER, deleted_at INTEGER
 );
 
@@ -418,27 +455,48 @@ explainable and must fail back rather than fail silent.
 (one service shared by the GUI and headless hosts; the Tauri side is a thin
 adapter, as in `desktop/src-tauri/src/commands/tasks.rs`).
 
+### 7.1 One turn
+
 - **Serial within a group** to keep transcript order; **at most two groups in
   parallel**, matching fusion's concurrency cap.
 - **One turn is one real run**, addressed to the binding session:
   `future run --session <sid> --model … --thinking … "<envelope>"`.
-- **Turn end**: the final text goes into `group_turns` (`status='done'`); its
-  `@` mentions are parsed, the speaking policy decides whether a judgement runs,
-  and the next turns are dispatched. No mention and no judgement answer ends the
-  chain.
+- **Turn end**: the final text goes into `group_turns` (`status='done'`); its `@`
+  mentions are parsed, the speaking policy decides whether a judgement runs, and
+  the next turns are dispatched. No mention and no judgement answer ends the chain.
 - **Timeout**: on the order of 600 seconds; abort first, then write a system
   message.
 - **Approvals**: a bot's action can park on one. The group shows a single
   "Waiting for approval" line; the approval card stays in the bot's private
   conversation and the global pending list, matching Grok Bot's "approvals do not
-  appear in a group". A group therefore **stops when nobody is there** —
-  intended, but it must be visible (§11.2).
-- **Cancellation**: deleting a group or closing a bot stops first, then
-  deletes, following the goal plane's "delete must stop first" lesson.
-- **Refresh**: every successful write publishes `bots-updated`, the same way
-  `tasks-updated` works — otherwise "a bot created on the phone is missing on the
-  desktop" reproduces the field report the task panel already had (see
-  [tasks.md](tasks.md) §11).
+  appear in a group". A group therefore **stops when nobody is there** — intended,
+  but it must be visible (§11.2).
+- **Cancellation**: deleting a group or closing a bot stops first, then deletes,
+  following the goal plane's "delete must stop first" lesson.
+
+### 7.2 Metering and a soft gate
+
+The bill is the user's own, so the least we can do is put the spend in front of
+them instead of letting them find out at the end of the month:
+
+- Every finished turn writes one system line: `N runs this turn · X in / Y out
+  tokens · about Z`, taken from the run's usage, the same source `task_runs` uses.
+- Group-level budget: `budget_tokens` / `budget_runs` / `budget_window` /
+  `budget_action` (§3.2). At 80% the transcript says so once; at 100% the action
+  decides — `stop` halts dispatch and leaves a "continue?" note, `ask` asks first.
+- Each bot carries `daily_budget_tokens`; past it, the bot answers but stops
+  taking initiative.
+- If usage cannot be read, the line says "usage unknown this turn" rather than
+  pretending it was zero.
+
+### 7.3 Notifications and refresh
+
+- **Only three things notify**: being `@`-ed, a failed turn, and a pending
+  approval. Everything else lands in the transcript without interrupting.
+- Every successful write publishes `bots-updated`, the same way `tasks-updated`
+  works — otherwise "a bot created on the phone is missing on the desktop"
+  reproduces the field report the task panel already had (see [tasks.md](tasks.md)
+  §11).
 
 ---
 
@@ -570,7 +628,7 @@ and marks it unscheduled. It is ordered after the separate instance.
 
 ---
 
-## 9. The chief bot and the cost of creating one
+## 9. The bot surface: creation, the chief, and defaults
 
 ### 9.1 The chief is a bot with a different job, not a privileged agent
 
@@ -648,6 +706,21 @@ The "rosters only grow" guardrail stays, but no longer sits on the main path.
    an existing project is `future bot set <id> --workspace <path>`, never a
    rebuild.
 
+### 9.5 What the surface looks like by default
+
+The surface first gets the person out of the noise, then offers features:
+
+- **Quiet by default**: no badge on the list; only being `@`-ed, a failure, and a
+  pending approval raise anything (§7.3).
+- **"Only what needs my decision"**: a filter keeping pending approvals, unread
+  `@`-mentions, and failures.
+- **"Recently learned"**: a diff of the `FUTURE.md` and `.future/memory/` files the
+  bot itself wrote, newest first. This turns "it reviews itself" from a claim into
+  something checkable (§2.1 items 6 and 7).
+- **One factual line per bot**: the job in one sentence, its groups, its model,
+  its last run, its last spend. Collapsed, that is everything.
+
+
 ---
 
 ## 10. Permissions and sandbox
@@ -688,6 +761,18 @@ from the separate agent instance (§8.3), not from file permissions. That is why
 | Two-root allowlist | `SandboxPolicy.extra_roots`, or a per-bot `approval_rule.json` | the former touches proto and agent; the latter is generated output whose stale paths silently fall back to approval |
 
 Neither is in v1.
+
+### 10.4 Tightening a single bot
+
+Full access stays the default, but **one bot at a time** can be tightened:
+`bots.permission_level` accepts `workspace` (only its own workspace and the group
+workspace are writable) or `none` (read-only tools).
+
+For two kinds of bot: the one running someone else's code, and the one handling
+customer data. This is not a security model; it is **a landing place for the
+concrete judgement "I know this bot is risky"**. Grok Bot's pain is that the whole
+account has exactly one permission level and the user has no choice.
+
 
 ---
 
@@ -748,6 +833,23 @@ exactly one thing differs: `@` calls people, not files.**
 No data migration: no existing data carries the meaning "`@name` is a bot", and
 `@` inside user conversations is untouched.
 
+### 11.4 The bot agent instance is a single point of failure
+
+Every bot's sessions run in one bot agent instance (§8.3). If it dies, every bot's
+turn fails together — the same shape as Grok Bot's "the shared computer gets stuck
+and takes every bot down at once", and it must be admitted rather than papered
+over.
+
+Mitigations: the existing watchdog and crash recovery (`agent_supervisor`) bring
+the instance back; a failed turn becomes a system message instead of silence; group
+serialisation and timeouts keep one stuck bot from stalling a whole group; and when
+the instance is unavailable the desktop says "the bot service is not ready" instead
+of letting a group look alive.
+
+The upgrade path (not v1): multiple instances per group or per bot, at the cost of
+one lock, one database and one process each.
+
+
 ---
 
 ## 12. Decisions taken
@@ -767,6 +869,8 @@ reached.
 | 7 | **Private-chat context is off by default inside a group**, with a per-group switch (§4.4) | The leak is silent: others in the group see a sentence and never learn it came from a private chat | Users complain about re-explaining background every time and accept a visible "this turn cited private context" mark |
 | 8 | **The chief creates immediately when the user stated the job, and asks only when it inferred one itself** (§9.4) | A roster that only grows is this system's characteristic disease, but a confirmation on the path where the user has already decided is pure friction | Inferred creations become frequent and the question feels redundant: fall back to confirming only batch creation |
 | 9 | **"Create, then grow" is allowed**: a placeholder bot with no job can exist, and the first turn generates its `AGENTS.md` from the skeleton (§9.4) | This is the step that makes "setup is a message" true: the user does not have to finish writing the job before creating | If placeholders pile up and never acquire a job, require a job before first use |
+| 10 | **Every turn shows its usage, and both groups and bots carry a soft gate** (§7.2) | The two sharpest complaints in user feedback are limits cut overnight and "$20 is not the real number"; paying locally moves that risk onto the user, so the gate belongs in their hands | If one line per turn is too noisy, fold it or show it only at 80%; if nobody reads it, make it a weekly digest |
+| 11 | **Notifications are quiet by default**: only `@`, failure and pending approval light up (§7.3, §9.5) | A first-hand quote: "if every worker can ping me, I live in the sidebar" | If users say they miss progress, add a per-group "always notify" switch |
 
 Of the nine, only the second carries real work (one config override); the rest
 are parameter choices over mechanisms that already exist.
@@ -870,7 +974,7 @@ change.
 | Phase | Deliverable | Observable acceptance |
 |---|---|---|
 | **P1 Bot** | `bots.db` and its schema, **the bot's own agent instance and config override**, the private thread, navigation entry, bot list, one-click chief, one-line creation from the composer, `future bot` CLI | create a bot, talk three turns, restart and both name and memory are intact; its private conversation is absent from Recent and Workspace; **the user-side `future session list` does not contain it at all**; the bot can use the user's configured models and installed skills; **one line — `new bot: owns the launch post` — yields a working bot with no dialog, no naming step and no model choice**; `future data` backs up `bots/bots.db` and the bot `agent-home` |
-| **P2 Groups** | `bot_groups` / `group_members` / `group_bindings` / `group_turns`, `threads.scope`, routing kernel, three policies, executor, group view, startup sweep | two bots and me: `@`-ing one gets exactly one reply; a bot `@`-ing another stops at chain depth 2; a 9-turn message is cut by the budget with a stated reason; under `router`, nobody @-ed still yields the right speaker with a visible reason; all nine entry points of §8.5 pass; deleting a bot's thread by hand degrades the bot to "conversation deleted, can be recreated" instead of erroring |
+| **P2 Groups** | `bot_groups` / `group_members` / `group_bindings` / `group_turns`, `threads.scope`, routing kernel, three policies, executor, group view, startup sweep | two bots and me: `@`-ing one gets exactly one reply; a bot `@`-ing another stops at chain depth 2; a 9-turn message is cut by the budget with a stated reason; under `router`, nobody @-ed still yields the right speaker with a visible reason; all nine entry points of §8.5 pass; a finished turn shows its run count and token estimate; deleting a bot's thread by hand degrades the bot to "conversation deleted, can be recreated" instead of erroring |
 | **P3 Memory and routines** | observable memory writes, group summary, routines bound to a bot, growth from a conversation | ask a bot to remember a preference and it holds in a new group the next day; create a daily routine for a bot and read its run ledger; a conversation turned into a bot shows up on the roster |
 | **P4 Optional tightening** | hoisting config into `~/.future/config/` (a separate task), the layer-0-only tier (only if bots are offered to others), cross-group handoff, duplication and sharing | both instances read one config and the override field is gone; a bot cannot read `models.json`; A hands a result to B and B's answer lands where expected; a duplicated bot carries no memory |
 
@@ -922,11 +1026,17 @@ measurement or a test.
 13. **Cross-database repair is genuinely idempotent**: kill the process between
     each of the three writes that create a bot, and verify the startup sweep
     reclaims the orphan and that a second run changes nothing.
-14. **Does the generated job overfit**: create five bots with five different jobs
+14. **Metering matches reality**: a turn's displayed tokens are within 2% of the
+    provider's usage, and an unreadable usage says "unknown" rather than zero.
+15. **Quiet does not hide failure**: every failure must light up; the quiet default
+    must not swallow one.
+16. **Learning is visible**: after a bot writes to its memory, the entry appears in
+    the UI within a second.
+17. **Does the generated job overfit**: create five bots with five different jobs
     in one line each and compare their `AGENTS.md` — if they collapse into the
     same boilerplate, the skeleton's slots are too soft and the template needs
     tightening rather than the user patching each file.
-15. **Backup covers the new database and home**: `future data` restores
+18. **Backup covers the new database and home**: `future data` restores
     `bots/bots.db`, the bot `agent-home` and the group transcripts; deliberately
     omitting either must fail rather than pass silently.
 

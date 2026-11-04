@@ -36,17 +36,47 @@
 
 从这些事实里抽出三条对设计有决定作用的：上下文是**分层**的（bot 私有 × 共享 × 场景）；唤醒在它的产品里是**模型判断**，而不是内核判断；隔离的边界在**记忆与会话**，不在文件系统。
 
+**外部材料**
+
+- 发布讨论（334 条评论，含一个月长期使用者与架构复述）：<https://news.ycombinator.com/item?id=49261514>
+- 两周实测视频（爽点与"没告诉你的部分"）：<https://www.youtube.com/watch?v=d9c5gloGPMU>
+- 额度调整前后的一手记录：<https://www.youtube.com/watch?v=IULY-h-KwrI>；报道 <https://techcrunch.com/2026/11/02/elon-musk-throttles-grok-bot-limits-due-to-unsustainably-high-costs/>、<https://www.gadgetreview.com/grok-bot-throttled-after-xai-costs-outpaced-subscription-revenue>
+- 一支 bot 舰队的运行方式（"agent chats do not scale"）：<https://granda.org/en/2026/09/06/how-i-run-grok-bot/>
+- 跨 bot 泄漏事件：<https://www.techdirt.com/2026/10/19/whoops-grok-bot-spills-tech-ceos-bank-data-in-public-slack/>
+- 架构解析（队列、持久工作流、helper）：<https://www.peterp.me/articles/what-actually-happens-when-you-message-grok-bot/>
+
 ---
 
-## 2. 相对于 Grok Bot 的三处取舍
+## 2. 用户口碑与取舍
+
+### 2.1 用户验证过的爽点，本设计具备哪些
+
+试用者与评测者反复提到的八条，逐条对照（出处见 §1 末的"外部材料"）：
+
+| # | Grok Bot 的爽点 | 本设计 | 差距 |
+|---|---|---|---|
+| 1 | 装完就能用，几乎没有 setup | 一键建总管 + 一句话建 bot（§9.4） | 仍需一个在跑的宿主与 agent；没有"装完即可对话"的引导 |
+| 2 | 授权一次，所有 bot 共用 | 技能、模型、凭据全局共享（§8.3、§9.2） | 没有连接器目录，也没有一键授权流程 |
+| 3 | 合上笔记本它还在干 | **不具备** | 执行在本机，宿主必须在跑（§2.2 的 D1 代价） |
+| 4 | 按领域拆 bot，bot 之间互相派活 | 每 bot 一个 workspace；组内 `@` 交接；转录可审计 | 跨组交接必须显式发起（有意） |
+| 5 | 不用自己搬上下文 | 组转录 + 组工作区 + bot 自己的记忆 | 无 |
+| 6 | 教一遍就会（示范变技能） | **不具备** | 无录屏示范；替代是让 bot 自己写 skill 与记忆，并在界面上可见（§9.5） |
+| 7 | 它会自己复盘、改自己的 skill | **部分**：能力在（写工具 + 记忆纪律），缺触发与展示 | §9.5 的"最近学到"把这件事变成可观测的行为 |
+| 8 | 真能干成跨系统的事 | 本机 shell + MCP 覆盖 API 类 | 浏览器与桌面操控不具备 |
+
+一句话：**能靠本机工具与 MCP 做完的事，本设计的爽点不输；需要"一台云电脑"的事，明确不做。**
+
+### 2.2 三处取舍
 
 | # | 取舍 | Grok Bot | 本设计 | 代价 |
 |---|---|---|---|---|
 | D1 | bot 有自己的 workspace | 没有。全账号共享一台电脑与一个 `/workspace` | 每 bot 一个 workspace，是它的身份与记忆载体 | 跨 bot 交接必须显式；文件不自动可见 |
-| D2 | 唤醒由内核判定 | 由参与的 bot 自己决定是否回应，实测会抢话 | 三档发言策略；`eager` 用**廉价判定**代替"每个成员一次完整 run" | 需要判定器，且判定不一定准（§6.3） |
+| D2 | 唤醒由内核判定 | 由参与的 bot 自己决定是否回应，实测会抢话 | 三档发言策略；`eager` 用**廉价判定**代替"每个成员一次完整 run" | 需要判定器，且判定不一定准（§5） |
 | D3 | 记忆是文件 | 服务端、无界面、只能聊天里问"你记得什么" | `FUTURE.md` + `.future/memory/*.md`，可 grep、可 diff、可手改 | 文件不会自己总结，漏记需要人来补 |
 
-**不抄的一件**：共享一台电脑。它用隔离换便利，而 FutureOS 的 workspace 本身就是权限与上下文单位；抄它等于把唯一的结构性优势扔掉。
+### 2.3 不抄的一件
+
+共享一台电脑。它用隔离换便利，而 FutureOS 的 workspace 本身就是权限与上下文单位；抄它等于把唯一的结构性优势扔掉。
 
 ---
 
@@ -85,6 +115,7 @@ bots(
   is_primary INTEGER NOT NULL DEFAULT 0,        -- 每个 home 至多一个
   created_by_bot_id TEXT REFERENCES bots(id),   -- 只作审计，不授予权限
   pinned INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0,
+  daily_budget_tokens INTEGER,                    -- 超出即进入"只回答、不主动干活"
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, deleted_at INTEGER
 );
 CREATE UNIQUE INDEX bots_one_primary ON bots(is_primary) WHERE is_primary = 1;
@@ -99,6 +130,9 @@ bot_groups(
   allow_private_context INTEGER NOT NULL DEFAULT 0,
   max_turns INTEGER NOT NULL DEFAULT 8,
   max_depth INTEGER NOT NULL DEFAULT 2,
+  budget_tokens INTEGER, budget_runs INTEGER,     -- 组级预算；NULL = 不设闸
+  budget_window TEXT NOT NULL DEFAULT 'day',      -- day | week | month
+  budget_action TEXT NOT NULL DEFAULT 'ask',      -- stop | ask
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, archived_at INTEGER, deleted_at INTEGER
 );
 
@@ -312,13 +346,28 @@ should_stop(queue, budget, seen) -> Option<StopReason>
 
 `host/src/bots/executor.rs`，与 `host/src/tasks.rs` 的 tick 循环同构（GUI 与 headless 共享同一份服务，Tauri 侧只是薄适配，参见 `desktop/src-tauri/src/commands/tasks.rs`）。
 
+### 7.1 一个回合
+
 - **同组串行**，保证转录顺序；**跨组最多 2 路并行**，与 fusion 的并发上限一致。
 - **一个回合 = 一次真实 run**：按 binding 会话发 `future run --session <sid> --model … --thinking … "<信封>"`。
 - **回合结束**：最终文本写入 `group_turns`（`status='done'`），解析其 `@` 时按 `speak_policy` 决定是否再跑判定，然后派发；无人 @ 且判定也说没人接，链结束。
 - **超时**：单回合 600 秒量级；超时先 abort，再写 system 消息。
 - **审批**：bot 的动作可能停在审批上。组里只显示"等待批准"一行，审批卡回到 bot 私聊与全局待办（与 Grok Bot 的"审批不进群"一致）。因此**人不在时组会停下来**——这是设计意图，必须让人看得见（§11.2）。
 - **取消**：删除组或关闭 bot 时先 stop 再 delete，遵循 goal 平面"delete 先 stop"的教训。
-- **刷新**：任何写操作成功后发 `bots-updated`，与 `tasks-updated` 同一做法——否则"手机端口建了一个 bot、桌面上看不见"会复现任务面板当年的现场报告（见 [tasks.md](tasks.zh-CN.md) §11）。
+
+### 7.2 计量与软闸
+
+付费在自己手里，因此最该做的是**把花费摆在明面上**，而不是让用户月底才知道：
+
+- 每回合结束写一行系统消息：`本轮 N 次运行 · 输入 X / 输出 Y token · 约 Z`，数据取自 run 的 usage，与 `task_runs` 的统计同源。
+- 组级预算：`budget_tokens`／`budget_runs`／`budget_window`／`budget_action`（§3.2）。到 80% 在转录里提示一次，到 100% 按 `budget_action` 处理——`stop` 直接停派发并留一条"要继续吗"，`ask` 先问再继续。
+- 每个 bot 一个 `daily_budget_tokens`：超了进入"只回答、不主动干活"。
+- 计量失败（拿不到 usage）要显式写"本轮用量未知"，不假装是 0。
+
+### 7.3 通知与刷新
+
+- **只有三种情况通知**：被 `@`、回合失败、等待批准。其余写进转录，不打扰。
+- 任何写操作成功后发 `bots-updated`，与 `tasks-updated` 同一做法——否则"手机端建了一个 bot、桌面上看不见"会复现任务面板当年的现场报告（见 [tasks.md](tasks.zh-CN.md) §11）。
 
 ---
 
@@ -398,7 +447,7 @@ bot 的会话跑在**第二个 agent 实例**里，状态根为 `<home>/bots/age
 
 ---
 
-## 9. 总管 Bot 与建 bot 的门槛
+## 9. 机器人面：创建、总管与默认状态
 
 ### 9.1 总管是一个职责不同的 bot，不是特权 agent
 
@@ -455,6 +504,15 @@ bot 的会话跑在**第二个 agent 实例**里，状态根为 `<home>/bots/age
 2. **占位 bot 无职责时标灰**，不参与组默认成员，也不自动开 routine。
 3. **默认工作区** `<home>/bots/workspaces/<slug>/`；要指向现有项目时用 `future bot set <id> --workspace <path>`，不重建。
 
+### 9.5 机器人面的默认状态
+
+界面先把人从噪音里救出来，再谈功能：
+
+- **默认安静**：列表不亮红点，只有被 `@`、失败、等待批准会提醒（§7.3）。
+- **"只看需要我决策的"**：一个过滤器，只留等待批准、被 `@` 且尚未回复、失败的项。
+- **"最近学到"**：读 bot 自己写的 `FUTURE.md` 与 `.future/memory/` 的 diff，按时间倒序列出它记住了什么。这让"它会自己复盘"从传闻变成可检查的事实（§2.1 第 6、7 条）。
+- **每个 bot 一行事实**：一句话职责、所属组、模型、最近一次运行、最近一次花费。不展开就是全部。
+
 ---
 
 ## 10. 权限与沙箱
@@ -481,6 +539,13 @@ bot 会话创建时 `permission_level='all'`，且**不传 `sandbox_tier`**。�
 | 双根白名单 | `SandboxPolicy.extra_roots` 或 per-bot `approval_rule.json` | 前者改 proto + agent；后者是生成物，路径失效会静默退回审批 |
 
 两者都不在 v1 范围内。
+
+### 10.4 单个 bot 的收紧
+
+默认全开，但允许**按 bot** 单独收紧：`bots.permission_level` 可设 `workspace`（只能写自己的 workspace 与组工作区）或 `none`（只读工具）。
+
+用于两类 bot：跑别人代码的、碰客户数据的。这不是安全模型，是**给"我知道这个 bot 危险"这一具体判断一个落点**；Grok Bot 的痛点恰恰是全账号只有一档权限，用户没有选择。
+
 
 ---
 
@@ -518,6 +583,14 @@ bot 会话创建时 `permission_level='all'`，且**不传 `sandbox_tier`**。�
 
 没有数据迁移：既有数据里不存在"`@名字` 表示机器人"的语义，且用户会话里的 `@` 行为未被改变。
 
+### 11.4 bot 的 agent 实例是单点
+
+所有 bot 的会话跑在同一个 bot agent 实例里（§8.3）。实例崩了，所有 bot 的回合一起失败——这与 Grok Bot 的"一台共享电脑卡住，全部 bot 一起挂"是同一个形状，必须承认而不是假装没有。
+
+缓解：既有看门狗与崩溃恢复（`agent_supervisor`）拉起实例；每个回合的失败写成 system 消息而不是静默；组的串行与超时保证一个 bot 卡住不会拖死整组；实例不可用时桌面明确显示"机器人服务未就绪"，而不是让组看起来在运转。
+
+升级路径（不在 v1）：按组或按 bot 拆多个实例，代价是每个实例一份锁、库与进程。
+
 ---
 
 ## 12. 已定的选择
@@ -535,6 +608,8 @@ bot 会话创建时 `permission_level='all'`，且**不传 `sandbox_tier`**。�
 | 7 | **组里默认不能引用私聊上下文**，组级开关（§4.4） | 这个泄漏是静默的：群里其他人只看到一句话，不会知道它来自私聊 | 用户抱怨每次都要重新交代背景、且能接受在转录里标注引用来源时 |
 | 8 | **总管建 bot：说出职责就直接建，只有它自己推断时先问一句**（§9.4） | "名册只增不减"是这类系统的通病；但确认卡在用户已经想清楚的主路径上，就只剩下摩擦 | 推断类创建频发且用户觉得问得多余时，退成"只对一次建多个确认" |
 | 9 | **允许"先建后长"**：无职责的占位 bot 可以存在，第一轮对话结束时按骨架生成 `AGENTS.md`（§9.4） | 这是"setup is a message"的关键一步：用户不必在建之前把职责写完整 | 实测发现占位 bot 大量堆叠且从不补职责时，改为强制在首次使用前补完 |
+| 10 | **每回合显示用量，并给组与 bot 两级软闸**（§7.2） | 用户反馈里最痛的两条是"额度半夜被砍"和"$20 不是真实价格"；本地付费把风险转移到用户身上，就必须把闸放在他手里 | 每回合一行太吵时，改为折叠或只在 80% 提示；实测发现无人看这行时，改成周报 |
+| 11 | **通知默认安静**：只有被 `@`、失败、等待批准会亮（§7.3、§9.5） | 一手反馈的原话是"每个 worker 都能 ping 我，我就住在侧边栏里" | 用户抱怨错过进展时，加组级"总是通知"开关 |
 
 九条里只有第 2 条带工作量（一次配置覆盖），其余都是已实现机制的组合或参数选择。
 
@@ -608,7 +683,7 @@ orchestration/bots  ←── host ──→ desktop/src-tauri ←── desktop
 | 阶段 | 交付 | 可观测的验收 |
 |---|---|---|
 | **P1 Bot** | `bots.db` + 库结构、**bot 的独立 agent 实例与配置覆盖**、私聊 thread、导航入口、机器人列表、一键建总管、输入框一句话创建、`future bot` CLI | 建一个 bot、对话三轮、重启后名字与记忆都在；它的私聊不出现在「最近」与「工作区」；**用户侧 `future session list` 里根本没有它**；bot 能用用户已配置的模型与已安装技能；**用一句“新机器人：负责发布稿”建出一个无需任何弹窗、命名与模型选择、且能直接接活的 bot**；`future data` 备份包含 `bots/bots.db` 与 bot 的 `agent-home` |
-| **P2 组** | `bot_groups`／`group_members`／`group_bindings`／`group_turns`、`threads.scope`、路由内核、三档策略、执行器、组视图、启动扫描修复器 | 两个 bot + 我：`@` 一个只有一个回；bot `@` 另一个，链深到 2 自动停；一条消息 9 回合被预算截断并说明原因；`router` 档下无人 @ 也能选出该接话的人，且理由可见；§8.5 的九处入口逐个通过；手动删一个 bot 的 thread 后，bots.db 里的 bot 降级为"会话已删除、可重建"而不是报错 |
+| **P2 组** | `bot_groups`／`group_members`／`group_bindings`／`group_turns`、`threads.scope`、路由内核、三档策略、执行器、组视图、启动扫描修复器 | 两个 bot + 我：`@` 一个只有一个回；bot `@` 另一个，链深到 2 自动停；一条消息 9 回合被预算截断并说明原因；`router` 档下无人 @ 也能选出该接话的人，且理由可见；§8.5 的九处入口逐个通过；一轮结束后能看到本轮运行次数与 token 估计；手动删一个 bot 的 thread 后，bots.db 里的 bot 降级为"会话已删除、可重建"而不是报错 |
 | **P3 记忆与日常** | 记忆写回可观测、组摘要、routine 绑 bot、从会话长出来 | 让 bot 记住一条偏好，隔天在新组里生效；给 bot 建一条每日 routine 并看到运行记录；一段会话固化成 bot 后名册可见 |
 | **P4 可选收紧** | 配置提升到 `~/.future/config/`（独立任务）、仅层 0 的 tier（仅对外开放 bot 时）、跨组 handoff、复制与分享 | 两个实例读同一份配置，覆盖字段删除；bot 读不到 `models.json`；A 把结果交给 B 且 B 的答复回到指定位置；复制出的 bot 不带记忆 |
 
@@ -633,8 +708,11 @@ orchestration/bots  ←── host ──→ desktop/src-tauri ←── desktop
 11. **总管建 bot 的零摩擦**：`future bot new` 在 bot 的独立实例里不弹审批，桌面通过 `bots-updated` 在 1 秒内看到新 bot。
 12. **手机端能力位**：老 host 没有 `bots_v1` 时，客户端显示"这台电脑不支持"而不是空列表。
 13. **跨库修复真的幂等**：在"建 bot 三写"的每一步之间人为杀掉进程，验证启动扫描能把孤儿清理掉、并且重复跑不产生新改动。
-14. **生成出来的职责是否过拟合**：连续用一句话建 5 个不同职责的 bot，对比它们的 `AGENTS.md`——若退化成同一段套话，说明骨架的槽位不够硬，需要收紧模板而不是靠用户逐句修。
-15. **备份覆盖新库与新 home**：`future data` 备份出来能恢复 `bots/bots.db`、bot 的 `agent-home` 与组转录；故意漏掉时应当失败而不是静默跳过。
+14. **计量与实际一致**：一次回合显示的 token 与 provider usage 误差在 2% 以内；拿不到 usage 时显示"未知"而不是 0。
+15. **安静不掩盖失败**：任何失败都必须点亮，不能被"默认安静"吞掉。
+16. **学到的可见**：bot 写入记忆后，界面在 1 秒内出现对应条目。
+17. **生成出来的职责是否过拟合**：连续用一句话建 5 个不同职责的 bot，对比它们的 `AGENTS.md`——若退化成同一段套话，说明骨架的槽位不够硬，需要收紧模板而不是靠用户逐句修。
+18. **备份覆盖新库与新 home**：`future data` 备份出来能恢复 `bots/bots.db`、bot 的 `agent-home` 与组转录；故意漏掉时应当失败而不是静默跳过。
 
 ---
 
