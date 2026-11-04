@@ -369,6 +369,13 @@ pub(super) async fn run(args: &[String], out: &Output) -> Result<(), String> {
             bytes(entry_text)
         ));
     }
+    let settled = number(&plan["settledStreams"], "pendingRows");
+    if settled > 0 {
+        out.log(&format!(
+            "  {} settled-run stream rows to retire (no token replay afterwards)",
+            count(settled)
+        ));
+    }
     print_entries(&plan, true, out);
     if options.json {
         out.log(&serde_json::to_string_pretty(&plan).map_err(|e| e.to_string())?);
