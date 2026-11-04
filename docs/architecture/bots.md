@@ -4,73 +4,64 @@
 
 Status: design draft, not implemented. Updated: 2026-11-04.
 
-This document is design only: it contains no code changes, changes no actual
-`sandbox` / `approval_rule` configuration, creates no bot, and touches nothing
-under `~/.future/`. "Supported today" below means a mechanism that already
-exists in this repository, with the code location and the command line spelled
-out so it can be checked; everything that requires a change lives in its own
-section and is never mixed into the "today" list.
+This document is design only: no code changes, no configuration changes, no bot
+is created, and nothing under `~/.future/` is touched. "Supported today" always
+means a mechanism that already exists in this repository, with the code location
+and the command line given so it can be checked; anything that needs a change
+gets its own section and is never mixed into the "today" list.
 
-It answers three questions:
-
-1. How the xAI product *Grok Bot* organises bots, memory, group chats and
-   context (§1, every claim linked to its source).
-2. What a bot and a channel become in FutureOS, and how context is assembled
-   (§3–§6).
-3. Which part the current code already supports (§7), which part requires an
-   agent or sandbox change (§8), how each part fails (§9), and the **five
-   decisions that need a human answer** (§10).
+The problem it solves: make "bot" and "channel" first-class objects in the
+desktop app, so a user organises work by role rather than by task, while
+guaranteeing that the bot side of the app and the user's own conversations are
+**completely isolated**.
 
 ---
 
-## 1. What Grok Bot actually does
+## 1. What Grok Bot does
 
-Only claims with a source. Grok Bot's product documentation lives on
-`docs.x.ai`, carried by Cursor's account and billing system. A third-party
-write-up of xAI's 72-hour launch stream (Field Notes) fills in failure modes
-the official docs do not cover; it is **not** official documentation and is
-labelled as such wherever it is used.
+Only claims with a source. The product documentation lives on `docs.x.ai`,
+carried by Cursor's account and billing system. A third-party write-up of xAI's
+72-hour launch stream (Field Notes) fills in failure modes the official docs do
+not cover; it is **not** official documentation and is labelled wherever used.
 
 | Fact | Source |
 |---|---|
 | A Bot is a durable teammate with a name, a job, its own conversation and context that compounds — not a chat thread | [Create and manage Bots](https://docs.x.ai/grok-bot/bots) |
 | All bots share **one cloud computer**: files are visible to every bot, browser cookies and command-line credentials are shared; each bot gets its own screen, which is a parallel work surface and **not a security boundary** | [Use the computer and apps](https://docs.x.ai/grok-bot/computer-and-apps) |
-| That computer has one shared workspace at `/workspace`, where durable project files belong | same page, "Work with files" |
+| That computer has one shared workspace at `/workspace` | same page, "Work with files" |
 | Memory is **per bot**, long-lived, and the bot decides on its own when to save; a few facts about you (name, time zone) are shared by all bots | [Create and manage Bots](https://docs.x.ai/grok-bot/bots), "What a Bot remembers" |
 | In a group chat a bot **can use what you told it in your private chat**; each bot keeps its own memory and it is not shared with the other bots there; everyone in the group can read what it says | same page, "Across chats, Bots, and calls" |
-| A group holds 2–6 bots; `@Bot` directs a message and `@everyone` addresses the group; bots post into the group themselves and pass work among themselves | [Message and collaborate](https://docs.x.ai/grok-bot/chat-and-collaboration), "Start a group chat" / "Direct a message" |
-| Bot-to-bot messaging is an **asynchronous handoff**: the receiver wakes, handles the request and may reply later; the handoff shows in the bots' own chats, not in the group | same page, "Let Bots hand work off" |
-| Approval requests, secret requests and email/Slack drafts **do not appear in group chats**; a bot's handoff message to a group is text-only | same page, "Start a group chat" |
-| A skill library is **one per account** and every bot sees it; there is no per-bot attach | [Skills and routines](https://docs.x.ai/grok-bot/skills-routines-and-automations), "Save a skill"; see also [`grok-bot-cli`'s `gbot skills`](https://github.com/ScriptedAlchemy/grok-bot-cli) |
-| A routine belongs to **one bot**, fires on a schedule or an event, and runs in the cloud while the laptop is closed | [Skills and routines](https://docs.x.ai/grok-bot/skills-routines-and-automations), "Create a routine" |
-| Failure mode one: bots in a group are "eager", "love to talk" and talk over each other, because **every bot answers every message** | [Field Notes · ANTIPATTERNS §35](https://github.com/unicodef1wn/grokbot-field-notes/blob/main/ANTIPATTERNS.md) (third party) |
-| Failure mode two: routine frequency is the biggest cost leak ("every 15 minutes is hundreds of messages a day") | same file, §34 (third party) |
-| Duplicating a bot carries its profile, skills, routines and avatar but **not** chat history, learned memory or attachments; sharing a template keeps core memory and strips workspace-specific data | [Create and manage Bots](https://docs.x.ai/grok-bot/bots), "Share a Bot"; and [Field Notes · PRODUCT.md](https://github.com/unicodef1wn/grokbot-field-notes/blob/main/reference/PRODUCT.md) (third party) |
+| A group holds 2–6 bots; `@Bot` directs a message and `@everyone` addresses the group; writing normally lets "the participating Bots decide who should respond" | [Message and collaborate](https://docs.x.ai/grok-bot/chat-and-collaboration), "Start a group chat" / "Direct a message" |
+| Bot-to-bot messaging is an **asynchronous handoff**: the receiver wakes, handles it and may reply later; the handoff shows in the bots' own chats, not in the group | same page, "Let Bots hand work off" |
+| Approval requests, secret requests and email/Slack drafts **do not appear in group chats**; a bot's message to a group is text-only | same page, "Start a group chat" |
+| There is a formal "primary Bot": the main point of contact, which **proactively** reports progress and coordinates with the other bots; without one the product shows an "Introducing your primary Bot" card to create it in one step or nominate an existing bot; it is replaceable; a shared bot cannot be primary | [Create and manage Bots](https://docs.x.ai/grok-bot/bots), "Your primary Bot" |
+| Existing bots can **suggest or create** a focused new bot when a job deserves a long-lived owner; the docs also say to ask before creating several so the roster stays small | same page, "Create a Bot" |
+| A skill library is **one per account** and every bot sees it; there is no per-bot attach | [Skills and routines](https://docs.x.ai/grok-bot/skills-routines-and-automations); see also [`grok-bot-cli`'s `gbot skills`](https://github.com/ScriptedAlchemy/grok-bot-cli) |
+| A routine belongs to **one bot**, fires on a schedule or an event, and runs in the cloud | [Skills and routines](https://docs.x.ai/grok-bot/skills-routines-and-automations), "Create a routine" |
+| Failure mode one: every bot in a group answers every message, so they are "eager", "love to talk" and talk over each other | [Field Notes · ANTIPATTERNS §35](https://github.com/unicodef1wn/grokbot-field-notes/blob/main/ANTIPATTERNS.md) (third party) |
+| Failure mode two: routine frequency is the biggest cost leak (every 15 minutes is hundreds of messages a day) | same file, §34 (third party) |
+| Failure mode three: a **bot factory overfits** — "a bot-factory bot writes it for new bots and tends to overfit it to the one scenario it was created for" | [Field Notes · PRODUCT](https://github.com/unicodef1wn/grokbot-field-notes/blob/main/reference/PRODUCT.md) (third party) |
+| The practitioner "chief of staff" pattern: build every other bot *through* it, let it onboard new bots itself, and let it hold who is working on what | [Field Notes · ORCHESTRATION](https://github.com/unicodef1wn/grokbot-field-notes/blob/main/agents/ORCHESTRATION.md) (third party) |
+| Duplicating a bot carries profile, skills, routines and avatar, but **not** chat history, learned memory or attachments | [Create and manage Bots](https://docs.x.ai/grok-bot/bots), "Share a Bot" |
 
-Three consequences that decide the design:
-
-- **Context is layered**: bot-private (memory plus its own conversation) ×
-  shared (files and logins on the computer) × situational (the group transcript
-  everyone can read).
-- **Waking is explicit, but the default product behaviour was not**: `@`
-  directs a message, yet "every bot answers every message" is the failure the
-  team hit live and wrote down.
-- **Isolation is at the memory and conversation layer, not the filesystem**:
-  all bots share one `/workspace`.
+Three consequences decide this design: context is **layered** (bot-private ×
+shared × situational); waking there is a **model judgement** rather than a kernel
+rule; isolation lives at the **memory and conversation** layer, never at the
+filesystem.
 
 ---
 
-## 2. Three divergences from the existing idea
+## 2. Three trade-offs against Grok Bot
 
-| # | The idea | What Grok Bot does | What this design does | Cost |
+| # | Trade-off | Grok Bot | This design | Cost |
 |---|---|---|---|---|
-| D1 | Each bot has its own workspace | No. One shared computer and one `/workspace`; isolation lives in memory and conversations | **Follow the idea**: the bot's workspace is where its identity and memory live | Handoffs between bots must be explicit; files and memory are not automatically visible |
-| D2 | A bot joins only when `@`-ed | An expectation expressed in prompts; in practice bots talk over each other | **Make it a deterministic routing rule**, not a model judgement | Needs budgets and stop conditions, or it silently stops responding (§9.1) |
-| D3 | Bot workspace plus channel workspace, two roots | Single root; the problem does not exist | Keep both roots, but pay once for "writable outside cwd" | See §8: today that lands on approval, so option B or A |
+| D1 | A bot has its own workspace | No: one computer and one `/workspace` for the account | One workspace per bot, holding its identity and memory | Handoffs must be explicit; files are not automatically visible |
+| D2 | Waking is decided by the kernel | The participating bots decide; in practice they talk over each other | Three speaking policies; `eager` uses a **cheap judge** instead of a full run per member | Needs a judge, and judges are not always right (§5) |
+| D3 | Memory is files | Server-side, no screen for it, only "what do you remember?" in chat | `FUTURE.md` plus `.future/memory/*.md`: greppable, diffable, hand-editable | Files do not summarise themselves; missed entries need a human |
 
-D1 brings a bonus, and it is the cheapest part of this design: **a bot's
-identity and memory reuse the existing cwd-scoped context injection**, so no
-new memory subsystem is needed (§4.1, §7.1).
+**The one thing we do not copy**: sharing a single computer. It trades isolation
+for convenience, while a FutureOS workspace *is* the unit of permission and
+context; copying it would throw away the only structural advantage we have.
 
 ---
 
@@ -80,44 +71,61 @@ new memory subsystem is needed (§4.1, §7.1).
 
 | Concept | Definition |
 |---|---|
-| **Bot** | A workspace (`AGENTS.md` states the job, `FUTURE.md` is the memory index, `.future/memory/*.md` holds the details), a model and thinking level, a name and avatar, and **one private conversation** (an ordinary thread) |
-| **Channel** | Members (≥ 2 bots, plus people), a **channel workspace** (the shared board), a transcript ledger, and a charter |
-| **Binding** | The `(bot × channel)` session: that bot's context container inside that channel, created lazily |
-| **Turn** | One bot utterance dispatched by the routing kernel: a real agent run whose final text becomes a transcript entry |
+| **Bot** | A workspace (`AGENTS.md` states the job, `FUTURE.md` is the memory index, `.future/memory/*.md` holds the details), a model and thinking level, a name and avatar, and **one private conversation** |
+| **Channel** | Members (≥ 2 bots, plus people), a **channel workspace** (the shared board), a transcript ledger, a charter and a speaking policy |
+| **Binding** | The `(bot × channel)` session: that bot's context container in that channel, created lazily |
+| **Turn** | One utterance the routing kernel dispatches: a real run whose final text becomes a transcript entry |
+| **Chief bot** | The bot whose `is_primary` is set: it routes, maintains the roster and creates new bots for the user. Not a privileged agent — a bot with a different job |
+| **Session steward** | The agent inside the user's own ordinary conversations. It must be unable to see or reach bots' and channels' conversations (§8) |
 
-A bot being exactly one workspace is a deliberate trade: with `cwd` set to the
-bot workspace, the existing prompt builder already injects `AGENTS.md` (the
-job) and `FUTURE.md` (the memory index). See §7.1.
+A bot being exactly one workspace is deliberate: with `cwd` set to the bot
+workspace, the existing prompt builder injects `AGENTS.md` (the job) and
+`FUTURE.md` (the memory index). See §10.1.
 
-### 3.2 Tables
+### 3.2 Tables and database
 
-These live in `app.db` (the desktop GUI store), **not** in a separate database
-the way `tasks.db` does. The reason is filtering and joining: bots and channels
-must be queried alongside `workspaces` and `threads` — "the bot's private
-conversation must not appear in Recent" is not expressible across databases.
-`host/src/store/schema.rs` is the single source of truth for a fresh database,
-and a released database additionally needs a versioned migration in
-`host/src/store/migrations.rs` (that file's own doc comment states the rule).
+Definitions, membership and the transcript ledger live in a **separate
+database**, `~/.future/bots/bots.db`, a sibling of `tasks.db` and `fusion.db` and
+built the same way: `store_dir` / `store_path` / `open` /
+`open_existing_read_only`, `PRAGMA busy_timeout`, and `meta.schema_version`; the
+template is `orchestration/tasks/src/store.rs`.
+
+Why it is not folded into `app.db`: `app.db` carries startup, the three
+conversation lists and run status and is the most-read database in the app, while
+a transcript is a high-frequency append; putting these tables there would force
+the kernel crate to depend on `host::store` and weld the control plane to the
+presentation layer; `app.db` is a released schema where new tables need a
+versioned migration, whereas a new database creates itself on first use with no
+migration risk at all; and the transcript is append-only, may need its own
+reclamation, and does not share threads' update/archive semantics.
+
+Isolation does not require one database: the decision point is `threads.scope`
+on the table the enumerator already reads (§8.2), not a join against `bots`.
 
 ```sql
 bots(
   id TEXT PRIMARY KEY, name TEXT NOT NULL, job TEXT NOT NULL,
   avatar_shape TEXT, avatar_color TEXT,
-  workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+  workspace_id TEXT NOT NULL,                   -- soft reference: app.db workspaces.id
   model_id TEXT, thinking_level TEXT, permission_level TEXT,
-  dm_thread_id TEXT REFERENCES threads(id),
+  dm_thread_id TEXT,                            -- soft reference: app.db threads.id
+  is_primary INTEGER NOT NULL DEFAULT 0,        -- at most one per home
+  created_by_bot_id TEXT REFERENCES bots(id),   -- audit only, grants nothing
   pinned INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, deleted_at INTEGER
 );
+CREATE UNIQUE INDEX bots_one_primary ON bots(is_primary) WHERE is_primary = 1;
 
 channels(
   id TEXT PRIMARY KEY, name TEXT NOT NULL,
-  charter TEXT NOT NULL DEFAULT '',          -- what this channel is for
-  workspace_id TEXT NOT NULL REFERENCES workspaces(id),
-  summary TEXT NOT NULL DEFAULT '',          -- rolling summary (§4.4)
+  charter TEXT NOT NULL DEFAULT '',
+  workspace_id TEXT NOT NULL,                    -- soft reference: app.db workspaces.id
+  summary TEXT NOT NULL DEFAULT '',
+  speak_policy TEXT NOT NULL DEFAULT 'router',   -- mention_only | router | eager
+  router_bot_id TEXT REFERENCES bots(id),        -- NULL = use the chief bot
   allow_private_context INTEGER NOT NULL DEFAULT 0,
-  max_turns INTEGER NOT NULL DEFAULT 8,      -- bot turns per user message
-  max_depth INTEGER NOT NULL DEFAULT 2,      -- @ chain depth
+  max_turns INTEGER NOT NULL DEFAULT 8,
+  max_depth INTEGER NOT NULL DEFAULT 2,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, archived_at INTEGER, deleted_at INTEGER
 );
 
@@ -126,7 +134,7 @@ channel_members(channel_id TEXT NOT NULL, bot_id TEXT NOT NULL,
   PRIMARY KEY (channel_id, bot_id));
 
 channel_bindings(channel_id TEXT NOT NULL, bot_id TEXT NOT NULL,
-  thread_id TEXT, session_id TEXT, persona_hash TEXT,
+  session_id TEXT, persona_hash TEXT,
   PRIMARY KEY (channel_id, bot_id));
 
 channel_turns(
@@ -136,31 +144,77 @@ channel_turns(
   run_id TEXT, session_id TEXT,
   status TEXT NOT NULL,                      -- queued | running | done | failed | cancelled
   mentioned_json TEXT NOT NULL DEFAULT '[]',
+  wake_reason TEXT,                          -- which mention or rule woke it
   error_message TEXT, created_at INTEGER NOT NULL, finished_at INTEGER);
 CREATE UNIQUE INDEX channel_turns_seq ON channel_turns(channel_id, seq);
 ```
 
-Reuse rather than new tables: `workspaces` (one row per bot and one per channel,
-each `kind='user'`, so they show in the sidebar and the user can open the
-folder), and `threads` (a bot's private conversation is an ordinary thread with
-`mode='workspace'` and `workspace_id` set to the bot workspace).
+The only change to an existing table, in `app.db`:
 
-**Invariant**: the session behind `channel_bindings.session_id` carries
-`created_by='bot'` and `source_meta={botId, channelId}`. **Every entry point that
-lists conversations** (Recent, `#` session mentions, session search, the mobile
-conversation catalogue) must exclude them by default, or channel-internal
-sessions leak into the user's view. This repository has already seen that class
-of defect, so it must be verified at every entry point rather than filtered in
-one list component.
+```sql
+-- a versioned migration in host/src/store/migrations.rs; schema.rs mirrors it for fresh databases
+ALTER TABLE threads ADD COLUMN scope TEXT NOT NULL DEFAULT 'user';  -- user | bot | channel
+```
 
-### 3.3 CLI surface
+`scope` is the single source of truth for isolation (§8), not a derived field:
+every thread recorded in `bots.dm_thread_id` or `channel_bindings` must carry the
+matching `scope`, and the consistency sweep in §3.3 catches a mismatch.
 
-Consistent with the other control planes: read the same store, add no backend.
+Reuse rather than new tables: `workspaces` (one row per bot and per channel, each
+`kind='user'`, so they show in the sidebar and the folder can be opened), and
+`threads` (a bot's private conversation is an ordinary thread). Conversations
+themselves stay in the agent's database; `created_by='bot'` is only a mark.
+
+### 3.3 Cross-database consistency
+
+The price of a separate database is **no cross-database transaction**. There are
+exactly three such operations, and each is pinned down:
+
+| Operation | Order | Crash in between: symptom and repair |
+|---|---|---|
+| Create a bot | ① write the workspaces row → ② create the thread (`scope='bot'`) → ③ write the bots row | Crash after ①/②: an orphan workspace or thread; the startup sweep reclaims any `scope='bot'` thread and workspace no bots row references |
+| Create a channel | ① write the workspaces row → ② write the channels row | Orphan workspace, reclaimed the same way |
+| Delete a bot or channel | ① stop the executor and clear the queue → ② soft-delete the bots.db row → ③ delete the thread and workspace | Crash after ②: the bot is gone but its thread remains — already excluded from user lists by `scope='bot'`, and the startup sweep deletes it |
+
+Three rules:
+
+1. **Single writer**: the host is the only writer of `bots.db` (the GUI and
+   headless hosts share one service), the same assumption tasks makes. Other
+   processes read it, or go through the service.
+2. **A dangling reference degrades, never errors**: when the thread behind
+   `dm_thread_id` is gone, the bot shows as "conversation deleted, can be
+   recreated"; it never blocks a list and never throws. This is the same pattern
+   as tasks' `session_deleted`.
+3. **The startup sweep is idempotent**: it does two things only — reclaim
+   unowned workspaces and threads, and finish deleting the threads of bots that
+   are already gone. It does not infer intent and never recreates a conversation.
+
+Directory layout:
 
 ```
-future bot list|show|new|rename|delete        (v1: read-only plus create/rename)
-future channel list|show|new|add|remove|post  (post = send one message as the human)
+~/.future/bots/
+  bots.db                    # definitions, membership, bindings, transcript ledger
+  agent-home/                # the bot agent instance (FUTURE_HOME; see §8.3)
+  workspaces/<slug>/         # default workspace per bot (an ordinary user workspace)
 ```
+
+The state directory and the workspace directory are separate, and neither lives
+under `~/.future/workspaces/chat/` — that directory holds per-thread workspaces
+and is reclaimed. A bot may also point at an existing user workspace, in which
+case no directory is created.
+
+### 3.4 CLI surface
+
+Consistent with the other control planes: read and write the same `bots.db`, add
+no backend.
+
+```
+future bot list|show|new|rename|set|hide|delete
+future channel list|show|new|add|remove|post|policy
+```
+
+`future bot new` is the single entry point for "create a bot in one sentence": a
+person and a bot use the same path.
 
 ---
 
@@ -171,8 +225,8 @@ future channel list|show|new|add|remove|post  (post = send one message as the hu
 | Layer | Contents | Lifetime | Injection |
 |---|---|---|---|
 | **L1 bot-private** | The job (`AGENTS.md`), the memory index (`FUTURE.md`, linted to 30 entries / 100 lines / 12 KB), detail memory read on demand, the private conversation's history | Permanent | `cwd` injects the first two; the private history lives in the bot's own session |
-| **L2 channel-shared** | Charter, member roster (name plus one-line job), the full bot roster, the channel workspace path, the channel summary, speaking rules | Channel lifetime; refreshed only when a file hash changes | Session-level `append_system_prompt` |
-| **L3 turn envelope** | Who `@`-ed you, that message, the transcript window, what this turn asks | One turn | Prefix of the user message |
+| **L2 channel-shared** | Charter, member roster (name plus one-line job), the full bot roster, the channel workspace path, the channel summary, the speaking policy, the speaking rules | Channel lifetime; refreshed only when a content hash changes | Session-level `append_system_prompt` |
+| **L3 turn envelope** | Who woke you, that message, the transcript window, what this turn asks | One turn | Prefix of the user message |
 
 ### 4.2 The assembled shape
 
@@ -183,31 +237,31 @@ System prompt (one per `(bot × channel)` binding):
 
 # Project Context            ← AGENTS.md from cwd (the bot's job)
 # Workspace Memory           ← FUTURE.md from cwd (the bot's memory index)
-# Available Skills           ← the global skill library (shared, as in Grok Bot)
+# Available Skills           ← the global skill library (shared by the account)
 
-<append_system_prompt — the channel layer this design adds>
+<append_system_prompt — the channel layer>
 
 # Channel: Launch
-Charter: <channels.charter>
-Members (only speak when @-ed):
+Charter: <charter>
+Members (the speaking policy decides who answers):
 - @Writer (writes the launch post)
 - @Reviewer (lists blocking issues only)
 - @you (Research)
-Other bots on this account (not in this channel; use only to route):
+Other bots on this machine (not in this channel; use only to route):
 - @Support (customer issues)
 Channel workspace: <channel-workspace> (shared by everyone)
-Channel summary: <channels.summary>
+Channel summary: <summary>
 
 # Speaking rules
 - Your turn ends with one channel message; lead with the result, do not restate
   what others already said
 - To involve someone, @ them and say what you need; not @-ing means they stay out
-- Write files only in the channel workspace; your own workspace is private, keep
-  private material out of the channel
-- If you need a file someone else holds, give or ask for an absolute path; do not
-  assume you can read their workspace
-- For an action that needs human approval, say only "Waiting for approval" in the
-  channel and keep the details in private
+- The channel workspace is yours to read and write; your own workspace is
+  private, keep private material out of the channel
+- If you need a file someone else holds, give an absolute path and @ them; do not
+  assume you can reach it
+- Never list, open or reference this machine user's conversations; you can only
+  see this channel and your roster
 ```
 
 User message (per turn):
@@ -220,28 +274,25 @@ Writer   · 10:04 · <text>
 [you were @-ed] Answer the message above; if nobody else is needed, @ no one.
 ```
 
-### 4.3 Placement rules (backed by code, not taste)
+### 4.3 Placement rules (backed by code)
 
-Three constraints that must hold:
-
-1. **The append segment comes after project context and workspace memory**, so
-   it can override the bot's own `AGENTS.md`. Therefore the channel layer must
-   be **purely additive**: it never restates or rewrites the bot's job. The
-   verified order is in `agent/src/prompt/mod.rs::build_prompt` (section-order
-   comment) and `agent/src/rpc/session_prompt.rs::build_system_prompt`, which
-   reads the append segment after project context and memory.
-2. **Stable prefix first**: L1 and L2 go into the system prompt, L3 into the
-   user message. L2 is refreshed only when `AGENTS.md` / `FUTURE.md` / the
-   charter / the member list changes (by content hash); refreshing every turn
-   would blow the prefix cache. This repository has measured it: substituting the
-   system prompt, dropping the tool definitions, or adding one line each gave
-   **0%** cache on a primed prefix while an identical-shape request gave 93.7%,
-   so the whole conversation is billed again
+1. **The append segment comes after project context and workspace memory**, so it
+   can override the bot's own `AGENTS.md`. The channel layer must therefore be
+   **purely additive**: it never restates or rewrites the job. Evidence: the
+   section order in `agent/src/prompt/mod.rs::build_prompt`, and
+   `agent/src/rpc/session_prompt.rs::build_system_prompt`, which reads the append
+   segment after context and memory.
+2. **Stable prefix first**: L1 and L2 go into the system prompt, L3 into the user
+   message; L2 is refreshed only when `AGENTS.md` / `FUTURE.md` / the charter /
+   the member list changes (by content hash). Measured in this repository:
+   substituting the system prompt, dropping the tool definitions, or adding one
+   line each gave **0%** cache on a primed prefix while an identical-shape
+   request gave 93.7%, so the whole conversation is billed again
    ([compaction design](../internals/compaction/compaction.md), the cache and
    prefix section).
-3. **Never inject identity twice**: L1 already comes from `cwd`; L2 must not
-   copy it, or the job appears twice in one prompt and the model follows the
-   later copy.
+3. **Never inject identity twice**: L1 already comes from `cwd`; L2 must not copy
+   it, or the job appears twice in one prompt and the model follows the later
+   copy.
 
 ### 4.4 Budgets and truncation
 
@@ -249,50 +300,87 @@ Three constraints that must hold:
 |---|---|---|
 | Transcript window | 3k tokens, adapted to the model's window | Trim whole oldest messages, never half a message |
 | One message | 800 characters, head…tail | Same shape as `task_runs.result_text` |
-| Rolling summary | `channels.summary`, ≤ 1200 characters | Represents trimmed messages; written by a separate summary run the kernel starts |
+| Rolling summary | `channels.summary`, ≤ 1200 characters | Represents trimmed messages; written by a separate summary run |
 | Summary trigger | > 2000 characters or > 8 trimmed messages | Stops summarising every turn |
-| Private context | **Not** included by default | Channel flag `allow_private_context`, default 0 (§10 item 5) |
+| Private context | **Not** included by default | Channel flag `allow_private_context`, default 0 |
 
-### 4.5 Fusion rules (what goes in, what stays out)
+### 4.5 Fusion rules
 
 - **A bot writes only its own memory**: it writes `FUTURE.md` and
-  `.future/memory/` inside its own workspace with the ordinary tools. Context
-  crosses bots only as spoken text or as files in the channel workspace, which
-  matches Grok Bot's "nothing is shared between bots unless one messages another"
+  `.future/memory/` inside its own workspace. Context crosses bots only as
+  spoken text or as files in the channel workspace, matching Grok Bot's "nothing
+  is shared between bots unless one messages another"
   ([PRODUCT.md](https://github.com/unicodef1wn/grokbot-field-notes/blob/main/reference/PRODUCT.md)).
-- **The summary is not memory**: `channels.summary` is a channel fact injected
-  only into turns taken **in that channel**; it is never written into a bot's
-  `FUTURE.md`.
+- **The channel summary is not memory**: `channels.summary` is a channel fact
+  injected only into turns taken in that channel; it is never written into a
+  bot's `FUTURE.md`.
 - **Process stays out of the transcript**: a turn contributes its final text plus
-  one activity line; the full tool process stays in the binding session behind a
-  disclosure. Grok Bot shows tool activity, computer use and created files
-  alongside messages; we trade that for a transcript that is not drowned in
-  process noise, and pay for it with a single status line.
+  one activity line, and the full tool process stays in the binding session
+  behind a disclosure. The cost is that you cannot watch others work; a status
+  line stands in.
 - **Failures do enter the transcript**: a `failed` or `cancelled` turn writes a
-  system message saying who failed, why, and how to retry. Grok Bot's group chat
-  has no such slot, and the observed result in the field notes is "it looks like
-  nobody is answering you".
+  system message naming who failed, why, and how to retry. Grok Bot's group chat
+  has no such slot, and the observed result is "it looks like nobody is answering
+  you".
 
 ---
 
-## 5. The routing kernel
+## 5. Speaking policies
+
+`channels.speak_policy` has three settings; the difference is whether "deciding"
+and "working" are separated:
+
+| Policy | Model calls per user message | Feel | Cost order |
+|---|---|---|---|
+| `mention_only` | K real runs (K = the number of bots @-ed) | an extension number | 1× |
+| `router` | 1 cheap judgement + K real runs | close to "it answered on its own" | ≈1× |
+| `eager` | N cheap judgements (parallel) + K real runs | matches "let them decide" | ≈1×, N ≤ 6 |
+
+The difference is one of magnitude: a real run carries the identity section, tool
+definitions, the skill catalogue and the memory index — tens of kilobytes — while
+a judgement carries one job line, the last three messages and the new message: a
+few hundred tokens, and no tools. So `eager` asking every member costs far less
+than "every member runs a full turn", which is exactly where Grok Bot's
+group-chat cost comes from
+([ANTIPATTERNS §35](https://github.com/unicodef1wn/grokbot-field-notes/blob/main/ANTIPATTERNS.md)).
+The exact ratio needs measurement (§15).
+
+The judge's contract:
+
+- Input only: the machine's roster (name plus one-line job), this channel's
+  members, the last three messages, the new message, and the judge's own one-line
+  job.
+- Output only: a list of `(bot_id, one-line reason)`, or "nobody".
+- It has no tools, does not read memory or the workspace, and therefore misjudges
+  sometimes. Two escape hatches: it may answer `maybe`, which becomes a real run
+  only while budget remains; and a wrongly woken bot may say in its reply that
+  the message was not its job, which still costs one run and counts against the
+  budget.
+- A failed judgement (timeout, model error) **falls back to `mention_only`** and
+  writes a system message. It never goes silent.
+- `wake_reason` is recorded in `channel_turns`, so "why did it answer" has an
+  explanation.
+
+---
+
+## 6. The routing kernel
 
 Lives in `orchestration/bots`, shaped like goal / tasks / fusion: a deterministic
-kernel of pure functions over an SQLite store, with the executor on the host.
+kernel of pure functions over its store, with the executor on the host.
 
 ```rust
-// Pure functions, no IO, unit-testable
 mentions(text: &str, roster: &[BotRef]) -> Vec<BotId>
 enqueue(turn: &Turn, mentioned: Vec<BotId>) -> Vec<QueuedTurn>
-should_stop(queue: &[QueuedTurn], budget: &Budget, seen: &[TurnRef]) -> Option<StopReason>
+judge(roster, recent, message) -> Vec<(BotId, String)>   // router / eager only
+should_stop(queue, budget, seen) -> Option<StopReason>
 ```
 
-`mentions` rules, precise enough to test:
+`mentions` rules:
 
 1. A mention is `@` plus a **whole-name** match against the roster, longest name
-   first; the name must be followed by whitespace, line end, or punctuation.
-2. `@` must be preceded by whitespace or line start (so `mail@host` and
-   `src/@scope` are not mentions).
+   first; the name must be followed by whitespace, line end or punctuation.
+2. `@` must be preceded by whitespace or line start (`mail@host`, `src/@scope` do
+   not count).
 3. Fenced code blocks and `>` quote lines are not parsed.
 4. Names match case-insensitively but resolve to the canonical name.
 5. The author is excluded; a repeated mention counts once, at its first position.
@@ -302,355 +390,490 @@ Stopping and budgets:
 
 | Rule | Default | Why |
 |---|---|---|
-| Bot turns per user message | 8 | Directly answers the "every bot answers every message" failure in [ANTIPATTERNS §35](https://github.com/unicodef1wn/grokbot-field-notes/blob/main/ANTIPATTERNS.md) |
-| `@` chain depth | 2 | The documented conclusion is that "one bot tagging two others once" is usually enough (same file) |
+| Bot turns per user message | 8 | Directly answers the "every bot answers every message" cost pit |
+| `@` chain depth | 2 | One bot tagging two others once is usually the whole need |
 | A bot may not speak twice in a row | Hard rule | Prevents self-loops and two bots burning the budget on each other |
 | A turn that `@`-s nobody | Ends the chain | Silence terminates |
-| `@` a non-member | No wake; a system note "X is not a member of this channel" | No implicit joining |
-| `@all` | Allowed, counted against the budget, shown in red | Keep the capability, make the cost visible |
+| `@` a non-member | No wake; a system note | No implicit joining |
+| `@all` | Allowed, counted against the budget | Keep the capability, make the cost visible |
 
-Why this is code and not a prompt: prompt-level "who should speak" is exactly
-what failed in Grok Bot (§1, failure mode one). "Who was `@`-ed" is a string
-question with an exact answer; leaving it to the model makes both cost and
-ordering unpredictable.
+"Who was @-ed" has an exact string answer and is therefore code; "should I answer
+this" is a semantic judgement and is therefore the judge's, whose output must be
+explainable and must fail back rather than fail silent.
 
 ---
 
-## 6. The executor
+## 7. The executor
 
 `host/src/bots/executor.rs`, shaped like the tick loop in `host/src/tasks.rs`
 (one service shared by the GUI and headless hosts; the Tauri side is a thin
 adapter, as in `desktop/src-tauri/src/commands/tasks.rs`).
 
-- **Serial within a channel** to keep transcript order and stop bots talking
-  over each other. **At most two channels in parallel**, matching fusion's
-  concurrency cap.
-- **One turn is one real run**: `future run --session <binding-session> --model
-  <bot.model> --thinking <bot.thinking> "<envelope>"`.
-- **Turn end**: the run's final text is written to `channel_turns` with
-  `status='done'`, its `@` mentions are parsed to extend the queue, and a turn
-  that mentions nobody ends the chain.
-- **Timeout**: on the order of fusion's 600 seconds; abort first, then write a
-  system message.
+- **Serial within a channel** to keep transcript order; **at most two channels in
+  parallel**, matching fusion's concurrency cap.
+- **One turn is one real run**, addressed to the binding session:
+  `future run --session <sid> --model … --thinking … "<envelope>"`.
+- **Turn end**: the final text goes into `channel_turns` (`status='done'`); its
+  `@` mentions are parsed, the speaking policy decides whether a judgement runs,
+  and the next turns are dispatched. No mention and no judgement answer ends the
+  chain.
+- **Timeout**: on the order of 600 seconds; abort first, then write a system
+  message.
 - **Approvals**: a bot's action can park on one. The channel shows a single
   "Waiting for approval" line; the approval card stays in the bot's private
-  conversation and the global pending list, matching Grok Bot's "approvals do
-  not appear in a group". That means **a channel stops when nobody is there** —
-  intended, but it must be visible (§9.2).
+  conversation and the global pending list, matching Grok Bot's "approvals do not
+  appear in a group". A channel therefore **stops when nobody is there** —
+  intended, but it must be visible (§11.2).
 - **Cancellation**: deleting a channel or closing a bot stops first, then
   deletes, following the goal plane's "delete must stop first" lesson.
+- **Refresh**: every successful write publishes `bots-updated`, the same way
+  `tasks-updated` works — otherwise "a bot created on the phone is missing on the
+  desktop" reproduces the field report the task panel already had (see
+  [tasks.md](tasks.md) §11).
 
 ---
 
-## 7. What today's code already supports (no agent change)
+## 8. Conversation isolation (hard requirement)
 
-This section lists what already works, with the mechanism and the evidence. "It
-works" means the mechanism exists — not that a usable product exists. The UI, the
-router and the ledger are all unbuilt, and that is application work.
+Three requirements, all mandatory:
 
-### 7.1 Identity and memory: injection from `cwd`
+1. The Recent and Workspace lists **must not** contain conversations created by
+   bots.
+2. The bots surface **must not** contain Recent or Workspace conversations.
+3. The agent in the user's own conversations (the session steward) **must not**
+   reach bots' or channels' conversations.
 
-`agent/src/rpc/session_prompt.rs::build_system_prompt` re-reads from `cwd` on
-every run: `AGENTS.md` (falling back to `CLAUDE.md`, then `GEMINI.md`, see
-`agent/src/prompt/project_context.rs::load_project_context`) and `FUTURE.md`
-(linted and injected by the Workspace Memory section of
-`agent/src/prompt/mod.rs`). Therefore:
+### 8.1 Two layers, two mechanisms
 
-- the bot's job is the `AGENTS.md` in its workspace root;
-- the bot's memory is `FUTURE.md` plus `.future/memory/*.md` in the same
-  directory;
-- writing memory back is the existing `write`/`edit` tool following the memory
-  discipline already printed in its prompt (when to record, the caps, stale-entry
-  removal).
+Conversations are enumerated through two independent paths, and they live in two
+different databases:
 
-**Zero changes**, and identical to the memory behaviour the user already gets in
-any other conversation.
+| Layer | Enumerator | Location | Mechanism |
+|---|---|---|---|
+| **Thread layer** | the desktop's workspace / recent / archived views, merged remote rows, the mobile catalogue | `threads` in `app.db` | `threads.scope` filtering (§8.2) |
+| **Session layer** | `future session list`, `#` session mentions, session search | the agent's own database | **bots run in a separate agent instance**, so the user-side instance does not hold these sessions at all (§8.3) |
 
-### 7.2 The channel layer: the session's append prompt
+The thread layer must be filtered: the UI lists read `threads`, and
+`host/src/store/threads.rs::list_threads` today filters only
+`status != 'deleted'` and returns everything. The session layer is not filtered
+but **not co-located** — the only structural answer to requirement 3.
 
-`future session new --cwd <bot-workspace> --name "Research" --append-system-prompt "<channel layer>" --json`,
-then
-`future session set <sid> --append-system-prompt "<new channel layer>"`
-to refresh it. The segment is persisted with the session, re-read on every run,
-and placed after project context and memory (§4.3).
+### 8.2 Thread layer
 
-### 7.3 Running a turn
+- `threads.scope` (`user` | `bot` | `channel`) is the single source of truth.
+  `list_threads` and its siblings gain `scope = 'user'`; the bots surface queries
+  `scope <> 'user'`. One place satisfies requirements 1 and 2.
+- `#` session mentions are **disabled entirely** on the bot and channel surfaces
+  (the landing point for requirement 2; bots address each other with `@`, so the
+  semantics do not collide). The `@` menu in a channel never includes the user's
+  conversations.
+- `scope` is not a derived field: every thread recorded in `bots.dm_thread_id` or
+  `channel_bindings` must carry the matching `scope`, backed by the consistency
+  sweep in §3.3.
 
-`future run --session <sid> --model <id> --thinking <level> "<envelope>"`. Long
-text goes through `--message-file <path>` (which also avoids PowerShell's
-encoding trap). To not wait:
-`future run --no-wait --session <sid> ...` and later `future session wait <sid>`.
+### 8.3 Session layer: the bot's own agent instance
 
-### 7.4 Private conversation and routines
+Bot sessions run in a **second agent instance** whose state root is
+`<home>/bots/agent-home/`. This is not a new mechanism: the documentation of
+`FUTURE_HOME` describes exactly this — "replaces the whole root, which is how a
+second, fully isolated Agent instance runs beside the default one: its own
+singleton lock, database, sessions, logs and local IPC endpoint"
+(`agent/src/utils/mod.rs::future_home`).
 
-- A bot's private conversation is an ordinary thread plus a session; the existing
-  conversation view works as is.
-- "A bot's routine" is the existing `future task`:
-  `future task add --name "Daily risk list" --prompt "<skill name + boundary>" --cwd <bot-workspace> --session existing --daily --time 09:00`.
-  `tasks.cwd` and `session_policy=existing` already cover the three conditions —
-  the bot's identity, the bot's workspace, the bot's session. Filtering by bot
-  later only needs `tasks.owner_bot_id`.
+```
+~/.future/bots/
+  bots.db                       # definitions, membership, bindings, transcript ledger (§3.2)
+  agent-home/                   # FUTURE_HOME: the bot agent instance
+    agent/agent.db              # bot sessions and run events
+    agent/sessions/             # bot session files
+    agent/settings.json         # this instance's own settings
+    run/agent.sock              # this instance's own IPC endpoint
+  workspaces/<slug>/            # default workspace per bot
+```
 
-### 7.5 What today's code does **not** cover (all application-side)
+Three things follow: the user-side agent's session table does not contain bot
+sessions (unenumerable rather than filtered); channel transcripts and bot
+sessions do not slow the user's `agent.db` (this repository has seen a run
+journal grow to 4.4 GiB before reclamation); and the two instances restart
+independently, so a crash loop in one does not take the other down.
 
-| Missing piece | Owner |
+**Configuration sharing** (the only place this design needs an agent change):
+`models.json`, `auth.json` and the skill directories all live under
+`<home>/agent/`, and `FUTURE_HOME` moves them, so adding a provider, signing out
+or installing a skill would have to happen twice. The answer is a **configuration
+directory override** (pointing at the user's `agent/` config) that affects reads
+only and moves no data. Not a symlink (Windows needs a privilege or Developer
+Mode), and not a copy (two copies drift). On skills:
+`~/.future/agent/skills` moves with the home while `~/.agents/skills` already
+lives under the real user home and is unaffected — the same override points both
+instances at the same paths, so bots and the user see one skill set.
+
+### 8.4 The shape of that instance
+
+| Aspect | Design |
 |---|---|
-| `@` routing kernel and budgets | new crate `orchestration/bots` |
-| Transcript ledger and executor | `host/src/bots/*` plus an `app.db` migration |
-| Merged rendering across sessions (a channel is the output of N binding sessions) | new components; the existing projector is **single-session** (`packages/thread-projection/src/projection.ts`) |
-| Navigation entry and the left list switching | `desktop/src/components/layout/ActivityRail.tsx` (the `ActivitySection` union is near line 61) |
-| Access from the phone and another computer | a new capability in the remote protocol (the current list is in `packages/remote-protocol/src/handshake.rs`) |
+| Process and supervision | the existing watchdog and crash-recovery chain in `desktop/src-tauri/src/agent_supervisor.rs` takes a home parameter and runs two; the headless host likewise |
+| Endpoint | the bot instance uses its own `run/agent.sock`; the executor connects to it and the UI never does (the UI knows only "bots") |
+| Backup | `future data` gains `bots/bots.db` and the bot `agent-home` (today's list is `agent/agent.db`, `app/app.db`, `fusion/fusion.db`, `tasks/tasks.db`; see [data-backup.md](../guide/data-backup.md)) |
+| Diagnostics | `future run / session / logs / doctor` gain a "which instance" dimension; `FUTURE_HOME=… future session list` already does this today, and the bot service wraps it instead of exposing it |
+| Remote and mobile | still proxied by the host (`bots_v1`); the phone never learns there are two agents |
+
+### 8.5 Entry points that must be verified one by one
+
+Missing one produces "I never created this conversation". Every item below is part
+of acceptance and needs a test:
+
+1. the Workspace view and its tree (including the archived section);
+2. the Recent view (including paging and the recency ordering);
+3. the `#` session-mention menu;
+4. conversation search;
+5. unread dots and run-status polling;
+6. approval and pending counts — a turn parked on approval must not raise a badge
+   on a user conversation;
+7. merged remote rows (including a conversation catalogue pushed from another
+   desktop);
+8. the mobile conversation list and its Recent;
+9. the user-side `future session list` (the observable face of requirement 3: not
+   "filtered out" but "not there in the first place").
+
+### 8.6 Boundary and residual
+
+**It is not a security boundary.** A bot and the user are the same OS user on the
+same machine, and bots have full access by default (§10): a plain
+`sqlite3 ~/.future/agent/agent.db` still reads the user's database. A separate
+instance buys **structural unenumerability and fault isolation**, not "cannot
+read". The only ways to get the latter are a sandbox policy for bots (which
+conflicts with full access) or a separate OS user (out of scope). This sentence is
+a design statement, not a security claim.
+
+**Authenticated refusal is not part of this design.** Making "knowing a session id
+is not enough" true requires the agent to refuse `transcript` / `run` / `delete`
+for `created_by='bot'` until the caller is authenticated as the host executor, and
+that depends on a trusted-CLI channel this repository records as **not designed**:
+the layer-0 comment in `agent/src/sandbox/rules.rs` says the "proper fix is a
+dedicated credential channel (agent injects a short-lived scoped token via env …)"
+and marks it unscheduled. It is ordered after the separate instance.
 
 ---
 
-## 8. P4: what the two-root permission needs
+## 9. The chief bot and the cost of creating one
 
-The requirement: while participating, a bot must read and write its own
-workspace (memory, drafts) and the channel workspace (shared board,
-deliverables). Today, a write outside the cwd falls through to approval
-(`agent/src/sandbox/rules.rs` documents the layers: reads allow by default,
-writes allow inside the workspace or temp, otherwise `ask`).
+### 9.1 The chief is a bot with a different job, not a privileged agent
 
-Two options:
+Its power to create bots is the CLI it already has (`future bot new`,
+`future channel new`). There is no second permission path and no back door.
 
-| | Option B: generated per-bot rule file | Option A: `SandboxPolicy.extra_roots` |
+| Item | Design |
+|---|---|
+| Uniqueness | `bots.is_primary`, enforced by a partial unique index: at most one per home |
+| Creation | On first entry to the bots surface, a card reads "Set up your chief"; one click creates it (default workspace `<home>/bots/workspaces/chief/`, default model, default job template) or nominates an existing bot. Matches [Grok Bot's primary Bot](https://docs.x.ai/grok-bot/bots) |
+| Job | Routing (it judges when `channels.router_bot_id` is null), maintaining the roster, creating bots and channels for the user, reporting progress. **Not** a general assistant |
+| What it records | The roster, who is working on what, and the outcome of the last dispatch, in its own `FUTURE.md` |
+| What it must not do | List, read or reference the user's conversations; answer questions raised in them |
+
+### 9.2 Lowering the creation threshold
+
+| Action | What it removes |
+|---|---|
+| One-click chief | The directory, the model and the job template all have defaults |
+| One-sentence members | In the chief's private conversation: "add one for the launch post". The chief writes `AGENTS.md` from a **fixed skeleton** (job / boundaries / inputs / acceptance / when to ask whom) instead of improvising — exactly the cure for the "bot factory overfits" failure ([PRODUCT.md](https://github.com/unicodef1wn/grokbot-field-notes/blob/main/reference/PRODUCT.md)) |
+| Channels come with a default member | A new channel includes the chief, so "at least two bots" is satisfied by "chief + 1" |
+| Growth from a conversation | When a conversation has clearly taken on a long-lived job, suggest "make this a bot?" |
+
+One guardrail: **a roster that only grows is the characteristic disease of this
+system.** The roster page shows who the chief is and who has not been used in
+seven days, and suggests archiving rather than deleting — hide instead of delete
+is what Grok Bot explicitly recommends
+([Create and manage Bots](https://docs.x.ai/grok-bot/bots)). The chief asks before
+creating several at once, also from its guidance.
+
+### 9.3 Creating a bot in natural language
+
+The chief calls `future bot new --name … --job …` in its own private
+conversation; once the write succeeds the bot exists, and the desktop refreshes
+on `bots-updated`. Because bot sessions are fully permitted by default (§10), the
+command is not blocked by the sandbox and needs no extra confirmation step.
+Optional setting: `bots.confirm_create` (default on) — the chief restates the job
+and waits for the user to say "create" first.
+
+---
+
+## 10. Permissions and sandbox
+
+### 10.1 Default: full access
+
+A bot session is created with `permission_level='all'` and **no `sandbox_tier`**.
+Per `agent/src/rpc/session_prompt.rs`, no policy means
+`ResolvedSandbox::disabled`, and `evaluate()` returns `Allow` on its first line:
+the rule layers are never consulted.
+
+Three consequences follow:
+
+1. **The two-root problem disappears**: the bot workspace and the channel
+   workspace are both directly readable and writable, with no `extra_roots` and no
+   generated rule file.
+2. **Layer 0 does not apply either**: the hard denies on `models.json` and
+   `approval_rule.json` are not evaluated, so a bot can change its own model
+   configuration and rule file. That is what "full access" means; it is written
+   down here so nobody misreads it.
+3. **`future bot new` and `future channel new` need no approval**, so "create a
+   bot in one sentence" is frictionless.
+
+### 10.2 The asymmetry this creates
+
+There is no isolation at the file layer, while isolation at the conversation
+layer is mandatory (§8). The two do not explain each other: what is isolated is
+**conversations and context**, not files. A bot can read any file on the machine
+and still cannot see or enter any of the user's conversations — the latter comes
+from the separate agent instance (§8.3), not from file permissions. That is why
+§8.6 states plainly that the separate instance is not a security boundary.
+
+### 10.3 If tightening is ever wanted (not default)
+
+| Lever | Mechanism | Cost |
 |---|---|---|
-| What changes | Nothing in the agent. On membership change the kernel writes `{path: <channel-workspace>, access: "both", action: "allow"}` into `<bot-workspace>/.future/approval_rule.json` (the rule file shape is `rules.rs::RawRule`) | `repeated Root extra_roots {path, access}` on `SandboxPolicy` in `packages/rpc/proto/future.proto`; `agent/src/sandbox` merges it into that session's runtime rule layer; `REGENERATE_PROTO=1` regenerates |
-| Scope | Per bot: A's rule lives in A's workspace, so B gains nothing | Per `(bot × channel)` session: the most precise scope |
-| Cost | The rule file is generated output that collides with hand edits, so it needs a `managed` marker and idempotent rewriting; copying or sharing a workspace carries stale paths | Agent plus protocol change, verified across Windows/macOS/Linux rule layers (seatbelt and the Windows path) |
-| Risk | The file is readable by the bot and leaks "which channels am I in"; a stale path silently falls back to `ask`, so a channel suddenly starts asking for approval | Backward compatibility: an older agent that does not know the field must **degrade to ask**, never ignore it — ignoring it is a privilege escalation |
+| Layer 0 only | add a "layer 0 only" tier to the agent: workspace/user rules are not evaluated, but the hard denies on `models.json`, `approval_rule.json` and credential files stay | an agent change (new tier plus three-platform verification) |
+| Two-root allowlist | `SandboxPolicy.extra_roots`, or a per-bot `approval_rule.json` | the former touches proto and agent; the latter is generated output whose stale paths silently fall back to approval |
 
-**Recommendation: B first, A as the real answer.** B keeps P1–P3 entirely free
-of agent risk, and its per-bot scope cannot leak into another bot. A is cleaner,
-but it introduces a security-relevant field whose cross-version degradation
-semantics deserve their own PR and a three-platform sandbox regression.
-
-One assumption that can be checked **today**: reads outside the cwd are allowed
-by default, which means "B can read A's files if it has the path". That conflicts
-with the intent that bots do not share memory, so it must be decided explicitly —
-either the charter forbids cross-bot reads, or the bot workspace gets a `deny`
-rule. This design's position is that **read-by-default is today's behaviour, not
-a promise**, and therefore it must be verified in code (§13 item 3).
+Neither is in v1.
 
 ---
 
-## 9. Failure surfaces
+## 11. Failure surfaces
 
-The three questions a review will ask, each with the symptom, the diagnosis and
-the mitigation.
+### 11.1 Two bots cannot see each other's workspace — do they deadlock?
 
-### 9.1 Two bots cannot see each other's workspace — do they deadlock?
+No deadlock, but a silent stall is possible, and the two must not be conflated.
 
-**No deadlock, but a silent stall is possible, and the two must not be
-conflated.**
-
-- A deadlock is structurally impossible: waking is triggered only by `@` and is
-  decided by the kernel; a bot's turn **cannot block waiting** on another bot's
-  turn — it can only produce text. No wait edges means no deadlock. Grok Bot has
-  the same structure (asynchronous handoff).
+- A deadlock is structurally impossible: waking is triggered only by `@` or the
+  judge, and is decided by the kernel; a bot's turn **cannot block waiting** on
+  another bot's turn — it can only produce text. No wait edges means no deadlock.
 - Three stalls are possible and each must be visible:
   1. **A writes its result into its own workspace and `@`-s B saying "see the
-     result".** B's turn fails to `read` that path (or is denied by the §8 rule),
-     so B either answers "I need that file, paste it or put it in the channel
-     workspace" or answers without evidence. **Mitigation**: the L2 speaking
-     rules require an absolute path and confirming the reader can reach it, and
-     the transcript keeps B's failed turn rather than swallowing it.
+     result".** Under full access B can read it (§10), but "private" is then only
+     a convention; if a rule ever denies it, B should answer "I need that file,
+     paste it or put it in the channel workspace" rather than answer without
+     evidence.
   2. **Two bots `@` each other until the budget runs out.** Termination is
      deterministic: the kernel stops at chain depth 2 or turn 8, writes a system
      message explaining why, and leaves both bots' last messages in the
      transcript. What the human sees is "they talked for four messages and
      stopped", not "it hung".
-  3. **A turn ends with neither a `@` nor an answer.** This is the hardest to
-     tell apart from a hang. **Mitigation**: put the turn contract in L2 ("your
-     turn ends with one channel message") and have the kernel write a system
-     message whenever a turn finishes `done` with no text.
+  3. **A turn ends with neither a `@` nor an answer.** The hardest to tell apart
+     from a hang. Mitigation: put the turn contract in L2 ("your turn ends with
+     one channel message") and write a system message whenever a turn finishes
+     `done` with no text.
 
-### 9.2 What happens when a write to the channel workspace is refused?
+### 11.2 A turn parked on approval
 
-- **Symptom**: the turn parks on approval (`ask`), the channel shows "Research is
-  waiting for approval", and the run does not end. With nobody there it stays
-  parked until the turn times out and is aborted.
-- **Why it stops rather than fails**: `ask` is the approval layer, not a denial.
-  This matches Grok Bot's decision to keep approvals out of the group, but our
-  representation is heavier: Grok Bot moves the draft card to the private chat,
-  while we only get one status line.
-- **Mitigation**: (1) the speaking rules require writing only inside the channel
-  workspace; (2) the channel makes a waiting turn clickable and opens the
-  approval card in the bot's private conversation; (3) a per-turn timeout (on the
-  order of 600 seconds) aborts and writes a system message, so one bot cannot
-  stall the channel; (4) **no batch approval inside a channel** — every approval
-  is read individually, or the red line means nothing.
+- Symptom: the turn parks on `ask`, the channel shows "Waiting for approval", and
+  the run does not end; with nobody there it stays parked until the turn times
+  out and is aborted.
+- Mitigation: the speaking rules make the bot judge the target before writing; a
+  waiting turn in a channel is clickable and opens the approval card in the
+  private conversation; the per-turn timeout aborts and writes a system message
+  so one bot cannot stall the channel; and **no batch approval inside a
+  channel**.
 
-### 9.3 Compatibility of the `@` change with existing file references
+### 11.3 The `@` change and existing file references
 
 Today `@` in the editor mentions **workspace files**
 (`desktop/src/features/agent/MentionEditor.tsx`; a file pill serialises to
 `[name](./path)`), and `#` mentions sessions.
 
-In a channel, `@` becomes bot-first. The compatibility matrix:
-
 | Existing behaviour | After the change | Verdict |
 |---|---|---|
 | File pills in stored drafts and messages | They serialise to markdown links and never go through mention parsing | Unaffected |
-| `#` session mentions | Untouched | Unaffected |
-| `@` in the channel editor | Three groups: channel members → other bots → files | Files stay in the same menu, third |
-| Hand-typed `@./src/main.rs` and similar paths | Matches no roster name, treated as plain text | No error, no wake |
-| A bot writing `@Writer` as plain text | Parsed by the kernel | Required: the CLI, the phone and bot-authored messages are all plain text |
-| A machine and a file sharing a name (a bot called `docs`) | The roster match wins, so `@docs` means the bot | Needs a UI warning; warn about the clash when the bot is created |
+| `#` session mentions | unchanged in user conversations; disabled entirely on the bot and channel surfaces | Satisfies the isolation requirement |
+| `@` in a channel editor | three groups: channel members → other bots → files | Files stay mentionable, third |
+| Hand-typed `@./src/main.rs` | matches no roster name, treated as plain text | No error, no wake |
+| A bot writing `@Writer` as plain text | parsed by the kernel | Required: the CLI, the phone and bot-authored messages are all plain text |
+| A machine and a file sharing a name (a bot called `docs`) | the roster match wins | Warn about the clash when the bot is created |
 
-**No data migration**: no existing data carries the meaning "`@name` is a bot";
-the change touches the editor menu and the kernel parser only.
+No data migration: no existing data carries the meaning "`@name` is a bot".
 
 ---
 
-## 10. Five decisions that need a human answer
+## 12. Decisions that need a human answer
 
-This section can be forwarded as is. Each item gives both options, what each one
-changes and costs, and the recommendation with its reason.
+Each item gives both options, what each changes and costs, and the recommendation
+with its reason.
 
-### 10.1 Two-root writes: B first, or A directly?
+### 12.1 Permission default: full access, or layer 0 only
 
-- **Option 1 (B)**: the kernel generates a per-bot `approval_rule.json`. Cost:
-  generated output that needs idempotent rewriting and a `managed` marker; a
-  stale path silently falls back to approval. Benefit: P1–P3 touch no agent code.
-- **Option 2 (A)**: `SandboxPolicy.extra_roots`. Cost: proto, agent, and a
-  three-platform sandbox regression; an older agent must degrade to `ask`.
-  Benefit: scope is exactly `(bot × channel)`, and no generated file appears in
-  the user's workspace.
-- **Recommendation: B first, A as the P4 answer.** B leaves the first three
-  phases free of agent risk; A's advantages (exact scope, no generated file)
-  only pay off past roughly three bots and five channels, which is when the
-  cross-platform verification cost is worth paying.
+- **Option 1 (full access, current design)**: no `sandbox_tier`, no rule
+  evaluation. Zero changes; `future bot new` and channel reads/writes are
+  frictionless. Cost: a bot can rewrite `models.json` and its own rule file, and
+  the file boundary exists only in the prompt.
+- **Option 2 (layer 0 only)**: a new tier that keeps only the hard denies. One
+  more agent change and three-platform verification in exchange for "cannot
+  rewrite model config and credentials".
+- **Recommendation: option 1.** The person running the bot is the machine's
+  owner, so breaking config costs a reinstall, while a policy layer that must be
+  maintained forever costs continuously. Switch to option 2 the day bots are
+  offered to someone other than the machine's owner.
 
-### 10.2 `@` in a channel: bots first, or a new trigger for files?
+### 12.2 How the bot instance shares configuration
 
-- **Option 1**: `@` matches bots first and files move to the third group of the
-  same menu (§9.3).
-- **Option 2**: keep `@` for files and give bots another symbol (for example
-  `@@`).
-- **Recommendation: option 1.** In a person's intuition `@` means "call
-  someone", and files already have dragging and path entry; option 2 turns
-  "call a bot" into something that must be taught, while it is the main path of
-  this feature. The cost is that `@` behaves differently in different editors,
-  which is why the menu must group the results rather than relying on docs.
+A separate instance puts `models.json`, `auth.json` and the skill directories
+under another home.
 
-### 10.3 Should a bot's private conversation appear in the normal list?
+- **Option 1 (config directory override)**: one field or environment variable
+  makes the bot instance read the user's `agent/` config (models, credentials,
+  app-scope skills). Reads only, no data moved, platform-safe. Requires one agent
+  change.
+- **Option 2 (copy)**: copy at creation and sync later. No agent change, but the
+  two copies drift — the user adds a provider or signs out, the bot still has the
+  old state, and the failure is silent.
+- **Option 3 (symlink)**: no agent change, but Windows needs a privilege or
+  Developer Mode, which conflicts with the three-platform promise.
+- **Recommendation: option 1.** It is the only agent change this design needs,
+  and it buys one config, one set of credentials and one skill set; option 2's
+  drift is hardest to diagnose exactly when "the provider I just added does not
+  exist for the bot".
 
-- **Option 1**: no; it is reachable only from the bots entry. This needs the
-  §3.2 invariant enforced at **every** conversation-listing entry point.
-- **Option 2**: yes, distinguished by workspace grouping.
-- **Recommendation: option 1.** Grok Bot splits bots and conversations into two
-  sidebar sections because they answer different questions ("who am I working
-  with" versus "what am I doing"); a single list lets a bot's daily chatter push
-  the user's real recent work out of view. The cost is that the filter must be
-  complete — one missed entry point produces duplicate rows, which is verifiable
-  (§13 item 5).
+### 12.3 Default speaking policy
 
-### 10.4 May a channel `@` a non-member and pull it in?
+- **Option 1 (`router`)**: a new channel gets a chief judgement, so it feels like
+  "it answered on its own" at almost no cost. Cost: one cheap judgement, which
+  can misjudge.
+- **Option 2 (`mention_only`)**: fully predictable, never misjudges, but the user
+  must decide whom to call.
+- **Recommendation: option 1.** One judgement of a few hundred tokens removes the
+  largest usage friction — the human doing the routing every turn. Keep
+  `mention_only` as a channel-level "silent" setting.
 
-- **Option 1**: no; a system note plus an invite button.
-- **Option 2**: add automatically.
-- **Recommendation: option 1.** Automatic joining turns a visible fact ("who is
-  in this channel") into an invisible side effect, and the member count directly
-  sets the per-turn cost (§5 budgets scale with members). Making it a click
-  costs one step.
+### 12.4 The `eager` cap and the judge's model
 
-### 10.5 May a bot use its private-chat context inside a channel?
+- **Option 1 (N ≤ 6, judge on a cheap model)**: the same group size Grok Bot uses,
+  with judgement cost pressed to the floor.
+- **Option 2 (no cap, judge on the same model as the bots)**: more accurate, with
+  cost rising linearly with membership.
+- **Recommendation: option 1.** A group's value is a few viewpoints, not a crowd;
+  the judge only needs to know whether a message touches a job, not to reason
+  hard. The two escape hatches (`maybe` and "this was not my job") already cover
+  accuracy.
 
-- **Option 1**: off by default, per-channel switch. Grok Bot defaults to
+### 12.5 `@` semantics inside a channel
+
+- **Option 1**: `@` matches bots first, and files move to the third group of the
+  same menu.
+- **Option 2**: `@` keeps the file meaning and bots get another symbol.
+- **Recommendation: option 1.** In a person's intuition `@` means "call someone",
+  and it is this feature's main path; option 2 turns the most common action into
+  something that has to be taught. The cost is that `@` behaves differently in
+  different editors, which the menu groups must express rather than the docs.
+
+### 12.6 May a bot use its private-chat context inside a channel
+
+- **Option 1 (off by default, per-channel switch)**: Grok Bot defaults to
   allowing it ([source](https://docs.x.ai/grok-bot/bots): "In a group chat, your
   Bot can use what you told it in your private chat").
-- **Option 2**: on by default, matching Grok Bot.
-- **Recommendation: option 1 (off by default).** Private chats often hold
-  material that must not be published, and this leak is **silent**: others in
-  the group see a sentence, never that it came from a private chat. What the
-  feature buys (not repeating the background) is worth far less than one leak;
-  when it is needed, turn it on and mark the turn as having used private
-  context.
+- **Option 2 (on by default, matching it)**: one less background to repeat.
+- **Recommendation: option 1.** This leak is silent: others in the group see a
+  sentence and never learn it came from a private chat. When it is needed, turn it
+  on and mark the turn as having used private context.
+
+### 12.7 Must the chief confirm before creating a bot
+
+- **Option 1 (confirm by default)**: the chief restates the job and waits for
+  "create".
+- **Option 2 (create directly)**: zero friction, and sixteen bots before long.
+- **Recommendation: option 1, switchable off.** A roster that only grows is this
+  system's characteristic disease; one confirmation is far cheaper than the
+  cleanup afterwards.
 
 ---
 
-## 11. Cross-machine bots: not now, and what is missing
+## 13. Cross-machine bots: not doing it, and what is missing
 
-The scenario is "a bot on machine A joins a channel on machine B". This design
-recommends **single-machine only** (the host machine), not because it is
-"complex" but because the following five things do not exist yet, and without
-any one of them the feature can only ship half-done:
+"A bot on machine A joins a channel on machine B". v1 is single-machine (the host
+machine), not because it is complex but because none of the following five things
+exists, and with any one missing the feature can only ship half-done:
 
-1. **An addressable bot handle.** `future run --session <id>` resolves a session
-   against the local agent; the remote protocol is a channel between two paired
+1. **An addressable bot handle**: `future run --session <id>` resolves a session
+   against the local agent; the remote protocol is a channel between paired
    desktops and has no notion of "a bot on another machine is an addressable
    object".
-2. **A cross-machine turn protocol.** Who holds transcript order, who decides the
-   budget, and how a turn on machine A is written into B's transcript and
-   deduplicated (it needs a `turn_id`, an idempotency key, and a clock ruling).
-   The remote protocol today has peer presence and request/response, not
-   multi-party ordering.
-3. **Cross-machine member authorisation.** Handing a workspace path on machine B
-   to a bot on machine A means letting another machine write local files; the
-   sandbox rules and approvals are **local**, and there is no layer for "this
-   machine's user has authorised an agent on another machine".
-4. **Cost ownership.** One channel turn spends two machines' owners' credits and
-   the billing attribution is undefined; today even "which channel this run
-   belongs to" exists only in the local ledger.
-5. **Disconnection semantics.** When A's host drops, is that member "temporarily
+2. **A cross-machine turn protocol**: who holds transcript order, who decides the
+   budget, and how a turn on A is written into B's transcript and deduplicated
+   (it needs a `turn_id`, an idempotency key and a clock ruling). The remote
+   protocol today has peer presence and request/response only.
+3. **Cross-machine member authorisation**: handing a workspace path on B to a bot
+   on A means letting another machine write local files; sandbox rules and
+   approvals are local, and there is no layer for "this machine's user has
+   authorised an agent on another machine".
+4. **Cost ownership**: one turn spends two owners' credits and the attribution is
+   undefined.
+5. **Disconnection semantics**: when A's host drops, is that member "temporarily
    unavailable" or is the turn failed? The two answers differ for both transcript
    and budget, and neither is defined.
 
 Conclusion: in the single-machine version, a bot whose executor is elsewhere gets
-one explicit message ("this bot runs on another computer; open it there"),
-instead of pretending it can participate.
+one explicit message instead of pretending it can participate.
 
 ---
 
-## 12. Phases and acceptance
+## 14. Phases and acceptance
 
 | Phase | Deliverable | Observable acceptance |
 |---|---|---|
-| **P1 Bot** | `bots` table, private thread, navigation entry, bot list, creation (existing workspace or a new `<home>/bots/<id>/`) | Create a bot, talk three turns, restart and both the name and memory are intact; its private conversation is absent from Recent; `future bot list` shows it |
-| **P2 Channel** | `channels`/`members`/`bindings`/`turns`, routing kernel, executor, channel view | Two bots and me: `@`-ing one gets exactly one reply; a bot `@`-ing another stops at chain depth 2; a 9-turn message is cut by the budget with a stated reason; closing the view keeps the transcript |
-| **P3 Memory and routines** | Observable memory writes, channel summary, tasks bound to a bot | Ask a bot to remember a preference and see it hold in a new channel the next day; create a daily routine for a bot and read its run ledger |
-| **P4 Isolation and handoff** | `extra_roots` (option A), cross-channel handoff, bot-to-bot private channel, duplicate/share | Two bots cannot read each other's manifest; A hands a result to B and B's answer lands where expected; a duplicated bot carries no memory |
+| **P1 Bot** | `bots.db` and its schema, **the bot's own agent instance and config override**, the private thread, navigation entry, bot list, one-click chief, `future bot` CLI | create a bot, talk three turns, restart and both name and memory are intact; its private conversation is absent from Recent and Workspace; **the user-side `future session list` does not contain it at all**; the bot can use the user's configured models and installed skills; `future data` backs up `bots/bots.db` and the bot `agent-home` |
+| **P2 Channel** | `channels` / `members` / `bindings` / `turns`, `threads.scope`, routing kernel, three policies, executor, channel view, startup sweep | two bots and me: `@`-ing one gets exactly one reply; a bot `@`-ing another stops at chain depth 2; a 9-turn message is cut by the budget with a stated reason; under `router`, nobody @-ed still yields the right speaker with a visible reason; all nine entry points of §8.5 pass; deleting a bot's thread by hand degrades the bot to "conversation deleted, can be recreated" instead of erroring |
+| **P3 Memory and routines** | observable memory writes, channel summary, routines bound to a bot, growth from a conversation | ask a bot to remember a preference and it holds in a new channel the next day; create a daily routine for a bot and read its run ledger; a conversation turned into a bot shows up on the roster |
+| **P4 Optional tightening** | layer-0-only tier, cross-channel handoff, duplication and sharing | a bot cannot read `models.json`; A hands a result to B and B's answer lands where expected; a duplicated bot carries no memory |
 
-**Not doing** (stated so reviews stop asking): voice calls, browser/desktop
-control, `@bot` from X, wiring a channel into an IM bridge (Feishu/DingTalk),
-cross-machine bots.
+**Not doing** (stated so it is not asked again): voice calls, browser/desktop
+control, `@bot` from X, wiring a channel into an IM bridge, cross-machine bots.
 
 ---
 
-## 13. Points that code must verify, not this document
+## 15. Points that code must verify, not this document
 
-Each of these is an **assumption** of this design. They are listed because paper
-cannot settle them; each needs a measurement or a test. A follow-up verification
-session should work through them and write the results back into this file.
+Each is an **assumption** of this design. Paper cannot settle them; each needs a
+measurement or a test.
 
-1. **Is the prefix cache actually stable?** Two adjacent turns with an unchanged
-   L2 should reach the same `cache_read` magnitude, and editing `FUTURE.md`
-   should force one full recompute. Use the repository's existing measure
+1. **Is the prefix cache actually stable**: two adjacent turns with an unchanged
+   L2 should reach the same `cache_read` magnitude; editing `FUTURE.md` should
+   force one full recompute. Use the repository's existing measure
    (`cache_read / inputTokens`).
-2. **Does option B's rule file actually take effect?** With
-   `{access: "both", action: "allow"}` pointing at the channel workspace, writes
-   stop asking; and verify it does **not** give another bot on the same machine
-   the same write access.
-3. **Is read-outside-cwd allowed the same way under all three tiers?** In
-   particular, under macOS seatbelt `tier=sandbox`, is reading another workspace
-   still allowed? This decides the note at the end of §8.
-4. **Channel serialisation plus budget truncation**: run a 9-turn chain against a
-   stub agent and verify the order, the stop point, and the system message.
-5. **Bot × channel sessions do not leak**: verify at every entry point (Recent,
-   `#` mentions, session search, the mobile conversation catalogue,
-   `future session list`), not only in the list component.
-6. **Answerability after summarising**: ask a question that depends on message 3
+2. **Does layer 0 really not apply under a policy-free sandbox**: read
+   `models.json` from a bot session and confirm it is readable — this decides
+   §10.1 item 2.
+3. **The nine entry points, in both directions**: verify each one, and verify
+   absence rather than presence. Missing one is half the wall down.
+4. **The separate instance actually runs**: the second agent gets its own lock,
+   `agent.db` and socket; the user-side instance's session table does not contain
+   it; the two restart independently and one crash does not affect the other.
+5. **The config override works**: the bot instance sees a newly added provider and
+   a freshly installed app-scope skill without a second configuration step, and a
+   user sign-out takes the old credential away from the bot too.
+6. **Judge accuracy**: run 20 real messages under `router` and under `eager`, and
+   count "should have been called but was not" against "called but should not
+   have been", to decide whether `eager` deserves to be on by default.
+7. **Channel serialisation and budget truncation**: a 9-turn chain against a stub
+   agent, verifying order, the stop point, and the system message.
+8. **Answerability after summarising**: ask a question that depends on message 3
    once the channel is at message 40, and verify the summary plus window still
-   answers correctly rather than merely appearing to.
-7. **One bot `@`-ed by two channels at once**: the two binding sessions do not
-   interfere; and confirm by measurement whether the run queueing semantics
-   (`append` by default) ever need `--steer`.
-8. **A parked approval does not stall the channel**: with one turn parked on
-   approval, other turns in the same channel still proceed, and the timeout
-   aborts and writes a system message.
-9. **Mobile capability gate**: against an older host without `bots_v1`, the
-   client shows "this computer does not support it" rather than an empty list.
+   answers correctly rather than appearing to.
+9. **One bot `@`-ed by two channels at once**: the two binding sessions do not
+   interfere; and measure whether the queueing semantics (`append` by default)
+   ever need `--steer`.
+10. **A parked approval does not stall the channel**: with one turn parked, other
+    turns in the same channel proceed, and the timeout aborts and writes a system
+    message.
+11. **Chief creation is frictionless**: `future bot new` raises no approval inside
+    the bot's own instance, and the desktop sees the new bot within a second via
+    `bots-updated`.
+12. **Mobile capability gate**: against an older host without `bots_v1`, the
+    client says "this computer does not support it" rather than showing an empty
+    list.
+13. **Cross-database repair is genuinely idempotent**: kill the process between
+    each of the three writes that create a bot, and verify the startup sweep
+    reclaims the orphan and that a second run changes nothing.
+14. **Backup covers the new database and home**: `future data` restores
+    `bots/bots.db`, the bot `agent-home` and the channel transcripts; deliberately
+    omitting either must fail rather than pass silently.
 
 ---
 
@@ -658,7 +881,8 @@ session should work through them and write the results back into this file.
 
 | Existing capability | Relationship |
 |---|---|
-| Scheduled tasks ([tasks.md](tasks.md)) | Routines are reused directly; a bot only gives a task an owner |
-| Fusion ([fusion.md](fusion.md)) | Multi-model discussion **inside one run**, not a multi-bot conversation; both share the "deterministic kernel plus host executor" shape, but fusion is read-only and single-turn |
-| Goal control plane ([goal-control-plane.md](goal-control-plane.md)) | Long-lived goals and human gates; a channel is several parties collaborating in one conversation and introduces no goal state |
-| IM channels (the `channels/` crate) | Shares only the word "channel": that bridges an external IM into the agent, this is conversations between agents |
+| Scheduled tasks ([tasks.md](tasks.md)) | routines are reused directly; a bot only gives a task an owner. `future task` runs at full permission by design, which matches a bot's own boundary and does not bypass it |
+| Fusion ([fusion.md](fusion.md)) | multi-model discussion **inside one run**, not a multi-bot conversation; both share the "deterministic kernel plus host executor" shape, but fusion is read-only and single-turn |
+| Goal control plane ([goal-control-plane.md](goal-control-plane.md)) | long-lived goals and human gates; a channel is several parties collaborating in one conversation and introduces no goal state |
+| IM channels (the `channels/` crate) | shares only the word "channel": that bridges an external IM into the agent; this is conversations between agents and people |
+| Workspaces and conversations | a bot's private conversation is an ordinary thread with `scope='bot'`, isolated in both directions from user conversations (§8) |
