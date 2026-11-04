@@ -1553,6 +1553,8 @@ mod tests {
 
     #[test]
     fn list_run_events_since_returns_only_the_unseen_tail() {
+        // HOME cleanup clears the process-global buffer between these reads.
+        let _fixtures = hold_run_event_fixtures();
         let run_id = seed_event_buffer("tail", 10);
 
         let tail = list_run_events_since(&run_id, 4).expect("tail read");

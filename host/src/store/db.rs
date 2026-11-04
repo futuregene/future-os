@@ -151,12 +151,6 @@ impl Drop for PooledConnection {
     }
 }
 
-/// PRAGMAs applied to every fresh connection. Hoisted to a const so the
-/// `execute_batch` call stays a single (single-edge) line.
-const CONNECTION_PRAGMAS: &str = "PRAGMA foreign_keys = ON;
-PRAGMA busy_timeout = 5000;
-PRAGMA journal_mode = WAL;";
-
 /// Drop every pooled connection and forget the current database path.
 ///
 /// Windows refuses to unlink a file that is still open, and the pool keeps
@@ -195,7 +189,11 @@ pub(super) fn connect() -> Result<PooledConnection, crate::Error> {
     ensure_app_dirs()?;
     let conn = Connection::open(&path)?;
     super::migrations::admit(&conn)?;
-    conn.execute_batch(CONNECTION_PRAGMAS)?;
+    conn.execute_batch(
+        future_rpc::storage::StorageMode::from_env()
+            .map_err(crate::Error::from)?
+            .pragmas(),
+    )?;
     Ok(PooledConnection {
         conn: Some(conn),
         path,

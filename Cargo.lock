@@ -2004,6 +2004,7 @@ name = "future-fusion"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "future-rpc",
  "globset",
  "regex",
  "rusqlite",

@@ -2953,3 +2953,37 @@ fn session_lists_do_not_wait_for_a_busy_session_command_lock() {
         serde_json::json!(["default"])
     );
 }
+
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn nfs_new_session_is_durable_before_it_is_announced_and_can_be_deleted() {
+    if crate::test_support::reexec_env_test() {
+        return;
+    }
+    future_rpc::storage::StorageMode::Nfs.apply();
+    let state = make_app_state();
+    // make_cmd targets the fixture's already reserved "default" session.
+    // This case must create a fresh identity, as a real new-session caller does.
+    let mut command = make_cmd("new_session");
+    command.session_id = uuid::Uuid::new_v4().to_string();
+    let expected_id = command.session_id.clone();
+    assert!(!state.session_manager.contains(&expected_id).unwrap());
+    let response = parse_response(&handle_command_internal(&state, command));
+    assert_eq!(response["success"], true, "{response}");
+    let id = response["data"]["sessionId"].as_str().unwrap();
+    assert_eq!(id, expected_id);
+    assert!(state.session_manager.contains(id).unwrap());
+    let entries = state
+        .session_manager
+        .storage()
+        .unwrap()
+        .entries(id)
+        .unwrap();
+    assert_eq!(entries[0]["type"], "session_info");
+    assert!(!state.sessions.read().get(id).unwrap().read().initializing);
+    let mut delete = make_cmd("delete_session");
+    delete.session_id = id.into();
+    let deleted = parse_response(&handle_command_internal(&state, delete));
+    assert_eq!(deleted["success"], true, "{deleted}");
+    assert!(!state.session_manager.contains(id).unwrap());
+}

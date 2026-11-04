@@ -19,13 +19,16 @@ use future_host::{future_login, remote, Error as AppError};
 const RUNTIME_WORKER_THREADS: usize = 5;
 
 pub const HELP: &str =
-    "Usage: future host [--agent-grpc-addr ADDR] [--relay URL [--relay-ca PEM]] [--help]
+    "Usage: future host [--storage-mode wal|nfs] [--agent-grpc-addr ADDR] [--relay URL [--relay-ca PEM]] [--help]
 
 Run this machine as a FutureOS host in this terminal; Ctrl+C stops it.
 It serves this machine's Agent, local runs and tasks; signing in to FutureOS
 additionally serves the paired remote desktops (a phone, or another computer)
 and reuses an existing pairing. With --relay, no Future account is needed at all.
 
+  --storage-mode MODE
+              wal (default) for local storage, nfs for an NFS home.
+              Also accepts FUTURE_STORAGE_MODE; restart Host/Agent to change.
   --agent-grpc-addr ADDR
               Serve this machine's Agent on a loopback TCP address instead of
               per-user IPC, e.g. 127.0.0.1:47200. One command starts the Agent
@@ -79,6 +82,7 @@ pub struct Options {
     pub relay_ca: Option<String>,
     /// Serve the Agent on this loopback TCP address instead of per-user IPC.
     pub agent_grpc_addr: Option<String>,
+    pub storage_mode: Option<future_rpc::storage::StorageMode>,
 }
 
 impl Options {
@@ -90,7 +94,7 @@ impl Options {
             let arg = args[index].as_str();
             match arg {
                 "--help" | "-h" => help = true,
-                "--relay" | "--relay-ca" | "--agent-grpc-addr" => {
+                "--relay" | "--relay-ca" | "--agent-grpc-addr" | "--storage-mode" => {
                     index += 1;
                     let value = args
                         .get(index)
@@ -98,6 +102,7 @@ impl Options {
                     match arg {
                         "--relay" => options.relay = Some(value.clone()),
                         "--relay-ca" => options.relay_ca = Some(value.clone()),
+                        "--storage-mode" => options.storage_mode = Some(value.parse()?),
                         _ => options.agent_grpc_addr = Some(value.clone()),
                     }
                 }
@@ -109,6 +114,9 @@ impl Options {
                 }
                 value if value.starts_with("--agent-grpc-addr=") => {
                     options.agent_grpc_addr = Some(value["--agent-grpc-addr=".len()..].to_string());
+                }
+                value if value.starts_with("--storage-mode=") => {
+                    options.storage_mode = Some(value["--storage-mode=".len()..].parse()?);
                 }
                 _ => return Err(format!("Unknown option: {arg}")),
             }
@@ -142,6 +150,9 @@ fn apply_agent_address(addr: Option<&str>) {
 /// A single process-lifetime runtime; no Tauri Builder, window, plugin or
 /// event loop is constructed on this path.
 pub fn run(options: Options) -> Result<(), String> {
+    if let Some(mode) = options.storage_mode {
+        mode.apply();
+    }
     // A serving launch is one command: the flag names the endpoint and the
     // launch policy that serves it. Applied before anything reads them —
     // `prepare_process` freezes the data root but leaves these alone, and the
@@ -149,6 +160,7 @@ pub fn run(options: Options) -> Result<(), String> {
     apply_agent_address(options.agent_grpc_addr.as_deref());
     // Hydration may supply FUTURE_HOME; freeze it before selecting the lock.
     future_host::environment::prepare_process_for(future_logging::Component::Host);
+    future_rpc::storage::StorageMode::from_env()?.apply();
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     future_host::cli_tool::prepare_path_for(&executable).map_err(|e| e.to_string())?;
     let _guard = future_host::instance::InstanceGuard::acquire().map_err(|e| e.to_string())?;
@@ -960,6 +972,21 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<Launch, String> {
         Options::parse(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn storage_mode_accepts_both_forms_and_rejects_missing_or_unknown_values() {
+        for args in [vec!["--storage-mode", "nfs"], vec!["--storage-mode=nfs"]] {
+            let Launch::Headless(options) = parse(&args).unwrap() else {
+                panic!("not a serving launch")
+            };
+            assert_eq!(
+                options.storage_mode,
+                Some(future_rpc::storage::StorageMode::Nfs)
+            );
+        }
+        assert!(parse(&["--storage-mode"]).is_err());
+        assert!(parse(&["--storage-mode", "off"]).is_err());
     }
 
     #[test]

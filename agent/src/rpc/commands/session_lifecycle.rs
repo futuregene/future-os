@@ -762,7 +762,16 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
     );
     stage_started = std::time::Instant::now();
 
-    let mut new_sess = ServerSession::new_with_queue_budget(
+    let nfs_creation = is_new
+        && session_manager
+            .storage()
+            .is_ok_and(|store| store.db.is_nfs());
+    let constructor = if nfs_creation {
+        ServerSession::new_for_creation
+    } else {
+        ServerSession::new_with_queue_budget
+    };
+    let mut new_sess = constructor(
         new_session_id.clone(),
         Arc::new(tokio::sync::RwLock::new(fresh_loop)),
         session_manager.clone(),
@@ -957,7 +966,12 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
             new_sess.parent_session_id.clone(),
             vec![info],
         );
-        if let Err(error) = session_manager.save(&snapshot) {
+        let saved = if nfs_creation {
+            session_manager.create_initial(&snapshot)
+        } else {
+            session_manager.save(&snapshot)
+        };
+        if let Err(error) = saved {
             return RpcResponse::build_fail_code(
                 id,
                 "new_session",
@@ -974,6 +988,21 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
         session_id = new_session_id,
         elapsed_ms = stage_started.elapsed().as_millis() as u64
     );
+    if nfs_creation {
+        if let Err(error) = new_sess
+            .broadcaster
+            .configure_created_journal(new_session_id.clone(), &session_manager)
+        {
+            return RpcResponse::build_fail_code(
+                id,
+                "new_session",
+                "session_storage_unavailable",
+                &format!("Unable to attach new session journal: {error:#}"),
+                serde_json::json!({"sessionId":new_session_id}),
+            );
+        }
+        new_sess.initializing = false;
+    }
     // Add to sessions map only after durable creation succeeds.
     let new_id = state.create_session(new_sess);
 

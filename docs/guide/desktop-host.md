@@ -475,3 +475,32 @@ Phone-triggered tools run on the host under the existing approval and file-acces
 rules. Host mode does not grant extra permissions or provide additional
 sandbox isolation. See [Phone remote access](../wiki/en/Remote.md) for transport and
 relay trust boundaries and [Sandbox](../wiki/en/Sandbox.md) for permissions.
+
+
+## NFS home storage mode
+
+When the databases must remain on NFS, stop Host/Agent for that data root, then run
+`future host --storage-mode nfs` (or `future agent --storage-mode nfs`). TUI remains
+a client: use `future tui` without a storage flag. `FUTURE_STORAGE_MODE=nfs` is also
+accepted. The flag takes precedence over the environment, then the saved policy.
+The Agent records the selection in `<FUTURE_HOME>/storage-mode` while holding its
+instance lock; subsequent CLI commands and service starts reuse it. An unconfigured
+home still defaults to WAL. Stop the service and select `--storage-mode wal` to
+return to the local-storage policy.
+
+The policy covers the embedded Agent, Host application, tasks, skills and Fusion
+stores without requiring a desktop GUI. NFS uses PERSIST rollback journals and FULL
+synchronization, disables Agent WAL checkpoints and automatic space reclamation,
+and batches events over 250 ms while retaining durable acknowledgement boundaries.
+A bounded new conversation's initial metadata commits in one transaction; large
+extension bodies retain staged recovery. Deletion commits tombstones and removes
+history transactionally without an additional file-shrinking pass. Freed pages
+remain reusable, so the database file may not shrink. History reads release read
+transactions between application stages and validate identity/history generation.
+A concurrent rewrite produces an error rather than mixed history.
+
+SQLite performs journal conversion after other connections have stopped. Never
+manually remove WAL, SHM or rollback-journal files. A Host explicitly requesting a
+mode refuses to attach to an Agent reporting another mode. NFS must still supply
+reliable server-side locking and stable writes; server I/O stalls can still delay
+commits. Only one service instance owns a data root; other terminals use its RPC.
