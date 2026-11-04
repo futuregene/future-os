@@ -86,6 +86,28 @@ export function writeReport(runDir, { repoRoot = resolve(import.meta.dirname, ".
   }
   lines.push("");
 
+  const perfCases = cases.filter(item => item.perf && item.id.startsWith("perf-"));
+  if (perfCases.length) {
+    lines.push("## 性能观测", "");
+    lines.push("| 用例 | 启动/总耗时 | 交互延迟 | 堆 / RSS | IPC p95 / max | 首屏 IPC |");
+    lines.push("|---|---|---|---|---|---|");
+    for (const item of perfCases) {
+      const perf = item.perf ?? {};
+      const measures = perf.measures ?? [];
+      const measureText = measures.length
+        ? `${Math.min(...measures.map(m => m.ms))}–${Math.max(...measures.map(m => m.ms))}ms (${measures.length} 次)`
+        : "—";
+      const boot = perf.bootMs != null ? `${perf.bootMs}ms` : perf.startupMs != null ? `${perf.startupMs}ms` : `${(item.durationMs / 1000).toFixed(2)}s`;
+      const memory = perf.heapGrowthMb != null || perf.rssGrowthMb != null
+        ? `${perf.heapGrowthMb ?? "—"}MB / ${perf.rssGrowthMb ?? "—"}MB`
+        : "—";
+      const ipc = perf.ipcP95 != null ? `${perf.ipcP95}ms / ${perf.ipcMax}ms` : "—";
+      const first = perf.invokeRequests != null ? `${perf.invokeRequests} 次 / ${Math.round((perf.invokeBytes ?? 0) / 1024)}KB` : "—";
+      lines.push(`| ${item.id} | ${boot} | ${measureText} | ${memory} | ${ipc} | ${first} |`);
+    }
+    lines.push("");
+  }
+
   if (analysis?.findings?.length) {
     const grouped = groupFindings(analysis.findings);
     lines.push("## 发现的问题", "");
