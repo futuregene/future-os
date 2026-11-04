@@ -333,6 +333,11 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
     // A self-hosted relay is the other answer to "which account": it has none.
     let relay = future_host::remote::relay::endpoint();
     future_host::store::initialize_app_store()?;
+    // This entry serves the same embedded terminal the window does: a paired
+    // device drives shells here, in this conversation's directory, and the
+    // handshake advertises the capability only because this line installed the
+    // registry (`docs/internals/desktop/embedded-terminal.md` §Remote).
+    future_host::terminal::install_service();
     // Leftover convergence walks the data tree and no command depends on it, so
     // it must not sit between the operator and the Agent starting.
     std::thread::spawn(future_host::store::reconcile_after_startup);
@@ -893,8 +898,12 @@ fn install_channel_runtime() -> future_host::agent_client::RuntimeInstall {
 
 fn stop(reason: &'static str) -> Result<(), AppError> {
     future_host::shutdown::begin(reason, move |operation| {
-        let mut services = future_host::shutdown::ServiceStop::prepare(operation, reason, || {})
-            .map_err(|error| error.to_string())?;
+        let mut services = future_host::shutdown::ServiceStop::prepare(operation, reason, || {
+            // No new shells once this run has decided to stop; the ones below
+            // are torn down with the rest of the services.
+            future_host::terminal::manager().freeze();
+        })
+        .map_err(|error| error.to_string())?;
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -907,6 +916,15 @@ fn stop(reason: &'static str) -> Result<(), AppError> {
         };
         if let Some(runtime) = &runtime {
             runtime.block_on(services.disconnect());
+        }
+        // A shell must not outlive the process that owns it: the child is in
+        // this process's session, and leaving it behind would strand a pty with
+        // nobody to read it.
+        operation.stage("terminals");
+        if let Err(error) = future_host::terminal::manager()
+            .shutdown_checked(operation.remaining(future_host::terminal::manager::CLOSE_GRACE))
+        {
+            services.record_error(error);
         }
         if let Some(runtime) = runtime {
             runtime.shutdown_timeout(operation.remaining(Duration::from_secs(1)));
