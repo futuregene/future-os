@@ -414,12 +414,33 @@ pub fn sync_thread_parent_session(
 /// Record that a thread was opened without treating the visit as message
 /// activity. `last_opened_at` chooses the startup thread, but deliberately
 /// does not affect the sidebar's conversation order.
+///
+/// This is also the **only** writer of a workspace's own `last_opened_at`, and
+/// it writes it here because opening a conversation is the one act that means
+/// "I was working in this folder". Everything that orders workspace groups
+/// reads that column — the paged rail list (`store::paging::
+/// list_workspaces_page`), the pinned list, and the phone's `workspaceOrderedAt`
+/// — so leaving it at its creation value (as the field did until now) made
+/// those orders *creation* orders: the folder used all day sank below one that
+/// merely got created later, fell out of the rail's first page, and the header
+/// could no longer name it. A chat's `temporary` scratch workspace is not a
+/// list item, so it is left alone.
 pub fn mark_thread_opened(thread_id: &str) -> Result<(), crate::Error> {
     let now = now_millis();
     const SQL: &str = "UPDATE threads SET last_opened_at = ?1
          WHERE id = ?2 AND status != 'deleted'";
+    // The workspace is resolved through the thread (one indexed read on the
+    // primary key) rather than passed in, so every caller of `mark_thread_opened`
+    // — the Desktop today, whichever host is next — keeps the two stamps
+    // together without having to know about workspaces at all. A missing or
+    // soft-deleted row matches nothing and the visit still stands.
+    const WORKSPACE_SQL: &str = "UPDATE workspaces SET last_opened_at = ?1
+         WHERE kind = 'user' AND deleted_at IS NULL
+           AND id = (SELECT workspace_id FROM threads
+                      WHERE id = ?2 AND status != 'deleted')";
     let conn = connect()?;
     conn.execute(SQL, params![now, thread_id])?;
+    conn.execute(WORKSPACE_SQL, params![now, thread_id])?;
     Ok(())
 }
 
@@ -1517,6 +1538,67 @@ mod tests {
         assert_eq!(
             thread.updated_at, 1,
             "opening does not become sidebar activity"
+        );
+    }
+
+    /// Opening a conversation stamps its workspace as the folder last worked
+    /// in — the visit is what the workspace list orders by.
+    ///
+    /// This is the only writer of a workspace's `last_opened_at`. Before it
+    /// existed the column kept its creation value, so every order derived from
+    /// it (the paged rail list, the pinned list, the phone's
+    /// `workspaceOrderedAt`) ranked folders by *age*: the one used every day sat
+    /// below one that merely got created later, fell out of the rail's first
+    /// page, and the conversation header could no longer name the workspace it
+    /// was in. A soft-deleted conversation's visit changes nothing, and a chat's
+    /// `temporary` container is not a list item, so it keeps its own stamp.
+    #[test]
+    fn opening_a_conversation_stamps_its_workspace_as_last_used() {
+        let (_home, conn) = guarded_conn("threads_workspace_recency");
+        seed_two_threads(&conn);
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                 VALUES ('ws_chat', 'Chat', 'temporary', '/tmp/chat', 1, 1),
+                        ('ws_gone', 'Gone', 'user', '/tmp/gone', 1, 1);
+             INSERT INTO threads (id, workspace_id, mode, title, status, pinned,
+                 created_at, updated_at)
+                 VALUES ('t_chat', 'ws_chat', 'chat', 'Chat', 'active', 0, 1, 1),
+                        ('t_deleted', 'ws_gone', 'chat', 'Gone', 'deleted', 0, 1, 1);",
+        )
+        .expect("seed a chat container and a deleted conversation");
+        drop(conn);
+
+        let stamp = |workspace_id: &str| {
+            connect()
+                .expect("connect")
+                .query_row(
+                    "SELECT last_opened_at FROM workspaces WHERE id = ?1",
+                    [workspace_id],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .expect("workspace stamp")
+        };
+        assert_eq!(stamp("ws1"), None, "a workspace starts with no visit");
+
+        mark_thread_opened("t1").expect("record open");
+        assert!(
+            stamp("ws1").is_some(),
+            "the opened conversation's workspace is now the one last used"
+        );
+        assert_eq!(stamp("ws2"), None, "another workspace keeps its own stamp");
+
+        mark_thread_opened("t_deleted").expect("record open");
+        assert_eq!(
+            stamp("ws_gone"),
+            None,
+            "a soft-deleted conversation is not a visit"
+        );
+
+        mark_thread_opened("t_chat").expect("record open");
+        assert_eq!(
+            stamp("ws_chat"),
+            None,
+            "a chat's temporary container is not a list item"
         );
     }
 
