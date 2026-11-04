@@ -12,7 +12,13 @@ export type AgentActivityKind = "thinking" | "read" | "shell" | "edit" | "write"
 export interface AgentActivityItem {
   id: string;
   kind: AgentActivityKind;
-  status: "running" | "completed" | "failed";
+  /**
+   * `interrupted` is a call that started and never reported back: the run ended
+   * (or a later call did, which proves this one had stopped) without a result
+   * for it. It is not `failed` — nothing said it failed — and it is certainly
+   * not `completed`, which is what a result-less call used to claim.
+   */
+  status: "running" | "completed" | "failed" | "interrupted";
   target?: string;
   detail?: string;
   count?: number;

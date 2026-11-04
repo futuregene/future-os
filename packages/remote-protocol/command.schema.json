@@ -171,6 +171,14 @@
       ],
       "description": "get_session_entries backward cursor (mobile lazy history)"
     },
+    "cursor": {
+      "x-rust-name": "cursor",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "list_sessions windowed page: the previous page's nextCursor. Absent asks for the whole catalogue, which is what a client that cannot page still receives."
+    },
     "modelId": {
       "x-rust-name": "model_id",
       "x-rust-type": "String",

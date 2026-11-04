@@ -57,6 +57,16 @@ export interface RemoteSessionRow {
    */
   workspaceOrderedAt?: number | null;
   parentSessionId?: string | null;
+  /**
+   * Whether the host has shelved this conversation.
+   *
+   * Set on the row itself when the conversation was archived, and on every row
+   * of a shelved workspace (the host folds the workspace's marker into it), so
+   * a client's two lists agree with the host's own without a join. Optional by
+   * contract: a host that predates the field reports nothing, which reads as
+   * active — exactly what such a host's own list still did.
+   */
+  archived?: boolean;
   pinned?: boolean;
   streaming?: boolean;
   status?: string;
@@ -116,6 +126,13 @@ export interface RemoteWorkspaceRow {
   kind?: "user" | "temporary";
   /** When that workspace itself was last touched there, or `null` if unknown. */
   orderedAt?: number | null;
+  /**
+   * Whether the host has shelved this workspace.
+   *
+   * Optional by contract, like every field here: a host that predates it says
+   * nothing and the workspace is drawn as active.
+   */
+  archived?: boolean;
 }
 
 export interface RemoteCatalog {
@@ -131,6 +148,43 @@ export interface RemoteCatalog {
    * invented one.
    */
   workspaces?: RemoteWorkspaceRow[];
+  /**
+   * Where the host's window of conversations ends, or `null` when it sent the
+   * whole list.
+   *
+   * A host that speaks `catalog_window_v1` sends its newest conversations and
+   * names the cursor for the next page; this is that cursor, as the last
+   * snapshot or delta packet stated it. Absent on a host that predates the
+   * window — which sent everything, so there is nothing more to ask for.
+   */
+  nextCursor?: string | null;
+  /**
+   * How many conversation roots the host's list holds in total, its own count.
+   *
+   * The number behind "show the other N": the window can hold fewer rows than
+   * this, and the reader's `pageCursor` walks the difference. Absent on a host
+   * that does not page, where the rows it sent *are* the list.
+   */
+  totalRoots?: number | null;
+  /**
+   * The cursor the *reader* has reached, which outlives the polls.
+   *
+   * `nextCursor` is restated by every snapshot ("the window ends here"), while a
+   * reader who asked for more has moved past it. Kept per host so a five-second
+   * poll does not silently throw the loaded pages away and re-offer them:
+   * `undefined` means the reader has not asked, and `null` that there is nothing
+   * left to ask for.
+   */
+  pageCursor?: string | null;
+  /**
+   * The sessions this catalogue holds *beyond* the host's first page.
+   *
+   * The host's own window says nothing about them (they are outside it), so a
+   * fresh snapshot of the window must not drop them: this is the record of which
+   * rows were loaded by paging rather than delivered by the window, and it is
+   * what `mergeWindowPage` carries across a poll.
+   */
+  pagedIds?: string[];
 }
 
 /**
@@ -191,6 +245,19 @@ export interface MergedConversation {
    * machine reports nothing.
    */
   runStatus?: string | null;
+  /**
+   * Whether the conversation sits in the archived view rather than the active
+   * lists.
+   *
+   * For a local row this is the thread's own `archived` status; for a host's
+   * row it is the `archived` flag its catalogue carries (which also covers a
+   * conversation inside a shelved workspace). The merge keeps both kinds in one
+   * list so ordering and grouping have one answer; the rail is what splits them
+   * into the two views. Optional so a row built by a caller that predates
+   * this field (`archived` on the catalogue) reads as active, which is what
+   * those hosts' own lists showed.
+   */
+  archived?: boolean;
   mode: "chat" | "workspace";
   /** The remote workspace this session belongs to; `null` for local rows. */
   workspaceId: string | null;
@@ -418,6 +485,92 @@ export function mergeRemoteSessionDelta(
   });
 }
 
+/**
+ * A host's first-page answer applied over what this machine already holds.
+ *
+ * A windowed catalogue is replaced by every snapshot and every five-second poll,
+ * and the rows a reader asked for beyond it are *outside* the window by
+ * definition: replacing the list with the window alone would throw them away and
+ * re-offer them every few seconds. So the window wins for every row it names,
+ * and a row that was loaded by paging — `pagedIds` — is carried across unless the
+ * window has since reached it.
+ *
+ * Where the reader had got to survives too: `pageCursor` is theirs, and a poll
+ * restating the window's edge must not move it back. Only a catalogue nobody has
+ * paged follows the host's own cursor, so a list that shrank says "no more" the
+ * moment the host does.
+ */
+export function mergeRemoteCatalogWindow(
+  answer: RemoteCatalog,
+  previous: RemoteCatalog | undefined,
+): RemoteCatalog {
+  const firstAnswer: RemoteCatalog = {
+    ...answer,
+    pagedIds: [],
+    pageCursor: answer.nextCursor ?? null,
+  };
+  if (!previous)
+    return firstAnswer;
+  const answered = new Set(answer.sessions.map(row => row.sessionId));
+  const held = new Map(previous.sessions.map(row => [row.sessionId, row] as const));
+  const carried: RemoteSessionRow[] = [];
+  for (const id of previous.pagedIds ?? []) {
+    const row = held.get(id);
+    if (row && !answered.has(id))
+      carried.push(row);
+  }
+  const paged = (previous.pagedIds ?? []).length > 0;
+  return {
+    ...answer,
+    sessions: [...answer.sessions, ...carried],
+    pagedIds: carried.map(row => row.sessionId),
+    // A reader who asked for more keeps their place — including the end of the
+    // list, which is `null` and must not be re-opened by a fresh window.
+    pageCursor: paged ? (previous.pageCursor ?? null) : (answer.nextCursor ?? null),
+  };
+}
+
+/**
+ * One more page of a host's conversations merged into what this machine holds.
+ *
+ * The page is a continuation, so its rows are appended rather than applied: a row
+ * the window already delivered is the same conversation and keeps the copy the
+ * list has been drawing, while a new one is recorded as *paged* so the next
+ * window snapshot carries it across (`mergeRemoteCatalogWindow`).
+ */
+export function appendRemoteCatalogPage(
+  catalog: RemoteCatalog,
+  page: RemoteCatalog,
+): RemoteCatalog {
+  const held = new Set(catalog.sessions.map(row => row.sessionId));
+  const added = page.sessions.filter(row => !held.has(row.sessionId));
+  return {
+    ...catalog,
+    sessions: [...catalog.sessions, ...added],
+    pagedIds: [...(catalog.pagedIds ?? []), ...added.map(row => row.sessionId)],
+    pageCursor: page.nextCursor ?? null,
+    totalRoots: page.totalRoots ?? catalog.totalRoots ?? null,
+  };
+}
+
+/**
+ * How many conversations that host holds beyond the ones this machine has.
+ *
+ * Counted in roots, the unit the host's own count is in: a fork's child rides
+ * with its root and must not be counted twice. The control that shows this also
+ * shows itself while any host still names a next page, so a host that counts
+ * differently can never hide a page that exists.
+ */
+export function remoteCatalogRemaining(catalog: RemoteCatalog): number {
+  if (typeof catalog.totalRoots !== "number")
+    return 0;
+  const ids = new Set(catalog.sessions.map(row => row.sessionId));
+  const held = catalog.sessions
+    .filter(row => !row.parentSessionId || !ids.has(row.parentSessionId))
+    .length;
+  return Math.max(0, catalog.totalRoots - held);
+}
+
 export function mergeConversations(
   threads: LocalThreadLike[],
   catalogs: RemoteCatalog[],
@@ -461,6 +614,10 @@ export function mergeConversations(
         // This machine's run status is the rail's, per thread; a second copy
         // here is how two answers to "is this running" come to disagree.
         runStatus: null,
+        // A local thread's archive status; the rail's active lists hold only
+        // active rows, but the merge states the fact rather than assuming it, so
+        // one filter over the merged rows is correct for both machines.
+        archived: thread.status === "archived",
         mode: thread.mode,
         workspaceId: thread.workspaceId,
         workspaceName: workspaceNames.get(thread.workspaceId) ?? null,
@@ -503,6 +660,10 @@ export function mergeConversations(
         lastMessageAt: typeof session.lastMessageAt === "number" ? session.lastMessageAt : null,
         createdAt: typeof session.createdAt === "number" ? session.createdAt : null,
         runStatus: typeof session.status === "string" ? session.status : null,
+        // The host marks a conversation inside a shelved workspace too, so this
+        // one field is the whole answer for the remote half — no join against
+        // the workspace list is needed here.
+        archived: session.archived === true,
         mode: session.mode === "workspace" ? "workspace" : "chat",
         workspaceId: session.workspaceId ?? null,
         workspaceName: session.workspaceName ?? null,
@@ -797,5 +958,107 @@ export function groupMergedRows(
     // machine to scan separately. Its order is the one the blocks were ranked in,
     // so a conversation's forks are under it rather than ranked among it.
     chats: chats ? chats.rows : [],
+  };
+}
+
+/**
+ * The archived view's remote half: shelved workspaces and their conversations,
+ * ready to draw.
+ *
+ * The host keeps archived rows in the same catalogue as active ones (it is the
+ * client that splits them, so one list can page and one view can search what
+ * the host already sent). This turns that half into the same shapes the merged
+ * list draws, which is what lets the archived view use one row component and one
+ * group heading for either machine.
+ *
+ * Grouping is by `(machine, workspace id)` like the active list, and a shelved
+ * workspace with nothing in it still gets a heading — the reader has to be able
+ * to restore it, and a row is not the only thing a workspace can be.
+ *
+ * `filter` is the device picker: the archived view shows the machines the list
+ * is showing, so a host the user filtered out does not keep a shelf here.
+ */
+export interface ArchivedRemoteShelves {
+  /** Shelved workspaces, each with the conversations it still holds. */
+  workspaces: MergedGroup[];
+  /**
+   * Shelved conversations with no shelved workspace above them (chats, or an
+   * archived row whose workspace the host no longer reports).
+   */
+  rows: MergedConversation[];
+}
+
+export function archivedRemoteShelves(
+  catalogs: readonly RemoteCatalog[],
+  filter: DeviceFilter,
+): ArchivedRemoteShelves {
+  const shown = catalogs.filter(catalog =>
+    filter.kind === "all"
+    || (filter.kind === "device" && filter.desktopId === catalog.desktopId),
+  );
+  const archivedRows = mergeConversations(
+    [],
+    shown.map((catalog) => {
+      // A host older than the row-level `workspaceName` still names its
+      // workspaces in the list beside the rows, and a shelf drawn with no name
+      // is a heading the reader cannot find again. Fill it in from that list
+      // before the merge, so the group label comes from whichever half the host
+      // reported.
+      const names = new Map((catalog.workspaces ?? []).map(workspace => [workspace.id, workspace.name] as const));
+      return {
+        desktopId: catalog.desktopId,
+        sessions: catalog.sessions
+          .filter(session => session.archived === true)
+          .map((session) => {
+            const name = session.workspaceName ?? (session.workspaceId ? names.get(session.workspaceId) : undefined);
+            return name && !session.workspaceName ? { ...session, workspaceName: name } : session;
+          }),
+      };
+    }),
+    { kind: "all" },
+  );
+  const hostWorkspaces = new Map(
+    shown.map(catalog => [
+      catalog.desktopId,
+      (catalog.workspaces ?? []).filter(workspace => workspace.archived === true),
+    ] as const),
+  );
+  const grouped = groupMergedRows(archivedRows, new Map(), hostWorkspaces);
+  return {
+    workspaces: grouped.workspaces,
+    // Pinned rows cannot normally be archived (the store clears the pin), but a
+    // host that predates that rule must not lose one: they are drawn with the
+    // loose rows rather than dropped by the grouping.
+    rows: [...grouped.pinned, ...grouped.chats],
+  };
+}
+
+/**
+ * The archived shelves narrowed to a search query.
+ *
+ * A shelved workspace survives on a match of its own name — then keeping every
+ * conversation in it, since the reader asked for the shelf — or because one of
+ * its conversations matches. A loose conversation is judged on its own title or
+ * its workspace's name, the same rule the active lists use. A query the host's
+ * folded rows would hide is not a match the reader can see, and the archived
+ * view draws its groups open while searching, so no fold state is consulted
+ * here.
+ */
+export function filterArchivedRemoteShelves(
+  shelves: ArchivedRemoteShelves,
+  query: string,
+): ArchivedRemoteShelves {
+  const needle = query.trim().toLowerCase();
+  if (!needle)
+    return shelves;
+  const matchesRow = (row: MergedConversation) =>
+    row.title.toLowerCase().includes(needle)
+    || Boolean(row.workspaceName && row.workspaceName.toLowerCase().includes(needle));
+  return {
+    workspaces: shelves.workspaces.filter(group =>
+      Boolean(group.label && group.label.toLowerCase().includes(needle))
+      || group.rows.some(matchesRow),
+    ),
+    rows: shelves.rows.filter(matchesRow),
   };
 }

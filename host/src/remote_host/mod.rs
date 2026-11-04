@@ -141,6 +141,14 @@ impl StateHost for DesktopHost {
     fn sessions_catalog(&self, pair: &str) -> Option<SessionsCatalog> {
         catalog::sessions_catalog(pair)
     }
+    fn sessions_catalog_page(
+        &self,
+        pair: &str,
+        cursor: Option<&str>,
+        limit: i64,
+    ) -> Option<SessionsCatalog> {
+        catalog::sessions_catalog_window(pair, cursor, limit)
+    }
     fn workspaces(&self) -> Option<(Value, String)> {
         catalog::workspaces()
     }
@@ -149,6 +157,11 @@ impl StateHost for DesktopHost {
     }
     fn catalog_dirty(&self) -> bool {
         crate::store::take_catalog_dirty()
+    }
+    fn session_still_exists(&self, session_id: &str) -> bool {
+        crate::store::find_thread_by_agent_session(session_id)
+            .map(|thread| thread.is_some())
+            .unwrap_or(true)
     }
     fn agent_available(&self) -> bool {
         availability::available()

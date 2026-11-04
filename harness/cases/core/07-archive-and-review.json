@@ -1,0 +1,44 @@
+{
+  "id": "archive-and-review",
+  "title": "归档会话 → 在已归档视图里找到它",
+  "area": "conversation",
+  "priority": "P1",
+  "tags": ["conversation", "archive"],
+  "description": "把一个真实会话归档：主列表应移除它，数据库 archived_at 写入；点侧边栏的「已归档的会话」后，它应出现在归档视图里。",
+  "preconditions": "应用已启动；至少一个活跃会话。",
+  "expectations": [
+    "归档后活跃列表不再显示该会话",
+    "数据库 archived_at 非空且 status=archived",
+    "归档视图列出该会话，并明确标注「已归档」"
+  ],
+  "steps": [
+    { "wait": 800 },
+    {
+      "db": {
+        "sql": "SELECT title FROM (SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' AND archived_at IS NULL AND title NOT IN (SELECT name FROM workspaces) ORDER BY COALESCE(last_message_at, updated_at) DESC LIMIT 8) WHERE length(title) <= 16 LIMIT 1",
+        "as": "target"
+      }
+    },
+    { "hover": { "aria": "{{target}}" } },
+    { "click": { "aria": "{{target}} 的操作" } },
+    { "click": { "selector": "[role=menuitem]", "text": "归档" } },
+    {
+      "db": {
+        "sql": "SELECT (archived_at IS NOT NULL AND status = 'archived') AS ok FROM threads WHERE title = '{{target}}' ORDER BY created_at DESC LIMIT 1",
+        "expect": 1,
+        "message": "数据库标记为已归档"
+      }
+    },
+    { "wait": 600 },
+    {
+      "assert": {
+        "expr": "!document.querySelector('[aria-label=\"{{target}}\"]')",
+        "message": "归档后活跃列表不再有该会话行"
+      }
+    },
+    { "shot": "after-archive" },
+    { "click": { "aria": "已归档的会话" }, "note": "切到归档视图" },
+    { "waitFor": { "text": "{{target}}" }, "timeout": 5000 },
+    { "shot": "archived-view", "note": "归档视图里能找到它" }
+  ]
+}

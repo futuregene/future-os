@@ -1,0 +1,37 @@
+{
+  "id": "side-panels-smoke",
+  "title": "侧栏五个入口：模型 / 技能 / 定时任务 / 远程 / 设置",
+  "area": "navigation",
+  "priority": "P2",
+  "tags": ["navigation", "smoke"],
+  "description": "依次打开侧栏的五个页面。目的不是逐个功能细测，而是确认每个入口都能渲染出有内容的页面、没有空白页或崩溃；截图留给视觉分析找布局/文案问题。",
+  "preconditions": "应用已启动。",
+  "expectations": [
+    "五个入口都能打开，页面有标题或内容，不是空白",
+    "切换过程中没有未捕获异常",
+    "页面布局不溢出窗口，侧栏保持可见"
+  ],
+  "steps": [
+    { "wait": 900 },
+    { "click": { "text": "模型" } },
+    { "wait": 900 },
+    { "assert": { "expr": "document.querySelector('main')?.innerText.trim().length > 20", "message": "模型页有内容" } },
+    { "shot": "panel-models" },
+    { "click": { "text": "技能" } },
+    { "wait": 900 },
+    { "assert": { "expr": "document.querySelector('main')?.innerText.trim().length > 20", "message": "技能页有内容" } },
+    { "shot": "panel-skills" },
+    { "click": { "text": "定时任务" } },
+    { "wait": 900 },
+    { "assert": { "expr": "document.querySelector('main')?.innerText.trim().length > 20", "message": "定时任务页有内容" } },
+    { "shot": "panel-tasks" },
+    { "click": { "text": "远程" } },
+    { "wait": 900 },
+    { "assert": { "expr": "document.querySelector('main')?.innerText.trim().length > 20", "message": "远程页有内容" } },
+    { "shot": "panel-remote" },
+    { "click": { "text": "设置" } },
+    { "wait": 900 },
+    { "assert": { "expr": "document.querySelector('main')?.innerText.trim().length > 20", "message": "设置页有内容" } },
+    { "shot": "panel-settings" }
+  ]
+}

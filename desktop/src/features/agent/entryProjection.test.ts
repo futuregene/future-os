@@ -515,6 +515,15 @@ describe("entriesToMessages", () => {
           ),
         ],
       },
+      // Only calls that reported are completed, and only completed calls fold
+      // into a burst — so every call here carries its result.
+      ...[0, 1, 2].map(index => ({
+        id: `t${index}`,
+        kind: "tool" as const,
+        role: "tool" as const,
+        createdAtMs: Date.parse("2026-07-01T10:00:04+08:00"),
+        blocks: [{ kind: "tool_result" as const, toolCallId: "call_00_test", isError: false }],
+      })),
     ];
 
     const activities

@@ -207,6 +207,14 @@ pub async fn sessions(desktop_id: &str) -> Result<Value, crate::Error> {
     client().sessions(desktop_id).await.map_err(Into::into)
 }
 
+/// One page of a host's conversations; `cursor == None` is the first page.
+pub async fn sessions_page(desktop_id: &str, cursor: Option<&str>) -> Result<Value, crate::Error> {
+    client()
+        .sessions_page(desktop_id, cursor)
+        .await
+        .map_err(Into::into)
+}
+
 pub async fn workspaces(desktop_id: &str) -> Result<Value, crate::Error> {
     client().workspaces(desktop_id).await.map_err(Into::into)
 }

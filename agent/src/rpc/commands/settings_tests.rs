@@ -433,12 +433,31 @@ fn compact_empty_session_returns_async_ack() {
     let operation_id = resp["data"]["operationId"].as_str().unwrap();
     let terminal = events.blocking_recv().unwrap();
     assert_eq!(terminal.event_type, "compaction_unchanged");
+    // Session fan-out, not run content: a manual compaction only runs between
+    // turns, where the settled run's journal is already retired, so a
+    // run-stamped terminal is refused by the journal and dropped before any
+    // subscriber sees it (the client's "compacting" divider then never
+    // settles). Run scope would stamp the current run id and idx here.
+    assert!(
+        terminal.run_id.is_empty(),
+        "a manual compaction's terminal names no run: {:?}",
+        terminal.run_id
+    );
+    assert_eq!(
+        terminal.idx, -1,
+        "a session-scoped frame carries no run position"
+    );
+    assert!(
+        terminal.session_idx >= 0,
+        "it must be durable in the session scope clients replay"
+    );
     assert!(!session
         .read()
         .compaction_in_progress
         .load(std::sync::atomic::Ordering::Acquire));
     let data: serde_json::Value = serde_json::from_str(&terminal.data).unwrap();
     assert_eq!(data["operation_id"], operation_id);
+    assert_eq!(data["phase"], "standalone");
 }
 
 #[test]

@@ -7,12 +7,17 @@ import type {
 } from "./mergeConversations";
 import { describe, expect, it } from "vitest";
 import {
+  appendRemoteCatalogPage,
+  archivedRemoteShelves,
   compareConversations,
   compareSource,
+  filterArchivedRemoteShelves,
   groupMergedRows,
   localTimestamp,
   mergeConversations,
+  mergeRemoteCatalogWindow,
   mergeRemoteSessionDelta,
+  remoteCatalogRemaining,
   rowKey,
 } from "./mergeConversations";
 
@@ -878,5 +883,236 @@ describe("mergeRemoteSessionDelta", () => {
     expect(merged[0]?.workspaceName).toBe("新名字");
     expect(merged[0]?.workspacePinned).toBe(true);
     expect(merged[0]?.workspaceOrderedAt).toBe(42);
+  });
+});
+
+/**
+ * The archived half of a host's catalogue.
+ *
+ * The host marks a conversation archived when its own thread was shelved and
+ * when the workspace holding it was; either way the row it sends says so, and
+ * this side has to read the flag onto the merged row rather than letting a
+ * shelved conversation sit in the active list.
+ */
+describe("archived rows", () => {
+  it("carries a host's archived flag onto its merged row", () => {
+    const rows = mergeConversations(
+      [thread({ id: "local_shelved", status: "archived" })],
+      [catalog("desktop_a", [
+        { archived: true, sessionId: "a_shelved", title: "shelved" },
+        { archived: false, sessionId: "a_live", title: "live" },
+        // A host that predates the field says nothing, which reads as active.
+        { sessionId: "a_old", title: "old host" },
+      ])],
+      ALL,
+    );
+
+    const byId = new Map(rows.map(row => [row.id, row.archived]));
+    expect(byId.get("local_shelved")).toBe(true);
+    expect(byId.get("a_shelved")).toBe(true);
+    expect(byId.get("a_live")).toBe(false);
+    expect(byId.get("a_old")).toBe(false);
+  });
+
+  it("groups a host's shelved conversations under the shelved workspace heading", () => {
+    const shelves = archivedRemoteShelves([
+      {
+        desktopId: "desktop_a",
+        sessions: [
+          {
+            archived: true,
+            mode: "workspace",
+            sessionId: "a_shelved",
+            title: "shelved conversation",
+            workspaceId: "ws_9",
+            workspaceName: "Remote project",
+          },
+          { archived: false, sessionId: "a_live", title: "active conversation" },
+        ],
+        workspaces: [
+          { archived: true, id: "ws_9", name: "Remote project", path: "/r", pinned: false },
+          { archived: false, id: "ws_live", name: "Active project", path: "/a", pinned: false },
+        ],
+      },
+    ], ALL);
+
+    expect(shelves.workspaces).toHaveLength(1);
+    expect(shelves.workspaces[0]!.label).toBe("Remote project");
+    expect(shelves.workspaces[0]!.rows.map(row => row.id)).toEqual(["a_shelved"]);
+    // The active conversation and its workspace stay out of the archived view.
+    expect(shelves.rows).toEqual([]);
+  });
+
+  it("still draws a shelved workspace nobody has written in", () => {
+    const shelves = archivedRemoteShelves([
+      {
+        desktopId: "desktop_a",
+        sessions: [],
+        workspaces: [{ archived: true, id: "ws_empty", name: "Empty shelf", path: "/e", pinned: false }],
+      },
+    ], ALL);
+
+    expect(shelves.workspaces.map(group => group.label)).toEqual(["Empty shelf"]);
+    expect(shelves.workspaces[0]!.rows).toEqual([]);
+  });
+
+  it("shows only the machines the device picker names", () => {
+    const catalogs: RemoteCatalog[] = [
+      {
+        desktopId: "desktop_a",
+        sessions: [{ archived: true, mode: "workspace", sessionId: "a", title: "a", workspaceId: "ws_9" }],
+        workspaces: [{ archived: true, id: "ws_9", name: "A shelf", path: "/a", pinned: false }],
+      },
+      {
+        desktopId: "desktop_b",
+        sessions: [{ archived: true, mode: "workspace", sessionId: "b", title: "b", workspaceId: "ws_10" }],
+        workspaces: [{ archived: true, id: "ws_10", name: "B shelf", path: "/b", pinned: false }],
+      },
+    ];
+
+    const onlyB = archivedRemoteShelves(catalogs, { desktopId: "desktop_b", kind: "device" });
+    expect(onlyB.workspaces.map(group => group.label)).toEqual(["B shelf"]);
+    expect(onlyB.workspaces[0]!.rows.map(row => row.id)).toEqual(["b"]);
+  });
+
+  it("keeps a shelf whose name matches, and a shelf one of whose conversations matches", () => {
+    const shelves = archivedRemoteShelves([
+      {
+        desktopId: "desktop_a",
+        sessions: [
+          {
+            archived: true,
+            mode: "workspace",
+            sessionId: "a_shelved",
+            title: "alpha task",
+            workspaceId: "ws_9",
+            workspaceName: "Remote project",
+          },
+        ],
+        workspaces: [
+          { archived: true, id: "ws_9", name: "Remote project", path: "/r", pinned: false },
+          { archived: true, id: "ws_10", name: "beta project", path: "/b", pinned: false },
+        ],
+      },
+    ], ALL);
+
+    const byTitle = filterArchivedRemoteShelves(shelves, "alpha");
+    expect(byTitle.workspaces.map(group => group.label)).toEqual(["Remote project"]);
+    // The shelf was kept, so the reader sees what is in it.
+    expect(byTitle.workspaces[0]!.rows.map(row => row.id)).toEqual(["a_shelved"]);
+
+    const byName = filterArchivedRemoteShelves(shelves, "beta");
+    expect(byName.workspaces.map(group => group.label)).toEqual(["beta project"]);
+
+    const none = filterArchivedRemoteShelves(shelves, "gamma");
+    expect(none.workspaces).toEqual([]);
+    expect(none.rows).toEqual([]);
+  });
+});
+
+/**
+ * The windowed catalogue: a host sends its newest conversations and keeps the
+ * rest a page away, so the reader's own cursor and the rows behind it have to
+ * survive every snapshot the host restates.
+ */
+describe("windowed catalogues", () => {
+  const row = (sessionId: string, extra: Partial<RemoteSessionRow> = {}): RemoteSessionRow => ({
+    sessionId,
+    title: `Title ${sessionId}`,
+    streaming: false,
+    lastMessageAt: 100,
+    ...extra,
+  });
+
+  it("takes the window's own cursor until the reader asks for more", () => {
+    const answer: RemoteCatalog = {
+      desktopId: "desktop_a",
+      sessions: [row("a"), row("b")],
+      nextCursor: "100:b",
+      totalRoots: 12,
+    };
+    const merged = mergeRemoteCatalogWindow(answer, undefined);
+    expect(merged.pageCursor).toBe("100:b");
+    expect(merged.totalRoots).toBe(12);
+    expect(merged.pagedIds).toEqual([]);
+  });
+
+  it("carries the pages a reader loaded across a fresh window snapshot", () => {
+    const held: RemoteCatalog = {
+      desktopId: "desktop_a",
+      sessions: [row("a"), row("b"), row("older")],
+      nextCursor: "100:b",
+      totalRoots: 12,
+      pageCursor: "50:older",
+      pagedIds: ["older"],
+    };
+    // The poll answers with the window alone — exactly what it always sends.
+    const answer: RemoteCatalog = {
+      desktopId: "desktop_a",
+      sessions: [row("a"), row("b")],
+      nextCursor: "100:b",
+      totalRoots: 12,
+    };
+    const merged = mergeRemoteCatalogWindow(answer, held);
+    expect(merged.sessions.map(item => item.sessionId)).toEqual(["a", "b", "older"]);
+    expect(merged.pagedIds).toEqual(["older"]);
+    // The reader's place is theirs: the window's edge would move it back.
+    expect(merged.pageCursor).toBe("50:older");
+  });
+
+  it("follows the host when a list nobody paged has nothing more", () => {
+    const held: RemoteCatalog = {
+      desktopId: "desktop_a",
+      sessions: [row("a")],
+      nextCursor: "100:a",
+      pageCursor: "100:a",
+      pagedIds: [],
+    };
+    const merged = mergeRemoteCatalogWindow(
+      { desktopId: "desktop_a", sessions: [row("a")], nextCursor: null },
+      held,
+    );
+    expect(merged.pageCursor).toBeNull();
+  });
+
+  it("appends a page, records what came from it, and advances the cursor", () => {
+    const held: RemoteCatalog = {
+      desktopId: "desktop_a",
+      sessions: [row("a"), row("b")],
+      nextCursor: "100:b",
+      pageCursor: "100:b",
+      totalRoots: 4,
+      pagedIds: [],
+    };
+    const next = appendRemoteCatalogPage(held, {
+      desktopId: "desktop_a",
+      // A row the window already delivered is the same conversation, not a second.
+      sessions: [row("b"), row("c")],
+      nextCursor: "20:c",
+      totalRoots: 4,
+    });
+    expect(next.sessions.map(item => item.sessionId)).toEqual(["a", "b", "c"]);
+    expect(next.pagedIds).toEqual(["c"]);
+    expect(next.pageCursor).toBe("20:c");
+
+    const last = appendRemoteCatalogPage(next, {
+      desktopId: "desktop_a",
+      sessions: [row("d")],
+      nextCursor: null,
+      totalRoots: 4,
+    });
+    expect(last.pageCursor).toBeNull();
+  });
+
+  it("counts the remainder in roots, so a fork is not counted twice", () => {
+    const held: RemoteCatalog = {
+      desktopId: "desktop_a",
+      // A root and its fork child: one conversation of the four the host holds.
+      sessions: [row("a"), row("child", { parentSessionId: "a" })],
+      totalRoots: 4,
+    };
+    expect(remoteCatalogRemaining(held)).toBe(3);
+    // A host that does not count (no window) has nothing to promise.
+    expect(remoteCatalogRemaining({ desktopId: "desktop_a", sessions: [row("a")] })).toBe(0);
   });
 });

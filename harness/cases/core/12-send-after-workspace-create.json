@@ -1,0 +1,39 @@
+{
+  "id": "send-right-after-workspace-create",
+  "title": "新建工作区后立刻发送：草稿不能被静默丢弃",
+  "area": "workspace",
+  "priority": "P1",
+  "tags": ["workspace", "edge", "race"],
+  "description": "创建完工作区后不等待，立即输入并点发送。发送按钮此时已经可用，所以用户完全可能这么做；如果模型目录尚未加载完，应用必须保留草稿或提示，而不能把草稿清空、又不创建会话。",
+  "preconditions": "应用已启动；harness 已准备空目录。",
+  "expectations": [
+    "点击发送后要么创建会话，要么保留草稿并说明原因",
+    "草稿不会在没有任何会话产生的情况下消失"
+  ],
+  "steps": [
+    { "wait": 800 },
+    { "click": { "aria": "新建工作区" } },
+    { "waitFor": { "selector": "button[aria-label='选择工作区']" }, "timeout": 5000 },
+    { "click": { "aria": "选择工作区" } },
+    { "waitFor": { "text": "工作区路径：" }, "timeout": 5000 },
+    { "click": { "selector": "button", "text": "打开" } },
+    { "waitFor": { "text": "使用此项目文件夹及其工作区资源" }, "timeout": 8000 },
+    { "click": { "selector": "[role=textbox]" } },
+    { "type": "模型加载前发送的草稿" },
+    { "click": { "aria": "发送" }, "note": "不等待模型目录，模拟真实的快速操作" },
+    { "wait": 2500 },
+    {
+      "db": {
+        "sql": "SELECT COUNT(*) AS n FROM threads WHERE deleted_at IS NULL AND status != 'deleted'",
+        "as": "startCount"
+      }
+    },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes('模型加载前发送的草稿') || !!document.querySelector('[role=textbox]').innerText.trim()",
+        "message": "草稿仍留在输入框里，或已经变成会话"
+      }
+    },
+    { "shot": "after-immediate-send" }
+  ]
+}

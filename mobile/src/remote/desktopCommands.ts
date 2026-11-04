@@ -19,6 +19,10 @@
  * session: the session id alone is the lane a command travels on, not an
  * identity the host can act on. A host that reported no thread id cannot be
  * addressed for either.
+ *
+ * The four archive commands are the host's own shelving routes, gated on
+ * `archive_v1`: the catalogue has carried `archived` on its rows since before
+ * that flag existed, so reading a shelf never needed it — changing one does.
  */
 export interface DesktopCommands {
   /** What the machine says it supports, from its handshake. */
@@ -28,9 +32,17 @@ export interface DesktopCommands {
   generateTitle(sessionId: string, language: string): Promise<string>;
   setSessionPinned(sessionId: string, threadId: string, pinned: boolean): Promise<void>;
   deleteSession(sessionId: string, threadId: string): Promise<void>;
+  /** Shelve a conversation and its forks on that machine. */
+  archiveSession(sessionId: string, threadId: string): Promise<void>;
+  /** Bring a shelved conversation's tree back on that machine. */
+  restoreSession(sessionId: string, threadId: string): Promise<void>;
   /** Rename a workspace the machine owns. The host applies its own name rules. */
   renameWorkspace(workspaceId: string, name: string): Promise<void>;
   setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void>;
+  /** Shelve a workspace and hide its conversations on that machine. */
+  archiveWorkspace(workspaceId: string): Promise<void>;
+  /** Bring a shelved workspace, and the conversations it hid, back. */
+  restoreWorkspace(workspaceId: string): Promise<void>;
   /** Remove a workspace *and its conversations* on the machine that owns it. */
   deleteWorkspace(workspaceId: string): Promise<void>;
 }

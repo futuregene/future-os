@@ -187,6 +187,44 @@ export function timelineFromHistory(messages: HistoryMessage[]): TimelineState {
   return { ...emptyTimeline(), items };
 }
 
+/** A path this device can open by itself — a picker copy — not the host's. */
+const LOCAL_ATTACHMENT_PATH = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+/**
+ * Keep the copy of an attachment this device already holds.
+ *
+ * A prompt sent from a phone is drawn from that phone's own picker file the
+ * moment the desktop acknowledges it. The desktop's record of the same prompt
+ * names *its* path for the file, and it arrives a moment later — the live
+ * `user_message` mirror, then durable history (which is authoritative on every
+ * reconcile). Replacing the path unmounts the picture under a name this device
+ * has no copy for, so the bubble falls back to a name chip and the photo comes
+ * back one transfer later: on a phone that reads as "the image showed, then
+ * vanished, then showed again".
+ *
+ * Matching is by name — the same identity the transcript uses everywhere else
+ * for "this attachment" — and only a local path from the row being replaced is
+ * carried. Nothing is persisted by this: a conversation opened later is built
+ * from durable history alone, so a picker file the OS has since purged can
+ * never leave a permanently blank picture behind.
+ */
+export function keepLocalAttachmentPaths(
+  attachments: HistoryAttachment[] | undefined,
+  previous: HistoryAttachment[] | undefined,
+): HistoryAttachment[] | undefined {
+  if (!attachments?.length || !previous?.length) return attachments;
+  let changed = false;
+  const next = attachments.map(attachment => {
+    const local = previous.find(
+      candidate => candidate.name === attachment.name && LOCAL_ATTACHMENT_PATH.test(candidate.path),
+    );
+    if (!local || local.path === attachment.path) return attachment;
+    changed = true;
+    return { ...attachment, path: local.path };
+  });
+  return changed ? next : attachments;
+}
+
 /** Merge durable attachment metadata into text-only live user events. */
 export function mergeHistoryAttachments(
   live: TimelineState,
@@ -345,6 +383,36 @@ function isCompactionDividerRow(item: TimelineItem): boolean {
 }
 
 /**
+ * Close a standalone (manual) compaction whose end this client will never see.
+ *
+ * Unlike a compaction inside a run, a manual one belongs to no reply: its
+ * divider is the only trace of it, and it settles solely from its terminal
+ * frame. When that frame is lost — the agent restarted or was killed while the
+ * summary ran, the stream dropped, the operation was abandoned — nothing else
+ * ever closes it, so it reads "compacting context" under a finished reply for
+ * the rest of the session's life. The authoritative session state is the exit:
+ * `isCompacting === false` says the operation is over, and a divider left
+ * running is stale.
+ *
+ * The row keeps its `compaction:<operation id>` identity and gains no
+ * checkpoint, so a terminal frame that arrives afterwards still replaces it
+ * (see `applyStandaloneCompaction`), and no durable history is invented.
+ */
+export function settleInterruptedStandaloneCompactions(items: TimelineItem[]): TimelineItem[] {
+  let changed = false;
+  const next = items.map(item => {
+    if (item.kind !== "message" || item.role !== "assistant") return item;
+    if (!item.id.startsWith("compaction:")) return item;
+    if (item.segments?.length !== 1) return item;
+    const segment = item.segments[0];
+    if (segment?.kind !== "compaction" || segment.status !== "running") return item;
+    changed = true;
+    return { ...item, segments: [{ ...segment, status: "interrupted" as const }] };
+  });
+  return changed ? next : items;
+}
+
+/**
  * The wire's own spelling of a replay event, and its canonical form.
  *
  * Both live in the shared package now: the mapping is a fact about the host's
@@ -417,6 +485,25 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
   return applyEvent(state, event);
 }
 
+/**
+ * The identity one stream event is deduplicated by, or null when it has none.
+ *
+ * A run event's position is its run + idx, and a replayed or re-broadcast copy
+ * carries the same pair. A session-scoped event (a manual compaction's
+ * lifecycle, `model_changed`, `cwd_changed`) carries none: the wire spells it
+ * `runId: ""` with `idx: -1` (`build_event_body` always writes runId), so
+ * keying those by the pair collapsed *every* session-scoped frame in a lane
+ * onto one key — the first applied, all the rest discarded as duplicates. That
+ * is how a manual compaction's terminal frame went missing after its start
+ * (the divider then read "compacting" under a settled reply forever) and why a
+ * second settings change never landed. Session frames are ordered by arrival
+ * and are idempotent, so they are applied rather than deduplicated.
+ */
+function eventKey(event: StreamEvent): string | null {
+  if (!event.runId || event.idx == null || event.idx < 0) return null;
+  return `${event.runId}:${event.idx}`;
+}
+
 function applyEvent(state: TimelineState, event: StreamEvent, batch?: {
   seenEvents: Set<string>;
   deferRunSnapshot: boolean;
@@ -424,7 +511,7 @@ function applyEvent(state: TimelineState, event: StreamEvent, batch?: {
 }): TimelineState {
   if (event.type === "ping") return state;
   const runId = event.runId ?? state.currentRunId ?? undefined;
-  const key = event.runId != null && event.idx != null ? `${event.runId}:${event.idx}` : null;
+  const key = eventKey(event);
   if (key && state.seenEvents.has(key)) return state;
 
   const seenEvents = batch?.seenEvents ?? new Set(state.seenEvents);
@@ -466,7 +553,20 @@ function applyEvent(state: TimelineState, event: StreamEvent, batch?: {
           ? { attachments: canonical.attachments.map(toHistoryAttachment) }
           : {}),
       };
-      items = upsertUserMessage<TimelineItem>(items, user);
+      const mirrored = items.find(
+        item =>
+          item.kind === "message" &&
+          item.role === "user" &&
+          (item.id === user.id || (!!user.runId && item.runId === user.runId)),
+      );
+      const attachments = keepLocalAttachmentPaths(
+        user.attachments,
+        mirrored?.kind === "message" ? mirrored.attachments : undefined,
+      );
+      items = upsertUserMessage<TimelineItem>(
+        items,
+        attachments === user.attachments ? user : { ...user, attachments },
+      );
       break;
     }
     case "approval_request": {
@@ -586,7 +686,7 @@ export function createStreamEventBatch(initial: TimelineState) {
   return {
     append(event: StreamEvent) {
       if (event.type === "ping") return;
-      const key = event.runId != null && event.idx != null ? `${event.runId}:${event.idx}` : null;
+      const key = eventKey(event);
       if (key && seenEvents.has(key)) return;
       const runId = event.runId ?? state.currentRunId ?? undefined;
       const data = eventData(event);

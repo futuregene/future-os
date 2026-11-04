@@ -1,4 +1,6 @@
 import type { RemoteSession, RemoteWorkspace } from "../remote/types";
+import type { CatalogRow } from "./sessionTree";
+import { archivedRows } from "./sessionTree";
 
 /**
  * Archive state of a remote row, in one place.
@@ -57,4 +59,73 @@ export function splitArchived<T extends { session: RemoteSession; }>(
  */
 export function activeWorkspaces(workspaces: readonly RemoteWorkspace[]): RemoteWorkspace[] {
   return workspaces.filter(workspace => !isArchivedWorkspace(workspace));
+}
+
+/** One machine's half of the archived shelf. */
+export interface ArchivedCatalog {
+  desktopId: string;
+  sessions: RemoteSession[];
+  /**
+   * That machine's workspaces when this phone has them.
+   *
+   * The shelf can still group without them: an archived conversation carries the
+   * name of the workspace holding it, and `archivedCatalogRows` derives headings
+   * from those rows. What only this list can supply is a shelved workspace with
+   * nothing left inside it — the one row whose only action is "restore".
+   */
+  workspaces?: RemoteWorkspace[];
+}
+
+/**
+ * Shelved workspaces derived from the conversations that name them.
+ *
+ * A host's workspace list is the authority; this is the fallback for a machine
+ * whose list has not been read (a peer's workspaces are not part of its session
+ * catalogue). Without it, every archived conversation of a shelved workspace
+ * would be drawn loose — each one correct, but filed under nothing, which is the
+ * one thing the shelf is for.
+ */
+function derivedArchivedWorkspaces(
+  sessions: readonly RemoteSession[],
+  workspaces: readonly RemoteWorkspace[],
+): RemoteWorkspace[] {
+  if (workspaces.some(workspace => workspace.archived === true)) return [...workspaces];
+  const byId = new Map<string, RemoteWorkspace>();
+  for (const session of sessions) {
+    if (session.archived !== true || session.mode !== "workspace" || !session.workspaceId) continue;
+    if (byId.has(session.workspaceId)) continue;
+    byId.set(session.workspaceId, {
+      id: session.workspaceId,
+      name: session.workspaceName ?? "",
+      path: "",
+      pinned: false,
+      archived: true,
+    });
+  }
+  return [...workspaces, ...byId.values()];
+}
+
+/**
+ * The archived shelf across every machine the list is showing.
+ *
+ * The desktop's archived view holds all of its paired machines' shelves; the
+ * phone's held only the open connection's, so a conversation shelved on another
+ * pairing was missing from the one page meant to list it. Each machine's rows
+ * carry their source, which is what draws the machine glyph and routes a restore
+ * back to the machine that owns the row.
+ *
+ * `collapsed` is the same fold set the active pages use; a search passes an
+ * empty set, so every shelf is open while the reader is looking for something.
+ */
+export function archivedCatalogRows(
+  catalogs: readonly ArchivedCatalog[],
+  collapsed: ReadonlySet<string>,
+): CatalogRow[] {
+  return catalogs.flatMap(catalog => archivedRows(
+    catalog.sessions,
+    derivedArchivedWorkspaces(catalog.sessions, catalog.workspaces ?? []),
+    () => true,
+    collapsed,
+    catalog.desktopId,
+  ));
 }

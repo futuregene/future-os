@@ -34,9 +34,14 @@ function isStepSegment(segment: TimelineSegment): segment is StepSegment {
  * in the summary's accessibility label. A
  * call that is still running stays on screen: it is live progress, and folding it
  * would hide work in flight.
+ *
+ * An interrupted call stays on screen too, for the opposite reason: it stopped
+ * *without* reporting, so a "Ran 8 commands" summary would claim the one thing
+ * nobody knows. It keeps its own row and its own 已中断 label.
  */
 function foldableStep(segment: StepSegment): boolean {
-  return segment.kind === "thinking" || segment.tool.complete;
+  return segment.kind === "thinking"
+    || (segment.tool.complete && segment.tool.status !== "interrupted");
 }
 
 function stepRunKind(segment: StepSegment): StepRunKind {

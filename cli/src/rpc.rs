@@ -219,12 +219,21 @@ impl RunClient {
             .await
     }
 
+    /// The Agent's resident streaming sessions (`{sessionIds: [...]}`) — the
+    /// sessions with a run in flight right now.
+    ///
+    /// The archive precondition needs it: a run another client started has no
+    /// local row to read, and shelving a conversation would hide the run — and
+    /// any approval request it is waiting on — behind the shelf.
+    pub async fn list_streaming_sessions(&self) -> Result<Value, String> {
+        self.execute_command("list_streaming_sessions", RpcCommand::default(), None, 5)
+            .await
+    }
+
     /// Check that an Agent can handle a command without triggering skill
     /// discovery. This works with older Agents as well as current builds.
     pub async fn probe_agent(&self) -> Result<(), String> {
-        self.execute_command("list_streaming_sessions", RpcCommand::default(), None, 5)
-            .await
-            .map(|_| ())
+        self.list_streaming_sessions().await.map(|_| ())
     }
 
     pub async fn fusion_discussion(

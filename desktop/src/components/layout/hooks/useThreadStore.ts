@@ -192,11 +192,57 @@ export function applyThreadActivity(
  * Same-set guard for streaming statuses: while any thread streams, the push
  * repeats the unchanged id set at push frequency — writing a fresh object each
  * time re-rendered AppShell (and with it the whole rail) for nothing.
- */
-function mergeStreamingStatuses(previous: ThreadStreamingStatuses, threadIds: string[]): ThreadStreamingStatuses {
+ */function mergeStreamingStatuses(previous: ThreadStreamingStatuses, threadIds: string[]): ThreadStreamingStatuses {
   if (threadIds.length === Object.keys(previous).length && threadIds.every(threadId => previous[threadId]))
     return previous;
   return streamingStatuses(threadIds);
+}
+
+/**
+ * What a refresh knows beyond "re-read the lists".
+ *
+ * A refreshed page that no longer returns a row is ambiguous on its own: the
+ * conversation was archived, moved to another workspace, or simply paged out.
+ * A delete is the one answer nothing later contradicts, so the caller that did
+ * it says which rows are gone and the store stops holding them.
+ */
+export interface RefreshStoreOptions {
+  /** Conversations that no longer exist — deleted, and never to be revived. */
+  removedThreadIds?: readonly string[];
+}
+
+/** When a conversation last did anything — the stamp its place in a list reads. */
+function activityStamp(thread: StoredThread): number {
+  return thread.lastMessageAt ?? thread.createdAt;
+}
+
+/**
+ * The conversation the column falls back to once the open one is deleted.
+ *
+ * Its own workspace first: a reader who just deleted a conversation is still
+ * working where that conversation lived, so the next one should come from the
+ * same group rather than from across the rail. Then the most recently active row
+ * the store holds, because "somewhere else" still beats a blank column. A
+ * shelved row is never a candidate — it is not in the list the reader is looking
+ * at, and swapping one in for a deleted conversation would read as a jump, not a
+ * fallback. `null` means the store has nothing left to open, which the shell
+ * turns into its new-conversation screen.
+ */
+function replacementAfterRemoval(
+  byId: ReadonlyMap<string, StoredThread>,
+  workspaceId: string | undefined,
+): string | null {
+  let inWorkspace: StoredThread | null = null;
+  let anywhere: StoredThread | null = null;
+  for (const row of byId.values()) {
+    if (row.status !== "active")
+      continue;
+    if (!anywhere || activityStamp(row) > activityStamp(anywhere))
+      anywhere = row;
+    if (workspaceId && row.workspaceId === workspaceId && (!inWorkspace || activityStamp(row) > activityStamp(inWorkspace)))
+      inWorkspace = row;
+  }
+  return (inWorkspace ?? anywhere)?.id ?? null;
 }
 
 export interface ThreadStore {
@@ -249,8 +295,14 @@ export interface ThreadStore {
   /**
    * Reload the scopes already in the store, keeping their loaded depth — the
    * mutation path (archive/restore/delete) and the `threads-updated` push.
+   *
+   * `nextActiveThreadId` is the conversation to keep open: absent keeps the one
+   * on screen, `null` leaves nothing open. A selection that `options` reports as
+   * removed is replaced by the nearest remaining conversation instead of being
+   * kept, so deleting the open one cannot leave the column on a row the sidebar
+   * has already dropped.
    */
-  refreshStore: (nextActiveThreadId?: string) => Promise<void>;
+  refreshStore: (nextActiveThreadId?: string | null, options?: RefreshStoreOptions) => Promise<void>;
 }
 
 /**
@@ -490,10 +542,13 @@ export function useThreadStore(): ThreadStore {
    * Not a full reload: each open scope is re-requested page by page until it
    * reaches the roots it already held (or runs dry), so a restart-ordered list
    * converges without paging a reader back to row one. The active id is
-   * re-derived the same way the unpaged store did it.
+   * re-derived the same way the unpaged store did it — except that a row the
+   * caller reports as removed is never kept, so the delete path ends with the
+   * row gone and the selection moved on (see `RefreshStoreOptions`).
    */
-  const refreshStore = useCallback(async (nextActiveThreadId?: string) => {
+  const refreshStore = useCallback(async (nextActiveThreadId?: string | null, options?: RefreshStoreOptions) => {
     const generation = ++refreshStoreGenRef.current;
+    const removed = new Set(options?.removedThreadIds ?? []);
     try {
       const [pinned, pinnedWs, allWorkspaces, active] = await Promise.all([
         listPinnedThreads("recent"),
@@ -552,19 +607,39 @@ export function useThreadStore(): ThreadStore {
         setRecentIds(recentRows);
 
       const byId = new Map(rows.map(thread => [thread.id, thread] as const));
+      // A removed conversation leaves the store outright, whatever a page
+      // racing this read brought in: the delete is the one fact no later
+      // listing can contradict.
+      for (const id of removed) byId.delete(id);
       // The conversation on screen stays addressable even when its scope no
-      // longer returns it (a just-archived detail stays open, read-only).
-      const currentActive = byId.get(activeThreadIdRef.current ?? "");
-      if (!currentActive && activeThreadIdRef.current) {
-        const stillKnown = threadsRef.current.find(thread => thread.id === activeThreadIdRef.current);
+      // longer returns it (a just-archived detail stays open, read-only) — but
+      // never one the caller just deleted, or the row survives the very reload
+      // that was meant to drop it.
+      const currentId = activeThreadIdRef.current;
+      if (currentId && !byId.has(currentId) && !removed.has(currentId)) {
+        const stillKnown = threadsRef.current.find(thread => thread.id === currentId);
         if (stillKnown)
           byId.set(stillKnown.id, stillKnown);
       }
       setThreads([...byId.values()]);
 
-      const selectable = nextActiveThreadId ?? activeThreadIdRef.current;
+      // `null` is "nothing is open any more", which is not the same request as
+      // "keep whatever is on screen" (`undefined`).
+      if (nextActiveThreadId === null) {
+        setActiveThreadId(null);
+        return;
+      }
+      const selectable = nextActiveThreadId ?? currentId;
       if (selectable && byId.has(selectable)) {
         setActiveThreadId(selectable);
+      }
+      else if (selectable && removed.has(selectable)) {
+        // The open conversation was deleted: the column falls back to the
+        // nearest one that remains, never to the id that just left.
+        setActiveThreadId(replacementAfterRemoval(
+          byId,
+          threadsRef.current.find(thread => thread.id === selectable)?.workspaceId,
+        ));
       }
     }
     catch (error) {

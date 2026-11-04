@@ -78,6 +78,18 @@ interface ComposerProps {
   onSend: (payload: ComposerSendPayload) => void | Promise<void>;
   className?: string;
   disabled?: boolean;
+  /**
+   * The send path cannot build a request yet: the new-conversation screen sets
+   * it until the model catalogue arrives, because a send before that would fall
+   * back to the Agent's default model instead of the one the screen shows.
+   *
+   * Deliberately not `disabled`: a locked editor swallows what the reader types
+   * (that is exactly how the first message of a conversation used to disappear
+   * after creating a workspace — nothing arrived, nothing was said, the draft
+   * was simply gone). Here the editor stays editable and keeps the draft; only
+   * submission is held, and the control row says what it is waiting for.
+   */
+  preparing?: boolean;
   modelId?: string;
   modelOptions: AgentModelOption[];
   /** Why the picker list is empty, to tailor its empty-state copy. */
@@ -188,6 +200,7 @@ function ComposerImpl({
   onSend,
   className,
   disabled,
+  preparing,
   modelId,
   modelOptions,
   modelsEmptyReason,
@@ -246,7 +259,7 @@ function ComposerImpl({
   const captureOperation = useOperationLifetime(draftKey);
   const { attachments, attachmentsRef, setAttachments, attachError, setAttachError, dragState, addAttachmentPaths, attachPastedFiles, attachNativeClipboardImage, handleAttachFiles, removeAttachment }
     = useComposerAttachments({ disabled, onDragStateChange, captureOperation });
-  const sendStateRef = useCommittedRef({ disabled, sending, compactionPending, onSend });
+  const sendStateRef = useCommittedRef({ disabled, sending, compactionPending, onSend, preparing });
   useEffect(() => {
     recommendPendingRef.current = false;
     evaluatedDraftRef.current = null;
@@ -476,8 +489,12 @@ function ComposerImpl({
       setQueueChoiceOpen(true);
       return;
     }
+    // `preparing` keeps the draft: submission is not refused as "nothing to
+    // do", it is refused because the request cannot be built yet, and the
+    // control row beside the button says so (`t("composer.preparing")`).
     if (
       disabled
+      || preparing
       || sendPending
       || sending
       || compactionPending
@@ -593,7 +610,7 @@ function ComposerImpl({
    */
   function sendNow(evaluatedText?: string) {
     const state = sendStateRef.current;
-    if (!editorRef.current || state.disabled || state.sending || state.compactionPending)
+    if (!editorRef.current || state.disabled || state.preparing || state.sending || state.compactionPending)
       return;
     const submittedText = editorRef.current?.getContent() ?? "";
     const trimmed = submittedText.trim();
@@ -822,6 +839,7 @@ function ComposerImpl({
         : (
             <ComposerControls
               disabled={disabled}
+              preparing={preparing}
               modelId={modelId}
               modelOptions={modelOptions}
               modelsEmptyReason={modelsEmptyReason}

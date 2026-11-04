@@ -4,7 +4,12 @@ import type { RemotePeer, RemotePeerEvent } from "../../../features/remote-peer/
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CatalogVersionGate } from "../../../features/remote-peer/catalogVersion";
-import { mergeRemoteSessionDelta } from "../../../features/remote-peer/mergeConversations";
+import {
+  appendRemoteCatalogPage,
+  mergeRemoteCatalogWindow,
+  mergeRemoteSessionDelta,
+  remoteCatalogRemaining,
+} from "../../../features/remote-peer/mergeConversations";
 import { peerRevoked } from "../../../features/remote-peer/peerStatus";
 import { forgetHostCatalogue, warmHostCatalogue } from "../../../features/remote-peer/remoteHostCatalog";
 import {
@@ -68,6 +73,23 @@ export interface RemotePeersState {
    * pairing should be live", and only this one may overrule a deliberate stop.
    */
   reconnectAll: () => Promise<void>;
+  /**
+   * Conversations the paired machines hold beyond the window this list drew.
+   *
+   * A host that speaks `catalog_window_v1` sends its newest conversations and
+   * keeps the rest one page away, so this is the honest remainder behind the
+   * list's own "show the rest" control (and `0` when every host sent
+   * everything, or when the reader has already walked to the end).
+   */
+  sessionsRemaining: number;
+  /**
+   * Walk every host's remaining pages, newest first, to the end.
+   *
+   * One click, the whole remainder — the same promise `RailLoadMoreRow` makes
+   * for this machine's own list, whose control names the count it will load.
+   * A page that fails leaves the control where it was so the next click retries.
+   */
+  loadMoreSessions: () => Promise<void>;
 }
 
 /**
@@ -342,6 +364,60 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
     await refresh();
   }, [refresh]);
 
+  /** The catalogues as of the last render, for callbacks that must not be re-created. */
+  const catalogsRef = useRef<RemoteCatalog[]>([]);
+  useEffect(() => {
+    catalogsRef.current = catalogs;
+  }, [catalogs]);
+
+  /**
+   * Load every host's remaining conversations.
+   *
+   * The window each host sent is the newest conversation trees, and everything
+   * below it is one `sessions_page` away. This walks that cursor to the end, per
+   * host, because the control's own sentence is "show the other N" and N is the
+   * whole remainder — a reader who asked for the rest should not have to ask
+   * again every fifty conversations on a machine with several hundred.
+   *
+   * Bounded by the same 100-page cap the local rail's own walk uses: a host whose
+   * cursor never ends would otherwise be an unbounded loop of round trips. A
+   * failed page stops that host's walk only — the reader's place is kept, so the
+   * next click continues where this one stopped.
+   */
+  const loadMoreSessions = useCallback(async () => {
+    const hosts = catalogsRef.current.filter(catalog => catalog.pageCursor);
+    await Promise.all(hosts.map(async (catalog) => {
+      let cursor = catalog.pageCursor ?? null;
+      for (let page = 0; page < 100 && cursor; page += 1) {
+        let answer: RemoteCatalog;
+        try {
+          answer = await fetchRemoteSessions(catalog.desktopId, cursor);
+        }
+        catch {
+          return;
+        }
+        cursor = answer.nextCursor ?? null;
+        setCatalogs(current => current.map(entry => entry.desktopId === catalog.desktopId
+          ? appendRemoteCatalogPage(entry, answer)
+          : entry));
+      }
+    }));
+  }, []);
+
+  /**
+   * The remainder behind the list, counted in the unit the hosts count in.
+   *
+   * A host that still names a next page contributes at least one, so a count that
+   * disagrees with a host's own arithmetic can never hide a page that exists.
+   */
+  const sessionsRemaining = useMemo(
+    () => catalogs.reduce(
+      (sum, catalog) => sum + Math.max(remoteCatalogRemaining(catalog), catalog.pageCursor ? 1 : 0),
+      0,
+    ),
+    [catalogs],
+  );
+
   // A slower, separate catalogue cadence (see CATALOG_POLL_MS).
   useEffect(() => {
     if (!enabled)
@@ -499,8 +575,28 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
   }, [enabled, forgetDetached, refresh]);
 
   return useMemo(
-    () => ({ peers, catalogs, loading, error, refresh, refreshPeers, reconnectAll }),
-    [peers, catalogs, loading, error, refresh, refreshPeers, reconnectAll],
+    () => ({
+      peers,
+      catalogs,
+      loading,
+      error,
+      refresh,
+      refreshPeers,
+      reconnectAll,
+      sessionsRemaining,
+      loadMoreSessions,
+    }),
+    [
+      peers,
+      catalogs,
+      loading,
+      error,
+      refresh,
+      refreshPeers,
+      reconnectAll,
+      sessionsRemaining,
+      loadMoreSessions,
+    ],
   );
 }
 
@@ -562,11 +658,15 @@ function keepUnanswered(
   asked: readonly string[],
 ): RemoteCatalog[] {
   const answers = new Map(answered.map(catalog => [catalog.desktopId, catalog] as const));
+  const before = new Map(current.map(catalog => [catalog.desktopId, catalog] as const));
   const next: RemoteCatalog[] = [];
   for (const catalog of current) {
     const answer = answers.get(catalog.desktopId);
     if (answer) {
-      next.push(answer);
+      // The answer is the host's *window*, not necessarily the whole list: the
+      // pages the reader asked for beyond it are carried across here, or a
+      // five-second poll would re-offer rows it had already loaded.
+      next.push(mergeRemoteCatalogWindow(answer, before.get(catalog.desktopId)));
       answers.delete(catalog.desktopId);
       continue;
     }
@@ -575,7 +675,8 @@ function keepUnanswered(
   }
   // A host this list has never held: there is nothing to keep, so its answer —
   // if it produced one — is what introduces it.
-  next.push(...answers.values());
+  for (const answer of answers.values())
+    next.push(mergeRemoteCatalogWindow(answer, undefined));
   return next;
 }
 
@@ -806,12 +907,31 @@ function handleCatalog(
       dictionary: obj.workspaces,
       full: obj.full === true,
     };
+    // A windowed host restates where its window ends when that moved, which is
+    // how a reader learns there is more to ask for without a whole snapshot.
+    const carriesWindow = "nextCursor" in obj || "totalRoots" in obj;
+    const windowCursor = typeof obj.nextCursor === "string" ? obj.nextCursor : null;
+    const totalRoots = typeof obj.totalRoots === "number" ? obj.totalRoots : null;
     setCatalogs(current =>
-      current.map(catalog =>
-        catalog.desktopId === desktopId
-          ? { ...catalog, sessions: mergeRemoteSessionDelta(catalog.sessions, delta) }
-          : catalog,
-      ),
+      current.map((catalog) => {
+        if (catalog.desktopId !== desktopId)
+          return catalog;
+        const next: RemoteCatalog = {
+          ...catalog,
+          sessions: mergeRemoteSessionDelta(catalog.sessions, delta),
+          ...(carriesWindow ? { nextCursor: windowCursor } : {}),
+          ...(totalRoots !== null ? { totalRoots } : {}),
+        };
+        // A `full` packet is the first one on a connection: the rows it names are
+        // the window and nothing here is left of the pages an earlier connection
+        // carried, so the reader's place restarts at the window's edge rather
+        // than pointing into a list this client no longer holds.
+        if (delta.full) {
+          next.pagedIds = [];
+          next.pageCursor = windowCursor;
+        }
+        return next;
+      }),
     );
     return;
   }
@@ -820,17 +940,31 @@ function handleCatalog(
     const raw = obj.sessions;
     if (!Array.isArray(raw))
       return;
-    const next: RemoteCatalog = {
+    const answer: RemoteCatalog = {
       desktopId,
       // The same parser the poll uses: the merged list must see no difference
       // between a pushed snapshot and a polled one, and one field list is what
       // keeps a host field from reaching one path and not the other.
       sessions: normalizeRemoteSessionRows(obj.sessions),
+      nextCursor: typeof obj.nextCursor === "string" ? obj.nextCursor : null,
+      totalRoots: typeof obj.totalRoots === "number" ? obj.totalRoots : null,
     };
     // A sessions snapshot says nothing about workspaces, so the host's list —
     // and with it the headings of its empty folders — is carried over rather
-    // than dropped with the row set it was attached to.
-    setCatalogs(current => current.map(catalog => (catalog.desktopId === desktopId ? { ...next, ...(catalog.workspaces ? { workspaces: catalog.workspaces } : {}) } : catalog)));
+    // than dropped with the row set it was attached to. The pages a reader
+    // loaded beyond this window are carried over too, for the same reason: they
+    // are rows this list holds, and the window is not the whole list.
+    setCatalogs((current) => {
+      let found = false;
+      const next = current.map((catalog) => {
+        if (catalog.desktopId !== desktopId)
+          return catalog;
+        found = true;
+        const merged = mergeRemoteCatalogWindow(answer, catalog);
+        return catalog.workspaces ? { ...merged, workspaces: catalog.workspaces } : merged;
+      });
+      return found ? next : [...next, mergeRemoteCatalogWindow(answer, undefined)];
+    });
     return;
   }
 

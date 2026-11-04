@@ -355,8 +355,9 @@ describe("useThreadDialogs", () => {
     });
 
     expect(mocks.deleteThread).toHaveBeenCalledWith({ threadId: "t1", deleteFiles: false });
-    // The active thread is gone — the store must pick a new one.
-    expect(mocks.refreshStore).toHaveBeenCalledWith(undefined);
+    // The active thread is gone — the store is told which row left so it can
+    // move the selection on instead of keeping a deleted conversation open.
+    expect(mocks.refreshStore).toHaveBeenCalledWith(undefined, { removedThreadIds: ["t1"] });
     expect(harness.current.deleteDialog).toBeNull();
     harness.unmount();
   });
@@ -372,7 +373,7 @@ describe("useThreadDialogs", () => {
       await harness.current.confirmDelete();
     });
 
-    expect(mocks.refreshStore).toHaveBeenCalledWith("t1");
+    expect(mocks.refreshStore).toHaveBeenCalledWith("t1", { removedThreadIds: ["t9"] });
     harness.unmount();
   });
 
@@ -428,7 +429,7 @@ describe("useThreadDialogs", () => {
 
     expect(mocks.batchDelete).toHaveBeenCalledWith({ threadIds: ["a", "b"], deleteFiles: true });
     expect(mocks.invalidate.mock.calls.map(([id]) => id)).toEqual(["a", "b"]);
-    expect(mocks.refreshStore).toHaveBeenCalledWith();
+    expect(mocks.refreshStore).toHaveBeenCalledWith(undefined, { removedThreadIds: ["a", "b"] });
     expect(harness.current.batchDeleteDialog).toBeNull();
     harness.unmount();
   });
@@ -621,7 +622,7 @@ describe("useThreadDialogs", () => {
     await act(async () => {
       await harness.current.confirmDelete();
     });
-    expect(mocks.refreshStore).toHaveBeenCalledWith(undefined);
+    expect(mocks.refreshStore).toHaveBeenCalledWith(undefined, { removedThreadIds: ["t9"] });
     harness.unmount();
   });
 

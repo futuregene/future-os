@@ -12,7 +12,7 @@ Groups:
   init      Install built-in skills and initialize local commands
   config    Configure a model provider, and read/write global settings
   desktop   Read and change the desktop app's settings
-  workspace List, and add, the desktop app's workspaces
+  workspace List, add, and archive the desktop app's workspaces
   remote    Manage the devices paired to this machine's remote desktop
   auth      Authentication & API key management
   account   Platform account info
@@ -55,7 +55,7 @@ Run 'future <group> --help' for per-group details.
   future init --help         Initialization behavior
   future config --help       Interactive model-provider setup
   future desktop --help      Desktop app settings
-  future workspace --help    Desktop app workspaces (list/add)
+  future workspace --help    Desktop app workspaces (list/add/archive/restore)
   future remote --help       Paired remote devices (list/remove/use)
   future fusion --help       Inspect multi-model discussions
   future run --help          All run options (model, fork, thinking, tools, etc.)
@@ -244,9 +244,14 @@ A list value is a JSON array or a comma-separated list; an empty value clears it
 pub const WORKSPACE_HELP: &str = r#"future workspace — manage the desktop app's workspaces
 
 Usage:
-  future workspace list [--json]                    List the user's workspaces
+  future workspace list [--archived | --all] [--json]
+                                                   List the user's workspaces
   future workspace add <path> [--name <name>] [--json]
                                                    Add a directory as a workspace
+  future workspace archive <path|id|name> [--json]
+                                                   Shelve a workspace and its conversations
+  future workspace restore <path|id|name> [--json]
+                                                   Bring a shelved workspace back
 
 A workspace is a directory on this machine that workspace conversations are
 filed under. The records live in the desktop app's own database
@@ -261,18 +266,29 @@ instead of creating a second one for the same directory, however the path is
 spelled (~, a symlinked path, a trailing separator) — one directory is always
 one workspace.
 
+Archiving moves a workspace to the app's Archived view: it leaves the sidebar
+and the pickers, and the conversations filed under it go with it. Restoring
+brings back exactly what archiving hid. `future workspace archive --help` has
+the rules in full; in short, a conversation that is still running refuses to be
+shelved, and archiving clears the pin.
+
 Workspaces also appear on their own: `future session set <id> --cwd <dir>` files
 that conversation under the directory's workspace, and the desktop app does the
 same whenever a cwd changes. `future workspace list` is then the place to see
-where conversations are filed.
+where conversations are filed — active ones by default, `--archived` for the
+archived view and `--all` for both, marked.
 
 Examples:
   future workspace list
   future workspace add ~/projects/demo
   future workspace add /srv/app --name "Service"
+  future workspace archive ~/projects/demo
+  future workspace restore ws-1a2b3c
 
-With --json, list prints an array of workspace records and add prints the
-record it created or reopened, with "created" saying which."#;
+With --json, list prints an array of workspace records; add prints the record it
+created or reopened, with "created" saying which; archive and restore print the
+record with "archived" saying which shelf it is on now, plus the database the
+write landed in."#;
 
 /// `future desktop settings get --help` output.
 pub const DESKTOP_GET_HELP: &str = r#"future desktop settings get — show the desktop app's effective settings

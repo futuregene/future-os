@@ -42,7 +42,9 @@ import {
   applyReplayEvents,
   dropSupersededCompactionDividers,
   foldLiveCompactionPlaceholdersIntoHistory,
+  settleInterruptedStandaloneCompactions,
   emptyTimeline,
+  keepLocalAttachmentPaths,
   stripRunItems,
   upsertTruncationNotice,
   type TimelineState,
@@ -714,9 +716,22 @@ export class SyncEngine {
       // Historical run events may describe an older compaction. The session
       // snapshot owns the baseline; live events queued during this reconcile
       // are applied afterwards and can release or acquire the fence.
-      if (lane.timeline && (lane.timeline.compacting === true) !== (state.isCompacting === true)) {
-        lane.timeline = { ...lane.timeline, compacting: state.isCompacting === true };
-        this.commit(lane);
+      if (lane.timeline) {
+        // A manual compaction that the session says is no longer running owes
+        // its divider a terminal frame this client may never receive (the agent
+        // restarted mid-summary, the stream dropped). Between turns the
+        // snapshot is the authority, so the placeholder is closed here rather
+        // than left reading "compacting" for the rest of the session. The
+        // running fence itself is only ever *released* by this answer, never
+        // acquired, so a compaction still in flight keeps its divider.
+        const items = state.isCompacting === true
+          ? lane.timeline.items
+          : settleInterruptedStandaloneCompactions(lane.timeline.items);
+        const compacting = state.isCompacting === true;
+        if (items !== lane.timeline.items || (lane.timeline.compacting === true) !== compacting) {
+          lane.timeline = { ...lane.timeline, items, compacting };
+          this.commit(lane);
+        }
       }
       lane.established = true;
       outcome = "success";
@@ -1310,8 +1325,24 @@ function mergeLiveInto(
     item.kind === "message" && item.role === "assistant" && item.runId && !item.streaming
       ? [[item.runId, item] as const] : [],
   ));
+  // The picture a prompt was sent with lives on this device under its picker
+  // path; the durable row names the host's copy of the same file. Drawing the
+  // prompt from the row below however is what keeps the photo on screen instead
+  // of blinking out to a download — see `keepLocalAttachmentPaths`.
+  const liveUserAttachments = new Map(liveItems.flatMap(item =>
+    item.kind === "message" && item.role === "user" && item.runId && item.attachments?.length
+      ? [[item.runId, item.attachments] as const] : [],
+  ));
   const items = dropSupersededCompactionDividers(historyItems, liveItems).map(item => {
-    if (item.kind !== "message" || item.role !== "assistant" || !item.runId) return item;
+    if (item.kind !== "message" || !item.runId) return item;
+    if (item.role === "user") {
+      const attachments = keepLocalAttachmentPaths(
+        item.attachments,
+        liveUserAttachments.get(item.runId),
+      );
+      return attachments === item.attachments ? item : { ...item, attachments };
+    }
+    if (item.role !== "assistant") return item;
     const cached = settledReplies.get(item.runId);
     if (!cached) return item;
     // The entry page can arrive before its terminal metadata is attached.

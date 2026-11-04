@@ -19,11 +19,11 @@ import type { CatalogRow } from "./sessionTree";
  * of one they did. So the stretches rank only conversations whose parent is not
  * on this page, a parent carries the same `+` / `−` tree toggle the other pages
  * give it, and its children are drawn — indented, up to the same three levels —
- * only while it is open. A child is never a row of either stretch on its own: a
- * running worker does not lift its conversation into "Active", and the captions
- * count conversations rather than the sessions under them. The fold is the one
- * the other pages use (the same `expanded` set), so a conversation opened here is
- * open there too.
+ * only while it is open. A child is never a row of either stretch on its own —
+ * and work still running in one files that conversation under "Active" (see
+ * `isActiveConversation`) — while the captions count conversations rather than
+ * the sessions under them. The fold is the one the other pages use (the same
+ * `expanded` set), so a conversation opened here is open there too.
  *
  * Search is the exception that keeps a match reachable: it flattens the page as
  * the other two do, so a child whose parent does not match is drawn as a row at
@@ -33,7 +33,9 @@ import type { CatalogRow } from "./sessionTree";
  * or waiting for the reader's approval. The last one matters most — a run
  * blocked on a question is the one place a reader is being waited on, and it
  * is *not* streaming, so a page that read `streaming` alone would file it under
- * "earlier" and make them hunt for it.
+ * "earlier" and make them hunt for it. A run in a child session counts as the
+ * conversation's own: the child is inside the fold, so nothing else on the page
+ * would say the conversation is still working.
  *
  * The two stretches are ordered by different clocks, on purpose. "Earlier" is
  * ordered by the last reply, which is the question that page answers. "Active"
@@ -42,7 +44,9 @@ import type { CatalogRow } from "./sessionTree";
  * rows swap places under the reader's thumb while a handful of runs took turns
  * producing output. A start time does not move, so a row keeps its place for the
  * whole run and a row joining or leaving the stretch is the only thing that
- * shifts the others.
+ * shifts the others. A conversation lifted into the stretch by a running child
+ * keeps its own start time: the stretch ranks conversations, and the child is
+ * part of that one rather than a row of its own to rank.
  */
 
 /** Run states that mean "this conversation is not done yet". */
@@ -73,6 +77,25 @@ const MAX_DEPTH = 2;
 export function isActiveSession(row: MergedSessionRow): boolean {
   const status = effectiveRunStatus(row.session.status, row.session.streaming);
   return status !== undefined && ACTIVE_STATUSES.has(status);
+}
+
+/**
+ * Whether a conversation still has work in flight: its own run, or one a
+ * conversation it started is running.
+ *
+ * A child is drawn inside its conversation's fold, so a worker still producing
+ * output is work the reader cannot see on this page. Filing the conversation
+ * under "Earlier" while that work ran made them hunt for the one row that was
+ * actually moving — the child is that conversation's work, not a conversation of
+ * its own, so the stretch it belongs in is the stretch its work is in. The walk
+ * descends, because a worker can start a worker.
+ */
+function isActiveConversation(
+  row: MergedSessionRow,
+  children: ReadonlyMap<string, MergedSessionRow[]>,
+): boolean {
+  if (isActiveSession(row)) return true;
+  return (children.get(row.key) ?? []).some(child => isActiveConversation(child, children));
 }
 
 /** Newest first on one stamp; a row without it sorts below every dated row. */
@@ -255,8 +278,14 @@ export function recentRows(
   // not match is a root of the result rather than a row with nothing above it.
   const listed = rows.filter(matches);
   const { roots, children } = recentHierarchy(listed, activeDesktopId);
-  const active = roots.filter(isActiveSession).sort(byCreation);
-  const earlier = roots.filter(row => !isActiveSession(row)).sort(byRecency);
+  const active: MergedSessionRow[] = [];
+  const earlier: MergedSessionRow[] = [];
+  for (const row of roots) {
+    if (isActiveConversation(row, children)) active.push(row);
+    else earlier.push(row);
+  }
+  active.sort(byCreation);
+  earlier.sort(byRecency);
   /**
    * One conversation and the children its fold reveals, parents before children.
    *

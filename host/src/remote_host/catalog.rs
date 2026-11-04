@@ -143,14 +143,48 @@ const RECENCY_FIELD: &str = "lastMessageAt";
 pub(crate) use future_remote_server::services::SessionsCatalog;
 
 pub(crate) fn sessions_catalog(pair_id: &str) -> Option<SessionsCatalog> {
+    sessions_catalog_window(pair_id, None, 0)
+}
+
+/// One catalogue read: the whole list (`limit == 0`), or one page of the
+/// newest-first stream (`limit > 0`, `cursor` = the previous page's
+/// `nextCursor`).
+///
+/// A windowed page is the same rule the local rail pages by — roots newest
+/// activity first, each root with its fork tree — plus the pinned conversations,
+/// which lead the list whole there too. The page carries its own cursor and the
+/// scope's whole root count, so a reader can offer "show the rest" without
+/// asking how much is left and without a second request to find out.
+///
+/// A page is the *live* list, as the local rail's own recent stream is: a
+/// conversation the user shelved, or one inside a shelved workspace, is not in
+/// it, and neither is a pinned conversation they shelved — those belong to the
+/// archived view, which is this machine's and not the host's to draw. The whole
+/// read (`limit == 0`) still carries them, which is what a client that never
+/// declared the window keeps reading.
+pub(crate) fn sessions_catalog_window(
+    pair_id: &str,
+    cursor: Option<&str>,
+    limit: i64,
+) -> Option<SessionsCatalog> {
     let mut state = CATALOG.lock().unwrap();
-    let mut payload = read_sessions(pair_id)?;
+    let mut payload = read_sessions(pair_id, cursor, limit)?;
     let epoch = state.epoch.clone();
     let (signature, structural) = row_signatures(&payload["sessions"]);
     // The revision is bumped by the *whole* signature, so a recency-only change
     // moves it too: that is what makes a dropped recency packet observable to
     // the heartbeat's revision check.
-    let revision = bump(&mut state.sessions, &signature);
+    //
+    // A *continuation* page is not a catalogue state: it is one reader walking
+    // further into the list it was already sent. Bumping the revision from it
+    // would advertise a state no packet ever carried, and the presence heartbeat
+    // would then send every client hunting for it — one wasted pull per page
+    // read. So a later page reports the revision the host is actually on.
+    let revision = if limit > 0 && cursor.is_some() {
+        state.sessions.0.max(1)
+    } else {
+        bump(&mut state.sessions, &signature)
+    };
     payload["version"] = json!({ "epoch": epoch, "revision": revision });
     let activity = recency_vector(&payload["sessions"]);
     let catalog = SessionsCatalog {
@@ -160,12 +194,16 @@ pub(crate) fn sessions_catalog(pair_id: &str) -> Option<SessionsCatalog> {
         activity,
     };
     // A pull that arrives between two ticks is answered from this, not by a
-    // second read of the same store.
-    *SESSIONS_SNAPSHOT.lock().unwrap() = Some((
-        std::time::Instant::now(),
-        pair_id.to_string(),
-        catalog.clone(),
-    ));
+    // second read of the same store. A *page* is not a catalogue: caching it
+    // here would hand a whole-list pull — the phone's — one page of rows, and it
+    // is cheap enough (a bounded read) that it needs no cache of its own.
+    if limit <= 0 {
+        *SESSIONS_SNAPSHOT.lock().unwrap() = Some((
+            std::time::Instant::now(),
+            pair_id.to_string(),
+            catalog.clone(),
+        ));
+    }
     Some(catalog)
 }
 
@@ -220,9 +258,63 @@ pub(crate) fn workspaces() -> Option<(Value, String)> {
     let signature = state.workspaces.1.clone();
     Some((payload, signature))
 }
-fn read_sessions(pair_id: &str) -> Option<Value> {
+/// The catalogue's rows: the whole store, or one page of it.
+///
+/// `limit == 0` is the whole list — what a client that has not asked for a
+/// window (the phone) receives, unchanged. A positive `limit` is the newest
+/// `limit` roots plus their forks, the pinned conversations leading them, and
+/// the page's cursor and the scope's size beside the rows.
+fn read_sessions(pair_id: &str, cursor: Option<&str>, limit: i64) -> Option<Value> {
     let active_sessions = crate::store::active_run_sessions().ok()?;
-    let threads = crate::store::list_threads().ok()?;
+    let windowed = if limit > 0 {
+        let page =
+            crate::store::list_threads_page(&crate::store::ThreadScope::Recent, cursor, limit)
+                .ok()?;
+        let mut threads = Vec::new();
+        // Pinned conversations lead every list and are never paged, so they ride
+        // with the first page (and only there: a later page is a continuation of
+        // the stream, not another copy of the shortcuts).
+        if cursor.is_none() {
+            threads.extend(
+                crate::store::list_pinned_threads(&crate::store::ThreadScope::Recent).ok()?,
+            );
+            // The shelved conversations, whole, and never windowed.
+            //
+            // They are not the list this page bounds: the reader reaches them
+            // through the archived view, which on this side draws exactly what it
+            // is sent and has no "show more" of its own. Truncating them would
+            // make a shelf silently incomplete — the one failure mode a window
+            // must not have — so they ride along whatever their count, and the
+            // window's saving is measured against the live conversations it
+            // leaves out. Read in pages to keep each query bounded; the loop is
+            // the cursor walk, not a second listing.
+            let mut shelved_cursor: Option<String> = None;
+            for _ in 0..20 {
+                let shelved = crate::store::list_threads_page(
+                    &crate::store::ThreadScope::Shelved,
+                    shelved_cursor.as_deref(),
+                    100,
+                )
+                .ok()?;
+                shelved_cursor = shelved.next_cursor;
+                threads.extend(shelved.threads);
+                if shelved_cursor.is_none() {
+                    break;
+                }
+            }
+        }
+        let total_roots = page.total_roots;
+        threads.extend(page.threads);
+        Some((threads, json!(page.next_cursor), json!(total_roots)))
+    } else {
+        None
+    };
+    let (threads, next_cursor, total_roots) = match windowed {
+        Some((threads, next_cursor, total_roots)) => {
+            (threads, Some(next_cursor), Some(total_roots))
+        }
+        None => (crate::store::list_threads().ok()?, None, None),
+    };
     // A client that groups its merged list by workspace needs the workspace's
     // *name* — an id means nothing to a reader, and the alternative (showing the
     // peer's name for every remote group) would collapse several workspaces into
@@ -320,10 +412,18 @@ fn read_sessions(pair_id: &str) -> Option<Value> {
         }));
     }
 
-    let payload = json!({
+    let mut payload = json!({
         "pairId": pair_id,
         "sessions": sessions,
     });
+    // A windowed page says how to ask for the next one, and how many roots the
+    // whole scope holds: a reader offering "show the rest" needs both, and
+    // neither is derivable from the rows it was sent.
+    if let Some(next_cursor) = next_cursor {
+        payload["windowed"] = json!(true);
+        payload["nextCursor"] = next_cursor;
+        payload["totalRoots"] = total_roots.unwrap_or(Value::Null);
+    }
     Some(payload)
 }
 
@@ -538,8 +638,175 @@ mod tests {
         assert_eq!(other.payload["pairId"], "pair_other");
     }
 
-    /// The activity stamp a client shows as a row's age.
+    /// A windowed catalogue: the newest conversations now, a cursor for the rest.
     ///
+    /// The whole list is what a machine with hundreds of conversations used to
+    /// send on every connect. A client that declared `catalog_window_v1` gets
+    /// one page of it — roots newest activity first, each with its fork tree,
+    /// the pinned conversations leading — plus the two facts that make the rest
+    /// reachable: where the page ends, and how many roots the scope holds.
+    #[test]
+    fn a_windowed_catalogue_carries_the_newest_roots_and_a_cursor_for_the_rest() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-window");
+        crate::remote::test_support::init_store();
+
+        let oldest = new_thread("sess-window-a", "Oldest");
+        let newer = new_thread("sess-window-b", "Newer");
+        let newest = new_thread("sess-window-c", "Newest");
+        // Activity decides the order, not creation.
+        record_thread_message_activity(&oldest.id, 2_001).expect("activity");
+        record_thread_message_activity(&newer.id, 2_002).expect("activity");
+        record_thread_message_activity(&newest.id, 2_003).expect("activity");
+        // A pinned conversation is a shortcut and rides with every first page.
+        let pinned = new_thread("sess-window-pin", "Pinned");
+        crate::store::pin_thread(crate::store::PinThreadInput {
+            thread_id: pinned.id.clone(),
+            pinned: true,
+        })
+        .expect("pin");
+        crate::store::take_catalog_dirty();
+
+        let first = sessions_catalog_window("pair_window", None, 2).expect("first page");
+        let ids = |payload: &Value| -> Vec<String> {
+            payload["sessions"]
+                .as_array()
+                .expect("rows")
+                .iter()
+                .map(|row| row["sessionId"].as_str().expect("session id").to_owned())
+                .collect()
+        };
+        assert_eq!(first.payload["windowed"], json!(true));
+        assert_eq!(first.payload["totalRoots"], json!(3), "every unpinned root");
+        let cursor = first.payload["nextCursor"]
+            .as_str()
+            .expect("a full page carries the next cursor")
+            .to_owned();
+        assert_eq!(
+            ids(&first.payload),
+            vec!["sess-window-pin", "sess-window-c", "sess-window-b"],
+            "the pinned shortcut, then the two newest"
+        );
+
+        let second = sessions_catalog_window("pair_window", Some(&cursor), 2).expect("second page");
+        assert_eq!(ids(&second.payload), vec!["sess-window-a"]);
+        assert_eq!(second.payload["totalRoots"], json!(3));
+        assert_eq!(
+            second.payload["nextCursor"],
+            Value::Null,
+            "the last page names no successor"
+        );
+
+        // A continuation page is one reader walking further into the list it was
+        // sent, not a catalogue state: the revision the heartbeat advertises must
+        // not move for it, or every page read would send every client hunting for
+        // a state no packet ever carried.
+        let (_, before_page, _) = revisions();
+        let _again = sessions_catalog_window("pair_window", Some(&cursor), 2).expect("second page");
+        assert_eq!(
+            revisions().1,
+            before_page,
+            "a continuation does not advertise a new catalogue revision"
+        );
+
+        // The whole list — what a client that never declared the window reads —
+        // carries no window envelope at all, so nothing about its shape changed.
+        let whole = sessions_catalog_window("pair_window", None, 0).expect("whole list");
+        assert_eq!(ids(&whole.payload).len(), 4);
+        assert_eq!(whole.payload.get("windowed"), None);
+        assert_eq!(whole.payload.get("nextCursor"), None);
+    }
+
+    /// The point of the window: a host with many conversations stops paying for
+    /// all of them on every connect.
+    ///
+    /// Measured, not assumed: the same store is read whole and windowed, and the
+    /// page is asserted to be a fraction of it. A regression that quietly turned
+    /// the window back into the whole list would still pass every "the rows are
+    /// right" test above, because the rows *are* right — there are just hundreds
+    /// more of them.
+    #[test]
+    fn a_windowed_page_is_a_fraction_of_the_whole_list() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-window-size");
+        crate::remote::test_support::init_store();
+        for index in 0..120 {
+            new_thread(
+                &format!("sess_size_{index}"),
+                &format!("A conversation titled as a real one does {index}"),
+            );
+        }
+        crate::store::take_catalog_dirty();
+
+        let bytes = |catalog: &SessionsCatalog| catalog.payload.to_string().len();
+        let whole = sessions_catalog_window("pair_size", None, 0).expect("whole list");
+        let page = sessions_catalog_window(
+            "pair_size",
+            None,
+            future_remote_protocol::CATALOG_WINDOW_ROOTS,
+        )
+        .expect("first page");
+        let rows =
+            |catalog: &SessionsCatalog| catalog.payload["sessions"].as_array().expect("rows").len();
+        println!(
+            "CATALOG_WINDOW whole={}B rows={} page={}B rows={}",
+            bytes(&whole),
+            rows(&whole),
+            bytes(&page),
+            rows(&page),
+        );
+        assert_eq!(rows(&whole), 120);
+        assert!(
+            rows(&page) <= future_remote_protocol::CATALOG_WINDOW_ROOTS as usize,
+            "a page carries at most one window of roots"
+        );
+        assert!(
+            bytes(&page) * 2 < bytes(&whole),
+            "the window is most of the saving: {}B of {}B",
+            bytes(&page),
+            bytes(&whole)
+        );
+    }
+
+    /// A windowed page still carries the shelved conversations, whole.
+    ///
+    /// They are the archived view's data, and this side sends rows rather than a
+    /// scope: a page that left them out would empty a shelf the reader can still
+    /// see, with no "show more" under it to get them back.
+    #[test]
+    fn a_windowed_page_carries_the_shelved_conversations() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-window-shelved");
+        crate::remote::test_support::init_store();
+
+        let live = new_thread("sess-window-live", "Live");
+        record_thread_message_activity(&live.id, 5_000).expect("activity");
+        let shelved = new_thread("sess-window-shelved", "Shelved");
+        record_thread_message_activity(&shelved.id, 9_000).expect("activity");
+        crate::store::archive_thread_tree(&shelved.id, &[]).expect("archive the conversation");
+        // And one shelved by its workspace, which is the other half of the same
+        // set: its own status never changed.
+        let (workspace, inside) = new_workspace_thread("sess-window-in-workspace", "Inside");
+        crate::store::archive_workspace(&workspace.id, &[]).expect("archive the workspace");
+        crate::store::take_catalog_dirty();
+
+        let page = sessions_catalog_window("pair_shelved", None, 1).expect("first page");
+        let rows = page.payload["sessions"].as_array().expect("rows");
+        let row = |session: &str| {
+            rows.iter()
+                .find(|row| row["sessionId"] == json!(session))
+                .unwrap_or_else(|| panic!("{session} is in the page: {rows:?}"))
+        };
+        assert_eq!(row("sess-window-shelved")["archived"], json!(true));
+        assert_eq!(
+            row("sess-window-in-workspace")["archived"],
+            json!(true),
+            "a workspace's shelf marks its conversations on their own rows"
+        );
+        assert_eq!(row("sess-window-live")["archived"], json!(false));
+        // The window bounds the *live* list, so its count is the live roots only.
+        assert_eq!(page.payload["totalRoots"], json!(1));
+        let _ = inside;
+    }
+
+    /// The activity stamp a client shows as a row's age.    ///
     /// It is the same coalesce the store orders by (`last_message_at`, else
     /// `updated_at`), it has to be present, and it must move when a message
     /// lands. A client no longer ranks rows by it (the creation time below is

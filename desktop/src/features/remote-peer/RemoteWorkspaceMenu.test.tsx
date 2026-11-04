@@ -20,17 +20,29 @@ import { RemoteWorkspaceMenu } from "./RemoteWorkspaceMenu";
  */
 const pin = vi.fn<(desktopId: string, workspaceId: string, pinned: boolean) => Promise<unknown>>();
 const remove = vi.fn<(desktopId: string, workspaceId: string) => Promise<unknown>>();
+const archive = vi.fn<(desktopId: string, workspaceId: string) => Promise<unknown>>();
+const restore = vi.fn<(desktopId: string, workspaceId: string) => Promise<unknown>>();
 vi.mock("./remotePeerClient", () => ({
+  archiveRemoteWorkspace: (...args: Parameters<typeof archive>) => archive(...args),
   deleteRemoteWorkspace: (...args: Parameters<typeof remove>) => remove(...args),
+  restoreRemoteWorkspace: (...args: Parameters<typeof restore>) => restore(...args),
   setRemoteWorkspacePinned: (...args: Parameters<typeof pin>) => pin(...args),
 }));
 
 beforeEach(() => {
+  archive.mockReset().mockResolvedValue(undefined);
+  restore.mockReset().mockResolvedValue(undefined);
   pin.mockReset().mockResolvedValue(undefined);
   remove.mockReset().mockResolvedValue(undefined);
 });
 
-async function mount(overrides: { onRename?: (workspaceId: string) => void; onSelect?: () => void; pinned?: boolean } = {}) {
+async function mount(overrides: {
+  archived?: boolean;
+  canArchive?: boolean;
+  onRename?: (workspaceId: string) => void;
+  onSelect?: () => void;
+  pinned?: boolean;
+} = {}) {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -38,6 +50,8 @@ async function mount(overrides: { onRename?: (workspaceId: string) => void; onSe
   await act(async () => {
     root.render(
       <RemoteWorkspaceMenu
+        archived={overrides.archived}
+        canArchive={overrides.canArchive}
         desktopId="desktop_a"
         name="图表脚本"
         onChanged={onChanged}
@@ -168,5 +182,42 @@ it("closes the menu on a second click of its trigger", async () => {
   expect(view.container.querySelector("[role='menu']")).not.toBeNull();
   await act(async () => view.trigger().click());
   expect(view.container.querySelector("[role='menu']")).toBeNull();
+  await view.unmount();
+});
+
+/**
+ * Shelving a workspace is the host's command, offered only by a host that
+ * answered `archive_v1`. The archived view asks for the reverse, and the pin is
+ * not offered there: shelving clears it, so the host cannot be in that state.
+ */
+it("archives the workspace on its host when the capability is there", async () => {
+  const view = await mount({ canArchive: true });
+  await view.open();
+
+  await act(async () => view.item("Archive")!.click());
+
+  expect(archive).toHaveBeenCalledWith("desktop_a", "ws_9");
+  expect(view.onChanged).toHaveBeenCalled();
+  await view.unmount();
+});
+
+it("withholds archive from a host that never declared it", async () => {
+  const view = await mount({ canArchive: false });
+  await view.open();
+
+  expect(view.item("Archive")).toBeUndefined();
+  await view.unmount();
+});
+
+it("offers restore, not pin, for a shelved workspace", async () => {
+  const view = await mount({ archived: true, canArchive: true });
+  await view.open();
+
+  expect(view.item("Pin")).toBeUndefined();
+  expect(view.item("Unpin")).toBeUndefined();
+  await act(async () => view.item("Restore")!.click());
+
+  expect(restore).toHaveBeenCalledWith("desktop_a", "ws_9");
+  expect(view.onChanged).toHaveBeenCalled();
   await view.unmount();
 });

@@ -1,6 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { StoredThread } from "../../../integrations/storage/threadStore";
 import type { ArchiveDialogState, BatchDeleteDialogState, DeleteDialogState, RenameDialogState } from "../AppShellDialogs";
+import type { RefreshStoreOptions } from "./useThreadStore";
 import { useRef, useState } from "react";
 import i18n, { getLanguage } from "../../../i18n";
 import { invalidateAgentState, prefetchAgentState } from "../../../integrations/agent/agentStateCache";
@@ -19,7 +20,7 @@ import { treeMemberCount } from "../threadTree";
 
 interface UseThreadDialogsParams {
   activeThreadId: string | null;
-  refreshStore: (nextActiveThreadId?: string) => Promise<void>;
+  refreshStore: (nextActiveThreadId?: string | null, options?: RefreshStoreOptions) => Promise<void>;
   /** Called after a successful archive so the shell can show its guide. */
   onArchived?: () => void;
   /** The store's rows, for the tree-member count a multi-member archive confirms. */
@@ -170,10 +171,20 @@ export function useThreadDialogs({ activeThreadId, onArchived, refreshStore, thr
     if (!deleteDialog || deleteDialog.submitting)
       return;
 
+    const deleted = deleteDialog.thread;
     setDeleteDialog(current => current ? { ...current, error: null, submitting: true } : current);
     try {
-      await deleteThread({ threadId: deleteDialog.thread.id, deleteFiles: false });
-      await refreshStore(deleteDialog.thread.id === activeThreadId ? undefined : activeThreadId ?? undefined);
+      await deleteThread({ threadId: deleted.id, deleteFiles: false });
+      // The row is gone for good, and the refresh has to be told so: pages no
+      // longer returning it is otherwise the same evidence as "archived, still
+      // open, read-only", so the store would hold it — and, when it was the open
+      // one, keep drawing it while its sidebar row disappeared. Recomputing the
+      // selection happens in the store, which is what knows which conversations
+      // are left.
+      await refreshStore(
+        deleted.id === activeThreadId ? undefined : (activeThreadId ?? undefined),
+        { removedThreadIds: [deleted.id] },
+      );
       setDeleteDialog(null);
     }
     catch (error) {
@@ -217,7 +228,9 @@ export function useThreadDialogs({ activeThreadId, onArchived, refreshStore, thr
       for (const threadId of threadIds) {
         invalidateAgentState(threadId);
       }
-      await refreshStore();
+      // Same as a single delete: the rows are gone, not merely off the page. A
+      // batch that included the open conversation must move the column on too.
+      await refreshStore(undefined, { removedThreadIds: threadIds });
       setBatchDeleteDialog(null);
     }
     catch (error) {

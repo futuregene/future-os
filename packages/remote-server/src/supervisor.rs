@@ -363,6 +363,15 @@ impl Supervisor {
         self.shared_or_insert(pair_id).catalog_delta
     }
 
+    /// Whether the client on `pair_id` reads the catalogue as a window of the
+    /// newest conversations, with the rest one `list_sessions` page away.
+    ///
+    /// Same per-pairing rule as the other declared capabilities: a connection
+    /// that did not declare it is sent every row it owns, exactly as before.
+    pub fn catalog_window(&self, pair_id: &str) -> Arc<AtomicBool> {
+        self.shared_or_insert(pair_id).catalog_window
+    }
+
     pub fn lean_events(&self, pair_id: &str) -> Arc<AtomicBool> {
         self.shared_or_insert(pair_id).lean_events
     }
@@ -390,6 +399,7 @@ impl Supervisor {
                 coalesce_events: Arc::new(AtomicBool::new(false)),
                 catalog_activity: Arc::new(AtomicBool::new(false)),
                 catalog_delta: Arc::new(AtomicBool::new(false)),
+                catalog_window: Arc::new(AtomicBool::new(false)),
                 catalogue_lane: Arc::new(std::sync::atomic::AtomicU8::new(0)),
                 catalogue_packets: Arc::new(AtomicU64::new(0)),
                 catalogue_bytes: Arc::new(AtomicU64::new(0)),
@@ -712,6 +722,11 @@ pub struct BridgeRuntimeShared {
     pub catalogue_packets: Arc<AtomicU64>,
     pub catalogue_bytes: Arc<AtomicU64>,
     pub catalog_delta: Arc<AtomicBool>,
+    /// Whether this client reads the catalogue as a window of the newest
+    /// conversations. Declared like the two lanes above, and for the same
+    /// reason: a reader that cannot page must not be sent a window, because
+    /// what it is not sent is, to it, gone.
+    pub catalog_window: Arc<AtomicBool>,
     /// Whether this connection declared the lean feed. Per pairing like the
     /// others: trimming one device's history to fields another device asked to
     /// skip would be a silent narrowing of what it receives.
@@ -816,6 +831,7 @@ impl Supervisor {
             coalesce_events: Arc::new(AtomicBool::new(false)),
             catalog_activity: Arc::new(AtomicBool::new(false)),
             catalog_delta: Arc::new(AtomicBool::new(false)),
+            catalog_window: Arc::new(AtomicBool::new(false)),
             catalogue_lane: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             catalogue_packets: Arc::new(AtomicU64::new(0)),
             catalogue_bytes: Arc::new(AtomicU64::new(0)),

@@ -1,0 +1,51 @@
+{
+  "id": "reload-persistence",
+  "title": "新建会话后刷新：会话仍在列表里",
+  "area": "conversation",
+  "priority": "P1",
+  "tags": ["reload", "persistence"],
+  "description": "创建一个会话后整页刷新（模拟应用重启后的首次读库）。会话必须还在列表里，标题与数据库一致，且刷新后不会凭空多出一个会话。",
+  "preconditions": "应用已启动。",
+  "expectations": [
+    "刷新后同一会话仍在列表顶部",
+    "刷新不会重复创建会话（数据库行数不变）",
+    "刷新后没有控制台异常"
+  ],
+  "steps": [
+    { "wait": 800 },
+    { "click": { "aria": "新建对话" } },
+    { "waitFor": { "text": "欢迎使用" }, "timeout": 5000 },
+    { "click": { "selector": "[role=textbox]" } },
+    { "type": "刷新后仍然存在的会话" },
+    { "click": { "aria": "发送" } },
+    { "waitFor": { "text": "刷新后仍然存在的会话" }, "timeout": 8000 },
+    {
+      "db": {
+        "sql": "SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' ORDER BY created_at DESC LIMIT 1",
+        "as": "created"
+      }
+    },
+    {
+      "db": {
+        "sql": "SELECT COUNT(*) AS n FROM threads WHERE deleted_at IS NULL AND status != 'deleted'",
+        "as": "startCount"
+      }
+    },
+    { "reload": true },
+    { "waitFor": { "text": "{{created}}" }, "timeout": 10000 },
+    {
+      "assert": {
+        "expr": "!!document.querySelector('[aria-label=\"{{created}}\"]')",
+        "message": "刷新后该会话以行形式出现在侧边栏"
+      }
+    },
+    {
+      "db": {
+        "sql": "SELECT COUNT(*) AS n FROM threads WHERE deleted_at IS NULL AND status != 'deleted'",
+        "delta": 0,
+        "message": "刷新没有重复创建会话"
+      }
+    },
+    { "shot": "after-reload" }
+  ]
+}

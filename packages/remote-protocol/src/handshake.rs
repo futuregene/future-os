@@ -33,6 +33,10 @@ pub const SERVER_FEATURES: &[&str] = &[
     "selective_events_v1",
     "workspace_pinning_v1",
     "workspace_create_v1",
+    // Shelve/restore a conversation or a workspace from another machine. The
+    // catalogue has reported `archived` for both since before this flag; the
+    // flag is what says the *commands* that change it are answered.
+    "archive_v1",
     "desktop_settings_v1",
     "skill_management_v1",
     "compaction_v1",

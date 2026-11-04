@@ -1,5 +1,6 @@
 import {
   Archive,
+  ArrowLeft,
   Check,
   CheckCheck,
   ChevronDown,
@@ -43,7 +44,7 @@ import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 import { formatRelativeTime } from "./relativeTime";
 import { RECENT_PAGE_SIZE, recentRows } from "./recentRows";
 import type { MergedSessionRow } from "../remote/mergeSessions";
-import { activeWorkspaces, ARCHIVED_PAGE_SIZE, isArchivedSession } from "./archived";
+import { activeWorkspaces, ARCHIVED_PAGE_SIZE, archivedCatalogRows, isArchivedSession, type ArchivedCatalog } from "./archived";
 import {
   archivedRows,
   catalogRows,
@@ -156,6 +157,7 @@ export function SessionList({
   tab,
   active = true,
   archived = false,
+  archivedCatalogs,
   onTabChange,
   empty,
   merged,
@@ -172,10 +174,21 @@ export function SessionList({
    *
    * A mode rather than a second list: the archived view draws the same rows, in
    * the same rows' shape, from the same catalogue — what changes is which half
-   * of it, and that nothing there can be written to. The phone can read the
-   * shelf; restoring or archiving is the desktop's, so no row here offers it.
+   * of it, and that a row's menu carries the restore instead of the shelf
+   * action. Shelving itself is offered from the active rows, gated on the
+   * machine's `archive_v1` capability.
    */
   archived?: boolean;
+  /**
+   * Every machine the list is showing, for the archived shelf.
+   *
+   * The shelf is the one view that has to hold all of them: a conversation
+   * shelved on a pairing that is not the open connection used to be missing
+   * from the one page meant to list it. When absent the shelf falls back to the
+   * connected desktop's own catalogue, which is the same thing for a phone with
+   * one pairing.
+   */
+  archivedCatalogs?: ArchivedCatalog[];
   onTabChange: (tab: Tab) => void;
   empty: ReactNode;
   /**
@@ -371,14 +384,16 @@ export function SessionList({
    */
   const archivedSource = useMemo(
     () => (archived
-      ? archivedRows(
-        remote.sessions,
-        remote.workspaces,
-        () => true,
-        query.trim() ? new Set<string>() : collapsed,
-      )
+      ? archivedCatalogs && archivedCatalogs.length > 0
+        ? archivedCatalogRows(archivedCatalogs, query.trim() ? new Set<string>() : collapsed)
+        : archivedRows(
+          remote.sessions,
+          remote.workspaces,
+          () => true,
+          query.trim() ? new Set<string>() : collapsed,
+        )
       : []),
-    [archived, remote.sessions, remote.workspaces, collapsed, query],
+    [archived, archivedCatalogs, remote.sessions, remote.workspaces, collapsed, query],
   );
   /**
    * How many archived conversations the shelf draws.
@@ -780,6 +795,10 @@ export function SessionList({
   };
   /** What the open workspace menu acts through — null when it cannot act. */
   const menuWorkspaceCommands = menuWorkspace ? rowCommands(menuWorkspace) : null;
+  /** Whether the open menu is a shelved shelf, which flips the shelf item. */
+  const menuWorkspaceArchived = menuWorkspace?.workspace.archived === true;
+  /** Whether that machine answered the archive commands. */
+  const menuWorkspaceCanArchive = menuWorkspaceCommands?.capabilities.has("archive_v1") === true;
 
   const renderRow = ({ item }: { item: CatalogRow }) => {
     /**
@@ -839,21 +858,20 @@ export function SessionList({
             {item.workspace.pinned && <Pin size={13} color={colors.accent} />}
             <Text style={styles.count}>{item.count}</Text>
           </Pressable>
-          {/* A shelved shelf offers no actions: renaming, pinning, adding a
-              conversation to it and deleting it are all writes to the desktop,
-              and a shelved workspace takes them only after being restored. */}
-          {!archived && (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={t("sessions.workspaceActions", { title: name })}
-              accessibilityState={{ disabled: deleting || !commands }}
-              disabled={deleting || !commands}
-              onPress={() => openWorkspaceMenu(item)}
-              style={[styles.iconButton, (deleting || !commands) && styles.disabled]}
-            >
-              <MoreHorizontal size={18} color={colors.inkMuted} />
-            </Pressable>
-          )}
+          {/* A shelved shelf still has a menu: restoring it is the one action
+              the archived view exists to offer, and rename/delete are the same
+              commands they are anywhere else. The sheet decides which items the
+              machine can take (see its actions below). */}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t("sessions.workspaceActions", { title: name })}
+            accessibilityState={{ disabled: deleting || !commands }}
+            disabled={deleting || !commands}
+            onPress={() => openWorkspaceMenu(item)}
+            style={[styles.iconButton, (deleting || !commands) && styles.disabled]}
+          >
+            <MoreHorizontal size={18} color={colors.inkMuted} />
+          </Pressable>
         </View>
       );
     }
@@ -1032,7 +1050,7 @@ export function SessionList({
             </>
           )}
         </Pressable>
-        {!selecting && !archived && (
+        {!selecting && (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={t("sessions.actions", {
@@ -1087,31 +1105,60 @@ export function SessionList({
           // Every group offers it, wherever its workspace lives: the sheet the
           // reader opened should hold the same items for a peer's group as for
           // this machine's, and the workspace already says which machine the
-          // conversation will run on.
-          {
-            label: t("sessions.new"),
-            icon: <Plus size={18} color={colors.accent} />,
-            disabled: !menuWorkspaceCommands || deleting,
-            // The draft, the machine it is built on and both failure messages
-            // are the helper's: one place decides what creating here takes.
-            onPress: () => void startConversationInWorkspace(menuWorkspace),
-          },
-          ...(menuWorkspaceCommands?.capabilities.has("workspace_pinning_v1") ? [{
-            // A workspace group is an ordering shortcut like a pinned
-            // conversation: pinned groups sit under the pinned conversations
-            // and above the unpinned groups (see catalogRows).
-            label: t(menuWorkspace.workspace.pinned ? "sessions.unpin" : "sessions.pin"),
-            icon: <Pin size={18} color={colors.inkSoft} />,
-            disabled: !menuWorkspaceCommands || deleting,
-            onPress: () => {
-              void menuWorkspaceCommands
-                ?.setWorkspacePinned(
-                  menuWorkspace.workspaceId,
-                  !menuWorkspace.workspace.pinned,
-                )
-                .catch(() => Alert.alert(t("common.error")));
-            },
-          }] : []),
+          // conversation will run on. A shelved shelf offers neither this nor the
+          // pin: starting work inside one, or pinning one, is a statement about a
+          // group the reader cannot see — restoring it is.
+          ...(menuWorkspaceArchived
+            ? []
+            : [{
+              label: t("sessions.new"),
+              icon: <Plus size={18} color={colors.accent} />,
+              disabled: !menuWorkspaceCommands || deleting,
+              // The draft, the machine it is built on and both failure messages
+              // are the helper's: one place decides what creating here takes.
+              onPress: () => void startConversationInWorkspace(menuWorkspace),
+            }]),
+          ...(menuWorkspaceArchived
+            ? []
+            : menuWorkspaceCommands?.capabilities.has("workspace_pinning_v1")
+              ? [{
+                // A workspace group is an ordering shortcut like a pinned
+                // conversation: pinned groups sit under the pinned conversations
+                // and above the unpinned groups (see catalogRows).
+                label: t(menuWorkspace.workspace.pinned ? "sessions.unpin" : "sessions.pin"),
+                icon: <Pin size={18} color={colors.inkSoft} />,
+                disabled: !menuWorkspaceCommands || deleting,
+                onPress: () => {
+                  void menuWorkspaceCommands
+                    ?.setWorkspacePinned(
+                      menuWorkspace.workspaceId,
+                      !menuWorkspace.workspace.pinned,
+                    )
+                    .catch(() => Alert.alert(t("common.error")));
+                },
+              }]
+              : []),
+          // The shelf item flips with the row: shelf a workspace from the active
+          // list, restore it from the archived one. Both are the host's own
+          // commands, offered only where it declared them.
+          ...(menuWorkspaceCanArchive
+            ? [{
+              label: t(menuWorkspaceArchived ? "sessions.restore" : "sessions.archive"),
+              icon: menuWorkspaceArchived
+                ? <ArrowLeft size={18} color={colors.inkSoft} />
+                : <Archive size={18} color={colors.inkSoft} />,
+              disabled: !menuWorkspaceCommands || deleting,
+              onPress: () => {
+                const commands = menuWorkspaceCommands;
+                if (!commands) return;
+                setMenuWorkspace(null);
+                void (menuWorkspaceArchived
+                  ? commands.restoreWorkspace(menuWorkspace.workspaceId)
+                  : commands.archiveWorkspace(menuWorkspace.workspaceId))
+                  .catch(() => Alert.alert(t("common.error"), t("sessions.archiveFailed")));
+              },
+            }]
+            : []),
           {
             label: t("sessions.renameWorkspace"),
             icon: <Pencil size={18} color={colors.inkSoft} />,
@@ -1123,12 +1170,14 @@ export function SessionList({
               setRenamingWorkspace(menuWorkspace);
             },
           },
-          {
-            label: t("sessions.selectWorkspaceSessions"),
-            icon: <ListChecks size={18} color={colors.inkSoft} />,
-            disabled: deleting || sessionsInWorkspace(menuWorkspace).length === 0,
-            onPress: () => selectWorkspaceSessions(menuWorkspace),
-          },
+          ...(menuWorkspaceArchived
+            ? []
+            : [{
+              label: t("sessions.selectWorkspaceSessions"),
+              icon: <ListChecks size={18} color={colors.inkSoft} />,
+              disabled: deleting || sessionsInWorkspace(menuWorkspace).length === 0,
+              onPress: () => selectWorkspaceSessions(menuWorkspace),
+            }]),
           {
             label: t("sessions.deleteWorkspace"),
             icon: <Trash2 size={18} color={colors.danger} />,

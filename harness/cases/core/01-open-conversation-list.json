@@ -1,0 +1,45 @@
+{
+  "id": "open-conversation-list",
+  "title": "打开应用：会话列表来自真实数据库",
+  "area": "conversation-list",
+  "priority": "P0",
+  "tags": ["smoke", "list"],
+  "description": "冷启动桌面端，停在默认会话列表。验证列表不是空壳：行数、最近会话标题、置顶区都来自真实数据库，且首屏没有控制台异常。",
+  "preconditions": "应用可启动；测试数据库是真实 app.db 的副本（700+ 会话）。",
+  "expectations": [
+    "首屏侧边栏渲染出大量真实会话，而不是占位或空列表",
+    "最近活动的会话出现在列表顶部，标题与数据库中最新的会话一致",
+    "首屏无未捕获异常、无资源加载失败"
+  ],
+  "steps": [
+    { "wait": 900, "note": "等待首屏完成首帧渲染" },
+    {
+      "assert": {
+        "expr": "document.querySelectorAll('[aria-label$=\" 的操作\"]').length >= 20",
+        "message": "侧边栏至少渲染出 20 个真实会话行"
+      },
+      "note": "真实数据量级：截图里应能看到密集的会话行"
+    },
+    {
+      "db": {
+        "sql": "SELECT (COUNT(*) >= 100) AS ok FROM threads WHERE deleted_at IS NULL AND status != 'deleted'",
+        "expect": 1,
+        "message": "数据库里有至少 100 个未删除会话"
+      }
+    },
+    {
+      "db": {
+        "sql": "SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' ORDER BY COALESCE(last_message_at, updated_at) DESC LIMIT 1",
+        "as": "newest"
+      },
+      "note": "取真实的最新会话标题，下一步在界面上找它"
+    },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes(window.__harnessLastDb[0].title)",
+        "message": "列表顶部出现数据库中最新的会话"
+      }
+    },
+    { "shot": "conversation-list", "note": "默认首屏" }
+  ]
+}

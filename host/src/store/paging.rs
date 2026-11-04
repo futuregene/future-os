@@ -47,6 +47,14 @@ pub enum ThreadScope {
     /// whose workspace is not itself archived (those belong under the
     /// workspace heading, not here).
     Archived,
+    /// *Every* shelved conversation, whichever half shelved it: the user
+    /// shelved the conversation, or shelved the workspace holding it.
+    ///
+    /// The two halves are drawn apart in the archived view (a workspace's
+    /// contents hang under its heading), but one machine hands both to a paired
+    /// client as one set of rows marked `archived`, so reading them back needs a
+    /// scope that says the same thing.
+    Shelved,
 }
 
 impl ThreadScope {
@@ -58,6 +66,7 @@ impl ThreadScope {
             "" | "chat" => Ok(Self::Chat),
             "recent" => Ok(Self::Recent),
             "archived" => Ok(Self::Archived),
+            "shelved" => Ok(Self::Shelved),
             other => {
                 if let Some(id) = other.strip_prefix("workspace-archived:") {
                     if !id.trim().is_empty() {
@@ -167,6 +176,9 @@ fn thread_scope_filter(scope: &ThreadScope) -> String {
         ThreadScope::Archived => {
             "t.status = 'archived' AND t.deleted_at IS NULL AND w.archived_at IS NULL".to_string()
         }
+        ThreadScope::Shelved => "t.deleted_at IS NULL
+             AND (t.status = 'archived' OR w.archived_at IS NOT NULL)"
+            .to_string(),
     }
 }
 
@@ -614,6 +626,45 @@ mod tests {
         // the view shows each conversation exactly once.
         let archived = list_threads_page(&ThreadScope::Archived, None, 50).expect("archived");
         assert!(archived.threads.is_empty());
+    }
+
+    /// The shelved scope is both halves of the archive at once.
+    ///
+    /// The archived *view* draws them apart — a workspace's contents under its
+    /// heading, a user-shelved conversation in its own section — but one machine
+    /// hands both to a paired client as one set of rows marked `archived`, and
+    /// this is the scope that reads them back the same way.
+    #[test]
+    fn a_shelved_page_lists_both_halves_of_the_archive() {
+        let (_home, conn) = guarded_conn("page_shelved");
+        workspace(&conn, "open", false);
+        workspace(&conn, "closed", true);
+        seed(&conn, "open", "live", 10, None);
+        seed(&conn, "open", "shelved", 20, None);
+        seed(&conn, "closed", "inside", 30, None);
+        conn.execute(
+            "UPDATE threads SET status = 'archived' WHERE id = 'shelved'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let page = list_threads_page(&ThreadScope::Shelved, None, 50).expect("page");
+        let mut ids: Vec<&str> = page
+            .threads
+            .iter()
+            .map(|thread| thread.id.as_str())
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["inside", "shelved"]);
+        // Neither half is the active list.
+        let live = list_threads_page(&ThreadScope::Recent, None, 50).expect("recent");
+        let live: Vec<&str> = live
+            .threads
+            .iter()
+            .map(|thread| thread.id.as_str())
+            .collect();
+        assert_eq!(live, vec!["live"]);
     }
 
     #[test]

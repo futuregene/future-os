@@ -1127,6 +1127,43 @@ describe("useSessionCatalog", () => {
     expect(result.current.unreadSessions.has("other")).toBe(false);
   });
 
+  test("archiveSession and restoreSession are the host's own routes, then a re-read", async () => {
+    render();
+    request.mockResolvedValue({ data: {} });
+    await act(async () => {
+      await result.current.archiveSession("s1", "thread-s1");
+    });
+    expect(request).toHaveBeenCalledWith(
+      { type: "archive_session", sessionId: "s1", threadId: "thread-s1" },
+      "s1",
+    );
+    request.mockClear();
+    await act(async () => {
+      await result.current.restoreSession("s1", "thread-s1");
+    });
+    expect(request).toHaveBeenCalledWith(
+      { type: "restore_session", sessionId: "s1", threadId: "thread-s1" },
+      "s1",
+    );
+    // A row with no thread id cannot be addressed: the host takes the thread,
+    // and the session id is only the lane.
+    await expect(result.current.archiveSession("s1", "")).rejects.toThrow("Session unavailable");
+  });
+
+  test("archiveWorkspace and restoreWorkspace name the workspace on the list lane", async () => {
+    render();
+    request.mockResolvedValue({ data: {} });
+    await act(async () => {
+      await result.current.archiveWorkspace("w1");
+    });
+    expect(request).toHaveBeenCalledWith({ type: "archive_workspace", workspaceId: "w1" }, "list");
+    request.mockClear();
+    await act(async () => {
+      await result.current.restoreWorkspace("w1");
+    });
+    expect(request).toHaveBeenCalledWith({ type: "restore_workspace", workspaceId: "w1" }, "list");
+  });
+
   test("setSessionPinned sends the pin and reorders pinned sessions to the top", async () => {
     render();
     act(

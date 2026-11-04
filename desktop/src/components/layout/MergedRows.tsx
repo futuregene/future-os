@@ -9,9 +9,11 @@ import { useTranslation } from "react-i18next";
 import { groupMergedRows } from "../../features/remote-peer/mergeConversations";
 import { PeerIconGlyph } from "../../features/remote-peer/PeerIconGlyph";
 import { peerBadgeText } from "../../features/remote-peer/peerIcons";
+import { peerCanArchive } from "../../features/remote-peer/peerStatus";
 import { RemoteWorkspaceMenu } from "../../features/remote-peer/RemoteWorkspaceMenu";
 import { ChatSectionMenu } from "./ActivityRailMenus";
 import { RailGroupHeader, RailHeaderButton, RailSectionHeader, RailSectionToggle } from "./RailChrome";
+import { RailLoadMoreRow } from "./RailRow";
 import { RemoteConversationRow } from "./RemoteConversationRow";
 
 /**
@@ -67,6 +69,8 @@ export function MergedRows({
   onShowMoreRecent,
   recentMore,
   recentMoreBusy,
+  onShowMoreRemote,
+  remoteMore,
   recentSections,
   renderLocalRow,
   rowMeta,
@@ -102,6 +106,16 @@ export function MergedRows({
   recentMore?: number;
   recentMoreBusy?: boolean;
   onShowMoreRecent?: () => void;
+  /**
+   * Conversations the paired machines hold beyond the window this list drew.
+   *
+   * A host that speaks `catalog_window_v1` sends its newest conversations and
+   * keeps the rest a page away, so this is the remainder behind the same
+   * "show the rest" control the local list draws. `0` (or absent) means every
+   * host sent everything it holds.
+   */
+  remoteMore?: number;
+  onShowMoreRemote?: () => void;
   chatSectionCollapsed: boolean;
   /** The rail's fold state: the same instance that draws the local headings. */
   collapsedWorkspaces: ReadonlySet<string>;
@@ -321,10 +335,12 @@ export function MergedRows({
     }
     const selectable = remoteSelection?.selectable(conversation) === true;
     const meta = rowMeta.get(conversation.key);
+    const peer = peers.find(entry => entry.desktopId === conversation.desktopId);
     return (
       <RemoteConversationRow
         active={activeKey === conversation.key}
         ageLabel={recent?.age}
+        canArchive={peerCanArchive(peer)}
         compact={compact}
         conversation={conversation}
         depth={meta?.depth ?? 0}
@@ -345,7 +361,7 @@ export function MergedRows({
         onOpenRename={onRenameRemote}
         onToggleExpanded={row => onToggleRemoteExpanded(row.key)}
         onToggleSelection={conversation => remoteSelection?.toggle(conversation)}
-        peer={peers.find(peer => peer.desktopId === conversation.desktopId)}
+        peer={peer}
         selected={remoteSelection?.selected(conversation) === true}
         selectionMode={selectable}
       />
@@ -404,6 +420,12 @@ export function MergedRows({
                 {t("activityRail.showMore", { count: recentMore })}
               </button>
             )
+          : null}
+        {/* A remote host's conversations beyond the window it sent are a second
+            remainder, and they belong under the same list for the same reason:
+            the view above already draws everything this machine holds. */}
+        {remoteMore !== undefined && remoteMore > 0
+          ? <RailLoadMoreRow count={remoteMore} onClick={() => onShowMoreRemote?.()} />
           : null}
       </div>
     );
@@ -487,6 +509,7 @@ export function MergedRows({
                                 the actions menu first, then the way to start a
                                 conversation in it. */}
                         <RemoteWorkspaceMenu
+                          canArchive={peerCanArchive(peers.find(peer => peer.desktopId === desktopId))}
                           desktopId={desktopId}
                           name={group.label ?? t("activityRail.workspace")}
                           onChanged={onChangedRemote}
@@ -583,6 +606,12 @@ export function MergedRows({
           : null}
         <div className="shrink-0 space-y-0.5" data-testid="merged-conversations">
           {chatSectionCollapsed ? null : chats.map(row => renderRow(row, false))}
+          {/* A remote host's conversations beyond the window it sent: the rest
+              of the list, one click away, exactly as this machine's own
+              "load more" row works under its chats. */}
+          {!chatSectionCollapsed && remoteMore !== undefined && remoteMore > 0
+            ? <RailLoadMoreRow compact count={remoteMore} onClick={() => onShowMoreRemote?.()} />
+            : null}
         </div>
       </div>
     </>

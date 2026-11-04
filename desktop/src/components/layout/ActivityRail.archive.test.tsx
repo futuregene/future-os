@@ -310,3 +310,141 @@ describe("archive entry and its guide", () => {
     view.unmount();
   });
 });
+
+/**
+ * The archived view's remote half.
+ *
+ * A host keeps its shelved conversations and workspaces in the same catalogue it
+ * sends for the active list — the split is the client's — so the archived view
+ * has to draw them itself, with the machine's glyph, and the active list has to
+ * stop drawing them.
+ */
+const remotePeer = {
+  agentAvailable: true,
+  bridgeInstanceId: "bridge_1",
+  connected: true,
+  desktopId: "desktop_a",
+  error: null,
+  features: ["archive_v1"],
+  icon: "laptop",
+  name: "Studio iMac",
+  pairId: "pair_1",
+  stopped: false,
+};
+
+function remoteCatalog() {
+  return [{
+    desktopId: "desktop_a",
+    sessions: [
+      {
+        archived: false,
+        lastMessageAt: 4_000,
+        mode: "chat",
+        sessionId: "s_live",
+        threadId: "t_live",
+        title: "still here",
+      },
+      {
+        archived: true,
+        lastMessageAt: 3_000,
+        mode: "workspace",
+        sessionId: "s_shelved",
+        threadId: "t_shelved",
+        title: "remote shelved conversation",
+        workspaceId: "ws_9",
+        workspaceName: "Remote project",
+      },
+    ],
+    workspaces: [
+      { archived: true, id: "ws_9", name: "Remote project", path: "/remote/project", pinned: false },
+    ],
+  }] as never;
+}
+
+describe("the archived view's remote shelves", () => {
+  it("draws a host's shelved workspace and conversation with the machine's glyph", () => {
+    currentView = "archived";
+    archivedThreads.length = 0;
+    archivedWorkspaces.length = 0;
+
+    const view = mount(createElement(ActivityRail, props({
+      remoteCatalogs: remoteCatalog(),
+      remotePeers: [remotePeer],
+    })));
+    const root = view.container.querySelector("[data-testid='rail-archived-view']")!;
+    expect(root.textContent).toContain("Remote project");
+
+    const group = [...root.querySelectorAll(".group\\/workspace")]
+      .find(node => node.textContent?.includes("Remote project"))!;
+    expect(group.querySelector("[data-testid='remote-source-icon']")).not.toBeNull();
+
+    // Folded by default, as a shelved workspace is: the count says what is
+    // behind the heading, and the reader opens it like any other group.
+    expect(root.textContent).not.toContain("remote shelved conversation");
+    act(() => group.querySelector("button")!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(root.textContent).toContain("remote shelved conversation");
+    expect(root.querySelector("[data-testid='remote-source-icon']")).not.toBeNull();
+    view.unmount();
+  });
+
+  it("keeps a host's shelved conversation out of the active list", () => {
+    currentView = "workspace";
+    const view = mount(createElement(ActivityRail, props({
+      deviceFilter: { kind: "all" },
+      remoteCatalogs: remoteCatalog(),
+      remotePeers: [remotePeer],
+    })));
+    expect(view.container.textContent).toContain("still here");
+    expect(view.container.textContent).not.toContain("remote shelved conversation");
+    view.unmount();
+  });
+
+  it("searches a host's shelved shelves by title and by workspace name", () => {
+    currentView = "archived";
+    archivedThreads.length = 0;
+    archivedWorkspaces.length = 0;
+
+    const view = mount(createElement(ActivityRail, props({
+      remoteCatalogs: remoteCatalog(),
+      remotePeers: [remotePeer],
+    })));
+    act(() => view.container
+      .querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!
+      .dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    const input = view.container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(input, "shelved conversation");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    // The row matched, so its shelf is kept and opened even though the query
+    // says nothing about the workspace's name.
+    expect(view.container.textContent).toContain("remote shelved conversation");
+    expect(view.container.textContent).toContain("Remote project");
+
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(input, "nothing matches this");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(view.container.textContent).not.toContain("remote shelved conversation");
+    expect(view.container.textContent).not.toContain("Remote project");
+    view.unmount();
+  });
+
+  it("hides a host's shelf when the picker is showing another machine", () => {
+    currentView = "archived";
+    archivedThreads.length = 0;
+    archivedWorkspaces.length = 0;
+
+    const view = mount(createElement(ActivityRail, props({
+      deviceFilter: { desktopId: null, kind: "device" },
+      remoteCatalogs: remoteCatalog(),
+      remotePeers: [remotePeer],
+    })));
+    const root = view.container.querySelector("[data-testid='rail-archived-view']")!;
+    expect(root.textContent).not.toContain("Remote project");
+    expect(root.textContent).not.toContain("remote shelved conversation");
+    view.unmount();
+  });
+});

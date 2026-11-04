@@ -1,0 +1,58 @@
+{
+  "id": "delete-open-conversation",
+  "title": "删除当前打开的会话：应回退到另一个会话",
+  "area": "conversation",
+  "priority": "P0",
+  "tags": ["delete", "edge"],
+  "description": "先打开一个真实会话，再把它删掉。删除成功后主区域不能留在被删会话上，也不能空白：应自动落到另一个会话或新对话页。",
+  "preconditions": "至少有两个活跃会话。",
+  "expectations": [
+    "删除的正是当前打开的会话",
+    "主区域不残留被删会话的内容",
+    "界面落到另一个会话或新对话页，而不是空白"
+  ],
+  "steps": [
+    { "wait": 900 },
+    {
+      "db": {
+        "sql": "SELECT title FROM (SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' AND archived_at IS NULL AND title NOT IN (SELECT name FROM workspaces) ORDER BY COALESCE(last_message_at, updated_at) DESC LIMIT 8) WHERE length(title) <= 16 LIMIT 1",
+        "as": "target"
+      }
+    },
+    { "click": { "aria": "{{target}}" }, "note": "打开该会话" },
+    { "waitFor": { "text": "{{target}}" }, "timeout": 5000 },
+    { "shot": "opened" },
+    { "hover": { "aria": "{{target}}" } },
+    { "click": { "aria": "{{target}} 的操作" } },
+    { "click": { "selector": "[role=menuitem]", "text": "删除" } },
+    { "click": { "selector": "[role=dialog] button", "text": "删除" } },
+    {
+      "db": {
+        "sql": "SELECT deleted_at IS NOT NULL AS ok FROM threads WHERE title = '{{target}}' ORDER BY created_at DESC LIMIT 1",
+        "expect": 1,
+        "message": "被打开的会话已软删除"
+      }
+    },
+    { "wait": 900 },
+    {
+      "assert": {
+        "expr": "!document.querySelector('[aria-label=\"{{target}}\"]')",
+        "message": "删除后侧边栏不再有该会话行（确认框承诺「从侧边栏移除」）"
+      }
+    },
+    {
+      "assert": {
+        "expr": "!document.body.innerText.includes('{{target}}')",
+        "message": "主区域不再显示已删除会话的内容"
+      }
+    },
+    {
+      "assert": {
+        "expr": "(() => { const main = document.querySelector('main'); return !!main && main.innerText.trim().length > 10; })()",
+        "message": "主区域没有空成一片"
+      }
+    },
+    { "assert": { "expr": "!document.body.innerText.includes('删除对话')", "message": "确认对话框已关闭" } },
+    { "shot": "after-deleting-open-conversation" }
+  ]
+}

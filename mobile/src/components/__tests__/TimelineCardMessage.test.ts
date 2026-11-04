@@ -177,7 +177,17 @@ describe("a user message is the user's own markdown, plus their attachments", ()
     // whether the prompt above was from ten minutes or ten days ago. The row now
     // draws the prompt's own time under its bubble, from the persisted entry's
     // creation time — not from the moment this phone read it.
-    const createdAt = new Date(2026, 10, 4, 22, 47).toISOString();
+    // Today at 22:47, built from the machine's own clock: the component grades
+    // against the real `now`, so a hard-coded date stops being "today" the next
+    // day and the row draws a date line instead of the clock this asserts.
+    const today = new Date();
+    const createdAt = new Date(
+      today.getFullYear(),
+      today.getMonth(),
+      today.getDate(),
+      22,
+      47,
+    ).toISOString();
     // The clock reading, asserted independently of the helper: today's stamps
     // read as the reader's own time format, nothing more.
     const clock = new Intl.DateTimeFormat(i18n.language, { hour: "2-digit", minute: "2-digit" })

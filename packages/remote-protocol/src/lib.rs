@@ -24,6 +24,27 @@ pub const CATALOG_ACTIVITY_FEATURE: &str = "catalog_activity_v1";
 /// does not declare it keeps receiving whole snapshots, byte for byte as before
 /// — reading a delta as a snapshot would make every absent row look deleted.
 pub const CATALOG_DELTA_FEATURE: &str = "catalog_delta_v1";
+
+/// A client that reads the catalogue as a *window* of the newest conversations
+/// and can ask for the next page.
+///
+/// Declaring it promises the other half of the deal: the host then sends the
+/// newest `CATALOG_WINDOW_ROOTS` conversation trees (plus the pinned ones)
+/// instead of every conversation it owns, and the reader offers the rest through
+/// `list_sessions` with a `cursor`. A client that does not declare it — the
+/// phone, and every build older than this one — keeps receiving the whole list,
+/// byte for byte as before: a window it did not ask for would look like a
+/// machine that lost most of its conversations, with no way to ask for them.
+pub const CATALOG_WINDOW_FEATURE: &str = "catalog_window_v1";
+
+/// How many conversation roots one windowed catalogue page carries.
+///
+/// The wire-level number both ends use: the host sends this many of the newest
+/// conversation trees in a `state.sessions` window, and a client asks
+/// `list_sessions` for the next page of the same size. Fifty roots is several
+/// screens of the newest conversations, and about a twelfth of what a machine
+/// with 604 conversations used to send on every connect.
+pub const CATALOG_WINDOW_ROOTS: i64 = 50;
 pub const REPLY_GZIP_FEATURE: &str = "reply_gzip_v1";
 
 /// Whether a host serves the embedded terminal over the control plane.

@@ -42,8 +42,9 @@ export interface TimelineToolRow {
   /** The call's display target (desktop parity): the shell command or
    *  file path, shown on the row and expandable on tap. */
   detail?: string;
-  /** Authoritative tool state — "failed" renders a danger-styled row. */
-  status?: "running" | "completed" | "failed";
+  /** Authoritative tool state — "failed" renders a danger-styled row, and
+   *  "interrupted" a call that never reported (it started and the run moved on). */
+  status?: "running" | "completed" | "failed" | "interrupted";
   /** Present on a collapsed same-kind burst ("Edited 3 files") — the child
    *  calls the summary row stands for. */
   count?: number;
@@ -80,7 +81,10 @@ export type TimelineSegment =
        */
       tokensAfter?: number;
       trigger?: string;
-      status?: "running" | "completed" | "failed";
+      /** `interrupted` is a manual compaction this client never saw finish —
+       * the session stopped compacting without a terminal frame (see
+       * `settleInterruptedStandaloneCompactions`). */
+      status?: "running" | "completed" | "failed" | "interrupted";
       error?: string;
     };
 

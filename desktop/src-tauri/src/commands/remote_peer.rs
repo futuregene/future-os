@@ -127,9 +127,16 @@ pub async fn remote_peer_set_visible_session(
 }
 
 /// The host's session snapshot, stamped with `desktopId`.
+///
+/// `cursor` asks for the *next* page of a windowed host's conversations: the
+/// first read carries the newest page and its `nextCursor`, and passing that
+/// cursor back reaches the rest. A host that does not page ignores it.
 #[tauri::command]
-pub async fn remote_peer_sessions(desktop_id: String) -> Result<Value, crate::AppError> {
-    runtime::sessions(&desktop_id).await
+pub async fn remote_peer_sessions(
+    desktop_id: String,
+    cursor: Option<String>,
+) -> Result<Value, crate::AppError> {
+    runtime::sessions_page(&desktop_id, cursor.as_deref()).await
 }
 
 #[tauri::command]
@@ -405,7 +412,12 @@ mod tests {
                     "remote_peer_set_visible_session",
                     serde_json::json!({ "desktopId": "d", "sessionId": 1 }),
                 ),
-                ("remote_peer_sessions", serde_json::json!({})),
+                (
+                    // `cursor` is the last argument and an `Option<String>`, so a
+                    // missing key would succeed; only a wrong-typed one fails.
+                    "remote_peer_sessions",
+                    serde_json::json!({ "desktopId": "d", "cursor": 1 }),
+                ),
                 ("remote_peer_workspaces", serde_json::json!({})),
                 (
                     "remote_peer_list_files",
@@ -578,7 +590,7 @@ mod tests {
         assert_eq!(listed[0].name.as_deref(), Some("Studio"));
         assert_eq!(listed[0].icon.as_deref(), Some("rocket"));
 
-        let sessions = remote_peer_sessions(desktop_id.clone())
+        let sessions = remote_peer_sessions(desktop_id.clone(), None)
             .await
             .expect("sessions");
         assert_eq!(sessions["desktopId"], serde_json::json!(desktop_id));
@@ -674,7 +686,7 @@ mod tests {
     #[tokio::test]
     async fn commands_reject_an_unpaired_host() {
         let (_home, fx) = start("peer-cmd-unpaired").await;
-        let error = remote_peer_sessions("desktop_nobody".into())
+        let error = remote_peer_sessions("desktop_nobody".into(), None)
             .await
             .expect_err("an unpaired host has no catalogue");
         assert!(error.to_string().contains("peer_not_paired"), "{error}");

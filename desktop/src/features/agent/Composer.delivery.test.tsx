@@ -61,6 +61,47 @@ it("blocks button and Enter submission during external compaction, preserving th
   }
 });
 
+it("holds submission while the send path prepares, keeping the typed draft", async () => {
+  // The new-conversation screen is not ready to build a request until the model
+  // catalogue arrives. Blocking it must not lock the editor: a locked box
+  // silently drops what the reader types, which is how a first message used to
+  // disappear right after a workspace was created — no thread, no draft, no word
+  // about why.
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const onSend = vi.fn(async () => {});
+  try {
+    await act(async () => root.render(<Composer onSend={onSend} modelOptions={[]} preparing />));
+    const editor = host.querySelector<HTMLElement>("[role=textbox]")!;
+    expect(editor.getAttribute("contenteditable")).not.toBe("false");
+    expect(host.querySelector("[role=status]")?.textContent).toBe("Loading models…");
+    expect(host.querySelector<HTMLButtonElement>("button[type=submit]")!.title).toBe("Loading models…");
+    act(() => {
+      editor.textContent = "draft before the catalog loads";
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(host.querySelector<HTMLButtonElement>("button[type=submit]")!.disabled).toBe(true);
+    await act(async () => {
+      host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(editor.textContent).toBe("draft before the catalog loads");
+    // The catalogue arrives: the same draft is still there and now goes out.
+    await act(async () => root.render(<Composer onSend={onSend} modelOptions={[]} preparing={false} />));
+    expect(host.querySelector("[role=status]")).toBeNull();
+    expect(host.querySelector<HTMLButtonElement>("button[type=submit]")!.disabled).toBe(false);
+    await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSend).toHaveBeenCalledWith({ attachments: [], content: "draft before the catalog loads" });
+  }
+  finally {
+    act(() => root.unmount());
+    host.remove();
+  }
+});
+
 it.each(["accepted", "rejected", "edited"] as const)("handles %s delivery without losing a draft", async (outcome) => {
   const host = document.createElement("div");
   document.body.append(host);

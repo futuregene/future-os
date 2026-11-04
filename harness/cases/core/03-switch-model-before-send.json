@@ -1,0 +1,39 @@
+{
+  "id": "switch-model-before-send",
+  "title": "新建会话 → 切换模型 → 发送",
+  "area": "model",
+  "priority": "P0",
+  "tags": ["model", "create"],
+  "description": "在新对话草稿上打开模型选择器，选一个明确不是默认的模型；模型控件必须立即显示新选择，发送后新会话以该模型创建（IPC 里 create_thread 带上了 modelId）。",
+  "preconditions": "至少配置了两个可见模型；应用停在会话列表。",
+  "expectations": [
+    "模型菜单列出当前配置的模型，并标出所属 provider",
+    "选择后输入框旁的模型名立即更新，不需要刷新",
+    "发送创建会话时使用选中的模型，而不是回落到默认模型"
+  ],
+  "steps": [
+    { "wait": 800 },
+    { "click": { "aria": "新建对话" } },
+    { "waitFor": { "text": "欢迎使用" }, "timeout": 5000 },
+    { "assert": { "expr": "!!document.querySelector(\"button[title='模型']\")", "message": "输入框旁有模型控件" } },
+    { "click": { "selector": "button[title='模型']" }, "note": "打开模型选择器" },
+    { "waitFor": { "text": "deepseek-flash" }, "timeout": 5000 },
+    { "shot": "model-menu", "note": "模型菜单：名称 + provider" },
+    { "click": { "selector": "button", "text": "deepseek-flash" } },
+    { "assert": { "expr": "document.querySelector(\"button[title='模型']\").innerText.includes('deepseek-flash')", "message": "模型控件立即显示 deepseek-flash" } },
+    { "shot": "model-selected" },
+    { "click": { "selector": "[role=textbox]" } },
+    { "type": "模型切换后的会话" },
+    { "click": { "aria": "发送" } },
+    { "waitFor": { "text": "模型切换后的会话" }, "timeout": 8000 },
+    { "server": { "command": "create_thread", "expect": 1, "message": "发送创建了一个会话" } },
+    {
+      "db": {
+        "sql": "SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' ORDER BY created_at DESC LIMIT 1",
+        "as": "created"
+      }
+    },
+    { "assert": { "expr": "document.body.innerText.includes(window.__harnessLastDb[0].title)", "message": "新会话出现在列表" } },
+    { "shot": "sent-with-model" }
+  ]
+}

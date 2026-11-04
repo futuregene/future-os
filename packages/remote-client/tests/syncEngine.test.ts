@@ -331,6 +331,42 @@ describe("SyncEngine", () => {
     } finally { h.engine.clear(); }
   });
 
+  test("a session that stopped compacting closes its stranded standalone divider", async () => {
+    // The agent restarted (or was killed) while a manual compaction's summary
+    // was in flight: the divider's start arrived, its terminal never will, and
+    // there is no durable checkpoint to fold it into. The session snapshot is
+    // the authority between turns — `isCompacting: false` must end the divider
+    // instead of leaving it reading "compacting" for the rest of the session.
+    const h = new Harness("r");
+    h.journal.add(agentStart("r"));
+    h.journal.add(textChunk("r", 1, "reply"));
+    try {
+      await h.engine.open("s");
+      await h.settle();
+      h.active("");
+      h.isCompacting = true;
+      h.engine.event("s", {
+        type: "compaction_started",
+        runId: "",
+        idx: -1,
+        data: JSON.stringify({ operation_id: "cmp", trigger: "manual", phase: "standalone" }),
+      });
+      await h.settle();
+      expect(h.timelineOf("s").items.at(-1)).toMatchObject({
+        id: "compaction:cmp",
+        segments: [{ status: "running" }],
+      });
+
+      h.isCompacting = false;
+      h.engine.reconcile("s", "resend");
+      await h.settle();
+      const divider = h.timelineOf("s").items.find(item =>
+        item.kind === "message" && item.id === "compaction:cmp");
+      expect(divider).toMatchObject({ segments: [{ status: "interrupted" }] });
+      expect(h.timelineOf("s").compacting).toBe(false);
+    } finally { h.engine.clear(); }
+  });
+
   test.each(["compaction_committed", "compaction_failed", "compaction_unchanged"])("restores compaction on open and releases it on %s", async terminal => {
     const h = new Harness();
     h.isCompacting = true;
@@ -1387,6 +1423,52 @@ describe("SyncEngine", () => {
       }
     },
   );
+
+  test("a rebuilt history row keeps the picture this phone already holds", async () => {
+    const h = new Harness();
+    // Durable history is authoritative for the row: it names the host's copy of
+    // the file the prompt was sent with.
+    h.history = timelineFromEntries([
+      {
+        id: "u1", kind: "user", role: "user", createdAtMs: 1, runId: "r1",
+        blocks: [{ kind: "text", text: "look" }],
+        metadata: { attachments: [{ path: "/home/me/photo.jpg", name: "photo.jpg", kind: "image" }] },
+      },
+    ]);
+    try {
+      // The prompt as this phone drew it: its own picker copy, under the run the
+      // acknowledgement named. Every reconcile rebuilds the row from history, so
+      // without carrying this forward the picture blinks out and comes back.
+      h.engine.mutate("s", () => ({
+        ...emptyTimeline(),
+        items: [{
+          id: "local:prompt-1", kind: "message" as const, role: "user" as const,
+          text: "look", runId: "r1",
+          attachments: [{ path: "file:///picked/photo.jpg", name: "photo.jpg", kind: "image" as const }],
+        }],
+      }));
+      await h.settle();
+      await h.engine.open("s");
+      await h.settle();
+
+      // Twice, because the second rebuild starts from a row that is already
+      // durable: if carrying the path depended on the optimistic bubble still
+      // being in the cache, the picture would blink out on every later reconcile.
+      for (const reopen of [0, 1]) {
+        if (reopen > 0) {
+          h.engine.restart("s", "reconnect");
+          await h.settle();
+        }
+        expect(h.timelineOf("s").items).toHaveLength(1);
+        expect(h.timelineOf("s").items[0]).toMatchObject({
+          id: "m_u1",
+          attachments: [{ path: "file:///picked/photo.jpg", name: "photo.jpg" }],
+        });
+      }
+    } finally {
+      h.engine.clear();
+    }
+  });
 
   test("history dedup requires both role and run identity, not matching text", async () => {
     const h = new Harness();

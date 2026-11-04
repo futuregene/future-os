@@ -8,6 +8,7 @@ import {
   markApprovalDecision,
   mergeHistoryAttachments,
   normalizeReplayEvents,
+  settleInterruptedStandaloneCompactions,
   stripRunItems,
   timelineFromEntries,
   timelineFromHistory,
@@ -505,11 +506,15 @@ describe("entry reducer", () => {
     expect(state.items).toHaveLength(2);
     expect(state.items[1]).toMatchObject({
       runId: "r1", failed: true, error: "interrupted", durationMs: 100,
+      // None of the three calls reported, so none of them collapsed into a
+      // "ran 2 commands" summary: a burst summary claims the calls ran, and an
+      // unreported call is `interrupted`, which keeps its own row.
       segments: [
         { kind: "compaction", id: "seg_cp1_compaction" },
-        { kind: "tool", tool: { count: 2 } },
+        { kind: "tool", tool: { status: "interrupted" } },
+        { kind: "tool", tool: { status: "interrupted" } },
         { kind: "compaction", id: "seg_cp2_compaction" },
-        { kind: "tool" },
+        { kind: "tool", tool: { status: "interrupted" } },
       ],
     });
   });
@@ -859,6 +864,69 @@ describe("user message mirror", () => {
       "completed",
       "failed",
     ]);
+  });
+
+  test("the row the desktop wrote keeps the copy of the picture this device holds", () => {
+    // The phone painted the photo from its own picker file when the desktop
+    // acknowledged the prompt…
+    const accepted = commitAcknowledgedUserMessage(emptyTimeline(), {
+      id: "local:prompt-1",
+      runId: "run-1",
+      text: "look",
+      attachments: [{ path: "file:///picked/photo.jpg", name: "photo.jpg", kind: "image" }],
+    });
+    // …and the live mirror of that same prompt names the host's copy of the file.
+    const mirrored = applyStreamEvent(accepted, {
+      type: "user_message",
+      runId: "run-1",
+      data: JSON.stringify({
+        entry_id: "e1",
+        run_id: "run-1",
+        text: "look",
+        created_at_ms: 1,
+        attachments: [{ path: "/home/me/.future/agent/images/photo.jpg", name: "photo.jpg", kind: "image" }],
+      }),
+    });
+
+    // Taking the host path would unmount the picture under a name this device
+    // has no bytes for: the bubble drops to a name chip and the photo returns a
+    // transfer later, which on a phone reads as the image blinking out.
+    expect(mirrored.items).toHaveLength(1);
+    expect(mirrored.items[0]).toMatchObject({
+      kind: "message",
+      role: "user",
+      attachments: [{ path: "file:///picked/photo.jpg", name: "photo.jpg", kind: "image" }],
+    });
+  });
+
+  test("an attachment this device never held keeps the desktop's path", () => {
+    const accepted = commitAcknowledgedUserMessage(emptyTimeline(), {
+      id: "local:prompt-1",
+      runId: "run-1",
+      text: "look",
+      attachments: [{ path: "file:///picked/one.jpg", name: "one.jpg", kind: "image" }],
+    });
+    const mirrored = applyStreamEvent(accepted, {
+      type: "user_message",
+      runId: "run-1",
+      data: JSON.stringify({
+        entry_id: "e1",
+        run_id: "run-1",
+        text: "look",
+        created_at_ms: 1,
+        attachments: [
+          { path: "file:///picked/one.jpg", name: "one.jpg", kind: "image" },
+          { path: "/home/me/.future/agent/images/two.jpg", name: "two.jpg", kind: "image" },
+        ],
+      }),
+    });
+
+    expect(mirrored.items[0]).toMatchObject({
+      attachments: [
+        { path: "file:///picked/one.jpg", name: "one.jpg" },
+        { path: "/home/me/.future/agent/images/two.jpg", name: "two.jpg" },
+      ],
+    });
   });
 
   test("acknowledgement enriches an early live mirror instead of duplicating it", () => {
@@ -1865,6 +1933,83 @@ describe("shared-projection semantic flags", () => {
       segments: [{ id: "seg_cp-manual_compaction", kind: "compaction", tokensBefore: 33_064, trigger: "manual", status: "completed" }],
     });
     expect(messages[1]?.runId).toBeUndefined();
+  });
+
+  test("a session-scoped compaction keeps its terminal, which never had a run position", () => {
+    // A manual compaction between runs is session fan-out: the wire spells it
+    // `runId: ""` with `idx: -1` (`build_event_body` always writes runId).
+    // Keying those frames by run+idx collapsed every session-scoped frame of a
+    // lane onto `":-1"`, so the terminal was discarded as a duplicate of its
+    // own start — the divider read "compacting" under a finished reply and never
+    // settled.
+    const started = {
+      type: "compaction_started",
+      runId: "",
+      idx: -1,
+      data: JSON.stringify({ operation_id: "cmp-manual", trigger: "manual", phase: "standalone" }),
+    };
+    const committed = {
+      type: "compaction_committed",
+      runId: "",
+      idx: -1,
+      data: JSON.stringify({
+        operation_id: "cmp-manual",
+        checkpoint_id: "cp-manual",
+        tokens_before: 41_000,
+        tokens_after: 9_000,
+        trigger: "manual",
+        phase: "standalone",
+      }),
+    };
+    let state = applyStreamEvent(emptyTimeline(), started);
+    expect(state.compacting).toBe(true);
+    expect(state.items).toHaveLength(1);
+
+    state = applyStreamEvent(state, committed);
+    expect(state.compacting).toBe(false);
+    const messages = state.items.filter(item => item.kind === "message");
+    expect(messages.map(item => item.id)).toEqual(["m_cp-manual"]);
+    expect(messages[0]).toMatchObject({
+      segments: [expect.objectContaining({ status: "completed", tokensBefore: 41_000, tokensAfter: 9_000 })],
+    });
+  });
+
+  test("a stranded manual divider settles as interrupted and still takes a late terminal", () => {
+    // The agent restarted mid-summary (or the frame was lost): no terminal is
+    // coming, and the session reports it is no longer compacting. The divider
+    // must stop reading as in flight without inventing a checkpoint.
+    const started = {
+      type: "compaction_started",
+      runId: "",
+      idx: -1,
+      data: JSON.stringify({ operation_id: "cmp-lost", trigger: "manual", phase: "standalone" }),
+    };
+    const state = applyStreamEvent(emptyTimeline(), started);
+    const settled = settleInterruptedStandaloneCompactions(state.items);
+    expect(settled[0]).toMatchObject({
+      id: "compaction:cmp-lost",
+      segments: [{ status: "interrupted" }],
+    });
+    // No checkpoint is invented: the row still has no durable identity.
+    const segment = (settled[0] as { segments?: { checkpointId?: string }[] }).segments?.[0];
+    expect(segment?.checkpointId).toBeUndefined();
+
+    // The identity is unchanged, so a terminal that does arrive late still
+    // replaces it with the committed divider instead of adding a second one.
+    const late = applyStreamEvent({ ...state, items: settled }, {
+      type: "compaction_committed",
+      runId: "",
+      idx: -1,
+      data: JSON.stringify({
+        operation_id: "cmp-lost",
+        checkpoint_id: "cp-late",
+        tokens_before: 12_000,
+        tokens_after: 3_000,
+        trigger: "manual",
+        phase: "standalone",
+      }),
+    });
+    expect(late.items.map(item => item.id)).toEqual(["m_cp-late"]);
   });
 
   test("a mid-turn compaction stays inside the running reply", () => {

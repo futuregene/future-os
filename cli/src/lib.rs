@@ -160,10 +160,7 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
 
     // `future workspace` — the desktop app's workspaces, from the terminal.
     if group == Some("workspace") {
-        return catch(out, async {
-            commands::workspace::workspace(command, rest, out)
-        })
-        .await;
+        return catch(out, commands::workspace::workspace(command, rest, out)).await;
     }
 
     // if (group === "auth" && (!command || command === "--help" || command === "-h"))
@@ -745,6 +742,14 @@ mod tests {
             (&["models", "-h"], help::MODELS_HELP),
             (&["session", "--help"], commands::session::SESSION_HELP),
             (&["session", "-h"], commands::session::SESSION_HELP),
+            (
+                &["session", "archive", "--help"],
+                commands::archive::SESSION_HELP,
+            ),
+            (
+                &["workspace", "archive", "--help"],
+                commands::archive::WORKSPACE_HELP,
+            ),
             (
                 &["session", "set", "--help"],
                 commands::session::SESSION_SET_HELP,

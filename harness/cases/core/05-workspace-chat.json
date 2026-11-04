@@ -1,0 +1,60 @@
+{
+  "id": "workspace-chat",
+  "title": "在新建的工作区里开对话",
+  "area": "workspace",
+  "priority": "P1",
+  "tags": ["workspace", "create", "workspace-flow"],
+  "description": "先创建一个工作区，再在它的新对话界面发送一句任务。会话必须落在该工作区（threads.workspace_id 指向它），而不是掉回临时 chat 工作区。",
+  "preconditions": "应用已启动；harness 已准备空目录。",
+  "expectations": [
+    "工作区模式下发送创建的是 workspace 类型的会话",
+    "会话的 workspace_id 指向刚创建的工作区",
+    "侧边栏该工作区分组下出现新会话"
+  ],
+  "steps": [
+    { "wait": 800 },
+    { "click": { "aria": "新建工作区" } },
+    { "waitFor": { "selector": "button[aria-label='选择工作区']" }, "timeout": 5000 },
+    { "click": { "aria": "选择工作区" } },
+    { "waitFor": { "text": "工作区路径：" }, "timeout": 5000 },
+    { "click": { "selector": "button", "text": "打开" } },
+    { "waitFor": { "text": "使用此项目文件夹及其工作区资源" }, "timeout": 8000 },
+    { "wait": 1200, "note": "等模型目录加载完：模型未就绪时发送会被静默丢弃" },
+    { "click": { "selector": "[role=textbox]" } },
+    { "type": "在工作区里跑的自动化任务" },
+    { "click": { "aria": "发送" } },
+    { "waitFor": { "text": "在工作区里跑的自动化任务" }, "timeout": 8000 },
+    {
+      "db": {
+        "sql": "SELECT mode, workspace_id FROM threads WHERE deleted_at IS NULL AND status != 'deleted' ORDER BY created_at DESC LIMIT 1",
+        "as": "latest"
+      }
+    },
+    {
+      "assert": {
+        "expr": "window.__harnessLastDb[0].mode === 'workspace'",
+        "message": "最新会话是 workspace 模式"
+      }
+    },
+    {
+      "assert": {
+        "expr": "String(window.__harnessLastDb[0].workspace_id).startsWith('ws-')",
+        "message": "最新会话绑定了工作区而不是临时 chat 工作区"
+      }
+    },
+    {
+      "db": {
+        "sql": "SELECT (w.path LIKE '%workspace-pick') AS ok FROM threads t JOIN workspaces w ON w.id = t.workspace_id WHERE t.deleted_at IS NULL ORDER BY t.created_at DESC LIMIT 1",
+        "expect": 1,
+        "message": "会话落在刚创建的工作区路径下"
+      }
+    },
+    {
+      "assert": {
+        "expr": "(() => { const nav = document.querySelector('nav'); return !!nav && nav.innerText.includes('在工作区里跑的自动化任务'); })()",
+        "message": "侧边栏工作区分组下出现新会话"
+      }
+    },
+    { "shot": "workspace-conversation" }
+  ]
+}
