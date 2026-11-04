@@ -65,7 +65,7 @@ impl SqliteStore {
         self.db.read(move |db| {
             let mut stmt=db.prepare("SELECT b.text,b.is_error,e.timestamp_ms,
                 CASE WHEN EXISTS(SELECT 1 FROM content_references r WHERE r.session_id=e.session_id AND r.owner_kind='entry' AND r.owner_id=e.entry_id AND r.field='/meta/shell_result')
-                THEN json_set(e.metadata_json,'$.meta.shell_result',json((SELECT r.body FROM resolved_content_references r WHERE r.session_id=e.session_id AND r.owner_kind='entry' AND r.owner_id=e.entry_id AND r.field='/meta/shell_result'))) ELSE e.metadata_json END
+                THEN json_set(coalesce((SELECT future_gunzip(x.body) FROM entry_bodies x WHERE x.session_id=e.session_id AND x.position=e.position AND x.field='metadata'),e.metadata_json),'$.meta.shell_result',json((SELECT r.body FROM resolved_content_references r WHERE r.session_id=e.session_id AND r.owner_kind='entry' AND r.owner_id=e.entry_id AND r.field='/meta/shell_result'))) ELSE coalesce((SELECT future_gunzip(x.body) FROM entry_bodies x WHERE x.session_id=e.session_id AND x.position=e.position AND x.field='metadata'),e.metadata_json) END
                 FROM resolved_message_blocks b JOIN entries e ON e.session_id=b.session_id AND e.position=b.entry_position WHERE b.session_id=?1 AND e.run_id=?2 AND b.tool_call_id=?3 AND b.kind='tool_result' ORDER BY e.position DESC LIMIT 1")?;
             let mut rows=stmt.query(params![session,run,call])?;
             let output=if let Some(row)=rows.next()? {

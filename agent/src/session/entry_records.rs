@@ -350,8 +350,13 @@ b4 AS (SELECT *,CASE WHEN arguments_json IS NULL THEN j3 ELSE json_set(j3,'$.' |
 b5 AS (SELECT *,CASE WHEN is_error IS NULL THEN j4 ELSE json_set(j4,'$.' || 'is_error',json(CASE WHEN is_error THEN 'true' ELSE 'false' END)) END AS j5 FROM b4)
 SELECT session_id,entry_position,ordinal,j5 AS payload FROM b5;
 CREATE VIEW entry_records AS
-WITH headers AS (
- SELECT e.*,json_set(metadata_json,'$.id',entry_id,'$.type',entry_type) AS header FROM entries e
+WITH bodies AS (
+ SELECT e.session_id,e.position,e.entry_id,e.entry_type,e.role,e.run_id,e.timestamp_ms,e.content_json,
+ coalesce((SELECT future_gunzip(x.body) FROM entry_bodies x
+   WHERE x.session_id=e.session_id AND x.position=e.position AND x.field='metadata'),e.metadata_json) AS metadata_json
+ FROM entries e
+), headers AS (
+ SELECT *,json_set(metadata_json,'$.id',entry_id,'$.type',entry_type) AS header FROM bodies
 ), roles AS (
  SELECT *,CASE WHEN role IS NULL THEN header ELSE json_set(header,'$.role',role) END AS with_role FROM headers
 ), ownership AS (
