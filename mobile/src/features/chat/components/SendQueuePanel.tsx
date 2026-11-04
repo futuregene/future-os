@@ -86,7 +86,11 @@ export function SendQueuePanel({
         <Text style={styles.title}>{t("chat.queue.title")}</Text>
         <Text style={styles.count}>{t("chat.queue.count", { count: items.length })}</Text>
         <View style={styles.headerSpacer} />
-        <Text numberOfLines={1} style={styles.hint}>{t("chat.queue.hint")}</Text>
+        {/* A parked row is not going to run when the reply ends — it never will
+            on its own — so the header must not promise the merge it describes. */}
+        <Text numberOfLines={1} style={styles.hint} testID="send-queue-hint">
+          {items.some(item => item.parked) ? t("chat.queue.hintParked") : t("chat.queue.hint")}
+        </Text>
       </View>
       {items.map((item, index) => {
         const editing = editingId === item.id;
