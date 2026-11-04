@@ -1,0 +1,3 @@
+# Python 3.9+. The runner itself uses the standard library.
+pyarrow==21.0.0
+ruff==0.14.3

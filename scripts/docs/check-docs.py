@@ -129,6 +129,10 @@ WHITELIST = {
     # Directory layout guides; they sit beside the scripts they describe.
     "scripts/README.md",
     "scripts/README.zh-CN.md",
+    # Benchmark instructions accompany their executable runner and frozen suites.
+    "benchmark/README.md",
+    "benchmark/fusion/README.md",
+    "benchmark/fusion/PROTOCOL.md",
 }
 
 # Bilingual pairing also applies to these paths outside docs/.
