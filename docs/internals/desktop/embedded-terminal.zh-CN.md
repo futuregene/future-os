@@ -3,8 +3,10 @@
 > （[English](embedded-terminal.md)）状态：**Linux** 已实现（自动化测试验证）；
 > macOS/Windows 路径存在但**未在本机验证**——见 §平台。
 
-终端是一个由桌面主进程持有的 PTY 注册表，通过**仅回环的 HTTP/WebSocket 监听器**
-服务给应用自己的 webview。它刻意不是 Tauri-IPC 消息泵。
+终端是宿主进程持有的 PTY 注册表，有两条供给路径：应用自己 webview 的**仅回环的
+HTTP/WebSocket 监听器**，以及已配对设备的远程控制面（§[远程](#远程)）。注册表在
+`future-host` 里，所以完全没有窗口的 `future host` 也供给同一批 shell。它刻意不是
+Tauri-IPC 消息泵。
 
 ## 为什么用 socket
 
@@ -202,17 +204,19 @@ shell，以 **ibus-libpinyin** 作为输入法，经 `WebKitWebDriver`——IME 
 
 | 层 | 位置 |
 | --- | --- |
-| 注册表在控制面眼中的样子 | `host/src/terminal_service.rs`（trait + 安装槽） |
-| 桌面端对它的实现 | `desktop/src-tauri/src/terminal/service.rs` |
+| 注册表 | `host/src/terminal/`（`manager`、`session`、`pty`、`shell`、`cwd`） |
+| 注册表在控制面眼中的样子 | `host/src/terminal/service.rs`，trait 与安装槽在 `host/src/terminal_service.rs` |
+| 谁来安装 | `future_host::terminal::install_service()`——窗口与 `future host` 都一样 |
 | wire 命令 | `host/src/remote_host/business/terminal.rs` |
 | 能力位 | `future_remote_protocol::TERMINAL_FEATURE`（`terminal_v1`） |
 | 客户端一半 | `desktop/src/features/terminal/remoteTerminal.ts` |
 | 传输接缝 | `desktop/src/features/terminal/transport.ts` |
 
 **是公布，不是假定。** 握手只在安装了注册表的进程里列出 `terminal_v1`
-（`services::set_terminal_available`）。已配对桌面只在公布了该能力的宿主上显示
-面板；没有 PTY 的宿主（`future host`）因此不会给出一个只会回
-`Unsupported command` 的按钮。
+（`services::set_terminal_available`），而两个入口都会安装：窗口的
+`AppState::initialize_process_state`，以及 `headless::session` 在远程桥接启动之前。
+已配对桌面只在公布了该能力的宿主上显示面板；从未安装过注册表的构建什么都不显示，
+而不是给出一个每次都只回 `Unsupported command` 的按钮。
 
 **它是分页拉取，不是推流。** 命令走普通控制面通道：`terminal_list` /
 `terminal_create` / `terminal_update` / `terminal_delete` / `terminal_read` /
@@ -229,6 +233,12 @@ shell，以 **ibus-libpinyin** 作为输入法，经 `WebKitWebDriver`——IME 
 这刻意比 agent 自身的面更宽——prompt 要过审批规则，shell 不过。仍在的门是*
 控制权*：`commands.rs` 在进入 handler 之前就拒绝待命设备的一切业务命令，所以
 只有用户把机器交出去的那台设备能开 shell 或打字。
+
+**headless 宿主是一等目标。** `future host` 在开始服务之前安装注册表，所以从已配对
+桌面访问一台服务器时，开出的是真实 shell，工作目录与 agent 在该机上用的一致；
+它的退出路径会冻结注册表，并与其他服务一起拆除子进程
+（`cli/src/headless/mod.rs::stop`）。工作目录仍由**存储**解析，也就是窗口使用的同一份
+`~/.future` 存储。
 
 **代价说清楚。** 输出每页一次往返（有产出时 16 ms 轮询、空闲时 250 ms——客户端
 只在面板打开时轮询），一次键击在 shell 收到前要一次往返，回显再来一次。经中继
