@@ -121,6 +121,9 @@ impl SqliteStore {
                     SELECT sequence,payload FROM run_events WHERE session_id=?1
                       AND json_extract(payload,'$.event_type') IN ('usage','model_changed')
                       AND NOT EXISTS(SELECT 1 FROM run_snapshots s WHERE s.session_id=run_events.session_id AND s.run_id=run_events.run_id)
+                      AND NOT EXISTS(SELECT 1 FROM run_pricing p WHERE p.session_id=run_events.session_id AND p.run_id=run_events.run_id)
+                    UNION ALL
+                    SELECT sequence,payload FROM run_pricing WHERE session_id=?1
                     UNION ALL
                     SELECT json_extract(j.value,'$.sequence') AS sequence,
                            json_extract(j.value,'$.payload') AS payload
