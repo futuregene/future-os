@@ -1269,24 +1269,19 @@ pub(crate) fn reset_windows_sandbox_capabilities() -> std::io::Result<usize> {
 /// cleanup revokes them. Skipping the revoke at shutdown is safe — the ACEs
 /// only grant the FutureOS capability SID access to paths it already owns,
 /// and no restricted process is alive after the drain.
+///
+/// Windows only, by construction: the shutdown step that calls it is a Windows
+/// arm (`agent/src/service/shutdown.rs`), because the capability ACEs a reset
+/// would revoke exist only there. A non-Windows stub would be a function no
+/// platform calls, which is what `-D warnings` rightly refuses to let through.
+#[cfg(windows)]
 pub(crate) fn reset_windows_sandbox_capabilities_bounded(
     budget: std::time::Duration,
 ) -> std::io::Result<usize> {
-    #[cfg(target_os = "windows")]
-    {
-        windows::runner::reset_capabilities_bounded(
-            &windows::runner::capability_state_path()?,
-            Some(budget),
-        )
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = budget;
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "Windows sandbox reset is only available on Windows",
-        ))
-    }
+    windows::runner::reset_capabilities_bounded(
+        &windows::runner::capability_state_path()?,
+        Some(budget),
+    )
 }
 
 /// Expose the generated Seatbelt profile (for smoke tests and diagnostics).
