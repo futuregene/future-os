@@ -558,6 +558,10 @@ async function judgeCase(result, runDir, { model = null } = {}) {
         "数字本身要与量级相符（本地首屏、本地命令应是毫秒到一两秒量级，不该以十秒计）",
       ];
 
+  const surfaceNote = result.surface === "mobile" || result.surface === "remote"
+    ? "重要边界：手机/远程界是通过 react-native-web 渲染的，不是真机。Modal / Alert 遮罩层的透明度、系统状态栏与安全区、原生滚动物理都与真机不同，因此「对话框背景半透、底层列表透出、弹层与列表文字重叠」这类现象是 Web 渲染的差，不要把它们判成产品缺陷（可以写成 low 级观察并注明来源）。真正与平台无关的问题（文案错、数据不加和、按钮无响应、内容缺失、层级遮挡、布局错位）照常报。"
+    : null;
+
   const prompt = [
     "你是 FutureOS 的产品验收员，不是测试脚本执行器。",
     "下面有一次真实操作的证据：按时间排列的截图、整段录像的帧拼图，以及运行时日志。",
@@ -570,6 +574,7 @@ async function judgeCase(result, runDir, { model = null } = {}) {
     `用例：${result.title}`,
     `说明：${result.description ?? ""}`,
     `操作时间线：\n${timelineText(result)}`,
+    surfaceNote ? `\n${surfaceNote}` : "",
     "",
     logs.length ? `运行时信号：\n${logs.join("\n")}` : "运行时信号：无错误",
     provenText ? `\n已由确定性断言在真实 DOM 上验证通过的事实（不要把这些当缺陷重复怀疑；如果截图看起来相反，优先认为是截图时机/滚动位置造成的证据不足）：\n${provenText}` : "",
