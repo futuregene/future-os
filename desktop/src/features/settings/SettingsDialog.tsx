@@ -22,8 +22,7 @@ import { UpdatePage } from "./UpdatePage";
 
 export type SettingsTab = "general" | "shortcuts" | "account" | "update" | "about" | "providers" | "models" | "fusion" | "environment" | "reset";
 
-// `devOnly` items are only shown on non-release builds — the environment switch
-// is a dev affordance; release builds are production-locked.
+// `devOnly` items are only shown on non-release builds.
 const NAV_GROUPS = [
   {
     items: [
@@ -39,7 +38,7 @@ const NAV_GROUPS = [
     items: [
       { icon: Boxes, labelKey: "dialog.tabs.providers", value: "providers" as const },
       { icon: Sparkles, labelKey: "dialog.tabs.models", value: "models" as const },
-      { icon: UserRoundGroup, labelKey: "dialog.tabs.fusion", value: "fusion" as const },
+      { icon: UserRoundGroup, labelKey: "dialog.tabs.fusion", value: "fusion" as const, devOnly: true },
     ],
     labelKey: "dialog.nav.server",
   },
@@ -109,8 +108,7 @@ export function SettingsDialog({
   const { t } = useTranslation("settings");
   const [tab, setTab] = useState<SettingsTab>(initialTab);
   const build = useBuildInfo();
-  // Environment switching is a dev-build affordance; release builds hide it.
-  const showEnvironment = Boolean(build.data && !build.data.isRelease);
+  const isTestBuild = build.data?.isRelease === false;
 
   // Reset to the requested tab each time the dialog opens.
   useEffect(() => {
@@ -119,12 +117,12 @@ export function SettingsDialog({
     }
   }, [open, initialTab]);
 
-  // Never strand on the dev-only environment tab on a release build.
+  // Never strand on a hidden tab, including when opened through initialTab.
   useEffect(() => {
-    if (!showEnvironment && tab === "environment") {
+    if (!isTestBuild && (tab === "environment" || tab === "fusion")) {
       setTab("general");
     }
-  }, [showEnvironment, tab]);
+  }, [isTestBuild, tab]);
 
   return (
     <Overlay onClose={onClose} open={open}>
@@ -140,7 +138,7 @@ export function SettingsDialog({
               <div key={group.labelKey} className="space-y-1">
                 <div className="px-2 pb-1 text-xs font-medium uppercase tracking-wide text-ink-muted">{t(group.labelKey)}</div>
                 {group.items
-                  .filter(item => showEnvironment || !("devOnly" in item && item.devOnly))
+                  .filter(item => isTestBuild || !("devOnly" in item && item.devOnly))
                   .map((item) => {
                     const Icon = item.icon;
                     const showDot = item.value === "update" && hasUpdate;
@@ -206,7 +204,7 @@ export function SettingsDialog({
                   />
                 )
               : null}
-            {tab === "fusion" ? <FusionSettingsPage /> : null}
+            {tab === "fusion" && isTestBuild ? <FusionSettingsPage /> : null}
             {tab === "shortcuts" ? <ShortcutsPage /> : null}
             {tab === "account"
               ? (
@@ -242,7 +240,7 @@ export function SettingsDialog({
                   />
                 )
               : null}
-            {tab === "environment" && showEnvironment
+            {tab === "environment" && isTestBuild
               ? (
                   <div className="space-y-6">
                     <EnvironmentPage />
