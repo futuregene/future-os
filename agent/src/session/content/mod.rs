@@ -28,6 +28,7 @@ pub(crate) mod journal;
 pub(crate) mod metadata;
 pub(crate) mod operations;
 pub(crate) mod reader;
+pub(crate) mod rechunk;
 mod recovery;
 pub(crate) mod reset;
 pub(crate) mod stream;

@@ -341,6 +341,13 @@ pub(super) async fn run(args: &[String], out: &Output) -> Result<(), String> {
             count(foldable)
         ));
     }
+    let segments = number(&plan["bodySegments"], "pendingRows");
+    if segments > 0 {
+        out.log(&format!(
+            "  {} body fragments to repack into one row each",
+            count(segments)
+        ));
+    }
     print_entries(&plan, true, out);
     if options.json {
         out.log(&serde_json::to_string_pretty(&plan).map_err(|e| e.to_string())?);

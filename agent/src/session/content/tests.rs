@@ -623,3 +623,67 @@ fn an_entry_reuses_the_sealed_stream_body_it_finishes() {
         })
         .unwrap();
 }
+
+/// A body written one fragment at a time keeps one row per fragment. The repack
+/// replaces them with one row that starts at the same offset and holds the same
+/// bytes; every reader addresses a range, so nothing else may change.
+#[test]
+fn a_repack_collapses_fragments_without_moving_a_byte() {
+    let mut db = connection();
+    let tx = db.transaction().unwrap();
+    let id = create(&tx).unwrap();
+    let mut digest = ContentDigest::default();
+    for (at, piece) in [(0i64, "alpha"), (5, "beta"), (9, "gamma")] {
+        append(&tx, id, at, piece).unwrap();
+        digest.push(piece).unwrap();
+    }
+    seal(&tx, id, digest).unwrap();
+    tx.commit().unwrap();
+    let bodies = |db: &Connection| -> String {
+        db.query_row(
+            "SELECT coalesce(group_concat(body,''),'') FROM
+               (SELECT body FROM content_segments ORDER BY byte_offset)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(bodies(&db), "alphabetagamma");
+    assert_eq!(super::rechunk::plan(&db).unwrap(), (1, 3));
+
+    assert_eq!(super::rechunk::apply(&mut db, 8).unwrap(), (1, 3, 1));
+    let rows: i64 = db
+        .query_row("SELECT count(*) FROM content_segments", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 1, "three fragments become the row they describe");
+    assert_eq!(bodies(&db), "alphabetagamma", "not one byte may move");
+    assert_eq!(super::rechunk::plan(&db).unwrap(), (0, 0), "nothing left");
+
+    let page = read(&db, id, 0, 64).unwrap();
+    assert!(format!("{page:?}").contains("alphabetagamma"));
+}
+
+/// A body larger than one segment cannot be a single row; the repack leaves it
+/// alone rather than splitting it differently.
+#[test]
+fn a_repack_leaves_a_body_that_cannot_fit_one_row() {
+    let mut db = connection();
+    let tx = db.transaction().unwrap();
+    let id = create(&tx).unwrap();
+    let text = "x".repeat(SEGMENT_BYTES + 8);
+    let mut digest = ContentDigest::default();
+    append(&tx, id, 0, &text).unwrap();
+    digest.push(&text).unwrap();
+    seal(&tx, id, digest).unwrap();
+    tx.commit().unwrap();
+    let rows_before: i64 = db
+        .query_row("SELECT count(*) FROM content_segments", [], |r| r.get(0))
+        .unwrap();
+    assert!(rows_before > 1);
+    assert_eq!(super::rechunk::plan(&db).unwrap(), (0, 0));
+    assert_eq!(super::rechunk::apply(&mut db, 8).unwrap(), (0, 0, 0));
+    let rows_after: i64 = db
+        .query_row("SELECT count(*) FROM content_segments", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows_before, rows_after);
+}
