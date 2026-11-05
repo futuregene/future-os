@@ -41,7 +41,7 @@ const FOLD_BATCH_RUNS: i64 = 8;
 const RECHUNK_BATCH_OBJECTS: i64 = 64;
 /// Bodies compressed per sweep call. Each is a read of one body plus a gzip and
 /// a two-statement transaction, so a small batch keeps a slice responsive.
-const COMPRESS_BATCH_OBJECTS: i64 = 16;
+const COMPRESS_BATCH_OBJECTS: i64 = 64;
 /// Blocks compressed per sweep call.
 const BLOCK_BODY_BATCH: i64 = 32;
 /// A block smaller than this keeps its text inline: the body row costs more than
