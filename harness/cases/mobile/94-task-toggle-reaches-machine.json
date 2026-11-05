@@ -1,0 +1,55 @@
+{
+  "id": "mobile-task-toggle-reaches-machine",
+  "surface": "mobile",
+  "title": "手机端停用定时任务：写入落到对端，重新打开还是停用",
+  "area": "mobile-tasks",
+  "priority": "P1",
+  "tags": ["mobile", "tasks", "write"],
+  "description": "在手机上停用一个定时任务，写入的是桌面端那条任务本身。所以「停用」按下之后，动作行必须换成「启用」，而且这个变化要留在对端：离开这条任务、回到列表、再点开它，读到的仍是停用（按钮是「启用」）。这一条是「手机改的那一下真的到了机器上」的可见证据——只把按钮在本地翻一下、下一次读取又变回启用的实现，过不了这一步。",
+  "preconditions": "移动端 shot 服务可用；任务写入在 mock 内持久（对应真实桌面端的 tasks 存储）。",
+  "expectations": [
+    "打开「每周进展周报」，动作行是「停用」",
+    "点「停用」后动作行变成「启用」，没有报错条",
+    "返回列表再点开同一条任务，动作行仍是「启用」（写入落在对端）",
+    "再次点「启用」可以恢复原状"
+  ],
+  "steps": [
+    { "wait": 1800 },
+    { "click": { "text": "稍后再说" }, "note": "关闭开发版更新提示", "optional": true },
+    { "wait": 500 },
+    { "click": { "text": "全部桌面" } },
+    { "wait": 900 },
+    { "click": { "text": "管理已配对的桌面…" } },
+    { "wait": 1300 },
+    { "click": { "aria": "桌面端设置" } },
+    { "wait": 1300 },
+    { "click": { "text": "定时任务设置" } },
+    { "wait": 1600 },
+    { "click": { "text": "每周进展周报" } },
+    { "wait": 1700 },
+    { "assert": { "expr": "[...document.querySelectorAll('[role=\"button\"]')].some(e => e.innerText.trim() === '停用')", "message": "初始状态是停用按钮" } },
+    { "shot": "mobile-task-enabled" },
+    { "click": { "text": "停用" } },
+    { "wait": 1900 },
+    { "assert": { "expr": "[...document.querySelectorAll('[role=\"button\"]')].some(e => e.innerText.trim() === '启用') && ![...document.querySelectorAll('[role=\"button\"]')].some(e => e.innerText.trim() === '停用')", "message": "停用之后按钮变成启用" } },
+    { "expectAbsent": "无法读取桌面端数据" },
+    { "shot": "mobile-task-disabled" },
+    { "click": { "aria": "返回" }, "note": "回到任务列表" },
+    { "wait": 1300 },
+    { "click": { "text": "每周进展周报" } },
+    { "wait": 1900 },
+    { "assert": { "expr": "[...document.querySelectorAll('[role=\"button\"]')].some(e => e.innerText.trim() === '启用')", "message": "重新读一次，仍是停用" } },
+    { "shot": "mobile-task-disabled-again" },
+    { "click": { "text": "启用" } },
+    { "wait": 1900 },
+    { "assert": { "expr": "[...document.querySelectorAll('[role=\"button\"]')].some(e => e.innerText.trim() === '停用')", "message": "再次启用恢复原状" } }
+  ],
+  "judge": {
+    "criteria": [
+      "停用/启用是一个动作按钮，状态切换在截图里读得出来",
+      "写入后没有报错条、没有重复的按钮、没有卡在 loading",
+      "重新读一次的状态与刚才的操作一致——页面不能自己变回去"
+    ],
+    "maxImages": 6
+  }
+}

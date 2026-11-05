@@ -1,0 +1,42 @@
+{
+  "id": "mobile-standby-takeover",
+  "surface": "mobile",
+  "title": "手机端接管：桌面被另一台设备占用时，列表说清原因并能接管回来",
+  "area": "mobile-remote",
+  "priority": "P0",
+  "tags": ["mobile", "remote", "takeover", "standby"],
+  "description": "一个字段报告里的现场：这台电脑正被另一台设备控制，手机上看到的是「会话列表为空」——一个说机器里没有会话的页面，而机器里全是会话。夹具 ?held=1&single=1 让这台唯一配对的桌面处于待命（控制权在另一台设备），首页必须给出接管页：谁在占用、接管会断开它、以及一个能真的接管回来的按钮。点「接管」之后，机器的会话必须回来，而不是继续停留在空页面或待命页。",
+  "preconditions": "移动端 shot 服务可用；夹具带 ?held=1&single=1（唯一一台配对桌面处于待命）。",
+  "expectations": [
+    "首页显示接管页，写明已被「实验室的 MacBook Air」接管，并说明接管会断开它",
+    "页面上有「接管」按钮",
+    "不出现「还没有对话」这类空列表文案（机器里其实有会话）",
+    "点「接管」后会话列表回来（跑通 Longformer 的 baseline 等行出现），接管页消失"
+  ],
+  "query": { "held": "1", "single": "1" },
+  "steps": [
+    { "wait": 1800 },
+    { "click": { "text": "稍后再说" }, "note": "关闭开发版更新提示", "optional": true },
+    { "wait": 600 },
+    { "expectText": "已被 实验室的 MacBook Air 接管" },
+    { "expectText": "这台桌面正被另一台设备使用" },
+    { "expectText": "接管会断开 实验室的 MacBook Air。" },
+    { "expectAbsent": "还没有对话", "note": "占用的机器不是空机器" },
+    { "assert": { "expr": "[...document.querySelectorAll('[role=\"button\"]')].some(e => e.innerText.trim() === '接管')", "message": "接管按钮在页面上" } },
+    { "shot": "mobile-standby" },
+    { "click": { "text": "接管" } },
+    { "wait": 1800 },
+    { "expectText": "跑通 Longformer 的 baseline", "note": "接管后机器的会话回来了" },
+    { "expectAbsent": "已被 实验室的 MacBook Air 接管" },
+    { "shot": "mobile-after-takeover" }
+  ],
+  "judge": {
+    "criteria": [
+      "待命页读起来是一个「原因 + 一个可执行动作」的页面，不是空列表或报错页",
+      "占用者被指名，接管会断开谁说得清楚",
+      "点接管后页面直接换成会话列表，中间没有空页面或报错",
+      "两张截图里没有空白行、遮挡或截断的文案"
+    ],
+    "maxImages": 6
+  }
+}

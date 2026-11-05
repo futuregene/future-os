@@ -1,0 +1,37 @@
+{
+  "id": "mobile-connection-dropped-escape",
+  "surface": "mobile",
+  "title": "手机端连接断开：可以重连，也必须有一条解除配对的出路",
+  "area": "mobile-remote",
+  "priority": "P1",
+  "tags": ["mobile", "remote", "unpair", "disconnect"],
+  "description": "配对还在、桌面端暂时不应答的状态（?connection=dropped）。这种情况值得重试，所以「重新连接」是首要动作；但一个再也回不来的桌面曾经把手机困在这一页——只有一个永远不会成功的按钮。所以除了解除配对，这一页必须同时给出「解除连接」这条路（幽灵按钮），让用户能自己结束这段配对。与之相对的 ?revoked=1 只给解除，不给重试：两张页面一起，才说明「暂时断了」和「配对没了」不是同一件事。",
+  "preconditions": "移动端 shot 服务可用；夹具带 ?connection=dropped。",
+  "expectations": [
+    "页面标题是「已断开」，说明与桌面端的连接已断开、请确认在线后重新连接",
+    "主按钮是「重新连接」",
+    "页面上另有「解除设备配对」，作为结束这段配对的出路",
+    "页面不声称配对已失效（配对还在，只是没应答）"
+  ],
+  "query": { "connection": "dropped" },
+  "steps": [
+    { "wait": 1800 },
+    { "click": { "text": "稍后再说" }, "optional": true },
+    { "wait": 600 },
+    { "expectText": "已断开" },
+    { "expectText": "请确认桌面端在线后重新连接" },
+    { "expectText": "重新连接" },
+    { "expectText": "解除设备配对", "note": "出路不能只藏在设置里" },
+    { "expectAbsent": "配对已失效" },
+    { "assert": { "expr": "[...document.querySelectorAll('[role=\"button\"]')].map(e => e.innerText.trim()).filter(text => text === '重新连接' || text === '解除设备配对').length === 2", "message": "两个动作同时在页面上" } },
+    { "shot": "mobile-connection-dropped" }
+  ],
+  "judge": {
+    "criteria": [
+      "断开页把「重试」放在前面，但读者能找到结束配对的路，不需要绕回设置",
+      "两个动作的主次分明（主按钮 vs 幽灵按钮），不是两个同等重量的红按钮",
+      "文案没有把暂时断开说成配对失效"
+    ],
+    "maxImages": 4
+  }
+}

@@ -822,3 +822,26 @@ export const demoTaskDeps = [
   { upstreamTaskId: "tsk_lit_watch", upstreamName: "文献监控", on: "completed", satisfied: true },
 ];
 
+/**
+ * Every task as the detail screen reads it.
+ *
+ * The wire contract sends the prompt body only from `get_task`, and a phone that
+ * edits any of the three tasks needs one — a capture (or a harness case) that
+ * opens 「文献监控」 used to be handed the weekly report's prompt, so an edit of
+ * one task silently described another. Each row therefore gets its own detail;
+ * the fields a task has not chosen (model, zone, conversation type) fall back to
+ * the same values the demo desktop reports.
+ */
+export const demoTaskDetails = demoTasks.map(task => ({
+  ...task,
+  prompt: task.id === demoTaskDetail.id
+    ? demoTaskDetail.prompt
+    : `按「${task.name}」的计划跑一遍，把结果写进 reports/ 下当天的文件。`,
+  promptVersion: task.id === demoTaskDetail.id ? demoTaskDetail.promptVersion : 1,
+  cwd: demoTaskDetail.cwd,
+  modelId: demoTaskDetail.modelId,
+  thinkingLevel: demoTaskDetail.thinkingLevel,
+  sessionPolicy: demoTaskDetail.sessionPolicy,
+  conversationMode: demoTaskDetail.conversationMode,
+}));
+

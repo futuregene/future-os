@@ -31,6 +31,7 @@ Legend: ✅ two or more cases · ◐ one smoke case · — not covered.
 | Settings pages (models/skills/tasks/remote) | ✅ smoke | `side-panels-smoke`, `settings-page`, `remote-page` |
 | 定时任务：列表、下次运行、运行记录、失败原因 | ◐ | `tasks-panel-detail` |
 | 定时任务：新建（含与已有任务同名） | ◐ | `tasks-create-same-name` |
+| 定时任务：别的客户端改了任务，面板收到 `tasks-updated` 就重读 | ◐ | `tasks-panel-refresh` |
 | 远程桌面：设备列表、控制/待命、解除一台 | ◐ | `remote-device-list` |
 | 远程桌面：添加设备的邀请不占死名额 | ◐ | `remote-add-device-repeat` |
 | Settings tabs (general/models/skills/tasks/remote) | ✅ | `settings-tabs`, `settings-page`, `remote-page` |
@@ -51,8 +52,15 @@ Legend: ✅ two or more cases · ◐ one smoke case · — not covered.
 | Manage menu (rename/delete/cancel) | ✅ | `mobile-manage-menu` |
 | Settings, archived view | ✅ | `mobile-settings`, `mobile-archived-view` |
 | Device picker / fleet | ✅ | `mobile-device-picker` |
+| Standby: a machine another device holds | ✅ | `mobile-standby-takeover` |
+| Pairing endings: revoked vs merely dropped | ✅ | `mobile-pairing-revoked`, `mobile-connection-dropped-escape` |
+| Scheduled tasks: list, detail, `编辑` entry | ✅ | `mobile-task-list-and-edit` |
+| Scheduled tasks: form, time picker, save write-through | ✅ | `mobile-task-time-picker` |
+| Scheduled tasks: draft across a cold start, cancel clears it | ✅ | `mobile-task-draft-survives-restart` |
+| Scheduled tasks: enable/disable reaches the machine | ◐ | `mobile-task-toggle-reaches-machine` |
 | Chat panels (files, token usage) | ✅ | `mobile-chat-panels` |
 | Task reminders, share intent | — | next |
+| Task dependencies / run detail paging | — | next (the model keeps no deps; runs have one page) |
 | Mobile send queue, attachment download | — | next |
 
 ## TUI
@@ -97,6 +105,7 @@ lands in the desktop's `app.db`.
 | Self-hosted relay: invitation → pairing → serving | ✅ | `remote-live-pair-and-connect` |
 | Relay + broker restart recovery | ◐ | `remote-live-relay-restart` |
 | Unpair, then pair again with a fresh invitation | ◐ | `remote-live-repair-after-unpair` |
+| Host-side revocation: the machine stops serving the removed device | ◐ | `remote-live-host-unpair` |
 | Phone (real client code) pairs and reads the desktop catalogue | ✅ | `mobile-live-pair-and-list` |
 | Phone writes to the desktop (pin) and the DB confirms it | ✅ | `mobile-live-pin-roundtrip` |
 | Two clients: standby with a holder, takeover moves control | ◐ | `mobile-live-two-clients-control` |
@@ -104,7 +113,7 @@ lands in the desktop's `app.db`.
 | Official platform: full pairing through the deployed relay | ◐ | `remote-cn-platform-contract` with `FUTURE_REMOTE_CN_FULL=1` (needs `future auth login`) |
 | Phone/desktop driving a prompt and watching the stream | — | next: needs a model behind the host (costs credits), and a client runtime the CLI cannot hold |
 | File transfer, image latency, weak network | — | unit-tested in `packages/remote-*`; not in this library |
-| Phone UI states while standby / reconnecting | — | next: the Expo build has no transport, so these need the live client plus a rendered UI |
+| Phone UI states while standby / revoked / reconnecting | ✅ | `mobile-standby-takeover`, `mobile-pairing-revoked`, `mobile-connection-dropped-escape` (the screens, on mocks; the transport itself is `mobile-live-*`) |
 
 ## Performance
 

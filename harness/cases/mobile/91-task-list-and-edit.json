@@ -1,0 +1,63 @@
+{
+  "id": "mobile-task-list-and-edit",
+  "surface": "mobile",
+  "title": "手机端定时任务：列表读得出计划，进任务页的动作叫「编辑」",
+  "area": "mobile-tasks",
+  "priority": "P1",
+  "tags": ["mobile", "tasks", "settings"],
+  "description": "手机端的定时任务页在这个库里一直是空白。这一页要能读：三条任务的计划各自说得清（每周一、五 10:00 / 每 12 小时 / 每月 31 日 09:00），运行状态与下一次运行时间都在行上。进入一条任务后，动作行是「停用 / 删除 / 编辑」，其中进入表单的那个按钮必须叫「编辑」——它曾经叫「设置」，和桌面端自己的按钮对不上，读者会以为它打开的是这台机器的设置。",
+  "preconditions": "移动端 shot 服务可用；任务夹具（shot/mock/data.ts 的 demoTasks）由手机端 mock 提供。",
+  "expectations": [
+    "设置 → 已配对的桌面端 → 该桌面端的设置 → 定时任务，列出三条任务",
+    "每行有名称、状态（完成 / 已排队）与计划摘要（周一, 周五 10:00 / 每 12 小时 / 每月 31 日 09:00）",
+    "点开「每周进展周报」后有「停用」「删除」「编辑」三个动作与运行记录",
+    "动作行里没有叫「设置」的按钮；「编辑」打开的是「编辑定时任务」表单"
+  ],
+  "steps": [
+    { "wait": 1800 },
+    { "click": { "text": "稍后再说" }, "note": "关闭开发版更新提示", "optional": true },
+    { "wait": 500 },
+    { "click": { "text": "全部桌面" }, "note": "打开设备选择浮层" },
+    { "wait": 900 },
+    { "click": { "text": "管理已配对的桌面…" } },
+    { "wait": 1300 },
+    { "click": { "aria": "桌面端设置" }, "note": "第一台机器的设置入口" },
+    { "wait": 1300 },
+    { "click": { "text": "定时任务设置" } },
+    { "wait": 1600 },
+    { "expectText": "定时任务" },
+    { "expectText": "每周进展周报" },
+    { "expectText": "周一, 周五 10:00" },
+    { "expectText": "文献监控" },
+    { "expectText": "已排队" },
+    { "expectText": "每 12 小时" },
+    { "expectText": "月末归档" },
+    { "expectText": "每月 31 日 09:00" },
+    { "expectText": "定时任务在已配对的桌面端上运行" },
+    { "shot": "mobile-task-list" },
+    { "click": { "text": "每周进展周报" } },
+    { "wait": 1700 },
+    { "expectText": "停用" },
+    { "expectText": "删除" },
+    { "expectText": "编辑" },
+    { "expectText": "运行记录" },
+    { "expectText": "写入 reports/weekly-2026-10-05.md：3 条结论变化。" },
+    { "assert": { "expr": "[...document.querySelectorAll('[role=\"button\"]')].every(e => e.innerText.trim() !== '设置')", "message": "动作行里没有「设置」按钮" } },
+    { "shot": "mobile-task-detail" },
+    { "click": { "text": "编辑" } },
+    { "wait": 1700 },
+    { "expectText": "编辑定时任务" },
+    { "expectText": "定时任务信息" },
+    { "assert": { "expr": "document.querySelector('[aria-label=\"名称\"]')?.value === '每周进展周报'", "message": "表单带着这条任务的名字打开" } },
+    { "shot": "mobile-task-form" }
+  ],
+  "judge": {
+    "criteria": [
+      "列表行读得懂：名称、状态、计划三件事各自清楚，没有把 JSON 或英文键名漏到界面上",
+      "任务页的动作行只用「编辑」指代进入表单，读者不会把它当成机器设置",
+      "运行记录在任务页可见，且不是把长历史压成折叠块盖住动作",
+      "表单打开时字段是这条任务自己的值，不是空白或别的任务的值"
+    ],
+    "maxImages": 8
+  }
+}
