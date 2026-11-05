@@ -15,6 +15,11 @@ const { withMainActivity } = require("@expo/config-plugins");
 //
 // Reinstalling is not enough: an already-running process keeps its vote, so
 // `am force-stop cn.futureos.mobile` (or a reboot) before measuring.
+//
+// A stale `android/` makes this plugin a no-op: `expo run:android` reuses an
+// existing native project instead of regenerating it, so after changing this
+// file run `npx expo prebuild --platform android` (or delete `android/`) before
+// building. CI regenerates it every time (`build-android-apk.yml`).
 const MARKER = "capDisplayFrameRate";
 const ANCHOR = "    super.onCreate(null)\n";
 const CALL = "    capDisplayFrameRate(this)\n";
