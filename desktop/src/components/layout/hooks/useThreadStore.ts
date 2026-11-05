@@ -7,6 +7,7 @@ import i18n from "../../../i18n";
 import { listStreamingThreadIds, prefetchAgentState } from "../../../integrations/agent/agentStateCache";
 import {
   getRecentOrCreateDefaultThread,
+  getWorkspace,
   initializeAppStore,
   listActiveThreads,
   listLatestRunInfos,
@@ -357,6 +358,16 @@ export function useThreadStore(): ThreadStore {
   const [threadRunStatuses, setThreadRunStatuses] = useState<ThreadRunStatuses>({});
   const [threadStreamingStatuses, setThreadStreamingStatuses] = useState<ThreadStreamingStatuses>({});
   const [workspaces, setWorkspaces] = useState<StoredWorkspace[]>([]);
+  // The open conversation's own workspace, when the rail's list cannot hold it.
+  //
+  // `workspaces` is the rail's user-directory list (`list_workspaces_page` /
+  // `list_pinned_workspaces` filter `kind = 'user'`), so a chat conversation's
+  // per-thread scratch workspace is never in it. Resolving the active workspace
+  // from that list alone therefore missed the chat's own directory and fell
+  // through to "the first user workspace", which handed the Files tab — and the
+  // `@` picker's root — somebody else's folder. That id is still the right
+  // answer for the conversation, so it is read from the store by id instead.
+  const [threadWorkspace, setThreadWorkspace] = useState<StoredWorkspace | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [loadingStore, setLoadingStore] = useState(true);
   const [storeError, setStoreError] = useState<string | null>(null);
@@ -384,17 +395,57 @@ export function useThreadStore(): ThreadStore {
     () => threads.find(thread => thread.id === activeThreadId) ?? null,
     [activeThreadId, threads],
   );
+  const activeThreadWorkspaceId = activeThread?.workspaceId ?? null;
+  // The open conversation's workspace: the rail's list first (a user directory
+  // is there), then the by-id read that holds a chat's scratch workspace, then
+  // — only when the conversation names no workspace at all — the first user
+  // directory, which is what the new-conversation screen offers.
+  const listedActiveWorkspace = useMemo(
+    () => workspaces.find(workspace => workspace.id === activeThreadWorkspaceId) ?? null,
+    [activeThreadWorkspaceId, workspaces],
+  );
+  const resolvedThreadWorkspace = threadWorkspace?.id === activeThreadWorkspaceId
+    ? threadWorkspace
+    : null;
   const activeWorkspace = useMemo(
     () =>
-      workspaces.find(workspace => workspace.id === activeThread?.workspaceId)
-      ?? workspaces.find(workspace => workspace.kind === "user")
-      ?? null,
-    [activeThread?.workspaceId, workspaces],
+      listedActiveWorkspace
+      ?? resolvedThreadWorkspace
+      ?? (activeThreadWorkspaceId ? null : workspaces.find(workspace => workspace.kind === "user") ?? null),
+    [activeThreadWorkspaceId, listedActiveWorkspace, resolvedThreadWorkspace, workspaces],
   );
   const activeThreads = useMemo(
     () => threads.filter(thread => thread.status === "active"),
     [threads],
   );
+
+  // Read the open conversation's workspace by id when the rail's list does not
+  // hold it (a chat's temporary scratch workspace). Keyed on the id, so a
+  // conversation switch reads its own; `workspaces` is a dependency because a
+  // store refresh is how the path learns about a change the list cannot show —
+  // a new chat's scratch directory is renamed to its session id when the first
+  // prompt runs (`file_session_for_cwd`), and that arrives as a refreshed store.
+  useEffect(() => {
+    if (!activeThreadWorkspaceId || listedActiveWorkspace) {
+      setThreadWorkspace(null);
+      return;
+    }
+    let cancelled = false;
+    void getWorkspace(activeThreadWorkspaceId)
+      .then((workspace) => {
+        if (!cancelled)
+          setThreadWorkspace(workspace ?? null);
+      })
+      .catch(() => {
+        // A workspace that cannot be read is no path at all: the Files tab shows
+        // its empty state rather than a folder that belongs to another one.
+        if (!cancelled)
+          setThreadWorkspace(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeThreadWorkspaceId, listedActiveWorkspace, workspaces]);
 
   /** Merge fetched rows into the store, newest copy winning. */
   const mergeThreads = useCallback((incoming: StoredThread[]) => {
