@@ -391,8 +391,8 @@ export const resources = {
         backToActive: "Back to active",
         archivedBack: "All conversations",
         archive: "Archive",
-        restore: "Restore",
-        archiveFailed: "Couldn't archive or restore it. Reconnect and try again.",
+        restore: "Unarchive",
+        archiveFailed: "Couldn't archive or unarchive it. Reconnect and try again.",
         archiveRunningTitle: "This conversation is running",
         archiveRunningConfirm:
           '"{{name}}" is still running. Finish it or stop it before archiving.',
@@ -426,7 +426,7 @@ export const resources = {
         selectWorkspaceSessions: "Select all conversations in this workspace",
         deleteWorkspace: "Delete workspace",
         deleteWorkspaceConfirm:
-          'Delete the workspace "{{title}}"? Its active conversations are deleted with it; archived conversations are kept as independent conversations you can restore. The files in the workspace folder on the desktop are not deleted.',
+          'Delete the workspace "{{title}}"? Its active conversations are deleted with it; archived conversations are kept as independent conversations you can unarchive. The files in the workspace folder on the desktop are not deleted.',
         deleteWorkspaceFailed:
           "Could not delete the workspace. Reconnect and retry.",
         openOnDesktopFailed:
@@ -649,8 +649,8 @@ export const resources = {
           "The beginning of this run is no longer available in the live buffer.",
         backToLatest: "Back to latest",
         archivedReadOnly:
-          "This conversation is archived. Update the desktop to restore it from the phone.",
-        archivedRestoreHint: "This conversation is archived. Restore it to keep chatting.",
+          "This conversation is archived. Update the desktop to unarchive it from the phone.",
+        archivedRestoreHint: "This conversation is archived. Unarchive it to keep chatting.",
         previousQuestion: "Previous question",
         questionNext: "Next question",
         runStopped: "Stopped",
@@ -1559,8 +1559,8 @@ export const resources = {
         backToActive: "返回活跃",
         archivedBack: "全部会话",
         archive: "归档",
-        restore: "恢复",
-        archiveFailed: "归档或恢复失败，请恢复连接后重试。",
+        restore: "取消归档",
+        archiveFailed: "归档或取消归档失败，请恢复连接后重试。",
         archiveRunningTitle: "会话正在进行中",
         archiveRunningConfirm: "「{{name}}」正在运行，结束或停止后才能归档。",
         archiveWorkspaceRunningTitle: "工作区里有会话正在进行",
@@ -1590,7 +1590,7 @@ export const resources = {
         selectWorkspaceSessions: "全选该工作区的会话",
         deleteWorkspace: "删除工作区",
         deleteWorkspaceConfirm:
-          "删除工作区「{{title}}」？其中的未归档会话会一并删除；已归档的会话会保留为独立会话，恢复后仍可继续对话。桌面端工作区文件夹里的文件不会被删除。",
+          "删除工作区「{{title}}」？其中的未归档会话会一并删除；已归档的会话会保留为独立会话，取消归档后仍可继续对话。桌面端工作区文件夹里的文件不会被删除。",
         deleteWorkspaceFailed: "工作区删除失败，请恢复连接后重试。",
         openOnDesktopFailed:
           "切换到「{{name}}」打开该会话失败，请恢复连接后重试。",
@@ -1791,8 +1791,8 @@ export const resources = {
         save: "保存",
         truncated: "本轮开头已超出实时缓冲，无法回放。",
         backToLatest: "回到最新",
-        archivedReadOnly: "该会话已归档。更新桌面端后可直接在手机上恢复。",
-        archivedRestoreHint: "该会话已归档。恢复后即可继续对话。",
+        archivedReadOnly: "该会话已归档。更新桌面端后即可在手机上取消归档。",
+        archivedRestoreHint: "该会话已归档。取消归档后即可继续对话。",
         previousQuestion: "上一个提问",
         questionNext: "下一个提问",
         runStopped: "已停止",

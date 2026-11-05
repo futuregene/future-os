@@ -33,7 +33,7 @@
   "heldTitle": "Taken over by {{name}}",
   "heldTitleUnknown": "Taken over by another device",
   "heldCannotSend": "Anything sent from here will not arrive. Take this computer back to keep working in this conversation.",
-  "archivedReadOnly": "This conversation is archived. Restore it to keep working in it.",
+  "archivedReadOnly": "This conversation is archived. Unarchive it to keep working in it.",
   "heldSendBlocked": "Taken over by another device — sending is closed until this computer takes it back",
   "heldApprovalBlocked": "This approval cannot be answered from here. Take this computer back first.",
   "peersSummary": "{{connected}} of {{total}} connected",

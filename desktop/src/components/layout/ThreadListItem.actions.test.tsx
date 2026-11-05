@@ -107,7 +107,7 @@ describe("thread row interactions", () => {
     const view = mount({ archived: true, menuOpen: true });
     expect(view.container.textContent).toContain("Archived");
     expect(menuItem(view.container, "Rename")).toBeUndefined();
-    act(() => menuItem(view.container, "Restore")!.click());
+    act(() => menuItem(view.container, "Unarchive")!.click());
     expect(view.all.onRestoreThread).toHaveBeenCalledWith(view.all.thread);
     view.unmount();
   });
