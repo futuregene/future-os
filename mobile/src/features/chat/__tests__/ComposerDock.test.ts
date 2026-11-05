@@ -24,7 +24,7 @@ jest.mock("react-native", () => {
   });
 });
 
-jest.mock("lucide-react-native", () => Object.fromEntries(["ArrowDown", "Check", "ChevronDown", "CircleAlert", "FileText", "Info", "Lightbulb", "ListPlus", "MessageCircle", "Paperclip", "Pencil", "Play", "RotateCcw", "Send", "Slash", "Square", "Trash2", "X", "Zap"].map(name => [name, () => null])));
+jest.mock("lucide-react-native", () => Object.fromEntries(["ArchiveRestore", "ArrowDown", "Check", "ChevronDown", "CircleAlert", "FileText", "Info", "Lightbulb", "ListPlus", "MessageCircle", "Paperclip", "Pencil", "Play", "RotateCcw", "Send", "Slash", "Square", "Trash2", "X", "Zap"].map(name => [name, () => null])));
 // The composer takes `t` as a prop, but the details dialog and the surfaces
 // below it call `useTranslation` themselves. Standing up the real i18n module
 // would drag expo-localization into a component test; the translations are
@@ -163,6 +163,55 @@ test("an archived conversation locks the composer and says where to undo it", ()
     expect(send).toHaveBeenCalledTimes(1);
     expect(tree.root.findAll(node => node.props.testID === "composer-archived-banner")
       .length).toBe(0);
+  } finally {
+    act(() => tree.unmount());
+  }
+});
+
+test("a shelved conversation offers its restore where it is read", () => {
+  const onRestore = jest.fn();
+  const props = {
+    message: "", setMessage: jest.fn(), attachments: [], setAttachments: jest.fn(),
+    supportsImages: true, activeModelLabel: "model", t: (key: string) => key,
+    remote: { draft: false, selectedSessionId: "s1", desktopOnline: true,
+      connectionPresentation: { level: "connected" }, models: [], modelId: "model",
+      streaming: false, busy: false, abort: jest.fn() },
+    openAttachmentMenu: jest.fn(), send: jest.fn(async () => {}), atLatest: true,
+    scrollToLatest: jest.fn(), pendingApprovals: [], approvalSubmitting: null,
+    approvalError: null, decideApproval: jest.fn(), selector: null, setSelector: jest.fn(),
+  } as unknown as ComponentProps<typeof ComposerDock>;
+  let tree!: ReactTestRenderer;
+  const restore = () => tree.root.findAll(node =>
+    node.props.accessibilityLabel === "sessions.restore" && node.props.onPress)[0];
+  try {
+    // A machine that answered `archive_v1`: the phone undoes the shelf itself,
+    // so the banner is a statement plus the control that changes it — not an
+    // instruction to go and find a desktop.
+    act(() => {
+      tree = create(createElement(ComposerDock, { ...props, archived: true, onRestore }));
+    });
+    expect(restore()).toBeDefined();
+    expect(tree.root.findAll(node =>
+      typeof node.props.children === "string" && node.props.children === "chat.archivedRestoreHint")
+      .length).toBeGreaterThan(0);
+    act(() => restore()!.props.onPress());
+    expect(onRestore).toHaveBeenCalledTimes(1);
+
+    // The restore is in flight: the control says so and takes no second tap.
+    act(() => {
+      tree.update(createElement(ComposerDock, {
+        ...props, archived: true, onRestore, restoringArchived: true,
+      }));
+    });
+    expect(restore()!.props.disabled).toBe(true);
+
+    // A machine too old for the command keeps the old sentence and offers
+    // nothing it would refuse.
+    act(() => tree.update(createElement(ComposerDock, { ...props, archived: true })));
+    expect(restore()).toBeUndefined();
+    expect(tree.root.findAll(node =>
+      typeof node.props.children === "string" && node.props.children === "chat.archivedReadOnly")
+      .length).toBeGreaterThan(0);
   } finally {
     act(() => tree.unmount());
   }

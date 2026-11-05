@@ -43,6 +43,7 @@ import { SessionListActions } from "./SessionListActions";
 import { listTargets, selectableTargets } from "./sessionSelection";
 import { type Tab } from "./sessionTabs";
 import { DesktopPicker } from "./DesktopPicker";
+import { unreadableShelfMachines } from "./archived";
 import { DisconnectedScreen } from "./DisconnectedScreen";
 import { StandbyScreen } from "./StandbyScreen";
 import { layout, radius, spacing } from "../theme/tokens";
@@ -911,6 +912,39 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     </View>
   );
 
+  /**
+   * What the shelf says when it holds nothing.
+   *
+   * The shelf draws the catalogues of the machines that are answering, so an
+   * empty shelf means "nothing archived on the machines this phone can read" —
+   * which is not the same statement as "nothing archived". A reader whose
+   * archive sits on a machine that is not answering read the old copy as their
+   * archive having vanished, with nothing on the page saying which machine could
+   * not be read. So those machines are named, and the one action that changes it
+   * is offered: reconnecting every pairing, which is what the header's own
+   * reconnect does.
+   */
+  const archivedEmpty = (() => {
+    const silent = unreadableShelfMachines(machines, scopedFilter);
+    if (silent.length === 0) {
+      return <Text style={styles.empty}>{t("sessions.archivedEmpty")}</Text>;
+    }
+    return (
+      <View style={styles.emptyState}>
+        <View style={[styles.emptyIcon, styles.emptyIconIdle]}>
+          <Archive color={colors.accent} size={26} />
+        </View>
+        <Text style={styles.emptyTitle}>{t("sessions.archived")}</Text>
+        <Text style={styles.emptyHint}>
+          {t("sessions.archivedMachineSilent", {
+            name: silent.map(machine => desktopLabel(machine.desktopId)).join(t("common.listSeparator")),
+          })}
+        </Text>
+        <Button compact label={t("connection.reconnect")} onPress={() => catalogs.reconnect()} />
+      </View>
+    );
+  })();
+
   // The workspace tree is the open machine's own, so its empty state answers for
   // that machine rather than for the set: saying "no workspaces" under one
   // machine's tree because *another* machine is up would name the wrong machine.
@@ -1142,6 +1176,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           key={archivedOpen ? `archived:${tab}` : tab}
           archived={archivedOpen}
           archivedCatalogs={archivedCatalogs}
+          onExitArchived={() => setArchivedOpen(false)}
           tab={tab}
           active={active}
           onTabChange={setTab}
@@ -1149,7 +1184,9 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           icons={peerIcons}
           commandsFor={commandsFor}
           merged={showMerged ? mergedRows : undefined}
-          empty={scopedPeerEmpty ?? (tab === "workspace" ? workspaceEmpty : !scopeAnswers ? offlineEmpty : createChatEmpty)}
+          empty={archivedOpen
+            ? archivedEmpty
+            : scopedPeerEmpty ?? (tab === "workspace" ? workspaceEmpty : !scopeAnswers ? offlineEmpty : createChatEmpty)}
           onMenu={openSessionMenu}
         />}
 

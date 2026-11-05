@@ -88,6 +88,8 @@ jest.mock("lucide-react-native", () =>
   Object.fromEntries(
     [
       "Archive",
+      "ArchiveRestore",
+      "ArrowLeft",
       "Check",
       "CheckCheck",
       "ChevronDown",
@@ -128,6 +130,13 @@ jest.mock("react-i18next", () => ({
 let tree: ReactTestRenderer;
 const onMenu = jest.fn();
 const onTabChange = jest.fn();
+/**
+ * Leaving the archived shelf, as the header's own way out of it.
+ *
+ * A prop of its own rather than a tab change: the shelf is not a page of the
+ * list, and the shelf's back control is what this stands in for.
+ */
+const onExitArchived = jest.fn();
 
 /**
  * The list's handle, as the header above it reaches the same two modes.
@@ -169,14 +178,25 @@ const activeCommands = machineCommands(["workspace_pinning_v1"]);
 const peerCommands = machineCommands(["workspace_pinning_v1"]);
 /** Machines that answer at all; empty means the phone reached none of them. */
 let machinesAnswer = true;
+/**
+ * Whether the machines in this test answered `archive_v1`.
+ *
+ * The shelf's restore control and the row menu's shelf item are withheld on a
+ * host that predates the commands, so a test that wants them has to say the
+ * machine serves them — the same gate the real capability set is read through.
+ */
+let shelvingMachines = false;
 /** Machines specifically withheld — a peer this phone cannot reach. */
 const unreachableMachines = new Set<string>();
-const testCommandsFor = (desktopId: string | null): DesktopCommands | null =>
-  !machinesAnswer || (desktopId !== null && unreachableMachines.has(desktopId))
+const testCommandsFor = (desktopId: string | null): DesktopCommands | null => {
+  const commands = !machinesAnswer || (desktopId !== null && unreachableMachines.has(desktopId))
     ? null
     : desktopId && desktopId !== "desk-a"
       ? peerCommands
       : activeCommands;
+  if (!commands || !shelvingMachines) return commands;
+  return { ...commands, capabilities: new Set([...commands.capabilities, "archive_v1"]) };
+};
 // Slide-out/settle animations resolve immediately here; the tab actually
 // changing is what these tests are about.
 const finishedAnimation = {
@@ -206,6 +226,7 @@ function swipeHarness(tab: "workspace" | "chat" | "recent") {
         empty: null,
         onMenu,
         onTabChange: tabChange,
+        onExitArchived,
         commandsFor: testCommandsFor,
         ref: handle,
       }),
@@ -284,6 +305,7 @@ beforeEach(async () => {
   mockRemote.capabilities = new Set(["workspace_pinning_v1"]);
   mockRemote.desktops = [{ desktopId: "desk-a", pairId: "p1", name: "Studio" }];
   machinesAnswer = true;
+  shelvingMachines = false;
   unreachableMachines.clear();
   activeCommands.capabilities = new Set(["workspace_pinning_v1"]);
   peerCommands.capabilities = new Set(["workspace_pinning_v1"]);
@@ -299,6 +321,7 @@ beforeEach(async () => {
       empty: null,
       onMenu,
       onTabChange,
+      onExitArchived: onExitArchived,
       commandsFor: testCommandsFor,
       ref: listRef,
     }));
@@ -342,6 +365,7 @@ test("explicit row action opens rename/pin/delete menu; offline management is di
       empty: null,
       onMenu,
       onTabChange,
+      onExitArchived: onExitArchived,
       commandsFor: testCommandsFor,
       ref: listRef,
     })));
@@ -392,6 +416,7 @@ test("a batch opens while a folded group holds the only conversations", () => {
     empty: null,
     onMenu,
     onTabChange,
+    onExitArchived: onExitArchived,
     commandsFor: testCommandsFor,
     ref: listRef,
   })));
@@ -430,6 +455,7 @@ test("a batch cannot be entered when nothing may join it", () => {
     empty: null,
     onMenu,
     onTabChange,
+    onExitArchived: onExitArchived,
     commandsFor: testCommandsFor,
     ref: listRef,
   })));
@@ -485,6 +511,7 @@ test("the recency page puts a run in flight above the rest, newest first", () =>
     empty: null,
     onMenu,
     onTabChange,
+    onExitArchived: onExitArchived,
     commandsFor: testCommandsFor,
     ref: listRef,
   })));
@@ -549,6 +576,7 @@ test("the recency page windows the finished rows and opens the window on request
     empty: null,
     onMenu,
     onTabChange,
+    onExitArchived: onExitArchived,
     commandsFor: testCommandsFor,
     ref: listRef,
   })));
@@ -588,6 +616,7 @@ test("a pinned conversation carries a checkbox on the recency page", () => {
     empty: null,
     onMenu,
     onTabChange,
+    onExitArchived: onExitArchived,
     commandsFor: testCommandsFor,
     ref: listRef,
   })));
@@ -726,6 +755,7 @@ test("selection replaces the toolbar and can be cancelled even after going offli
       empty: null,
       onMenu,
       onTabChange,
+      onExitArchived: onExitArchived,
       commandsFor: testCommandsFor,
       ref: listRef,
     })));
@@ -795,6 +825,7 @@ test("select visible skips pinned chats, which carry no checkbox", () => {
       empty: null,
       onMenu,
       onTabChange,
+      onExitArchived: onExitArchived,
       commandsFor: testCommandsFor,
       ref: listRef,
     })));
@@ -834,6 +865,7 @@ function renderWorkspaceTab(): void {
       empty: null,
       onMenu,
       onTabChange,
+      onExitArchived: onExitArchived,
       commandsFor: testCommandsFor,
       ref: listRef,
     }));
@@ -856,6 +888,7 @@ function renderChatTab(): void {
       empty: null,
       onMenu,
       onTabChange,
+      onExitArchived: onExitArchived,
       commandsFor: testCommandsFor,
       ref: listRef,
     })));
@@ -909,6 +942,7 @@ test("the recency page keeps a child session inside its conversation", () => {
     empty: null,
     onMenu,
     onTabChange,
+    onExitArchived: onExitArchived,
     commandsFor: testCommandsFor,
     ref: listRef,
   })));
@@ -937,6 +971,7 @@ test("the recency page keeps a child session inside its conversation", () => {
     empty: null,
     onMenu,
     onTabChange,
+    onExitArchived: onExitArchived,
     commandsFor: testCommandsFor,
     ref: listRef,
   })));
@@ -961,6 +996,7 @@ test.each(["workspace", "chat"] as const)("%s parents fold with +/−, not the w
       empty: null,
       onMenu,
       onTabChange,
+      onExitArchived: onExitArchived,
       commandsFor: testCommandsFor,
       ref: listRef,
     })));
@@ -986,6 +1022,7 @@ test.each(["workspace", "chat"] as const)("%s parents fold with +/−, not the w
       empty: null,
       onMenu,
       onTabChange,
+      onExitArchived: onExitArchived,
       commandsFor: testCommandsFor,
       ref: listRef,
     })));
@@ -1001,6 +1038,7 @@ test("a child in one workspace does not enlarge other workspace session gutters"
       empty: null,
       onMenu,
       onTabChange,
+      onExitArchived: onExitArchived,
       commandsFor: testCommandsFor,
       ref: listRef,
     })));
@@ -1027,6 +1065,7 @@ test.each(["workspace", "chat"] as const)("a parent's title column is its rows' 
       empty: null,
       onMenu,
       onTabChange,
+      onExitArchived: onExitArchived,
       commandsFor: testCommandsFor,
       ref: listRef,
     })));
@@ -1056,6 +1095,7 @@ test.each(["workspace", "chat"] as const)("a parent's title column is its rows' 
       empty: null,
       onMenu,
       onTabChange,
+      onExitArchived: onExitArchived,
       commandsFor: testCommandsFor,
       ref: listRef,
     })));
@@ -1079,6 +1119,7 @@ test.each(["workspace", "chat"] as const)("independent %s sessions keep their gu
       empty: null,
       onMenu,
       onTabChange,
+      onExitArchived: onExitArchived,
       commandsFor: testCommandsFor,
       ref: listRef,
     })));
@@ -1206,6 +1247,7 @@ test("the workspace menu pins a group and offers unpin once it is pinned", async
       empty: null,
       onMenu,
       onTabChange,
+      onExitArchived: onExitArchived,
       commandsFor: testCommandsFor,
       ref: listRef,
     })));
@@ -1286,6 +1328,7 @@ test("promoted workspace pins stay visible and openable but are left out of work
       empty: null,
       onMenu,
       onTabChange,
+      onExitArchived: onExitArchived,
       commandsFor: testCommandsFor,
       ref: listRef,
     })));
@@ -1335,6 +1378,7 @@ test("a workspace menu cannot outlive the screen that opened it", () => {
       empty: null,
       onMenu,
       onTabChange,
+      onExitArchived: onExitArchived,
       commandsFor: testCommandsFor,
       ref: listRef,
       active: false,
@@ -1345,6 +1389,7 @@ test("a workspace menu cannot outlive the screen that opened it", () => {
       empty: null,
       onMenu,
       onTabChange,
+      onExitArchived: onExitArchived,
       commandsFor: testCommandsFor,
       ref: listRef,
       active: true,
@@ -1408,6 +1453,7 @@ test("a batch tap with nothing selected, or while offline, sends nothing", () =>
       empty: null,
       onMenu,
       onTabChange,
+      onExitArchived: onExitArchived,
       commandsFor: testCommandsFor,
       ref: listRef,
     })));
@@ -1435,6 +1481,7 @@ test("a workspace select-all with nothing to select is inert", () => {
       empty: null,
       onMenu,
       onTabChange,
+      onExitArchived: onExitArchived,
       commandsFor: testCommandsFor,
       ref: listRef,
     })));
@@ -1453,6 +1500,7 @@ test("a workspace menu does not open while the desktop is unreachable", () => {
       empty: null,
       onMenu,
       onTabChange,
+      onExitArchived: onExitArchived,
       commandsFor: testCommandsFor,
       ref: listRef,
     })));
@@ -1742,6 +1790,7 @@ test("a merged row from another desktop is opened on that desktop", () => {
     empty: null,
     onMenu,
     onTabChange,
+    onExitArchived: onExitArchived,
     commandsFor: testCommandsFor,
     ref: listRef,
     merged,
@@ -1782,6 +1831,7 @@ test("a row whose machine refuses to open reports the refusal by name", async ()
       empty: null,
       onMenu,
       onTabChange,
+      onExitArchived: onExitArchived,
       commandsFor: testCommandsFor,
       ref: listRef,
       merged,
@@ -1828,6 +1878,7 @@ function renderMerged(
     empty: null,
     onMenu,
     onTabChange,
+    onExitArchived: onExitArchived,
     commandsFor: testCommandsFor,
     ref: listRef,
     merged,
@@ -1984,6 +2035,7 @@ test("a single-machine list marks every row and heading with the machine", () =>
     empty: null,
     onMenu,
     onTabChange,
+    onExitArchived: onExitArchived,
     commandsFor: testCommandsFor,
     ref: listRef,
     activeDesktopId: "desk-a",
@@ -2072,6 +2124,7 @@ test("an empty merged list draws none of the active machine's rows", () => {
     empty: createElement(Text, null, "nothing here"),
     onMenu,
     onTabChange,
+    onExitArchived: onExitArchived,
     commandsFor: testCommandsFor,
     ref: listRef,
     merged: [],
@@ -2659,9 +2712,13 @@ function renderArchived(sessions: RemoteSession[], workspaces: RemoteWorkspace[]
   act(() => tree.update(createElement(SessionList, {
     tab: "chat",
     archived: true,
-    empty: null,
+    // The shelf's empty state is the *screen's*, because it is the screen that
+    // knows which machines are answering and which ones' shelves cannot be read.
+    // This stands in for that node.
+    empty: createElement(Text, { testID: "shelf-empty" }, "shelf-empty"),
     onMenu,
     onTabChange,
+    onExitArchived: onExitArchived,
     commandsFor: testCommandsFor,
     ref: listRef,
   })));
@@ -2721,6 +2778,7 @@ test("the shelf draws every shown machine's archived rows, each with its machine
     empty: null,
     onMenu,
     onTabChange,
+    onExitArchived: onExitArchived,
     commandsFor: testCommandsFor,
     ref: listRef,
     archivedCatalogs: [
@@ -2809,11 +2867,77 @@ test("the shelf's search keeps matching conversations and drops empty shelves", 
   expect(archivedHeadingNames()).toEqual([]);
 });
 
-test("an empty shelf says so instead of showing the pages' own empty state", () => {
+test("an empty shelf draws the screen's own empty state, not a caption of its own", () => {
   renderArchived([], []);
-  expect(tree.root.findAll(node =>
-    typeof node.props.children === "string"
-    && node.props.children === "sessions.archivedEmpty")).not.toHaveLength(0);
+  // The screen is the half that knows why the shelf is empty — nothing archived
+  // on the machines that answered, or a machine whose shelf cannot be read — so
+  // the list passes its node through instead of wording the state itself.
+  // `findAll` sees the element and the host it renders as, so the count is not
+  // the point — that the screen's node is the one on the shelf is.
+  expect(tree.root.findAll(node => node.props.testID === "shelf-empty")).not.toHaveLength(0);
+  // And nothing else is offered under it: the recency page's window used to
+  // reach this footer, drawing "show N more" under a shelf with no rows.
+  expect(tree.root.findAll(node => node.props.accessibilityLabel === "sessions.showMore"))
+    .toHaveLength(0);
+});
+
+test("the shelf's way back is a control of its own", () => {
+  renderArchived([], []);
+  onExitArchived.mockClear();
+  act(() => button("sessions.archivedBack").props.onPress());
+  expect(onExitArchived).toHaveBeenCalledTimes(1);
+  // Leaving the shelf is not a page change: the tabs it replaced are back
+  // afterwards, and this control never stands in for them.
+  expect(onTabChange).not.toHaveBeenCalled();
+});
+
+/**
+ * The shelf's restore is a control on the row, not a hidden menu item.
+ *
+ * Restoring is what the page is for, so a reader looking at a shelved
+ * conversation should not have to discover that its way back lives behind the
+ * ⋯ beside it. Both kinds of shelved row carry it — a conversation and a
+ * workspace — and each is addressed to the machine that owns the row.
+ */
+test("the shelf restores a shelved conversation and workspace from its own rows", async () => {
+  shelvingMachines = true;
+  renderArchived(
+    [
+      {
+        sessionId: "in-shelf",
+        threadId: "t1",
+        title: "Inside the shelf",
+        mode: "workspace",
+        workspaceId: "w-shut",
+        streaming: false,
+        archived: true,
+      },
+    ],
+    [{ id: "w-shut", name: "Shut project", path: "/tmp/p", archived: true }],
+  );
+
+  // The heading first, then its conversation: two rows, one control each.
+  const restores = tree.root.findAll(
+    node => node.props.accessibilityLabel === "sessions.restore" && node.props.onPress,
+  );
+  expect(restores).toHaveLength(2);
+
+  await act(async () => restores[0]!.props.onPress());
+  expect(activeCommands.restoreWorkspace).toHaveBeenCalledWith("w-shut");
+
+  await act(async () => restores[1]!.props.onPress());
+  expect(activeCommands.restoreSession).toHaveBeenCalledWith("in-shelf", "t1");
+});
+
+/** A host that predates the commands gets no control it would refuse. */
+test("the shelf offers no restore where the machine never declared it", () => {
+  renderArchived(
+    [{ sessionId: "in-shelf", threadId: "t1", title: "Shelved", streaming: false, archived: true }],
+    [],
+  );
+  expect(tree.root.findAll(
+    node => node.props.accessibilityLabel === "sessions.restore" && node.props.onPress,
+  )).toHaveLength(0);
 });
 
 test("the shelf holds ten conversations until the footer is asked for more", () => {

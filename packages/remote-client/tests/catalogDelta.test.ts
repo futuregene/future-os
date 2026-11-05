@@ -148,4 +148,37 @@ describe("applyCatalogDelta", () => {
     expect(next).toHaveLength(1);
     expect(next[0]?.title).toBe("three");
   });
+
+  /**
+   * A shelved row over this lane is still shelved.
+   *
+   * The host compacts a row for the packet — the workspace's own fields move to
+   * the dictionary — but the archived marker stays on the row, because the
+   * dictionary's workspaces carry no such field. A client that dropped it would
+   * draw every shelved conversation as active: the phone's archived view reads
+   * exactly this flag off exactly these rows, so the lane is what decides whether
+   * a shelf exists on the phone at all.
+   */
+  it("keeps a row's archived marker, on a full packet and on a delta", () => {
+    const shelved = {
+      sessionId: "s",
+      threadId: "thread_s",
+      title: "shelved",
+      streaming: false,
+      createdAt: 50,
+      archived: true,
+    };
+    const full = applyCatalogDelta([], { full: true, rows: [shelved], removed: [] });
+    expect(full[0]?.archived).toBe(true);
+
+    // The same row moved, this time into a catalogue that already holds it — the
+    // packet's copy wins, over the fields it carries.
+    const moved = applyCatalogDelta(full, {
+      full: false,
+      rows: [{ ...shelved, title: "still shelved" }],
+      removed: [],
+    });
+    expect(moved[0]?.archived).toBe(true);
+    expect(moved[0]?.title).toBe("still shelved");
+  });
 });

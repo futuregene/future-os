@@ -1,7 +1,7 @@
 import { useFusionAvailability } from "../../../remote/useFusionAvailability";
 import { IS_RELEASE } from "../../../version.generated";
 import { INPUT_MIN_HEIGHT, INPUT_MAX_HEIGHT } from "../composer/composerMetrics";
-import { ArrowDown, CircleAlert, FileText, Paperclip, X } from "lucide-react-native";
+import { ArrowDown, ArchiveRestore, CircleAlert, FileText, Paperclip, X } from "lucide-react-native";
 import { Pressable, ScrollView, Text, TextInput, useWindowDimensions, View, type TextInputInstance } from "react-native";
 import { memo, useCallback, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type { TFunction } from "i18next";
@@ -67,6 +67,8 @@ function ComposerDockView({
   onQueueRemove,
   onQueueRelease,
   archived = false,
+  onRestore,
+  restoringArchived = false,
 }: {
   message: string;
   setMessage: Dispatch<SetStateAction<string>>;
@@ -121,6 +123,18 @@ function ComposerDockView({
    * it. Display-only, matching the desktop's read-only detail.
    */
   archived?: boolean;
+  /**
+   * Bring the shelved conversation back, so it can be written to again.
+   *
+   * Offered where the machine answered `archive_v1` and the page has the row to
+   * address: the phone can shelve and unshelve from its own lists (see the
+   * archived shelf), so a conversation opened from the shelf is not a dead end
+   * waiting for someone at the desktop. Absent on a machine too old for the
+   * command, which is when the banner keeps naming the desktop instead.
+   */
+  onRestore?: () => void;
+  /** The restore the reader asked for is in flight. */
+  restoringArchived?: boolean;
   /**
    * One sentence about a row that left the queue without running.
    *
@@ -281,9 +295,27 @@ function ComposerDockView({
         />
       )}
       {archived && (
-        <Text style={styles.archivedBanner} testID="composer-archived-banner">
-          {t("chat.archivedReadOnly")}
-        </Text>
+        <View style={styles.archivedBanner} testID="composer-archived-banner">
+          <Text style={styles.archivedBannerText}>
+            {t(onRestore ? "chat.archivedRestoreHint" : "chat.archivedReadOnly")}
+          </Text>
+          {onRestore && (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("sessions.restore")}
+              accessibilityState={{ disabled: restoringArchived }}
+              disabled={restoringArchived}
+              onPress={onRestore}
+              style={({ pressed }) => [
+                styles.archivedRestore,
+                (pressed || restoringArchived) && styles.archivedRestoreDim,
+              ]}
+            >
+              <ArchiveRestore size={14} color={colors.accent} />
+              <Text style={styles.archivedRestoreLabel}>{t("sessions.restore")}</Text>
+            </Pressable>
+          )}
+        </View>
       )}
       {!remote.draft &&
         remote.desktopOnline &&

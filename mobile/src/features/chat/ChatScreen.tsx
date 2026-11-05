@@ -79,6 +79,25 @@ export function ChatScreen() {
   const selectedSession = remote.sessions.find(
     (session) => session.sessionId === remote.selectedSessionId,
   );
+  /**
+   * Bring this conversation back out of the shelf, from where it is read.
+   *
+   * A shelved conversation opens with its composer locked, and the banner used to
+   * send the reader to the desktop to undo that — the phone now has the same
+   * restore the shelf's rows carry, so the one place a reader can be sure they
+   * are looking at the right conversation is the place to offer it. The host
+   * refuses a few trees (one with a running member), so a refusal is reported
+   * rather than left looking like a dead button.
+   */
+  const [restoringArchived, setRestoringArchived] = useState(false);
+  const restoreArchived = useCallback(() => {
+    const session = selectedSession;
+    if (!session?.threadId || restoringArchived) return;
+    setRestoringArchived(true);
+    void remote.restoreSession(session.sessionId, session.threadId)
+      .catch(() => showToast(t("sessions.archiveFailed")))
+      .finally(() => setRestoringArchived(false));
+  }, [restoringArchived, remote, selectedSession, t]);
   const mode = remote.draft ? remote.draftMode : selectedSession?.mode;
   const workspaceId = remote.draft
     ? remote.draftWorkspaceId
@@ -699,6 +718,12 @@ export function ChatScreen() {
                     onCompactContext={compactContext.compact}
                     compactionPending={compactContext.pending}
                     archived={selectedSession?.archived === true}
+                    onRestore={selectedSession?.archived === true
+                      && Boolean(selectedSession.threadId)
+                      && remote.capabilities.has("archive_v1")
+                      ? restoreArchived
+                      : undefined}
+                    restoringArchived={restoringArchived}
                     skillSuggestion={skillRecommendation.suggestion}
                     skillEvaluating={skillRecommendation.evaluating}
                     skillInstalling={installingSkill}

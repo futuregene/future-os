@@ -87,6 +87,17 @@ export interface PresenceSession {
   parentSessionId?: string | null;
   /** Desktop `threads.pinned` — hoisted to the top of the session list. */
   pinned?: boolean;
+  /**
+   * Shelved, exactly as `RemoteSession.archived` reads: the conversation itself,
+   * or the workspace holding it.
+   *
+   * A delta packet's row is the same row a snapshot carries, minus the workspace
+   * fields the packet's dictionary holds instead — the archived marker stays on
+   * it, because the dictionary's workspaces do not carry one. Omitting it here
+   * would tell a reader this lane never reports a shelf, which is what left the
+   * archived view's rows looking active to anyone who trusted the type.
+   */
+  archived?: boolean;
   streaming: boolean;
   status?: string;
   /** The workspace's own name, pin and place, as the host reports them per row. */

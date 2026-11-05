@@ -1,5 +1,6 @@
 import {
   Archive,
+  ArchiveRestore,
   ArrowLeft,
   Check,
   CheckCheck,
@@ -158,6 +159,7 @@ export function SessionList({
   active = true,
   archived = false,
   archivedCatalogs,
+  onExitArchived,
   onTabChange,
   empty,
   merged,
@@ -189,6 +191,15 @@ export function SessionList({
    * one pairing.
    */
   archivedCatalogs?: ArchivedCatalog[];
+  /**
+   * Leave the archived shelf for the pages it replaced.
+   *
+   * The shelf is a destination rather than a fourth page, and a phone has no
+   * hardware back for it: without this the only way out was the header's menu —
+   * the same control that opened it, one level above the page the reader is
+   * looking at.
+   */
+  onExitArchived(): void;
   onTabChange: (tab: Tab) => void;
   empty: ReactNode;
   /**
@@ -306,6 +317,16 @@ export function SessionList({
   const [pressedSessionId, setPressedSessionId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const deletingRef = useRef(false);
+  /**
+   * The shelved row being brought back, by row key.
+   *
+   * One at a time, and held across the await: restoring is a write to the
+   * machine, and two taps on one row would send it twice. The key rather than a
+   * boolean because the shelf can hold several machines' rows and only the row
+   * that was tapped may draw the spinner.
+   */
+  const [restoringKey, setRestoringKey] = useState<string | null>(null);
+  const restoringRef = useRef(false);
   /**
    * The machine that owns a row: the one this phone is talking to for a row of
    * its own, and the row's own source for a row merged in from elsewhere.
@@ -800,6 +821,52 @@ export function SessionList({
   /** Whether that machine answered the archive commands. */
   const menuWorkspaceCanArchive = menuWorkspaceCommands?.capabilities.has("archive_v1") === true;
 
+  /**
+   * Whether a row's machine answered the archive commands.
+   *
+   * Reading a shelf never needed the flag — the catalogue has carried `archived`
+   * for longer — but changing one does, and a host that predates the commands
+   * answers "Unsupported command". So the shelf's controls are withheld there
+   * rather than offered and then refused, exactly as the menu's items are.
+   */
+  const canShelve = (commands: DesktopCommands | null): boolean =>
+    commands?.capabilities.has("archive_v1") === true;
+
+  /**
+   * Bring one shelved conversation back, from the shelf itself.
+   *
+   * The shelf's whole purpose is this one write, so it is a control of its own
+   * on the row rather than an item behind the row's ⋯: a page whose only action
+   * is restore should not make the reader open a menu per row to find it. The
+   * host's catalogue answers with the row moving out of the shelf — this re-reads
+   * nothing, because the push that follows the command is the same one the active
+   * lists already render from.
+   */
+  const restoreSessionRow = (row: SessionRow, commands: DesktopCommands | null) => {
+    if (!commands || !row.session.threadId || restoringRef.current) return;
+    restoringRef.current = true;
+    setRestoringKey(row.key);
+    void commands.restoreSession(row.session.sessionId, row.session.threadId)
+      .catch(() => Alert.alert(t("common.error"), t("sessions.archiveFailed")))
+      .finally(() => {
+        restoringRef.current = false;
+        setRestoringKey(null);
+      });
+  };
+
+  /** The same write for a shelved workspace, which brings its conversations too. */
+  const restoreWorkspaceRow = (row: WorkspaceRow, commands: DesktopCommands | null) => {
+    if (!commands || restoringRef.current) return;
+    restoringRef.current = true;
+    setRestoringKey(row.key);
+    void commands.restoreWorkspace(row.workspaceId)
+      .catch(() => Alert.alert(t("common.error"), t("sessions.archiveFailed")))
+      .finally(() => {
+        restoringRef.current = false;
+        setRestoringKey(null);
+      });
+  };
+
   const renderRow = ({ item }: { item: CatalogRow }) => {
     /**
      * Whether this row belongs to a machine other than the connected one.
@@ -858,6 +925,26 @@ export function SessionList({
             {item.workspace.pinned && <Pin size={13} color={colors.accent} />}
             <Text style={styles.count}>{item.count}</Text>
           </Pressable>
+          {/* A shelved shelf's one action is to come back, so it is a control
+              here rather than an item in the sheet: the sheet is where a shelved
+              heading's rename and delete still live, not where its restore is
+              hidden. Withheld on a machine that predates the commands. */}
+          {archived && canShelve(commands) && (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("sessions.restore")}
+              accessibilityState={{ disabled: restoringKey !== null }}
+              disabled={restoringKey !== null}
+              onPress={() => restoreWorkspaceRow(item, commands)}
+              style={[styles.iconButton, restoringKey !== null && styles.disabled]}
+            >
+              {restoringKey === item.key ? (
+                <ActivityIndicator size={16} color={colors.accent} />
+              ) : (
+                <ArchiveRestore size={18} color={colors.accent} />
+              )}
+            </Pressable>
+          )}
           {/* A shelved shelf still has a menu: restoring it is the one action
               the archived view exists to offer, and rename/delete are the same
               commands they are anywhere else. The sheet decides which items the
@@ -980,10 +1067,11 @@ export function SessionList({
             void remote.selectSession(session.sessionId);
           }}
           onLongPress={() => {
-            // The shelf's rows offer no actions: a long press would open the
-            // same sheet whose button this view hides, and every item in it is a
-            // write to the desktop.
-            if (!selecting && !archived) onMenu(session, item.desktopId ?? null);
+            // The shelf's rows open the same sheet the ⋯ does: it carries
+            // rename, delete and — on the machines that answered `archive_v1` —
+            // the shelf item, so a long press is not a way into writes the page
+            // hides (the visible restore beside it is the one that matters).
+            if (!selecting) onMenu(session, item.desktopId ?? null);
           }}
           onPressIn={() => setPressedSessionId(session.sessionId)}
           onPressOut={() =>
@@ -1050,6 +1138,22 @@ export function SessionList({
             </>
           )}
         </Pressable>
+        {archived && !selecting && canShelve(commands) && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t("sessions.restore")}
+            accessibilityState={{ disabled: restoringKey !== null }}
+            disabled={restoringKey !== null}
+            onPress={() => restoreSessionRow(item, commands)}
+            style={[styles.iconButton, restoringKey !== null && styles.disabled]}
+          >
+            {restoringKey === item.key ? (
+              <ActivityIndicator size={16} color={colors.accent} />
+            ) : (
+              <ArchiveRestore size={18} color={colors.accent} />
+            )}
+          </Pressable>
+        )}
         {!selecting && (
           <Pressable
             accessibilityRole="button"
@@ -1282,9 +1386,20 @@ export function SessionList({
         ) : archived ? (
           // The shelf is not another page of the three: the tab row would invite
           // the reader to swipe between a place they went to and the pages it
-          // replaced. One plain caption says which shelf this is.
-          <View style={styles.archivedCaption}>
-            <Archive size={16} color={colors.inkSoft} />
+          // replaced. So the row carries the shelf's own caption — and the way
+          // back, which is a control here rather than a menu item one level above
+          // the page: a destination with only the header's ⋯ to leave by is a
+          // page the reader is stuck on once they forget how they got there.
+          <View style={styles.archivedBar}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("sessions.archivedBack")}
+              onPress={onExitArchived}
+              style={({ pressed }) => [styles.archivedBack, pressed && styles.pressed]}
+            >
+              <ArrowLeft size={18} color={colors.accent} />
+              <Text style={styles.archivedBackLabel}>{t("sessions.archivedBack")}</Text>
+            </Pressable>
             <Text style={styles.archivedCaptionText} numberOfLines={1}>
               {t("sessions.archived")}
             </Text>
@@ -1341,8 +1456,6 @@ export function SessionList({
           ListEmptyComponent={
             query.trim() ? (
               <Text style={styles.noResults}>{t("sessions.noResults")}</Text>
-            ) : archived ? (
-              <Text style={styles.noResults}>{t("sessions.archivedEmpty")}</Text>
             ) : (
               <>{empty}</>
             )
@@ -1351,11 +1464,19 @@ export function SessionList({
             // The window's edge, whichever window it is. It says how much is
             // held back rather than opening silently on scroll: both lists are
             // meant to be short, and a reader who wants the rest asks for it.
-            archivedPage && archivedPage.more > 0 ? (
-              <ShowMore
-                count={archivedPage.more}
-                onPress={() => setArchivedLimit(current => current + ARCHIVED_PAGE_SIZE)}
-              />
+            //
+            // Each list pages only its own rows. The shelf used to fall through
+            // to the recency page's window whenever its own was empty, so an
+            // empty shelf drew "show 755 more" — the active list's count, under
+            // a caption saying nothing was archived, which reads as archived
+            // conversations the reader cannot reach.
+            archived ? (
+              archivedPage && archivedPage.more > 0 ? (
+                <ShowMore
+                  count={archivedPage.more}
+                  onPress={() => setArchivedLimit(current => current + ARCHIVED_PAGE_SIZE)}
+                />
+              ) : undefined
             ) : recent && recent.more > 0 ? (
               <ShowMore
                 count={recent.more}
@@ -1382,18 +1503,29 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     paddingHorizontal: layout.gutter,
     paddingBottom: spacing.md,
   },
-  // The archived shelf's caption in place of the tab row: the same height, so
-  // the rows below it do not jump when the reader moves between the two.
-  archivedCaption: {
+  // The archived shelf's own row: its caption, and the way back to the pages it
+  // replaced. Same height as the tab row, so the rows below do not jump when the
+  // reader moves between the two.
+  archivedBar: {
     flex: 1,
     minWidth: 0,
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+    minHeight: layout.touchTarget,
+    paddingHorizontal: spacing.xs,
+  },
+  archivedBack: {
+    flexDirection: "row",
+    alignItems: "center",
     gap: spacing.xs,
     minHeight: layout.touchTarget,
-    paddingHorizontal: spacing.sm,
+    paddingRight: spacing.sm,
   },
+  archivedBackLabel: { flexShrink: 1, color: theme.colors.accent, fontSize: theme.font(14), fontWeight: "600" },
   archivedCaptionText: {
+    flexShrink: 1,
     color: theme.colors.inkSoft,
     fontSize: theme.font(14),
     fontWeight: "600",
