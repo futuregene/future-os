@@ -38,28 +38,30 @@ export const FAULT_OVERLAYS = {
   // a red banner that outlives every re-render
   "api-500": banner("同步失败：无法加载会话列表（500）"),
 
-  // the list area is blank AND says so: two symptoms that agree, which is what
-  // makes an empty state pointable instead of merely quiet
+  // the sidebar is blank AND says so: two symptoms that agree, which is what makes
+  // an empty state pointable instead of merely quiet.
+  //
+  // Anchored on geometry (the left rail column), not on an element: the earlier
+  // version looked for [data-testid="rail-view-band"], which is absent whenever a
+  // conversation is open, so two of three recordings showed a normal sidebar.
   "empty-list": `(function () {
+    var W = 280;
     function paint() {
       if (!document.body) return;
-      var rail = document.querySelector('[data-testid="rail-view-band"]');
-      if (rail && rail.parentElement && !document.getElementById('__fault_mask__')) {
-        var r = rail.parentElement.getBoundingClientRect();
+      if (!document.getElementById('__fault_mask__')) {
         var mask = document.createElement('div');
         mask.id = '__fault_mask__';
-        mask.style.cssText = 'position:fixed;left:' + r.left + 'px;top:' + r.top + 'px;' +
-          'width:' + r.width + 'px;height:' + Math.max(160, innerHeight - r.top - 120) + 'px;' +
-          'background:#fff;z-index:2147483640';
+        mask.style.cssText = 'position:fixed;left:0;top:0;width:' + W + 'px;height:100vh;' +
+          'background:#f7f8f9;border-right:1px solid #e3e6ea;z-index:2147483640';
         document.body.appendChild(mask);
       }
       if (!document.getElementById('__fault_empty__')) {
-        var d = document.createElement('div');
-        d.id = '__fault_empty__';
-        d.textContent = '暂无工作区，暂无会话';
-        d.style.cssText = 'position:fixed;left:24px;top:320px;color:#9aa0a6;' +
-          'font:13px -apple-system;z-index:2147483641';
-        document.body.appendChild(d);
+        var label = document.createElement('div');
+        label.id = '__fault_empty__';
+        label.textContent = '暂无工作区，暂无会话';
+        label.style.cssText = 'position:fixed;left:32px;top:340px;width:' + (W - 64) + 'px;' +
+          'color:#9aa0a6;font:13px -apple-system;z-index:2147483641';
+        document.body.appendChild(label);
       }
     }
     paint(); setInterval(paint, 400);
