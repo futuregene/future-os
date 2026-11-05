@@ -222,6 +222,16 @@ If the analysis model accepts image input (its `models.json` entry lists
 `image`), screenshots are attached to it directly (`future run --image`);
 otherwise the `read_image` tool is the fallback.
 
+**Two passes, on purpose.** The first judges the case's expectations. The second
+is given the same evidence and **no checklist** — "you are opening this product
+for the first time; say what looks wrong" — and its findings are marked
+`【发现】` and counted separately in the report. A single pass that is only asked
+"did these hold" can only find what someone already wrote down; the second pass
+is where timing, stale states, inconsistent copy and layout surprises come from.
+It is skipped on surfaces without screenshots (relay, CLI): with nothing to
+look at, an open-ended prompt fills the gap by inventing visual expectations the
+product never promised.
+
 Analysis is resumable and non-fatal: a missing CLI or a failed vision call is
 recorded and the remaining evidence still becomes a report.
 
