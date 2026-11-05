@@ -1,0 +1,144 @@
+{
+  "id": "first-screen-welcome-versus-history",
+  "title": "首屏欢迎页 vs 700+ 条历史会话：不出现首次使用的登录门，问候语也不假装库是空的",
+  "area": "onboarding",
+  "priority": "P1",
+  "tags": [
+    "desktop",
+    "onboarding",
+    "empty-state",
+    "layout"
+  ],
+  "description": "读图分析（perf-switch-scaling、tui-sidebar-panels 两次）都提到「第一次进入出现欢迎引导页，而侧边栏已经有内容」，怀疑老用户被当成新用户。这条用例在真实库（765 条会话、707 个工作区）上首屏打开应用，用可见事实回答三件事：(a) 是否出现首次使用才该出现的页面 —— 具体是 OnboardingGate 那一屏「欢迎使用 FutureOS / 一站式 AI 科研工作台 / 登录 · 注册 / 新用户注册即送免费额度」（layout:gate.*，只在没有任何可用模型服务商时才该出现）；(b) 若出现「欢迎使用」这类问候，它是否与已有会话冲突 —— 即是否宣称「还没有会话 / 开始第一次对话」这类与 700 条历史矛盾的说法，以及它是否把会话列表挤掉或盖住；(c) 用户能否越过它去操作已有内容（这里就是点侧边栏的一条真实会话并打开）。结论口径：老用户 + 已有模型服务商时，首屏应当直接是「侧边栏会话 + 新对话输入框」，问候只用一句中性的「欢迎使用」标题，不宣称库是空的；点会话必须立刻打开，不需要先关掉任何引导。",
+  "preconditions": "应用已启动；数据库是真实副本（765 条会话、707 个工作区、47 条普通对话）；账号在夹具里是已登录状态，模型服务商可用（因此不该出现首次使用的引导门）。",
+  "expectations": [
+    "首屏不出现首次使用的引导门（「登录 / 注册」「一站式 AI 科研工作台」「新用户注册即送免费额度」都不在屏幕上）",
+    "首屏侧边栏已是真实库：能看到真实会话标题，并能看到「再显示 N 个」这种大列表分页",
+    "新对话页的问候只有中性的「欢迎使用」，不出现「还没有会话 / 暂无会话 / 开始第一次对话」这类与 700 条历史矛盾的文案",
+    "问候页与会话列表共存：打开新对话页后，侧边栏的大列表仍然在，且没有被问候块遮挡",
+    "从问候页直接点侧边栏的一条真实会话就能打开它（关键操作不被引导挡住），打开后问候消失、输入框可用",
+    "整个过程没有报错、没有空白主区域"
+  ],
+  "steps": [
+    { "wait": 1500 },
+    { "shot": "first-screen", "note": "首屏实际长什么样" },
+    {
+      "db": {
+        "sql": "SELECT COUNT(*) AS n FROM threads WHERE deleted_at IS NULL AND status != 'deleted'",
+        "as": "threads"
+      },
+      "note": "真实库规模，后面用来证明「不是空库」"
+    },
+    {
+      "db": {
+        "sql": "SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' AND title NOT IN (SELECT name FROM workspaces) ORDER BY COALESCE(last_message_at, updated_at) DESC LIMIT 1",
+        "as": "firstTitle"
+      }
+    },
+    {
+      "assert": {
+        "expr": "Number('{{threads}}') >= 100",
+        "message": "真实库确实很大（≥100 条会话），下面所有「不是新用户」的判断都基于这一点"
+      }
+    },
+    {
+      "assert": {
+        "expr": "!document.body.innerText.includes('登录 / 注册') && !document.body.innerText.includes('一站式 AI 科研工作台') && !document.body.innerText.includes('新用户注册即送免费额度')",
+        "message": "首屏没有首次使用的登录/注册引导门"
+      }
+    },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes('{{firstTitle}}')",
+        "message": "首屏侧边栏列出的是真实库里的会话"
+      }
+    },
+    {
+      "assert": {
+        "expr": "/再显示 \\d+ 个/.test(document.body.innerText)",
+        "message": "侧边栏是大列表：有「再显示 N 个」分页入口"
+      }
+    },
+    { "click": { "aria": "新建对话" } },
+    { "waitFor": { "text": "欢迎使用" }, "timeout": 8000, "capture": false },
+    { "wait": 600 },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes('欢迎使用')",
+        "message": "新对话页给出问候"
+      }
+    },
+    {
+      "assert": {
+        "expr": "!document.body.innerText.includes('还没有会话') && !document.body.innerText.includes('暂无会话') && !document.body.innerText.includes('开始第一次对话') && !document.body.innerText.includes('创建第一个对话')",
+        "message": "问候不宣称库是空的（与 700 条历史不矛盾）"
+      }
+    },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes('{{firstTitle}}') && /再显示 \\d+ 个/.test(document.body.innerText)",
+        "message": "问候与已有会话列表同屏共存"
+      }
+    },
+    {
+      "eval": "(() => { const rows = [...document.querySelectorAll('button[aria-label]')].filter((el) => { const label = el.getAttribute('aria-label') || ''; const r = el.getBoundingClientRect(); return label.length > 1 && el.getAttribute('title') === label && r.width > 40 && r.width < 320 && r.left < 300 && r.height > 12 && r.top >= 0 && r.bottom <= innerHeight; }); const row = rows[0]; if (!row) return null; const hero = [...document.querySelectorAll('h1')].find(el => (el.innerText || '').trim() === '欢迎使用'); const r = row.getBoundingClientRect(); const h = hero ? hero.getBoundingClientRect() : null; window.__covFirst = { row: { top: r.top, bottom: r.bottom, left: r.left, right: r.right }, hero: h ? { top: h.top, bottom: h.bottom, left: h.left, right: h.right } : null, viewport: { w: innerWidth, h: innerHeight } }; return row.getAttribute('aria-label'); })()",
+      "as": "visibleRow",
+      "note": "侧边栏第一条真正看得见、点得到的会话行 + 问候标题的位置"
+    },
+    {
+      "assert": {
+        "expr": "!!window.__covFirst && !!window.__covFirst.hero && window.__covFirst.hero.left >= window.__covFirst.row.right",
+        "message": "问候块在右侧主区域，没有横向压住侧边栏会话行"
+      }
+    },
+    { "shot": "new-chat-welcome", "note": "问候 + 完整会话列表同屏" },
+    { "click": { "aria": "{{visibleRow}}" }, "note": "从问候页直接打开一条真实会话" },
+    {
+      "assert": {
+        "expr": "document.body.innerText.length > 400",
+        "message": "打开会话后主区域有内容（不是空白）"
+      },
+      "capture": false
+    },
+    { "wait": 1500 },
+    {
+      "assert": {
+        "expr": "!document.body.innerText.includes('欢迎使用')",
+        "message": "点开会话后问候页消失"
+      }
+    },
+    {
+      "assert": {
+        "expr": "!!document.querySelector('[role=textbox]')",
+        "message": "打开的会话里有可用的输入框（关键操作没被引导挡住）"
+      }
+    },
+    {
+      "assert": {
+        "expr": "!document.body.innerText.includes('登录 / 注册') && !document.body.innerText.includes('一站式 AI 科研工作台')",
+        "message": "打开会话后也没有冒出登录门"
+      }
+    },
+    { "shot": "opened-from-welcome" },
+    { "click": { "aria": "新建对话" } },
+    { "waitFor": { "text": "欢迎使用" }, "timeout": 8000, "capture": false },
+    { "wait": 500 },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes('{{firstTitle}}') && !document.body.innerText.includes('登录 / 注册')",
+        "message": "回到新对话页仍与列表共存，且不需要关闭任何引导"
+      }
+    },
+    { "shot": "back-to-welcome" }
+  ],
+  "judge": {
+    "criteria": [
+      "这是一个已经有几百条会话、已登录、模型可用的老用户：首屏应当直接是「会话列表 + 对话区」，不应出现「欢迎使用 FutureOS / 登录 · 注册 / 新用户注册即送免费额度」这种首次使用才该出现的整屏引导",
+      "新对话页上出现「欢迎使用」这样的问候是正常的，但它不能配「还没有会话 / 开始第一次对话」这类与已有 700 条会话矛盾的文案，也不该把会话列表挤掉或盖住",
+      "从问候页直接点侧边栏的一条会话应当立刻打开它，不需要先关掉什么引导",
+      "任一步的截图都不应出现空白主区域、报错提示或残留的加载文案",
+      "整体像一个老用户正常打开自己的工作台"
+    ],
+    "maxImages": 8
+  }
+}

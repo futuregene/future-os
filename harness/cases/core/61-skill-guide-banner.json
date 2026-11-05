@@ -1,0 +1,161 @@
+{
+  "id": "skill-guide-banner",
+  "title": "技能教学横幅：出现在新对话输入框下方 → 收起 → 刷新后不再出现",
+  "area": "skills",
+  "priority": "P1",
+  "tags": [
+    "desktop",
+    "skills",
+    "onboarding",
+    "layout"
+  ],
+  "description": "新对话页的「5 分钟技能上手」是一次性引导：它教用户用 / 唤起技能，并给一次「技能教学」入口，同时必须能被收起且收起后不再打扰。这条用例回答三件事：(1) 入口是否真的出现、文案是否完整（标题/副标题/动作/收起都在）；(2) 它是否压住输入框或挡住侧边栏的可点区域 —— 既有用例 archive-and-review 里出现过「引导浮层遮挡列表顶部」这类问题，所以这里用几何与命中测试证明输入框仍然点得到；(3) 收起之后刷新页面不会再冒出来，并且说明里承诺的「技能」页重进入口真的存在。前置状态由用例自己设定：真实库里这个人早收起了教学入口（app_settings.skill_guide_dismissed=true），所以先用夹具的 update_app_settings 把它置回未收起再刷新，才能看到首屏横幅 —— 这是状态准备，不是改断言。另外注意：夹具的 update_app_settings 只认 `{settings}` / 裸参数，而客户端按真实后端契约发的是 `{input}`（desktop/src-tauri 的 `update_app_settings(input: UpdateAppSettingsInput)`），所以夹具会把客户端的设置写入当成未知键静默丢掉（见报告里的夹具缺口）。用例在点「收起」前把这条 IPC 的参数改写成夹具能读懂的裸参数，让「用户点了收起，状态真的写进去」这一条能在浏览器端被验证；夹具修好后这段改写变成恒等变换，可以删掉。",
+  "preconditions": "应用已启动；数据库是真实副本（765 条会话、707 个工作区）；用例把 app_settings.skill_guide_dismissed 置回 false 后刷新页面，模拟「从未收起过」的用户。",
+  "expectations": [
+    "新对话页出现「5 分钟技能上手」横幅，标题、副标题、「技能教学」动作和「收起教学入口」按钮齐全",
+    "横幅完整落在视口内、位于输入框下方，且不覆盖输入框 —— 输入框中心点仍然命中输入框本身；横幅也不越过侧边栏的右边界",
+    "点「收起教学入口」后横幅消失，并给出「已收起教学入口 · 随时可在左侧「技能」页重新打开教程」的说明",
+    "收起这个动作真的写进了设置（IPC update_app_settings 带了 skillGuideDismissed: true）",
+    "刷新页面后横幅不再出现，新对话页回到正常样子",
+    "「技能」页上确实有说明里承诺的入口（「技能怎么用」），点开后能看到 / 触发提示与「教我使用技能」「使用手册」"
+  ],
+  "steps": [
+    { "wait": 1000 },
+    { "click": { "aria": "新建对话" } },
+    { "waitFor": { "text": "欢迎使用" }, "timeout": 8000, "capture": false },
+    {
+      "db": {
+        "sql": "SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' AND title NOT IN (SELECT name FROM workspaces) ORDER BY COALESCE(last_message_at, updated_at) DESC LIMIT 1",
+        "as": "firstTitle"
+      },
+      "note": "侧边栏第一行，稍后用它证明横幅没有压到侧边栏"
+    },
+    {
+      "eval": "(async () => { const f = new URLSearchParams(location.search).get('fixture'); const r = await (await fetch(f + '/invoke', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ command: 'update_app_settings', args: { skillGuideDismissed: false } }) })).json(); return !!(r.value && r.value.skillGuideDismissed === false); })()",
+      "as": "seeded",
+      "note": "状态准备：真实库里这条横幅早被收起，置回未收起"
+    },
+    { "reload": true },
+    { "wait": 1500 },
+    { "click": { "aria": "新建对话" } },
+    { "waitFor": { "text": "5 分钟技能上手" }, "timeout": 10000, "capture": false },
+    { "wait": 400 },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes('互动式教学，教练带着你边学边练，快速学会用技能')",
+        "message": "横幅副标题完整"
+      }
+    },
+    {
+      "assert": {
+        "expr": "[...document.querySelectorAll('button')].some(b => (b.innerText || '').trim().startsWith('技能教学'))",
+        "message": "横幅有「技能教学」动作"
+      }
+    },
+    {
+      "assert": {
+        "expr": "!!document.querySelector('[aria-label=\"收起教学入口\"]')",
+        "message": "横幅有收起按钮"
+      }
+    },
+    {
+      "eval": "(() => { const btn = document.querySelector('[aria-label=\"收起教学入口\"]'); const banner = btn.closest('div.relative'); const composer = document.querySelector('[role=textbox]'); if (!banner || !composer) return null; const r = banner.getBoundingClientRect(); const c = composer.getBoundingClientRect(); const hit = document.elementFromPoint((c.left + c.right) / 2, (c.top + c.bottom) / 2); const row = document.querySelector('[aria-label=\"{{firstTitle}}\"]'); const rr = row ? row.getBoundingClientRect() : null; window.__covBanner = { banner: { top: r.top, bottom: r.bottom, left: r.left, right: r.right }, composer: { top: c.top, bottom: c.bottom, left: c.left, right: c.right }, row: rr ? { top: rr.top, bottom: rr.bottom, left: rr.left, right: rr.right } : null, viewport: { w: innerWidth, h: innerHeight } }; return { banner: window.__covBanner.banner, composer: window.__covBanner.composer, row: window.__covBanner.row, composerHitOk: !!hit && (hit === composer || composer.contains(hit) || hit.contains(composer)) }; })()",
+      "as": "geometry",
+      "note": "横幅位置 + 输入框中心的命中测试"
+    },
+    {
+      "assert": {
+        "expr": "!!window.__covBanner && window.__covBanner.banner.top >= 0 && window.__covBanner.banner.bottom <= window.__covBanner.viewport.h && window.__covBanner.banner.right <= window.__covBanner.viewport.w",
+        "message": "横幅完整落在视口内，没有被裁掉"
+      }
+    },
+    {
+      "assert": {
+        "expr": "!!window.__covBanner && !(window.__covBanner.banner.top < window.__covBanner.composer.bottom && window.__covBanner.banner.bottom > window.__covBanner.composer.top)",
+        "message": "横幅不覆盖输入框区域"
+      }
+    },
+    {
+      "assert": {
+        "expr": "!!window.__covBanner && !!window.__covBanner.row && window.__covBanner.banner.left >= window.__covBanner.row.right",
+        "message": "横幅不越过侧边栏右边界（不遮挡会话列表）"
+      }
+    },
+    { "shot": "banner-visible", "note": "横幅：标题 + 副标题 + 技能教学 + 收起按钮" },
+    {
+      "eval": "(() => { if (window.__covSettingsBridge) return 'already'; const orig = window.fetch.bind(window); window.__covSettingsBridge = true; window.fetch = (input, init) => { try { if (typeof input === 'string' && input.includes('/invoke') && init && typeof init.body === 'string') { const body = JSON.parse(init.body); if (body.command === 'update_app_settings' && body.args && body.args.input && !body.args.settings) return orig(input, { ...init, body: JSON.stringify({ ...body, args: body.args.input }) }); } } catch {} return orig(input, init); }; return 'patched'; })()",
+      "as": "bridge",
+      "note": "把客户端按真实契约发来的 {input} 交给夹具（夹具只认裸参数；修好后是恒等变换）"
+    },
+    { "click": { "aria": "收起教学入口" } },
+    { "wait": 900 },
+    {
+      "assert": {
+        "expr": "!document.body.innerText.includes('5 分钟技能上手')",
+        "message": "收起后横幅消失"
+      }
+    },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes('已收起教学入口')",
+        "message": "收起后给出说明，并指出在「技能」页可以重新打开"
+      }
+    },
+    {
+      "server": {
+        "command": "update_app_settings",
+        "args": { "skillGuideDismissed": true },
+        "expect": 1,
+        "message": "收起这个动作真的写进了设置"
+      }
+    },
+    { "shot": "banner-dismissed" },
+    { "reload": true },
+    { "wait": 1500 },
+    { "click": { "aria": "新建对话" } },
+    { "wait": 1200 },
+    {
+      "assert": {
+        "expr": "!document.body.innerText.includes('5 分钟技能上手')",
+        "message": "刷新后横幅不再出现"
+      }
+    },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes('欢迎使用')",
+        "message": "刷新后新对话页正常，没有被引导块占住"
+      }
+    },
+    { "shot": "after-reload" },
+    { "click": { "text": "技能" } },
+    { "wait": 1200 },
+    { "waitFor": { "text": "技能怎么用" }, "timeout": 8000, "capture": false },
+    { "shot": "skills-page", "note": "「技能」页上有说明里承诺的入口" },
+    { "click": { "selector": "button", "text": "技能怎么用" } },
+    { "wait": 700 },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes('在对话输入框敲 / 即可唤起技能')",
+        "message": "入口展开后给出 / 触发提示"
+      }
+    },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes('教我使用技能') && document.body.innerText.includes('使用手册')",
+        "message": "入口展开后两个动作都在"
+      }
+    },
+    { "shot": "skills-guide-open" }
+  ],
+  "judge": {
+    "criteria": [
+      "「5 分钟技能上手」横幅应在输入框下方出现，标题、副标题、右侧「技能教学」动作和角上的收起按钮都读得清",
+      "横幅不能压住输入框，也不能挡住侧边栏列表的可点区域；它应像一块附在输入区下方的提示",
+      "点收起后横幅应消失，并出现一行说明（已收起教学入口…可在「技能」页重新打开），说明与它指向的「技能」页入口要一致",
+      "刷新后横幅不应再出现，页面不应留下空块或残留的说明条",
+      "「技能怎么用」展开后的浮层应给出 / 用法提示与「教我使用技能」「使用手册」两个动作，且不遮挡关键操作",
+      "整体像正常产品的一次性引导"
+    ],
+    "maxImages": 8
+  }
+}
