@@ -117,10 +117,15 @@ export function SendQueuePanel({
           : (
               <span className="truncate text-right text-xs text-ink-muted">
                 {/* A parked row runs only when someone presses its own button,
-                    so the merge this line describes would never happen to it. */}
+                    so the merge this line describes would never happen to it.
+                    With one row there is nothing to merge with: it leaves on
+                    its own at the turn boundary, and saying "merged" there
+                    promised a combination the queue never performs. */}
                 {items.some(item => item.parked)
                   ? t("composer.queue.hintParked")
-                  : t("composer.queue.hint")}
+                  : items.length === 1
+                    ? t("composer.queue.hintOne")
+                    : t("composer.queue.hint")}
               </span>
             )}
       </header>

@@ -80,16 +80,66 @@ interface TerminalPanelShellProps {
   hostLabel?: string;
 }
 
+/**
+ * How a tab's *first* attach is going, per tab.
+ *
+ * A shell that has never streamed looks exactly like a broken one, so the panel
+ * says which it is: a spinner while the first attach is in flight, and a
+ * failure with a retry once repeated attempts have not connected. A drop after
+ * a working session is a different thing (the reconnecting badge) and never
+ * counts here.
+ */
+interface TabConnection {
+  everConnected: boolean;
+  failures: number;
+}
+
+/** Failed first-attach attempts before the panel calls the start failed. */
+const CONNECT_ATTEMPT_LIMIT = 3;
+
 function TerminalPanelShell({ panel, tabs, transport, hostLabel }: TerminalPanelShellProps) {
   const { t } = useTranslation("terminal");
   // Transient transport notice per tab, cleared when it reconnects.
   const [notices, setNotices] = useState<Record<string, string | undefined>>({});
+  const [connections, setConnections] = useState<Record<string, TabConnection | undefined>>({});
+  // Bumped to remount the view after a failed start, so the retry opens a fresh
+  // connection instead of waiting out the view's own backoff schedule.
+  const [reconnects, setReconnects] = useState<Record<string, number | undefined>>({});
   const autoCreatedRef = useRef(false);
 
   const activeId = tabs.activeId;
   const activeTab = tabs.activeTab;
   const exitCode = activeTab?.exitCode;
   const showExitBar = Boolean(activeTab) && !activeTab?.missing && exitCode !== undefined && exitCode !== null;
+
+  const connection = activeId ? connections[activeId] : undefined;
+  // Starting, running and failed are three different pictures of the same
+  // panel; before this, all three were a blank screen (issue #1519).
+  const connectFailed = Boolean(activeTab)
+    && !connection?.everConnected
+    && (connection?.failures ?? 0) >= CONNECT_ATTEMPT_LIMIT;
+  const connecting = Boolean(activeTab) && !connection?.everConnected && !connectFailed;
+
+  const retryConnection = (id: string) => {
+    setConnections((previous) => {
+      const next = { ...previous };
+      delete next[id];
+      return next;
+    });
+    setReconnects(previous => ({ ...previous, [id]: (previous[id] ?? 0) + 1 }));
+  };
+  const noteConnected = (id: string) => {
+    setConnections(previous => ({ ...previous, [id]: { everConnected: true, failures: 0 } }));
+  };
+  const noteDropped = (id: string) => {
+    setConnections((previous) => {
+      const current = previous[id];
+      // A drop after a working session is the reconnecting badge's business.
+      if (current?.everConnected)
+        return previous;
+      return { ...previous, [id]: { everConnected: false, failures: (current?.failures ?? 0) + 1 } };
+    });
+  };
 
   // Opening the panel with no tabs starts one — the only case where the UI
   // creates a shell without the user pressing "+".
@@ -181,6 +231,22 @@ function TerminalPanelShell({ panel, tabs, transport, hostLabel }: TerminalPanel
             onClick={() => void tabs.create()}
           />
         </div>
+        {activeTab?.cwd
+          ? (
+              // Which project this shell runs in. The tab title is the shell's
+              // own name (`zsh`), which attributes the output to nothing, and
+              // the panel may be on another machine's host — so the directory
+              // belongs in the header, next to the host badge (issue #1538).
+              <span
+                className="max-w-48 shrink-0 truncate font-mono text-2xs text-ink-muted"
+                data-component="terminal-cwd"
+                dir="ltr"
+                title={t("workingDirectory", { path: activeTab.cwd })}
+              >
+                {activeTab.cwd}
+              </span>
+            )
+          : null}
         {hostLabel
           ? (
               <span
@@ -273,14 +339,27 @@ function TerminalPanelShell({ panel, tabs, transport, hostLabel }: TerminalPanel
           {activeTab
             ? (
                 <div className="absolute inset-0">
-                  <Suspense fallback={<div className="p-3 text-xs text-ink-muted">{t("loading")}</div>}>
+                  <Suspense
+                    fallback={(
+                      <div className="flex items-center gap-2 p-3 text-xs text-ink-muted">
+                        <Loader2 className="size-3.5 animate-spin" />
+                        {t("loading")}
+                      </div>
+                    )}
+                  >
                     <TerminalBoundary>
                       <TerminalView
                         autoFocus
-                        key={activeTab.id}
+                        key={`${activeTab.id}:${reconnects[activeTab.id] ?? 0}`}
                         transport={transport}
-                        onConnect={() => setNotice(setNotices, activeTab.id, undefined)}
-                        onDisconnected={() => setNotice(setNotices, activeTab.id, "disconnected")}
+                        onConnect={() => {
+                          setNotice(setNotices, activeTab.id, undefined);
+                          noteConnected(activeTab.id);
+                        }}
+                        onDisconnected={() => {
+                          setNotice(setNotices, activeTab.id, "disconnected");
+                          noteDropped(activeTab.id);
+                        }}
                         onExit={code => tabs.markExit(activeTab.id, code)}
                         onMissing={() => tabs.markMissing(activeTab.id)}
                         onPersist={patch => tabs.save(activeTab.id, patch)}
@@ -289,6 +368,39 @@ function TerminalPanelShell({ panel, tabs, transport, hostLabel }: TerminalPanel
                     </TerminalBoundary>
                   </Suspense>
                 </div>
+              )
+            : null}
+
+          {/* The first attach, said out loud: a spinner instead of an empty
+              screen, and a way out once attempts keep failing. Non-interactive
+              so the terminal can still be clicked into while it connects. */}
+          {connecting
+            ? (
+                <div
+                  className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 text-xs text-ink-muted"
+                  data-component="terminal-starting"
+                >
+                  <Loader2 className="size-3.5 animate-spin" />
+                  {t("loading")}
+                </div>
+              )
+            : null}
+          {connectFailed && activeTab
+            ? (
+                <Notice
+                  tone="danger"
+                  title={t("connectFailed")}
+                  description={t("connectFailedHint")}
+                  actions={(
+                    <button
+                      className="rounded-md border border-line bg-surface px-2 py-1 text-xs font-medium text-ink-soft hover:bg-surface-subtle"
+                      onClick={() => retryConnection(activeTab.id)}
+                      type="button"
+                    >
+                      {t("retry")}
+                    </button>
+                  )}
+                />
               )
             : null}
         </div>
@@ -357,10 +469,14 @@ function Notice(props: {
     danger: "text-danger",
   } as const;
   return (
-    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-6 text-center">
-      <div className={cn("text-sm font-medium", tones[props.tone])}>{props.title}</div>
-      {props.description ? <div className="max-w-xl text-xs text-ink-muted">{props.description}</div> : null}
-      {props.actions ? <div className="flex items-center gap-2">{props.actions}</div> : null}
+    // Above the mounted screen (the terminal's own background is opaque, so a
+    // notice painted under it is a notice nobody can see), yet transparent to
+    // the mouse except for its own text and actions: the final screen of a
+    // session the server lost must stay selectable.
+    <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 px-6 text-center">
+      <div className={cn("pointer-events-auto text-sm font-medium", tones[props.tone])}>{props.title}</div>
+      {props.description ? <div className="pointer-events-auto max-w-xl text-xs text-ink-muted">{props.description}</div> : null}
+      {props.actions ? <div className="pointer-events-auto flex items-center gap-2">{props.actions}</div> : null}
     </div>
   );
 }

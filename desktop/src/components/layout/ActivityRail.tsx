@@ -348,9 +348,23 @@ export function ActivityRail({
         : remoteIndicator === "disconnected"
           ? "down"
           : null);
-  const remoteDot = dotState
+  const remoteDotLabel = dotState === "up"
+    ? t("activityRail.remoteStateUp")
+    : dotState === "partial"
+      ? t("activityRail.remoteStatePartial")
+      : dotState === "down"
+        ? t("activityRail.remoteStateDown")
+        : null;
+  const remoteDot = dotState && remoteDotLabel
     ? (
         <span
+          // What the dot means, in words: the colour alone read as an unread
+          // badge — a red mark next to "Remote" that no unopened conversation
+          // explains and nothing clears — and a status a reader cannot ask about
+          // is a status they cannot act on.
+          aria-label={remoteDotLabel}
+          role="img"
+          title={remoteDotLabel}
           className={cn(
             "absolute -right-1 -top-1 size-2 rounded-full",
             dotState === "up"

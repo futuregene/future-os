@@ -64,6 +64,7 @@ function toTab(info: TerminalInfo, titleNumber: number): TerminalTab {
     titleNumber,
     cols: info.cols || undefined,
     rows: info.rows || undefined,
+    ...(info.cwd ? { cwd: info.cwd } : {}),
     missing: false,
     ...(info.status === "exited" ? { exitCode: info.exitCode } : {}),
   };
@@ -90,6 +91,7 @@ export function reconcileTabs(stored: TerminalTabsState, live: readonly Terminal
     return {
       ...tab,
       title: info.title || tab.title,
+      ...(info.cwd ? { cwd: info.cwd } : {}),
       missing: false,
       ...(info.status === "exited" ? { exitCode: info.exitCode } : { exitCode: undefined }),
     };

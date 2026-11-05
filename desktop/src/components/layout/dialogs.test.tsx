@@ -267,7 +267,7 @@ describe("app shell dialogs", () => {
       },
       handlers: { del },
     }));
-    expect(view.container.textContent).toContain("This chat will be removed from the sidebar.");
+    expect(view.container.textContent).toContain("This conversation will be removed from the sidebar.");
     expect(view.container.textContent).toContain("Artifacts");
     expect(view.container.textContent).toContain("3");
     act(() => byText(view.container, "Delete")!.click());
@@ -299,7 +299,7 @@ describe("app shell dialogs", () => {
       },
       handlers: {},
     }));
-    expect(view.container.textContent).toContain("This removes only the chat. Workspace files will not be changed.");
+    expect(view.container.textContent).toContain("This removes only this conversation. Workspace files will not be changed.");
     expect(view.container.textContent).not.toContain("Artifacts");
     expect(view.container.textContent).toContain("nope");
     view.unmount();
@@ -326,6 +326,8 @@ describe("app shell dialogs", () => {
     expect(view.container.textContent).toContain("8 conversation(s) selected");
     expect(view.container.textContent).toContain("6 chat(s) and 2 workspace conversation(s) will be removed");
     expect(view.container.textContent).toContain("2 workspace conversation(s): files on disk will not be deleted.");
+    // The description no longer says it as well: one statement, with the count.
+    expect(view.container.textContent).not.toContain("Workspace files are not affected");
     // Only the first five titles are listed; the rest collapse into a count.
     expect(view.container.textContent).toContain("Title a");
     expect(view.container.textContent).not.toContain("Title f");
@@ -379,8 +381,39 @@ describe("app shell dialogs", () => {
     expect(view.container.textContent).toContain("Title ws-1");
     expect(view.container.textContent).not.toContain("more");
     expect(view.container.querySelector("input[type=\"checkbox\"]")).toBeNull();
-    // Pure-workspace batches use the workspace wording.
-    expect(view.container.textContent).toContain("This removes only the chat.");
+    // Pure-workspace batches use the workspace wording, in the plural.
+    expect(view.container.textContent).toContain("These workspace conversations will be removed from the sidebar.");
+    view.unmount();
+  });
+
+  it("states the workspace-file note once, in the plural, for a batch of three", () => {
+    // #1521: the body used to reuse the one-conversation description — "this
+    // conversation" for a batch of three — and the file note appeared twice,
+    // once there and once in the box under the list.
+    const view = mount(createElement(Harness, {
+      initial: {
+        batch: {
+          chatThreadCount: 0,
+          deleteFiles: false,
+          error: null,
+          submitting: false,
+          threads: [
+            thread("a", { mode: "workspace" }),
+            thread("b", { mode: "workspace" }),
+            thread("c", { mode: "workspace" }),
+          ],
+          workspaceThreadCount: 3,
+        },
+      },
+      handlers: {},
+    }));
+    const text = view.container.querySelector("[role=\"dialog\"]")!.textContent ?? "";
+    expect(text).toContain("3 conversation(s) selected");
+    expect(text).toContain("These workspace conversations will be removed from the sidebar.");
+    expect(text).not.toContain("only this conversation");
+    // One statement about the files on disk, and it carries the same count.
+    expect(text.split("files on disk will not be deleted").length - 1).toBe(1);
+    expect(text).toContain("3 workspace conversation(s): files on disk will not be deleted.");
     view.unmount();
   });
 
@@ -398,7 +431,7 @@ describe("app shell dialogs", () => {
       },
       handlers: {},
     }));
-    expect(view.container.textContent).toContain("This chat will be removed from the sidebar.");
+    expect(view.container.textContent).toContain("These conversations will be removed from the sidebar.");
     expect(view.container.textContent).not.toContain("workspace conversation(s)");
 
     act(() => byText(view.container, "Cancel")!.click());

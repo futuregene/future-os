@@ -75,6 +75,16 @@ describe("tab state persistence", () => {
     expect(loadTabsState("thread-1")).toEqual(EMPTY_TABS);
   });
 
+  it("keeps the working directory across a reload", () => {
+    saveTabsState("thread-1", {
+      active: "term_1",
+      all: [{ id: "term_1", title: "Terminal 1", titleNumber: 1, cwd: "/home/user/project" }],
+    });
+    expect(loadTabsState("thread-1").all[0]?.cwd).toBe("/home/user/project");
+    // Untrusted input: a non-string directory is dropped, not coerced.
+    expect(migrateTabsState({ all: [{ id: "term_1", titleNumber: 1, cwd: 42 }] }).all[0]?.cwd).toBeUndefined();
+  });
+
   it("removes the entry when the last tab closes", () => {
     saveTabsState("thread-1", { active: "term_1", all: [{ id: "term_1", title: "T", titleNumber: 1 }] });
     expect(localStorage.getItem(tabsStorageKey("thread-1"))).not.toBeNull();
@@ -152,6 +162,28 @@ describe("reconciling stored tabs with the server", () => {
       [info({ id: "term_1" }), info({ id: "term_2" }), info({ id: "term_3" })],
     );
     expect(merged.all.map(tab => tab.titleNumber)).toEqual([1, 2, 3]);
+  });
+
+  it("carries the shell's working directory, so the panel can name it", () => {
+    // Without it the header can only repeat the tab title (the shell's own
+    // name, `zsh`), which attributes the output to no project (issue #1538).
+    const adopted = reconcileTabs({ all: [] }, [info({ cwd: "/home/user/project" })]);
+    expect(adopted.all[0]?.cwd).toBe("/home/user/project");
+
+    // A restart or a thread switch in the same directory refreshes it from the
+    // server rather than pinning a stale value.
+    const known = reconcileTabs(
+      { all: [{ id: "term_1", title: "Terminal 1", titleNumber: 1, cwd: "/old/dir" }] },
+      [info({ cwd: "/new/dir" })],
+    );
+    expect(known.all[0]?.cwd).toBe("/new/dir");
+
+    // A stored tab keeps its directory even when the server no longer has it.
+    const missing = reconcileTabs(
+      { all: [{ id: "term_1", title: "Terminal 1", titleNumber: 1, cwd: "/kept" }] },
+      [],
+    );
+    expect(missing.all[0]?.cwd).toBe("/kept");
   });
 
   it("falls back to the first tab when the stored active id is gone", () => {

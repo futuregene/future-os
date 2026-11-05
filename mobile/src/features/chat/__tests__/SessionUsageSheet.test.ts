@@ -62,6 +62,32 @@ test("splits the tokens by category and names the conversation it accounts for",
   expect(props.onClose).toHaveBeenCalledTimes(1);
 });
 
+test("labels the estimated rows and the billed total as two different kinds of number", () => {
+  // The rows are priced from the model's rates and the total is what the
+  // provider billed; they need not agree, so the table has to say which is
+  // which. One word over both columns (「金额」 / 「合计」) read as an arithmetic
+  // error whenever the rows did not add up. The footnote is unchanged and still
+  // says it in a sentence.
+  const rendered = texts();
+  expect(rendered).toContain("chat.usageCostEstimate");
+  expect(rendered).toContain("chat.usageTotalBilled");
+  expect(rendered).not.toContain("chat.usageCost");
+  expect(rendered).toContain("chat.usageHintPriced");
+
+  // No estimate is shown for a model with no prices, so the column makes no
+  // estimate claim — and the total is still what was billed.
+  act(() => {
+    tree.update(createElement(SessionUsageSheet, {
+      ...props,
+      usage: { ...usage, costInputCny: 0, costOutputCny: 0, costCacheReadCny: 0, costCacheWriteCny: 0 },
+    }));
+  });
+  const unpriced = texts();
+  expect(unpriced).toContain("chat.usageCost");
+  expect(unpriced).not.toContain("chat.usageCostEstimate");
+  expect(unpriced).toContain("chat.usageTotalBilled");
+});
+
 test("the sheet pads its bottom edge by the inset the provider reports", () => {
   // A Modal is its own native window, so a `SafeAreaView` inside it resolves no
   // insets (see `components/previewInsets.ts`); the total row would otherwise
@@ -96,7 +122,8 @@ test("reports missing usage instead of an empty table", () => {
   act(() => { tree.update(createElement(SessionUsageSheet, { ...props, usage: null })); });
   const rendered = texts();
   expect(rendered).toContain("chat.usageUnavailable");
-  expect(rendered).not.toContain("chat.usageTotal");
+  expect(rendered).not.toContain("chat.usageTotalBilled");
+  expect(rendered).not.toContain("chat.usageCostEstimate");
 });
 
 test("stays a bounded, dismissible modal sheet", () => {

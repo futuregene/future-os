@@ -12,6 +12,7 @@
   "errorSignedOut": "This computer isn't signed in to FutureOS. Sign in, then connect again.",
   "errorRefused": "That desktop refused this computer's access. Pair them again to restore the connection.",
   "empty": "No remote desktops yet.",
+  "emptyDetail": "Open \"Add a desktop\" above and paste the pairing link from the other computer to connect it.",
   "loading": "Reading your desktops…",
   "connect": "Connect",
   "connecting": "Connecting…",

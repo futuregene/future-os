@@ -554,7 +554,13 @@ describe("the list", () => {
 
   it("says so when nothing is connected yet, and offers to add one", async () => {
     await mount({ remoteStatus: status({ phase: "enabled" }) });
-    expect(container.textContent).toContain("No devices are paired yet.");
+    // The shared empty-state card, not a sentence inside the list's own box:
+    // every other panel in the app says "nothing here" this way (#1545), and
+    // the card is where the next step can be named.
+    const card = container.querySelector(".border-dashed")!;
+    expect(card).not.toBeNull();
+    expect(card.textContent).toContain("No devices are paired yet.");
+    expect(card.textContent).toContain("Add a device");
     expect(buttonByText("Add a device")).toBeTruthy();
   });
 

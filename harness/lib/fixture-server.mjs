@@ -206,7 +206,14 @@ function syntheticEntries(thread, { fork = null } = {}) {
   if (!thread)
     return [];
   const origin = fork?.sourceThread ?? thread;
-  const created = thread.lastMessageAt ?? thread.updatedAt ?? now();
+  // The copied entries keep the *source* thread's clock, because that is what
+  // the real fork does: the Agent re-ids the parent's journal entries and
+  // carries their `timestamp` with them (`agent/src/session/fork.rs`), so the
+  // question a fork carries still reads as old as it is. Deriving the stamp
+  // from the fork's own row (which was written a moment ago) re-dated the
+  // shared question to "just now" and was reported as the fork rewriting the
+  // history it copied (#1516).
+  const created = origin.lastMessageAt ?? origin.updatedAt ?? now();
   const entries = [
     {
       id: `harness_u_${origin.id}`,

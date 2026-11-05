@@ -4,17 +4,19 @@
   "area": "terminal",
   "priority": "P2",
   "tags": ["terminal", "panel"],
-  "description": "打开会话底部的内嵌终端，确认有 shell 输出；再收起，确认主区域恢复。",
+  "description": "打开会话底部的内嵌终端，确认有 shell 输出；再从面板自己的关闭按钮收起（收起绑定在 terminal.toggle 快捷键和这个按钮上，不是 Escape），确认面板真的从布局里消失。",
   "preconditions": "应用已启动。",
-  "expectations": ["终端面板能展开", "终端里有输出文本", "收起后不遮挡会话"],
+  "expectations": ["终端面板能展开", "终端里有输出文本", "面板标出 shell 所在的目录", "收起后终端面板不再渲染，会话拿回那块高度"],
   "steps": [
     { "wait": 900 },
     { "click": { "aria": "展开终端（⌘J）" } },
     { "wait": 900 },
     { "assert": { "expr": "document.body.innerText.includes('git status') || document.body.innerText.includes('passed') || document.body.innerText.includes('➜')", "message": "终端有 shell 输出" } },
+    { "assert": { "expr": "(() => { const el = document.querySelector('[data-component=\"terminal-cwd\"]'); return !!el && (el.textContent || '').trim().length > 0; })()", "message": "终端面板标出了 shell 所在的目录" } },
     { "shot": "terminal-open" },
-    { "press": "Escape" },
+    { "click": { "selector": "[data-component='terminal-panel'] header button[aria-label^='收起终端']" } },
     { "wait": 500 },
+    { "assert": { "expr": "!document.querySelector('[data-component=\"terminal-panel\"]')", "message": "终端面板已收起（收起后不应再有终端面板）" } },
     { "shot": "terminal-closed" }
   ]
 }

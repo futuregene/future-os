@@ -3,6 +3,25 @@ import type { MaintenanceStatus } from "../../integrations/tauri/useMaintenanceS
 // The official site remains reachable even when update discovery is unavailable.
 export const UPDATE_DOWNLOAD_PAGE = "https://future-os.cn/";
 
+/**
+ * When the result on screen was produced, in the reader's own clock.
+ *
+ * A cached result is still a real result — the desktop checks once a day in the
+ * background — but the page must not present it as "now": "you're on the latest
+ * version" with no time reads as if a check had just run on this visit. Same-day
+ * results read as `HH:mm`; an older one carries its date.
+ */
+export function formatCheckedAt(checkedAt: number, now = Date.now()) {
+  const then = new Date(checkedAt);
+  const today = new Date(now);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const time = `${pad(then.getHours())}:${pad(then.getMinutes())}`;
+  const sameDay = then.getFullYear() === today.getFullYear()
+    && then.getMonth() === today.getMonth()
+    && then.getDate() === today.getDate();
+  return sameDay ? time : `${pad(then.getMonth() + 1)}-${pad(then.getDate())} ${time}`;
+}
+
 /** User-facing states deliberately exclude journal identifiers and diagnostics. */
 export function updatePresentation(result: MaintenanceStatus["update"]) {
   const outcome = result?.outcome;

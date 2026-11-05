@@ -13,6 +13,7 @@
   "expectations": [
     "面板展开后页签选择器存在",
     "切到文件/运行/审查，每一页都真的换内容",
+    "文件页签标出它列出的是哪个目录",
     "页面没有报错或卡在加载态"
   ],
   "steps": [
@@ -42,6 +43,12 @@
     },
     {
       "shot": "tab-files"
+    },
+    {
+      "assert": {
+        "expr": "(() => { const el = document.querySelector('[data-component=\"filetree-root\"]'); return !!el && (el.textContent || '').trim().length > 0; })()",
+        "message": "文件页签标出了它列出的是哪个目录"
+      }
     },
     {
       "eval": "(() => { const s=[...document.querySelectorAll('select')].find(el=>[...el.options].some(o=>o.value==='runs')); if(!s) throw new Error('no context tab select'); s.value='runs'; s.dispatchEvent(new Event('change',{bubbles:true})); return s.value; })()",

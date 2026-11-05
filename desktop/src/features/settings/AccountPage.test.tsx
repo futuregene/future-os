@@ -236,14 +236,41 @@ describe("accountPage balance states", () => {
   it.each([
     ["loading", null, "Refreshing…"],
     ["unavailable", null, "Balance temporarily unavailable"],
-    ["available", null, "—"],
-    ["available", 0, "0 credits"],
+    ["available", null, "Balance not loaded yet"],
+    ["available", 0, "0 credits · used up"],
     ["available", 7.9, "7 credits"],
     ["idle", 3, "3 credits"],
   ] as const)("shows %s / %j as %j", async (balanceStatus, balance, expected) => {
     const container = await renderPage({ balanceStatus, balance });
 
     expect(container.textContent).toContain(expected);
+  });
+
+  it("explains what a zero balance stops instead of leaving the number bare", async () => {
+    const container = await renderPage({ balance: 0 });
+
+    expect(container.textContent).toContain("0 credits · used up");
+    expect(container.textContent).toContain("runs can't start until you top up");
+    // The top-up action stays: it is the answer to the sentence above it.
+    expect(button(container, "Recharge")).toBeTruthy();
+  });
+
+  it("says what credits pay for while the balance row is shown", async () => {
+    const container = await renderPage({ balance: 42 });
+
+    expect(container.textContent).toContain("Credits pay for model calls on the platform.");
+  });
+
+  it("does not explain credits to a signed-out reader", async () => {
+    const container = await renderPage({ sessionStatus: "signed_out" });
+
+    expect(container.textContent).not.toContain("Credits pay for model calls");
+  });
+
+  it("explains why the community edition shows no balance at all", async () => {
+    const container = await renderPage({ communityEdition: true, balance: 100 });
+
+    expect(container.textContent).toContain("community edition runs with your own models");
   });
 
   it("retries the balance instead of recharging while it is unavailable", async () => {

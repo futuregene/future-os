@@ -23,6 +23,13 @@ export interface TerminalTab {
   rows?: number;
   scrollY?: number;
   /**
+   * The shell's working directory, as the server reported it. A terminal's
+   * output is only attributable if the panel can say which project it runs in:
+   * the tab title is the shell's own name (`zsh`), which names no project
+   * (issue #1538).
+   */
+  cwd?: string;
+  /**
    * Set when the shell exited: the tab keeps its final screen and the UI
    * offers a restart.
    */
@@ -73,6 +80,7 @@ function toTab(value: unknown): TerminalTab | undefined {
   const cols = num(value.cols);
   const rows = num(value.rows);
   const scrollY = num(value.scrollY);
+  const cwd = text(value.cwd);
   const exitCode = value.exitCode === null ? null : num(value.exitCode);
   const missing = value.missing === true;
   return {
@@ -84,6 +92,7 @@ function toTab(value: unknown): TerminalTab | undefined {
     ...(cols === undefined ? {} : { cols }),
     ...(rows === undefined ? {} : { rows }),
     ...(scrollY === undefined ? {} : { scrollY }),
+    ...(cwd ? { cwd } : {}),
     ...(exitCode === undefined ? {} : { exitCode }),
     ...(missing ? { missing } : {}),
   };
