@@ -23,6 +23,7 @@ Legend: ✅ two or more cases · ◐ one smoke case · — not covered.
 | Skill `/` and mention `@`/`#` menus | ✅ | `composer-slash-menu`, `composer-mention-menu` |
 | Skill recommendation, guide banner | — | next |
 | Context panel (files/run/review), narrow window | ✅ | `context-panel-tabs`, `narrow-context-panel` |
+| Context panel loading state converges | ✅ | `context-panel-finishes-loading` |
 | Terminal panel | ✅ | `terminal-panel` |
 | Fold/unfold tool calls, fork, copy | ✅ | `tool-call-fold-expand`, `fork-conversation`, `copy-message-feedback` |
 | Approval card approve/reject | — | next (fixture answers `list_pending_approval_requests`) |
