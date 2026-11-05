@@ -162,6 +162,7 @@
     "skillRecommend": {
       "cardTitle": "Recommended skill",
       "installAndUse": "Install & use",
+      "installHint": "Installs it, then sends this message with /{{name}} in front.",
       "dismissAndSend": "Send without it",
       "installFailed": "Couldn't install the skill. Please try again."
     },

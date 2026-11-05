@@ -810,7 +810,10 @@ export function RemoteComposer({
     try {
       if (!await reco.onInstall(card))
         return;
-      const withSkill = `${text.trim()} /${card.name} `;
+      // The token leads, matching the `/skill` placement the app's own mention
+      // menu and the Skills page prefill produce: it annotates the sentence
+      // rather than being spliced in after the reader's last word.
+      const withSkill = `/${card.name}${text.trim() ? ` ${text.trim()}` : ""}`;
       setText(withSkill);
       const staged = uploads;
       reco.onDismiss();

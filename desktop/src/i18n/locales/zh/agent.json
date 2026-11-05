@@ -163,6 +163,7 @@
     "skillRecommend": {
       "cardTitle": "推荐技能",
       "installAndUse": "安装并使用",
+      "installHint": "先安装该技能，再把 /{{name}} 加到这条消息前面一起发送",
       "dismissAndSend": "不用，直接发送",
       "installFailed": "安装失败，请稍后再试"
     },

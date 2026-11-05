@@ -446,11 +446,10 @@ it("installs the skill with no separating space when the draft is empty", async 
   await click(byText("Install & use"));
   expect(onInstall).toHaveBeenCalledTimes(1);
   // The observable is what gets SENT, not the editor afterwards: a successful
-  // install appends the skill and immediately submits, which clears the composer
-  // (so asserting the editor's text would pass on an empty string for the wrong
-  // reason). `submitValue` trims the draft, so the trailing space the restore adds
-  // is gone by the time it is sent - what matters is that there is no LEADING
-  // space, which is what the empty-draft arm governs.
+  // install leads the message with the skill and immediately submits, which
+  // clears the composer (so asserting the editor's text would pass on an empty
+  // string for the wrong reason). `submitValue` trims the draft, so what matters
+  // is that the token carries a separating space and the draft is not altered.
   expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ content: "/future-web" }));
 });
 
@@ -472,7 +471,7 @@ it("separates an installed skill from an existing draft with one space", async (
   });
 
   await click(byText("Install & use"));
-  expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ content: "look at /future-web" }));
+  expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ content: "/future-web look at" }));
 });
 
 it("persists the last known draft when a composition frame lands after unmount", async () => {

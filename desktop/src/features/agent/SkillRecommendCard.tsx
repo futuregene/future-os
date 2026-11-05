@@ -38,6 +38,12 @@ export function SkillRecommendCard({
         <p className="mt-0.5 line-clamp-2 text-xs text-ink-muted">
           {description}
         </p>
+        {/* What the two actions do to the message, not just that they exist:
+            "install and use" changes what gets sent (the slash token goes to the
+            front of it), so the card has to say so before it is pressed. */}
+        <p className="mt-0.5 text-[11px] leading-4 text-ink-muted">
+          {t("composer.skillRecommend.installHint", { name })}
+        </p>
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
         <button
