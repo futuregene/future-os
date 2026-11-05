@@ -315,10 +315,12 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 .await
                 {
                     Ok(Some(snapshot)) => {
-                        // The snapshot's folded events are the same reasoning and
-                        // tool-argument content again, in a shape both sides
-                        // validate for length and ordering — so its events keep
-                        // their `idx` and only their text is blanked.
+                        // The snapshot's folded events keep their `idx` in a
+                        // shape both sides validate for length and ordering, so
+                        // a trimmed one is blanked in place and a dropped one
+                        // stays with empty text. Reasoning keeps its body here
+                        // like everywhere else: this projection is what a reply
+                        // rebuilt from a snapshot draws its rows from.
                         let mut snapshot = snapshot;
                         crate::remote_host::lean::lean_replay_page(
                             &mut snapshot,

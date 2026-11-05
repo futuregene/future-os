@@ -1607,13 +1607,15 @@ export class RemoteClient {
     //   reply_gzip_v1 — replies may be gzip-compressed; `decodeRemoteJson`
     //     detects the magic bytes. An older client does not have that check and
     //     would fail to parse a compressed reply, hence the declaration.
-    //   lean_events_v1 — the desktop may omit reasoning text, streamed tool
-    //     arguments and captured tool output. This client renders a reasoning
-    //     row from its `thinking_start`/`thinking_end` boundary alone, takes a
-    //     tool's target from `tool_start`'s complete arguments, and reads a
-    //     tool's outcome from `exit_code`/`error` instead of parsing an
-    //     `[exit: N]` footer out of the output. An older client does all three
-    //     from the text, so it must keep receiving the full lane.
+    //   lean_events_v1 — the desktop may omit the argument stream of a tool call
+    //     still being written and the captured output of a finished one; it may
+    //     also trim a history page's tool-result bodies and tool arguments. This
+    //     client takes a tool's target from `tool_start`'s complete arguments and
+    //     reads a tool's outcome from `exit_code`/`error` instead of parsing an
+    //     `[exit: N]` footer out of the output. An older client does both from the
+    //     text, so it must keep receiving the full lane. Reasoning is *not* on
+    //     this list: the row opens into that text, and a client that was not sent
+    //     it draws a label nothing can expand (`ThinkingRow`).
     //   catalog_activity_v1 — while a run streams, the desktop may tell this
     //     client only the rows whose ordering timestamp moved
     //     (`onSessionActivity`) instead of re-sending the whole session list

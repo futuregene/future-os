@@ -212,10 +212,11 @@ test("the folded run opens into its rows, each still opening its own detail", ()
   expect(hasText("ls -la")).toBe(true);
 });
 
-// A lean feed carries no reasoning body at all. The row is then a status label,
-// not a disclosure: rendering the chevron anyway opened an empty box on a real
-// device (tapping 已思考 expanded to nothing), which promises content that never
-// arrives.
+// A row can still arrive without a body — a host that withholds reasoning, or a
+// reply whose reasoning the agent never recorded. The row is then a status
+// label, not a disclosure: rendering the chevron anyway opened an empty box on a
+// real device (tapping 已思考 expanded to nothing), which promises content that
+// never arrives.
 test("a thinking row with no body is a label, not a disclosure", () => {
   render(reply({ segments: [thinking("k1", "")] }));
   expect(countText("chat.thoughtCompleted")).toBe(1);

@@ -1030,7 +1030,8 @@ fn assert_history_undeclared(capture: &ReplyCapture, entries: &Value, what: &str
 }
 
 /// The declared state keeps the page's structure (entry/block identity and
-/// count) and drops only the three unread bodies.
+/// count), drops the unread tool bodies, and keeps the reasoning body — which is
+/// what a thinking row opens into.
 fn assert_history_lean(capture: &ReplyCapture, full: &ReplyCapture, entries: &Value, what: &str) {
     assert_eq!(
         capture.body["success"],
@@ -1057,11 +1058,14 @@ fn assert_history_lean(capture: &ReplyCapture, full: &ReplyCapture, entries: &Va
                 })
                 .expect("block survives");
             match block["kind"].as_str().unwrap_or_default() {
-                "reasoning" | "tool_result" => {
-                    let kind = block["kind"].as_str().unwrap_or_default();
+                "reasoning" => assert_eq!(
+                    returned_block["text"], block["text"],
+                    "{what}: reasoning reaches a lean client, or its row cannot open"
+                ),
+                "tool_result" => {
                     assert!(
                         returned_block.get("text").is_none(),
-                        "{what}: {kind} body must be dropped, not blanked"
+                        "{what}: tool_result body must be dropped, not blanked"
                     );
                     trimmed += 1;
                 }
@@ -1132,16 +1136,34 @@ async fn run_fixture(broker: Broker, label: &str) {
         serde_json::from_str(full.received[5].body["data"].as_str().unwrap()).unwrap();
     assert_eq!(tool_end["text"], json!("file body\n[exit: 3]"));
 
-    // ── Declared: streamed content drops, outcomes survive ──
+    // ── Declared: unread argument fragments drop, reasoning and outcomes survive ──
     e2e.declare(&[lean::LEAN_EVENTS_FEATURE]).await;
     assert!(lean_declared(&e2e.pair_id));
     let lean_capture = e2e.replay_live_lane(&session, "run-verify", &journal).await;
     assert_lane(&lean_capture, &journal, true, "declared");
-    assert_eq!(lean_capture.received.len(), 5, "two content events drop");
-    assert_eq!(lean_capture.received[0].body["type"], json!("text_chunk"));
-    assert_eq!(lean_capture.received[0].body["idx"], json!(2));
+    assert_eq!(
+        lean_capture.received.len(),
+        6,
+        "one content event (the tool argument fragment) drops"
+    );
+    assert_eq!(
+        lean_capture.received[0].body["type"],
+        json!("thinking_delta")
+    );
+    assert_eq!(lean_capture.received[0].body["idx"], json!(1));
+    // The reasoning body is what a thinking row opens into, so the lean lane
+    // carries it too: with it gone the row could not be opened at all.
+    let reasoning: Value =
+        serde_json::from_str(lean_capture.received[0].body["data"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        reasoning["text"],
+        json!("private reasoning no phone renders"),
+        "reasoning reaches the declared lane"
+    );
+    assert_eq!(lean_capture.received[1].body["type"], json!("text_chunk"));
+    assert_eq!(lean_capture.received[1].body["idx"], json!(2));
     let tool_end: Value =
-        serde_json::from_str(lean_capture.received[3].body["data"].as_str().unwrap()).unwrap();
+        serde_json::from_str(lean_capture.received[4].body["data"].as_str().unwrap()).unwrap();
     assert!(tool_end.get("text").is_none(), "captured output is dropped");
     assert_eq!(tool_end["exit_code"], json!(3), "outcome survives");
     let lean_bytes = lean_capture.wire_bytes();
@@ -1907,10 +1929,17 @@ mod tests {
         let lean = expected_lane_data(&event, true).expect("a text chunk is kept");
         assert_eq!(lean, undeclared, "the same cap applies on either lane");
 
-        // A streamed type is not measured at all when the client declared it.
-        let streamed = journal_event("thinking_delta", json!({ "text": huge }), 2);
+        // A streamed argument fragment is not measured at all when the client
+        // declared it; a streamed reasoning fragment is, because the row opens
+        // into that text.
+        let streamed = journal_event("tool_delta", json!({ "text": huge }), 2);
         assert!(expected_lane_data(&streamed, true).is_none());
         assert!(expected_lane_data(&streamed, false).is_some());
+        let reasoning = journal_event("thinking_delta", json!({ "text": huge }), 3);
+        assert!(
+            expected_lane_data(&reasoning, true).is_some(),
+            "reasoning reaches the declared lane"
+        );
     }
 
     /// The summary a measurement prints: sealed bytes, decrypted bytes, and how

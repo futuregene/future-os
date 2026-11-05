@@ -1,15 +1,26 @@
-//! The lean event feed: what a phone that does not render reasoning or tool
-//! argument text can do without.
+//! The lean event feed: what a phone that does not render tool argument text can
+//! do without.
 //!
 //! Measured on the three heaviest completed runs, a run's live lane costs 67-77
-//! MB raw / 4.4-4.7 MB after coalescing, and two event types are almost all of
+//! MB raw / 4.4-4.7 MB after coalescing, and two event types were almost all of
 //! it: `thinking_delta` (57-84%) and `tool_delta` (4-41%). Both are per-token
-//! streams whose content no phone surface shows — `thinking_start` alone opens
-//! the "thinking" row, and a tool row's target already rides `tool_start`'s
-//! complete `tool_args`.
+//! streams.
 //!
-//! Dropping them is therefore not a fidelity trade, it is dead weight. Once
-//! rewritten, the same runs deliver 0.9-1.4 MB raw / 0.5-0.9 MB coalesced.
+//! Only the tool one is still dropped. A tool row's target already rides
+//! `tool_start`'s complete `tool_args`, so its fragments carry nothing a reader
+//! can see. A reasoning row is different: both clients render its body when the
+//! row is expanded (`ThinkingRow` on the phone, the reply's step row on the
+//! desktop), and with the body gone the row cannot be opened at all — measured
+//! on a device, tapping 已思考 expanded to nothing, and the phone's own answer to
+//! that was to stop drawing a chevron on a bodyless row. Reasoning therefore
+//! stays on the lane; it is content the reader can open, not dead weight.
+//!
+//! What that costs is the reasoning text itself plus the envelope of the
+//! coalesced fragments (`thinking_delta` is merged like any other fragment
+//! stream), which is the price of the feature: a reply's "已思考" row can only be
+//! opened by a client that was sent the words. On the real journal behind this
+//! change, one reasoning block averages 1.7 KB and the heaviest recorded run
+//! holds 150 KB of reasoning across 94 blocks.
 //!
 //! Two rules keep this honest:
 //!
@@ -17,8 +28,8 @@
 //!   byte-for-byte, so a future event type cannot be silently reshaped.
 //! - **Structure is preserved where a peer validates it.** The folded projection
 //!   that rides a snapshot has to keep every event with its `idx` (both the
-//!   desktop and the client reject an empty or reordered list), so there the
-//!   text is blanked rather than the event removed.
+//!   desktop and the client reject an empty or reordered list), so there a
+//!   dropped event's text is blanked rather than the event removed.
 //!
 //! The request scope is shared with the Server command loop; application
 //! business adapters read it while constructing history/replay replies.
@@ -34,8 +45,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Named so an older desktop ignores it and an older client never asks for it.
 pub use future_remote_protocol::LEAN_EVENTS_FEATURE;
 
-/// Event types that exist only to stream content a phone does not render.
-const DROPPED_EVENTS: [&str; 3] = ["thinking_delta", "tool_delta", "toolcall_delta"];
+/// Event types that exist only to stream content no reader renders.
+///
+/// `thinking_delta` is deliberately **not** here: a reasoning row opens into the
+/// text it accumulated, so its fragments are the content the reader asked for
+/// (see the module docs). A `tool_delta` is the arguments of a call still being
+/// written, and the settled call already carries them on `tool_start`.
+const DROPPED_EVENTS: [&str; 2] = ["tool_delta", "toolcall_delta"];
 
 /// Tools whose arguments carry a body the phone never renders: a `write` its
 /// whole file, an `edit` the text it replaces.
@@ -162,8 +178,8 @@ fn is_dropped(event_type: &str) -> bool {
 /// The lean rewrite of one event's `data`, or `None` when the event is dropped.
 ///
 /// Reads `event_type` before any parsing, which is what keeps the hot path
-/// cheap: the two highest-frequency types cost one slice compare each, and only
-/// the per-call types (`tool_end`, `run_snapshot`) are parsed at all.
+/// cheap: the dropped types cost one slice compare each, and only the per-call
+/// types (`tool_end`, `run_snapshot`) are parsed at all.
 pub fn lean_event_data<'a>(event_type: &str, data: &'a str) -> Option<Cow<'a, str>> {
     if is_dropped(event_type) {
         return None;
@@ -181,9 +197,11 @@ pub fn lean_event_data<'a>(event_type: &str, data: &'a str) -> Option<Cow<'a, st
                 Some(without(data, &["text", "result"]))
             }
         }
-        // The folded events are the same reasoning and argument fragments again.
-        // The client treats this event as a "resync me" signal and never reads
-        // them, so the whole array goes.
+        // The folded events are the same argument fragments again, in a shape no
+        // client reads: it treats this event as a "resync me" signal. The whole
+        // array goes. Reasoning is *not* in here: a replay page or a snapshot
+        // carrying `thinking_delta` keeps its text, because that is the body the
+        // row opens into.
         "run_snapshot" => Some(without(data, &["snapshotEvents"])),
         // A tool call announces itself twice: an `input` phase when the model
         // begins writing the call, then an `execution` phase when the arguments
@@ -499,13 +517,16 @@ pub fn lean_replay_page(page: &mut Value, lean: bool) {
 ///
 /// | Trim | Share of the page |
 /// | --- | --- |
-/// | reasoning body | 25.6-32.2% |
 /// | tool-result body | 22.0-26.5% |
 /// | tool-call arguments | 12.3-17.8% (of which shell commands are most) |
-/// | shell facts in `metadata` (`attempts[].output`, `command`, `cwd`) | 37-42% of what the three above leave behind |
+/// | shell facts in `metadata` (`attempts[].output`, `command`, `cwd`) | 37-42% of what the two above leave behind |
 ///
-/// Each is unread rather than merely unrendered, which is what makes this a
-/// removal:
+/// A reasoning body (25.6-32.2% of the page) was in this table and is no longer:
+/// the row it belongs to opens into it, so a page without it draws a "已思考"
+/// label that cannot be opened at all. See the module docs.
+///
+/// Each remaining trim is unread rather than merely unrendered, which is what
+/// makes it a removal:
 ///
 /// - `targetFromArgs` derives a **file** row's text from `path`/`file_path`/
 ///   `filePath` and never reads any other argument key, so keeping exactly
@@ -518,7 +539,6 @@ pub fn lean_replay_page(page: &mut Value, lean: bool) {
 ///   `arguments`" is exactly the state that means "ask for them".
 /// - `foldToolEntry` reads a result block's `toolCallId` and `isError` and
 ///   nothing else.
-/// - A reasoning block's body is only ever rendered when the row is expanded.
 /// - A shell entry repeats its output and its command in `metadata`: see
 ///   [`narrow_shell_result`].
 ///
@@ -533,12 +553,6 @@ pub fn lean_entries(entries: &mut Value) {
         if let Some(blocks) = entry.get_mut("blocks").and_then(Value::as_array_mut) {
             for block in blocks {
                 match block["kind"].as_str().unwrap_or_default() {
-                    // The body goes; the block stays, so the row still appears.
-                    "reasoning" => {
-                        if let Some(fields) = block.as_object_mut() {
-                            fields.remove("text");
-                        }
-                    }
                     "tool_result" => {
                         if let Some(fields) = block.as_object_mut() {
                             fields.remove("text");
@@ -726,14 +740,15 @@ mod tests {
 
     #[test]
     fn streamed_content_drops_and_decision_events_do_not() {
-        for event_type in ["thinking_delta", "tool_delta", "toolcall_delta"] {
+        for event_type in ["tool_delta", "toolcall_delta"] {
             assert!(
                 lean_event_data(event_type, r#"{"text":"x"}"#).is_none(),
-                "{event_type} streams content the phone does not render"
+                "{event_type} streams content no reader renders"
             );
         }
         for event_type in [
             "text_chunk",
+            "thinking_delta",
             "tool_start",
             "thinking_start",
             "thinking_end",
@@ -1139,7 +1154,8 @@ mod tests {
     }
 
     /// Raw page events are dropped (the envelope is the cost), while the folded
-    /// projection keeps its events with blanked text (the client validates them).
+    /// projection keeps its events (the client validates them). Reasoning stays
+    /// on both: it is the body a thinking row opens into.
     #[test]
     fn replay_page_trims_each_shape_the_way_its_consumer_requires() {
         let mut page = json!({
@@ -1164,13 +1180,18 @@ mod tests {
             .iter()
             .map(|event| event["type"].as_str().unwrap())
             .collect();
-        assert_eq!(types, vec!["tool_start", "tool_end"]);
+        assert_eq!(types, vec!["thinking_delta", "tool_start", "tool_end"]);
+        // The reasoning body travels with its event: a replayed run is where a
+        // phone rebuilds a reply it joined mid-flight, and the row has to be
+        // openable there too.
+        let reasoning: Value = serde_json::from_str(events[0]["data"].as_str().unwrap()).unwrap();
+        assert_eq!(reasoning["text"], json!("think"));
         // The cursor contract is untouched by the trim.
         assert_eq!(page["nextSinceIdx"], json!(30));
         assert_eq!(page["watermark"], json!(30));
         // …and the client is told how many source events the range held, so its
-        // "did this tail reach the watermark" check stays exact even though two
-        // of the four were dropped. Without this the client counts arrivals and
+        // "did this tail reach the watermark" check stays exact even though one
+        // of the four was dropped. Without this the client counts arrivals and
         // rejects every trimmed tail (`replay_prefix_invalid`), which is what
         // pinned the phone in a retry loop.
         assert_eq!(page["rawEvents"], json!(4));
@@ -1178,8 +1199,9 @@ mod tests {
         let folded = page["projection"]["events"].as_array().unwrap();
         assert_eq!(folded.len(), 2, "the folded list keeps its length and idx");
         assert_eq!(folded[0]["idx"], json!(10));
-        let blanked: Value = serde_json::from_str(folded[0]["data"].as_str().unwrap()).unwrap();
-        assert_eq!(blanked["text"], json!(""));
+        let folded_reasoning: Value =
+            serde_json::from_str(folded[0]["data"].as_str().unwrap()).unwrap();
+        assert_eq!(folded_reasoning["text"], json!("think"));
         // Non-delta folded events are trimmed the way the live lane trims them,
         // not left whole: the captured output goes, the outcome stays, and the
         // array keeps its length and idx (the client validates against those).
@@ -1201,9 +1223,9 @@ mod tests {
         assert!(page.get("rawEvents").is_none());
     }
 
-    /// The three trims, on the shapes a real page carries.
+    /// The remaining trims, on the shapes a real page carries.
     #[test]
-    fn lean_entries_trims_the_three_unread_payloads() {
+    fn lean_entries_trims_the_unread_payloads_and_keeps_reasoning() {
         let mut entries = json!([
             {
                 "id": "a1",
@@ -1232,9 +1254,14 @@ mod tests {
         lean_entries(&mut entries);
 
         let blocks = entries[0]["blocks"].as_array().unwrap();
-        // The reasoning block survives with no body, so the row still appears.
+        // A reasoning body is the row's content: it stays, because the row opens
+        // into it. Trimming it left a "已思考" label that could not be opened.
         assert_eq!(blocks[0]["kind"], json!("reasoning"));
-        assert!(blocks[0].get("text").is_none(), "reasoning body is dropped");
+        assert_eq!(
+            blocks[0]["text"],
+            json!("a long private monologue"),
+            "a reasoning body is the row's content"
+        );
         // Visible text is untouched.
         assert_eq!(blocks[1]["text"], json!("visible answer"));
         // A file row keeps exactly the keys its target can be read from.
@@ -1565,8 +1592,8 @@ mod tests {
             for block in entry["blocks"].as_array().into_iter().flatten() {
                 match block["kind"].as_str().unwrap_or_default() {
                     "reasoning" => assert!(
-                        block.get("text").is_none(),
-                        "a lean reasoning block carries no body"
+                        block.get("text").is_some(),
+                        "a reasoning body is the row's content and stays on the lane"
                     ),
                     "tool_result" => assert!(
                         block.get("text").is_none(),
@@ -1679,10 +1706,12 @@ mod tests {
     /// The derivation the generation run performs, on a fixture this test owns.
     /// The ignored test above is the env-gated driver (it rewrites the mobile
     /// render fixtures); this is the same code with the gates taken out, so the
-    /// ordinary suite proves the four properties the generation asserts: the
-    /// streamed event goes, the lean envelope carries only the keys a subscriber
-    /// reads, the legacy shell outcome (the `[exit: N]` footer) survives, and a
-    /// shell row's command is gone from the page while its result stays.
+    /// ordinary suite proves the properties the generation asserts: reasoning
+    /// keeps its body (both as a streamed event and as a history block) while an
+    /// unread argument fragment goes, the lean envelope carries only the keys a
+    /// subscriber reads, the legacy shell outcome (the `[exit: N]` footer)
+    /// survives, and a shell row's command is gone from the page while its result
+    /// stays.
     #[test]
     fn the_render_fixture_derivation_trims_through_the_shipping_code() {
         let dir = tempfile::tempdir().expect("fixture dir");
@@ -1764,10 +1793,11 @@ mod tests {
                 .iter()
                 .map(|event| event["type"].as_str().unwrap())
                 .collect::<Vec<_>>(),
-            ["tool_start", "tool_end"],
-            "the streamed reasoning event is the one thing dropped"
+            ["thinking_delta", "tool_start", "tool_end"],
+            "reasoning and the tool events all reach the phone; only unread \
+             argument fragments are dropped"
         );
-        for key in events[0]
+        for key in events[1]
             .as_object()
             .expect("envelope")
             .keys()
@@ -1779,14 +1809,14 @@ mod tests {
             );
         }
         assert!(
-            events[1]["data"]
+            events[2]["data"]
                 .as_str()
                 .unwrap_or_default()
                 .contains("[exit: 3]"),
             "the legacy shell outcome is the only signal such a row has"
         );
         assert_eq!(
-            serde_json::from_str::<Value>(events[0]["data"].as_str().unwrap())
+            serde_json::from_str::<Value>(events[1]["data"].as_str().unwrap())
                 .expect("the rewritten payload is JSON")["tool_args"],
             json!({"file_path": "/tmp/a"}),
             "a write keeps the path its row shows and loses the body it never renders"
@@ -1798,9 +1828,10 @@ mod tests {
         )
         .expect("lean history json");
         let blocks = lean_history[0]["blocks"].as_array().expect("blocks");
-        assert!(
-            blocks[0].get("text").is_none(),
-            "a reasoning body is dropped"
+        assert_eq!(
+            blocks[0]["text"],
+            json!("private reasoning body"),
+            "a reasoning body is what the row opens into"
         );
         assert_eq!(
             blocks[1]["text"],
@@ -1872,9 +1903,9 @@ mod tests {
             (0.0..1.0).contains(&saved),
             "the saving is a fraction of the page: {report}"
         );
-        // The measured page really is the trimmed one: the shell command is gone
-        // and the reasoning body is blanked.
-        assert!(entries[0]["blocks"][0].get("text").is_none());
+        // The measured page really is the trimmed one: a shell command is gone,
+        // and the reasoning body (no longer trimmed) is still there.
+        assert_eq!(entries[0]["blocks"][0]["text"], json!("r".repeat(400)));
         assert!(entries[0]["blocks"][2].get("arguments").is_none());
     }
 
@@ -1929,10 +1960,10 @@ mod tests {
     fn folded_events_with_an_unexpected_payload_are_left_alone() {
         let mut page = json!({
             "projection": {"events": [
-                {"type": "thinking_delta", "data": "not json", "idx": 1},
-                {"type": "thinking_delta", "idx": 2},
-                {"type": "thinking_delta", "data": 7, "idx": 3},
-                {"type": "thinking_delta", "data": json!({"text": "long"}).to_string(), "idx": 4},
+                {"type": "tool_delta", "data": "not json", "idx": 1},
+                {"type": "tool_delta", "idx": 2},
+                {"type": "tool_delta", "data": 7, "idx": 3},
+                {"type": "tool_delta", "data": json!({"text": "long"}).to_string(), "idx": 4},
             ]},
         });
         lean_replay_page(&mut page, true);

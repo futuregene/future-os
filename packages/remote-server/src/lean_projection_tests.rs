@@ -1,9 +1,12 @@
 //! The projection is the same run read once instead of token by token, so it
-//! must not carry what the token lane already drops.
+//! must not carry what the token lane already drops — and must carry what it
+//! keeps.
 use super::*;
 use serde_json::json;
 
-/// A bootstrap must not carry what the stream it replaces already drops.
+/// A bootstrap must not carry what the stream it replaces already drops — and a
+/// reasoning body is no longer one of those: a reply rebuilt from a projection is
+/// where a thinking row is opened.
 #[test]
 fn a_lean_projection_drops_tool_output_text_and_keeps_the_outcome() {
     let mut page = json!({
@@ -25,8 +28,8 @@ fn a_lean_projection_drops_tool_output_text_and_keeps_the_outcome() {
     assert!(!tool_start.contains("git status"), "{tool_start}");
     assert_eq!(
         events[2]["data"].as_str().unwrap(),
-        "{\"text\":\"\"}",
-        "reasoning text is blanked, its event kept"
+        "{\"text\":\"reasoning\"}",
+        "reasoning text survives in the projection, so its row can open"
     );
 
     // A page from a connection that declared nothing is untouched.
