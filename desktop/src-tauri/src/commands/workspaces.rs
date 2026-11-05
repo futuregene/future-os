@@ -86,6 +86,14 @@ pub async fn delete_workspace(
     future_host::workspaces::delete_workspace(workspace_id).await
 }
 
+/// What a workspace delete removes and what it keeps, for its confirmation.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub fn workspace_delete_summary(
+    workspace_id: String,
+) -> Result<store::WorkspaceDeleteSummary, crate::AppError> {
+    future_host::workspaces::delete_summary(workspace_id)
+}
+
 #[cfg(all(test, feature = "gui"))]
 mod tests {
     #![allow(clippy::await_holding_lock)]

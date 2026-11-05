@@ -126,6 +126,14 @@ pub async fn delete_workspace(
     Ok(workspace)
 }
 
+/// What deleting this workspace would remove, and what it would keep.
+///
+/// The delete is not an archive delete; the confirmation names both numbers
+/// before the reader commits to it.
+pub fn delete_summary(workspace_id: String) -> Result<store::WorkspaceDeleteSummary, crate::Error> {
+    store::delete_summary(&workspace_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
