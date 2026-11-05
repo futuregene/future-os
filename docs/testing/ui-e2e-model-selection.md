@@ -81,3 +81,23 @@ FUTURE_API_KEY=... node harness/scripts/som-element-picker.mjs --url http://loca
 draws the marks, asks the model, clicks, and prints the before/after text delta. It needs a
 vision model endpoint and an API key from the environment; it is a template for writing
 cases, not something CI calls.
+
+## Judging the recording with a video model
+
+Scripted assertions only know what they encode. A second layer watches the recording:
+`harness/scripts/video-judge.mjs` sends the flow video to a video-capable model
+(`qwen3.8-max`; the DeepSeek models in the catalogue take images, not video) and asks
+whether the run matched the expected flow.
+
+Measured on the desktop renderer, 2026-11-06 (8 fps capture, 6–9 s clips, 152–179 s per
+judgement):
+
+- clean run → `pass`, with per-step confirmation (panel titles, 5 installed skills matching
+  the sidebar badge, scheduled-task list);
+- run with three injected anomalies → `fail`, and all three were named with the right step:
+  a `加载失败：无法获取模型列表 (500)` banner, the same banner persisting across later screens
+  and occluding content, and a `（此处应显示技能列表，但内容为空）` placeholder contradicting a
+  list that was in fact rendered.
+
+Cost and latency rule out per-assertion use: budget ~3 minutes per case and run it
+asynchronously after the scripted pass, as a second opinion rather than a gate.
