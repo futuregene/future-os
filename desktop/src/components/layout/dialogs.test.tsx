@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import type { ComponentProps, ReactElement } from "react";
 import type { StoredThread, ThreadCleanupSummary } from "../../integrations/storage/threadStore";
-import type { ArchiveDialogState, BatchDeleteDialogState, DeleteDialogState, RenameDialogState } from "./AppShellDialogs";
+import type { ArchiveDialogState, ArchiveWorkspaceDialogState, BatchDeleteDialogState, DeleteDialogState, RenameDialogState } from "./AppShellDialogs";
 import type { WorkspaceDeleteDialogState, WorkspaceRenameDialogState } from "./hooks/useWorkspaceDialogs";
 import { act, createElement, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -187,16 +187,20 @@ describe("app shell dialogs", () => {
     const [deleteDialog, setDeleteDialog] = useState(initial.del ?? null);
     const [batchDeleteDialog, setBatchDeleteDialog] = useState(initial.batch ?? null);
     const [archiveDialog, setArchiveDialog] = useState<ArchiveDialogState | null>(null);
+    const [archiveWorkspaceDialog, setArchiveWorkspaceDialog] = useState<ArchiveWorkspaceDialogState | null>(null);
     return createElement(AppShellDialogs, {
       archiveDialog,
+      archiveWorkspaceDialog,
       batchDeleteDialog,
       deleteDialog,
       renameDialog,
       setArchiveDialog,
+      setArchiveWorkspaceDialog,
       setBatchDeleteDialog,
       setDeleteDialog,
       setRenameDialog,
       onConfirmArchiveThread: () => {},
+      onConfirmArchiveWorkspace: () => {},
       onConfirmBatchDeleteThread: handlers.batch ?? (() => {}),
       onConfirmDeleteThread: handlers.del ?? (() => {}),
       onConfirmRenameThread: handlers.rename ?? (() => {}),

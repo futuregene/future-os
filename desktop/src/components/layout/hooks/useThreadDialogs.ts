@@ -12,7 +12,9 @@ import {
   deleteThread,
   generateThreadTitle,
   getThreadCleanupSummary,
+  listActiveThreads,
   renameThread,
+  stopThreads,
 } from "../../../integrations/storage/threadStore";
 import { errorMessage } from "../../../lib/errors";
 import { emitFutureEvent } from "../../../lib/futureEvents";
@@ -250,15 +252,25 @@ export function useThreadDialogs({ activeThreadId, onArchived, refreshStore, thr
    * A single conversation's archive.
    *
    * The tree is the unit, so the count of members decides the flow: one member
-   * archives immediately, several ask first (a confirmation that names the scope
-   * is cheaper than a surprise restore of four rows later). A refusal — the tree
-   * is running — comes back from the backend naming the member; it is surfaced
-   * as a toast here rather than in a dialog, because the archive dialog may not
-   * even be open (the single-member path never opens one).
+   * archives straight away (the menu item is the decision); several ask first,
+   * because a fork's children go with it and that is not what "archive this
+   * conversation" sounds like.
+   *
+   * A running member changes the question rather than answering "no": the row
+   * menu cannot stop a run the reader has not opened, so the dialog offers the
+   * two things they can do about it — cancel, or stop it and then archive. The
+   * activity read is the backend's own (`listActiveThreads` covers runs this
+   * store recorded *and* runs another client started); a failure to read it
+   * falls through to the archive, whose refusal names the member.
    */
   async function requestArchive(thread: StoredThread, treeMembers?: StoredThread[]) {
     const lineage = treeMembers ?? threadsRef.current;
     const members = treeMemberCount(lineage, thread.id);
+    const running = await runningMembers(treeMemberIds(lineage, thread.id), thread.id);
+    if (running.length > 0) {
+      setArchiveDialog({ error: null, members, running, submitting: false, thread });
+      return;
+    }
     if (members <= 1) {
       try {
         await archiveThreadTree(thread.id);
@@ -276,19 +288,25 @@ export function useThreadDialogs({ activeThreadId, onArchived, refreshStore, thr
       }
       return;
     }
-    setArchiveDialog({ error: null, submitting: false, thread, members });
+    setArchiveDialog({ error: null, members, running: [], submitting: false, thread });
   }
 
   async function confirmArchive() {
     if (!archiveDialog || archiveDialog.submitting)
       return;
+    const dialog = archiveDialog;
     setArchiveDialog(current => current ? { ...current, error: null, submitting: true } : current);
     try {
-      await archiveThreadTree(archiveDialog.thread.id);
+      // "Stop and archive": the reader chose the stop, so it happens before the
+      // archive and its failure keeps the dialog open instead of shelving a
+      // conversation whose run is still alive.
+      if (dialog.running.length > 0)
+        await stopThreads(dialog.running.map(thread => thread.id));
+      await archiveThreadTree(dialog.thread.id);
       onArchived?.();
       emitFutureEvent("archive-changed", undefined);
       await refreshStore(undefined, {
-        archivedThreadIds: archivedIdsFor(threadsRef.current, archiveDialog.thread.id),
+        archivedThreadIds: archivedIdsFor(threadsRef.current, dialog.thread.id),
       });
       setArchiveDialog(null);
     }
@@ -346,6 +364,27 @@ export function useThreadDialogs({ activeThreadId, onArchived, refreshStore, thr
     confirmArchive,
     archiveThreads,
   };
+}
+
+/**
+ * The conversations in a scope that are still running.
+ *
+ * The backend's own activity read, not the rail's row statuses: an archive is
+ * refused on runs this store recorded *and* on runs another client started
+ * (the Agent's streaming set), and the dialog has to name exactly what the
+ * refusal would. A scope the read cannot answer is treated as idle — the
+ * archive call that follows still refuses anything alive.
+ */
+async function runningMembers(memberIds: string[], fallbackId: string): Promise<StoredThread[]> {
+  const ids = new Set(memberIds);
+  ids.add(fallbackId);
+  try {
+    const active = await listActiveThreads();
+    return active.filter(thread => ids.has(thread.id));
+  }
+  catch {
+    return [];
+  }
 }
 
 /**

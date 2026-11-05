@@ -138,7 +138,13 @@
     "titleEmpty": "Title cannot be empty.",
     "archiveSkipped": "{{names}}{{more}} still running; finish or stop them before archiving.",
     "archiveTitle": "Archive this conversation?",
-    "archiveDescription": "The conversation and its {{count}} forked conversations will be archived together. You can restore them later."
+    "archiveDescription": "The conversation and its {{count}} forked conversations will be archived together. You can restore them later.",
+    "archiveRunningTitle": "This conversation is running",
+    "archiveRunningDescription": "{{count}} conversation(s) are still running; finish or stop them before archiving.",
+    "archiveRunningMore": "and {{count}} more running",
+    "archiveStopAndArchive": "Stop and archive",
+    "archiveWorkspaceRunningTitle": "Conversations in this workspace are running",
+    "archiveWorkspaceRunningDescription": "\"{{name}}\" has {{count}} running conversations; finish or stop them before archiving."
   },
   "workspaceDialogs": {
     "renameTitle": "Rename workspace",
