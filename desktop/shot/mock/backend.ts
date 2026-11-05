@@ -251,6 +251,30 @@ const shotActiveRun = new Map<string, string>();
  */
 const sentEntries = new Map<string, MockEntry[]>();
 
+/**
+ * The demo's pending cards the reader has answered, by approval id.
+ *
+ * The demo has two: the review session's escalation and the parser session's
+ * push. `decide_approval_request` used to answer `null` and leave both in the
+ * queue forever, so whichever conversation was on screen kept an authorisation
+ * card above the composer for the whole session — through later turns, a new
+ * message and the reply to it — because nothing could ever settle it. That is
+ * the "stale approval card" a capture reports (#1533); the product settles it
+ * (a run's terminal transition cancels its pending approvals,
+ * `host/src/store/runs.rs::cancel_children_of_runs`), so the demo has to as
+ * well, or it shows a state the shipped app cannot be in.
+ */
+const decidedApprovals = new Map<string, { status: string; decisionNote: string | null; decidedAt: number }>();
+
+/** The two demo cards differ in shape (one suggests a saved rule, one does not). */
+type DemoApprovalCard = typeof pendingApproval | typeof parserApproval;
+
+/** The demo approvals still waiting on the reader. */
+function demoApprovalCards(): DemoApprovalCard[] {
+  const cards: DemoApprovalCard[] = [pendingApproval, parserApproval];
+  return cards.filter(card => !decidedApprovals.has(card.id));
+}
+
 /** What this fixture's reply says, split into the frames a run writes. */
 function shotRunFrames(prompt: string): Array<[string, Record<string, unknown>]> {
   return [
@@ -980,12 +1004,7 @@ const handlers: Record<string, (args: any) => unknown> = {
     if (new URLSearchParams(window.location.search).has("fusion"))
       return [];
     const threadId = args?.threadId;
-    const cards: unknown[] = [];
-    if (threadId === pendingApproval.threadId)
-      cards.push(pendingApproval);
-    if (threadId === parserApproval.threadId)
-      cards.push(parserApproval);
-    return cards;
+    return demoApprovalCards().filter(card => card.threadId === threadId);
   },
   /**
    * A run's auto-approval assessments: none here, but the *handler* has to exist.
@@ -996,9 +1015,27 @@ const handlers: Record<string, (args: any) => unknown> = {
    * missing answer here cost every frame that clicked a tool row, not a detail.
    */
   list_approval_assessments: () => [],
-  list_pending_approval_requests: () => new URLSearchParams(window.location.search).has("fusion") ? [] : [pendingApproval],
+  list_pending_approval_requests: () => new URLSearchParams(window.location.search).has("fusion") ? [] : demoApprovalCards(),
 
-  decide_approval_request: () => null,
+  /**
+   * Record the reader's answer, the way the backend does.
+   *
+   * The card leaves the queue (and the sidebar's pending badge with it) and the
+   * decision is kept, so a later read of the conversation does not bring it
+   * back. A decision that names an unknown card is answered with `null` instead
+   * of inventing one.
+   */
+  decide_approval_request: (args) => {
+    const input = args?.input ?? {};
+    const id = String(input.approvalRequestId ?? "");
+    const status = String(input.status ?? "");
+    const card = demoApprovalCards().find(entry => entry.id === id);
+    if (!card || !["approved", "rejected", "cancelled"].includes(status))
+      return null;
+    const decision = { status, decisionNote: input.decisionNote ?? null, decidedAt: Date.now() };
+    decidedApprovals.set(id, decision);
+    return { ...card, ...decision };
+  },
   save_approval_rule: () => null,
   save_approval_rules: () => null,
 
