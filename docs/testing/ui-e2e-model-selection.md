@@ -122,3 +122,31 @@ So: **report false positives and catch rate together, each with its n.** A judge
 that reports nothing scores perfectly on false positives and is worthless; a judge
 that reports everything scores perfectly on catch and is unusable. Neither number
 means anything alone, and a suite of green runs can only ever measure the first.
+
+### The judge is only as good as the defect's visible symptom
+
+> **A judge's value depends on the defect having a visible symptom; a defect with no
+> symptom cannot measure a catch rate.**
+
+Round one injected three fixture faults and the judge caught **0/9**. The faults were
+real — the cases failed their own assertions — but nothing was *visible*: `hang` looks
+like a normal slow start, `api-500` is swallowed by the desktop into an empty sidebar,
+and a list that returns nothing looks like a list that never had anything.
+
+Before that, an injector reported `applied: 148` (148 successful DOM writes over 45 s)
+and the recording still showed a clean run: **an injector's own success counter is not
+evidence that the symptom reached the video**. Verify with a frame grab and an OCR
+question, not with the injector's log.
+
+Giving each fault a painted symptom fixed it:
+
+| fault | symptom | caught |
+|---|---|---|
+| `api-500` | red banner that survives re-renders | 4/4 |
+| `dead-click` | greyed button + 「正在发送，未响应…」 pill | 3/3 |
+| `empty-list` | blank rail + 「暂无工作区，暂无会话」 | 1/3 → **2/3** after anchoring the mask on geometry instead of on an element |
+
+The one remaining miss is the judge's, not the fixture's: the recording plainly shows a
+blank rail next to a rendered conversation, and it reported both facts while still
+returning `pass`. That is the next thing to look at — with a v2/v3 comparison, not by
+editing v2 in place.
