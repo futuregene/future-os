@@ -97,6 +97,13 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
       modelsPath,
       logPath: serverLogPath,
       slowModelsMs: Number(testCase.query?.slowModels ?? 0),
+      // A case that wants a card waiting above the composer asks for it here;
+      // every other case keeps the empty queue the real store reports.
+      approvalSeed: Number(testCase.query?.approvals ?? 0),
+      // `transcript: "page"` reads the conversation back from the page's own
+      // mock instead of this server's title-derived one, which is what a case
+      // that sends a message needs: only the page knows what it said.
+      pageTranscript: testCase.query?.transcript === "page",
     }));
 
   const startedAt = Date.now();

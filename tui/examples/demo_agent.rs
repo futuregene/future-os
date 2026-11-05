@@ -424,7 +424,7 @@ fn long_turns_en(entries: &mut Vec<Value>) {
 }
 
 /// `get_state`: what the header, the status bar and the session list draw.
-fn state() -> Value {
+fn state(active: Option<&(u64, String)>) -> Value {
     let mut state = json!({
         "sessionId": SESSION_ID,
         "sessionName": session_name(),
@@ -450,6 +450,18 @@ fn state() -> Value {
             "costCny": 0.0137
         }
     });
+    // A scripted turn that is still writing chunks *is* a run in flight, and the
+    // state has to say so: a client reads `get_state` after `agent_start` and
+    // treats a state without `activeRun` as proof the run is gone, so a stand-in
+    // that always answered "not streaming" made its own interrupt chord
+    // (`ctrl+c`) a no-op — the surface had already forgotten the run it was
+    // drawing a spinner for.
+    if let Some((_, run_id)) = active {
+        state["isStreaming"] = json!(true);
+        state["activeRun"] = json!({
+            "runId": run_id, "epoch": 1, "state": "running", "lastEventIdx": 0
+        });
+    }
     // `FUTURE_DEMO_QUEUE=1` also reports a turn in flight and the prompts waiting
     // behind it, which is what the composer's queue band draws. Gated like
     // `FUTURE_DEMO_CWD`: a stand-in that always had a queue would put a band in
@@ -837,6 +849,19 @@ fn now_ms() -> i64 {
 struct DemoAgent {
     events:
         std::sync::Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<StreamEvent>>>>,
+    /// Bumped by `abort`, read by every scripted turn before its next delta.
+    ///
+    /// A real agent stops writing chunks for a run it has aborted; a stand-in
+    /// that kept streaming made the surface's interrupt look broken — the turn's
+    /// chunks kept arriving after `ctrl+c` and put the activity row straight
+    /// back, so nothing in the TUI could ever be seen to stop. A scripted turn
+    /// carries the generation it started in and drops out once it changes.
+    turn: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// The run a scripted turn is streaming, `(generation, run id)`, so
+    /// `get_state` can report it as in flight (see [`state`]). Cleared by
+    /// `abort`; it outlives the last delta on purpose, because the committed
+    /// frames are of a turn that is still streaming.
+    active: std::sync::Arc<std::sync::Mutex<Option<(u64, String)>>>,
 }
 
 impl DemoAgent {
@@ -856,6 +881,11 @@ impl DemoAgent {
             DemoLang::Zh => &STREAM_DELTAS,
             DemoLang::En => &STREAM_DELTAS_EN,
         };
+        let generation = self.turn.load(std::sync::atomic::Ordering::SeqCst);
+        let turn = self.turn.clone();
+        if let Ok(mut slot) = self.active.lock() {
+            *slot = Some((generation, run_id.clone()));
+        }
         tokio::spawn(async move {
             let event = |kind: &str, data: Value| StreamEvent {
                 r#type: kind.to_string(),
@@ -875,6 +905,11 @@ impl DemoAgent {
             }
             for delta in deltas {
                 tokio::time::sleep(STREAM_DELTA).await;
+                // Aborted between deltas: the turn ends here, the way an
+                // interrupted run stops writing rather than finishing.
+                if turn.load(std::sync::atomic::Ordering::SeqCst) != generation {
+                    return;
+                }
                 if tx
                     .send(event("text_chunk", json!({"text": delta})))
                     .is_err()
@@ -903,7 +938,10 @@ impl FutureAgent for DemoAgent {
                 "dataRootId": "0".repeat(64),
                 "storageSchemaVersion": future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION
             }),
-            "get_state" => state(),
+            "get_state" => {
+                let active = self.active.lock().ok().and_then(|slot| slot.clone());
+                state(active.as_ref())
+            }
             "list_sessions" => sessions(),
             "list_models" => models(),
             "get_session_entries" => journal(),
@@ -924,6 +962,66 @@ impl FutureAgent for DemoAgent {
                 // "Failed to send: missing field `run_id`" notice the first
                 // time a scripted turn was screenshotted.
                 json!({"run_id": run_id, "run_epoch": 1, "accepted_state": "running"})
+            }
+            // The interrupt chord. There is no model behind the scripted turn,
+            // so "abort" means: stop writing chunks, and *end* the run.
+            //
+            // The end matters as much as the stop. A real agent answers an abort
+            // with `state: cancelling` and the run then terminates, which is what
+            // produces `agent_end` — the only event that takes the activity row
+            // away for good. A stand-in that stopped writing but never ended left
+            // the surface "streaming" forever, so a chunk that landed a
+            // millisecond after the abort re-lit the row and nothing could ever
+            // clear it: an interrupt that looks broken, on a fixture that never
+            // sends the event every real run sends.
+            "abort" => {
+                // `FUTURE_DEMO_LATE_CHUNK=1` lands one more chunk *after* the
+                // interrupt, which is what an in-flight write looks like from the
+                // surface's side: the agent stopped, but bytes it had already
+                // queued still arrive. It is how the client's handling of that
+                // race is reproduced on purpose — off by default, because the
+                // committed frames and the other cases want a clean stop.
+                if std::env::var_os("FUTURE_DEMO_LATE_CHUNK").is_some() {
+                    if let Some(tx) = self.events.lock().ok().and_then(|slot| slot.clone()) {
+                        let text = "（中断前已经在路上的一个 chunk）".to_string();
+                        let run_id = cmd.run_id.clone();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+                            let _ = tx.send(StreamEvent {
+                                r#type: "text_chunk".into(),
+                                session_id: SESSION_ID.to_string(),
+                                run_id,
+                                data: json!({"text": text}).to_string(),
+                                ..Default::default()
+                            });
+                        });
+                    }
+                }
+                self.turn.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if let Ok(mut slot) = self.active.lock() {
+                    *slot = None;
+                }
+                if let Some(tx) = self.events.lock().ok().and_then(|slot| slot.clone()) {
+                    let run_id = if cmd.run_id.is_empty() {
+                        "demo-run-live".to_string()
+                    } else {
+                        cmd.run_id.clone()
+                    };
+                    // The wind-down: a real aborted run emits its end once the
+                    // provider has actually stopped, not in the same tick as the
+                    // interrupt.
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                        let _ = tx.send(StreamEvent {
+                            r#type: "agent_end".into(),
+                            session_id: SESSION_ID.to_string(),
+                            run_id,
+                            data: json!({"state": "cancelled"}).to_string(),
+                            ..Default::default()
+                        });
+                    });
+                }
+                json!({"aborted": true})
             }
             _ => json!({}),
         };

@@ -7,7 +7,7 @@
  * folded in and the file is a single consistent snapshot; every case then gets
  * its own copy of that snapshot.
  */
-import { copyFileSync, cpSync, existsSync, mkdirSync, statSync, writeFileSync, readFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -84,9 +84,18 @@ export async function prepare({ source = defaultSource(), force = false } = {}) 
   return { path: BASE_DB, meta, reused: false };
 }
 
-/** An isolated FutureOS home for one CLI case; the real app.db copy plus config. */
+/**
+ * An isolated FutureOS home for one CLI case; the real app.db copy plus config.
+ *
+ * An existing home is removed first. Re-running a case under the same run name
+ * reuses this directory, and the skills snapshot holds *symlinks* into the
+ * checkout: copying them a second time made `fs.cpSync` resolve the destination
+ * through the leftover link and refuse with "cannot copy … to a subdirectory of
+ * itself", so every second run of every CLI case died before its first command.
+ */
 export function createCliHome(target) {
   const home = resolve(target);
+  rmSync(home, { recursive: true, force: true });
   mkdirSync(join(home, "app"), { recursive: true });
   mkdirSync(join(home, "agent"), { recursive: true });
   mkdirSync(join(home, "tasks"), { recursive: true });

@@ -1,0 +1,162 @@
+{
+  "id": "tui-git-files-panels",
+  "surface": "tui",
+  "title": "TUI 的 git 面板与文件面板：打开就是真实仓库与真实目录",
+  "area": "tui",
+  "priority": "P1",
+  "tags": [
+    "tui",
+    "git",
+    "files"
+  ],
+  "description": "会话工作区指向真实仓库（demo_agent 的 FUTURE_DEMO_CWD）：ctrl+g 打开 git 面板，六个视图页签、真实提交列表，以及选中那条提交的详情（git 自己的 commit 头 + diffstat），切到「引用」还能看到真实 ref 名；esc 关闭后 ctrl+f 打开文件面板，是本工作区的目录树，目录在前、文件在后并带大小。两个面板都要有真实内容 —— 不是空白，也不是「没有提交」/「当前工作区不是 git 仓库」这类降级文案。断言刻意避开 git 自己打印的标签（commits 详情用的是 git 的默认输出，语言不跟界面走，这一条作为观察记在报告里）。",
+  "preconditions": "future 与 demo_agent 已构建；demo_agent 以 FUTURE_DEMO_CWD=$REPO 启动，所以脚本会话的工作区是本次运行的 checkout（一个真实 git 仓库）。",
+  "agentEnv": {
+    "FUTURE_DEMO_CWD": "$REPO"
+  },
+  "expectations": [
+    "ctrl+g 打开 git 面板：标题带仓库名，六个视图页签 1.提交 / 2.引用 / 3.改动 / 4.储藏 / 5.工作区 / 6.分支，底部是快捷键提示",
+    "git 面板右侧详情是真实数据：commit 头 + diffstat（不是空白，也不是降级文案）",
+    "面板里不出现「当前工作区不是 git 仓库」/「没有提交」/「git 没有任何输出」",
+    "esc 关闭后 ctrl+f 打开文件面板：标题是 文件 · <工作区路径>，列出真实目录与文件（AGENTS.md、Cargo.toml、harness、tui 等）",
+    "esc 关闭文件面板回到会话输入框，正文与页脚没有被面板残留覆盖"
+  ],
+  "steps": [
+    {
+      "wait": 1500
+    },
+    {
+      "press": "ctrl+g",
+      "note": "打开 git 面板"
+    },
+    {
+      "wait": 2800
+    },
+    {
+      "assertText": "1. 提交"
+    },
+    {
+      "assertText": "2. 引用"
+    },
+    {
+      "assertText": "3. 改动"
+    },
+    {
+      "assertText": "5. 工作区"
+    },
+    {
+      "assertText": "6. 分支"
+    },
+    {
+      "assertText": "1-6 视图 · ↑↓ 选择 · tab 列表/详情",
+      "note": "面板自己的快捷键提示"
+    },
+    {
+      "assertText": "详情",
+      "note": "右侧详情栏"
+    },
+    {
+      "assertText": "commit ",
+      "note": "详情首行是 git 的 commit 头（仓库里真有提交才会有）"
+    },
+    {
+      "expectAbsent": "选择一个条目查看详情",
+      "note": "详情栏不是空的：已经选中了第一条提交"
+    },
+    {
+      "expectAbsent": "当前工作区不是 git 仓库"
+    },
+    {
+      "expectAbsent": "没有提交"
+    },
+    {
+      "expectAbsent": "git 没有任何输出"
+    },
+    {
+      "shot": "tui-git-commits"
+    },
+    {
+      "press": "2",
+      "note": "切到引用视图"
+    },
+    {
+      "wait": 1200
+    },
+    {
+      "assertText": "refs/heads/",
+      "note": "引用视图里是真实 ref 名"
+    },
+    {
+      "expectAbsent": "没有分支或标签"
+    },
+    {
+      "shot": "tui-git-refs"
+    },
+    {
+      "press": "esc",
+      "note": "关闭 git 面板"
+    },
+    {
+      "wait": 900
+    },
+    {
+      "assertText": "描述你要做的事",
+      "note": "回到会话：输入框还在"
+    },
+    {
+      "press": "ctrl+f",
+      "note": "打开文件面板"
+    },
+    {
+      "wait": 2200
+    },
+    {
+      "assertText": "文件 · ",
+      "note": "标题带着工作区路径"
+    },
+    {
+      "assertText": "↑↓ 选择 · ⏎ 打开 · ⌫ 上一层 · r 刷新 · esc 关闭"
+    },
+    {
+      "assertText": "▸harness",
+      "note": "目录行（折叠箭头 + 名字）"
+    },
+    {
+      "assertText": "AGENTS.md",
+      "note": "工作区里的真实文件"
+    },
+    {
+      "assertText": "Cargo.toml"
+    },
+    {
+      "shot": "tui-files-tree"
+    },
+    {
+      "press": "esc",
+      "note": "关闭文件面板"
+    },
+    {
+      "wait": 900
+    },
+    {
+      "assertText": "描述你要做的事"
+    },
+    {
+      "assertText": "表达式解析器里的 off-by-one",
+      "note": "会话标题行仍在，面板没有留下残影"
+    },
+    {
+      "shot": "tui-panels-closed"
+    }
+  ],
+  "judge": {
+    "criteria": [
+      "git 面板里的提交列表与详情都是真实仓库内容（时间、作者、commit 号、diffstat 对齐），不是占位或空白",
+      "六个视图页签与底部快捷键提示都完整可读，没有被截断成半个字",
+      "文件面板是一棵真实目录树：目录带折叠箭头、文件带大小，缩进一致",
+      "两个面板关闭后回到会话画面，正文与页脚干净、没有面板残留",
+      "画面里没有残留的加载态、降级文案或报错行"
+    ],
+    "maxImages": 8
+  }
+}

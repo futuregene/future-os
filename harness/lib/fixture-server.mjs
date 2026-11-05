@@ -20,6 +20,12 @@
  * (settings panels, remote peers, task list) working while the data surface is
  * real. Unhandled names are logged so adding coverage is mechanical.
  *
+ * A handler may also answer `DEFER` when the answer depends on the page rather
+ * than on this database: the command then takes the same fallback path a
+ * missing handler does. That is how a case can opt into the page's own
+ * transcript (`pageTranscript`), which is the only place a message this page
+ * just sent exists.
+ *
  * Fidelity boundary: this reimplements the *store* commands in JS for test
  * purposes. It does not exercise `host/src/store/*.rs`, so a backend bug in a
  * query will not be found here — only UI behaviour against real-shaped data.
@@ -30,6 +36,9 @@ import { DatabaseSync } from "node:sqlite";
 import { createServer } from "node:http";
 
 const now = () => Date.now();
+
+/** Answer this command from the page's own mock instead of from the database. */
+const DEFER = Symbol("defer");
 
 function createId(prefix) {
   const d = new Date();
@@ -157,6 +166,29 @@ function providerView(models) {
 }
 
 /**
+ * Every settable setting, as the client names it and as `app_settings` stores it.
+ *
+ * The keys are the shared `future-app-settings` ones (see
+ * `host/src/store/app_settings.rs`), so a case that asserts on a row is asserting
+ * on the same key the real backend writes. A setting this map does not carry is
+ * left in the in-memory copy only.
+ */
+const SETTING_KEYS = {
+  approvalTier: "approval_tier",
+  autoConnectRemote: "auto_connect_remote",
+  autoTitleFirstTurn: "auto_title_first_turn",
+  autoUpgradeSkills: "auto_upgrade_skills",
+  archiveGuideSeen: "archive_guide_seen",
+  bellOnComplete: "bell_on_complete",
+  communityEdition: "community_edition",
+  hiddenModels: "hidden_models",
+  skillGuideDismissed: "skill_guide_dismissed",
+  skillIntroDismissed: "skill_intro_dismissed",
+  skillRecommend: "skill_recommend",
+  titleLanguage: "title_language",
+};
+
+/**
  * One deterministic transcript per thread, derived from its title.
  *
  * Real transcripts live in the 1 GB agent DB behind a block/projection layer
@@ -201,7 +233,7 @@ function syntheticEntries(thread, { fork = null } = {}) {
   return cut >= 0 ? entries.slice(0, cut + 1) : entries;
 }
 
-export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs = 0 }) {
+export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs = 0, approvalSeed = 0, pageTranscript = false }) {
   const db = new DatabaseSync(dbPath);
   db.exec("PRAGMA journal_mode=WAL");
   db.exec("PRAGMA foreign_keys=ON");
@@ -391,6 +423,89 @@ export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs 
   // the switch on and see the list, on a machine whose owner left it on or off.
   settings = { ...settings, autoConnectRemote: false };
 
+  /**
+   * Pending approval cards, as rows of this case's own database.
+   *
+   * Both approval reads used to answer `[]`, which is the honest answer for a
+   * conversation with nothing waiting — and that is why "approve the card" had
+   * no case: the card could not be produced at all. The rows below are real
+   * `approval_requests` records, so a decision is a real `UPDATE` and the two
+   * reads (`list_approval_requests` for the card above the composer,
+   * `list_pending_approval_requests` for the sidebar badge) agree with each
+   * other for a reason a `db` step can prove — a boolean in the fixture would
+   * have let a case pass while the product's own query went the other way.
+   *
+   * Seeded only when the case asks (`approvals` in its `query`), and bound to
+   * the conversation that is actually opened: the first read for a thread is
+   * what inserts its card, so no case has to know a row id in advance.
+   */
+  const APPROVAL_COLUMNS = `id, thread_id, run_id, tool_call_id, kind, status, title,
+    summary, risk_level, requested_action, decision_note, decided_at, created_at,
+    updated_at, action_category, action_payload, sandbox_boundary, save_suggestion,
+    reviewer, decision_scope, decision_source`;
+  const approvalRows = (where, ...params) =>
+    db.prepare(`SELECT ${APPROVAL_COLUMNS} FROM approval_requests ${where} ORDER BY created_at DESC`)
+      .all(...params)
+      .map(row => ({
+        id: row.id,
+        threadId: row.thread_id,
+        runId: row.run_id ?? null,
+        toolCallId: row.tool_call_id ?? null,
+        kind: row.kind,
+        status: row.status,
+        title: row.title,
+        summary: row.summary ?? null,
+        riskLevel: row.risk_level ?? null,
+        requestedAction: row.requested_action ?? null,
+        decisionNote: row.decision_note ?? null,
+        decidedAt: row.decided_at ?? null,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        actionCategory: row.action_category ?? null,
+        actionPayload: row.action_payload ?? null,
+        sandboxBoundary: row.sandbox_boundary ?? null,
+        saveSuggestion: row.save_suggestion ?? null,
+        reviewer: row.reviewer,
+        decisionScope: row.decision_scope,
+        decisionSource: row.decision_source,
+      }));
+  const seededApprovalThreads = new Set();
+  /** One card per seeded conversation: a tool call the sandbox refused to run. */
+  const seedApproval = (thread) => {
+    if (approvalSeed < 1 || !thread || seededApprovalThreads.has(thread.id))
+      return;
+    seededApprovalThreads.add(thread.id);
+    const t = now();
+    const workspace = workspaceById(thread.workspace_id);
+    const cwd = workspace?.path ?? "$HOME";
+    db.prepare(`INSERT INTO approval_requests (id, thread_id, run_id, tool_call_id, kind, status, title,
+        summary, risk_level, requested_action, created_at, updated_at, action_category, action_payload,
+        sandbox_boundary, save_suggestion, reviewer, decision_scope, decision_source)
+      VALUES (?, ?, NULL, ?, 'sandbox_escalation', 'pending', ?, ?, 'medium', 'shell', ?, ?, 'shell', ?, ?, ?, 'user', 'once', 'user')`)
+      .run(
+        createId("approval"),
+        thread.id,
+        `tc_${thread.id}`,
+        "Run the analysis outside the sandbox",
+        "Rscript analysis/effect-size.R --out notes/effect-size.png",
+        t,
+        t,
+        JSON.stringify({
+          tool: "shell",
+          category: "sandbox_escalation",
+          behavior: "manage_files",
+          summary: "沙箱拒绝写入 notes/effect-size.png",
+          command: "Rscript analysis/effect-size.R --out notes/effect-size.png",
+          justification: "脚本要把森林图写进 notes/",
+          escalationTrigger: "sandbox_failure",
+          blockedPaths: ["notes/effect-size.png"],
+          scope: { cwd, insideWorkspace: true, estimatedBlastRadius: "low" },
+        }),
+        cwd,
+        JSON.stringify({ path: "notes/**", access: "write" }),
+      );
+  };
+
   const handlers = {
     // ── Boot / agent liveness ────────────────────────────────────────────
     get_agent_status: () => ({ phase: "ready", desktopVersion: "harness", agentVersion: "harness" }),
@@ -399,14 +514,66 @@ export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs 
     get_skill_guide: () => ({ links: {}, skills: {} }),
     app_build_info: () => ({ version: "0.0.0-harness", buildNumber: "harness", isRelease: false }),
     get_app_settings: () => settings,
+    /**
+     * Settings are persisted, not remembered.
+     *
+     * This answered from an in-memory copy only, so a case could change a
+     * setting, reload the page and see it stick — while `app.db`, which is what
+     * the next launch and every other client read, still held the old value. A
+     * case that checks persistence therefore has to be able to check the row,
+     * and the real backend writes it (`store::update_app_settings` → the
+     * `app_settings` table), so this one does too.
+     */
     update_app_settings: (args) => {
-      settings = { ...settings, ...(args?.settings ?? args ?? {}) };
+      // The command's payload is `{ input: <patch> }` (the real backend's
+      // `UpdateAppSettingsInput`), not the patch itself: reading it as the patch
+      // merged `{input: …}` into the settings object and changed nothing, so a
+      // case could flip a switch, see it stick in the page and still find the
+      // old value in the database.
+      const patch = args?.input ?? args?.settings ?? args ?? {};
+      settings = { ...settings, ...patch };
+      const t = now();
+      const write = db.prepare(`INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`);
+      for (const [key, snake] of Object.entries(SETTING_KEYS)) {
+        if (!(key in patch))
+          continue;
+        const value = patch[key];
+        write.run(snake, typeof value === "string" ? value : JSON.stringify(value), t);
+      }
       return settings;
     },
     list_installed_skills: () => [],
     list_available_skills: () => [],
-    list_pending_approval_requests: () => [],
-    list_approval_requests: () => [],
+    list_pending_approval_requests: () => approvalRows("WHERE status = 'pending'"),
+    list_approval_requests: (args) => {
+      const threadId = String(args?.threadId ?? "");
+      seedApproval(db.prepare(`SELECT ${THREAD_COLUMNS} FROM threads WHERE id = ?`).get(threadId));
+      return threadId ? approvalRows("WHERE thread_id = ?", threadId) : [];
+    },
+    /**
+     * The reader's answer to a card, as a row update.
+     *
+     * The status write is the whole point: the card above the composer is drawn
+     * from the still-`pending` rows, so this is what makes it leave for good —
+     * a reload cannot bring it back, and the sidebar badge drops with it.
+     */
+    decide_approval_request: (args) => {
+      const input = args?.input ?? {};
+      const id = String(input.approvalRequestId ?? "");
+      const current = id ? db.prepare(`SELECT ${APPROVAL_COLUMNS} FROM approval_requests WHERE id = ?`).get(id) : null;
+      if (!current)
+        throw new Error(`no approval request ${id}`);
+      const status = String(input.status ?? "");
+      if (!["approved", "rejected", "cancelled"].includes(status))
+        throw new Error(`unsupported approval decision ${status}`);
+      const t = now();
+      db.prepare(`UPDATE approval_requests SET status = ?, decision_note = ?, decided_at = ?,
+        updated_at = ?, reviewer = 'user', decision_scope = 'once', decision_source = 'user'
+        WHERE id = ?`)
+        .run(status, input.decisionNote ?? null, t, t, id);
+      return approvalRows("WHERE id = ?", id)[0] ?? null;
+    },
     list_agent_providers: () => providerView(models),
     get_future_auth_state: () => ({ status: "authenticated", profile: null }),
     get_future_balance: () => ({ credits: 0 }),
@@ -718,17 +885,30 @@ export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs 
     },
 
     // ── Agent transcript (synthetic but deterministic) ───────────────────
+    //
+    // `pageTranscript` hands these to the page's own mock, which knows what was
+    // actually sent here. This server's transcript is derived from the thread
+    // title, so it can describe a conversation that never happened and cannot
+    // carry the message a reader just wrote: a case that sends, waits for the
+    // reply to settle and then reads the transcript back would see its own
+    // words disappear.
     get_session_entries: (args) => {
+      if (pageTranscript)
+        return DEFER;
       const thread = threadById(args?.threadId);
       const entries = entriesFor(thread);
       return { entries, hasMore: false, nextOffset: entries.length };
     },
     get_session_entries_page: (args) => {
+      if (pageTranscript)
+        return DEFER;
       const thread = threadById(args?.threadId);
       const entries = entriesFor(thread);
       return { entries, hasMore: false, nextOffset: entries.length };
     },
     begin_session_history_transfer: (args) => {
+      if (pageTranscript)
+        return DEFER;
       const thread = threadById(args?.threadId);
       const entries = entriesFor(thread);
       const payload = { entries, hasMore: false, nextOffset: entries.length };
@@ -738,6 +918,8 @@ export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs 
       return { id, totalBytes: bytes.length, chunkBytes: 64 * 1024 };
     },
     read_session_history_transfer: (args) => {
+      if (pageTranscript)
+        return DEFER;
       const bytes = historyTransfers.get(String(args?.transferId ?? ""));
       if (!bytes)
         return [];
@@ -763,8 +945,21 @@ export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs 
     // the wrong fixture for a UI case — it changes between runs, and a user's own
     // tasks are not a contract about anything.
     list_session_files: () => ({ files: [] }),
-    list_runs: () => [],
-    get_latest_run: () => null,
+    /**
+     * Runs are left to the page's own mock, which is where a local send's run
+     * actually lives.
+     *
+     * These two answered `[]` / `null` — "this conversation has no run" — and
+     * that answer shadowed the run the mock had just created for a send, so the
+     * app's `get_latest_run` never saw it. It went unnoticed while every run was
+     * driven by the send that started it (its own pipeline paints the reply); a
+     * run that starts *later* — the one a queued message becomes at the turn
+     * boundary — is only ever picked up through `get_latest_run` + re-attach, and
+     * with this stub that reply was never read or drawn. The database's `runs`
+     * table is real but the mock's scripted runs are not in it, so answering here
+     * can only ever be a lie; `{}` is not an option this dispatch supports, so
+     * the handlers are simply not implemented and the page falls back.
+     */
     list_latest_run_infos: (args) => (args?.threadIds ?? []).map(threadId => ({ threadId, run: null })),
     list_artifacts: () => ({ artifacts: [] }),
     image_url: () => "",
@@ -829,7 +1024,7 @@ export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs 
       else {
         try {
           const value = await handler(args);
-          payload = { handled: true, value: value ?? null };
+          payload = value === DEFER ? { handled: false } : { handled: true, value: value ?? null };
         }
         catch (error) {
           payload = { handled: true, error: String(error?.message ?? error) };
