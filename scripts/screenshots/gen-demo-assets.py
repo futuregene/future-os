@@ -61,6 +61,31 @@ def check_tick_labels_do_not_collide(fig, ax, minimum_gap: float = 4.0) -> None:
           f"closest pair {closest:.1f} px apart")
 
 
+def check_title_fits(fig, ax, name: str) -> None:
+    """Fail the run when the chart's title is drawn past the canvas edge.
+
+    Matplotlib neither shrinks a title nor ellipsizes it: a title wider than
+    the plate is painted straight to the boundary and stops there, so the
+    screenshot shows 「…depends on task structu」 with nothing to say the word
+    continues. That is not a renderer artefact of the app showing the picture —
+    it is this file, and it is measurable before the PNG is written: the drawn
+    title's own bounding box against the figure's.
+    """
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    title = ax.title.get_window_extent(renderer)
+    canvas = fig.bbox
+    overflow = max(canvas.x0 - title.x0, title.x1 - canvas.x1)
+    if overflow > 0:
+        raise SystemExit(
+            f"{name}: the title is drawn {overflow:.1f} px past the canvas edge "
+            f"({title.width:.0f} px wide in a {canvas.width:.0f} px plate), so it "
+            f"arrives cut mid-word — wrap it with a line break or shorten it"
+        )
+    print(f"{name}: title {title.width:.0f} px in a {canvas.width:.0f} px plate, "
+          f"{min(title.x0 - canvas.x0, canvas.x1 - title.x1):.0f} px to the nearest edge")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", default=str(DEFAULT_OUT), help="output directory")
@@ -90,7 +115,12 @@ def main() -> int:
     ax.set_yticks(y, studies, fontsize=9)
     ax.axvline(0, color="#8a8f98", lw=1)
     ax.set_xlabel("Effect size r (dopamine vs. risk taking)", fontsize=9)
-    ax.set_title("Dopamine and risk taking: effect direction depends on task structure", fontsize=10)
+    # Two lines rather than one: at 6.4 in × 200 dpi the full sentence is
+    # ~972 px against a 1280 px plate, and matplotlib clips it at the edge
+    # (「…task structu」) instead of wrapping — `check_title_fits` below fails the
+    # run if this ever stops fitting again. The break follows the colon, which is
+    # where the sentence splits anyway.
+    ax.set_title("Dopamine and risk taking:\neffect direction depends on task structure", fontsize=10)
     ax.set_xlim(-0.6, 0.65)
     ax.grid(axis="x", color="#e6e8ec", lw=0.8)
     ax.set_axisbelow(True)
@@ -98,6 +128,7 @@ def main() -> int:
         ax.spines[spine].set_visible(False)
     ax.tick_params(axis="y", length=0)
     fig.tight_layout()
+    check_title_fits(fig, ax, "effect-size")
     fig.savefig(out / "effect-size.png", facecolor="white")
     plt.close(fig)
 
@@ -121,6 +152,7 @@ def main() -> int:
         ax.spines[spine].set_visible(False)
     ax.tick_params(axis="y", length=0)
     fig.tight_layout()
+    check_title_fits(fig, ax, "forest-plot")
     fig.savefig(out / "forest-plot.png", facecolor="white")
     plt.close(fig)
 
