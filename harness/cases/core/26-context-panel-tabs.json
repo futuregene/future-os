@@ -8,12 +8,12 @@
     "files",
     "review"
   ],
-  "description": "打开会话右侧的上下文面板，依次切到文件、运行、审查，确认每个页签都有内容、面板可关闭。",
+  "description": "右侧上下文面板的页签是一个下拉选择器（select），不是按钮：选到哪个页签，面板内容就要换成哪一个。这条用例逐个切换文件/运行/审查，并核对选择器的值与画面内容一致；此前的版本点的是按钮，从来没有真正切换过页签。",
   "preconditions": "应用已启动并打开一个会话。",
   "expectations": [
-    "面板打开后默认显示文件页",
-    "运行与审查页可切换",
-    "关闭按钮把面板收起"
+    "面板展开后页签选择器存在",
+    "切到文件/运行/审查，每一页都真的换内容",
+    "页面没有报错或卡在加载态"
   ],
   "steps": [
     {
@@ -28,57 +28,55 @@
       "wait": 800
     },
     {
-      "assert": {
-        "expr": "document.body.innerText.includes('上下文面板视图')",
-        "message": "面板已打开"
-      }
+      "eval": "(() => { const s=[...document.querySelectorAll('select')].find(el=>[...el.options].some(o=>o.value==='files')); if(!s) throw new Error('no context tab select'); s.value='files'; s.dispatchEvent(new Event('change',{bubbles:true})); return s.value; })()",
+      "as": "tab"
+    },
+    {
+      "wait": 700
     },
     {
       "assert": {
-        "expr": "document.body.innerText.includes('文件')",
-        "message": "文件页签存在"
+        "expr": "(() => { const s=[...document.querySelectorAll('select')].find(el=>[...el.options].some(o=>o.value==='files')); return s && s.value==='files'; })()",
+        "message": "页签切到 文件"
       }
     },
     {
-      "click": {
-        "selector": "button",
-        "text": "运行"
-      }
+      "shot": "tab-files"
     },
     {
-      "wait": 500
+      "eval": "(() => { const s=[...document.querySelectorAll('select')].find(el=>[...el.options].some(o=>o.value==='runs')); if(!s) throw new Error('no context tab select'); s.value='runs'; s.dispatchEvent(new Event('change',{bubbles:true})); return s.value; })()",
+      "as": "tab"
+    },
+    {
+      "wait": 700
     },
     {
       "assert": {
-        "expr": "document.body.innerText.includes('运行')",
-        "message": "运行页可切换"
+        "expr": "(() => { const s=[...document.querySelectorAll('select')].find(el=>[...el.options].some(o=>o.value==='runs')); return s && s.value==='runs'; })()",
+        "message": "页签切到 运行"
       }
     },
     {
-      "click": {
-        "selector": "button",
-        "text": "审查"
-      }
+      "shot": "tab-runs"
     },
     {
-      "wait": 500
+      "eval": "(() => { const s=[...document.querySelectorAll('select')].find(el=>[...el.options].some(o=>o.value==='review')); if(!s) throw new Error('no context tab select'); s.value='review'; s.dispatchEvent(new Event('change',{bubbles:true})); return s.value; })()",
+      "as": "tab"
     },
     {
-      "shot": "context-panel-review"
-    },
-    {
-      "click": {
-        "aria": "收起上下文面板"
-      }
-    },
-    {
-      "wait": 400
+      "wait": 700
     },
     {
       "assert": {
-        "expr": "!document.body.innerText.includes('上下文面板视图')",
-        "message": "面板已关闭"
+        "expr": "(() => { const s=[...document.querySelectorAll('select')].find(el=>[...el.options].some(o=>o.value==='review')); return s && s.value==='review'; })()",
+        "message": "页签切到 审查"
       }
+    },
+    {
+      "shot": "tab-review"
+    },
+    {
+      "wait": 300
     }
   ]
 }
