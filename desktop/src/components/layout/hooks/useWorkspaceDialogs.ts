@@ -1,9 +1,10 @@
 import type { Dispatch, SetStateAction } from "react";
+import type { WorkspaceDeleteSummary } from "../../../integrations/storage/threads";
 import type { StoredWorkspace } from "../../../integrations/storage/threadStore";
 import type { RefreshStoreOptions } from "./useThreadStore";
 import { useState } from "react";
 import i18n from "../../../i18n";
-import { deleteWorkspace, renameWorkspace } from "../../../integrations/storage/threadStore";
+import { deleteWorkspace, renameWorkspace, workspaceDeleteSummary } from "../../../integrations/storage/threadStore";
 import { errorMessage } from "../../../lib/errors";
 import { emitFutureEvent } from "../../../lib/futureEvents";
 
@@ -18,6 +19,16 @@ export interface WorkspaceDeleteDialogState {
   workspace: StoredWorkspace;
   error: string | null;
   submitting: boolean;
+  /**
+   * How many conversations the delete removes, and how many it keeps.
+   *
+   * Read when the dialog opens (the counts are the backend's, not the loaded
+   * pages'), so the confirmation can say what will happen before the reader
+   * commits. Null while it is being read, or when the read failed — the dialog
+   * then falls back to its general sentence.
+   */
+  summary: WorkspaceDeleteSummary | null;
+  loadingSummary: boolean;
 }
 
 export interface WorkspaceDialogs {
@@ -77,7 +88,28 @@ export function useWorkspaceDialogs({
   }
 
   function openDelete(workspace: StoredWorkspace) {
-    setDeleteDialog({ error: null, submitting: false, workspace });
+    setDeleteDialog({
+      error: null,
+      loadingSummary: true,
+      submitting: false,
+      summary: null,
+      workspace,
+    });
+    void workspaceDeleteSummary(workspace.id)
+      .then((summary) => {
+        setDeleteDialog(current =>
+          current?.workspace.id === workspace.id
+            ? { ...current, loadingSummary: false, summary }
+            : current,
+        );
+      })
+      .catch(() => {
+        setDeleteDialog(current =>
+          current?.workspace.id === workspace.id
+            ? { ...current, loadingSummary: false }
+            : current,
+        );
+      });
   }
 
   async function confirmDelete() {

@@ -1085,6 +1085,7 @@ mod gui {
                 rename_workspace,
                 pin_workspace,
                 delete_workspace,
+                workspace_delete_summary,
                 ensure_workspace_git,
                 save_pasted_image,
                 save_pasted_file,

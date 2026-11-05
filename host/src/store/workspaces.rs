@@ -1,4 +1,5 @@
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
 use std::path::PathBuf;
 
 use super::db::*;
@@ -244,6 +245,46 @@ pub fn delete_workspace(workspace_id: &str) -> Result<WorkspaceRecord, crate::Er
     tx.commit()?;
     mark_catalog_dirty();
     Ok(workspace)
+}
+
+/// What a workspace delete would remove, and what it would keep.
+///
+/// The delete is not an archive delete: conversations the reader shelved survive
+/// it as ordinary (chat-mode) conversations, and a shelved workspace keeps every
+/// conversation it was hiding. The confirmation has to name both numbers, and
+/// the client cannot count them itself — its lists hold only the pages that were
+/// scrolled into view.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceDeleteSummary {
+    /// Conversations deleted together with the workspace.
+    pub deleted_threads: usize,
+    /// Conversations that survive as independent, still-shelved chats.
+    pub kept_threads: usize,
+}
+
+pub fn delete_summary(workspace_id: &str) -> Result<WorkspaceDeleteSummary, crate::Error> {
+    let conn = connect()?;
+    let workspace = loaded(get_workspace_in(&conn, workspace_id)?, "Workspace")?;
+    let (active, archived): (i64, i64) = conn.query_row(
+        "SELECT
+             COALESCE(SUM(CASE WHEN status = 'archived' THEN 0 ELSE 1 END), 0),
+             COALESCE(SUM(CASE WHEN status = 'archived' THEN 1 ELSE 0 END), 0)
+         FROM threads WHERE workspace_id = ?1 AND deleted_at IS NULL",
+        params![workspace_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    // A shelved workspace takes nothing with it: every conversation inside is
+    // kept, whether it was shelved on its own or by the container.
+    let (deleted_threads, kept_threads) = if workspace.archived_at.is_some() {
+        (0, (active + archived) as usize)
+    } else {
+        (active as usize, archived as usize)
+    };
+    Ok(WorkspaceDeleteSummary {
+        deleted_threads,
+        kept_threads,
+    })
 }
 
 /// The FK-safe cascade for a workspace hard-delete, split out so the (subtle)
@@ -1007,6 +1048,35 @@ mod tests {
         assert_eq!(deleted.id, "ws1");
         assert!(get_workspace("ws1").expect("get").is_none());
         assert!(delete_workspace("ws1").is_err(), "second delete errors");
+    }
+
+    /// The delete confirmation's two numbers are the store's, not the loaded
+    /// pages': a workspace counts what the delete removes and what it keeps.
+    #[test]
+    fn delete_summary_counts_what_survives_and_what_goes() {
+        let (_home, conn) = guarded_conn("ws_delete_summary");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                 VALUES ('ws1', 'W', 'user', '/tmp/ws1', 1, 1),
+                        ('ws2', 'S', 'user', '/tmp/ws2', 1, 1);
+             UPDATE workspaces SET archived_at = 9 WHERE id = 'ws2';
+             INSERT INTO threads (id, workspace_id, mode, title, status, created_at, updated_at)
+                 VALUES ('a1', 'ws1', 'workspace', 'A1', 'active', 1, 1),
+                        ('a2', 'ws1', 'workspace', 'A2', 'active', 1, 1),
+                        ('s1', 'ws1', 'workspace', 'S1', 'archived', 1, 1),
+                        ('h1', 'ws2', 'workspace', 'H1', 'active', 1, 1),
+                        ('h2', 'ws2', 'workspace', 'H2', 'active', 1, 1);",
+        )
+        .expect("seed");
+        drop(conn);
+
+        let active = delete_summary("ws1").expect("summary");
+        assert_eq!(active.deleted_threads, 2);
+        assert_eq!(active.kept_threads, 1);
+        // A shelved workspace keeps everything it was hiding.
+        let shelved = delete_summary("ws2").expect("summary");
+        assert_eq!(shelved.deleted_threads, 0);
+        assert_eq!(shelved.kept_threads, 2);
     }
 
     #[test]

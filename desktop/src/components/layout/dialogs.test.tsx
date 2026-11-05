@@ -422,7 +422,15 @@ describe("workspace dialogs", () => {
       { error: "taken", submitting: false, value: "Alpha", workspace },
     );
     const [deleteDialog, setDeleteDialog] = useState<WorkspaceDeleteDialogState | null>(
-      initial?.deleteOpen ? { error: null, submitting: false, workspace } : null,
+      initial?.deleteOpen
+        ? {
+            error: null,
+            loadingSummary: false,
+            submitting: false,
+            summary: { deletedThreads: 1, keptThreads: 2 },
+            workspace,
+          }
+        : null,
     );
     return createElement(WorkspaceDialogs, {
       deleteDialog,
@@ -441,7 +449,6 @@ describe("workspace dialogs", () => {
     expect(view.container.textContent).toContain("Alpha");
     act(() => byText(view.container, "Delete")!.click());
     expect(del).toHaveBeenCalledTimes(1);
-
     const deleteDialog = [...view.container.querySelectorAll("[role=\"dialog\"]")]
       .find(dialog => dialog.textContent!.includes("Delete workspace"))!;
     const cancel = [...deleteDialog.querySelectorAll<HTMLButtonElement>("button")]
@@ -449,6 +456,15 @@ describe("workspace dialogs", () => {
     act(() => cancel.click());
     expect([...view.container.querySelectorAll("[role=\"dialog\"]")]
       .some(dialog => dialog.textContent!.includes("Delete workspace"))).toBe(false);
+    view.unmount();
+  });
+
+  it("says how many conversations a workspace delete removes and keeps", () => {
+    const view = mount(createElement(Harness, { handlers: {}, initial: { deleteOpen: true } }));
+    // A delete is not an archive delete: the confirmation names both halves, with
+    // the backend's counts rather than the loaded pages'.
+    expect(view.container.textContent).toContain("1 active conversations are deleted with it");
+    expect(view.container.textContent).toContain("2 archived conversations are kept");
     view.unmount();
   });
 

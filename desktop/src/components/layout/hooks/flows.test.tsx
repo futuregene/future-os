@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   unlisten: vi.fn(),
   updateCachedAgentState: vi.fn(),
   validateImageAttachment: vi.fn(),
+  workspaceDeleteSummary: vi.fn(),
 }));
 
 vi.mock("../../../integrations/storage/threadStore", () => ({
@@ -27,6 +28,7 @@ vi.mock("../../../integrations/storage/threadStore", () => ({
   deleteWorkspace: (...args: unknown[]) => mocks.deleteWorkspace(...args),
   listApprovalRequests: (...args: unknown[]) => mocks.listApprovalRequests(...args),
   renameWorkspace: (...args: unknown[]) => mocks.renameWorkspace(...args),
+  workspaceDeleteSummary: (...args: unknown[]) => mocks.workspaceDeleteSummary(...args),
 }));
 vi.mock("../../../integrations/agent/agentStateCache", () => ({
   updateCachedAgentState: (...args: unknown[]) => mocks.updateCachedAgentState(...args),
@@ -98,6 +100,7 @@ beforeEach(() => {
   mocks.refreshStore.mockReset().mockResolvedValue(undefined);
   mocks.unlisten.mockReset();
   mocks.updateCachedAgentState.mockReset();
+  mocks.workspaceDeleteSummary.mockReset().mockResolvedValue({ deletedThreads: 0, keptThreads: 0 });
   mocks.validateImageAttachment.mockReset().mockResolvedValue(undefined);
 });
 

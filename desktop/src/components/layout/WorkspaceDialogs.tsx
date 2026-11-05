@@ -12,6 +12,33 @@ interface WorkspaceDialogsProps {
   setRenameDialog: Dispatch<SetStateAction<WorkspaceRenameDialogState | null>>;
 }
 
+/**
+ * What the workspace delete is about to do.
+ *
+ * The two numbers are the backend's count of the workspace's conversations, not
+ * the loaded pages': deleting a workspace removes the conversations still in it
+ * and keeps the ones the reader shelved (as independent chats). When only one
+ * side has anything to say the other sentence is dropped, so a workspace with no
+ * archive keeps the short confirmation it always had.
+ */
+function deleteDescription(
+  state: WorkspaceDeleteDialogState | null,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  const summary = state?.summary;
+  if (!summary)
+    return t("workspaceDialogs.deleteDescription");
+  if (summary.deletedThreads > 0 && summary.keptThreads > 0) {
+    return t("workspaceDialogs.deleteMixedDescription", {
+      deleted: summary.deletedThreads,
+      kept: summary.keptThreads,
+    });
+  }
+  if (summary.keptThreads > 0)
+    return t("workspaceDialogs.deleteKeptDescription", { kept: summary.keptThreads });
+  return t("workspaceDialogs.deleteDescription");
+}
+
 export function WorkspaceDialogs({
   deleteDialog,
   renameDialog,
@@ -37,7 +64,7 @@ export function WorkspaceDialogs({
         value={renameDialog?.value ?? ""}
       />
       <ConfirmDeleteDialog
-        description={t("workspaceDialogs.deleteDescription")}
+        description={deleteDescription(deleteDialog, t)}
         error={deleteDialog?.error ?? null}
         onClose={() => setDeleteDialog(null)}
         onConfirm={onConfirmDeleteWorkspace}

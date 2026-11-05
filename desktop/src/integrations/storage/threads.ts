@@ -36,6 +36,22 @@ export async function deleteWorkspace(workspaceId: string) {
   return invokeCommand<StoredWorkspace>("delete_workspace", { workspaceId });
 }
 
+/**
+ * What deleting a workspace removes, and what it keeps.
+ *
+ * A delete is not an archive delete: conversations shelved out of the workspace
+ * survive as independent chats. The confirmation names both numbers, and this is
+ * the only source for them — the client's lists hold just the loaded pages.
+ */
+export interface WorkspaceDeleteSummary {
+  deletedThreads: number;
+  keptThreads: number;
+}
+
+export async function workspaceDeleteSummary(workspaceId: string) {
+  return invokeCommand<WorkspaceDeleteSummary>("workspace_delete_summary", { workspaceId });
+}
+
 export async function pinWorkspace(input: {
   workspaceId: string;
   pinned: boolean;
