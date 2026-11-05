@@ -390,6 +390,53 @@ describe("useThreadDialogs", () => {
     harness.unmount();
   });
 
+  it("tells the archived shelf to re-read after a delete", async () => {
+    // The shelf keeps its own lists; a deleted row is not something the store's
+    // pages can report as gone, so without this event the row stayed on the
+    // shelf and opening it asked the backend for a conversation that no longer
+    // existed ("Thread not found").
+    let changes = 0;
+    const listener = () => {
+      changes += 1;
+    };
+    window.addEventListener("futureos:archive-changed", listener);
+    const { harness } = mount("t1");
+    await act(async () => {
+      harness.current.openDelete(thread("t1"));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await harness.current.confirmDelete();
+    });
+
+    window.removeEventListener("futureos:archive-changed", listener);
+    expect(changes).toBe(1);
+    harness.unmount();
+  });
+
+  it("leaves the shelf alone when the delete fails", async () => {
+    let changes = 0;
+    const listener = () => {
+      changes += 1;
+    };
+    window.addEventListener("futureos:archive-changed", listener);
+    mocks.deleteThread.mockRejectedValue(new Error("permission denied"));
+    const { harness } = mount("t1");
+    await act(async () => {
+      harness.current.openDelete(thread("t1"));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await harness.current.confirmDelete();
+    });
+
+    window.removeEventListener("futureos:archive-changed", listener);
+    expect(changes).toBe(0);
+    harness.unmount();
+  });
+
   it("keeps the delete dialog open with an error when deletion fails", async () => {
     mocks.deleteThread.mockRejectedValue(new Error("permission denied"));
     const { harness } = mount();

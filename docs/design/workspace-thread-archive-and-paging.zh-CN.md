@@ -217,6 +217,8 @@ store-changed: { kind: thread|workspace, op: created|updated|archived|restored|d
 
 行操作：恢复整组、删除整组、重命名。点击行 = 打开只读详情。
 
+**删除后归档视图必须重读**：归档视图持有自己的流（`archived` / `workspace-archived:<id>`），store 的分页列表无法表达"这一行已经不存在"——页不再返回它，与"归档中、只是不在这一页"是同一份证据。因此 `delete_thread` / `batch_delete_threads` 成功后同样发 `archive-changed`，让货架重读；否则行留在货架上，点开时后端找不到会话，只读详情显示 `Thread not found`。
+
 ### 7.4 只读详情
 
 点击归档行后，中间区像正常会话一样打开，但只读：
