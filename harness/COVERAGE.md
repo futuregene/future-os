@@ -191,3 +191,26 @@ the user sees is written for them. Do not delete it to make a run look clean.
   The host filters those before any client sees them
   (`host/src/agent_bridge/queue.rs`), so it is covered there by unit tests; a
   browser case would have to fake the filtering it is meant to check.
+
+## Fault injection (`--fault`)
+
+`node harness/cli.mjs run --case <id> --fault <name>` puts a **known defect** into
+the fixture server before the case starts and leaves it there for the whole run.
+It exists to measure the video judge (`harness/scripts/video-judge.mjs`): a green
+suite can only show false positives, so the judge's catch rate needs recordings
+that really contain a defect.
+
+| Name | What the page gets | Visible on screen? |
+|---|---|---|
+| `api-500` | `list_threads`, `list_threads_page`, `list_pinned_threads` return an error | **no** — the desktop swallows the error and renders an empty sidebar, so this one is only useful for assertion-level checks |
+| `empty-list` | the same three commands succeed with no rows | partly — the session list is empty while workspace groups still render |
+| `hang` | the same three never answer (20 s) | **yes** — the app stays on 「正在加载账号和模型服务设置」 for the whole case |
+
+Rules this hook follows:
+
+- **Off by default.** Without `--fault`, dispatch is the original code path; no
+  fault code runs and no behaviour changes.
+- **Test-only.** It is not wired into CI, and no case's pass criteria reference it.
+  A faulted run is expected to fail its own assertions — that is the point.
+- **Whole-run.** The fault is applied before the case starts and never lifted, so
+  the defect is on screen for seconds, not one frame.
