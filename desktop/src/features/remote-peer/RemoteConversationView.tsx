@@ -23,6 +23,7 @@ import { peerHolderName } from "./peerStatus";
 import { RemoteAttachmentProvider } from "./RemoteAttachmentOrigin";
 import { foldLiveReply, stripRunCopies } from "./remoteLiveReplies";
 import { setRemotePeerVisibleSession } from "./remotePeerClient";
+import { fetchRemoteReasoning } from "./remoteReasoning";
 import { withRemoteRunNotices } from "./remoteRunNotices";
 import { RemoteStandbyNotice } from "./RemoteStandbyNotice";
 import { fetchRemoteToolTarget } from "./remoteToolTarget";
@@ -239,6 +240,21 @@ export function RemoteConversationView({
    */
   const resolveActivityTarget = useCallback<ActivityTargetResolver>(
     input => fetchRemoteToolTarget({ desktopId, sessionId, ...input }),
+    [desktopId, sessionId],
+  );
+  /**
+   * One reasoning block's text, read from the host when its row is opened.
+   *
+   * The same bargain one row over: the trimmed lane sends a reasoning row's
+   * boundaries and not its body, so the row asks for the text the first time a
+   * reader expands it. Gated on the host advertising `reasoning_fetch_v1`: a host
+   * that predates the read would refuse it, and a row that offers an expansion
+   * it cannot deliver is worse than one that stays the label it was.
+   */
+  const supportsReasoningFetch = peer?.features.includes("reasoning_fetch_v1") === true;
+  const onResolveReasoning = useCallback(
+    (runId: string, index: number, settled?: boolean) =>
+      fetchRemoteReasoning({ desktopId, sessionId, runId, index, settled }),
     [desktopId, sessionId],
   );
   const transcript = useMemo(() => withRemoteRunNotices(messages), [messages]);
@@ -537,6 +553,7 @@ The same two layers this app's own conversation uses (`AgentThread`):
                       // answer and left the new one invisible.
                       message={message}
                       resolveActivityTarget={resolveActivityTarget}
+                      onResolveReasoning={supportsReasoningFetch ? onResolveReasoning : undefined}
                     />
                   </RemoteAttachmentProvider>
                 );
