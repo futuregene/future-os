@@ -273,7 +273,7 @@ it("locks the input and spins the send button while the recommender is asked", a
   }
 });
 
-it("installs, appends the slash command and sends on 安装并使用", async () => {
+it("installs, then leads the message with the slash command and sends on 安装并使用", async () => {
   const host = document.createElement("div");
   document.body.append(host);
   const onSend = vi.fn();
@@ -282,12 +282,17 @@ it("installs, appends the slash command and sends on 安装并使用", async () 
     const { onInstall } = await mountCardOwner(host, vi.fn(async () => card), onSend);
     typeInto(host, "please search the web for this");
     await submit(host);
+    // The card says what the action does to the message before it is pressed.
+    expect(host.textContent).toContain("Installs it, then sends this message with /future-web in front.");
     await act(async () => buttonSaying(host, "Install & use").click());
     expect(onInstall).toHaveBeenCalledWith(card);
-    // The sent message carries the original draft plus the slash command,
-    // appended after a space.
+    // The sent message carries the original draft, word for word, with the
+    // slash command in front of it — the position the app's own `/` menu and
+    // the Skills page's 「试试」 prefill produce. Appending it after the last
+    // word spliced a token into the sentence the reader wrote, which read as
+    // the draft having been rewritten.
     expect(onSend).toHaveBeenCalledTimes(1);
-    expect(sentContent(onSend)).toBe("please search the web for this /future-web");
+    expect(sentContent(onSend)).toBe("/future-web please search the web for this");
     // A successful send clears the composer.
     expect(host.querySelector<HTMLElement>("[role=textbox]")!.textContent).toBe("");
   }

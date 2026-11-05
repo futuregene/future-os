@@ -77,7 +77,15 @@ export function ChatTopBar({
               </Text>
             </>
           ) : null}
-          <Text numberOfLines={1} style={styles.context} accessibilityLabel={contextLabel}>
+          {/* Two lines, like the device trigger on the session list: the machine
+              name caps at 70% of this row, so on a phone the workspace half has
+              ~80pt and a single line cut 「工作区 · 多巴胺与决策」 to 「多巴…」 —
+              the one fact that says *which* workspace this conversation is in.
+              The bar has the room (it is a 60pt minimum, and the line under the
+              title was using about half of it), so the name wraps instead of
+              disappearing. Beyond two lines it still ellipsizes: a workspace
+              called by a paragraph is not what this line is for. */}
+          <Text numberOfLines={2} style={styles.context} accessibilityLabel={contextLabel}>
             {contextLabel}
           </Text>
         </View>

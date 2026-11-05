@@ -191,7 +191,9 @@ it("sends with the skill once it is installed", async () => {
   await settle();
 
   expect(onInstall).toHaveBeenCalledWith(card);
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", expect.stringContaining("/pdf-tools"), [], null, { modelId: null, thinkingLevel: null }, expect.any(String));
+  // The token leads, word for word around the user's own sentence: the same
+  // placement `/` insertion and the Skills page prefill give it on this side.
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "/pdf-tools please summarise this pdf", [], null, { modelId: null, thinkingLevel: null }, expect.any(String));
   await view.unmount();
 });
 

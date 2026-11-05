@@ -159,6 +159,9 @@
     "check": "检查更新",
     "checking": "检查中…",
     "upToDate": "已是最新版本",
+    "checkingNow": "正在检查更新…",
+    "lastChecked": "上次检查：{{time}}",
+    "unsupported": "当前平台无法自动检查更新，请从官网下载最新版本。",
     "available": "发现新版本 v{{version}}",
     "install": "下载并安装",
     "downloading": "下载中",
@@ -228,7 +231,11 @@
     "balanceLoading": "正在刷新…",
     "balanceUnavailable": "余额暂时不可用",
     "credits": "credits",
-    "recharge": "充值"
+    "recharge": "充值",
+    "balanceEmpty": "已用完，任务无法运行，请先充值",
+    "balanceUnknown": "尚未读取到余额",
+    "balanceHint": "余额用于抵扣平台上的模型调用费用；余额为 0 时新的任务无法运行。团队账户请联系管理员充值。",
+    "balanceCommunity": "社区版使用自己的模型与密钥，不经过平台计费，因此不显示余额。"
   },
   "models": {
     "searchPlaceholder": "搜索模型…",

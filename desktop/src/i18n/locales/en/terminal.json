@@ -20,6 +20,9 @@
   "retry": "Retry",
   "dismiss": "Dismiss",
   "createFailed": "Could not start the terminal",
+  "connectFailed": "Couldn't connect to the terminal",
+  "connectFailedHint": "The shell did not connect after several attempts. Retry, or close this tab and start a new terminal.",
+  "workingDirectory": "Working directory: {{path}}",
   "serverUnavailable": "Terminal server unavailable",
   "reconnecting": "Reconnecting…",
   "onHost": "on {{host}}"

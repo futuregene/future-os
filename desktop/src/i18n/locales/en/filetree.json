@@ -3,6 +3,8 @@
   "openWorkspace": "Open Folder",
   "showHidden": "Hidden files",
   "empty": "This folder is empty",
+  "emptyTitle": "This folder is empty",
+  "emptyDetail": "{{path}} has no files yet. Create one here, or use Open Folder to browse it in your file manager.",
   "loading": "Loading…",
   "loadFailed": "Couldn't read this folder",
   "openFailed": "Couldn't open this file",

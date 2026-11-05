@@ -162,6 +162,7 @@
     "skillRecommend": {
       "cardTitle": "Recommended skill",
       "installAndUse": "Install & use",
+      "installHint": "Installs it, then sends this message with /{{name}} in front.",
       "dismissAndSend": "Send without it",
       "installFailed": "Couldn't install the skill. Please try again."
     },
@@ -198,6 +199,7 @@
       "title": "Send queue",
       "count": "{{count}} waiting",
       "hint": "Sent as one message when this reply ends",
+      "hintOne": "Sent as its own message when this reply ends",
       "hintParked": "Waited too long — press “Send this one now”",
       "attachments": "Attachments: {{count}}",
       "attachmentsOnly": "Attachments only",

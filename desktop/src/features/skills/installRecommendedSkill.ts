@@ -1,4 +1,5 @@
 import { installSkill, listAvailableSkills, refreshSkills } from "../../integrations/skills/skillsClient";
+import { emitFutureEvent } from "../../lib/futureEvents";
 
 /**
  * Install a recommended skill at its latest catalogue version, then tell the
@@ -20,6 +21,15 @@ export async function installRecommendedSkill(skillId: string): Promise<boolean>
       return false;
     await installSkill(skillId, version);
     await refreshSkills();
+    // Announce the change in the renderer as well. The catalogue cache is
+    // dropped by the calls above, but the left rail's count is not cache
+    // driven: it re-reads `list_installed_skills` only when "skills-changed"
+    // arrives, and its own install from the Skills page emits this event. The
+    // backend does publish an invalidation too, but that arrives while the
+    // catalog cache may still hold the pre-install list, so the badge kept the
+    // old count. Emitting here — after both mutations settled — is the same
+    // contract the Skills page already relies on.
+    emitFutureEvent("skills-changed", undefined);
     return true;
   }
   catch {

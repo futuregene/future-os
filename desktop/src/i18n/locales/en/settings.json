@@ -159,6 +159,9 @@
     "check": "Check for updates",
     "checking": "Checking…",
     "upToDate": "You're on the latest version",
+    "checkingNow": "Checking for updates…",
+    "lastChecked": "Last checked {{time}}",
+    "unsupported": "This platform can't check for updates automatically. Download the latest version from the website.",
     "available": "New version v{{version}} available",
     "install": "Download and install",
     "downloading": "Downloading",
@@ -228,7 +231,11 @@
     "balanceLoading": "Refreshing…",
     "balanceUnavailable": "Balance temporarily unavailable",
     "credits": "credits",
-    "recharge": "Recharge"
+    "recharge": "Recharge",
+    "balanceEmpty": "used up — runs can't start until you top up",
+    "balanceUnknown": "Balance not loaded yet",
+    "balanceHint": "Credits pay for model calls on the platform. At zero, new runs can't start; on a team account, ask your admin to top up.",
+    "balanceCommunity": "The community edition runs with your own models and keys, so it isn't billed by the platform — and shows no balance."
   },
   "models": {
     "searchPlaceholder": "Search models…",

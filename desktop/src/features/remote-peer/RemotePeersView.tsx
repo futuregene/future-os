@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
+import { EmptyState } from "../../components/ui/EmptyState";
 import { TextInput } from "../../components/ui/TextInput";
 import { cn } from "../../lib/cn";
 import { emitFutureEvent } from "../../lib/futureEvents";
@@ -329,9 +330,15 @@ export function RemoteClientSection({
 
         {peers.length === 0
           ? (
-              <p className="text-sm text-ink-soft" data-testid={loading ? "peers-loading" : undefined}>
-                {loading ? t("loading") : t("empty")}
-              </p>
+              loading
+                // Still reading: a labelled placeholder, not the empty card.
+                // The rows start empty, so the two states must not look alike —
+                // a machine the user has paired would look removed until the
+                // read answers.
+                ? <p aria-live="polite" className="text-sm text-ink-soft" data-testid="peers-loading">{t("loading")}</p>
+                // Nothing paired: the shared card (as everywhere else in the
+                // app), with the next step in the pairing form above.
+                : <EmptyState detail={t("emptyDetail")} title={t("empty")} />
             )
           : (
               <div className="space-y-2">

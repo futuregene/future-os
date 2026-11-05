@@ -326,6 +326,54 @@ CREATE TABLE IF NOT EXISTS task_prompt_revisions (
 );
 "#;
 
+/// A write was refused because an undeleted task already carries that name —
+/// the `tasks_active_name` index. Returned by [`Store::insert_task`] and
+/// [`Store::update_task`] in place of the driver's
+/// `UNIQUE constraint failed: tasks.name`, which is the database talking to a
+/// developer: a host can print this one as-is and the user learns which task
+/// holds the name and what to do about it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskNameTaken {
+    /// The name the caller asked for.
+    pub name: String,
+    /// The task that already holds it (`""` when it could not be read back, so
+    /// a racing delete still leaves a sentence rather than an empty pair of
+    /// brackets).
+    pub existing_id: String,
+}
+
+impl std::fmt::Display for TaskNameTaken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.existing_id.is_empty() {
+            write!(
+                f,
+                "a task named \"{}\" already exists; rename this one or edit that task instead",
+                self.name
+            )
+        } else {
+            write!(
+                f,
+                "a task named \"{}\" already exists ({}); rename this one or edit that task instead",
+                self.name, self.existing_id
+            )
+        }
+    }
+}
+
+impl std::error::Error for TaskNameTaken {}
+
+/// Whether the driver refused a write because a *live* task already has the
+/// name being written (`tasks_active_name`). Only that one constraint has a
+/// sentence for the user; every other failure passes through untouched.
+fn is_taken_name_error(err: &rusqlite::Error) -> bool {
+    matches!(
+        err,
+        rusqlite::Error::SqliteFailure(inner, Some(message))
+            if inner.code == rusqlite::ErrorCode::ConstraintViolation
+                && message.contains("tasks.name")
+    )
+}
+
 pub fn store_dir(home: &Path) -> PathBuf {
     home.join(STORE_DIR)
 }
@@ -446,7 +494,9 @@ impl Store {
             task.deleted_at,
             task.timezone,
         ];
-        self.conn.execute(SQL_INSERT_TASK, values)?;
+        if let Err(err) = self.conn.execute(SQL_INSERT_TASK, values) {
+            return Err(self.explain_write_error(err, &task.name));
+        }
         Ok(())
     }
 
@@ -474,8 +524,29 @@ impl Store {
             task.deleted_at,
             task.timezone,
         ];
-        self.conn.execute(SQL_UPDATE_TASK, values)?;
+        if let Err(err) = self.conn.execute(SQL_UPDATE_TASK, values) {
+            return Err(self.explain_write_error(err, &task.name));
+        }
         Ok(())
+    }
+
+    /// A name collision is the one write failure with something to say to the
+    /// user: name the task that already holds the name. Everything else is the
+    /// driver's own error, returned unchanged.
+    fn explain_write_error(&self, err: rusqlite::Error, name: &str) -> anyhow::Error {
+        if !is_taken_name_error(&err) {
+            return err.into();
+        }
+        let existing_id = self
+            .find_task_by_name(name)
+            .ok()
+            .flatten()
+            .map(|t| t.id)
+            .unwrap_or_default();
+        anyhow::Error::new(TaskNameTaken {
+            name: name.to_string(),
+            existing_id,
+        })
     }
 
     pub fn get_task(&self, id: &str) -> Result<Option<Task>> {
@@ -1043,12 +1114,95 @@ mod tests {
         let (_dir, s) = store();
         s.insert_task(&task("dup")).unwrap();
         let err = s.insert_task(&task("dup")).unwrap_err();
-        assert!(err.to_string().contains("UNIQUE") || err.to_string().contains("unique"));
+        assert!(
+            err.downcast_ref::<TaskNameTaken>().is_some(),
+            "a live name is unique: {err}"
+        );
         // Soft-delete frees the name.
         let mut t = s.find_task_by_name("dup").unwrap().unwrap();
         t.deleted_at = Some(1);
         s.update_task(&t).unwrap();
         s.insert_task(&task("dup")).unwrap();
+    }
+
+    /// A rejected duplicate *insert* names the task that already holds the
+    /// name, in words, and leaves the store as it was: one row, the first
+    /// task's prompt, and a store that still takes writes.
+    #[test]
+    fn a_duplicate_name_is_refused_in_words_and_writes_nothing() {
+        let (_dir, s) = store();
+        let first = task("report");
+        s.insert_task(&first).unwrap();
+
+        let mut second = task("report");
+        second.prompt = "the prompt that must not land".into();
+        let err = s.insert_task(&second).unwrap_err();
+
+        // The typed error, not the driver's text.
+        let taken = err
+            .downcast_ref::<TaskNameTaken>()
+            .unwrap_or_else(|| panic!("expected a TaskNameTaken, got {err:?}"));
+        assert_eq!(taken.name, "report");
+        assert_eq!(taken.existing_id, first.id);
+
+        let message = err.to_string();
+        assert!(message.contains("\"report\""), "{message}");
+        assert!(message.contains(&first.id), "{message}");
+        assert!(
+            message.contains("rename this one or edit that task instead"),
+            "{message}"
+        );
+        assert!(!message.contains("UNIQUE"), "{message}");
+        assert!(!message.contains("constraint"), "{message}");
+
+        // Nothing half-written: one row, still the first task's prompt, and the
+        // name still resolves to it.
+        assert_eq!(s.list_tasks(false).unwrap().len(), 1);
+        let stored = s.find_task_by_name("report").unwrap().unwrap();
+        assert_eq!(stored.id, first.id);
+        assert_eq!(stored.prompt, first.prompt);
+
+        // The store is still usable after the refusal.
+        s.insert_task(&task("another")).unwrap();
+        assert_eq!(s.list_tasks(false).unwrap().len(), 2);
+    }
+
+    /// Renaming onto a taken name is the same refusal on the update path, and
+    /// it names the *other* task, not the row being renamed.
+    #[test]
+    fn renaming_onto_a_taken_name_is_refused_in_words() {
+        let (_dir, s) = store();
+        let keep = task("keep");
+        s.insert_task(&keep).unwrap();
+        let mut other = task("other");
+        s.insert_task(&other).unwrap();
+
+        other.name = "keep".into();
+        let err = s.update_task(&other).unwrap_err();
+        let taken = err.downcast_ref::<TaskNameTaken>().expect("typed error");
+        assert_eq!(taken.existing_id, keep.id);
+        assert!(!err.to_string().contains("UNIQUE"), "{err}");
+
+        // The row keeps its old name: the update was refused, not half-applied.
+        assert_eq!(s.get_task(&other.id).unwrap().unwrap().name, "other");
+    }
+
+    /// Every other write failure keeps the driver's error: only the name index
+    /// has a sentence for the user.
+    #[test]
+    fn a_non_name_failure_is_not_rewritten() {
+        let (_dir, s) = store();
+        s.insert_task(&task("kept")).unwrap();
+
+        // Same primary key, different name: a collision on `tasks.id`, which is
+        // not a taken name and must not be reported as one.
+        let mut duplicate_id = task("fresh-name");
+        duplicate_id.id = s.find_task_by_name("kept").unwrap().unwrap().id;
+        let err = s.insert_task(&duplicate_id).unwrap_err();
+        assert!(
+            err.downcast_ref::<TaskNameTaken>().is_none(),
+            "a primary-key collision must not be reported as a taken name: {err}"
+        );
     }
 
     #[test]

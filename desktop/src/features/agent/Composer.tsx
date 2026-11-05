@@ -699,9 +699,14 @@ function ComposerImpl({
         });
         return;
       }
+      // The token goes to the FRONT of the draft, the way the product's own
+      // `/skill` insertion places it (`/` menu pills, the Skills page's 「试试」
+      // prefill): a skill reads as a prefix on the sentence, and appending it
+      // after the last word spliced a token into the reader's own sentence —
+      // which read as the message being rewritten rather than annotated.
       const current = editorRef.current?.getContent() ?? "";
-      const separator = current.length > 0 && !current.endsWith(" ") ? " " : "";
-      editorRef.current?.restore(`${current}${separator}/${reco.card.name} `);
+      const separator = current.length > 0 ? " " : "";
+      editorRef.current?.restore(`/${reco.card.name}${separator}${current}`);
       cardHandledRef.current = true;
       reco.onDismiss();
       // The card is handled; submitValue now takes the normal send path.

@@ -41,10 +41,15 @@ describe("agent status gate", () => {
     expect(renderStatus("incompatible", false, "Agent serves a different data root")).toContain("Agent serves a different data root");
   });
 
-  it("shows only the animation during the first five seconds", () => {
+  it("names what it is waiting for instead of leaving a bare spinner", () => {
+    // Measured against the harness (#1545): the cold-start screen was a centred
+    // spinner and no text at all, so nothing said what the app was waiting for
+    // or that it was still doing something rather than stuck.
     const text = renderStatus("starting");
-    expect(text).toBe("");
-    expect(text).not.toContain("Future Agent is starting");
+    expect(text).toContain("Starting Future Agent");
+    // The step detail and the nudge are still held back, so a fast start does
+    // not flash three sentences before the shell appears.
+    expect(text).not.toContain("Please wait a moment.");
     expect(text).not.toContain("Sign in");
   });
 
@@ -61,7 +66,8 @@ describe("agent status gate", () => {
 
   it("reveals upgrade progress only after the waiting hint delay", () => {
     const progress = { stage: "upgrading_storage" as const, elapsedMs: 24000 };
-    expect(renderStatus("starting", false, undefined, undefined, progress)).toBe("");
+    const upgrading = renderStatus("starting", false, undefined, undefined, progress);
+    expect(upgrading).not.toContain("Upgrading conversation data");
     const text = renderStatus("starting", true, undefined, undefined, progress);
     expect(text).toContain("Upgrading conversation data. Do not close the app.");
     expect(text).toContain("Startup is taking longer");
@@ -70,7 +76,8 @@ describe("agent status gate", () => {
 
   it("shows the backup close warning only after the waiting hint delay", () => {
     const progress = { stage: "backing_up_storage" as const, elapsedMs: 6000 };
-    expect(renderStatus("starting", false, undefined, undefined, progress)).toBe("");
+    const backingUp = renderStatus("starting", false, undefined, undefined, progress);
+    expect(backingUp).not.toContain("Backing up data before upgrading");
     const text = renderStatus("starting", true, undefined, undefined, progress);
     expect(text).toContain("Backing up data before upgrading. Do not close the app.");
     expect(text).not.toContain("Startup is taking longer");

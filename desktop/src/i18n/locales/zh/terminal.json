@@ -20,6 +20,9 @@
   "retry": "重试",
   "dismiss": "忽略",
   "createFailed": "无法启动终端",
+  "connectFailed": "无法连接终端",
+  "connectFailedHint": "多次尝试后仍未连上 shell。可以重试连接，或关闭该标签后新建一个终端。",
+  "workingDirectory": "工作目录：{{path}}",
   "serverUnavailable": "终端服务不可用",
   "reconnecting": "正在重连…",
   "onHost": "在 {{host}} 上"

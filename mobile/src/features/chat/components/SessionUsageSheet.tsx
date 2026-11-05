@@ -22,6 +22,13 @@ import { formatCostCny } from "../utils";
  * total is the agent's authoritative figure when the provider bills itself
  * (the Future platform), so the rows are an estimate and need not add up to it
  * exactly. An unpriced model reports zeros — then rows show tokens only.
+ *
+ * Two bases, so the table names both: the amount column is labelled as the
+ * estimate it is, and the total row says it is what the provider billed. The
+ * footnote below says the same in a sentence, but a reader adding the rows up
+ * reads the column heading and the total's own label first — and with one
+ * label over both (「金额」 / 「合计」) a row that did not reconcile with the
+ * total looked like an arithmetic error rather than two different quantities.
  */
 export function SessionUsageSheet({
   title,
@@ -97,7 +104,9 @@ export function SessionUsageSheet({
                 <View style={[styles.row, styles.headRow]}>
                   <Text style={[styles.headCell, styles.grow]}>{t("chat.usageCategory")}</Text>
                   <Text style={[styles.headCell, styles.numberCell]}>{t("chat.usageTokens")}</Text>
-                  <Text style={[styles.headCell, styles.numberCell]}>{t("chat.usageCost")}</Text>
+                  <Text style={[styles.headCell, styles.numberCell]}>
+                    {priced ? t("chat.usageCostEstimate") : t("chat.usageCost")}
+                  </Text>
                 </View>
                 {rows.map(row => (
                   <View key={row.label} style={styles.row}>
@@ -109,7 +118,7 @@ export function SessionUsageSheet({
                   </View>
                 ))}
                 <View style={[styles.row, styles.totalRow]}>
-                  <Text style={[styles.totalCell, styles.grow]}>{t("chat.usageTotal")}</Text>
+                  <Text style={[styles.totalCell, styles.grow]}>{t("chat.usageTotalBilled")}</Text>
                   <Text style={[styles.totalCell, styles.numberCell]} />
                   <Text style={[styles.totalCell, styles.numberCell]}>{formatCostCny(usage.costCny)}</Text>
                 </View>

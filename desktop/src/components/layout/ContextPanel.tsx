@@ -513,11 +513,16 @@ export function ContextPanel({
                   )
             )
           : null}
+        {/* The Files tab reads `activeWorkspacePath`, not
+            `activeWorkspace?.path`: the store's workspace falls back to the
+            first user workspace while the thread's own is unresolved, so
+            handing that down listed another project's folder while the Review
+            tab queried the thread's (issue #1541). */}
         {!showInitialLoading && activeThread && activeTab === "files"
           ? (
               <FileTreePanel
                 isWorkspace={isWorkspaceThread}
-                rootPath={activeWorkspace?.path ?? null}
+                rootPath={activeWorkspacePath}
               />
             )
           : null}

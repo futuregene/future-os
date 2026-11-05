@@ -6,6 +6,7 @@ import { ConfirmDeleteDialog } from "../../components/layout/EntityDialogs";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
+import { EmptyState } from "../../components/ui/EmptyState";
 import { Switch } from "../../components/ui/Switch";
 import { getAppSettings } from "../../integrations/storage/appSettings";
 import { emitFutureEvent } from "../../lib/futureEvents";
@@ -537,10 +538,20 @@ export function RemoteHostSection({
               <>
                 <span className="text-sm font-medium text-ink">{t("clientsTitle")}</span>
 
-                <div className="rounded-lg border border-line-soft bg-surface-subtle">
+                {/* The empty list is the shared card, not a sentence in a box:
+                    every other "nothing here" in the app (Runs, Review, Files,
+                    Skills, Terminal) is that card, and the remote page was the
+                    one place where the same fact arrived in a different
+                    language (#1545). The card brings its own border, so the
+                    wrapper drops its own when it is empty rather than framing
+                    a dashed card in a solid one. */}
+                <div className={devices.length === 0 ? undefined : "rounded-lg border border-line-soft bg-surface-subtle"}>
                   {devices.length === 0
                     ? (
-                        <p className="px-4 py-3 text-sm text-ink-muted">{t("noClients")}</p>
+                        <EmptyState
+                          detail={t("noClientsDetail")}
+                          title={t("noClients")}
+                        />
                       )
                     : (
                         <ul className="divide-y divide-line-soft">
