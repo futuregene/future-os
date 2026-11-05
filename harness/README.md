@@ -104,6 +104,7 @@ harness/
     remote-driver.mjs     desktop + mobile clients in one case
     video.mjs             screencast frames → mp4 (real timing)
     analyze.mjs           deterministic signals → vision → synthesis
+    provenance.mjs        which values the harness wrote, and what that rules out
     report.mjs            report.md
     issues.mjs            GitHub issue drafts (human approval by default)
   tui/driver.py           pty driver, terminal cell model, PNG frames
@@ -236,6 +237,44 @@ product never promised.
 Analysis is resumable and non-fatal: a missing CLI or a failed vision call is
 recorded and the remaining evidence still becomes a report.
 
+### What the evidence cannot prove
+
+Two classes of false finding cost more than they look: they read exactly like a
+defect, and a human has to read the code to refute each one. Measured on the
+2026-11-05 run (`final-v12`, 19 cases, 33 issues filed): of the twelve issues a
+reviewer later closed as "not a defect", five came from data the harness wrote
+itself, and three came from frames that predate the action they were read as
+proving.
+
+**Fixture provenance.** The UI is real; some of the values it renders are not.
+`lib/provenance.mjs` builds a block for the per-case judge and the open-ended
+pass naming, for *this run*, which channels are fixture data — the version and
+build number, the account balance, the assistant's reply text, the simulated
+send queue, the demo approval card, the device fleet, the replayed terminal —
+plus the IPC commands that fell through to the in-page demo mock
+(`server.fallbacks`, read from the result rather than guessed). The rule it
+states is narrow on purpose: a *value* the fixture wrote is not a defect, while
+*how the product draws a value* — truncation, overlap, a bare empty state, a
+button that does nothing, a count that disagrees with its own rows — still is.
+To keep that from being advice a model may skip, `markFixtureFindings()` demotes
+findings that quote a value no real build can emit (`0.0.0-harness`), so the
+issue flow cannot file them; the report still shows them as observations.
+Which value belongs on that list is the whole design: a corpus check over the
+mock sources was tried and removed, because it demoted a real defect whose
+evidence quoted the draft the case itself typed.
+
+**Frame provenance.** Every screenshot is labelled with the step that produced
+it and, since the screencast records its own clock, with its position in the
+recording (`第 12 步 · click · 录像 18.4s`). Those labels are now part of the
+prompt — before, the model received the images in order with nothing saying which
+step each one was, which is how "the fork still shows the original reply" was
+reported about a frame taken *before* the fork. Both passes are told that a
+claim of the form "it stayed / it did not change / the count is wrong" must be
+visible in the frame marked 「最终状态」, and that anything seen only in a middle
+frame is `info` at most.
+
+Run the guard's tests with `node --test harness/lib/provenance.test.mjs`.
+
 ### Discovery, two levels
 
 The first level judges one case and asks a second time with no checklist: look at
@@ -266,7 +305,9 @@ case ids, the case's own expectations, the exact reproduction command, and how i
 was found (failed assertion / model verdict / model discovery) so a reader can
 calibrate. The model writes the prose; the structural parts are appended from the
 run, and a draft whose cases no longer exist in the library is dropped instead of
-being filed as unverifiable.
+being filed as unverifiable. Findings that quote a value the fixture wrote are
+filtered before drafting and the count is reported, so a run cannot file its own
+test data as a product defect.
 
 ```bash
 node harness/cli.mjs issues-en --run harness/runs/<id>                    # drafts only

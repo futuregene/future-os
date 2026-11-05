@@ -79,9 +79,9 @@ async function mergeByModel(merged, { runPrompt, runDir, model }) {
 }
 
 export async function runIssuesEn(runDir, { model, runPrompt, file = false, repo = null, yes = false } = {}) {
-  const { analysis, cases, groups } = draftEnglishIssues(runDir, { minSeverity: "medium" });
+  const { analysis, cases, groups, fixtureSkipped } = draftEnglishIssues(runDir, { minSeverity: "medium" });
   if (!groups.length)
-    return { message: "Nothing at medium severity or above; no issues drafted.", drafts: [] };
+    return { message: `Nothing at medium severity or above${fixtureSkipped ? ` (${fixtureSkipped} fixture-authored finding(s) excluded)` : ""}; no issues drafted.`, drafts: [] };
 
   // A finding for a case that no longer exists cannot be re-run, so it cannot be
   // a useful issue. Dropped cases leave their findings behind in older analyses.
@@ -105,6 +105,9 @@ export async function runIssuesEn(runDir, { model, runPrompt, file = false, repo
 
   const summary = [
     `${drafts.length} issue(s) drafted in ${runDir}/issues-en`,
+    // Say what was left out and why: a harness that silently drops findings is
+    // indistinguishable from one that never had them.
+    fixtureSkipped ? `${fixtureSkipped} finding(s) excluded: they quote a value only the test fixture produces` : null,
     stale.length ? `${stale.length} candidate(s) skipped: their cases are no longer in the library` : null,
   ].filter(Boolean).join("; ");
 

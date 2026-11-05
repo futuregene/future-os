@@ -57,6 +57,8 @@ export function writeReport(runDir, { repoRoot = resolve(import.meta.dirname, ".
   lines.push(`- 运行：\`${manifest.id}\``);
   lines.push(`- 时间：${new Date().toISOString()}`);
   lines.push(`- 用例：${totals.cases} 个，通过 ${totals.passed}，失败 ${totals.failed}；发现问题 ${totals.findings ?? 0} 项`);
+  if (totals.fixture)
+    lines.push(`- 其中 ${totals.fixture} 条引用的值由测试夹具写死（占位版本号等），已降级为观察项，不计入缺陷、也不提交 issue`);
   lines.push(`- 数据：真实 \`app.db\` 快照（每个用例独立副本）`);
   lines.push(`- 界面：真实桌面前端（Vite + React），Tauri IPC 由夹具服务替代`);
   lines.push("");
