@@ -15,6 +15,27 @@ vi.mock("../../lib/useFloatingScrollbar", () => ({
   useFloatingScrollbar: () => ({ scrollRef: { current: null }, scrollbar: { height: 0, top: 0, visible: false }, handleScroll: () => {}, handleThumbPointerDown: () => {} }),
 }));
 
+/**
+ * The store's answer, stood in for here.
+ *
+ * It only answers once something is typed, which is what the real hook does
+ * (`null` while the box is empty) — otherwise every test in this file would
+ * draw rows nobody searched for.
+ */
+let searchAnswer: { active: unknown[]; archived: unknown[] } | null = null;
+vi.mock("./hooks/useThreadSearch", () => ({
+  useThreadSearch: (query: string) => (query.trim().length > 0 ? searchAnswer : null),
+}));
+
+/** Groups the reader has folded; empty unless a test says otherwise. */
+let foldedWorkspaces = new Set<string>();
+vi.mock("./hooks/useCollapsedWorkspaces", () => ({
+  useCollapsedWorkspaces: () => ({
+    collapsedWorkspaces: foldedWorkspaces,
+    toggleWorkspaceCollapsed: () => {},
+  }),
+}));
+
 function thread(id: string, title: string, mode: "chat" | "workspace" = "chat", workspaceId = "ws"): ReturnType<typeof threadBuilder> {
   return threadBuilder(id, title, mode, workspaceId);
 }
@@ -95,6 +116,8 @@ async function render(p: ComponentProps<typeof ActivityRail>) {
 describe("activity rail conversation search", () => {
   beforeEach(() => {
     localStorage.clear();
+    searchAnswer = null;
+    foldedWorkspaces = new Set<string>();
   });
 
   it("filters local and remote conversations by title", async () => {
@@ -461,5 +484,61 @@ describe("activity rail conversation search", () => {
     // The list's own no-matches banner is the first thing it draws; it must not
     // be there when a workspace group answered the search.
     expect(list.firstElementChild?.getAttribute("data-testid")).not.toBe("no-matches");
+  });
+
+  /**
+   * The lists are paged, and the store answers the query in full.
+   *
+   * A reader who searches is asking about everything they have written, not
+   * about the pages this window happens to be holding. The rail therefore takes
+   * the store's matches — a conversation whose group page never arrived is
+   * drawn under its heading, exactly like one that was loaded.
+   */
+  it("finds a conversation the loaded pages never reached", async () => {
+    searchAnswer = {
+      archived: [],
+      // A workspace conversation older than anything the rail paged in: the
+      // props below carry no threads at all.
+      active: [{ ...workspaceThread("deep", "ws_a", "a buried conversation"), id: "deep" } as never],
+    };
+    const p = props([], [storedWorkspace("ws_a", "Alpha")]);
+    const { container } = await render(p);
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    await flushAsync();
+    const input = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
+    await act(async () => {
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+      descriptor?.set?.call(input, "buried");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushAsync();
+
+    const list = container.querySelector("[data-activity-rail-content]")!;
+    expect(list.textContent).toContain("a buried conversation");
+    expect(list.textContent).toContain("Alpha");
+  });
+
+  /** A folded group is a browsing convenience, not a filter. */
+  it("opens a folded workspace around a matching row", async () => {
+    foldedWorkspaces = new Set(["ws_a"]);
+    searchAnswer = {
+      archived: [],
+      active: [workspaceThread("folded", "ws_a", "the folded needle") as never],
+    };
+    const p = props([workspaceThread("visible", "ws_a", "another row")], [storedWorkspace("ws_a", "Alpha")]);
+    const { container } = await render(p);
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    await flushAsync();
+    const input = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
+    await act(async () => {
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+      descriptor?.set?.call(input, "folded needle");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushAsync();
+
+    const list = container.querySelector("[data-activity-rail-content]")!;
+    // Folded away before the query; open while it is on.
+    expect(list.textContent).toContain("the folded needle");
   });
 });
