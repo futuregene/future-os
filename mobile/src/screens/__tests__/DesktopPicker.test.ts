@@ -12,6 +12,7 @@ jest.mock("react-i18next", () => ({
     t: (key: string, options?: { name?: string }) => ({
       "desktops.pickerLabel": "Desktops",
       "desktops.filterAll": "All desktops",
+      "desktops.empty": "No paired desktops yet.",
       "desktops.manage": "Manage paired desktops…",
       "common.close": "Close",
       "connection.showDetails": "Show connection details and available actions",
@@ -87,6 +88,37 @@ const machineDotColor = (tree: ReactTestRenderer, desktopId: string) => {
   const dot = tree.root.findAll(node => node.props.testID === `machine-dot-${desktopId}`)[0]!;
   return StyleSheet.flatten(dot.props.style).backgroundColor;
 };
+
+describe("an empty device list", () => {
+  const empty = () => {
+    let tree!: ReactTestRenderer;
+    act(() => {
+      tree = create(createElement(DesktopPicker, {
+        filter: { kind: "all" },
+        onChange: () => undefined,
+        onManage: () => undefined,
+        desktops: [],
+        machines: [],
+        connection: { presentation: ready },
+      }));
+    });
+    openPicker(tree);
+    return tree;
+  };
+
+  it("says nothing is paired instead of drawing a list with nothing in it", () => {
+    // #1545: the sheet offered "All desktops" and a manage row over empty
+    // space, so a phone with no machine paired could not tell that from a list
+    // that had not loaded. The sentence is the manage screen's own, reused.
+    expect(painted(empty())).toContain("No paired desktops yet.");
+  });
+
+  it("does not say it while machines are paired", () => {
+    const tree = render([]);
+    openPicker(tree);
+    expect(painted(tree)).not.toContain("No paired desktops yet.");
+  });
+});
 
 describe("the picker's trigger", () => {
   it("keeps the machine's whole name on screen at the largest text size", () => {
