@@ -59,8 +59,17 @@ pub(crate) fn with_history_index<T>(
 
 pub(super) fn history_index_ready(db: &Connection, session: &str) -> Result<bool> {
     let stored_session = crate::session::identity::session_key(db, session)?;
+    // A ready flag alone is not evidence: the projections can be dropped under it
+    // (an operator purge deletes the rows; a rebuild that raced that purge can
+    // then mark the session ready with nothing in the table). A session that has
+    // entries but no display rows is not indexed, whatever the flag says - that
+    // is what made a converted conversation read as "history unavailable".
     Ok(db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM history_index_state WHERE session_id=?1 AND projection_version=?2)",
+        "SELECT EXISTS(
+             SELECT 1 FROM history_index_state st
+              WHERE st.session_id=?1 AND st.projection_version=?2
+                AND (EXISTS(SELECT 1 FROM history_display d WHERE d.session_id=st.session_id)
+                     OR NOT EXISTS(SELECT 1 FROM entries e WHERE e.session_id=st.session_id)))",
         params![&stored_session, PROJECTION_VERSION],
         |row| row.get(0),
     )?)
