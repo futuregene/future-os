@@ -34,6 +34,7 @@ import { readFileSync, existsSync, appendFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { createServer } from "node:http";
+import { applyFixtureFault } from "./faults.mjs";
 
 const now = () => Date.now();
 
@@ -240,7 +241,7 @@ function syntheticEntries(thread, { fork = null } = {}) {
   return cut >= 0 ? entries.slice(0, cut + 1) : entries;
 }
 
-export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs = 0, approvalSeed = 0, pageTranscript = false }) {
+export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs = 0, approvalSeed = 0, pageTranscript = false, fault = null }) {
   const db = new DatabaseSync(dbPath);
   db.exec("PRAGMA journal_mode=WAL");
   db.exec("PRAGMA foreign_keys=ON");
@@ -1023,6 +1024,27 @@ export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs 
       const command = String(body?.command ?? "");
       const args = body?.args ?? {};
       const started = performance.now();
+      // Test-only fault injection (`--fault`). Absent by default: with no fault
+      // selected the dispatch below is byte-for-byte the original one. A fault is
+      // applied before the case starts and stays for the whole run, so the defect
+      // is on screen for the recording rather than appearing for one frame.
+      const injected = applyFault(fault, command);
+      if (injected) {
+        if (injected.hangMs) await delay(injected.hangMs);
+        const entry = {
+          ts: Date.now(),
+          command,
+          handled: true,
+          ms: Math.round((performance.now() - started) * 100) / 100,
+          args: summarizeArgs(args),
+          error: injected.error ?? null,
+          fault,
+        };
+        writeLog(entry);
+        res.writeHead(200, { ...cors, "content-type": "application/json" });
+        res.end(JSON.stringify({ handled: true, ...injected.payload }));
+        return;
+      }
       const handler = handlers[command];
       let payload;
       if (!handler) {
@@ -1093,6 +1115,12 @@ function readBody(req) {
     });
     req.on("error", reject);
   });
+}
+
+// Test-only faults live in ./faults.mjs so the fixture side and the overlay side
+// are declared together.
+function applyFault(fault, command) {
+  return applyFixtureFault(fault, command);
 }
 
 function summarizeArgs(args) {

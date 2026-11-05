@@ -191,3 +191,34 @@ the user sees is written for them. Do not delete it to make a run look clean.
   The host filters those before any client sees them
   (`host/src/agent_bridge/queue.rs`), so it is covered there by unit tests; a
   browser case would have to fake the filtering it is meant to check.
+
+## Fault injection (`--fault`)
+
+`node harness/cli.mjs run --case <id> --fault <name>` puts a **known defect** into
+a run: the fixture side makes the backend actually misbehave, and a document-start
+script paints the *symptom* before the page navigates, so the defect is on screen
+for the whole recording. It exists to measure the video judge
+(`harness/scripts/video-judge.mjs`): a green suite can only show false positives, so
+a judge's catch rate needs recordings that really contain something to see.
+
+| Name | Backend fault | Symptom on screen | Caught by v2 (2026-11-06) |
+|---|---|---|---|
+| `api-500` | thread-list commands return an error | red banner 「同步失败：无法加载会话列表（500）」 that survives re-renders | **4/4** |
+| `dead-click` | the send command never answers (30 s) | the send button greys out and a 「正在发送，未响应…」 pill stays in the corner | **3/3** |
+| `empty-list` | thread-list *and* workspace-list return nothing | the rail turns blank and reads 「暂无工作区，暂无会话」 | **1/3** |
+
+The first round of faults (`hang`, and an `api-500` without an overlay) scored
+**0/9**: their symptoms were invisible — `hang` looks like a normal slow start and a
+bare `api-500` is swallowed into an empty sidebar. A defect that cannot be pointed
+at in the recording measures nothing, whoever is watching.
+
+`empty-list` is the remaining weak one: its mask anchors on the rail element, which
+is absent on some screens, so two of three runs showed a normal sidebar.
+
+Rules this hook follows:
+
+- **Off by default.** Without `--fault`, dispatch is the original code path and no
+  script is registered; nothing about an ordinary run changes.
+- **Test-only.** Not wired into CI, and no case's pass criteria reference it. A
+  faulted run is expected to fail its own assertions — that is the point.
+- **Whole-run.** Both halves are installed before the case starts and never lifted.

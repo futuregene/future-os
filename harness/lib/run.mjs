@@ -13,6 +13,7 @@ import { join, resolve } from "node:path";
 import { CdpPage } from "./cdp.mjs";
 import { copyDatabase, BASE_DB } from "./data.mjs";
 import { createFixtureServer } from "./fixture-server.mjs";
+import { FAULT_OVERLAYS } from "./faults.mjs";
 import { muxVideo, videoClock } from "./video.mjs";
 import { percentile, resolveLimit, readBaseline, baselineKey, drift, slope, mean } from "./perf.mjs";
 
@@ -78,7 +79,7 @@ async function queryFixture(fixture, sql) {
 /**
  * Run one case. Returns the result record; artifacts are written beside it.
  */
-export async function runCase({ page, testCase, runDir, modelsPath, viewport, recordVideo = true, fixture: providedFixture }) {
+export async function runCase({ page, testCase, runDir, modelsPath, viewport, recordVideo = true, fixture: providedFixture, fault = null }) {
   const caseDir = join(runDir, slug(testCase.id));
   mkdirSync(caseDir, { recursive: true });
   const shotsDir = join(caseDir, "shots");
@@ -107,6 +108,7 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
       // mock instead of this server's title-derived one, which is what a case
       // that sends a message needs: only the page knows what it said.
       pageTranscript: testCase.query?.transcript === "page",
+      fault,
     }));
 
   const startedAt = Date.now();
@@ -245,6 +247,12 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
   const injection = await page.send("Page.addScriptToEvaluateOnNewDocument", {
     source: `window.__harnessPickPaths = ${JSON.stringify({ directory: pickDir, file: pickFile })};`,
   });
+  // A faulted run must show its defect in the recording, not just in the
+  // assertions: register the symptom as a document-start script, before the page
+  // navigates, so it survives every re-render. No fault => nothing registered.
+  const faultScript = fault ? FAULT_OVERLAYS[fault] : null;
+  if (faultScript)
+    await page.send("Page.addScriptToEvaluateOnNewDocument", { source: faultScript });
   // Each case starts from the same UI state: the app remembers its last
   // section/sidebar width in localStorage, so a previous case's navigation
   // would otherwise decide which rail is on screen for this one.
