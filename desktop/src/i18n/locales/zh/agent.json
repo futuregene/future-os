@@ -199,6 +199,7 @@
       "title": "发送队列",
       "count": "{{count}} 条等待中",
       "hint": "当前回复结束后合并成一条发送",
+      "hintOne": "当前回复结束后单独发送这一条",
       "hintParked": "等待过久：需点「现在发送这一条」才会发送",
       "attachments": "附件 {{count}} 个",
       "attachmentsOnly": "仅附件",
