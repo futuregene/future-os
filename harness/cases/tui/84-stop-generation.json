@@ -1,0 +1,54 @@
+{
+  "id": "tui-stop-generation",
+  "surface": "tui",
+  "title": "TUI 停止生成：ctrl+c 之后没有任何东西还在流",
+  "area": "tui",
+  "priority": "P0",
+  "tags": ["tui", "stop", "run"],
+  "description": "发一句话让回复开始流式输出，页脚出现「生成 · Ns · 0 工具」的活动行。按 ctrl+c 中断：页面回到空闲，活动行消失，并且等两秒后仍然空闲 —— 不只是冲掉一行状态，而是真的没有后续 chunk 再把生成态带回来。再检查正文：脚本回复靠后的一段（「要我把这三处的改动拆成两个 commit 吗？」）在中断之后再没有出现，说明输出确实停在了中断那一刻；中断后输入框仍然能打字。",
+  "preconditions": "future 与 demo_agent 已构建；demo_agent 的脚本回复共 44 个 chunk、约 5 秒才写完，所以一秒处中断时它离结束还很远；demo_agent 收到 abort 后停止写 chunk（与真 agent 一致）。",
+  "expectations": [
+    "回车后进入生成态：页脚是「生成 · Ns · 0 工具」",
+    "ctrl+c 之后页脚回到「空闲」，活动行里的工具计数一并消失",
+    "再等两秒仍是「空闲」：没有迟到的 chunk 把生成态重新点亮",
+    "中断后再没有新的正文写入（脚本后段的句子始终不出现）",
+    "中断后仍能继续正常操作（输入框可输入，界面没有卡住）"
+  ],
+  "steps": [
+    { "wait": 1500 },
+    { "type": "把停止键也测一下" },
+    { "press": "enter" },
+    { "wait": 1000 },
+    { "assertText": "生成", "note": "活动行：正在生成" },
+    { "assertText": "0 工具", "note": "活动行里的工具计数（只有生成态才有）" },
+    { "assertText": "先看边界", "note": "回复已经开始流式写出" },
+    { "press": "ctrl+c", "note": "中断当前生成" },
+    { "wait": 1000 },
+    { "assertText": "空闲", "note": "活动行回到空闲" },
+    { "expectAbsent": "0 工具", "note": "工具计数跟着活动行一起消失" },
+    { "shot": "tui-stop-stopped" },
+    { "wait": 2200, "note": "再等两秒：迟到的 chunk 不该把生成态带回来" },
+    { "assertText": "空闲" },
+    { "expectAbsent": "0 工具" },
+    { "expectAbsent": "要我把这三处的改动拆成两个 commit 吗", "note": "脚本后段没有写进来：输出确实停了" },
+    { "assertText": "把停止键也测一下", "note": "自己那行还在，正文没有被清空" },
+    { "type": "停完还能打字" },
+    { "wait": 500 },
+    { "assertText": "停完还能打字", "note": "中断后界面仍可操作" },
+    { "press": "backspace" },
+    { "wait": 300 },
+    { "press": "backspace" },
+    { "wait": 300 },
+    { "shot": "tui-stop-after-input" }
+  ],
+  "judge": {
+    "criteria": [
+      "中断后页脚是干净的「空闲」，转圈与「生成 · Ns · 0 工具」整行消失",
+      "中断后的正文停在半句话上也正常：没有残破的转义字符、没有把半个字画出来",
+      "中断后写进输入框的字正常显示在输入框里，光标位置看不出错位",
+      "画面里没有残留的加载态或报错文案",
+      "整体像一个正常工作的终端产品"
+    ],
+    "maxImages": 8
+  }
+}

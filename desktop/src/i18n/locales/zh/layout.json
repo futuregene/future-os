@@ -138,7 +138,13 @@
     "titleEmpty": "标题不能为空。",
     "archiveSkipped": "{{names}}{{more}} 仍在运行，结束后才能归档。",
     "archiveTitle": "归档此会话？",
-    "archiveDescription": "该会话及其 {{count}} 条派生会话将一起归档，之后可随时恢复。"
+    "archiveDescription": "该会话及其 {{count}} 条派生会话将一起归档，之后可随时恢复。",
+    "archiveRunningTitle": "会话正在进行中",
+    "archiveRunningDescription": "{{count}} 个会话正在进行中，结束或停止后才能归档。",
+    "archiveRunningMore": "另有 {{count}} 个会话正在进行",
+    "archiveStopAndArchive": "停止并归档",
+    "archiveWorkspaceRunningTitle": "工作区里有会话正在进行",
+    "archiveWorkspaceRunningDescription": "「{{name}}」中有 {{count}} 个会话正在进行中，结束或停止后才能归档。"
   },
   "workspaceDialogs": {
     "renameTitle": "重命名工作区",

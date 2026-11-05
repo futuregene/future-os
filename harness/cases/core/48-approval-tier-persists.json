@@ -1,0 +1,182 @@
+{
+  "id": "approval-tier-persists",
+  "title": "审批模式：改成手动审批后写库、刷新仍在、新会话的输入框跟着变",
+  "area": "settings",
+  "priority": "P1",
+  "tags": [
+    "desktop",
+    "settings",
+    "approval"
+  ],
+  "description": "审批模式决定 Agent 会不会在执行命令前停下来问人，选错一级的后果是「该问的没问」或「每条都问」。在设置 → 通用里把审批模式从默认的「完全访问」改成「手动审批」，要求三件事同时成立：设置真的写进了 app.db 的 app_settings（不是只改了内存里的副本）、刷新页面后仍是手动审批、新建会话的输入框上显示的也是手动审批（一个只在设置页生效、输入框还写着「完全访问」的状态会让人以为自己在受保护的模式下工作）。再把模式切回「完全访问」，确认文案同样跟着回退。",
+  "preconditions": "应用已启动；数据库是真实 app.db 的副本，当前审批模式为「完全访问」（off）。",
+  "expectations": [
+    "设置 → 通用里有「审批模式」下拉，默认值是完全访问",
+    "选「手动审批」后，数据库 app_settings 的 approval_tier 变成 manual（不只是界面变化）",
+    "刷新页面后设置页仍显示手动审批",
+    "新建会话的输入框上，审批模式显示为手动审批",
+    "切回「完全访问」后数据库与输入框文案一起回退，刷新后仍保持一致",
+    "整个过程没有报错文案或空白设置项"
+  ],
+  "steps": [
+    {
+      "wait": 900
+    },
+    {
+      "db": {
+        "sql": "SELECT value FROM app_settings WHERE key = 'approval_tier'",
+        "expect": "off",
+        "message": "初始审批模式是完全访问"
+      },
+      "capture": false
+    },
+    {
+      "click": {
+        "text": "设置"
+      },
+      "capture": false
+    },
+    {
+      "wait": 800
+    },
+    {
+      "eval": "(() => { const s = [...document.querySelectorAll('select')].find(el => [...el.options].some(o => o.textContent.trim() === '手动审批')); if (!s) throw new Error('no approval-tier select'); const o = [...s.options].find(o => o.textContent.trim() === '手动审批'); s.value = o.value; s.dispatchEvent(new Event('input', { bubbles: true })); s.dispatchEvent(new Event('change', { bubbles: true })); return s.value; })()",
+      "as": "manualValue",
+      "capture": false
+    },
+    {
+      "wait": 800
+    },
+    {
+      "shot": "settings-manual"
+    },
+    {
+      "db": {
+        "sql": "SELECT value FROM app_settings WHERE key = 'approval_tier'",
+        "expect": "manual",
+        "message": "审批模式写进了数据库"
+      },
+      "capture": false
+    },
+    {
+      "press": "Escape",
+      "capture": false
+    },
+    {
+      "wait": 600
+    },
+    {
+      "click": {
+        "aria": "新建对话"
+      },
+      "capture": false
+    },
+    {
+      "waitFor": {
+        "text": "欢迎使用"
+      },
+      "timeout": 6000,
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "(() => { const chip = [...document.querySelectorAll('button[title=\"审批模式\"]')].map(el => el.innerText.trim()); return chip.includes('手动审批'); })()",
+        "message": "新会话的输入框显示手动审批"
+      }
+    },
+    {
+      "shot": "new-chat-manual"
+    },
+    {
+      "reload": true
+    },
+    {
+      "waitFor": {
+        "selector": "[aria-label=\"新建对话\"]"
+      },
+      "timeout": 10000,
+      "capture": false
+    },
+    {
+      "db": {
+        "sql": "SELECT value FROM app_settings WHERE key = 'approval_tier'",
+        "expect": "manual",
+        "message": "刷新后数据库仍是手动审批"
+      },
+      "capture": false
+    },
+    {
+      "click": {
+        "text": "设置"
+      },
+      "capture": false
+    },
+    {
+      "wait": 900
+    },
+    {
+      "assert": {
+        "expr": "(() => { const s = [...document.querySelectorAll('select')].find(el => [...el.options].some(o => o.textContent.trim() === '手动审批')); return !!s && s.value === 'manual'; })()",
+        "message": "刷新后设置页仍选中手动审批"
+      }
+    },
+    {
+      "shot": "settings-after-reload"
+    },
+    {
+      "eval": "(() => { const s = [...document.querySelectorAll('select')].find(el => [...el.options].some(o => o.textContent.trim() === '手动审批')); const o = [...s.options].find(o => o.textContent.trim() === '完全访问'); s.value = o.value; s.dispatchEvent(new Event('input', { bubbles: true })); s.dispatchEvent(new Event('change', { bubbles: true })); return s.value; })()",
+      "as": "offValue",
+      "capture": false
+    },
+    {
+      "wait": 800
+    },
+    {
+      "db": {
+        "sql": "SELECT value FROM app_settings WHERE key = 'approval_tier'",
+        "expect": "off",
+        "message": "切回完全访问也写进了数据库"
+      },
+      "capture": false
+    },
+    {
+      "press": "Escape",
+      "capture": false
+    },
+    {
+      "wait": 600
+    },
+    {
+      "click": {
+        "aria": "新建对话"
+      },
+      "capture": false
+    },
+    {
+      "waitFor": {
+        "text": "欢迎使用"
+      },
+      "timeout": 6000,
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "(() => { const chip = [...document.querySelectorAll('button[title=\"审批模式\"]')].map(el => el.innerText.trim()); return chip.includes('完全访问'); })()",
+        "message": "切回完全访问后输入框文案跟着回退"
+      }
+    },
+    {
+      "shot": "new-chat-off"
+    }
+  ],
+  "judge": {
+    "criteria": [
+      "设置页的「审批模式」是一个可读的下拉，显示当前选中的值，并给出这一档意味着什么的一句说明",
+      "改成手动审批后，界面上的文案与下拉的值一致，没有出现「设置保存失败」之类提示",
+      "新会话的输入框区域显示同样的审批模式，两处不矛盾",
+      "刷新之后仍然是同一个模式（不会悄悄回到默认）",
+      "整体看起来像正常产品：没有空白设置行、错位或残留加载态"
+    ],
+    "maxImages": 8
+  }
+}

@@ -276,10 +276,16 @@ with `gh`. Nothing is filed without that explicit flag.
 
 - **Transcripts are synthetic on desktop too.** Real history lives in the 1 GB
   `agent.db` projection layer; only thread metadata is wired to real data today.
+  A case that sends and then reads the conversation back can set
+  `"query": {"transcript": "page"}` to read the page's own transcript instead,
+  which is the only place the message it just wrote exists.
 - **Store queries are reimplemented.** A bug in `host/src/store/*.rs` cannot be
   found here; the harness proves UI behaviour against real-shaped data.
 - **`agent_prompt` is still mocked.** Sending does not call a model, so reply
-  content and streaming states are out of scope for now.
+  content is fixed demo prose; what it does model is the *lifecycle* — a reply
+  that streams, a stop that ends it, and (with `?slowStream=`) one long enough to
+  write a second message during, which the fixture then holds in the
+  conversation's own queue (`session_queue`) and runs at the turn boundary.
 - **Mobile and remote use the shot mocks.** They exercise the real mobile UI and
   both layouts, but not a live NATS link; a two-host relay harness is the next
   step.
@@ -291,10 +297,13 @@ with `gh`. Nothing is filed without that explicit flag.
 - **Video is analyzed as a filmstrip, not as motion.** A 12-frame strip catches
   obvious state changes; it is not a temporal model.
 
-- **Desktop send queue is not simulated.** Choosing "加入发送队列" is covered by a
-  TUI case, but the desktop path needs an agent-side queue fixture: the shot mock
-  answers `session_queue` but never enqueues, so a queued row cannot be observed.
-  Do not assert on it until the fixture owns the queue.
+- **The desktop send queue is simulated by the page, not by an agent.**
+  `session_queue` answers from the shot mock's own per-conversation queue, and a
+  prompt that arrives mid-run is held and answered with the agent's `run_queued`
+  ack. That is enough to observe the queue row and its drain
+  (`send-queue-while-streaming`), but it is the mock's reading of the protocol,
+  not a real session's queue: coalescing several held messages into one turn, a
+  parked row and "start it now" are still unexercised here.
 
 - **The embedded terminal is a stand-in, not a shell.** `desktop/shot/terminal-server.mjs`
   replays one transcript and answers a few fixed commands (`seq 1 N` prints N

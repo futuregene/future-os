@@ -99,6 +99,13 @@ export async function runRemoteMobileCase({ testCase, runDir, bin }) {
   const caseDir = join(runDir, slug(testCase.id));
   mkdirSync(caseDir, { recursive: true });
   const bundle = join(import.meta.dirname, "..", "mobile-client", ".artifacts", "mobile-client.cjs");
+  if (!existsSync(bundle)) {
+    // The bundle is gitignored, so a fresh checkout has the sources and no build.
+    // Building it here keeps a first run working instead of failing with an
+    // instruction the caller has to go and follow.
+    const { execFileSync } = await import("node:child_process");
+    execFileSync(process.execPath, [join(import.meta.dirname, "..", "mobile-client", "build.mjs")], { stdio: "pipe" });
+  }
   if (!existsSync(bundle))
     throw new Error(`mobile client bundle missing (${bundle}); run: node harness/mobile-client/build.mjs`);
 

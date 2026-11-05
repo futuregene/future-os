@@ -212,6 +212,18 @@ pub async fn abort_session(session_id: &str) -> Result<AbortSessionOutcome, crat
     .await
 }
 
+/// Stop whatever the Agent is running for a conversation, without a local run
+/// row to name the run.
+///
+/// `abort_run` needs the store's run id; a run another client started has only
+/// an agent session, and the archive dialog's "stop and archive" has to reach
+/// it too. The Agent resolves the active run from the session itself, and a
+/// session it never had is a no-op — the same tolerance `abort_session`
+/// documents.
+pub async fn stop_thread(thread_id: &str) -> Result<(), crate::Error> {
+    abort_agent_thread(thread_id, None).await
+}
+
 /// Abort an in-flight agent run, then mark its store run cancelled. A missing
 /// agent (e.g. the backend is down) is tolerated — the run is still cancelled
 /// locally so the UI doesn't strand on a "running" row.

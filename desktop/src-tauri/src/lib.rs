@@ -1124,6 +1124,7 @@ mod gui {
                 list_latest_run_infos,
                 update_run_status,
                 abort_run,
+                stop_threads,
                 session_queue,
                 cancel_queued_run,
                 release_queued_run,

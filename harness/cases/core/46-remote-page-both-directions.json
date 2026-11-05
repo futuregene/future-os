@@ -1,0 +1,38 @@
+{
+  "id": "remote-page-both-directions",
+  "title": "远程页：两个方向都讲清楚了，空态给出下一步",
+  "area": "remote",
+  "priority": "P1",
+  "tags": ["remote", "desktop", "peers"],
+  "description": "远程页把「让别的设备连接本机」和「连接别的电脑」分成两栏，各自说明这一栏是干什么的。这条用例验证两栏都在、都有解释、被控方向有开关、主控方向在没有已连桌面时给出明确的空态与「添加桌面」入口。注意边界：夹具里虽然有 remote_peer_list 的数据，主控栏在这条无运行时的路径上仍渲染空态，所以「已配对桌面列表」本身不在本用例范围内（见 COVERAGE 的缺口说明）。",
+  "preconditions": "桌面 shot 服务可用。",
+  "expectations": [
+    "两个方向的标题与说明都在",
+    "被控方向有远程桌面开关",
+    "主控方向在空态下仍给出「添加桌面」入口",
+    "没有初始化错误、没有空白区块"
+  ],
+  "steps": [
+    { "wait": 900 },
+    { "click": { "selector": "button", "text": "远程" } },
+    { "wait": 1200 },
+    { "shot": "remote-hub" },
+    { "assert": { "expr": "document.querySelector('main')?.innerText.includes('让别的设备连接本机')", "message": "被控方向存在" } },
+    { "assert": { "expr": "document.querySelector('main')?.innerText.includes('连接别的电脑')", "message": "主控方向存在" } },
+    { "assert": { "expr": "document.querySelector('main')?.innerText.includes('添加桌面')", "message": "主控方向有空态入口" } },
+    { "assert": { "expr": "!document.body.innerText.includes('本地存储初始化失败')", "message": "没有初始化错误" } },
+    { "click": { "selector": "button", "text": "远程桌面" } },
+    { "wait": 900 },
+    { "shot": "remote-after-toggle" },
+    { "assert": { "expr": "document.querySelector('main')?.innerText.length > 120", "message": "切换开关后页面仍有内容" } }
+  ],
+  "judge": {
+    "criteria": [
+      "两个方向必须各自说清楚：谁在控制这台电脑、这台电脑又连着谁",
+      "空态要给出可执行的下一步，而不是只说「没有」",
+      "开关与说明一致：关闭时不应同时显示「已被控制」之类的话",
+      "排版正常，没有空白区块、截断或重叠"
+    ],
+    "maxImages": 5
+  }
+}

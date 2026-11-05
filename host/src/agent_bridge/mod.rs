@@ -85,7 +85,9 @@ pub use self::reconciliation::{
     attach_remote_stream, reconcile_interrupted_runs, reconcile_thread_workspace,
     spawn_active_run_watchdog,
 };
-pub use self::run_control::{abort_run, compact_agent_session, compact_thread_context};
+pub use self::run_control::{
+    abort_run, compact_agent_session, compact_thread_context, stop_thread,
+};
 pub use self::run_control::{
     abort_session, cancel_queued_run, release_queued_run, wait_for_agent_idle, AbortSessionOutcome,
 };

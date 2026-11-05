@@ -57,6 +57,60 @@ pub async fn abort_run(
     agent_bridge::abort_run(thread_id, run_id).await
 }
 
+/// How long "stop, then archive" waits for the Agent's streaming snapshot to let
+/// go of the conversations it just aborted.
+///
+/// The abort is accepted asynchronously — the Agent stops the run and only then
+/// drops it from `list_streaming_sessions`. Archiving checks that snapshot, so
+/// it has to be given a moment to catch up rather than refused for work the
+/// reader just asked to stop.
+const STOP_SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const STOP_SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Stop whatever is still running in each of `thread_ids`.
+///
+/// This is the archive dialog's "stop and archive", and the same stop the
+/// conversation's own button performs: a local run row names the run to abort
+/// (and aborting settles it), while a run another client started exists only as
+/// an Agent session, so that path asks the Agent for the session's active run.
+/// A conversation with nothing running is a no-op, which is what lets a whole
+/// workspace be handed over without first narrowing it.
+///
+/// Best effort by design: an unreachable Agent must not strand the dialog, and
+/// the archive that follows still refuses anything that is really still alive.
+pub async fn stop_threads(thread_ids: Vec<String>) -> Result<(), crate::Error> {
+    if thread_ids.is_empty() {
+        return Ok(());
+    }
+    let mut pending = thread_ids;
+    for thread_id in &pending {
+        let local =
+            store::latest_run(thread_id)?.filter(|run| !store::is_terminal_run_status(&run.status));
+        let stopped = match local {
+            Some(run) => agent_bridge::abort_run(thread_id.clone(), run.id)
+                .await
+                .map(|_| ()),
+            None => agent_bridge::stop_thread(thread_id).await,
+        };
+        if let Err(error) = stopped {
+            tracing::warn!(event = "stop_threads", thread_id, %error,
+                "conversation could not be stopped; the archive that follows reports what is still running"
+            );
+        }
+    }
+    let deadline = std::time::Instant::now() + STOP_SETTLE_TIMEOUT;
+    loop {
+        let streaming = agent_bridge::reconcile_streaming_observers()
+            .await
+            .unwrap_or_default();
+        pending.retain(|id| streaming.iter().any(|active| active == id));
+        if pending.is_empty() || std::time::Instant::now() >= deadline {
+            return Ok(());
+        }
+        tokio::time::sleep(STOP_SETTLE_POLL).await;
+    }
+}
+
 pub async fn list_run_events(run_id: String) -> Result<Vec<store::RunEventRecord>, crate::Error> {
     agent_events(&run_id, -1).await
 }
@@ -311,6 +365,14 @@ mod tests {
             model_provider: None,
             model_id: None,
         }
+    }
+
+    /// Nothing to stop is a no-op, and it must not reach the Agent: the dialog
+    /// calls this for a scope that turned out empty between the read and the
+    /// confirm.
+    #[tokio::test]
+    async fn stop_threads_with_no_targets_is_a_no_op() {
+        stop_threads(Vec::new()).await.expect("nothing to stop");
     }
 
     #[test]

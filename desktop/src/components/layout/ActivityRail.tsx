@@ -855,6 +855,45 @@ export function ActivityRail({
   );
 
   /**
+   * Shelved conversations that belong to a workspace which is still active.
+   *
+   * Archiving is per conversation: shelving one of a workspace's chats leaves
+   * the workspace and its other conversations in place. Drawing that row loose
+   * under "archived conversations" hid the one fact the reader needs — which
+   * workspace it came from, and therefore what restoring it goes back to — so
+   * the archived view files it under that workspace's own heading, the same
+   * heading a shelved workspace gets, with the count of what is shelved in it.
+   *
+   * A conversation whose workspace is itself shelved is not here: its workspace
+   * is a shelf of its own (`filteredArchivedWorkspaces`), and the store's
+   * `archived` scope excludes those rows precisely so one conversation is not
+   * drawn under two headings.
+   */
+  const archivedThreadsByWorkspace = useMemo(() => {
+    const byId = new Map<string, StoredThread[]>();
+    const loose: StoredThread[] = [];
+    for (const thread of archiveView.threads) {
+      const workspaceId = thread.mode === "workspace" ? thread.workspaceId : "";
+      const workspace = workspaceId ? workspaces.find(item => item.id === workspaceId) : undefined;
+      if (!workspace) {
+        if (archivedMatches(thread, null))
+          loose.push(thread);
+        continue;
+      }
+      if (!archivedMatches(thread, workspace.name))
+        continue;
+      const list = byId.get(workspace.id) ?? [];
+      list.push(thread);
+      byId.set(workspace.id, list);
+    }
+    const groups = [...byId.entries()].flatMap(([id, threads]) => {
+      const workspace = workspaces.find(item => item.id === id);
+      return workspace ? [{ threads, workspace }] : [];
+    });
+    return { groups, loose };
+  }, [archiveView.threads, archivedMatches, workspaces]);
+
+  /**
    * The archived view's remote half.
    *
    * A host's shelved rows are already in its catalogue — the list is split on
@@ -1246,6 +1285,29 @@ export function ActivityRail({
   const activeConversationKey = (active === "chat" || active === "workspace") && activeThreadId
     ? `local::${activeThreadId}`
     : activeRemoteKey;
+
+  /**
+   * One shelved conversation's row, shared by the loose list and the workspace
+   * groups so a row cannot gain the restore menu in one place and lose it in
+   * the other.
+   */
+  function renderArchivedRow(thread: StoredThread): React.ReactNode {
+    return (
+      <ArchivedThreadRow
+        active={thread.id === activeThreadId}
+        key={thread.id}
+        members={archivedTreeMembers(thread)}
+        onDelete={onDeleteThread}
+        onOpen={onOpenArchivedThread ?? onSelectThread}
+        onRename={onRenameThread}
+        onRestore={onRestoreThread}
+        onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
+        selected={selectedThreadIds.has(thread.id)}
+        selectionMode={threadSelectionMode(thread)}
+        thread={thread}
+      />
+    );
+  }
 
   /**
    * One local row, built once and reused by both list modes. Extracted rather
@@ -1874,7 +1936,9 @@ export function ActivityRail({
                                   />
                                   {archivedWorkspacesCollapsed
                                     ? null
-                                    : filteredArchivedWorkspaces.length === 0 && archivedRemote.workspaces.length === 0
+                                    : filteredArchivedWorkspaces.length === 0
+                                      && archivedThreadsByWorkspace.groups.length === 0
+                                      && archivedRemote.workspaces.length === 0
                                       ? (
                                           <ArchivedEmpty
                                             label={archivedQuery.length > 0
@@ -1995,6 +2059,24 @@ export function ActivityRail({
                                                 </ArchivedWorkspaceGroup>
                                               );
                                             })}
+                                            {/* A workspace that is still in the active list,
+                                                with the conversations the reader shelved out
+                                                of it: the shelf keeps the workspace's own name
+                                                so restoring one goes back where it came from. */}
+                                            {archivedThreadsByWorkspace.groups.map(({ threads, workspace }) => (
+                                              <ArchivedWorkspaceGroup
+                                                count={threads.length}
+                                                expanded={archivedGroupExpanded(workspace.id)}
+                                                key={`archived-in:${workspace.id}`}
+                                                menu={null}
+                                                name={workspace.name}
+                                                onToggle={() => toggleArchivedWorkspace(workspace.id)}
+                                              >
+                                                <div className="space-y-0.5 pl-2">
+                                                  {threads.map(thread => renderArchivedRow(thread))}
+                                                </div>
+                                              </ArchivedWorkspaceGroup>
+                                            ))}
                                           </>
                                         )}
                                   {!archivedWorkspacesCollapsed && archiveView.hasMoreWorkspaces && archivedQuery.length === 0
@@ -2039,21 +2121,7 @@ export function ActivityRail({
                                         )
                                       : (
                                           <>
-                                            {filteredArchivedThreads.map(thread => (
-                                              <ArchivedThreadRow
-                                                active={thread.id === activeThreadId}
-                                                key={thread.id}
-                                                members={archivedTreeMembers(thread)}
-                                                onDelete={onDeleteThread}
-                                                onOpen={onOpenArchivedThread ?? onSelectThread}
-                                                onRename={onRenameThread}
-                                                onRestore={onRestoreThread}
-                                                onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
-                                                selected={selectedThreadIds.has(thread.id)}
-                                                selectionMode={threadSelectionMode(thread)}
-                                                thread={thread}
-                                              />
-                                            ))}
+                                            {archivedThreadsByWorkspace.loose.map(thread => renderArchivedRow(thread))}
                                             {/* Conversations a host shelved on
                                                 their own (a chat, or one its
                                                 workspace list no longer covers),
