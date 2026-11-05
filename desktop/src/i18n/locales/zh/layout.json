@@ -150,7 +150,7 @@
     "renameTitle": "重命名工作区",
     "renameDescription": "为这个工作区取一个便于识别的名称。",
     "deleteTitle": "删除工作区",
-    "deleteDescription": "此工作区及其对话将从侧边栏移除，磁盘上的文件不会被删除。",
+    "deleteDescription": "此工作区及其未归档对话将从侧边栏移除；已归档的会话会保留为普通会话。磁盘上的文件不会被删除。",
     "nameEmpty": "名称不能为空。"
   },
   "gate": {
