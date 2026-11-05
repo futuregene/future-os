@@ -246,6 +246,16 @@ function deleteThreadDescription(thread: StoredThread, t: (key: string, options?
   return t("appShellDialogs.deleteChatDescription");
 }
 
+/**
+ * What a batch's dialog says above its list.
+ *
+ * A batch has its own wording rather than reusing the one-conversation
+ * descriptions: those speak in the singular ("this conversation"), which
+ * contradicted the list and the count right underneath it ("3 conversations
+ * selected"), and the workspace one also states that files are unaffected —
+ * a fact the batch body states again, with the workspace count, in its own box.
+ * One statement of it, and the batch's own number.
+ */
 function batchDeleteDescription(state: BatchDeleteDialogState, t: (key: string, options?: Record<string, unknown>) => string) {
   if (state.workspaceThreadCount > 0 && state.chatThreadCount > 0) {
     return t("appShellDialogs.batchDeleteMixedDescription", {
@@ -254,7 +264,7 @@ function batchDeleteDescription(state: BatchDeleteDialogState, t: (key: string, 
     });
   }
   if (state.workspaceThreadCount > 0) {
-    return t("appShellDialogs.deleteWorkspaceDescription");
+    return t("appShellDialogs.batchDeleteWorkspaceDescription");
   }
-  return t("appShellDialogs.deleteChatDescription");
+  return t("appShellDialogs.batchDeleteChatDescription");
 }
