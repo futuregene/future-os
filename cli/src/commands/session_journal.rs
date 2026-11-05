@@ -383,6 +383,13 @@ pub(super) async fn run(args: &[String], out: &Output) -> Result<(), String> {
             count(projections)
         ));
     }
+    let converting = number(&plan["legacySessions"], "pendingSessions");
+    if converting > 0 {
+        out.log(&format!(
+            "  {} legacy sessions to convert into the canonical body store",
+            count(converting)
+        ));
+    }
     print_entries(&plan, true, out);
     if options.json {
         out.log(&serde_json::to_string_pretty(&plan).map_err(|e| e.to_string())?);

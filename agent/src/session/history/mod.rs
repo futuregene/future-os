@@ -13,7 +13,7 @@ pub(crate) use recovery::PROJECTION_VERSION;
 pub(super) use recovery::{ensure_history_index, mark_history_index_ready, with_history_index};
 
 pub(super) use display_index::{
-    insert_entry_shape, refresh_session_metadata, update_display_index_from,
+    insert_entry_shape, project_history_index, refresh_session_metadata, update_display_index_from,
 };
 pub(crate) use display_projection::project_entries;
 pub(crate) use recall::{HISTORY_DEFAULT_BYTES, HISTORY_DEFAULT_SESSIONS};

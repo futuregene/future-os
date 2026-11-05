@@ -26,6 +26,7 @@ mod entry_stages;
 mod extensions;
 pub(crate) mod fork;
 pub(crate) mod journal;
+pub(crate) mod legacy_migrate;
 pub(crate) mod metadata;
 pub(crate) mod operations;
 pub(crate) mod reader;

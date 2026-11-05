@@ -17,6 +17,11 @@ use rusqlite::{params, Connection};
 /// Rows removed per table per transaction.
 const PURGE_CHUNK: i64 = 4_096;
 
+/// A session is a candidate only when nothing has been written to it for this
+/// long. Dropping a warm session's projection does not save bytes a reader cares
+/// about - it makes the next open rebuild the whole conversation.
+const COLD_AFTER_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+
 /// What the projections hold right now: `(rows, payload bytes)`.
 pub(crate) fn plan(db: &Connection) -> Result<(i64, i64)> {
     Ok(db.query_row(
@@ -39,15 +44,18 @@ pub(crate) fn apply(db: &mut Connection, limit: i64) -> Result<(i64, i64)> {
     // `String` refuses the second kind, which is how this pass once failed 473
     // times on a real store while reporting nothing.
     let measured: Vec<(rusqlite::types::Value, i64)> = {
-        let mut statement = db.prepare_cached(
+        let mut statement = db.prepare_cached(&format!(
             "SELECT session_id,sum(b) FROM (
                  SELECT session_id,coalesce(sum(length(CAST(payload AS BLOB))),0) b
                    FROM history_shapes GROUP BY session_id
                  UNION ALL
                  SELECT session_id,coalesce(sum(length(CAST(payload AS BLOB))),0) b
                    FROM history_display GROUP BY session_id)
-              GROUP BY session_id ORDER BY 2 DESC LIMIT ?1",
-        )?;
+              GROUP BY session_id
+             HAVING (SELECT coalesce(max(timestamp_ms),0) FROM entries e WHERE e.session_id=session_id)
+                    < CAST(strftime('%s','now') AS INTEGER)*1000 - {COLD_AFTER_MS}
+              ORDER BY 2 DESC LIMIT ?1"
+        ))?;
         let rows = statement
             .query_map(params![limit], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -79,6 +87,14 @@ pub(crate) fn apply(db: &mut Connection, limit: i64) -> Result<(i64, i64)> {
                     break;
                 }
             }
+            // Explicit, not left to the delete triggers: a rebuild that ran while
+            // these deletes were in flight could have set the flag again, and a
+            // ready flag over an empty projection is a conversation nobody can
+            // read.
+            tx.execute(
+                "DELETE FROM history_index_state WHERE session_id=?1",
+                params![session],
+            )?;
             Ok(removed)
         })?;
         if removed > 0 {
@@ -112,6 +128,15 @@ mod tests {
                            "content":[{"type":"text","text":"hi there"}]}),
                 ],
             )
+            .unwrap();
+        // Only a session nothing has touched for a month is a candidate: dropping
+        // a warm projection makes the next open rebuild the whole conversation.
+        store
+            .db
+            .call(|db| {
+                db.execute("UPDATE entries SET timestamp_ms=1", [])?;
+                Ok(())
+            })
             .unwrap();
         let snapshot = |db: &mut Connection| -> anyhow::Result<(i64, String)> {
             Ok((
@@ -174,6 +199,12 @@ mod blob_key_tests {
             .db
             .call(move |db| {
                 db.execute("INSERT INTO sessions(id) VALUES (?1)", params![key])?;
+                db.execute(
+                    "INSERT INTO entries(session_id,position,entry_id,entry_type,role,run_id,
+                                         timestamp_ms,metadata_json,content_json)
+                     VALUES (?1,0,'e0','message','user','run',1,'{}','[]')",
+                    params![key],
+                )?;
                 db.execute(
                     "INSERT INTO history_display(session_id,ordinal,source_position,is_user,payload)
                      VALUES (?1,0,0,0,'{}')",
