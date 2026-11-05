@@ -301,6 +301,41 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
             }
         }
+        // The reasoning sibling of `get_tool_call_args`: a lean lane sends the
+        // row's boundaries without its body, so this read is what a reader gets
+        // by opening one reasoning row. `offset` is the block's index in the run.
+        "get_reasoning" => {
+            if !crate::remote_host::lean::enabled() {
+                reply(
+                    sink,
+                    false,
+                    Value::Null,
+                    Some("Unsupported command: get_reasoning"),
+                )
+                .await;
+                return;
+            }
+            if cmd.session_id.is_empty() || cmd.run_id.is_empty() || cmd.offset < 0 {
+                reply(
+                    sink,
+                    false,
+                    Value::Null,
+                    Some("sessionId, runId and a non-negative offset are required"),
+                )
+                .await;
+                return;
+            }
+            match crate::agent_bridge::get_reasoning(
+                cmd.session_id.clone(),
+                cmd.run_id.clone(),
+                cmd.offset,
+            )
+            .await
+            {
+                Ok(data) => reply(sink, true, data, None).await,
+                Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+            }
+        }
         "get_events_since" => {
             if cmd.prefer_snapshot
                 && cmd.chunked_read
@@ -315,12 +350,10 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 .await
                 {
                     Ok(Some(snapshot)) => {
-                        // The snapshot's folded events keep their `idx` in a
-                        // shape both sides validate for length and ordering, so
-                        // a trimmed one is blanked in place and a dropped one
-                        // stays with empty text. Reasoning keeps its body here
-                        // like everywhere else: this projection is what a reply
-                        // rebuilt from a snapshot draws its rows from.
+                        // The snapshot's folded events are the same reasoning and
+                        // tool-argument content again, in a shape both sides
+                        // validate for length and ordering — so its events keep
+                        // their `idx` and only their text is blanked.
                         let mut snapshot = snapshot;
                         crate::remote_host::lean::lean_replay_page(
                             &mut snapshot,

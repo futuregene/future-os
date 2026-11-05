@@ -76,8 +76,8 @@ pub use self::queries::{
     WindowsSandboxProbeResult,
 };
 pub use self::queries::{
-    get_event_content_range, get_events_since_page, get_events_since_page_until, get_run_snapshot,
-    get_session_entries_at_offset, get_session_entries_before_with_client,
+    get_event_content_range, get_events_since_page, get_events_since_page_until, get_reasoning,
+    get_run_snapshot, get_session_entries_at_offset, get_session_entries_before_with_client,
     get_session_entries_with_client, get_tool_call_args, provision_agent_session, query_tools,
     session_has_entries,
 };

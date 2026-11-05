@@ -141,6 +141,11 @@ export function ChatScreen() {
   // Forking is a Desktop-hosted operation; an older host that does not
   // advertise it leaves the affordance hidden rather than failing on tap.
   const forkSupported = remote.capabilities.has("fork_v1");
+  // A lean reply's reasoning row opens by fetching its body. An older host
+  // advertises nothing for that read — and would answer "Unsupported command",
+  // i.e. a row that promises content and produces an error — so the row stays a
+  // plain label there rather than offering an expansion it cannot deliver.
+  const reasoningFetchSupported = remote.capabilities.has("reasoning_fetch_v1");
 
   const { message, setMessage, attachments, setAttachments, sessionRefs, rememberSessionRef, restoring } = useComposerDraft(
     remote,
@@ -484,6 +489,7 @@ export function ChatScreen() {
     continue: continueMessage,
     fork: forkMessage,
     resolveToolTarget: remote.resolveToolCallTarget,
+    resolveReasoning: remote.resolveReasoning,
   });
   useEffect(() => {
     timelineActionsRef.current = {
@@ -493,12 +499,14 @@ export function ChatScreen() {
       continue: continueMessage,
       fork: forkMessage,
       resolveToolTarget: remote.resolveToolCallTarget,
+      resolveReasoning: remote.resolveReasoning,
     };
   }, [
     continueMessage,
     forkMessage,
     openTimelineAttachment,
     openTimelineFile,
+    remote.resolveReasoning,
     remote.resolveToolCallTarget,
     retryMessage,
   ]);
@@ -536,6 +544,12 @@ export function ChatScreen() {
     [],
   );
 
+  const handleResolveReasoning = useCallback(
+    (runId: string, index: number, settled?: boolean) =>
+      timelineActionsRef.current.resolveReasoning(runId, index, settled),
+    [],
+  );
+
   const renderTimelineItem = useCallback(
     ({ item }: { item: TimelineItem; }) => (
       <View onLayout={onRowLayout}>
@@ -549,11 +563,14 @@ export function ChatScreen() {
           onContinue={handleTimelineContinue}
           onFork={forkSupported ? handleTimelineFork : undefined}
           onResolveToolTarget={handleResolveToolTarget}
+          onResolveReasoning={reasoningFetchSupported ? handleResolveReasoning : undefined}
         />
       </View>
     ),
     [
       forkSupported,
+      handleResolveReasoning,
+      reasoningFetchSupported,
       handleResolveToolTarget,
       handleTimelineAttachment,
       handleTimelineContinue,

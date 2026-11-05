@@ -1262,6 +1262,7 @@ pub fn advertised_features(terminal: bool) -> Vec<&'static str> {
         "task_deps_v1",
         future_remote_protocol::READ_BINARY_FEATURE,
         future_remote_protocol::SEGMENTED_CONTENT_FEATURE,
+        future_remote_protocol::REASONING_FETCH_FEATURE,
     ];
     if terminal {
         features.push(future_remote_protocol::TERMINAL_FEATURE);

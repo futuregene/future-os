@@ -6,7 +6,7 @@ import { MarkdownText } from "../../../components/MarkdownText";
 import type { TimelineSegment } from "../../../remote/types";
 import { useTheme } from "../../../theme/ThemeContext";
 import { useStyles } from "./messageStyles";
-import type { ToolTargetResolver } from "./types";
+import type { ReasoningLoader, ToolTargetResolver } from "./types";
 import { ToolRow } from "./ToolRow";
 import { ThinkingRow } from "./ThinkingRow";
 import { CompactionDivider } from "./MessageStatus";
@@ -190,9 +190,11 @@ function stepRunSummary(
 export function StepRunBlock({
   segments,
   onResolveToolTarget,
+  onResolveReasoning,
 }: {
   segments: StepSegment[];
   onResolveToolTarget?: ToolTargetResolver;
+  onResolveReasoning?: ReasoningLoader;
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -250,7 +252,12 @@ export function StepRunBlock({
             segment.kind === "thinking" ? (
               // Every folded reasoning slice has already been closed by the
               // slice after it, so none of them is still streaming.
-              <ThinkingRow key={segment.id} opened text={segment.text} />
+              <ThinkingRow
+                key={segment.id}
+                opened
+                text={segment.text}
+                onLoad={onResolveReasoning ? () => onResolveReasoning(segment.id) : undefined}
+              />
             ) : (
               <ToolRow
                 key={segment.id}
@@ -273,6 +280,7 @@ export function ReplyBlockRow({
   replyStreaming,
   onOpenFile,
   onResolveToolTarget,
+  onResolveReasoning,
 }: {
   block: ReplyBlock;
   streaming?: boolean;
@@ -280,9 +288,16 @@ export function ReplyBlockRow({
   replyStreaming?: boolean;
   onOpenFile?(path: string): void;
   onResolveToolTarget?: ToolTargetResolver;
+  onResolveReasoning?: ReasoningLoader;
 }) {
   if (block.kind === "steps") {
-    return <StepRunBlock segments={block.segments} onResolveToolTarget={onResolveToolTarget} />;
+    return (
+      <StepRunBlock
+        segments={block.segments}
+        onResolveToolTarget={onResolveToolTarget}
+        onResolveReasoning={onResolveReasoning}
+      />
+    );
   }
   return (
     <SegmentBlock
@@ -291,6 +306,7 @@ export function ReplyBlockRow({
       replyStreaming={replyStreaming}
       onOpenFile={onOpenFile}
       onResolveToolTarget={onResolveToolTarget}
+      onResolveReasoning={onResolveReasoning}
     />
   );
 }
@@ -313,10 +329,12 @@ export function ProcessFold({
   blocks,
   onOpenFile,
   onResolveToolTarget,
+  onResolveReasoning,
 }: {
   blocks: ReplyBlock[];
   onOpenFile?(path: string): void;
   onResolveToolTarget?: ToolTargetResolver;
+  onResolveReasoning?: ReasoningLoader;
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -362,6 +380,7 @@ export function ProcessFold({
                 key={block.kind === "steps" ? block.segments[0]!.id : block.segment.id}
                 onOpenFile={onOpenFile}
                 onResolveToolTarget={onResolveToolTarget}
+                onResolveReasoning={onResolveReasoning}
               />
             ),
           )}
@@ -378,12 +397,14 @@ export function SegmentBlock({
   replyStreaming,
   onOpenFile,
   onResolveToolTarget,
+  onResolveReasoning,
 }: {
   segment: TimelineSegment;
   streaming?: boolean;
   replyStreaming?: boolean;
   onOpenFile?(path: string): void;
   onResolveToolTarget?: ToolTargetResolver;
+  onResolveReasoning?: ReasoningLoader;
 }) {
   const styles = useStyles();
   if (segment.kind === "text") {
@@ -392,7 +413,12 @@ export function SegmentBlock({
   if (segment.kind === "thinking") {
     return (
       <View style={styles.activityBlock}>
-        <ThinkingRow opened={false} streaming={streaming} text={segment.text} />
+        <ThinkingRow
+          opened={false}
+          streaming={streaming}
+          text={segment.text}
+          onLoad={onResolveReasoning ? () => onResolveReasoning(segment.id) : undefined}
+        />
       </View>
     );
   }

@@ -500,9 +500,8 @@ mod runtime_tests {
 
     /// The live lane's half of the lean feed. The unit tests pin the rewrite
     /// rules; this pins that `publish_event` actually consults the declared
-    /// flag, drops the unread content events before they reach the queue, keeps
-    /// the reasoning a row opens into, and forwards a tool result the client can
-    /// still read an outcome from.
+    /// flag, drops the content events before they reach the queue, and forwards
+    /// a tool result the client can still read an outcome from.
     ///
     /// `HomeGuard` holds `TEST_HOME_LOCK`, so no sibling test can publish while
     /// the process-wide flag is flipped.
@@ -583,24 +582,16 @@ mod runtime_tests {
             .lean_events("pair_lean")
             .store(false, Ordering::Release);
 
-        // The first thing on the lane is the reasoning, not the tool-argument
-        // fragment that was published after it: reasoning is content a thinking
-        // row opens into, so it stays.
+        // The first thing on the lane is the tool start, not the reasoning that
+        // was published before it.
         let first = await_publish(
             &mut tap,
             "p.pair_lean.evt.sess-lean",
             Duration::from_secs(5),
         )
         .await;
-        assert_eq!(first.json()["type"], json!("thinking_delta"));
-        assert_eq!(first.json()["idx"], json!(1));
-        let reasoning: serde_json::Value =
-            serde_json::from_str(first.json()["data"].as_str().expect("data is a string")).unwrap();
-        assert_eq!(
-            reasoning["text"],
-            json!("long reasoning"),
-            "a reasoning body is what its row displays"
-        );
+        assert_eq!(first.json()["type"], json!("tool_start"));
+        assert_eq!(first.json()["idx"], json!(3));
 
         let second = await_publish(
             &mut tap,
@@ -608,16 +599,7 @@ mod runtime_tests {
             Duration::from_secs(5),
         )
         .await;
-        assert_eq!(second.json()["type"], json!("tool_start"));
-        assert_eq!(second.json()["idx"], json!(3));
-
-        let third = await_publish(
-            &mut tap,
-            "p.pair_lean.evt.sess-lean",
-            Duration::from_secs(5),
-        )
-        .await;
-        let body = third.json();
+        let body = second.json();
         assert_eq!(body["type"], json!("tool_end"));
         assert_eq!(body["idx"], json!(4));
         let data: serde_json::Value =

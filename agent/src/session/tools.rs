@@ -23,6 +23,9 @@ impl Manager {
     pub(crate) fn tool_call_args(&self, session: &str, run: &str, call: &str) -> Result<Value> {
         self.storage()?.tool_call_args(session, run, call)
     }
+    pub(crate) fn reasoning_block(&self, session: &str, run: &str, index: i64) -> Result<Value> {
+        self.storage()?.reasoning_block(session, run, index)
+    }
 }
 
 impl SqliteStore {
@@ -106,6 +109,35 @@ impl SqliteStore {
             };
             Ok(json!({"toolCallId": call, "name": name, "arguments": arguments}))
         })
+    }
+
+    /// One reasoning block's text, by its position in the run — the same
+    /// on-demand read as [`Self::tool_call_args`], for the body a reasoning row
+    /// opens into. `index` counts reasoning blocks across the run's entries in
+    /// stream order, which is how the reply is rendered.
+    ///
+    /// A miss is an explicit `null`, never another block's text.
+    fn reasoning_block(&self, session: &str, run: &str, index: i64) -> Result<Value> {
+        if self.storage_format(session)? == super::content::FORMAT_VERSION {
+            return canonical::reasoning(self, session, run, index);
+        }
+        let (session, run) = (session.to_owned(), run.to_owned());
+        let text = if index < 0 {
+            None
+        } else {
+            let (scoped_session, scoped_run) = (session.clone(), run.clone());
+            self.db.read(move |db| {
+                let mut stmt = db.prepare(
+                    "SELECT b.text FROM resolved_message_blocks b JOIN entries e ON e.session_id=b.session_id AND e.position=b.entry_position WHERE b.session_id=?1 AND e.run_id=?2 AND b.kind='reasoning' ORDER BY e.position,b.ordinal LIMIT 1 OFFSET ?3",
+                )?;
+                let mut rows = stmt.query(params![scoped_session, scoped_run, index])?;
+                match rows.next()? {
+                    Some(row) => Ok(row.get::<_, Option<String>>(0)?),
+                    None => Ok(None),
+                }
+            })?
+        };
+        Ok(json!({"runId": run, "index": index, "text": text}))
     }
 }
 
@@ -193,6 +225,62 @@ mod tests {
             future_rpc::shell_result::model_summary(&serde_json::from_value(facts).unwrap());
         assert_eq!(output["output"]["text"], expected);
     }
+    /// A reasoning row is sent as a boundary plus an index, and its body is read
+    /// only when a reader opens it: `index` counts reasoning blocks across the
+    /// run's entries in stream order, the order the reply renders them in.
+    ///
+    /// Both storage shapes answer, a miss is an explicit null, and a block that
+    /// belongs to another run of the same session never answers this one.
+    #[test]
+    fn get_reasoning_reads_one_block_by_its_index_in_the_run() {
+        let entries = |run: &str, text: &str| {
+            json!({"id":format!("{run}-{text}"),"type":"assistant","role":"assistant",
+                "timestamp":"2026-01-01T00:00:00Z","meta":{"run_id":run},
+                "content":[{"type":"reasoning","text":text},{"type":"text","text":"answer"}]})
+        };
+        for canonical in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+            if canonical {
+                store.reserve_segmented("s").unwrap();
+            }
+            store
+                .replace(
+                    "s",
+                    vec![
+                        entries("r", "first thought"),
+                        entries("r", "second thought"),
+                        entries("other", "other run"),
+                    ],
+                )
+                .unwrap();
+            assert_eq!(
+                store.reasoning_block("s", "r", 0).unwrap()["text"],
+                json!("first thought"),
+                "canonical={canonical}"
+            );
+            assert_eq!(
+                store.reasoning_block("s", "r", 1).unwrap()["text"],
+                json!("second thought"),
+                "canonical={canonical}"
+            );
+            // Past the run's end, and for a negative index: an explicit null,
+            // never another block's body.
+            for index in [2, 7, -1] {
+                assert_eq!(
+                    store.reasoning_block("s", "r", index).unwrap()["text"],
+                    Value::Null,
+                    "canonical={canonical} index={index}"
+                );
+            }
+            assert_eq!(
+                store.reasoning_block("s", "other", 0).unwrap()["text"],
+                json!("other run"),
+                "canonical={canonical}"
+            );
+        }
+    }
+
     #[test]
     fn tool_queries_are_run_scoped_paged_and_preserve_null_arguments() {
         let dir = tempfile::tempdir().unwrap();

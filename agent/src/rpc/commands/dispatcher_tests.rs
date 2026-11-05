@@ -310,6 +310,35 @@ fn tool_call_args_reads_its_own_arm_and_still_requires_the_call_id() {
     );
 }
 
+/// `get_reasoning` shares the tool-inspection family's session+run scope but
+/// needs no call identity: the index of the reasoning block rides `offset`.
+#[test]
+fn get_reasoning_reads_its_own_arm_with_the_block_index_in_offset() {
+    let state = make_app_state();
+
+    let mut cmd = make_cmd("get_reasoning");
+    cmd.session_id = "default".into();
+    cmd.run_id = "".into();
+    let response = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(response["success"], false, "{response}");
+    assert!(response["error"].as_str().unwrap().contains("runId"));
+
+    // A well-formed read on a run that recorded nothing answers its own arm with
+    // an explicit miss, not an error and not a tool read.
+    let mut cmd = make_cmd("get_reasoning");
+    cmd.session_id = "default".into();
+    cmd.run_id = "run-with-no-thinking".into();
+    cmd.offset = Some(0);
+    let response = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(response["success"], true, "{response}");
+    assert_eq!(response["data"]["index"], serde_json::json!(0));
+    assert!(response["data"]["text"].is_null(), "{response}");
+    assert!(
+        response["data"].get("arguments").is_none() && response["data"].get("output").is_none(),
+        "the reasoning arm must not fall through to a tool read: {response}"
+    );
+}
+
 /// Dispatch completeness: every command the shared policy registry knows must
 /// reach a real arm. The dispatcher's final `_ => "unknown command"` arm is the
 /// tripwire for a gap between the registry and the match below it, so any
