@@ -827,3 +827,31 @@ fn an_unsealed_body_is_never_compressed() {
     assert_eq!(super::compress::plan(&db).unwrap(), (0, 0));
     assert_eq!(super::compress::apply(&mut db, 8).unwrap().0, 0);
 }
+
+/// A body of one to three kilobytes is worth encoding: that is the size a
+/// converted legacy session leaves behind, and at the old four-kilobyte
+/// threshold every one of those stayed plaintext.
+#[test]
+fn a_small_body_is_compressed_too() {
+    let mut db = connection();
+    let text = "中文内容".repeat(120);
+    assert!(
+        text.len() > 512 && text.len() < 4096,
+        "{} bytes",
+        text.len()
+    );
+    let tx = db.transaction().unwrap();
+    let id = create(&tx).unwrap();
+    let mut digest = ContentDigest::default();
+    append(&tx, id, 0, &text).unwrap();
+    digest.push(&text).unwrap();
+    seal(&tx, id, digest).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(super::compress::plan(&db).unwrap().0, 1);
+    assert_eq!(super::compress::apply(&mut db, 8).unwrap().0, 1);
+    let encoding: String = db
+        .query_row("SELECT encoding FROM content_compressed", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(encoding, "gzip");
+    assert_eq!(read(&db, id, 0, text.len()).unwrap().text, text);
+}
