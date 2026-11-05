@@ -638,16 +638,74 @@ async function judgeCase(result, runDir, { model = null } = {}) {
     writeFileSync(join(runDir, "analysis", `${result.id}.judge-answer.md`), text);
     const parsed = parseFindings(text) ?? {};
     const verdict = parsed.verdict === "issue" ? "issue" : "pass";
+    const findings = Array.isArray(parsed.findings) ? parsed.findings : [];
+    // Second pass, no checklist. A judge that is only asked "did these
+    // expectations hold" can only find what someone already thought of; this one
+    // is asked to look at the same evidence as a stranger and say what looks
+    // wrong. Kept as a separate call so the two answers cannot blend, and skipped
+    // on surfaces that have no screen to look at — a log-only run (a relay, a CLI)
+    // gives the discovery pass nothing to inspect, and it fills the gap by
+    // inventing visual expectations the product never promised.
+    const screenshotCount = images.filter(item => !item.path.endsWith("judge-filmstrip.png")).length;
+    const discovered = screenshotCount > 0 ? await discoverCase(result, runDir, { model, images }) : [];
     return {
       verdict,
       confidence: parsed.confidence ?? "low",
       summary: parsed.summary ?? truncate(text, 300),
-      findings: Array.isArray(parsed.findings) ? parsed.findings : [],
+      findings: [...findings, ...discovered],
+      discovered: discovered.length,
       images: images.map(item => item.label),
     };
   }
   catch (error) {
     return { verdict: "unknown", confidence: "low", summary: "", findings: [], images: images.map(item => item.label), error: String(error?.message ?? error) };
+  }
+}
+
+/**
+ * The open-ended pass: same evidence, no expectations, "what looks wrong?".
+ *
+ * Deliberately not given the case's criteria — the point is to find the things
+ * nobody wrote down. Findings are prefixed so a report can separate them from
+ * checklist verdicts, and an empty answer is a valid answer.
+ */
+async function discoverCase(result, runDir, { model, images }) {
+  const promptPath = join(runDir, "analysis", `${result.id}.discover.md`);
+  const prompt = [
+    "你是一位资深产品验收员，第一次打开这个产品。下面是一次真实操作留下的证据：按时间排列的截图、整段录像的帧拼图，以及运行时日志与数值。",
+    "**没有预期清单。**请自己看，然后说出任何看起来不像一个成熟产品的地方。",
+    "值得注意的类别（不限于此）：",
+    "- 时序：某一步之后画面停在旧状态、闪一下再变、动画结束时残留、计数与实际条目不符；",
+    "- 状态：空态与列表并存、加载态永不结束、按钮可点但无反应、禁用却不说原因、同一信息两处不一致；",
+    "- 文案：中英文混排、术语不统一、数字/单位/币种不自洽、截断到无法辨认；",
+    "- 布局：遮挡、重叠、贴边、溢出、留白突兀、层级颠倒；",
+    "- 数据：合计算错、时间逆序、同一实体两个名字；",
+    "- 资源：耗时或内存随重复操作单调上升、某项操作明显比同类慢。",
+    "",
+    `用例（仅供参考它做了什么）：${result.title}`,
+    `操作时间线：\n${timelineText(result)}`,
+    result.bodyText ? `\n页面文本/进程日志快照（截断）：\n${truncate(result.bodyText, 4000)}` : "",
+    "",
+    "输出严格 JSON（不要 markdown 围栏）。如果确实没有发现问题，findings 为空数组：",
+    `{"findings":[{"severity":"high|medium|low|info","title":"【发现】简短标题","detail":"看到什么 + 为什么不像正常产品","evidence":"哪一步/哪一帧"}]}`,
+    "规则：",
+    "- 只写证据里真的看得到的；看不出来就写 info 并说明证据不足。",
+    "- 不报实现细节、不报需要读代码才能知道的事、不报风格偏好（例如“我更喜欢圆角”）。",
+    "- 生成中/加载中的瞬时状态不算；除非它卡住或与操作明显不符。",
+    "- 视频抽帧与最终截图可能不同步，以最终状态帧为准。",
+    "- 宁少勿多：一条看得出、说得清的问题，胜过五条猜测。",
+  ].join("\n");
+  writeFileSync(promptPath, prompt);
+  try {
+    const { text } = await runPrompt(promptPath, { model, images: images.map(item => item.path) });
+    writeFileSync(join(runDir, "analysis", `${result.id}.discover-answer.md`), text);
+    const parsed = parseFindings(text) ?? {};
+    const findings = Array.isArray(parsed.findings) ? parsed.findings : [];
+    // Mark them here rather than trusting the model to remember the prefix.
+    return findings.map(item => ({ ...item, title: /^\s*【发现】/.test(item.title ?? "") ? item.title : `【发现】${item.title ?? "未命名发现"}` }));
+  }
+  catch {
+    return [];
   }
 }
 

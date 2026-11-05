@@ -390,14 +390,16 @@ export async function runRemoteLiveCase({ testCase, runDir, bin }) {
 
   const durationMs = Date.now() - startedAt;
   const readLog = path => (existsSync(path) ? readFileSync(path, "utf8").slice(-8000) : "");
-  const hostLog = readLog(host.logPath);
+  // Cut the log where harness teardown begins. Annotating it was not enough: a
+  // reader still reported "the device left right after pairing" as a discovery,
+  // when that line was this driver's own SIGTERM.
+  const trimTeardown = (text) => {
+    const at = text.search(/received SIGTERM|clean shutdown request|stopped \(reason=headless_sigterm/);
+    return at > 0 ? `${text.slice(0, at)}\n[harness] teardown begins here; the log is cut at this point.` : text;
+  };
+  const hostLog = trimTeardown(readLog(host.logPath));
   const relayText = readLog(relayLog);
-  // Say where the log ends on purpose: the harness stops the host when the case
-  // is done, and a reader (or a model) that does not know this reads the final
-  // SIGTERM and "inbound device left" as the product dropping the connection.
-  const banner = "以下是被控主机与中继进程的日志。日志末尾的 SIGTERM、stopped 与 inbound device left 是 harness 收尾时停掉进程造成的，不是产品行为。";
-  logs.push(banner);
-  logs.push(`host.log:\n${hostLog.slice(-4000)}`);
+  logs.push(`host.log（截止到收尾前）:\n${hostLog.slice(-4000)}`);
   if (relayText)
     logs.push(`relay.log:\n${relayText.slice(-2000)}`);
 
