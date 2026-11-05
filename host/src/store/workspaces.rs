@@ -258,26 +258,61 @@ pub(super) fn delete_workspace_in(
     // a workspace is not deleting its archive. Each one becomes an ordinary
     // (chat-mode) conversation, with a shelf of its own, before the workspace
     // row goes — restoring it later lands it in the chat section, because there
-    // is no workspace left to show it under. Everything else in the workspace
-    // is deleted with it.
-    let kept: Vec<(String, String)> = {
+    // is no workspace left to show it under.
+    //
+    // A shelved *workspace* is one of those: its conversations still read
+    // `active` (workspace archive is a container marker, not a per-conversation
+    // status), but the reader shelved them when they shelved its container, so
+    // the delete keeps them too — as shelved chats rather than live ones.
+    // Everything else in the workspace is deleted with it.
+    let workspace_archived_at: Option<i64> = conn
+        .query_row(
+            "SELECT archived_at FROM workspaces WHERE id = ?1",
+            params![workspace_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    let kept: Vec<(String, String, String)> = {
         let mut stmt = conn.prepare(
-            "SELECT id, title FROM threads
-             WHERE workspace_id = ?1 AND status = 'archived' AND deleted_at IS NULL",
+            "SELECT id, title, status FROM threads
+             WHERE workspace_id = ?1 AND deleted_at IS NULL
+               AND (status = 'archived' OR ?2 IS NOT NULL)",
         )?;
-        let rows = stmt.query_map(params![workspace_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        let rows = stmt.query_map(params![workspace_id, workspace_archived_at], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })?;
         rows.collect::<rusqlite::Result<_>>()?
     };
     let now = now_millis();
-    for (thread_id, title) in &kept {
+    for (thread_id, title, status) in &kept {
         let chat = get_or_create_chat_workspace_in(conn, thread_id, Some(title.clone()))?;
-        conn.execute(
-            "UPDATE threads SET workspace_id = ?1, mode = 'chat', updated_at = ?2
-             WHERE id = ?3",
-            params![chat.id, now, thread_id],
-        )?;
+        if status == "archived" {
+            conn.execute(
+                "UPDATE threads SET workspace_id = ?1, mode = 'chat', updated_at = ?2
+                 WHERE id = ?3",
+                params![chat.id, now, thread_id],
+            )?;
+        } else {
+            // Hidden by the workspace, not shelved on its own: it keeps that
+            // meaning as a shelved chat, so the delete does not turn it into a
+            // conversation the reader never asked to be live.
+            conn.execute(
+                "UPDATE threads SET workspace_id = ?1, mode = 'chat', status = 'archived',
+                        archived_at = COALESCE(archived_at, ?2), pinned = 0, updated_at = ?3
+                 WHERE id = ?4",
+                params![
+                    chat.id,
+                    workspace_archived_at.unwrap_or(now),
+                    now,
+                    thread_id
+                ],
+            )?;
+        }
         // Artifacts are workspace-scoped, so the ones this conversation owns
         // travel with it; the rest of the workspace's artifacts go below.
         conn.execute(
@@ -525,6 +560,45 @@ mod tests {
             .unwrap();
         assert_eq!(tombstoned, 0);
         assert!(get_workspace("ws1").expect("get").is_none());
+    }
+
+    /// A shelved workspace hides its conversations through the container, not
+    /// through their own status. Deleting it keeps them too, as *shelved* chats:
+    /// the delete must not turn them into live conversations, and must not drop
+    /// them with the container either.
+    #[test]
+    fn deleting_a_shelved_workspace_shelves_its_conversations_as_chats() {
+        let (_home, conn) = guarded_conn("ws_delete_shelved_workspace");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, archived_at, created_at, updated_at)
+                 VALUES ('ws2', 'W', 'user', '/tmp/ws2', 50, 1, 1);
+             INSERT INTO threads (id, workspace_id, mode, title, status, agent_session_id,
+                 created_at, updated_at)
+                 VALUES ('t_hidden', 'ws2', 'workspace', 'Hidden', 'active', 'sess_hidden', 1, 1);",
+        )
+        .expect("seed");
+
+        delete_workspace_in(&conn, "ws2").expect("delete");
+
+        let (workspace_id, mode, status, archived_at): (String, String, String, Option<i64>) = conn
+            .query_row(
+                "SELECT workspace_id, mode, status, archived_at FROM threads WHERE id = 't_hidden'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("kept thread");
+        assert_eq!(mode, "chat");
+        assert_eq!(status, "archived", "it stays shelved, not live");
+        assert_eq!(archived_at, Some(50), "it keeps the shelf's timestamp");
+        let kind: String = conn
+            .query_row(
+                "SELECT kind FROM workspaces WHERE id = ?1",
+                [&workspace_id],
+                |r| r.get(0),
+            )
+            .expect("chat shelf");
+        assert_eq!(kind, "temporary");
+        assert!(get_workspace("ws2").expect("get").is_none());
     }
 
     #[test]
