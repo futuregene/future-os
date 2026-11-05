@@ -38,6 +38,7 @@ Usage:
   future session approvals <id> [--json]             Approval requests the session waits on
   future session approve <id> <request-id> [opts]      Allow a pending approval
   future session reject <id> <request-id> [opts]       Deny a pending approval
+  future session recover <id> [--json]                 Clear a journal failure so prompts are accepted
   future session delete <id>                           Delete a session
   future session prune --older-than <age> [--yes]      Delete sessions idle longer than <age>
   future session journal [--reclaim [--yes]] [--json]  Raw run-journal cost + reclamation

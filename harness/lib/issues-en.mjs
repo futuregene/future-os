@@ -191,7 +191,7 @@ export function groupFindings(findings) {
   return groups;
 }
 
-export function draftEnglishIssues(runDir, { minSeverity = "medium", include = ["check", "judge", "model", "cross-case"] } = {}) {
+export function draftEnglishIssues(runDir, { minSeverity = "medium", include = ["check", "judge", "model", "cross-case"], includeFixture = false } = {}) {
   runDir = resolve(runDir);
   const analysisPath = join(runDir, "analysis.json");
   if (!existsSync(analysisPath))
@@ -200,7 +200,14 @@ export function draftEnglishIssues(runDir, { minSeverity = "medium", include = [
   const cases = caseLookup(analysis);
 
   const cutoff = SEVERITY_ORDER.indexOf(minSeverity);
+  // A finding that quotes a value only the harness can produce is not a defect;
+  // the analysis demoted it to an observation and the report still shows it. It
+  // is filtered here as well rather than relying on its severity alone, so a
+  // run whose severities were edited by hand cannot file one by accident.
+  const fixtureSkipped = (analysis.findings ?? []).filter(finding => finding.fixture).length;
   const findings = (analysis.findings ?? []).filter((finding) => {
+    if (finding.fixture && !includeFixture)
+      return false;
     if (!include.includes(finding.source))
       return false;
     // A failed assertion is a defect whatever its severity label says: the case
@@ -218,7 +225,7 @@ export function draftEnglishIssues(runDir, { minSeverity = "medium", include = [
 
   const groups = groupFindings(findings);
   groups.sort((a, b) => SEVERITY_ORDER.indexOf(a.primary.severity) - SEVERITY_ORDER.indexOf(b.primary.severity));
-  return { analysis, cases, groups, runId: analysis.runId };
+  return { analysis, cases, groups, runId: analysis.runId, fixtureSkipped };
 }
 
 /** Write one markdown file per (already merged) issue and return their manifest. */

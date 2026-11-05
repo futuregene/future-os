@@ -681,6 +681,38 @@ impl ServerSession {
         Ok(lease)
     }
 
+    /// Clear a recorded journal failure on a session that is not running.
+    ///
+    /// A storage failure — in practice `SQLITE_BUSY` while another session holds
+    /// the write lock — marks the journal unhealthy, and from then on every
+    /// prompt is refused at admission (`session persistence is unavailable`)
+    /// even after the contention has passed. Every other clearing path rebinds
+    /// or starts a run, which the flag itself prevents, so a session with no run
+    /// had no way back short of restarting the agent. This is that way back: it
+    /// writes a health marker, drains the writer, and drops the cached
+    /// transcript so the next read rebuilds the projection from disk.
+    ///
+    /// It removes no entry and rewrites no content: the journal it recovers is
+    /// the one already on disk.
+    pub fn recover_session_journal(&mut self) -> Result<serde_json::Value> {
+        anyhow::ensure!(
+            !self.ephemeral,
+            "this session keeps no durable journal to recover"
+        );
+        anyhow::ensure!(
+            self.runtime.snapshot().is_none() && !self.runtime.has_owned_task(),
+            "session has an active run; stop it first (future session abort) or use retry_persistence"
+        );
+        let was_degraded = self.broadcaster.persistence_error().is_some();
+        self.broadcaster.recover_storage()?;
+        self.mark_history_stale();
+        Ok(serde_json::json!({
+            "recovered": true,
+            "was_degraded": was_degraded,
+            "journal_error": self.broadcaster.persistence_error(),
+        }))
+    }
+
     pub fn session_name(&self) -> String {
         self.session_name.clone()
     }

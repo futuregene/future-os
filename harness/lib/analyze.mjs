@@ -17,6 +17,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join, relative, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { discoverAcrossCases } from "./discovery.mjs";
+import { fixtureProvenance, markFixtureFindings } from "./provenance.mjs";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -443,16 +444,54 @@ async function visionFindings(result, runDir, { limit = 3, native = false, model
   return notes;
 }
 
+/**
+ * Where a step sits in the finished clip, in seconds.
+ *
+ * The clip is not the wall clock — the muxer caps an idle frame at 5 s and its
+ * frames are not always 25 fps — so this interpolates over the clock the muxer
+ * recorded (`videoClock()` in video.mjs). Without it, "this frame is the state
+ * after step 7" cannot be checked against the filmstrip, which is sampled in
+ * video time.
+ */
+function videoSeconds(step, window) {
+  const samples = window?.samples;
+  if (!samples?.length || !Number.isFinite(step.ts))
+    return null;
+  const end = (step.ts ?? 0) + (step.ms ?? 0);
+  let low = 0;
+  let high = samples.length - 1;
+  let pick = -1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (samples[mid][0] <= end) {
+      pick = mid;
+      low = mid + 1;
+    }
+    else {
+      high = mid - 1;
+    }
+  }
+  if (pick < 0)
+    return null;
+  const [ts, at] = samples[pick];
+  const next = samples[pick + 1];
+  if (!next || next[0] <= ts)
+    return at;
+  return at + (next[1] - at) * Math.min(1, Math.max(0, (end - ts) / (next[0] - ts)));
+}
+
 /** Ordered evidence for one case: actions first, then the whole recording. */
 async function judgeEvidence(result, runDir, { limit = 8 } = {}) {
   const all = [];
+  const window = result.artifacts?.videoWindow ?? null;
   for (const step of result.steps ?? []) {
     if (!step.shot && !step.failureShot)
       continue;
     const path = step.failureShot ?? step.shot;
     if (!path || all.some(item => item.path === path))
       continue;
-    all.push({ path, label: `第 ${step.index} 步 · ${step.action}${step.note ? ` · ${step.note}` : ""}${step.ok === false ? "（失败现场）" : ""}` });
+    const at = videoSeconds(step, window);
+    all.push({ path, label: `第 ${step.index} 步 · ${step.action}${at !== null ? ` · 录像 ${at.toFixed(1)}s` : ""}${step.note ? ` · ${step.note}` : ""}${step.ok === false ? "（失败现场）" : ""}` });
   }
   // Keep the final state, always.
   //
@@ -483,7 +522,14 @@ async function judgeEvidence(result, runDir, { limit = 8 } = {}) {
   if (strip) {
     const final = images.at(-1);
     const head = images.slice(0, -1);
-    images = [...head, { path: strip, label: "整段操作录像的 12 帧拼图（从左到右、从上到下，按真实时间；抽帧可能与最终状态帧不同步，以标有「最终状态」的那张为准）" }, ...(final ? [final] : [])];
+    const span = window?.durationMs
+      ? `约 0–${(window.durationMs / 1000).toFixed(1)}s，每帧约 ${((window.durationMs / 1000) / 12).toFixed(1)}s`
+      : "按真实时间";
+    const finalAt = final ? (() => {
+      const match = String(final.label).match(/录像 ([\d.]+)s/);
+      return match ? `，标「最终状态」的那张在 ${match[1]}s` : "";
+    })() : "";
+    images = [...head, { path: strip, label: `整段操作录像的 12 帧拼图（从左到右、从上到下，${span}${finalAt}；早于某个步骤的帧拍的是那一步之前的状态，读数以标「最终状态」的那张为准）` }, ...(final ? [final] : [])];
   }
   return images;
 }
@@ -602,6 +648,7 @@ async function judgeCase(result, runDir, { model = null } = {}) {
       ];
 
   const surfaceNote = surfaceCaveat(result);
+  const provenance = fixtureProvenance(result);
 
   const prompt = [
     "你是 FutureOS 的产品验收员，不是测试脚本执行器。",
@@ -615,7 +662,13 @@ async function judgeCase(result, runDir, { model = null } = {}) {
     `用例：${result.title}`,
     `说明：${result.description ?? ""}`,
     `操作时间线：\n${timelineText(result)}`,
+    // The labels used to live only in the report: the model got the images in
+    // order and nothing saying which step each one was, so a frame from before
+    // an action read as a frame after it ("the fork still shows the original
+    // reply"). The legend is the same list the attachments arrive in.
+    images.length ? `图片（按附件顺序）：\n${images.map((item, index) => `  ${index + 1}. ${item.label}`).join("\n")}` : "",
     surfaceNote ? `\n${surfaceNote}` : "",
+    provenance.text ? `\n${provenance.text}` : "",
     "",
     logs.length ? `运行时信号：\n${logs.join("\n")}` : "运行时信号：无错误",
     provenText ? `\n已由确定性断言在真实 DOM 上验证通过的事实（不要把这些当缺陷重复怀疑；如果截图看起来相反，优先认为是截图时机/滚动位置造成的证据不足）：\n${provenText}` : "",
@@ -638,6 +691,7 @@ async function judgeCase(result, runDir, { model = null } = {}) {
     "- 只判断用户能看到/会遇到的问题；内部实现细节不报。",
     "- 动态过程中的瞬时状态（生成中、加载中）不要当缺陷，除非它卡住或与操作明显不符。",
     "- 如果画面正常但证据不足，verdict=pass、confidence=low，不要编造。",
+    "- 时间关系：标「第 N 步」的截图是第 N 步**执行完成之后**的状态，录像抽帧从更早的时刻开始，早于某一步的帧拍的是那一步之前的样子。凡是「状态残留 / 内容没变 / 没有消失 / 数量不对」这类判断，必须能在标「最终状态」的那张截图里看到；只在中间帧里看到、最终帧里看不到的，按证据不足处理（info，并写出是哪一帧）。",
     "- 对「上面已通过断言的事实」不要再提反面结论；你只能补充断言没盖住的、画面里真实可见的问题。",
     "- 预期项出现在文本快照但截图里看不到时，说明它可能在滚动区之外，不要判成缺失；标记证据不足即可。",
     "- 代码块/表格/长文本的排版、文案、空态、错位、遮挡都算。",
@@ -687,6 +741,7 @@ async function judgeCase(result, runDir, { model = null } = {}) {
  */
 async function discoverCase(result, runDir, { model, images }) {
   const promptPath = join(runDir, "analysis", `${result.id}.discover.md`);
+  const provenance = fixtureProvenance(result);
   const prompt = [
     "你是一位资深产品验收员，第一次打开这个产品。下面是一次真实操作留下的证据：按时间排列的截图、整段录像的帧拼图，以及运行时日志与数值。",
     "**没有预期清单。**请自己看，然后说出任何看起来不像一个成熟产品的地方。",
@@ -700,11 +755,13 @@ async function discoverCase(result, runDir, { model, images }) {
     "",
     `用例（仅供参考它做了什么）：${result.title}`,
     `操作时间线：\n${timelineText(result)}`,
+    images?.length ? `图片（按附件顺序）：\n${images.map((item, index) => `  ${index + 1}. ${item.label}`).join("\n")}` : "",
     result.bodyText ? `\n页面文本/进程日志快照（截断）：\n${truncate(result.bodyText, 4000)}` : "",
     // Same two guards the checklist pass gets, for the same reason: without them
     // this pass reads a web-rendered modal as a product defect, and restates
     // things a live-DOM assertion already proved as discoveries.
     surfaceCaveat(result) ? `\n${surfaceCaveat(result)}` : "",
+    provenance.text ? `\n${provenance.text}` : "",
     provenText(result) ? `\n已由确定性断言在真实 DOM / 进程上验证通过的事实（如果截图看起来相反，先当作截图时机或滚动位置造成的证据不足，不要判成缺陷）：\n${provenText(result)}` : "",
     "",
     "输出严格 JSON（不要 markdown 围栏）。如果确实没有发现问题，findings 为空数组：",
@@ -713,7 +770,7 @@ async function discoverCase(result, runDir, { model, images }) {
     "- 只写证据里真的看得到的；看不出来就写 info 并说明证据不足。",
     "- 不报实现细节、不报需要读代码才能知道的事、不报风格偏好（例如“我更喜欢圆角”）。",
     "- 生成中/加载中的瞬时状态不算；除非它卡住或与操作明显不符。",
-    "- 视频抽帧与最终截图可能不同步，以最终状态帧为准。",
+    "- 视频抽帧与最终截图可能不同步：标「第 N 步」的截图是该步完成后的状态，早于它的帧是操作之前的样子；「残留 / 没消失 / 没变化」必须能在最终状态帧里看到，否则写 info 并注明证据不足。",
     "- 宁少勿多：一条看得出、说得清的问题，胜过五条猜测。",
     "- 与上面「已验证通过」的事实冲突的观察，写成 low 并注明证据不足，不要写 high/medium。",
   ].join("\n");
@@ -950,6 +1007,10 @@ export async function analyzeRun(runDir, { mode = "heuristic", model = null, onl
   // here and every total comes from the merged list — a count that disagrees with
   // the list it summarises is the kind of thing this harness exists to catch.
   const mergedFindings = [...allFindings, ...(crossCase?.findings ?? [])];
+  // A value only the harness can produce is not a product defect, whoever saw
+  // it: demote once, over the merged list, so the report and the issue flow can
+  // never disagree about the severity.
+  markFixtureFindings(mergedFindings);
   const analysis = {
     runId: manifest.id,
     generatedAt: new Date().toISOString(),
@@ -988,6 +1049,7 @@ export async function analyzeRun(runDir, { mode = "heuristic", model = null, onl
       info: mergedFindings.filter(item => item.severity === "info").length,
       discovered: mergedFindings.filter(item => item.discovered).length,
       crossCase: mergedFindings.filter(item => item.source === "cross-case").length,
+      fixture: mergedFindings.filter(item => item.fixture).length,
     },
   };
   writeFileSync(join(runDir, "analysis.json"), JSON.stringify(analysis, null, 2));
@@ -1009,7 +1071,7 @@ function renderFindings(analysis, runDir) {
     if (!item.findings.length)
       lines.push("", "没有发现问题。");
     for (const finding of item.findings) {
-      lines.push("", `### [${finding.severity}] ${finding.title}`);
+      lines.push("", `### [${finding.severity}] ${finding.title}${finding.fixture ? "（夹具数据，不计入缺陷）" : ""}`);
       lines.push("", finding.detail);
       if (finding.evidence?.dir)
         lines.push("", `证据：${relative(runDir, finding.evidence.dir)}`);

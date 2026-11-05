@@ -99,4 +99,31 @@ describe("useArchiveView's paging", () => {
     expect(h.current.workspaceRemaining["w-shelved"]).toBe(0);
     h.unmount();
   });
+
+  it("re-reads an open group's contents when the shelf refreshes", async () => {
+    listThreadsPage
+      // The entry's own read, then the group the reader expands.
+      .mockResolvedValueOnce(page([], null, 0))
+      .mockResolvedValueOnce(page(pages(["one", "restored"]), null, 2))
+      // The refresh after a restore: the stream, then the group again.
+      .mockResolvedValueOnce(page([], null, 0))
+      .mockResolvedValueOnce(page(pages(["one"]), null, 1));
+    listWorkspacesPage
+      .mockResolvedValueOnce({ nextCursor: null, workspaces: [{ id: "w1", name: "A" } as StoredWorkspace] })
+      .mockResolvedValueOnce({ nextCursor: null, workspaces: [{ id: "w1", name: "A" } as StoredWorkspace] });
+
+    const h = await mountArchive();
+    act(() => h.current.ensureWorkspaceThreads("w1"));
+    await flushAsync();
+    await flushAsync();
+    expect(h.current.workspaceThreads.w1?.map(row => row.id)).toEqual(["one", "restored"]);
+
+    // One conversation was restored: the workspace stays on the shelf, but its
+    // cached page must not keep drawing the row that left it.
+    await act(async () => {
+      await h.current.refresh();
+    });
+    expect(h.current.workspaceThreads.w1?.map(row => row.id)).toEqual(["one"]);
+    h.unmount();
+  });
 });

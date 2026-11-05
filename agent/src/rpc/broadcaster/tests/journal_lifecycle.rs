@@ -529,8 +529,15 @@ impl Drop for HeldWriter {
 /// Reproduction of the 2026-10-31 incident (`run_ebdcad4959…`, 20:04:58Z):
 /// an append whose oldest pending reservation is past the age bound is refused
 /// as `Unavailable`, the caller marks the journal failed, the run's interrupt
-/// flag flips — and **nothing** clears it afterwards. The backlog itself is
-/// gone by then, so the session dies from a condition that no longer exists.
+/// flag flips — and the backlog that caused it is gone a moment later, so the
+/// session was left dead from a condition that no longer existed.
+///
+/// The repair is the writer itself: it keeps the events it was holding, commits
+/// them once the backlog clears, and that commit is what proves the journal
+/// writable again (2026-11-05, `flush_event_batch`). The *run* stays interrupted
+/// — its production was stopped on purpose, and re-arming it mid-run is not this
+/// path's business — but the *session* accepts events again instead of staying
+/// poisoned until a restart.
 ///
 /// The writer is parked on its own test gate and the age bound is shrunk to
 /// 1 ms, so "the oldest reservation is older than the bound" is a fact at the
@@ -538,7 +545,7 @@ impl Drop for HeldWriter {
 /// segmented store, the writer thread, the broadcaster's stamping and its
 /// failure bookkeeping.
 #[test]
-fn an_append_past_the_pending_age_limit_kills_the_journal_and_it_never_recovers() {
+fn an_append_past_the_pending_age_limit_fails_the_journal_until_a_commit_lands() {
     let directory = tempfile::tempdir().unwrap();
     let manager = crate::session::Manager::new(directory.path().to_path_buf());
     let broadcaster = SseBroadcaster::new();
@@ -622,22 +629,24 @@ fn an_append_past_the_pending_age_limit_kills_the_journal_and_it_never_recovers(
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
-    // The refusal is permanent even though its cause is gone: the health latch
-    // is only cleared by re-binding the journal (agent restart) or by
-    // `start_run`, which a poisoned session can never reach because the prompt
-    // path refuses first.
+    // The backlog drained, and the commit that drained it is what clears the
+    // health flag: the journal has just written successfully, so the condition
+    // that refused the append is provably gone.
     assert!(
-        broadcaster.persistence_error().is_some(),
-        "a drained backlog must not by itself revive the journal"
+        broadcaster.persistence_error().is_none(),
+        "a drained backlog must revive the journal, not outlive it"
     );
-    assert!(interrupt.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(
+        interrupt.load(std::sync::atomic::Ordering::SeqCst),
+        "the run that was interrupted stays interrupted"
+    );
     broadcaster.broadcast(SseEvent::new(
         "text_chunk",
         serde_json::json!({"block_id": "b0", "text": "c"}),
     ));
     assert!(
-        events.try_recv().is_err(),
-        "every later event stays dropped until the session is restarted"
+        events.try_recv().is_ok(),
+        "the session accepts events again instead of staying poisoned"
     );
 }
 
@@ -703,4 +712,90 @@ fn a_settled_run_keeps_the_same_projection_the_journal_folds_to() {
             .all(|event| !event.data.contains("text")),
         "a tool result's captured text is not part of the projection"
     );
+}
+
+/// Wait for a condition the writer reports from its own thread. Bounded well
+/// above the retry interval, because a fully parallel suite competes with the
+/// worker for CPU.
+fn eventually(what: &str, mut check: impl FnMut() -> bool) {
+    for _ in 0..600 {
+        if check() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("timed out waiting for {what}");
+}
+
+/// A storage failure is usually contention on a shared SQLite database — another
+/// session's long transaction, a checkpoint of a large WAL — and that contention
+/// ends by itself. The writer therefore keeps the events it already accepted and
+/// retries them, and the commit that finally lands is what clears the journal
+/// health flag. Before this, a session whose journal failed *once* stayed
+/// unwritable: health was only cleared on a run's journal rebind, and the flag is
+/// exactly what refuses the next run admission (measured 2026-11-05: one
+/// session unrunnable for 20 minutes while every other session streamed).
+#[test]
+fn a_failed_batch_is_retried_and_its_success_clears_the_failure() {
+    let directory = tempfile::tempdir().unwrap();
+    let manager = crate::session::Manager::new(directory.path().to_path_buf());
+    let b = SseBroadcaster::new();
+    b.configure_legacy_journal("session-retry", &manager)
+        .unwrap();
+    b.start_run("run-retry".to_string(), 1);
+
+    b.inject_commit_failures(1);
+    b.broadcast(SseEvent::new(
+        "text_chunk",
+        serde_json::json!({"text": "retry me"}),
+    ));
+    eventually("the injected failure to be reported", || {
+        b.persistence_error().is_some()
+    });
+
+    // Nothing else is written: the writer retries the batch it kept, and the
+    // successful commit both lands the event and clears the flag.
+    eventually("the retry to commit the batch it kept", || {
+        b.journal_commit_count() == 1
+    });
+    assert!(
+        b.persistence_error().is_none(),
+        "the commit that landed is what proves the journal writable again"
+    );
+    assert_eq!(
+        b.read_journal("run-retry").unwrap().len(),
+        1,
+        "the retained batch is the retry's payload"
+    );
+}
+
+/// The flag lives in the broadcaster, not in the store: a restarted agent gets a
+/// fresh one. Asserting it here keeps a future "persist the health marker" change
+/// from silently re-introducing the wedge across restarts.
+#[test]
+fn journal_health_is_not_carried_into_a_new_broadcaster() {
+    let directory = tempfile::tempdir().unwrap();
+    let manager = crate::session::Manager::new(directory.path().to_path_buf());
+    let first = SseBroadcaster::new();
+    first
+        .configure_legacy_journal("session-restart", &manager)
+        .unwrap();
+    first.fail_persistence("event journal append failed: database is locked");
+    assert!(first.persistence_error().is_some());
+
+    let restarted = SseBroadcaster::new();
+    restarted
+        .configure_legacy_journal("session-restart", &manager)
+        .unwrap();
+    assert!(
+        restarted.persistence_error().is_none(),
+        "a fresh broadcaster over the same journal starts healthy"
+    );
+    restarted.broadcast(SseEvent::new(
+        "text_chunk",
+        serde_json::json!({"text": "ok"}),
+    ));
+    eventually("the restarted journal to accept a write", || {
+        restarted.journal_commit_count() == 1
+    });
 }

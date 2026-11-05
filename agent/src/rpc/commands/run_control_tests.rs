@@ -535,6 +535,47 @@ fn abort_session_cancels_queued_runs() {
 }
 
 #[test]
+fn recover_session_clears_a_recorded_journal_failure() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    session
+        .read()
+        .broadcaster
+        .fail_persistence("event journal append failed: database is locked");
+
+    let resp = parse_response(&handle_command_internal(
+        &state,
+        make_cmd("recover_session"),
+    ));
+    assert_eq!(resp["success"], true, "{resp}");
+    assert_eq!(resp["data"]["recovered"], true);
+    assert_eq!(resp["data"]["was_degraded"], true);
+    assert!(
+        session.read().broadcaster.persistence_error().is_none(),
+        "the flag the command exists to clear is gone"
+    );
+}
+
+#[test]
+fn recover_session_refuses_while_a_run_is_active() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    session
+        .read()
+        .runtime
+        .begin(Some("run-active"), Some("request-active"))
+        .unwrap();
+
+    let resp = parse_response(&handle_command_internal(
+        &state,
+        make_cmd("recover_session"),
+    ));
+    assert_eq!(resp["success"], false);
+    assert_eq!(resp["error_code"], "session_recovery_failed");
+    assert!(resp["error"].as_str().unwrap().contains("active run"));
+}
+
+#[test]
 fn retry_persistence_on_healthy_session_fails() {
     let state = make_app_state();
     let resp = parse_response(&handle_command_internal(

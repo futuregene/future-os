@@ -86,6 +86,8 @@ export function useArchiveView(): ArchiveView {
   // another page cannot read this render's state.
   const workspaceCursorRef = useRef<Record<string, string | null>>({});
   workspaceCursorRef.current = workspaceNextCursor;
+  const workspaceThreadsRef = useRef<Record<string, StoredThread[]>>({});
+  workspaceThreadsRef.current = workspaceThreads;
   const workspaceLoadedRef = useRef<Record<string, number>>({});
   const stateRef = useRef<ArchiveViewState>({ loading: false, loaded: false, nextCursor: null });
   stateRef.current = { loading, loaded: stateRef.current.loaded, nextCursor };
@@ -96,10 +98,8 @@ export function useArchiveView(): ArchiveView {
     stateRef.current = { ...stateRef.current, loading: true, loaded: true };
     setLoading(true);
     try {
-      const [workspacePage, threadPage] = await Promise.all([
-        listWorkspacesPage(true, null, PAGE_SIZE),
-        listThreadsPage("archived", null, PAGE_SIZE),
-      ]);
+      const workspacePage = await listWorkspacesPage(true, null, PAGE_SIZE);
+      const threadPage = await listThreadsPage("archived", null, PAGE_SIZE);
       setWorkspaces(workspacePage.workspaces);
       setWorkspaceNextCursorForList(workspacePage.nextCursor);
       setThreads(threadPage.threads);
@@ -107,17 +107,32 @@ export function useArchiveView(): ArchiveView {
       setThreadsRemaining(threadPage.nextCursor === null
         ? 0
         : Math.max(0, threadPage.totalRoots - PAGE_SIZE));
-      // Contents of workspaces that are still shelved are re-read for the ones
-      // the reader had open; a restored workspace's entry simply disappears
-      // with its heading.
+      // The groups the reader had open are re-read, not merely kept: restoring
+      // one conversation out of a group leaves the workspace on the shelf, and a
+      // cached page would keep drawing the conversation that just left it (and
+      // keep counting it in the heading). A workspace that is gone from the
+      // shelf drops its entry with its heading.
+      const opened = Object.keys(workspaceThreadsRef.current).filter(id =>
+        workspacePage.workspaces.some(workspace => workspace.id === id));
       setWorkspaceThreads((current) => {
         const kept: Record<string, StoredThread[]> = {};
-        for (const workspace of workspacePage.workspaces) {
-          if (current[workspace.id])
-            kept[workspace.id] = current[workspace.id]!;
+        for (const id of opened) {
+          if (current[id])
+            kept[id] = current[id]!;
         }
         return kept;
       });
+      await Promise.all(opened.map(async (id) => {
+        const page = await listThreadsPage(`workspace-archived:${id}`, null, PAGE_SIZE);
+        setWorkspaceThreads(previous => ({ ...previous, [id]: page.threads }));
+        setWorkspaceNextCursor(previous => ({ ...previous, [id]: page.nextCursor }));
+        workspaceCursorRef.current = { ...workspaceCursorRef.current, [id]: page.nextCursor };
+        workspaceLoadedRef.current[id] = PAGE_SIZE;
+        setWorkspaceRemaining(previous => ({
+          ...previous,
+          [id]: page.nextCursor === null ? 0 : Math.max(0, page.totalRoots - PAGE_SIZE),
+        }));
+      }));
     }
     finally {
       stateRef.current = { loading: false, loaded: true, nextCursor: stateRef.current.nextCursor };
