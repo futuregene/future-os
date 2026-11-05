@@ -736,12 +736,19 @@ async fn an_exhausted_total_budget_refuses_before_launching() {
 ///
 /// Portable by construction rather than by `#[cfg]`: the guard is a *runtime
 /// measurement* (`wraps_shell()`), so the same body runs under seatbelt here and —
-/// on Linux — drives the **helper-report** wiring in `spawn_shell_impl`, the branch
-/// that exists only when the resolved backend is `LinuxBubblewrap`
-/// (`expects_report`; see the module record's §6.2). A `#[cfg(target_os = "linux")]`
-/// twin would be uncompilable on this host (the crate's build scripts need a Linux
-/// `cc`), so this test is the form that can be *verified* here and still measure
-/// those lines on a Linux runner.
+/// on a Linux host whose sandbox *runs commands* — drives the **helper-report**
+/// wiring in `spawn_shell_impl` (`expects_report`; see the module record's §6.2).
+/// A `#[cfg(target_os = "linux")]` twin would be uncompilable on this host (the
+/// crate's build scripts need a Linux `cc`), so this test is the form that can be
+/// *verified* here.
+///
+/// The Linux helper cannot be driven from a lib test, and that is why the second
+/// guard below exists rather than being a `#[cfg]`: `linux::runner::prepare`
+/// re-executes `current_exe()` with `--linux-sandbox-helper`, and here that is the
+/// libtest harness, which rejects the flag (`Unrecognized option`, exit 101)
+/// before any test code runs. A runner without a working bwrap hid this by making
+/// the whole test skip; on a runner that has one the run has to be measured
+/// through the real binary (`agent/tests/linux_sandbox_smoke.rs`).
 #[allow(clippy::await_holding_lock)] // HOME is process-global during policy resolution.
 #[tokio::test(flavor = "current_thread")]
 async fn a_sandboxed_run_announces_the_wrapper_and_reports_process_facts() {
@@ -758,6 +765,17 @@ async fn a_sandboxed_run_announces_the_wrapper_and_reports_process_facts() {
     if !sandbox.wraps_shell() {
         // No OS sandbox on this host: the wiring is measured where one exists.
         eprintln!("skipping the sandboxed-run test: no OS sandbox backend on this host");
+        return;
+    }
+    if matches!(
+        sandbox.backend_receipt,
+        crate::sandbox::SandboxBackendReceipt::LinuxBubblewrap { .. }
+    ) {
+        // Only the agent binary answers `--linux-sandbox-helper`; this process is
+        // the test harness (see the doc comment).
+        eprintln!(
+            "skipping the sandboxed-run test: the Linux helper is this process, not the agent"
+        );
         return;
     }
     let announced = Arc::new(Mutex::new(Vec::new()));
