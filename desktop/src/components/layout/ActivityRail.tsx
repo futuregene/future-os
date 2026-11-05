@@ -404,6 +404,7 @@ export function ActivityRail({
   const { collapsedWorkspaces, toggleWorkspaceCollapsed } = useCollapsedWorkspaces();
   // Collapse state for the two top-level list sections (Workspace / Chat),
   // independent of the per-workspace group collapse above.
+  const [workspaceSectionCollapsed, setWorkspaceSectionCollapsed] = useState(false);
   const [chatSectionCollapsed, setChatSectionCollapsed] = useState(false);
   // The archived view's two sections fold like the active ones (one click each,
   // no need to fold every workspace heading by hand).
@@ -1205,13 +1206,13 @@ export function ActivityRail({
    * this effect asks again for whatever is open.
    */
   useEffect(() => {
-    if (railView === "archived")
+    if (railView === "archived" || workspaceSectionCollapsed)
       return;
     for (const group of workspaceGroups) {
       if (!collapsedWorkspaces.has(group.workspace.id))
         ensureThreadScope?.(`workspace:${group.workspace.id}`);
     }
-  }, [collapsedWorkspaces, ensureThreadScope, railView, workspaceGroups]);
+  }, [collapsedWorkspaces, ensureThreadScope, railView, workspaceGroups, workspaceSectionCollapsed]);
 
   const filteredPinnedThreads = useMemo(
     () => pinnedThreads.filter(({ thread }) => threadMatchesQuery(thread)),
@@ -1225,7 +1226,10 @@ export function ActivityRail({
   // Memoized rather than computed inline: these three are dependencies of the
   // walkable-row list below (and of the row builders), and a fresh array every
   // render would rebuild all of it on every keystroke elsewhere in the app.
-  const visibleWorkspaceGroups = workspaceGroups;
+  const visibleWorkspaceGroups = useMemo(
+    () => (workspaceSectionCollapsed ? [] : workspaceGroups),
+    [workspaceSectionCollapsed, workspaceGroups],
+  );
   const visiblePinnedThreads = filteredPinnedThreads;
   const visibleChatThreads = useMemo(
     () => (chatSectionCollapsed ? [] : filteredChatThreads),
@@ -1440,7 +1444,12 @@ export function ActivityRail({
       const toRows = (row: MergedConversation) => ({ key: row.key, open: () => openRow(row) });
       return [
         ...byRoot(pinned, rootOf).map(rows => toBlock("pinned", rows.map(toRows))),
-        ...workspaces.map(group => toBlock("workspace", group.rows.map(toRows))),
+        // A folded-away section has no rows on screen, so the walk must not stop
+        // on them either: the keyboard follows what is drawn, and the local list
+        // already answers the same fold this way.
+        ...(workspaceSectionCollapsed
+          ? []
+          : workspaces.map(group => toBlock("workspace", group.rows.map(toRows)))),
         ...byRoot(chats, rootOf).map(rows => toBlock("chat", rows.map(toRows))),
       ];
     }
@@ -1487,6 +1496,7 @@ export function ActivityRail({
     recent.roots,
     recent.rows,
     threadParents,
+    workspaceSectionCollapsed,
     visibleChatThreads,
     visiblePinnedThreads,
     visibleWorkspaceGroups,
@@ -2210,6 +2220,8 @@ export function ActivityRail({
                                   onToggleChatSection={() => setChatSectionCollapsed(value => !value)}
                                   onToggleRemoteExpanded={toggleRemoteThreadExpanded}
                                   onToggleWorkspace={toggleWorkspaceCollapsed}
+                                  onToggleWorkspaceSection={() => setWorkspaceSectionCollapsed(value => !value)}
+                                  workspaceSectionCollapsed={workspaceSectionCollapsed}
                                   peers={remotePeers}
                                   remoteSelection={{
                                     selectable: isRemoteRowSelectable,
@@ -2284,6 +2296,13 @@ export function ActivityRail({
                                   <div className="sticky top-0 z-20 flex h-6 items-center justify-between bg-surface px-2 text-xs font-medium text-ink-muted">
                                     <span>{t("activityRail.workspace")}</span>
                                     <div className="flex items-center gap-0.5">
+                                      <SectionToggle
+                                        collapsed={workspaceSectionCollapsed}
+                                        label={workspaceSectionCollapsed
+                                          ? t("activityRail.expandWorkspaceSection")
+                                          : t("activityRail.collapseWorkspaceSection")}
+                                        onToggle={() => setWorkspaceSectionCollapsed(value => !value)}
+                                      />
                                       <button
                                         aria-label={t("activityRail.newWorkspace")}
                                         className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
@@ -2295,7 +2314,7 @@ export function ActivityRail({
                                       </button>
                                     </div>
                                   </div>
-                                  {workspaceGroups.length === 0 && (filteredChatThreads.length === 0 || chatSectionCollapsed)
+                                  {!workspaceSectionCollapsed && workspaceGroups.length === 0 && (filteredChatThreads.length === 0 || chatSectionCollapsed)
                                     ? (
                                         <div className="px-2 py-1 text-xs text-ink-muted" data-testid="no-matches-workspace">{noMatchesText}</div>
                                       )
