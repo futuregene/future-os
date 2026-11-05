@@ -519,7 +519,7 @@ pub(crate) fn insert_transcript_entries(
         }
     }
     if let Some(position) = changed_position {
-        crate::session::history::update_display_index_from(db, session, position)?;
+        crate::session::history::project_history_index(db, session, position)?;
     }
     if metadata_changed {
         crate::session::history::refresh_session_metadata(db, session)?;

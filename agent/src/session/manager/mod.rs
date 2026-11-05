@@ -164,6 +164,12 @@ impl Manager {
             startup::step(&database, "recover_segmented_runs", || {
                 store.recover_segmented_runs_cancellable(cancellation)
             })?;
+            // A conversion records its payloads before it drops the session's
+            // rows, so a start that finds a record finishes the rewrite instead
+            // of leaving the session empty.
+            startup::step(&database, "recover_legacy_conversions", || {
+                store.recover_legacy_conversions(16).map(|_| ())
+            })?;
             // A settled run replays its transcript, not its token stream, so its
             // journal is retired automatically once it has been settled for a
             // while: the sweep handles the bulk, this keeps a long-running store

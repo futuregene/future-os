@@ -13,7 +13,28 @@ use rusqlite::{params, Connection};
 /// empty string: the divider lost its numbers, its `phase` (which decides
 /// whether an in-turn checkpoint stays inside the exchange or splits it) and its
 /// identity. Those rows must be rebuilt, not patched — the shape is the input.
-pub(crate) const PROJECTION_VERSION: i64 = 2;
+///
+/// 3: a canonical session's rows are the *healed* rows too
+/// ([`super::update_display_index_from`]), not the stored ones. Version 2 copied
+/// a canonical session's shapes straight through, so a run cut off between a
+/// tool call and its result lost the `[Tool execution lost — …]` row a legacy
+/// session showed for the same journal — and converting the legacy session into
+/// the canon dropped the row. Rows built under 2 must be rebuilt once.
+///
+/// 4: a rebuild batch that stops exactly on an exchange boundary heals that
+/// trailing exchange (it is whole: nothing more can join it). Under 3 the next
+/// batch opened a new run, so `affected_history_start` never walked back into
+/// the exchange the previous batch ended on and its rows stayed unhealed — the
+/// same placeholder lost, but only for conversations where a batch boundary
+/// landed there.
+///
+/// 5: every exchange window reaches the index in position order. Under 4 a
+/// window the healing left alone was skipped, and the next healed window was
+/// written behind everything already indexed, so the skipped window's rows were
+/// appended at the end of the transcript: the same entries, in the wrong order
+/// (measured on a 2,287-entry conversation: the eleven entries that ended one
+/// run were displayed after a window twenty user turns later).
+pub(crate) const PROJECTION_VERSION: i64 = 5;
 
 /// Keep healthy reads on a read transaction. If reconstruction is needed,
 /// release that snapshot before reserving a writer and recheck under the lock.
@@ -96,7 +117,7 @@ pub(crate) fn ensure_history_index(db: &Connection, session: &str) -> Result<()>
             position = next;
         }
     }
-    super::update_display_index_from(db, session, 0)?;
+    super::project_history_index(db, session, 0)?;
     mark_history_index_ready(db, session)
 }
 
@@ -209,6 +230,9 @@ fn rebuild_batch(
     if rows.is_empty() {
         mark_history_index_ready(&tx, session)?;
     } else {
+        // The shape insert advances `next`; the projection only closes an
+        // exchange whose shapes are all on disk, and the next batch continues
+        // inside the exchange this one stopped in.
         super::update_display_index_from(&tx, session, after + 1)?;
     }
     tx.commit()?;
@@ -260,6 +284,93 @@ mod tests {
             .unwrap();
         assert!(ready);
         assert_eq!(rows, 200);
+    }
+
+    /// A rebuild batch is a slice of rows, and a slice can end exactly on the
+    /// boundary between two exchanges. That trailing exchange is whole — nothing
+    /// more can join it — so it must be projected healed like any other; if it is
+    /// skipped, the next batch starts at the following user message, never walks
+    /// back (a new message opens a new run), and the exchange keeps its unhealed
+    /// rows forever. What that costs a reader: the `[Tool execution lost — …]`
+    /// result of a call whose answer never landed.
+    #[test]
+    fn a_batch_that_ends_on_an_exchange_boundary_still_heals_that_exchange() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = Manager::new(root.path().join("sessions"));
+        let store = manager.storage().unwrap();
+        store.reserve_segmented("boundary").unwrap();
+        let mut entries = Vec::new();
+        // Positions 0..=61: two whole exchanges, so the dangling one straddles the
+        // 64th row rather than sitting at the very start.
+        for index in 0..62 {
+            entries.push(serde_json::json!({
+                "id": format!("u-{index}"),
+                "type": "user",
+                "role": "user",
+                "content": format!("turn {index}"),
+                "meta": {"run_id": format!("run-{index}")}
+            }));
+        }
+        // 62: a call the run never answered. 63: the run's terminal marker — the
+        // last row of the first batch. 64: the next user message, the first row of
+        // the second batch and the boundary the first batch stops on.
+        entries.push(serde_json::json!({
+            "id": "cut-off",
+            "type": "assistant",
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": "call-cut-off",
+                "type": "function",
+                "function": {"name": "shell", "arguments": {"command": "cargo test"}}
+            }],
+            "meta": {"run_id": "run-cut-off"}
+        }));
+        entries.push(serde_json::json!({
+            "id": "cut-off-terminal",
+            "type": "run_terminal",
+            "role": "system",
+            "content": {"run_id": "run-cut-off", "state": "interrupted"}
+        }));
+        for index in 64..199 {
+            entries.push(serde_json::json!({
+                "id": format!("u-{index}"),
+                "type": "user",
+                "role": "user",
+                "content": format!("turn {index}"),
+                "meta": {"run_id": format!("run-{index}")}
+            }));
+        }
+        store.replace("boundary", entries).unwrap();
+        store
+            .db
+            .call(|db| {
+                db.execute(
+                    "DELETE FROM history_index_state WHERE session_id='boundary'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        manager.rebuild_history_index("boundary").unwrap();
+        let page = manager
+            .history_page("boundary", None, Some(0), Some(1000))
+            .unwrap();
+        let ids: Vec<&str> = page["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["id"].as_str().unwrap())
+            .collect();
+        let assistant = ids.iter().position(|id| *id == "cut-off").unwrap();
+        assert_eq!(
+            ids[assistant + 1],
+            "missing-tool:cut-off:call-cut-off",
+            "the placeholder must follow the call it stands in for, not be appended at the end"
+        );
+        // The page holds one batch's worth of rows; the placeholder is its last
+        // row, which is where the exchange the batch stopped on ends.
+        assert_eq!(ids.len(), assistant + 2);
     }
 
     #[test]

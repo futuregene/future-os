@@ -55,6 +55,8 @@ const ENTRY_BODY_BATCH: i64 = 64;
 const RETIRE_BATCH_STREAMS: i64 = 4;
 /// Sessions whose derived display projections are purged per sweep call.
 const HISTORY_PURGE_BATCH: i64 = 4;
+/// Legacy sessions converted into the canonical body store per sweep call.
+const LEGACY_MIGRATE_BATCH: i64 = 8;
 
 /// Runs one startup catch-up may fold. A completion notification already
 /// handles the normal case, so this only mops up what a crash or a stop left
@@ -533,6 +535,11 @@ pub(crate) fn compress_entry_bodies(db: &mut Connection, limit: i64) -> Result<(
 }
 
 impl SqliteStore {
+    /// Finish any conversion a previous process left behind.
+    pub(crate) fn recover_legacy_conversions(&self, limit: i64) -> Result<usize> {
+        super::content::legacy_migrate::recover(self, limit)
+    }
+
     /// Everything `future session journal` prints. Read-only, cheap enough to
     /// run whenever someone suspects the journal, and never a mutation.
     pub(crate) fn journal_stats(&self) -> Result<Value> {
@@ -1046,6 +1053,29 @@ impl SqliteStore {
             .map(|plan| plan.0)
             .unwrap_or(0);
 
+        // 11. Legacy sessions: the same entries, rebuilt through the session
+        //     writer. The conversion records the payloads first, so an
+        //     interruption is finished by the next start rather than losing them.
+        let pending_legacy_sessions = self
+            .db
+            .call(|db| super::content::legacy_migrate::plan(db))?;
+        let (converted, converted_entries, converted_bodies) =
+            if dry_run || pending_legacy_sessions.0 == 0 || started.elapsed() >= budget {
+                (0i64, 0i64, 0i64)
+            } else {
+                super::content::legacy_migrate::apply(self, LEGACY_MIGRATE_BATCH).unwrap_or_else(
+                    |error| {
+                        tracing::warn!(%error, "legacy session conversion failed");
+                        (0, 0, 0)
+                    },
+                )
+            };
+        let legacy_sessions_pending = self
+            .db
+            .call(|db| super::content::legacy_migrate::plan(db))
+            .map(|plan| plan.0)
+            .unwrap_or(0);
+
         // `hasMore` promises *more work this sweep can do*, not "some settled run
         // still keeps a journal": a run that cannot be representationally
         // reclaimed (its last event is not `agent_end`, its envelope is unknown)
@@ -1069,6 +1099,7 @@ impl SqliteStore {
                 || entries_pending > 0
                 || streams_pending > 0
                 || history_pending > 0
+                || legacy_sessions_pending > 0
         };
 
         // Fold freed pages back into the file where this database can do it
@@ -1139,6 +1170,12 @@ impl SqliteStore {
                 "pendingRows": history_pending,
                 "rowsDeleted": history_rows,
                 "bytesDeleted": history_bytes,
+            },
+            "legacySessions": {
+                "pendingSessions": legacy_sessions_pending,
+                "convertedSessions": converted,
+                "entriesRewritten": converted_entries,
+                "bodiesCleared": converted_bodies,
             },
             "hasMore": has_more,
             "quickCheck": quick_check,
