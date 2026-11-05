@@ -22,6 +22,7 @@ jest.mock("react-i18next", () => {
     "chat.stepTool": "Tool calls",
     "chat.stepThink": "Thought",
     "chat.stepsFailed": "{{count}} failed",
+    "chat.stepsInterrupted": "{{count}} interrupted",
     // The compaction divider's copy, so the rendered label is assertable instead
     // of being the bare i18n key.
     "chat.compacted": "Context compacted",
@@ -96,11 +97,12 @@ const tool = (id: string, fields: Partial<TimelineToolRow> = {}): TimelineSegmen
  * are the row's whole semantics, and the label spells out what the glyphs mean.
  * Tool calls come first, then reasoning (the fixed order), zeros dropped.
  */
-function summaryRow(counts: { tools?: number; thinking?: number; failed?: number }) {
+function summaryRow(counts: { tools?: number; thinking?: number; failed?: number; interrupted?: number }) {
   const label = [
     counts.tools ? `Tool calls ${counts.tools}×` : null,
     counts.thinking ? `Thought ${counts.thinking}×` : null,
     counts.failed ? `${counts.failed} failed` : null,
+    counts.interrupted ? `${counts.interrupted} interrupted` : null,
   ].filter(Boolean).join(" · ");
   return tree.root.findAll(node =>
     typeof node.props.onPress === "function" && node.props.accessibilityLabel === label)[0]!;
@@ -168,6 +170,27 @@ test("the icon summary keeps a spoken form", () => {
   render(reply({ segments: [thinking("k1"), tool("c1"), tool("c2", { status: "failed" })] }));
   const row = summaryRow({ tools: 2, thinking: 1, failed: 1 });
   expect(row.props.accessibilityLabel).toBe("Tool calls 2× · Thought 1× · 1 failed");
+});
+
+// A tool result that never arrived leaves its call `interrupted` with work on
+// both sides of it. It used to keep its own row, so the same reply arrived as
+// two summaries with a lone 已中断 line between them — one lost result cut a long
+// answer in half. It is one line now, and the label says what happened to it.
+test("a call that never reported back does not split the run in two", () => {
+  render(reply({
+    segments: [
+      thinking("k1"), tool("c1"),
+      tool("c2", { status: "interrupted" }),
+      tool("c3"), thinking("k2"),
+    ],
+  }));
+  const row = summaryRow({ tools: 3, thinking: 2, interrupted: 1 });
+  expect(row).toBeTruthy();
+  expect(row.props.accessibilityLabel).toBe("Tool calls 3× · Thought 2× · 1 interrupted");
+  expect(countText("chat.toolInterrupted")).toBe(0);
+  act(() => row.props.onPress());
+  // Opened, it is still its own row with its own label.
+  expect(countText("chat.toolInterrupted")).toBe(1);
 });
 
 test("the folded run opens into its rows, each still opening its own detail", () => {

@@ -24,7 +24,7 @@ import { useChatScroll } from "./useChatScroll";
 import { useQuestionNav } from "./useQuestionNav";
 import { useTimelinePaging } from "./useTimelinePaging";
 import { useCompactContext } from "./useCompactContext";
-import { useSendMessage, sendFailureText, QUEUED_SEND_POLICY } from "./useSendMessage";
+import { useSendMessage, sendFailureText, QUEUED_SEND_POLICY, type SendMessageIntent } from "./useSendMessage";
 import { useSkillRecommendation } from "./useSkillRecommendation";
 import { useDesktopResource } from "../settings/useDesktopResource";
 import { ChatTimeline, type SyncNoticeState } from "./components/ChatTimeline";
@@ -278,9 +278,13 @@ export function ChatScreen() {
   }, [changeQueue, forgetQueuedRow, remote, sessionId, setMessage]);
 
   /** Send, then read the queue: the row that send may have made is now real. */
-  const sendAndReadQueue = useCallback(async (override?: string) => {
-    await send(override);
+  const sendAndReadQueue = useCallback(async (
+    override?: string,
+    intent?: SendMessageIntent,
+  ) => {
+    const delivered = intent ? await send(override, intent) : await send(override);
     refreshQueue();
+    return delivered;
   }, [refreshQueue, send]);
 
   // Approvals live docked above the composer (not inline in the transcript), and
