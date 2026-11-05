@@ -7,6 +7,8 @@
   "activity": {
     "thinking": "Thinking",
     "thoughtCompleted": "Thought",
+    "thoughtLoading": "Reading the reasoning…",
+    "thoughtUnavailable": "Couldn't read this reasoning",
     "stepCount": "×{{count}}",
     "stepTools": "Tool calls {{count}}×",
     "stepThoughts": "Thought {{count}}×",
