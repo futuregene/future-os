@@ -1,0 +1,43 @@
+{
+  "id": "tasks-create-same-name",
+  "title": "新建定时任务：名字与已有任务相同也能存下并各自成行",
+  "area": "tasks",
+  "priority": "P1",
+  "tags": ["tasks", "form", "regression"],
+  "description": "在定时任务页新建一个任务，名字直接用列表里已有的那个（用户反馈的第 17 条：名字应该可以重复）。填名称与提示词是真的用键盘打进去的；几个下拉是原生 select，headless Chrome 打不开它的弹层，所以按值触发一次 change——这是本用例唯一的模拟动作。保存后列表里应当出现两行同名任务，而不是一条红色提示或被吞掉一次保存。",
+  "preconditions": "页面自带的定时任务夹具里已有「每周进展周报」；模型来自本机 models.json。",
+  "expectations": [
+    "保存后列表里有两行「每周进展周报」",
+    "没有出现「UNIQUE constraint failed」这类存储层原文",
+    "也没有停在必填校验（名称和提示词都已填）",
+    "新任务的触发方式写成了每天"
+  ],
+  "steps": [
+    { "wait": 900 },
+    { "click": { "selector": "button", "text": "定时任务" } },
+    { "waitFor": { "text": "每周进展周报" }, "timeout": 8000 },
+    { "click": { "selector": "button", "text": "新建定时任务" } },
+    { "wait": 700 },
+
+    { "click": { "aria": "名称" } },
+    { "type": "每周进展周报" },
+    { "click": { "aria": "提示词" } },
+    { "type": "把这一周改过的笔记整理成周报，写进 reports/weekly.md。" },
+
+    { "eval": "(() => { const setValue = (el, value) => { if (!el) return null; const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')?.set; setter?.call(el, value); el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); return el.value; }; const selects = [...document.querySelectorAll('select')]; const model = selects.find(s => [...s.options].some(o => o.value.includes('/'))); const options = [...model.options].filter(o => o.value.includes('/')); const pick = options.find(o => o.value.includes('deepseek-flash')) ?? options[0]; return setValue(model, pick.value); })()" },
+    { "wait": 600 },
+    { "eval": "(() => { const setValue = (el, value) => { if (!el) return null; const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')?.set; setter?.call(el, value); el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); return el.value; }; const selects = [...document.querySelectorAll('select')]; const thinking = selects.find(s => [...s.options].some(o => o.value === 'high')); const settled = setValue(thinking, 'high'); const trigger = selects.find(s => [...s.options].some(o => o.value === 'yearly')); setValue(trigger, 'daily'); return settled + '/' + trigger.value; })()" },
+    { "wait": 600 },
+    { "eval": "(() => { const setValue = (el, value) => { const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')?.set; setter?.call(el, value); el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }; const time = document.querySelector('input[type=\"time\"]'); if (!time) return 'no-time-field'; setValue(time, '09:15'); return time.value; })()" },
+    { "wait": 400 },
+    { "shot": "task-form-filled" },
+
+    { "click": { "selector": "button", "text": "保存" } },
+    { "wait": 900 },
+    { "assert": { "expr": "(() => { const rows = [...document.querySelectorAll('button')].filter(b => (b.innerText || '').includes('每周进展周报')); return rows.length >= 2; })()", "message": "列表里有两行同名任务" } },
+    { "assert": { "expr": "!document.body.innerText.includes('UNIQUE constraint failed')", "message": "没有把 SQLite 的原文贴到界面上" } },
+    { "assert": { "expr": "!document.body.innerText.includes('名称和提示词必填')", "message": "没有停在必填校验" } },
+    { "assert": { "expr": "document.body.innerText.includes('每天')", "message": "新任务的触发方式写成了每天" } },
+    { "shot": "two-same-name-tasks" }
+  ]
+}

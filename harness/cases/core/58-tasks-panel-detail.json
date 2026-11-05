@@ -1,0 +1,39 @@
+{
+  "id": "tasks-panel-detail",
+  "title": "定时任务页：列表说清下次何时跑，详情说清上次跑成什么样",
+  "area": "tasks",
+  "priority": "P1",
+  "tags": ["tasks", "navigation"],
+  "description": "打开定时任务页，看列表里的每个任务是否带触发方式与下次运行时间、是否标出最近一次运行的结果；点开一个上次失败的任务，详情里应该能看到这次失败的原始错误、提示词版本，以及运行记录卡片。任务「一直在启用、时间也对、就是不跑」的现场只能从这里看出来，所以这一页得先把这三件事说清楚。",
+  "preconditions": "页面自带的定时任务夹具里有四个任务：一个每周、一个每 12 小时（有一次失败、还有排队请求）、一个手动、一个月底任务。",
+  "expectations": [
+    "任务列表里两个有名任务都可见",
+    "列表标出了最近一次运行的结果（完成 / 失败）与排队状态",
+    "详情里有「下次」时间、提示词与提示词版本",
+    "运行记录里能看到这次失败的原因原文",
+    "详情里的折叠「设置」展开后能看到模型、时区等运行参数"
+  ],
+  "steps": [
+    { "wait": 900 },
+    { "click": { "selector": "button", "text": "定时任务" } },
+    { "waitFor": { "text": "每周进展周报" }, "timeout": 8000 },
+    { "assert": { "expr": "document.body.innerText.includes('文献监控')", "message": "两个有名任务都在列表里" } },
+    { "assert": { "expr": "document.body.innerText.includes('完成') && document.body.innerText.includes('失败')", "message": "列表标出了最近一次运行的结果" } },
+    { "assert": { "expr": "document.body.innerText.includes('已排队')", "message": "有排队请求的任务被标成「已排队」" } },
+    { "shot": "task-list" },
+
+    { "click": { "selector": "button", "text": "文献监控" } },
+    { "waitFor": { "text": "运行记录" }, "timeout": 8000 },
+    { "assert": { "expr": "document.body.innerText.includes('下次')", "message": "详情给出了下次运行时间" } },
+    { "assert": { "expr": "document.body.innerText.includes('上游检索服务返回 503')", "message": "运行记录里能看到失败原因原文" } },
+    { "assert": { "expr": "document.body.innerText.includes('定时')", "message": "运行记录标出这是一次定时运行" } },
+    { "shot": "task-detail" },
+
+    { "click": { "selector": "button[aria-expanded]", "text": "设置" } },
+    { "wait": 600 },
+    { "assert": { "expr": "document.body.innerText.includes('提示词') && document.body.innerText.includes('检索最近 7 天')", "message": "展开设置后能看到提示词原文" } },
+    { "assert": { "expr": "document.body.innerText.includes('提示词版本 v2')", "message": "提示词带版本号（v2）" } },
+    { "assert": { "expr": "document.body.innerText.includes('时区') && document.body.innerText.includes('每 12 小时')", "message": "设置里写出了触发方式与时区" } },
+    { "shot": "task-detail-settings" }
+  ]
+}
