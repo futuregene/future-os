@@ -5,6 +5,7 @@ import { FolderOpen, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
+import { EmptyState } from "../../components/ui/EmptyState";
 import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
 import { openPath } from "../../integrations/storage/files";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
@@ -256,6 +257,24 @@ export function FileTreePanel({
         </div>
       </div>
 
+      {/* Which directory this list is of. The Review tab names its branch in
+          this same slot and type; without a path the file list is unattributed
+          and "empty" cannot be told apart from "you are looking at some other
+          folder" (issue #1541). */}
+      {rootPath
+        ? (
+            <div
+              className="flex min-w-0 shrink-0 items-center gap-1.5 px-4 pb-1.5 text-xs text-ink-soft"
+              data-component="filetree-root"
+            >
+              <FolderOpen className="size-3.5 shrink-0" />
+              <span className="truncate" dir="ltr" title={rootPath}>
+                {rootPath}
+              </span>
+            </div>
+          )
+        : null}
+
       {/*
         The tree is a card, the same treatment the composer and the approval
         prompt get (`rounded-lg border border-line bg-surface/95`), inset from the
@@ -281,8 +300,10 @@ export function FileTreePanel({
               ? (
                   tree.rootErrored
                     ? (
-                        <div className="flex h-full items-center justify-center text-sm text-ink-muted">
-                          {t("loadFailed")}
+                        <div className="p-4">
+                          <div className="rounded-md border border-danger-line bg-danger-soft p-3 text-sm text-danger">
+                            {t("loadFailed")}
+                          </div>
                         </div>
                       )
                     : showLoading
@@ -295,9 +316,14 @@ export function FileTreePanel({
                 )
               : rootEntries.length === 0
                 ? (
-                    <div className="flex h-full items-center justify-center text-sm text-ink-muted">
-                      {t("empty")}
-                    </div>
+                    /* The same empty-state card the Runs and Review tabs use,
+                       naming the directory and a next step instead of a bare
+                       grey line (issues #1541, #1542). */
+                    <EmptyState
+                      className="m-4"
+                      detail={t("emptyDetail", { path: rootPath ?? "" })}
+                      title={t("emptyTitle")}
+                    />
                   )
                 : (
                     <ul>

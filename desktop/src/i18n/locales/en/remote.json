@@ -72,6 +72,7 @@
   "back": "Back",
   "clientsTitle": "Paired devices",
   "noClients": "No devices are paired yet.",
+  "noClientsDetail": "Scan the code or enter the pairing code from \"Add a device\" below; the connection shows up here once it pairs.",
   "addDeviceTitle": "Add a device",
   "addDeviceDescription": "Scan the QR code with the mobile app, or enter the pairing code on another computer."
 }

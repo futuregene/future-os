@@ -95,3 +95,33 @@ test("the context line carries the machine, and both halves stay addressable", (
   expect(tree.root.findAll(node => node.props.testID === "chat-machine")).toHaveLength(0);
   expect(tree.root.findAll(node => node.props.accessibilityLabel === props.contextLabel).length).toBeGreaterThan(0);
 });
+
+/**
+ * The workspace half of the context line wraps rather than disappearing.
+ *
+ * The machine caps at 70% of the row and never shrinks (see `contextLine`), so on
+ * a 390 pt phone the workspace side gets ~80 pt: one line of that printed
+ * 「工作区 · 多巴…」 — the machine's name and nothing of the workspace the
+ * reader needs to tell one of that machine's conversations from another. The
+ * bar is a 60 pt minimum that the line was using half of, so the name is allowed
+ * the second line it needs; the machine keeps one, because it is the half that
+ * has to stay whole.
+ */
+test("the workspace wraps instead of truncating, and the machine stays on one line", () => {
+  act(() => {
+    tree = create(createElement(ChatTopBar, {
+      ...props,
+      contextLabel: "Workspace · 多巴胺与决策",
+      machine: { icon: "laptop", label: "实验室的 MacBook Pro" },
+    }));
+  });
+
+  const context = tree.root.findAll(node =>
+    node.props.accessibilityLabel === "Workspace · 多巴胺与决策" && String(node.type) === "Text");
+  expect(context).toHaveLength(1);
+  expect(context[0]!.props.numberOfLines).toBe(2);
+  const machineLabel = tree.root.findAll(node =>
+    node.props.testID === "chat-machine" && String(node.type) === "View")[0]!
+    .findAll(node => String(node.type) === "Text");
+  expect(machineLabel.map(node => node.props.numberOfLines)).toEqual([1]);
+});

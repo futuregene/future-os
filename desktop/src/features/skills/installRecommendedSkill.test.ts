@@ -2,9 +2,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { installRecommendedSkill } from "./installRecommendedSkill";
 
 const mocks = vi.hoisted(() => ({
+  emitFutureEvent: vi.fn(),
   installSkill: vi.fn(),
   listAvailableSkills: vi.fn(),
   refreshSkills: vi.fn(),
+}));
+
+vi.mock("../../lib/futureEvents", () => ({
+  emitFutureEvent: mocks.emitFutureEvent,
 }));
 
 vi.mock("../../integrations/skills/skillsClient", () => ({
@@ -27,6 +32,7 @@ function entry(id: string, latestVersion: string | null) {
 }
 
 beforeEach(() => {
+  mocks.emitFutureEvent.mockReset();
   mocks.installSkill.mockReset();
   mocks.installSkill.mockResolvedValue(undefined);
   mocks.listAvailableSkills.mockReset();
@@ -46,6 +52,13 @@ describe("installRecommendedSkill", () => {
     // must follow the install, or the next slash command resolves to nothing.
     expect(mocks.installSkill.mock.invocationCallOrder[0]!)
       .toBeLessThan(mocks.refreshSkills.mock.invocationCallOrder[0]!);
+    // The renderer is told, after both mutations settled: the rail's skills
+    // badge and the `/` menu re-read on this event, and an install announced
+    // only by the backend can land before the cached list was dropped (the
+    // badge then keeps the pre-install count).
+    expect(mocks.emitFutureEvent).toHaveBeenCalledExactlyOnceWith("skills-changed", undefined);
+    expect(mocks.refreshSkills.mock.invocationCallOrder[0]!)
+      .toBeLessThan(mocks.emitFutureEvent.mock.invocationCallOrder[0]!);
   });
 
   it("resolves false without installing when the skill is not in the catalogue", async () => {
@@ -55,6 +68,7 @@ describe("installRecommendedSkill", () => {
 
     expect(mocks.installSkill).not.toHaveBeenCalled();
     expect(mocks.refreshSkills).not.toHaveBeenCalled();
+    expect(mocks.emitFutureEvent).not.toHaveBeenCalled();
   });
 
   it("resolves false for a catalogue entry without a published version", async () => {
@@ -62,6 +76,7 @@ describe("installRecommendedSkill", () => {
 
     await expect(installRecommendedSkill("make-ppt")).resolves.toBe(false);
     expect(mocks.installSkill).not.toHaveBeenCalled();
+    expect(mocks.emitFutureEvent).not.toHaveBeenCalled();
   });
 
   it("takes the first match when the catalogue repeats an id", async () => {
@@ -80,6 +95,8 @@ describe("installRecommendedSkill", () => {
     arrange();
 
     await expect(installRecommendedSkill("make-ppt")).resolves.toBe(false);
+    // A failed install changed nothing, so nothing is announced.
+    expect(mocks.emitFutureEvent).not.toHaveBeenCalled();
   });
 
   it("resolves false for a string rejection too", async () => {

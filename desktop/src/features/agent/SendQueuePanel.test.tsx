@@ -83,7 +83,12 @@ it("stops promising the merge once a row is parked", () => {
   // A parked row never runs when the reply ends — it waits for the person reading
   // it — so the header that says the queue is merged and sent at the boundary is
   // simply wrong about it, and leaves the reader wondering why nothing went out.
-  const fresh = renderPanel({ items: [{ content: "will run by itself", id: "a" }] });
+  const fresh = renderPanel({
+    items: [
+      { content: "will run by itself", id: "a" },
+      { content: "and so will this one", id: "c" },
+    ],
+  });
   try {
     expect(fresh.host.textContent).toContain("Sent as one message when this reply ends");
   }
@@ -102,6 +107,26 @@ it("stops promising the merge once a row is parked", () => {
   }
   finally {
     parked.cleanup();
+  }
+});
+
+/**
+ * One waiting message is not merged with anything.
+ *
+ * The Agent folds the coalescing requests queued *behind* the front one into
+ * it (`drain_coalescing_after_first`); a lone row waits and then runs as its
+ * own message, with its own reply. Promising a merge there described something
+ * the queue never does, which is exactly what a report of "the header says
+ * merged but the second message ran on its own" sees.
+ */
+it("describes a lone waiting message as its own message, not a merge", () => {
+  const panel = renderPanel({ items: [{ content: "the only one", id: "a" }] });
+  try {
+    expect(panel.host.textContent).toContain("Sent as its own message when this reply ends");
+    expect(panel.host.textContent).not.toContain("Sent as one message when this reply ends");
+  }
+  finally {
+    panel.cleanup();
   }
 });
 
@@ -147,6 +172,8 @@ it("hides the start control when the queue cannot be started by hand", () => {
   });
   try {
     expect(panel.host.querySelector("[data-queue-release]")).toBeNull();
+    // ...and the header names the parked state instead of a send it will not make.
+    expect(panel.host.textContent).not.toContain("Sent as its own message");
   }
   finally {
     panel.cleanup();

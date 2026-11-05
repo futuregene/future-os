@@ -13,6 +13,6 @@ pub mod timezone;
 pub mod types;
 
 pub use kernel::*;
-pub use store::Store;
+pub use store::{Store, TaskNameTaken};
 pub use timezone::*;
 pub use types::*;

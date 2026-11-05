@@ -20,19 +20,24 @@ export interface UpdateStatus {
  * - `hasUpdate` — true when a new version exists and the user hasn't visited
  *   the update tab yet (drives the red-dot indicators).
  * - `cachedStatus` — the full result from the most recent successful check.
+ * - `cachedCheckedAt` — when that result was produced, so a screen can say so
+ *   instead of presenting a background answer as a check made just now.
  * - `markSeen` — clears the red-dot flag (user acknowledged the update).
  */
 export function useUpdateChecker(): {
   hasUpdate: boolean;
   cachedStatus: UpdateStatus | null;
+  cachedCheckedAt: number | null;
   markSeen: () => void;
 } {
   const [hasUpdate, setHasUpdate] = useState(false);
   const [cachedStatus, setCachedStatus] = useState<UpdateStatus | null>(null);
+  const [cachedCheckedAt, setCachedCheckedAt] = useState<number | null>(null);
   const seenRef = useRef(false);
 
   const applyStatus = useCallback((status: UpdateStatus) => {
     setCachedStatus(status);
+    setCachedCheckedAt(Date.now());
     if (status.hasUpdate && !seenRef.current) {
       setHasUpdate(true);
     }
@@ -58,5 +63,5 @@ export function useUpdateChecker(): {
     setHasUpdate(false);
   }, []);
 
-  return { hasUpdate, cachedStatus, markSeen };
+  return { hasUpdate, cachedStatus, cachedCheckedAt, markSeen };
 }

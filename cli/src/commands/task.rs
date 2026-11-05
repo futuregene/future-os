@@ -1554,6 +1554,71 @@ mod tests {
         assert!(add(&args(&["--name", "n", "--prompt", "p"]), &out).is_err());
     }
 
+    /// #1517: a second task with a taken name is refused with one sentence that
+    /// names the existing task, never the driver's
+    /// `UNIQUE constraint failed: tasks.name`. The refusal writes nothing: the
+    /// first task keeps its prompt and the store still takes writes.
+    #[tokio::test]
+    async fn add_refuses_a_taken_name_in_words() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let first = args(&[
+            "--name",
+            "nightly",
+            "--prompt",
+            "the first prompt",
+            "--cwd",
+            "/tmp",
+            "--daily",
+        ]);
+        let (out, _captured) = Output::memory();
+        add(&first, &out).unwrap();
+
+        let (out, captured) = Output::memory();
+        let error = add(
+            &args(&[
+                "--name",
+                "nightly",
+                "--prompt",
+                "the second prompt",
+                "--cwd",
+                "/tmp",
+                "--daily",
+            ]),
+            &out,
+        )
+        .expect_err("a second task with the same name is refused");
+        assert!(!error.contains("UNIQUE"), "{error}");
+        assert!(!error.contains("constraint"), "{error}");
+        assert!(error.contains("\"nightly\""), "{error}");
+        assert!(error.contains("already exists"), "{error}");
+        assert!(
+            error.contains("rename this one or edit that task instead"),
+            "{error}"
+        );
+        assert!(
+            text(captured.out).is_empty(),
+            "a refused add reports no task"
+        );
+
+        // One row, still the first task's prompt: nothing half-written.
+        let store = Store::open(&home.dir.path().join(".future")).unwrap();
+        let rows = store.list_tasks(false).unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].name, "nightly");
+        assert_eq!(rows[0].prompt, "the first prompt");
+
+        // And the store is usable afterwards.
+        add(
+            &args(&[
+                "--name", "morning", "--prompt", "p", "--cwd", "/tmp", "--daily",
+            ]),
+            &out,
+        )
+        .unwrap();
+        assert_eq!(store.list_tasks(false).unwrap().len(), 2);
+    }
+
     #[tokio::test]
     async fn monthly_short_month_rule_is_stored() {
         let _guard = crate::test_env::lock_env().await;

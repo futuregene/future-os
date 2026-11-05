@@ -12,6 +12,7 @@
   "errorSignedOut": "本机还没有登录 FutureOS，请先登录再连接。",
   "errorRefused": "那台电脑拒绝了本机的访问，请重新配对后再试。",
   "empty": "还没有远程桌面。",
+  "emptyDetail": "展开上方「添加桌面」，填入另一台电脑上的配对链接，就能连上它。",
   "loading": "正在读取已配对的电脑…",
   "connect": "连接",
   "connecting": "正在连接…",

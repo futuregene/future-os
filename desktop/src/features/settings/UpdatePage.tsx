@@ -11,7 +11,7 @@ import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { useMaintenanceStatus } from "../../integrations/tauri/useMaintenanceStatus";
 import { errorMessage } from "../../lib/errors";
 import { SettingsSection } from "./SettingsPrimitives";
-import { UPDATE_DOWNLOAD_PAGE, updatePresentation } from "./updatePresentation";
+import { formatCheckedAt, UPDATE_DOWNLOAD_PAGE, updatePresentation } from "./updatePresentation";
 
 interface DownloadProgress {
   downloaded: number;
@@ -21,12 +21,17 @@ interface DownloadProgress {
 /**
  * Software update page backed by Tauri's signed in-place updater.
  * Accepts an optional `cachedStatus` from the background update checker so
- * the result is displayed immediately without a redundant network round-trip.
+ * the result is displayed immediately without a redundant network round-trip —
+ * labelled with when that result was produced, so a day-old answer is not read
+ * as a check that just ran.
  */
-export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | null }) {
+export function UpdatePage({ cachedStatus, cachedStatusCheckedAt }: { cachedStatus?: UpdateStatus | null; cachedStatusCheckedAt?: number | null }) {
   const { t, i18n } = useTranslation("settings");
   const build = useBuildInfo();
   const [status, setStatus] = useState<UpdateStatus | null>(cachedStatus ?? null);
+  // When `status` was produced. Null when nothing has answered yet: an unchecked
+  // state must never be presented as an up-to-date result.
+  const [checkedAt, setCheckedAt] = useState<number | null>(cachedStatus ? cachedStatusCheckedAt ?? null : null);
   const [checking, setChecking] = useState(false);
   const [checkError, setCheckError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
@@ -44,6 +49,10 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
   const updateStage = recovery?.stage ?? "downloading";
   const preparing = ["verified", "preparing", "prepared"].includes(updateStage);
   const installing = ["cleanup", "awaiting-exit", "installing"].includes(updateStage);
+  // "No update" is only a real answer when the check could actually run: a
+  // platform the updater cannot query answers `hasUpdate: false` without
+  // looking, so that answer must not be rendered as "you're up to date".
+  const noUpdateLabel = status?.platformSupported === false ? "update.unsupported" : "update.upToDate";
 
   // Tear down the streamed-progress listener if the page unmounts mid-download
   // (the download command itself still settles in the background).
@@ -67,9 +76,11 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
     setActionError(null);
     try {
       setStatus(await invokeCommand<UpdateStatus>("check_app_update"));
+      setCheckedAt(Date.now());
     }
     catch (error) {
       setStatus(null);
+      setCheckedAt(null);
       setCheckError(errorMessage(error));
     }
     finally {
@@ -203,6 +214,7 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
           {!downloading && (installError || presentation.repair || actionError || maintenanceError || presentation.retryable)
             ? <Button onClick={() => void handleManualDownload()} size="sm" variant="secondary">{t("update.manualFallback")}</Button>
             : null}
+          {checking ? <p className="text-xs text-ink-muted" role="status">{t("update.checkingNow")}</p> : null}
           {checkError ? <p role="alert" className="text-xs text-danger">{t("update.checkFailed")}</p> : null}
           {downloadError ? <p role="alert" className="text-xs text-danger">{t("update.downloadFailed")}</p> : null}
 
@@ -284,7 +296,10 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
                               )}
                         </>
                       )
-                    : <p className="text-sm text-ink-soft">{t("update.upToDate")}</p>}
+                    : <p className="text-sm text-ink-soft">{t(noUpdateLabel)}</p>}
+                  {checkedAt != null
+                    ? <p className="text-xs text-ink-muted">{t("update.lastChecked", { time: formatCheckedAt(checkedAt) })}</p>
+                    : null}
                 </div>
               )
             : null}

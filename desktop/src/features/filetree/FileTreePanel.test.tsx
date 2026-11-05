@@ -159,6 +159,9 @@ describe("fileTreePanel states", () => {
     listDirectory.mockRejectedValue(new Error("EACCES"));
     await mount({ rootPath: freshRoot("error") });
     expect(container.textContent).toContain("Couldn't read this folder");
+    // A failed read is an error, not an empty folder: it gets the danger
+    // treatment the Review tab uses instead of the same grey line (#1542).
+    expect(container.querySelector(".text-danger")).not.toBeNull();
   });
 
   it("reports an empty root", async () => {
@@ -167,10 +170,33 @@ describe("fileTreePanel states", () => {
     expect(container.textContent).toContain("This folder is empty");
   });
 
+  it("names the directory its empty state refers to and what to do next", async () => {
+    listDirectory.mockResolvedValue([]);
+    const rootPath = freshRoot("empty-named");
+    await mount({ rootPath });
+    // The same empty-state card the Runs and Review tabs use, carrying the
+    // path — an unattributed "empty" is indistinguishable from looking at the
+    // wrong folder (issue #1541), and a bare line leaves no next step (#1542).
+    expect(container.textContent).toContain("This folder is empty");
+    expect(container.textContent).toContain(rootPath);
+    expect(container.textContent).toContain("Open Folder");
+  });
+
+  it("states which directory it lists, above the card", async () => {
+    const rootPath = freshRoot("labelled");
+    await mount({ rootPath });
+    const label = container.querySelector("[data-component='filetree-root']");
+    expect(label?.textContent).toContain(rootPath);
+    expect(label?.querySelector("span")?.getAttribute("title")).toBe(rootPath);
+    // It is not part of the scrollable card: it labels the card.
+    expect(label?.closest(".floating-scrollbar")).toBeNull();
+  });
+
   it("says nothing at all when there is no workspace root", async () => {
     await mount({ rootPath: null });
     expect(listDirectory).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("Couldn't read this folder");
+    expect(container.querySelector("[data-component='filetree-root']")).toBeNull();
     expect(buttonByText("Open Folder")?.disabled).toBe(true);
     expect(buttonByText("Refresh")?.disabled).toBe(true);
   });

@@ -546,6 +546,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn task_add_duplicate_name_prints_a_sentence_and_fails() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let first = run(&[
+            "task", "add", "--name", "nightly", "--prompt", "one", "--cwd", "/tmp", "--daily",
+        ])
+        .await;
+        assert_eq!(first.0, 0, "stderr: {}", first.2);
+
+        // #1517: the harness asserts stderr carries no `UNIQUE constraint
+        // failed: tasks.name` — the sentence must be written for the user, and
+        // the exit code must still say it failed.
+        let (code, stdout, stderr) = run(&[
+            "task", "add", "--name", "nightly", "--prompt", "two", "--cwd", "/tmp", "--daily",
+        ])
+        .await;
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "", "a refused add creates nothing to print");
+        assert!(!stderr.contains("UNIQUE"), "stderr: {stderr}");
+        assert!(!stderr.contains("constraint"), "stderr: {stderr}");
+        assert!(stderr.contains("\"nightly\""), "stderr: {stderr}");
+        assert!(stderr.contains("already exists"), "stderr: {stderr}");
+
+        // The one row that exists is still the first task, and the store works.
+        let (code, stdout, stderr) = run(&["task", "list", "--json"]).await;
+        assert_eq!(code, 0, "stderr: {stderr}");
+        assert_eq!(stdout.matches("nightly").count(), 1, "stdout: {stdout}");
+        assert!(!stdout.contains("\"two\""), "stdout: {stdout}");
+    }
+
+    #[tokio::test]
     async fn init_help_and_unknown_arg() {
         let (code, stdout, _) = run(&["init", "--help"]).await;
         assert_eq!(code, 0);

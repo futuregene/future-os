@@ -179,11 +179,11 @@ describe("archive entry and its guide", () => {
     void archivedRow;
   });
 
-  it("files a workspace's shelved conversation under that workspace, not among loose chats", () => {
+  it("keeps a workspace on the shelf for its shelved conversations, on both sides", () => {
     currentView = "archived";
     archivedThreads.length = 0;
     archivedWorkspaces.length = 0;
-    archivedThreads.push({
+    const shelved = {
       agentSessionId: "s-w",
       createdAt: 1,
       id: "w-thread",
@@ -194,7 +194,14 @@ describe("archive entry and its guide", () => {
       title: "Shelved in the workspace",
       updatedAt: 2,
       workspaceId: "w1",
-    } as unknown as StoredThread);
+    } as unknown as StoredThread;
+    // The store puts a workspace that still holds shelved conversations on the
+    // shelf, even though it is in the active list too; the heading comes from
+    // that list, not from a join of the active one.
+    archivedWorkspaces.push({ id: "w1", name: "Workspace Alpha" });
+    archivedWorkspaceThreads.w1 = [shelved];
+    // The conversation stream holds the same row; the rail must draw it once.
+    archivedThreads.push(shelved);
 
     const view = mount(createElement(ActivityRail, props({
       workspaces: [{
@@ -208,21 +215,22 @@ describe("archive entry and its guide", () => {
       }],
     })));
     const body = view.container.querySelector("[data-testid='rail-archived-view']")!;
-    // The workspace is still active, so its heading comes from the shelf's own
-    // grouping rather than from an archived workspace; the row must hang under
-    // it, which is what tells the reader what restoring it goes back to.
     const heading = [...body.querySelectorAll("[class*='group/workspace']")]
       .find(node => node.textContent?.includes("Workspace Alpha"));
     expect(heading).not.toBeNull();
     // The heading counts what is shelved in it, and expanding it draws the row
     // under the workspace it came from.
-    expect(heading!.textContent).toContain("1");
     act(() => {
       heading!.querySelector("button")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(heading!.parentElement!.textContent).toContain("Shelved in the workspace");
+    // The conversation section does not repeat the row the heading owns.
+    const occurrences = (view.container.textContent?.match(/Shelved in the workspace/g) ?? []).length;
+    expect(occurrences).toBe(1);
     view.unmount();
     archivedThreads.length = 0;
+    archivedWorkspaces.length = 0;
+    delete archivedWorkspaceThreads.w1;
   });
 
   it("restores one conversation out of a shelved workspace from its own row", () => {

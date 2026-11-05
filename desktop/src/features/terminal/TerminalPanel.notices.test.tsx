@@ -220,6 +220,72 @@ describe("terminalPanel notices", () => {
   });
 });
 
+describe("terminalPanel start state", () => {
+  it("shows a spinner while the first attach is still connecting", async () => {
+    installFetch(call => (call.method === "GET" ? { body: [], status: 200 } : { body: running("term_1"), status: 200 }));
+    await render(controller());
+    // The view mounts before its socket is open: the panel says so instead of
+    // showing a blank screen that reads as a broken terminal (issue #1519).
+    const starting = container.querySelector("[data-component='terminal-starting']");
+    expect(starting?.textContent).toContain("Starting terminal…");
+    expect(starting?.querySelector("svg")?.getAttribute("class")).toContain("animate-spin");
+    // It never steals the click that focuses the terminal.
+    expect(starting?.className).toContain("pointer-events-none");
+
+    await fire("fire-connect");
+    expect(container.querySelector("[data-component='terminal-starting']")).toBeNull();
+    expect(container.textContent).not.toContain("Starting terminal…");
+  });
+
+  it("stops calling it a start once a shell has connected and then dropped", async () => {
+    installFetch(call => (call.method === "GET" ? { body: [], status: 200 } : { body: running("term_1"), status: 200 }));
+    await render(controller());
+    await fire("fire-connect");
+    await fire("fire-disconnect");
+    // A drop after a working session is a reconnect, not a failed start.
+    expect(container.textContent).toContain("Reconnecting…");
+    expect(container.textContent).not.toContain("Couldn't connect to the terminal");
+    expect(container.querySelector("[data-component='terminal-starting']")).toBeNull();
+  });
+
+  it("reports a start that keeps failing and retries it from the notice", async () => {
+    installFetch(call => (call.method === "GET" ? { body: [], status: 200 } : { body: running("term_1"), status: 200 }));
+    await render(controller());
+
+    await fire("fire-disconnect");
+    await fire("fire-disconnect");
+    // Still plausibly just slow: keep saying it is starting.
+    expect(container.textContent).toContain("Starting terminal…");
+    expect(container.textContent).not.toContain("Couldn't connect to the terminal");
+
+    await fire("fire-disconnect");
+    expect(container.textContent).toContain("Couldn't connect to the terminal");
+    expect(container.textContent).toContain("The shell did not connect after several attempts.");
+    // The view keeps retrying while the notice offers the way out.
+    expect(container.querySelector("[data-component='terminal-starting']")).toBeNull();
+
+    const retry = buttonByText("Retry")!;
+    await act(async () => {
+      retry.click();
+    });
+    await flush();
+    // A fresh attach: the notice is gone and the panel is starting again.
+    expect(container.textContent).not.toContain("Couldn't connect to the terminal");
+    expect(container.querySelector("[data-component='terminal-starting']")).not.toBeNull();
+    expect(container.querySelector("[data-testid='terminal-view']")).not.toBeNull();
+  });
+
+  it("names the directory the shell runs in", async () => {
+    installFetch(call => (call.method === "GET" ? { body: [], status: 200 } : { body: running("term_1", { cwd: "/home/user/project" }), status: 200 }));
+    await render(controller());
+    // The tab title is the shell's own name; without the directory the output
+    // belongs to no project (issue #1538).
+    const label = container.querySelector("[data-component='terminal-cwd']");
+    expect(label?.textContent).toBe("/home/user/project");
+    expect(label?.getAttribute("title")).toBe("Working directory: /home/user/project");
+  });
+});
+
 describe("terminalPanel chrome", () => {
   it("switches the active tab and starts a new one from the strip", async () => {
     localStorage.setItem("future.terminal.tabs.v1.thread-1", JSON.stringify({

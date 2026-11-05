@@ -55,6 +55,28 @@ export function AccountPage({
   const signedInLabel = accountEmail ?? "";
   const platformUrl = environment.data?.platformUrl;
 
+  // What the balance row says. A bare number leaves the reader guessing whether
+  // zero is normal, so a zero balance says what it means and every state the
+  // account store can be in renders distinctly (the em dash this replaced said
+  // nothing at all about "not read yet").
+  const balanceText = balanceStatus === "loading"
+    ? t("account.balanceLoading")
+    : balanceStatus === "unavailable"
+      ? t("account.balanceUnavailable")
+      : balance == null
+        ? t("account.balanceUnknown")
+        : balance <= 0
+          ? `${Math.trunc(balance)} ${t("account.credits")} · ${t("account.balanceEmpty")}`
+          : `${Math.trunc(balance)} ${t("account.credits")}`;
+  const showsBalance = loggedIn && !communityEdition;
+  // Credits are a platform concept the page never explained: what they are,
+  // what a zero balance stops, and why the community edition hides the row.
+  const balanceHint = communityEdition
+    ? t("account.balanceCommunity")
+    : showsBalance
+      ? t("account.balanceHint")
+      : null;
+
   async function handleRecharge() {
     if (!platformUrl)
       return;
@@ -174,17 +196,11 @@ export function AccountPage({
                         </div>
                       )}
           </SettingsRow>
-          {loggedIn && !communityEdition
+          {showsBalance
             ? (
                 <SettingsRow
                   title={t("account.balance")}
-                  description={balanceStatus === "loading"
-                    ? t("account.balanceLoading")
-                    : balanceStatus === "unavailable"
-                      ? t("account.balanceUnavailable")
-                      : balance != null
-                        ? `${Math.trunc(balance)} ${t("account.credits")}`
-                        : "—"}
+                  description={balanceText}
                 >
                   <Button
                     disabled={balanceStatus !== "unavailable" && !platformUrl}
@@ -198,6 +214,7 @@ export function AccountPage({
               )
             : null}
         </SettingsList>
+        {balanceHint ? <p className="text-xs leading-5 text-ink-muted">{balanceHint}</p> : null}
       </SettingsSection>
     </div>
   );
