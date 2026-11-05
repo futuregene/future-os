@@ -142,6 +142,8 @@ async function mountRail(overrides: Partial<ComponentProps<typeof ActivityRail>>
       .find(node => node.textContent === label),
     /** The remote nav dot's own state, or null when it is not drawn. */
     dotState: () => container.querySelector("[data-testid='remote-status-dot']")?.getAttribute("data-state") ?? null,
+    /** What the dot says it means, or null when it says nothing. */
+    dotLabel: () => container.querySelector("[data-testid='remote-status-dot']")?.getAttribute("title") ?? null,
     text: () => container.textContent ?? "",
     unmount: () => {
       act(() => root.unmount());
@@ -180,6 +182,28 @@ describe("the remote nav dot", () => {
     });
     expect(view.dotState()).toBe("down");
     view.unmount();
+  });
+
+  /**
+   * The dot says what it means.
+   *
+   * A colour beside "Remote" is otherwise a mark with no name: the harness read
+   * the red one as an *unread* badge — content the reader could open and clear —
+   * and reported that it could not be cleared. It is the connection state, and
+   * naming it is what separates the two readings.
+   */
+  it("names the state it reports, in every colour", async () => {
+    const down = await mountRail({ remotePeers: [{ ...peer, connected: false, error: "gone" }] });
+    expect(down.dotLabel()).toBe("Remote: not connected");
+    down.unmount();
+
+    const partial = await mountRail({ remotePeers: [peer, { ...peer, connected: false, desktopId: "desktop_b", error: "gone" }] });
+    expect(partial.dotLabel()).toBe("Remote: some machines are not reachable");
+    partial.unmount();
+
+    const up = await mountRail({ remotePeers: [peer] });
+    expect(up.dotLabel()).toBe("Remote: connected");
+    up.unmount();
   });
 
   /**
