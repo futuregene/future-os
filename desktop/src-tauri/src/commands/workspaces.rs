@@ -30,7 +30,9 @@ pub fn get_or_create_chat_workspace(
 /// One workspace by id, whatever its kind — the open conversation's own
 /// workspace, which the rail's user-only list never holds for a chat.
 #[cfg_attr(feature = "gui", tauri::command)]
-pub fn get_workspace(workspace_id: String) -> Result<Option<store::WorkspaceRecord>, crate::AppError> {
+pub fn get_workspace(
+    workspace_id: String,
+) -> Result<Option<store::WorkspaceRecord>, crate::AppError> {
     future_host::workspaces::get_workspace(workspace_id)
 }
 
