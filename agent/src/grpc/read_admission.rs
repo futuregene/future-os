@@ -46,6 +46,7 @@ pub(super) async fn command(
         | "list_tool_calls"
         | "get_tool_output"
         | "get_tool_call_args"
+        | "get_reasoning"
         | "get_run_snapshot"
         | "get_events_since"
         | "get_session_events_since"

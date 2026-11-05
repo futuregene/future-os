@@ -101,3 +101,14 @@ pub const CLIENT_PRESENCE_FEATURE: &str = "client_presence_v1";
 /// A client that never declares it keeps the legacy page byte for byte,
 /// including the base64 `data` field and the size assertions built on it.
 pub const READ_BINARY_FEATURE: &str = "read_binary_v1";
+
+/// Capability a host advertises when it can answer `get_reasoning` — the
+/// on-demand read of one reasoning block's text.
+///
+/// The lean lanes send a reasoning row's boundaries and not its body (the
+/// largest thing a reply carries that nobody has opened yet), so a client that
+/// declares the trimmed feed draws the row from its boundary and fetches the
+/// text when the reader opens it. A host that predates the command would answer
+/// the fetch with "Unsupported command", i.e. a row that promises content and
+/// produces an error, so the row only offers to open when this is advertised.
+pub const REASONING_FETCH_FEATURE: &str = "reasoning_fetch_v1";

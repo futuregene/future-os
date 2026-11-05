@@ -28,17 +28,5 @@
     "idx": 6,
     "runId": "run_verify_lean",
     "type": "thinking_start"
-  },
-  {
-    "data": "{\"type\":\"thinking_delta\",\"text\":\"先记住 d = 0.42 这个数，\",\"block_id\":\"rs_mid\"}",
-    "idx": 7,
-    "runId": "run_verify_lean",
-    "type": "thinking_delta"
-  },
-  {
-    "data": "{\"type\":\"thinking_delta\",\"text\":\"待会儿和 Dreher 的条件效应放在一起看。\",\"block_id\":\"rs_mid\"}",
-    "idx": 8,
-    "runId": "run_verify_lean",
-    "type": "thinking_delta"
   }
 ]

@@ -7,12 +7,32 @@ import { useStyles } from "./messageStyles";
 import { ROW_HIT_SLOP } from "./touchTargets";
 
 /**
+ * Where a bodyless reasoning row's text stands.
+ *
+ * The lean lanes send a reasoning block's boundaries and never its body: the
+ * text is the largest thing a reply carries that nobody has opened yet, so it
+ * is fetched when the row is opened (`onLoad`) rather than pushed with every
+ * reply. That makes "no body" mean *not loaded yet*, which is a different state
+ * from "there is nothing to show" — and the only one that can fail.
+ */
+type FetchState =
+  | { status: "idle"; }
+  | { status: "loading"; }
+  | { status: "loaded"; text: string; }
+  | { status: "unavailable"; };
+
+/**
  * Inline thinking block inside a reply bubble. The mobile product decision
  * (audit D4) is that reasoning always renders collapsed — a muted one-line
  * label, expandable on tap — so long reasoning never floods the bubble or the
- * FlatList. The shared projection captures the full text; the collapse is a
- * render concern only. The label reads "thinking" while the run is streaming
- * (the block is still mid-reasoning) and "thought completed" once settled.
+ * FlatList. The collapse is a render concern only. The label reads "thinking"
+ * while the run is streaming (the block is still mid-reasoning) and "thought
+ * completed" once settled.
+ *
+ * A row that arrives without its body (the lean lanes) is still expandable: the
+ * first open asks `onLoad` for the text and shows it, and a second tap collapses
+ * it again. Only a row with neither a body nor a way to fetch one is a plain
+ * label — a chevron that opens an empty box promises content that never arrives.
  *
  * The glyph matches the desktop's thinking activity glyph (Brain), so an
  * expanded reasoning row and a tool row are the same shape: icon, then words.
@@ -20,32 +40,55 @@ import { ROW_HIT_SLOP } from "./touchTargets";
  * carries no rule; its revealed text indents under the label the same way a
  * revealed target does — see ToolRow.
  */
-export function ThinkingRow({ text, streaming, opened }: {
+export function ThinkingRow({ text, streaming, opened, onLoad }: {
   text: string;
   streaming?: boolean;
   opened: boolean;
+  /**
+   * Fetch this row's reasoning on demand. Absent for a row whose body was sent
+   * with the reply (a full feed), and for a reader with no connection to ask.
+   */
+  onLoad?(): Promise<string | null>;
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
-  // A row can still arrive with no body at all — a host that withholds reasoning,
-  // or a reply whose reasoning the agent never recorded. It is then a status
-  // label, not a disclosure: a chevron that opens an empty box promises content
-  // that never arrives, so a bodyless row must not read as expandable.
-  //
-  // `opened` is the layout (a row inside a run sits on the open rail); the body
-  // is the reader's own expansion. Only the disclosure affordance is gated on
-  // having something to disclose — the two must not be conflated.
-  const hasBody = text.trim().length > 0;
+  const [fetched, setFetched] = useState<FetchState>({ status: "idle" });
+  const hasText = text.trim().length > 0;
+  // A body is what earns the chevron — either the one that came with the reply,
+  // or the one this row can go and read.
+  const disclosable = hasText || !!onLoad;
   const open = opened || expanded;
+  const body = hasText ? text : fetched.status === "loaded" ? fetched.text : null;
+
+  const toggle = () => {
+    if (expanded) {
+      setExpanded(false);
+      return;
+    }
+    setExpanded(true);
+    if (hasText || !onLoad) return;
+    if (fetched.status === "loading") return;
+    if (fetched.status === "loaded") return;
+    setFetched({ status: "loading" });
+    void onLoad()
+      .then((loaded) => {
+        const trimmed = loaded?.trim() ?? "";
+        setFetched(trimmed.length > 0
+          ? { status: "loaded", text: loaded ?? "" }
+          : { status: "unavailable" });
+      })
+      .catch(() => setFetched({ status: "unavailable" }));
+  };
+
   const header = (
     <>
       <Brain color={colors.inkMuted} size={14} />
       <Text style={styles.inlineThinkingLabel}>
         {t(streaming ? "chat.thinking" : "chat.thoughtCompleted")}
       </Text>
-      {hasBody &&
+      {disclosable &&
         (expanded ? (
           <ChevronUp color={colors.inkMuted} size={14} />
         ) : (
@@ -55,11 +98,12 @@ export function ThinkingRow({ text, streaming, opened }: {
   );
   return (
     <View style={[styles.inlineThinking, !open && styles.railBlock]}>
-      {hasBody ? (
+      {disclosable ? (
         <Pressable
           accessibilityRole="button"
+          accessibilityState={{ expanded }}
           hitSlop={ROW_HIT_SLOP}
-          onPress={() => setExpanded(value => !value)}
+          onPress={toggle}
           style={[styles.inlineThinkingHeader, !open && styles.railRow]}
         >
           {header}
@@ -67,7 +111,13 @@ export function ThinkingRow({ text, streaming, opened }: {
       ) : (
         <View style={[styles.inlineThinkingHeader, !open && styles.railRow]}>{header}</View>
       )}
-      {expanded && <Text style={styles.inlineThinkingText}>{text}</Text>}
+      {expanded && body ? <Text style={styles.inlineThinkingText}>{body}</Text> : null}
+      {expanded && !body && fetched.status === "loading" ? (
+        <Text style={styles.inlineThinkingText}>{t("chat.thoughtLoading")}</Text>
+      ) : null}
+      {expanded && !body && fetched.status === "unavailable" ? (
+        <Text style={styles.inlineThinkingText}>{t("chat.thoughtUnavailable")}</Text>
+      ) : null}
     </View>
   );
 }
