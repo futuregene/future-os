@@ -126,6 +126,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "prune_run_events",
     "refresh_skills",
     "reclaim_run_journals",
+    "recover_session",
     "release_queued_run",
     "reload_auth",
     "reload_config",
@@ -305,6 +306,7 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
         | "refresh_skills"
         | "reload_auth"
         | "reload_config"
+        | "recover_session"
         | "reset_session_history"
         | "reset_windows_sandbox"
         | "retry_persistence"

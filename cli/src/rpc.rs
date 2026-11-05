@@ -792,6 +792,18 @@ impl RunClient {
             .await
     }
 
+    /// `recover_session`: clear a recorded journal failure on a session that is
+    /// not running, so prompts are admitted again. Removes no entry.
+    pub async fn recover_session(&self, session_id: &str) -> Result<Value, String> {
+        self.execute_command(
+            "recover_session",
+            RpcCommand::default(),
+            Some(session_id),
+            30,
+        )
+        .await
+    }
+
     /// `cancelQueuedRun(runId, sessionId?)` — `cancel_queued_run` for a run that
     /// has not started yet.
     pub async fn cancel_queued_run(&self, run_id: &str, session_id: &str) -> Result<Value, String> {
