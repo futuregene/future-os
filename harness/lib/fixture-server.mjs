@@ -34,6 +34,7 @@ import { readFileSync, existsSync, appendFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { createServer } from "node:http";
+import { applyFixtureFault } from "./faults.mjs";
 
 const now = () => Date.now();
 
@@ -1116,48 +1117,10 @@ function readBody(req) {
   });
 }
 
-/**
- * Test-only faults, selected with `harness/cli.mjs run --fault <name>`.
- *
- * They exist so a *recorded run* can contain a defect the scripted assertions do
- * not encode — that is what the video judge is measured against. Nothing here runs
- * unless a fault is named, and a fault is applied to every matching fixture call
- * for the whole case, so the defect stays on screen long enough to be recorded
- * rather than flashing for one frame.
- */
-const FAULTS = {
-  // the session list fails outright: the page has to surface and keep an error
-  "api-500": {
-    on: ["list_threads", "list_threads_page", "list_pinned_threads"],
-    payload: () => ({}),
-    error: "fault(injected): upstream returned 500",
-  },
-  // the list answers successfully but empty, while the database still holds rows
-  "empty-list": {
-    on: ["list_threads", "list_threads_page", "list_pinned_threads"],
-    payload: (command) => ({
-      value: command === "list_threads_page"
-        ? { threads: [], nextCursor: null, totalRoots: 0 }
-        : [],
-    }),
-  },
-  // the call never answers: the page stays in its loading state for the whole case
-  hang: {
-    on: ["list_threads", "list_threads_page", "list_pinned_threads"],
-    payload: () => ({}),
-    hangMs: 20000,
-  },
-};
-
-function delay(ms) {
-  return new Promise((done) => setTimeout(done, ms));
-}
-
+// Test-only faults live in ./faults.mjs so the fixture side and the overlay side
+// are declared together.
 function applyFault(fault, command) {
-  if (!fault) return null;
-  const spec = FAULTS[fault];
-  if (!spec || !spec.on.includes(command)) return null;
-  return { payload: spec.payload(command), error: spec.error ?? null, hangMs: spec.hangMs ?? 0 };
+  return applyFixtureFault(fault, command);
 }
 
 function summarizeArgs(args) {
