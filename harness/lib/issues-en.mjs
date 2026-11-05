@@ -102,8 +102,14 @@ function bodyFor(group, analysis, cases, localized = null) {
   // The observations are rewritten in English by the localizer; the raw finding
   // text stays with the run. Falling back to the original would put another
   // language into an English issue, which is the one thing the body must not do.
+  // A cross-case finding is one finding with several cases behind it, so pairing
+  // notes with findings by index mislabels every note but the first. Those get
+  // the case list once; per-case findings keep their own attribution.
+  const crossCase = group.findings.every(finding => finding.source === "cross-case");
   const occurrences = (localized?.notes?.length ? localized.notes : []).map((note, index) => {
     const finding = group.findings[index] ?? group.findings[0];
+    if (crossCase)
+      return `- ${note} _(from ${sourceLabel(finding ?? {})})_`;
     const where = finding?.evidence?.caseId ?? "unknown case";
     return `- ${note} _(${finding?.severity ?? "info"}, from ${sourceLabel(finding ?? {})}, case \`${where}\`)_`;
   });
