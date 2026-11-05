@@ -357,13 +357,18 @@ describe("context panel states", () => {
   });
 
   it("withholds a stale workspace path while the thread's workspace is still resolving", () => {
-    mount(
+    const view = mount(
       <ContextPanel {...baseProps({
         activeWorkspace: { ...chatWorkspace, id: "w-other", path: "/tmp/other" } as StoredWorkspace,
       })}
       />,
     );
     expect(recorded("context")).toMatchObject({ activeWorkspacePath: null, workspaceScopeReady: false });
+    // The Files tab reads the same guarded path: the store's `activeWorkspace`
+    // falls back to the first user workspace, so handing that down would list a
+    // different project's folder than the tab claims to be (issue #1541).
+    expect(recorded("fileTree")).toMatchObject({ rootPath: null });
+    view.unmount();
   });
 
   it("passes the active thread's scope identity through to the data hook", () => {
