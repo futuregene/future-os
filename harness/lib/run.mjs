@@ -78,7 +78,7 @@ async function queryFixture(fixture, sql) {
 /**
  * Run one case. Returns the result record; artifacts are written beside it.
  */
-export async function runCase({ page, testCase, runDir, modelsPath, viewport, recordVideo = true, fixture: providedFixture }) {
+export async function runCase({ page, testCase, runDir, modelsPath, viewport, recordVideo = true, fixture: providedFixture, fault = null }) {
   const caseDir = join(runDir, slug(testCase.id));
   mkdirSync(caseDir, { recursive: true });
   const shotsDir = join(caseDir, "shots");
@@ -107,6 +107,7 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
       // mock instead of this server's title-derived one, which is what a case
       // that sends a message needs: only the page knows what it said.
       pageTranscript: testCase.query?.transcript === "page",
+      fault,
     }));
 
   const startedAt = Date.now();
