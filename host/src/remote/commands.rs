@@ -940,9 +940,10 @@ mod bridge_tests {
         let lean = read("lean-after").await;
         assert_eq!(lean["success"], json!(true));
         let blocks = lean["data"]["entries"][1]["blocks"].as_array().unwrap();
-        // The reasoning block survives without its body, so the row still shows.
+        // The reasoning body stays: it is what the row opens into, and dropping
+        // it left a "已思考" label that could not be opened at all.
         assert_eq!(blocks[0]["kind"], json!("reasoning"));
-        assert!(blocks[0].get("text").is_none());
+        assert_eq!(blocks[0]["text"], json!("private reasoning body"));
         // Visible text is untouched.
         assert_eq!(blocks[1]["text"], json!("visible answer"));
         // A file row keeps only the keys a target can be derived from.
@@ -970,9 +971,10 @@ mod bridge_tests {
         let paged_blocks = lean_paged["data"]["entries"][1]["blocks"]
             .as_array()
             .unwrap();
-        assert!(
-            paged_blocks[0].get("text").is_none(),
-            "the paged path must trim too"
+        assert_eq!(
+            paged_blocks[0]["text"],
+            json!("private reasoning body"),
+            "the paged path keeps the reasoning body too"
         );
         assert_eq!(paged_blocks[2]["arguments"], json!({"path": "/tmp/a"}));
         assert_eq!(paged_blocks[3]["toolCallId"], json!("c2"));

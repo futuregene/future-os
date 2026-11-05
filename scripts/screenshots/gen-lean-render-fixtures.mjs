@@ -237,8 +237,9 @@ const fullLaneEvents = [
 //
 // A run at the moment a capture catches it: the read call is in flight (its
 // `tool_end` has not been published) and a reasoning block has opened as the
-// newest slice, with no end boundary and no deltas to carry its body — which is
-// exactly what the lean lane looks like mid-thought.
+// newest slice, with no end boundary yet. Its deltas are on the lean lane too
+// (reasoning is the one streamed body a row opens into), so a mid-thought row
+// is openable while it is still being written.
 
 const fullLaneMidEvents = [
   ev(0, "user_message", {

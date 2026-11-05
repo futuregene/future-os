@@ -226,11 +226,12 @@ describe("entry reducer", () => {
   });
 
   /**
-   * A lean history page carries reasoning blocks with no body (the desktop trims
-   * them for a client that declared `lean_events_v1`). The row still has to
-   * appear — it is the only indication that the model reasoned — so the segment
-   * is produced from the block's presence, not from its text. The full-feed case
-   * in the same assertion is what keeps the rendered body working.
+   * A history page can carry a reasoning block with no body — an older desktop
+   * trims them, and a host is free to withhold reasoning from a client that
+   * never declared it renders the row. The row still has to appear — it is the
+   * only indication that the model reasoned — so the segment is produced from
+   * the block's presence, not from its text. The full-feed case in the same
+   * assertion is what keeps the rendered body working.
    */
   test("a reasoning block produces a thinking row with or without a body", () => {
     const user: HistoryEntry = {
@@ -1673,9 +1674,10 @@ describe("shared-projection semantic flags", () => {
   });
 
   /**
-   * The other two halves of the lean contract: a reasoning row has to exist from
-   * its boundary alone (the deltas never arrive), and a tool's target has to come
-   * from `tool_start`'s complete arguments, since `tool_delta` is not sent.
+   * The lean contract's other halves: a reasoning row has to exist from its
+   * boundary alone (a host that withholds the deltas sends only that), and a
+   * tool's target has to come from `tool_start`'s complete arguments, since
+   * `tool_delta` is not sent.
    */
   test("a reasoning row is projected from its boundary alone", () => {
     let state = applyStreamEvent(emptyTimeline(), {
@@ -1704,9 +1706,9 @@ describe("shared-projection semantic flags", () => {
   });
 
   /**
-   * A lean feed opens a reasoning block *after* work has already started: the
-   * tool calls streamed first, then the model thinks again. The block carries no
-   * body (its deltas are not published), so its boundary is the only thing that
+   * A reasoning block can open *after* work has already started: the tool calls
+   * streamed first, then the model thinks again. Where a host withholds the body
+   * (deltas not published to that client), its boundary is the only thing that
    * can render the row — the tool run's "hop over whitespace-only text" must not
    * mistake the empty reasoning slot for that whitespace and swallow it, nor may
    * it glue the tools on either side into one burst.

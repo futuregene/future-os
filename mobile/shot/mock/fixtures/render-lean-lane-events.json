@@ -18,6 +18,24 @@
     "type": "thinking_start"
   },
   {
+    "data": "{\"type\":\"thinking_delta\",\"text\":\"用户要的是一张对比表，不是复述。先把两份笔记读进来，确认各自的效应量方向，\",\"block_id\":\"rs_1\"}",
+    "idx": 3,
+    "runId": "run_verify_lean",
+    "type": "thinking_delta"
+  },
+  {
+    "data": "{\"type\":\"thinking_delta\",\"text\":\"再决定按什么维度对比。Frank 2024 报 d = 0.42，Dreher 2025 报的却是条件效应——\",\"block_id\":\"rs_1\"}",
+    "idx": 4,
+    "runId": "run_verify_lean",
+    "type": "thinking_delta"
+  },
+  {
+    "data": "{\"type\":\"thinking_delta\",\"text\":\"两者不冲突，适用条件不同，表格里要把这个说清楚。\",\"block_id\":\"rs_1\"}",
+    "idx": 5,
+    "runId": "run_verify_lean",
+    "type": "thinking_delta"
+  },
+  {
     "data": "{\"type\":\"thinking_end\",\"block_id\":\"rs_1\"}",
     "idx": 6,
     "runId": "run_verify_lean",

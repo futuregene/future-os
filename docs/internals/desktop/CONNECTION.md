@@ -945,18 +945,27 @@ understates every body by ~96 bytes.
 
 | Event | Without the declaration | With it |
 | --- | --- | --- |
-| `thinking_delta`, `tool_delta`, `toolcall_delta` | per-token content | not published |
+| `tool_delta`, `toolcall_delta` | per-token arguments | not published |
 | `tool_end` / `tool_result` | plus the captured output | output dropped; `exit_code`, `is_soft_fail`, `target_path`, `error` kept |
 | `run_snapshot` | plus folded `snapshotEvents` | array dropped; the client only uses this event as a resync signal |
 
+Reasoning (`thinking_delta`) is **not** trimmed. The row it belongs to opens
+into that text — `ThinkingRow` on the phone, the reply's step row on the
+desktop — so a lane without it draws a "已思考" label that cannot be opened:
+measured on a device, tapping it expanded to nothing, and the phone's answer to
+that was to stop drawing the chevron at all. What the lane pays for keeping it is
+the reasoning text plus the envelope of its coalesced fragments, which is the
+price of a row that can be read (one block averages 1.7 KB on the journal behind
+this change; the heaviest recorded run holds 150 KB across 94 blocks).
+
 Only those named types are touched; every other event is forwarded
-byte-for-byte, so a future type cannot be silently reshaped. Three properties
-make the removal safe rather than lossy: `thinking_start`/`thinking_end` alone
-open and close a reasoning row, a tool's target already rides `tool_start`'s
-complete `tool_args`, and a tool's outcome is on `tool_end` as structured fields.
-The client therefore reads `exit_code` instead of parsing an `[exit: N]` footer
-out of the output — which is why an older client must not be sent this feed, and
-why the flag is cleared on every new connection rather than latched.
+byte-for-byte, so a future type cannot be silently reshaped. Two properties
+make the removal safe rather than lossy: a tool's target already rides
+`tool_start`'s complete `tool_args`, and a tool's outcome is on `tool_end` as
+structured fields. The client therefore reads `exit_code` instead of parsing an
+`[exit: N]` footer out of the output — which is why an older client must not be
+sent this feed, and why the flag is cleared on every new connection rather than
+latched.
 
 The durable replay path is rewritten to match (`get_events_since`, the snapshot
 bootstrap). There the page's cursor fields are computed **before** the rewrite:
@@ -986,23 +995,23 @@ verdict there is unanswerable by construction. The same flag suppresses the
 "unknown prefix" reconcile, for the same reason.
 
 **Lean history:** the same declaration also trims the history pages
-(`get_session_entries`, both the paged and the full read). Three payloads, all of
+(`get_session_entries`, both the paged and the full read). Two payloads, both of
 them unread rather than merely unrendered, measured on the three heaviest real
 sessions (whole-session payloads, `scripts/measure/measure-lean-history.py`):
 
 | Trim | Share of the page |
 | --- | --- |
-| reasoning body | 25.6-32.2% |
 | tool-result body | 22.0-26.5% |
 | tool-call arguments beyond the four a target can come from | 12.3-17.8% |
-| shell facts repeated in `metadata` | 37-42% of what the three above leave |
+| shell facts repeated in `metadata` | 37-42% of what the two above leave |
 
-Together 67.1% / 72.7% / 68.4% of a whole session. `targetFromArgs` derives a tool
+A reasoning body (25.6-32.2%) was on this list and is not any more: it is the
+content its row expands into, and a page that dropped it could not be read at
+all. `targetFromArgs` derives a tool
 row's text from `command`, `path`, `file_path` or `filePath` and reads **no other**
 argument key for any tool name, so keeping exactly those four is
 behaviour-preserving; `foldToolEntry` reads a result block's `toolCallId` and
-`isError` and nothing else; a reasoning body is only rendered when its row is
-expanded.
+`isError` and nothing else.
 
 The fourth row is the one that outlived the first three: a finished shell call
 appears *twice* on one entry — once as the tool-result block's `text` (dropped
@@ -1110,9 +1119,9 @@ knowing before touching any of them:
   page from ≤192 KiB chunks, so no single record is near the limit.
 
 It is the same declaration as the lean event lane because it is the same client
-generation: the reasoning row, the tool target and the tool outcome are exactly
-the three things that client reads differently. It is cleared on every new
-connection for the same reason.
+generation: the tool target and the tool outcome are exactly the two things that
+client reads differently. It is cleared on every new connection for the same
+reason.
 
 **Catalog activity packets:** catalog *ordering* stopped costing a
 whole session list. A streaming run rewrites its conversation's

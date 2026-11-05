@@ -29,9 +29,10 @@ export function ThinkingRow({ text, streaming, opened }: {
   const { colors } = useTheme();
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
-  // A lean feed carries no body at all: the row is then a status label, not a
-  // disclosure. A chevron that opens an empty box promises content that never
-  // arrives, so a bodyless row must not read as expandable.
+  // A row can still arrive with no body at all — a host that withholds reasoning,
+  // or a reply whose reasoning the agent never recorded. It is then a status
+  // label, not a disclosure: a chevron that opens an empty box promises content
+  // that never arrives, so a bodyless row must not read as expandable.
   //
   // `opened` is the layout (a row inside a run sits on the open rail); the body
   // is the reader's own expansion. Only the disclosure affordance is gated on
