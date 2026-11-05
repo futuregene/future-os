@@ -21,13 +21,13 @@ Legend: ✅ two or more cases · ◐ one smoke case · — not covered.
 | Batch select, batch archive/delete | ✅ | `batch-select-delete`, `batch-select-all-cancel` |
 | Attachments (file/image), paste, remove | ◐ | `attachment-add-remove` |
 | Skill `/` and mention `@`/`#` menus | ✅ | `composer-slash-menu`, `composer-mention-menu` |
-| Skill recommendation, guide banner | — | next |
+| Skill recommendation, guide banner | ✅ | `skill-recommend-card`, `skill-guide-banner` |
 | Context panel (files/run/review), narrow window | ✅ | `context-panel-tabs`, `narrow-context-panel` |
 | Context panel loading state converges | ✅ | `context-panel-finishes-loading` |
 | Terminal panel | ✅ | `terminal-panel`, `terminal-panel-bottom` |
 | 终端溢出到屏外：滚到底能回到最后一行 | ◐ | `terminal-panel-bottom` |
 | Fold/unfold tool calls, fork, copy | ✅ | `tool-call-fold-expand`, `fork-conversation`, `copy-message-feedback` |
-| Approval card approve/reject | — | next (fixture answers `list_pending_approval_requests`) |
+| Approval card approve/reject | ✅ | `approval-card-approve`, `approval-card-reject` |
 | Settings pages (models/skills/tasks/remote) | ✅ smoke | `side-panels-smoke`, `settings-page`, `remote-page` |
 | 定时任务：列表、下次运行、运行记录、失败原因 | ◐ | `tasks-panel-detail` |
 | 定时任务：新建（含与已有任务同名） | ◐ | `tasks-create-same-name` |
@@ -36,9 +36,9 @@ Legend: ✅ two or more cases · ◐ one smoke case · — not covered.
 | 远程桌面：添加设备的邀请不占死名额 | ◐ | `remote-add-device-repeat` |
 | Settings tabs (general/models/skills/tasks/remote) | ✅ | `settings-tabs`, `settings-page`, `remote-page` |
 | Language / theme persistence across reload | ✅ | `settings-language`, `settings-theme` |
-| Approval tier persistence | — | next |
-| Send queue while a reply runs | — | blocked: shot mock has no agent queue |
-| Fusion discussion | — | next |
+| Approval tier persistence | ✅ | `approval-tier-persists` |
+| Send queue while a reply runs | ✅ | `send-queue-while-streaming` |
+| Fusion discussion | — | blocked: the fixture's fusion run is keyed to `th_review`, but the runs panel reads runs by session id and renders none, so the entry point cannot be reached from the UI; needs a fixture fix first |
 | Reload persistence | ✅ | `reload-persistence`, `thinking-level-high-persists`, `model-persists-after-reload` |
 | Empty send, empty states | ✅ | `empty-send-noop` |
 
@@ -59,7 +59,8 @@ Legend: ✅ two or more cases · ◐ one smoke case · — not covered.
 | Scheduled tasks: draft across a cold start, cancel clears it | ✅ | `mobile-task-draft-survives-restart` |
 | Scheduled tasks: enable/disable reaches the machine | ◐ | `mobile-task-toggle-reaches-machine` |
 | Chat panels (files, token usage) | ✅ | `mobile-chat-panels` |
-| Task reminders, share intent | — | next |
+| Share intent intake | ✅ | `mobile-share-intake` |
+| Task reminders | — | next: the reminder is scheduled by the OS; the Expo build has no scheduler to observe |
 | Task dependencies / run detail paging | — | next (the model keeps no deps; runs have one page) |
 | Mobile send queue, attachment download | — | next |
 
@@ -71,7 +72,7 @@ Legend: ✅ two or more cases · ◐ one smoke case · — not covered.
 | Help, palette | ✅ | `tui-help`, `tui-palette` |
 | Submit echo, queue while running | ✅ | `tui-submit-echo`, `tui-queue-during-run` |
 | Sidebar panels (sessions/workspaces), preferences, tool fold | ✅ | `tui-sidebar-panels`, `tui-preferences`, `tui-tool-fold` |
-| Theme/language, launchpad, workspace picker, stop, fold, search, git/files panels | — | next |
+| Launchpad / workspace picker · stop · git & files panels · theme & language | ✅ | `tui-launchpad-workspace-picker`, `tui-stop-generation`, `tui-git-files-panels`, `tui-preferences` |
 
 ## CLI
 
@@ -82,9 +83,9 @@ Legend: ✅ two or more cases · ◐ one smoke case · — not covered.
 | Workspace list/add/archive/restore, duplicates, missing | ✅ | 4 cases |
 | Skills list, task list, MCP add/list/remove, doctor | ✅ | `cli-skills-list`, `cli-task-list`, `cli-mcp-*`, `cli-doctor` |
 | 定时任务存储：间隔任务的下次槽位、排队运行、同名拒绝 | ✅ | `cli-task-interval-next-slot`, `cli-task-run-twice`, `cli-task-add-same-name` |
-| Session list/status/transcript (agent-backed) | — | needs a fixture agent |
-| Models list/refresh, data backup/verify | — | needs agent / backup fixture |
-| Goal commands | — | next |
+| Session list/status/transcript (agent-backed) | ✅ | `cli-session-list-status-transcript` (scripted `demo_agent` on its own port) |
+| Models list, data backup/verify | ✅ | `cli-models-and-data-backup` |
+| Goal commands | ✅ | `cli-goal-commands` |
 
 ## Remote
 
@@ -101,7 +102,8 @@ lands in the desktop's `app.db`.
 | Area | Coverage | Cases |
 |---|---|---|
 | Desktop + mobile render the same session | ✅ | `remote-parser-pair`, `remote-page` |
-| Desktop UI: both directions of the remote page | ✅ | `remote-page-peers-held`, `remote-page` |
+| Desktop UI: both directions of the remote page | ✅ | `remote-page-both-directions`, `remote-page` |
+| Desktop UI: paired-desktop list and standby-of-a-peer | — | blocked: the hub renders its peer summary empty even with two peer fixtures present, so the list-with-devices state is not reachable headlessly; needs to find what the hub actually reads |
 | Self-hosted relay: invitation → pairing → serving | ✅ | `remote-live-pair-and-connect` |
 | Relay + broker restart recovery | ◐ | `remote-live-relay-restart` |
 | Unpair, then pair again with a fresh invitation | ◐ | `remote-live-repair-after-unpair` |

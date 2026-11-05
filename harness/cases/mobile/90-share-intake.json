@@ -1,0 +1,31 @@
+{
+  "id": "mobile-share-intake",
+  "surface": "mobile",
+  "title": "手机端接收分享：分享进来的内容进入会话，能发出也能取消",
+  "area": "remote",
+  "priority": "P2",
+  "tags": ["mobile", "share"],
+  "description": "手机从别处「分享到 FutureOS」时，内容应当进入一个可编辑的会话草稿，而不是直接悄悄发出去或丢掉。用移动端夹具的 ?share=1 场景打开分享收件箱，检查内容可见、可以取消，且取消后不留下半条消息。",
+  "preconditions": "移动端 shot 服务可用（Expo web + 夹具）。",
+  "expectations": [
+    "分享进来的文本/文件在界面上可见",
+    "可以直接发送，也可以取消",
+    "取消后草稿不再出现，没有残留空会话"
+  ],
+  "steps": [
+    { "wait": 1600 },
+    { "shot": "share-intake" },
+    { "assert": { "expr": "document.body.innerText.length > 60", "message": "分享收件界面有内容" } },
+    { "assert": { "expr": "!document.body.innerText.includes('undefined')", "message": "没有把未定义值渲染出来" } },
+    { "shot": "share-intake-2" }
+  ],
+  "query": { "share": "1" },
+  "judge": {
+    "criteria": [
+      "分享进来的内容应当出现在一个可发送的会话里，用户能看清发的是什么",
+      "取消或关闭后不应留下半条消息或空会话",
+      "排版正常，没有占位符、undefined 或错位"
+    ],
+    "maxImages": 5
+  }
+}

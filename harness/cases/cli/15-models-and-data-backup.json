@@ -1,0 +1,139 @@
+{
+  "id": "cli-models-and-data-backup",
+  "surface": "cli",
+  "title": "CLI 模型清单与数据备份/校验：models 说得清，backup + verify 能对上",
+  "area": "cli",
+  "priority": "P1",
+  "tags": [
+    "cli",
+    "models",
+    "data"
+  ],
+  "agent": "demo",
+  "description": "两条离线能跑完的运维路径。其一是 future models：对着脚本 agent（本用例新起的端口）列出它当前能用的模型，文本态按 provider 分组、--json 态是 {providers, defaultModel, models} 结构，模型行带上下文窗口与图片能力。其二是 future data backup / verify：把隔离的 FUTURE_HOME 备份到用例目录里（home 之外），verify 读回同一份备份并报告文件数；指向不存在目录的 verify 必须退出码 1 并在 stderr 上说清原因。",
+  "preconditions": "future 与 demo_agent 已构建；FUTURE_HOME 是本次用例自己的目录（含真实 app.db 副本、agent 设置与技能目录）；备份写到 {{case}}/backup-out —— 在 home 之外，否则备份会把输出目录自己也走进去。",
+  "expectations": [
+    "models 文本输出按 provider 分组（Provider: future / anthropic），带模型 id 与上下文窗口",
+    "models 的末行是数量汇总（N models, N providers）",
+    "models --json 是 {providers, defaultModel, models} 结构：providers 至少两个，models.future[0].id 是 deepseek-flash，anthropic 的模型声明支持图片",
+    "data backup <dir> 退出码 0 并打印 Verified backup: <dir>",
+    "data verify <dir> 读回同一份备份，退出码 0，打印 backup id 与文件数",
+    "data verify 指向不存在的目录：退出码 1，stderr 说明没有这个目录"
+  ],
+  "steps": [
+    {
+      "run": [
+        "models"
+      ],
+      "expectExit": 0
+    },
+    {
+      "expectStdout": "Provider: future"
+    },
+    {
+      "expectStdout": "deepseek-flash"
+    },
+    {
+      "expectStdout": "ctx: 200K"
+    },
+    {
+      "expectStdout": {
+        "regex": "\\d+ models, \\d+ providers\\.",
+        "message": "末行的数量汇总"
+      }
+    },
+    {
+      "run": [
+        "models",
+        "--json"
+      ],
+      "expectExit": 0
+    },
+    {
+      "expectJson": {
+        "path": "providers",
+        "lengthMin": 2
+      }
+    },
+    {
+      "expectJson": {
+        "path": "models.future.0.id",
+        "equals": "deepseek-flash"
+      }
+    },
+    {
+      "expectJson": {
+        "path": "models.anthropic.0.supportsImages",
+        "equals": true
+      }
+    },
+    {
+      "expectJson": {
+        "path": "models.future.0.contextWindow",
+        "equals": 200000
+      }
+    },
+    {
+      "remove": "{{case}}/backup-out",
+      "note": "从零开始：上一次同名运行留下的备份会让 backup 拒绝覆盖同名目录"
+    },
+    {
+      "run": [
+        "data",
+        "backup",
+        "{{case}}/backup-out"
+      ],
+      "expectExit": 0,
+      "timeout": 180000
+    },
+    {
+      "expectStdout": "Verified backup: "
+    },
+    {
+      "run": [
+        "data",
+        "verify",
+        "{{case}}/backup-out"
+      ],
+      "expectExit": 0
+    },
+    {
+      "expectStdout": {
+        "regex": "Verified backup backup-\\d{8}-\\d{6}-[0-9a-f]+: \\d+ files",
+        "message": "读回同一份备份并报告文件数"
+      }
+    },
+    {
+      "run": [
+        "data",
+        "verify",
+        "{{case}}/no-such-backup"
+      ],
+      "expectExit": 1
+    },
+    {
+      "expectStderr": "No such file or directory"
+    },
+    {
+      "run": [
+        "models",
+        "refresh",
+        "--help"
+      ],
+      "expectExit": 0
+    },
+    {
+      "expectStdout": "future models refresh [--json]"
+    }
+  ],
+  "judge": {
+    "criteria": [
+      "models 的分组表每一行都对得齐：provider 段落头、模型行、上下文窗口列不错位",
+      "models --json 是一个结构化的对象，而不是把表格塞进字符串",
+      "data backup 与 data verify 的完成句都点名了具体的目录或 backup id，不是一句笼统的 done",
+      "备份失败时给的是可操作的错误（哪个路径不存在），不是堆栈",
+      "整体像一套正常的运维命令：成功有完成句、失败有原因"
+    ],
+    "maxImages": 4
+  }
+}

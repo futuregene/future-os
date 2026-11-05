@@ -1,0 +1,153 @@
+{
+  "id": "cli-goal-commands",
+  "surface": "cli",
+  "title": "CLI Goal：init 建目标、status 查状态，非法输入有明确报错与退出码",
+  "area": "cli",
+  "priority": "P1",
+  "tags": [
+    "cli",
+    "goal"
+  ],
+  "description": "在隔离的 FUTURE_HOME 与一个临时目录里跑 goal 控制面的离线子命令：future goal init --objective 建一个目标（落在 <cwd>/.future/goal，不动仓库），future goal status 读回这个目标（文本与 --format json 两态），确认状态可查、todos 已生成。再跑两条非法输入：不带 --objective 的 init、指向不存在目标的 status —— 两条都必须退出码 1 并在 stderr 上说明原因，而不是静默成功或打印一整页帮助。",
+  "preconditions": "future 已构建；另一个进程不需要 agent（goal 子命令离线可用）；用例有自己的 FUTURE_HOME，cwd 也在其中，所以 .future/goal 是这次用例私有的。",
+  "expectations": [
+    "goal init --objective 创建目标并打印 goal id 与 root 路径，退出码 0",
+    "goal status 文本输出含 objective 与生成的 todo",
+    "goal status --format json 是数组，含 goal_id / objective / status=active / 至少一个 todo",
+    "goal init 不带 --objective：退出码 1，stderr 说明 requires --objective",
+    "goal status --goal <不存在>：退出码 1，stderr 说明 not found",
+    "goal --help 列出 init / cancel / delete / status 等子命令"
+  ],
+  "steps": [
+    {
+      "run": [
+        "goal",
+        "--help"
+      ],
+      "expectExit": 0
+    },
+    {
+      "expectStdout": "init --objective \"...\""
+    },
+    {
+      "expectStdout": "status [--goal G] [--format json]"
+    },
+    {
+      "run": [
+        "goal",
+        "init",
+        "--objective",
+        "把 TUI 的启动时间压到 1 秒内"
+      ],
+      "expectExit": 0
+    },
+    {
+      "expectStdout": {
+        "regex": "goal goal_[0-9a-f]+ created",
+        "message": "打印新目标 id"
+      }
+    },
+    {
+      "expectStdout": "root "
+    },
+    {
+      "run": [
+        "goal",
+        "status"
+      ],
+      "expectExit": 0
+    },
+    {
+      "expectStdout": "objective : 把 TUI 的启动时间压到 1 秒内"
+    },
+    {
+      "expectStdout": "todos     : todo_"
+    },
+    {
+      "expectStdout": "terminal  :"
+    },
+    {
+      "run": [
+        "goal",
+        "status",
+        "--format",
+        "json"
+      ],
+      "expectExit": 0
+    },
+    {
+      "expectJson": {
+        "path": "0.objective",
+        "equals": "把 TUI 的启动时间压到 1 秒内"
+      }
+    },
+    {
+      "expectJson": {
+        "path": "0.status",
+        "equals": "active"
+      }
+    },
+    {
+      "expectJson": {
+        "path": "0.todos",
+        "lengthMin": 1
+      }
+    },
+    {
+      "expectJson": {
+        "path": "0.goal_id",
+        "contains": "goal_"
+      }
+    },
+    {
+      "run": [
+        "goal",
+        "init"
+      ],
+      "expectExit": 1
+    },
+    {
+      "expectStderr": "goal init requires --objective"
+    },
+    {
+      "run": [
+        "goal",
+        "status",
+        "--goal",
+        "goal_does_not_exist"
+      ],
+      "expectExit": 1
+    },
+    {
+      "expectStderr": {
+        "regex": "goal goal_does_not_exist not found",
+        "message": "指名道姓地说哪个目标不存在"
+      }
+    },
+    {
+      "run": [
+        "goal",
+        "delete",
+        "--goal",
+        "goal_does_not_exist"
+      ],
+      "expectExit": 1
+    },
+    {
+      "expectStderr": {
+        "regex": "(not found|--force)",
+        "message": "删不存在/缺 --force 的目标给出原因"
+      }
+    }
+  ],
+  "judge": {
+    "criteria": [
+      "goal status 的输出是一块对齐的键值表（goal / objective / todos / gaps / next / terminal），没有错行",
+      "创建成功后能读回同一个目标，objective 原样保留（中文没有被截断或转义）",
+      "两条非法输入都给出了具体原因（缺哪个参数、哪个目标不存在），不是一整页帮助",
+      "输出里没有 Rust panic、backtrace 或 expect/expectation 之类的内部字样",
+      "整体像一条能用的命令行工具：成功有明确的完成句，失败有明确的下一步"
+    ],
+    "maxImages": 4
+  }
+}

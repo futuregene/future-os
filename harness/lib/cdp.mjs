@@ -10,7 +10,7 @@
  * "clicking" two different things.
  */
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import WebSocket from "ws";
 
@@ -205,6 +205,13 @@ export class CdpPage {
     });
 
     const portFile = join(profile, "DevToolsActivePort");
+    // A profile directory is reused across runs named the same (`<run>/chrome-profile`),
+    // and it keeps the *previous* run's port file. Reading it before this Chrome
+    // has written its own dials a port nobody listens on, and the WebSocket error
+    // that follows leaves the run hanging instead of failing: measured twice, a
+    // four-minute stall with `ECONNREFUSED` and no case ever starting. The file is
+    // only meaningful once the browser below has written it.
+    rmSync(portFile, { force: true });
     let port = null;
     let browserPath = null;
     for (let i = 0; i < 120; i += 1) {

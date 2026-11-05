@@ -1,0 +1,156 @@
+{
+  "id": "approval-card-reject",
+  "title": "审批卡片：点「拒绝」后卡片消失，命令没有被执行",
+  "area": "approval",
+  "priority": "P0",
+  "tags": [
+    "desktop",
+    "approval"
+  ],
+  "query": {
+    "approvals": "1"
+  },
+  "description": "同一条被沙箱拦下的命令，这次选「拒绝」。拒绝必须是一次真实的否决：卡片从输入框上方消失、数据库里这条审批变成 rejected（而不是留在 pending 等着再次弹）、刷新之后页面上没有任何「等读者回答」的痕迹，会话回到可以继续输入的状态。拒绝如果只把卡片藏起来而决定没落库，下一次重开同一会话又会被问一遍，读者会以为自己已经拒绝过了。",
+  "preconditions": "应用已启动；夹具在本会话里放了一条待审批记录（沙箱拒绝写入 notes/effect-size.png 的 Rscript 命令），对应真实 app.db 的 approval_requests 行。",
+  "expectations": [
+    "打开该会话后，输入框上方出现审批卡片，并显示被拦下的命令",
+    "点「拒绝」后卡片消失，页面上不再有「允许一次」「拒绝」按钮和这条命令的标题",
+    "数据库里这条审批的状态变成 rejected，并记录了决定时间",
+    "刷新页面后卡片不再出现，也没有任何「等待审批」的残留提示",
+    "会话回到可以继续提问的状态（输入框与发送按钮都在），没有报错文案"
+  ],
+  "steps": [
+    {
+      "wait": 900
+    },
+    {
+      "db": {
+        "sql": "SELECT title FROM (SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' AND archived_at IS NULL AND title NOT IN (SELECT name FROM workspaces) ORDER BY COALESCE(last_message_at, updated_at) DESC LIMIT 8) WHERE length(title) <= 16 LIMIT 1",
+        "as": "target"
+      },
+      "capture": false
+    },
+    {
+      "click": {
+        "aria": "{{target}}"
+      },
+      "capture": false
+    },
+    {
+      "waitFor": {
+        "text": "在沙箱外运行此命令"
+      },
+      "timeout": 8000,
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes('Rscript analysis/effect-size.R') && (() => { const b = [...document.querySelectorAll('button')].map(el => el.innerText.trim()); return b.includes('允许一次') && b.includes('拒绝'); })()",
+        "message": "卡片显示被拦下的命令与两个决定按钮"
+      },
+      "capture": false
+    },
+    {
+      "db": {
+        "sql": "SELECT thread_id AS id FROM approval_requests ORDER BY created_at DESC LIMIT 1",
+        "as": "approvalThread"
+      },
+      "capture": false
+    },
+    {
+      "shot": "approval-card"
+    },
+    {
+      "click": {
+        "selector": "button",
+        "text": "拒绝"
+      },
+      "capture": false
+    },
+    {
+      "waitFor": {
+        "absent": "允许一次"
+      },
+      "timeout": 8000,
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "!document.body.innerText.includes('在沙箱外运行此命令') && !document.body.innerText.includes('Rscript analysis/effect-size.R')",
+        "message": "拒绝后卡片整体离开页面"
+      }
+    },
+    {
+      "db": {
+        "sql": "SELECT status FROM approval_requests WHERE thread_id = '{{approvalThread}}'",
+        "expect": "rejected",
+        "message": "数据库记录这次拒绝"
+      },
+      "capture": false
+    },
+    {
+      "db": {
+        "sql": "SELECT (decided_at IS NOT NULL) AS ok FROM approval_requests WHERE thread_id = '{{approvalThread}}'",
+        "expect": 1,
+        "message": "拒绝也带决定时间"
+      },
+      "capture": false
+    },
+    {
+      "server": {
+        "command": "decide_approval_request",
+        "expect": 1,
+        "message": "界面只提交了一次决定"
+      },
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "!!document.querySelector('[role=textbox]') && !!document.querySelector('[aria-label=\"发送\"]')",
+        "message": "拒绝后输入框与发送按钮回到可用状态"
+      },
+      "capture": false
+    },
+    {
+      "shot": "after-reject"
+    },
+    {
+      "reload": true
+    },
+    {
+      "waitFor": {
+        "text": "{{target}}"
+      },
+      "timeout": 10000,
+      "capture": false
+    },
+    {
+      "click": {
+        "aria": "{{target}}"
+      },
+      "capture": false
+    },
+    {
+      "wait": 1500
+    },
+    {
+      "assert": {
+        "expr": "!document.body.innerText.includes('允许一次') && !document.body.innerText.includes('在沙箱外运行此命令') && !document.body.innerText.includes('Rscript analysis/effect-size.R')",
+        "message": "刷新后没有任何等待审批的残留"
+      }
+    },
+    {
+      "shot": "after-reload"
+    }
+  ],
+  "judge": {
+    "criteria": [
+      "拒绝之后输入框上方不再有任何等待回答的卡片，会话回到可以继续提问的样子",
+      "页面不应该把拒绝显示成失败或报错（没有英文异常、没有红色「出错」提示）",
+      "对话正文仍然正常显示，没有被卡片的消失带走内容",
+      "整体看起来像正常产品：没有残留加载态、空白大块或错位",
+      "被拒绝的命令是夹具固定的演示命令，是否切题不是判据"
+    ],
+    "maxImages": 8
+  }
+}
