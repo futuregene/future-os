@@ -101,3 +101,24 @@ judgement):
 
 Cost and latency rule out per-assertion use: budget ~3 minutes per case and run it
 asynchronously after the scripted pass, as a second opinion rather than a gate.
+
+## A zero false-positive rate is only half a metric
+
+Tightening the judge until it stops flagging healthy runs is easy and it is not
+progress. Measured on 2026-11-06, same desktop renderer:
+
+| prompt | false positives (green runs judged fail) | catch (recorded defects found) |
+|---|---|---|
+| v1 "verify every step" | 2/8 (25%) | 3/3 on a clip with a stuck red banner + contradictory empty state |
+| v2 "report only what you can point at" | **0/8** | 3/3 on that same clip; **0/9 on fixture-level faults** |
+
+The 0/9 is the useful part. `harness/cli.mjs run --fault {api-500,empty-list,hang}`
+injects real fixture faults, but their *symptoms* are not visible in a 4–11 s
+recording: `hang` looks like normal startup, `empty-list` still renders workspace
+groups, and `api-500` is swallowed by the desktop into an empty sidebar. The judge
+called all nine "normal loading", and frame-level checks agreed with it.
+
+So: **report false positives and catch rate together, each with its n.** A judge
+that reports nothing scores perfectly on false positives and is worthless; a judge
+that reports everything scores perfectly on catch and is unusable. Neither number
+means anything alone, and a suite of green runs can only ever measure the first.
