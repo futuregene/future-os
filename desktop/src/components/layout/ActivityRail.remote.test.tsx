@@ -570,15 +570,17 @@ describe("the remote tree in merged mode", () => {
  */
 describe("the merged list's controls", () => {
   it("folds the chat section from its header, and keeps every workspace heading", async () => {
-    // The workspaces are the list's spine, not a section that can be folded away:
-    // with two machines' rows in the list their headings are how a reader knows
-    // which folders exist where.
+    // Both sections fold from their own heading; the workspaces' chevron sits
+    // next to the section's own "＋" and its own state is the rail's, so the
+    // merged list and the local list cannot disagree about it.
     const view = await mountRail({ remoteCatalogs: [catalogRow("sess_a")] });
 
-    expect(view.container.querySelector("button[aria-label='Collapse workspace list']")).toBeNull();
+    expect(view.container.querySelector("button[aria-label='Collapse workspace list']")).not.toBeNull();
 
+    await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='Collapse workspace list']")!.click());
     await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='Collapse chat list']")!.click());
     expect(view.container.querySelector("button[aria-label='Expand chat list']")).not.toBeNull();
+    expect(view.container.querySelector("button[aria-label='Expand workspace list']")).not.toBeNull();
     view.unmount();
   });
 

@@ -28,6 +28,8 @@
     "noWorkspaceThreads": "No workspace threads",
     "expandWorkspace": "Expand workspace",
     "collapseWorkspace": "Collapse workspace",
+    "expandWorkspaceSection": "Expand workspace list",
+    "collapseWorkspaceSection": "Collapse workspace list",
     "expandChatSection": "Expand chat list",
     "collapseChatSection": "Collapse chat list",
     "newChatInWorkspace": "New chat in {{name}}",

@@ -101,6 +101,8 @@ async function render(props: {
   threadById: Map<string, StoredThread>;
   /** The hosts' workspaces, for the headings of empty ones. */
   workspaces?: ReadonlyMap<string, readonly RemoteWorkspaceRow[]>;
+  onToggleWorkspaceSection?: () => void;
+  workspaceSectionCollapsed?: boolean;
 }) {
   const container = document.createElement("div");
   document.body.append(container);
@@ -127,6 +129,8 @@ async function render(props: {
         onToggleChatSection={props.onToggleChatSection ?? vi.fn()}
         onToggleRemoteExpanded={props.onToggleRemoteExpanded ?? vi.fn()}
         onToggleWorkspace={props.onToggleWorkspace ?? vi.fn()}
+        onToggleWorkspaceSection={props.onToggleWorkspaceSection ?? vi.fn()}
+        workspaceSectionCollapsed={props.workspaceSectionCollapsed ?? false}
         peers={props.peers ?? []}
         rowMeta={props.rowMeta ?? new Map()}
         remoteSelection={props.remoteSelection}

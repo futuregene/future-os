@@ -192,11 +192,13 @@ descendants are all visible", so the descendant query needs no status filtering.
   the real remainder and one click loads all of it — a cursor alone cannot say
   how much is left, and naming the loaded part was the defect.
 - **Archived view**: flat, `archived_at DESC`, 50 trees per page.
-- **Workspace list**: read whole at startup, not paged, and the section does not
-  fold. The list holds user workspaces only (a chat's temporary workspace never
+- **Workspace list**: read whole at startup, still not paged, and the section
+  folds. The list holds user workspaces only (a chat's temporary workspace never
   appears in it), so it is one or two requests; a "load more workspaces" under
   the last group hid workspaces behind a click the reader had no reason to make.
-  Pinned workspaces are also fetched separately in full.
+  The fold is the reader tidying their own rail — it decides what is drawn, not
+  what is fetched, so unfolding one costs no request. Pinned workspaces are also
+  fetched separately in full.
 
 ### 4.5 Event-driven updates replace full reloads (a prerequisite)
 

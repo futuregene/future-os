@@ -236,11 +236,10 @@ describe("activity rail navigation", () => {
     view.unmount();
   });
 
-  it("folds the chat section, and never folds the workspaces away", () => {
-    // The workspace section is not foldable: every workspace the reader owns gets
-    // a heading, which is the only honest answer to "where did my workspaces go".
-    // The chat section keeps its own fold — it is a list of one kind of
-    // conversation, not a container for the workspaces.
+  it("folds a section from its heading, each list one of its own", () => {
+    // Both top-level sections fold, and independently: folding the workspaces
+    // away is a reader tidying their own list, not the rail deciding which
+    // folders they own. The chat section keeps its own chevron on the same rule.
     const p = props([thread("root"), thread("ws-thread", { mode: "workspace", workspaceId: "ws-a" })]);
     const view = mount(<ActivityRail {...p} />);
     const has = (title: string) => view.container.querySelector(`button[aria-label="${title}"]`) !== null;
@@ -249,13 +248,17 @@ describe("activity rail navigation", () => {
     expect(has("ws-thread")).toBe(true);
     act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Collapse chat list\"]")!.click());
     expect(has("root")).toBe(false);
-    // The workspaces are unaffected by the chat section's fold.
     expect(has("ws-thread")).toBe(true);
+    act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Collapse workspace list\"]")!.click());
+    expect(has("ws-thread")).toBe(false);
+    // Folding one section leaves the other's own state alone — the chats stay
+    // folded, because that is what the reader last did to them.
+    expect(has("root")).toBe(false);
+    act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Expand workspace list\"]")!.click());
+    expect(has("ws-thread")).toBe(true);
+    expect(has("root")).toBe(false);
     act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Expand chat list\"]")!.click());
     expect(has("root")).toBe(true);
-
-    expect(view.container.querySelector("button[aria-label=\"Collapse workspace list\"]")).toBeNull();
-    expect(view.container.querySelector("button[aria-label=\"Expand workspace list\"]")).toBeNull();
     view.unmount();
   });
 });
