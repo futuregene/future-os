@@ -1218,8 +1218,9 @@ function ReadyAppShell({
     try {
       await restoreWorkspace(workspace.id);
       emitFutureEvent("archive-changed", undefined);
-      // No options: restoring re-lists the conversations it was hiding, and
-      // that page is the whole answer — nothing was ever marked shelved.
+      // No options: restoring re-lists every conversation the folder showed —
+      // the ones it was hiding and the ones shelved on their own — so one
+      // refresh is the whole answer.
       await refreshStore();
     }
     catch (error) {
