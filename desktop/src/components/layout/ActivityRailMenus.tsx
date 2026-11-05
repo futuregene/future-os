@@ -301,9 +301,16 @@ export function ArchivedWorkspaceMenu({
                 dropUp ? "bottom-7" : "top-7",
               )}
             >
-              <ThreadMenuItem icon={<Archive className="size-3.5" />} onClick={() => onRestore(workspace)} onClose={() => onOpenChange(false)}>
-                {t("activityRail.restoreWorkspace")}
-              </ThreadMenuItem>
+              {/* A workspace that is still in use is on the shelf for its
+                  shelved conversations only; it is already "unarchived", so the
+                  restore item would be a no-op there. */}
+              {workspace.archivedAt != null
+                ? (
+                    <ThreadMenuItem icon={<Archive className="size-3.5" />} onClick={() => onRestore(workspace)} onClose={() => onOpenChange(false)}>
+                      {t("activityRail.restoreWorkspace")}
+                    </ThreadMenuItem>
+                  )
+                : null}
               <ThreadMenuItem icon={<Pencil className="size-3.5" />} onClick={() => onRename(workspace)} onClose={() => onOpenChange(false)}>
                 {t("activityRail.rename")}
               </ThreadMenuItem>
