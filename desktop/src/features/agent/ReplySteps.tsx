@@ -1,5 +1,6 @@
 import type { ActivityTargetResolver } from "./AgentActivityList";
 import type { StepSegment } from "./replyBlocks";
+import type { ReasoningLoader } from "./ThinkingBlock";
 import { Brain, ChevronDown, ChevronUp, Wrench } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -7,13 +8,15 @@ import { AgentActivityLine } from "./AgentActivityList";
 import { ThinkingBlock } from "./ThinkingBlock";
 
 /** A quiet summary aligned with the reading column and its revealed steps. */
-export function ReplySteps({ resolveTarget, segments, workspaceId, workspacePath, runId }: {
+export function ReplySteps({ resolveTarget, resolveReasoning, segments, workspaceId, workspacePath, runId }: {
   segments: StepSegment[];
   workspaceId?: string | null;
   workspacePath?: string | null;
   runId?: string | null;
   /** Where a step's target comes from when the row arrived without one. */
   resolveTarget?: ActivityTargetResolver;
+  /** Where a step's reasoning text comes from when it arrived without one. */
+  resolveReasoning?: ReasoningLoader;
 }) {
   const { t } = useTranslation("agent");
   const [expanded, setExpanded] = useState(false);
@@ -67,7 +70,14 @@ export function ReplySteps({ resolveTarget, segments, workspaceId, workspacePath
         ? (
             <div className="min-w-0 space-y-1 pl-6">
               {segments.map(segment => segment.kind === "thinking"
-                ? <ThinkingBlock key={segment.id} text={segment.text} workspaceId={workspaceId} />
+                ? (
+                    <ThinkingBlock
+                      key={segment.id}
+                      text={segment.text}
+                      workspaceId={workspaceId}
+                      onLoad={resolveReasoning ? () => resolveReasoning(segment.id) : undefined}
+                    />
+                  )
                 : <AgentActivityLine key={segment.id} item={segment.item} resolveTarget={resolveTarget} workspacePath={workspacePath} runId={runId} />)}
             </div>
           )

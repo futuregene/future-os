@@ -1,8 +1,9 @@
 import type { AgentMessage } from "@future-os/thread-projection";
 import type { ActivityTargetResolver } from "./AgentActivityList";
 import type { ReplyBlock, StepSegment } from "./replyBlocks";
+import type { ReasoningLoader } from "./ThinkingBlock";
 import { GitBranch, RotateCcw, StepForward } from "lucide-react";
-import { Fragment, memo, useState } from "react";
+import { Fragment, memo, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CopyButton } from "../../components/ui/CopyButton";
 import { useCopyState } from "../../components/ui/useCopyState";
@@ -47,6 +48,15 @@ interface MessageBlockProps {
    * them (see `ActivityTargetResolver`). Unset everywhere else.
    */
   resolveActivityTarget?: ActivityTargetResolver;
+  /**
+   * Where a reasoning row's text comes from when it arrived without one.
+   *
+   * The same bargain one row over: the trimmed lane sends a reasoning block's
+   * boundaries and not its body, so a row a reader opens asks for the text then
+   * (`(runId, index)` — the block's position among the run's reasoning blocks).
+   * Unset for a local run, whose reasoning is already here.
+   */
+  onResolveReasoning?: (runId: string, index: number, settled?: boolean) => Promise<string | null>;
 }
 
 // Memoized: pushed streaming deltas re-render MessageList frequently and any hover
@@ -67,6 +77,7 @@ function MessageBlockImpl({
   onHover,
   onLeave,
   onRetry,
+  onResolveReasoning,
   resolveActivityTarget,
   workspaceId,
   workspacePath,
@@ -78,6 +89,31 @@ function MessageBlockImpl({
   // Expansion is the reader's, per reply — each row owns its own.
   const finalAnswerOnly = foldsSettledReply(useReplyDetail());
   const [processExpanded, setProcessExpanded] = useState(false);
+  // Reasoning bodies are read when a row is opened (the trimmed lane sends the
+  // boundaries only), so a segment maps back to its position among this reply's
+  // reasoning blocks — the identity the host resolves the text by. Built from the
+  // same slice list the rows are, so the two can never disagree.
+  const reasoningIndex = useMemo(() => {
+    const byId = new Map<string, number>();
+    let index = 0;
+    for (const segment of message.segments ?? []) {
+      if (segment.kind === "thinking")
+        byId.set(segment.id, index++);
+    }
+    return byId;
+  }, [message.segments]);
+  const resolveReasoning = useMemo<ReasoningLoader | undefined>(() => {
+    if (!onResolveReasoning || !message.runId || reasoningIndex.size === 0)
+      return undefined;
+    const runId = message.runId;
+    const settled = message.status !== "streaming";
+    return (segmentId: string) => {
+      const index = reasoningIndex.get(segmentId);
+      return index === undefined
+        ? Promise.resolve(null)
+        : onResolveReasoning(runId, index, settled);
+    };
+  }, [message.runId, message.status, onResolveReasoning, reasoningIndex]);
   const isUser = message.role === "user";
   // While the reply streams, the footer is pinned open and shows a live activity
   // indicator instead of the copy button; the copy button returns once it settles.
@@ -183,6 +219,7 @@ function MessageBlockImpl({
         liveSegmentId={liveSegmentId}
         message={message}
         resolveActivityTarget={resolveActivityTarget}
+        resolveReasoning={resolveReasoning}
         streaming={streaming}
         workspaceId={workspaceId}
         workspacePath={workspacePath}
@@ -381,6 +418,7 @@ function ReplyBlockBody({
   liveSegmentId,
   message,
   resolveActivityTarget,
+  resolveReasoning,
   streaming,
   workspaceId,
   workspacePath,
@@ -393,6 +431,8 @@ function ReplyBlockBody({
   message: AgentMessage;
   /** Where a tool row's target comes from when it arrived without one. */
   resolveActivityTarget?: ActivityTargetResolver;
+  /** Where a reasoning row's text comes from when it arrived without one. */
+  resolveReasoning?: ReasoningLoader;
   streaming: boolean;
   workspaceId?: string | null;
   workspacePath?: string | null;
@@ -401,6 +441,7 @@ function ReplyBlockBody({
     return (
       <ReplySteps
         resolveTarget={resolveActivityTarget}
+        resolveReasoning={resolveReasoning}
         segments={block.segments}
         workspaceId={workspaceId}
         workspacePath={workspacePath}
@@ -424,6 +465,7 @@ function ReplyBlockBody({
         live={streaming && segment.id === lastSegmentId}
         text={segment.text}
         workspaceId={workspaceId}
+        onLoad={resolveReasoning ? () => resolveReasoning(segment.id) : undefined}
       />
     );
   }

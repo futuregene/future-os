@@ -103,6 +103,12 @@ export function useConversationController({
    */
   const toolTargetsRef = useRef(new Map<string, string | null>());
   /**
+   * Reasoning bodies already fetched for lean rows, keyed by
+   * `session\u0000run\u0000index`. Like the tool targets above, one
+   * conversation's worth of rows the reader actually opened.
+   */
+  const reasoningBodiesRef = useRef(new Map<string, string | null>());
+  /**
    * One idempotency key belongs to one fork intent (a parent session + source
    * entry), not permanently to that point: it survives failed retries so a
    * lost reply cannot create a second child, then is released on success so the
@@ -306,6 +312,38 @@ export function useConversationController({
     );
     toolTargetsRef.current.set(key, target ?? null);
     return target ?? null;
+  }, [clientRef, selectedRef]);
+
+  /**
+   * Fetch one reasoning block's text on demand, and remember it.
+   *
+   * The lean lanes send a reasoning row's boundaries without its body (that is
+   * the single largest thing a reply carries that nobody has opened yet), so a
+   * row with no text asks for it the first time the reader opens it.
+   * `index` counts reasoning blocks across the run — the order the reply renders
+   * them in — which is the identity the Agent resolves.
+   *
+   * Only a *settled* reply's read is cached: a block still being written keeps
+   * growing, and a cached partial body would freeze what the reader sees. A miss
+   * is cached too (as `null`), so a row that resolved to nothing cannot turn
+   * into a request per tap.
+   */
+  const resolveReasoning = useCallback(async (runId: string, index: number, settled = true) => {
+    const client = clientRef.current;
+    const sessionId = selectedRef.current;
+    if (!client || !sessionId) return null;
+    const key = `${sessionId}\u0000${runId}\u0000${index}`;
+    if (settled) {
+      const cached = reasoningBodiesRef.current.get(key);
+      if (cached !== undefined) return cached;
+    }
+    const response = await client.requestRetry<{ text?: string | null }>(
+      { type: "get_reasoning", sessionId, runId, offset: index },
+      sessionId,
+    );
+    const text = typeof response.data?.text === "string" ? response.data.text : null;
+    if (settled) reasoningBodiesRef.current.set(key, text);
+    return text;
   }, [clientRef, selectedRef]);
 
   const listSessionFiles = useCallback(async (path = "") => {
@@ -555,6 +593,7 @@ export function useConversationController({
     listSessionFiles,
     listSkills,
     resolveToolCallTarget,
+    resolveReasoning,
     prepareAttachment,
     cachedAttachment,
     downloadAttachment,

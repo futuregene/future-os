@@ -151,3 +151,66 @@ pub(super) fn page(
     scope.verify(store)?;
     Ok(json!({"hasMore":more,"nextOffset":offset+tools.len() as i64,"tools":tools}))
 }
+
+/// One reasoning block's text, by its position in the run.
+///
+/// A lean history page (and the lean live lane) withholds reasoning bodies: the
+/// row they belong to is drawn from the block's presence alone, and the text is
+/// fetched only when a reader opens it. `index` counts reasoning blocks across
+/// the run's entries in stream order — the order the reply is rendered in — so
+/// the caller needs no entry identity it does not already have.
+///
+/// A miss (a run still writing its block, or an index past its end) is an
+/// explicit `null`, never another block's text.
+pub(super) fn reasoning(
+    store: &SqliteStore,
+    session: &str,
+    run: &str,
+    index: i64,
+) -> Result<Value> {
+    if index < 0 {
+        return Ok(json!({"runId": run, "index": index, "text": null}));
+    }
+    if empty_reservation(store, session)? {
+        return Ok(json!({"runId": run, "index": index, "text": null}));
+    }
+    let (session, run) = (session.to_owned(), run.to_owned());
+    let (scope, located) = {
+        let (scoped_session, scoped_run) = (session.clone(), run.clone());
+        store.db.read(move |db| {
+            let tx = db.transaction()?;
+            let scope = Snapshot::capture_from(&tx, &scoped_session)?;
+            let run =
+                crate::session::identity::BoundIdentity::run(&tx, &scoped_session, &scoped_run)?;
+            let session = crate::session::identity::BoundIdentity::session(&tx, &scoped_session)?;
+            let located = tx
+                .query_row(
+                    "SELECT e.position,e.entry_id,b.ordinal FROM entries e JOIN message_blocks b
+                     ON b.session_id=e.session_id AND b.entry_position=e.position
+                     WHERE e.session_id=?1 AND e.run_id=?2 AND b.kind='reasoning'
+                     ORDER BY e.position,b.ordinal LIMIT 1 OFFSET ?3",
+                    params![session, run, index],
+                    |row| {
+                        Ok((
+                            Entry {
+                                position: row.get(0)?,
+                                id: row.get(1)?,
+                            },
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            tx.commit()?;
+            Ok((scope, located))
+        })?
+    };
+    let text = match located {
+        Some((entry, ordinal)) => {
+            scope.field(store, &entry, &format!("/content/{ordinal}/text"))?
+        }
+        None => None,
+    };
+    scope.verify(store)?;
+    Ok(json!({"runId": run, "index": index, "text": text}))
+}

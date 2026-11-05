@@ -301,6 +301,41 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
             }
         }
+        // The reasoning sibling of `get_tool_call_args`: a lean lane sends the
+        // row's boundaries without its body, so this read is what a reader gets
+        // by opening one reasoning row. `offset` is the block's index in the run.
+        "get_reasoning" => {
+            if !crate::remote_host::lean::enabled() {
+                reply(
+                    sink,
+                    false,
+                    Value::Null,
+                    Some("Unsupported command: get_reasoning"),
+                )
+                .await;
+                return;
+            }
+            if cmd.session_id.is_empty() || cmd.run_id.is_empty() || cmd.offset < 0 {
+                reply(
+                    sink,
+                    false,
+                    Value::Null,
+                    Some("sessionId, runId and a non-negative offset are required"),
+                )
+                .await;
+                return;
+            }
+            match crate::agent_bridge::get_reasoning(
+                cmd.session_id.clone(),
+                cmd.run_id.clone(),
+                cmd.offset,
+            )
+            .await
+            {
+                Ok(data) => reply(sink, true, data, None).await,
+                Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+            }
+        }
         "get_events_since" => {
             if cmd.prefer_snapshot
                 && cmd.chunked_read

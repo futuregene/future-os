@@ -546,6 +546,10 @@ export const resources = {
         stopped: "Stop requested",
         thinking: "Thinking",
         thoughtCompleted: "Thought",
+        // A reasoning row the lean lanes sent without its body: opening it is
+        // what fetches the text, so these two are its waiting/failed states.
+        thoughtLoading: "Reading the reasoning…",
+        thoughtUnavailable: "Couldn't read this reasoning",
         reading: "Reading a file",
         readCompleted: "Read a file",
         writing: "Writing a file",
@@ -1714,6 +1718,9 @@ export const resources = {
         stopped: "已请求停止",
         thinking: "思考中",
         thoughtCompleted: "已思考",
+        // lean 通道只发推理块的边界，正文要点开才取回来。
+        thoughtLoading: "正在读取推理…",
+        thoughtUnavailable: "这段推理暂时读不到",
         reading: "正在读取",
         readCompleted: "已读取",
         writing: "正在写入",

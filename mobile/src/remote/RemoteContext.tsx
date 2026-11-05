@@ -227,6 +227,14 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
    * row treats as "leave the row as it was".
    */
   resolveToolCallTarget(toolCallId: string, runId: string, fusion?: { stepId?: string; offset?: number }): Promise<string | null>;
+  /**
+   * Fetch a reasoning block's text on demand — the body a lean lane withheld —
+   * and cache it for a settled reply. `index` is the block's position among the
+   * run's reasoning blocks, the order the reply renders them in. Resolves null
+   * for a block that is not readable (yet); rejects on transport failure, which
+   * the row shows as "couldn't read this".
+   */
+  resolveReasoning(runId: string, index: number, settled?: boolean): Promise<string | null>;
   prepareAttachment(
     attachment: HistoryAttachment,
     variant?: "preview" | "original",
@@ -600,6 +608,7 @@ function machineSurface(
       throw new Error("not_connected");
     }),
     resolveToolCallTarget: runtime?.conversation.resolveToolCallTarget ?? (async () => null),
+    resolveReasoning: runtime?.conversation.resolveReasoning ?? (async () => null),
     prepareAttachment: runtime?.conversation.prepareAttachment ?? (async () => {
       throw new Error("not_connected");
     }),
@@ -1179,6 +1188,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     activeRuntime?.conversation.newConversation,
     activeRuntime?.conversation.prepareAttachment,
     activeRuntime?.conversation.refreshSessionUsage,
+    activeRuntime?.conversation.resolveReasoning,
     activeRuntime?.conversation.resolveToolCallTarget,
     activeRuntime?.conversation.selectSession,
     activeRuntime?.conversation.sessionUsage,

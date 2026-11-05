@@ -221,7 +221,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     // ── Session-scoped commands: resolve the target session or fail.
     if matches!(
         cmd_type.as_str(),
-        "list_tool_calls" | "get_tool_output" | "get_tool_call_args"
+        "list_tool_calls" | "get_tool_output" | "get_tool_call_args" | "get_reasoning"
     ) {
         // `get_tool_call_args` is the lean client's way back to a shell call's
         // arguments, which its history page deliberately omitted.
@@ -247,6 +247,14 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 &cmd.session_id,
                 &cmd.run_id,
                 cmd.tool_call_id.as_deref().unwrap_or(""),
+            ),
+            // The reasoning sibling of `get_tool_call_args`: the lean lanes send
+            // only a block's boundaries, so a row that is opened asks for the
+            // body. `offset` carries which reasoning block of the run it is.
+            "get_reasoning" => state.session_manager.reasoning_block(
+                &cmd.session_id,
+                &cmd.run_id,
+                cmd.offset.unwrap_or(0),
             ),
             _ => state.session_manager.tool_output(
                 &cmd.session_id,

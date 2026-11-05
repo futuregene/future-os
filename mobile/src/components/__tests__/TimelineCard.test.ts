@@ -212,16 +212,88 @@ test("the folded run opens into its rows, each still opening its own detail", ()
   expect(hasText("ls -la")).toBe(true);
 });
 
-// A lean feed carries no reasoning body at all. The row is then a status label,
-// not a disclosure: rendering the chevron anyway opened an empty box on a real
-// device (tapping 已思考 expanded to nothing), which promises content that never
-// arrives.
-test("a thinking row with no body is a label, not a disclosure", () => {
+// A row with no body and no way to fetch one is a status label, not a
+// disclosure: rendering the chevron anyway opened an empty box on a real device
+// (tapping 已思考 expanded to nothing), which promises content that never arrives.
+// The fetchable case below is the contrast — the same missing body, with a body
+// it can actually get.
+test("a thinking row with no body and no fetch is a label, not a disclosure", () => {
   render(reply({ segments: [thinking("k1", "")] }));
   expect(countText("chat.thoughtCompleted")).toBe(1);
   expect(countIconsNamed(tree.root, "ChevronDown")).toBe(0);
   expect(countIconsNamed(tree.root, "ChevronUp")).toBe(0);
   expect(rowButton("chat.thoughtCompleted")).toBeUndefined();
+});
+
+// A bodyless reasoning row on a lean lane is still a disclosure: the body is
+// fetched the first time the row is opened, and only then. These cases pin both
+// halves — the fetch happens once, and a failed or empty answer leaves the row
+// honest instead of blank.
+test("a reasoning row without a body fetches it when it is opened", async () => {
+  const load = jest.fn().mockResolvedValue("because the test said so");
+  render(reply({ segments: [thinking("k1", "")], runId: "run-1" }), {
+    onResolveReasoning: load,
+  });
+  // Nothing is fetched for simply drawing the reply: the whole point of the
+  // trim is that an unopened row costs nothing.
+  expect(load).toHaveBeenCalledTimes(0);
+  expect(countIconsNamed(tree.root, "ChevronDown")).toBe(1);
+  await act(async () => rowButton("chat.thoughtCompleted").props.onPress());
+  expect(load).toHaveBeenCalledWith("run-1", 0, true);
+  expect(hasText("because the test said so")).toBe(true);
+  // Closing and reopening does not ask again: the row already holds the text.
+  await act(async () => rowButton("chat.thoughtCompleted").props.onPress());
+  expect(hasText("because the test said so")).toBe(false);
+  await act(async () => rowButton("chat.thoughtCompleted").props.onPress());
+  expect(load).toHaveBeenCalledTimes(1);
+  expect(hasText("because the test said so")).toBe(true);
+});
+
+// The index a row asks for is its own position among the reply's reasoning
+// blocks — the identity the host resolves the body by.
+test("a reasoning row asks for its own block in the run", async () => {
+  const load = jest.fn().mockResolvedValue("second thought");
+  render(reply({
+    runId: "run-9",
+    segments: [thinking("k0", "first thought"), tool("c1"), thinking("k1", "")],
+  }), { onResolveReasoning: load });
+  // The three step rows fold into one summary; the rows below it each open their
+  // own detail, and this reply's second reasoning row is the second one.
+  act(() => summaryRow({ tools: 1, thinking: 2 }).props.onPress());
+  await act(async () => rowButtons("chat.thoughtCompleted")[1]!.props.onPress());
+  expect(load).toHaveBeenLastCalledWith("run-9", 1, true);
+  expect(hasText("second thought")).toBe(true);
+});
+
+// A row the host cannot answer for (a block still being written, an older
+// desktop) says so instead of expanding to nothing.
+test("a reasoning row whose body cannot be read says so", async () => {
+  const load = jest.fn().mockRejectedValue(new Error("not found"));
+  render(reply({ segments: [thinking("k1", "")], runId: "run-1" }), {
+    onResolveReasoning: load,
+  });
+  await act(async () => rowButton("chat.thoughtCompleted").props.onPress());
+  expect(hasText("chat.thoughtUnavailable")).toBe(true);
+  const empty = jest.fn().mockResolvedValue(null);
+  act(() => tree.unmount());
+  render(reply({ segments: [thinking("k1", "")], runId: "run-1" }), {
+    onResolveReasoning: empty,
+  });
+  await act(async () => rowButton("chat.thoughtCompleted").props.onPress());
+  expect(hasText("chat.thoughtUnavailable")).toBe(true);
+});
+
+// A streaming reply's block is still growing, so it is read fresh each time it
+// is opened rather than remembered.
+test("a streaming reply's reasoning is not cached by the row", async () => {
+  const load = jest.fn().mockResolvedValue("half a thought");
+  render(reply({ segments: [thinking("k1", "")], runId: "run-1", streaming: true }), {
+    onResolveReasoning: load,
+  });
+  await act(async () => rowButton("chat.thinking").props.onPress());
+  expect(load).toHaveBeenLastCalledWith("run-1", 0, false);
+  await act(async () => rowButton("chat.thinking").props.onPress());
+  expect(hasText("half a thought")).toBe(false);
 });
 
 // The contrast: a body is what earns the chevron.

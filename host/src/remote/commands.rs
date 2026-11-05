@@ -672,7 +672,10 @@ mod bridge_tests {
                 // Advertised, not merely honoured: a client only declares the
                 // frame carrier after finding it here.
                 "read_binary_v1",
-                "segmented_content_v1"
+                "segmented_content_v1",
+                // Advertised so a reasoning row only offers to open on a host
+                // that can actually answer the fetch.
+                "reasoning_fetch_v1"
             ]
         );
         assert!(bridge.handshake.active_flag().load(Ordering::Acquire));
@@ -1117,6 +1120,119 @@ mod bridge_tests {
             &["event_coalescing_v1".to_string()],
         );
         let reply = ask("args-withdrawn").await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("Unsupported command"));
+    }
+
+    /// The reasoning half of the lazy fetch, end to end: a lean client is sent a
+    /// reasoning row's boundaries without its body, so opening that row is what
+    /// asks the Agent for the text — and only a client that declared the lean
+    /// feed may ask at all.
+    #[tokio::test]
+    async fn get_reasoning_is_reachable_only_for_a_client_that_declared_lean() {
+        use crate::remote_host::lean::LEAN_EVENTS_FEATURE;
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-reasoning").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        let session = unique("sess-reasoning");
+        let run = unique("run-reasoning");
+        let ask = |id: &'static str, index: i64| {
+            let bridge = &bridge;
+            let session = session.clone();
+            let run = run.clone();
+            async move {
+                bridge
+                    .call(json!({
+                        "id": unique(id),
+                        "type": "get_reasoning",
+                        "sessionId": session,
+                        "runId": run,
+                        "offset": index,
+                    }))
+                    .await
+            }
+        };
+
+        // Undeclared: as unreachable as it is for an older bridge, and the Agent
+        // is never bothered.
+        agent.clear_requests();
+        let reply = ask("reasoning-undeclared", 0).await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(
+            reply["error"]
+                .as_str()
+                .unwrap()
+                .contains("Unsupported command"),
+            "got: {reply}"
+        );
+        assert!(!agent.served("get_reasoning", &session));
+
+        apply_declared_features(
+            &bridge.handshake,
+            &bridge.pair_id,
+            &[LEAN_EVENTS_FEATURE.to_string()],
+        );
+        agent.script_for(
+            "get_reasoning",
+            &session,
+            true,
+            json!({"runId": run, "index": 1, "text": "why it broke"}),
+            "",
+        );
+        let reply = ask("reasoning-declared", 1).await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["text"], json!("why it broke"));
+        let forwarded = agent
+            .last_full_request("get_reasoning")
+            .expect("the declared client's read must reach the Agent");
+        assert_eq!(forwarded.session_id, session);
+        assert_eq!(forwarded.run_id, run);
+        assert_eq!(
+            forwarded.offset,
+            Some(1),
+            "the block index travels as `offset`"
+        );
+
+        // A negative index is refused locally: there is no such block, and the
+        // Agent should not be asked to invent one.
+        agent.clear_requests();
+        let reply = ask("reasoning-negative", -1).await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(
+            reply["error"].as_str().unwrap().contains("non-negative"),
+            "got: {reply}"
+        );
+        assert!(!agent.served("get_reasoning", &session));
+
+        // An Agent-side miss is passed through as an explicit null, not an
+        // error: a block that is still being written reads as "not yet".
+        apply_declared_features(
+            &bridge.handshake,
+            &bridge.pair_id,
+            &[LEAN_EVENTS_FEATURE.to_string()],
+        );
+        agent.script_for(
+            "get_reasoning",
+            &session,
+            true,
+            json!({"runId": run, "index": 9, "text": null}),
+            "",
+        );
+        let reply = ask("reasoning-missing", 9).await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert!(reply["data"]["text"].is_null(), "got: {reply}");
+
+        // Withdrawing the declaration takes the command away again.
+        apply_declared_features(
+            &bridge.handshake,
+            &bridge.pair_id,
+            &["event_coalescing_v1".to_string()],
+        );
+        let reply = ask("reasoning-withdrawn", 0).await;
         assert_eq!(reply["success"], json!(false));
         assert!(reply["error"]
             .as_str()
