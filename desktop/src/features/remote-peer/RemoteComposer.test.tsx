@@ -1886,7 +1886,7 @@ describe("an archived conversation", () => {
     const view = await mount({ archived: true });
 
     expect(view.input.readOnly).toBe(true);
-    expect(view.text()).toContain("This conversation is archived. Restore it to keep working in it.");
+    expect(view.text()).toContain("This conversation is archived. Unarchive it to keep working in it.");
     expect(view.button("Send")?.disabled).toBe(true);
 
     await view.press("Enter");

@@ -241,14 +241,14 @@ it("withholds archive from a host that never declared it", async () => {
 
 /**
  * In the archived view the one item that flips is the archive one: a shelved
- * conversation is restored, not pinned — shelving cleared the pin, so an item
+ * conversation is restored, not pinned 鈥?shelving cleared the pin, so an item
  * offering one would present a state the host cannot be in.
  */
 it("offers restore, not pin, for a shelved conversation", async () => {
   const view = await mount(conversation(), { archived: true, canArchive: true });
 
   expect(view.item("Pin")).toBeUndefined();
-  await act(async () => view.item("Restore")!.click());
+  await act(async () => view.item("Unarchive")!.click());
   await settle();
 
   expect(restore).toHaveBeenCalledWith("desktop_a", { sessionId: "sess_1", threadId: "thread_1" });
