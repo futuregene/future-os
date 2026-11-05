@@ -166,13 +166,15 @@ trend in prose (and call out superlinear growth) rather than only fail a bound.
 
 ## Known defect records (red on purpose)
 
-`cli-task-add-same-name` is red against today's build: naming a second task the
-same as an existing one is refused, and the refusal reaches the user as
-`UNIQUE constraint failed: tasks.name` — the store's own words, in both the CLI
-and the desktop editor. Users asked for repeated names to be *allowed*; what the
-case encodes is the weaker promise that whichever policy wins, the sentence the
-user sees is written for them. Fix it and the case turns green; do not delete it
-to make a run look clean.
+None right now. `cli-task-add-same-name` was the last one: naming a second task
+the same as an existing one was refused with `UNIQUE constraint failed:
+tasks.name`, the store's own words, in both the CLI and the desktop editor. The
+refusal now reads `a task named "<name>" already exists (<id>); rename this one
+or edit that task instead` (a typed `future_tasks::TaskNameTaken` the store
+returns in place of the driver's text), so the case is green. Keep the case: it
+records *why* it exists — users asked for repeated names to be *allowed*, and
+what it encodes is the weaker promise that whichever policy wins, the sentence
+the user sees is written for them. Do not delete it to make a run look clean.
 
 ## Not covered, and why
 
