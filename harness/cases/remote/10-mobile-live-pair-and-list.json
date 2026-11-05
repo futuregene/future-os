@@ -1,0 +1,136 @@
+{
+  "id": "mobile-live-pair-and-list",
+  "surface": "remote-mobile-live",
+  "title": "手机连远程桌面：认领邀请 → 连上 → 拿到真实会话目录",
+  "area": "remote",
+  "priority": "P0",
+  "tags": [
+    "remote",
+    "mobile",
+    "relay"
+  ],
+  "description": "用手机端自己的代码（mobile/src/remote/pairing.ts 与 client.ts，只有 expo 平台层被打桩）连一台真实运行的自建中继主机：认领桌面端签发的邀请、经 NATS WebSocket 连上、拿到该桌面的会话与工作区目录。这条用例证明的是手机上真正执行的那段传输代码，而不是截图夹具。",
+  "preconditions": "future 二进制可用；本机有 nats-server；手机客户端 bundle 已构建（node harness/mobile-client/build.mjs）。",
+  "expectations": [
+    "手机能用邀请认领到 pairId 与目标 desktopId",
+    "连上后收到非空的会话目录与工作区目录",
+    "手机声明自己的能力集（features 非空）",
+    "主机侧把这次连接记录为该设备的 bridge 已连接"
+  ],
+  "steps": [
+    {
+      "hostStart": true
+    },
+    {
+      "invite": true,
+      "as": "link"
+    },
+    {
+      "phone": {
+        "label": "phone"
+      }
+    },
+    {
+      "claim": "{{link}}",
+      "as": "claimed"
+    },
+    {
+      "assertJson": {
+        "from": "claimed",
+        "path": "pairId",
+        "truthy": true,
+        "message": "拿到 pairId"
+      }
+    },
+    {
+      "assertJson": {
+        "from": "claimed",
+        "path": "desktopId",
+        "truthy": true,
+        "message": "邀请里带着目标桌面"
+      }
+    },
+    {
+      "connect": true
+    },
+    {
+      "ready": {
+        "as": "ready",
+        "timeout": 60000
+      }
+    },
+    {
+      "assertJson": {
+        "from": "ready",
+        "path": "sessions",
+        "gte": 1,
+        "message": "会话目录非空"
+      }
+    },
+    {
+      "assertJson": {
+        "from": "ready",
+        "path": "workspaces",
+        "gte": 0,
+        "message": "工作区目录可读"
+      }
+    },
+    {
+      "snapshot": {
+        "as": "snapshot"
+      }
+    },
+    {
+      "assertJson": {
+        "from": "snapshot",
+        "path": "sessions[0].sessionId",
+        "truthy": true,
+        "message": "会话行有 sessionId"
+      }
+    },
+    {
+      "assertJson": {
+        "from": "snapshot",
+        "path": "sessions[0].title",
+        "truthy": true,
+        "message": "会话行有真实标题（来自桌面库，不是夹具）"
+      }
+    },
+    {
+      "assertJson": {
+        "from": "snapshot",
+        "path": "features",
+        "truthy": true,
+        "message": "手机声明了 features"
+      }
+    },
+    {
+      "hostStatus": {
+        "as": "hostStatus"
+      }
+    },
+    {
+      "assertJson": {
+        "from": "hostStatus",
+        "path": "devices[0].connected",
+        "equals": true,
+        "message": "主机认为该设备的桥已连接"
+      }
+    },
+    {
+      "assertJson": {
+        "from": "hostStatus",
+        "path": "devicesTotal",
+        "equals": 1,
+        "message": "主机只记录了这一台设备"
+      }
+    }
+  ],
+  "judge": {
+    "criteria": [
+      "手机连上后拿到的应当是这台桌面真实的会话，而不是空目录或占位标题",
+      "主机与手机对同一次连接的描述不能互相矛盾",
+      "客户端日志里不应出现凭证被拒、端点被拒或反复重连"
+    ]
+  }
+}

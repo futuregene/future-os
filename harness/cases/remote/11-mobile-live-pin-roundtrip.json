@@ -1,0 +1,39 @@
+{
+  "id": "mobile-live-pin-roundtrip",
+  "surface": "remote-mobile-live",
+  "title": "手机连远程桌面：置顶会话 → 桌面库真的变了 → 手机目录同步",
+  "area": "remote",
+  "priority": "P0",
+  "tags": ["remote", "mobile", "relay", "write"],
+  "description": "手机连上真实主机后，用手机端自己的命令通道（client.request，与 useSessionCatalog 完全同一条路）把一条会话置顶，然后从两处验证：主机自己的 app.db 里该行 pinned 变了，手机随后收到的目录里这条也是置顶。这条用例证明的是「手机上的写操作真的落到了桌面」，而不是界面上看起来变了。选置顶而不是改名，是因为置顶是纯本地存储写入，不需要 Agent 会话库；改名要走 Agent，在任何只带 app.db 的主机上都必然失败。",
+  "preconditions": "future 二进制可用；本机有 nats-server；手机客户端 bundle 已构建。",
+  "expectations": [
+    "手机能连上并拿到真实会话目录（来自桌面真实数据库）",
+    "置顶命令被主机接受",
+    "主机 app.db 中该会话 pinned 变为真",
+    "手机随后拿到的目录里该会话也是置顶状态"
+  ],
+  "steps": [
+    { "hostStart": true },
+    { "invite": true, "as": "link" },
+    { "phone": { "label": "phone" } },
+    { "claim": "{{link}}", "as": "claimed" },
+    { "connect": true },
+    { "ready": { "as": "ready" } },
+    { "snapshot": { "as": "snapshot" } },
+    { "assertJson": { "from": "snapshot", "path": "sessions[0].sessionId", "truthy": true, "message": "拿到一个真实会话" } },
+    { "assertJson": { "from": "snapshot", "path": "sessions[0].threadId", "truthy": true, "message": "会话行带 threadId" } },
+    { "request": { "command": { "type": "set_session_pinned", "sessionId": "{{snapshot.sessions[0].sessionId}}", "threadId": "{{snapshot.sessions[0].threadId}}", "pinned": true }, "sessionId": "{{snapshot.sessions[0].sessionId}}", "message": "手机发出置顶命令", "as": "pin" } },
+    { "hostDb": { "sql": "select pinned from threads where id = '{{snapshot.sessions[0].threadId}}'", "expect": 1, "message": "桌面库中该会话已置顶", "as": "pinned" } },
+    { "wait": 1500 },
+    { "snapshot": { "as": "after" } },
+    { "assertJson": { "from": "after", "path": "sessions[0].pinned", "equals": true, "message": "手机目录里该会话也是置顶" } }
+  ],
+  "judge": {
+    "criteria": [
+      "手机上的写操作必须在桌面侧真的生效：数据库变了才算生效",
+      "手机自己的目录随后要与桌面一致，不能一边置顶了另一边还是未置顶",
+      "客户端日志里不应出现命令被拒或需要重试的痕迹"
+    ]
+  }
+}
