@@ -106,3 +106,66 @@ describe("thread row title space", () => {
     }
   });
 });
+
+describe("a fork's marker in the row title", () => {
+  // The host names a fork "<parent> (fork)" (host/src/agent_bridge/session.rs),
+  // so the marker is part of the string the row draws. The row draws one
+  // truncated line, and that used to cut the marker off the end of a long title
+  // — "make install 全流程安装成功 (fo…" — which left a fork recognisable only by
+  // an indent every other child shares.
+  const parent = "make install 全流程安装成功的一段很长的标题";
+  const forked = `${parent} (fork)`;
+
+  function mount(title: string) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const p = props();
+    p.thread = { ...p.thread, title };
+    act(() => root.render(<ThreadListItem {...p} />));
+    return {
+      dispose: () => {
+        act(() => root.unmount());
+        container.remove();
+      },
+      marker: () => container.querySelector<HTMLElement>("[data-fork-marker]"),
+      select: () => container.querySelector<HTMLButtonElement>("button[title]")!,
+      title: () => container.querySelector<HTMLElement>("span.truncate")!,
+    };
+  }
+
+  it("draws the marker beside the truncating title instead of inside it", () => {
+    const view = mount(forked);
+    try {
+      // The title is the flexible, truncating element; the marker keeps its own
+      // width, so the title is what loses characters when the column is narrow.
+      expect(view.title().classList.contains("truncate")).toBe(true);
+      expect(view.title().textContent).toBe(parent);
+      const marker = view.marker()!;
+      expect(marker.textContent).toBe(" (fork)");
+      expect(marker.classList.contains("truncate")).toBe(false);
+      expect(marker.classList.contains("shrink-0")).toBe(true);
+      // Still one title to a reader (and to a screen reader): the marker follows
+      // the title in the same row.
+      expect(view.title().nextElementSibling).toBe(marker);
+      expect(`${view.title().textContent}${marker.textContent}`).toBe(forked);
+      // ...and the row's click target and tooltip name the whole thing.
+      expect(view.select().title).toBe(forked);
+    }
+    finally {
+      view.dispose();
+    }
+  });
+
+  it("leaves a title that is not a fork exactly as it was", () => {
+    const view = mount(parent);
+    try {
+      expect(view.marker()).toBeNull();
+      expect(view.title().textContent).toBe(parent);
+      expect(view.select().title).toBe(parent);
+    }
+    finally {
+      view.dispose();
+    }
+  });
+});

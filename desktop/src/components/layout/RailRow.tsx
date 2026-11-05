@@ -172,6 +172,19 @@ export function RailRowTreeToggle({
 }
 
 /**
+ * The suffix a forked conversation's name carries.
+ *
+ * The host mints a fork's own name as `<parent> (fork)` (see
+ * `fork_agent_session` in `host/src/agent_bridge/session.rs`, and the same
+ * suffix the agent's own fork writes), so the marker is *inside* the title
+ * string a row draws — and a row draws one truncated line, which cut it off the
+ * end of a long title: "make install 全流程安装成功 (fo…". A fork was then
+ * recognisable only by its indent, in a list where the indent is shared with
+ * every other child.
+ */
+const FORK_MARKER = " (fork)";
+
+/**
  * A row's title, at the one size and weight every row uses.
  *
  * `text-13` (13px), not `text-sm`: at 14px a row's title, its workspace heading
@@ -180,23 +193,45 @@ export function RailRowTreeToggle({
  * macOS source-list size, which is what a 224–480px column of one-line labels
  * is, and in the 203px title column it fits about one more CJK character than
  * 14px did — enough that the longest demo title stops clipping.
+ *
+ * A trailing fork marker is drawn out of the truncated span: the title keeps the
+ * flexible width (and its ellipsis), the marker keeps its own and is never
+ * clipped. The row's text is unchanged — `"<title> (fork)"` either way.
  */
 export function RailRowTitle({ children, grow = true, muted }: { children: ReactNode; grow?: boolean; muted?: boolean }) {
+  const forked = typeof children === "string" && children.endsWith(FORK_MARKER);
+  const title = forked ? (children as string).slice(0, -FORK_MARKER.length) : children;
+  const ink = muted ? "text-ink-muted" : "text-ink-soft";
   return (
-    <span
-      className={cn(
-        "pointer-events-none min-w-0 truncate text-13 font-medium",
-        // `flex-1` while the title is the row's last flexible element (its
-        // indicator and menu belong at the right edge). A row that puts a
-        // qualifier *after* the title — the machine a conversation is on —
-        // passes `grow={false}` and adds the spacer itself, so the qualifier
-        // sits against the title instead of a pane's width away from it.
-        grow && "flex-1",
-        muted ? "text-ink-muted" : "text-ink-soft",
-      )}
-    >
-      {children}
-    </span>
+    <>
+      <span
+        className={cn(
+          "pointer-events-none min-w-0 truncate text-13 font-medium",
+          // `flex-1` while the title is the row's last flexible element (its
+          // indicator and menu belong at the right edge). A row that puts a
+          // qualifier *after* the title — the machine a conversation is on —
+          // passes `grow={false}` and adds the spacer itself, so the qualifier
+          // sits against the title instead of a pane's width away from it.
+          grow && "flex-1",
+          ink,
+        )}
+      >
+        {title}
+      </span>
+      {forked
+        ? (
+            <span
+              // `shrink-0`, never `truncate`: this is the part of the title that
+              // says what the row *is*, so the width it needs comes out of the
+              // title's flexible share before the ellipsis does.
+              className={cn("pointer-events-none shrink-0 text-13 font-medium", ink)}
+              data-fork-marker="true"
+            >
+              {FORK_MARKER}
+            </span>
+          )
+        : null}
+    </>
   );
 }
 
