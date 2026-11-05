@@ -189,6 +189,12 @@ export function useThreadDialogs({ activeThreadId, onArchived, refreshStore, thr
     setDeleteDialog(current => current ? { ...current, error: null, submitting: true } : current);
     try {
       await deleteThread({ threadId: deleted.id, deleteFiles: false });
+      // The archived view keeps its own lists, and the store's pages cannot say
+      // a shelved row is gone: deleting from the shelf left the row drawn, and
+      // clicking it asked the backend for a conversation that no longer existed
+      // ("Thread not found"). This is the event that makes the shelf re-read,
+      // exactly as an archive or a restore does.
+      emitFutureEvent("archive-changed", undefined);
       // The row is gone for good, and the refresh has to be told so: pages no
       // longer returning it is otherwise the same evidence as "archived, still
       // open, read-only", so the store would hold it — and, when it was the open
@@ -245,6 +251,9 @@ export function useThreadDialogs({ activeThreadId, onArchived, refreshStore, thr
       // Same as a single delete: the rows are gone, not merely off the page. A
       // batch that included the open conversation must move the column on too.
       await refreshStore(undefined, { removedThreadIds: threadIds });
+      // And the shelf re-reads for the same reason a single delete makes it: a
+      // batch taken from the archived view is deleted rows that list still draws.
+      emitFutureEvent("archive-changed", undefined);
       setBatchDeleteDialog(null);
     }
     catch (error) {
