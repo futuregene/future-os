@@ -66,6 +66,18 @@ export async function listPinnedWorkspaces() {
   return invokeCommand<StoredWorkspace[]>("list_pinned_workspaces");
 }
 
+/**
+ * One workspace by id, whatever its kind.
+ *
+ * The rail's list (`list_workspaces_page` / `list_pinned_workspaces`) holds the
+ * user's own directories only, so a chat conversation's per-thread scratch
+ * workspace is never in it. Anything that has a workspace id — the open
+ * conversation's own `workspaceId` — asks here instead of searching that list.
+ */
+export async function getWorkspace(workspaceId: string) {
+  return invokeCommand<StoredWorkspace | null>("get_workspace", { workspaceId });
+}
+
 export interface WorkspacesPage {
   workspaces: StoredWorkspace[];
   nextCursor: string | null;

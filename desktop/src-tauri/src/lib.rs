@@ -1089,6 +1089,7 @@ mod gui {
                 save_pasted_image,
                 save_pasted_file,
                 get_or_create_chat_workspace,
+                get_workspace,
                 get_thread,
                 get_recent_thread,
                 mark_thread_opened,
