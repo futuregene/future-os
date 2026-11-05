@@ -137,6 +137,9 @@ WHITELIST = {
     # UI harness guide: it sits beside the case library it documents, so a
     # reader editing a case has the schema and the fidelity boundary at hand.
     "harness/README.md",
+    # The harness's own coverage matrix: same reason, it has to sit where a case
+    # author looks before adding one.
+    "harness/COVERAGE.md",
 }
 
 # Bilingual pairing also applies to these paths outside docs/.

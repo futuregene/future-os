@@ -26,7 +26,7 @@ const MAX_CASES = 40;
 
 function summarizeCase(item) {
   const findings = (item.findings ?? [])
-    .filter(finding => finding.source !== "harness")
+    .filter(finding => finding.source !== "harness" && !finding.fixture)
     .map(finding => `  - [${finding.severity}] ${finding.title}`)
     .join("\n");
   // A case carried over from an earlier pass is the *summary* record, where
@@ -35,9 +35,14 @@ function summarizeCase(item) {
   const checkList = Array.isArray(item.checks) ? item.checks : [];
   const failed = checkList.filter(check => !check.ok).length;
   const checks = failed ? `  - ${failed} of ${checkList.length} checks failed` : "";
+  const surface = item.surface ?? "desktop";
+  // Which data the screen was drawn from is part of what a comparison means:
+  // two counts that look different are not a contradiction when one of them is a
+  // screenshot mock's number.
+  const data = surface === "mobile" || surface === "remote" ? "screenshot mocks" : "real app.db copy";
   return [
     `### ${item.id} — ${item.title}`,
-    `surface: ${item.surface ?? "desktop"} · status: ${item.status}`,
+    `surface: ${surface} · data: ${data} · status: ${item.status}`,
     item.expectations?.length ? `expectations:\n${item.expectations.map(text => `  - ${text}`).join("\n")}` : null,
     item.summary ? `verdict note: ${item.summary}` : null,
     item.judge?.summary ? `judge: ${item.judge.summary}` : null,
@@ -64,6 +69,9 @@ export function buildCrossCasePrompt(analysis) {
     "- Every finding must list the case ids it is derived from (`cases`), and at least one of them must show the problem. If you cannot name a case, do not report it.",
     "- Only report what the record shows. Do not infer a screen you cannot see, and do not assume a state the cases never reached.",
     "- If the same problem was already reported per case, report it once here only if the cross-case view adds something (it spans screens, or its scope is larger than the one case).",
+    "- A number only contradicts another number when both describe the SAME object in the SAME scope: a workspace's remainder, a list total, a filtered count and a different screen's rendering of the same list are different scopes. State each number's scope in `detail`; if you cannot, do not report it.",
+    "- Cases marked `data: screenshot mocks` (mobile, remote) are drawn from the screenshot fixture; the desktop cases read a real `app.db` copy. Their counts, dates and device lists differ by construction — never put them side by side as a contradiction.",
+    "- A phenomenon seen in one frame is not systemic. A claim that a state persists must rest on that case's final-state evidence.",
     "- Be sparing: two or three solid systemic findings are worth more than ten restatements. If nothing is systemic, return an empty list.",
     "",
     "Sessions:",

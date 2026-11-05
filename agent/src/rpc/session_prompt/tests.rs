@@ -4665,3 +4665,73 @@ async fn a_run_whose_event_journal_dies_mid_way_is_abandoned_as_failed() {
         "the broadcaster keeps the failure the client was told about"
     );
 }
+
+/// The other half of `a_failed_journal_refuses_new_input_with_its_persistence_failure`:
+/// a recorded failure must have a way back that does not need a run.
+///
+/// The failure itself is what refuses a run admission, and every other clearing
+/// path rebinds the journal from a run that starts — so a session that failed
+/// once was unwritable until the agent restarted (measured 2026-11-05: a
+/// transient `SQLITE_BUSY` left one conversation refusing every prompt for
+/// 20 minutes while the rest of the agent streamed normally).
+#[tokio::test(flavor = "current_thread")]
+async fn a_failed_journal_is_recovered_without_a_run() {
+    let provider = ScriptedProvider::new(vec![text_turn("first"), text_turn("after recovery")]);
+    let fixture = run_fixture(provider.clone(), "journal-recovered");
+    let manager = fixture.session.session_manager.clone();
+    let mut session = fixture.session;
+    // A settled turn, so the recovery below has real history to leave alone.
+    session.prompt("first", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    let before = manager.load(&session.session_id).unwrap().entries;
+    assert!(!before.is_empty());
+
+    session
+        .broadcaster
+        .fail_persistence("event journal append failed: database is locked");
+    let refused = session
+        .enqueue_prompt(
+            "must not run",
+            &[],
+            &[],
+            None,
+            "req-refused",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap_err();
+    assert!(matches!(
+        refused.downcast_ref::<crate::runtime::RunQueueError>(),
+        Some(crate::runtime::RunQueueError::PersistenceUnavailable(_))
+    ));
+    assert!(
+        session.runtime.snapshot().is_none(),
+        "the refusal starts no run"
+    );
+    assert_eq!(provider.requests.lock().unwrap().len(), 1, "no model call");
+
+    let report = session
+        .recover_session_journal()
+        .expect("a session with no run must be recoverable");
+    assert_eq!(report["was_degraded"], serde_json::json!(true));
+    assert_eq!(report["journal_error"], serde_json::json!(null));
+    assert!(session.broadcaster.persistence_error().is_none());
+    assert_eq!(
+        manager.load(&session.session_id).unwrap().entries.len(),
+        before.len(),
+        "recovery rebuilds the projection and removes no entry"
+    );
+
+    session
+        .prompt("after recovery", &[], &[], None, None)
+        .expect("the recovered session accepts a prompt");
+    wait_for_run_end(&session).await;
+    assert_eq!(
+        session.messages.read().last().unwrap().text(),
+        "after recovery"
+    );
+    assert!(session.broadcaster.persistence_error().is_none());
+    assert!(
+        manager.load(&session.session_id).unwrap().entries.len() > before.len(),
+        "the recovered run is journaled"
+    );
+}

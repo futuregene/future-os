@@ -358,6 +358,17 @@ impl SseBroadcaster {
         self.journal.lock().fail_at = Some(JournalFailPoint::Append);
     }
 
+    /// Make the next `count` batch commits fail the way a transient storage
+    /// failure does: the events stay buffered, health is marked, and the reply
+    /// waits for the retry.
+    #[cfg(test)]
+    pub(crate) fn inject_commit_failures(&self, count: usize) {
+        let journal = self.journal.lock();
+        if let Some(writer) = journal.writer.as_ref() {
+            writer.health.inject_commit_failures(count);
+        }
+    }
+
     /// Arm the next completion-time drain to fail **without** marking the journal
     /// unhealthy, so `prompt_internal`'s drain guard sees a healthy journal and
     /// still finds the drain failing.

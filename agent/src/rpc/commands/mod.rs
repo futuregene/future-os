@@ -380,6 +380,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "fork",
         "prompt",
         "reload_config",
+        "recover_session",
         "reset_session_history",
         "retry_persistence",
         "set_auto_compaction",
@@ -453,6 +454,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 | "release_queued_run"
                 | "approval_decision"
                 | "prune_run_events"
+                | "recover_session"
                 | "set_session_name"
                 | "set_cwd"
                 | "set_permission_level"
@@ -481,6 +483,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "prune_run_events" => run_control::handle_prune_run_events(&session, &cmd, id),
         "abort_session" => run_control::handle_abort_session(&session, id),
         "retry_persistence" => run_control::handle_retry_persistence(&session, id),
+        "recover_session" => run_control::handle_recover_session(&session, id),
         "reset_session_history" => {
             session_reset::handle_reset_session_history(state, &session, &cmd, id)
         }
