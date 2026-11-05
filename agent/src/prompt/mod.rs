@@ -479,6 +479,15 @@ fn build_sessions_section(is_subsession: bool) -> String {
         // conversation rail, `session list --parent` and the lineage guard would
         // all miss it.
         //
+        // Because that sentence names the flag, it read as the shape of *every*
+        // session this section creates, and the default became the opposite of
+        // what it should be: a session told to set up a workspace and start a
+        // conversation in it spawned that conversation with `--parent` and
+        // nested a user's project under a setup chat, which also removed its
+        // ability to delegate. So the paragraph states the default outright —
+        // no parent unless this turn is delegating — and the user's own request
+        // (a new workspace's session) is named as the case that must not.
+        //
         // The closing rules are the failure modes seen when this is left to the
         // model's judgement: a prompt that assumes shared history, a turn that
         // ends while a child still runs, and a wait per spawn that serializes
@@ -498,7 +507,7 @@ fn build_sessions_section(is_subsession: bool) -> String {
         // just paid for. Collecting the answer stays the default — it is what a
         // turn that can wait should do, and a callback spends credits.
         parts.push(
-            "Work can also be handed to another conversation of your own — a sub-session, which the user may also call a subagent, a sub-agent, or 子会话 / 子agent / 子代理; treat those words as asking for one. Create it with the lineage recorded in the same step — `future session new --parent <this-session-id> --name \"<short task>\" --json` (the id comes back as `sessionId`, not `id`) — then hand it the work with `future run --no-wait --session <child> \"<prompt>\"` (a long or non-ASCII prompt goes in a file passed as `--message-file <path>`, because `@<file>` would hand the child an attachment instead of the message): the ack returns at once and the run continues, and `future session wait <child> --timeout 4m` prints its answer when it ends — and exits non-zero when the run ends without one, which is the child failing, not an empty answer. To see where it has got to, `future session status <child>` reports whether its run is still active and `future session transcript --session <child> --runs` its per-run outcomes; appending behind it, --steer, and the provenance/intent requirement are the same as for a referenced conversation. The rest of a child's lifecycle: `future session abort <child>` stops its run and clears its queue, `future session delete <child>` removes it once its result is no longer wanted, `future session approvals <child>` lists the approvals it is parked on — a --no-wait child waiting there looks exactly like a slow one — and `future session list --parent <this-session-id> --json` lists your own children with their isStreaming flags. Hand your own model, thinking level and tool access down with the work: `--model <the Current model your environment block reports> --thinking <the Thinking level it reports>` on that `run` (they are recorded on the child, so its later runs keep them), because a child otherwise starts on the agent's default model and `default` thinking rather than yours — leave both off when the default is what you want. Tool permission is the one thing handed down for you: the child inherits the level you are running with, so it can never start with more access than its parent. A child cannot see this conversation, so its prompt must stand alone: the goal, the files to touch, the acceptance check, and that it should return the result rather than a narration. If you cannot stay to collect that answer — a run can outlast the shell tool's 600-second cap — put this session's id in the prompt and ask the child to report back with `future run --session <this-session-id>`, saying the report comes from this conversation: that call is a real run here and spends credits, so it is for answers that would otherwise land after the turn ends, not the normal path. Delegate only when the work is genuinely independent or long enough that its tool chatter would otherwise fill this conversation: the child is a full run on the user's credits, so do not spawn one to answer something you could read yourself, and a child cannot start its own child. Never end your turn with one still running — wait for it, or abort it and say so — unless you gave it this session's id to report back to, and then say in your reply that it is still going. Keep at most three in flight, launched first and awaited one at a time, because a blocking wait per spawn serializes the work and loses the point of delegating."
+            "Work can also be handed to another conversation of your own — a sub-session, which the user may also call a subagent, a sub-agent, or 子会话 / 子agent / 子代理; treat those words as asking for one. Lineage is deliberate, not the default: `--parent` belongs to a child this session creates to do work it will collect. A session the user asked for — a new workspace's conversation, a fresh session they will drive themselves — is created without it (`future session new --cwd <dir> --name <name> --json`) and stays top-level; recording a parent is what makes it a sub-session, listed under this one and unable to delegate further, and handing work into it later does not make it a child either. For delegation, create it with the lineage recorded in the same step, and name the directory the work belongs to — `future session new --cwd <project-dir> --parent <this-session-id> --name \"<short task>\" --json` (the id comes back as `sessionId`, not `id`). `--cwd` is not decoration: a session created without it takes the caller's working directory, and a chat thread's is a scratch workspace under `~/.future/workspaces/chat/`, so the child would build the work somewhere the user never opens. Then hand it the work with `future run --no-wait --session <child> \"<prompt>\"` (a long or non-ASCII prompt goes in a file passed as `--message-file <path>`, because `@<file>` would hand the child an attachment instead of the message): the ack returns at once and the run continues, and `future session wait <child> --timeout 4m` prints its answer when it ends — and exits non-zero when the run ends without one, which is the child failing, not an empty answer. To see where it has got to, `future session status <child>` reports whether its run is still active and `future session transcript --session <child> --runs` its per-run outcomes; appending behind it, --steer, and the provenance/intent requirement are the same as for a referenced conversation. The rest of a child's lifecycle: `future session abort <child>` stops its run and clears its queue, `future session delete <child>` removes it once its result is no longer wanted, `future session approvals <child>` lists the approvals it is parked on — a --no-wait child waiting there looks exactly like a slow one — and `future session list --parent <this-session-id> --json` lists your own children with their isStreaming flags. Hand your own model, thinking level and tool access down with the work: `--model <the Current model your environment block reports> --thinking <the Thinking level it reports>` on that `run` (they are recorded on the child, so its later runs keep them), because a child otherwise starts on the agent's default model and `default` thinking rather than yours — leave both off when the default is what you want. Tool permission is the one thing handed down for you: the child inherits the level you are running with, so it can never start with more access than its parent. A child cannot see this conversation, so its prompt must stand alone: the goal, the files to touch, the acceptance check, and that it should return the result rather than a narration. If you cannot stay to collect that answer — a run can outlast the shell tool's 600-second cap — put this session's id in the prompt and ask the child to report back with `future run --session <this-session-id>`, saying the report comes from this conversation: that call is a real run here and spends credits, so it is for answers that would otherwise land after the turn ends, not the normal path. Delegate only when the work is genuinely independent or long enough that its tool chatter would otherwise fill this conversation: the child is a full run on the user's credits, so do not spawn one to answer something you could read yourself, and a child cannot start its own child. Never end your turn with one still running — wait for it, or abort it and say so — unless you gave it this session's id to report back to, and then say in your reply that it is still going. Keep at most three in flight, launched first and awaited one at a time, because a blocking wait per spawn serializes the work and loses the point of delegating."
                 .to_string(),
         );
     }
@@ -1156,7 +1165,21 @@ mod tests {
         }
         // `--parent` in the same step is what creates a child rather than an
         // unrelated session that merely happens to be busy.
-        assert!(prompt.contains("future session new --parent <this-session-id>"));
+        assert!(
+            prompt.contains("future session new --cwd <project-dir> --parent <this-session-id>")
+        );
+        // ...and `--cwd` rides on it: a create without a directory inherits the
+        // caller's, which in a chat thread is the thread's scratch workspace —
+        // a child left without it built its files where the user never looks.
+        assert!(prompt.contains("`--cwd` is not decoration"));
+        assert!(prompt.contains("~/.future/workspaces/chat/"));
+        // ...and it is delegation's flag, not the shape of every session this
+        // section creates: a session made for the user stays top-level. Naming
+        // the flag without the default is what nested a project's own
+        // conversation under the setup chat that spawned it.
+        assert!(prompt.contains("Lineage is deliberate, not the default"));
+        assert!(prompt.contains("stays top-level"));
+        assert!(prompt.contains("future session new --cwd <dir> --name <name> --json"));
         // The one field the model has to read out of `--json`, named: it is
         // `sessionId`, while `session list` calls the same thing `id`, and
         // models guessed one or the other and lost a turn to a KeyError.
@@ -1234,7 +1257,7 @@ mod tests {
             is_subsession: true,
             ..Default::default()
         });
-        assert!(!sub.contains("future session new --parent"));
+        assert!(!sub.contains("future session new --cwd <project-dir> --parent"));
         assert!(!sub.contains("at most three in flight"));
         assert!(sub.contains("cannot start one of its own"));
         // Reading and messaging an existing conversation still works from a
@@ -1248,7 +1271,7 @@ mod tests {
             tools: vec![crate::tools::read_tool()],
             ..Default::default()
         });
-        assert!(!read_only.contains("future session new --parent"));
+        assert!(!read_only.contains("future session new --cwd <project-dir> --parent"));
     }
 
     /// The session capabilities are their own top-level section, early in the
