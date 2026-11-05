@@ -35,13 +35,15 @@ function isStepSegment(segment: TimelineSegment): segment is StepSegment {
  * call that is still running stays on screen: it is live progress, and folding it
  * would hide work in flight.
  *
- * An interrupted call stays on screen too, for the opposite reason: it stopped
- * *without* reporting, so a "Ran 8 commands" summary would claim the one thing
- * nobody knows. It keeps its own row and its own 已中断 label.
+ * A call that never reported back (`interrupted`) folds with the rest. It used
+ * to keep its own row, but a run broken by one meant the reply arrived as two
+ * summaries with a lone 已中断 line between them — measured on a device, a single
+ * long answer split in half around one lost tool result. It is named in the
+ * summary's accessibility label beside the failures, and the expanded run draws
+ * its own row with its own label, so nothing is lost by folding it.
  */
 function foldableStep(segment: StepSegment): boolean {
-  return segment.kind === "thinking"
-    || (segment.tool.complete && segment.tool.status !== "interrupted");
+  return segment.kind === "thinking" || segment.tool.complete;
 }
 
 function stepRunKind(segment: StepSegment): StepRunKind {
@@ -177,8 +179,9 @@ function stepRunSummary(
  *
  * The summary stays on the left even once the run is open: the line the user
  * just tapped does not move, and its rows appear below in the reading column.
- * Failures remain named in the accessibility label and in the expanded rows;
- * the summary only paints the work counts and disclosure chevron.
+ * Failures and calls that never reported back remain named in the accessibility
+ * label and in the expanded rows; the summary only paints the work counts and
+ * disclosure chevron.
  *
  * The row draws as one 20px line but is a real touch target (`ROW_HIT_SLOP`):
  * it is the only way into the run behind it, and a target the size of the text
@@ -197,15 +200,24 @@ export function StepRunBlock({
   const [expanded, setExpanded] = useState(false);
   const counts = stepRunCounts(segments);
   const summary = stepRunSummary(t, counts);
-  // Keep failure context available to screen readers without a summary icon.
+  // Keep failure and interruption context available to screen readers without a
+  // summary icon: the badge counts work, and a call that never reported back is
+  // only visible as one more mark on it.
   const failedCount = segments.filter(
     segment => segment.kind === "tool" && segment.tool.status === "failed",
   ).length;
-  const failureNote = failedCount > 0 ? t("chat.stepsFailed", { count: failedCount }) : null;
+  const interruptedCount = segments.filter(
+    segment => segment.kind === "tool" && segment.tool.status === "interrupted",
+  ).length;
+  const notes = [
+    failedCount > 0 ? t("chat.stepsFailed", { count: failedCount }) : null,
+    interruptedCount > 0 ? t("chat.stepsInterrupted", { count: interruptedCount }) : null,
+  ].filter((note): note is string => !!note);
+  const notesLabel = notes.join(" · ");
   return (
     <View style={[styles.inlineTool, styles.activityBlock]}>
       <Pressable
-        accessibilityLabel={failureNote ? `${summary} · ${failureNote}` : summary}
+        accessibilityLabel={notesLabel ? `${summary} · ${notesLabel}` : summary}
         accessibilityRole="button"
         accessibilityState={{ expanded }}
         hitSlop={ROW_HIT_SLOP}
