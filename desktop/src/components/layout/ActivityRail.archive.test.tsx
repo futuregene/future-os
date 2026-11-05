@@ -177,6 +177,52 @@ describe("archive entry and its guide", () => {
     void archivedRow;
   });
 
+  it("files a workspace's shelved conversation under that workspace, not among loose chats", () => {
+    currentView = "archived";
+    archivedThreads.length = 0;
+    archivedWorkspaces.length = 0;
+    archivedThreads.push({
+      agentSessionId: "s-w",
+      createdAt: 1,
+      id: "w-thread",
+      mode: "workspace",
+      pinned: false,
+      readonly: false,
+      status: "archived",
+      title: "Shelved in the workspace",
+      updatedAt: 2,
+      workspaceId: "w1",
+    } as unknown as StoredThread);
+
+    const view = mount(createElement(ActivityRail, props({
+      workspaces: [{
+        cleanupStatus: "active",
+        createdAt: 1,
+        id: "w1",
+        kind: "user",
+        name: "Workspace Alpha",
+        path: "/w",
+        updatedAt: 1,
+      }],
+    })));
+    const body = view.container.querySelector("[data-testid='rail-archived-view']")!;
+    // The workspace is still active, so its heading comes from the shelf's own
+    // grouping rather than from an archived workspace; the row must hang under
+    // it, which is what tells the reader what restoring it goes back to.
+    const heading = [...body.querySelectorAll("[class*='group/workspace']")]
+      .find(node => node.textContent?.includes("Workspace Alpha"));
+    expect(heading).not.toBeNull();
+    // The heading counts what is shelved in it, and expanding it draws the row
+    // under the workspace it came from.
+    expect(heading!.textContent).toContain("1");
+    act(() => {
+      heading!.querySelector("button")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(heading!.parentElement!.textContent).toContain("Shelved in the workspace");
+    view.unmount();
+    archivedThreads.length = 0;
+  });
+
   it("filters archived conversations by the search box", async () => {
     currentView = "archived";
     archivedThreads.length = 0;
