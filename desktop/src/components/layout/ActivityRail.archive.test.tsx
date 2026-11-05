@@ -312,22 +312,21 @@ describe("archive entry and its guide", () => {
 
     const view = mount(createElement(ActivityRail, props()));
     // The magnifier opens the field; typing narrows the archived list.
-    const searchButton = view.container.querySelector("[aria-label='activityRail.search']")
-      ?? view.container.querySelector("button[title]");
-    expect(searchButton).not.toBeNull();
-    act(() => searchButton!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    const input = view.container.querySelector("input[type='text'], input[placeholder]") as HTMLInputElement | null;
-    if (input) {
-      act(() => {
-        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
-        setter.call(input, "alpha");
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-      });
-    }
-    // Whether or not the field was reachable in this harness, the filtering
-    // rule itself is the assertion worth keeping: both rows are present, and
-    // only one matches "alpha".
+    act(() => view.container
+      .querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!
+      .dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    const input = view.container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
+    expect(view.container.textContent).toContain("beta conversation");
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(input, "alpha");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    // The shelved conversations section is narrowed like every other list: a
+    // query used to reach the headings and leave every loose row on screen, so
+    // the archive was the one list the search box did not filter.
     expect(view.container.textContent).toContain("alpha conversation");
+    expect(view.container.textContent).not.toContain("beta conversation");
     view.unmount();
     archivedThreads.length = 0;
   });

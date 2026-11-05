@@ -94,9 +94,24 @@ export function useArchiveView(): ArchiveView {
   const stateRef = useRef<ArchiveViewState>({ loading: false, loaded: false, nextCursor: null });
   stateRef.current = { loading, loaded: stateRef.current.loaded, nextCursor };
 
+  /**
+   * A refresh that arrived while the lists were being read.
+   *
+   * `loadFirst` is one at a time — the pages it receives are the answer to
+   * "what is shelved now" — but dropping a request because one is in flight
+   * loses the change that asked for it: the archive/restore that fired
+   * `archive-changed` mid-read leaves the page it was reading stale, and the
+   * row it moved stays drawn on the shelf it just left. The flag turns the drop
+   * into a second read, so the last word is always about the latest state.
+   */
+  const refreshQueuedRef = useRef(false);
+  const loadFirstRef = useRef<() => Promise<void>>(async () => {});
+
   const loadFirst = useCallback(async () => {
-    if (stateRef.current.loading)
+    if (stateRef.current.loading) {
+      refreshQueuedRef.current = true;
       return;
+    }
     stateRef.current = { ...stateRef.current, loading: true, loaded: true };
     setLoading(true);
     try {
@@ -139,8 +154,15 @@ export function useArchiveView(): ArchiveView {
     finally {
       stateRef.current = { loading: false, loaded: true, nextCursor: stateRef.current.nextCursor };
       setLoading(false);
+      // The read above may already be out of date; the queued request is the
+      // one that answers for the state the reader is looking at.
+      if (refreshQueuedRef.current) {
+        refreshQueuedRef.current = false;
+        void loadFirstRef.current();
+      }
     }
   }, []);
+  loadFirstRef.current = loadFirst;
 
   /**
    * One archived workspace's conversations.
