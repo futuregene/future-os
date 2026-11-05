@@ -67,6 +67,7 @@ const TAB_TITLE_KEYS: Record<SettingsTab, string> = {
 export function SettingsDialog({
   appSettings,
   cachedUpdateStatus,
+  cachedUpdateCheckedAt,
   futureBalance,
   futureBalanceStatus,
   futureEmail,
@@ -85,6 +86,8 @@ export function SettingsDialog({
   appSettings: AppSettings;
   /** Cached update-check result from the background checker. */
   cachedUpdateStatus?: UpdateStatus | null;
+  /** When `cachedUpdateStatus` was produced (epoch ms). */
+  cachedUpdateCheckedAt?: number | null;
   /** Shared account state from AppShell; prevents tab-specific profile loads. */
   futureBalance: number | null;
   futureBalanceStatus: FutureBalanceStatus;
@@ -142,11 +145,18 @@ export function SettingsDialog({
                   .map((item) => {
                     const Icon = item.icon;
                     const showDot = item.value === "update" && hasUpdate;
+                    // The selected item paints the rail's own `surface`; the
+                    // hover tint must stay a *different* fill (`line-soft`) —
+                    // an item that hovers to the same block as the selected one
+                    // reads as a second selected tab while the pane shows
+                    // another page. `aria-current` names the one that counts,
+                    // for screen readers and for anything reading the DOM.
                     return (
                       <button
+                        aria-current={tab === item.value ? "page" : undefined}
                         key={item.value}
                         className={cn(
-                          "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-surface hover:text-ink",
+                          "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-line-soft hover:text-ink",
                           tab === item.value && "border-line-soft bg-surface text-ink shadow-xs",
                         )}
                         onClick={() => {
@@ -219,7 +229,7 @@ export function SettingsDialog({
                   />
                 )
               : null}
-            {tab === "update" ? <UpdatePage cachedStatus={cachedUpdateStatus} /> : null}
+            {tab === "update" ? <UpdatePage cachedStatus={cachedUpdateStatus} cachedStatusCheckedAt={cachedUpdateCheckedAt} /> : null}
             {tab === "about" ? <AboutPage communityEdition={appSettings.communityEdition} /> : null}
             {tab === "providers"
               ? (
