@@ -185,6 +185,7 @@
     "noResponse": "Future Agent 暂未响应",
     "noResponseHint": "已连续 15 秒未收到启动状态，正在继续尝试连接。",
     "takingLonger": "启动耗时较长，仍在处理中，请稍候。",
+    "starting": "正在启动 Future Agent",
     "startupStages": {
       "preparing": "正在准备 Future Agent",
       "loading_models": "正在加载模型和凭据",

@@ -898,6 +898,21 @@ it("says it is still reading rather than claiming nothing is paired", async () =
   await view.unmount();
 });
 
+it("says nothing is paired yet in the shared empty-state card, with the next step", async () => {
+  listRemotePeers.mockResolvedValue([]);
+  const view = await mount();
+
+  // #1545: this section said "nothing is paired" in a bare sentence while every
+  // other panel in the app (Runs, Review, Files, Skills, Terminal) says it in
+  // the dashed card — and the sentence carried no next step, which is the half
+  // a first-time reader needs.
+  const card = view.container.querySelector(".border-dashed")!;
+  expect(card).not.toBeNull();
+  expect(card.textContent).toContain("No remote desktops yet.");
+  expect(card.textContent).toContain("Add a desktop");
+  await view.unmount();
+});
+
 it("reports a failed connect, and reports a failed disconnect the same way", async () => {
   connectRemotePeer.mockRejectedValue(new Error("bridge_unreachable"));
   // An offline machine is the one that offers "Connect".

@@ -54,7 +54,12 @@ export function AgentStatusGate({ status, showWait = false }: AgentStatusGatePro
     <div className="flex h-full items-center justify-center bg-canvas px-6 text-center text-ink">
       <div className="flex max-w-lg flex-col items-center gap-3">
         {pending ? <Loader2 aria-hidden="true" className="size-6 animate-spin text-accent" /> : null}
-        {!pending ? <p className="text-lg font-medium">{t(statusKey)}</p> : null}
+        {/* The label is always there, even during the first seconds the stage
+            lines are held back: a spinner on its own says "something is
+            happening" but not what, and the cold-start screen was the one
+            surface in the app that offered no words at all (#1545). The stage
+            detail stays delayed so a fast start does not flash three sentences. */}
+        <p className="text-lg font-medium">{t(pending ? "agentStatus.starting" : statusKey)}</p>
         {!pending && status.error ? <p role="alert" className="text-sm text-ink-muted">{status.error}</p> : null}
         {!pending || showWait ? <p className="text-sm text-ink-muted">{t(hintKey)}</p> : null}
         {pending && showWait && (status.startup?.elapsedMs ?? 0) >= 15000 ? <p className="text-sm text-ink-muted">{t("agentStatus.takingLonger")}</p> : null}
