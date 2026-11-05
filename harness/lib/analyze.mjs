@@ -535,6 +535,23 @@ function perfDigest(result) {
   return lines.join("\n");
 }
 
+/** The one place the mobile/web boundary is stated, for both judge passes. */
+function surfaceCaveat(result) {
+  if (result.surface !== "mobile" && result.surface !== "remote")
+    return null;
+  return "重要边界：手机/远程界面是通过 react-native-web 渲染的，不是真机。Modal / Alert 遮罩层的透明度、系统状态栏与安全区、原生滚动物理都与真机不同，因此「对话框背景半透、底层列表透出、弹层与列表文字重叠」这类现象是 Web 渲染的差，不要把它们判成产品缺陷（可以写成 low 级观察并注明来源）。真正与平台无关的问题（文案错、数据不加和、按钮无响应、内容缺失、层级遮挡、布局错位）照常报。";
+}
+
+/** What the deterministic layer already proved, phrased for a model reader. */
+function provenText(result) {
+  const proven = (result.checks ?? []).filter(check => check.ok && check.kind !== "perf");
+  if (!proven.length)
+    return "";
+  return proven.slice(0, 20)
+    .map(check => `- ${check.message}${check.actual !== undefined ? `（实测 ${truncate(JSON.stringify(check.actual), 80)}）` : ""}`)
+    .join("\n");
+}
+
 function timelineText(result) {
   return (result.steps ?? [])
     .filter(step => step.action !== "note")
@@ -583,9 +600,7 @@ async function judgeCase(result, runDir, { model = null } = {}) {
         "数字本身要与量级相符（本地首屏、本地命令应是毫秒到一两秒量级，不该以十秒计）",
       ];
 
-  const surfaceNote = result.surface === "mobile" || result.surface === "remote"
-    ? "重要边界：手机/远程界是通过 react-native-web 渲染的，不是真机。Modal / Alert 遮罩层的透明度、系统状态栏与安全区、原生滚动物理都与真机不同，因此「对话框背景半透、底层列表透出、弹层与列表文字重叠」这类现象是 Web 渲染的差，不要把它们判成产品缺陷（可以写成 low 级观察并注明来源）。真正与平台无关的问题（文案错、数据不加和、按钮无响应、内容缺失、层级遮挡、布局错位）照常报。"
-    : null;
+  const surfaceNote = surfaceCaveat(result);
 
   const prompt = [
     "你是 FutureOS 的产品验收员，不是测试脚本执行器。",
@@ -685,6 +700,11 @@ async function discoverCase(result, runDir, { model, images }) {
     `用例（仅供参考它做了什么）：${result.title}`,
     `操作时间线：\n${timelineText(result)}`,
     result.bodyText ? `\n页面文本/进程日志快照（截断）：\n${truncate(result.bodyText, 4000)}` : "",
+    // Same two guards the checklist pass gets, for the same reason: without them
+    // this pass reads a web-rendered modal as a product defect, and restates
+    // things a live-DOM assertion already proved as discoveries.
+    surfaceCaveat(result) ? `\n${surfaceCaveat(result)}` : "",
+    provenText(result) ? `\n已由确定性断言在真实 DOM / 进程上验证通过的事实（如果截图看起来相反，先当作截图时机或滚动位置造成的证据不足，不要判成缺陷）：\n${provenText(result)}` : "",
     "",
     "输出严格 JSON（不要 markdown 围栏）。如果确实没有发现问题，findings 为空数组：",
     `{"findings":[{"severity":"high|medium|low|info","title":"【发现】简短标题","detail":"看到什么 + 为什么不像正常产品","evidence":"哪一步/哪一帧"}]}`,
@@ -694,6 +714,7 @@ async function discoverCase(result, runDir, { model, images }) {
     "- 生成中/加载中的瞬时状态不算；除非它卡住或与操作明显不符。",
     "- 视频抽帧与最终截图可能不同步，以最终状态帧为准。",
     "- 宁少勿多：一条看得出、说得清的问题，胜过五条猜测。",
+    "- 与上面「已验证通过」的事实冲突的观察，写成 low 并注明证据不足，不要写 high/medium。",
   ].join("\n");
   writeFileSync(promptPath, prompt);
   try {
