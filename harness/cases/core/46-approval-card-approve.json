@@ -1,0 +1,168 @@
+{
+  "id": "approval-card-approve",
+  "title": "审批卡片：点「允许一次」后卡片消失，刷新也不再回来",
+  "area": "approval",
+  "priority": "P0",
+  "tags": [
+    "desktop",
+    "approval"
+  ],
+  "query": {
+    "approvals": "1"
+  },
+  "description": "会话里有一个等待读者回答的审批（一条被沙箱拦下的 shell 命令）。点「允许一次」之后，这张卡片必须真的被回答掉：卡片从输入框上方消失、数据库里的审批行变成 approved、侧边栏的待审批标记随之减少，而且刷新页面不会又弹回来。卡片只是从画面上消失（数据库仍是 pending）是最坏的一种「假通过」——读者以为批准了，下一次重开同一会话又会看到同一张卡片，Agent 那边也从来没收到回答。",
+  "preconditions": "应用已启动；夹具在本会话里放了一条待审批记录（沙箱拒绝写入 notes/effect-size.png 的 Rscript 命令），对应真实 app.db 的 approval_requests 行。",
+  "expectations": [
+    "打开该会话后，输入框上方出现审批卡片，标题说明要在沙箱外运行这条命令",
+    "卡片上有「允许一次」和「拒绝」两个按钮，并显示被拦下的命令",
+    "点「允许一次」后卡片消失，按钮「允许一次」不在页面上",
+    "数据库里这条审批的状态变成 approved，并记录了决定时间",
+    "刷新页面后卡片不再出现（批准是持久的，不是一次性的画面变化）",
+    "整个过程没有报错文案、没有残留加载态"
+  ],
+  "steps": [
+    {
+      "wait": 900
+    },
+    {
+      "db": {
+        "sql": "SELECT title FROM (SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' AND archived_at IS NULL AND title NOT IN (SELECT name FROM workspaces) ORDER BY COALESCE(last_message_at, updated_at) DESC LIMIT 8) WHERE length(title) <= 16 LIMIT 1",
+        "as": "target"
+      },
+      "note": "取一个真实标题短到能完整显示的会话",
+      "capture": false
+    },
+    {
+      "click": {
+        "aria": "{{target}}"
+      },
+      "capture": false
+    },
+    {
+      "waitFor": {
+        "text": "在沙箱外运行此命令"
+      },
+      "timeout": 8000,
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "!!document.querySelector('[role=textbox]') && document.body.innerText.includes('Rscript analysis/effect-size.R') && (() => { const b = [...document.querySelectorAll('button')].map(el => el.innerText.trim()); return b.includes('允许一次') && b.includes('拒绝'); })()",
+        "message": "卡片上有「允许一次」「拒绝」和被拦下的命令，且输入框仍在"
+      },
+      "capture": false
+    },
+    {
+      "db": {
+        "sql": "SELECT thread_id AS id FROM approval_requests ORDER BY created_at DESC LIMIT 1",
+        "as": "approvalThread"
+      },
+      "note": "这张卡片属于哪个会话（会话 id，不是标题）",
+      "capture": false
+    },
+    {
+      "db": {
+        "sql": "SELECT (COUNT(*) = 1) AS ok FROM approval_requests WHERE thread_id = '{{approvalThread}}' AND status = 'pending'",
+        "expect": 1,
+        "message": "这个会话在数据库里恰好有一条待审批"
+      },
+      "capture": false
+    },
+    {
+      "shot": "approval-card"
+    },
+    {
+      "click": {
+        "selector": "button",
+        "text": "允许一次"
+      },
+      "capture": false
+    },
+    {
+      "waitFor": {
+        "absent": "允许一次"
+      },
+      "timeout": 8000,
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "!document.body.innerText.includes('在沙箱外运行此命令')",
+        "message": "批准后卡片整体离开页面"
+      }
+    },
+    {
+      "db": {
+        "sql": "SELECT status FROM approval_requests WHERE thread_id = '{{approvalThread}}'",
+        "expect": "approved",
+        "message": "数据库记录这次批准"
+      },
+      "capture": false
+    },
+    {
+      "db": {
+        "sql": "SELECT (COUNT(*) = 0) AS ok FROM approval_requests WHERE thread_id = '{{approvalThread}}' AND status = 'pending'",
+        "expect": 1,
+        "message": "批准后这个会话没有遗留的待审批行"
+      },
+      "capture": false
+    },
+    {
+      "db": {
+        "sql": "SELECT (decided_at IS NOT NULL AND decision_note IS NOT NULL) AS ok FROM approval_requests WHERE thread_id = '{{approvalThread}}'",
+        "expect": 1,
+        "message": "批准带了决定时间与备注"
+      },
+      "capture": false
+    },
+    {
+      "server": {
+        "command": "decide_approval_request",
+        "expect": 1,
+        "message": "界面只提交了一次决定"
+      },
+      "capture": false
+    },
+    {
+      "shot": "after-approve"
+    },
+    {
+      "reload": true
+    },
+    {
+      "waitFor": {
+        "text": "{{target}}"
+      },
+      "timeout": 10000,
+      "capture": false
+    },
+    {
+      "click": {
+        "aria": "{{target}}"
+      },
+      "capture": false
+    },
+    {
+      "wait": 1500
+    },
+    {
+      "assert": {
+        "expr": "!document.body.innerText.includes('允许一次') && !document.body.innerText.includes('在沙箱外运行此命令')",
+        "message": "刷新后卡片不再回来"
+      }
+    },
+    {
+      "shot": "after-reload"
+    }
+  ],
+  "judge": {
+    "criteria": [
+      "批准之后输入框上方不再有任何等待回答的卡片，会话回到可以继续提问的样子",
+      "卡片消失的原因是「已批准」，页面上不该出现英文报错、红色失败提示或「保存失败」之类文案",
+      "对话正文仍然正常显示，没有被审批卡片的消失带走内容",
+      "整体看起来像正常产品：没有残留加载态、空白大块或错位",
+      "审批卡片的命令文本是夹具固定的演示命令，是否切题不是判据"
+    ],
+    "maxImages": 8
+  }
+}

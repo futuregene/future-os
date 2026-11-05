@@ -1,0 +1,216 @@
+{
+  "id": "send-queue-while-streaming",
+  "title": "回复还在流式时再发一条：进队列行、不进正文、跑完按顺序发出",
+  "area": "conversation",
+  "priority": "P0",
+  "tags": [
+    "desktop",
+    "composer",
+    "queue"
+  ],
+  "query": {
+    "slowStream": "12000",
+    "transcript": "page"
+  },
+  "description": "一条回复正在写的时候，读者又打了一条并选择「加入发送队列」。这条消息既不能被静默丢掉，也不能立刻并进正在写的正文里：它应该出现在输入框上方的「发送队列」行里（写明 1 条等待中），正文里还没有它；等当前回复结束后，队列行消失，这条消息作为一条独立的提问按顺序出现在对话里，Agent 再回答它。队列行是读者唯一能看见「我这条已经受理、等着发」的地方：它不出现或提前消失，读者只能重新打一遍；它出现了但消息永远不发，读者会以为已经发出去了。",
+  "preconditions": "应用已启动；夹具用 ?slowStream=12000 让这一轮回复持续约 12 秒，留出在流式期间写第二条消息的时间（默认节奏不变）。被执行的是真实 app.db 里一个已绑定 agent 会话的会话。",
+  "expectations": [
+    "第一条发出后进入流式：出现「停止」按钮，正文开始逐段出现",
+    "流式期间在输入框里写第二条、点发送按键，出现「加入发送队列」与「打断后发送」两个选项",
+    "选「加入发送队列」后，输入框上方出现「发送队列」行，写明「1 条等待中」并显示这条消息",
+    "这时正文里还没有第二条消息（没有被并进正在写的那一轮）",
+    "第一条回复结束后队列行消失，第二条作为独立提问出现在对话里，顺序在第一条之后",
+    "第二条紧接着被回答，界面没有报错文案或残留加载态"
+  ],
+  "steps": [
+    {
+      "wait": 900
+    },
+    {
+      "db": {
+        "sql": "SELECT title FROM (SELECT title FROM threads WHERE deleted_at IS NULL AND status != 'deleted' AND archived_at IS NULL AND agent_session_id IS NOT NULL AND title NOT IN (SELECT name FROM workspaces) ORDER BY COALESCE(last_message_at, updated_at) DESC LIMIT 12) WHERE length(title) <= 16 LIMIT 1",
+        "as": "target"
+      },
+      "note": "取一个绑定了 agent 会话、标题短到能完整显示的真实会话",
+      "capture": false
+    },
+    {
+      "click": {
+        "aria": "{{target}}"
+      },
+      "capture": false
+    },
+    {
+      "wait": 1200,
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "!document.querySelector('[data-send-queue]')",
+        "message": "发送前没有队列行"
+      },
+      "capture": false
+    },
+    {
+      "click": {
+        "selector": "[role=textbox]"
+      },
+      "capture": false
+    },
+    {
+      "type": "队列演示甲：先把这一轮的长说明写出来",
+      "capture": false
+    },
+    {
+      "click": {
+        "aria": "发送"
+      },
+      "capture": false
+    },
+    {
+      "waitFor": {
+        "selector": "button[aria-label=\"停止\"]"
+      },
+      "timeout": 8000,
+      "capture": false
+    },
+    {
+      "waitFor": {
+        "text": "好，我先把"
+      },
+      "timeout": 12000,
+      "capture": false
+    },
+    {
+      "shot": "streaming-first"
+    },
+    {
+      "click": {
+        "selector": "[role=textbox]"
+      },
+      "capture": false
+    },
+    {
+      "type": "队列演示乙：等这一轮写完再发",
+      "capture": false
+    },
+    {
+      "click": {
+        "aria": "选择如何处理这条消息"
+      },
+      "capture": false
+    },
+    {
+      "waitFor": {
+        "text": "加入发送队列"
+      },
+      "timeout": 5000,
+      "capture": false
+    },
+    {
+      "shot": "send-choice-menu"
+    },
+    {
+      "click": {
+        "text": "加入发送队列"
+      },
+      "capture": false
+    },
+    {
+      "waitFor": {
+        "selector": "[data-send-queue]"
+      },
+      "timeout": 8000,
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "(() => { const panel = document.querySelector('[data-send-queue]'); return !!panel && panel.innerText.includes('发送队列') && panel.innerText.includes('1 条等待中') && panel.innerText.includes('队列演示乙'); })()",
+        "message": "队列行写明 1 条等待中并显示这条消息"
+      }
+    },
+    {
+      "assert": {
+        "expr": "(() => { const bubbles = [...document.querySelectorAll('[data-message-id]')].map(el => el.innerText); return bubbles.every(text => !text.includes('队列演示乙')); })()",
+        "message": "第二条还没有进正文"
+      },
+      "capture": false
+    },
+    {
+      "shot": "queued-while-streaming"
+    },
+    {
+      "waitFor": {
+        "expr": "!document.querySelector('[data-send-queue]')"
+      },
+      "timeout": 30000,
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "!document.body.innerText.includes('条等待中')",
+        "message": "队列行随第一条结束而消失"
+      }
+    },
+    {
+      "waitFor": {
+        "expr": "(() => { const bubbles = [...document.querySelectorAll('[data-message-id]')].map(el => el.innerText); return bubbles.some(text => text.includes('队列演示乙')); })()"
+      },
+      "timeout": 30000,
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "(() => { const bubbles = [...document.querySelectorAll('[data-message-id]')].map(el => el.innerText); const a = bubbles.findIndex(text => text.includes('队列演示甲')); const b = bubbles.findIndex(text => text.includes('队列演示乙')); return a >= 0 && b > a; })()",
+        "message": "第二条出现在第一条之后（顺序正确）"
+      }
+    },
+    {
+      "shot": "both-sent"
+    },
+    {
+      "waitFor": {
+        "selector": "button[aria-label=\"停止\"]"
+      },
+      "timeout": 20000,
+      "capture": false
+    },
+    {
+      "shot": "second-streaming",
+      "note": "第二条也被回答了（而不是只把提问挂上去）"
+    },
+    {
+      "waitFor": {
+        "selector": "button[aria-label=\"发送\"]"
+      },
+      "timeout": 40000,
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "!document.querySelector('[data-send-queue]') && !document.body.innerText.includes('条等待中')",
+        "message": "两条都结束后没有队列行残留"
+      }
+    },
+    {
+      "assert": {
+        "expr": "(() => { const bubbles = [...document.querySelectorAll('[data-message-id]')].map(el => el.innerText); return bubbles.filter(text => text.includes('队列演示乙')).length >= 1; })()",
+        "message": "第二条在结束后仍在对话里（没有被重载冲掉）"
+      }
+    },
+    {
+      "shot": "settled"
+    }
+  ],
+  "judge": {
+    "criteria": [
+      "第一条回复写完之前，输入框上方有一块「发送队列 · 1 条等待中」的区域，里面是读者刚写的第二条消息",
+      "这块区域不该盖住输入框或与正文挤在一起，读起来像「还没发出去的一条」",
+      "第二条没有被并进第一条回复的正文，也不是一条已经答完的提问",
+      "两条回复都结束后，队列区域消失，对话里按顺序出现两条提问和各自的回答",
+      "整个过程没有报错文案、没有残留加载态或空白块，整体看起来像正常产品",
+      "回复正文是夹具固定的演示文案，是否切题不是判据"
+    ],
+    "maxImages": 8
+  }
+}

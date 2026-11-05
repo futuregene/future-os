@@ -203,6 +203,53 @@ const TOOL_RUN_FRAMES: Array<[string, Record<string, unknown>]> = [
   ["tool_end", { tool_id: "shot_tool_1", tool_name: "read", is_error: false }],
 ];
 
+/**
+ * How long a scripted run should take, when the page asked for a slow one.
+ *
+ * The default run writes itself out in about three seconds, which is shorter
+ * than a person needs to type a second message — so the send-while-running
+ * control and the queue behind it were unreachable in a capture. `?slowStream=`
+ * stretches the same frames across that many milliseconds (nothing else about
+ * the run changes); absent, the pacing is exactly what it was.
+ */
+function slowStreamMs(): number {
+  const raw = typeof window === "undefined" ? 0 : Number(new URLSearchParams(window.location.search).get("slowStream") ?? 0);
+  return Number.isFinite(raw) && raw > 0 ? raw : 0;
+}
+
+/** One message waiting behind a running reply, as the Agent would hold it. */
+interface ShotQueuedRun {
+  runId: string;
+  text: string;
+  acceptedAt: string;
+  state: string;
+  /** The agent session the send named, so its run is announced on the same one. */
+  sessionId: string;
+}
+
+/**
+ * The conversation's Agent-side send queue, and the run it is waiting for.
+ *
+ * A prompt sent while a reply streams is *accepted and held*, not run: the
+ * composer's queue row is a view of this list (`session_queue`), and the row
+ * only leaves it when the run ahead of it ends. Without these two maps the
+ * fixture could answer the queue read with nothing forever, which is why the
+ * desktop send queue had no case — a queued message could not be produced, let
+ * alone seen leaving.
+ */
+const shotQueue = new Map<string, ShotQueuedRun[]>();
+const shotActiveRun = new Map<string, string>();
+/**
+ * What this page has actually said, so a reload shows it.
+ *
+ * The fixture's transcripts are derived from the thread title and never
+ * contained a sent message: any reload replaced the conversation with a
+ * synthetic exchange and silently dropped what the reader had just written.
+ * Kept per thread, appended in order, and used instead of the synthetic
+ * transcript once a thread has one.
+ */
+const sentEntries = new Map<string, MockEntry[]>();
+
 /** What this fixture's reply says, split into the frames a run writes. */
 function shotRunFrames(prompt: string): Array<[string, Record<string, unknown>]> {
   return [
@@ -249,6 +296,12 @@ function publishShotRun(threadId: string, runId: string, status: string, resetPr
  * marks it cancelled), so each tick checks it before writing again and hands back
  * the text produced so far. That is what the backend does for a real abort, and
  * it is what makes the app paint a stopped reply rather than a finished one.
+ *
+ * A prompt that arrives while one of this conversation's runs is still
+ * streaming is not run at all: it is held in the conversation's queue and
+ * answered with the Agent's `run_queued` ack, which is exactly what the app
+ * branches on to leave the transcript alone and let the queue row carry the
+ * words until the run ahead of it ends.
  */
 async function streamShotRun(args: any): Promise<Record<string, unknown>> {
   const request = args?.request ?? {};
@@ -258,12 +311,29 @@ async function streamShotRun(args: any): Promise<Record<string, unknown>> {
   if (!runId || !threadId)
     return { content: "", complete: true, sessionId };
 
+  const active = shotActiveRun.get(threadId);
+  if (active && active !== runId) {
+    const held = shotQueue.get(threadId) ?? [];
+    held.push({ runId, text: String(request.message ?? ""), acceptedAt: new Date().toISOString(), state: "queued", sessionId });
+    shotQueue.set(threadId, held);
+    // `complete: false` on its own would read as a cut-off reply; the queued
+    // kind is what says "accepted, still coming".
+    return { content: "", complete: false, terminationKind: "run_queued", queuePosition: held.length, sessionId };
+  }
+
+  // The session the client named is what the queued run below has to be
+  // announced on: a `user_message` event is only applied when its `sessionId`
+  // matches the thread's own agent session (`useSessionMessageEvents`).
+  shotActiveRun.set(threadId, runId);
+  const startedAt = Date.now();
   const cancelled = () =>
     String((runs.find(candidate => candidate.id === runId) as { status?: string } | undefined)?.status ?? "") === "cancelled";
-  let written = "";
   const frames = shotRunFrames(String(request.message ?? ""));
+  const slow = slowStreamMs();
+  const frameDelay = slow ? Math.max(120, Math.round(slow / frames.length)) : 380;
+  let written = "";
   for (const [eventType, data] of frames) {
-    await new Promise(resolve => setTimeout(resolve, 380));
+    await new Promise(resolve => setTimeout(resolve, frameDelay));
     if (cancelled())
       break;
     appendShotRunEvent(runId, eventType, data);
@@ -272,14 +342,108 @@ async function streamShotRun(args: any): Promise<Record<string, unknown>> {
     publishShotRun(threadId, runId, "running");
   }
   if (cancelled()) {
+    shotActiveRun.delete(threadId);
     publishShotRun(threadId, runId, "cancelled");
+    void drainShotQueue(threadId);
     return { content: written, complete: false, sessionId };
   }
-  await new Promise(resolve => setTimeout(resolve, 380));
+  await new Promise(resolve => setTimeout(resolve, frameDelay));
   publishShotRun(threadId, runId, "running");
   appendShotRunEvent(runId, "agent_end", {});
+  recordSentTurn(threadId, runId, String(request.message ?? ""), written, Date.now() - startedAt);
+  shotActiveRun.delete(threadId);
+  // The Agent folds a burst of queued messages into the turn boundary: whatever
+  // was held behind this reply starts now, in the order it was accepted.
+  void drainShotQueue(threadId);
   return { content: written, complete: true, sessionId };
 }
+
+/** Keep what was said, so a history reload shows the conversation (see `sentEntries`). */
+function recordSentTurn(threadId: string, runId: string, prompt: string, reply: string, durationMs: number): void {
+  if (!prompt)
+    return;
+  const created = Date.now();
+  const list = sentEntries.get(threadId) ?? [];
+  // `runId` is what the transcript reconciliation keys on
+  // (`historyMessageKey`): without it the reloaded pair is a different message
+  // from the one on screen and the reader sees every sent prompt twice.
+  list.push({
+    id: `shot_u_${runId}`,
+    kind: "message",
+    role: "user",
+    runId,
+    createdAtMs: created,
+    blocks: [{ kind: "text", text: prompt }],
+    metadata: {},
+  } as unknown as MockEntry);
+  if (reply) {
+    list.push({
+      id: `shot_a_${runId}`,
+      kind: "message",
+      role: "assistant",
+      runId,
+      createdAtMs: created + 1,
+      run: { status: "completed", durationMs },
+      blocks: [{ kind: "text", text: reply }],
+      metadata: {},
+    } as unknown as MockEntry);
+  }
+  sentEntries.set(threadId, list);
+}
+
+/**
+ * Start the next held message as if the Agent had reached the turn boundary.
+ *
+ * A queued prompt runs only after the reply it waited behind ends, and it is
+ * announced the way the Agent announces it: a `user_message` agent event puts
+ * the reader's own words in the transcript (the send that queued it deliberately
+ * draws nothing), then the run streams its frames. Nothing in the app has to be
+ * told about the queue — it reads `session_queue` and this run like any other.
+ */
+async function drainShotQueue(threadId: string): Promise<void> {
+  const held = shotQueue.get(threadId) ?? [];
+  const next = held.shift();
+  if (!next)
+    return;
+  if (held.length === 0)
+    shotQueue.delete(threadId);
+  const run = runs.find(candidate => candidate.id === next.runId) as Record<string, unknown> | undefined;
+  if (run)
+    Object.assign(run, { status: "running", startedAt: Date.now(), endedAt: null, updatedAt: Date.now() });
+  shotRunEvents.set(next.runId, []);
+  shotActiveRun.set(threadId, next.runId);
+  const startedAt = Date.now();
+  publishShotRun(threadId, next.runId, "running", true);
+  void emit("agent-event", {
+    threadId,
+    sessionId: next.sessionId,
+    _eventType: "user_message",
+    entry_id: `shot_entry_${next.runId}`,
+    run_id: next.runId,
+    text: next.text,
+    created_at_ms: Date.now(),
+  });
+  const frames = shotRunFrames(next.text);
+  const slow = slowStreamMs();
+  const frameDelay = slow ? Math.max(120, Math.round(slow / frames.length)) : 380;
+  let written = "";
+  for (const [eventType, data] of frames) {
+    await new Promise(resolve => setTimeout(resolve, frameDelay));
+    appendShotRunEvent(next.runId, eventType, data);
+    if (eventType === "text_chunk")
+      written += String(data.text ?? "");
+    publishShotRun(threadId, next.runId, "running");
+  }
+  await new Promise(resolve => setTimeout(resolve, frameDelay));
+  appendShotRunEvent(next.runId, "agent_end", {});
+  recordSentTurn(threadId, next.runId, next.text, written, Date.now() - startedAt);
+  if (run)
+    Object.assign(run, { status: "completed", endedAt: Date.now(), updatedAt: Date.now() });
+  shotActiveRun.delete(threadId);
+  publishShotRun(threadId, next.runId, "completed");
+  void drainShotQueue(threadId);
+}
+
 let historyTransferSeq = 0;
 /** The chunk size `historyTransfer.ts` insists on. */
 const HISTORY_CHUNK_BYTES = 64 * 1024;
@@ -320,6 +484,21 @@ export function entriesForThread(threadId: string): MockEntry[] {
     return compactResumeEntries;
   }
   return entriesByThread[threadId] ?? [];
+}
+
+/**
+ * The conversation's own history once something has been said in it.
+ *
+ * A thread this page has sent a prompt in is not a demo transcript any more: it
+ * is the exchange the reader just had. Returning it (and nothing else) is what
+ * makes a reload — or the settle-reload after a re-attached run — show the
+ * messages that were sent instead of replacing them with a synthetic pair.
+ */
+function threadEntries(threadId: string): MockEntry[] {
+  const said = sentEntries.get(threadId);
+  if (said && said.length > 0)
+    return said;
+  return entriesForThread(threadId);
 }
 
 /**
@@ -683,7 +862,7 @@ const handlers: Record<string, (args: any) => unknown> = {
    * all. The bytes are UTF-8 JSON, which is what `decodeJsonBytes` expects.
    */
   begin_session_history_transfer: (args) => {
-    const entries = entriesForThread(args?.threadId ?? "");
+    const entries = threadEntries(args?.threadId ?? "");
     const page = { entries, hasMore: false, nextOffset: entries.length };
     const bytes = new TextEncoder().encode(JSON.stringify(page));
     const id = `shot_transfer_${++historyTransferSeq}`;
@@ -702,10 +881,10 @@ const handlers: Record<string, (args: any) => unknown> = {
     return null;
   },
   get_session_entries_page: (args) => {
-    const entries = entriesForThread(args?.threadId ?? "");
+    const entries = threadEntries(args?.threadId ?? "");
     return { entries, hasMore: false, nextOffset: entries.length };
   },
-  get_session_entries: args => ({ entries: entriesForThread(args?.threadId ?? "") }),
+  get_session_entries: args => ({ entries: threadEntries(args?.threadId ?? "") }),
 
   // ── Runs, tools, approvals ─────────────────────────────────────────────
   list_runs: args => runs.filter(run => run.threadId === args?.threadId),
@@ -953,6 +1132,36 @@ const handlers: Record<string, (args: any) => unknown> = {
    * feeds (`remoteStream.ts`), on this machine's own conversation.
    */
   agent_prompt: async (args: any) => streamShotRun(args),
+  /**
+   * The conversation's Agent-side queue, as the composer's queue row reads it.
+   *
+   * `queued` is what a second send while a reply streams fills (see
+   * `streamShotRun`), and it empties on its own when the run ahead of it ends.
+   * `recentTerminalAcks` stays empty: nothing here drops a row without running
+   * it, so there is never a sentence to explain.
+   */
+  session_queue: (args: any) => {
+    const threadId = String(args?.threadId ?? "");
+    const queued = (shotQueue.get(threadId) ?? []).map((row, index) => ({
+      runId: row.runId,
+      position: index + 1,
+      acceptedAt: row.acceptedAt,
+      text: row.text,
+      state: row.state,
+    }));
+    return { activeRunId: shotActiveRun.get(threadId) ?? null, queued, recentTerminalAcks: [] };
+  },
+  /** Taking a waiting message back out before it runs (`取消队列`) . */
+  cancel_queued_run: (args: any) => {
+    const threadId = String(args?.threadId ?? "");
+    const runId = String(args?.runId ?? "");
+    const held = (shotQueue.get(threadId) ?? []).filter(row => row.runId !== runId);
+    if (held.length === 0)
+      shotQueue.delete(threadId);
+    else
+      shotQueue.set(threadId, held);
+    return null;
+  },
   sync_future_models: () => ({ synced: true, modelCount: models.length, revision: 42 }),
   list_agent_providers: () => providersView,
   upsert_custom_provider: () => providersView,
