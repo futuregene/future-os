@@ -294,3 +294,9 @@ with `gh`. Nothing is filed without that explicit flag.
   TUI case, but the desktop path needs an agent-side queue fixture: the shot mock
   answers `session_queue` but never enqueues, so a queued row cannot be observed.
   Do not assert on it until the fixture owns the queue.
+
+- **The embedded terminal is a stand-in, not a shell.** `desktop/shot/terminal-server.mjs`
+  replays one transcript and answers a few fixed commands (`seq 1 N` prints N
+  lines, which is how a case overflows the panel); typed input is otherwise
+  echoed. It is enough to prove scrolling and layout, and says nothing about the
+  real PTY on the Rust side.

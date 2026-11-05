@@ -206,6 +206,9 @@ export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs 
   db.exec("PRAGMA journal_mode=WAL");
   db.exec("PRAGMA foreign_keys=ON");
 
+  /** This machine's id, as the remote host reports it and a paired device records. */
+  const DESKTOP_ID = "desktop_harness";
+
   const models = loadModels(modelsPath);
   let settings = readAppSettings(db);
   /** threadId → { model, thinkingLevel } for the agent-backed part of state. */
@@ -313,6 +316,81 @@ export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs 
     return workspaceById(id);
   };
 
+  /**
+   * The **platform** side of this machine's remote desktop: who is paired, and
+   * how many invitations the account may still mint.
+   *
+   * Two things about this fixture are deliberate. It is stateful, because the
+   * defect it exists to catch is a *leak*: an invitation occupies one of the
+   * account's device slots from the moment it is minted, whether or not anybody
+   * scans it, so a window that mints one and then forgets it fills the
+   * allowance with connections that do not exist. A fixture answering from a
+   * fixed list could not tell a discarded invitation from a leaked one. And it
+   * enforces the cap where the real control plane enforces it — the client is
+   * the only thing under test, and it can only be caught running out of slots
+   * if something actually counts them.
+   *
+   * Seeded with two paired devices, so three slots are free: six rounds of
+   * "add a device → cancel" fit only if every invitation is given back.
+   */
+  const REMOTE_DEVICE_CAP = 5;
+  const remoteHost = {
+    phase: "stopped",
+    minted: 0,
+    devices: [
+      {
+        pairId: "pair_8F3A21C4D5E64B77",
+        phase: "ready",
+        control: "active",
+        connected: true,
+        present: true,
+        client: { name: "iPhone 17 Pro", kind: "mobile" },
+        pairingCode: null,
+        pairingCodeExpiresAt: null,
+        desktopId: DESKTOP_ID,
+      },
+      {
+        pairId: "pair_2D9E4B1A7C3F8052",
+        phase: "ready",
+        control: "standby",
+        connected: true,
+        present: true,
+        client: { name: "实验室的 MacBook Air", kind: "desktop" },
+        pairingCode: null,
+        pairingCodeExpiresAt: null,
+        desktopId: DESKTOP_ID,
+      },
+    ],
+  };
+
+  /** The host status the app polls: the top-level fields describe the live rows. */
+  const remoteView = () => {
+    const paired = remoteHost.devices.filter(device => device.pairingCode == null);
+    const invitation = remoteHost.devices.find(device => device.pairingCode != null) ?? null;
+    const active = paired.find(device => device.control === "active") ?? paired[0] ?? null;
+    return {
+      agentAvailable: true,
+      phase: remoteHost.phase,
+      reason: null,
+      recovery: null,
+      natsUrl: "tls://www.future-os.cn:4222",
+      pairId: active?.pairId ?? "",
+      pairingCode: invitation?.pairingCode ?? null,
+      pairingCodeExpiresAt: invitation?.pairingCodeExpiresAt ?? null,
+      desktopId: DESKTOP_ID,
+      desktopPublicKey: "",
+      webUrl: null,
+      webLanUrl: null,
+      warningCode: null,
+      devices: remoteHost.devices.map(device => ({ ...device })),
+    };
+  };
+
+  // The stored preference decides whether the section shows at all, and a real
+  // app.db carries whatever the user last chose. Pinned off so a case can turn
+  // the switch on and see the list, on a machine whose owner left it on or off.
+  settings = { ...settings, autoConnectRemote: false };
+
   const handlers = {
     // ── Boot / agent liveness ────────────────────────────────────────────
     get_agent_status: () => ({ phase: "ready", desktopVersion: "harness", agentVersion: "harness" }),
@@ -332,22 +410,70 @@ export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs 
     list_agent_providers: () => providerView(models),
     get_future_auth_state: () => ({ status: "authenticated", profile: null }),
     get_future_balance: () => ({ credits: 0 }),
-    /** One machine under test: no paired devices, so "new chat" cannot ask which. */
-    remote_status: () => ({
-      agentAvailable: true,
-      phase: "stopped",
-      reason: null,
-      recovery: null,
-      natsUrl: "tls://www.future-os.cn:4222",
-      pairId: "",
-      pairingCode: null,
-      pairingCodeExpiresAt: null,
-      desktopId: "desktop_harness",
-      desktopPublicKey: "",
-      webUrl: null,
-      webLanUrl: null,
-      warningCode: null,
-    }),
+    /** The remote desktop's own rows: two paired devices, no invitations yet. */
+    remote_status: () => remoteView(),
+    remote_pairing_status: () => ({ paired: false, deviceName: null }),
+    /**
+     * Turning the switch on stores the preference *and* starts serving — the two
+     * are one action in the app, so splitting them here would let a case pass on
+     * a machine that is not actually reachable.
+     */
+    remote_start: () => {
+      remoteHost.phase = "ready";
+      settings = { ...settings, autoConnectRemote: true };
+      return remoteView();
+    },
+    remote_stop: () => {
+      remoteHost.phase = "stopped";
+      settings = { ...settings, autoConnectRemote: false };
+      return remoteView();
+    },
+    remote_unpair: () => {
+      remoteHost.devices = [];
+      remoteHost.phase = "stopped";
+      return remoteView();
+    },
+    /**
+     * Mint one invitation.
+     *
+     * The account, not the app, decides whether there is room; the refusal is the
+     * same code the real control plane returns, which the window draws as "unpair
+     * a device first" instead of a generic failure.
+     */
+    remote_add_device: () => {
+      if (remoteHost.devices.length >= REMOTE_DEVICE_CAP)
+        throw new Error("pairing_limit_reached");
+      remoteHost.minted += 1;
+      remoteHost.devices.push({
+        pairId: `pair_invitation_${remoteHost.minted}`,
+        phase: "connecting",
+        control: "standby",
+        connected: false,
+        present: false,
+        client: null,
+        pairingCode: `futureos://remote/pair?code=harness-${remoteHost.minted}&desktopId=${DESKTOP_ID}`,
+        pairingCodeExpiresAt: Math.floor(Date.now() / 1000) + 600,
+        desktopId: DESKTOP_ID,
+      });
+      return remoteView();
+    },
+    remote_unpair_device: (args) => {
+      const pairId = String(args?.pairId ?? "");
+      const index = remoteHost.devices.findIndex(device => device.pairId === pairId);
+      if (index < 0)
+        throw new Error(`unknown pairing: ${pairId}`);
+      remoteHost.devices.splice(index, 1);
+      return remoteView();
+    },
+    remote_takeover: (args) => {
+      const pairId = String(args?.pairId ?? "");
+      const target = remoteHost.devices.find(device => device.pairId === pairId);
+      if (!target)
+        throw new Error(`unknown pairing: ${pairId}`);
+      for (const device of remoteHost.devices)
+        device.control = device.pairId === pairId ? "active" : "standby";
+      return remoteView();
+    },
     remote_peer_list: () => [],
     remote_peer_sessions: () => ({ desktopId: "", sessions: [] }),
     remote_peer_workspaces: () => ({ desktopId: "", workspaces: [] }),
@@ -631,7 +757,11 @@ export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs 
     },
     get_settings: () => ({ approvalTier: settings.approvalTier, sandboxAvailable: true }),
     list_skills: () => [],
-    list_tasks: () => [],
+    // Scheduled tasks are deliberately *not* handled here: the page's own mock
+    // carries a seeded task list with run history, which is what the panel reads
+    // when this server answers `{handled:false}`. A real `tasks.db` snapshot is
+    // the wrong fixture for a UI case — it changes between runs, and a user's own
+    // tasks are not a contract about anything.
     list_session_files: () => ({ files: [] }),
     list_runs: () => [],
     get_latest_run: () => null,

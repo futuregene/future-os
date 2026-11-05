@@ -571,12 +571,16 @@ function TaskForm({
 
       <label className="block space-y-1.5">
         <span className="text-xs text-ink-soft">{t("form.name")}</span>
-        <TextInput value={draft.name} onChange={e => onChange({ name: e.target.value })} />
+        {/* The visible caption is a sibling span, not a `<label>` text node, so an
+            assistive reader (and anything else that matches by accessible name)
+            would see an unnamed edit field: the name is stated here as well. */}
+        <TextInput aria-label={t("form.name")} value={draft.name} onChange={e => onChange({ name: e.target.value })} />
       </label>
 
       <label className="block space-y-1.5">
         <span className="text-xs text-ink-soft">{t("form.prompt")}</span>
         <textarea
+          aria-label={t("form.prompt")}
           className="min-h-32 w-full rounded-md border border-line-soft bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-focus focus:ring-2 focus:ring-focus"
           spellCheck={false}
           value={draft.prompt}

@@ -1,0 +1,64 @@
+{
+  "id": "remote-add-device-repeat",
+  "title": "添加设备取消六次后仍能添加：取消必须交还它占的配额",
+  "area": "remote",
+  "priority": "P1",
+  "tags": ["remote", "pairing", "regression"],
+  "description": "打开远程桌面后，反复「添加设备 → 取消」六轮。平台侧每生成一个配对邀请就占掉这台电脑的一个设备名额（不管有没有人扫码），所以取消必须把它交还；否则几轮之后「添加设备」会以「已配对设备已达上限」拒绝一台明明只配了两台设备的电脑。夹具按平台的真实规则计数并执行上限，因此泄漏一次就会在后面的点击里暴露。",
+  "preconditions": "夹具里有 2 台已配对设备（名额上限 5），远程桌面开关初始为关。",
+  "expectations": [
+    "六轮取消之后，第七次「添加设备」仍然给出配对码（二维码/配对码都在）",
+    "界面上不出现「已配对设备已达上限」",
+    "每次取消都调用一次 remote_unpair_device：没有邀请被留在平台侧",
+    "设备列表里不会冒出「等待配对」的残留行"
+  ],
+  "steps": [
+    { "wait": 900 },
+    { "click": { "selector": "button", "text": "远程" } },
+    { "wait": 700 },
+    { "click": { "aria": "远程桌面" } },
+    { "waitFor": { "text": "已配对的设备" }, "timeout": 8000 },
+
+    { "click": { "selector": "button", "text": "添加设备" } },
+    { "waitFor": { "selector": "[data-testid=\"pairing-code\"]" }, "timeout": 8000 },
+    { "click": { "selector": "button", "text": "取消" } },
+    { "waitFor": { "expr": "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === '添加设备' && !b.disabled)" }, "timeout": 8000 },
+
+    { "click": { "selector": "button", "text": "添加设备" } },
+    { "waitFor": { "selector": "[data-testid=\"pairing-code\"]" }, "timeout": 8000 },
+    { "click": { "selector": "button", "text": "取消" } },
+    { "waitFor": { "expr": "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === '添加设备' && !b.disabled)" }, "timeout": 8000 },
+
+    { "click": { "selector": "button", "text": "添加设备" } },
+    { "waitFor": { "selector": "[data-testid=\"pairing-code\"]" }, "timeout": 8000 },
+    { "click": { "selector": "button", "text": "取消" } },
+    { "waitFor": { "expr": "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === '添加设备' && !b.disabled)" }, "timeout": 8000 },
+
+    { "click": { "selector": "button", "text": "添加设备" } },
+    { "waitFor": { "selector": "[data-testid=\"pairing-code\"]" }, "timeout": 8000 },
+    { "click": { "selector": "button", "text": "取消" } },
+    { "waitFor": { "expr": "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === '添加设备' && !b.disabled)" }, "timeout": 8000 },
+
+    { "click": { "selector": "button", "text": "添加设备" } },
+    { "waitFor": { "selector": "[data-testid=\"pairing-code\"]" }, "timeout": 8000 },
+    { "click": { "selector": "button", "text": "取消" } },
+    { "waitFor": { "expr": "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === '添加设备' && !b.disabled)" }, "timeout": 8000 },
+
+    { "click": { "selector": "button", "text": "添加设备" } },
+    { "waitFor": { "selector": "[data-testid=\"pairing-code\"]" }, "timeout": 8000 },
+    { "click": { "selector": "button", "text": "取消" } },
+    { "waitFor": { "expr": "[...document.querySelectorAll('button')].some(b => b.textContent.trim() === '添加设备' && !b.disabled)" }, "timeout": 8000 },
+
+    { "assert": { "expr": "!document.body.innerText.includes('已达上限')", "message": "六轮取消后界面上没有「已达上限」" } },
+    { "assert": { "expr": "!document.body.innerText.includes('等待配对')", "message": "设备列表里没有残留的「等待配对」行" } },
+    { "shot": "after-six-cancels" },
+
+    { "click": { "selector": "button", "text": "添加设备" } },
+    { "waitFor": { "selector": "[data-testid=\"pairing-code\"]" }, "timeout": 8000 },
+    { "assert": { "expr": "(document.querySelector('[data-testid=\"pairing-code\"]')?.textContent ?? '').includes('futureos://remote/pair')", "message": "第七次添加给出可扫码的配对码" } },
+    { "shot": "seventh-add-succeeds" },
+
+    { "server": { "command": "remote_add_device", "expect": 7, "message": "七次「添加设备」都向平台申请了邀请" } },
+    { "server": { "command": "remote_unpair_device", "expect": 6, "message": "每次取消都交还了它占的邀请" } }
+  ]
+}

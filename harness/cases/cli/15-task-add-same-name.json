@@ -1,0 +1,30 @@
+{
+  "id": "cli-task-add-same-name",
+  "surface": "cli",
+  "title": "CLI 定时任务：同名任务不许把 SQLite 的原文抛给用户",
+  "area": "cli-tasks",
+  "priority": "P1",
+  "tags": ["cli", "tasks", "regression"],
+  "description": "用同一个名字连建两个任务。用户报的是「名字应该可以重复」，但不管最后的规定是哪一种，第二个人都不能看到 `UNIQUE constraint failed: tasks.name` 这种存储层原文——那是数据库在跟开发者说话。这一条在今天的构建上是红的：CLI 把 SQLite 的错误直接打进了 stderr（桌面端的编辑页同样把它当红色提示贴上去），而 store 里的 `tasks_active_name` 唯一索引仍然按名字去重。断言顺序是先证明「拒绝是干净的」，最后才是「理由是人话」，这样红的只有这一条。",
+  "defect": "同名任务仍被拒绝，而且拒绝理由是未经翻译的 SQLite 原文（用户反馈第 17 条）。",
+  "preconditions": "隔离 home；写入会新建 tasks.db。",
+  "expectations": [
+    "第一个任务建得成",
+    "被拒绝的那一次没有留下半条记录：库里仍只有第一个任务，提示词也没被改写",
+    "拒绝之后 store 仍然可用（task list 正常返回）",
+    "第二个同名任务的失败理由是一句人话，而不是 SQLite 原文"
+  ],
+  "steps": [
+    { "run": ["task", "add", "--name", "同名任务 harness", "--prompt", "第一段提示词", "--cwd", "/tmp", "--daily", "--time", "09:00"], "expectExit": 0 },
+    { "expectStdout": { "regex": "Created task 同名任务 harness" } },
+    { "run": ["task", "add", "--name", "同名任务 harness", "--prompt", "第二段提示词", "--cwd", "/tmp", "--daily", "--time", "10:00"] },
+    { "db": { "file": "tasks.db", "sql": "SELECT COUNT(*) AS n FROM tasks WHERE name = '同名任务 harness' AND deleted_at IS NULL", "expect": 1, "message": "库里只有第一条（被拒的那次没有半条记录）" } },
+    { "db": { "file": "tasks.db", "sql": "SELECT prompt FROM tasks WHERE name = '同名任务 harness' AND deleted_at IS NULL", "expect": "第一段提示词", "message": "留下的是第一条的提示词，没被覆盖" } },
+    { "run": ["task", "show", "同名任务 harness"], "expectExit": 0 },
+    { "run": ["task", "list", "--json"], "expectExit": 0 },
+    { "expectJson": { "contains": "同名任务 harness" } },
+    { "note": "最后一条：被拒绝时用户看到的是哪句话" },
+    { "run": ["task", "add", "--name", "同名任务 harness", "--prompt", "第三段提示词", "--cwd", "/tmp", "--daily", "--time", "11:00"] },
+    { "expectStderr": { "regex": "^(?![\\s\\S]*UNIQUE constraint failed)[\\s\\S]*$" } }
+  ]
+}
