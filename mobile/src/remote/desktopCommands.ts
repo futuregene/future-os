@@ -34,6 +34,14 @@ export interface DesktopCommands {
   deleteSession(sessionId: string, threadId: string): Promise<void>;
   /** Shelve a conversation and its forks on that machine. */
   archiveSession(sessionId: string, threadId: string): Promise<void>;
+  /**
+   * Stop what the Agent is running in a conversation, by its session.
+   *
+   * The rail's archive needs it: the run may belong to a row the reader never
+   * opened, and a "stop and archive" has to be able to stop what it is waiting
+   * on. A conversation with nothing running is a no-op on the host.
+   */
+  abortSession(sessionId: string): Promise<void>;
   /** Bring a shelved conversation's tree back on that machine. */
   restoreSession(sessionId: string, threadId: string): Promise<void>;
   /** Rename a workspace the machine owns. The host applies its own name rules. */
