@@ -23,7 +23,12 @@ use std::io::{Read, Write};
 const COMPRESSED_CHUNK_BYTES: usize = 8 * 1024;
 /// Below this a body is left alone: the marker row and the header cost more than
 /// the text saves, and small bodies are the ones read most often.
-pub(crate) const COMPRESS_MIN_BODY_BYTES: i64 = 4096;
+///
+/// 512 rather than 4 KiB: a converted legacy session keeps its text in bodies of
+/// one to three kilobytes, and at the old threshold every one of those stayed
+/// plaintext - 230 MiB on a real store after the conversion. A body that does not
+/// pay for itself is still skipped by the encoder below.
+pub(crate) const COMPRESS_MIN_BODY_BYTES: i64 = 512;
 
 /// Sealed bodies still stored as text: `(objects, plaintext bytes)`.
 pub(crate) fn plan(db: &Connection) -> Result<(i64, i64)> {

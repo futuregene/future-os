@@ -60,6 +60,7 @@ async function main() {
   analyze --run DIR        (re)analyze a finished run
   report --run DIR         write report.md
   issues --run DIR [--create --yes]
+  issues-en --run DIR [--create --yes --repo owner/name] [--model M]
   serve                    start the shot dev server and wait
 `);
     return;
@@ -277,6 +278,18 @@ async function main() {
     const runDir = resolve(arg("run") ?? "");
     const path = writeReport(runDir);
     console.log(`wrote ${path}`);
+    return;
+  }
+
+  if (command === "issues-en") {
+    const { runIssuesEn } = await import("./lib/issues-en-run.mjs");
+    const result = await runIssuesEn(resolve(arg("run") ?? ""), {
+      model: arg("model"),
+      file: flag("create"),
+      yes: flag("yes"),
+      repo: arg("repo"),
+    });
+    console.log(result.message);
     return;
   }
 

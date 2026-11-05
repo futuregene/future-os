@@ -236,6 +236,43 @@ product never promised.
 Analysis is resumable and non-fatal: a missing CLI or a failed vision call is
 recorded and the remaining evidence still becomes a report.
 
+### Discovery, two levels
+
+The first level judges one case and asks a second time with no checklist: look at
+this evidence as a stranger and say what is wrong. That pass is where timing,
+stale states, inconsistent copy and layout surprises come from, and it is marked
+`【发现】` in the report and `discovered` in the analysis so a reader can tell
+judgement from a checklist.
+
+The second level reads only text — every case's title, expectations, verdict,
+summary and findings — and looks for what a person notices after a morning of
+clicking: one concept with three names, a count that disagrees between two
+screens, an empty state that contradicts the rest of the product, a state one
+screen explains and another does not. It must attribute every finding to the
+cases it came from, and it may not infer a screen the evidence never reached.
+
+```bash
+node harness/cli.mjs analyze --run harness/runs/<id> --mode full   # both levels
+```
+
+A cross-case pass needs per-case findings to compare, so it runs after them and
+only in `--mode full`. Its findings carry `source: "cross-case"` and appear in
+the report under 模型验收.
+
+### Filing issues
+
+`issues-en` writes one English issue per problem, grouped across cases, with the
+case ids, the case's own expectations, the exact reproduction command, and how it
+was found (failed assertion / model verdict / model discovery) so a reader can
+calibrate. The model writes the prose; the structural parts are appended from the
+run, and a draft whose cases no longer exist in the library is dropped instead of
+being filed as unverifiable.
+
+```bash
+node harness/cli.mjs issues-en --run harness/runs/<id>                    # drafts only
+node harness/cli.mjs issues-en --run harness/runs/<id> --create --yes --repo owner/name
+```
+
 ### Performance judgement
 
 Perf cases carry numbers, not just pass/fail. `perfDigest` hands the model the

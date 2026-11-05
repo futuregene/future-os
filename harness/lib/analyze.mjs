@@ -16,6 +16,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { execFile } from "node:child_process";
+import { discoverAcrossCases } from "./discovery.mjs";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -928,7 +929,27 @@ export async function analyzeRun(runDir, { mode = "heuristic", model = null, onl
         cases.push(item);
     }
   }
+
+  // Second-level discovery: the problems that only exist between cases. Runs on
+  // the completed picture (including cases carried over from an earlier pass), and
+  // only in full mode — it needs the per-case findings to compare.
+  let crossCase = { findings: [], error: null };
+  if (mode === "full" && cases.length >= 2) {
+    process.stdout.write("  cross-case discovery… ");
+    try {
+      crossCase = await discoverAcrossCases({ analysis: { cases }, runDir, model, runPrompt });
+    }
+    catch (error) {
+      // A failed second-level pass must not lose the per-case work.
+      crossCase = { findings: [], error: String(error?.message ?? error) };
+    }
+    process.stdout.write(crossCase.error ? `skipped (${crossCase.error.slice(0, 80)})\n` : `${crossCase.findings.length} findings\n`);
+  }
   const allFindings = cases.flatMap(item => item.findings);
+  // Cross-case findings were produced after the per-case loop, so they are merged
+  // here and every total comes from the merged list — a count that disagrees with
+  // the list it summarises is the kind of thing this harness exists to catch.
+  const mergedFindings = [...allFindings, ...(crossCase?.findings ?? [])];
   const analysis = {
     runId: manifest.id,
     generatedAt: new Date().toISOString(),
@@ -954,16 +975,19 @@ export async function analyzeRun(runDir, { mode = "heuristic", model = null, onl
         artifacts: item.artifacts,
       };
     }),
-    findings: allFindings,
+    findings: mergedFindings,
+    crossCase: { findings: crossCase.findings, error: crossCase.error },
     totals: {
       cases: cases.length,
       passed: cases.filter(item => item.status === "pass").length,
       failed: cases.filter(item => item.status !== "pass").length,
-      findings: allFindings.length,
-      high: allFindings.filter(item => item.severity === "high").length,
-      medium: allFindings.filter(item => item.severity === "medium").length,
-      low: allFindings.filter(item => item.severity === "low").length,
-      info: allFindings.filter(item => item.severity === "info").length,
+      findings: mergedFindings.length,
+      high: mergedFindings.filter(item => item.severity === "high").length,
+      medium: mergedFindings.filter(item => item.severity === "medium").length,
+      low: mergedFindings.filter(item => item.severity === "low").length,
+      info: mergedFindings.filter(item => item.severity === "info").length,
+      discovered: mergedFindings.filter(item => item.discovered).length,
+      crossCase: mergedFindings.filter(item => item.source === "cross-case").length,
     },
   };
   writeFileSync(join(runDir, "analysis.json"), JSON.stringify(analysis, null, 2));

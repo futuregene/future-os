@@ -193,6 +193,17 @@ CREATE TABLE IF NOT EXISTS run_snapshot_cache (
 -- keeps. The retirement copies the elements here, one row per event, before it
 -- deletes the snapshot, so the usage projection answers what it answered before
 -- while the JSON wrapper, the fold and the raw journal all go.
+-- Payloads of a legacy session whose conversion is in flight.
+--
+-- The conversion has to drop a session's rows before the writer will publish new
+-- content for them, so the payloads it is about to rebuild live here until the
+-- rewrite commits. A start that finds a row finishes the conversion instead of
+-- leaving the session empty.
+CREATE TABLE IF NOT EXISTS legacy_conversions (
+    session_id TEXT PRIMARY KEY NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    payloads TEXT NOT NULL CHECK(json_valid(payloads)),
+    started_at_ms INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS run_pricing (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     run_id TEXT NOT NULL,
