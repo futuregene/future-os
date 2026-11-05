@@ -49,6 +49,7 @@ import {
 } from "./data";
 import { emit } from "./event";
 import { replayPage, replayState, sessionEntries, streamRemoteRun } from "./remoteStream";
+import { quotedPrompt } from "./replyQuote";
 
 // The console output doubles as the "what is missing" list while iterating on
 // the harness, which is why this one log call is intentional.
@@ -263,7 +264,7 @@ function shotRunFrames(prompt: string): Array<[string, Record<string, unknown>]>
           ["thinking_end", {}],
         ] as Array<[string, Record<string, unknown>]>),
     ["text_chunk", { text: "好，我先把" }],
-    ["text_chunk", { text: `「${prompt.slice(0, 16)}」` }],
+    ["text_chunk", { text: `「${quotedPrompt(prompt)}」` }],
     ["text_chunk", { text: "拆成两步：" }],
     ["text_chunk", { text: "先核对一遍现有结果，" }],
     ["text_chunk", { text: "再按你说的改。" }],
