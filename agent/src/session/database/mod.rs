@@ -80,6 +80,42 @@ impl Drop for DatabaseWorker {
     }
 }
 
+/// Lift this process's soft descriptor limit to the hard limit for the lib test
+/// suite — once, before the first database is opened.
+///
+/// The suite opens a database per test and keeps it alive while other tests run,
+/// and each one owns a writer, two readers, a checkpoint worker and a snapshot
+/// reader. Measured on macOS: `cargo test -p future-agent --lib session::`
+/// peaks in the thousands of descriptors. A login shell's soft limit is 256
+/// there, so anything past the first few hundred tests fails with `EMFILE` /
+/// `unable to open database file` — dozens of unrelated red tests that say
+/// nothing about the code under test. CI runners already allow a million, so
+/// the raise is a no-op there.
+///
+/// The hard limit is the ceiling the kernel already grants every process; this
+/// only stops the shell's lower soft limit from deciding whether the suite runs.
+#[cfg(all(test, unix))]
+fn raise_descriptor_limit_for_tests() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: `getrlimit` writes only into the struct passed to it and
+        // `setrlimit` lowers nothing — it raises our own soft limit towards the
+        // hard limit the process is already allowed to use. Failure is ignored:
+        // the suite then runs under whatever limit it had, as before.
+        unsafe {
+            let mut limit: libc::rlimit = std::mem::zeroed();
+            if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 {
+                return;
+            }
+            if limit.rlim_cur < limit.rlim_max {
+                limit.rlim_cur = limit.rlim_max;
+                let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &limit);
+            }
+        }
+    });
+}
+
 impl Database {
     pub(crate) fn open(path: &Path) -> Result<Self> {
         Self::open_cancellable(path, crate::service::StartupCancellation::default())
@@ -89,6 +125,8 @@ impl Database {
         path: &Path,
         cancellation: crate::service::StartupCancellation,
     ) -> Result<Self> {
+        #[cfg(all(test, unix))]
+        raise_descriptor_limit_for_tests();
         let nfs = future_rpc::storage::StorageMode::from_env().map_err(anyhow::Error::msg)?
             == future_rpc::storage::StorageMode::Nfs;
         let read_path = path.to_path_buf();

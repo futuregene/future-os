@@ -1510,9 +1510,22 @@ mod tests {
     #[test]
     fn sandbox_violation_classifies_only_linux_receipts() {
         let ws = temp_workspace("violation-scope");
-        let manual = enabled(&ws);
+        // The receipt decides, never the host that resolved it: name the
+        // non-Linux backends instead of taking this host's receipt. On a Linux
+        // runner with a working bwrap, `enabled` resolves the very Linux receipt
+        // the second half of this test expects to classify, so a fixture left to
+        // the host asserts the opposite of what it says here.
+        let mut manual = enabled(&ws);
+        manual.backend_receipt = SandboxBackendReceipt::Unavailable;
         assert!(sandbox_violation(&manual, 1, "touch: /x: Permission denied").is_none());
         assert!(sandbox_violation(&manual, 1, "Read-only file system").is_none());
+        manual.backend_receipt = SandboxBackendReceipt::MacosSeatbelt {
+            executable: PathBuf::from("/usr/bin/sandbox-exec"),
+        };
+        assert!(sandbox_violation(&manual, 1, "touch: /x: Permission denied").is_none());
+        assert!(sandbox_violation(&manual, 1, "Read-only file system").is_none());
+        manual.backend_receipt = SandboxBackendReceipt::WindowsRestricted;
+        assert!(sandbox_violation(&manual, 1, "touch: /x: Permission denied").is_none());
 
         let mut linux = enabled(&ws);
         linux.set_linux_backend_available_for_test();

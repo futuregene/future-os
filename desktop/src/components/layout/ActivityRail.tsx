@@ -1978,7 +1978,10 @@ export function ActivityRail({
                                                   hasMore={archiveView.workspaceNextCursor[workspace.id] !== null
                                                     && archiveView.workspaceNextCursor[workspace.id] !== undefined}
                                                   loading={archiveView.loading}
+                                                  onDelete={onDeleteThread}
                                                   onLoadMore={() => void archiveView.loadAllWorkspaceThreads(workspace.id)}
+                                                  onRename={onRenameThread}
+                                                  onRestore={onRestoreThread}
                                                   remaining={archiveView.workspaceRemaining[workspace.id] ?? 0}
                                                   onOpen={onOpenArchivedThread ?? onSelectThread}
                                                   onToggleSelection={toggleThreadSelection}
