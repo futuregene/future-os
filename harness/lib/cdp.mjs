@@ -104,7 +104,27 @@ const LOCATE = (query, byText, selector) => `(() => {
     target = __harnessMatch(wanted);
   }
   if (!target) return null;
-  target.scrollIntoView({ block: 'center' });
+  // Put the pointer on the target without moving a list a person would have
+  // left alone. Recentring every target unconditionally rewrites the scroll
+  // position that the screenshots after the click are judged against: a rail
+  // nobody scrolled ended up 23px down, with a row cut under its sticky group
+  // header, and the analysis read that as a rendering defect (#1523).
+  const onTarget = (el) => {
+    const box = el.getBoundingClientRect();
+    if (box.width === 0 || box.height === 0) return false;
+    if (box.top < 0 || box.left < 0 || box.bottom > window.innerHeight || box.right > window.innerWidth) return false;
+    // Something else over the centre means the click would miss it: a sticky
+    // group header, an open menu's overlay, a fixed toolbar.
+    const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+    return !!hit && (hit === el || el.contains(hit) || hit.contains(el));
+  };
+  if (!onTarget(target)) {
+    target.scrollIntoView({ block: 'nearest' });
+    // 'nearest' stops as soon as the box is inside the viewport, which can leave
+    // it flush under a sticky header with its centre still covered; a wrong
+    // click costs more than the extra scroll, so fall back to centring.
+    if (!onTarget(target)) target.scrollIntoView({ block: 'center' });
+  }
   const rect = target.getBoundingClientRect();
   return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2,
            w: rect.width, h: rect.height,

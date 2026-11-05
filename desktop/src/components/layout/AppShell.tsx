@@ -632,10 +632,12 @@ function ReadyAppShell({
     deleteDialog,
     batchDeleteDialog,
     archiveDialog,
+    batchArchiveDialog,
     setRenameDialog,
     setDeleteDialog,
     setBatchDeleteDialog,
     setArchiveDialog,
+    setBatchArchiveDialog,
     openRename,
     confirmRename,
     generateTitle,
@@ -646,6 +648,7 @@ function ReadyAppShell({
     requestArchive,
     confirmArchive,
     archiveThreads,
+    confirmBatchArchive,
   } = useThreadDialogs({ activeThreadId, onArchived: handleFirstArchive, refreshStore, threads });
   const {
     renameDialog: workspaceRenameDialog,
@@ -2228,16 +2231,19 @@ function ReadyAppShell({
       <AppShellDialogs
         archiveDialog={archiveDialog}
         archiveWorkspaceDialog={archiveWorkspaceDialog}
+        batchArchiveDialog={batchArchiveDialog}
         batchDeleteDialog={batchDeleteDialog}
         deleteDialog={deleteDialog}
         renameDialog={renameDialog}
         setArchiveDialog={setArchiveDialog}
         setArchiveWorkspaceDialog={setArchiveWorkspaceDialog}
+        setBatchArchiveDialog={setBatchArchiveDialog}
         setBatchDeleteDialog={setBatchDeleteDialog}
         setDeleteDialog={setDeleteDialog}
         setRenameDialog={setRenameDialog}
         onConfirmArchiveThread={() => void confirmArchive()}
         onConfirmArchiveWorkspace={() => void confirmArchiveWorkspace()}
+        onConfirmBatchArchive={() => void confirmBatchArchive()}
         onConfirmBatchDeleteThread={() => void confirmBatchDelete()}
         onConfirmDeleteThread={() => void confirmDelete()}
         onConfirmRenameThread={() => void confirmRename()}

@@ -55,13 +55,23 @@ export interface ArchiveWorkspaceDialogState {
   running: StoredThread[];
 }
 
+/** Confirm shelving a selection that still holds running conversations. */
+export interface BatchArchiveDialogState {
+  error: string | null;
+  submitting: boolean;
+  threads: StoredThread[];
+  running: StoredThread[];
+}
+
 interface AppShellDialogsProps {
   archiveDialog: ArchiveDialogState | null;
   archiveWorkspaceDialog: ArchiveWorkspaceDialogState | null;
+  batchArchiveDialog: BatchArchiveDialogState | null;
   batchDeleteDialog: BatchDeleteDialogState | null;
   deleteDialog: DeleteDialogState | null;
   onConfirmArchiveThread: () => void;
   onConfirmArchiveWorkspace: () => void;
+  onConfirmBatchArchive: () => void;
   onConfirmBatchDeleteThread: () => void;
   onConfirmDeleteThread: () => void;
   onConfirmRenameThread: () => void;
@@ -69,6 +79,7 @@ interface AppShellDialogsProps {
   renameDialog: RenameDialogState | null;
   setArchiveDialog: Dispatch<SetStateAction<ArchiveDialogState | null>>;
   setArchiveWorkspaceDialog: Dispatch<SetStateAction<ArchiveWorkspaceDialogState | null>>;
+  setBatchArchiveDialog: Dispatch<SetStateAction<BatchArchiveDialogState | null>>;
   setBatchDeleteDialog: Dispatch<SetStateAction<BatchDeleteDialogState | null>>;
   setDeleteDialog: Dispatch<SetStateAction<DeleteDialogState | null>>;
   setRenameDialog: Dispatch<SetStateAction<RenameDialogState | null>>;
@@ -77,10 +88,12 @@ interface AppShellDialogsProps {
 export function AppShellDialogs({
   archiveDialog,
   archiveWorkspaceDialog,
+  batchArchiveDialog,
   batchDeleteDialog,
   deleteDialog,
   onConfirmArchiveThread,
   onConfirmArchiveWorkspace,
+  onConfirmBatchArchive,
   onConfirmBatchDeleteThread,
   onConfirmDeleteThread,
   onConfirmRenameThread,
@@ -88,11 +101,17 @@ export function AppShellDialogs({
   renameDialog,
   setArchiveDialog,
   setArchiveWorkspaceDialog,
+  setBatchArchiveDialog,
   setBatchDeleteDialog,
   setDeleteDialog,
   setRenameDialog,
 }: AppShellDialogsProps) {
   const { t } = useTranslation("layout");
+  // The single-conversation dialog already names the conversation it is about;
+  // listing it again under "running" drew the same title twice.
+  const otherRunning = archiveDialog
+    ? archiveDialog.running.filter(thread => thread.id !== archiveDialog.thread.id)
+    : [];
   return (
     <>
       <ConfirmDialog
@@ -115,8 +134,8 @@ export function AppShellDialogs({
                 <div className="rounded-md border border-line-soft bg-surface-subtle p-3 text-sm text-ink">
                   {archiveDialog.thread.title}
                 </div>
-                {archiveDialog.running.length > 0
-                  ? <RunningList count={archiveDialog.running.length} threads={archiveDialog.running} />
+                {otherRunning.length > 0
+                  ? <RunningList count={otherRunning.length} threads={otherRunning} />
                   : null}
               </div>
             )
@@ -146,6 +165,24 @@ export function AppShellDialogs({
                 <RunningList count={archiveWorkspaceDialog.running.length} threads={archiveWorkspaceDialog.running} />
               </div>
             )
+          : null}
+      </ConfirmDialog>
+      <ConfirmDialog
+        confirmLabel={t("threadDialogs.archiveStopAndArchive")}
+        description={batchArchiveDialog
+          ? t("threadDialogs.archiveBatchRunningDescription", {
+              count: batchArchiveDialog.running.length,
+            })
+          : undefined}
+        error={batchArchiveDialog?.error ?? null}
+        onClose={() => setBatchArchiveDialog(null)}
+        onConfirm={onConfirmBatchArchive}
+        open={Boolean(batchArchiveDialog)}
+        submitting={batchArchiveDialog?.submitting ?? false}
+        title={t("threadDialogs.archiveBatchRunningTitle")}
+      >
+        {batchArchiveDialog
+          ? <RunningList count={batchArchiveDialog.running.length} threads={batchArchiveDialog.running} />
           : null}
       </ConfirmDialog>
       <RenameDialog

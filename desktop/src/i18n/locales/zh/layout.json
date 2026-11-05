@@ -150,6 +150,8 @@
     "archiveRunningDescription": "{{count}} 个会话正在进行中，结束或停止后才能归档。",
     "archiveRunningMore": "另有 {{count}} 个会话正在进行",
     "archiveStopAndArchive": "停止并归档",
+    "archiveBatchRunningTitle": "有会话正在进行中",
+    "archiveBatchRunningDescription": "所选会话中有 {{count}} 个正在进行中，结束或停止后才能归档。",
     "archiveWorkspaceRunningTitle": "工作区里有会话正在进行",
     "archiveWorkspaceRunningDescription": "「{{name}}」中有 {{count}} 个会话正在进行中，结束或停止后才能归档。"
   },
