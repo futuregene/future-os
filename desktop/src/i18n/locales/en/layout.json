@@ -185,6 +185,7 @@
     "noResponse": "Future Agent is not responding yet",
     "noResponseHint": "No startup status received for 15 seconds. Still trying to connect.",
     "takingLonger": "Startup is taking longer. Work is still in progress; please wait.",
+    "starting": "Starting Future Agent",
     "startupStages": {
       "preparing": "Preparing Future Agent",
       "loading_models": "Loading models and credentials",

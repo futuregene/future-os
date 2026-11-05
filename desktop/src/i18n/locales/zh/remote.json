@@ -72,6 +72,7 @@
   "back": "返回",
   "clientsTitle": "已配对的设备",
   "noClients": "还没有配对的设备。",
+  "noClientsDetail": "用下方「添加设备」扫码或输入配对码，连上后这里会列出它。",
   "addDeviceTitle": "添加设备",
   "addDeviceDescription": "用手机端扫描二维码，或在另一台电脑上输入配对码。"
 }

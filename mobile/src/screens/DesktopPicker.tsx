@@ -226,6 +226,13 @@ export function DesktopPicker({
               </Text>
               {filter.kind === "all" ? <Check color={colors.accent} size={16} /> : null}
             </Pressable>
+            {/* No machines: say so, in the words the manage screen already uses
+                for the same list (#1545). Without it the sheet offered "all
+                desktops" and a manage row over an empty space, which reads as a
+                list that failed to load rather than one with nothing in it. */}
+            {desktops.length === 0
+              ? <Text style={styles.emptyNote}>{t("desktops.empty")}</Text>
+              : null}
             {desktops.map((desktop) => {
               const isSelected = filter.kind === "desktop" && filter.desktopId === desktop.desktopId;
               const machine = stateOf(desktop.desktopId);
@@ -360,6 +367,15 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   optionState: { flexDirection: "row", alignItems: "center", gap: spacing.xs, marginTop: 1 },
   stateDot: { width: 6, height: 6, borderRadius: 3 },
   optionNote: { color: theme.colors.inkMuted, fontSize: theme.font(12) },
+  // Same centred, unboxed sentence the manage screen's own empty list uses
+  // (`DesktopsScreen`), so the two lists say "nothing here" alike.
+  emptyNote: {
+    color: theme.colors.inkSoft,
+    fontSize: theme.font(14),
+    textAlign: "center",
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.md,
+  },
   takeControl: {
     minHeight: 32,
     justifyContent: "center",
