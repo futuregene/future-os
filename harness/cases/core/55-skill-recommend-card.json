@@ -1,0 +1,106 @@
+{
+  "id": "skill-recommend-card",
+  "title": "技能推荐卡片：出卡 → 忽略直接发送 → 再出卡 → 安装并使用",
+  "area": "skills",
+  "priority": "P1",
+  "tags": [
+    "desktop",
+    "skills",
+    "recommendation"
+  ],
+  "description": "发出一条足够长的中文消息时，客户端会先问推荐器（suggest_skill）要不要推荐一个尚未安装的技能，并在此期间扣住这条消息。卡片的三种结局都要能被用户看见：忽略后原草稿照常发出、安装后消息带上该技能、卡片本身不残留。这条用例同时约束两件容易悄悄坏掉的事：卡片出现时草稿不能丢（用户以为发送了，其实被扣住了），以及「忽略」必须真的把这条消息发出去，而不是把它和卡片一起丢掉。数据说明：推荐卡片的内容来自技能目录与推荐器，不来自本地 app.db —— 真实库夹具把「技能目录」和「账户余额」都答成空（见报告），所以本用例把 fixture 参数置空，让页面运行在 shot 的演示数据上（技能目录有 5 个可安装技能、推荐器返回第一个未安装的 future-slides）；会话列表与输入框仍是同一个真实前端。",
+  "preconditions": "应用已启动并打开了演示数据里的一个会话（输入框可用）；「智能技能推荐」在演示设置里是开的；页面用演示数据（fixture 置空），回复由 shot mock 分帧流式返回（约 4 秒）。",
+  "expectations": [
+    "发送长消息时先出现「推荐技能」卡片，并显示技能名 /future-slides 与其中文描述",
+    "卡片提供「安装并使用」与「不用，直接发送」两个可选动作",
+    "点「不用，直接发送」后卡片消失，原草稿真的被发出（对话里出现这条消息）",
+    "第二次发送时卡片再次出现；点「安装并使用」后卡片消失，发出的消息带上该技能",
+    "卡片出现与消失的整个过程里输入框不被永久禁用，没有报错或空白"
+  ],
+  "query": {
+    "fixture": ""
+  },
+  "steps": [
+    { "wait": 1200 },
+    { "shot": "composer-ready" },
+    { "click": { "selector": "[role=textbox]" }, "capture": false },
+    { "type": "帮我把今天的文献整理成综述初稿并核对引用", "capture": false },
+    { "wait": 300 },
+    { "shot": "draft-typed" },
+    { "click": { "aria": "发送" } },
+    { "waitFor": { "text": "推荐技能" }, "timeout": 8000, "capture": false },
+    { "wait": 400 },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes('推荐技能') && document.body.innerText.includes('/future-slides')",
+        "message": "卡片出现并带着推荐到的技能名"
+      }
+    },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes('把报告做成一整套幻灯片')",
+        "message": "卡片显示该技能的中文描述"
+      }
+    },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes('安装并使用') && document.body.innerText.includes('不用，直接发送')",
+        "message": "卡片给出两个动作"
+      }
+    },
+    { "shot": "reco-card", "note": "卡片：技能名 + 描述 + 两个动作" },
+    { "click": { "selector": "button", "text": "不用，直接发送" } },
+    { "wait": 900 },
+    {
+      "assert": {
+        "expr": "!document.body.innerText.includes('推荐技能')",
+        "message": "忽略后卡片消失"
+      }
+    },
+    {
+      "expectText": "帮我把今天的文献整理成综述初稿并核对引用",
+      "note": "忽略 = 原草稿照常发出，不是把消息一起丢掉"
+    },
+    { "shot": "dismissed-and-sent", "note": "卡片消失，草稿已经发出去" },
+    { "waitFor": { "selector": "button[aria-label=\"发送\"]", "timeout": 25000 }, "capture": false, "note": "等这一轮回复结束，输入框回到「发送」" },
+    { "click": { "selector": "[role=textbox]" }, "capture": false },
+    { "type": "把这批实验数据画成森林图并核对置信区间", "capture": false },
+    { "wait": 300 },
+    { "click": { "aria": "发送" }, "capture": false },
+    { "waitFor": { "text": "推荐技能" }, "timeout": 8000, "capture": false },
+    { "wait": 400 },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes('/future-slides')",
+        "message": "第二次发送同样给出推荐卡片"
+      }
+    },
+    { "shot": "reco-card-again" },
+    { "click": { "selector": "button", "text": "安装并使用" } },
+    { "wait": 1500 },
+    {
+      "assert": {
+        "expr": "!document.body.innerText.includes('推荐技能')",
+        "message": "安装后卡片消失"
+      }
+    },
+    {
+      "assert": {
+        "expr": "document.body.innerText.includes('/future-slides')",
+        "message": "发出的消息带上刚安装的技能"
+      }
+    },
+    { "shot": "installed-and-sent" }
+  ],
+  "judge": {
+    "criteria": [
+      "推荐卡片应读作一次决策：技能名（斜杠形式）、一句中文描述、一个主动作「安装并使用」和一个次要动作「不用，直接发送」",
+      "点「不用，直接发送」之后卡片应消失，并且用户写的那句话确实出现在对话里，不应连消息一起消失",
+      "点「安装并使用」之后卡片应消失，且发出的消息带上了刚安装的技能（斜杠形式可见）",
+      "卡片出现的时机应在发送之前/之间，输入框不能长时间停在禁用态",
+      "任一帧都不应出现空白面板、报错提示或残留的加载文案",
+      "整体像一个正常产品的一次推荐流程"
+    ],
+    "maxImages": 8
+  }
+}
