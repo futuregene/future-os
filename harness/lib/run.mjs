@@ -13,7 +13,7 @@ import { join, resolve } from "node:path";
 import { CdpPage } from "./cdp.mjs";
 import { copyDatabase, BASE_DB } from "./data.mjs";
 import { createFixtureServer } from "./fixture-server.mjs";
-import { muxVideo } from "./video.mjs";
+import { muxVideo, videoClock } from "./video.mjs";
 import { percentile, resolveLimit, readBaseline, baselineKey, drift, slope, mean } from "./perf.mjs";
 
 const sleep = ms => new Promise(done => setTimeout(done, ms));
@@ -84,6 +84,9 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
   const shotsDir = join(caseDir, "shots");
   const framesDir = join(caseDir, "video");
   mkdirSync(shotsDir, { recursive: true });
+
+  // The recording's own clock, filled in when the screencast stops.
+  let videoWindow = null;
 
   const dbPath = copyDatabase(join(caseDir, "app.db"));
   const serverLogPath = join(caseDir, "server.jsonl");
@@ -520,6 +523,11 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
     page.onEvent = null;
     stepsEndedAt ??= Date.now();
     const frames = await page.stopScreencast().catch(() => []);
+    // The clip's own clock, so a step reads as "this happened at 12.4s of the
+    // recording" instead of the reader having to count frames: the analysis uses
+    // it to tell pre-action frames from post-action ones.
+    if (frames.length)
+      videoWindow = videoClock(frames);
     // Let the last frame land before the page leaves; otherwise the filmstrip's
     // tail is the teardown (a black frame), which a vision model can only read
     // as "the product went blank".
@@ -627,6 +635,7 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
       timeline: timelinePath,
       serverLog: serverLogPath,
       video: join(caseDir, "video.mp4"),
+      videoWindow,
       shots: timeline.filter(entry => entry.shot).map(entry => entry.shot),
     },
   };

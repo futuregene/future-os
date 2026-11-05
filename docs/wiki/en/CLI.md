@@ -417,6 +417,7 @@ future session wait <id> [--run <run-id>] [--timeout <duration>]  # wait for a r
 future session approvals <id>
 future session approve <id> <request-id> [--allow <glob>]
 future session reject <id> <request-id>
+future session recover <id>              # clear a journal failure so prompts are accepted again
 future session delete <id>
 future session prune --older-than 3d [--yes]  # delete sessions idle longer than that (preview by default)
 ```

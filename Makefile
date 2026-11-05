@@ -3,7 +3,7 @@
 	test test-agent test-channels test-cli test-app-settings test-config test-http test-tui test-cli-diff \
 	test-desktop test-desktop-rust test-mobile \
 	lint lint-rust lint-desktop stylelint-desktop lint-mobile check-desktop check-mobile fmt \
-	check-docs test-docs-check \
+	check-docs test-docs-check test-ui-harness \
 	run-agent run-tui run-cli run-host run-headless run-desktop run-mobile-android run-mobile-ios run-channels run-goal \
 	profile-agent-build profile-agent profile-quick profile-heap \
 	generate-models generate-proto \
@@ -529,6 +529,13 @@ test-screenshot-harness:
 	python3 scripts/tests/test-screenshot-harness-reap.py
 	python3 scripts/tests/test-screenshot-upright-check.py
 	python3 scripts/tests/test-screenshot-scenario-fragments.py
+
+# Regression tests for the UI harness's own judgement: the performance thresholds
+# (both directions — real noise passes, a claimed regression fails), which quoted
+# values may be demoted as fixture data, and the clip clock the analysis labels its
+# screenshots with. Offline, no browser, no model — a few hundred milliseconds.
+test-ui-harness:
+	node --test harness/lib/perf.test.mjs harness/lib/provenance.test.mjs harness/lib/video.test.mjs
 
 # Wire codegen owners: packages/rpc (future.proto) + channels (feishu_ws pbbp2).
 #

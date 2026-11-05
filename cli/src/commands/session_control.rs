@@ -1,5 +1,6 @@
-//! `future session abort|cancel|approvals|approve|reject` — acting on a session
-//! that is running, queued, or parked on an approval.
+//! `future session abort|cancel|approvals|approve|reject|recover` — acting on a
+//! session that is running, queued, parked on an approval, or refusing prompts
+//! because its journal was marked unhealthy.
 //!
 //! Every other session command reads the journal. These act on the *live*
 //! agent: they are the CLI counterpart of the TUI's `/stop`, `/cancel`,
@@ -25,6 +26,7 @@ Usage:
   future session approve <session-id> <request-id> [--note <text>] [--json]
       [--allow <glob> [--access read|write]]
   future session reject <session-id> <request-id> [--note <text>] [--json]
+  future session recover <session-id> [--json]
 
   abort        Stop the session's active run and cancel everything queued
                behind it.
@@ -32,6 +34,8 @@ Usage:
   approvals    List the approval requests the session is parked on.
   approve      Allow the named request, letting its tool run.
   reject       Deny the named request, failing that tool call.
+  recover      Clear a recorded journal failure so the session accepts prompts
+               again. For a session that is not running; removes no entry.
 
 Options:
   --note <text>        Decision note recorded with an approve/reject.
@@ -43,7 +47,14 @@ Options:
 
 abort and cancel reject nothing and change no settings; approvals lists what
 `future session status` also shows. An approval request id comes from
-`future session approvals`.";
+`future session approvals`.
+
+recover is the way back from `Journal: degraded` in `future session status`: a
+storage failure (a busy database) marks the journal unhealthy, and every prompt
+after that is refused with `session persistence is unavailable`. It drains the
+buffered events, proves the store accepts a commit again, and rebuilds the
+cached transcript from disk — no entry is removed or rewritten. A session that
+is still running has its own path: `future session abort`, then recover.";
 
 /// Which of the five actions to take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +64,7 @@ pub(super) enum Action {
     Approvals,
     Approve,
     Reject,
+    Recover,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -75,6 +87,7 @@ fn usage(action: Action) -> &'static str {
         Action::Approvals => "future session approvals <session-id>",
         Action::Approve => "future session approve <session-id> <request-id>",
         Action::Reject => "future session reject <session-id> <request-id>",
+        Action::Recover => "future session recover <session-id>",
     }
 }
 
@@ -151,7 +164,7 @@ fn parse(action: Action, args: &[String]) -> Result<Options, String> {
     }
 
     let arity_ok = match action {
-        Action::Abort | Action::Approvals => target.is_none(),
+        Action::Abort | Action::Approvals | Action::Recover => target.is_none(),
         Action::Cancel | Action::Approve | Action::Reject => target.is_some(),
     };
     if !arity_ok {
@@ -192,6 +205,37 @@ async fn abort(options: &Options, out: &Output) -> Result<(), String> {
     }
     if queued > 0 {
         out.log(&format!("Cancelled {queued} queued run(s)."));
+    }
+    Ok(())
+}
+
+async fn recover(options: &Options, out: &Output) -> Result<(), String> {
+    let result = RunClient::new(&grpc_addr())
+        .recover_session(&options.session)
+        .await?;
+    if options.json {
+        return print_json(out, result);
+    }
+    if result["journal_error"]
+        .as_str()
+        .is_some_and(|e| !e.is_empty())
+    {
+        return Err(format!(
+            "Session {} is still degraded: {}",
+            options.session,
+            result["journal_error"].as_str().unwrap_or_default()
+        ));
+    }
+    if result["was_degraded"].as_bool().unwrap_or(false) {
+        out.log(&format!(
+            "Session {} recovered: its journal is writable and the transcript is rebuilt from disk.",
+            options.session
+        ));
+    } else {
+        out.log(&format!(
+            "Session {} had no recorded journal failure; its transcript is rebuilt from disk.",
+            options.session
+        ));
     }
     Ok(())
 }
@@ -337,6 +381,7 @@ pub(super) async fn run(action: Action, args: &[String], out: &Output) -> Result
         Action::Approvals => approvals(&options, out).await,
         Action::Approve => decide(&options, true, out).await,
         Action::Reject => decide(&options, false, out).await,
+        Action::Recover => recover(&options, out).await,
     }
 }
 
@@ -347,6 +392,7 @@ pub(super) const SUBCOMMANDS: &[(&str, Action)] = &[
     ("approvals", Action::Approvals),
     ("approve", Action::Approve),
     ("reject", Action::Reject),
+    ("recover", Action::Recover),
 ];
 
 #[cfg(test)]
@@ -430,6 +476,55 @@ mod tests {
             .is_err(),
             "duplicate options are rejected, not last-wins"
         );
+    }
+
+    #[tokio::test]
+    async fn recover_reports_the_cleared_journal() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = MockAgent::default();
+        agent.responses.insert(
+            "recover_session".into(),
+            json!({"recovered": true, "was_degraded": true, "journal_error": null}).to_string(),
+        );
+        let (agent, _env) = spawn(agent).await;
+        let (out, cap) = Output::memory();
+        run(Action::Recover, &args(&["s1"]), &out)
+            .await
+            .expect("recover");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("Session s1 recovered"), "{stdout}");
+        assert_eq!(agent.seen_of("recover_session")[0].session_id, "s1");
+    }
+
+    #[tokio::test]
+    async fn recover_fails_loudly_when_the_journal_is_still_degraded() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = MockAgent::default();
+        agent.responses.insert(
+            "recover_session".into(),
+            json!({
+                "recovered": true,
+                "was_degraded": true,
+                "journal_error": "event journal append failed: database is locked"
+            })
+            .to_string(),
+        );
+        let (_agent, _env) = spawn(agent).await;
+        let (out, _cap) = Output::memory();
+        let error = run(Action::Recover, &args(&["s1"]), &out)
+            .await
+            .expect_err("a still-degraded journal is not a success");
+        assert!(error.contains("still degraded"), "{error}");
+    }
+
+    #[test]
+    fn recover_takes_only_a_session() {
+        let parsed = parse(Action::Recover, &args(&["s1"])).unwrap();
+        assert_eq!(parsed.session, "s1");
+        assert!(parsed.target.is_none());
+        assert!(parse(Action::Recover, &args(&[])).is_err());
+        assert!(parse(Action::Recover, &args(&["s1", "extra"])).is_err());
+        assert!(parse(Action::Recover, &args(&["s1", "--run", "r"])).is_err());
     }
 
     #[tokio::test]
