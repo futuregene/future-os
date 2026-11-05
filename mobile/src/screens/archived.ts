@@ -1,3 +1,5 @@
+import type { MachineSummary } from "../remote/desktopStatus";
+import type { DesktopFilter } from "../remote/mergeSessions";
 import type { RemoteSession, RemoteWorkspace } from "../remote/types";
 import type { CatalogRow } from "./sessionTree";
 import { archivedRows } from "./sessionTree";
@@ -128,4 +130,27 @@ export function archivedCatalogRows(
     collapsed,
     catalog.desktopId,
   ));
+}
+
+/**
+ * The machines whose shelves the archived view cannot read.
+ *
+ * The shelf draws the catalogues of machines that are `connected` (see
+ * `CatalogEntry.status`), which makes an empty shelf a statement about those
+ * machines only: "nothing archived on the machines this phone can read". A
+ * reader whose archive sits on a machine that is not answering — asleep, off the
+ * network, its agent restarting — was told "nothing archived yet" instead, and a
+ * page that says an archive does not exist is a page they cannot act on.
+ *
+ * So the empty state names them. `filter` is the picker's own scope: a machine
+ * the reader filtered out is not one they are asking about.
+ */
+export function unreadableShelfMachines(
+  machines: readonly MachineSummary[],
+  filter: DesktopFilter,
+): MachineSummary[] {
+  const scope = filter.kind === "desktop"
+    ? machines.filter(machine => machine.desktopId === filter.desktopId)
+    : machines;
+  return scope.filter(machine => machine.status !== "connected");
 }
