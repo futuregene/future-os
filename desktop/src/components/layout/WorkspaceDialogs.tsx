@@ -36,7 +36,9 @@ function deleteDescription(
   }
   if (summary.keptThreads > 0)
     return t("workspaceDialogs.deleteKeptDescription", { kept: summary.keptThreads });
-  return t("workspaceDialogs.deleteDescription");
+  // Nothing shelved: the delete takes everything in it, which is the sentence
+  // this confirmation has always used.
+  return t("workspaceDialogs.deleteActiveOnlyDescription");
 }
 
 export function WorkspaceDialogs({

@@ -417,7 +417,7 @@ describe("app shell dialogs", () => {
 describe("workspace dialogs", () => {
   const workspace = { cleanupStatus: "active" as const, createdAt: 0, id: "ws-1", kind: "user" as const, name: "Alpha", path: "/tmp/alpha", pinned: false, updatedAt: 0 };
 
-  function Harness({ handlers, initial }: { handlers: Record<string, () => void>; initial?: { deleteOpen?: boolean } }) {
+  function Harness({ handlers, initial }: { handlers: Record<string, () => void>; initial?: { deleteOpen?: boolean; summary?: { deletedThreads: number; keptThreads: number } } }) {
     const [renameDialog, setRenameDialog] = useState<WorkspaceRenameDialogState | null>(
       { error: "taken", submitting: false, value: "Alpha", workspace },
     );
@@ -427,7 +427,7 @@ describe("workspace dialogs", () => {
             error: null,
             loadingSummary: false,
             submitting: false,
-            summary: { deletedThreads: 1, keptThreads: 2 },
+            summary: initial.summary ?? { deletedThreads: 1, keptThreads: 2 },
             workspace,
           }
         : null,
@@ -462,9 +462,22 @@ describe("workspace dialogs", () => {
   it("says how many conversations a workspace delete removes and keeps", () => {
     const view = mount(createElement(Harness, { handlers: {}, initial: { deleteOpen: true } }));
     // A delete is not an archive delete: the confirmation names both halves, with
-    // the backend's counts rather than the loaded pages'.
+    // the backend's counts rather than the loaded pages', and it keeps the
+    // file-safety sentence the old confirmation carried.
     expect(view.container.textContent).toContain("1 active conversations are deleted with it");
     expect(view.container.textContent).toContain("2 archived conversations are kept");
+    expect(view.container.textContent).toContain("Files on disk are not deleted");
+    view.unmount();
+  });
+
+  it("keeps the old confirmation wording when nothing is archived", () => {
+    const view = mount(createElement(Harness, {
+      handlers: {},
+      initial: { deleteOpen: true, summary: { deletedThreads: 2, keptThreads: 0 } },
+    }));
+    expect(view.container.textContent).toContain(
+      "This workspace and its conversations are removed from the sidebar; files on disk are not deleted.",
+    );
     view.unmount();
   });
 
