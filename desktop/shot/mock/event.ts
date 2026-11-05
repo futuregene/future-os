@@ -36,3 +36,15 @@ export async function emitTo(): Promise<void> {}
 export class TauriEvent {
   static readonly WINDOW_RESIZED = "tauri://resize";
 }
+
+/**
+ * The page's own handle on the bus, for the UI harness.
+ *
+ * In a real launch these events come from the Rust side — the host publishes
+ * `tasks-updated` after a remote write, the agent publishes run progress — and
+ * nothing inside the page can produce one. The harness has no Rust side, so a
+ * case that is about "the window learns about a change made elsewhere" delivers
+ * the event here, where the app really listens for it.
+ */
+if (typeof window !== "undefined")
+  (window as unknown as { __shotEmit?: typeof emit }).__shotEmit = emit;

@@ -1,0 +1,40 @@
+{
+  "id": "remote-live-host-unpair",
+  "surface": "remote-live",
+  "title": "自建中继：主机解除配对后不再服务那台设备，也不需要重启",
+  "area": "remote",
+  "priority": "P1",
+  "tags": ["remote", "relay", "unpair"],
+  "description": "另一份报告是反方向：在桌面端点「解除配对」，手机却一直「已断开 / 重试」。那一半是手机侧的呈现（见 mobile-pairing-revoked），这一半是权威：主机撤销一台已配对的设备之后，自己的配对簿必须立刻少掉它、停止为它服务，而主机进程继续运行——不需要重启，也不该留下一个还连着的桥。报告里的「手动刷新才更新」就是两侧说法不一致留下的缝。",
+  "preconditions": "future 二进制可用；本机有 nats-server。",
+  "expectations": [
+    "配对成功后主机 devicesTotal = 1 且 state = serving",
+    "主机 `remote devices remove` 之后 devicesTotal = 0",
+    "移除之后主机回到 state = on、serving = false、transport = null（不再为任何设备服务）",
+    "主机进程仍在运行（desktopRunning = true），撤销不需要重启",
+    "移除命令自己返回的文档也是 0 台设备（命令的答案与状态页一致）"
+  ],
+  "steps": [
+    { "hostStart": true },
+    { "invite": true, "as": "link" },
+    { "clientAdd": "{{link}}", "as": "paired" },
+    { "assertJson": { "from": "paired", "path": "paired.agentAvailable", "equals": true, "message": "配对后客户端能拿到 agent 能力" } },
+    { "waitFor": { "source": "host", "args": ["remote", "status", "--json"], "expect": { "path": "devicesTotal", "equals": 1 }, "message": "主机记录了一台设备", "as": "beforeRemoval" } },
+    { "assertJson": { "from": "beforeRemoval", "path": "state", "equals": "serving", "message": "配对后主机在服务" } },
+    { "hostCli": ["remote", "devices", "remove", "1", "--yes", "--json"], "as": "removal" },
+    { "assertJson": { "from": "removal", "path": "devices", "equals": [], "message": "移除命令自己报告的设备列表已经空了" } },
+    { "assertJson": { "from": "removal", "path": "active", "absent": true, "message": "没有设备在控制位" } },
+    { "waitFor": { "source": "host", "args": ["remote", "status", "--json"], "expect": { "path": "devicesTotal", "equals": 0 }, "message": "设备从主机的配对簿里消失", "as": "afterRemoval" } },
+    { "assertJson": { "from": "afterRemoval", "path": "state", "equals": "on", "message": "回到「已启用、未服务」，而不是 serving" } },
+    { "assertJson": { "from": "afterRemoval", "path": "serving", "equals": false, "message": "不再服务那台设备" } },
+    { "assertJson": { "from": "afterRemoval", "path": "transport", "absent": true, "message": "不再保留到 broker 的传输" } },
+    { "assertJson": { "from": "afterRemoval", "path": "desktopRunning", "equals": true, "message": "主机仍在运行：撤销不需要重启" } }
+  ],
+  "judge": {
+    "criteria": [
+      "主机在移除设备后立刻停止服务，状态词从 serving 回到 on，客户端不会继续对着一个已撤销的配对重连",
+      "移除命令的答案与状态页一致（都是 0 台设备）",
+      "主机进程没有因此退出或重启，日志里没有凭据被拒的反复重连"
+    ]
+  }
+}

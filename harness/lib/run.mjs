@@ -109,6 +109,8 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
   const observations = [];
   const metrics = [];
   const dbValues = new Map();
+  /** IPC command → the count the previous `server` step observed. */
+  const serverCounts = new Map();
   const variables = {};
   let status = "pass";
   let fatal = null;
@@ -387,6 +389,25 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
             });
             if (!ok)
               throw new Error(`IPC expectation failed: ${spec.command} expected ${spec.expect}, got ${matches.length}`);
+          }
+          // A count is absolute; "this interaction caused one more read" is the
+          // delta form, and the only one a subscription can be tested with.
+          const serverKey = `server:${spec.command}`;
+          const previousMatches = serverCounts.get(serverKey);
+          serverCounts.set(serverKey, matches.length);
+          if (spec.delta !== undefined) {
+            const actual = previousMatches === undefined ? null : matches.length - previousMatches;
+            const ok = actual === spec.delta;
+            checks.push({
+              kind: "serverDelta",
+              step: index + 1,
+              message: spec.message ?? `IPC ${spec.command} 新增 ${spec.delta} 次调用`,
+              ok,
+              expected: spec.delta,
+              actual,
+            });
+            if (!ok)
+              throw new Error(`IPC delta failed: ${spec.command} expected ${spec.delta} more calls, got ${actual === null ? "no earlier count" : actual}`);
           }
         }
         else if (action === "measure") {
