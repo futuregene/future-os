@@ -1,0 +1,57 @@
+{
+  "id": "cli-session-list-status-transcript",
+  "surface": "cli",
+  "title": "CLI 会话三连：list / status / transcript 对着一个真 agent 都说得清",
+  "area": "cli",
+  "priority": "P0",
+  "tags": ["cli", "session", "agent"],
+  "agent": "demo",
+  "description": "对着脚本化的 gRPC agent（仓库里的 demo_agent，本用例自己挑一个新端口启动，不碰本机正在跑的 agent）跑三个读命令：future session list 列出会话（表格 + --json 两态）、future session status 报出一个会话的实时状态与上下文占用、future session transcript 按条打印一个会话的记录。要点是三个命令都把 agent 真实返回的数据摊开：会话标题、模型、上下文窗口、用量、记录里的用户 / 助手 / 工具条目都在，而不是空表或「没有会话」。",
+  "preconditions": "future 与 demo_agent 已构建；本用例用 FUTURE_HOME 指向自己的隔离目录，并把 FUTURE_AGENT_GRPC_ADDR 指向本用例新起的 demo_agent 端口（demo_agent 提供 58 个会话、一个 200k 上下文的会话状态、一份 17 条的记录）。",
+  "expectations": [
+    "session list 表格有表头与真实会话行（demo-session / future/deepseek-flash）",
+    "session list --json 的 sessions 数组有二十条以上，且第一条是 demo-session",
+    "session status <id> 打印出模型、上下文 12K / 200K、权限与技能数",
+    "session status --json 的上下文窗口与用量字段与 agent 报告一致",
+    "session transcript --session <id> 打印扫描统计与 [user] / [assistant] / [tool] 三类条目",
+    "四个命令都以退出码 0 结束"
+  ],
+  "steps": [
+    { "run": ["session", "list"], "expectExit": 0 },
+    { "expectStdout": "SESSION ID" },
+    { "expectStdout": "demo-session" },
+    { "expectStdout": "future/deepseek-flash" },
+    { "run": ["session", "list", "--json"], "expectExit": 0 },
+    { "expectJson": { "path": "sessions", "lengthMin": 20, "message": "sessions 数组有 20 条以上" } },
+    { "expectJson": { "path": "sessions.0.id", "equals": "demo-session", "message": "第一条是脚本会话" } },
+    { "expectJson": { "path": "sessions.0.sessionName", "equals": "表达式解析器里的 off-by-one" } },
+    { "expectJson": { "path": "sessions.0.isStreaming", "equals": false } },
+    { "run": ["session", "status", "demo-session"], "expectExit": 0 },
+    { "expectStdout": "Session:  demo-session" },
+    { "expectStdout": "Model:         future/deepseek-flash" },
+    { "expectStdout": "Context:       12K / 200K tokens (6.2%)" },
+    { "expectStdout": "Permission:    workspace" },
+    { "expectStdout": "Skills:        3 loaded" },
+    { "run": ["session", "status", "demo-session", "--json"], "expectExit": 0 },
+    { "expectJson": { "path": "contextWindow", "equals": 200000 } },
+    { "expectJson": { "path": "contextTokens", "equals": 12400 } },
+    { "expectJson": { "path": "usage.cacheReadTokens", "equals": 88000 } },
+    { "expectJson": { "path": "model", "equals": "future/deepseek-flash" } },
+    { "run": ["session", "transcript", "--session", "demo-session"], "expectExit": 0 },
+    { "expectStdout": { "regex": "session=demo-session scanned=\\d+ entries=\\d+", "message": "记录的扫描统计行" } },
+    { "expectStdout": "[user]" },
+    { "expectStdout": "[assistant]" },
+    { "expectStdout": "tool-result" },
+    { "expectStdout": "parse_expr" }
+  ],
+  "judge": {
+    "criteria": [
+      "三条命令的输出都是这个 agent 的真实数据（会话标题、模型、上下文占用、记录条目），不是空表或占位符",
+      "表格类输出（session list）表头与列对得齐，宽字符没有被挤成半个字",
+      "session status 的键值行缩进一致，数值带单位（12K / 200K、6.2%）",
+      "session transcript 的条目按 [user] / [assistant] / [tool] 分段，正文可读",
+      "没有任何一条命令以非零退出码结束或打印报错"
+    ],
+    "maxImages": 4
+  }
+}

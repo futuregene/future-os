@@ -251,12 +251,21 @@ def main() -> int:
     shutil.rmtree(home, ignore_errors=True)
     home.mkdir(parents=True, exist_ok=True)
 
+    # `agentEnv` is how a case names the data the scripted agent should claim:
+    # `FUTURE_DEMO_CWD` is the checkout the panels read, so a case that opens the
+    # git or files panel has to point it at a real directory. `$REPO` expands to
+    # this checkout, which keeps the case machine-independent — a hard-coded
+    # `/Users/<name>/…` would only ever run on the machine it was written on.
+    agent_env = dict(os.environ)
+    for name, value in (spec.get("agentEnv") or {}).items():
+        agent_env[str(name)] = str(value).replace("$REPO", str(ROOT))
+
     port = free_port()
     agent = subprocess.Popen(
         [demo_agent_bin(), "--port", str(port)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        env=os.environ,
+        env=agent_env,
     )
     session = None
     timeline = []

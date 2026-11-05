@@ -5,10 +5,13 @@
  * settings, so a mutating command (`workspace add/archive/restore`) changes only
  * that case. `FUTURE_HOME` also moves the IPC endpoint into the case, and the
  * agent address is pointed at a closed port: an offline command must never
- * reach the user's running agent.
+ * reach the user's running agent. A case that needs a live agent opts in with
+ * `"agent": "demo"` and gets the scripted `demo_agent` on a port taken for that
+ * case alone — never the address of whatever agent the user is running.
  */
-import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
+import { execFile, spawn } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
+import { createConnection, createServer } from "node:net";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { DatabaseSync } from "node:sqlite";
@@ -18,6 +21,59 @@ import { resolveLimit, readBaseline, baselineKey } from "./perf.mjs";
 const execFileAsync = promisify(execFile);
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
+
+function demoAgentBin() {
+  if (process.env.FUTURE_DEMO_AGENT)
+    return process.env.FUTURE_DEMO_AGENT;
+  return join(REPO_ROOT, "target", "debug", "examples", "demo_agent");
+}
+
+/** A port nothing is listening on, taken by asking the OS for one. */
+function freePort() {
+  return new Promise((resolvePort, reject) => {
+    const server = createServer();
+    server.unref();
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address();
+      server.close(() => resolvePort(port));
+    });
+  });
+}
+
+async function waitForPort(port, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const open = await new Promise((resolveOpen) => {
+      const socket = createConnection({ host: "127.0.0.1", port });
+      socket.once("connect", () => {
+        socket.destroy();
+        resolveOpen(true);
+      });
+      socket.once("error", () => resolveOpen(false));
+    });
+    if (open)
+      return;
+    await new Promise(r => setTimeout(r, 100));
+  }
+  throw new Error(`fixture agent did not listen on 127.0.0.1:${port}`);
+}
+
+/**
+ * Start the scripted demo agent for a case that needs a live one.
+ *
+ * `agent: "demo"` in a case file is the whole opt-in: the address handed to the
+ * run steps is this process's freshly taken port, never the user's running
+ * agent's, and it is torn down with the case. A case without it keeps the
+ * closed-port default, so an offline command still cannot reach a real agent by
+ * accident.
+ */
+async function startDemoAgent() {
+  const port = await freePort();
+  const child = spawn(demoAgentBin(), ["--port", String(port)], { stdio: "ignore" });
+  await waitForPort(port);
+  return { child, addr: `127.0.0.1:${port}`, port };
+}
 
 export function cliBin() {
   if (process.env.FUTURE_BIN)
@@ -81,8 +137,33 @@ export async function runCliCase({ testCase, runDir, bin = cliBin() }) {
     note({ action: "fail", ok: false, error: message, ...extra });
   };
 
+  // An agent-backed case (`"agent": "demo"`) gets the scripted gRPC server on a
+  // port taken for this case alone; every other case keeps the closed port that
+  // makes an accidental connection impossible.
+  let fixture = null;
+  if (testCase.agent === "demo") {
+    fixture = await startDemoAgent();
+    note({ action: "agent", ok: true, note: `demo_agent on 127.0.0.1:${fixture.port}` });
+    // A crash between here and the kill below still has to take the child with
+    // it: an orphaned agent on a fixed port is how the next run talks to a
+    // process nobody is watching.
+    process.once("exit", () => fixture?.child.kill());
+  }
+  const agentAddr = fixture?.addr ?? "127.0.0.1:1";
+
+  // `{{home}}` / `{{case}}` name the two paths a case cannot spell for itself:
+  // the isolated `FUTURE_HOME` and its parent. A backup has to be written
+  // *outside* the home it archives (a directory inside it would be walked into
+  // itself), and neither path is knowable when the case file is written.
+  const fill = value => typeof value === "string"
+    ? value.replaceAll("{{home}}", home).replaceAll("{{case}}", caseDir)
+    : Array.isArray(value) ? value.map(fill)
+      : value && typeof value === "object"
+        ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, fill(item)]))
+        : value;
+
   for (const [index, rawStep] of testCase.steps.entries()) {
-    const step = rawStep; // CLI cases do not need DB-derived interpolation yet
+    const step = fill(rawStep);
     const action = Object.keys(step).find(key => !["note", "timeout", "optional"].includes(key)) ?? "note";
     if (step.note)
       note({ action: "note", note: step.note });
@@ -96,7 +177,7 @@ export async function runCliCase({ testCase, runDir, bin = cliBin() }) {
         const env = {
           ...process.env,
           FUTURE_HOME: home,
-          FUTURE_AGENT_GRPC_ADDR: "127.0.0.1:1",
+          FUTURE_AGENT_GRPC_ADDR: agentAddr,
           NO_COLOR: "1",
           TERM: "dumb",
         };
@@ -205,6 +286,13 @@ export async function runCliCase({ testCase, runDir, bin = cliBin() }) {
       else if (action === "mkdir") {
         mkdirSync(step.mkdir, { recursive: true });
       }
+      else if (action === "remove") {
+        // Start a step that measures a fresh artefact (a backup directory, an
+        // export) from nothing: re-running a case under the same run name
+        // reuses this directory, and `future data backup` refuses a destination
+        // that already exists.
+        rmSync(step.remove, { recursive: true, force: true });
+      }
       else {
         throw new Error(`unknown CLI step: ${action}`);
       }
@@ -222,6 +310,8 @@ export async function runCliCase({ testCase, runDir, bin = cliBin() }) {
         break;
     }
   }
+
+  fixture?.child.kill();
 
   const result = {
     id: testCase.id,
