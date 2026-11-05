@@ -379,6 +379,7 @@ future session wait <id> [--run <run-id>] [--timeout <duration>]  # 等待某个
 future session approvals <id>
 future session approve <id> <request-id> [--allow <glob>]
 future session reject <id> <request-id>
+future session recover <id>              # 清掉日志失败标记，让会话重新接受提问
 future session delete <id>
 future session prune --older-than 3d [--yes]  # 删除闲置超过该时长的会话（默认只预览）
 ```

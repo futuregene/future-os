@@ -4,6 +4,15 @@ use crate::session::sqlite_store::is_event_rejected;
 pub(super) type AppendReceipt = super::journal_control::WorkerReceipt<Result<(), AppendFailure>>;
 
 pub(super) const EVENT_BATCH_WINDOW: std::time::Duration = std::time::Duration::from_millis(100);
+/// How long a batch that could not be committed waits before the writer tries
+/// the same events again. A storage failure is usually contention on a shared
+/// SQLite database (another session's long transaction, a checkpoint of a large
+/// WAL), and such a window opens and closes on its own — so the writer keeps the
+/// events it already accepted and retries them instead of waiting for the next
+/// append. A successful retry is also what clears the journal health flag
+/// (see `flush_event_batch`), which is the only self-healing path a session with
+/// no run can take.
+pub(super) const EVENT_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 const EVENT_BATCH_MAX_EVENTS: usize = 128;
 const EVENT_BATCH_MAX_BYTES: usize = 64 * 1024;
 const EVENT_BATCH_QUEUE_CAPACITY: usize = BROADCAST_RING_CAPACITY;
@@ -13,6 +22,10 @@ pub(super) struct EventJournalHealth {
     last_error: parking_lot::Mutex<Option<String>>,
     pub(super) metrics: super::journal_metrics::JournalMetrics,
     interrupt_flag: parking_lot::Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+    /// Test-only: make the next `n` batch commits fail the way a transient
+    /// storage failure does (the batch is kept, not dropped).
+    #[cfg(test)]
+    injected_failures: std::sync::atomic::AtomicUsize,
 }
 
 impl EventJournalHealth {
@@ -22,6 +35,28 @@ impl EventJournalHealth {
 
     pub(super) fn clear(&self) {
         *self.last_error.lock() = None;
+    }
+
+    #[cfg(test)]
+    pub(super) fn inject_commit_failures(&self, count: usize) {
+        self.injected_failures
+            .store(count, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Consume one injected failure. Test-only and single-threaded by
+    /// construction: the flag is armed before a broadcast and read by the one
+    /// writer thread.
+    #[cfg(test)]
+    fn take_injected_failure(&self) -> bool {
+        let remaining = self
+            .injected_failures
+            .load(std::sync::atomic::Ordering::SeqCst);
+        if remaining == 0 {
+            return false;
+        }
+        self.injected_failures
+            .store(remaining - 1, std::sync::atomic::Ordering::SeqCst);
+        true
     }
 
     pub(super) fn fail(&self, message: String) {
@@ -381,7 +416,10 @@ fn run_event_batch_writer(
     };
     let mut pending = Vec::<PendingEvent>::new();
     let mut pending_bytes = 0usize;
-    let mut deadline = None::<std::time::Instant>;
+    // When the loop must wake on its own: the batch window while the journal is
+    // healthy, or the retry interval while it is not. Both are "something is
+    // buffered and nothing else will wake us".
+    let mut due = None::<std::time::Instant>;
     let mut failed = false;
     let mut consumed = 0u64;
     let mut control = None::<super::journal_control::ControlCommand>;
@@ -396,38 +434,36 @@ fn run_event_batch_writer(
             .is_some_and(|command| command.target <= consumed)
         {
             let command = control.take().expect("ready control");
-            let ok = flush_event_batch(
+            let (now_failed, now_bytes, now_due) = flush_and_schedule(
                 &store,
                 &session_id,
                 &health,
                 &mut pending,
                 &mut canonical,
+                window,
                 #[cfg(test)]
                 &commits,
             );
-            failed = !ok;
-            pending_bytes = pending.iter().map(|item| item.bytes).sum();
-            deadline = (!pending.is_empty() && !failed).then(|| std::time::Instant::now() + window);
-            command.reply.send(if ok {
-                Ok(())
-            } else {
+            failed = now_failed;
+            pending_bytes = now_bytes;
+            due = now_due;
+            command.reply.send(if failed {
                 Err(health
                     .error()
                     .unwrap_or_else(|| "event persistence is unavailable".into()))
+            } else {
+                Ok(())
             });
             if command.shutdown {
                 break;
             }
             continue;
         }
-        let timer = if !pending.is_empty() && !failed {
-            crossbeam_channel::after(
-                deadline
-                    .unwrap_or_else(std::time::Instant::now)
-                    .saturating_duration_since(std::time::Instant::now()),
-            )
-        } else {
-            crossbeam_channel::never()
+        let timer = match due {
+            Some(at) => {
+                crossbeam_channel::after(at.saturating_duration_since(std::time::Instant::now()))
+            }
+            None => crossbeam_channel::never(),
         };
         let command = if control.is_some() {
             // A fence has priority but must consume its preceding body first.
@@ -445,17 +481,19 @@ fn run_event_batch_writer(
             }
         };
         let Some(command) = command else {
-            failed = !flush_event_batch(
+            let (now_failed, now_bytes, now_due) = flush_and_schedule(
                 &store,
                 &session_id,
                 &health,
                 &mut pending,
                 &mut canonical,
+                window,
                 #[cfg(test)]
                 &commits,
             );
-            pending_bytes = pending.iter().map(|item| item.bytes).sum();
-            deadline = (!pending.is_empty() && !failed).then(|| std::time::Instant::now() + window);
+            failed = now_failed;
+            pending_bytes = now_bytes;
+            due = now_due;
             continue;
         };
 
@@ -488,23 +526,24 @@ fn run_event_batch_writer(
                     reply,
                     _reservation: reservation,
                 });
-                deadline.get_or_insert_with(|| std::time::Instant::now() + window);
+                due.get_or_insert_with(|| std::time::Instant::now() + window);
                 if durable
                     || pending.len() >= EVENT_BATCH_MAX_EVENTS
                     || pending_bytes >= EVENT_BATCH_MAX_BYTES
                 {
-                    failed = !flush_event_batch(
+                    let (now_failed, now_bytes, now_due) = flush_and_schedule(
                         &store,
                         &session_id,
                         &health,
                         &mut pending,
                         &mut canonical,
+                        window,
                         #[cfg(test)]
                         &commits,
                     );
-                    pending_bytes = pending.iter().map(|item| item.bytes).sum();
-                    deadline = (!pending.is_empty() && !failed)
-                        .then(|| std::time::Instant::now() + window);
+                    failed = now_failed;
+                    pending_bytes = now_bytes;
+                    due = now_due;
                 }
             }
             #[cfg(test)]
@@ -514,6 +553,38 @@ fn run_event_batch_writer(
             }
         }
     }
+}
+
+/// Flush whatever is buffered and say when the loop must wake next.
+///
+/// A batch that could not be committed stays in `pending` (see
+/// `flush_event_batch`), so the retry writes *those* events rather than waiting
+/// for a new one to arrive: the journal heals itself while nobody is running.
+fn flush_and_schedule(
+    store: &crate::session::sqlite_store::SqliteStore,
+    session_id: &str,
+    health: &EventJournalHealth,
+    pending: &mut Vec<PendingEvent>,
+    canonical: &mut Option<crate::session::content::journal::Writer>,
+    window: std::time::Duration,
+    #[cfg(test)] commits: &std::sync::atomic::AtomicU64,
+) -> (bool, usize, Option<std::time::Instant>) {
+    let failed = !flush_event_batch(
+        store,
+        session_id,
+        health,
+        pending,
+        canonical,
+        #[cfg(test)]
+        commits,
+    );
+    let bytes = pending.iter().map(|item| item.bytes).sum();
+    // Nothing buffered means nothing to retry: a failure recorded on an empty
+    // queue is left to `recover_session`/`retry_persistence`, which do not need
+    // a run to be woken by.
+    let due = (!pending.is_empty())
+        .then(|| std::time::Instant::now() + if failed { EVENT_RETRY_INTERVAL } else { window });
+    (failed, bytes, due)
 }
 
 fn flush_event_batch(
@@ -526,6 +597,13 @@ fn flush_event_batch(
 ) -> bool {
     if pending.is_empty() {
         return true;
+    }
+    #[cfg(test)]
+    if health.take_injected_failure() {
+        // Same shape as a real transient failure: the batch is kept, health is
+        // marked, and the reply stays with its event for the next attempt.
+        health.fail("event batch commit failed: injected storage failure".into());
+        return false;
     }
     let started = std::time::Instant::now();
     let result = match canonical.as_mut() {
@@ -545,6 +623,13 @@ fn flush_event_batch(
         Ok(()) => {
             #[cfg(test)]
             commits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            // The journal just proved it is writable again. Clearing here —
+            // rather than only at a run's journal rebind — is what keeps a
+            // transient failure (SQLITE_BUSY under another session's long
+            // transaction) from outliving it: without this, the flag is only
+            // cleared by a write path that the flag itself blocks, and a
+            // session with no run can never get back to writable.
+            health.clear();
             for item in pending.drain(..) {
                 if let Some(reply) = item.reply {
                     let _ = reply.send(Ok(()));

@@ -279,6 +279,22 @@ pub(crate) fn handle_retry_persistence(
     }
 }
 
+pub(crate) fn handle_recover_session(
+    session: &Arc<parking_lot::RwLock<ServerSession>>,
+    id: &str,
+) -> String {
+    match session.write().recover_session_journal() {
+        Ok(report) => RpcResponse::ok(id, "recover_session", report),
+        Err(error) => RpcResponse::build_fail_code(
+            id,
+            "recover_session",
+            "session_recovery_failed",
+            &error.to_string(),
+            serde_json::json!({"retryable": true}),
+        ),
+    }
+}
+
 pub(crate) fn handle_abort(
     state: &AppState,
     session: &Arc<parking_lot::RwLock<ServerSession>>,
