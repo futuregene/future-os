@@ -250,8 +250,14 @@ export function RemoteConversationView({
    * reader expands it. Gated on the host advertising `reasoning_fetch_v1`: a host
    * that predates the read would refuse it, and a row that offers an expansion
    * it cannot deliver is worse than one that stays the label it was.
+   *
+   * The capability list is read defensively for the same reason the peer is:
+   * the handshake fields reach this view as decoded JSON, and a host older than
+   * the list — or a peer row this client only partly knows — arrives without
+   * one. An absent list is not an error to throw on; it is the same answer as a
+   * list without the word, so the row stays its label.
    */
-  const supportsReasoningFetch = peer?.features.includes("reasoning_fetch_v1") === true;
+  const supportsReasoningFetch = peer?.features?.includes("reasoning_fetch_v1") === true;
   const onResolveReasoning = useCallback(
     (runId: string, index: number, settled?: boolean) =>
       fetchRemoteReasoning({ desktopId, sessionId, runId, index, settled }),
