@@ -17,7 +17,7 @@ import { loadCases, listCases, CASES_DIR } from "./lib/cases.mjs";
 import { prepare, BASE_DB, MODELS_COPY, DATA_DIR } from "./lib/data.mjs";
 import { ensureDevServer, ensureMobileServer, ensureAssetServer, ensureTerminalServer, DEFAULT_URL } from "./lib/dev-server.mjs";
 import { runCase } from "./lib/run.mjs";
-import { runCliCase } from "./lib/cli-driver.mjs";
+import { runCliCase, cliBin } from "./lib/cli-driver.mjs";
 import { CdpPage } from "./lib/cdp.mjs";
 import { analyzeRun } from "./lib/analyze.mjs";
 import { writeReport } from "./lib/report.mjs";
@@ -90,9 +90,17 @@ async function main() {
     if (!existsSync(BASE_DB))
       throw new Error("no base database; run `node harness/cli.mjs prepare` first");
     const ids = args("case");
-    const cases = loadCases({ ids, tag: arg("tag") });
+    const tag = arg("tag");
+    // A case that needs the public network stays out of a default run: on a
+    // plane, an offline laptop would otherwise file the internet as a product
+    // defect. It runs when named by id or tag, and `list` still shows it.
+    const selected = loadCases({ ids, tag });
+    const cases = (ids.length || tag)
+      ? selected
+      : selected.filter(testCase => !testCase.needsNetwork);
     if (!cases.length)
       throw new Error(`no cases matched (library: ${CASES_DIR})`);
+    const skippedNetwork = selected.length - cases.length;
 
     const runId = arg("name") ?? stamp();
     const runDir = join(RUNS_DIR, runId);
@@ -188,6 +196,35 @@ async function main() {
           record(result);
       }
 
+      // `remote-live` needs no dev server, no browser and no mock: it is the
+      // relay path with real processes. `remote-cn` talks to the deployed Future
+      // platform and is opt-in (it is tagged, so a default run excludes it).
+      const liveRemote = bySurface("remote-live");
+      if (liveRemote.length) {
+        const { runRemoteLiveCase } = await import("./lib/remote-live.mjs");
+        for (const testCase of liveRemote) {
+          process.stdout.write(`\n▶ ${testCase.id} — ${testCase.title}\n`);
+          record(await runRemoteLiveCase({ testCase, runDir, bin: cliBin() }));
+        }
+      }
+
+      const mobileLive = bySurface("remote-mobile-live");
+      if (mobileLive.length) {
+        const { runRemoteMobileCase } = await import("./lib/remote-mobile-live.mjs");
+        for (const testCase of mobileLive) {
+          process.stdout.write(`\n▶ ${testCase.id} — ${testCase.title}\n`);
+          record(await runRemoteMobileCase({ testCase, runDir, bin: cliBin() }));
+        }
+      }
+
+      const cnRemote = bySurface("remote-cn");      if (cnRemote.length) {
+        const { runRemoteCnCase } = await import("./lib/remote-cn.mjs");
+        for (const testCase of cnRemote) {
+          process.stdout.write(`\n▶ ${testCase.id} — ${testCase.title}\n`);
+          record(await runRemoteCnCase({ testCase, runDir, bin: cliBin() }));
+        }
+      }
+
       const remote = bySurface("remote");
       if (remote.length) {
         const { runRemoteCases } = await import("./lib/remote-driver.mjs");
@@ -222,6 +259,8 @@ async function main() {
       console.log(`\n${analysis.totals.findings} findings (high ${analysis.totals.high}, medium ${analysis.totals.medium}). Report: ${report}`);
     }
 
+    if (skippedNetwork)
+      console.log(`\n（已跳过 ${skippedNetwork} 条需要公网的用例；用 --tag remote-cn 或 --case <id> 显式运行）`);
     const failed = results.filter(result => result.status !== "pass").length;
     console.log(`\n${results.length - failed}/${results.length} cases passed. Artifacts: ${runDir}`);
     process.exit(failed ? 1 : 0);

@@ -1,0 +1,37 @@
+{
+  "id": "remote-device-list",
+  "title": "已配对设备列表：谁在控制说清楚，解除只断那一条",
+  "area": "remote",
+  "priority": "P1",
+  "tags": ["remote", "pairing"],
+  "description": "打开远程桌面，看已配对的两台设备：控制权在谁身上、另一台处于待命，各自的配对 ID 与版本都写清楚。再对列表里的第一台执行「解除配对」，确认框点明是哪一台，完成后只少这一行，另一台还在。这也是「已配对设备已达上限，请先解除一台」那条提示指向的出口——那条路必须真的走得通。",
+  "preconditions": "夹具里有 2 台已配对设备（第一台正在控制本机），远程桌面开关初始为关。",
+  "expectations": [
+    "两台设备各有一行，名字可见",
+    "正在控制本机的那台标「正在控制」，另一台标「待命」",
+    "解除配对的确认框里出现那台设备的名字",
+    "确认后列表只剩一台，界面上没有报错"
+  ],
+  "steps": [
+    { "wait": 900 },
+    { "click": { "selector": "button", "text": "远程" } },
+    { "wait": 700 },
+    { "click": { "aria": "远程桌面" } },
+    { "waitFor": { "text": "已配对的设备" }, "timeout": 8000 },
+    { "assert": { "expr": "document.body.innerText.includes('iPhone 17 Pro') && document.body.innerText.includes('实验室的 MacBook Air')", "message": "两台已配对设备都在列表里" } },
+    { "assert": { "expr": "document.body.innerText.includes('正在控制') && document.body.innerText.includes('待命')", "message": "控制权与待命状态都写出来了" } },
+    { "shot": "device-list" },
+
+    { "click": { "selector": "button", "text": "解除配对" } },
+    { "wait": 700 },
+    { "assert": { "expr": "document.body.innerText.includes('解除这台设备') && document.body.innerText.includes('iPhone 17 Pro')", "message": "确认框点名了要解除的那台设备" } },
+    { "shot": "unpair-confirm" },
+    { "click": { "selector": "button", "text": "删除" } },
+    { "waitFor": { "absent": "iPhone 17 Pro" }, "timeout": 8000 },
+    { "assert": { "expr": "document.body.innerText.includes('实验室的 MacBook Air')", "message": "另一台设备仍然配对" } },
+    { "assert": { "expr": "!document.body.innerText.includes('解除这台设备')", "message": "确认框已经关掉" } },
+    { "assert": { "expr": "!document.body.innerText.includes('操作未完成')", "message": "解除配对没有落入通用错误" } },
+    { "shot": "one-device-left" },
+    { "server": { "command": "remote_unpair_device", "expect": 1, "message": "只解除了一台" } }
+  ]
+}

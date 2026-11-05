@@ -535,6 +535,23 @@ function perfDigest(result) {
   return lines.join("\n");
 }
 
+/** The one place the mobile/web boundary is stated, for both judge passes. */
+function surfaceCaveat(result) {
+  if (result.surface !== "mobile" && result.surface !== "remote")
+    return null;
+  return "重要边界：手机/远程界面是通过 react-native-web 渲染的，不是真机。Modal / Alert 遮罩层的透明度、系统状态栏与安全区、原生滚动物理都与真机不同，因此「对话框背景半透、底层列表透出、弹层与列表文字重叠」这类现象是 Web 渲染的差，不要把它们判成产品缺陷（可以写成 low 级观察并注明来源）。真正与平台无关的问题（文案错、数据不加和、按钮无响应、内容缺失、层级遮挡、布局错位）照常报。";
+}
+
+/** What the deterministic layer already proved, phrased for a model reader. */
+function provenText(result) {
+  const proven = (result.checks ?? []).filter(check => check.ok && check.kind !== "perf");
+  if (!proven.length)
+    return "";
+  return proven.slice(0, 20)
+    .map(check => `- ${check.message}${check.actual !== undefined ? `（实测 ${truncate(JSON.stringify(check.actual), 80)}）` : ""}`)
+    .join("\n");
+}
+
 function timelineText(result) {
   return (result.steps ?? [])
     .filter(step => step.action !== "note")
@@ -583,9 +600,7 @@ async function judgeCase(result, runDir, { model = null } = {}) {
         "数字本身要与量级相符（本地首屏、本地命令应是毫秒到一两秒量级，不该以十秒计）",
       ];
 
-  const surfaceNote = result.surface === "mobile" || result.surface === "remote"
-    ? "重要边界：手机/远程界是通过 react-native-web 渲染的，不是真机。Modal / Alert 遮罩层的透明度、系统状态栏与安全区、原生滚动物理都与真机不同，因此「对话框背景半透、底层列表透出、弹层与列表文字重叠」这类现象是 Web 渲染的差，不要把它们判成产品缺陷（可以写成 low 级观察并注明来源）。真正与平台无关的问题（文案错、数据不加和、按钮无响应、内容缺失、层级遮挡、布局错位）照常报。"
-    : null;
+  const surfaceNote = surfaceCaveat(result);
 
   const prompt = [
     "你是 FutureOS 的产品验收员，不是测试脚本执行器。",
@@ -606,8 +621,18 @@ async function judgeCase(result, runDir, { model = null } = {}) {
     perfText ? `\n性能与资源数据：\n${perfText}` : "",
     result.bodyText ? `\n页面文本快照（末尾时刻，截断；证明元素存在，不代表都在可视区）：\n${truncate(result.bodyText, 4000)}` : "",
     "",
+    "请先按上面的预期逐条判断，然后做一遍【自主检查】：把自己当成第一次用这个产品的人，从整套证据里找出**上面预期没提到**的问题。例如：",
+    "  · 动态过程：某个状态停住、卡片闪烁、切换后先出现上一个会话的内容再跳、动画结束后留下残影；",
+    "  · 状态不自洽：列表说有、主区说无，计数与行数不符，按钮可用但点了没反应，禁用态没有原因；",
+    "  · 文案与数据：数字不加和、时间逆序、单位或币种不一致、同一概念两种叫法、中英文混排；",
+    "  · 布局：遮挡、被浮动元素压住、空态与列表同时出现、长文本溢出、滚动到底部才有的空白；",
+    "  · 资源与性能：内存或请求量随重复操作单调上升、某项操作耗时比其他同类高一截。",
+    "自主发现的问题，在 title 前加「【发现】」（例如「【发现】切换后先闪一下上一个会话」），并写清是哪一帧/哪一步看到的。如果确实没发现，就不要凑数。",
+    "",
     "请输出严格 JSON（不要 markdown 围栏）：",
-    `{"verdict":"pass|issue","confidence":"high|medium|low","summary":"一句话判断","findings":[{"severity":"high|medium|low","title":"简短标题","detail":"看到什么、为什么不符合预期","evidence":"哪一步/哪一帧"}]}`,
+    `{"verdict":"pass|issue","confidence":"high|medium|low","summary":"一句话判断","findings":[{"severity":"high|medium|low|info","title":"简短标题","detail":"看到什么、为什么不符合预期","evidence":"哪一步/哪一帧"}]}`,
+    "示例：",
+    '{"verdict":"issue","confidence":"medium","summary":"配对可用，但切换后闪现旧会话内容","findings":[{"severity":"medium","title":"【发现】切换会话时先渲染上一个会话的正文","detail":"第 6→7 帧之间主区标题已变但正文仍是上一个会话，持续约 200ms","evidence":"录像第 6、7 帧"}]}',
     "规则：",
     "- 只判断用户能看到/会遇到的问题；内部实现细节不报。",
     "- 动态过程中的瞬时状态（生成中、加载中）不要当缺陷，除非它卡住或与操作明显不符。",
@@ -628,16 +653,80 @@ async function judgeCase(result, runDir, { model = null } = {}) {
     writeFileSync(join(runDir, "analysis", `${result.id}.judge-answer.md`), text);
     const parsed = parseFindings(text) ?? {};
     const verdict = parsed.verdict === "issue" ? "issue" : "pass";
+    const findings = Array.isArray(parsed.findings) ? parsed.findings : [];
+    // Second pass, no checklist. A judge that is only asked "did these
+    // expectations hold" can only find what someone already thought of; this one
+    // is asked to look at the same evidence as a stranger and say what looks
+    // wrong. Kept as a separate call so the two answers cannot blend, and skipped
+    // on surfaces that have no screen to look at — a log-only run (a relay, a CLI)
+    // gives the discovery pass nothing to inspect, and it fills the gap by
+    // inventing visual expectations the product never promised.
+    const screenshotCount = images.filter(item => !item.path.endsWith("judge-filmstrip.png")).length;
+    const discovered = screenshotCount > 0 ? await discoverCase(result, runDir, { model, images }) : [];
     return {
       verdict,
       confidence: parsed.confidence ?? "low",
       summary: parsed.summary ?? truncate(text, 300),
-      findings: Array.isArray(parsed.findings) ? parsed.findings : [],
+      findings: [...findings, ...discovered],
+      discovered: discovered.length,
       images: images.map(item => item.label),
     };
   }
   catch (error) {
     return { verdict: "unknown", confidence: "low", summary: "", findings: [], images: images.map(item => item.label), error: String(error?.message ?? error) };
+  }
+}
+
+/**
+ * The open-ended pass: same evidence, no expectations, "what looks wrong?".
+ *
+ * Deliberately not given the case's criteria — the point is to find the things
+ * nobody wrote down. Findings are prefixed so a report can separate them from
+ * checklist verdicts, and an empty answer is a valid answer.
+ */
+async function discoverCase(result, runDir, { model, images }) {
+  const promptPath = join(runDir, "analysis", `${result.id}.discover.md`);
+  const prompt = [
+    "你是一位资深产品验收员，第一次打开这个产品。下面是一次真实操作留下的证据：按时间排列的截图、整段录像的帧拼图，以及运行时日志与数值。",
+    "**没有预期清单。**请自己看，然后说出任何看起来不像一个成熟产品的地方。",
+    "值得注意的类别（不限于此）：",
+    "- 时序：某一步之后画面停在旧状态、闪一下再变、动画结束时残留、计数与实际条目不符；",
+    "- 状态：空态与列表并存、加载态永不结束、按钮可点但无反应、禁用却不说原因、同一信息两处不一致；",
+    "- 文案：中英文混排、术语不统一、数字/单位/币种不自洽、截断到无法辨认；",
+    "- 布局：遮挡、重叠、贴边、溢出、留白突兀、层级颠倒；",
+    "- 数据：合计算错、时间逆序、同一实体两个名字；",
+    "- 资源：耗时或内存随重复操作单调上升、某项操作明显比同类慢。",
+    "",
+    `用例（仅供参考它做了什么）：${result.title}`,
+    `操作时间线：\n${timelineText(result)}`,
+    result.bodyText ? `\n页面文本/进程日志快照（截断）：\n${truncate(result.bodyText, 4000)}` : "",
+    // Same two guards the checklist pass gets, for the same reason: without them
+    // this pass reads a web-rendered modal as a product defect, and restates
+    // things a live-DOM assertion already proved as discoveries.
+    surfaceCaveat(result) ? `\n${surfaceCaveat(result)}` : "",
+    provenText(result) ? `\n已由确定性断言在真实 DOM / 进程上验证通过的事实（如果截图看起来相反，先当作截图时机或滚动位置造成的证据不足，不要判成缺陷）：\n${provenText(result)}` : "",
+    "",
+    "输出严格 JSON（不要 markdown 围栏）。如果确实没有发现问题，findings 为空数组：",
+    `{"findings":[{"severity":"high|medium|low|info","title":"【发现】简短标题","detail":"看到什么 + 为什么不像正常产品","evidence":"哪一步/哪一帧"}]}`,
+    "规则：",
+    "- 只写证据里真的看得到的；看不出来就写 info 并说明证据不足。",
+    "- 不报实现细节、不报需要读代码才能知道的事、不报风格偏好（例如“我更喜欢圆角”）。",
+    "- 生成中/加载中的瞬时状态不算；除非它卡住或与操作明显不符。",
+    "- 视频抽帧与最终截图可能不同步，以最终状态帧为准。",
+    "- 宁少勿多：一条看得出、说得清的问题，胜过五条猜测。",
+    "- 与上面「已验证通过」的事实冲突的观察，写成 low 并注明证据不足，不要写 high/medium。",
+  ].join("\n");
+  writeFileSync(promptPath, prompt);
+  try {
+    const { text } = await runPrompt(promptPath, { model, images: images.map(item => item.path) });
+    writeFileSync(join(runDir, "analysis", `${result.id}.discover-answer.md`), text);
+    const parsed = parseFindings(text) ?? {};
+    const findings = Array.isArray(parsed.findings) ? parsed.findings : [];
+    // Mark them here rather than trusting the model to remember the prefix.
+    return findings.map(item => ({ ...item, title: /^\s*【发现】/.test(item.title ?? "") ? item.title : `【发现】${item.title ?? "未命名发现"}` }));
+  }
+  catch {
+    return [];
   }
 }
 
@@ -744,16 +833,24 @@ export async function analyzeRun(runDir, { mode = "heuristic", model = null, onl
         synthesized = { summary: "", findings: [], error: String(error?.message ?? error) };
       }
     }
-    const judgeFindings = (judged?.findings ?? []).map((item, index) => ({
-      id: `${result.id}:judge:${index}`,
-      severity: item.severity ?? (judged?.verdict === "issue" ? "medium" : "info"),
-      category: item.category ?? "behaviour",
-      title: item.title ?? "（模型验收未命名）",
-      detail: item.detail ?? judged?.summary ?? "",
-      evidence: { caseId: result.id, quote: item.evidence ?? null, dir: result.artifacts?.dir },
-      source: "judge",
-      confidence: judged?.confidence ?? "medium",
-    }));
+    // 「【发现】」 marks something the model found on its own, outside the case's
+    // expectations. Keeping the flag separate is what lets the report say how
+    // much of a run's value came from judgement rather than from a checklist.
+    const judgeFindings = (judged?.findings ?? []).map((item, index) => {
+      const raw = item.title ?? "（模型验收未命名）";
+      const discovered = /^\s*【发现】\s*/.test(raw);
+      return {
+        id: `${result.id}:judge:${index}`,
+        severity: item.severity ?? (judged?.verdict === "issue" ? "medium" : "info"),
+        category: item.category ?? "behaviour",
+        title: raw.replace(/^\s*【发现】\s*/, ""),
+        detail: item.detail ?? judged?.summary ?? "",
+        evidence: { caseId: result.id, quote: item.evidence ?? null, dir: result.artifacts?.dir },
+        source: "judge",
+        discovered,
+        confidence: judged?.confidence ?? "medium",
+      };
+    });
     if (judged?.verdict === "issue" && !judgeFindings.length) {
       judgeFindings.push({
         id: `${result.id}:judge:summary`,

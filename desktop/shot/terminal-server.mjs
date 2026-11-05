@@ -36,6 +36,40 @@ const TRANSCRIPT = [
 const sessions = new Map();
 let nextId = 1;
 
+/**
+ * Commands the canned shell answers for real.
+ *
+ * A transcript that fits on screen says nothing about scrolling, and "the
+ * terminal is cut off and will not scroll to the end" is exactly a property of
+ * the screen *after* it has overflowed — so one command has to produce more
+ * lines than the panel can hold. Only commands whose answer is fixed live here;
+ * anything else is echoed back as typed, as before.
+ */
+const PROMPT = "\u001B[1;32m➜\u001B[0m \u001B[1;36mdopamine-decision\u001B[0m git:(\u001B[31mmain\u001B[0m) ";
+const COMMANDS = [
+  {
+    pattern: /^seq 1 (\d+)$/,
+    answer: (_line, count) => {
+      const total = Math.min(Number(count) || 0, 400);
+      let out = "";
+      for (let index = 1; index <= total; index += 1)
+        out += `${index}\r\n`;
+      return out;
+    },
+  },
+];
+
+/** What the shell prints for one submitted line: the echo, then any answer. */
+function reply(line) {
+  const trimmed = line.trim();
+  for (const command of COMMANDS) {
+    const match = command.pattern.exec(trimmed);
+    if (match)
+      return `${PROMPT}${trimmed}\r\n${command.answer(trimmed, match[1])}`;
+  }
+  return `${PROMPT}${line}\r\n`;
+}
+
 const CORS = {
   "content-type": "application/json",
   "access-control-allow-origin": "*",
@@ -128,12 +162,21 @@ const server = createServer((request, response) => {
 
 const wss = new WebSocketServer({ server });
 wss.on("connection", (socket) => {
-  // Replay the transcript, then echo typed input so the panel feels live.
+  // Replay the transcript, then answer typed lines so the panel feels live.
   socket.send(TRANSCRIPT, { binary: false });
+  // Input arrives as it is typed: a whole pasted word in one frame, the newline
+  // (or Enter as `\r`) in the next. Buffer until a line is submitted, so a
+  // command typed key by key and one inserted at once behave the same.
+  let pending = "";
   socket.on("message", (data) => {
     const text = String(data);
-    if (/^[\x20-\x7E\r\n]+$/.test(text))
-      socket.send(text.replace(/\r/g, "\r\n"), { binary: false });
+    if (!/^[\x20-\x7E\r\n]+$/.test(text))
+      return;
+    const lines = (pending + text).split(/\r\n|\r|\n/);
+    pending = lines.pop() ?? "";
+    if (lines.length === 0)
+      return;
+    socket.send(lines.map(reply).join(""), { binary: false });
   });
 });
 

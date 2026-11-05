@@ -1,3 +1,4 @@
+import type { MachineStatus, MachineSummary } from "../../remote/desktopStatus";
 import type { RemoteSession, RemoteWorkspace } from "../../remote/types";
 import {
   activeWorkspaces,
@@ -5,6 +6,7 @@ import {
   isArchivedSession,
   isArchivedWorkspace,
   splitArchived,
+  unreadableShelfMachines,
 } from "../archived";
 import {
   archivedRows,
@@ -251,5 +253,36 @@ describe("paging the shelf", () => {
     const page = pageArchivedRows(archivedRows(many(2), [], () => true), 10);
     expect(sessionKeys(page.rows)).toHaveLength(2);
     expect(page.more).toBe(0);
+  });
+});
+
+/**
+ * An empty shelf is a statement about the machines the phone can read, not about
+ * the archive: the page drew its catalogues only for machines that are
+ * `connected`, and then worded the result as "nothing archived yet".
+ */
+describe("the machines whose shelves cannot be read", () => {
+  const machine = (desktopId: string, status: MachineStatus): MachineSummary =>
+    ({ desktopId, status, label: desktopId, active: false });
+
+  it("names the paired machines that are not answering", () => {
+    const machines = [
+      machine("here", "connected"),
+      machine("office", "offline"),
+      machine("laptop", "preparing"),
+    ];
+    expect(unreadableShelfMachines(machines, { kind: "all" }).map(item => item.desktopId))
+      .toEqual(["office", "laptop"]);
+  });
+
+  it("says nothing on a shelf where every machine answers", () => {
+    expect(unreadableShelfMachines([machine("here", "connected")], { kind: "all" })).toEqual([]);
+  });
+
+  it("follows the picker's scope: a filtered-out machine is not one being asked about", () => {
+    const machines = [machine("here", "connected"), machine("office", "offline")];
+    expect(unreadableShelfMachines(machines, { kind: "desktop", desktopId: "here" })).toEqual([]);
+    expect(unreadableShelfMachines(machines, { kind: "desktop", desktopId: "office" }))
+      .toEqual([machine("office", "offline")]);
   });
 });

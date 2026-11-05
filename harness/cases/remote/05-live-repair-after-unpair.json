@@ -1,0 +1,38 @@
+{
+  "id": "remote-live-repair-after-unpair",
+  "surface": "remote-live",
+  "title": "自建中继：解绑后重新配对仍然可用",
+  "area": "remote",
+  "priority": "P1",
+  "tags": ["remote", "relay"],
+  "description": "配对、服务、客户端解绑，然后用一张新的邀请重新配对。自建中继的撤销是「本地解绑 + 删除 room」，所以这一步真正验证的是中继的 room 与凭据生命周期：旧邀请不能复活，新邀请必须能立刻用，主机不需要重启。注意主机侧字段的语义：connected 指「主机为这条配对保留的桥还连着」，present 才是「客户端真的在场」——二者不是一回事，用例按此断言。",
+  "preconditions": "future 二进制可用；本机有 nats-server。",
+  "expectations": [
+    "第一次配对成功，主机 serving",
+    "客户端解绑后，客户端侧不再列出这台主机",
+    "用新邀请可以再次配对成功，且客户端仍能拿到 agent 能力",
+    "主机保持运行、仍在服务，不需要重启",
+    "两次配对得到不同的 pairId（旧邀请没有被复用）"
+  ],
+  "steps": [
+    { "hostStart": true },
+    { "invite": true, "as": "link1" },
+    { "clientAdd": "{{link1}}", "as": "paired1" },
+    { "waitFor": { "source": "host", "args": ["remote", "status", "--json"], "expect": { "path": "serving", "equals": true }, "message": "第一次配对后在服务", "as": "first" } },
+    { "fault": "client-unpair" },
+    { "clientCli": ["remote", "peers", "list", "--json"], "as": "peersAfterUnpair" },
+    { "assertJson": { "from": "peersAfterUnpair", "path": "peers[0].desktopId", "absent": true, "message": "客户端侧已解绑" } },
+    { "invite": true, "as": "link2" },
+    { "clientAdd": "{{link2}}", "as": "paired2" },
+    { "assertJson": { "from": "paired2", "path": "paired.agentAvailable", "equals": true, "message": "重新配对后仍能拿到 agent 能力" } },
+    { "waitFor": { "source": "host", "args": ["remote", "status", "--json"], "expect": { "path": "serving", "equals": true }, "message": "重新配对后仍在服务", "as": "second" } },
+    { "assertJson": { "from": "second", "path": "desktopRunning", "equals": true, "message": "主机没有重启" } }
+  ],
+  "judge": {
+    "criteria": [
+      "解绑之后用新邀请应当能立刻重新配对，不需要重启主机或中继",
+      "如果旧邀请在新配对后还能用、或新邀请被拒绝，都是缺陷",
+      "主机日志里不应出现 room 冲突、凭据被拒或反复重连"
+    ]
+  }
+}

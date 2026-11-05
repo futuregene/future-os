@@ -24,16 +24,40 @@ export const useStyles = createThemedStyles(theme => StyleSheet.create({
    * is a state the reader asked for, not a fault to fix.
    */
   archivedBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
     marginHorizontal: spacing.md,
     marginBottom: spacing.xs,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
+    paddingLeft: spacing.lg,
+    paddingRight: spacing.sm,
+    paddingVertical: spacing.xs,
     borderRadius: radius.md,
-    color: theme.colors.inkSoft,
     backgroundColor: theme.colors.surfaceSubtle,
+  },
+  archivedBannerText: {
+    flex: 1,
+    minWidth: 0,
+    color: theme.colors.inkSoft,
     fontSize: theme.font(12),
     lineHeight: theme.font(17),
-    textAlign: "center",
+  },
+  /** The banner's one control: a pill, so it reads as an action, not a link. */
+  archivedRestore: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    minHeight: 32,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: theme.colors.accent,
+  },
+  archivedRestoreDim: { opacity: 0.6 },
+  archivedRestoreLabel: {
+    color: theme.colors.accent,
+    fontSize: theme.font(12),
+    fontWeight: "600",
   },
   offlineComposer: {
     marginHorizontal: spacing.md,

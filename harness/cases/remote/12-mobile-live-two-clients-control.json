@@ -1,0 +1,173 @@
+{
+  "id": "mobile-live-two-clients-control",
+  "surface": "remote-mobile-live",
+  "title": "两台手机连同一台桌面：一台控制、另一台待命，takeover 后易主",
+  "area": "remote",
+  "priority": "P1",
+  "tags": [
+    "remote",
+    "mobile",
+    "relay",
+    "control"
+  ],
+  "description": "同一台桌面被两台手机同时连上。产品规则是「一台设备在控制，其它保持连接但只能待命」：待命端的 presence 应当写明 control=standby 并指出 holder 是谁。第二台发 takeover 后控制权转移，它变成 active，第一台降为 standby 但仍连着。全程使用手机端真实客户端代码；control 与 holder 都是主机在 presence 里宣告的，不是本地猜测。",
+  "preconditions": "future 二进制可用；本机有 nats-server；手机客户端 bundle 已构建。",
+  "expectations": [
+    "两台手机都能配对并连上同一台桌面",
+    "主机记录两台设备",
+    "后连的那台是 standby，且 presence 里 holder 指向第一台",
+    "takeover 之后第二台变 active、第一台变 standby，两台都没有掉线"
+  ],
+  "steps": [
+    {
+      "hostStart": true
+    },
+    {
+      "invite": true,
+      "as": "linkA"
+    },
+    {
+      "phone": {
+        "label": "a"
+      }
+    },
+    {
+      "claim": "{{linkA}}",
+      "label": "a",
+      "as": "claimedA"
+    },
+    {
+      "connect": {
+        "label": "a"
+      }
+    },
+    {
+      "ready": {
+        "label": "a",
+        "as": "readyA"
+      }
+    },
+    {
+      "invite": true,
+      "as": "linkB"
+    },
+    {
+      "phone": {
+        "label": "b"
+      }
+    },
+    {
+      "claim": "{{linkB}}",
+      "label": "b",
+      "as": "claimedB"
+    },
+    {
+      "connect": {
+        "label": "b"
+      }
+    },
+    {
+      "wait": 3000
+    },
+    {
+      "hostStatus": {
+        "as": "host"
+      }
+    },
+    {
+      "assertJson": {
+        "from": "host",
+        "path": "devicesTotal",
+        "equals": 2,
+        "message": "主机记录两台设备"
+      }
+    },
+    {
+      "snapshot": {
+        "label": "b",
+        "as": "beforeB"
+      }
+    },
+    {
+      "assertJson": {
+        "from": "beforeB",
+        "path": "presence.control",
+        "equals": "standby",
+        "message": "后连的一台是待命"
+      }
+    },
+    {
+      "assertJson": {
+        "from": "beforeB",
+        "path": "presence.holder.pairId",
+        "equals": "{{claimedA.pairId}}",
+        "message": "待命端知道控制权在第一台手里"
+      }
+    },
+    {
+      "request": {
+        "label": "b",
+        "command": {
+          "type": "takeover"
+        },
+        "sessionId": "list",
+        "message": "第二台请求接管",
+        "as": "takeover"
+      }
+    },
+    {
+      "wait": 2000
+    },
+    {
+      "until": {
+        "label": "b",
+        "path": "presence.control",
+        "equals": "active",
+        "timeout": 30000,
+        "message": "第二台接管后成为控制端",
+        "as": "afterB"
+      }
+    },
+    {
+      "assertJson": {
+        "from": "afterB",
+        "path": "presence.control",
+        "equals": "active",
+        "message": "第二台接管成功，成为控制端"
+      }
+    },
+    {
+      "until": {
+        "label": "a",
+        "path": "presence.control",
+        "equals": "standby",
+        "timeout": 30000,
+        "message": "第一台降为待命",
+        "as": "afterA"
+      }
+    },
+    {
+      "assertJson": {
+        "from": "afterA",
+        "path": "presence.control",
+        "equals": "standby",
+        "message": "第一台降为待命"
+      }
+    },
+    {
+      "assertJson": {
+        "from": "afterA",
+        "path": "presence.online",
+        "equals": true,
+        "message": "第一台仍保持连接（只是失去控制）"
+      }
+    }
+  ],
+  "judge": {
+    "criteria": [
+      "同一时刻只能有一台设备控制这台桌面，另一台应当是待命而不是断开",
+      "takeover 之后两端对「谁在控制」的说法必须一致，不能各说各话",
+      "失去控制的一方不应被踢下线；它应当仍连着、只是不能执行命令"
+    ]
+  }
+}

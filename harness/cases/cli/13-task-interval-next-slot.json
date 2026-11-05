@@ -1,0 +1,23 @@
+{
+  "id": "cli-task-interval-next-slot",
+  "surface": "cli",
+  "title": "CLI 定时任务：间隔任务一建好就有一个真实的「下次运行」",
+  "area": "cli-tasks",
+  "priority": "P1",
+  "tags": ["cli", "tasks", "regression"],
+  "description": "新建一个「每 30 分钟」的任务，然后看两件事：CLI 的 JSON 里有 nextDueAt，存储里的 next_due_at 也落在一个真的槽位上（不早于现在，也不超过一个间隔加余量）。一个没有下次槽位的间隔任务永远不会被 tick 捡起来——它在界面上一样「已启用、时间也对」，只是永远不跑，这正是用户报的第一类故障。间隔的锚点默认是「现在」，所以第一个槽位可能就在眼前，也可能在下一个整点半；只要它在。",
+  "preconditions": "隔离 home；写入会新建 tasks.db。",
+  "expectations": [
+    "task add --every 30m 退出码 0",
+    "JSON 输出里有 nextDueAt",
+    "tasks.db 的 next_due_at 落在一个真实槽位上（不早于现在、不晚于一个间隔加余量）",
+    "task show 打出的「next due」带具体时刻"
+  ],
+  "steps": [
+    { "run": ["task", "add", "--name", "间隔任务 harness", "--prompt", "报告当前时间", "--cwd", "/tmp", "--every", "30m", "--json"], "expectExit": 0 },
+    { "expectJson": { "path": "nextDueAt", "exists": true, "message": "新建的间隔任务有 nextDueAt" } },
+    { "db": { "file": "tasks.db", "sql": "SELECT (next_due_at >= strftime('%s','now') * 1000 - 60000 AND next_due_at <= strftime('%s','now') * 1000 + 3900000) AS ok FROM tasks WHERE name = '间隔任务 harness'", "expect": 1, "message": "next_due_at 是一个有效槽位（不早于现在，且在一个间隔加余量之内）" } },
+    { "run": ["task", "show", "间隔任务 harness"], "expectExit": 0 },
+    { "expectStdout": { "regex": "next due:\\s*\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}" } }
+  ]
+}

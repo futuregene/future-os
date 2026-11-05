@@ -1,0 +1,77 @@
+{
+  "id": "context-panel-finishes-loading",
+  "title": "上下文面板：加载态必须结束，且给出真实内容或明确的空态",
+  "area": "layout",
+  "priority": "P1",
+  "tags": [
+    "desktop",
+    "context-panel"
+  ],
+  "description": "打开右侧上下文面板并等待，然后断言「正在加载上下文…」必须消失。这条用例来自读图发现：多轮验收里右侧面板在运行页签上一直显示加载文案，而既有用例只断言页签能切、文案里有「文件/运行」，从没检查过加载态会不会结束——所以一个永不结束的加载态在测试里是完全隐形的。结束之后要么有真实内容（运行记录、文件列表），要么给出明确的空态，不能停在中间。",
+  "preconditions": "应用已启动，已打开一个带历史记录的会话。",
+  "expectations": [
+    "打开上下文面板后，先出现加载文案（可接受）",
+    "3 秒内「正在加载上下文…」必须消失",
+    "消失后不停在中间态（是否有内容由模型验收看截图判断，机械断言只负责“加载已结束”）",
+    "运行页签与文件页签都满足这一点"
+  ],
+  "steps": [
+    {
+      "wait": 1200
+    },
+    {
+      "click": {
+        "selector": "button",
+        "text": "运行"
+      }
+    },
+    {
+      "wait": 500
+    },
+    {
+      "shot": "runs-tab-just-opened"
+    },
+    {
+      "waitFor": {
+        "expr": "!document.body.innerText.includes('正在加载上下文')",
+        "timeout": 8000
+      },
+      "message": "加载态结束"
+    },
+    {
+      "assert": {
+        "expr": "!document.body.innerText.includes('正在加载上下文')",
+        "message": "运行页签不再显示加载文案"
+      }
+    },
+    {
+      "shot": "runs-tab-loaded"
+    },
+    {
+      "click": {
+        "selector": "button",
+        "text": "文件"
+      }
+    },
+    {
+      "wait": 900
+    },
+    {
+      "assert": {
+        "expr": "!document.body.innerText.includes('正在加载上下文')",
+        "message": "文件页签没有卡在加载态"
+      }
+    },
+    {
+      "shot": "files-tab-loaded"
+    }
+  ],
+  "judge": {
+    "criteria": [
+      "面板的加载态必须收敛：要么有内容，要么明确告诉用户这里没有东西",
+      "如果面板停在加载文案上，即使其它页签正常，也要算缺陷（用户会一直等）",
+      "两个页签在结束加载后的排版应正常，不应出现空白大块或只有一条分割线"
+    ],
+    "maxImages": 5
+  }
+}

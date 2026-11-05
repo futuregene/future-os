@@ -1,0 +1,32 @@
+{
+  "id": "terminal-panel-bottom",
+  "title": "内嵌终端刷满屏之后：最后一行真的滑得到",
+  "area": "terminal",
+  "priority": "P1",
+  "tags": ["terminal", "panel", "regression"],
+  "description": "在内嵌终端里执行一条会打印 120 行的命令，让画面溢出面板高度。要确认三件事：屏幕本身没有被面板裁掉（xterm 的屏幕矩形落在终端区域里，也在窗口里），滚到底之后最后一行排在最下面，而且把滚动条拉回顶部再拉到底仍然能回到那一行——也就是「滑不到最下面」不会发生。",
+  "preconditions": "应用已启动；内置的终端假服务器会把 `seq 1 120` 真的打印成 120 行。",
+  "expectations": [
+    "终端面板能展开",
+    "打印 120 行之后，xterm 屏幕没有被面板或窗口裁掉",
+    "滚到底时最后一行是 120，且落在面板可见范围内",
+    "拉回顶部再拉到底，仍能回到最后一行"
+  ],
+  "steps": [
+    { "wait": 900 },
+    { "click": { "aria": "展开终端（⌘J）" } },
+    { "waitFor": { "selector": "[data-terminal-root] .xterm" }, "timeout": 8000 },
+    { "wait": 700 },
+    { "click": { "selector": "[data-terminal-root] .xterm-screen" } },
+    { "wait": 300 },
+    { "type": "seq 1 120" },
+    { "press": "Enter" },
+    { "waitFor": { "text": "120" }, "timeout": 8000 },
+    { "wait": 600 },
+    { "assert": { "expr": "(() => { const root = document.querySelector('[data-terminal-root]'); const screen = root?.querySelector('.xterm-screen'); if (!root || !screen) return false; const r = root.getBoundingClientRect(); const s = screen.getBoundingClientRect(); return s.bottom <= r.bottom + 1 && s.top >= r.top - 1 && r.bottom <= window.innerHeight + 1; })()", "message": "xterm 屏幕在终端面板内、面板在窗口内，没有被裁掉" } },
+    { "assert": { "expr": "(() => { const root = document.querySelector('[data-terminal-root]'); const rows = [...(root?.querySelectorAll('.xterm-rows > div') ?? [])].filter(row => (row.textContent || '').trim()); const last = rows.at(-1); if (!last) return false; const rr = root.getBoundingClientRect(); const lr = last.getBoundingClientRect(); return (last.textContent || '').trim().endsWith('120') && lr.bottom <= rr.bottom + 1 && lr.top >= rr.top - 1; })()", "message": "最后一行是 120，并且就在面板可见范围内" } },
+    { "assert": { "expr": "(() => { const viewport = document.querySelector('[data-terminal-root] .xterm-viewport'); if (!viewport) return false; viewport.scrollTop = 0; const top = viewport.scrollTop; viewport.scrollTop = viewport.scrollHeight; const bottom = viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 2; return top === 0 && bottom; })()", "message": "滚动条能拉回顶部，也能拉到最底" } },
+    { "assert": { "expr": "(() => { const root = document.querySelector('[data-terminal-root]'); const rows = [...(root?.querySelectorAll('.xterm-rows > div') ?? [])].filter(row => (row.textContent || '').trim()); const last = rows.at(-1); if (!last) return false; const rr = root.getBoundingClientRect(); const lr = last.getBoundingClientRect(); return lr.bottom <= rr.bottom + 1 && lr.top >= rr.top - 1; })()", "message": "滑到底之后最后一行仍然可见（不是滑到空白）" } },
+    { "shot": "terminal-scrolled-to-bottom" }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "id": "mobile-pairing-revoked",
+  "surface": "mobile",
+  "title": "手机端配对被对方解除：页面说「配对已失效」，并给出唯一的出路",
+  "area": "mobile-remote",
+  "priority": "P0",
+  "tags": ["mobile", "remote", "unpair", "revoked"],
+  "description": "另一份报告：桌面端点「解除配对」之后，手机一直显示「已断开 / 重试」，而那个重试永远不可能成功。夹具 ?revoked=1 是配对在另一侧结束的状态（桌面端解除了这台手机，或平台拒绝续期凭据）。这一页必须说清配对已经没了、让人重新扫码，并且不能把「重新连接」当成主要动作——它连着一条死掉的配对。",
+  "preconditions": "移动端 shot 服务可用；夹具带 ?revoked=1。",
+  "expectations": [
+    "页面标题是「配对已失效」，不是「已断开」",
+    "正文说明请在桌面管理中重新扫码配对，并带支持码 PA001",
+    "动作是「解除设备配对」，页面上没有「重新连接」",
+    "不出现「请确认桌面端在线后重新连接」这种可重试的措辞"
+  ],
+  "query": { "revoked": "1" },
+  "steps": [
+    { "wait": 1800 },
+    { "click": { "text": "稍后再说" }, "optional": true },
+    { "wait": 600 },
+    { "expectText": "配对已失效" },
+    { "expectText": "PA001" },
+    { "expectText": "请在桌面管理中重新扫码配对" },
+    { "expectAbsent": "重新连接", "note": "配对已死，重试是死路" },
+    { "expectAbsent": "已断开" },
+    { "assert": { "expr": "[...document.querySelectorAll('[role=\"button\"]')].some(e => e.innerText.trim() === '解除设备配对')", "message": "出路是解除设备配对" } },
+    { "shot": "mobile-pairing-revoked" }
+  ],
+  "judge": {
+    "criteria": [
+      "页面把「配对结束」和「连接暂时断了」区分开，读者不会去点一个不可能成功的重试",
+      "唯一的动作是解除这对配对，措辞与它的后果一致",
+      "页面上没有残留的会话列表或空状态伪装成正常页面"
+    ],
+    "maxImages": 4
+  }
+}

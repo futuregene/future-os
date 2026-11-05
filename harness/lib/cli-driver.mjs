@@ -59,8 +59,14 @@ export async function runCliCase({ testCase, runDir, bin = cliBin() }) {
     return record;
   };
 
-  const queryDb = sql => {
-    const db = new DatabaseSync(appDb, { readOnly: true });
+  const queryDb = (sql, file = "app.db") => {
+    // Only the two databases a CLI case can write: the desktop store and the
+    // scheduled-task store. A path is not accepted, so a case cannot reach out
+    // of its own home.
+    const target = file === "tasks.db" ? join(home, "tasks", "tasks.db") : appDb;
+    if (!existsSync(target))
+      throw new Error(`no such database: ${file} (${target})`);
+    const db = new DatabaseSync(target, { readOnly: true });
     try {
       return db.prepare(sql).all();
     }
@@ -186,7 +192,7 @@ export async function runCliCase({ testCase, runDir, bin = cliBin() }) {
       }
       else if (action === "db") {
         const spec = typeof step.db === "string" ? { sql: step.db } : step.db;
-        const rows = queryDb(spec.sql);
+        const rows = queryDb(spec.sql, spec.file ?? "app.db");
         entry.rows = rows;
         const scalar = rows.length === 1 && Object.keys(rows[0]).length === 1 ? Object.values(rows[0])[0] : rows;
         if (spec.expect !== undefined) {

@@ -32,8 +32,9 @@ import type {
   RemoteSessionUsage,
   SessionFileListing,
 } from "../../src/remote/types";
-import { createContext, useContext, useMemo, useState } from "react";
+import { createContext, useContext, useMemo, useRef, useState } from "react";
 import { connectionPresentation as buildConnectionPresentation } from "../../src/remote/connectionPresentation";
+import type { RemoteTaskDetail, RemoteTaskRow, RemoteTaskRun } from "../../src/remote/taskTypes";
 import { applyStreamEvents, timelineFromEntries } from "@future-os/remote-client/projection";
 import { leanRenderMode, leanRenderTimeline, leanTargetForToolCall } from "./leanRender";
 import {
@@ -50,7 +51,7 @@ import {
   demoSessionUsage,
   demoSkills,
   demoTaskDeps,
-  demoTaskDetail,
+  demoTaskDetails,
   demoTaskRuns,
   demoTasks,
   demoUnpricedSessionUsage,
@@ -97,6 +98,79 @@ const BOOT_TIME = Date.now();
  * no-op rather than crash the whole screen. Every miss is logged once so the
  * fix (adding a real value here) stays obvious.
  */
+/** The list row for a stored task: the wire contract sends no prompt body. */
+function taskRowOf(task: RemoteTaskDetail): RemoteTaskRow {
+  const { prompt: _prompt, promptVersion: _version, ...row } = task;
+  return row;
+}
+
+const textOf = (value: unknown, fallback = ""): string => (typeof value === "string" ? value : fallback);
+
+/**
+ * A stored task after the phone's form payload.
+ *
+ * Shared by create and update, because the two send the same shape: a field the
+ * payload leaves out keeps what the task had, and a prompt that changed moves the
+ * prompt version (the number the phone's draft is keyed by, so a stale edit
+ * draft is dropped rather than restored over the new prompt).
+ */
+function applyTaskPayload(task: RemoteTaskDetail, payload: Record<string, unknown>): RemoteTaskDetail {
+  const triggerKind = textOf(payload.triggerKind, task.triggerKind);
+  const trigger = payload.trigger && typeof payload.trigger === "object" && !Array.isArray(payload.trigger)
+    ? payload.trigger as Record<string, unknown>
+    : task.trigger;
+  const prompt = textOf(payload.prompt, task.prompt);
+  const nullable = (value: unknown, fallback: string | null | undefined) =>
+    value === undefined ? fallback ?? null : (typeof value === "string" && value ? value : null);
+  return {
+    ...task,
+    name: textOf(payload.name, task.name),
+    enabled: typeof payload.enabled === "boolean" ? payload.enabled : task.enabled,
+    triggerKind,
+    trigger,
+    timezone: textOf(payload.timezone, task.timezone ?? "") || undefined,
+    // A schedule keeps a next slot on a real desktop; an hour out is enough for
+    // a row to describe, and a manual task has none.
+    nextDueAt: triggerKind === "schedule" ? Date.now() + 60 * 60_000 : null,
+    // A write is what the desktop's own scheduler re-arms, so a new decision does
+    // not inherit the previous run's queue position.
+    queued: false,
+    prompt,
+    promptVersion: prompt === task.prompt ? task.promptVersion : task.promptVersion + 1,
+    cwd: textOf(payload.cwd, task.cwd),
+    modelId: nullable(payload.modelId, task.modelId),
+    thinkingLevel: nullable(payload.thinkingLevel, task.thinkingLevel),
+    sessionPolicy: textOf(payload.sessionPolicy, task.sessionPolicy),
+    sessionRetention: textOf(payload.sessionRetention, task.sessionRetention ?? "keep"),
+    conversationMode: textOf(payload.conversationMode, task.conversationMode ?? "chat"),
+  };
+}
+
+/** A task the phone just created, as the desktop would store it. */
+function taskFromPayload(payload: Record<string, unknown>, taskId: string): RemoteTaskDetail {
+  const created = applyTaskPayload({
+    id: taskId,
+    name: "",
+    enabled: true,
+    triggerKind: "manual",
+    trigger: {},
+    prompt: "",
+    promptVersion: 0,
+    cwd: "",
+    modelId: null,
+    thinkingLevel: null,
+    sessionPolicy: "new",
+    sessionRetention: "keep",
+    conversationMode: "chat",
+    nextDueAt: null,
+    queued: false,
+    latestRun: null,
+  }, payload);
+  // A task starts at its first prompt version (an edit bumps it), not at the
+  // "no version yet" the blank shape carries.
+  return { ...created, promptVersion: 1 };
+}
+
 function withFallback(value: MockValue): MockValue {
   return new Proxy(value, {
     get(target, property) {
@@ -168,6 +242,27 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const [usageOverride, setUsageOverride] = useState<RemoteSessionUsage | null>(null);
   const [fusionSettings, setFusionSettings] = useState(initialFusionSettings);
   const [providers, setProviders] = useState(demoProviders);
+  /**
+   * The paired desktop's tasks.
+   *
+   * Held so a write lands: the form, the enable/disable toggle and the delete
+   * button all change what the list reads afterwards, the way the desktop store
+   * does. The read-only stub this replaces answered every write with the same
+   * fixed detail, so "did the phone's edit reach the machine" could not be asked
+   * at all.
+   *
+   * A ref rather than state, because the page keeps the callbacks from the render
+   * that drew it and reloads through those: a handler closing over a state value
+   * would answer the reload that follows a write with the list from before it.
+   * The counter is what makes the new list render.
+   */
+  const taskStore = useRef<RemoteTaskDetail[]>(demoTaskDetails);
+  const [, setTasksRevision] = useState(0);
+  const readTasks = () => taskStore.current;
+  const writeTasks = (next: RemoteTaskDetail[]) => {
+    taskStore.current = next;
+    setTasksRevision(revision => revision + 1);
+  };
   const [desktopSettings, setDesktopSettings] = useState<DesktopSettings>({
     autoUpgradeSkills: true,
     autoTitleFirstTurn: true,
@@ -225,11 +320,22 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // and its sheet have to say the connection is gone and offer a retry. Every
   // other capture runs against a live desktop, so this is opt-in.
   const connectionDropped = new URLSearchParams(window.location.search).get("connection") === "dropped";
+  // `?revoked=1` is the other ending: the desktop unpaired this phone (or the
+  // platform refused to renew the credentials). The pairing is gone, so the page
+  // must say so and offer to drop it — a retry against a dead pairing cannot
+  // succeed, and the reports behind this fixture were read as "已断开 / 重试"
+  // forever.
+  const pairingRevoked = new URLSearchParams(window.location.search).get("revoked") === "1";
   // `?held=1` makes another paired device the one driving this desktop: the
   // phone is connected and in standby, so it can show who holds the machine and
   // offer to take it back. This is the state connecting must NOT silently
-  // resolve, so it needs a fixture of its own.
-  const heldByAnother = new URLSearchParams(window.location.search).get("held") === "1";
+  // resolve, so it needs a fixture of its own. It is state, not a constant, so
+  // the takeover the page offers actually happens — a mock that answered the
+  // button with nothing would make "can the phone take its machine back" an
+  // untestable question.
+  const [heldByAnother, setHeldByAnother] = useState(
+    new URLSearchParams(window.location.search).get("held") === "1",
+  );
   const [olderLoaded, setOlderLoaded] = useState(false);
   // `?leanRender=<mode>` renders a lean (or, for the control, full) lane slice
   // instead of the demo conversation — see shot/mock/leanRender.ts.
@@ -313,13 +419,13 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
   const value = withFallback({
     // Connection
-    desktopReadable: !connectionDropped && !heldByAnother,
-    phase: connectionDropped ? "stopped" : "ready",
+    desktopReadable: !connectionDropped && !pairingRevoked && !heldByAnother,
+    phase: pairingRevoked ? "revoked" : connectionDropped ? "stopped" : "ready",
     error: null,
     credentials,
     desktops,
     presence: {
-      online: !connectionDropped,
+      online: !connectionDropped && !pairingRevoked,
       pairId: credentials.pairId,
       bridgeInstanceId: "bridge_1",
       lastHeartbeatTs: BOOT_TIME,
@@ -331,14 +437,28 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       ...(connectionDropped ? { disconnected: true } : {}),
     },
     // Taking over is an action, not a state: the mock answers it the way the
-    // desktop does (success), and the banner disappearing is what a capture's
-    // assertion can see.
-    takeControl: async () => undefined,
-    desktopOnline: !connectionDropped,
-    hasConnectedContent: true,
-    agentAvailable: true,
+    // desktop does (success, and the control packet that says so), so the
+    // standby page gives way to the machine's own conversations. A button that
+    // answered with nothing would leave the one behaviour this fixture exists
+    // for unprovable.
+    takeControl: async () => {
+      setHeldByAnother(false);
+    },
+    desktopOnline: !connectionDropped && !pairingRevoked,
+    // A revoked pairing has nothing to show: the phone is not paired to that
+    // machine any more, so the disconnected page is the whole screen.
+    hasConnectedContent: !pairingRevoked,
+    agentAvailable: !pairingRevoked,
     connectionPresentation: buildConnectionPresentation(
-      connectionDropped
+      pairingRevoked
+        ? {
+            // The pairing ended on the other side (the desktop unpaired this
+            // phone, or the platform refused to renew its credentials).
+            phase: "revoked",
+            desktopOnline: false,
+            agentAvailable: false,
+          }
+        : connectionDropped
         ? {
             // The desktop stopped answering and said so: the pairing survives,
             // the cached content is still readable, and the only way forward is
@@ -549,16 +669,39 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       return providers;
     },
     // Tasks: the phone manages the paired desktop's tasks (list rows carry no
-    // prompt body, matching the wire contract; the detail does).
-    listTasks: async () => demoTasks,
-    getTask: async () => demoTaskDetail,
-    listTaskRuns: async () => demoTaskRuns,
+    // prompt body, matching the wire contract; the detail does). The writes are
+    // applied to `taskStore`, so what the list reads after one is what the
+    // desktop would have after the same write.
+    listTasks: async (): Promise<RemoteTaskRow[]> => readTasks().map(taskRowOf),
+    getTask: async (taskId: string): Promise<RemoteTaskDetail> =>
+      readTasks().find(task => task.id === taskId) ?? readTasks()[0]!,
+    listTaskRuns: async (taskId: string): Promise<RemoteTaskRun[]> =>
+      // Only the demo task that has history has any; a task the phone just
+      // created has never run.
+      taskId === demoTasks[0]!.id ? (demoTaskRuns.filter(Boolean) as RemoteTaskRun[]) : [],
     listTaskDeps: async () => demoTaskDeps,
-    createTask: async () => demoTaskDetail,
-    updateTask: async () => demoTaskDetail,
-    deleteTask: async () => undefined,
-    setTaskEnabled: async () => demoTaskDetail,
-    runTask: async () => demoTaskDetail,
+    createTask: async (payload: Record<string, unknown>): Promise<RemoteTaskDetail> => {
+      const created = taskFromPayload(payload, `tsk_created_${readTasks().length + 1}`);
+      writeTasks([created, ...readTasks()]);
+      return created;
+    },
+    updateTask: async (taskId: string, payload: Record<string, unknown>): Promise<RemoteTaskDetail> => {
+      const found = readTasks().find(task => task.id === taskId) ?? readTasks()[0]!;
+      const updated = applyTaskPayload(found, payload);
+      writeTasks(readTasks().map(task => (task.id === updated.id ? updated : task)));
+      return updated;
+    },
+    deleteTask: async (taskId: string) => {
+      writeTasks(readTasks().filter(task => task.id !== taskId));
+    },
+    setTaskEnabled: async (taskId: string, enabled: boolean): Promise<RemoteTaskDetail> => {
+      const found = readTasks().find(task => task.id === taskId) ?? readTasks()[0]!;
+      const updated = { ...found, enabled };
+      writeTasks(readTasks().map(task => (task.id === taskId ? updated : task)));
+      return updated;
+    },
+    runTask: async (taskId: string): Promise<RemoteTaskDetail> =>
+      readTasks().find(task => task.id === taskId) ?? readTasks()[0]!,
     listInstalledSkills: async (): Promise<InstalledSkill[]> => demoInstalledSkills,
     listAvailableSkills: async (): Promise<AvailableSkill[]> => demoAvailableSkills,
     installSkill: async () => undefined,

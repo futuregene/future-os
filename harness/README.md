@@ -21,11 +21,31 @@ replay by hand, and every run leaves evidence a person can check.
 | `tui` | real `future tui` in a pty, rendered through the terminal cell model | `demo_agent` (scripted gRPC) | `"surface": "tui"` |
 | `cli` | real `future` binary in an isolated `FUTURE_HOME` | copy of the real `app.db` + settings/tasks snapshot | `"surface": "cli"` |
 | `remote` | desktop and mobile clients at the same time | shot mocks on both sides | `"surface": "remote"` |
+| `remote-live` | a real self-hosted relay: `future relay init` + `nats-server` + `future relay serve` + `future host --relay`, paired by a real second home | real processes, each with its own `FUTURE_HOME` | `"surface": "remote-live"` |
+| `remote-cn` | the deployed Future platform over the network (read-only contract check; full pairing on request) | the real platform at `future-os.cn` | `"surface": "remote-cn"` |
+| `remote-mobile-live` | the **phone's own client code** (`mobile/src/remote/`) against a real host | real relay + real `future host`; only the expo platform layer is stubbed | `"surface": "remote-mobile-live"` |
 
 Two boundaries stated up front: `mobile`/`remote` use the screenshot harness's
 synthetic remote dataset (the pair check proves both clients render the same
 session, not a live NATS link), and `tui` uses `demo_agent` rather than a real
-model. `desktop` and `cli` run against real database snapshots.
+model. `desktop` and `cli` run against real database snapshots. The relay itself
+is covered — for real — by `remote-live`, which runs the actual binaries.
+
+The three remote surfaces answer three different questions, and none of them
+substitutes for the others:
+
+| Surface | Question it answers | What is fake |
+|---|---|---|
+| `remote` | do the desktop and the phone render the same session the same way | both clients talk to shot mocks |
+| `remote-live` | does a pairing actually work end to end (relay, broker, invitation, bridge, device book) | nothing; all four processes are real, on one machine |
+| `remote-cn` | is the **official** relay's control plane still the contract we ship against | nothing; a real network call to `future-os.cn` |
+
+The official path needs a signed-in account (`future auth login`), which an API
+key is not. `remote-cn` says so and runs the read-only contract checks anyway,
+which is what catches a moved route, a changed error shape or an outage. Set
+`FUTURE_REMOTE_CN_FULL=1` on a signed-in machine to pair a real device through
+the deployed platform; it removes the pairing again before returning. Cases
+marked `needsNetwork` stay out of a default run and are selected by id or tag.
 
 ## Quick start
 
@@ -203,6 +223,16 @@ If the analysis model accepts image input (its `models.json` entry lists
 `image`), screenshots are attached to it directly (`future run --image`);
 otherwise the `read_image` tool is the fallback.
 
+**Two passes, on purpose.** The first judges the case's expectations. The second
+is given the same evidence and **no checklist** — "you are opening this product
+for the first time; say what looks wrong" — and its findings are marked
+`【发现】` and counted separately in the report. A single pass that is only asked
+"did these hold" can only find what someone already wrote down; the second pass
+is where timing, stale states, inconsistent copy and layout surprises come from.
+It is skipped on surfaces without screenshots (relay, CLI): with nothing to
+look at, an open-ended prompt fills the gap by inventing visual expectations the
+product never promised.
+
 Analysis is resumable and non-fatal: a missing CLI or a failed vision call is
 recorded and the remaining evidence still becomes a report.
 
@@ -265,3 +295,9 @@ with `gh`. Nothing is filed without that explicit flag.
   TUI case, but the desktop path needs an agent-side queue fixture: the shot mock
   answers `session_queue` but never enqueues, so a queued row cannot be observed.
   Do not assert on it until the fixture owns the queue.
+
+- **The embedded terminal is a stand-in, not a shell.** `desktop/shot/terminal-server.mjs`
+  replays one transcript and answers a few fixed commands (`seq 1 N` prints N
+  lines, which is how a case overflows the panel); typed input is otherwise
+  echoed. It is enough to prove scrolling and layout, and says nothing about the
+  real PTY on the Rust side.

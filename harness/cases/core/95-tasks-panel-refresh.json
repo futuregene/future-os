@@ -1,0 +1,80 @@
+{
+  "id": "tasks-panel-refresh",
+  "title": "桌面端定时任务面板：别的客户端改了任务，面板自己重新读",
+  "area": "tasks",
+  "priority": "P1",
+  "tags": [
+    "tasks",
+    "remote",
+    "event"
+  ],
+  "description": "任务在桌面端自己的进程里，所以手机上停用一条任务时，存储早就变了——过时的只是那个面板。它曾经要等用户离开这一页再回来才知道，报告里「手机端停用定时任务，桌面端未更新，手动刷新后才更新」就是这个。写任务成功时主机发 `tasks-updated`（自有事件，不是 `threads-updated`：不一定有会话变了），面板收到就重读。这个用例坐在那个订阅上：打开定时任务面板，投递一次该事件（真实启动里由 Rust 侧发出，页面本身发不出），面板必须重新 `list_tasks` 一次；再等一会儿不该继续读——它是被事件推动的，不是轮询。任务行来自页面自己的演示数据（`desktop/shot/mock/data.ts` 的 tasks），fixture 不答 `list_tasks`，这正是这条订阅与数据来源无关的意思。",
+  "preconditions": "harness/.data 已 prepare；定时任务面板的行来自桌面 shot mock 自带的演示任务（不读真实 tasks.db）。",
+  "expectations": [
+    "左侧「定时任务」打开面板，面板有内容（不是「还没有定时任务」的空状态）",
+    "投递 tasks-updated 后，list_tasks 的调用次数 +1",
+    "再等 2.5 秒，调用次数不再增长（事件驱动，不是轮询）"
+  ],
+  "steps": [
+    {
+      "wait": 1000
+    },
+    {
+      "click": {
+        "text": "定时任务"
+      },
+      "note": "左侧活动栏"
+    },
+    {
+      "wait": 1000
+    },
+    {
+      "expectText": "新建定时任务"
+    },
+    {
+      "expectAbsent": "还没有定时任务",
+      "note": "快照里有任务，面板不是空状态"
+    },
+    {
+      "server": {
+        "command": "list_tasks"
+      },
+      "note": "第一次读：记下基线"
+    },
+    {
+      "eval": "window.__shotEmit('tasks-updated')",
+      "note": "主机在写任务成功后发出的事件"
+    },
+    {
+      "wait": 900
+    },
+    {
+      "server": {
+        "command": "list_tasks",
+        "delta": 1,
+        "message": "面板收到事件后重读了一次"
+      }
+    },
+    {
+      "shot": "tasks-panel-after-event"
+    },
+    {
+      "wait": 2500
+    },
+    {
+      "server": {
+        "command": "list_tasks",
+        "delta": 0,
+        "message": "之后不再读：不是轮询"
+      }
+    }
+  ],
+  "judge": {
+    "criteria": [
+      "面板读起来是一份任务清单（左侧列表 + 右侧详情），不是空白或占位符",
+      "事件之后列表仍然自洽，没有一闪而过的加载态残留在截图里",
+      "截图里没有报错条或重复的面板"
+    ],
+    "maxImages": 4
+  }
+}

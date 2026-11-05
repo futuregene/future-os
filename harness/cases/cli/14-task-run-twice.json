@@ -1,0 +1,27 @@
+{
+  "id": "cli-task-run-twice",
+  "surface": "cli",
+  "title": "CLI 定时任务：连续两次「立刻运行」都被接受，不撞存储的唯一约束",
+  "area": "cli-tasks",
+  "priority": "P1",
+  "tags": ["cli", "tasks", "regression"],
+  "description": "对一个任务连续点两次「运行」等价于连续两次 `future task run`。两次都必须被接受并留下一个待运行的请求：调度器的一条脏记录曾经让整个 tick 在 `task_runs` 的唯一约束上失败，此后手动请求排了队却永远取不出来。这里检查第二次请求不报错，而且请求真的写进了待运行字段。",
+  "preconditions": "隔离 home；写入会新建 tasks.db。",
+  "expectations": [
+    "两次 task run 都退出码 0",
+    "输出说请求已排队",
+    "pending_request_at 有值（调度器看得见这次请求）",
+    "task list 把该任务标成 queued"
+  ],
+  "steps": [
+    { "run": ["task", "add", "--name", "连点任务 harness", "--prompt", "报告当前时间", "--cwd", "/tmp", "--every", "1d"], "expectExit": 0 },
+    { "run": ["task", "run", "连点任务 harness"], "expectExit": 0 },
+    { "expectStdout": { "regex": "Queued run for 连点任务 harness" } },
+    { "run": ["task", "run", "连点任务 harness"], "expectExit": 0 },
+    { "expectStdout": { "regex": "Queued run for 连点任务 harness" } },
+    { "db": { "file": "tasks.db", "sql": "SELECT pending_request_at IS NOT NULL AS queued FROM tasks WHERE name = '连点任务 harness'", "expect": 1, "message": "pending_request_at 已写入" } },
+    { "run": ["task", "list", "--json"], "expectExit": 0 },
+    { "expectJson": { "contains": "连点任务 harness" } },
+    { "expectJson": { "contains": "\"queued\":true" } }
+  ]
+}
