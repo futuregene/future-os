@@ -936,6 +936,23 @@ export function ActivityRail({
     [archivedQuery, expandedArchivedWorkspaces],
   );
 
+  /**
+   * An expanded group with no contents re-reads them.
+   *
+   * Opening a group is the only other trigger, and a group can be expanded while
+   * its page is gone — the workspace left the shelf (its entry was dropped) and
+   * came back after one conversation was archived into it. The heading then sat
+   * on "loading" until the reader folded it and opened it again.
+   */
+  useEffect(() => {
+    if (railView !== "archived")
+      return;
+    for (const workspace of archiveView.workspaces) {
+      if (archivedGroupExpanded(workspace.id) && archiveView.workspaceThreads[workspace.id] === undefined)
+        archiveView.ensureWorkspaceThreads(workspace.id);
+    }
+  }, [archiveView, archivedGroupExpanded, railView]);
+
   const threadMatchesQuery = useCallback((thread: StoredThread): boolean => {
     if (!queryActive)
       return true;

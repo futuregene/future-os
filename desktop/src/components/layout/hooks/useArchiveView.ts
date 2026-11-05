@@ -88,6 +88,8 @@ export function useArchiveView(): ArchiveView {
   workspaceCursorRef.current = workspaceNextCursor;
   const workspaceThreadsRef = useRef<Record<string, StoredThread[]>>({});
   workspaceThreadsRef.current = workspaceThreads;
+  // Groups whose contents a page is being fetched for (see ensureWorkspaceThreads).
+  const workspaceLoadingRef = useRef<Set<string>>(new Set());
   const workspaceLoadedRef = useRef<Record<string, number>>({});
   const stateRef = useRef<ArchiveViewState>({ loading: false, loaded: false, nextCursor: null });
   stateRef.current = { loading, loaded: stateRef.current.loaded, nextCursor };
@@ -147,28 +149,32 @@ export function useArchiveView(): ArchiveView {
    * collapse/re-expand does not refetch and a batch can address the rows.
    */
   const ensureWorkspaceThreads = useCallback((workspaceId: string) => {
-    setWorkspaceThreads((current) => {
-      if (current[workspaceId])
-        return current;
-      void listThreadsPage(`workspace-archived:${workspaceId}`, null, PAGE_SIZE)
-        .then((page) => {
-          setWorkspaceThreads(previous => ({ ...previous, [workspaceId]: page.threads }));
-          setWorkspaceNextCursor(previous => ({ ...previous, [workspaceId]: page.nextCursor }));
-          workspaceCursorRef.current = { ...workspaceCursorRef.current, [workspaceId]: page.nextCursor };
-          workspaceLoadedRef.current[workspaceId] = PAGE_SIZE;
-          setWorkspaceRemaining(previous => ({
-            ...previous,
-            [workspaceId]: page.nextCursor === null
-              ? 0
-              : Math.max(0, page.totalRoots - PAGE_SIZE),
-          }));
-        })
-        .catch(() => {
-          setWorkspaceThreads(previous => ({ ...previous, [workspaceId]: [] }));
-          setWorkspaceNextCursor(previous => ({ ...previous, [workspaceId]: null }));
-        });
-      return current;
-    });
+    // One fetch per group: `ensure` is also called from the view's own effect
+    // whenever an expanded group has no contents left, and a second call while
+    // the first is in flight must not start another.
+    if (workspaceThreadsRef.current[workspaceId] || workspaceLoadingRef.current.has(workspaceId))
+      return;
+    workspaceLoadingRef.current.add(workspaceId);
+    void listThreadsPage(`workspace-archived:${workspaceId}`, null, PAGE_SIZE)
+      .then((page) => {
+        setWorkspaceThreads(previous => ({ ...previous, [workspaceId]: page.threads }));
+        setWorkspaceNextCursor(previous => ({ ...previous, [workspaceId]: page.nextCursor }));
+        workspaceCursorRef.current = { ...workspaceCursorRef.current, [workspaceId]: page.nextCursor };
+        workspaceLoadedRef.current[workspaceId] = PAGE_SIZE;
+        setWorkspaceRemaining(previous => ({
+          ...previous,
+          [workspaceId]: page.nextCursor === null
+            ? 0
+            : Math.max(0, page.totalRoots - PAGE_SIZE),
+        }));
+      })
+      .catch(() => {
+        setWorkspaceThreads(previous => ({ ...previous, [workspaceId]: [] }));
+        setWorkspaceNextCursor(previous => ({ ...previous, [workspaceId]: null }));
+      })
+      .finally(() => {
+        workspaceLoadingRef.current.delete(workspaceId);
+      });
   }, []);
 
   const ensureLoaded = useCallback(() => {
