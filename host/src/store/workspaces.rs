@@ -198,14 +198,28 @@ pub fn archive_workspace(
 
 /// Bring a shelved workspace (and every conversation it was hiding) back into
 /// the default lists. Idempotent for a workspace that is already active.
+/// Bring a shelved workspace back.
+///
+/// The shelf's folder showed every conversation it held — the ones it was
+/// hiding and the ones shelved on their own before it — so restoring it returns
+/// all of them: the action is "unarchive this folder", and a conversation left
+/// behind would be one the reader just saw inside it.
 pub fn restore_workspace(workspace_id: &str) -> Result<WorkspaceRecord, crate::Error> {
-    let conn = connect()?;
+    let mut conn = connect()?;
     loaded(get_workspace_in(&conn, workspace_id)?, "Workspace")?;
-    conn.execute(
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let now = now_millis();
+    tx.execute(
+        "UPDATE threads SET status = 'active', archived_at = NULL, updated_at = ?1
+         WHERE workspace_id = ?2 AND status = 'archived' AND deleted_at IS NULL",
+        params![now, workspace_id],
+    )?;
+    tx.execute(
         "UPDATE workspaces SET archived_at = NULL, updated_at = ?1
          WHERE id = ?2 AND deleted_at IS NULL",
-        params![now_millis(), workspace_id],
+        params![now, workspace_id],
     )?;
+    tx.commit()?;
     mark_catalog_dirty();
     loaded(get_workspace_in(&conn, workspace_id)?, "Workspace")
 }
@@ -1077,6 +1091,36 @@ mod tests {
         let shelved = delete_summary("ws2").expect("summary");
         assert_eq!(shelved.deleted_threads, 0);
         assert_eq!(shelved.kept_threads, 2);
+    }
+
+    /// A folder on the shelf shows every conversation it holds — the ones it was
+    /// hiding and the ones shelved on their own before it. Restoring it returns
+    /// all of them: the reader should not have to bring the rest back one by one.
+    #[test]
+    fn restoring_a_shelved_workspace_returns_every_conversation_it_holds() {
+        let (_home, conn) = guarded_conn("ws_restore_all");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, archived_at, created_at, updated_at)
+                 VALUES ('ws', 'W', 'user', '/tmp/ws', 5, 1, 1);
+             INSERT INTO threads (id, workspace_id, mode, title, status, archived_at,
+                 created_at, updated_at)
+                 VALUES ('shelved_before', 'ws', 'workspace', 'S', 'archived', 4, 1, 1),
+                        ('hidden_one', 'ws', 'workspace', 'H1', 'active', NULL, 1, 1),
+                        ('hidden_two', 'ws', 'workspace', 'H2', 'active', NULL, 1, 1);",
+        )
+        .expect("seed");
+
+        let restored = restore_workspace("ws").expect("restore");
+        assert_eq!(restored.archived_at, None, "the folder is back");
+        let still_shelved: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM threads
+                  WHERE workspace_id = 'ws' AND (status != 'active' OR archived_at IS NOT NULL)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(still_shelved, 0, "every conversation came back with it");
     }
 
     #[test]
