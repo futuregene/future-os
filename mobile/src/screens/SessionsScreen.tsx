@@ -44,6 +44,7 @@ import { listTargets, selectableTargets } from "./sessionSelection";
 import { type Tab } from "./sessionTabs";
 import { DesktopPicker } from "./DesktopPicker";
 import { unreadableShelfMachines } from "./archived";
+import { archiveSessionWithPrompt } from "./archiveAction";
 import { DisconnectedScreen } from "./DisconnectedScreen";
 import { StandbyScreen } from "./StandbyScreen";
 import { layout, radius, spacing } from "../theme/tokens";
@@ -215,6 +216,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     deleteWorkspace: remote.deleteWorkspace,
     archiveSession: remote.archiveSession,
     restoreSession: remote.restoreSession,
+    abortSession: remote.abortSession,
     archiveWorkspace: remote.archiveWorkspace,
     restoreWorkspace: remote.restoreWorkspace,
   }), [
@@ -228,6 +230,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     remote.setWorkspacePinned,
     remote.archiveSession,
     remote.restoreSession,
+    remote.abortSession,
     remote.archiveWorkspace,
     remote.restoreWorkspace,
   ]);
@@ -1095,12 +1098,23 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
                 disabled: !canManage,
                 onPress: () => {
                   const commands = menuSessionCommands;
-                  if (!commands) return;
+                  const session = menuSession?.session;
+                  if (!commands || !session) return;
                   setMenuSession(null);
-                  void (menuSessionArchived
-                    ? commands.restoreSession(menuSession.session.sessionId, menuSession.session.threadId)
-                    : commands.archiveSession(menuSession.session.sessionId, menuSession.session.threadId))
-                    .catch(() => Alert.alert(t("common.error"), t("sessions.archiveFailed")));
+                  if (menuSessionArchived) {
+                    void commands.restoreSession(session.sessionId, session.threadId)
+                      .catch(() => Alert.alert(t("common.error"), t("sessions.archiveFailed")));
+                    return;
+                  }
+                  // A running conversation is a question, not a refusal: the
+                  // reader can cancel or let the stop happen first.
+                  archiveSessionWithPrompt({
+                    alert: (title, message, buttons) => Alert.alert(title, message, buttons),
+                    commands,
+                    onFailed: () => Alert.alert(t("common.error"), t("sessions.archiveFailed")),
+                    session,
+                    t,
+                  });
                 },
               }]
               : []),

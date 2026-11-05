@@ -167,6 +167,7 @@ function machineCommands(capabilities: string[] = []) {
     deleteSession: jest.fn(async (_sessionId: string, _threadId: string) => {}),
     archiveSession: jest.fn(async (_sessionId: string, _threadId: string) => {}),
     restoreSession: jest.fn(async (_sessionId: string, _threadId: string) => {}),
+    abortSession: jest.fn(async (_sessionId: string) => {}),
     renameWorkspace: jest.fn(async (_workspaceId: string, _name: string) => {}),
     setWorkspacePinned: jest.fn(async (_workspaceId: string, _pinned: boolean) => {}),
     archiveWorkspace: jest.fn(async (_workspaceId: string) => {}),

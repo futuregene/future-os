@@ -8,6 +8,7 @@ import type { VibeThreadViewProps } from "../../features/vibe/VibeStage";
 import type { FutureAuthState, ProvidersView } from "../../integrations/agent/providers";
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ActivitySection } from "./ActivityRail";
+import type { ArchiveWorkspaceDialogState } from "./AppShellDialogs";
 import type { ContextTab } from "./ContextPanel";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -64,11 +65,13 @@ import { openExternalUrl } from "../../integrations/storage/files";
 import {
   archiveWorkspace,
   createWorkspace,
+  listActiveThreads,
   markThreadOpened,
   pinThread,
   pinWorkspace,
   restoreThreadTree,
   restoreWorkspace,
+  stopThreads,
 } from "../../integrations/storage/threadStore";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 import { errorMessage } from "../../lib/errors";
@@ -237,6 +240,15 @@ function ReadyAppShell({
   const draftWorkspaces = useRemoteWorkspaceRows(remoteDraft?.desktopId ?? null);
   /** The remote conversation whose rename dialog is open, if any. */
   const [remoteRename, setRemoteRename] = useState<MergedConversation | null>(null);
+  /**
+   * A workspace archive waiting on the reader's decision about running work.
+   *
+   * The rail's "archive workspace" is one click, but its conversations may be
+   * mid-run. Rather than a bare refusal, the click opens this dialog naming how
+   * many are running, with the reader's two real choices: cancel, or stop them
+   * and archive.
+   */
+  const [archiveWorkspaceDialog, setArchiveWorkspaceDialog] = useState<ArchiveWorkspaceDialogState | null>(null);
   /** The remote *workspace* whose rename dialog is open, if any. */
   const [remoteWorkspaceRename, setRemoteWorkspaceRename] = useState<RemoteWorkspaceTarget | null>(null);
   /** Whether the open remote conversation's account book is showing. */
@@ -620,10 +632,12 @@ function ReadyAppShell({
     deleteDialog,
     batchDeleteDialog,
     archiveDialog,
+    batchArchiveDialog,
     setRenameDialog,
     setDeleteDialog,
     setBatchDeleteDialog,
     setArchiveDialog,
+    setBatchArchiveDialog,
     openRename,
     confirmRename,
     generateTitle,
@@ -634,6 +648,7 @@ function ReadyAppShell({
     requestArchive,
     confirmArchive,
     archiveThreads,
+    confirmBatchArchive,
   } = useThreadDialogs({ activeThreadId, onArchived: handleFirstArchive, refreshStore, threads });
   const {
     renameDialog: workspaceRenameDialog,
@@ -1138,20 +1153,67 @@ function ReadyAppShell({
     showArchiveGuide();
   }
 
+  /**
+   * Archive a workspace, after asking about anything still running.
+   *
+   * A workspace archive is one click in the rail, so the question has to be the
+   * click's answer rather than a refusal toast: the reader either cancels or
+   * chooses to stop the running conversations first. The activity read is the
+   * backend's own — runs this store recorded plus runs another client started —
+   * so the number the dialog names is the number the archive would refuse on.
+   */
   async function handleArchiveWorkspace(workspace: StoredWorkspace) {
+    let running: StoredThread[] = [];
     try {
-      await archiveWorkspace(workspace.id);
-      handleFirstArchive();
-      emitFutureEvent("archive-changed", undefined);
-      // The workspace takes its conversations with it, and none of them was
-      // archived itself — every member keeps its status, so no listing can say
-      // the open one is gone. Naming the workspace is what moves the column off
-      // a conversation whose rail entry just disappeared (see
-      // `RefreshStoreOptions.archivedWorkspaceIds`).
-      await refreshStore(undefined, { archivedWorkspaceIds: [workspace.id] });
+      const active = await listActiveThreads();
+      running = active.filter(thread => thread.workspaceId === workspace.id);
+    }
+    catch {
+      // The archive still refuses a running member by name; the dialog is the
+      // nicer path, not the only guard.
+    }
+    if (running.length > 0) {
+      setArchiveWorkspaceDialog({ error: null, running, submitting: false, workspace });
+      return;
+    }
+    try {
+      await archiveWorkspaceNow(workspace);
     }
     catch (error) {
       emitFutureEvent("toast", { message: errorMessage(error), tone: "error" });
+    }
+  }
+
+  /** The workspace write itself, shared by the plain and the stop-first path. */
+  async function archiveWorkspaceNow(workspace: StoredWorkspace) {
+    await archiveWorkspace(workspace.id);
+    handleFirstArchive();
+    emitFutureEvent("archive-changed", undefined);
+    // The workspace takes its conversations with it, and none of them was
+    // archived itself — every member keeps its status, so no listing can say
+    // the open one is gone. Naming the workspace is what moves the column off
+    // a conversation whose rail entry just disappeared (see
+    // `RefreshStoreOptions.archivedWorkspaceIds`).
+    await refreshStore(undefined, { archivedWorkspaceIds: [workspace.id] });
+  }
+
+  /** Stop the workspace's running conversations, then archive it. */
+  async function confirmArchiveWorkspace() {
+    if (!archiveWorkspaceDialog || archiveWorkspaceDialog.submitting)
+      return;
+    const dialog = archiveWorkspaceDialog;
+    setArchiveWorkspaceDialog(current => current ? { ...current, error: null, submitting: true } : current);
+    try {
+      await stopThreads(dialog.running.map(thread => thread.id));
+      await archiveWorkspaceNow(dialog.workspace);
+      setArchiveWorkspaceDialog(null);
+    }
+    catch (error) {
+      setArchiveWorkspaceDialog(current =>
+        current
+          ? { ...current, error: errorMessage(error), submitting: false }
+          : current,
+      );
     }
   }
 
@@ -1159,8 +1221,9 @@ function ReadyAppShell({
     try {
       await restoreWorkspace(workspace.id);
       emitFutureEvent("archive-changed", undefined);
-      // No options: restoring re-lists the conversations it was hiding, and
-      // that page is the whole answer — nothing was ever marked shelved.
+      // No options: restoring re-lists every conversation the folder showed —
+      // the ones it was hiding and the ones shelved on their own — so one
+      // refresh is the whole answer.
       await refreshStore();
     }
     catch (error) {
@@ -2167,14 +2230,20 @@ function ReadyAppShell({
           )}
       <AppShellDialogs
         archiveDialog={archiveDialog}
+        archiveWorkspaceDialog={archiveWorkspaceDialog}
+        batchArchiveDialog={batchArchiveDialog}
         batchDeleteDialog={batchDeleteDialog}
         deleteDialog={deleteDialog}
         renameDialog={renameDialog}
         setArchiveDialog={setArchiveDialog}
+        setArchiveWorkspaceDialog={setArchiveWorkspaceDialog}
+        setBatchArchiveDialog={setBatchArchiveDialog}
         setBatchDeleteDialog={setBatchDeleteDialog}
         setDeleteDialog={setDeleteDialog}
         setRenameDialog={setRenameDialog}
         onConfirmArchiveThread={() => void confirmArchive()}
+        onConfirmArchiveWorkspace={() => void confirmArchiveWorkspace()}
+        onConfirmBatchArchive={() => void confirmBatchArchive()}
         onConfirmBatchDeleteThread={() => void confirmBatchDelete()}
         onConfirmDeleteThread={() => void confirmDelete()}
         onConfirmRenameThread={() => void confirmRename()}

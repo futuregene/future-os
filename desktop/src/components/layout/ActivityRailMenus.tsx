@@ -301,6 +301,10 @@ export function ArchivedWorkspaceMenu({
                 dropUp ? "bottom-7" : "top-7",
               )}
             >
+              {/* The folder's own action, on every shelf entry: a workspace can
+                  be on the shelf because it was shelved *or* because it still
+                  holds shelved conversations while in use, and the folder is
+                  what says "bring everything inside it back". */}
               <ThreadMenuItem icon={<Archive className="size-3.5" />} onClick={() => onRestore(workspace)} onClose={() => onOpenChange(false)}>
                 {t("activityRail.restoreWorkspace")}
               </ThreadMenuItem>

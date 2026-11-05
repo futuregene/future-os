@@ -86,20 +86,37 @@ export function useArchiveView(): ArchiveView {
   // another page cannot read this render's state.
   const workspaceCursorRef = useRef<Record<string, string | null>>({});
   workspaceCursorRef.current = workspaceNextCursor;
+  const workspaceThreadsRef = useRef<Record<string, StoredThread[]>>({});
+  workspaceThreadsRef.current = workspaceThreads;
+  // Groups whose contents a page is being fetched for (see ensureWorkspaceThreads).
+  const workspaceLoadingRef = useRef<Set<string>>(new Set());
   const workspaceLoadedRef = useRef<Record<string, number>>({});
   const stateRef = useRef<ArchiveViewState>({ loading: false, loaded: false, nextCursor: null });
   stateRef.current = { loading, loaded: stateRef.current.loaded, nextCursor };
 
+  /**
+   * A refresh that arrived while the lists were being read.
+   *
+   * `loadFirst` is one at a time — the pages it receives are the answer to
+   * "what is shelved now" — but dropping a request because one is in flight
+   * loses the change that asked for it: the archive/restore that fired
+   * `archive-changed` mid-read leaves the page it was reading stale, and the
+   * row it moved stays drawn on the shelf it just left. The flag turns the drop
+   * into a second read, so the last word is always about the latest state.
+   */
+  const refreshQueuedRef = useRef(false);
+  const loadFirstRef = useRef<() => Promise<void>>(async () => {});
+
   const loadFirst = useCallback(async () => {
-    if (stateRef.current.loading)
+    if (stateRef.current.loading) {
+      refreshQueuedRef.current = true;
       return;
+    }
     stateRef.current = { ...stateRef.current, loading: true, loaded: true };
     setLoading(true);
     try {
-      const [workspacePage, threadPage] = await Promise.all([
-        listWorkspacesPage(true, null, PAGE_SIZE),
-        listThreadsPage("archived", null, PAGE_SIZE),
-      ]);
+      const workspacePage = await listWorkspacesPage(true, null, PAGE_SIZE);
+      const threadPage = await listThreadsPage("archived", null, PAGE_SIZE);
       setWorkspaces(workspacePage.workspaces);
       setWorkspaceNextCursorForList(workspacePage.nextCursor);
       setThreads(threadPage.threads);
@@ -107,23 +124,45 @@ export function useArchiveView(): ArchiveView {
       setThreadsRemaining(threadPage.nextCursor === null
         ? 0
         : Math.max(0, threadPage.totalRoots - PAGE_SIZE));
-      // Contents of workspaces that are still shelved are re-read for the ones
-      // the reader had open; a restored workspace's entry simply disappears
-      // with its heading.
+      // The groups the reader had open are re-read, not merely kept: restoring
+      // one conversation out of a group leaves the workspace on the shelf, and a
+      // cached page would keep drawing the conversation that just left it (and
+      // keep counting it in the heading). A workspace that is gone from the
+      // shelf drops its entry with its heading.
+      const opened = Object.keys(workspaceThreadsRef.current).filter(id =>
+        workspacePage.workspaces.some(workspace => workspace.id === id));
       setWorkspaceThreads((current) => {
         const kept: Record<string, StoredThread[]> = {};
-        for (const workspace of workspacePage.workspaces) {
-          if (current[workspace.id])
-            kept[workspace.id] = current[workspace.id]!;
+        for (const id of opened) {
+          if (current[id])
+            kept[id] = current[id]!;
         }
         return kept;
       });
+      await Promise.all(opened.map(async (id) => {
+        const page = await listThreadsPage(`workspace-archived:${id}`, null, PAGE_SIZE);
+        setWorkspaceThreads(previous => ({ ...previous, [id]: page.threads }));
+        setWorkspaceNextCursor(previous => ({ ...previous, [id]: page.nextCursor }));
+        workspaceCursorRef.current = { ...workspaceCursorRef.current, [id]: page.nextCursor };
+        workspaceLoadedRef.current[id] = PAGE_SIZE;
+        setWorkspaceRemaining(previous => ({
+          ...previous,
+          [id]: page.nextCursor === null ? 0 : Math.max(0, page.totalRoots - PAGE_SIZE),
+        }));
+      }));
     }
     finally {
       stateRef.current = { loading: false, loaded: true, nextCursor: stateRef.current.nextCursor };
       setLoading(false);
+      // The read above may already be out of date; the queued request is the
+      // one that answers for the state the reader is looking at.
+      if (refreshQueuedRef.current) {
+        refreshQueuedRef.current = false;
+        void loadFirstRef.current();
+      }
     }
   }, []);
+  loadFirstRef.current = loadFirst;
 
   /**
    * One archived workspace's conversations.
@@ -132,28 +171,32 @@ export function useArchiveView(): ArchiveView {
    * collapse/re-expand does not refetch and a batch can address the rows.
    */
   const ensureWorkspaceThreads = useCallback((workspaceId: string) => {
-    setWorkspaceThreads((current) => {
-      if (current[workspaceId])
-        return current;
-      void listThreadsPage(`workspace-archived:${workspaceId}`, null, PAGE_SIZE)
-        .then((page) => {
-          setWorkspaceThreads(previous => ({ ...previous, [workspaceId]: page.threads }));
-          setWorkspaceNextCursor(previous => ({ ...previous, [workspaceId]: page.nextCursor }));
-          workspaceCursorRef.current = { ...workspaceCursorRef.current, [workspaceId]: page.nextCursor };
-          workspaceLoadedRef.current[workspaceId] = PAGE_SIZE;
-          setWorkspaceRemaining(previous => ({
-            ...previous,
-            [workspaceId]: page.nextCursor === null
-              ? 0
-              : Math.max(0, page.totalRoots - PAGE_SIZE),
-          }));
-        })
-        .catch(() => {
-          setWorkspaceThreads(previous => ({ ...previous, [workspaceId]: [] }));
-          setWorkspaceNextCursor(previous => ({ ...previous, [workspaceId]: null }));
-        });
-      return current;
-    });
+    // One fetch per group: `ensure` is also called from the view's own effect
+    // whenever an expanded group has no contents left, and a second call while
+    // the first is in flight must not start another.
+    if (workspaceThreadsRef.current[workspaceId] || workspaceLoadingRef.current.has(workspaceId))
+      return;
+    workspaceLoadingRef.current.add(workspaceId);
+    void listThreadsPage(`workspace-archived:${workspaceId}`, null, PAGE_SIZE)
+      .then((page) => {
+        setWorkspaceThreads(previous => ({ ...previous, [workspaceId]: page.threads }));
+        setWorkspaceNextCursor(previous => ({ ...previous, [workspaceId]: page.nextCursor }));
+        workspaceCursorRef.current = { ...workspaceCursorRef.current, [workspaceId]: page.nextCursor };
+        workspaceLoadedRef.current[workspaceId] = PAGE_SIZE;
+        setWorkspaceRemaining(previous => ({
+          ...previous,
+          [workspaceId]: page.nextCursor === null
+            ? 0
+            : Math.max(0, page.totalRoots - PAGE_SIZE),
+        }));
+      })
+      .catch(() => {
+        setWorkspaceThreads(previous => ({ ...previous, [workspaceId]: [] }));
+        setWorkspaceNextCursor(previous => ({ ...previous, [workspaceId]: null }));
+      })
+      .finally(() => {
+        workspaceLoadingRef.current.delete(workspaceId);
+      });
   }, []);
 
   const ensureLoaded = useCallback(() => {

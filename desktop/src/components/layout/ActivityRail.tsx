@@ -53,6 +53,7 @@ import { useCollapsedWorkspaces } from "./hooks/useCollapsedWorkspaces";
 import { usePendingApprovalCounts } from "./hooks/usePendingApprovalCounts";
 import { useRailSelection } from "./hooks/useRailSelection";
 import { useRailView } from "./hooks/useRailView";
+import { useThreadSearch } from "./hooks/useThreadSearch";
 import { MergedRows } from "./MergedRows";
 import { RailDisclosure, RailHeaderButton } from "./RailChrome";
 import { RailLoadMoreRow } from "./RailRow";
@@ -66,6 +67,13 @@ export type ActivitySection = "chat" | "workspace" | "skill" | "tasks" | "remote
 
 /** Development builds only: a packaged app strips the controls gated on this. */
 const DEV = import.meta.env.DEV;
+
+/**
+ * "Nothing is folded", for the lists that unfold themselves while a query is
+ * on. A module constant rather than a fresh `new Set()` so the prop does not
+ * change identity on every render, which would re-render every merged group.
+ */
+const NO_FOLDED_GROUPS: ReadonlySet<string> = new Set<string>();
 
 interface ActivityRailProps {
   active: ActivitySection;
@@ -418,6 +426,7 @@ export function ActivityRail({
   const { collapsedWorkspaces, toggleWorkspaceCollapsed } = useCollapsedWorkspaces();
   // Collapse state for the two top-level list sections (Workspace / Chat),
   // independent of the per-workspace group collapse above.
+  const [workspaceSectionCollapsed, setWorkspaceSectionCollapsed] = useState(false);
   const [chatSectionCollapsed, setChatSectionCollapsed] = useState(false);
   // The archived view's two sections fold like the active ones (one click each,
   // no need to fold every workspace heading by hand).
@@ -567,10 +576,37 @@ export function ActivityRail({
   // run/streaming status changes, but these depend only on the thread list
   // and selection scope — recomputing the sort + filters (O(W×T) with the
   // workspace grouping) on every render was wasted churn (M3).
-  const visibleThreads = useMemo(
-    () => sortThreads(threads.filter(thread => thread.status === "active")),
-    [threads],
+  /**
+   * The store's answer to the search box.
+   *
+   * The lists are paged, so what a window holds is what its groups and views
+   * asked for — a folded workspace, an unexpanded shelf or anything older than
+   * the first page is simply not here to be filtered. The store is asked
+   * instead, and its rows are folded into the lists below beside the loaded
+   * ones, so a search finds a conversation whether or not its page arrived.
+   */
+  const threadSearch = useThreadSearch(searchQuery);
+  /** The rows the store matched, whichever half they are shelved in. */
+  const searchHitIds = useMemo(
+    () => new Set([...(threadSearch?.active ?? []), ...(threadSearch?.archived ?? [])].map(thread => thread.id)),
+    [threadSearch],
   );
+
+  const visibleThreads = useMemo(() => {
+    const loaded = threads.filter(thread => thread.status === "active");
+    const found = threadSearch?.active ?? [];
+    if (found.length === 0)
+      return sortThreads(loaded);
+    // Added, not substituted: a loaded row carries the state this window has
+    // been patching (a run, a fresh title), and the union is keyed by id, so a
+    // row both halves know is still one row.
+    const byId = new Map(loaded.map(thread => [thread.id, thread] as const));
+    for (const thread of found) {
+      if (thread.status === "active")
+        byId.set(thread.id, thread);
+    }
+    return sortThreads([...byId.values()]);
+  }, [threads, threadSearch]);
 
   const threadTree = useMemo(() => buildThreadTree(visibleThreads), [visibleThreads]);
   const threadScopes = useMemo(() => {
@@ -765,8 +801,11 @@ export function ActivityRail({
       return true;
     if (row.workspaceName && row.workspaceName.toLowerCase().includes(normalizedQuery))
       return true;
-    return false;
-  }, [normalizedQuery, queryActive]);
+    // The store matched it. Its answer is the authority on its own rows: a
+    // workspace name this window does not hold (an unloaded group, another
+    // machine's folder) is a reason to keep the row, not to drop it.
+    return searchHitIds.has(row.id);
+  }, [normalizedQuery, queryActive, searchHitIds]);
 
   const visibleRemoteRows = useMemo(
     () => (mergedMode ? activeRemoteRows : []),
@@ -820,6 +859,11 @@ export function ActivityRail({
     // into the key its merged row carries.
     const expanded = new Set(expandedRemoteThreads);
     for (const threadId of expandedThreads) expanded.add(rowKey(null, threadId));
+    // A search draws every match: a fork folded under its parent would be a
+    // hit the list claims to have and does not show.
+    if (queryActive) {
+      for (const row of filteredRemoteRows) expanded.add(row.key);
+    }
     const visible = visibleTreeRows(nodes, row => row.key, expanded);
     const meta = new Map(visible.map(row => [row.item.key, row] as const));
     // Which conversation each row hangs under. Section and order are decided
@@ -835,7 +879,7 @@ export function ActivityRail({
     };
     for (const node of nodes) tag([node], node.item);
     return { meta, roots, rows: visible.map(row => row.item) };
-  }, [expandedRemoteThreads, expandedThreads, filteredRemoteRows]);
+  }, [expandedRemoteThreads, expandedThreads, filteredRemoteRows, queryActive]);
 
   /**
    * The archived view, filtered by the search box.
@@ -846,26 +890,132 @@ export function ActivityRail({
    * its workspace's name, a workspace by its own name or any conversation in it.
    */
   const archivedQuery = normalizedQuery;
+  /** Each workspace's name, from both lists that hold one. */
+  const workspaceNameById = useMemo(
+    () => new Map([
+      ...workspaces.map(workspace => [workspace.id, workspace.name] as const),
+      ...archiveView.workspaces.map(workspace => [workspace.id, workspace.name] as const),
+    ]),
+    [archiveView.workspaces, workspaces],
+  );
+  /** The store's shelved matches, by id, for the rows it answered for. */
+  const archivedSearchIds = useMemo(
+    () => new Set((threadSearch?.archived ?? []).map(thread => thread.id)),
+    [threadSearch],
+  );
   const archivedMatches = useCallback((thread: StoredThread, workspaceName?: string | null): boolean => {
     if (archivedQuery.length === 0)
+      return true;
+    // The store's own answer wins: it matched on a workspace name this window
+    // may not hold at all (a shelf whose group never loaded), and dropping that
+    // row would be dropping a real hit.
+    if (archivedSearchIds.has(thread.id))
       return true;
     if (thread.title.toLowerCase().includes(archivedQuery))
       return true;
     return Boolean(workspaceName && workspaceName.toLowerCase().includes(archivedQuery));
-  }, [archivedQuery]);
+  }, [archivedQuery, archivedSearchIds]);
+
+  /**
+   * This machine's shelved conversations: the loaded page plus the store's
+   * matches.
+   *
+   * The page is ten rows and the shelf is as long as the reader's own history;
+   * a query that could only see the page answered "nothing" for everything
+   * behind it. Both halves are keyed by id, so a row in both is one row.
+   */
+  const archivedThreadsForList = useMemo(() => {
+    const found = queryActive && threadSearch ? threadSearch.archived : [];
+    if (found.length === 0)
+      return archiveView.threads;
+    const byId = new Map(archiveView.threads.map(thread => [thread.id, thread] as const));
+    for (const thread of found) byId.set(thread.id, thread);
+    return [...byId.values()];
+  }, [archiveView.threads, queryActive, threadSearch]);
   const filteredArchivedThreads = useMemo(
-    () => archiveView.threads.filter(thread => archivedMatches(thread, null)),
-    [archiveView.threads, archivedMatches],
+    () => archivedThreadsForList.filter(thread =>
+      archivedMatches(thread, workspaceNameById.get(thread.workspaceId) ?? null)),
+    [archivedThreadsForList, archivedMatches, workspaceNameById],
   );
+  /** Workspaces the store shelved rows in, whether or not their heading loaded. */
+  const archivedMatchWorkspaceIds = useMemo(
+    () => new Set((threadSearch?.archived ?? []).map(thread => thread.workspaceId)),
+    [threadSearch],
+  );
+  /**
+   * One shelved workspace's conversations: its own loaded page plus the store's
+   * matches for it.
+   *
+   * A group the reader has not expanded has no page at all, so a query that
+   * matched a conversation inside it used to keep the heading and show it
+   * empty. The store's rows fill it; the group's page takes precedence where
+   * both hold the same row, because that is the copy this window keeps patching.
+   */
+  const archivedThreadsForWorkspace = useCallback((workspaceId: string): StoredThread[] | undefined => {
+    const loaded = archiveView.workspaceThreads[workspaceId];
+    const found = queryActive && threadSearch
+      ? threadSearch.archived.filter(thread => thread.workspaceId === workspaceId)
+      : [];
+    let rows: StoredThread[] | undefined = loaded;
+    if (found.length > 0) {
+      const byId = new Map((loaded ?? []).map(thread => [thread.id, thread] as const));
+      for (const thread of found) {
+        if (!byId.has(thread.id))
+          byId.set(thread.id, thread);
+      }
+      rows = [...byId.values()];
+    }
+    // A query narrows a group to its own hits, the same rule the sections
+    // above follow: the heading says how many are shown, and the count is only
+    // honest if the rows under it are the ones counted.
+    if (archivedQuery.length === 0)
+      return rows;
+    return rows?.filter(thread => archivedMatches(thread, workspaceNameById.get(workspaceId) ?? null));
+  }, [archiveView.workspaceThreads, archivedMatches, archivedQuery, queryActive, threadSearch, workspaceNameById]);
   const filteredArchivedWorkspaces = useMemo(
     () => archiveView.workspaces.filter((workspace) => {
       if (archivedQuery.length === 0)
         return true;
       if (workspace.name.toLowerCase().includes(archivedQuery))
         return true;
+      if (archivedMatchWorkspaceIds.has(workspace.id))
+        return true;
       return (archiveView.workspaceThreads[workspace.id] ?? []).some(thread => archivedMatches(thread, workspace.name));
     }),
-    [archiveView.workspaces, archiveView.workspaceThreads, archivedMatches, archivedQuery],
+    [archiveView.workspaces, archiveView.workspaceThreads, archivedMatches, archivedMatchWorkspaceIds, archivedQuery],
+  );
+
+  /**
+   * Shelved conversations that belong to a workspace which is still active.
+   *
+   * Archiving is per conversation: shelving one of a workspace's chats leaves
+   * the workspace and its other conversations in place. Drawing that row loose
+   * under "archived conversations" hid the one fact the reader needs — which
+   * workspace it came from, and therefore what restoring it goes back to — so
+   * the archived view files it under that workspace's own heading, the same
+   * heading a shelved workspace gets, with the count of what is shelved in it.
+   *
+   * A conversation whose workspace is itself shelved is not here: its workspace
+   * is a shelf of its own (`filteredArchivedWorkspaces`), and the store's
+   * `archived` scope excludes those rows precisely so one conversation is not
+   * drawn under two headings.
+   *
+   * The query narrows this section the same way it narrows the headings: a
+   * shelved conversation is a hit by its own title or by its workspace's name,
+   * and the store's matches are hits too. Without that, typing in the search
+   * box while looking at the archive kept every shelved conversation on
+   * screen — the archive was the one list the search did not reach.
+   */
+  const archivedWorkspaceIds = useMemo(
+    () => new Set(filteredArchivedWorkspaces.map(workspace => workspace.id)),
+    [filteredArchivedWorkspaces],
+  );
+  const looseArchivedThreads = useMemo(
+    () => filteredArchivedThreads.filter(thread =>
+      !(thread.mode === "workspace"
+        && thread.workspaceId
+        && archivedWorkspaceIds.has(thread.workspaceId))),
+    [filteredArchivedThreads, archivedWorkspaceIds],
   );
 
   /**
@@ -899,6 +1049,25 @@ export function ActivityRail({
     [archivedQuery, expandedArchivedWorkspaces],
   );
 
+  /**
+   * An expanded group with no contents re-reads them.
+   *
+   * Opening a group is the only other trigger, and a group can be expanded while
+   * its page is gone — the workspace left the shelf (its entry was dropped) and
+   * came back after one conversation was archived into it. The heading then sat
+   * on "loading" until the reader folded it and opened it again.
+   */
+  useEffect(() => {
+    if (railView !== "archived")
+      return;
+    // Only the headings on screen: a query opens them all, and every shelved
+    // workspace in the store is not the same set as the ones it draws.
+    for (const workspace of filteredArchivedWorkspaces) {
+      if (archivedGroupExpanded(workspace.id) && archiveView.workspaceThreads[workspace.id] === undefined)
+        archiveView.ensureWorkspaceThreads(workspace.id);
+    }
+  }, [archiveView, archivedGroupExpanded, filteredArchivedWorkspaces, railView]);
+
   const threadMatchesQuery = useCallback((thread: StoredThread): boolean => {
     if (!queryActive)
       return true;
@@ -907,8 +1076,11 @@ export function ActivityRail({
     const workspace = workspaces.find(ws => ws.id === thread.workspaceId);
     if (workspace && workspace.name.toLowerCase().includes(normalizedQuery))
       return true;
-    return false;
-  }, [normalizedQuery, queryActive, workspaces]);
+    // A row the store matched but this window cannot explain: its workspace's
+    // name is not loaded here (the group's page never arrived), so the store's
+    // answer is the only one available — and the one the reader asked for.
+    return searchHitIds.has(thread.id);
+  }, [normalizedQuery, queryActive, workspaces, searchHitIds]);
 
   const filteredVisibleThreads = useMemo(
     () => visibleThreads.filter(thread => threadMatchesQuery(thread)),
@@ -977,6 +1149,9 @@ export function ActivityRail({
         row.desktopId !== null
         || !recentThreadIds
         || recentThreadIds.has(row.id)
+        // A search reaches the whole store: its rows are drawn here even
+        // though this view's stream never paged them in.
+        || queryActive
         // A run in flight is drawn even before its page arrives: the active
         // stretch is read whole from `list_active_threads`, so a conversation
         // the reader just started (here or on the phone) is never missing from
@@ -989,6 +1164,11 @@ export function ActivityRail({
     // into the key its merged row carries — the same translation the tree makes.
     const expanded = new Set(expandedRemoteThreads);
     for (const threadId of expandedThreads) expanded.add(rowKey(null, threadId));
+    // A search draws every match: a fork folded under its parent here would be
+    // a hit the list claims to have and does not show.
+    if (queryActive) {
+      for (const row of rows) expanded.add(row.key);
+    }
     const meta = new Map<string, { depth: number; hasChildren: boolean }>();
     const roots = new Map<string, string>();
     const sections = split.sections.map((section) => {
@@ -998,7 +1178,7 @@ export function ActivityRail({
       return { ...section, rows: expansion.rows };
     });
     return { meta, roots, rows: sections.flatMap(section => section.rows), sections };
-  }, [expandedRemoteThreads, expandedThreads, recentThreadIds, activeRemoteRows, rowMatchesQuery, threadRunStatuses, threadStreamingStatuses]);
+  }, [expandedRemoteThreads, expandedThreads, recentThreadIds, activeRemoteRows, queryActive, rowMatchesQuery, threadRunStatuses, threadStreamingStatuses]);
 
   /**
    * What the view still holds back, and the control that reveals it.
@@ -1131,8 +1311,21 @@ export function ActivityRail({
 
   // Pinned threads are hoisted into a single global section (regardless of
   // workspace/chat); the per-group lists show only the unpinned rest.
-  const pinnedThreads = useMemo(() => visibleThreadRows(threadTree.filter(node => node.item.pinned), expandedThreads), [threadTree, expandedThreads]);
-  const chatThreads = useMemo(() => visibleThreadRows(threadTree.filter(node => node.item.mode === "chat" && !node.item.pinned), expandedThreads), [threadTree, expandedThreads]);
+  /**
+   * Which forks are drawn open.
+   *
+   * A search opens them all. A fold hides a row inside the row it forked from,
+   * which is a browsing convenience while nothing is being looked for — and a
+   * filter that silently keeps a match behind a `+` while saying "no matches"
+   * is a wrong answer. Outside a query the reader's own fold state is used, so
+   * nothing unfolds by itself.
+   */
+  const rowExpansion = useMemo(
+    () => (queryActive ? new Set(visibleThreads.map(thread => thread.id)) : expandedThreads),
+    [expandedThreads, queryActive, visibleThreads],
+  );
+  const pinnedThreads = useMemo(() => visibleThreadRows(threadTree.filter(node => node.item.pinned), rowExpansion), [threadTree, rowExpansion]);
+  const chatThreads = useMemo(() => visibleThreadRows(threadTree.filter(node => node.item.mode === "chat" && !node.item.pinned), rowExpansion), [threadTree, rowExpansion]);
   const workspaceRoots = useMemo(() => threadTree.filter(node => node.item.mode === "workspace" && !node.item.pinned), [threadTree]);
   // The store keeps its recency order (the new-conversation picker reads
   // `workspaces[0]` as "most recent"); pinning is this list's own rule, so the
@@ -1144,7 +1337,7 @@ export function ActivityRail({
     return [...groups.filter(workspace => workspace.pinned), ...groups.filter(workspace => !workspace.pinned)]
       .map((workspace) => {
         const roots = workspaceRoots.filter(node => node.item.workspaceId === workspace.id);
-        const rows = visibleThreadRows(roots, expandedThreads);
+        const rows = visibleThreadRows(roots, rowExpansion);
         return {
           workspace,
           rows,
@@ -1166,7 +1359,7 @@ export function ActivityRail({
         rows: group.rows.filter(({ thread }) => threadMatchesQuery(thread)),
         threads: group.threads.filter(thread => threadMatchesQuery(thread)),
       }));
-  }, [workspaceRoots, workspaces, expandedThreads, visibleThreads, threadMatchesQuery, normalizedQuery, threadScopeHasMore, threadScopeLoading]);
+  }, [workspaceRoots, workspaces, rowExpansion, visibleThreads, threadMatchesQuery, normalizedQuery, threadScopeHasMore, threadScopeLoading]);
 
   /**
    * Ask for the first page of every group the reader can see.
@@ -1180,13 +1373,13 @@ export function ActivityRail({
    * this effect asks again for whatever is open.
    */
   useEffect(() => {
-    if (railView === "archived")
+    if (railView === "archived" || workspaceSectionCollapsed)
       return;
     for (const group of workspaceGroups) {
       if (!collapsedWorkspaces.has(group.workspace.id))
         ensureThreadScope?.(`workspace:${group.workspace.id}`);
     }
-  }, [collapsedWorkspaces, ensureThreadScope, railView, workspaceGroups]);
+  }, [collapsedWorkspaces, ensureThreadScope, railView, workspaceGroups, workspaceSectionCollapsed]);
 
   const filteredPinnedThreads = useMemo(
     () => pinnedThreads.filter(({ thread }) => threadMatchesQuery(thread)),
@@ -1200,11 +1393,16 @@ export function ActivityRail({
   // Memoized rather than computed inline: these three are dependencies of the
   // walkable-row list below (and of the row builders), and a fresh array every
   // render would rebuild all of it on every keystroke elsewhere in the app.
-  const visibleWorkspaceGroups = workspaceGroups;
+  const visibleWorkspaceGroups = useMemo(
+    // A search shows every group: a match inside a folded group is a match the
+    // reader cannot see, which is exactly what the search box is for.
+    () => (workspaceSectionCollapsed && !queryActive ? [] : workspaceGroups),
+    [workspaceSectionCollapsed, queryActive, workspaceGroups],
+  );
   const visiblePinnedThreads = filteredPinnedThreads;
   const visibleChatThreads = useMemo(
-    () => (chatSectionCollapsed ? [] : filteredChatThreads),
-    [chatSectionCollapsed, filteredChatThreads],
+    () => (chatSectionCollapsed && !queryActive ? [] : filteredChatThreads),
+    [chatSectionCollapsed, queryActive, filteredChatThreads],
   );
   const hasAnyVisibleRow = useMemo(() => {
     if (!queryActive)
@@ -1260,6 +1458,29 @@ export function ActivityRail({
   const activeConversationKey = (active === "chat" || active === "workspace") && activeThreadId
     ? `local::${activeThreadId}`
     : activeRemoteKey;
+
+  /**
+   * One shelved conversation's row, shared by the loose list and the workspace
+   * groups so a row cannot gain the restore menu in one place and lose it in
+   * the other.
+   */
+  function renderArchivedRow(thread: StoredThread): React.ReactNode {
+    return (
+      <ArchivedThreadRow
+        active={thread.id === activeThreadId}
+        key={thread.id}
+        members={archivedTreeMembers(thread)}
+        onDelete={onDeleteThread}
+        onOpen={onOpenArchivedThread ?? onSelectThread}
+        onRename={onRenameThread}
+        onRestore={onRestoreThread}
+        onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
+        selected={selectedThreadIds.has(thread.id)}
+        selectionMode={threadSelectionMode(thread)}
+        thread={thread}
+      />
+    );
+  }
 
   /**
    * One local row, built once and reused by both list modes. Extracted rather
@@ -1392,7 +1613,12 @@ export function ActivityRail({
       const toRows = (row: MergedConversation) => ({ key: row.key, open: () => openRow(row) });
       return [
         ...byRoot(pinned, rootOf).map(rows => toBlock("pinned", rows.map(toRows))),
-        ...workspaces.map(group => toBlock("workspace", group.rows.map(toRows))),
+        // A folded-away section has no rows on screen, so the walk must not stop
+        // on them either: the keyboard follows what is drawn, and the local list
+        // already answers the same fold this way.
+        ...(workspaceSectionCollapsed
+          ? []
+          : workspaces.map(group => toBlock("workspace", group.rows.map(toRows)))),
         ...byRoot(chats, rootOf).map(rows => toBlock("chat", rows.map(toRows))),
       ];
     }
@@ -1439,6 +1665,7 @@ export function ActivityRail({
     recent.roots,
     recent.rows,
     threadParents,
+    workspaceSectionCollapsed,
     visibleChatThreads,
     visiblePinnedThreads,
     visibleWorkspaceGroups,
@@ -1562,7 +1789,9 @@ export function ActivityRail({
    * lists drifted apart in the first place.
    */
   function renderWorkspaceHeader(workspace: StoredWorkspace, groupThreads: StoredThread[]): React.ReactNode {
-    const collapsed = collapsedWorkspaces.has(workspace.id);
+    // A search opens every group (see `visibleWorkspaceGroups`): the toggle
+    // must say what the list is actually doing.
+    const collapsed = !queryActive && collapsedWorkspaces.has(workspace.id);
     const selected = activeWorkspaceId === workspace.id;
     return (
       // Right-click anywhere on the heading opens the same actions menu as the
@@ -1881,14 +2110,15 @@ export function ActivityRail({
                               <div className="space-y-3" data-testid="rail-archived-view">
                                 <div className="space-y-0.5">
                                   <ArchivedSectionHeading
-                                    collapsed={archivedWorkspacesCollapsed}
+                                    collapsed={archivedWorkspacesCollapsed && !queryActive}
                                     icon={<Folder className="size-3.5" />}
                                     label={t("activityRail.archivedWorkspacesHeader")}
                                     onToggle={() => setArchivedWorkspacesCollapsed(value => !value)}
                                   />
-                                  {archivedWorkspacesCollapsed
+                                  {archivedWorkspacesCollapsed && !queryActive
                                     ? null
-                                    : filteredArchivedWorkspaces.length === 0 && archivedRemote.workspaces.length === 0
+                                    : filteredArchivedWorkspaces.length === 0
+                                      && archivedRemote.workspaces.length === 0
                                       ? (
                                           <ArchivedEmpty
                                             label={archivedQuery.length > 0
@@ -1898,46 +2128,52 @@ export function ActivityRail({
                                         )
                                       : (
                                           <>
-                                            {filteredArchivedWorkspaces.map(workspace => (
-                                              <ArchivedWorkspaceGroup
-                                                count={null}
-                                                expanded={expandedArchivedWorkspaces.has(workspace.id)}
-                                                key={workspace.id}
-                                                menu={(
-                                                  <ArchivedWorkspaceMenu
-                                                    open={openArchivedWorkspaceMenuId === workspace.id}
-                                                    onDelete={onDeleteWorkspace}
-                                                    onOpenChange={open => setOpenArchivedWorkspaceMenuId(open ? workspace.id : null)}
-                                                    onRename={onRenameWorkspace}
-                                                    onRestore={restoreArchivedWorkspace}
-                                                    onReveal={() => void openPath(workspace.path).catch(() => {})}
-                                                    onSelectConversations={() => enterSelectionMode(`archived-workspace:${workspace.id}`)}
-                                                    workspace={workspace}
+                                            {filteredArchivedWorkspaces.map((workspace) => {
+                                              const groupThreads = archivedThreadsForWorkspace(workspace.id);
+                                              return (
+                                                <ArchivedWorkspaceGroup
+                                                  count={groupThreads?.length ?? null}
+                                                  expanded={archivedGroupExpanded(workspace.id)}
+                                                  key={workspace.id}
+                                                  menu={(
+                                                    <ArchivedWorkspaceMenu
+                                                      open={openArchivedWorkspaceMenuId === workspace.id}
+                                                      onDelete={onDeleteWorkspace}
+                                                      onOpenChange={open => setOpenArchivedWorkspaceMenuId(open ? workspace.id : null)}
+                                                      onRename={onRenameWorkspace}
+                                                      onRestore={restoreArchivedWorkspace}
+                                                      onReveal={() => void openPath(workspace.path).catch(() => {})}
+                                                      onSelectConversations={() => enterSelectionMode(`archived-workspace:${workspace.id}`)}
+                                                      workspace={workspace}
+                                                    />
+                                                  )}
+                                                  name={workspace.name}
+                                                  onOpenMenu={() => setOpenArchivedWorkspaceMenuId(workspace.id)}
+                                                  onToggle={() => {
+                                                    const next = !expandedArchivedWorkspaces.has(workspace.id);
+                                                    if (next)
+                                                      archiveView.ensureWorkspaceThreads(workspace.id);
+                                                    toggleArchivedWorkspace(workspace.id);
+                                                  }}
+                                                >
+                                                  <ArchivedWorkspaceContents
+                                                    hasMore={archiveView.workspaceNextCursor[workspace.id] !== null
+                                                      && archiveView.workspaceNextCursor[workspace.id] !== undefined}
+                                                    loading={archiveView.loading}
+                                                    onDelete={onDeleteThread}
+                                                    onLoadMore={() => void archiveView.loadAllWorkspaceThreads(workspace.id)}
+                                                    onRename={onRenameThread}
+                                                    onRestore={onRestoreThread}
+                                                    remaining={archiveView.workspaceRemaining[workspace.id] ?? 0}
+                                                    onOpen={onOpenArchivedThread ?? onSelectThread}
+                                                    onToggleSelection={toggleThreadSelection}
+                                                    selectedIds={selectedThreadIds}
+                                                    selectionMode={selectionMode && selectionScope === `archived-workspace:${workspace.id}`}
+                                                    threads={groupThreads}
                                                   />
-                                                )}
-                                                name={workspace.name}
-                                                onOpenMenu={() => setOpenArchivedWorkspaceMenuId(workspace.id)}
-                                                onToggle={() => {
-                                                  const next = !expandedArchivedWorkspaces.has(workspace.id);
-                                                  if (next)
-                                                    archiveView.ensureWorkspaceThreads(workspace.id);
-                                                  toggleArchivedWorkspace(workspace.id);
-                                                }}
-                                              >
-                                                <ArchivedWorkspaceContents
-                                                  hasMore={archiveView.workspaceNextCursor[workspace.id] !== null
-                                                    && archiveView.workspaceNextCursor[workspace.id] !== undefined}
-                                                  loading={archiveView.loading}
-                                                  onLoadMore={() => void archiveView.loadAllWorkspaceThreads(workspace.id)}
-                                                  remaining={archiveView.workspaceRemaining[workspace.id] ?? 0}
-                                                  onOpen={onOpenArchivedThread ?? onSelectThread}
-                                                  onToggleSelection={toggleThreadSelection}
-                                                  selectedIds={selectedThreadIds}
-                                                  selectionMode={selectionMode && selectionScope === `archived-workspace:${workspace.id}`}
-                                                  threads={archiveView.workspaceThreads[workspace.id]}
-                                                />
-                                              </ArchivedWorkspaceGroup>
-                                            ))}
+                                                </ArchivedWorkspaceGroup>
+                                              );
+                                            })}
                                             {/* A host's shelves, drawn with the same
                                                 heading and the machine's glyph:
                                                 the archived view is where both
@@ -2036,14 +2272,14 @@ export function ActivityRail({
                                           />
                                         )
                                       : null}
-                                    collapsed={archivedThreadsCollapsed}
+                                    collapsed={archivedThreadsCollapsed && !queryActive}
                                     icon={<MessageSquare className="size-3.5" />}
                                     label={t("activityRail.archivedThreadsHeader")}
                                     onToggle={() => setArchivedThreadsCollapsed(value => !value)}
                                   />
-                                  {archivedThreadsCollapsed
+                                  {archivedThreadsCollapsed && !queryActive
                                     ? null
-                                    : filteredArchivedThreads.length === 0 && archivedRemote.rows.length === 0
+                                    : looseArchivedThreads.length === 0 && archivedRemote.rows.length === 0
                                       ? (
                                           <ArchivedEmpty
                                             label={archivedQuery.length > 0
@@ -2053,21 +2289,7 @@ export function ActivityRail({
                                         )
                                       : (
                                           <>
-                                            {filteredArchivedThreads.map(thread => (
-                                              <ArchivedThreadRow
-                                                active={thread.id === activeThreadId}
-                                                key={thread.id}
-                                                members={archivedTreeMembers(thread)}
-                                                onDelete={onDeleteThread}
-                                                onOpen={onOpenArchivedThread ?? onSelectThread}
-                                                onRename={onRenameThread}
-                                                onRestore={onRestoreThread}
-                                                onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
-                                                selected={selectedThreadIds.has(thread.id)}
-                                                selectionMode={threadSelectionMode(thread)}
-                                                thread={thread}
-                                              />
-                                            ))}
+                                            {looseArchivedThreads.map(thread => renderArchivedRow(thread))}
                                             {/* Conversations a host shelved on
                                                 their own (a chat, or one its
                                                 workspace list no longer covers),
@@ -2135,8 +2357,8 @@ export function ActivityRail({
                                 <MergedRows
                                   activeKey={activeConversationKey}
                                   ageLabels={railView === "recent" ? recentAgeLabels : undefined}
-                                  chatSectionCollapsed={chatSectionCollapsed}
-                                  collapsedWorkspaces={collapsedWorkspaces}
+                                  chatSectionCollapsed={queryActive ? false : chatSectionCollapsed}
+                                  collapsedWorkspaces={queryActive ? NO_FOLDED_GROUPS : collapsedWorkspaces}
                                   filter={deviceFilter}
                                   onChangedRemote={() => onRemoteConversationsChanged?.()}
                                   onDeletedRemote={conversation => onRemoteConversationDeleted(conversation)}
@@ -2153,6 +2375,8 @@ export function ActivityRail({
                                   onToggleChatSection={() => setChatSectionCollapsed(value => !value)}
                                   onToggleRemoteExpanded={toggleRemoteThreadExpanded}
                                   onToggleWorkspace={toggleWorkspaceCollapsed}
+                                  onToggleWorkspaceSection={() => setWorkspaceSectionCollapsed(value => !value)}
+                                  workspaceSectionCollapsed={queryActive ? false : workspaceSectionCollapsed}
                                   peers={remotePeers}
                                   remoteSelection={{
                                     selectable: isRemoteRowSelectable,
@@ -2227,6 +2451,13 @@ export function ActivityRail({
                                   <div className="sticky top-0 z-20 flex h-6 items-center justify-between bg-surface px-2 text-xs font-medium text-ink-muted">
                                     <span>{t("activityRail.workspace")}</span>
                                     <div className="flex items-center gap-0.5">
+                                      <SectionToggle
+                                        collapsed={workspaceSectionCollapsed}
+                                        label={workspaceSectionCollapsed
+                                          ? t("activityRail.expandWorkspaceSection")
+                                          : t("activityRail.collapseWorkspaceSection")}
+                                        onToggle={() => setWorkspaceSectionCollapsed(value => !value)}
+                                      />
                                       <button
                                         aria-label={t("activityRail.newWorkspace")}
                                         className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
@@ -2238,13 +2469,13 @@ export function ActivityRail({
                                       </button>
                                     </div>
                                   </div>
-                                  {workspaceGroups.length === 0 && (filteredChatThreads.length === 0 || chatSectionCollapsed)
+                                  {!workspaceSectionCollapsed && workspaceGroups.length === 0 && (filteredChatThreads.length === 0 || chatSectionCollapsed)
                                     ? (
                                         <div className="px-2 py-1 text-xs text-ink-muted" data-testid="no-matches-workspace">{noMatchesText}</div>
                                       )
                                     : null}
                                   {visibleWorkspaceGroups.map(({ workspace, threads: groupThreads, rows, more, loading }) => {
-                                    const collapsed = collapsedWorkspaces.has(workspace.id);
+                                    const collapsed = !queryActive && collapsedWorkspaces.has(workspace.id);
                                     return (
                                       <div key={workspace.id} className="space-y-0.5">
                                         {renderWorkspaceHeader(workspace, groupThreads)}

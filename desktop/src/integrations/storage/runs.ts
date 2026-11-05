@@ -51,6 +51,18 @@ export async function abortRun(input: { threadId: string; runId: string }) {
   return invokeCommand<StoredRun>("abort_run", { threadId: input.threadId, runId: input.runId });
 }
 
+/**
+ * Stop whatever is still running in these conversations.
+ *
+ * The archive dialog's "stop and archive" uses this instead of `abortRun`: the
+ * reader did not open the conversation, so there is no run id in hand, and a run
+ * another client started has no local row at all. A conversation with nothing
+ * running is a no-op.
+ */
+export async function stopThreads(threadIds: string[]) {
+  return invokeCommand<void>("stop_threads", { threadIds });
+}
+
 export async function archiveFinishedRuns(threadId: string) {
   return invokeCommand<number>("archive_finished_runs", { threadId });
 }

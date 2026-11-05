@@ -399,6 +399,20 @@ export function useConversationController({
     await client.request({ type: "abort", sessionId }, sessionId);
   }, [clientRef, selectedRef]);
 
+  /**
+   * Stop another conversation's run, by its session.
+   *
+   * The list's "stop and archive" acts on a row the reader has not opened, so
+   * the command names its session rather than using the selected one. The
+   * connection is the same client; only the lane changes.
+   */
+  const abortSession = useCallback(async (sessionId: string) => {
+    const client = clientRef.current;
+    if (!sessionId.trim()) return;
+    if (!client) throw new Error("not_connected");
+    await client.request({ type: "abort", sessionId }, sessionId);
+  }, [clientRef]);
+
   const setModel = useCallback(
     async (nextModelId: string) => {
       const client = clientRef.current;
@@ -545,6 +559,7 @@ export function useConversationController({
     cachedAttachment,
     downloadAttachment,
     abort,
+    abortSession,
     compactContext,
     setModel,
     setThinkingLevel,

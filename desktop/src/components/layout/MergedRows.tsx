@@ -80,6 +80,8 @@ export function MergedRows({
   threadById,
   expandedRemoteRows,
   view = "tree",
+  workspaceSectionCollapsed,
+  onToggleWorkspaceSection,
   workspaces: hostWorkspaces,
 }: {
   activeKey: string | null;
@@ -186,6 +188,9 @@ export function MergedRows({
   /** Fold or unfold the forks of one conversation on another machine, by row key. */
   onToggleRemoteExpanded: (key: string) => void;
   onToggleWorkspace: (key: string) => void;
+  /** Whether the workspace section is folded away, and how to unfold it. */
+  workspaceSectionCollapsed: boolean;
+  onToggleWorkspaceSection: () => void;
   /**
    * Which remote conversations have their forks on screen.
    *
@@ -445,6 +450,13 @@ export function MergedRows({
         <RailSectionHeader
           controls={(
             <>
+              <RailSectionToggle
+                collapsed={workspaceSectionCollapsed}
+                label={workspaceSectionCollapsed
+                  ? t("activityRail.expandWorkspaceSection")
+                  : t("activityRail.collapseWorkspaceSection")}
+                onToggle={onToggleWorkspaceSection}
+              />
               {showLocalActions && onNewWorkspace
                 ? (
                     <RailHeaderButton
@@ -472,89 +484,93 @@ export function MergedRows({
         >
           {t("activityRail.workspace")}
         </RailSectionHeader>
-        {workspaceGroups.length === 0
-          ? <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noWorkspaceThreads")}</div>
-          : null}
-        {workspaceGroups.map((group) => {
-          // A group of this machine's rows is this machine's workspace, and
-          // the rail already renders that heading — with its menu, its
-          // click-to-select and its pin marker. Using it here is what makes
-          // the two lists one list rather than two that resemble each other.
-          if (group.desktopId === null && group.workspaceId !== null) {
-            const collapsed = collapsedWorkspaces.has(group.workspaceId);
-            return (
-              <div className="space-y-0.5" key={group.key}>
-                {renderLocalGroupHeader(group.workspaceId)}
-                {collapsed
-                  ? null
-                  : group.rows.map(row => renderRow(row, true))}
-              </div>
-            );
-          }
-          const collapsed = collapsedWorkspaces.has(group.key);
-          const desktopId = group.desktopId;
-          const workspaceId = group.workspaceId;
-          return (
-            <div className="space-y-0.5" key={group.key}>
-              <RailGroupHeader
-                collapsed={collapsed}
-                collapsedLabel={t("activityRail.expandWorkspace")}
-                expandedLabel={t("activityRail.collapseWorkspace")}
-                glyph={<GroupGlyph desktopId={desktopId} peers={peers} />}
-                menu={desktopId && workspaceId
-                  ? (
-                      <>
-                        {/* A workspace on another machine takes the same
+        {workspaceSectionCollapsed
+          ? null
+          : workspaceGroups.length === 0
+            ? <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noWorkspaceThreads")}</div>
+            : null}
+        {workspaceSectionCollapsed
+          ? null
+          : workspaceGroups.map((group) => {
+              // A group of this machine's rows is this machine's workspace, and
+              // the rail already renders that heading — with its menu, its
+              // click-to-select and its pin marker. Using it here is what makes
+              // the two lists one list rather than two that resemble each other.
+              if (group.desktopId === null && group.workspaceId !== null) {
+                const collapsed = collapsedWorkspaces.has(group.workspaceId);
+                return (
+                  <div className="space-y-0.5" key={group.key}>
+                    {renderLocalGroupHeader(group.workspaceId)}
+                    {collapsed
+                      ? null
+                      : group.rows.map(row => renderRow(row, true))}
+                  </div>
+                );
+              }
+              const collapsed = collapsedWorkspaces.has(group.key);
+              const desktopId = group.desktopId;
+              const workspaceId = group.workspaceId;
+              return (
+                <div className="space-y-0.5" key={group.key}>
+                  <RailGroupHeader
+                    collapsed={collapsed}
+                    collapsedLabel={t("activityRail.expandWorkspace")}
+                    expandedLabel={t("activityRail.collapseWorkspace")}
+                    glyph={<GroupGlyph desktopId={desktopId} peers={peers} />}
+                    menu={desktopId && workspaceId
+                      ? (
+                          <>
+                            {/* A workspace on another machine takes the same
                                 controls the local one has, in the same order:
                                 the actions menu first, then the way to start a
                                 conversation in it. */}
-                        <RemoteWorkspaceMenu
-                          canArchive={peerCanArchive(peers.find(peer => peer.desktopId === desktopId))}
-                          desktopId={desktopId}
-                          name={group.label ?? t("activityRail.workspace")}
-                          onChanged={onChangedRemote}
-                          onRename={onRenameRemoteWorkspace
-                            ? () => onRenameRemoteWorkspace({
-                                // The heading's *current* name, which is what the
-                                // dialog opens with and what the host is
-                                // addressed by id to replace.
-                                desktopId,
-                                name: group.label ?? "",
-                                workspaceId,
-                              })
-                            : undefined}
-                          onSelect={selectionMode
-                            ? undefined
-                            : () => onSelectWorkspaceChats?.(group.key)}
-                          pinned={group.pinned}
-                          workspaceId={workspaceId}
-                        />
-                        <RailHeaderButton
-                          icon={<Plus className="size-3.5" />}
-                          label={t("activityRail.newChatInWorkspace", {
-                            name: group.label ?? t("activityRail.workspace"),
-                          })}
-                          onClick={() => onNewChatInWorkspace?.(desktopId, workspaceId)}
-                          // A *group* heading, not a section heading: the plus
-                          // is the same control the local workspace heading
-                          // draws, revealed the same way. Drawing it plainly
-                          // here left a permanently visible glyph in the
-                          // remote heading and a hidden one in the local
-                          // heading directly above it.
-                          revealOnHover
-                        />
-                      </>
-                    )
-                  : null}
-                name={group.label ?? t("activityRail.workspace")}
-                onToggle={() => onToggleWorkspace(group.key)}
-                pinned={group.pinned}
-                testId="merged-group-heading"
-              />
-              {collapsed ? null : group.rows.map(row => renderRow(row, true))}
-            </div>
-          );
-        })}
+                            <RemoteWorkspaceMenu
+                              canArchive={peerCanArchive(peers.find(peer => peer.desktopId === desktopId))}
+                              desktopId={desktopId}
+                              name={group.label ?? t("activityRail.workspace")}
+                              onChanged={onChangedRemote}
+                              onRename={onRenameRemoteWorkspace
+                                ? () => onRenameRemoteWorkspace({
+                                    // The heading's *current* name, which is what the
+                                    // dialog opens with and what the host is
+                                    // addressed by id to replace.
+                                    desktopId,
+                                    name: group.label ?? "",
+                                    workspaceId,
+                                  })
+                                : undefined}
+                              onSelect={selectionMode
+                                ? undefined
+                                : () => onSelectWorkspaceChats?.(group.key)}
+                              pinned={group.pinned}
+                              workspaceId={workspaceId}
+                            />
+                            <RailHeaderButton
+                              icon={<Plus className="size-3.5" />}
+                              label={t("activityRail.newChatInWorkspace", {
+                                name: group.label ?? t("activityRail.workspace"),
+                              })}
+                              onClick={() => onNewChatInWorkspace?.(desktopId, workspaceId)}
+                              // A *group* heading, not a section heading: the plus
+                              // is the same control the local workspace heading
+                              // draws, revealed the same way. Drawing it plainly
+                              // here left a permanently visible glyph in the
+                              // remote heading and a hidden one in the local
+                              // heading directly above it.
+                              revealOnHover
+                            />
+                          </>
+                        )
+                      : null}
+                    name={group.label ?? t("activityRail.workspace")}
+                    onToggle={() => onToggleWorkspace(group.key)}
+                    pinned={group.pinned}
+                    testId="merged-group-heading"
+                  />
+                  {collapsed ? null : group.rows.map(row => renderRow(row, true))}
+                </div>
+              );
+            })}
       </div>
       <div className="mt-3 flex flex-1 flex-col space-y-0.5">
         <RailSectionHeader

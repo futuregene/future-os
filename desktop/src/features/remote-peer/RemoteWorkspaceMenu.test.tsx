@@ -53,7 +53,7 @@ async function mount(overrides: {
         archived={overrides.archived}
         canArchive={overrides.canArchive}
         desktopId="desktop_a"
-        name="图表脚本"
+        name="鍥捐〃鑴氭湰"
         onChanged={onChanged}
         onRename={overrides.onRename}
         onSelect={overrides.onSelect}
@@ -215,7 +215,7 @@ it("offers restore, not pin, for a shelved workspace", async () => {
 
   expect(view.item("Pin")).toBeUndefined();
   expect(view.item("Unpin")).toBeUndefined();
-  await act(async () => view.item("Restore")!.click());
+  await act(async () => view.item("Unarchive")!.click());
 
   expect(restore).toHaveBeenCalledWith("desktop_a", "ws_9");
   expect(view.onChanged).toHaveBeenCalled();

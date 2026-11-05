@@ -27,6 +27,15 @@ pub fn get_or_create_chat_workspace(
     future_host::workspaces::get_or_create_chat_workspace(thread_id, title)
 }
 
+/// One workspace by id, whatever its kind — the open conversation's own
+/// workspace, which the rail's user-only list never holds for a chat.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub fn get_workspace(
+    workspace_id: String,
+) -> Result<Option<store::WorkspaceRecord>, crate::AppError> {
+    future_host::workspaces::get_workspace(workspace_id)
+}
+
 #[cfg_attr(feature = "gui", tauri::command)]
 pub fn rename_workspace(
     input: store::RenameWorkspaceInput,
@@ -75,6 +84,14 @@ pub async fn delete_workspace(
     workspace_id: String,
 ) -> Result<store::WorkspaceRecord, crate::AppError> {
     future_host::workspaces::delete_workspace(workspace_id).await
+}
+
+/// What a workspace delete removes and what it keeps, for its confirmation.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub fn workspace_delete_summary(
+    workspace_id: String,
+) -> Result<store::WorkspaceDeleteSummary, crate::AppError> {
+    future_host::workspaces::delete_summary(workspace_id)
 }
 
 #[cfg(all(test, feature = "gui"))]

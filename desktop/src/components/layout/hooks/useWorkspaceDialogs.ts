@@ -1,10 +1,12 @@
 import type { Dispatch, SetStateAction } from "react";
+import type { WorkspaceDeleteSummary } from "../../../integrations/storage/threads";
 import type { StoredWorkspace } from "../../../integrations/storage/threadStore";
 import type { RefreshStoreOptions } from "./useThreadStore";
 import { useState } from "react";
 import i18n from "../../../i18n";
-import { deleteWorkspace, renameWorkspace } from "../../../integrations/storage/threadStore";
+import { deleteWorkspace, renameWorkspace, workspaceDeleteSummary } from "../../../integrations/storage/threadStore";
 import { errorMessage } from "../../../lib/errors";
+import { emitFutureEvent } from "../../../lib/futureEvents";
 
 export interface WorkspaceRenameDialogState {
   workspace: StoredWorkspace;
@@ -17,6 +19,16 @@ export interface WorkspaceDeleteDialogState {
   workspace: StoredWorkspace;
   error: string | null;
   submitting: boolean;
+  /**
+   * How many conversations the delete removes, and how many it keeps.
+   *
+   * Read when the dialog opens (the counts are the backend's, not the loaded
+   * pages'), so the confirmation can say what will happen before the reader
+   * commits. Null while it is being read, or when the read failed — the dialog
+   * then falls back to its general sentence.
+   */
+  summary: WorkspaceDeleteSummary | null;
+  loadingSummary: boolean;
 }
 
 export interface WorkspaceDialogs {
@@ -76,7 +88,28 @@ export function useWorkspaceDialogs({
   }
 
   function openDelete(workspace: StoredWorkspace) {
-    setDeleteDialog({ error: null, submitting: false, workspace });
+    setDeleteDialog({
+      error: null,
+      loadingSummary: true,
+      submitting: false,
+      summary: null,
+      workspace,
+    });
+    void workspaceDeleteSummary(workspace.id)
+      .then((summary) => {
+        setDeleteDialog(current =>
+          current?.workspace.id === workspace.id
+            ? { ...current, loadingSummary: false, summary }
+            : current,
+        );
+      })
+      .catch(() => {
+        setDeleteDialog(current =>
+          current?.workspace.id === workspace.id
+            ? { ...current, loadingSummary: false }
+            : current,
+        );
+      });
   }
 
   async function confirmDelete() {
@@ -91,6 +124,11 @@ export function useWorkspaceDialogs({
       // from "not on this page": the open one would stay on screen as a row no
       // list will ever return (see `RefreshStoreOptions.removedWorkspaceIds`).
       await refreshStore(undefined, { removedWorkspaceIds: [workspace.id] });
+      // A delete is not an archive delete: the conversations shelved out of the
+      // workspace survive as ordinary chats, so the archived view holds rows the
+      // store's active pages never saw. It re-reads on this event, which also
+      // drops the shelf of any workspace that is really gone.
+      emitFutureEvent("archive-changed", undefined);
       setDeleteDialog(null);
     }
     catch (error) {

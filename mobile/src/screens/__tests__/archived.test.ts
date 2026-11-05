@@ -91,6 +91,26 @@ describe("the archived shelf's rows", () => {
       .toEqual(["heading", 1, 1, 0]);
   });
 
+  it("files a workspace's shelved conversation under that workspace's heading", () => {
+    const rows = archivedRows(
+      [
+        session("one", { mode: "workspace", workspaceId: "w", archived: true }),
+        session("chat", { archived: true }),
+      ],
+      // The workspace itself is still in the active list; its heading earns its
+      // place from the shelved row under it.
+      [workspace("w", { name: "Live project" })],
+      () => true,
+    );
+    expect(keys(rows)).toEqual(["archived-workspace:w", "one", "chat"]);
+    const heading = rows[0];
+    expect(heading?.kind).toBe("workspace");
+    if (heading?.kind === "workspace") {
+      expect(heading.workspace.name).toBe("Live project");
+      expect(heading.count).toBe(1);
+    }
+  });
+
   it("leaves out conversations the caller does not own and rows that are active", () => {
     const rows = archivedRows(
       [

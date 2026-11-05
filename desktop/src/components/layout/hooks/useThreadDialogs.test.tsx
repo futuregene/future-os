@@ -13,9 +13,11 @@ const mocks = vi.hoisted(() => ({
   generateTitle: vi.fn(),
   cleanupSummary: vi.fn(),
   invalidate: vi.fn(),
+  listActiveThreads: vi.fn(),
   prefetch: vi.fn(),
   renameThread: vi.fn(),
   refreshStore: vi.fn(),
+  stopThreads: vi.fn(),
 }));
 
 vi.mock("../../../integrations/storage/threadStore", () => ({
@@ -25,7 +27,9 @@ vi.mock("../../../integrations/storage/threadStore", () => ({
   deleteThread: (...args: unknown[]) => mocks.deleteThread(...args),
   generateThreadTitle: (...args: unknown[]) => mocks.generateTitle(...args),
   getThreadCleanupSummary: (...args: unknown[]) => mocks.cleanupSummary(...args),
+  listActiveThreads: (...args: unknown[]) => mocks.listActiveThreads(...args),
   renameThread: (...args: unknown[]) => mocks.renameThread(...args),
+  stopThreads: (...args: unknown[]) => mocks.stopThreads(...args),
 }));
 
 vi.mock("../../../integrations/agent/agentStateCache", () => ({
@@ -78,9 +82,11 @@ describe("useThreadDialogs", () => {
     mocks.generateTitle.mockReset().mockResolvedValue({ title: "Generated" });
     mocks.cleanupSummary.mockReset().mockResolvedValue({ artifactCount: 2 });
     mocks.invalidate.mockReset();
+    mocks.listActiveThreads.mockReset().mockResolvedValue([]);
     mocks.prefetch.mockReset();
     mocks.renameThread.mockReset().mockResolvedValue(undefined);
     mocks.refreshStore.mockReset().mockResolvedValue(undefined);
+    mocks.stopThreads.mockReset().mockResolvedValue(undefined);
   });
 
   it("seeds the rename dialog from the thread's current title", () => {
@@ -381,6 +387,53 @@ describe("useThreadDialogs", () => {
     });
 
     expect(mocks.refreshStore).toHaveBeenCalledWith("t1", { removedThreadIds: ["t9"] });
+    harness.unmount();
+  });
+
+  it("tells the archived shelf to re-read after a delete", async () => {
+    // The shelf keeps its own lists; a deleted row is not something the store's
+    // pages can report as gone, so without this event the row stayed on the
+    // shelf and opening it asked the backend for a conversation that no longer
+    // existed ("Thread not found").
+    let changes = 0;
+    const listener = () => {
+      changes += 1;
+    };
+    window.addEventListener("futureos:archive-changed", listener);
+    const { harness } = mount("t1");
+    await act(async () => {
+      harness.current.openDelete(thread("t1"));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await harness.current.confirmDelete();
+    });
+
+    window.removeEventListener("futureos:archive-changed", listener);
+    expect(changes).toBe(1);
+    harness.unmount();
+  });
+
+  it("leaves the shelf alone when the delete fails", async () => {
+    let changes = 0;
+    const listener = () => {
+      changes += 1;
+    };
+    window.addEventListener("futureos:archive-changed", listener);
+    mocks.deleteThread.mockRejectedValue(new Error("permission denied"));
+    const { harness } = mount("t1");
+    await act(async () => {
+      harness.current.openDelete(thread("t1"));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await harness.current.confirmDelete();
+    });
+
+    window.removeEventListener("futureos:archive-changed", listener);
+    expect(changes).toBe(0);
     harness.unmount();
   });
 
@@ -765,13 +818,73 @@ describe("useThreadDialogs", () => {
     harness.unmount();
   });
 
+  it("asks before shelving a conversation that is still running", async () => {
+    const running = thread("t1");
+    mocks.listActiveThreads.mockResolvedValue([running]);
+    const { harness } = mount("t1", [running]);
+    await act(async () => {
+      await harness.current.requestArchive(running);
+    });
+    expect(mocks.archiveThreadTree).not.toHaveBeenCalled();
+    expect(harness.current.archiveDialog).toMatchObject({
+      running: [expect.objectContaining({ id: "t1" })],
+      thread: expect.objectContaining({ id: "t1" }),
+    });
+    harness.unmount();
+  });
+
+  it("stops the running conversation before archiving it", async () => {
+    const running = thread("t1");
+    mocks.listActiveThreads.mockResolvedValue([running]);
+    const { harness } = mount("t1", [running]);
+    await act(async () => {
+      await harness.current.requestArchive(running);
+    });
+    await act(async () => {
+      await harness.current.confirmArchive();
+    });
+    expect(mocks.stopThreads).toHaveBeenCalledWith(["t1"]);
+    expect(mocks.archiveThreadTree).toHaveBeenCalledWith("t1");
+    expect(harness.current.archiveDialog).toBeNull();
+    harness.unmount();
+  });
+
+  it("asks before archiving a selection that still has a running conversation", async () => {
+    const running = thread("busy");
+    mocks.listActiveThreads.mockResolvedValue([running]);
+    const { harness } = mount("busy", [running]);
+    await act(async () => {
+      await harness.current.archiveThreads([running]);
+    });
+    expect(mocks.batchArchiveThreads).not.toHaveBeenCalled();
+    expect(harness.current.batchArchiveDialog).toMatchObject({
+      running: [expect.objectContaining({ id: "busy" })],
+      threads: [expect.objectContaining({ id: "busy" })],
+    });
+    harness.unmount();
+  });
+
+  it("stops the selection's running conversations and then archives the batch", async () => {
+    const running = thread("busy");
+    mocks.listActiveThreads.mockResolvedValue([running]);
+    const { harness } = mount("busy", [running]);
+    await act(async () => {
+      await harness.current.archiveThreads([running]);
+    });
+    await act(async () => {
+      await harness.current.confirmBatchArchive();
+    });
+    expect(mocks.stopThreads).toHaveBeenCalledWith(["busy"]);
+    expect(mocks.batchArchiveThreads).toHaveBeenCalledWith(["busy"]);
+    expect(harness.current.batchArchiveDialog).toBeNull();
+    harness.unmount();
+  });
+
   it("reports every member of an archived tree, so an open child moves too", async () => {
-    // A fork hangs off its parent by agent session id; archiving the parent
-    // takes the child, so the column must leave a child that was open.
     const parent = thread("parent");
     const child = thread("child", { parentSessionId: "parent" });
     const { harness } = mount("child", [parent, child]);
-    act(() => harness.current.setArchiveDialog({ error: null, submitting: false, thread: parent, members: 2 }));
+    act(() => harness.current.setArchiveDialog({ error: null, members: 2, running: [], submitting: false, thread: parent }));
     await act(async () => {
       await harness.current.confirmArchive();
     });
