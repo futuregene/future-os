@@ -102,7 +102,8 @@ lands in the desktop's `app.db`.
 | Area | Coverage | Cases |
 |---|---|---|
 | Desktop + mobile render the same session | ✅ | `remote-parser-pair`, `remote-page` |
-| Desktop UI: both directions of the remote page | ✅ | `remote-page-peers-held`, `remote-page` |
+| Desktop UI: both directions of the remote page | ✅ | `remote-page-both-directions`, `remote-page` |
+| Desktop UI: paired-desktop list and standby-of-a-peer | — | blocked: the hub renders its peer summary empty even with two peer fixtures present, so the list-with-devices state is not reachable headlessly; needs to find what the hub actually reads |
 | Self-hosted relay: invitation → pairing → serving | ✅ | `remote-live-pair-and-connect` |
 | Relay + broker restart recovery | ◐ | `remote-live-relay-restart` |
 | Unpair, then pair again with a fresh invitation | ◐ | `remote-live-repair-after-unpair` |
