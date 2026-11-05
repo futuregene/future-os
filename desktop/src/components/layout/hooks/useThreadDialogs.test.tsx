@@ -802,9 +802,38 @@ describe("useThreadDialogs", () => {
     harness.unmount();
   });
 
+  it("asks before archiving a selection that still has a running conversation", async () => {
+    const running = thread("busy");
+    mocks.listActiveThreads.mockResolvedValue([running]);
+    const { harness } = mount("busy", [running]);
+    await act(async () => {
+      await harness.current.archiveThreads([running]);
+    });
+    expect(mocks.batchArchiveThreads).not.toHaveBeenCalled();
+    expect(harness.current.batchArchiveDialog).toMatchObject({
+      running: [expect.objectContaining({ id: "busy" })],
+      threads: [expect.objectContaining({ id: "busy" })],
+    });
+    harness.unmount();
+  });
+
+  it("stops the selection's running conversations and then archives the batch", async () => {
+    const running = thread("busy");
+    mocks.listActiveThreads.mockResolvedValue([running]);
+    const { harness } = mount("busy", [running]);
+    await act(async () => {
+      await harness.current.archiveThreads([running]);
+    });
+    await act(async () => {
+      await harness.current.confirmBatchArchive();
+    });
+    expect(mocks.stopThreads).toHaveBeenCalledWith(["busy"]);
+    expect(mocks.batchArchiveThreads).toHaveBeenCalledWith(["busy"]);
+    expect(harness.current.batchArchiveDialog).toBeNull();
+    harness.unmount();
+  });
+
   it("reports every member of an archived tree, so an open child moves too", async () => {
-    // A fork hangs off its parent by agent session id; archiving the parent
-    // takes the child, so the column must leave a child that was open.
     const parent = thread("parent");
     const child = thread("child", { parentSessionId: "parent" });
     const { harness } = mount("child", [parent, child]);

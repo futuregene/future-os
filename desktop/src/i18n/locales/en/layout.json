@@ -150,6 +150,8 @@
     "archiveRunningDescription": "{{count}} conversation(s) are still running; finish or stop them before archiving.",
     "archiveRunningMore": "and {{count}} more running",
     "archiveStopAndArchive": "Stop and archive",
+    "archiveBatchRunningTitle": "Some selected conversations are running",
+    "archiveBatchRunningDescription": "{{count}} of the selected conversations are still running; finish or stop them before archiving.",
     "archiveWorkspaceRunningTitle": "Conversations in this workspace are running",
     "archiveWorkspaceRunningDescription": "\"{{name}}\" has {{count}} running conversations; finish or stop them before archiving."
   },

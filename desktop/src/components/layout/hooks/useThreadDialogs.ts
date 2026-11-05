@@ -1,6 +1,6 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { StoredThread } from "../../../integrations/storage/threadStore";
-import type { ArchiveDialogState, BatchDeleteDialogState, DeleteDialogState, RenameDialogState } from "../AppShellDialogs";
+import type { ArchiveDialogState, BatchArchiveDialogState, BatchDeleteDialogState, DeleteDialogState, RenameDialogState } from "../AppShellDialogs";
 import type { RefreshStoreOptions } from "./useThreadStore";
 import { useRef, useState } from "react";
 import i18n, { getLanguage } from "../../../i18n";
@@ -34,10 +34,19 @@ export interface ThreadDialogs {
   deleteDialog: DeleteDialogState | null;
   batchDeleteDialog: BatchDeleteDialogState | null;
   archiveDialog: ArchiveDialogState | null;
+  /**
+   * A batch archive waiting on the reader's decision about running work.
+   *
+   * The selection can hold several trees; each one whose member is still
+   * running has to stop before it can be shelved, so the batch asks once for
+   * the whole set instead of dropping those rows with a toast afterwards.
+   */
+  batchArchiveDialog: BatchArchiveDialogState | null;
   setRenameDialog: Dispatch<SetStateAction<RenameDialogState | null>>;
   setDeleteDialog: Dispatch<SetStateAction<DeleteDialogState | null>>;
   setBatchDeleteDialog: Dispatch<SetStateAction<BatchDeleteDialogState | null>>;
   setArchiveDialog: Dispatch<SetStateAction<ArchiveDialogState | null>>;
+  setBatchArchiveDialog: Dispatch<SetStateAction<BatchArchiveDialogState | null>>;
   openRename: (thread: StoredThread) => void;
   confirmRename: () => Promise<void>;
   generateTitle: () => Promise<void>;
@@ -54,8 +63,10 @@ export interface ThreadDialogs {
    */
   requestArchive: (thread: StoredThread, treeMembers?: StoredThread[]) => Promise<void>;
   confirmArchive: () => Promise<void>;
-  /** Archive the selected conversations, reporting the trees a run kept back. */
+  /** Archive the selected conversations, asking about any that are running. */
   archiveThreads: (threads: StoredThread[]) => Promise<void>;
+  /** Stop the batch's running conversations, then archive it. */
+  confirmBatchArchive: () => Promise<void>;
 }
 
 /**
@@ -68,6 +79,7 @@ export function useThreadDialogs({ activeThreadId, onArchived, refreshStore, thr
   const [renameDialog, setRenameDialog] = useState<RenameDialogState | null>(null);
   const [batchDeleteDialog, setBatchDeleteDialog] = useState<BatchDeleteDialogState | null>(null);
   const [archiveDialog, setArchiveDialog] = useState<ArchiveDialogState | null>(null);
+  const [batchArchiveDialog, setBatchArchiveDialog] = useState<BatchArchiveDialogState | null>(null);
   const generationSequenceRef = useRef(0);
   const generatingDialogRef = useRef<RenameDialogState | null>(null);
   const threadsRef = useRef(threads);
@@ -320,9 +332,48 @@ export function useThreadDialogs({ activeThreadId, onArchived, refreshStore, thr
   }
 
   /** Archive a batch of trees; the backend skips the running ones and names them. */
+  /**
+   * Archive the selected conversations, asking first when any is still running.
+   *
+   * The batch is the one place a refusal used to arrive as a toast after the
+   * fact, and the skipped rows then had to be archived one by one: the same two
+   * choices the single-conversation archive offers — cancel, or stop and
+   * archive — are asked here before anything is written.
+   */
   async function archiveThreads(threads: StoredThread[]) {
     if (threads.length === 0)
       return;
+    const running = await runningInTrees(threadsRef.current, threads);
+    if (running.length > 0) {
+      setBatchArchiveDialog({ error: null, running, submitting: false, threads });
+      return;
+    }
+    await archiveThreadsNow(threads);
+  }
+
+  /** Stop the selected conversations' runs, then archive the batch. */
+  async function confirmBatchArchive() {
+    if (!batchArchiveDialog || batchArchiveDialog.submitting)
+      return;
+    const dialog = batchArchiveDialog;
+    setBatchArchiveDialog(current =>
+      current ? { ...current, error: null, submitting: true } : current);
+    try {
+      if (dialog.running.length > 0)
+        await stopThreads(dialog.running.map(thread => thread.id));
+      await archiveThreadsNow(dialog.threads);
+      setBatchArchiveDialog(null);
+    }
+    catch (error) {
+      setBatchArchiveDialog(current =>
+        current
+          ? { ...current, error: errorMessage(error), submitting: false }
+          : current,
+      );
+    }
+  }
+
+  async function archiveThreadsNow(threads: StoredThread[]) {
     const wanted = threads.flatMap(thread => archivedIdsFor(threadsRef.current, thread.id));
     try {
       const result = await batchArchiveThreads(threads.map(thread => thread.id));
@@ -363,6 +414,9 @@ export function useThreadDialogs({ activeThreadId, onArchived, refreshStore, thr
     requestArchive,
     confirmArchive,
     archiveThreads,
+    batchArchiveDialog,
+    setBatchArchiveDialog,
+    confirmBatchArchive,
   };
 }
 
@@ -378,6 +432,28 @@ export function useThreadDialogs({ activeThreadId, onArchived, refreshStore, thr
 async function runningMembers(memberIds: string[], fallbackId: string): Promise<StoredThread[]> {
   const ids = new Set(memberIds);
   ids.add(fallbackId);
+  try {
+    const active = await listActiveThreads();
+    return active.filter(thread => ids.has(thread.id));
+  }
+  catch {
+    return [];
+  }
+}
+
+/**
+ * The running conversations among a selection, fork trees included.
+ *
+ * A tree is archived whole, so a selected root whose fork is running counts as
+ * running: the batch would have to refuse it anyway.
+ */
+async function runningInTrees(rows: StoredThread[], threads: StoredThread[]): Promise<StoredThread[]> {
+  const ids = new Set<string>();
+  for (const thread of threads) {
+    ids.add(thread.id);
+    for (const id of treeMemberIds(rows, thread.id))
+      ids.add(id);
+  }
   try {
     const active = await listActiveThreads();
     return active.filter(thread => ids.has(thread.id));
