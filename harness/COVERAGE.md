@@ -73,10 +73,20 @@ Legend: ✅ two or more cases · ◐ one smoke case · — not covered.
 
 ## Remote
 
+Three surfaces: the two UIs side by side (`remote`), the relay itself with real
+processes (`remote-live`), and the deployed platform (`remote-cn`).
+
 | Area | Coverage | Cases |
 |---|---|---|
-| Desktop + mobile render the same session | ◐ | `remote-parser-pair` |
-| Live NATS relay, paired host, remote prompt/stream | — | next |
+| Desktop + mobile render the same session | ✅ | `remote-parser-pair`, `remote-page` |
+| Self-hosted relay: invitation → pairing → serving | ✅ | `remote-live-pair-and-connect` |
+| Relay + broker restart recovery | ◐ | `remote-live-relay-restart` |
+| Unpair, then pair again with a fresh invitation | ◐ | `remote-live-repair-after-unpair` |
+| Official platform: reachability, route and error-shape contract | ✅ | `remote-cn-platform-contract` |
+| Official platform: full pairing through the deployed relay | ◐ | `remote-cn-platform-contract` with `FUTURE_REMOTE_CN_FULL=1` (needs `future auth login`) |
+| Remote prompt/stream from the phone driving the host | — | next: needs a controlling client, and the CLI cannot hold one |
+| Two clients, takeover between them | — | next |
+| File transfer, image latency, weak network | — | unit-tested in `packages/remote-*`; not in this library |
 
 ## Performance
 

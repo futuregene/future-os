@@ -1,0 +1,35 @@
+{
+  "id": "remote-live-relay-restart",
+  "surface": "remote-live",
+  "title": "自建中继：中继与 broker 重启后自动恢复",
+  "area": "remote",
+  "priority": "P1",
+  "tags": ["remote", "relay", "resilience"],
+  "description": "配对完成后，把中继 API 与 nats-server 一起停掉再以同样的端口重启——这是自建中继最常见的运维动作（升级、重启机器）。主机应当自己重连并把设备恢复成已连接，不需要人工重新配对；如果配对被丢掉或状态卡在 serving 却没有设备，才算失败。",
+  "preconditions": "future 二进制可用；本机有 nats-server。",
+  "expectations": [
+    "先完成一次真实配对（主机 serving、设备 connected）",
+    "中继与 broker 重启期间主机不崩溃（进程仍在）",
+    "恢复后主机重新进入 serving，且设备仍是原来那台（pairId 不变）",
+    "不需要重新配对就能恢复连接"
+  ],
+  "steps": [
+    { "hostStart": true },
+    { "invite": true, "as": "link" },
+    { "clientAdd": "{{link}}", "as": "paired" },
+    { "waitFor": { "source": "host", "args": ["remote", "status", "--json"], "expect": { "path": "serving", "equals": true }, "message": "重启前已在服务", "as": "before" } },
+    { "fault": "relay-restart" },
+    { "waitFor": { "source": "host", "args": ["remote", "status", "--json"], "expect": { "path": "serving", "equals": true }, "message": "重启后重新进入 serving", "timeout": 60000, "as": "after" } },
+    { "assertJson": { "from": "after", "path": "desktopRunning", "equals": true, "message": "主机进程没有退出" } },
+    { "hostCli": ["remote", "devices", "--json"], "as": "devices" },
+    { "assertJson": { "from": "devices", "path": "devices[0].pairId", "truthy": true, "message": "设备仍在册（没有要求重新配对）" } },
+    { "assertJson": { "from": "devices", "path": "devices[0].endpoint", "equals": "relay", "message": "仍走自建中继" } }
+  ],
+  "judge": {
+    "criteria": [
+      "重启后主机应恢复到服务状态，且不要求用户重新配对",
+      "主机日志里出现重连是正常的；出现反复失败退避、崩溃或配对被清掉才是不正常",
+      "如果状态显示 serving 但设备列表为空，属于状态与事实不一致，要报"
+    ]
+  }
+}
