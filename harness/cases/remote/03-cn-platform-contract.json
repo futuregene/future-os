@@ -1,0 +1,34 @@
+{
+  "id": "remote-cn-platform-contract",
+  "surface": "remote-cn",
+  "title": "官方中继（future-os.cn）：控制面契约与可达性",
+  "area": "remote",
+  "priority": "P1",
+  "tags": [
+    "remote",
+    "remote-cn",
+    "platform"
+  ],
+  "description": "对部署中的官方平台做只读验证：HTTPS 可达、/client/v1/remote 路由仍存在、未登录时按契约拒绝（设备列表 401 unauthorized；认领邀请 422 并指出缺少 nonce；换取中继凭据 401/422）。平台的错误形状变化、路由迁移或服务不可用都会在这里变红，且不会在任何人账号上留下设备。设置 FUTURE_REMOTE_CN_FULL=1 时，会在官方中继上真的配一台设备并立刻撤销。",
+  "preconditions": "可访问外网；需要验证完整配对时先 future auth login。",
+  "expectations": [
+    "https://future-os.cn 可达（HTTP < 500）",
+    "未登录访问 /client/v1/remote/devices 返回 401 unauthorized",
+    "未登录 POST /client/v1/remote/pair/claim 返回 422 且提到 nonce",
+    "未登录 POST /client/v1/remote/auth/token 返回 401 或 422",
+    "（可选）登录后经官方中继完整配对成功，并撤销该设备"
+  ],
+  "steps": [
+    {
+      "note": "契约检查由 remote-cn 驱动完成：reachability → devices → claim → token →（可选）完整配对"
+    }
+  ],
+  "judge": {
+    "criteria": [
+      "这些状态码与错误形状必须彼此自洽：路由存在才会给出字段级校验错误，鉴权在路由之前才可能返回 401",
+      "如果出现 404 / 502 / HTML 错误页，说明官方中继的路由或网关在这一刻有问题，即使状态码不是 5xx 也要报",
+      "本机凭据只需如实记录；未登录不是缺陷，但把未登录写成『配对成功』就是缺陷"
+    ]
+  },
+  "needsNetwork": true
+}

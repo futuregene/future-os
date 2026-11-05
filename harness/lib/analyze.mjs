@@ -606,8 +606,18 @@ async function judgeCase(result, runDir, { model = null } = {}) {
     perfText ? `\n性能与资源数据：\n${perfText}` : "",
     result.bodyText ? `\n页面文本快照（末尾时刻，截断；证明元素存在，不代表都在可视区）：\n${truncate(result.bodyText, 4000)}` : "",
     "",
+    "请先按上面的预期逐条判断，然后做一遍【自主检查】：把自己当成第一次用这个产品的人，从整套证据里找出**上面预期没提到**的问题。例如：",
+    "  · 动态过程：某个状态停住、卡片闪烁、切换后先出现上一个会话的内容再跳、动画结束后留下残影；",
+    "  · 状态不自洽：列表说有、主区说无，计数与行数不符，按钮可用但点了没反应，禁用态没有原因；",
+    "  · 文案与数据：数字不加和、时间逆序、单位或币种不一致、同一概念两种叫法、中英文混排；",
+    "  · 布局：遮挡、被浮动元素压住、空态与列表同时出现、长文本溢出、滚动到底部才有的空白；",
+    "  · 资源与性能：内存或请求量随重复操作单调上升、某项操作耗时比其他同类高一截。",
+    "自主发现的问题，在 title 前加「【发现】」（例如「【发现】切换后先闪一下上一个会话」），并写清是哪一帧/哪一步看到的。如果确实没发现，就不要凑数。",
+    "",
     "请输出严格 JSON（不要 markdown 围栏）：",
-    `{"verdict":"pass|issue","confidence":"high|medium|low","summary":"一句话判断","findings":[{"severity":"high|medium|low","title":"简短标题","detail":"看到什么、为什么不符合预期","evidence":"哪一步/哪一帧"}]}`,
+    `{"verdict":"pass|issue","confidence":"high|medium|low","summary":"一句话判断","findings":[{"severity":"high|medium|low|info","title":"简短标题","detail":"看到什么、为什么不符合预期","evidence":"哪一步/哪一帧"}]}`,
+    "示例：",
+    '{"verdict":"issue","confidence":"medium","summary":"配对可用，但切换后闪现旧会话内容","findings":[{"severity":"medium","title":"【发现】切换会话时先渲染上一个会话的正文","detail":"第 6→7 帧之间主区标题已变但正文仍是上一个会话，持续约 200ms","evidence":"录像第 6、7 帧"}]}',
     "规则：",
     "- 只判断用户能看到/会遇到的问题；内部实现细节不报。",
     "- 动态过程中的瞬时状态（生成中、加载中）不要当缺陷，除非它卡住或与操作明显不符。",
@@ -744,16 +754,24 @@ export async function analyzeRun(runDir, { mode = "heuristic", model = null, onl
         synthesized = { summary: "", findings: [], error: String(error?.message ?? error) };
       }
     }
-    const judgeFindings = (judged?.findings ?? []).map((item, index) => ({
-      id: `${result.id}:judge:${index}`,
-      severity: item.severity ?? (judged?.verdict === "issue" ? "medium" : "info"),
-      category: item.category ?? "behaviour",
-      title: item.title ?? "（模型验收未命名）",
-      detail: item.detail ?? judged?.summary ?? "",
-      evidence: { caseId: result.id, quote: item.evidence ?? null, dir: result.artifacts?.dir },
-      source: "judge",
-      confidence: judged?.confidence ?? "medium",
-    }));
+    // 「【发现】」 marks something the model found on its own, outside the case's
+    // expectations. Keeping the flag separate is what lets the report say how
+    // much of a run's value came from judgement rather than from a checklist.
+    const judgeFindings = (judged?.findings ?? []).map((item, index) => {
+      const raw = item.title ?? "（模型验收未命名）";
+      const discovered = /^\s*【发现】\s*/.test(raw);
+      return {
+        id: `${result.id}:judge:${index}`,
+        severity: item.severity ?? (judged?.verdict === "issue" ? "medium" : "info"),
+        category: item.category ?? "behaviour",
+        title: raw.replace(/^\s*【发现】\s*/, ""),
+        detail: item.detail ?? judged?.summary ?? "",
+        evidence: { caseId: result.id, quote: item.evidence ?? null, dir: result.artifacts?.dir },
+        source: "judge",
+        discovered,
+        confidence: judged?.confidence ?? "medium",
+      };
+    });
     if (judged?.verdict === "issue" && !judgeFindings.length) {
       judgeFindings.push({
         id: `${result.id}:judge:summary`,

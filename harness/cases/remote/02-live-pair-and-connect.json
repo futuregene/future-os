@@ -1,0 +1,40 @@
+{
+  "id": "remote-live-pair-and-connect",
+  "surface": "remote-live",
+  "title": "自建中继：邀请 → 配对 → 主机开始服务",
+  "area": "remote",
+  "priority": "P0",
+  "tags": ["remote", "relay"],
+  "description": "用真实进程跑完整条自建中继链路：future relay init 生成信任材料、nats-server 起 broker、future relay serve 起中继 API、future host --relay 以被控身份运行。主机签发邀请，另一个 home 里的客户端用邀请配对；两端都必须确认这次配对，并且主机的 serving 状态要真的从 on 变成 serving。",
+  "preconditions": "future 二进制可用；本机有 nats-server。",
+  "expectations": [
+    "主机以自建中继模式启动：desktopRunning=true，state=on（已启用但还没有设备）",
+    "签发邀请后拿到 futureos:// 链接与 pairId",
+    "客户端用该邀请配对成功，并报告 agentAvailable=true（说明真的经中继握手上主机）",
+    "配对后主机设备列表出现该设备，endpoint=relay",
+    "主机状态从 on 变为 serving，transport 指向本地 broker，设备 connected=true"
+  ],
+  "steps": [
+    { "hostStart": true },
+    { "hostCli": ["remote", "status", "--json"], "as": "before" },
+    { "assertJson": { "from": "before", "path": "desktopRunning", "equals": true, "message": "主机进程在跑" } },
+    { "assertJson": { "from": "before", "path": "state", "equals": "on", "message": "未配对时是「已启用、未服务」而不是 serving" } },
+    { "invite": true, "as": "link" },
+    { "clientAdd": "{{link}}", "as": "paired" },
+    { "assertJson": { "from": "paired", "path": "paired.desktopId", "truthy": true, "message": "配对返回被控端 desktopId" } },
+    { "assertJson": { "from": "paired", "path": "paired.agentAvailable", "equals": true, "message": "客户端经中继拿到被控端 agent 能力" } },
+    { "waitFor": { "source": "host", "args": ["remote", "devices", "--json"], "expect": { "path": "devices[0].endpoint", "equals": "relay" }, "message": "主机记录该设备走自建中继", "as": "devices" } },
+    { "assertJson": { "from": "devices", "path": "devices[0].control", "equals": "active", "message": "唯一设备应在控制位" } },
+    { "waitFor": { "source": "host", "args": ["remote", "status", "--json"], "expect": { "path": "serving", "equals": true }, "message": "配对后主机进入 serving", "as": "after" } },
+    { "assertJson": { "from": "after", "path": "devicesTotal", "equals": 1, "message": "只有一台设备" } },
+    { "assertJson": { "from": "after", "path": "devices[0].connected", "equals": true, "message": "设备已连接" } },
+    { "assertJson": { "from": "after", "path": "transport", "contains": "nats://127.0.0.1", "message": "transport 指向本地 broker" } }
+  ],
+  "judge": {
+    "criteria": [
+      "每一步都有明确结果：邀请链接、配对返回、主机设备列表三者不能互相矛盾",
+      "主机日志里不应出现握手失败、鉴权失败或反复重连的痕迹",
+      "配对成功但主机自称没有设备，或设备显示已连接却拿不到 agent，都算严重不一致"
+    ]
+  }
+}

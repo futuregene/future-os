@@ -130,6 +130,9 @@ export function writeReport(runDir, { repoRoot = resolve(import.meta.dirname, ".
   const judgedCases = analysis?.cases?.filter(item => item.judge) ?? [];
   if (judgedCases.length) {
     lines.push("## 模型验收", "");
+    const discovered = analysis.findings.filter(item => item.discovered) ?? [];
+    if (discovered.length)
+      lines.push(`其中 **${discovered.length}** 项是模型自主发现的（不在用例预期里），下面表里的标题已去标记，详情页保留来源。`, "");
     lines.push("| 用例 | 结论 | 置信度 | 判断 | 证据 |");
     lines.push("|---|---|---|---|---|");
     for (const item of judgedCases) {
