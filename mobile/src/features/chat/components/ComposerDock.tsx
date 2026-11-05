@@ -17,6 +17,7 @@ import { sessionMentionOptions } from "../sessionMention";
 import type { PendingSuggestion } from "../useSkillRecommendation";
 import type { SlashAction } from "../skillCompletion";
 import { useStopRequest } from "../useStopRequest";
+import { QUEUED_SEND_POLICY, type SendMessageIntent } from "../useSendMessage";
 import { SkillDetailsDialog } from "./SkillDetailsDialog";
 import { SkillSuggestionCard } from "./SkillSuggestionCard";
 import { ComposerToolbar } from "../composer/ComposerToolbar";
@@ -85,7 +86,7 @@ function ComposerDockView({
   remote: Remote;
   t: TFunction;
   openAttachmentMenu: () => void;
-  send: () => Promise<void>;
+  send: (intent?: SendMessageIntent) => Promise<boolean>;
   atLatest: boolean;
   scrollToLatest: () => void;
   pendingApprovals: PendingApproval[];
@@ -222,20 +223,31 @@ function ComposerDockView({
   );
   const hasDraft = !!message.trim() || attachments.length > 0;
   /**
-   * "Interrupt and send": end the run, then hand the message over.
+   * Hand the draft to the session, and end the run it waited behind.
    *
-   * The send does not wait on this phone reading the run as over — it goes out
-   * with the queueing policy either way, so the session holds it for the boundary
-   * the interrupt is about to reach.
+   * The message goes first, with the queueing policy, and the interrupt second —
+   * the order the desktop uses, for the reason it uses it. Whatever the run is
+   * doing, the prompt is the session's the moment this returns: queued behind a
+   * run still finishing, or starting at once if it has already ended. Sent the
+   * other way round, the stop can win the race and the prompt then arrives at a
+   * host that still reads the session as busy — refused with `session_busy`, the
+   * draft back in the field, and an interrupt the reader asked to be followed by
+   * a send that never leaves. And a send that did not leave stops nothing: the
+   * draft is still there to fix, and ending the reply on top of it would cost the
+   * reader both.
    */
   const interruptAndSend = useCallback(async () => {
     setQueueChoiceOpen(false);
-    await stopRequest.stop();
-    await send();
+    const handedOver = await send({ busyPolicy: QUEUED_SEND_POLICY });
+    if (handedOver)
+      await stopRequest.stop();
   }, [send, stopRequest]);
   const sendQueued = useCallback(() => {
     setQueueChoiceOpen(false);
-    void send();
+    // The other row of the same sheet: it exists only because a reply streams,
+    // so it names the queueing policy rather than leaving the send to read that
+    // from this screen's own flag.
+    void send({ busyPolicy: QUEUED_SEND_POLICY });
   }, [send]);
   const inputRef = useRef<TextInputInstance>(null);
   const completion = useComposerCompletion(
