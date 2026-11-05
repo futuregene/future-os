@@ -243,8 +243,8 @@ Two classes of false finding cost more than they look: they read exactly like a
 defect, and a human has to read the code to refute each one. Measured on the
 2026-11-05 run (`final-v12`, 19 cases, 33 issues filed): of the twelve issues a
 reviewer later closed as "not a defect", five came from data the harness wrote
-itself, and three came from frames that predate the action they were read as
-proving.
+itself, and three came from reading one frame as proof of a state that frame
+could not show — one of them taken before the action it was read as following.
 
 **Fixture provenance.** The UI is real; some of the values it renders are not.
 `lib/provenance.mjs` builds a block for the per-case judge and the open-ended
