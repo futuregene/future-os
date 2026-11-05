@@ -12,6 +12,7 @@ const listPinnedThreads = vi.fn();
 const listActiveThreads = vi.fn();
 const listWorkspacesPage = vi.fn();
 const listPinnedWorkspaces = vi.fn();
+const getWorkspace = vi.fn();
 const initializeAppStore = vi.fn();
 const getRecentOrCreateDefaultThread = vi.fn();
 const listLatestRunInfos = vi.fn();
@@ -24,6 +25,7 @@ vi.mock("../../../integrations/storage/threadStore", () => ({
   listActiveThreads: (...args: unknown[]) => listActiveThreads(...args),
   listWorkspacesPage: (...args: unknown[]) => listWorkspacesPage(...args),
   listPinnedWorkspaces: (...args: unknown[]) => listPinnedWorkspaces(...args),
+  getWorkspace: (...args: unknown[]) => getWorkspace(...args),
   initializeAppStore: (...args: unknown[]) => initializeAppStore(...args),
   getRecentOrCreateDefaultThread: (...args: unknown[]) => getRecentOrCreateDefaultThread(...args),
   listLatestRunInfos: (...args: unknown[]) => listLatestRunInfos(...args),
@@ -70,6 +72,7 @@ beforeEach(() => {
     listActiveThreads,
     listWorkspacesPage,
     listPinnedWorkspaces,
+    getWorkspace,
     initializeAppStore,
     getRecentOrCreateDefaultThread,
     listLatestRunInfos,
@@ -85,6 +88,7 @@ beforeEach(() => {
   listActiveThreads.mockResolvedValue([]);
   listWorkspacesPage.mockResolvedValue(workspacesPageOf([workspace]));
   listPinnedWorkspaces.mockResolvedValue([]);
+  getWorkspace.mockResolvedValue(null);
   getRecentOrCreateDefaultThread.mockResolvedValue(thread("t1"));
   listLatestRunInfos.mockResolvedValue([]);
   listStreamingThreadIds.mockResolvedValue([]);
@@ -787,15 +791,51 @@ describe("useThreadStore", () => {
     h.unmount();
   });
 
-  it("activeWorkspace falls back to the user-kind workspace", async () => {
+  it("resolves a chat's own workspace by id instead of falling back to a user one", async () => {
+    // A chat's workspace is `temporary`, so the rail's user-only list can never
+    // hold it. Reading it by id is what keeps the Files tab on the chat's own
+    // scratch directory — the fallback drew somebody else's folder there.
     const h = await mountStore();
-    // Point the active thread at an unknown workspace: falls back to kind user.
-    listThreadsPage.mockResolvedValue(pageOf([thread("t1", "unknown-ws")]));
+    const scratch = { id: "w-chat", kind: "temporary", name: "Chat", path: "/scratch/chat" } as unknown as StoredWorkspace;
+    listThreadsPage.mockResolvedValue(pageOf([thread("t1", "w-chat")]));
+    listWorkspacesPage.mockResolvedValue(workspacesPageOf([workspace]));
+    getWorkspace.mockResolvedValue(scratch);
+    await act(async () => {
+      await h.current.refreshStore("t1");
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(getWorkspace).toHaveBeenCalledWith("w-chat");
+    expect(h.current.activeWorkspace?.path).toBe("/scratch/chat");
+    h.unmount();
+  });
+
+  it("falls back to a user workspace only when the conversation names none", async () => {
+    const h = await mountStore();
+    listThreadsPage.mockResolvedValue(pageOf([thread("t1", "")]));
     listWorkspacesPage.mockResolvedValue(workspacesPageOf([workspace]));
     await act(async () => {
       await h.current.refreshStore("t1");
     });
     expect(h.current.activeWorkspace?.id).toBe("w1");
+    h.unmount();
+  });
+
+  it("hands down no workspace when the conversation's own cannot be read", async () => {
+    // The conversation names a workspace that no longer exists, and it is not in
+    // the list either: a path is better absent than borrowed from another
+    // conversation's folder.
+    const h = await mountStore();
+    listThreadsPage.mockResolvedValue(pageOf([thread("t1", "unknown-ws")]));
+    listWorkspacesPage.mockResolvedValue(workspacesPageOf([workspace]));
+    await act(async () => {
+      await h.current.refreshStore("t1");
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(h.current.activeWorkspace).toBeNull();
     h.unmount();
   });
 

@@ -31,6 +31,8 @@
     "noWorkspaceThreads": "No workspace threads",
     "expandWorkspace": "Expand workspace",
     "collapseWorkspace": "Collapse workspace",
+    "expandWorkspaceSection": "Expand workspace list",
+    "collapseWorkspaceSection": "Collapse workspace list",
     "expandChatSection": "Expand chat list",
     "collapseChatSection": "Collapse chat list",
     "newChatInWorkspace": "New chat in {{name}}",
@@ -44,7 +46,7 @@
     "failed": "Failed",
     "cancelled": "Cancelled",
     "threadActions": "Thread actions for {{title}}",
-    "restore": "Restore",
+    "restore": "Unarchive",
     "rename": "Rename",
     "pin": "Pin",
     "unpin": "Unpin",
@@ -76,7 +78,7 @@
     "recentActions": "Recent list actions",
     "archive": "Archive",
     "archiveWorkspace": "Archive workspace",
-    "restoreWorkspace": "Restore workspace",
+    "restoreWorkspace": "Unarchive",
     "viewArchived": "Archived conversations",
     "archivedTreeMembers": "{{count}} conversations",
     "loadMore": "Load more",
@@ -89,7 +91,7 @@
     "loading": "Loading…",
     "archiveGuideAgain": "Show the archive guide again",
     "archivedThreadsActions": "Archived conversation actions",
-    "restoreSelected": "Restore"
+    "restoreSelected": "Unarchive"
   },
   "appShell": {
     "storeInitFailed": "FutureOS local storage failed to initialize: ",
@@ -143,13 +145,24 @@
     "titleEmpty": "Title cannot be empty.",
     "archiveSkipped": "{{names}}{{more}} still running; finish or stop them before archiving.",
     "archiveTitle": "Archive this conversation?",
-    "archiveDescription": "The conversation and its {{count}} forked conversations will be archived together. You can restore them later."
+    "archiveDescription": "The conversation and its {{count}} forked conversations will be archived together. You can unarchive them later.",
+    "archiveRunningTitle": "This conversation is running",
+    "archiveRunningDescription": "{{count}} conversation(s) are still running; finish or stop them before archiving.",
+    "archiveRunningMore": "and {{count}} more running",
+    "archiveStopAndArchive": "Stop and archive",
+    "archiveBatchRunningTitle": "Some selected conversations are running",
+    "archiveBatchRunningDescription": "{{count}} of the selected conversations are still running; finish or stop them before archiving.",
+    "archiveWorkspaceRunningTitle": "Conversations in this workspace are running",
+    "archiveWorkspaceRunningDescription": "\"{{name}}\" has {{count}} running conversations; finish or stop them before archiving."
   },
   "workspaceDialogs": {
     "renameTitle": "Rename workspace",
     "renameDescription": "Give this workspace a name that's easy to recognize.",
     "deleteTitle": "Delete workspace",
-    "deleteDescription": "This workspace and its chats are removed from the sidebar; files on disk are not deleted.",
+    "deleteDescription": "This workspace and its active conversations are removed from the sidebar; archived conversations are kept as ordinary chats. Files on disk are not deleted.",
+    "deleteActiveOnlyDescription": "This workspace and its conversations are removed from the sidebar; files on disk are not deleted.",
+    "deleteMixedDescription": "This workspace will be removed: {{deleted}} active conversations are deleted with it, and {{kept}} archived conversations are kept as independent conversations you can unarchive. Files on disk are not deleted.",
+    "deleteKeptDescription": "This workspace will be removed, and its {{kept}} archived conversations are kept as independent conversations you can unarchive. Files on disk are not deleted.",
     "nameEmpty": "Name cannot be empty."
   },
   "gate": {
@@ -231,7 +244,7 @@
   },
   "archiveGuide": {
     "title": "Archived conversations live here",
-    "body": "View a shelved conversation's full history, or restore it to keep talking.",
+    "body": "View a shelved conversation's full history, or unarchive it to keep talking.",
     "viewArchived": "View archived",
     "dismiss": "Got it"
   }

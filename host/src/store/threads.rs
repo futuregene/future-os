@@ -603,6 +603,47 @@ pub fn restore_thread_tree(thread_id: &str) -> Result<ThreadRecord, crate::Error
             )?;
         }
     }
+    // A conversation coming back out of a shelved *workspace* cannot be shown
+    // while the workspace stays shelved: the container hides every row inside
+    // it. Restoring one therefore reopens the workspace and materializes what it
+    // was hiding — each remaining conversation becomes shelved on its own — so
+    // the reader gets back exactly the row they restored and nothing else.
+    // Conversations that were already shelved on their own keep their shelf.
+    let workspace_id = closure
+        .iter()
+        .find(|thread| thread.id == thread_id)
+        .map(|thread| thread.workspace_id.clone())
+        .unwrap_or_default();
+    if !workspace_id.is_empty() {
+        if let Some(archived_at) = get_workspace_in(&tx, &workspace_id)?.and_then(|w| w.archived_at)
+        {
+            let remaining: Vec<String> = {
+                let mut stmt = tx.prepare(
+                    "SELECT id FROM threads
+                     WHERE workspace_id = ?1 AND deleted_at IS NULL",
+                )?;
+                let rows = stmt.query_map(params![workspace_id], |row| row.get::<_, String>(0))?;
+                rows.collect::<rusqlite::Result<_>>()?
+            };
+            let restored: Vec<&str> = closure.iter().map(|thread| thread.id.as_str()).collect();
+            for id in remaining {
+                if restored.contains(&id.as_str()) {
+                    continue;
+                }
+                tx.execute(
+                    "UPDATE threads
+                     SET status = 'archived', archived_at = COALESCE(archived_at, ?1),
+                         pinned = 0, updated_at = ?2
+                     WHERE id = ?3 AND status NOT IN ('archived', 'deleted')",
+                    params![archived_at, now, id],
+                )?;
+            }
+            tx.execute(
+                "UPDATE workspaces SET archived_at = NULL, updated_at = ?1 WHERE id = ?2",
+                params![now, workspace_id],
+            )?;
+        }
+    }
     tx.commit()?;
     mark_catalog_dirty();
     loaded(get_thread(thread_id)?, "Conversation")
@@ -2481,6 +2522,48 @@ mod archive_tests {
         assert_eq!(get_thread("root").unwrap().unwrap().status, "active");
         assert_eq!(get_thread("child").unwrap().unwrap().status, "active");
         assert_eq!(get_thread("keep").unwrap().unwrap().status, "active");
+    }
+
+    /// Restoring one conversation out of a shelved workspace reopens the
+    /// workspace and shelves what the container was hiding: the reader gets back
+    /// exactly that row, and the workspace's other conversations stay archived —
+    /// now on their own, keeping the shelf's timestamp.
+    #[test]
+    fn restoring_one_conversation_reopens_its_shelved_workspace() {
+        let (_home, conn) = guarded_conn("restore_from_shelved_workspace");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, archived_at, created_at, updated_at)
+             VALUES ('ws', 'W', 'user', '/tmp/ws', 100, 1, 1);",
+        )
+        .unwrap();
+        seed(&conn, "target", None, "active");
+        seed(&conn, "sibling", None, "active");
+        seed(&conn, "shelved_before", None, "archived");
+        drop(conn);
+
+        let restored = restore_thread_tree("target").expect("restore one");
+
+        assert_eq!(restored.status, "active");
+        let workspace = crate::store::get_workspace("ws")
+            .expect("get workspace")
+            .expect("some");
+        assert_eq!(
+            workspace.archived_at, None,
+            "the workspace is visible again"
+        );
+        assert_eq!(get_thread("target").unwrap().unwrap().status, "active");
+        let sibling = get_thread("sibling").unwrap().unwrap();
+        assert_eq!(sibling.status, "archived", "the rest stays shelved");
+        assert_eq!(
+            sibling.archived_at,
+            Some(100),
+            "it keeps the shelf's timestamp"
+        );
+        assert_eq!(
+            get_thread("shelved_before").unwrap().unwrap().status,
+            "archived",
+            "a conversation shelved on its own is not revived"
+        );
     }
 
     /// Batch archive archives the inactive trees and reports the running ones

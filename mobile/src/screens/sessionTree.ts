@@ -236,10 +236,15 @@ export function groupMergedRows(
  *
  * Deliberately not a tree: an archived workspace and an archived conversation are
  * two shelves, and the desktop's archived view draws them that way — a workspace
- * heading with its conversations under it, then the shelved conversations that own
- * no archived workspace. Filing them back into the normal workspace tree would
- * make "archived" look like a status of the tree rather than a place the reader
- * goes to.
+ * heading with its conversations under it, then the shelved conversations that
+ * belong to no workspace at all. Filing them back into the normal workspace tree
+ * would make "archived" look like a status of the tree rather than a place the
+ * reader goes to.
+ *
+ * A conversation shelved out of a workspace that is still in use keeps that
+ * workspace's heading: the heading is what says where a restore goes back to.
+ * The heading earns its place from the shelved rows under it, so an active
+ * workspace with nothing shelved is not drawn at all.
  *
  * The rows come from the same catalogue the default pages read (the host keeps
  * archived rows in it), narrowed by the caller to the archived half.
@@ -269,7 +274,6 @@ export function archivedRows(
   const rows: CatalogRow[] = [];
   const stamp = desktopId ? { desktopId } : {};
   const rowKey = (sessionId: string) => (desktopId ? sessionKey(desktopId, sessionId) : sessionId);
-  const archivedWorkspaces = workspaces.filter(workspace => workspace.archived === true);
   const byWorkspace = new Map<string, RemoteSession[]>();
   const loose: RemoteSession[] = [];
   for (const session of sessions) {
@@ -278,17 +282,27 @@ export function archivedRows(
     // still active; the host marks the row, so this is one comparison.
     if (session.archived !== true) continue;
     const workspaceId = session.mode === "workspace" ? session.workspaceId ?? "" : "";
-    const shelved = archivedWorkspaces.find(workspace => workspace.id === workspaceId);
-    if (shelved) {
-      const list = byWorkspace.get(shelved.id) ?? [];
+    const workspace = workspaceId
+      ? workspaces.find(item => item.id === workspaceId)
+      : undefined;
+    if (workspace) {
+      const list = byWorkspace.get(workspace.id) ?? [];
       list.push(session);
-      byWorkspace.set(shelved.id, list);
+      byWorkspace.set(workspace.id, list);
     }
     else {
       loose.push(session);
     }
   }
-  for (const workspace of archivedWorkspaces) {
+  // A shelved workspace keeps its heading even with nothing left inside it — its
+  // one action is restore. A workspace still in the active list earns a heading
+  // only because some of its conversations are shelved: that is the same
+  // grouping the desktop's archived view draws, so one conversation does not
+  // look like it came from nowhere.
+  const archivedWorkspaces = workspaces.filter(workspace => workspace.archived === true);
+  const activeShelves = workspaces.filter(workspace =>
+    workspace.archived !== true && (byWorkspace.get(workspace.id)?.length ?? 0) > 0);
+  for (const workspace of [...archivedWorkspaces, ...activeShelves]) {
     const children = byWorkspace.get(workspace.id) ?? [];
     rows.push({
       kind: "workspace",

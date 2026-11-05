@@ -257,8 +257,11 @@ export function ArchivedEmpty({ label }: { label: string }) {
 export function ArchivedWorkspaceContents({
   hasMore,
   loading,
+  onDelete,
   onLoadMore,
   onOpen,
+  onRename,
+  onRestore,
   onToggleSelection,
   remaining,
   selectedIds,
@@ -268,10 +271,13 @@ export function ArchivedWorkspaceContents({
   /** Whether this group's own list has another page. */
   hasMore?: boolean;
   loading: boolean;
+  onDelete: (thread: StoredThread) => void;
   onLoadMore?: () => void;
   /** Conversations this group still holds back (the control's count). */
   remaining?: number;
   onOpen: (thread: StoredThread) => void;
+  onRename: (thread: StoredThread) => void;
+  onRestore: (thread: StoredThread) => void;
   onToggleSelection?: (thread: StoredThread) => void;
   /** Ids of the rows ticked in a batch. */
   selectedIds?: ReadonlySet<string>;
@@ -287,24 +293,24 @@ export function ArchivedWorkspaceContents({
     return <div className="px-4 py-1 text-xs text-ink-muted">{t("activityRail.archivedThreadsEmpty")}</div>;
   return (
     <div className="space-y-0.5 pl-2">
+      {/* The same row the loose shelf draws, menu included: a conversation
+          shelved with its workspace is still a conversation the reader can
+          restore (or rename, or delete) on its own. Restoring one reopens the
+          workspace and leaves the rest of the shelf behind it. */}
       {threads.map(thread => (
-        <RailRow active={false} compact key={thread.id} onSelect={() => onOpen(thread)} title={thread.title}>
-          <RailRowTitle>{thread.title}</RailRowTitle>
-          {selectionMode
-            ? (
-                <input
-                  aria-label={t("activityRail.selectThread", { title: thread.title })}
-                  checked={selectedIds?.has(thread.id) ?? false}
-                  className="relative z-10 size-5 shrink-0 rounded border-line accent-accent"
-                  onChange={(event) => {
-                    event.stopPropagation();
-                    onToggleSelection?.(thread);
-                  }}
-                  type="checkbox"
-                />
-              )
-            : null}
-        </RailRow>
+        <ArchivedThreadRow
+          active={false}
+          key={thread.id}
+          members={1}
+          onDelete={onDelete}
+          onOpen={onOpen}
+          onRename={onRename}
+          onRestore={onRestore}
+          onToggleSelection={selectionMode ? onToggleSelection : undefined}
+          selected={selectedIds?.has(thread.id) ?? false}
+          selectionMode={selectionMode}
+          thread={thread}
+        />
       ))}
       {hasMore
         ? (

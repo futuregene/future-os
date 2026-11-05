@@ -99,4 +99,97 @@ describe("useArchiveView's paging", () => {
     expect(h.current.workspaceRemaining["w-shelved"]).toBe(0);
     h.unmount();
   });
+
+  it("fetches a group's contents once while the first request is in flight", async () => {
+    listThreadsPage.mockResolvedValueOnce(page([], null, 0));
+    const h = await mountArchive();
+
+    let resolve!: (value: ReturnType<typeof page>) => void;
+    const pending = new Promise<ReturnType<typeof page>>((done) => {
+      resolve = done;
+    });
+    listThreadsPage.mockReturnValueOnce(pending);
+    // The view asks again on every render while an expanded group has no page;
+    // that must be one request, not one per render.
+    act(() => {
+      h.current.ensureWorkspaceThreads("w1");
+      h.current.ensureWorkspaceThreads("w1");
+    });
+    expect(listThreadsPage).toHaveBeenCalledTimes(2);
+
+    act(() => resolve(page(pages(["one"]), null, 1)));
+    await flushAsync();
+    await flushAsync();
+    expect(h.current.workspaceThreads.w1?.map(row => row.id)).toEqual(["one"]);
+    // Loaded: another ask is a no-op.
+    act(() => h.current.ensureWorkspaceThreads("w1"));
+    expect(listThreadsPage).toHaveBeenCalledTimes(2);
+    h.unmount();
+  });
+
+  it("re-reads an open group's contents when the shelf refreshes", async () => {
+    listThreadsPage
+      // The entry's own read, then the group the reader expands.
+      .mockResolvedValueOnce(page([], null, 0))
+      .mockResolvedValueOnce(page(pages(["one", "restored"]), null, 2))
+      // The refresh after a restore: the stream, then the group again.
+      .mockResolvedValueOnce(page([], null, 0))
+      .mockResolvedValueOnce(page(pages(["one"]), null, 1));
+    listWorkspacesPage
+      .mockResolvedValueOnce({ nextCursor: null, workspaces: [{ id: "w1", name: "A" } as StoredWorkspace] })
+      .mockResolvedValueOnce({ nextCursor: null, workspaces: [{ id: "w1", name: "A" } as StoredWorkspace] });
+
+    const h = await mountArchive();
+    act(() => h.current.ensureWorkspaceThreads("w1"));
+    await flushAsync();
+    await flushAsync();
+    expect(h.current.workspaceThreads.w1?.map(row => row.id)).toEqual(["one", "restored"]);
+
+    // One conversation was restored: the workspace stays on the shelf, but its
+    // cached page must not keep drawing the row that left it.
+    await act(async () => {
+      await h.current.refresh();
+    });
+    expect(h.current.workspaceThreads.w1?.map(row => row.id)).toEqual(["one"]);
+    h.unmount();
+  });
+
+  /**
+   * A restore that lands while the lists are being read is not lost.
+   *
+   * `loadFirst` is one read at a time, and dropping a request that arrives
+   * during one leaves the page that was already in flight on screen — the row
+   * the reader just restored stays drawn on the shelf *and* appears in the
+   * active list, which is the duplicate they report. The queued request turns
+   * that drop into a second read.
+   */
+  it("does not drop a refresh that arrives while the lists are loading", async () => {
+    let release!: (value: ReturnType<typeof page>) => void;
+    const firstRead = new Promise<ReturnType<typeof page>>((done) => {
+      release = done;
+    });
+    listThreadsPage
+      // The entry's own read, held open so the refresh below arrives mid-read.
+      .mockReturnValueOnce(firstRead)
+      // The queued read: the restored conversation has left the shelf.
+      .mockResolvedValueOnce(page(pages(["one"]), null, 1));
+    listWorkspacesPage.mockResolvedValue({ nextCursor: null, workspaces: [] });
+
+    const h = renderHook(() => useArchiveView());
+    act(() => h.current.ensureLoaded());
+    // Mid-read: the reader restores a conversation.
+    await act(async () => {
+      await h.current.refresh();
+    });
+
+    act(() => release(page(pages(["one", "restored"]), null, 2)));
+    await flushAsync();
+    await flushAsync();
+    await flushAsync();
+
+    // The queued read ran and its answer is what the view holds.
+    expect(listThreadsPage).toHaveBeenCalledTimes(2);
+    expect(h.current.threads.map(row => row.id)).toEqual(["one"]);
+    h.unmount();
+  });
 });

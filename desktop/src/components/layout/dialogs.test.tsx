@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import type { ComponentProps, ReactElement } from "react";
 import type { StoredThread, ThreadCleanupSummary } from "../../integrations/storage/threadStore";
-import type { ArchiveDialogState, BatchDeleteDialogState, DeleteDialogState, RenameDialogState } from "./AppShellDialogs";
+import type { ArchiveDialogState, ArchiveWorkspaceDialogState, BatchArchiveDialogState, BatchDeleteDialogState, DeleteDialogState, RenameDialogState } from "./AppShellDialogs";
 import type { WorkspaceDeleteDialogState, WorkspaceRenameDialogState } from "./hooks/useWorkspaceDialogs";
 import { act, createElement, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -187,16 +187,24 @@ describe("app shell dialogs", () => {
     const [deleteDialog, setDeleteDialog] = useState(initial.del ?? null);
     const [batchDeleteDialog, setBatchDeleteDialog] = useState(initial.batch ?? null);
     const [archiveDialog, setArchiveDialog] = useState<ArchiveDialogState | null>(null);
+    const [archiveWorkspaceDialog, setArchiveWorkspaceDialog] = useState<ArchiveWorkspaceDialogState | null>(null);
+    const [batchArchiveDialog, setBatchArchiveDialog] = useState<BatchArchiveDialogState | null>(null);
     return createElement(AppShellDialogs, {
       archiveDialog,
+      archiveWorkspaceDialog,
+      batchArchiveDialog,
       batchDeleteDialog,
       deleteDialog,
       renameDialog,
       setArchiveDialog,
+      setArchiveWorkspaceDialog,
+      setBatchArchiveDialog,
       setBatchDeleteDialog,
       setDeleteDialog,
       setRenameDialog,
       onConfirmArchiveThread: () => {},
+      onConfirmArchiveWorkspace: () => {},
+      onConfirmBatchArchive: () => {},
       onConfirmBatchDeleteThread: handlers.batch ?? (() => {}),
       onConfirmDeleteThread: handlers.del ?? (() => {}),
       onConfirmRenameThread: handlers.rename ?? (() => {}),
@@ -446,12 +454,20 @@ describe("app shell dialogs", () => {
 describe("workspace dialogs", () => {
   const workspace = { cleanupStatus: "active" as const, createdAt: 0, id: "ws-1", kind: "user" as const, name: "Alpha", path: "/tmp/alpha", pinned: false, updatedAt: 0 };
 
-  function Harness({ handlers, initial }: { handlers: Record<string, () => void>; initial?: { deleteOpen?: boolean } }) {
+  function Harness({ handlers, initial }: { handlers: Record<string, () => void>; initial?: { deleteOpen?: boolean; summary?: { deletedThreads: number; keptThreads: number } } }) {
     const [renameDialog, setRenameDialog] = useState<WorkspaceRenameDialogState | null>(
       { error: "taken", submitting: false, value: "Alpha", workspace },
     );
     const [deleteDialog, setDeleteDialog] = useState<WorkspaceDeleteDialogState | null>(
-      initial?.deleteOpen ? { error: null, submitting: false, workspace } : null,
+      initial?.deleteOpen
+        ? {
+            error: null,
+            loadingSummary: false,
+            submitting: false,
+            summary: initial.summary ?? { deletedThreads: 1, keptThreads: 2 },
+            workspace,
+          }
+        : null,
     );
     return createElement(WorkspaceDialogs, {
       deleteDialog,
@@ -470,7 +486,6 @@ describe("workspace dialogs", () => {
     expect(view.container.textContent).toContain("Alpha");
     act(() => byText(view.container, "Delete")!.click());
     expect(del).toHaveBeenCalledTimes(1);
-
     const deleteDialog = [...view.container.querySelectorAll("[role=\"dialog\"]")]
       .find(dialog => dialog.textContent!.includes("Delete workspace"))!;
     const cancel = [...deleteDialog.querySelectorAll<HTMLButtonElement>("button")]
@@ -478,6 +493,28 @@ describe("workspace dialogs", () => {
     act(() => cancel.click());
     expect([...view.container.querySelectorAll("[role=\"dialog\"]")]
       .some(dialog => dialog.textContent!.includes("Delete workspace"))).toBe(false);
+    view.unmount();
+  });
+
+  it("says how many conversations a workspace delete removes and keeps", () => {
+    const view = mount(createElement(Harness, { handlers: {}, initial: { deleteOpen: true } }));
+    // A delete is not an archive delete: the confirmation names both halves, with
+    // the backend's counts rather than the loaded pages', and it keeps the
+    // file-safety sentence the old confirmation carried.
+    expect(view.container.textContent).toContain("1 active conversations are deleted with it");
+    expect(view.container.textContent).toContain("2 archived conversations are kept");
+    expect(view.container.textContent).toContain("Files on disk are not deleted");
+    view.unmount();
+  });
+
+  it("keeps the old confirmation wording when nothing is archived", () => {
+    const view = mount(createElement(Harness, {
+      handlers: {},
+      initial: { deleteOpen: true, summary: { deletedThreads: 2, keptThreads: 0 } },
+    }));
+    expect(view.container.textContent).toContain(
+      "This workspace and its conversations are removed from the sidebar; files on disk are not deleted.",
+    );
     view.unmount();
   });
 

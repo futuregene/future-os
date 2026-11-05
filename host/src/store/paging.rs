@@ -167,7 +167,11 @@ fn thread_scope_filter(scope: &ThreadScope) -> String {
             id.replace('\'', "''")
         ),
         ThreadScope::ArchivedWorkspace(id) => format!(
-            "t.deleted_at IS NULL AND t.workspace_id = '{}'",
+            // A shelved workspace shows everything it holds. A workspace that
+            // is still in use shows only the conversations shelved out of it:
+            // its live ones are already on the active list.
+            "t.deleted_at IS NULL AND t.workspace_id = '{}'
+             AND (t.status = 'archived' OR w.archived_at IS NOT NULL)",
             id.replace('\'', "''")
         ),
         ThreadScope::Recent => {
@@ -336,10 +340,12 @@ pub fn workspace_has_live_threads(workspace_id: &str) -> Result<bool, crate::Err
 /// One page of the workspace list.
 ///
 /// `archived` (the default `false`) is every user workspace that is *not*
-/// archived; `true` lists the shelved ones by `archived_at`. Temporary chat
-/// workspaces are containers of a conversation, not list items, so they never
-/// appear here. Pinned workspaces are excluded — like pinned conversations they
-/// lead the list whole ([`list_pinned_workspaces`]).
+/// archived; `true` is the shelf: workspaces that were shelved, plus the ones
+/// still in use that hold shelved conversations. A workspace can be on both
+/// sides — the active list shows what is live, the shelf shows what was shelved
+/// out of it. Temporary chat workspaces are containers of a conversation, not
+/// list items, so they never appear here. Pinned workspaces are excluded — like
+/// pinned conversations they lead the list whole ([`list_pinned_workspaces`]).
 pub fn list_workspaces_page(
     archived: bool,
     cursor: Option<&str>,
@@ -349,7 +355,17 @@ pub fn list_workspaces_page(
     let conn = connect()?;
     let (where_clause, stamp) = if archived {
         (
-            "kind = 'user' AND archived_at IS NOT NULL AND deleted_at IS NULL",
+            // A workspace is on the shelf when it was shelved *or* when it
+            // still holds shelved conversations and is itself in use: after
+            // one conversation is brought back, the workspace belongs to the
+            // active list and to the shelf at once, which is what the reader
+            // expects to see on both sides.
+            "kind = 'user' AND deleted_at IS NULL
+             AND (archived_at IS NOT NULL OR EXISTS (
+                 SELECT 1 FROM threads t
+                  WHERE t.workspace_id = workspaces.id
+                    AND t.status = 'archived' AND t.deleted_at IS NULL
+             ))",
             "COALESCE(archived_at, updated_at)",
         )
     } else {
@@ -626,6 +642,57 @@ mod tests {
         // the view shows each conversation exactly once.
         let archived = list_threads_page(&ThreadScope::Archived, None, 50).expect("archived");
         assert!(archived.threads.is_empty());
+    }
+
+    /// A workspace that is still in use but holds shelved conversations is on
+    /// both sides at once: the active list shows what is live, the shelf shows
+    /// what was shelved out of it — the state a single restore from a shelved
+    /// workspace leaves behind.
+    #[test]
+    fn a_workspace_with_shelved_conversations_is_listed_on_both_sides() {
+        let (_home, conn) = guarded_conn("page_ws_both_sides");
+        workspace(&conn, "ws", false);
+        seed(&conn, "ws", "live", 10, None);
+        seed(&conn, "ws", "one", 20, None);
+        seed(&conn, "ws", "two", 30, None);
+        conn.execute(
+            "UPDATE threads SET status = 'archived', archived_at = 50
+             WHERE id IN ('one', 'two')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let archived = list_workspaces_page(true, None, 50).expect("shelf");
+        assert_eq!(
+            archived
+                .workspaces
+                .iter()
+                .map(|w| w.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ws"],
+            "the active workspace is still on the shelf"
+        );
+        let active = list_workspaces_page(false, None, 50).expect("active");
+        assert_eq!(
+            active
+                .workspaces
+                .iter()
+                .map(|w| w.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ws"],
+            "…and it is still in the active list"
+        );
+        // The shelf's contents are the shelved conversations only; the live one
+        // is not drawn a second time under the heading.
+        let contents = list_threads_page(&ThreadScope::ArchivedWorkspace("ws".into()), None, 50)
+            .expect("contents");
+        let ids: Vec<&str> = contents.threads.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["two", "one"]);
+        // Both shelved conversations also stay in the conversation section — the
+        // rail keeps the heading's own list out of that section.
+        let section = list_threads_page(&ThreadScope::Archived, None, 50).expect("section");
+        assert_eq!(section.threads.len(), 2);
     }
 
     /// The shelved scope is both halves of the archive at once.

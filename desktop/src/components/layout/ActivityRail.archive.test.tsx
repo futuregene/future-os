@@ -3,6 +3,7 @@ import type { StoredThread } from "../../integrations/storage/threadStore";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import i18n from "../../i18n";
 
 import { ActivityRail } from "./ActivityRail";
 
@@ -39,6 +40,7 @@ vi.mock("./hooks/useRailView", async (importOriginal) => {
 });
 const archivedThreads: StoredThread[] = [];
 const archivedWorkspaces: { id: string; name: string }[] = [];
+const archivedWorkspaceThreads: Record<string, StoredThread[]> = {};
 
 vi.mock("./hooks/useArchiveView", () => ({
   useArchiveView: () => ({
@@ -57,7 +59,7 @@ vi.mock("./hooks/useArchiveView", () => ({
     threadsRemaining: 0,
     workspaceNextCursor: {},
     workspaceRemaining: {},
-    workspaceThreads: {},
+    workspaceThreads: archivedWorkspaceThreads,
     workspaces: archivedWorkspaces,
   }),
 }));
@@ -177,6 +179,107 @@ describe("archive entry and its guide", () => {
     void archivedRow;
   });
 
+  it("keeps a workspace on the shelf for its shelved conversations, on both sides", () => {
+    currentView = "archived";
+    archivedThreads.length = 0;
+    archivedWorkspaces.length = 0;
+    const shelved = {
+      agentSessionId: "s-w",
+      createdAt: 1,
+      id: "w-thread",
+      mode: "workspace",
+      pinned: false,
+      readonly: false,
+      status: "archived",
+      title: "Shelved in the workspace",
+      updatedAt: 2,
+      workspaceId: "w1",
+    } as unknown as StoredThread;
+    // The store puts a workspace that still holds shelved conversations on the
+    // shelf, even though it is in the active list too; the heading comes from
+    // that list, not from a join of the active one.
+    archivedWorkspaces.push({ id: "w1", name: "Workspace Alpha" });
+    archivedWorkspaceThreads.w1 = [shelved];
+    // The conversation stream holds the same row; the rail must draw it once.
+    archivedThreads.push(shelved);
+
+    const view = mount(createElement(ActivityRail, props({
+      workspaces: [{
+        cleanupStatus: "active",
+        createdAt: 1,
+        id: "w1",
+        kind: "user",
+        name: "Workspace Alpha",
+        path: "/w",
+        updatedAt: 1,
+      }],
+    })));
+    const body = view.container.querySelector("[data-testid='rail-archived-view']")!;
+    const heading = [...body.querySelectorAll("[class*='group/workspace']")]
+      .find(node => node.textContent?.includes("Workspace Alpha"));
+    expect(heading).not.toBeNull();
+    // The heading counts what is shelved in it, and expanding it draws the row
+    // under the workspace it came from.
+    act(() => {
+      heading!.querySelector("button")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(heading!.parentElement!.textContent).toContain("Shelved in the workspace");
+    // The conversation section does not repeat the row the heading owns.
+    const occurrences = (view.container.textContent?.match(/Shelved in the workspace/g) ?? []).length;
+    expect(occurrences).toBe(1);
+    view.unmount();
+    archivedThreads.length = 0;
+    archivedWorkspaces.length = 0;
+    delete archivedWorkspaceThreads.w1;
+  });
+
+  it("restores one conversation out of a shelved workspace from its own row", () => {
+    currentView = "archived";
+    archivedThreads.length = 0;
+    archivedWorkspaces.length = 0;
+    archivedWorkspaces.push({ id: "w-shelved", name: "Shelved project" });
+    archivedWorkspaceThreads["w-shelved"] = [
+      {
+        agentSessionId: "s-inside",
+        createdAt: 1,
+        id: "inside",
+        mode: "workspace",
+        pinned: false,
+        readonly: false,
+        status: "archived",
+        title: "Only one",
+        updatedAt: 2,
+        workspaceId: "w-shelved",
+      } as unknown as StoredThread,
+    ];
+    const onRestoreThread = vi.fn();
+    const view = mount(createElement(ActivityRail, props({ onRestoreThread })));
+    const body = view.container.querySelector("[data-testid='rail-archived-view']")!;
+    // Expand the shelved workspace, then open the row's own menu.
+    const heading = [...body.querySelectorAll("[class*='group/workspace']")]
+      .find(node => node.textContent?.includes("Shelved project"));
+    act(() => {
+      heading!.querySelector("button")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const row = [...view.container.querySelectorAll("[class*='group/thread']")]
+      .find(node => node.textContent?.includes("Only one"));
+    expect(row, "the shelved conversation is drawn").not.toBeUndefined();
+    act(() => {
+      row!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    });
+    const items = [...view.container.querySelectorAll("[role=menuitem]")];
+    const restore = items.find(node => node.textContent === i18n.t("layout:activityRail.restore"));
+    expect(restore, "the row can be restored on its own").not.toBeUndefined();
+    act(() => {
+      restore!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onRestoreThread).toHaveBeenCalledWith(expect.objectContaining({ id: "inside" }));
+    view.unmount();
+    archivedThreads.length = 0;
+    archivedWorkspaces.length = 0;
+    delete archivedWorkspaceThreads["w-shelved"];
+  });
+
   it("filters archived conversations by the search box", async () => {
     currentView = "archived";
     archivedThreads.length = 0;
@@ -209,22 +312,21 @@ describe("archive entry and its guide", () => {
 
     const view = mount(createElement(ActivityRail, props()));
     // The magnifier opens the field; typing narrows the archived list.
-    const searchButton = view.container.querySelector("[aria-label='activityRail.search']")
-      ?? view.container.querySelector("button[title]");
-    expect(searchButton).not.toBeNull();
-    act(() => searchButton!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    const input = view.container.querySelector("input[type='text'], input[placeholder]") as HTMLInputElement | null;
-    if (input) {
-      act(() => {
-        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
-        setter.call(input, "alpha");
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-      });
-    }
-    // Whether or not the field was reachable in this harness, the filtering
-    // rule itself is the assertion worth keeping: both rows are present, and
-    // only one matches "alpha".
+    act(() => view.container
+      .querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!
+      .dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    const input = view.container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
+    expect(view.container.textContent).toContain("beta conversation");
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(input, "alpha");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    // The shelved conversations section is narrowed like every other list: a
+    // query used to reach the headings and leave every loose row on screen, so
+    // the archive was the one list the search box did not filter.
     expect(view.container.textContent).toContain("alpha conversation");
+    expect(view.container.textContent).not.toContain("beta conversation");
     view.unmount();
     archivedThreads.length = 0;
   });

@@ -108,9 +108,10 @@ pub use util::strip_verbatim_prefix;
 pub use util::{catalog_dirty_peek, create_id, create_run_id, now_millis, take_catalog_dirty};
 pub use workspace_files::{search_workspace_files, WorkspaceFileResult, WorkspaceFileSearchInput};
 pub use workspaces::{
-    archive_workspace, create_workspace, delete_workspace, file_session_workspace,
+    archive_workspace, create_workspace, delete_summary, delete_workspace, file_session_workspace,
     get_or_create_chat_workspace, get_workspace, list_workspaces, pin_workspace,
-    purge_soft_deleted_workspaces, rename_workspace, restore_workspace, WorkspaceRecord,
+    purge_soft_deleted_workspaces, rename_workspace, restore_workspace, WorkspaceDeleteSummary,
+    WorkspaceRecord,
 };
 
 pub fn app_data_path() -> Result<AppDataPath, crate::Error> {

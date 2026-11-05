@@ -31,6 +31,8 @@
     "noWorkspaceThreads": "暂无工作区对话",
     "expandWorkspace": "展开工作区",
     "collapseWorkspace": "收起工作区",
+    "expandWorkspaceSection": "展开工作区列表",
+    "collapseWorkspaceSection": "收起工作区列表",
     "expandChatSection": "展开对话列表",
     "collapseChatSection": "收起对话列表",
     "newChatInWorkspace": "在 {{name}} 中新建对话",
@@ -44,7 +46,7 @@
     "failed": "失败",
     "cancelled": "已取消",
     "threadActions": "{{title}} 的操作",
-    "restore": "恢复",
+    "restore": "取消归档",
     "rename": "重命名",
     "pin": "置顶",
     "unpin": "取消置顶",
@@ -76,7 +78,7 @@
     "recentActions": "最近列表操作",
     "archive": "归档",
     "archiveWorkspace": "归档工作区",
-    "restoreWorkspace": "恢复工作区",
+    "restoreWorkspace": "取消归档",
     "viewArchived": "已归档的会话",
     "archivedTreeMembers": "{{count}} 条会话",
     "loadMore": "加载更多",
@@ -89,7 +91,7 @@
     "loading": "加载中…",
     "archiveGuideAgain": "再看一次归档提示",
     "archivedThreadsActions": "已归档会话操作",
-    "restoreSelected": "恢复"
+    "restoreSelected": "取消归档"
   },
   "appShell": {
     "storeInitFailed": "FutureOS 本地存储初始化失败：",
@@ -143,13 +145,24 @@
     "titleEmpty": "标题不能为空。",
     "archiveSkipped": "{{names}}{{more}} 仍在运行，结束后才能归档。",
     "archiveTitle": "归档此会话？",
-    "archiveDescription": "该会话及其 {{count}} 条派生会话将一起归档，之后可随时恢复。"
+    "archiveDescription": "该会话及其 {{count}} 条派生会话将一起归档，之后可随时取消归档。",
+    "archiveRunningTitle": "会话正在进行中",
+    "archiveRunningDescription": "{{count}} 个会话正在进行中，结束或停止后才能归档。",
+    "archiveRunningMore": "另有 {{count}} 个会话正在进行",
+    "archiveStopAndArchive": "停止并归档",
+    "archiveBatchRunningTitle": "有会话正在进行中",
+    "archiveBatchRunningDescription": "所选会话中有 {{count}} 个正在进行中，结束或停止后才能归档。",
+    "archiveWorkspaceRunningTitle": "工作区里有会话正在进行",
+    "archiveWorkspaceRunningDescription": "「{{name}}」中有 {{count}} 个会话正在进行中，结束或停止后才能归档。"
   },
   "workspaceDialogs": {
     "renameTitle": "重命名工作区",
     "renameDescription": "为这个工作区取一个便于识别的名称。",
     "deleteTitle": "删除工作区",
-    "deleteDescription": "此工作区及其对话将从侧边栏移除，磁盘上的文件不会被删除。",
+    "deleteDescription": "此工作区及其未归档对话将从侧边栏移除；已归档的会话会保留为普通会话。磁盘上的文件不会被删除。",
+    "deleteActiveOnlyDescription": "此工作区及其对话将从侧边栏移除，磁盘上的文件不会被删除。",
+    "deleteMixedDescription": "此工作区将被移除：{{deleted}} 个未归档会话会一并删除；{{kept}} 个已归档会话会保留为独立会话，取消归档后仍可继续对话。磁盘上的文件不会被删除。",
+    "deleteKeptDescription": "此工作区将被移除：其中 {{kept}} 个已归档会话会保留为独立会话，取消归档后仍可继续对话。磁盘上的文件不会被删除。",
     "nameEmpty": "名称不能为空。"
   },
   "gate": {
@@ -231,7 +244,7 @@
   },
   "archiveGuide": {
     "title": "已归档的会话收在这里",
-    "body": "随时查看完整历史，或恢复后继续对话。",
+    "body": "随时查看完整历史，或取消归档后继续对话。",
     "viewArchived": "查看已归档",
     "dismiss": "知道了"
   }

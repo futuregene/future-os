@@ -34,6 +34,17 @@ pub fn get_or_create_chat_workspace(
     store::get_or_create_chat_workspace(&thread_id, title)
 }
 
+/// One workspace by id, whatever its kind.
+///
+/// The rail's list holds the user's own directories only (`kind = 'user'`), so a
+/// chat conversation's per-thread scratch workspace is never in it. A reader
+/// that has a workspace id — the open conversation's own `workspaceId` — asks
+/// here instead of searching that list, which is what kept a chat's Files tab
+/// pointing at somebody else's folder.
+pub fn get_workspace(workspace_id: String) -> Result<Option<store::WorkspaceRecord>, crate::Error> {
+    store::get_workspace(&workspace_id)
+}
+
 pub fn rename_workspace(
     input: store::RenameWorkspaceInput,
 ) -> Result<store::WorkspaceRecord, crate::Error> {
@@ -115,6 +126,14 @@ pub async fn delete_workspace(
     Ok(workspace)
 }
 
+/// What deleting this workspace would remove, and what it would keep.
+///
+/// The delete is not an archive delete; the confirmation names both numbers
+/// before the reader commits to it.
+pub fn delete_summary(workspace_id: String) -> Result<store::WorkspaceDeleteSummary, crate::Error> {
+    store::delete_summary(&workspace_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,5 +211,25 @@ mod tests {
             get_or_create_chat_workspace("thread_x".into(), Some("Chat".into())).expect("first");
         let second = get_or_create_chat_workspace("thread_x".into(), None).expect("second");
         assert_eq!(first.id, second.id);
+    }
+
+    /// A chat's scratch workspace is `temporary`, which the rail's user-only list
+    /// never holds — so a reader that has the id must be able to read it directly.
+    #[test]
+    fn get_workspace_reads_a_temporary_chat_workspace_by_id() {
+        let _home = init("cmd_ws_get");
+        let chat = get_or_create_chat_workspace("thread_y".into(), Some("Chat".into()))
+            .expect("chat workspace");
+        let read = get_workspace(chat.id.clone())
+            .expect("read")
+            .expect("the chat workspace exists");
+        assert_eq!(read.id, chat.id);
+        assert_eq!(read.kind, "temporary");
+        assert_eq!(
+            read.path, chat.path,
+            "the path is what the Files tab and the @ picker root at"
+        );
+        assert!(list_pinned_workspaces().expect("pinned").is_empty());
+        assert!(get_workspace("ws-missing".into()).expect("read").is_none());
     }
 }

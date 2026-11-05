@@ -78,7 +78,7 @@ describe("thread item menu", () => {
     expect(item(container, "Rename")).toBeTruthy();
     expect(item(container, "Pin")).toBeTruthy();
     expect(item(container, "Unpin")).toBeUndefined();
-    expect(item(container, "Restore")).toBeUndefined();
+    expect(item(container, "Unarchive")).toBeUndefined();
 
     act(() => item(container, "Rename")!.click());
     expect(handlers.onClose).toHaveBeenCalledTimes(1);
@@ -97,10 +97,10 @@ describe("thread item menu", () => {
     pinned.unmount();
 
     const archived = mountMenu({ archived: true });
-    expect(item(archived.container, "Restore")).toBeTruthy();
+    expect(item(archived.container, "Unarchive")).toBeTruthy();
     expect(item(archived.container, "Rename")).toBeUndefined();
     expect(item(archived.container, "Pin")).toBeUndefined();
-    act(() => item(archived.container, "Restore")!.click());
+    act(() => item(archived.container, "Unarchive")!.click());
     expect(archived.handlers.onRestore).toHaveBeenCalledTimes(1);
     archived.unmount();
   });

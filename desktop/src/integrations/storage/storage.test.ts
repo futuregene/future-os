@@ -67,6 +67,7 @@ import {
   getRecentThread,
   getSessionEntries,
   getThreadCleanupSummary,
+  getWorkspace,
   listThreads,
   listWorkspaces,
   markThreadOpened,
@@ -252,6 +253,8 @@ describe("storage invoke wrappers", () => {
   it("threads and workspaces", async () => {
     await listWorkspaces();
     expect(invokeMock).toHaveBeenLastCalledWith("list_workspaces", undefined);
+    await getWorkspace("w");
+    expect(invokeMock).toHaveBeenLastCalledWith("get_workspace", { workspaceId: "w" });
     await createWorkspace({ path: "/w" });
     expect(invokeMock).toHaveBeenLastCalledWith("create_workspace", { input: { path: "/w" } });
     await ensureWorkspaceGit("w");

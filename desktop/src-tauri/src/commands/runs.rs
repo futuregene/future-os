@@ -60,6 +60,16 @@ pub async fn abort_run(
     future_host::application::runs::abort_run(thread_id, run_id).await
 }
 
+/// Stop what is still running in these conversations, for "stop and archive".
+///
+/// The archive dialog asks before it shelves anything; once the reader chooses
+/// to stop, this is the stop the conversation's own button performs, applied to
+/// every running member of the scope the reader named.
+#[tauri::command]
+pub async fn stop_threads(thread_ids: Vec<String>) -> Result<(), crate::AppError> {
+    future_host::application::runs::stop_threads(thread_ids).await
+}
+
 /// What this conversation has in flight and waiting, from the Agent's queue.
 #[tauri::command]
 pub async fn session_queue(thread_id: String) -> Result<serde_json::Value, crate::AppError> {

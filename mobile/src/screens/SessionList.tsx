@@ -46,6 +46,7 @@ import { formatRelativeTime } from "./relativeTime";
 import { RECENT_PAGE_SIZE, recentRows } from "./recentRows";
 import type { MergedSessionRow } from "../remote/mergeSessions";
 import { activeWorkspaces, ARCHIVED_PAGE_SIZE, archivedCatalogRows, isArchivedSession, type ArchivedCatalog } from "./archived";
+import { archiveWorkspaceWithPrompt, runningInWorkspace } from "./archiveAction";
 import {
   archivedRows,
   catalogRows,
@@ -1254,12 +1255,35 @@ export function SessionList({
               disabled: !menuWorkspaceCommands || deleting,
               onPress: () => {
                 const commands = menuWorkspaceCommands;
-                if (!commands) return;
+                const workspace = menuWorkspace;
+                if (!commands || !workspace) return;
                 setMenuWorkspace(null);
-                void (menuWorkspaceArchived
-                  ? commands.restoreWorkspace(menuWorkspace.workspaceId)
-                  : commands.archiveWorkspace(menuWorkspace.workspaceId))
-                  .catch(() => Alert.alert(t("common.error"), t("sessions.archiveFailed")));
+                if (menuWorkspaceArchived) {
+                  void commands.restoreWorkspace(workspace.workspaceId)
+                    .catch(() => Alert.alert(t("common.error"), t("sessions.archiveFailed")));
+                  return;
+                }
+                // A workspace archive stops every conversation it is waiting
+                // on, so the reader is told how many that is before it happens.
+                const running = new Map<string, RemoteSession>();
+                for (const session of runningInWorkspace(allSessions, workspace.workspaceId, workspace.desktopId ?? null))
+                  running.set(session.sessionId, session);
+                // The shelf's own rows are not in `allSessions` (it is empty
+                // there), so the active catalogue fills in the machine's own
+                // conversations when the heading is drawn from it.
+                for (const session of remote.sessions) {
+                  if (session.streaming === true && (session.workspaceId ?? "") === workspace.workspaceId)
+                    running.set(session.sessionId, session);
+                }
+                archiveWorkspaceWithPrompt({
+                  alert: (title, message, buttons) => Alert.alert(title, message, buttons),
+                  commands,
+                  name: workspace.workspace.name || t("sessions.workspace"),
+                  onFailed: () => Alert.alert(t("common.error"), t("sessions.archiveFailed")),
+                  running: [...running.values()],
+                  t,
+                  workspaceId: workspace.workspaceId,
+                });
               },
             }]
             : []),
