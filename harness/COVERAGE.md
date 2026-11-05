@@ -80,20 +80,31 @@ Legend: ✅ two or more cases · ◐ one smoke case · — not covered.
 
 ## Remote
 
-Three surfaces: the two UIs side by side (`remote`), the relay itself with real
-processes (`remote-live`), and the deployed platform (`remote-cn`).
+Four surfaces: the two UIs side by side (`remote`), the relay itself with real
+Rust processes (`remote-live`), the **phone's own client** against a real desktop
+(`remote-mobile-live`), and the deployed platform (`remote-cn`).
+
+`remote-mobile-live` is the one that removes the last mock: it bundles
+`mobile/src/remote/pairing.ts` + `client.ts` and runs them in Node with only
+`expo-device` / `expo-secure-store` / `react-native` stubbed, so the invitation is
+really claimed, the WebSocket really connects, and a write from the phone really
+lands in the desktop's `app.db`.
 
 | Area | Coverage | Cases |
 |---|---|---|
 | Desktop + mobile render the same session | ✅ | `remote-parser-pair`, `remote-page` |
+| Desktop UI: both directions of the remote page | ✅ | `remote-page-peers-held`, `remote-page` |
 | Self-hosted relay: invitation → pairing → serving | ✅ | `remote-live-pair-and-connect` |
 | Relay + broker restart recovery | ◐ | `remote-live-relay-restart` |
 | Unpair, then pair again with a fresh invitation | ◐ | `remote-live-repair-after-unpair` |
+| Phone (real client code) pairs and reads the desktop catalogue | ✅ | `mobile-live-pair-and-list` |
+| Phone writes to the desktop (pin) and the DB confirms it | ✅ | `mobile-live-pin-roundtrip` |
+| Two clients: standby with a holder, takeover moves control | ◐ | `mobile-live-two-clients-control` |
 | Official platform: reachability, route and error-shape contract | ✅ | `remote-cn-platform-contract` |
 | Official platform: full pairing through the deployed relay | ◐ | `remote-cn-platform-contract` with `FUTURE_REMOTE_CN_FULL=1` (needs `future auth login`) |
-| Remote prompt/stream from the phone driving the host | — | next: needs a controlling client, and the CLI cannot hold one |
-| Two clients, takeover between them | — | next |
+| Phone/desktop driving a prompt and watching the stream | — | next: needs a model behind the host (costs credits), and a client runtime the CLI cannot hold |
 | File transfer, image latency, weak network | — | unit-tested in `packages/remote-*`; not in this library |
+| Phone UI states while standby / reconnecting | — | next: the Expo build has no transport, so these need the live client plus a rendered UI |
 
 ## Performance
 

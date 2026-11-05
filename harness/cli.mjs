@@ -208,8 +208,16 @@ async function main() {
         }
       }
 
-      const cnRemote = bySurface("remote-cn");
-      if (cnRemote.length) {
+      const mobileLive = bySurface("remote-mobile-live");
+      if (mobileLive.length) {
+        const { runRemoteMobileCase } = await import("./lib/remote-mobile-live.mjs");
+        for (const testCase of mobileLive) {
+          process.stdout.write(`\n▶ ${testCase.id} — ${testCase.title}\n`);
+          record(await runRemoteMobileCase({ testCase, runDir, bin: cliBin() }));
+        }
+      }
+
+      const cnRemote = bySurface("remote-cn");      if (cnRemote.length) {
         const { runRemoteCnCase } = await import("./lib/remote-cn.mjs");
         for (const testCase of cnRemote) {
           process.stdout.write(`\n▶ ${testCase.id} — ${testCase.title}\n`);

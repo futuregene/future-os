@@ -23,6 +23,7 @@ replay by hand, and every run leaves evidence a person can check.
 | `remote` | desktop and mobile clients at the same time | shot mocks on both sides | `"surface": "remote"` |
 | `remote-live` | a real self-hosted relay: `future relay init` + `nats-server` + `future relay serve` + `future host --relay`, paired by a real second home | real processes, each with its own `FUTURE_HOME` | `"surface": "remote-live"` |
 | `remote-cn` | the deployed Future platform over the network (read-only contract check; full pairing on request) | the real platform at `future-os.cn` | `"surface": "remote-cn"` |
+| `remote-mobile-live` | the **phone's own client code** (`mobile/src/remote/`) against a real host | real relay + real `future host`; only the expo platform layer is stubbed | `"surface": "remote-mobile-live"` |
 
 Two boundaries stated up front: `mobile`/`remote` use the screenshot harness's
 synthetic remote dataset (the pair check proves both clients render the same
