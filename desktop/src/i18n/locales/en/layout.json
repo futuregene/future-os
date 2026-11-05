@@ -150,7 +150,7 @@
     "renameTitle": "Rename workspace",
     "renameDescription": "Give this workspace a name that's easy to recognize.",
     "deleteTitle": "Delete workspace",
-    "deleteDescription": "This workspace and its chats are removed from the sidebar; files on disk are not deleted.",
+    "deleteDescription": "This workspace and its active conversations are removed from the sidebar; archived conversations are kept as ordinary chats. Files on disk are not deleted.",
     "nameEmpty": "Name cannot be empty."
   },
   "gate": {

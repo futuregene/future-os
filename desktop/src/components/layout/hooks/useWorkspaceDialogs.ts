@@ -5,6 +5,7 @@ import { useState } from "react";
 import i18n from "../../../i18n";
 import { deleteWorkspace, renameWorkspace } from "../../../integrations/storage/threadStore";
 import { errorMessage } from "../../../lib/errors";
+import { emitFutureEvent } from "../../../lib/futureEvents";
 
 export interface WorkspaceRenameDialogState {
   workspace: StoredWorkspace;
@@ -91,6 +92,11 @@ export function useWorkspaceDialogs({
       // from "not on this page": the open one would stay on screen as a row no
       // list will ever return (see `RefreshStoreOptions.removedWorkspaceIds`).
       await refreshStore(undefined, { removedWorkspaceIds: [workspace.id] });
+      // A delete is not an archive delete: the conversations shelved out of the
+      // workspace survive as ordinary chats, so the archived view holds rows the
+      // store's active pages never saw. It re-reads on this event, which also
+      // drops the shelf of any workspace that is really gone.
+      emitFutureEvent("archive-changed", undefined);
       setDeleteDialog(null);
     }
     catch (error) {

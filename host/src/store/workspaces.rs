@@ -250,11 +250,47 @@ pub fn delete_workspace(workspace_id: &str) -> Result<WorkspaceRecord, crate::Er
 /// deletion order can be unit-tested against an in-memory DB with foreign keys
 /// enforced. Deletes every thread's children and the threads, then the
 /// workspace-scoped rows, then the workspace itself. Does not touch any files.
-pub(super) fn delete_workspace_in(conn: &Connection, workspace_id: &str) -> rusqlite::Result<()> {
+pub(super) fn delete_workspace_in(
+    conn: &Connection,
+    workspace_id: &str,
+) -> Result<(), crate::Error> {
+    // Archived conversations outlive the workspace they were filed in: deleting
+    // a workspace is not deleting its archive. Each one becomes an ordinary
+    // (chat-mode) conversation, with a shelf of its own, before the workspace
+    // row goes — restoring it later lands it in the chat section, because there
+    // is no workspace left to show it under. Everything else in the workspace
+    // is deleted with it.
+    let kept: Vec<(String, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, title FROM threads
+             WHERE workspace_id = ?1 AND status = 'archived' AND deleted_at IS NULL",
+        )?;
+        let rows = stmt.query_map(params![workspace_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let now = now_millis();
+    for (thread_id, title) in &kept {
+        let chat = get_or_create_chat_workspace_in(conn, thread_id, Some(title.clone()))?;
+        conn.execute(
+            "UPDATE threads SET workspace_id = ?1, mode = 'chat', updated_at = ?2
+             WHERE id = ?3",
+            params![chat.id, now, thread_id],
+        )?;
+        // Artifacts are workspace-scoped, so the ones this conversation owns
+        // travel with it; the rest of the workspace's artifacts go below.
+        conn.execute(
+            "UPDATE artifacts SET workspace_id = ?1
+             WHERE thread_id = ?2 AND workspace_id = ?3",
+            params![chat.id, thread_id, workspace_id],
+        )?;
+    }
     // Tombstone only sessions for which this workspace deletes the final GUI
     // owner. This is deliberately in the same transaction as the thread
     // cascade, so a crash cannot leave a deleted thread without delivery
-    // intent for its Agent source of truth.
+    // intent for its Agent source of truth. The kept conversations have already
+    // left the workspace and still count as owners, so their sessions survive.
     let session_ids: Vec<String> = {
         const SQL: &str = "SELECT DISTINCT COALESCE(NULLIF(TRIM(agent_session_id), ''), id)
              FROM threads WHERE workspace_id = ?1";
@@ -421,6 +457,76 @@ mod tests {
 
     /// A session still owned by a thread in another workspace must NOT be
     /// tombstoned when one of its workspaces is deleted.
+    /// Deleting a workspace keeps the conversations that were archived out of
+    /// it: each becomes an ordinary (chat-mode) conversation with a shelf of its
+    /// own, while the conversations still in the workspace are deleted with it.
+    #[test]
+    fn delete_workspace_keeps_archived_conversations_as_chats() {
+        let (_home, conn) = guarded_conn("ws_delete_keeps_archived");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                 VALUES ('ws1', 'W', 'user', '/tmp/ws1', 1, 1);
+             INSERT INTO threads (id, workspace_id, mode, title, status, agent_session_id,
+                 created_at, updated_at)
+                 VALUES ('t_live', 'ws1', 'workspace', 'Live', 'active', 'sess_live', 1, 1),
+                        ('t_shelf', 'ws1', 'workspace', 'Shelved', 'archived', 'sess_shelf', 1, 1);
+             INSERT INTO artifacts (id, workspace_id, thread_id, title, artifact_type,
+                 created_at, updated_at)
+                 VALUES ('a1', 'ws1', 't_shelf', 'A', 'file', 1, 1);",
+        )
+        .expect("seed");
+
+        delete_workspace_in(&conn, "ws1").expect("delete");
+
+        // The conversation still in the workspace went with it; the archived one
+        // survives as a chat, still shelved, on a temporary shelf of its own.
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM threads WHERE id = 't_live'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        let (workspace_id, mode, status): (String, String, String) = conn
+            .query_row(
+                "SELECT workspace_id, mode, status FROM threads WHERE id = 't_shelf'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("kept thread");
+        assert_eq!(mode, "chat");
+        assert_eq!(status, "archived");
+        let kind: String = conn
+            .query_row(
+                "SELECT kind FROM workspaces WHERE id = ?1",
+                [&workspace_id],
+                |r| r.get(0),
+            )
+            .expect("chat shelf");
+        assert_eq!(kind, "temporary");
+        // Its artifacts and its Agent session travel with it: the conversation is
+        // still restorable, so none of its rows may be deleted or tombstoned.
+        let artifact_workspace: String = conn
+            .query_row(
+                "SELECT workspace_id FROM artifacts WHERE id = 'a1'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("artifact");
+        assert_eq!(artifact_workspace, workspace_id);
+        let tombstoned: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_delete_outbox WHERE session_id = 'sess_shelf'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(tombstoned, 0);
+        assert!(get_workspace("ws1").expect("get").is_none());
+    }
+
     #[test]
     fn delete_workspace_in_tombstones_only_orphaned_sessions() {
         let conn = test_conn();
