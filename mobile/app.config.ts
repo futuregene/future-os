@@ -101,6 +101,11 @@ const config: ExpoConfig = {
         },
       },
     ],
+    // The chat UI changes its content ~12 times a second at most, so ask the
+    // display for 60 Hz instead of letting a 120 Hz panel double the render and
+    // composition work. Injected into the prebuilt `MainActivity.kt` — see the
+    // plugin for how to verify the panel actually followed.
+    "./plugins/withFrameRateCap",
   ],
   ios: {
     bundleIdentifier: "cn.futureos.mobile",
