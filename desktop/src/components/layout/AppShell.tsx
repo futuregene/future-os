@@ -291,7 +291,7 @@ function ReadyAppShell({
   const [cheatSheetOpen, setCheatSheetOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
 
-  const { hasUpdate, cachedStatus, markSeen: markUpdateSeen } = useUpdateChecker();
+  const { hasUpdate, cachedStatus, cachedCheckedAt, markSeen: markUpdateSeen } = useUpdateChecker();
   // Drives the onboarding gate below. Kept with the other top-level hooks so
   // the early returns further down stay after every hook call (rules of hooks).
   const {
@@ -2287,6 +2287,7 @@ function ReadyAppShell({
       <SettingsDialog
         appSettings={appSettings}
         cachedUpdateStatus={cachedStatus}
+        cachedUpdateCheckedAt={cachedCheckedAt}
         futureBalance={futureBalance}
         futureBalanceStatus={futureBalanceStatus}
         futureEmail={futureEmail}

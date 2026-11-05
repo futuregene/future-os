@@ -53,7 +53,9 @@ vi.mock("./AccountPage", () => ({
   ),
 }));
 vi.mock("./UpdatePage", () => ({
-  UpdatePage: (props: { cachedStatus: unknown }) => <div data-page="update" data-cached={String(props.cachedStatus !== null)} />,
+  UpdatePage: (props: { cachedStatus: unknown; cachedStatusCheckedAt?: number | null }) => (
+    <div data-page="update" data-cached={String(props.cachedStatus !== null)} data-checked-at={String(props.cachedStatusCheckedAt ?? "")} />
+  ),
 }));
 vi.mock("./AboutPage", () => ({ AboutPage: () => <div data-page="about" /> }));
 vi.mock("./ProvidersPage", () => ({
@@ -114,6 +116,7 @@ afterEach(() => {
 interface DialogOverrides {
   appSettings?: Partial<AppSettings>;
   cachedUpdateStatus?: UpdateStatus | null;
+  cachedUpdateCheckedAt?: number | null;
   futureBalance?: number | null;
   futureSessionStatus?: "signed_out" | "authenticated" | "invalid" | "unavailable" | "checking";
   hasUpdate?: boolean;
@@ -141,6 +144,7 @@ function mount(overrides: DialogOverrides = {}) {
         <SettingsDialog
           appSettings={{ ...APP_SETTINGS, ...current.appSettings }}
           cachedUpdateStatus={current.cachedUpdateStatus ?? null}
+          cachedUpdateCheckedAt={current.cachedUpdateCheckedAt ?? null}
           futureBalance={current.futureBalance ?? null}
           futureBalanceStatus="available"
           futureEmail="user@example.com"
@@ -263,6 +267,35 @@ describe("settingsDialog tab routing", () => {
     expect(navButton(container, "General").className).not.toContain("shadow-xs");
   });
 
+  it("names the shown page as the current one, and only that one", () => {
+    const { container } = mount();
+    const current = () => [...container.querySelectorAll<HTMLButtonElement>("nav button[aria-current=page]")]
+      .map(item => item.textContent);
+
+    expect(current()).toEqual(["General"]);
+
+    act(() => navButton(container, "Check for updates").click());
+    expect(current()).toEqual(["Check for updates"]);
+    expect(page(container)).toBe("update");
+    expect(header(container)).toBe("Check for updates");
+  });
+
+  it("does not paint a hovered item like the selected one", () => {
+    // A hovered entry that takes the selected entry's fill and ink reads as a
+    // second selected tab while the pane shows another page (#1530). The state
+    // is one value; the *styles* must keep the two states apart.
+    const { container } = mount();
+    const selected = navButton(container, "General").className.split(" ");
+    const idle = navButton(container, "Reset").className.split(" ");
+
+    expect(selected).toContain("bg-surface");
+    expect(selected).toContain("text-ink");
+    expect(idle).not.toContain("bg-surface");
+    expect(idle).not.toContain("text-ink");
+    expect(idle).toContain("hover:bg-line-soft");
+    expect(idle).not.toContain("hover:bg-surface");
+  });
+
   it("honours initialTab and resets to it on every reopen", () => {
     const { container, render } = mount({ initialTab: "models" });
     expect(page(container)).toBe("models");
@@ -375,7 +408,7 @@ describe("settingsDialog update tab", () => {
     expect(onUpdateSeen).not.toHaveBeenCalled();
   });
 
-  it("passes the cached update status down", () => {
+  it("passes the cached update status and its timestamp down", () => {
     const cachedUpdateStatus: UpdateStatus = {
       currentVersion: "1.0.0",
       latestVersion: "1.1.0",
@@ -384,10 +417,11 @@ describe("settingsDialog update tab", () => {
       canInstallInApp: true,
       downloadUrl: "https://example.com/app.dmg",
     };
-    const { container } = mount({ cachedUpdateStatus });
+    const { container } = mount({ cachedUpdateStatus, cachedUpdateCheckedAt: 1_700_000_000_000 });
     act(() => navButton(container, "Check for updates").click());
 
     expect(container.querySelector("[data-page=update]")!.getAttribute("data-cached")).toBe("true");
+    expect(container.querySelector("[data-page=update]")!.getAttribute("data-checked-at")).toBe("1700000000000");
   });
 
   it("marks the update nav item without a dot when the cached status says up to date", () => {

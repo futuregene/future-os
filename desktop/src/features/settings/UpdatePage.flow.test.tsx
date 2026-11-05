@@ -84,13 +84,13 @@ afterEach(() => {
   }
 });
 
-async function renderPage(cachedStatus: UpdateStatus | null = null) {
+async function renderPage(cachedStatus: UpdateStatus | null = null, cachedStatusCheckedAt: number | null = null) {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
   roots.push({ container, root });
   await act(async () => {
-    root.render(<UpdatePage cachedStatus={cachedStatus} />);
+    root.render(<UpdatePage cachedStatus={cachedStatus} cachedStatusCheckedAt={cachedStatusCheckedAt} />);
   });
   return container;
 }
@@ -190,6 +190,42 @@ describe("updatePage version and check", () => {
 
     expect(container.textContent).toContain("New version v2.1.0 available");
     expect(mocks.invokeCommand).not.toHaveBeenCalled();
+  });
+
+  it("says when a cached result was produced instead of presenting it as a fresh check", async () => {
+    const container = await renderPage(UP_TO_DATE, Date.now());
+
+    expect(container.textContent).toContain("You're on the latest version");
+    expect(container.textContent).toContain("Last checked");
+  });
+
+  it("shows no check time while nothing has answered", async () => {
+    // An unchecked state must not read as "checked and up to date".
+    const container = await renderPage();
+
+    expect(container.textContent).not.toContain("Last checked");
+    expect(container.textContent).not.toContain("You're on the latest version");
+  });
+
+  it("records the time of a check made on this page", async () => {
+    const container = await renderPage();
+    expect(container.textContent).not.toContain("Last checked");
+
+    mocks.invokeCommand.mockResolvedValueOnce(UP_TO_DATE);
+    await act(async () => {
+      button(container, "Check for updates")!.click();
+    });
+
+    expect(container.textContent).toContain("Last checked");
+  });
+
+  it("does not claim up to date where the check could not run", async () => {
+    // A platform the updater cannot query answers `hasUpdate: false` without
+    // asking anything, so the same answer must not be rendered as a result.
+    const container = await renderPage({ ...UP_TO_DATE, platformSupported: false });
+
+    expect(container.textContent).not.toContain("You're on the latest version");
+    expect(container.textContent).toContain("This platform can't check for updates automatically");
   });
 });
 
