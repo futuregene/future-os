@@ -1030,6 +1030,28 @@ describe("useSessionCatalog", () => {
     expect(result.current.sessions).toEqual([]);
   });
 
+  test("deleteWorkspace keeps the shelved conversations, which the desktop keeps too", async () => {
+    // The confirmation says the workspace's shelved conversations survive as
+    // independent ones. Dropping them here emptied the shelf until the next
+    // push, which is the one outcome the dialog rules out.
+    render();
+    const inWorkspace = (id: string, archived: boolean): RemoteSession => ({
+      ...session(id),
+      archived,
+      mode: "workspace",
+      workspaceId: "w1",
+    });
+    act(() => void result.current.applySessionSnapshot([
+      inWorkspace("live", false),
+      inWorkspace("shelved", true),
+    ]));
+    request.mockResolvedValueOnce({ data: {} });
+    await act(async () => {
+      await result.current.deleteWorkspace("w1");
+    });
+    expect(result.current.sessions.map(item => item.sessionId)).toEqual(["shelved"]);
+  });
+
   test("deleteWorkspace keeps the local catalogue when the desktop refuses", async () => {
     render();
     act(

@@ -679,25 +679,37 @@ export function useSessionCatalog(
    * workspace's threads too, so the local catalogue drops both. Returns true
    * when the selected session lived in that workspace, so the caller can close
    * the conversation it was showing.
+   *
+   * Shelved conversations are the exception, and deliberately so: the desktop
+   * keeps them through a workspace delete — each becomes an ordinary archived
+   * chat, because deleting a workspace is not deleting its archive (and the
+   * confirmation the reader agreed to says exactly that). Dropping them here
+   * emptied the shelf on this phone until the next catalogue push, i.e. the one
+   * thing the dialog promised would be kept. They stay, filed under the
+   * workspace they came from until that push rewrites the row; a workspace that
+   * is gone from the list is what the shelf draws as a loose conversation.
    */
   const deleteWorkspace = useCallback(
     async (workspaceId: string): Promise<boolean> => {
       const client = clientRef.current;
       if (!client || !workspaceId) throw new Error("Workspace unavailable");
       const epoch = catalogEpoch.current;
-      const removed = sessionsRef.current.filter(
+      const inWorkspace = sessionsRef.current.filter(
         (session) => (session.workspaceId ?? "") === workspaceId,
       );
+      // `archived` is the host's own marker (a shelved conversation, or one its
+      // shelved workspace is hiding), so this reads the same rule the shelf does.
+      const removed = inWorkspace.filter((session) => session.archived !== true);
       await client.request({ type: "delete_workspace", workspaceId }, "list");
       if (clientRef.current !== client || catalogEpoch.current !== epoch) return false;
       revisions.current.sessions += 1;
       revisions.current.workspaces += 1;
       setWorkspacesLocal((current) => current.filter((workspace) => workspace.id !== workspaceId));
+      const removedIds = new Set(removed.map((session) => session.sessionId));
       setSessions((current) =>
-        current.filter((session) => (session.workspaceId ?? "") !== workspaceId),
+        current.filter((session) => !removedIds.has(session.sessionId)),
       );
       if (removed.length > 0) {
-        const removedIds = new Set(removed.map((session) => session.sessionId));
         // Unread markers and title overrides for gone sessions would otherwise
         // leak into a re-used id or linger in memory for the session's life.
         setUnreadSessions((current) => {
@@ -768,7 +780,15 @@ export function useSessionCatalog(
     [clientRef, refreshSessions],
   );
 
-  /** Bring a shelved conversation's tree back, then re-read the catalogue. */
+  /**
+   * Bring a shelved conversation's tree back, then re-read the catalogue.
+   *
+   * The workspace list is re-read with it, because restoring one conversation
+   * out of a shelved *workspace* reopens that workspace and materializes the
+   * rest as shelved on their own (the host's `restore_thread_tree`). Without
+   * this read the shelf kept the workspace's heading marked archived, and the
+   * active pages kept hiding a workspace the host had already reopened.
+   */
   const restoreSession = useCallback(
     async (sessionId: string, threadId: string) => {
       const client = clientRef.current;
@@ -776,9 +796,12 @@ export function useSessionCatalog(
       const epoch = catalogEpoch.current;
       await client.request({ type: "restore_session", sessionId, threadId }, sessionId);
       if (clientRef.current !== client || catalogEpoch.current !== epoch) return;
-      await refreshSessions().catch(() => undefined);
+      await Promise.all([
+        refreshSessions().catch(() => undefined),
+        refreshWorkspaces().catch(() => undefined),
+      ]);
     },
-    [clientRef, refreshSessions],
+    [clientRef, refreshSessions, refreshWorkspaces],
   );
 
   /**
