@@ -244,6 +244,8 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
     onWaiting?: () => void,
   ): Promise<import("expo-file-system").File>;
   abort(): Promise<void>;
+  /** Stop a specific conversation's run — the list's "stop and archive". */
+  abortSession(sessionId: string): Promise<void>;
   setModel(modelId: string): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): Promise<void>;
   setApprovalTier(tier: string): Promise<void>;
@@ -606,6 +608,9 @@ function machineSurface(
       throw new Error("not_connected");
     }),
     abort: runtime?.conversation.abort ?? noop,
+    abortSession: runtime?.conversation.abortSession ?? (async () => {
+      throw new Error("not_connected");
+    }),
     setModel: runtime?.conversation.setModel ?? noop,
     setThinkingLevel: runtime?.conversation.setThinkingLevel ?? noop,
     setApprovalTier: runtime?.conversation.setApprovalTier ?? noop,
@@ -1025,6 +1030,12 @@ export function RemoteProvider({ children }: PropsWithChildren) {
           archiveSession: async (sessionId, threadId) => {
             await client()?.request({ type: "archive_session", sessionId, threadId }, sessionId);
             await accepted();
+          },
+          abortSession: async (sessionId) => {
+            // The host resolves the session's own active run; the rail's
+            // "stop and archive" names the conversation it is shelving, not the
+            // one this phone happens to have open.
+            await client()?.request({ type: "abort", sessionId }, sessionId);
           },
           restoreSession: async (sessionId, threadId) => {
             await client()?.request({ type: "restore_session", sessionId, threadId }, sessionId);
