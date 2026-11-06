@@ -51,6 +51,10 @@ marked `needsNetwork` stay out of a default run and are selected by id or tag.
 
 ```bash
 node harness/cli.mjs prepare              # snapshot ~/.future/app/app.db (once)
+# CLI/TUI cases run the built binaries: build both with one FUTURE_VERSION, or the
+# TUI refuses to attach and every TUI case fails on its own unrelated assertion.
+FUTURE_VERSION=$(node scripts/version.mjs) \
+  cargo build -p future-cli -p future-tui --example demo_agent
 node harness/cli.mjs list                 # the case library, all surfaces
 node harness/cli.mjs run --case create-chat-and-delete      # desktop
 node harness/cli.mjs run --case cli-workspace-add-list-archive   # CLI
