@@ -3,16 +3,55 @@
   "title": "远程页：单机状态下不空白",
   "area": "remote",
   "priority": "P1",
-  "tags": ["remote", "settings"],
-  "description": "从左侧导航打开远程页。夹具报告没有配对设备，页面应给出本机/配对状态的说明，而不是空白。",
-  "preconditions": "应用已启动；remote_peer_list 为空。",
-  "expectations": ["远程页可打开", "页面有状态说明", "没有错误提示"],
+  "tags": [
+    "remote",
+    "settings"
+  ],
+  "description": "从左侧导航打开远程页。夹具报告没有配对设备，页面应给出本机/配对状态的说明，而不是空白。 夹具用 ?peers=held 让第一台机器处于「被另一台已配对设备持有」，好让行内提示真的渲染出来。",
+  "preconditions": "应用已启动；?peers=held 让第一台机器被另一台设备持有。",
+  "expectations": [
+    "远程页可打开",
+    "页面有状态说明",
+    "没有错误提示",
+    "被持有的机器行里出现「由 <设备> 持有」提示，且宽度贴合文字（不是涂满整列的横幅）"
+  ],
   "steps": [
-    { "wait": 900 },
-    { "click": { "selector": "button", "text": "远程" } },
-    { "wait": 900 },
-    { "assert": { "expr": "document.querySelector('main')?.innerText.trim().length > 20", "message": "远程页有内容" } },
-    { "assert": { "expr": "!document.body.innerText.includes('本地存储初始化失败')", "message": "没有初始化错误" } },
-    { "shot": "remote-page" }
-  ]
+    {
+      "wait": 900
+    },
+    {
+      "click": {
+        "selector": "button",
+        "text": "远程"
+      }
+    },
+    {
+      "wait": 900
+    },
+    {
+      "assert": {
+        "expr": "document.querySelector('main')?.innerText.trim().length > 20",
+        "message": "远程页有内容"
+      }
+    },
+    {
+      "assert": {
+        "expr": "!document.body.innerText.includes('本地存储初始化失败')",
+        "message": "没有初始化错误"
+      }
+    },
+    {
+      "shot": "remote-page"
+    },
+    {
+      "assert": {
+        "expr": "(() => {const e=document.querySelector('[data-testid=peer-held]');if(!e)return false;const r=e.getBoundingClientRect();return Math.abs(r.width-e.scrollWidth)<=2 && r.width < e.parentElement.getBoundingClientRect().width;})()",
+        "message": "被持有的提示贴合文字宽度，不涂满整列"
+      },
+      "capture": true
+    }
+  ],
+  "query": {
+    "peers": "held"
+  }
 }

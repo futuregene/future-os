@@ -241,7 +241,7 @@ function syntheticEntries(thread, { fork = null } = {}) {
   return cut >= 0 ? entries.slice(0, cut + 1) : entries;
 }
 
-export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs = 0, approvalSeed = 0, pageTranscript = false, fault = null }) {
+export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs = 0, approvalSeed = 0, pageTranscript = false, fault = null, peers = "" }) {
   const db = new DatabaseSync(dbPath);
   db.exec("PRAGMA journal_mode=WAL");
   db.exec("PRAGMA foreign_keys=ON");
@@ -649,7 +649,25 @@ export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs 
         device.control = device.pairId === pairId ? "active" : "standby";
       return remoteView();
     },
-    remote_peer_list: () => [],
+    // `?peers=held` makes one paired machine the one another device is driving.
+    // The rows that explain "why this machine's conversations are not here" only
+    // render in that state, so a geometry assertion about them needs a fixture that
+    // can produce it — an empty list makes the whole surface untestable.
+    remote_peer_list: () => (peers === "held"
+      ? [{
+        desktopId: "desktop_studio",
+        pairId: "pair_studio",
+        name: "工作室 iMac",
+        icon: "laptop",
+        connected: true,
+        error: null,
+        bridgeInstanceId: "bridge_studio",
+        features: ["workspace_create_v1"],
+        agentAvailable: true,
+        control: "standby",
+        holder: { pairId: "pair_phone", name: "LNA-AL00", kind: "mobile" },
+      }]
+      : []),
     remote_peer_sessions: () => ({ desktopId: "", sessions: [] }),
     remote_peer_workspaces: () => ({ desktopId: "", workspaces: [] }),
     initialize_app_store: () => null,

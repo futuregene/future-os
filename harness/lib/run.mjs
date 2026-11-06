@@ -108,6 +108,8 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
       // mock instead of this server's title-derived one, which is what a case
       // that sends a message needs: only the page knows what it said.
       pageTranscript: testCase.query?.transcript === "page",
+      // A case that needs a machine held by another device asks for it here.
+      peers: String(testCase.query?.peers ?? ""),
       fault,
     }));
 
