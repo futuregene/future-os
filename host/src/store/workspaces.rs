@@ -87,7 +87,35 @@ pub fn get_or_create_chat_workspace(
     title: Option<String>,
 ) -> Result<WorkspaceRecord, crate::Error> {
     let conn = connect()?;
-    get_or_create_chat_workspace_in(&conn, thread_id, title)
+    let workspace = get_or_create_chat_workspace_in(&conn, thread_id, title)?;
+    // The row's directory is what the Files tab reads, so it must exist from the
+    // moment the row does (see `materialize_chat_workspace_dir`).
+    materialize_chat_workspace_dir(PathBuf::from(&workspace.path).as_path());
+    Ok(workspace)
+}
+
+/// Create a chat workspace's scratch directory if it is missing.
+///
+/// A chat conversation's workspace is the directory its Files tab lists, and the
+/// tab is reachable the instant the conversation exists — before any prompt, so
+/// before the Agent has created a cwd. Deferring the directory to the first run
+/// meant the panel's first read hit a path that did not exist yet and painted
+/// "cannot read this directory" until the user pressed Refresh (issue reported
+/// 2026-11-06). Creating it with the row costs one `create_dir_all` and makes the
+/// empty state ("this directory is empty") the honest first answer instead.
+///
+/// Best-effort by design: a failure here is not worth failing the conversation
+/// for (the row is still a valid workspace and the Agent recreates the directory
+/// when the first prompt runs), so the error is logged and dropped.
+pub(super) fn materialize_chat_workspace_dir(path: &std::path::Path) {
+    if let Err(error) = std::fs::create_dir_all(path) {
+        tracing::warn!(
+            event = "chat_workspace_dir_create_failed",
+            path = %path.display(),
+            %error,
+            "FutureOS: could not create the chat workspace directory"
+        );
+    }
 }
 
 /// Connection-injecting variant so a composite write (e.g. `create_thread`) can
@@ -115,9 +143,10 @@ pub(super) fn get_or_create_chat_workspace_in(
     }
 
     let path = chat_workspace_path(thread_id)?;
-    // Directory creation is deferred — we don't know the session id yet.
-    // The real directory (named after the session id) is created when the
-    // first prompt runs and the workspace path is updated.
+    // The directory itself is created by the caller that owns the store
+    // connection, once the row is committed (`materialize_chat_workspace_dir`).
+    // It is not created here: this helper runs inside a transaction, and a
+    // filesystem write must not be what decides whether the row commits.
     let now = now_millis();
     let workspace_id = create_id("ws");
     let name = format!(
@@ -1188,6 +1217,14 @@ mod tests {
         let created = get_or_create_chat_workspace("thread_x", None).expect("create chat ws");
         assert_eq!(created.kind, "temporary");
         assert_eq!(created.name, "New Chat Workspace");
+        // The row and its directory arrive together: the Files tab lists this
+        // path as soon as the conversation exists, so a missing directory here
+        // is the "cannot read this directory" state the panel used to show.
+        assert!(
+            std::path::Path::new(&created.path).is_dir(),
+            "the chat workspace directory exists with its row: {}",
+            created.path
+        );
 
         // Idempotent on the same thread id…
         let again = get_or_create_chat_workspace("thread_x", Some("Titled".to_string()))

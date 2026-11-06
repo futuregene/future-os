@@ -160,7 +160,15 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Er
     )?;
 
     let thread = loaded(get_thread_in(&tx, &thread_id)?, "Created thread")?;
+    // A chat conversation's Files tab reads this directory, and it is reachable
+    // as soon as the conversation is: create it now rather than leaving the tab
+    // to read a missing path until the Agent makes a cwd on the first prompt.
+    // After the commit, so a filesystem failure cannot hold the row back.
+    let chat_workspace_dir = (mode == "chat").then(|| std::path::PathBuf::from(&workspace.path));
     tx.commit()?;
+    if let Some(dir) = chat_workspace_dir {
+        super::workspaces::materialize_chat_workspace_dir(&dir);
+    }
     mark_catalog_dirty();
     Ok(thread)
 }
@@ -1762,6 +1770,33 @@ mod tests {
         let mut neither = chat_input();
         neither.mode = "workspace".to_string();
         assert!(create_thread(neither).is_err());
+    }
+
+    /// A chat conversation's workspace directory exists as soon as the
+    /// conversation does. The Files tab reads `workspace.path` immediately, and
+    /// the Agent only creates the directory when the first prompt runs — so a
+    /// deferred directory made the tab's first read fail and paint "cannot read
+    /// this directory" until a manual Refresh (reported 2026-11-06).
+    #[test]
+    fn creating_a_chat_thread_creates_its_workspace_directory() {
+        let (_home, conn) = guarded_conn("threads_chat_workspace_dir");
+        drop(conn);
+
+        let chat = create_thread(chat_input()).expect("chat thread");
+        let workspace = get_workspace(&chat.workspace_id)
+            .expect("workspace")
+            .expect("row");
+        let dir = std::path::Path::new(&workspace.path);
+        assert!(
+            dir.is_dir(),
+            "the chat workspace directory must exist with its thread: {}",
+            workspace.path
+        );
+        assert_eq!(
+            dir,
+            crate::store::chat_workspace_path(&chat.id).expect("path"),
+            "the directory is the thread-keyed scratch path"
+        );
     }
 
     #[test]
