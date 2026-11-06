@@ -86,22 +86,34 @@ export interface ArchivedCatalog {
  * catalogue). Without it, every archived conversation of a shelved workspace
  * would be drawn loose — each one correct, but filed under nothing, which is the
  * one thing the shelf is for.
+ *
+ * The derivation fills gaps, it does not shadow the list: an id the machine
+ * already named is skipped, however that workspace is marked.
  */
 function derivedArchivedWorkspaces(
   sessions: readonly RemoteSession[],
   workspaces: readonly RemoteWorkspace[],
 ): RemoteWorkspace[] {
   if (workspaces.some(workspace => workspace.archived === true)) return [...workspaces];
+  const known = new Set(workspaces.map(workspace => workspace.id));
   const byId = new Map<string, RemoteWorkspace>();
   for (const session of sessions) {
     if (session.archived !== true || session.mode !== "workspace" || !session.workspaceId) continue;
-    if (byId.has(session.workspaceId)) continue;
+    // Only an id the machine's list does not already have needs deriving. A
+    // workspace that is in use and merely holds a shelved conversation is in
+    // that list, and synthesizing a twin drew the same folder twice on the shelf
+    // (115 build: one archived conversation under `case` produced two `case`
+    // headings, each opening onto that same conversation).
+    if (known.has(session.workspaceId) || byId.has(session.workspaceId)) continue;
     byId.set(session.workspaceId, {
       id: session.workspaceId,
       name: session.workspaceName ?? "",
       path: "",
       pinned: false,
-      archived: true,
+      // Not `archived: true`: that marker means the reader shelved the *folder*,
+      // which is exactly what an in-use workspace is not. The heading is earned
+      // by the shelved conversation under it (see `archivedRows`).
+      archived: false,
     });
   }
   return [...workspaces, ...byId.values()];
