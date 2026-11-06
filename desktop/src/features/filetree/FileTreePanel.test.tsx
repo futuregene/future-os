@@ -164,6 +164,27 @@ describe("fileTreePanel states", () => {
     expect(container.querySelector(".text-danger")).not.toBeNull();
   });
 
+  it("shows the empty card for a root that is not created yet", async () => {
+    // A conversation's workspace directory is created by its first message, so a
+    // conversation nobody has messaged has a path that does not exist — and
+    // reading it fails exactly like an unreadable one. Its answer is "no files
+    // yet", not a read failure; the parent not listing the root is what tells
+    // them apart.
+    const rootPath = freshRoot("not-created");
+    listDirectory.mockImplementation(async (path) => {
+      if (path === rootPath)
+        throw new Error("The system cannot find the file specified. (os error 2)");
+      return [entry("some-other-conversation", true, "/ws")];
+    });
+
+    await mount({ rootPath });
+
+    expect(container.textContent).toContain("This folder is empty");
+    expect(container.textContent).toContain(rootPath);
+    expect(container.textContent).not.toContain("Couldn't read this folder");
+    expect(container.querySelector(".text-danger")).toBeNull();
+  });
+
   it("reports an empty root", async () => {
     listDirectory.mockResolvedValue([]);
     await mount({ rootPath: freshRoot("empty") });

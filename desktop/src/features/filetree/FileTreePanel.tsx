@@ -208,7 +208,7 @@ export function FileTreePanel({
   // entries yet, hold the "loading" line back for a beat. A cache-warm switch
   // back to this tab has entries on the first render and never trips this; only
   // a genuine cold load that outlasts the delay shows the indicator.
-  const loadingPending = rootEntries === null && !tree.rootErrored;
+  const loadingPending = rootEntries === null && !tree.rootErrored && !tree.rootMissing;
   const [showLoading, setShowLoading] = useState(false);
   useEffect(() => {
     if (!loadingPending) {
@@ -298,21 +298,34 @@ export function FileTreePanel({
           >
             {rootEntries === null
               ? (
-                  tree.rootErrored
+                  tree.rootMissing
                     ? (
-                        <div className="p-4">
-                          <div className="rounded-md border border-danger-line bg-danger-soft p-3 text-sm text-danger">
-                            {t("loadFailed")}
-                          </div>
-                        </div>
+                        /* A conversation's workspace directory is created by its
+                           first message, so a conversation nobody has messaged
+                           has no directory yet, and reading it fails. That is
+                           "nothing here yet" — the empty card, not a read
+                           failure. */
+                        <EmptyState
+                          className="m-4"
+                          detail={t("emptyDetail", { path: rootPath ?? "" })}
+                          title={t("emptyTitle")}
+                        />
                       )
-                    : showLoading
+                    : tree.rootErrored
                       ? (
-                          <div className="flex h-full items-center justify-center text-sm text-ink-muted">
-                            {t("loading")}
+                          <div className="p-4">
+                            <div className="rounded-md border border-danger-line bg-danger-soft p-3 text-sm text-danger">
+                              {t("loadFailed")}
+                            </div>
                           </div>
                         )
-                      : null
+                      : showLoading
+                        ? (
+                            <div className="flex h-full items-center justify-center text-sm text-ink-muted">
+                              {t("loading")}
+                            </div>
+                          )
+                        : null
                 )
               : rootEntries.length === 0
                 ? (

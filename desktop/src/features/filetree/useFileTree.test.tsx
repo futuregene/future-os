@@ -220,6 +220,59 @@ describe("useFileTree expansion", () => {
   });
 });
 
+describe("useFileTree root that is not created yet", () => {
+  it("reads a root its parent does not list as empty, not as a failure", async () => {
+    // A chat conversation's workspace directory is created by its first message,
+    // so a conversation nobody has messaged has a path that does not exist — and
+    // the host reports that as the same failure it reports for an unreadable
+    // directory. The parent's listing is what separates them.
+    const root = freshRoot("not-created");
+    listDirectory.mockImplementation(async (path) => {
+      if (path === root)
+        throw new Error("The system cannot find the file specified. (os error 2)");
+      return [entry("some-other-conversation", true, "/ws")];
+    });
+
+    const harness = renderHook(() => useFileTree(root));
+    await flush();
+
+    expect(harness.current.rootMissing).toBe(true);
+    expect(harness.current.rootErrored).toBe(false);
+    expect(harness.current.rootEntries).toBeNull();
+    harness.unmount();
+  });
+
+  it("still fails a root its parent does list", async () => {
+    // The directory is there; the read is what failed (a permission, a lock, a
+    // vanished volume). That keeps the danger treatment.
+    const root = freshRoot("unreadable");
+    listDirectory.mockImplementation(async (path) => {
+      if (path === root)
+        throw new Error("EACCES: permission denied");
+      return [entry(root.slice(root.lastIndexOf("/") + 1), true, "/ws")];
+    });
+
+    const harness = renderHook(() => useFileTree(root));
+    await flush();
+
+    expect(harness.current.rootErrored).toBe(true);
+    expect(harness.current.rootMissing).toBe(false);
+    harness.unmount();
+  });
+
+  it("stays a failure when the parent cannot be read either", async () => {
+    const root = freshRoot("no-parent-answer");
+    listDirectory.mockRejectedValue(new Error("EACCES: permission denied"));
+
+    const harness = renderHook(() => useFileTree(root));
+    await flush();
+
+    expect(harness.current.rootErrored).toBe(true);
+    expect(harness.current.rootMissing).toBe(false);
+    harness.unmount();
+  });
+});
+
 describe("useFileTree refresh and staleness", () => {
   it("re-reads the root and every expanded directory, keeping expansion", async () => {
     const root = freshRoot("refresh");
