@@ -1304,7 +1304,7 @@ async fn handle_event_from(
         // observer is projecting it, so the row must say `running` — a view
         // reads `queued` as "nothing is streaming here" and would keep its live
         // preview off the very reply these events are building.
-        promote_queued_run(&local_run_id);
+        promote_queued_run(&local_run_id, &thread_id);
         stream::persist_run_event_off_thread(
             &thread_id,
             Some(&local_run_id),
@@ -1427,7 +1427,14 @@ async fn replay_session_events(
 ///
 /// Cheap on the hot path: the CAS is only issued for a row that really is
 /// `queued`, so a normal run's every event does not pay a status write.
-fn promote_queued_run(local_run_id: &str) {
+///
+/// `thread_id` is what the wake-up is addressed to. Nothing else tells an open
+/// view that this run started: it stayed idle through the whole queue wait
+/// (`queued` is deliberately not a live anchor, because such a run may never
+/// run at all), so it holds no run id to subscribe with. Without this signal
+/// the reply streamed with nobody watching and appeared in full at the turn
+/// boundary — the "queued send does not stream" report.
+fn promote_queued_run(local_run_id: &str, thread_id: &str) {
     if !crate::store::get_run(local_run_id)
         .ok()
         .flatten()
@@ -1441,6 +1448,11 @@ fn promote_queued_run(local_run_id: &str) {
         error_message: None,
         error_type: None,
     });
+    // The row is live again, and the open view has to learn that: it pulls the
+    // thread's current run and arms the live preview from it. `remote-activity`
+    // is exactly this signal — "this conversation moved outside the view you
+    // are holding" — and its listener already owns the re-read.
+    crate::emit_remote_activity(thread_id);
 }
 
 fn note_run_active(shared: &Arc<ObserverShared>, state: &mut ObserverState, run_id: &str) {
