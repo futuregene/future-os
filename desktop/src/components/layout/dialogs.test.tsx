@@ -503,6 +503,11 @@ describe("workspace dialogs", () => {
     // file-safety sentence the old confirmation carried.
     expect(view.container.textContent).toContain("1 active conversations are deleted with it");
     expect(view.container.textContent).toContain("2 archived conversations are kept");
+    // And it says where they go. The workspace is about to stop existing, so
+    // "you can unarchive" alone read as "the workspace comes back": the row
+    // actually lands in the conversations list's Archived section, which is the
+    // only place its own restore control lives.
+    expect(view.container.textContent).toContain("they appear under Archived in the conversations list");
     expect(view.container.textContent).toContain("Files on disk are not deleted");
     view.unmount();
   });
@@ -515,6 +520,26 @@ describe("workspace dialogs", () => {
     expect(view.container.textContent).toContain(
       "This workspace and its conversations are removed from the sidebar; files on disk are not deleted.",
     );
+    view.unmount();
+  });
+
+  /**
+   * The sentence names where the kept conversations are, rather than only that
+   * they survive.
+   *
+   * A shelved conversation is moved out of the workspace onto a chat shelf of
+   * its own, so "kept as independent conversations you can unarchive" left the
+   * reader looking for a restore control on a workspace that no longer exists.
+   */
+  it("names where a kept conversation goes when the workspace will not exist", () => {
+    const view = mount(createElement(Harness, {
+      handlers: {},
+      initial: { deleteOpen: true, summary: { deletedThreads: 0, keptThreads: 3 } },
+    }));
+    const text = view.container.textContent ?? "";
+    expect(text).toContain("3 archived conversations are kept");
+    expect(text).toContain("under Archived in the conversations list");
+    expect(text).not.toContain("active conversations are deleted");
     view.unmount();
   });
 

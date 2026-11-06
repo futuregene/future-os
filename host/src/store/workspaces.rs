@@ -301,6 +301,17 @@ pub fn delete_summary(workspace_id: &str) -> Result<WorkspaceDeleteSummary, crat
     })
 }
 
+/// Tables whose rows carry both `thread_id` and `workspace_id`, and therefore
+/// have to be re-pointed when a conversation is kept out of a workspace that is
+/// being deleted.
+///
+/// The list is a constant rather than three inline statements because missing
+/// one is not a cosmetic bug: each of these columns is
+/// `REFERENCES workspaces(id)`, so a forgotten table makes the whole delete fail
+/// with a foreign-key error after the reader confirmed it. Every table in the
+/// schema with a `workspace_id` reference belongs here or in the cascade below.
+const MIGRATED_TO_KEPT_THREAD: &[&str] = &["artifacts", "review_snapshots", "review_changesets"];
+
 /// The FK-safe cascade for a workspace hard-delete, split out so the (subtle)
 /// deletion order can be unit-tested against an in-memory DB with foreign keys
 /// enforced. Deletes every thread's children and the threads, then the
@@ -368,13 +379,24 @@ pub(super) fn delete_workspace_in(
                 ],
             )?;
         }
-        // Artifacts are workspace-scoped, so the ones this conversation owns
-        // travel with it; the rest of the workspace's artifacts go below.
-        conn.execute(
-            "UPDATE artifacts SET workspace_id = ?1
-             WHERE thread_id = ?2 AND workspace_id = ?3",
-            params![chat.id, thread_id, workspace_id],
-        )?;
+        // Everything that names a workspace travels with a conversation that
+        // travels. `artifacts` was the only table moved here, which left the
+        // review rows (`review_snapshots`, `review_changesets`) still pointing
+        // at the workspace about to be deleted — and since they reference
+        // `workspaces(id)`, the delete then failed outright with "FOREIGN KEY
+        // constraint failed" (reproduced on a copy of a real database: 2
+        // snapshots and 1 changeset on the deleted workspace's id). A
+        // conversation kept as a chat still owns its review history, so its
+        // rows follow it to the chat's own shelf instead of being dropped.
+        for table in MIGRATED_TO_KEPT_THREAD {
+            conn.execute(
+                &format!(
+                    "UPDATE {table} SET workspace_id = ?1
+                     WHERE thread_id = ?2 AND workspace_id = ?3"
+                ),
+                params![chat.id, thread_id, workspace_id],
+            )?;
+        }
     }
     // Tombstone only sessions for which this workspace deletes the final GUI
     // owner. This is deliberately in the same transaction as the thread
@@ -418,8 +440,18 @@ pub(super) fn delete_workspace_in(
     conn.execute(DELETE_THREADS_SQL, params![workspace_id])?;
 
     // 2. Workspace-scoped rows, FK-safe (children before parents).
-    const DELETE_ARTIFACTS_SQL: &str = "DELETE FROM artifacts WHERE workspace_id = ?1";
-    conn.execute(DELETE_ARTIFACTS_SQL, params![workspace_id])?;
+    //
+    // Review rows are cleared here as well as re-pointed above: one whose
+    // `thread_id` is NULL — or whose thread went with the workspace — still
+    // names this workspace, and its column is `REFERENCES workspaces(id)`, so
+    // leaving it behind is the same foreign-key failure that made this delete
+    // unusable.
+    for table in MIGRATED_TO_KEPT_THREAD {
+        conn.execute(
+            &format!("DELETE FROM {table} WHERE workspace_id = ?1"),
+            params![workspace_id],
+        )?;
+    }
 
     // 3. The workspace row.
     const DELETE_WORKSPACE_SQL: &str = "DELETE FROM workspaces WHERE id = ?1";
@@ -654,6 +686,155 @@ mod tests {
             .expect("chat shelf");
         assert_eq!(kind, "temporary");
         assert!(get_workspace("ws2").expect("get").is_none());
+    }
+
+    /// A shelved conversation carries its review history out of the workspace.
+    ///
+    /// `review_snapshots` and `review_changesets` name a workspace through an FK,
+    /// and only `artifacts` used to be re-pointed at the kept conversation's new
+    /// shelf — so deleting a workspace that held an archived conversation failed
+    /// outright with "FOREIGN KEY constraint failed" (measured on a copy of a
+    /// real database: 2 snapshots and 1 changeset on the workspace being
+    /// deleted). The whole delete is one transaction, so the reader was left with
+    /// nothing done and only "FOREIGN KEY constraint failed" in the dialog.
+    #[test]
+    fn a_kept_conversation_takes_its_review_rows_with_it() {
+        let (_home, conn) = guarded_conn("ws_delete_keeps_review_rows");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                 VALUES ('ws1', 'W', 'user', '/tmp/ws1', 1, 1);
+             INSERT INTO threads (id, workspace_id, mode, title, status, agent_session_id,
+                 created_at, updated_at)
+                 VALUES ('t_shelf', 'ws1', 'workspace', 'Shelved', 'archived', 'sess_shelf', 1, 1);
+             INSERT INTO runs (id, thread_id, status, created_at, updated_at)
+                 VALUES ('r1', 't_shelf', 'completed', 1, 1);
+             INSERT INTO review_snapshots (id, workspace_id, thread_id, run_id, phase,
+                 status, created_at)
+                 VALUES ('s1', 'ws1', 't_shelf', 'r1', 'before', 'ready', 1);
+             INSERT INTO review_changesets (id, thread_id, run_id, title, status,
+                 workspace_id, created_at, updated_at)
+                 VALUES ('c1', 't_shelf', 'r1', 'C', 'ready', 'ws1', 1, 1);",
+        )
+        .expect("seed");
+
+        delete_workspace_in(&conn, "ws1")
+            .expect("a kept conversation's review rows must not block the delete");
+
+        let (thread_workspace, mode): (String, String) = conn
+            .query_row(
+                "SELECT workspace_id, mode FROM threads WHERE id = 't_shelf'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("kept thread");
+        assert_eq!(mode, "chat");
+        // The rows and the conversation share one workspace, so the review
+        // history is still readable from the conversation it belongs to.
+        for (table, id) in [("review_snapshots", "s1"), ("review_changesets", "c1")] {
+            let owner: String = conn
+                .query_row(
+                    &format!("SELECT workspace_id FROM {table} WHERE id = ?1"),
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap_or_else(|error| panic!("{table} {id} vanished or moved: {error}"));
+            assert_eq!(owner, thread_workspace, "{table} stayed behind");
+        }
+        assert!(get_workspace("ws1").expect("get").is_none());
+    }
+
+    /// Review rows whose conversation goes with the workspace are deleted with
+    /// it rather than blocking it: their `workspace_id` is `NOT NULL` on
+    /// `review_snapshots`, so they cannot simply be orphaned.
+    #[test]
+    fn review_rows_of_a_deleted_conversation_do_not_block_the_delete() {
+        let (_home, conn) = guarded_conn("ws_delete_review_rows_of_deleted");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                 VALUES ('ws1', 'W', 'user', '/tmp/ws1', 1, 1);
+             INSERT INTO threads (id, workspace_id, mode, title, status, agent_session_id,
+                 created_at, updated_at)
+                 VALUES ('t_live', 'ws1', 'workspace', 'Live', 'active', 'sess_live', 1, 1);
+             INSERT INTO runs (id, thread_id, status, created_at, updated_at)
+                 VALUES ('r1', 't_live', 'completed', 1, 1);
+             INSERT INTO review_snapshots (id, workspace_id, thread_id, run_id, phase,
+                 status, created_at)
+                 VALUES ('s1', 'ws1', 't_live', 'r1', 'after', 'ready', 1);
+             INSERT INTO review_changesets (id, thread_id, run_id, title, status,
+                 workspace_id, created_at, updated_at)
+                 VALUES ('c1', 't_live', 'r1', 'C', 'ready', 'ws1', 1, 1);",
+        )
+        .expect("seed");
+
+        delete_workspace_in(&conn, "ws1").expect("delete");
+
+        for table in ["review_snapshots", "review_changesets"] {
+            let left: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE workspace_id = 'ws1'"),
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(left, 0, "{table} rows outlived the workspace they name");
+        }
+        assert!(get_workspace("ws1").expect("get").is_none());
+    }
+
+    /// Deleting a workspace that holds a shelved conversation leaves that
+    /// conversation where the reader can find it: the archived list, with a
+    /// heading of its own, and restorable.
+    ///
+    /// The delete moves it onto a chat shelf (`kind = 'temporary'`), and the
+    /// archived *page* only draws `kind = 'user'` rows as headings — so the
+    /// confirmation's "kept as an independent conversation you can unarchive" is
+    /// only true if the row is still listed. This test is the end-to-end answer:
+    /// delete, then read both lists the way the rail reads them.
+    #[test]
+    fn a_kept_conversation_stays_on_the_shelf_and_can_be_restored() {
+        let (_home, conn) = guarded_conn("ws_delete_kept_stays_findable");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                 VALUES ('ws1', 'W', 'user', '/tmp/ws1', 1, 1);
+             INSERT INTO threads (id, workspace_id, mode, title, status, agent_session_id,
+                 created_at, updated_at)
+                 VALUES ('t_live', 'ws1', 'workspace', 'Live', 'active', 'sess_live', 1, 1),
+                        ('t_shelf', 'ws1', 'workspace', 'Shelved', 'archived', 'sess_shelf', 1, 1);",
+        )
+        .expect("seed");
+
+        delete_workspace_in(&conn, "ws1").expect("delete");
+        drop(conn);
+
+        // The archived stream is what the shelf's loose rows come from.
+        let archived =
+            crate::store::paging::list_threads_page(&crate::store::ThreadScope::Archived, None, 50)
+                .expect("archived page")
+                .threads;
+        assert!(
+            archived.iter().any(|thread| thread.id == "t_shelf"),
+            "the kept conversation is not in the archived list: {:?}",
+            archived.iter().map(|t| &t.id).collect::<Vec<_>>()
+        );
+        // And the chat section does not claim it: it is still shelved.
+        let chat =
+            crate::store::paging::list_threads_page(&crate::store::ThreadScope::Chat, None, 50)
+                .expect("chat page")
+                .threads;
+        assert!(!chat.iter().any(|thread| thread.id == "t_shelf"));
+
+        // Restoring it needs nothing else: it lands in the chat section on its
+        // own shelf, which is what the confirmation promised.
+        let restored = crate::store::restore_thread_tree("t_shelf").expect("restore");
+        assert_eq!(restored.status, "active");
+        let chat_after =
+            crate::store::paging::list_threads_page(&crate::store::ThreadScope::Chat, None, 50)
+                .expect("chat page")
+                .threads;
+        assert!(
+            chat_after.iter().any(|thread| thread.id == "t_shelf"),
+            "a restored kept conversation did not reach the chat list"
+        );
     }
 
     #[test]
