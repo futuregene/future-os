@@ -1,0 +1,9 @@
+{
+ "case": "tasks-create-same-name",
+ "frames": 19,
+ "updatedAt": "2026-11-06T00:00:00Z",
+ "updatedBy": "harness@session",
+ "commit": "baseline",
+ "reason": "initial baseline from current code (mutation-study calibration)",
+ "threshold": 0.01
+}
