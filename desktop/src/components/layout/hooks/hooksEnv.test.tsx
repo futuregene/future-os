@@ -356,6 +356,7 @@ describe("useRailSelection", () => {
       threadScopes,
       visibleRemoteRows: [],
       visibleThreads,
+      view: "workspace",
     }));
     return { harness, onBatchDeleteThreads, onDeleteRemoteConversations, onSelectThread };
   }
@@ -447,6 +448,7 @@ describe("useRailSelection", () => {
         threadScopes,
         visibleRemoteRows: [],
         visibleThreads: threads,
+        view: "workspace",
       });
       return createElement("div", {
         "data-mode": String(selection.selectionMode),

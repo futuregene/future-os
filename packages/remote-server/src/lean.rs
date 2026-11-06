@@ -1,15 +1,16 @@
-//! The lean event feed: what a phone that does not render reasoning or tool
-//! argument text can do without.
+//! The lean event feed: what a phone can leave on the wire until a reader asks.
 //!
 //! Measured on the three heaviest completed runs, a run's live lane costs 67-77
 //! MB raw / 4.4-4.7 MB after coalescing, and two event types are almost all of
 //! it: `thinking_delta` (57-84%) and `tool_delta` (4-41%). Both are per-token
-//! streams whose content no phone surface shows — `thinking_start` alone opens
-//! the "thinking" row, and a tool row's target already rides `tool_start`'s
-//! complete `tool_args`.
+//! streams whose text a row shows only once it is opened — `thinking_start`
+//! alone opens the "thinking" row, and a tool row's target already rides
+//! `tool_start`'s complete `tool_args`.
 //!
-//! Dropping them is therefore not a fidelity trade, it is dead weight. Once
-//! rewritten, the same runs deliver 0.9-1.4 MB raw / 0.5-0.9 MB coalesced.
+//! Dropping them is therefore deferral rather than loss: `get_reasoning` and
+//! `get_tool_call_args` read one block or one call back by identity when a
+//! reader opens it. Once rewritten, the same runs deliver 0.9-1.4 MB raw /
+//! 0.5-0.9 MB coalesced.
 //!
 //! Two rules keep this honest:
 //!
@@ -518,7 +519,9 @@ pub fn lean_replay_page(page: &mut Value, lean: bool) {
 ///   `arguments`" is exactly the state that means "ask for them".
 /// - `foldToolEntry` reads a result block's `toolCallId` and `isError` and
 ///   nothing else.
-/// - A reasoning block's body is only ever rendered when the row is expanded.
+/// - A reasoning block's body is only ever rendered when the row is expanded,
+///   and opening it fetches the text back (`get_reasoning`) by the block's
+///   index in the run. The block itself stays, so the row appears and opens.
 /// - A shell entry repeats its output and its command in `metadata`: see
 ///   [`narrow_shell_result`].
 ///

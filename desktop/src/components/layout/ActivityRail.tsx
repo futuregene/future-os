@@ -1322,6 +1322,9 @@ export function ActivityRail({
         : mergedMode
           ? filteredVisibleThreads
           : visibleThreads,
+    // A batch belongs to the list it was opened from: switching lists ends it
+    // rather than leaving a toolbar over rows the reader can no longer see.
+    view: railView,
   });
 
   const showListTools = !selectionMode || Boolean(onChangeDeviceFilter && remotePeers.length > 0);

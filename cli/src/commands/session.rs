@@ -866,17 +866,21 @@ Usage:
 
 Options:
   --cwd <dir>    Working directory for the new session (default: the current
-                 directory). The agent resolves ~ and relative paths.
+                 directory, which inside a chat thread is that thread's scratch
+                 workspace under ~/.future/workspaces/chat/ — pass the directory
+                 the work belongs to). The agent resolves ~ and relative paths.
   --name <text>  Initial title.
   --parent <session-id>
                  Record another session as this session's parent — what makes a
-                 session a sub-session of the one that created it. The parent
-                 must exist. Lineage only: no history is copied (that is
-                 `fork`), but the parent's conversation will list this session
-                 under it, and this session's prompt will not offer to delegate
-                 further — one jump is as far as delegation goes, and the agent
-                 refuses a deeper chain. A user can move a session out of such a
-                 chain with `future session set <id> --parent \"\"`.
+                 session a sub-session of the one that created it. Omitted by
+                 default: a new session is top-level unless you ask for a
+                 sub-session, and delegating work into a session later does not
+                 make it one. The parent must exist. Lineage only: no history is
+                 copied (that is `fork`), but the parent's conversation will list
+                 this session under it, and this session's prompt will not offer
+                 to delegate further — one jump is as far as delegation goes, and
+                 the agent refuses a deeper chain. A user can move a session out
+                 of such a chain with `future session set <id> --parent \"\"`.
                  `future session list --parent <id>` finds its children.
   --append-system-prompt <text>
                  Rules appended to the end of this session's system prompt on

@@ -1608,12 +1608,15 @@ export class RemoteClient {
     //     detects the magic bytes. An older client does not have that check and
     //     would fail to parse a compressed reply, hence the declaration.
     //   lean_events_v1 — the desktop may omit reasoning text, streamed tool
-    //     arguments and captured tool output. This client renders a reasoning
-    //     row from its `thinking_start`/`thinking_end` boundary alone, takes a
-    //     tool's target from `tool_start`'s complete arguments, and reads a
-    //     tool's outcome from `exit_code`/`error` instead of parsing an
-    //     `[exit: N]` footer out of the output. An older client does all three
-    //     from the text, so it must keep receiving the full lane.
+    //     arguments and captured tool output from the feed, and the same bodies
+    //     from a history page. This client renders a reasoning row from its
+    //     `thinking_start`/`thinking_end` boundary alone and reads the body back
+    //     when the reader opens it (`get_reasoning`), takes a tool's target from
+    //     `tool_start`'s complete arguments (fetching `get_tool_call_args` for a
+    //     shell call), and reads a tool's outcome from `exit_code`/`error`
+    //     instead of parsing an `[exit: N]` footer out of the output. An older
+    //     client does all of that from the text, so it must keep receiving the
+    //     full lane.
     //   catalog_activity_v1 — while a run streams, the desktop may tell this
     //     client only the rows whose ordering timestamp moved
     //     (`onSessionActivity`) instead of re-sending the whole session list

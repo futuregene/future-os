@@ -34,6 +34,7 @@ import { readFileSync, existsSync, appendFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { createServer } from "node:http";
+import { applyFixtureFault } from "./faults.mjs";
 
 const now = () => Date.now();
 
@@ -240,7 +241,8 @@ function syntheticEntries(thread, { fork = null } = {}) {
   return cut >= 0 ? entries.slice(0, cut + 1) : entries;
 }
 
-export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs = 0, approvalSeed = 0, pageTranscript = false }) {
+export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs = 0, approvalSeed = 0, pageTranscript = false, fault = null, peers = "" }) {
+  const startedAt = Date.now();
   const db = new DatabaseSync(dbPath);
   db.exec("PRAGMA journal_mode=WAL");
   db.exec("PRAGMA foreign_keys=ON");
@@ -648,7 +650,30 @@ export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs 
         device.control = device.pairId === pairId ? "active" : "standby";
       return remoteView();
     },
-    remote_peer_list: () => [],
+    // `?peers=held` makes one paired machine the one another device is driving.
+    // The rows that explain "why this machine's conversations are not here" only
+    // render in that state, so a geometry assertion about them needs a fixture that
+    // can produce it — an empty list makes the whole surface untestable.
+    // `?peers=held` keeps a machine in another device's hands; `?peers=transfer`
+    // starts that way and hands control back after five seconds, so a case can
+    // watch a row follow control instead of a snapshot that never moves.
+    remote_peer_list: () => (peers === "held" || peers === "transfer"
+      ? [{
+        desktopId: "desktop_studio",
+        pairId: "pair_studio",
+        name: "工作室 iMac",
+        icon: "laptop",
+        connected: true,
+        error: null,
+        bridgeInstanceId: "bridge_studio",
+        features: ["workspace_create_v1"],
+        agentAvailable: true,
+        control: peers === "transfer" && Date.now() - startedAt > 5000 ? "active" : "standby",
+        holder: peers === "transfer" && Date.now() - startedAt > 5000
+          ? null
+          : { pairId: "pair_phone", name: "LNA-AL00", kind: "mobile" },
+      }]
+      : []),
     remote_peer_sessions: () => ({ desktopId: "", sessions: [] }),
     remote_peer_workspaces: () => ({ desktopId: "", workspaces: [] }),
     initialize_app_store: () => null,
@@ -1023,6 +1048,27 @@ export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs 
       const command = String(body?.command ?? "");
       const args = body?.args ?? {};
       const started = performance.now();
+      // Test-only fault injection (`--fault`). Absent by default: with no fault
+      // selected the dispatch below is byte-for-byte the original one. A fault is
+      // applied before the case starts and stays for the whole run, so the defect
+      // is on screen for the recording rather than appearing for one frame.
+      const injected = applyFault(fault, command);
+      if (injected) {
+        if (injected.hangMs) await delay(injected.hangMs);
+        const entry = {
+          ts: Date.now(),
+          command,
+          handled: true,
+          ms: Math.round((performance.now() - started) * 100) / 100,
+          args: summarizeArgs(args),
+          error: injected.error ?? null,
+          fault,
+        };
+        writeLog(entry);
+        res.writeHead(200, { ...cors, "content-type": "application/json" });
+        res.end(JSON.stringify({ handled: true, ...injected.payload }));
+        return;
+      }
       const handler = handlers[command];
       let payload;
       if (!handler) {
@@ -1093,6 +1139,12 @@ function readBody(req) {
     });
     req.on("error", reject);
   });
+}
+
+// Test-only faults live in ./faults.mjs so the fixture side and the overlay side
+// are declared together.
+function applyFault(fault, command) {
+  return applyFixtureFault(fault, command);
 }
 
 function summarizeArgs(args) {

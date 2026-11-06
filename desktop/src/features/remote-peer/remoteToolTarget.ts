@@ -5,9 +5,10 @@ import { requestRemotePeer } from "./remotePeerClient";
  * What a tool call actually did, for a transcript that only received its identity.
  *
  * A lean history page strips a shell call's arguments: the row keeps the call id
- * and the run, and the command is fetched back when it is opened. The desktop
- * declares no lean capability, but a long conversation is still byte-budgeted, so
- * a row can arrive with its identity and nothing else — which is why this asks.
+ * and the run, and the command is fetched back when it is opened. This client
+ * declares the trimmed lane, so that is the shape it reads — and a long
+ * conversation is byte-budgeted on top, so a row can arrive with its identity and
+ * nothing else even for a host that trims less. Which is why this asks.
  *
  * The parsing is the *shared projection package's*, not a second copy: mobile
  * derives a row's target from exactly these three functions, and two

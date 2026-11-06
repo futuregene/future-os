@@ -32,7 +32,7 @@ function optionsFor(): Options {
     attachments: [],
     restoring: false,
     setMessage: jest.fn(),
-    send: jest.fn(async () => { }),
+    send: jest.fn(async () => true),
     scrollToLatest: jest.fn(),
     recommendation: {
       suggestion: null, evaluating: false, evaluate: jest.fn(async () => false),
@@ -58,7 +58,7 @@ test.each(["evaluation", "installation"])("navigation during %s never sends to t
   jest.mocked(options.recommendation.evaluate).mockReturnValue(evaluation.promise);
   jest.mocked(options.recommendation.installAndUse).mockReturnValue(installation.promise);
   render(options);
-  let pending!: Promise<void>;
+  let pending!: Promise<boolean>;
   act(() => { pending = phase === "evaluation" ? api.sendFromComposer() : api.installSuggestedSkill(); });
   render({ ...options, remote: { ...options.remote, selectedSessionId: "B" }, message: "B draft" });
   render({ ...options, message: "back to A" });
@@ -75,8 +75,8 @@ test("double tapping submit starts one evaluation and one delivery", async () =>
   const evaluation = deferred<boolean>();
   jest.mocked(options.recommendation.evaluate).mockReturnValue(evaluation.promise);
   render(options);
-  let first!: Promise<void>;
-  let second!: Promise<void>;
+  let first!: Promise<boolean>;
+  let second!: Promise<boolean>;
   act(() => { first = api.sendFromComposer(); second = api.sendFromComposer(); });
   expect(options.recommendation.evaluate).toHaveBeenCalledTimes(1);
   await act(async () => { evaluation.resolve(false); await Promise.all([first, second]); });
@@ -88,7 +88,7 @@ test("a changed draft is held after its earlier evaluation", async () => {
   const evaluation = deferred<boolean>();
   jest.mocked(options.recommendation.evaluate).mockReturnValue(evaluation.promise);
   render(options);
-  let pending!: Promise<void>;
+  let pending!: Promise<boolean>;
   act(() => { pending = api.sendFromComposer(); });
   render({ ...options, message: "new edit" });
   await act(async () => { evaluation.resolve(false); await pending; });
@@ -128,6 +128,30 @@ test("unrelated remote updates preserve composer callbacks", () => {
   expect(api).toBe(before);
 });
 
+test("a send that names the queueing policy hands it to the session, and answers whether it landed", async () => {
+  // The send sheet's interrupt relies on both halves: the policy is what keeps
+  // the message the session's while the run it waited behind ends, and the
+  // answer is what decides whether ending the run is still the right thing.
+  const options = optionsFor();
+  jest.mocked(options.send).mockResolvedValue(true);
+  render(options);
+  let delivered!: boolean | undefined;
+  await act(async () => { delivered = await api.sendFromComposer({ busyPolicy: "enqueue_coalescing" }); });
+  expect(options.send).toHaveBeenCalledWith(
+    undefined, { busyPolicy: "enqueue_coalescing" },
+  );
+  expect(delivered).toBe(true);
+});
+
+test("a refused send answers false, so a caller does not act on it", async () => {
+  const options = optionsFor();
+  jest.mocked(options.send).mockResolvedValue(false);
+  render(options);
+  let delivered!: boolean | undefined;
+  await act(async () => { delivered = await api.sendFromComposer({ busyPolicy: "enqueue_coalescing" }); });
+  expect(delivered).toBe(false);
+});
+
 test("accepting a recommendation passes the current edited draft to installation", async () => {
   const options = optionsFor();
   options.message = "the edited question";
@@ -149,7 +173,7 @@ test("connection cancellation releases the install spinner and keeps the draft",
   const installation = deferred<string>();
   jest.mocked(options.recommendation.installAndUse).mockReturnValue(installation.promise);
   render(options);
-  let pending!: Promise<void>;
+  let pending!: Promise<boolean>;
   act(() => { pending = api.installSuggestedSkill(); });
   expect(api.installingSkill).toBe(true);
   current = false;

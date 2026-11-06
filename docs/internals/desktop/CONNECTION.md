@@ -958,6 +958,17 @@ The client therefore reads `exit_code` instead of parsing an `[exit: N]` footer
 out of the output — which is why an older client must not be sent this feed, and
 why the flag is cleared on every new connection rather than latched.
 
+A dropped body is deferred, not withheld: opening the row reads it back.
+`get_tool_call_args` answers for a shell call by `toolCallId`, and `get_reasoning`
+answers for a reasoning block by its **index in the run** (the order the reply
+renders them, carried as the command's `offset`) — the identity a client has for
+a block it was sent only the boundaries of, live or in history. Both are gated on
+the same declaration, both are refused with a negative or missing identity before
+the Agent is bothered, and both answer an unresolvable identity with an explicit
+`null` rather than an error, so a block that is still being written reads as
+"not yet". The desktop peer fetches the same way; a client that never declares
+the feed never sees a row it would have to fetch.
+
 The durable replay path is rewritten to match (`get_events_since`, the snapshot
 bootstrap). There the page's cursor fields are computed **before** the rewrite:
 dropping an event must not move `nextSinceIdx`, or a client that resumes from it
@@ -1002,7 +1013,9 @@ row's text from `command`, `path`, `file_path` or `filePath` and reads **no othe
 argument key for any tool name, so keeping exactly those four is
 behaviour-preserving; `foldToolEntry` reads a result block's `toolCallId` and
 `isError` and nothing else; a reasoning body is only rendered when its row is
-expanded.
+expanded, and that tap is what reads it back (`get_reasoning`). Nothing is
+prefetched: opening a conversation costs the same page it always did, and the
+reasoning arrives only for the rows a reader actually opens.
 
 The fourth row is the one that outlived the first three: a finished shell call
 appears *twice* on one entry — once as the tool-result block's `text` (dropped

@@ -126,6 +126,42 @@ describe("sending", () => {
     );
   });
 
+  test("a send that names the queueing policy does not depend on this screen's streaming flag", async () => {
+    // The flag the phone holds is a projection: after an interrupt the stop's
+    // terminal can land before the host settles the run it was for, so a send
+    // that derives its policy from the flag goes out with none and is refused
+    // `session_busy` — the interrupt happened and the paragraph stayed behind.
+    const remote = remoteFor();
+    mount({ remote, message: "next one", streaming: false });
+    await act(async () => { await api.send(undefined, { busyPolicy: QUEUED_SEND_POLICY }); });
+    expect(remote.sendMessage).toHaveBeenCalledWith(
+      "next one", [], expect.any(Function), { busyPolicy: QUEUED_SEND_POLICY },
+    );
+  });
+
+  test("a send reports whether the session took it", async () => {
+    const refusal = deferred();
+    const remote = remoteFor({ sendMessage: jest.fn(() => refusal.promise) });
+    const { setMessage } = mount({ remote, message: "next one", streaming: true });
+    let delivered!: boolean | undefined;
+    await act(async () => {
+      const pending = api.send();
+      refusal.reject(new Error("session_busy: still running"));
+      delivered = await pending;
+    });
+    expect(delivered).toBe(false);
+    // The refusal put the draft back: the caller must not act on this send.
+    expect(setMessage).toHaveBeenCalledWith("next one");
+  });
+
+  test("an accepted send reports delivery", async () => {
+    const remote = remoteFor();
+    mount({ remote, message: "next one", streaming: true });
+    let delivered!: boolean | undefined;
+    await act(async () => { delivered = await api.send(); });
+    expect(delivered).toBe(true);
+  });
+
   test("an idle send carries no busy policy, so a busy session answers with a reason", async () => {
     const remote = remoteFor();
     mount({ remote, message: "hello", streaming: false });
@@ -468,7 +504,7 @@ describe("send completion ownership", () => {
       return pending.promise;
     }) });
     const original = mount({ remote, message: "message for A", attachments: [attachment] });
-    let sending!: Promise<void>;
+    let sending!: Promise<boolean>;
     act(() => { sending = api.send(); });
     const next = mount({ remote: remoteFor({ selectedSessionId: "session-2" }), message: "B draft" });
     original.setTransferProgress.mockClear();
@@ -490,7 +526,7 @@ describe("send completion ownership", () => {
     const pending = deferred();
     const remote = remoteFor({ sendMessage: jest.fn(() => pending.promise) });
     const original = mount({ remote, message: "submitted", attachments: [attachment] });
-    let sending!: Promise<void>;
+    let sending!: Promise<boolean>;
     act(() => { sending = api.send(); });
     const extra = { ...attachment, localUri: "file:///b.png", name: "b.png" };
     mount({ remote, message: "next message", attachments: [attachment, extra] });
@@ -505,7 +541,7 @@ describe("send completion ownership", () => {
     const remote = remoteFor({ selectedSessionId: "", draft: true, captureConversationOperation,
       sendMessage: jest.fn(() => pending.promise) });
     const original = mount({ remote, message: "new conversation" });
-    let sending!: Promise<void>;
+    let sending!: Promise<boolean>;
     act(() => { sending = api.send(); });
     mount({ remote: remoteFor({ selectedSessionId: "acknowledged", draft: false, captureConversationOperation }),
       message: "new conversation" });

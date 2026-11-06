@@ -304,7 +304,8 @@ future run --session <id> "<message>"     # 在那个会话里起一次 run
 叫它 subagent、子agent、子代理：
 
 ```sh
-future session new --parent <你的会话 id> --name "<短任务名>" --json
+future session new --cwd <项目目录> --parent <你的会话 id> \
+  --name "<短任务名>" --json
 future run --no-wait --session <子会话 id> \
   --model <id> --thinking <level> "<自包含的提示词>"
 ```
@@ -314,6 +315,12 @@ future run --no-wait --session <子会话 id> \
 
 在创建命令上就写下父会话，才让这个子会话真的是「子」：血缘在它首次运行之前就已存在，
 桌面端会把它画在这个会话下面，而子会话的系统提示词也会告诉它不能再向下委派。
+所以 `--parent` 只用于委派：用户自己要的会话（例如某个新工作区自己的那个会话）不加它，
+它是顶层会话；即使这一轮随后往它里面派活，也不因此变成子会话。
+
+`--cwd` 是同一句话的一部分：不给目录就继承调用方的目录，而聊天话题的目录是
+`~/.future/workspaces/chat/` 下的临时工作区。因此不带 `--cwd` 的子会话会把活干在
+用户永远不会打开的地方 —— 要给的是这份活所属的目录，不是默认值。
 上面那一节说的一切 —— `--no-wait` 与 `wait`、`--steer`、`status`、`transcript`、
 来源与意图 —— 全部照旧适用；`future session list --parent <id>` 列出一个会话的子会话，
 `abort` / `delete` 停掉并删除一个，`future session approvals <子会话>` 回答它是不是
