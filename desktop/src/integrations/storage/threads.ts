@@ -44,8 +44,12 @@ export async function deleteWorkspace(workspaceId: string) {
  * the only source for them — the client's lists hold just the loaded pages.
  */
 export interface WorkspaceDeleteSummary {
+  /** Conversations deleted together with the workspace. */
   deletedThreads: number;
-  keptThreads: number;
+  /** Conversations that survive as live chats, in the conversations list. */
+  keptLiveThreads: number;
+  /** Conversations that survive as shelved chats, in that list's archived section. */
+  keptArchivedThreads: number;
 }
 
 export async function workspaceDeleteSummary(workspaceId: string) {
