@@ -8,7 +8,12 @@ import { useCallback, useEffect, useRef } from "react";
 import { abortRun, getRun } from "../../integrations/storage/threadStore";
 import { useCommittedRef } from "../../lib/useCommittedRef";
 import { usePolling } from "../../lib/usePolling";
-import { loadComposerDraft, saveComposerDraft } from "./composerDraft";
+import { restoreComposerDraft } from "./composerDraft";
+import {
+  clearPromptSendInFlight,
+  isPromptSendInFlight,
+  markPromptSendInFlight,
+} from "./pendingPromptSends";
 import { useRunReattach } from "./useRunReattach";
 import { useQueuedSend, useSendMessage } from "./useSendMessage";
 import { useThreadMessages } from "./useThreadMessages";
@@ -29,42 +34,11 @@ interface UseAgentThreadStateInput {
   onThreadActivity: () => void;
 }
 
-// A keyed thread view can unmount before acceptance (e.g. during attachment
-// preparation). Keep pending-prompt ownership across those remounts until the
-// send settles; an instance-local ref alone permits a second submission.
-const pendingPromptSends = new Set<string>();
-
 // The run this thread is actively executing, or null.
 function activeRunIdOf(recentRun: StoredRun | null): string | null {
   return recentRun && !matchesSettledRun(recentRun.status)
     ? recentRun.id
     : null;
-}
-
-/**
- * Return a rejected first message to the conversation's composer draft.
- *
- * A prompt the Agent rejected never enters Agent history, so the conversation
- * reloads without it — the staged bubble is the only copy left. The composer
- * draft is where an unsent message belongs anyway: the conversation's composer
- * restores it on its next mount, and sending it from there is an explicit
- * retry that the normal send path persists.
- *
- * A draft the user typed while the send was settling wins: it is newer intent,
- * and concatenating the two would fabricate a message nobody wrote.
- */
-function restoreRejectedPromptToDraft(prompt: {
-  attachments?: MessageAttachment[];
-  content: string;
-  targetThreadId: string;
-}): void {
-  const existing = loadComposerDraft(prompt.targetThreadId);
-  if ((existing?.text ?? "").trim().length > 0 || (existing?.attachments?.length ?? 0) > 0)
-    return;
-  saveComposerDraft(prompt.targetThreadId, {
-    text: prompt.content,
-    attachments: prompt.attachments ?? [],
-  });
 }
 
 export function useAgentThreadState({
@@ -259,7 +233,7 @@ export function useAgentThreadState({
   useEffect(() => {
     if (!thread || loadingThread || loadingStore || !pendingPrompt)
       return;
-    if (consumedPromptRef.current === pendingPrompt.id || pendingPromptSends.has(pendingPrompt.id))
+    if (consumedPromptRef.current === pendingPrompt.id || isPromptSendInFlight(pendingPrompt.id))
       return;
     // Only deliver the prompt to the thread it was composed for. A fast thread
     // switch during the (async) message load can make `thread` the newly-opened
@@ -271,7 +245,7 @@ export function useAgentThreadState({
 
     const promptId = pendingPrompt.id;
     consumedPromptRef.current = promptId;
-    pendingPromptSends.add(promptId);
+    markPromptSendInFlight(promptId);
     void handleSend({
       attachments: pendingPrompt.attachments ?? [],
       content: pendingPrompt.content,
@@ -286,8 +260,8 @@ export function useAgentThreadState({
       // composer-initiated rejection gets. The current view keeps its failed
       // bubble, whose retry action sends it again without leaving the thread.
       onPromptConsumed(promptId);
-      restoreRejectedPromptToDraft(pendingPrompt);
-    }).finally(() => pendingPromptSends.delete(promptId));
+      restoreComposerDraft(pendingPrompt.targetThreadId, pendingPrompt);
+    }).finally(() => clearPromptSendInFlight(promptId));
   }, [
     handleSend,
     loadingStore,
