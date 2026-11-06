@@ -23,6 +23,7 @@ function tree(overrides: Partial<FileTree> = {}): FileTree {
     rootEntries: null,
     rootErrored: false,
     rootLoading: false,
+    rootMissing: false,
     toggle: vi.fn(),
     ...overrides,
   };

@@ -2,6 +2,8 @@
 import type { NewConversationStart } from "../../../features/agent/NewConversation";
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { clearComposerDraft, loadComposerDraft } from "../../../features/agent/composerDraft";
+import { clearPromptSendInFlight, markPromptSendInFlight } from "../../../features/agent/pendingPromptSends";
 import { onFutureEvent } from "../../../lib/futureEvents";
 import { renderHook } from "../../../test/renderHook";
 import { useNewConversation } from "./useNewConversation";
@@ -43,6 +45,10 @@ beforeEach(() => {
   mocks.createThread.mockResolvedValue({ id: "t_new", mode: "chat" } as never);
   mocks.pinThread.mockClear();
   mocks.pinThread.mockResolvedValue({} as never);
+  // The draft store is session-wide (sessionStorage): a fixed thread id here
+  // would otherwise inherit the previous test's restored draft.
+  clearComposerDraft("t_first");
+  clearComposerDraft("t_second");
   toasts = [];
   dispose = onFutureEvent("toast", (payload) => {
     toasts.push(payload as { message: string; tone?: string });
@@ -115,6 +121,62 @@ describe("a conversation the panel asked for", () => {
     // The message is the failure's, not a generic one, and it is staged for the thread.
     expect(toasts[0]!.message).toContain("store is locked");
     expect(hook.current.pendingPrompt).toMatchObject({ content: "first message", targetThreadId: "t_new" });
+    hook.unmount();
+  });
+});
+
+describe("a first message the flow never delivered", () => {
+  it("stages one prompt at a time, and returns the replaced message to its own draft", async () => {
+    // Two new conversations in a row before the first prompt was picked up. The
+    // flow holds one staged prompt, so the second creation used to replace the
+    // first message outright: that conversation kept no session, no message and
+    // no workspace folder — the text existed nowhere at all.
+    mocks.createThread
+      .mockResolvedValueOnce({ id: "t_first", mode: "chat" } as never)
+      .mockResolvedValueOnce({ id: "t_second", mode: "chat" } as never);
+    const hook = mount();
+
+    await act(async () => {
+      await hook.current.startNewConversation(start);
+    });
+    expect(hook.current.pendingPrompt).toMatchObject({ targetThreadId: "t_first" });
+
+    await act(async () => {
+      await hook.current.startNewConversation({ ...start, content: "second message" });
+    });
+
+    // The newest message goes to the conversation it was composed for…
+    expect(hook.current.pendingPrompt).toMatchObject({
+      content: "second message",
+      targetThreadId: "t_second",
+    });
+    // …and the replaced one is still a draft of its own conversation, one
+    // explicit resend away instead of lost.
+    expect(loadComposerDraft("t_first")).toMatchObject({ text: "first message" });
+    hook.unmount();
+  });
+
+  it("leaves a prompt a send already owns to that send", async () => {
+    // Ownership moves in two steps: the thread view latches the prompt, the
+    // Agent accepts it. Reclaiming a latched prompt would put the same message
+    // in the draft *and* send it — a duplicate nobody asked for.
+    mocks.createThread
+      .mockResolvedValueOnce({ id: "t_first", mode: "chat" } as never)
+      .mockResolvedValueOnce({ id: "t_second", mode: "chat" } as never);
+    const hook = mount();
+
+    await act(async () => {
+      await hook.current.startNewConversation(start);
+    });
+    const inFlight = hook.current.pendingPrompt!.id;
+    markPromptSendInFlight(inFlight);
+
+    await act(async () => {
+      await hook.current.startNewConversation({ ...start, content: "second message" });
+    });
+
+    expect(loadComposerDraft("t_first")).toBeNull();
+    clearPromptSendInFlight(inFlight);
     hook.unmount();
   });
 });
