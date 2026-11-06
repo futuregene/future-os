@@ -246,3 +246,26 @@ the list rows. Two independent checks say otherwise:
   stays within ±1% of its median; overlapping double-rendered text would spike it.
 
 Verdict: a misread, not a layout bug. No issue was opened.
+
+### Fixtures are static; bugs are dynamic
+
+Replaying 100 historical UI fixes against the case library caught **57%** of them, and the
+misses were not random. What separates a caught bug from a missed one is usually whether
+its **condition exists in the fixture**:
+
+- caught: a hint that should be sized to its text, a row whose order changes, a panel that
+  must stay reachable in a narrow window — all visible in a single static state;
+- missed: control moving from another device (the page reads a copy once), an admission
+  refusal that never happens, an ordering that only changes after an event.
+
+Two fixture capabilities change that, both additive and inert unless a case asks:
+
+- `?peers=held` — a paired machine held by another device, so the row hint renders at all
+  (without it, `remote_peer_list` returns `[]` and the surface is untestable);
+- `?peers=transfer` — the same, but control returns to this machine after five seconds, so
+  a case can watch a row **follow** control instead of a snapshot that never moves.
+
+Caveat learned the hard way: a transfer assertion that is green both before and after
+reverting the fix does not guard that fix — it only guards "the row never updates at all".
+Add the capability, then **prove the assertion goes red on the reverted commit**; otherwise
+it is a test of nothing.
