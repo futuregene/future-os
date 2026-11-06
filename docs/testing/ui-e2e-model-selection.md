@@ -205,3 +205,44 @@ Cost of that probe, for planning: two recordings, 170 s and 263 s, 11.3k + 6.1k 
 tokens and 6.9k + 12.7k completion tokens — **0.38 and 0.53 credits**, ~0.9 credits for
 two. Budget roughly half a credit per recording and ~4 minutes each; a 15-case sweep
 is ~7 credits and an hour, not a CI step.
+
+### What `v4` is actually for
+
+Two probes over eleven real, *passing* recordings (2026-11-06): **nine were judged
+`fail`, and not one of them held up.** Four were refuted outright —
+
+- a red Delete button read as *enabled* when the component sets
+  `disabled={selectedCount === 0}`; the destructive variant is red either way;
+- 「设置弹窗只打开了 4 个页签」 on a case whose 12/12 checks passed, i.e. every tab
+  did open and the recording simply switched fast;
+- 「余额 0 credits」 — the fixture's fake account balance, not a defect;
+- 「暂无会话 yet 工作区/对话」 — text the app does not contain; the model merged two
+  locale strings (`暂无工作区对话` and `暂无对话`).
+
+So `v4`'s use on real green runs is **"where to look", never "what is broken"**. Its
+characteristic error is **inferring state from appearance** (red ⇒ enabled), followed
+by **paraphrasing or splicing adjacent copy**.
+
+Two constraints now enforce that in `harness/scripts/video-judge.mjs`, each with a
+regression in `video-judge.test.mjs` (wired into `make test-ui-harness`):
+
+1. **A transport failure is not a verdict.** One retry, and the result records
+   `retried`/`attempts`; two failures exit 2 instead of becoming a pass or a fail. Two
+   of thirteen recordings were previously lost to a 300 s HTTP/2 stream timeout.
+2. **Every issue must quote what it saw, verbatim.** No quote, a quote containing
+   words that are in neither the app's locale bundles nor the case's captured text, or
+   an interactivity claim whose quote carries no state evidence — all are dropped, and
+   if nothing survives the verdict becomes `pass`.
+
+### The one surviving "layout overlap" was not a defect
+
+`batch-select-all-cancel` was reported as having the multi-select toolbar drawn over
+the list rows. Two independent checks say otherwise:
+
+- **Structure**: `ActivityRailSelectionToolbar` is an ordinary in-flow block
+  (`border-t shrink-0 …`) rendered as a sibling of the list inside a flex column, and
+  `globals.css` contains no `position: absolute|fixed` rule that could reach it.
+- **Frames**: in the 35 frames covering 6.5–10.0 s, the ink density of the left rail
+  stays within ±1% of its median; overlapping double-rendered text would spike it.
+
+Verdict: a misread, not a layout bug. No issue was opened.
