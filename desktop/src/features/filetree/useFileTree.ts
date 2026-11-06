@@ -17,6 +17,13 @@ interface TreeState {
   loading: Set<string>;
   /** Directory paths whose last load failed. */
   errored: Set<string>;
+  /**
+   * Roots whose read failed because the directory is not there yet — a chat
+   * conversation's workspace is created by its first message, so a conversation
+   * nobody has messaged has no folder to list. Kept apart from `errored`: the
+   * panel says an empty folder, not a read failure.
+   */
+  missing: Set<string>;
   /** Latest load generation per directory; prevents stale response overwrite. */
   generations: Map<string, number>;
 }
@@ -32,6 +39,7 @@ function stateFor(root: string): TreeState {
       children: new Map(),
       loading: new Set(),
       errored: new Set(),
+      missing: new Set(),
       generations: new Map(),
     };
     cache.set(root, state);
@@ -55,6 +63,8 @@ export interface FileTree {
   rootEntries: DirEntry[] | null;
   rootLoading: boolean;
   rootErrored: boolean;
+  /** The root directory does not exist yet (nothing has been written to it). */
+  rootMissing: boolean;
   isExpanded: (path: string) => boolean;
   childrenOf: (path: string) => DirEntry[] | null;
   isLoading: (path: string) => boolean;
@@ -70,6 +80,57 @@ export interface FileTree {
 /** A dotfile — hidden by default, revealed by the "show hidden" toggle. */
 function isHidden(name: string): boolean {
   return name.startsWith(".");
+}
+
+/**
+ * Whether a failed root read means "the directory is not there yet" rather than
+ * "the read failed".
+ *
+ * A chat conversation's workspace directory is created by its first message, so
+ * a conversation nobody has messaged has a path that does not exist — and
+ * `read_dir`, and therefore the host's `list_directory`, reports that as an
+ * error like any other. The panel's copy for that state is its empty card ("no
+ * files yet"), so the two have to be told apart.
+ *
+ * The only thing the host hands back is the OS message, which is localized
+ * (Windows formats its own text and keeps only the `(os error N)` suffix), so
+ * ask the filesystem instead: a directory that its parent lists exists, and one
+ * that it does not is missing. Everything unanswerable — a root with no parent
+ * to ask, or a parent that is unreadable too — stays an error.
+ */
+async function isMissingDirectory(path: string): Promise<boolean> {
+  const split = parentOf(path);
+  if (!split)
+    return false;
+  try {
+    const siblings = await listDirectory(split.parent);
+    return !siblings.some(entry =>
+      entry.name === split.name
+      // A listing comes back in the filesystem's own casing, and a
+      // case-insensitive volume may have normalized it: the same directory under
+      // another case is present, and calling it missing would swap a real
+      // failure for a false empty state.
+      || entry.name.toLowerCase() === split.name.toLowerCase());
+  }
+  catch {
+    return false;
+  }
+}
+
+/** Split a root into the directory that would list it and its own name. */
+function parentOf(path: string): { parent: string; name: string } | null {
+  const trimmed = path.trim().replace(/[\\/]+$/, "");
+  const index = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  // No separator, or one with nothing before it (`/` itself): no directory to ask.
+  if (index <= 0 || index === trimmed.length - 1)
+    return null;
+  const parent = trimmed.slice(0, index);
+  return {
+    // A bare `C:` is drive-relative on Windows — the *current* directory on that
+    // drive, not its root.
+    parent: /^[a-z]:$/i.test(parent) ? `${parent}${trimmed.charAt(index)}` : parent,
+    name: trimmed.slice(index + 1),
+  };
 }
 
 /**
@@ -92,6 +153,7 @@ export function useFileTree(root: string | null, showHidden = false): FileTree {
     state.generations.set(path, generation);
     state.loading.add(path);
     state.errored.delete(path);
+    state.missing.delete(path);
     bump();
     try {
       const entries = await listDirectory(path);
@@ -99,8 +161,17 @@ export function useFileTree(root: string | null, showHidden = false): FileTree {
         state.children.set(path, entries);
     }
     catch {
-      if (state.generations.get(path) === generation)
-        state.errored.add(path);
+      // Only the root can be a directory that does not exist yet, and only when
+      // it has nothing to show: ask its parent before calling the read a
+      // failure (see `isMissingDirectory`). Keep the loading state up while the
+      // parent answers, so a missing folder never flashes the danger box.
+      const missing = path === root && await isMissingDirectory(path);
+      if (state.generations.get(path) === generation) {
+        if (missing)
+          state.missing.add(path);
+        else
+          state.errored.add(path);
+      }
     }
     finally {
       if (state.generations.get(path) === generation) {
@@ -108,7 +179,7 @@ export function useFileTree(root: string | null, showHidden = false): FileTree {
         bump();
       }
     }
-  }, [state]);
+  }, [root, state]);
 
   const toggle = useCallback((path: string) => {
     if (!state)
@@ -148,6 +219,7 @@ export function useFileTree(root: string | null, showHidden = false): FileTree {
     rootEntries: rawRoot ? visible(rawRoot) : null,
     rootLoading: root ? state?.loading.has(root) ?? false : false,
     rootErrored: root ? state?.errored.has(root) ?? false : false,
+    rootMissing: root ? state?.missing.has(root) ?? false : false,
     isExpanded: path => state?.expanded.has(path) ?? false,
     childrenOf: (path) => {
       const raw = state?.children.get(path);
