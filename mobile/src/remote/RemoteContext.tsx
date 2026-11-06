@@ -784,13 +784,29 @@ export function RemoteProvider({ children }: PropsWithChildren) {
    * answer.
    */
   const { forgetDesktop } = pairing;
+  /**
+   * The pairing list, read when it is needed rather than closed over.
+   *
+   * This callback is handed to every machine's runtime as `onUnpaired`, and the
+   * runtime is *keyed* by it: `useDesktopConnection`'s bootstrap depends on
+   * `onUnpaired`, so a new identity here tears that machine's socket down and
+   * opens a new one. Depending on `pairing.desktops` — a list that every label
+   * write replaces — made renaming one machine rebuild every machine's
+   * connection, and a rebuilt client has no heartbeat yet: every row then read
+   * "已被其他设备接管" (a machine with no word on control is not this phone's
+   * to drive). Held in a ref instead, so only a genuine unpairing is news.
+   */
+  const desktopsLatest = useRef({ desktops: pairing.desktops });
+  useEffect(() => {
+    desktopsLatest.current = { desktops: pairing.desktops };
+  }, [pairing.desktops]);
   const forgetUnpaired = useCallback((desktopId: string) => {
-    const name = pairing.desktops.find(desktop => desktop.desktopId === desktopId)?.name
+    const name = desktopsLatest.current.desktops.find(desktop => desktop.desktopId === desktopId)?.name
       || desktopId;
     void forgetDesktop(desktopId).then(() => {
       AppAlert.alert(i18n.t("desktops.unpairedTitle"), i18n.t("desktops.unpaired", { name }));
     });
-  }, [forgetDesktop, pairing.desktops]);
+  }, [forgetDesktop]);
 
   const { selectDesktop } = pairing;
   const switchDesktop = useCallback(

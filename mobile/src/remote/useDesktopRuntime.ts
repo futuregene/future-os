@@ -125,6 +125,20 @@ export function useDesktopRuntime({
   const credentialsRef = useRef<RemoteCredentials | null>(null);
   const selectedRef = useRef("");
   const conversationEpochRef = useRef(0);
+  /**
+   * The name a finished run's reminder names the machine by.
+   *
+   * `onTaskFinished` reaches the catalogue's callbacks and, through them, the
+   * live connection's `connect` — so a changing identity here would rebuild the
+   * socket. A rename is a local label and must not: reported as every row on the
+   * "已配对的桌面端" page reading "已被其他设备接管" after renaming one machine, which
+   * is what a rebuilt client (no heartbeat yet) looks like. So the callback is
+   * keyed by the machine alone and reads the name when a run actually finishes.
+   */
+  const labelLatest = useRef({ label });
+  useEffect(() => {
+    labelLatest.current = { label };
+  }, [label]);
   const onTaskFinished = useCallback((session: RemoteSession) => {
     const pairing = credentialsRef.current?.pairId;
     if (!pairing) return;
@@ -133,10 +147,10 @@ export function useDesktopRuntime({
     // tap on the reminder has to open the conversation on *this* machine: the
     // phone may be reading another one by then.
     void notifyTaskFinished(session, () => credentialsRef.current?.pairId === pairing, {
-      machine: label,
+      machine: labelLatest.current.label,
       desktopId,
     });
-  }, [desktopId, label]);
+  }, [desktopId]);
 
   const catalog = useSessionCatalog(clientRef, selectedRef, onTaskFinished);
   // The slow self-heal read. Only while the app is in front (a backgrounded
