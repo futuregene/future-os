@@ -732,28 +732,30 @@ export function SessionList({
 
   const confirmDeleteWorkspace = (workspace: WorkspaceRow) => {
     if (deletingRef.current) return;
-    // Two questions with two different answers, so two sentences. Deleting a
-    // folder from the active list takes what it shows and keeps what the reader
-    // had already shelved out of it; deleting one from the archived shelf takes
-    // what it was hiding and keeps only the conversations the reader never
-    // shelved — those come back live. Wording them the same way told a reader
-    // that a conversation they had never archived was an "archived" one.
-    const shelved = workspace.workspace.archived === true;
+    // Which half goes is decided by *the list the delete was started from*, not
+    // by the workspace's own marker. A workspace can be in both lists at once —
+    // in use, but still holding a conversation the reader shelved — and
+    // `workspace.archived` describes only the folder, so reading it here is what
+    // made the shelf's delete take the workspace list's conversations too. The
+    // component's own `archived` prop is the list actually on screen.
+    const shelved = archived;
+    const scope = shelved ? "archived" : "active";
     const conversations = allSessions.filter(
       target =>
         (target.session.workspaceId ?? "") === workspace.workspaceId
         && (target.desktopId ?? null) === (workspace.desktopId ?? null),
     );
-    // Only the active-list sentence carries a count. A shelved workspace's rows
-    // all arrive with the catalogue's `archived` flag set — the host cannot tell
-    // "shelved by the reader" from "hidden by the shelved folder" here — so
-    // counting them would report the whole folder as archived conversations, which
-    // is the wording that started this.
+    // Each sentence names only its own half, and the count is of the
+    // conversations *that* half holds: the other list's rows are not part of
+    // this click, so mentioning their number would repeat the mistake of
+    // telling a reader their untouched conversations were about to go.
+    const removed = conversations.filter(target =>
+      shelved ? target.session.archived === true : target.session.archived !== true);
     Alert.alert(
       t("sessions.deleteWorkspace"),
       t(shelved ? "sessions.deleteWorkspaceConfirmArchived" : "sessions.deleteWorkspaceConfirm", {
         title: workspace.workspace.name || t("sessions.workspace"),
-        count: conversations.filter(target => target.session.archived !== true).length,
+        count: removed.length,
       }),
       [
         { text: t("chat.cancel"), style: "cancel" },
@@ -777,7 +779,7 @@ export function SessionList({
             // exactly that difference. `deleteWorkspace` re-reads the host's own
             // lists, so this only has to drop the heading it just removed.
             void commands
-              .deleteWorkspace(workspace.workspaceId, shelved ? "archived" : "active")
+              .deleteWorkspace(workspace.workspaceId, scope)
               .then(() => {
                 // A selection holding rows that are gone must not keep them.
                 setSelected(current => {

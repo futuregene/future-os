@@ -1070,7 +1070,7 @@ describe("RemoteProvider over several desktops", () => {
       // The name is trimmed here: the host applies its own rules to the rest.
       { type: "rename_workspace", workspaceId: "w1", name: "Renamed" },
       { type: "set_workspace_pinned", workspaceId: "w1", pinned: true },
-      { type: "delete_workspace", workspaceId: "w1" },
+      { type: "delete_workspace", workspaceId: "w1", deleteScope: "active" },
     ]));
     // The workspace verbs address the machine's list, not one of its sessions.
     expect(office.requests.filter((r) => r.command.type === "set_workspace_pinned")[0]!.sessionId)

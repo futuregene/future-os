@@ -2783,6 +2783,46 @@ test("a shelved workspace's delete confirmation is not the active one's", () => 
 });
 
 /**
+ * A workspace that is in use but also on the shelf asks the shelf's question
+ * when it is deleted from the shelf.
+ *
+ * This is the case the folder's own `archived` marker cannot answer: this
+ * workspace is *not* archived (it is in use), it merely holds a conversation the
+ * reader shelved — so reading `workspace.archived` picked the active list's
+ * sentence and scope, and the shelf's delete took the conversations the
+ * workspace list was still showing.
+ */
+test("a workspace in both lists deletes from the shelf when the shelf is showing", async () => {
+  renderArchived(
+    [{
+      sessionId: "in-shelf",
+      threadId: "t1",
+      title: "Shelved one",
+      mode: "workspace",
+      workspaceId: "w-both",
+      streaming: false,
+      archived: true,
+    }],
+    // In use: no `archived` marker on the folder itself.
+    [{ id: "w-both", name: "Both lists", path: "/tmp/both", archived: false }],
+  );
+  pressWorkspaceAction("Both lists", "sessions.deleteWorkspace");
+  // The sentence is the shelf's, not the workspace list's.
+  expect(dialogText()).toEqual(
+    expect.arrayContaining(["sessions.deleteWorkspaceConfirmArchived:Both lists"]),
+  );
+  expect(dialogText()).not.toEqual(
+    expect.arrayContaining(["sessions.deleteWorkspaceConfirm:Both lists"]),
+  );
+  const shelves = testCommandsFor(null);
+  await act(async () => {
+    confirmAlert();
+  });
+  // And the command names the shelf, so the host leaves the live half alone.
+  expect(shelves!.deleteWorkspace).toHaveBeenCalledWith("w-both", "archived");
+});
+
+/**
  * The shelf's delete names the shelf, so it can only take what the shelf drew.
  *
  * The host applies the scope: a workspace in both lists loses one half or the
