@@ -778,6 +778,37 @@ export function ActivityRail({
    */
   const mergedWorkspaces = useMemo(() => {
     const shown = new Map<string, RemoteWorkspaceRow[]>();
+    // This machine's own workspaces belong in this map too, and that was the
+    // bug: the merged list builds a workspace heading from the *rows* under it,
+    // so a folder nobody has written in — just created from the "＋", or one
+    // whose only conversations were archived — had nothing to be built from and
+    // went unlisted. Under "本机" the rail draws its headings straight from the
+    // workspace store and an empty folder shows, which is why the same folder
+    // appeared there and vanished under "全部设备".
+    //
+    // Not in the archived view (its headings come from `archivedRemoteShelves`,
+    // and the rail draws this machine's own shelf beside them), and not under a
+    // filter naming another machine.
+    const localShown = deviceFilter.kind === "device" && deviceFilter.desktopId !== null
+      ? false
+      : railView !== "archived";
+    if (localShown) {
+      const localRows: RemoteWorkspaceRow[] = workspaces
+        .filter(workspace =>
+          workspace.kind === "user"
+          && !workspace.archivedAt
+          && (!queryActive || workspace.name.toLowerCase().includes(normalizedQuery)))
+        .map(workspace => ({
+          id: workspace.id,
+          name: workspace.name,
+          path: workspace.path,
+          pinned: workspace.pinned === true,
+          kind: "user",
+          orderedAt: workspace.updatedAt,
+        }));
+      if (localRows.length > 0)
+        shown.set("local", localRows);
+    }
     for (const catalog of remoteCatalogs) {
       if (deviceFilter.kind === "device" && deviceFilter.desktopId !== catalog.desktopId)
         continue;
@@ -791,7 +822,7 @@ export function ActivityRail({
         shown.set(catalog.desktopId, rows);
     }
     return shown;
-  }, [deviceFilter, normalizedQuery, queryActive, remoteCatalogs]);
+  }, [deviceFilter, normalizedQuery, queryActive, railView, remoteCatalogs, workspaces]);
 
   // Filtering: include a row if its title or its workspace name matches.
   const rowMatchesQuery = useCallback((row: MergedConversation): boolean => {

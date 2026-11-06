@@ -916,15 +916,24 @@ export function groupMergedRows(
    * drawn in the chats section, and this machine's own list makes the same call.
    */
   for (const [desktopId, list] of hostWorkspaces) {
+    // This machine's own workspaces travel under `"local"` in the map, but a
+    // group's `desktopId` is `null` for them — the same shape a row-built local
+    // group has, and what makes the list draw the rail's own heading (with its
+    // menu, pin marker and click-to-select) instead of a remote one.
+    const local = desktopId === "local";
     for (const workspace of list) {
       if (workspace.kind === "temporary")
         continue;
-      const key = `${desktopId}::${workspace.id}`;
+      // This machine's groups are keyed by the workspace id alone (see above),
+      // and an empty one added under `local::<id>` would be a *second* heading
+      // for a workspace that already has rows — the very split the row-built
+      // groups avoid, so an empty heading joins its siblings under their key.
+      const key = local ? workspace.id : `${desktopId}::${workspace.id}`;
       if (byKey.has(key))
         continue;
       byKey.set(key, {
         key,
-        desktopId,
+        desktopId: local ? null : desktopId,
         kind: "workspace",
         label: workspace.name || null,
         workspaceId: workspace.id,
