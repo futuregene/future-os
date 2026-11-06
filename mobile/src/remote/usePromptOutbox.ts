@@ -355,23 +355,39 @@ export function usePromptOutbox({
         await clearSessionDraftIfMatches(delivered.draftKey, delivered);
         assertCurrentPairing();
         const nextSessionId = response.sessionId || targetSessionId;
-        engine?.mutate(nextSessionId, (timeline) =>
-          commitAcknowledgedUserMessage(timeline ?? emptyTimeline(), {
-            id: `local:${delivered.commandId}`,
-            runId: response.runId,
-            text: delivered.text.trim(),
-            ...(attachments.length
-              ? {
-                  attachments: attachments.map((attachment) => ({
-                    path: attachment.localUri,
-                    name: attachment.name,
-                    kind: attachment.kind,
-                    mobilePreviewUnsupported: attachment.mobilePreviewUnsupported,
-                  })),
-                }
-              : {}),
-          }),
-        );
+        // A send that named a busy policy was handed to the session to WAIT, and
+        // a message the session is holding has not been sent: it belongs to the
+        // queue panel, not to the transcript. Drawing it here is what put a
+        // second "你好" at the bottom of the conversation — the bubble this wrote
+        // sat under the reply it was never answered by, and when the session ran
+        // the queued prompt at the turn boundary its own `user_message` event
+        // added the real one beside it.
+        //
+        // The desktop's send pipeline states the same rule (`echoOptimistically`
+        // in `sendPipeline.ts`): the ack of a queued send draws nothing, while a
+        // queued-intent send the session ran immediately still gets its bubble
+        // there. That second ending is covered here by the branch below — the
+        // `user_message` mirror of the run paints it, under the Agent's entry id.
+        const queuedForLater = !!delivered.busyPolicy;
+        if (!queuedForLater) {
+          engine?.mutate(nextSessionId, (timeline) =>
+            commitAcknowledgedUserMessage(timeline ?? emptyTimeline(), {
+              id: `local:${delivered.commandId}`,
+              runId: response.runId,
+              text: delivered.text.trim(),
+              ...(attachments.length
+                ? {
+                    attachments: attachments.map((attachment) => ({
+                      path: attachment.localUri,
+                      name: attachment.name,
+                      kind: attachment.kind,
+                      mobilePreviewUnsupported: attachment.mobilePreviewUnsupported,
+                    })),
+                  }
+                : {}),
+            }),
+          );
+        }
         if (nextSessionId && nextSessionId !== targetSessionId) {
           const stillViewingSentDraft = conversationEpochRef.current === conversationEpoch;
           if (stillViewingSentDraft) {
