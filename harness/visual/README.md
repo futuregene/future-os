@@ -40,6 +40,21 @@ Treat every frame that shows the conversation panel as suspect: rebuild before
 using this set as a reference, and do not measure a delta against these pixels to
 decide whether the 4px shift is still there.
 
+### Identity when a mutation has to be committed
+
+A mutation only needs a commit when the revert itself is the evidence you are keeping.
+When you do commit one, use an author that cannot be mistaken for a person:
+
+```bash
+git -c user.name=harness -c user.email=devnull@localhost commit -m "mutation: <what>"
+# or: git commit --author="harness <devnull@localhost>"
+```
+
+A placeholder such as `x <x@y>` is worse than useless: `x@y` is registered to a real
+GitHub account, so the commit is attributed to a stranger, and that attribution rides
+along into any PR that squashes it (PR #1565 carries two such commits). Better still,
+do not commit at all: edit the file, run the case, `git checkout -- <path>`.
+
 ## What a baseline is allowed to hide
 
 - `threshold` comes from the case's own jitter (>= 5 repeats). Ten cases measured
