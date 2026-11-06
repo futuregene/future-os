@@ -35,19 +35,17 @@ export function SettingsLinkRow({
   return (
     <button
       aria-label={ariaLabel}
-      // `-mx-4 px-4`: the card insets its children by 16px, and this row is the
-      // one that paints a fill on hover. Left inside that inset the highlight
-      // stopped 16px short of the card on both sides, which read as a band
-      // floating in a white frame around it (measured on a paired machine's
-      // "Fusion" row, and on every other link row of the same list). The
-      // negative margin takes the row out to the card's edges and its own
-      // padding restores the inset; the card's `overflow-hidden` keeps the fill
-      // off its rounded corners, which is also why the focus ring is `inset`
-      // (an outset ring would be clipped away at the row's own edges). No
-      // `w-full`: with the negative margin that would overhang by the same 16px
-      // on the right, while a block-level row already stretches to the widened
-      // box.
-      className="-mx-4 flex items-center gap-4 px-4 py-3.5 text-left transition-colors hover:bg-surface-subtle focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-inset focus-visible:outline-none disabled:cursor-default disabled:text-ink-muted disabled:hover:bg-transparent"
+      // `w-full px-4`: the row carries the card's inset rather than sitting
+      // inside it, so the hover fill reaches both of the card's edges and the
+      // between-rows divider spans the same width. Padding on the card instead
+      // left the fill 16px short of each edge, which read as a band floating in
+      // a white frame (a paired machine's "Fusion" row had exactly that).
+      // `w-full` is required, not redundant: a `<button>` shrinks to its content
+      // in a block flow — dropping it here shrank the fill *and* the divider to
+      // the length of the longest line of text. The card's `overflow-hidden`
+      // keeps the fill off its rounded corners, which is also why the focus ring
+      // is drawn `inset` (an outset ring would be clipped at the row's edges).
+      className="flex w-full items-center gap-4 px-4 py-3.5 text-left transition-colors hover:bg-surface-subtle focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-inset focus-visible:outline-none disabled:cursor-default disabled:text-ink-muted disabled:hover:bg-transparent"
       disabled={disabled}
       onClick={onClick}
       type="button"
@@ -104,14 +102,16 @@ export function SettingsPage({
 /**
  * The card a settings page's rows sit in.
  *
- * Clipped, because a link row fills a hover highlight and has to reach the card's
- * own edges to look like a row of this card rather than a box floating inside it
- * (see `SettingsLinkRow`). The clip is also what keeps that fill inside the
- * rounded corners — and why the rows' focus ring is drawn `inset`.
+ * No horizontal padding here: each row carries its own (`SettingsRow`,
+ * `SettingsLinkRow`), because a row that paints a hover fill has to reach the
+ * card's edges — inside a card-level inset that fill stopped 16px short on both
+ * sides, and so did the between-rows dividers. Clipped, so the fill of a row
+ * touching an edge is rounded off with the card instead of squaring it — which
+ * is also why those rows draw their focus ring `inset`.
  */
 export function SettingsList({ children }: { children: ReactNode }) {
   return (
-    <div className="overflow-hidden rounded-lg border border-line-soft bg-surface px-4 [&>*+*]:border-t [&>*+*]:border-line-soft">
+    <div className="overflow-hidden rounded-lg border border-line-soft bg-surface [&>*+*]:border-t [&>*+*]:border-line-soft">
       {children}
     </div>
   );
@@ -139,7 +139,7 @@ export function SettingsRow({
   title: ReactNode;
 }) {
   return (
-    <div className={cn("flex gap-4 py-3.5", stacked ? "flex-col" : "items-center")}>
+    <div className={cn("flex gap-4 px-4 py-3.5", stacked ? "flex-col" : "items-center")}>
       <div className="min-w-0 flex-1">
         <div className="text-sm font-medium text-ink">{title}</div>
         {description ? <div className="mt-0.5 text-xs leading-5 text-ink-muted">{description}</div> : null}

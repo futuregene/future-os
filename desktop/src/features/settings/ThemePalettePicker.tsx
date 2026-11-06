@@ -82,7 +82,10 @@ export function ThemePalettePicker() {
         ? (
             <div
               aria-label={t("theme.title")}
-              className="grid grid-cols-3 gap-2.5 pb-3.5"
+              // The card carries no horizontal inset (each row carries its own,
+              // see SettingsList); this block is not a row, so it states its
+              // own to stay aligned with the labels above it.
+              className="grid grid-cols-3 gap-2.5 px-4 pb-3.5"
               role="radiogroup"
             >
               {THEME_PALETTES.map(palette => (
