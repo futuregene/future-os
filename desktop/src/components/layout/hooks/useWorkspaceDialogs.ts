@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from "react";
-import type { WorkspaceDeleteSummary } from "../../../integrations/storage/threads";
+import type { WorkspaceDeleteScope, WorkspaceDeleteSummary } from "../../../integrations/storage/threads";
 import type { StoredWorkspace } from "../../../integrations/storage/threadStore";
 import type { RefreshStoreOptions } from "./useThreadStore";
 import { useState } from "react";
@@ -17,6 +17,16 @@ export interface WorkspaceRenameDialogState {
 
 export interface WorkspaceDeleteDialogState {
   workspace: StoredWorkspace;
+  /**
+   * The list the delete was started from.
+   *
+   * A workspace can sit in both lists at once, and the two deletes are
+   * opposites: from the workspace list its live conversations go, from the
+   * shelf its shelved ones go. The reader's click is the whole answer, so it is
+   * captured when the dialog opens and sent with both the summary and the
+   * delete.
+   */
+  scope: WorkspaceDeleteScope;
   error: string | null;
   submitting: boolean;
   /**
@@ -38,7 +48,7 @@ export interface WorkspaceDialogs {
   setDeleteDialog: Dispatch<SetStateAction<WorkspaceDeleteDialogState | null>>;
   openRename: (workspace: StoredWorkspace) => void;
   confirmRename: () => Promise<void>;
-  openDelete: (workspace: StoredWorkspace) => void;
+  openDelete: (workspace: StoredWorkspace, scope?: WorkspaceDeleteScope) => void;
   confirmDelete: () => Promise<void>;
 }
 
@@ -92,15 +102,16 @@ export function useWorkspaceDialogs({
     }
   }
 
-  function openDelete(workspace: StoredWorkspace) {
+  function openDelete(workspace: StoredWorkspace, scope: WorkspaceDeleteScope = "active") {
     setDeleteDialog({
       error: null,
       loadingSummary: true,
+      scope,
       submitting: false,
       summary: null,
       workspace,
     });
-    void workspaceDeleteSummary(workspace.id)
+    void workspaceDeleteSummary(workspace.id, scope)
       .then((summary) => {
         setDeleteDialog(current =>
           current?.workspace.id === workspace.id
@@ -123,8 +134,8 @@ export function useWorkspaceDialogs({
 
     setDeleteDialog(current => current ? { ...current, error: null, submitting: true } : current);
     try {
-      const { workspace } = deleteDialog;
-      await deleteWorkspace(workspace.id);
+      const { scope, workspace } = deleteDialog;
+      await deleteWorkspace(workspace.id, scope);
       // Every conversation inside went with it, and the store cannot tell that
       // from "not on this page": the open one would stay on screen as a row no
       // list will ever return (see `RefreshStoreOptions.removedWorkspaceIds`).

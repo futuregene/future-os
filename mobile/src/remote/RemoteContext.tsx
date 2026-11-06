@@ -252,7 +252,7 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   rename(sessionId: string, name: string): Promise<void>;
   generateTitle(sessionId: string, language: string): Promise<string>;
   deleteSession(sessionId: string, threadId: string): Promise<void>;
-  deleteWorkspace(workspaceId: string): Promise<void>;
+  deleteWorkspace(workspaceId: string, scope?: "active" | "archived"): Promise<void>;
   /**
    * Register an existing directory on the desktop as a workspace. Resolves the
    * created row (a path that already names a workspace reopens it); rejects
@@ -1058,8 +1058,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
             await client()?.request({ type: "set_workspace_pinned", workspaceId, pinned }, "list");
             await accepted();
           },
-          deleteWorkspace: async (workspaceId) => {
-            await client()?.request({ type: "delete_workspace", workspaceId }, "list");
+          deleteWorkspace: async (workspaceId, scope) => {
+            await client()?.request(
+              { deleteScope: scope ?? "active", type: "delete_workspace", workspaceId },
+              "list",
+            );
             await accepted();
           },
         };

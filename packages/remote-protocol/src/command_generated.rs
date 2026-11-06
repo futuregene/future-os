@@ -69,6 +69,8 @@ pub struct IncomingCmd {
     pub pinned: bool,
     /// prompt creation mode / existing workspace selection
     pub workspace_id: String,
+    /// delete_workspace: which list the delete was started from (active | archived). A workspace can sit in both lists at once, and each one asks a different question, so the delete has to be told which it answers. Absent keeps the active list's answer.
+    pub delete_scope: String,
     /// create_workspace: the desktop-side directory to register (the phone has no folder picker for the host, so it types the path).
     pub path: String,
     /// `secure_ready`: what the client says it is. Optional and additive, so an older client that sends neither is simply "unknown" rather than wrong.
@@ -164,6 +166,7 @@ impl Default for IncomingCmd {
             thread_id: String::new(),
             pinned: false,
             workspace_id: String::new(),
+            delete_scope: String::new(),
             path: String::new(),
             device_name: String::new(),
             device_kind: String::new(),

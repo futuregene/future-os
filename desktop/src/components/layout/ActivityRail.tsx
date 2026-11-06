@@ -124,6 +124,17 @@ interface ActivityRailProps {
   onRenameWorkspace: (workspace: StoredWorkspace) => void;
   onTogglePinWorkspace: (workspace: StoredWorkspace) => void;
   onDeleteWorkspace: (workspace: StoredWorkspace) => void;
+  /**
+   * Delete a workspace *from the archived shelf*.
+   *
+   * A workspace can sit in both lists at once — in use, but still holding a
+   * conversation the reader shelved — and the two deletes are opposites: the
+   * workspace list's takes its live conversations, the shelf's takes the
+   * shelved ones. The click says which, so the two entries carry it through;
+   * without it the shelf asks the workspace list's question, which is what every
+   * caller did before the two were told apart.
+   */
+  onDeleteArchivedWorkspace?: (workspace: StoredWorkspace) => void;
   onRestoreThread: (thread: StoredThread) => void;
   /** The workspace whose conversations are on screen; its heading reads as selected. */
   activeWorkspaceId?: string | null;
@@ -285,6 +296,7 @@ export function ActivityRail({
   onRenameWorkspace,
   onTogglePinWorkspace,
   onDeleteWorkspace,
+  onDeleteArchivedWorkspace,
   onRestoreThread,
   onArchiveThread,
   onArchiveWorkspace,
@@ -2187,7 +2199,7 @@ export function ActivityRail({
                                                   menu={(
                                                     <ArchivedWorkspaceMenu
                                                       open={openArchivedWorkspaceMenuId === workspace.id}
-                                                      onDelete={onDeleteWorkspace}
+                                                      onDelete={onDeleteArchivedWorkspace ?? onDeleteWorkspace}
                                                       onOpenChange={open => setOpenArchivedWorkspaceMenuId(open ? workspace.id : null)}
                                                       onRename={onRenameWorkspace}
                                                       onRestore={restoreArchivedWorkspace}

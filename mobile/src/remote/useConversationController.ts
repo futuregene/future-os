@@ -63,7 +63,7 @@ interface ConversationControllerOptions {
   prepareTimelineOpen(sessionId: string): void;
   recordError(error: unknown): void;
   removeSession(sessionId: string, threadId: string): Promise<boolean>;
-  removeWorkspace(workspaceId: string): Promise<boolean>;
+  removeWorkspace(workspaceId: string, scope?: "active" | "archived"): Promise<boolean>;
   /** Re-read the session catalogue so a just-forked child is selectable. */
   refreshSessions(): Promise<void>;
   closeConversation(): void;
@@ -473,10 +473,10 @@ export function useConversationController({
   );
 
   const deleteWorkspace = useCallback(
-    async (workspaceId: string) => {
+    async (workspaceId: string, scope?: "active" | "archived") => {
       // Deleting the workspace removes every thread inside it, so a
       // conversation the user is reading may be gone with it.
-      if (await removeWorkspace(workspaceId)) closeConversation();
+      if (await removeWorkspace(workspaceId, scope)) closeConversation();
     },
     [closeConversation, removeWorkspace],
   );

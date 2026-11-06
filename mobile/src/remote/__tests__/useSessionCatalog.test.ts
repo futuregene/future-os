@@ -1003,7 +1003,7 @@ describe("useSessionCatalog", () => {
       selected = await result.current.deleteWorkspace("w1");
     });
     expect(request).toHaveBeenCalledWith(
-      { type: "delete_workspace", workspaceId: "w1" },
+      { deleteScope: "active", type: "delete_workspace", workspaceId: "w1" },
       "list",
     );
     expect(result.current.workspaces).toEqual([]);

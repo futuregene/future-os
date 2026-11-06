@@ -15,11 +15,11 @@ interface WorkspaceDialogsProps {
 /**
  * What the workspace delete is about to do.
  *
- * The three numbers are the backend's counts, not the loaded pages', and they
- * answer the reader's real question — which conversations survive, and where
- * they will be. Neither sentence may call a conversation "archived" unless the
- * reader shelved it themselves: a conversation hidden by its folder was never
- * archived, and saying so read as a mistake (115 build, "ces codex").
+ * The numbers are the backend's counts for the list the delete was started from,
+ * and they answer the reader's real question — which conversations this click
+ * removes, and where the survivors will be. The two lists are independent, so
+ * the shelf's sentence never mentions the conversations the workspace list still
+ * shows, and vice versa; that cross-talk is what the 115 build reported.
  */
 function deleteDescription(
   state: WorkspaceDeleteDialogState | null,
@@ -29,24 +29,27 @@ function deleteDescription(
   if (!summary)
     return t("workspaceDialogs.deleteDescription");
   const { deletedThreads: deleted, keptArchivedThreads: keptShelved, keptLiveThreads: keptLive } = summary;
+  if (state?.scope === "archived") {
+    if (deleted > 0 && keptLive > 0) {
+      return t("workspaceDialogs.deleteShelvedWorkspaceDescription", {
+        deleted,
+        kept: keptLive,
+      });
+    }
+    if (keptLive > 0)
+      return t("workspaceDialogs.deleteShelvedKeepsLiveDescription", { kept: keptLive });
+    if (deleted > 0)
+      return t("workspaceDialogs.deleteShelvedOnlyDescription", { deleted });
+    return t("workspaceDialogs.deleteActiveOnlyDescription");
+  }
   if (deleted > 0 && keptShelved > 0) {
     return t("workspaceDialogs.deleteMixedDescription", {
       deleted,
       kept: keptShelved,
     });
   }
-  if (deleted > 0 && keptLive > 0) {
-    // Deleting from the archived shelf: the folder hid conversations the reader
-    // never shelved, and they come back to the conversations list.
-    return t("workspaceDialogs.deleteShelvedWorkspaceDescription", {
-      deleted,
-      kept: keptLive,
-    });
-  }
   if (keptShelved > 0)
     return t("workspaceDialogs.deleteKeptDescription", { kept: keptShelved });
-  if (keptLive > 0)
-    return t("workspaceDialogs.deleteShelvedKeepsLiveDescription", { kept: keptLive });
   // Nothing survives: the delete takes everything in it, which is the sentence
   // this confirmation has always used.
   return t("workspaceDialogs.deleteActiveOnlyDescription");

@@ -111,8 +111,8 @@ pub use workspace_files::{search_workspace_files, WorkspaceFileResult, Workspace
 pub use workspaces::{
     archive_workspace, create_workspace, delete_summary, delete_workspace, file_session_workspace,
     get_or_create_chat_workspace, get_workspace, list_workspaces, pin_workspace,
-    purge_soft_deleted_workspaces, rename_workspace, restore_workspace, WorkspaceDeleteSummary,
-    WorkspaceRecord,
+    purge_soft_deleted_workspaces, rename_workspace, restore_workspace, DeleteScope,
+    WorkspaceDeleteSummary, WorkspaceRecord,
 };
 
 pub fn app_data_path() -> Result<AppDataPath, crate::Error> {

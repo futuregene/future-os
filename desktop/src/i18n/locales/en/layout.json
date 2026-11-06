@@ -164,8 +164,9 @@
     "deleteMixedDescription": "This workspace will be removed: {{deleted}} active conversations are deleted with it, and {{kept}} archived conversations are kept - they appear under Archived in the conversations list, where unarchiving one reopens it. Files on disk are not deleted.",
     "deleteKeptDescription": "This workspace will be removed, and its {{kept}} archived conversations are kept - they appear under Archived in the conversations list, where unarchiving one reopens it. Files on disk are not deleted.",
     "nameEmpty": "Name cannot be empty.",
-    "deleteShelvedWorkspaceDescription": "This workspace will be removed: its {{deleted}} archived conversations are deleted with it, and its {{kept}} active conversations are kept in the conversations list, ready to continue. Files on disk are not deleted.",
-    "deleteShelvedKeepsLiveDescription": "This workspace will be removed: its {{kept}} active conversations are kept in the conversations list, ready to continue. Files on disk are not deleted."
+    "deleteShelvedWorkspaceDescription": "This workspace will be removed: its {{deleted}} archived conversations are deleted with it, and its {{kept}} active conversations are not touched - they stay in the conversations list. Files on disk are not deleted.",
+    "deleteShelvedKeepsLiveDescription": "This workspace will be removed: its {{kept}} active conversations are not touched - they stay in the conversations list. Files on disk are not deleted.",
+    "deleteShelvedOnlyDescription": "This workspace will be removed: its {{deleted}} archived conversations are deleted with it. Files on disk are not deleted."
   },
   "gate": {
     "title": "Welcome to FutureOS",
