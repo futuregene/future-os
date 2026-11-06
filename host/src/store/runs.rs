@@ -9,8 +9,7 @@ use serde::{Deserialize, Serialize};
 use super::db::*;
 use super::records::*;
 use super::status::{
-    EXECUTING_RUN_STATUSES_SQL, QUEUED_RUN_STATUS, TERMINAL_RUN_STATUSES,
-    TERMINAL_RUN_STATUSES_SQL,
+    EXECUTING_RUN_STATUSES_SQL, QUEUED_RUN_STATUS, TERMINAL_RUN_STATUSES, TERMINAL_RUN_STATUSES_SQL,
 };
 use super::util::*;
 
@@ -2365,8 +2364,10 @@ mod tests {
         );
 
         let infos = latest_run_infos(&["t1".to_string(), "t2".to_string()]).expect("infos");
-        let by_thread: std::collections::HashMap<_, _> =
-            infos.iter().map(|info| (info.thread_id.as_str(), info.run_id.as_str())).collect();
+        let by_thread: std::collections::HashMap<_, _> = infos
+            .iter()
+            .map(|info| (info.thread_id.as_str(), info.run_id.as_str()))
+            .collect();
         assert_eq!(by_thread["t1"], "running_old");
         assert_eq!(
             by_thread["t2"], "exec_next",

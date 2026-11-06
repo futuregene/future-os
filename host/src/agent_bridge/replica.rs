@@ -243,7 +243,8 @@ mod tests {
             let _lease = manager.acquire("run-settled").unwrap();
         }
         manager.hand_off_to_observer("run-queued");
-        assert!(manager.is_owned_or_recently_released("run-settled"));    }
+        assert!(manager.is_owned_or_recently_released("run-settled"));
+    }
 
     #[tokio::test]
     async fn rejected_collection_releases_ownership() {

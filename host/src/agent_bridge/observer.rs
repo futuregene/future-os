@@ -3078,7 +3078,9 @@ mod tests {
             .await
         );
 
-        let run = crate::store::get_run("run-promote").expect("get").expect("some");
+        let run = crate::store::get_run("run-promote")
+            .expect("get")
+            .expect("some");
         assert_eq!(
             run.status, "running",
             "the turn started, so the row must stop claiming it is only waiting"
