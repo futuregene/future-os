@@ -609,3 +609,23 @@ help:
 	@echo "  uninstall                           Remove installed binaries from $(PREFIX)"
 	@echo "  package-desktop                     Package desktop bundles"
 	@echo "  clean                               Remove build artifacts"
+
+# Visual regression: compare a case's recording against a stored baseline of
+# downscaled frames. Thresholds come from each case's own jitter (>= 5 runs);
+# a case whose own runs disagree is excluded rather than given a loose number.
+#   make test-visual CASES="remote-device-list settings-page"
+#   make test-visual-changed REF=origin/main        (only pages the diff touches)
+# Updating a baseline is explicit and recorded:
+#   node harness/scripts/visual-regression.mjs --case X --update-baseline --reason "..."
+test-visual:
+	node harness/scripts/visual-regression.mjs --check $(CASES)
+
+test-visual-changed:
+	node harness/scripts/visual-regression.mjs --changed $(REF)
+
+# NOT TRIGGERED IN CI TODAY: harness changes run no code lane, so this target is
+# what runs locally and in the scheduled task. The workflow step, when the lane
+# exists, is:
+#   - run: make test-visual-changed REF=origin/main
+#     (needs a recorded baseline and a browser; see harness/visual/)
+.PHONY: test-visual test-visual-changed

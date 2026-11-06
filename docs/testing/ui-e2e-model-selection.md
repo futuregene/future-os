@@ -269,3 +269,38 @@ Caveat learned the hard way: a transfer assertion that is green both before and 
 reverting the fix does not guard that fix — it only guards "the row never updates at all".
 Add the capability, then **prove the assertion goes red on the reverted commit**; otherwise
 it is a test of nothing.
+
+### Visual regression: the other half of the coverage
+
+Assertions caught 68% of the replayable UI fixes. Of the 22 they missed, **18 still
+changed the picture** — those were never "the wrong property", they were "something
+moved", and a frame comparison answers that without anyone writing a spec.
+
+`node harness/scripts/visual-regression.mjs` (and `make test-visual`, `make
+test-visual-changed REF=origin/main`) stores each case's recording as downscaled
+grayscale frames and compares a new run against it frame by frame.
+
+**Thresholds are per case, from that case's own jitter.** Five repeats of the same
+case produced byte-identical frames in all ten cases measured (max spread 0.0000), so
+0.01 is a floor with a wide margin rather than a tuned number. A case whose own runs
+disagree by more than 5% is refused rather than given a loose threshold — a flaky
+visual test is switched off within days.
+
+**Updating a baseline is a recorded act**: `--update-baseline --reason "…"` writes
+who/when/commit/why into the case's `meta.json`. Nothing updates implicitly; an
+auto-updating baseline silences every future regression.
+
+**Only touched pages are compared**: `harness/visual/page-map.json` maps source
+prefixes to the cases that draw them, and `--changed <ref>` selects from that map. A
+change nobody mapped triggers nothing, which is visible in the output rather than
+silent.
+
+Not wired into CI today: harness changes run no code lane, so this runs locally and
+from the scheduled task; the workflow step is written in the `Makefile` comment next to
+the target.
+
+Measured on the 22 missed fixes (20 replayable with a recording): **18 flagged, 2 not**
+— both `perf-desktop-boot`, whose fixes changed startup timing, not pixels (worst frame
+0.0001). The 2 cases that had looked near-threshold under raw video (0.0103 / 0.0153)
+measure 0.0232 and 0.6848 here, i.e. comfortably visible; they are in. The 14 fixes with
+revert conflicts are **untested**, not passed.
