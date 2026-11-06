@@ -79,6 +79,35 @@ export function clearComposerDraft(draftKey: string): void {
 }
 
 /**
+ * Put an unsent message back into a conversation's draft.
+ *
+ * A message the Agent never received exists nowhere else: no run row, no agent
+ * entry — only whatever the app still holds. The composer draft is where an
+ * unsent message belongs, because the conversation restores it on its next
+ * mount and sending it from there is an explicit retry through the normal send
+ * path. Both ways a staged first message can go undelivered end here: the Agent
+ * rejected it, or a new conversation replaced the one staging slot before this
+ * prompt left it.
+ *
+ * A draft the user typed since wins: it is newer intent, and concatenating the
+ * two would fabricate a message nobody wrote.
+ */
+export function restoreComposerDraft(
+  draftKey: string | undefined,
+  message: { content: string; attachments?: readonly MessageAttachment[] },
+): void {
+  if (!draftKey)
+    return;
+  const existing = loadComposerDraft(draftKey);
+  if ((existing?.text ?? "").trim().length > 0 || (existing?.attachments?.length ?? 0) > 0)
+    return;
+  saveComposerDraft(draftKey, {
+    text: message.content,
+    attachments: [...(message.attachments ?? [])],
+  });
+}
+
+/**
  * Drop a conversation's draft when it still holds exactly the message that was
  * just accepted again. A rejected first send is restored to the draft so it can
  * be retried explicitly; once that retry (or the draft's own send) succeeds the

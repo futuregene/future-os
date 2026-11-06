@@ -5,6 +5,8 @@ import type { ActivitySection } from "../ActivityRail";
 import { plainTitleText } from "@future-os/markdown";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { restoreComposerDraft } from "../../../features/agent/composerDraft";
+import { isPromptSendInFlight } from "../../../features/agent/pendingPromptSends";
 import i18n from "../../../i18n";
 import { updateCachedAgentState } from "../../../integrations/agent/agentStateCache";
 import { validateImageAttachment } from "../../../integrations/storage/files";
@@ -129,6 +131,17 @@ export function useNewConversation({
       await refreshStore(thread.id);
       setSection(thread.mode === "workspace" ? "workspace" : "chat");
       setCenterMode("thread");
+      // One slot holds the staged first message, and this assignment replaces
+      // whatever was in it. A prompt still sitting there was never delivered:
+      // its conversation was created, the Agent never saw the message, so
+      // replacing the slot strands a conversation that opens empty forever
+      // (no session, no message, and — because a chat workspace directory is
+      // created by the first message — no folder either). Hand the message back
+      // to that conversation's draft instead, so it is one explicit resend away
+      // rather than gone; a prompt a send already picked up keeps going on its
+      // own and must not reappear as a draft (see `isPromptSendInFlight`).
+      if (pendingPrompt && !isPromptSendInFlight(pendingPrompt.id))
+        restoreComposerDraft(pendingPrompt.targetThreadId, pendingPrompt);
       setPendingPrompt({
         attachments: input.attachments,
         id: newPendingPromptId(thread.id),
