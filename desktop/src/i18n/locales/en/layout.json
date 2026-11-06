@@ -159,10 +159,10 @@
     "renameTitle": "Rename workspace",
     "renameDescription": "Give this workspace a name that's easy to recognize.",
     "deleteTitle": "Delete workspace",
-    "deleteDescription": "This workspace and its active conversations are removed from the sidebar; archived conversations are kept as ordinary chats. Files on disk are not deleted.",
+    "deleteDescription": "This workspace and its active conversations are removed from the sidebar; archived conversations are kept, and appear under Archived in the conversations list. Files on disk are not deleted.",
     "deleteActiveOnlyDescription": "This workspace and its conversations are removed from the sidebar; files on disk are not deleted.",
-    "deleteMixedDescription": "This workspace will be removed: {{deleted}} active conversations are deleted with it, and {{kept}} archived conversations are kept as independent conversations you can unarchive. Files on disk are not deleted.",
-    "deleteKeptDescription": "This workspace will be removed, and its {{kept}} archived conversations are kept as independent conversations you can unarchive. Files on disk are not deleted.",
+    "deleteMixedDescription": "This workspace will be removed: {{deleted}} active conversations are deleted with it, and {{kept}} archived conversations are kept - they appear under Archived in the conversations list, where unarchiving one reopens it. Files on disk are not deleted.",
+    "deleteKeptDescription": "This workspace will be removed, and its {{kept}} archived conversations are kept - they appear under Archived in the conversations list, where unarchiving one reopens it. Files on disk are not deleted.",
     "nameEmpty": "Name cannot be empty."
   },
   "gate": {
