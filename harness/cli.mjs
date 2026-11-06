@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+
+
 /**
  * UI test harness — end to end.
  *
@@ -13,6 +15,7 @@
  */
 import { mkdirSync, writeFileSync, readdirSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { loadCases, listCases, CASES_DIR } from "./lib/cases.mjs";
 import { prepare, BASE_DB, MODELS_COPY, DATA_DIR } from "./lib/data.mjs";
 import { ensureDevServer, ensureMobileServer, ensureAssetServer, ensureTerminalServer, DEFAULT_URL } from "./lib/dev-server.mjs";
@@ -49,6 +52,23 @@ function stamp() {
 }
 
 async function main() {
+  // A case must not touch this machine's real store. The fixture answers most
+  // commands, but anything it does not handle falls through to a live backend —
+  // that is how 130 empty sessions once landed in the real library, all with the
+  // scratch worktree as their cwd. Pointing FUTURE_HOME at a throwaway directory
+  // means even a fallback writes somewhere disposable.
+  const isolated = process.env.FUTURE_HOME
+    ? null
+    : join(tmpdir(), `future-harness-home-${process.pid}-${Date.now()}`);
+  if (isolated) {
+    mkdirSync(isolated, { recursive: true });
+    process.env.FUTURE_HOME = isolated;
+    process.stdout.write(`FUTURE_HOME=${isolated} (真实 ~/.future 本轮只读)\n`);
+    const cleanup = () => { try { rmSync(isolated, { recursive: true, force: true }); } catch {} };
+    process.on("exit", cleanup);
+    process.on("SIGINT", () => { cleanup(); process.exit(130); });
+  }
+
   const command = process.argv[2] ?? "help";
 
   if (command === "help" || command === "--help") {
