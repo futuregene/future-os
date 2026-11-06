@@ -85,13 +85,14 @@ pub use runs::{
     find_run_by_trigger_message_id, get_tool_call_input, has_active_run, latest_run,
     latest_run_infos, list_run_events, list_runs, list_runs_in_window, mark_remote_prompt_accepted,
     update_run_status_if_active, LatestRunInfo, RunEventRecord, RunRecord, ToolCallRecord,
-    ToolOutputRecord,
+    ToolOutputRecord, mark_run_queued,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use runs::{append_run_event, flush_run_event_log_for_test, reset_run_event_writer_for_test};
 pub use skill_reco::{record_skill_reco, skill_reco_today, SkillRecoToday};
-/// Run-status vocabulary: terminal states, so callers stop re-listing them.
-pub use status::is_terminal_run_status;
+/// Run-status vocabulary: terminal states, so callers stop re-listing them, and
+/// `queued` — accepted but held behind another run, which is neither.
+pub use status::{is_queued_run_status, is_terminal_run_status, QUEUED_RUN_STATUS};
 pub use thread_sources::{record_thread_source, thread_source};
 pub use threads::{
     archive_thread, archive_thread_tree, batch_archive_threads, bind_thread_session_id,

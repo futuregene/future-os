@@ -99,6 +99,22 @@ function stageFailure(stage: PreviewStage, error: unknown): PreviewStageError {
   return error instanceof PreviewStageError ? error : new PreviewStageError(stage, error);
 }
 
+/**
+ * Whether a failed read says the Agent has no such run, rather than that it
+ * could not answer just now.
+ *
+ * The Agent answers `run ... is not known by this session` (and the older `is
+ * not the active run` refusal) for a run id it never executed or has already
+ * retired. Neither improves by asking again, and a queued prompt that the turn
+ * boundary folded into the run ahead leaves exactly such an id behind — so the
+ * preview has to tell "no such run" apart from "ask me in a moment", or it
+ * keeps retrying a question with one fixed answer.
+ */
+function isUnknownRunError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /is not known by this session|is not the active run|unknown run/i.test(message);
+}
+
 /** Record a successful preview read: the streak (and any note) is over. */
 function recordPreviewSuccess(runId: string) {
   previewFailureStreaks.delete(runId);
@@ -247,7 +263,25 @@ async function projectRunForLivePreview(
     return null;
   const cached = liveProjectionCache.get(runId) ?? null;
   const since = cached?.projector.lastSequence ?? -1;
-  let events = await readRunEvents(runId, since);
+  let events: Awaited<ReturnType<typeof readRunEvents>>;
+  try {
+    events = await readRunEvents(runId, since);
+  }
+  catch (error) {
+    // The Agent does not know this run at all. That is not a preview that fell
+    // behind — there is nothing behind — and every retry asks the same question
+    // and gets the same answer, so a run the queue folded into the turn ahead
+    // (or one already retired) used to keep re-reading forever and hang a "sync
+    // paused" note on the reply. Stop reading it, and deliberately WITHOUT the
+    // give-up reason: that reason is what raises the note, and the note would
+    // claim this client is behind on a run that does not exist. An explicit
+    // reset re-opens the run if it ever becomes real.
+    if (isUnknownRunError(error)) {
+      markRepairOutcome(runId, "failed");
+      return null;
+    }
+    throw error;
+  }
   if (!shouldApply())
     return null;
 
@@ -492,6 +526,15 @@ export function ensureLiveReply(
   // Only the assistant AFTER the last user turn belongs to the in-flight
   // exchange; an earlier one is a settled reply this run did not write.
   if (lastAssistantIdx > lastUserIdx) {
+    const trailing = messages[lastAssistantIdx]!;
+    // That trailing bubble may already belong to ANOTHER run that is still
+    // streaming — a prefetched preview for this run that has not produced
+    // anything yet, landing while the real one is mid-reply. Re-stamping it
+    // would hand the running reply to this run, and the next projection of the
+    // real one would find no bubble of its own: the reply flickers, and a tool
+    // row whose result already arrived reads "interrupted" until the turn ends.
+    if (trailing.status === "streaming" && trailing.runId && trailing.runId !== runId)
+      return messages;
     return messages.map((message, index): AgentMessage => (index === lastAssistantIdx
       // The snapshot's own content, segments and activity are kept — the reader
       // should not watch the work already on screen disappear — and only its
