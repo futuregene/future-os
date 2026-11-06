@@ -177,3 +177,31 @@ Sample sizes, so nobody reads this as a complete study:
 The conclusion above does not depend on those gaps — three green runs were already
 enough to see that what looks like a false positive is really a review ticket — but
 the numbers should be quoted with their n.
+
+### What a green suite does not say
+
+A full pass read **122/122 cases passed** on 2026-11-06. That number is narrower than
+it looks: **the cases only assert what someone encoded.** They cannot see a stale
+line of copy, a one-frame flash, a colour that drifted, or two halves of a screen
+contradicting each other unless a case happens to check exactly that.
+
+Two probes make the gap concrete.
+
+**A "failing" case can be the harness, not the product.** `42-workspace-delete` was
+failing because the confirmation copy had been deliberately split into four variants
+(active-only / archived-only / mixed / all-archived). The product got *more* precise;
+the case still matched one sentence. Fixed by asserting the contract — workspace
+leaves the sidebar, its conversations go with it — instead of the wording.
+
+**A judge quote is not evidence until it is checked.** A `v4` scan of two of the most
+interactive recordings produced eight observations; the most alarming one quoted the
+sidebar as reading 「暂无会话 yet 工作区/对话」. The source has neither that sentence
+nor the word "yet": it has two separate strings, `暂无工作区对话` and `暂无对话`.
+The judge had merged and paraphrased them. **Verify the quoted text against the frame
+(or the locale file) before opening anything** — otherwise the review queue fills
+with ghosts.
+
+Cost of that probe, for planning: two recordings, 170 s and 263 s, 11.3k + 6.1k prompt
+tokens and 6.9k + 12.7k completion tokens — **0.38 and 0.53 credits**, ~0.9 credits for
+two. Budget roughly half a credit per recording and ~4 minutes each; a 15-case sweep
+is ~7 credits and an hour, not a CI step.

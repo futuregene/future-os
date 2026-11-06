@@ -67,7 +67,17 @@ export async function runTuiCases({ cases, runDir }) {
         "--cols", String(testCase.cols ?? 130),
         "--rows", String(testCase.rows ?? 40),
       ], env);
-      results.push(JSON.parse(readFileSync(join(caseDir, "result.json"), "utf8")));
+      const result = JSON.parse(readFileSync(join(caseDir, "result.json"), "utf8"));
+      // The TUI refuses to attach when the agent and the client were stamped with
+      // different versions, and every case then fails on its own unrelated
+      // assertion ("text not found: …"). Name the cause on the case itself so one
+      // root cause does not read as ten defects.
+      if (/Incompatible Future Agent|local startup is forbidden/i.test(result.bodyText ?? "")) {
+        result.fatal = "TUI 拒绝连接 demo agent：二进制版本不一致（见 preflight 提示），" +
+          "重建 future 与 demo_agent 时使用同一个 FUTURE_VERSION";
+        result.status = "fail";
+      }
+      results.push(result);
     }
     catch (error) {
       const result = {
