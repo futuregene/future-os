@@ -6,7 +6,7 @@ import type { useRemote } from "../../../remote/RemoteContext";
 import type { MobileAttachment } from "../../../remote/types";
 import { useCommittedRef } from "../../../lib/useCommittedRef";
 import { useConversationOperation } from "../useConversationOperation";
-import type { SendMessageApi } from "../useSendMessage";
+import type { SendMessageApi, SendMessageIntent } from "../useSendMessage";
 import type { SkillRecommendationApi } from "../useSkillRecommendation";
 import { showToast } from "../utils";
 
@@ -32,7 +32,11 @@ export function useComposerSubmission(options: Options) {
   const [installingScope, setInstallingScope] = useState<object | null>(null);
   useLayoutEffect(() => () => { attemptRef.current = null; }, [scope]);
 
-  const submit = useCallback(async (install = false, dismiss = false) => {
+  const submit = useCallback(async (
+    install = false,
+    dismiss = false,
+    intent?: SendMessageIntent,
+  ): Promise<boolean> => {
     const initial = latest.current;
     // No judgment about whether the session "looks" busy: that flag is this
     // client's own projection and outlives the run it described (a missed
@@ -41,11 +45,11 @@ export function useComposerSubmission(options: Options) {
     // flight is refused there with a reason — and `attemptRef` still stops one
     // tap from submitting twice.
     if (attemptRef.current || initial.restoring || initial.remote.busy
-      || initial.remote.compacting) return;
-    if (!initial.message.trim() && !initial.attachments.length) return;
-    if (fusionTask(initial.message) !== null && !initial.remote.capabilities.has("fusion_v1")) {showToast(initial.t("chat.fusionUnavailable"));return;}
-    if (fusionTask(initial.message) !== null && !fusionAllowed.current) { showToast(initial.t("chat.fusionDisabled")); return; }
-    if (fusionTask(initial.message) === "") { initial.setMessage("/fusion "); return; }
+      || initial.remote.compacting) return false;
+    if (!initial.message.trim() && !initial.attachments.length) return false;
+    if (fusionTask(initial.message) !== null && !initial.remote.capabilities.has("fusion_v1")) {showToast(initial.t("chat.fusionUnavailable"));return false;}
+    if (fusionTask(initial.message) !== null && !fusionAllowed.current) { showToast(initial.t("chat.fusionDisabled")); return false; }
+    if (fusionTask(initial.message) === "") { initial.setMessage("/fusion "); return false; }
     const attempt = {};
     attemptRef.current = attempt;
     const isCurrent = captureOperation();
@@ -56,19 +60,23 @@ export function useComposerSubmission(options: Options) {
       if (install) {
         setInstallingScope(scope);
         const result = await initial.recommendation.installAndUse(initial.message);
-        if (!unchanged()) return;
-        if (result === null) { showToast(initial.t("chat.skillInstallFailed")); return; }
+        if (!unchanged()) return false;
+        if (result === null) { showToast(initial.t("chat.skillInstallFailed")); return false; }
         composed = result;
         initial.setMessage(composed);
       } else if (dismiss || initial.recommendation.suggestion) {
         initial.recommendation.dismiss();
       } else if (fusionTask(initial.message) === null) {
         const held = await initial.recommendation.evaluate(initial.message);
-        if (held || !unchanged()) return;
+        if (held || !unchanged()) return false;
       }
-      if (!isCurrent()) return;
+      if (!isCurrent()) return false;
       initial.scrollToLatest();
-      await initial.send(composed);
+      // Whether the session took it: an interrupt that ends the run afterwards
+      // must not do so on the strength of a send that only put the draft back.
+      return intent
+        ? await initial.send(composed, intent)
+        : await initial.send(composed);
     } finally {
       if (attemptRef.current === attempt) {
         attemptRef.current = null;
@@ -76,7 +84,17 @@ export function useComposerSubmission(options: Options) {
       }
     }
   }, [captureOperation, latest, scope, fusionAllowed]);
-  const sendFromComposer = useCallback(() => submit(), [submit]);
+  /**
+   * The composer's send, with what this send means while the reply streams.
+   *
+   * `intent` names the queueing policy for the sends whose event is "hand this
+   * to the session" (the send sheet's two rows), so their delivery does not
+   * depend on this screen's reading of the run.
+   */
+  const sendFromComposer = useCallback(
+    (intent?: SendMessageIntent) => submit(false, false, intent),
+    [submit],
+  );
   const dismissSuggestedSkill = useCallback(() => { void submit(false, true); }, [submit]);
   const installSuggestedSkill = useCallback(() => submit(true), [submit]);
   return useMemo(() => ({

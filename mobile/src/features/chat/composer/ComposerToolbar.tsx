@@ -22,7 +22,8 @@ interface Props {
   stopRequest: ReturnType<typeof useStopRequest>;
   skillEvaluating: boolean;
   canSend: boolean;
-  send: () => Promise<void>;
+  /** The ordinary send (a run is not streaming); answers whether it landed. */
+  send: () => Promise<boolean>;
   /** Something is in the field: a send while a run streams becomes a choice. */
   hasDraft: boolean;
   /** Open the "hand it to the session, or interrupt and send" sheet. */

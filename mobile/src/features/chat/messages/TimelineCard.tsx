@@ -1,5 +1,5 @@
 import { Check, CircleAlert, Copy, GitBranch } from "lucide-react-native";
-import { Fragment, memo, useState } from "react";
+import { Fragment, memo, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
 import { Pressable, Text, useWindowDimensions, View } from "react-native";
@@ -9,7 +9,7 @@ import { canRecoverMessage } from "@future-os/remote-client/recovery";
 import { useAppearance, useTheme } from "../../../theme/ThemeContext";
 import { Button } from "../../../components/Button";
 import { useStyles } from "./messageStyles";
-import type { TimelineCardProps } from "./types";
+import type { ReasoningLoader, TimelineCardProps } from "./types";
 import { RunIndicator, formatDuration } from "./messageUtils";
 import { useCopyState } from "./useCopyState";
 import { AttachmentChip } from "./AttachmentChip";
@@ -30,6 +30,7 @@ function TimelineCardView({
   onContinue,
   onFork,
   onResolveToolTarget,
+  onResolveReasoning,
 }: TimelineCardProps) {
   const styles = useStyles();
   const { colors, chat } = useTheme();
@@ -46,6 +47,34 @@ function TimelineCardView({
   // the state lives here rather than in a wrapper component so the row keeps
   // its memoized identity.
   const [promptOpen, setPromptOpen] = useState(false);
+  // Reasoning bodies are fetched when a row is opened (the lean lanes send the
+  // boundaries only), so this maps a segment back to its position among the
+  // reply's reasoning blocks — the identity the host resolves the body by. Built
+  // from the same slice list the blocks are, so the two can never disagree.
+  const reasoningIndex = useMemo(() => {
+    const byId = new Map<string, number>();
+    if (item.kind !== "message") return byId;
+    let index = 0;
+    for (const segment of item.segments ?? []) {
+      if (segment.kind === "thinking") byId.set(segment.id, index++);
+    }
+    return byId;
+  }, [item]);
+  // Only a settled reply's read is worth caching (see `resolveReasoning`): a
+  // block still being written keeps growing, so the row asks again each time it
+  // is opened.
+  const resolveReasoning = useMemo<ReasoningLoader | undefined>(() => {
+    if (!onResolveReasoning || item.kind !== "message") return undefined;
+    const runId = item.runId;
+    if (!runId || reasoningIndex.size === 0) return undefined;
+    const settled = !item.streaming;
+    return (segmentId: string) => {
+      const index = reasoningIndex.get(segmentId);
+      return index === undefined
+        ? Promise.resolve(null)
+        : onResolveReasoning(runId, index, settled);
+    };
+  }, [item, onResolveReasoning, reasoningIndex]);
 
   if (item.kind === "message") {
     if (item.role === "assistant") {
@@ -101,6 +130,7 @@ function TimelineCardView({
                       blocks={hiddenWork}
                       onOpenFile={onOpenFile}
                       onResolveToolTarget={onResolveToolTarget}
+                      onResolveReasoning={resolveReasoning}
                     />
                   )
                 : null}
@@ -113,6 +143,7 @@ function TimelineCardView({
                       onOpenFile={onOpenFile}
                       replyStreaming={item.streaming}
                       onResolveToolTarget={onResolveToolTarget}
+                      onResolveReasoning={resolveReasoning}
                       streaming={item.streaming && block.kind === "segment" && block.segment === item.segments?.at(-1)}
                     />
                   </Fragment>

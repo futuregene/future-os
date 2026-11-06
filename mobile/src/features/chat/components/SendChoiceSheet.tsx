@@ -11,8 +11,8 @@ import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
  *
  * The desktop answers one prompt at a time, so a send during a run is a decision
  * rather than a refusal: hand it to the session (which holds it and runs it when
- * the current turn ends), or end the run now and send it. The draft is never
- * taken without one of these rows being picked.
+ * the current turn ends), or hand it over and end the run it waited behind. The
+ * draft is never taken without one of these rows being picked.
  *
  * The first row used to fill a queue this phone kept in memory; it now means the
  * same thing it means on the desktop: the message is the session's, at once.

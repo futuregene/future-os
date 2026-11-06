@@ -535,7 +535,8 @@ test-screenshot-harness:
 # values may be demoted as fixture data, and the clip clock the analysis labels its
 # screenshots with. Offline, no browser, no model — a few hundred milliseconds.
 test-ui-harness:
-	node --test harness/lib/perf.test.mjs harness/lib/provenance.test.mjs harness/lib/video.test.mjs
+	node --test harness/lib/perf.test.mjs harness/lib/provenance.test.mjs harness/lib/video.test.mjs \
+		harness/scripts/video-judge.test.mjs
 
 # Wire codegen owners: packages/rpc (future.proto) + channels (feishu_ws pbbp2).
 #

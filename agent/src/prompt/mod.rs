@@ -479,6 +479,15 @@ fn build_sessions_section(is_subsession: bool) -> String {
         // conversation rail, `session list --parent` and the lineage guard would
         // all miss it.
         //
+        // Because that sentence names the flag, it read as the shape of *every*
+        // session this section creates, and the default became the opposite of
+        // what it should be: a session told to set up a workspace and start a
+        // conversation in it spawned that conversation with `--parent` and
+        // nested a user's project under a setup chat, which also removed its
+        // ability to delegate. So the paragraph states the default outright —
+        // no parent unless this turn is delegating — and the user's own request
+        // (a new workspace's session) is named as the case that must not.
+        //
         // The closing rules are the failure modes seen when this is left to the
         // model's judgement: a prompt that assumes shared history, a turn that
         // ends while a child still runs, and a wait per spawn that serializes
@@ -497,8 +506,107 @@ fn build_sessions_section(is_subsession: bool) -> String {
         // parent's only options are abandoning it in silence or killing work it
         // just paid for. Collecting the answer stays the default — it is what a
         // turn that can wait should do, and a callback spends credits.
+        //
+        // Short paragraphs, not one 4,000-character sentence: this is read
+        // mid-task, and the run-on form buried the two facts that change what
+        // the model does — that lineage is opt-in, and that a child needs its
+        // own `--cwd` or it works in a scratch directory.
         parts.push(
-            "Work can also be handed to another conversation of your own — a sub-session, which the user may also call a subagent, a sub-agent, or 子会话 / 子agent / 子代理; treat those words as asking for one. Create it with the lineage recorded in the same step — `future session new --parent <this-session-id> --name \"<short task>\" --json` (the id comes back as `sessionId`, not `id`) — then hand it the work with `future run --no-wait --session <child> \"<prompt>\"` (a long or non-ASCII prompt goes in a file passed as `--message-file <path>`, because `@<file>` would hand the child an attachment instead of the message): the ack returns at once and the run continues, and `future session wait <child> --timeout 4m` prints its answer when it ends — and exits non-zero when the run ends without one, which is the child failing, not an empty answer. To see where it has got to, `future session status <child>` reports whether its run is still active and `future session transcript --session <child> --runs` its per-run outcomes; appending behind it, --steer, and the provenance/intent requirement are the same as for a referenced conversation. The rest of a child's lifecycle: `future session abort <child>` stops its run and clears its queue, `future session delete <child>` removes it once its result is no longer wanted, `future session approvals <child>` lists the approvals it is parked on — a --no-wait child waiting there looks exactly like a slow one — and `future session list --parent <this-session-id> --json` lists your own children with their isStreaming flags. Hand your own model, thinking level and tool access down with the work: `--model <the Current model your environment block reports> --thinking <the Thinking level it reports>` on that `run` (they are recorded on the child, so its later runs keep them), because a child otherwise starts on the agent's default model and `default` thinking rather than yours — leave both off when the default is what you want. Tool permission is the one thing handed down for you: the child inherits the level you are running with, so it can never start with more access than its parent. A child cannot see this conversation, so its prompt must stand alone: the goal, the files to touch, the acceptance check, and that it should return the result rather than a narration. If you cannot stay to collect that answer — a run can outlast the shell tool's 600-second cap — put this session's id in the prompt and ask the child to report back with `future run --session <this-session-id>`, saying the report comes from this conversation: that call is a real run here and spends credits, so it is for answers that would otherwise land after the turn ends, not the normal path. Delegate only when the work is genuinely independent or long enough that its tool chatter would otherwise fill this conversation: the child is a full run on the user's credits, so do not spawn one to answer something you could read yourself, and a child cannot start its own child. Never end your turn with one still running — wait for it, or abort it and say so — unless you gave it this session's id to report back to, and then say in your reply that it is still going. Keep at most three in flight, launched first and awaited one at a time, because a blocking wait per spawn serializes the work and loses the point of delegating."
+            "Work can also be handed to another conversation of your own — a sub-session, which the \
+             user may also call a subagent, a sub-agent, or 子会话 / 子agent / 子代理; treat those \
+             words as asking for one."
+                .to_string(),
+        );
+        parts.push(
+            "Lineage is deliberate, not the default: `--parent` belongs to a child this session \
+             creates to do work it will collect. A session the user asked for — a new workspace's \
+             conversation, a fresh session they will drive themselves — is created without it \
+             (`future session new --cwd <dir> --name <name> --json`) and stays top-level; \
+             recording a parent is what makes a session a sub-session, listed \
+             under this one, whose prompt no longer offers to delegate further. Handing work into \
+             a top-level session later does not make it a child either."
+                .to_string(),
+        );
+        parts.push(
+            "To delegate, name the directory the work belongs to and record the lineage in the same \
+             step:\n\n\
+             ```sh\n\
+             future session new --cwd <project-dir> --parent <this-session-id> --name \"<short task>\" --json\n\
+             ```\n\n\
+             The id comes back as `sessionId`, not `id`. `--cwd` is not decoration: a session \
+             created without it takes the caller's working directory, and a chat thread's is a \
+             scratch workspace under `~/.future/workspaces/chat/`, so the child would build the \
+             work somewhere the user never opens."
+                .to_string(),
+        );
+        parts.push(
+            "Then hand it the work — a long or non-ASCII prompt goes in a file passed as \
+             `--message-file <path>`, because `@<file>` would hand the child an attachment instead \
+             of the message:\n\n\
+             ```sh\n\
+             future run --no-wait --session <child> \"<prompt>\"\n\
+             ```\n\n\
+             The ack returns at once and the run continues. `future session wait <child> --timeout \
+             4m` prints its answer when it ends, and exits non-zero when the run ends without one, \
+             which is the child failing, not an empty answer. Appending behind it, --steer, and the \
+             provenance/intent requirement are the same as for a referenced conversation."
+                .to_string(),
+        );
+        parts.push(
+            "To see where it has got to, `future session status <child>` reports whether its run is \
+             still active and `future session transcript --session <child> --runs` its per-run \
+             outcomes."
+                .to_string(),
+        );
+        parts.push(
+            "The rest of a child's lifecycle: `future session abort <child>` stops its run and \
+             clears its queue, `future session delete <child>` removes it once its result is no \
+             longer wanted, `future session approvals <child>` lists the approvals it is parked on \
+             — a `--no-wait` child waiting there looks exactly like a slow one — and \
+             `future session list --parent <this-session-id> --json` lists your own children with \
+             their isStreaming flags."
+                .to_string(),
+        );
+        parts.push(
+            "Hand your own model, thinking level and tool access down with the work: `--model <the \
+             Current model your environment block reports> --thinking <the Thinking level it \
+             reports>` on that `run` (they are recorded on the child, so its later runs keep them); \
+             a child otherwise starts on the agent's default model and `default` thinking rather \
+             than yours — leave both off when the default is what you want. Tool permission is the \
+             one thing handed down for you: the child inherits the level you are running with, so \
+             it can never start with more access than its parent."
+                .to_string(),
+        );
+        parts.push(
+            "A child cannot see this conversation, so its prompt must stand alone: the goal, the \
+             files to touch, the acceptance check, and that it should return the result rather \
+             than a narration."
+                .to_string(),
+        );
+        parts.push(
+            "If you cannot stay to collect that answer — a run can outlast the shell tool's \
+             600-second cap — put this session's id in the prompt and ask the child to report back \
+             with `future run --session <this-session-id>`, saying the report comes from this \
+             conversation. That call is a real run here and spends credits, so it is for answers \
+             that would otherwise land after the turn ends, not the normal path."
+                .to_string(),
+        );
+        parts.push(
+            "Delegate only when the work is genuinely independent or long enough that its tool \
+             chatter would otherwise fill this conversation: the child is a full run on the user's \
+             credits, so do not spawn one to answer something you could read yourself, and a child \
+             cannot start its own child."
+                .to_string(),
+        );
+        parts.push(
+            "Keep at most three in flight, launched first and awaited one at a time, because a \
+             blocking wait per spawn serializes the work and loses the point of delegating."
+                .to_string(),
+        );
+        parts.push(
+            "Never end your turn with one still running — wait for it, or abort it and say so — \
+             unless you gave it this session's id to report back to, and then say in your reply \
+             that it is still going."
                 .to_string(),
         );
     }
@@ -516,8 +624,61 @@ fn build_sessions_section(is_subsession: bool) -> String {
     // Spell the call forms out: they are not uniform. `transcript` and `run`
     // take `--session <id>`, while `status` and `wait` take the id positionally
     // and reject `--session` as an unknown option.
+    // Split from the one-paragraph form it had: same sentences, a paragraph
+    // each, so "read it / send it / watch it" does not have to be recovered
+    // from a single 2,000-character run.
     parts.push(
-        "A user message may reference another conversation as [title](futureos://session/<session-id>): the id in that link identifies that conversation. Read it with the shell tool — `future session transcript --session <id>` (add --select/--grep/--limit/--counts to read it cheaply, --runs for its run outcomes) or `future session history search --session <id> --query \"<text>\"` to find a passage. To send it a message use `future run --session <id> \"<message>\"`, which starts a real run there and spends the user's credits; if that conversation is mid-run, you decide whether to append behind it (the default) or interrupt it with --steer, which cuts off the run in progress and discards the rest of what it was doing — use it when the new message replaces that work, not when it adds to it. By default the command waits for that run to end, so raise the shell tool's timeout for a long one (max 600s); `future run --no-wait --session <id> \"<message>\"` gets an ack immediately and continues, and the answer comes back later from `future session wait <id> [--run <run-id>]` — the ack carries the run id — while `future session status <id>` shows whether that run is still active. A conversation parked on an approval accepts the message but runs nothing until someone answers the approval, and from outside that looks exactly like a slow run: `future session approvals <id>` is how to tell the two apart. The target sees only a bare user turn, so state what it cannot infer: that the message comes from another conversation (name the sending session id) and whether you expect it to act on the content or merely take note. When the payload is long or non-ASCII, write it to a file and pass it as `--message-file <path>` — the CLI reads the file itself and sends its bytes as the message, unchanged — instead of reading it into a shell variable first: on Windows PowerShell 5.1 `Get-Content` decodes a BOM-less UTF-8 file with the ANSI code page, and the mojibake is what lands in the other conversation. Do not reach for `@<file>` to carry a message: that wraps the content in a `<file name=…>` block meant for a human attaching a file, so the target reads an attachment instead of your message, and the conversation it starts is titled from that wrapper."
+        "A user message may reference another conversation as [title](futureos://session/<session-id>): \
+         the id in that link identifies that conversation."
+            .to_string(),
+    );
+    parts.push(
+        "Read it with the shell tool — `future session transcript --session <id>` (add \
+         --select/--grep/--limit/--counts to read it cheaply, --runs for its run outcomes) or \
+         `future session history search --session <id> --query \"<text>\"` to find a passage."
+            .to_string(),
+    );
+    parts.push(
+        "To send it a message use `future run --session <id> \"<message>\"`, which starts a real \
+         run there and spends the user's credits. If that conversation is mid-run, you decide \
+         whether to append behind it (the default) or interrupt it with --steer, which cuts off the \
+         run in progress and discards the rest of what it was doing — use it when the new message \
+         replaces that work, not when it adds to it."
+            .to_string(),
+    );
+    parts.push(
+        "By default the command waits for that run to end, so raise the shell tool's timeout for a \
+         long one (max 600s). `future run --no-wait --session <id> \"<message>\"` gets an ack \
+         immediately and continues, and the answer comes back later from `future session wait \
+         <id> [--run <run-id>]` — the ack carries the run id — while `future session status <id>` \
+         shows whether that run is still active."
+            .to_string(),
+    );
+    parts.push(
+        "A conversation parked on an approval accepts the message but runs nothing until someone \
+         answers the approval, and from outside that looks exactly like a slow run: `future session \
+         approvals <id>` is how to tell the two apart."
+            .to_string(),
+    );
+    parts.push(
+        "The target sees only a bare user turn, so state what it cannot infer: that the message \
+         comes from another conversation (name the sending session id) and whether you expect it to \
+         act on the content or merely take note."
+            .to_string(),
+    );
+    parts.push(
+        "When the payload is long or non-ASCII, write it to a file and pass it as \
+         `--message-file <path>` — the CLI reads the file itself and sends its bytes as the \
+         message, unchanged — instead of reading it into a shell variable first: on Windows \
+         PowerShell 5.1 `Get-Content` decodes a BOM-less UTF-8 file with the ANSI code page, and \
+         the mojibake is what lands in the other conversation."
+            .to_string(),
+    );
+    parts.push(
+        "Do not reach for `@<file>` to carry a message: that wraps the content in a \
+         `<file name=…>` block meant for a human attaching a file, so the target reads an \
+         attachment instead of your message, and the conversation it starts is titled from that \
+         wrapper."
             .to_string(),
     );
 
@@ -1156,11 +1317,25 @@ mod tests {
         }
         // `--parent` in the same step is what creates a child rather than an
         // unrelated session that merely happens to be busy.
-        assert!(prompt.contains("future session new --parent <this-session-id>"));
+        assert!(
+            prompt.contains("future session new --cwd <project-dir> --parent <this-session-id>")
+        );
+        // ...and `--cwd` rides on it: a create without a directory inherits the
+        // caller's, which in a chat thread is the thread's scratch workspace —
+        // a child left without it built its files where the user never looks.
+        assert!(prompt.contains("`--cwd` is not decoration"));
+        assert!(prompt.contains("~/.future/workspaces/chat/"));
+        // ...and it is delegation's flag, not the shape of every session this
+        // section creates: a session made for the user stays top-level. Naming
+        // the flag without the default is what nested a project's own
+        // conversation under the setup chat that spawned it.
+        assert!(prompt.contains("Lineage is deliberate, not the default"));
+        assert!(prompt.contains("stays top-level"));
+        assert!(prompt.contains("future session new --cwd <dir> --name <name> --json"));
         // The one field the model has to read out of `--json`, named: it is
         // `sessionId`, while `session list` calls the same thing `id`, and
         // models guessed one or the other and lost a turn to a KeyError.
-        assert!(prompt.contains("the id comes back as `sessionId`"));
+        assert!(prompt.contains("id comes back as `sessionId`"));
         // A wait that ends without an answer is a failure, not a blank success:
         // a delegated child once reported "done" without ever answering.
         assert!(prompt.contains("exits non-zero when the run ends without one"));
@@ -1234,7 +1409,7 @@ mod tests {
             is_subsession: true,
             ..Default::default()
         });
-        assert!(!sub.contains("future session new --parent"));
+        assert!(!sub.contains("future session new --cwd <project-dir> --parent"));
         assert!(!sub.contains("at most three in flight"));
         assert!(sub.contains("cannot start one of its own"));
         // Reading and messaging an existing conversation still works from a
@@ -1248,7 +1423,7 @@ mod tests {
             tools: vec![crate::tools::read_tool()],
             ..Default::default()
         });
-        assert!(!read_only.contains("future session new --parent"));
+        assert!(!read_only.contains("future session new --cwd <project-dir> --parent"));
     }
 
     /// The session capabilities are their own top-level section, early in the
@@ -1440,5 +1615,24 @@ mod tests {
         // Should still contain workspace memory and environment sections
         assert!(prompt.contains("# Workspace Memory"));
         assert!(prompt.contains("# Environment"));
+    }
+
+    /// The section is read mid-task, and it used to be two sentences of
+    /// 2,000–4,000 characters each — the shape that let the model skim past
+    /// "lineage is opt-in" and "the child needs `--cwd`". One thought per
+    /// paragraph, and nothing long enough to read as a wall.
+    #[test]
+    fn sessions_section_paragraphs_stay_readable() {
+        let section = build_sessions_section(false);
+        let (longest, text) = section
+            .split("\n\n")
+            .map(|paragraph| (paragraph.chars().count(), paragraph))
+            .max_by_key(|(len, _)| *len)
+            .unwrap();
+        assert!(
+            longest <= 900,
+            "a paragraph grew back to {longest} characters; split it into one thought per paragraph: {}",
+            text.chars().take(80).collect::<String>()
+        );
     }
 }

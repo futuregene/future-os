@@ -24,7 +24,7 @@ import { useChatScroll } from "./useChatScroll";
 import { useQuestionNav } from "./useQuestionNav";
 import { useTimelinePaging } from "./useTimelinePaging";
 import { useCompactContext } from "./useCompactContext";
-import { useSendMessage, sendFailureText, QUEUED_SEND_POLICY } from "./useSendMessage";
+import { useSendMessage, sendFailureText, QUEUED_SEND_POLICY, type SendMessageIntent } from "./useSendMessage";
 import { useSkillRecommendation } from "./useSkillRecommendation";
 import { useDesktopResource } from "../settings/useDesktopResource";
 import { ChatTimeline, type SyncNoticeState } from "./components/ChatTimeline";
@@ -141,6 +141,11 @@ export function ChatScreen() {
   // Forking is a Desktop-hosted operation; an older host that does not
   // advertise it leaves the affordance hidden rather than failing on tap.
   const forkSupported = remote.capabilities.has("fork_v1");
+  // A lean reply's reasoning row opens by fetching its body. An older host
+  // advertises nothing for that read — and would answer "Unsupported command",
+  // i.e. a row that promises content and produces an error — so the row stays a
+  // plain label there rather than offering an expansion it cannot deliver.
+  const reasoningFetchSupported = remote.capabilities.has("reasoning_fetch_v1");
 
   const { message, setMessage, attachments, setAttachments, sessionRefs, rememberSessionRef, restoring } = useComposerDraft(
     remote,
@@ -278,9 +283,13 @@ export function ChatScreen() {
   }, [changeQueue, forgetQueuedRow, remote, sessionId, setMessage]);
 
   /** Send, then read the queue: the row that send may have made is now real. */
-  const sendAndReadQueue = useCallback(async (override?: string) => {
-    await send(override);
+  const sendAndReadQueue = useCallback(async (
+    override?: string,
+    intent?: SendMessageIntent,
+  ) => {
+    const delivered = intent ? await send(override, intent) : await send(override);
     refreshQueue();
+    return delivered;
   }, [refreshQueue, send]);
 
   // Approvals live docked above the composer (not inline in the transcript), and
@@ -480,6 +489,7 @@ export function ChatScreen() {
     continue: continueMessage,
     fork: forkMessage,
     resolveToolTarget: remote.resolveToolCallTarget,
+    resolveReasoning: remote.resolveReasoning,
   });
   useEffect(() => {
     timelineActionsRef.current = {
@@ -489,12 +499,14 @@ export function ChatScreen() {
       continue: continueMessage,
       fork: forkMessage,
       resolveToolTarget: remote.resolveToolCallTarget,
+      resolveReasoning: remote.resolveReasoning,
     };
   }, [
     continueMessage,
     forkMessage,
     openTimelineAttachment,
     openTimelineFile,
+    remote.resolveReasoning,
     remote.resolveToolCallTarget,
     retryMessage,
   ]);
@@ -532,6 +544,12 @@ export function ChatScreen() {
     [],
   );
 
+  const handleResolveReasoning = useCallback(
+    (runId: string, index: number, settled?: boolean) =>
+      timelineActionsRef.current.resolveReasoning(runId, index, settled),
+    [],
+  );
+
   const renderTimelineItem = useCallback(
     ({ item }: { item: TimelineItem; }) => (
       <View onLayout={onRowLayout}>
@@ -545,11 +563,14 @@ export function ChatScreen() {
           onContinue={handleTimelineContinue}
           onFork={forkSupported ? handleTimelineFork : undefined}
           onResolveToolTarget={handleResolveToolTarget}
+          onResolveReasoning={reasoningFetchSupported ? handleResolveReasoning : undefined}
         />
       </View>
     ),
     [
       forkSupported,
+      handleResolveReasoning,
+      reasoningFetchSupported,
       handleResolveToolTarget,
       handleTimelineAttachment,
       handleTimelineContinue,

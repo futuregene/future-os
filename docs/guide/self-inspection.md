@@ -360,7 +360,8 @@ Delegation is the same machinery aimed at a conversation of your own — a
 sub-session, which users may also call a subagent, a sub-agent or 子agent/子代理:
 
 ```sh
-future session new --parent <your-session-id> --name "<short task>" --json
+future session new --cwd <project-dir> --parent <your-session-id> \
+  --name "<short task>" --json
 future run --no-wait --session <child> \
   --model <id> --thinking <level> "<self-contained prompt>"
 ```
@@ -371,7 +372,16 @@ future run --no-wait --session <child> \
 Recording the parent on the create command is what makes the child a child: the
 lineage exists even if its first run never happens, it is drawn under this
 conversation in the app, and the prompt that runs there is told it cannot
-delegate further. Everything in the section above — `--no-wait` and `wait`,
+delegate further. So `--parent` is for delegation and nothing else — a session
+the user asked for, such as a new workspace's own conversation, is created
+without it and stays top-level, even when this turn goes on to hand it work;
+delegating into it later does not make it a child either.
+
+`--cwd` is part of the same sentence: a session created without it inherits the
+caller's directory, and a chat thread's is a scratch workspace under
+`~/.future/workspaces/chat/`. A child left without `--cwd` therefore does its
+work in a directory the user never opens — pass the directory the work belongs
+to, not the default. Everything in the section above — `--no-wait` and `wait`,
 `--steer`, `status`, `transcript`, provenance and intent — applies unchanged;
 `future session list --parent <id>` lists one session's children,
 `abort`/`delete` stop and remove one, and `future session approvals <child>`

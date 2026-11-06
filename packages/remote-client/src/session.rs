@@ -263,6 +263,10 @@ pub const SELECTIVE_EVENTS_FEATURE: &str = "selective_events_v1";
 ///   the phone does and what covers a host that trims the key.
 /// * `eventId` / `timestamp` — the timeline's live entry falls back to the record
 ///   inside `data` and then to `{runId}:{idx}` (`useRemoteTimeline`).
+/// * a reasoning block's body — sent as a boundary alone, and read back through
+///   `get_reasoning` (by the block's index in the run) when a reader opens the
+///   row. `ThinkingBlock` is the half that asks; a client that never opened it
+///   would draw a chevron onto an empty box.
 /// * a shell call's arguments — the host serves `get_tool_call_args` **only** to a
 ///   client that declared this, and lean is what takes them off the page. The two
 ///   are one mechanism: declaring one without consuming the other would leave

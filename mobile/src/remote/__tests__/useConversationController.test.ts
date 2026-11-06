@@ -1096,3 +1096,77 @@ describe("lean tool-argument fetch", () => {
     act(() => h.renderer.unmount());
   });
 });
+
+/**
+ * The lean lanes send a reasoning row's boundaries and not its body, so the row
+ * asks for the text when the reader opens it. The controller owns the
+ * one-fetch-per-block cache — and deliberately does not use it for a reply that
+ * is still streaming, whose block keeps growing.
+ */
+describe("on-demand reasoning fetch", () => {
+  const reasoningCalls = (requestRetry: jest.Mock) =>
+    requestRetry.mock.calls.filter(([command]: [{ type: string }]) =>
+      command.type === "get_reasoning");
+
+  it("fetches a settled block once and serves the cache to a remounted row", async () => {
+    const requestRetry = jest.fn(async () => ({
+      data: { runId: "run-1", index: 0, text: "why it broke" },
+    }));
+    const h = await mountController({ selected: "session-a", requestRetry });
+    await expect(current(h).resolveReasoning("run-1", 0)).resolves.toBe("why it broke");
+    expect(reasoningCalls(requestRetry)).toEqual([[
+      { type: "get_reasoning", sessionId: "session-a", runId: "run-1", offset: 0 },
+      "session-a",
+    ]]);
+    await expect(current(h).resolveReasoning("run-1", 0)).resolves.toBe("why it broke");
+    expect(reasoningCalls(requestRetry)).toHaveLength(1);
+    act(() => h.renderer.unmount());
+  });
+
+  it("reads a streaming block fresh every time, because it is still growing", async () => {
+    const requestRetry = jest.fn(async () => ({
+      data: { runId: "run-1", index: 0, text: "half a thought" },
+    }));
+    const h = await mountController({ selected: "session-a", requestRetry });
+    await expect(current(h).resolveReasoning("run-1", 0, false)).resolves.toBe("half a thought");
+    await expect(current(h).resolveReasoning("run-1", 0, false)).resolves.toBe("half a thought");
+    expect(reasoningCalls(requestRetry)).toHaveLength(2);
+    act(() => h.renderer.unmount());
+  });
+
+  it("keeps a miss as a miss instead of asking again", async () => {
+    const requestRetry = jest.fn(async () => ({
+      data: { runId: "run-1", index: 3, text: null },
+    }));
+    const h = await mountController({ selected: "session-a", requestRetry });
+    await expect(current(h).resolveReasoning("run-1", 3)).resolves.toBeNull();
+    await expect(current(h).resolveReasoning("run-1", 3)).resolves.toBeNull();
+    expect(reasoningCalls(requestRetry)).toHaveLength(1);
+    act(() => h.renderer.unmount());
+  });
+
+  it("never serves one conversation's block to another", async () => {
+    const requestRetry = jest.fn(async () => ({
+      data: { runId: "run-1", index: 0, text: "session a thought" },
+    }));
+    const h = await mountController({ selected: "session-a", requestRetry });
+    await expect(current(h).resolveReasoning("run-1", 0)).resolves.toBe("session a thought");
+    h.selectedRef.current = "session-b";
+    requestRetry.mockResolvedValueOnce({
+      data: { runId: "run-1", index: 0, text: "session b thought" },
+    });
+    await expect(current(h).resolveReasoning("run-1", 0)).resolves.toBe("session b thought");
+    expect(reasoningCalls(requestRetry)).toHaveLength(2);
+    act(() => h.renderer.unmount());
+  });
+
+  it("rejects when the desktop has no such route, so the row can say so", async () => {
+    const requestRetry = jest.fn(async () => {
+      throw new Error("Unsupported command: get_reasoning");
+    });
+    const h = await mountController({ selected: "session-a", requestRetry });
+    await expect(current(h).resolveReasoning("run-1", 0)).rejects.toThrow("Unsupported command");
+    act(() => h.renderer.unmount());
+  });
+});
+
