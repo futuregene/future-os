@@ -1,0 +1,15 @@
+{
+  "_comment": "路径前缀 → 会被它影响的用例。视觉回归只比对这里点到的用例；没有映射的改动不触发比对。",
+  "prefixes": {
+    "desktop/src/features/remote-peer/": ["remote-device-list", "remote-page-both-directions", "remote-add-device-repeat"],
+    "desktop/src/features/remote/": ["remote-device-list", "remote-page-both-directions"],
+    "desktop/src/features/tasks/": ["tasks-panel-refresh", "tasks-create-same-name", "tasks-panel-detail"],
+    "desktop/src/features/settings/": ["settings-page", "skill-recommend-card"],
+    "desktop/src/features/skill": ["skill-recommend-card", "skill-guide-banner"],
+    "desktop/src/components/layout/ActivityRail": ["side-panels-smoke", "workspace-rename", "batch-select-all-cancel"],
+    "desktop/src/components/layout/Workspace": ["workspace-rename"],
+    "desktop/src/features/workspaces/": ["workspace-rename"],
+    "desktop/src/i18n/locales/zh/": [],
+    "perf/": ["perf-desktop-boot"]
+  }
+}

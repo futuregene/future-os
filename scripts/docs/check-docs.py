@@ -140,6 +140,9 @@ WHITELIST = {
     # The harness's own coverage matrix: same reason, it has to sit where a case
     # author looks before adding one.
     "harness/COVERAGE.md",
+    # Visual-regression baseline guide: it travels with the baselines it
+    # explains, so whoever refreshes one reads how (and why) beside the frames.
+    "harness/visual/README.md",
 }
 
 # Bilingual pairing also applies to these paths outside docs/.
