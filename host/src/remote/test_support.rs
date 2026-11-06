@@ -1044,6 +1044,33 @@ fn default_answer(
                 "arguments": arguments.unwrap_or(Value::Null),
             }))
         }
+        // The reasoning sibling of the shell-args fetch: answered from the same
+        // recorded entries, in the order a reply renders them (entry position,
+        // then block order), so a mocked page can prove the read end to end.
+        "get_reasoning" => {
+            let index = cmd.offset.unwrap_or(0);
+            let text = if index < 0 {
+                None
+            } else {
+                state
+                    .session_entries
+                    .get(&cmd.session_id)
+                    .and_then(|entries| entries.get("entries"))
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|entry| entry.get("runId").and_then(Value::as_str) == Some(&cmd.run_id))
+                    .flat_map(|entry| entry["blocks"].as_array().into_iter().flatten())
+                    .filter(|block| block.get("kind").and_then(Value::as_str) == Some("reasoning"))
+                    .nth(usize::try_from(index).unwrap_or(usize::MAX))
+                    .and_then(|block| block.get("text").and_then(Value::as_str).map(str::to_owned))
+            };
+            ok(json!({
+                "runId": cmd.run_id,
+                "index": index,
+                "text": text,
+            }))
+        }
         "get_events_since" => ok(json!({ "events": [], "hasMore": false })),
         "get_state" => ok(json!({
             "sessionId": cmd.session_id,

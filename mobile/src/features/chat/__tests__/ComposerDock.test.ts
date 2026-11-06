@@ -950,7 +950,7 @@ test("the thinking selector shows the model's own starting level for a stored on
 });
 
 test("a streaming draft's send slot asks the queue question, and both rows reach the screen", async () => {
-  const send = jest.fn(async () => {});
+  const send = jest.fn(async () => true);
   const abort = jest.fn(async () => {});
   const { tree, pressable, unmount } = mountDock({
     message: "下一条",
@@ -969,22 +969,52 @@ test("a streaming draft's send slot asks the queue question, and both rows reach
     act(() => choose.props.onPress());
     expect(tree.root.findByType(SendChoiceSheet).props.open).toBe(true);
 
-    // Handing it to the session is a plain send: the busy policy travels with the
-    // prompt (see `useSendMessage`), so nothing is held here.
+    // Handing it to the session is a plain send: the row names the busy policy
+    // itself, so the send does not depend on this screen's streaming flag, and
+    // nothing is held here.
     act(() => tree.root.findByType(SendChoiceSheet).props.onSend());
-    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith({ busyPolicy: "enqueue_coalescing" });
     expect(tree.root.findByType(SendChoiceSheet).props.open).toBe(false);
     expect(abort).not.toHaveBeenCalled();
 
-    // The interrupt row ends the run first, then sends: the message lands behind
-    // the boundary the interrupt is about to reach.
+    // The interrupt row hands the message over first and ends the run second:
+    // the prompt is the session's either way, so a stop that won a race cannot
+    // leave the paragraph behind in the field.
     act(() => pressable("chat.chooseSend")!.props.onPress());
     await act(async () => tree.root.findByType(SendChoiceSheet).props.onInterruptAndSend());
-    expect(abort).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledTimes(2);
-    expect(abort.mock.invocationCallOrder[0]!).toBeLessThan(
-      send.mock.invocationCallOrder[1]!,
+    expect(send).toHaveBeenLastCalledWith({ busyPolicy: "enqueue_coalescing" });
+    expect(abort).toHaveBeenCalledTimes(1);
+    expect(send.mock.invocationCallOrder[1]!).toBeLessThan(
+      abort.mock.invocationCallOrder[0]!,
     );
+  } finally {
+    unmount();
+  }
+});
+
+test("an interrupt whose send was refused leaves the run alone", async () => {
+  // The draft is back in the field and the reader still has it: stopping the
+  // reply on top of a message that never left costs them both.
+  const send = jest.fn(async () => false);
+  const abort = jest.fn(async () => {});
+  const { tree, pressable, unmount } = mountDock({
+    message: "下一条",
+    send,
+    remote: {
+      draft: false, selectedSessionId: "s1", desktopOnline: true,
+      connectionPresentation: { level: "connected" }, models: [], modelId: "model",
+      streaming: true, busy: false, abort, capabilities: new Set(),
+    },
+  });
+  try {
+    act(() => pressable("chat.chooseSend")!.props.onPress());
+    await act(async () => tree.root.findByType(SendChoiceSheet).props.onInterruptAndSend());
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(abort).not.toHaveBeenCalled();
+    // The sheet is closed either way: the reader's choice was acted on, and the
+    // send's own refusal is what speaks (a toast, and the draft back).
+    expect(tree.root.findByType(SendChoiceSheet).props.open).toBe(false);
   } finally {
     unmount();
   }

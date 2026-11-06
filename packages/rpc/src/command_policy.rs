@@ -111,6 +111,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "list_tool_calls",
     "get_tool_output",
     "get_tool_call_args",
+    "get_reasoning",
     "get_system_prompt",
     "list_providers",
     "list_session_ids",
@@ -249,6 +250,7 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
         | "list_tool_calls"
         | "get_tool_output"
         | "get_tool_call_args"
+        | "get_reasoning"
         | "get_fork_messages"
         | "get_fork_entries"
         | "get_messages"

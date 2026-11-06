@@ -5,6 +5,7 @@ import { copyEventPayload, createContentEventLane, entriesToMessages, eventPaylo
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { requestRemotePeer } from "./remotePeerClient";
+import { forgetRemoteReasonings } from "./remoteReasoning";
 import { fetchRunReplay, replayTailCovers, replayUnsupported } from "./remoteRunReplay";
 import { RemoteRunStreams } from "./remoteRunStreams";
 import { forgetRemoteToolTargets } from "./remoteToolTarget";
@@ -628,10 +629,14 @@ export function useRemoteTimeline(
       // landed first would be replaced by the page.
       await reconcileActiveRun(desktopId, sessionId);
     })();
-    // Leaving this conversation drops its fetched tool arguments. They are keyed
-    // by run and call id, which never repeat, so nothing here would ever be read
-    // again — and the cache would otherwise grow for the life of the window.
-    return () => forgetRemoteToolTargets(desktopId, sessionId);
+    // Leaving this conversation drops its fetched tool arguments and reasoning
+    // bodies. Both are keyed by run identity that never repeats, so nothing here
+    // would ever be read again — and the caches would otherwise grow for the
+    // life of the window.
+    return () => {
+      forgetRemoteToolTargets(desktopId, sessionId);
+      forgetRemoteReasonings(desktopId, sessionId);
+    };
   }, [enabled, desktopId, sessionId, readPage, reconcileActiveRun]);
 
   // Live: append this session's events; ignore every other session's.

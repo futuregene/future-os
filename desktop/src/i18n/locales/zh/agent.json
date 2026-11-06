@@ -7,6 +7,8 @@
   "activity": {
     "thinking": "正在思考",
     "thoughtCompleted": "已思考",
+    "thoughtLoading": "正在读取推理…",
+    "thoughtUnavailable": "这段推理暂时读不到",
     "stepCount": "×{{count}}",
     "stepTools": "工具调用 {{count}} 次",
     "stepThoughts": "思考 {{count}} 次",

@@ -12,13 +12,34 @@ import { showToast } from "./utils";
 
 type Remote = ReturnType<typeof useRemote>;
 
+/** What one send carries beyond its text. */
+export interface SendMessageIntent {
+  /**
+   * What this send means if the session still has a run in flight
+   * (`enqueue_coalescing`: hold it and run it at the turn boundary).
+   *
+   * Named by the caller for the sends whose *own meaning* is queueing — the
+   * "hand it to the session" rows of the send sheet, and the interrupt that
+   * follows the same hand-over. Deriving it from this screen's `streaming` flag
+   * instead makes the policy depend on a projection: a flag that has already
+   * flipped (the stop's terminal landed, the run row on the host not yet) sends
+   * with no policy at all, and the host refuses the prompt with `session_busy`
+   * — the interrupt worked and the paragraph is still in the field.
+   */
+  busyPolicy?: string;
+}
+
 export interface SendMessageApi {
   /**
    * Send the composer's message. `override` sends an explicit text instead —
    * used after composing a skill command, where the value is not yet in state
    * (reading `message` in the same tick would send the pre-composition text).
+   *
+   * Resolves whether the session took it, so a caller that does something else
+   * afterwards on the strength of that send — ending the run — can tell a
+   * delivery from a refusal that only restored the draft.
    */
-  send: (override?: string) => Promise<void>;
+  send: (override?: string, intent?: SendMessageIntent) => Promise<boolean>;
   retryMessage: (item: TimelineItem) => void;
   continueMessage: (item: TimelineItem) => void;
   /** Fork the conversation at a settled reply's turn and open the child. */
@@ -95,13 +116,16 @@ export interface SendMessageOptions {
 export function useSendMessage(options: SendMessageOptions): SendMessageApi {
   const inputRef = useCommittedRef(options);
   const { captureOperation } = useConversationOperation(options.remote);
-  const send = useCallback(async (override?: string) => {
+  const send = useCallback(async (
+    override?: string,
+    intent?: SendMessageIntent,
+  ): Promise<boolean> => {
     const { remote, t, message, attachments, setMessage, setAttachments, setTransferProgress,
       sessionRefs = {}, compactionPending = false, streaming } = inputRef.current;
-    if (compactionPending || remote.compacting) { showToast(t("chat.compacting")); return; }
+    if (compactionPending || remote.compacting) { showToast(t("chat.compacting")); return false; }
     const draftValue = (override ?? message).trim();
     const value = expandSessionReferences(draftValue, sessionRefs);
-    if (!value && !attachments.length) return;
+    if (!value && !attachments.length) return false;
     const isCurrent = captureOperation();
     const sameText = () => [message.trim(), draftValue].includes(inputRef.current.message.trim());
     // A message written while a reply streams is not refused here: it is handed
@@ -110,22 +134,25 @@ export function useSendMessage(options: SendMessageOptions): SendMessageApi {
     // conversation, which can lag the desktop — a stale `true` is harmless (an
     // idle session simply runs the prompt), and a stale `false` leaves the legacy
     // refusal, which the reader is told about instead of being queued behind a
-    // run they cannot see.
-    const busyPolicy = streaming ? QUEUED_SEND_POLICY : undefined;
+    // run they cannot see. A caller whose send *is* queueing names the policy
+    // itself (`intent`), so that answer stops depending on the projection.
+    const busyPolicy = intent?.busyPolicy ?? (streaming ? QUEUED_SEND_POLICY : undefined);
     setTransferProgress(attachments.length ? 0 : null);
     try {
       await remote.sendMessage(value, attachments, (done, total) => {
         if (isCurrent()) setTransferProgress(total > 0 ? done / total : null);
       }, busyPolicy ? { busyPolicy } : undefined);
-      if (!isCurrent()) return;
+      if (!isCurrent()) return false;
       if (sameText()) setMessage("");
       const submitted = new Set(attachments.map(item => item.localUri));
       setAttachments(inputRef.current.attachments.filter(item => !submitted.has(item.localUri)));
+      return true;
     } catch (error) {
-      if (!isCurrent()) return;
+      if (!isCurrent()) return false;
       if (sameText()) setMessage(draftValue);
       const failure = sendFailureText(error, remote.presence?.holder?.name?.trim());
       showToast(t(failure.key, failure.params));
+      return false;
     } finally {
       if (isCurrent()) setTransferProgress(null);
     }

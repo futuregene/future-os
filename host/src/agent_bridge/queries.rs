@@ -431,6 +431,31 @@ pub async fn get_tool_call_args(
     Ok(future_rpc::decode::response_data(&response))
 }
 
+/// Fetch one reasoning block's text from the Agent, by its position in the run.
+///
+/// The reasoning sibling of [`get_tool_call_args`]: a lean lane sends a reasoning
+/// row's boundaries without the body, so the row asks for it here when it is
+/// opened, and never before. `index` counts reasoning blocks across the run's
+/// entries in stream order — the order the reply renders them in.
+pub async fn get_reasoning(
+    session_id: String,
+    run_id: String,
+    index: i64,
+) -> Result<serde_json::Value, crate::Error> {
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(future_rpc::proto::RpcCommand {
+            run_id,
+            offset: Some(index),
+            ..base_command("get_reasoning", session_id)
+        })
+        .await
+        .map_err(|error| format!("get_reasoning failed: {error}"))?
+        .into_inner()
+        .ok_or_rpc_error("get_reasoning rejected")?;
+    Ok(future_rpc::decode::response_data(&response))
+}
+
 /// Fetch one backward, user-exchange-bounded history page from the Agent. This
 /// keeps remote mobile paging end-to-end: the desktop no longer downloads the
 /// complete Agent history again for every NATS page and then slices it locally.

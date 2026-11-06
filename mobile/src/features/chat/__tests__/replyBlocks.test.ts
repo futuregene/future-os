@@ -79,10 +79,18 @@ describe("folding work that did not report back", () => {
       .toEqual(["a", "b", "steps:c,d"]);
   });
 
-  test("an interrupted call keeps its own row instead of joining a summary", () => {
-    // A folded run is summarised as work that ran ("Ran 3 commands"), which is
-    // exactly the claim an interrupted call cannot back up.
-    expect(blocks([completed("a"), completed("b"), interrupted("c"), completed("d")]))
-      .toEqual(["steps:a,b", "c", "d"]);
+  // A call that never reported back has stopped, so it folds with the rest of
+  // the work. Keeping it on its own row split one reply into two summaries with
+  // a lone 已中断 line between them — one lost tool result cut a long answer in
+  // half. The summary names it to a screen reader instead.
+  test("a call that never reported back folds into the run around it", () => {
+    expect(blocks([completed("a"), interrupted("c"), completed("b"), completed("d")]))
+      .toEqual(["steps:a,c,b,d"]);
+  });
+
+  test("an interrupted call alone is still a row of its own", () => {
+    // A run of one is not a run: there is nothing to fold it into, and the row
+    // is the only place its own label shows.
+    expect(blocks([interrupted("c")])).toEqual(["c"]);
   });
 });

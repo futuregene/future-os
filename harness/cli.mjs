@@ -56,7 +56,10 @@ async function main() {
 
   prepare                  snapshot the real app.db into harness/.data/base.db
   list [--tag T]           list cases
-  run [--case ID|--tag T] [--no-video] [--keep-server] [--analyze none|heuristic|full]
+  run [--case ID|--tag T] [--no-video] [--keep-server] [--fault NAME]
+                           [--analyze none|heuristic|full]
+                           --fault injects a test-only defect (api-500 | empty-list | hang);
+                           it exists to measure the video judge, never to gate a case
   analyze --run DIR        (re)analyze a finished run
   report --run DIR         write report.md
   issues --run DIR [--create --yes]
@@ -147,6 +150,9 @@ async function main() {
             modelsPath: MODELS_COPY,
             viewport,
             recordVideo: !flag("no-video"),
+            // Test-only: put a known defect into the run so the video judge can
+            // be measured against it. Absent, dispatch is unchanged.
+            fault: arg("fault", null),
           }));
         }
       }
@@ -183,6 +189,12 @@ async function main() {
             fixture: null,
           }));
         }
+      }
+
+      {
+        const { preflight, reportPreflight } = await import("./lib/preflight.mjs");
+        reportPreflight(preflight({ needsTui: bySurface("tui").length > 0,
+                                    needsCli: bySurface("cli").length > 0 }));
       }
 
       for (const testCase of bySurface("cli")) {
