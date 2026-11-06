@@ -150,3 +150,30 @@ The one remaining miss is the judge's, not the fixture's: the recording plainly 
 blank rail next to a rendered conversation, and it reported both facts while still
 returning `pass`. That is the next thing to look at — with a v2/v3 comparison, not by
 editing v2 in place.
+
+### Judging policy: recall for the review queue, precision for a gate
+
+Measured on 2026-11-06 over the injected defect set and the green recordings:
+
+1. **`v4` (recall-first) feeds a review queue, never a gate.** Its prompt asks for
+   anything that looks wrong and accepts that over-reporting is fine, because a
+   missed defect is unrecoverable while a false alarm costs one look. Result:
+   **10/10 injected defects caught**, ~260 s per green case, 1–3 observations each.
+   Confirmed observations are promoted to the issue store by a human — the judge
+   itself files nothing.
+2. **Strict `v2`/`v3` are for an actual gate only.** They report only what can be
+   pointed at (contradictory content on one screen, a persistent banner, a control
+   that never responds) and scored **0/8 false positives**. That is the right
+   behaviour once a suite is stable and a gate is wanted.
+3. **`v4` must never be a gate.** It flags **100% of green runs**, so gating on it
+   blocks every healthy build.
+
+Sample sizes, so nobody reads this as a complete study:
+
+- green recordings: **n = 3 of 8** under `v4` (the remaining five were not run);
+- the `v2`/`v3` columns are **partial samples from an interrupted batch** (n = 7 and
+  n = 6), not a complete same-batch pass.
+
+The conclusion above does not depend on those gaps — three green runs were already
+enough to see that what looks like a false positive is really a review ticket — but
+the numbers should be quoted with their n.
