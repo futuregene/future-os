@@ -72,6 +72,9 @@ export function ThreadHeader({
   // that can only say so.
   useCommand("thread.usage", openUsage, Boolean(thread?.agentSessionId));
   return (
+    // `pr-14` (56px) reserves the collapsed context-panel toggle's corner: its
+    // 16px inset + 32px button + the same 8px gap the buttons to the left of it
+    // use. ContextPanel's collapsed branch spells the same sum out.
     <header
       className="flex h-12 shrink-0 select-none items-center border-b border-line-soft/40 pl-4 pr-14"
       onMouseDown={startWindowDrag}
