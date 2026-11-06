@@ -759,6 +759,39 @@ describe("usePromptOutbox sendMessage", () => {
     expect(engine.mutate).toHaveBeenCalled();
   });
 
+  /**
+   * A send that names a busy policy is held by the session, so it has not been
+   * sent: it belongs to the queue panel, not to the transcript. Committing a
+   * bubble for it put a second copy of the text at the bottom of the
+   * conversation — under the reply it was never answered by, and beside the real
+   * bubble the run's own `user_message` later added (reported 2026-11-06).
+   */
+  it("a queued send draws no bubble until the session runs it", async () => {
+    const engine = fakeEngine();
+    const h = await mountSend({ engine });
+    await act(async () => {
+      await h.result.sendMessage("你好", [], undefined, { busyPolicy: "enqueue_coalescing" });
+    });
+    // The policy travelled to the session…
+    expect(h.requestRetry).toHaveBeenCalledWith(
+      expect.objectContaining({ busyPolicy: "enqueue_coalescing", type: "prompt" }),
+      "session-1",
+    );
+    // …and nothing was written into the timeline: the queue row is the message's
+    // only representation until the turn boundary runs it.
+    expect(engine.mutate).not.toHaveBeenCalled();
+  });
+
+  /** The other ending: no policy means the session runs it now, so it is sent. */
+  it("an idle send still commits its bubble", async () => {
+    const engine = fakeEngine();
+    const h = await mountSend({ engine });
+    await act(async () => {
+      await h.result.sendMessage("你好");
+    });
+    expect(engine.mutate).toHaveBeenCalled();
+  });
+
   it("acknowledges a matching pending prompt via its receipt", async () => {
     await savePendingPrompt({
       version: 2,
