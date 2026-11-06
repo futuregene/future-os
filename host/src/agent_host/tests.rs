@@ -543,8 +543,13 @@ fn host_fixture() {
         let manager = future_agent::session::Manager::new(root.join("agent/sessions"));
         let stored = manager.load("cli-session").unwrap();
         for (run, expected) in [
+            // The run that was executing when the host stopped: it had a reply
+            // in flight, so the restart is what ended it.
             ("cli-first", "interrupted_by_restart"),
-            ("cli-follow-up", "cancelled"),
+            // The follow-up was still queued — accepted, never started. A prompt
+            // that never ran has no reply to mark interrupted, so it ends as
+            // withdrawn rather than as a stopped reply (see `8b8ac898`).
+            ("cli-follow-up", "cancelled_before_start"),
         ] {
             assert_eq!(
                 future_agent::session::find_run_terminal(&stored.entries, run).unwrap()["state"],

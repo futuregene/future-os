@@ -67,6 +67,8 @@ export interface RemoteCommand {
   pinned?: boolean;
   /** prompt creation mode / existing workspace selection */
   workspaceId?: string;
+  /** delete_workspace: which list the delete was started from (active | archived). A workspace can sit in both lists at once, and each one asks a different question, so the delete has to be told which it answers. Absent keeps the active list's answer. */
+  deleteScope?: string;
   /** create_workspace: the desktop-side directory to register (the phone has no folder picker for the host, so it types the path). */
   path?: string;
   /** `secure_ready`: what the client says it is. Optional and additive, so an older client that sends neither is simply "unknown" rather than wrong. */

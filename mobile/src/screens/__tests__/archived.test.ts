@@ -180,6 +180,26 @@ describe("the shelf across machines", () => {
     expect(rows.map(row => row.key)).toEqual(["archived-workspace:desk-a:w-empty"]);
   });
 
+  it("draws one heading for a workspace that is in use and has a shelved conversation", () => {
+    // The 115 build's duplicate: shelving one conversation out of a workspace
+    // that stays in use. The machine's own workspace list already names that
+    // workspace (it is active, not shelved), and the derivation that exists for
+    // a *missing* list added a second copy of it — so the shelf drew the same
+    // folder twice, each heading opening onto the same conversation.
+    const rows = archivedCatalogRows([
+      {
+        desktopId: "desk-a",
+        sessions: [
+          session("hello", { mode: "workspace", workspaceId: "w-case", workspaceName: "case", archived: true }),
+        ],
+        workspaces: [workspace("w-case", { name: "case" })],
+      },
+    ], new Set());
+
+    expect(rows.filter(row => row.kind === "workspace").length).toBe(1);
+    expect(rows.map(row => row.key)).toEqual(["archived-workspace:desk-a:w-case", "desk-a::hello"]);
+  });
+
   it("honours the fold set by workspace id, as the active pages do", () => {
     const rows = archivedCatalogRows([
       {

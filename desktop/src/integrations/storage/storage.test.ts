@@ -262,7 +262,11 @@ describe("storage invoke wrappers", () => {
     await renameWorkspace({ workspaceId: "w", name: "n" });
     expect(invokeMock).toHaveBeenLastCalledWith("rename_workspace", { input: { workspaceId: "w", name: "n" } });
     await deleteWorkspace("w");
-    expect(invokeMock).toHaveBeenLastCalledWith("delete_workspace", { workspaceId: "w" });
+    // The scope travels with the delete: a workspace can sit in both lists, and
+    // the two deletes take opposite halves.
+    expect(invokeMock).toHaveBeenLastCalledWith("delete_workspace", { deleteScope: "active", workspaceId: "w" });
+    await deleteWorkspace("w", "archived");
+    expect(invokeMock).toHaveBeenLastCalledWith("delete_workspace", { deleteScope: "archived", workspaceId: "w" });
     await pinWorkspace({ workspaceId: "w", pinned: true });
     expect(invokeMock).toHaveBeenLastCalledWith("pin_workspace", { input: { workspaceId: "w", pinned: true } });
     await getRecentThread();

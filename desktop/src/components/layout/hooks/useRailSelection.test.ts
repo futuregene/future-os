@@ -42,6 +42,7 @@ describe("rail selection", () => {
       threadScopes,
       visibleRemoteRows: [],
       visibleThreads,
+      view: "workspace",
     }));
 
     act(() => h.current.enterSelectionMode("chat"));
@@ -78,6 +79,7 @@ describe("rail selection", () => {
       threadScopes: new Map([[plain.id, "recent"], [pinned.id, "recent"]]),
       visibleRemoteRows: [],
       visibleThreads: [plain, pinned],
+      view: "workspace",
     }));
 
     act(() => h.current.enterSelectionMode("recent"));
@@ -102,6 +104,7 @@ describe("rail selection", () => {
       threadScopes: new Map([[plain.id, "chat"], [pinned.id, "chat"]]),
       visibleRemoteRows: [],
       visibleThreads: [plain, pinned],
+      view: "workspace",
     }));
 
     act(() => h.current.enterSelectionMode("chat"));
@@ -116,6 +119,87 @@ describe("rail selection", () => {
     h.unmount();
   });
 
+  /**
+   * One ticked row is one conversation, whatever the list handed over.
+   *
+   * The archived view flattens two separately-filled streams into one list: the
+   * shelved conversations, and the contents of each shelved workspace the reader
+   * opened. A conversation described by both arrived here twice, so ticking it
+   * once produced a toolbar reading "1 selected" over a dialog offering to
+   * delete 2 conversations — both with the same name.
+   */
+  it("counts and deletes a conversation described twice in the list once", () => {
+    const only = thread("ai助手自我介绍");
+    const onBatchDeleteThreads = vi.fn();
+    const h = renderHook(() => useRailSelection({
+      onBatchDeleteThreads,
+      onDeleteRemoteConversations: vi.fn(),
+      onSelectThread: vi.fn(),
+      // The archived view: one flat scope for both kinds of shelf.
+      pinnedAreShortcuts: false,
+      remoteScopes: new Map(),
+      threadScopes: new Map([[only.id, "archived"]]),
+      visibleRemoteRows: [],
+      // The same conversation, from the workspace-group stream and the
+      // conversation stream.
+      visibleThreads: [only, { ...only }],
+      view: "workspace",
+    }));
+
+    act(() => h.current.enterSelectionMode("archived"));
+    expect(h.current.totalCount).toBe(1);
+
+    act(() => h.current.handleRowSelect(only));
+    expect(h.current.selectedThreadIds.size).toBe(1);
+
+    act(() => h.current.deleteSelected());
+    expect(onBatchDeleteThreads).toHaveBeenCalledWith([only]);
+    h.unmount();
+  });
+
+  /**
+   * A batch belongs to the list it was opened from.
+   *
+   * Every way into a batch names a heading of one list — a workspace group, the
+   * chat section, a shelved workspace — and neither other list has that heading:
+   * the recent view has none at all, and the archived view's are other shelves.
+   * Keeping the batch across a switch left the toolbar drawing a count, a
+   * select-all and a Delete over rows that were no longer on screen.
+   */
+  it("ends the batch when the list changes, in either direction", () => {
+    const item = thread("item");
+    let view: "archived" | "recent" | "workspace" = "workspace";
+    const h = renderHook(() => useRailSelection({
+      onBatchDeleteThreads: vi.fn(),
+      onDeleteRemoteConversations: vi.fn(),
+      onSelectThread: vi.fn(),
+      remoteScopes: new Map(),
+      threadScopes: new Map([[item.id, "workspace"]]),
+      visibleRemoteRows: [],
+      visibleThreads: [item],
+      view,
+    }));
+
+    act(() => h.current.enterSelectionMode("workspace"));
+    act(() => h.current.toggleThreadSelection(item));
+    expect(h.current.selectionMode).toBe(true);
+    expect(h.current.selectedThreadIds.size).toBe(1);
+
+    // The reader switches to the recent list: the batch ends with its rows.
+    view = "recent";
+    h.rerender();
+    expect(h.current.selectionMode).toBe(false);
+    expect(h.current.selectedThreadIds.size).toBe(0);
+
+    // And it stays ended after the list changes once more — a *changed* list is
+    // what ends a batch, not a listener that reopened it on the way back.
+    view = "archived";
+    h.rerender();
+    expect(h.current.selectionMode).toBe(false);
+    expect(h.current.selectedThreadIds.size).toBe(0);
+    h.unmount();
+  });
+
   it("only Escape leaves selection mode, and nothing is bound once it is off", () => {
     const item = thread("item");
     const h = renderHook(() => useRailSelection({
@@ -126,6 +210,7 @@ describe("rail selection", () => {
       threadScopes: new Map([[item.id, "chat"]]),
       visibleRemoteRows: [],
       visibleThreads: [item],
+      view: "workspace",
     }));
 
     // While selection mode is off there is no listener at all, so Escape is just
@@ -172,6 +257,7 @@ describe("rail selection", () => {
       threadScopes: new Map([[item.id, "chat"]]),
       visibleRemoteRows: [],
       visibleThreads: [item],
+      view: "workspace",
     }));
 
     act(() => h.current.handleRowSelect(item));
@@ -200,6 +286,7 @@ describe("rail selection", () => {
       threadScopes: new Map([[item.id, "chat"]]),
       visibleRemoteRows: [remote, other],
       visibleThreads: [item],
+      view: "workspace",
     }));
 
     act(() => h.current.enterSelectionMode("chat"));
@@ -238,6 +325,7 @@ describe("rail selection", () => {
       threadScopes: new Map(),
       visibleRemoteRows: [pinnedRemote],
       visibleThreads: [],
+      view: "workspace",
     }));
 
     act(() => h.current.enterSelectionMode("chat"));

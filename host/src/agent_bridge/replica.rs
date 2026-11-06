@@ -78,6 +78,20 @@ impl AgentReplicaManager {
             .retain(|_, at| at.elapsed() < RECENTLY_RELEASED_WINDOW);
         registry.released.contains_key(run_id)
     }
+
+    /// Hand a released run straight to the observer, grace window and all.
+    ///
+    /// The window exists for one thing: a collector that projected a run's
+    /// events must not have the observer project the terminal event again a
+    /// moment later. A prompt the Agent accepted *queued* is the opposite
+    /// situation — its collector never attached (the run had no execution to
+    /// attach to), so it persisted nothing, and the run is still owed. Holding
+    /// the window there would keep the observer from projecting a run that is
+    /// about to start, which is how a queued send lost its live stream.
+    pub(super) fn hand_off_to_observer(&self, run_id: &str) {
+        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        registry.released.remove(run_id);
+    }
 }
 
 pub(super) struct ReplicaLease {
@@ -199,6 +213,37 @@ mod tests {
         // seeing the terminal events a moment later doesn't double-persist.
         assert!(manager.is_owned_or_recently_released("run-a"));
         assert!(!manager.is_owned_or_recently_released("run-b"));
+    }
+
+    /// A run handed off was never collected, so the grace window protects
+    /// nothing and must not keep the observer away from it.
+    ///
+    /// That is the queued prompt: the collector attached to nothing (the run
+    /// had no execution to attach to) and persisted nothing, while the run
+    /// still owes a whole reply. Left in the window, the observer refuses it
+    /// during the one stretch where its events are arriving.
+    #[test]
+    fn a_handed_off_run_leaves_the_grace_window() {
+        let manager = Box::leak(Box::new(AgentReplicaManager {
+            registry: Mutex::new(ReplicaRegistry::default()),
+        }));
+        {
+            let _lease = manager.acquire("run-queued").unwrap();
+        }
+        assert!(manager.is_owned_or_recently_released("run-queued"));
+
+        manager.hand_off_to_observer("run-queued");
+
+        assert!(
+            !manager.is_owned_or_recently_released("run-queued"),
+            "the observer may take the run over immediately"
+        );
+        // Only that run: an unrelated released run keeps its protection.
+        {
+            let _lease = manager.acquire("run-settled").unwrap();
+        }
+        manager.hand_off_to_observer("run-queued");
+        assert!(manager.is_owned_or_recently_released("run-settled"));
     }
 
     #[tokio::test]

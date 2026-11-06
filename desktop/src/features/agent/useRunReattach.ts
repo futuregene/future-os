@@ -147,20 +147,26 @@ export function useRunReattach({
     }
   }, [activeRunId, reloadThreadHistory, sendingRef, threadId]);
 
-  // A remote (phone/web) client can drive this thread's session in the
-  // background. This view never started that run, and the recent-run poll
-  // only self-sustains once a run is already in flight — so a fresh remote run
-  // on an idle foreground thread would otherwise go unnoticed here (only the
-  // sidebar's independent run-status poll would spin). On the backend's
-  // remote-activity signal for THIS thread, pull the new run (which arms the
-  // live-preview + settle-reload machinery) and reload messages so the phone's
-  // user bubble shows immediately. Skip while a local send owns the view.
+  // A run can start on this conversation with no local send to drive it: a
+  // remote (phone/web) client prompting in the background, and — the same
+  // shape — a prompt this view queued itself, which the Agent starts at the
+  // turn boundary. This view holds no run id during that wait (`queued` is not
+  // a live anchor: such a run may never run), so the backend's signal is the
+  // only thing that arms the live preview; without it the reply streams with
+  // nobody reading and lands in full when the turn ends.
+  //
+  // Deliberately NOT skipped while a local send owns the view. That guard was
+  // for a run arriving from elsewhere, but a queued send's own run is exactly
+  // the case where `sendingRef` is still held by the pipeline that queued it —
+  // skipping there is what kept the queued reply unstreamed. Redundant work is
+  // harmless instead: this only re-reads the thread's current run and its
+  // messages, which is what this view is about to render anyway.
   useEffect(() => {
     if (!threadId)
       return;
     let cancelled = false;
     const unlisten = listen<string>("remote-activity", (event) => {
-      if (cancelled || event.payload !== threadId || sendingRef.current)
+      if (cancelled || event.payload !== threadId)
         return;
       void refreshRecentRun(threadId);
       void reloadThreadHistory(threadId);
@@ -169,5 +175,5 @@ export function useRunReattach({
       cancelled = true;
       void unlisten.then(stop => stop());
     };
-  }, [refreshRecentRun, reloadThreadHistory, sendingRef, workspaceId, threadId]);
+  }, [refreshRecentRun, reloadThreadHistory, workspaceId, threadId]);
 }

@@ -349,6 +349,15 @@ function turnFromAcc(acc: ExchangeAcc): SessionTurn | null {
     ? undefined
     : (acc.userRunId ?? acc.runId);
   const outcome = canonicalConflict ? undefined : acc.outcome;
+  // A queued prompt withdrawn before it ran is not an exchange at all.
+  //
+  // The prompt was accepted while another turn ran and then deleted from the
+  // send queue. It never started, so there is no reply to report: not a stopped
+  // one (which is what `cancelled` used to claim here — a "你已停止本次回复" divider
+  // with a `0s` footer under a message the reader had just taken back) and not a
+  // failed one. Both halves go, the user entry with them: a message deleted from
+  // the queue was never sent.
+  if (outcome?.status === "withdrawn") return null;
   const terminalWithoutReply =
     outcome?.status === "failed" ||
     outcome?.status === "interrupted" ||

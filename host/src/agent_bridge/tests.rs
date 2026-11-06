@@ -2519,8 +2519,8 @@ mod pipeline_tests {
                 .expect("run")
                 .expect("some")
                 .status,
-            "running",
-            "the observer still settles the queued run"
+            crate::store::QUEUED_RUN_STATUS,
+            "a held prompt is queued, not running: nothing is streaming for it"
         );
     }
 
@@ -2573,8 +2573,13 @@ mod pipeline_tests {
         assert_eq!(response.termination_kind.as_deref(), Some("run_queued"));
         let run = crate::store::get_run(&run_id).expect("run").expect("some");
         assert_eq!(
-            run.status, "running",
-            "a queued run is alive — the observer settles it on start/finish"
+            run.status,
+            crate::store::QUEUED_RUN_STATUS,
+            "a held prompt is queued — alive, but not the run this view is watching stream"
+        );
+        assert!(
+            crate::store::has_active_run(&run.thread_id).expect("active run"),
+            "a queued row still owes its turn, so the conversation is not idle"
         );
         assert!(
             run.error_message.is_none(),

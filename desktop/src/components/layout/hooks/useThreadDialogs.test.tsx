@@ -158,6 +158,60 @@ describe("useThreadDialogs", () => {
     harness.unmount();
   });
 
+  /**
+   * A renamed conversation that is shelved lives in the archived view's own
+   * lists, which the store's pages never hold — so the shelf has to be told to
+   * re-read, exactly as it is after an archive, a restore or a delete. Without
+   * the event the archived row kept drawing the old title until the view was
+   * reloaded.
+   */
+  it("tells the archived shelf to re-read after a rename", async () => {
+    let changes = 0;
+    const listener = () => {
+      changes += 1;
+    };
+    window.addEventListener("futureos:archive-changed", listener);
+    const { harness } = mount();
+    act(() => {
+      harness.current.openRename(thread("t1", { title: "Old", status: "archived" }));
+    });
+    act(() => {
+      harness.current.setRenameDialog(current => (current ? { ...current, value: "New" } : current));
+    });
+
+    await act(async () => {
+      await harness.current.confirmRename();
+    });
+
+    window.removeEventListener("futureos:archive-changed", listener);
+    expect(changes).toBe(1);
+    harness.unmount();
+  });
+
+  it("leaves the shelf alone when the rename write fails", async () => {
+    let changes = 0;
+    const listener = () => {
+      changes += 1;
+    };
+    window.addEventListener("futureos:archive-changed", listener);
+    mocks.renameThread.mockRejectedValue(new Error("db locked"));
+    const { harness } = mount();
+    act(() => {
+      harness.current.openRename(thread("t1", { title: "Old" }));
+    });
+    act(() => {
+      harness.current.setRenameDialog(current => (current ? { ...current, value: "New" } : current));
+    });
+
+    await act(async () => {
+      await harness.current.confirmRename();
+    });
+
+    window.removeEventListener("futureos:archive-changed", listener);
+    expect(changes).toBe(0);
+    harness.unmount();
+  });
+
   it("shows a rename failure and leaves the dialog open for a retry", async () => {
     mocks.renameThread.mockRejectedValue(new Error("db locked"));
     const { harness } = mount();

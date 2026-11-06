@@ -32,8 +32,19 @@ export async function renameWorkspace(input: {
   return invokeCommand<StoredWorkspace>("rename_workspace", { input });
 }
 
-export async function deleteWorkspace(workspaceId: string) {
-  return invokeCommand<StoredWorkspace>("delete_workspace", { workspaceId });
+/**
+ * Which list a workspace delete was started from.
+ *
+ * A workspace can sit in both lists at once — in use, but still holding a
+ * conversation the reader shelved — so the two lists ask different questions and
+ * the delete has to be told which one it answers. `active` takes the
+ * conversations the workspace list shows; `archived` takes the ones the shelf
+ * draws. The other half survives, untouched.
+ */
+export type WorkspaceDeleteScope = "active" | "archived";
+
+export async function deleteWorkspace(workspaceId: string, scope: WorkspaceDeleteScope = "active") {
+  return invokeCommand<StoredWorkspace>("delete_workspace", { deleteScope: scope, workspaceId });
 }
 
 /**
@@ -44,12 +55,19 @@ export async function deleteWorkspace(workspaceId: string) {
  * the only source for them — the client's lists hold just the loaded pages.
  */
 export interface WorkspaceDeleteSummary {
+  /** Conversations deleted together with the workspace. */
   deletedThreads: number;
-  keptThreads: number;
+  /** Conversations that survive as live chats, in the conversations list. */
+  keptLiveThreads: number;
+  /** Conversations that survive as shelved chats, in that list's archived section. */
+  keptArchivedThreads: number;
 }
 
-export async function workspaceDeleteSummary(workspaceId: string) {
-  return invokeCommand<WorkspaceDeleteSummary>("workspace_delete_summary", { workspaceId });
+export async function workspaceDeleteSummary(
+  workspaceId: string,
+  scope: WorkspaceDeleteScope = "active",
+) {
+  return invokeCommand<WorkspaceDeleteSummary>("workspace_delete_summary", { deleteScope: scope, workspaceId });
 }
 
 export async function pinWorkspace(input: {

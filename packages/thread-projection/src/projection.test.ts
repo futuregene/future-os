@@ -397,6 +397,26 @@ describe("entriesToTurns — run outcome", () => {
     expect(turn.assistant).toMatchObject({ id: "stopped_r1", stopped: true });
   });
 
+  /**
+   * A prompt deleted from the send queue never ran, so it is not a stopped
+   * reply. Reporting it as one put a "你已停止本次回复" divider with a `0s` footer
+   * under a message the reader had just taken back, in the middle of a reply
+   * that was still streaming (reported 2026-11-06). Both halves go: a message
+   * withdrawn from the queue was never sent.
+   */
+  it("drops a prompt withdrawn from the queue before it ran", () => {
+    const nodes = entriesToTurns([
+      entry("u1", "user", { blocks: [textBlock("hello")], runId: "r1" }),
+      entry("u2", "user", {
+        blocks: [textBlock("never sent")],
+        run: { status: "withdrawn", durationMs: 0 },
+        runId: "r2",
+      }),
+    ]);
+    expect(nodes).toHaveLength(1);
+    expect(turnsToMessages(nodes).map(message => message.content)).toEqual(["hello"]);
+  });
+
   it("stores usage and duration without any text", () => {
     const turn = turnOf([
       entry("u1", "user", { blocks: [textBlock("go")] }),
