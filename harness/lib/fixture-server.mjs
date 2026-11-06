@@ -242,6 +242,7 @@ function syntheticEntries(thread, { fork = null } = {}) {
 }
 
 export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs = 0, approvalSeed = 0, pageTranscript = false, fault = null, peers = "" }) {
+  const startedAt = Date.now();
   const db = new DatabaseSync(dbPath);
   db.exec("PRAGMA journal_mode=WAL");
   db.exec("PRAGMA foreign_keys=ON");
@@ -653,7 +654,10 @@ export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs 
     // The rows that explain "why this machine's conversations are not here" only
     // render in that state, so a geometry assertion about them needs a fixture that
     // can produce it — an empty list makes the whole surface untestable.
-    remote_peer_list: () => (peers === "held"
+    // `?peers=held` keeps a machine in another device's hands; `?peers=transfer`
+    // starts that way and hands control back after five seconds, so a case can
+    // watch a row follow control instead of a snapshot that never moves.
+    remote_peer_list: () => (peers === "held" || peers === "transfer"
       ? [{
         desktopId: "desktop_studio",
         pairId: "pair_studio",
@@ -664,8 +668,10 @@ export function createFixtureServer({ dbPath, modelsPath, logPath, slowModelsMs 
         bridgeInstanceId: "bridge_studio",
         features: ["workspace_create_v1"],
         agentAvailable: true,
-        control: "standby",
-        holder: { pairId: "pair_phone", name: "LNA-AL00", kind: "mobile" },
+        control: peers === "transfer" && Date.now() - startedAt > 5000 ? "active" : "standby",
+        holder: peers === "transfer" && Date.now() - startedAt > 5000
+          ? null
+          : { pairId: "pair_phone", name: "LNA-AL00", kind: "mobile" },
       }]
       : []),
     remote_peer_sessions: () => ({ desktopId: "", sessions: [] }),
