@@ -1,5 +1,6 @@
 import type { MergedConversation } from "../../../features/remote-peer/mergeConversations";
 import type { StoredThread } from "../../../integrations/storage/threadStore";
+import type { RailView } from "./useRailView";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 /**
@@ -44,6 +45,8 @@ export function useRailSelection({
   threadScopes,
   visibleRemoteRows,
   visibleThreads,
+  /** The list the batch belongs to — the rail's current view. */
+  view,
 }: {
   onBatchDeleteThreads: (threads: StoredThread[]) => void;
   /**
@@ -72,12 +75,46 @@ export function useRailSelection({
   /** The remote rows the list is showing, for selection and counts. */
   visibleRemoteRows: MergedConversation[];
   visibleThreads: StoredThread[];
+  /**
+   * The list the far half of the rail is drawing.
+   *
+   * The batch is opened from a heading of this list and addresses its rows, so
+   * this is what tells the hook the batch has been left behind when the reader
+   * switches lists.
+   */
+  view: RailView;
 }) {
+  /** The list that was showing when the open batch began (see below). */
+  const [selectionView, setSelectionView] = useState<RailView>(view);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectionScope, setSelectionScope] = useState("chat");
   const [selectedThreadIds, setSelectedThreadIds] = useState<Set<string>>(() => new Set());
   /** Remote rows are keyed by `desktopId::sessionId` (their merged-list key). */
   const [selectedRemoteKeys, setSelectedRemoteKeys] = useState<Set<string>>(() => new Set());
+
+  /**
+   * A batch belongs to the list it was opened from.
+   *
+   * Every way into a batch names a heading of one list — a workspace group, the
+   * chat section, a shelved workspace — and those headings exist in that list
+   * only: the recent view has no headings at all, and the archived view's are
+   * other shelves. Switching the list therefore leaves the batch addressing rows
+   * that are no longer on screen while its toolbar keeps drawing a count, a
+   * select-all and a Delete over them. Reported as "click 选择聊天 in a
+   * workspace, then switch between 最近 / 归档 — 多选 never goes away".
+   *
+   * Reset during render rather than in an effect: an effect lands after the new
+   * list has painted, so the toolbar would be drawn over it for a frame with a
+   * count taken from the list the reader just left.
+   */
+  if (selectionView !== view) {
+    setSelectionView(view);
+    if (selectionMode) {
+      setSelectionMode(false);
+      setSelectedThreadIds(new Set());
+      setSelectedRemoteKeys(new Set());
+    }
+  }
 
   // Pinned conversations are hoisted into their own global section, outside
   // every group, so they are never part of a batch: select-all in a group must
