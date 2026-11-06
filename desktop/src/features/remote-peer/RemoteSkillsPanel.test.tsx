@@ -3,6 +3,7 @@ import type { RemotePeer } from "./remotePeerClient";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, expect, it, vi } from "vitest";
+import i18n from "../../i18n";
 import { RemoteSkillsPanel } from "./RemoteSkillsPanel";
 
 /**
@@ -206,4 +207,43 @@ it("shows a skill in the app's language", async () => {
   expect(view.text()).toContain("English text");
   expect(view.text()).not.toContain("中文说明");
   await view.unmount();
+});
+
+/**
+ * An installed row takes its translation from the host's catalogue.
+ *
+ * An installed skill is described by its own `SKILL.md`, and a package built from
+ * the repository carries only the English description — so the installed half of
+ * the page read in English while the installable half below it read in Chinese.
+ * Both languages exist for the same id in the catalogue, which is where the
+ * phone and the local Skills page take them from too.
+ */
+it("translates an installed row from the host's catalogue", async () => {
+  await i18n.changeLanguage("zh");
+  installed.mockResolvedValue([
+    // What the host's `list_skills` really returns for a repository-built
+    // package: the English prose from SKILL.md and no translation columns.
+    { id: "future-slides", name: "future-slides", description: "Create decks" },
+  ]);
+  catalogue.mockResolvedValue([
+    {
+      id: "future-slides",
+      name: "future-slides",
+      description: "Create decks",
+      nameZh: "幻灯片生成",
+      descriptionZh: "中文说明",
+      latestVersion: "4.0.0",
+    },
+  ]);
+
+  try {
+    const view = await mount();
+    expect(view.text()).toContain("幻灯片生成");
+    expect(view.text()).toContain("中文说明");
+    expect(view.text()).not.toContain("Create decks");
+    await view.unmount();
+  }
+  finally {
+    await i18n.changeLanguage("en");
+  }
 });

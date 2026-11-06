@@ -78,6 +78,11 @@ export function useWorkspaceDialogs({
     try {
       await renameWorkspace({ name: nextName, workspaceId: renameDialog.workspace.id });
       await refreshStore();
+      // A shelved workspace's heading is drawn from the archived view's own
+      // list, which the store's pages never hold: without this the rename landed
+      // in the database and the heading kept the old name until the view was
+      // reloaded. The same event archive/restore/delete already fire.
+      emitFutureEvent("archive-changed", undefined);
       setRenameDialog(null);
     }
     catch (error) {

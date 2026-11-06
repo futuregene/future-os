@@ -158,6 +158,45 @@ describe("useWorkspaceDialogs", () => {
     expect(harness.current.renameDialog).toBeNull();
   });
 
+  /**
+   * A shelved workspace's heading is drawn from the archived view's own list, so
+   * the store's refresh cannot reach it: the rename landed and the heading kept
+   * the old name until the view was reloaded (the same reason an archive or a
+   * delete fires this event).
+   */
+  it("tells the archived shelf to re-read after a workspace rename", async () => {
+    let changes = 0;
+    const listener = () => {
+      changes += 1;
+    };
+    window.addEventListener("futureos:archive-changed", listener);
+    const harness = mount();
+    act(() => harness.current.openRename(workspace("ws-1")));
+    act(() => harness.current.setRenameDialog(state => (state ? { ...state, value: "Beta" } : state)));
+    await act(async () => {
+      await harness.current.confirmRename();
+    });
+    window.removeEventListener("futureos:archive-changed", listener);
+    expect(changes).toBe(1);
+  });
+
+  it("leaves the shelf alone when a workspace rename fails", async () => {
+    let changes = 0;
+    const listener = () => {
+      changes += 1;
+    };
+    window.addEventListener("futureos:archive-changed", listener);
+    mocks.renameWorkspace.mockRejectedValue(new Error("disk full"));
+    const harness = mount();
+    act(() => harness.current.openRename(workspace("ws-1")));
+    act(() => harness.current.setRenameDialog(state => (state ? { ...state, value: "Beta" } : state)));
+    await act(async () => {
+      await harness.current.confirmRename();
+    });
+    window.removeEventListener("futureos:archive-changed", listener);
+    expect(changes).toBe(0);
+  });
+
   it("surfaces a rename failure and lets the user retry", async () => {
     mocks.renameWorkspace.mockRejectedValue(new Error("disk full"));
     const harness = mount();

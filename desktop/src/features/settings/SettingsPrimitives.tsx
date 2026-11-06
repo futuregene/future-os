@@ -35,7 +35,19 @@ export function SettingsLinkRow({
   return (
     <button
       aria-label={ariaLabel}
-      className="flex w-full items-center gap-4 py-3.5 text-left transition-colors hover:bg-surface-subtle disabled:cursor-default disabled:text-ink-muted disabled:hover:bg-transparent"
+      // `-mx-4 px-4`: the card insets its children by 16px, and this row is the
+      // one that paints a fill on hover. Left inside that inset the highlight
+      // stopped 16px short of the card on both sides, which read as a band
+      // floating in a white frame around it (measured on a paired machine's
+      // "Fusion" row, and on every other link row of the same list). The
+      // negative margin takes the row out to the card's edges and its own
+      // padding restores the inset; the card's `overflow-hidden` keeps the fill
+      // off its rounded corners, which is also why the focus ring is `inset`
+      // (an outset ring would be clipped away at the row's own edges). No
+      // `w-full`: with the negative margin that would overhang by the same 16px
+      // on the right, while a block-level row already stretches to the widened
+      // box.
+      className="-mx-4 flex items-center gap-4 px-4 py-3.5 text-left transition-colors hover:bg-surface-subtle focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-inset focus-visible:outline-none disabled:cursor-default disabled:text-ink-muted disabled:hover:bg-transparent"
       disabled={disabled}
       onClick={onClick}
       type="button"
@@ -89,9 +101,17 @@ export function SettingsPage({
   );
 }
 
+/**
+ * The card a settings page's rows sit in.
+ *
+ * Clipped, because a link row fills a hover highlight and has to reach the card's
+ * own edges to look like a row of this card rather than a box floating inside it
+ * (see `SettingsLinkRow`). The clip is also what keeps that fill inside the
+ * rounded corners — and why the rows' focus ring is drawn `inset`.
+ */
 export function SettingsList({ children }: { children: ReactNode }) {
   return (
-    <div className="rounded-lg border border-line-soft bg-surface px-4 [&>*+*]:border-t [&>*+*]:border-line-soft">
+    <div className="overflow-hidden rounded-lg border border-line-soft bg-surface px-4 [&>*+*]:border-t [&>*+*]:border-line-soft">
       {children}
     </div>
   );
