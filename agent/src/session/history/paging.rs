@@ -228,7 +228,7 @@ pub(super) fn read_display_page(
     // The canonical branch must never touch the compatibility body views:
     // even asking SQLite for a sliced payload first assembles their full JSON.
     let sql = if canonical {
-        let outcome = "json_object('status',CASE r.status WHEN 'error' THEN 'failed' WHEN 'incomplete' THEN 'interrupted' WHEN 'interrupted_by_restart' THEN 'interrupted' ELSE r.status END,'error',r.error,'durationMs',r.duration_ms)";
+        let outcome = "json_object('status',CASE r.status WHEN 'error' THEN 'failed' WHEN 'incomplete' THEN 'interrupted' WHEN 'interrupted_by_restart' THEN 'interrupted' WHEN 'cancelled_before_start' THEN 'withdrawn' ELSE r.status END,'error',r.error,'durationMs',r.duration_ms)";
         format!("SELECT d.ordinal,
         CASE WHEN r.run_id IS NOT NULL THEN
           CASE WHEN header.entry_type='assistant' AND header.position=(SELECT max(a.position) FROM entries a WHERE a.session_id=header.session_id AND a.run_id=header.run_id AND a.entry_type='assistant')

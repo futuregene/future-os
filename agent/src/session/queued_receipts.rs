@@ -175,7 +175,13 @@ impl super::sqlite_store::SqliteStore {
                         continue;
                     };
                     let cancelled = status == "cancel_requested";
-                    let state = if cancelled { super::RUN_STATE_CANCELLED } else { super::RUN_STATE_INTERRUPTED_BY_RESTART };
+                    // A queued prompt deleted before it ever ran is not a stopped
+                    // reply: nothing was sent, so there is no reply to report as
+                    // interrupted. It gets its own terminal state, which history
+                    // renders as the prompt being withdrawn rather than as "you
+                    // stopped this response" with a 0s footer (reported
+                    // 2026-11-06).
+                    let state = if cancelled { super::RUN_STATE_CANCELLED_BEFORE_START } else { super::RUN_STATE_INTERRUPTED_BY_RESTART };
                     let mut terminal = SessionEntry::run_terminal(&run,state,0,0,Some(if cancelled {"Queued run cancelled before execution."} else {"Queued input preserved after restart; execution was not resumed."}));
                     terminal.content.as_mut().expect("terminal content")["run_sequence"] = sequence.into();
                     super::sqlite_store::insert_transcript_entries(&tx,&session,vec![serde_json::from_str(&Manager::serialize_entry(&user)?)?,serde_json::from_str(&Manager::serialize_entry(&terminal)?)?])?;
@@ -265,9 +271,11 @@ mod tests {
         assert!(!entries
             .iter()
             .any(|entry| entry.entry_type == "run_started"));
+        // A withdrawn prompt is still preserved as the reader's own input: it
+        // was never sent, so it is not a reply, but its words are not lost.
         for (run, state) in [
             ("queued", "interrupted_by_restart"),
-            ("cancelled", "cancelled"),
+            ("cancelled", "cancelled_before_start"),
         ] {
             let terminal = entries
                 .iter()
