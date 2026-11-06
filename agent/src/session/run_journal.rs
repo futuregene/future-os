@@ -18,6 +18,15 @@ pub const RUN_STATE_INCOMPLETE: &str = "incomplete";
 /// but no `run_terminal` — i.e. the agent crashed or restarted before the run
 /// committed. Such a run must never be presented as completed.
 pub const RUN_STATE_INTERRUPTED_BY_RESTART: &str = "interrupted_by_restart";
+/// Terminal state for a queued prompt that was withdrawn before it ever ran.
+///
+/// A prompt accepted while another turn ran waits in the send queue; deleting it
+/// from that queue ends it here. It never executed, so there is no reply to mark
+/// stopped or failed — reporting it as `cancelled` made history render a "you
+/// stopped this response" divider under a message the reader had just taken
+/// back, and an `interrupted` reading claimed an answer had been cut off when
+/// none had begun. History renders this state as the prompt being withdrawn.
+pub const RUN_STATE_CANCELLED_BEFORE_START: &str = "cancelled_before_start";
 
 /// True for entry types that are run lifecycle markers rather than
 /// conversation content. Forks skip these (they belong to the parent's runs)

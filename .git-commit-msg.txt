@@ -1,0 +1,20 @@
+fix(agent,thread-projection): a queued prompt withdrawn before it ran is not a stopped reply
+
+Deleting a row from the send queue ended its run as `cancelled`, which is the
+state history renders as "你已停止本次回复". The reader had asked for no reply
+and stopped none: the message was accepted while another turn ran, never
+started, and was then taken back. What they saw was a stopped-reply divider with
+a `0s` footer sitting under their own message, in the middle of the reply that
+was still streaming.
+
+A prompt that never executed has no reply to mark stopped or failed, so it gets
+its own terminal state, `cancelled_before_start`. History maps it to
+`withdrawn`, and the projection drops the exchange entirely — the user entry with
+it, because a message deleted from the queue was never sent.
+
+Preservation is unchanged: the accepted input is still recorded as the reader's
+own words, so a queue emptied by accident is not silent. `interrupted_by_restart`
+(the other way a queued receipt ends) is untouched — that one did hold a prompt
+across a restart, and its own recovery path is what reports it.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
