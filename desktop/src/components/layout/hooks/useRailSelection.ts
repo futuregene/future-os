@@ -3,6 +3,28 @@ import type { StoredThread } from "../../../integrations/storage/threadStore";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 /**
+ * One row per conversation id, keeping the first.
+ *
+ * The rail's lists are assembled from several streams (this machine's store, the
+ * archived conversation stream, each expanded shelved workspace), and the
+ * selection addresses them as one flat list. A conversation that reached more
+ * than one of those streams is one conversation, and everything downstream —
+ * the count in the toolbar, the names in the delete dialog, the batch itself —
+ * has to see it once.
+ */
+function uniqueById(threads: StoredThread[]): StoredThread[] {
+  if (threads.length < 2)
+    return threads;
+  const seen = new Set<string>();
+  return threads.filter((thread) => {
+    if (seen.has(thread.id))
+      return false;
+    seen.add(thread.id);
+    return true;
+  });
+}
+
+/**
  * The rail's batch selection, over every kind of row the list can hold.
  *
  * A batch is a *scope* — the chat section, or one workspace — and either kind of
@@ -63,9 +85,9 @@ export function useRailSelection({
   // rows carry no checkbox while selection mode is open. The same holds for a
   // pinned *host* row, for the same reason.
   const scopedThreads = useMemo(
-    () => visibleThreads.filter(
+    () => uniqueById(visibleThreads.filter(
       thread => (!pinnedAreShortcuts || !thread.pinned) && threadScopes.get(thread.id) === selectionScope,
-    ),
+    )),
     [pinnedAreShortcuts, selectionScope, threadScopes, visibleThreads],
   );
   const scopedRemoteRows = useMemo(
@@ -187,7 +209,16 @@ export function useRailSelection({
   }, []);
 
   const deleteSelected = useCallback(() => {
-    const selectedThreads = scopedThreads.filter(thread => selectedThreadIds.has(thread.id));
+    // The selection is a SET of ids, so the batch must be one row per id no
+    // matter what the list handed over. The archived view flattens this
+    // machine's shelved conversations and the contents of every expanded
+    // shelved workspace into one list, and those two halves are filled by
+    // different streams — a conversation that reached both (a duplicated page,
+    // a stale group cache) arrived here twice and was drawn as "2 conversations"
+    // in a dialog opened from one ticked row.
+    const selectedThreads = uniqueById(
+      scopedThreads.filter(thread => selectedThreadIds.has(thread.id)),
+    );
     const selectedRemote = scopedRemoteRows.filter(row => selectedRemoteKeys.has(row.key));
     if (selectedThreads.length === 0 && selectedRemote.length === 0)
       return;

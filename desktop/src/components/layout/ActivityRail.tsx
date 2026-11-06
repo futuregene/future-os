@@ -457,14 +457,32 @@ export function ActivityRail({
    * are offered to the selection explicitly.
    */
   interface ArchivedScopeEntry { scope: string; thread: StoredThread }
-  const archiveViewThreads = useMemo<ArchivedScopeEntry[]>(
-    () => [
+  /**
+   * The archived view's rows, one per conversation.
+   *
+   * Two streams feed this list: the shelved conversations, and the contents of
+   * each shelved workspace the reader has opened. They are filled separately —
+   * the workspace groups by their own paged read — so the same conversation can
+   * be described twice (a group whose page landed twice, a cache the reader
+   * reopened). The list is the batch a selection addresses, so a duplicate here
+   * is a duplicate in the toolbar's count and in the names the delete dialog
+   * lists: one ticked row read as "2 conversations". First description wins,
+   * which keeps the row where the reader sees it.
+   */
+  const archiveViewThreads = useMemo<ArchivedScopeEntry[]>(() => {
+    const entries: ArchivedScopeEntry[] = [
       ...archiveView.threads.map(thread => ({ scope: "archived", thread }) as ArchivedScopeEntry),
       ...Object.entries(archiveView.workspaceThreads).flatMap(([workspaceId, rows]) =>
         rows.map(thread => ({ scope: `archived-workspace:${workspaceId}`, thread }) as ArchivedScopeEntry)),
-    ],
-    [archiveView.threads, archiveView.workspaceThreads],
-  );
+    ];
+    const seen = new Set<string>();
+    return entries.filter((entry) => {
+      if (seen.has(entry.thread.id))
+        return false;
+      seen.add(entry.thread.id);
+      return true;
+    });
+  }, [archiveView.threads, archiveView.workspaceThreads]);
   const archivedThreadScopes = useMemo(
     () => new Map(archiveViewThreads.map(entry => [entry.thread.id, entry.scope] as const)),
     [archiveViewThreads],
