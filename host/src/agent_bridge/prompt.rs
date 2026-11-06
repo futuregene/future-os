@@ -455,6 +455,20 @@ pub(super) async fn agent_prompt_inner(
                 {
                     tracing::error!(event = "agent_prompt_inner", error = %error,"FutureOS queued user-entry persistence failed: {error}");
                 }
+                // Mark the row for what it is. Until it is `queued` it stays
+                // `running`, and being the newest row it wins every "latest run"
+                // read — so the open conversation anchors its live preview on
+                // this run, which has no events and may never run at all (a
+                // coalescing burst is folded into the run ahead). The reply then
+                // arrives in one lump when the turn ends, and the preview keeps
+                // failing against a run id the Agent does not know.
+                crate::store::mark_run_queued(&canonical_run_id);
+                // The collector is about to drop its lease, and the observer
+                // must be free to project this run the instant the Agent starts
+                // it. Without this the released-at stamp parks the run behind
+                // the single-writer grace window, and its whole reply streams
+                // with nobody persisting it.
+                super::replica::AGENT_REPLICAS.hand_off_to_observer(&canonical_run_id);
                 return Ok(AgentPromptResponse {
                     content: String::new(),
                     complete: false,

@@ -19,6 +19,27 @@ pub fn is_terminal_run_status(status: &str) -> bool {
 /// with [`TERMINAL_RUN_STATUSES`] (see `terminal_status_sql_matches_slice`).
 pub(super) const TERMINAL_RUN_STATUSES_SQL: &str = "'completed', 'failed', 'cancelled'";
 
+/// A run the Agent ACCEPTED but is holding behind the one already executing.
+///
+/// Not terminal — it still owes a turn, so `has_active_run`, the quit guard and
+/// the auto-title gate keep counting it. Not *executing* either, and that is
+/// the point of having the state at all: a row in it may never run (an
+/// `enqueue_coalescing` burst is folded into the run ahead), so nothing may
+/// treat it as the run this conversation is watching stream. While such a row
+/// stayed `running` it was also the newest row, so it won every "latest run"
+/// read and the view anchored its live preview on a run with no events of its
+/// own — the reply then arrived in one lump at the end, or not at all.
+pub const QUEUED_RUN_STATUS: &str = "queued";
+
+/// Whether a run status means "accepted, waiting behind another run".
+pub fn is_queued_run_status(status: &str) -> bool {
+    status == QUEUED_RUN_STATUS
+}
+
+/// The statuses that mean a run is executing right now. A view picking the run
+/// it watches stream must prefer these over anything merely queued.
+pub(super) const EXECUTING_RUN_STATUSES_SQL: &str = "'running', 'waiting_approval'";
+
 #[cfg(test)]
 mod tests {
     use super::*;
