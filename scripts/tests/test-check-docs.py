@@ -58,6 +58,16 @@ WHITELISTED_FILES = [
     "scripts/README.zh-CN.md",
     "docs/README.md",
     "docs/README.zh-CN.md",
+    # The whitelist's tool-directory entries. Each one sits beside the tool it
+    # documents rather than under docs/, so the fixture tree has to carry it:
+    # the checker reports every WHITELISTED path it cannot find ("whitelist
+    # entry does not exist: ..."), which fails every end-to-end case here.
+    "benchmark/README.md",
+    "benchmark/fusion/README.md",
+    "benchmark/fusion/PROTOCOL.md",
+    "harness/README.md",
+    "harness/COVERAGE.md",
+    "harness/visual/README.md",
 ]
 
 
