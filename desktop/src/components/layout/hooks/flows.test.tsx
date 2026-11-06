@@ -238,7 +238,7 @@ describe("useWorkspaceDialogs", () => {
     await act(async () => {
       await harness.current.confirmDelete();
     });
-    expect(mocks.deleteWorkspace).toHaveBeenCalledWith("ws-1");
+    expect(mocks.deleteWorkspace).toHaveBeenCalledWith("ws-1", "active");
     // The workspace takes its conversations with it: a plain refresh cannot say
     // so (no member row changed), and the open one would keep the column.
     expect(mocks.refreshStore).toHaveBeenCalledWith(undefined, { removedWorkspaceIds: ["ws-1"] });
@@ -350,7 +350,7 @@ describe("useWorkspaceDialogs", () => {
       close(null);
       await confirm();
     });
-    expect(mocks.deleteWorkspace).toHaveBeenCalledWith("ws-1");
+    expect(mocks.deleteWorkspace).toHaveBeenCalledWith("ws-1", "active");
     expect(harness.current.deleteDialog).toBeNull();
     harness.unmount();
   });

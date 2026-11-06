@@ -690,14 +690,17 @@ export function useSessionCatalog(
    * is gone from the list is what the shelf draws as a loose conversation.
    */
   const deleteWorkspace = useCallback(
-    async (workspaceId: string): Promise<boolean> => {
+    async (workspaceId: string, scope?: "active" | "archived"): Promise<boolean> => {
       const client = clientRef.current;
       if (!client || !workspaceId) throw new Error("Workspace unavailable");
       const epoch = catalogEpoch.current;
       const selectedInWorkspace =
         (sessionsRef.current.find((session) => session.sessionId === selectedRef.current)
           ?.workspaceId ?? "") === workspaceId;
-      await client.request({ type: "delete_workspace", workspaceId }, "list");
+      await client.request(
+        { deleteScope: scope ?? "active", type: "delete_workspace", workspaceId },
+        "list",
+      );
       if (clientRef.current !== client || catalogEpoch.current !== epoch) return false;
       // Which conversations survive depends on which list the delete was started
       // from, and the rows this client holds cannot answer it: the host's

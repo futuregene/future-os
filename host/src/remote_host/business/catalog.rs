@@ -318,7 +318,13 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             if cmd.workspace_id.is_empty() {
                 reply(sink, false, Value::Null, Some("missing workspace_id")).await;
             } else {
-                match crate::workspaces::delete_workspace(cmd.workspace_id.clone()).await {
+                // The list the caller started from decides which half of the
+                // workspace goes: a workspace can sit in both lists at once, and
+                // the two asks are opposites. An older client sends no scope,
+                // which reads as the workspace list — the one it could always
+                // answer.
+                let scope = crate::store::DeleteScope::parse(&cmd.delete_scope);
+                match crate::workspaces::delete_workspace(cmd.workspace_id.clone(), scope).await {
                     Ok(_) => {
                         crate::emit_threads_updated();
                         reply(sink, true, json!({}), None).await

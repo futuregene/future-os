@@ -280,24 +280,55 @@ pub fn rename_workspace(input: RenameWorkspaceInput) -> Result<WorkspaceRecord, 
 /// and GUI-managed scratch/review dirs are reclaimed by the startup reconcilers
 /// (keyed by thread/workspace id), not by removing `workspace.path`. The agent
 /// JSONLs and those physical dirs are cleaned by the command layer.
-pub fn delete_workspace(workspace_id: &str) -> Result<WorkspaceRecord, crate::Error> {
+pub fn delete_workspace(
+    workspace_id: &str,
+    scope: DeleteScope,
+) -> Result<WorkspaceRecord, crate::Error> {
     let mut conn = connect()?;
     let workspace = loaded(get_workspace_in(&conn, workspace_id)?, "Workspace")?;
     let tx = conn.transaction()?;
-    delete_workspace_in(&tx, workspace_id)?;
+    delete_workspace_in(&tx, workspace_id, scope)?;
     tx.commit()?;
     mark_catalog_dirty();
     Ok(workspace)
 }
 
+/// Which list a workspace delete was started from.
+///
+/// A workspace can sit in both lists at once — one that is in use but still
+/// holds a conversation the reader shelved appears on the shelf with that
+/// conversation, and in the workspace list with the rest. Each list asks its own
+/// question, so the delete has to be told which one it answers: that is the only
+/// fact that decides which half of the workspace goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteScope {
+    /// Started from the workspace list: its live conversations go.
+    Active,
+    /// Started from the archived shelf: its shelved conversations go.
+    Archived,
+}
+
+impl DeleteScope {
+    /// Parse the wire value, defaulting to the active list.
+    ///
+    /// An absent or unrecognised value means "active": that is the list a
+    /// workspace is always reachable from, and the conservative reading (never
+    /// destroy a shelf the caller did not name).
+    pub fn parse(raw: &str) -> Self {
+        match raw {
+            "archived" => Self::Archived,
+            _ => Self::Active,
+        }
+    }
+}
+
 /// What a workspace delete would remove, and what it would keep.
 ///
-/// The delete is not an archive delete: a conversation the reader did not
-/// shelve along with its workspace survives it as an ordinary chat on a shelf of
-/// its own. Which conversations those are depends on which list the delete was
-/// started from — see [`delete_workspace_in`] — so both halves are reported
-/// separately rather than as one "kept" number that could only be wrong on one
-/// of the two paths.
+/// The delete is not an archive delete: the half the reader did not start from
+/// survives as ordinary chats on a shelf of its own. Which half that is depends
+/// on the list the delete was started from — see [`delete_workspace_in`] — so
+/// both halves are reported separately rather than as one "kept" number that
+/// could only be wrong on one of the two paths.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceDeleteSummary {
@@ -311,9 +342,12 @@ pub struct WorkspaceDeleteSummary {
     pub kept_archived_threads: usize,
 }
 
-pub fn delete_summary(workspace_id: &str) -> Result<WorkspaceDeleteSummary, crate::Error> {
+pub fn delete_summary(
+    workspace_id: &str,
+    scope: DeleteScope,
+) -> Result<WorkspaceDeleteSummary, crate::Error> {
     let conn = connect()?;
-    let workspace = loaded(get_workspace_in(&conn, workspace_id)?, "Workspace")?;
+    loaded(get_workspace_in(&conn, workspace_id)?, "Workspace")?;
     let (active, archived): (i64, i64) = conn.query_row(
         "SELECT
              COALESCE(SUM(CASE WHEN status = 'archived' THEN 0 ELSE 1 END), 0),
@@ -322,34 +356,24 @@ pub fn delete_summary(workspace_id: &str) -> Result<WorkspaceDeleteSummary, crat
         params![workspace_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    Ok(kept_and_deleted(
-        workspace.archived_at.is_some(),
-        active,
-        archived,
-    ))
+    Ok(kept_and_deleted(scope, active, archived))
 }
 
 /// The counts for one delete, from the two status counts inside the workspace.
 ///
-/// A conversation is kept exactly when the reader's own decision about it
-/// *differs* from the decision about its workspace:
-///
-/// - deleting from the active list means "this folder and what it shows go" — so
-///   the conversations still in it go with it, and the ones the reader had
-///   already shelved out of it survive (they were already living without it);
-/// - deleting from the archived shelf means "this folder and what it was hiding
-///   go" — so the conversations it hid go with it, and the ones the reader had
-///   already shelved out of it survive.
+/// The two lists are independent: a delete takes exactly the conversations the
+/// list it was started from shows, and leaves the other half alone — still
+/// attached, still in its own status. So deleting from the workspace list takes
+/// the live conversations and keeps the shelved ones; deleting from the shelf
+/// takes the shelved ones and keeps the live ones, which come back to the
+/// conversations list ready to continue.
 ///
 /// A kept conversation keeps its own status, which is what makes the two halves
-/// land in different lists: shelved out of an active workspace it stays shelved
-/// (the archived section), and live out of a shelved workspace it stays live
-/// (the conversations list).
-fn kept_and_deleted(workspace_shelved: bool, active: i64, archived: i64) -> WorkspaceDeleteSummary {
-    let (deleted, kept_live, kept_archived) = if workspace_shelved {
-        (archived, active, 0)
-    } else {
-        (active, 0, archived)
+/// land in different lists.
+fn kept_and_deleted(scope: DeleteScope, active: i64, archived: i64) -> WorkspaceDeleteSummary {
+    let (deleted, kept_live, kept_archived) = match scope {
+        DeleteScope::Active => (active, 0, archived),
+        DeleteScope::Archived => (archived, active, 0),
     };
     WorkspaceDeleteSummary {
         deleted_threads: deleted as usize,
@@ -373,46 +397,40 @@ const MIGRATED_TO_KEPT_THREAD: &[&str] = &["artifacts", "review_snapshots", "rev
 /// deletion order can be unit-tested against an in-memory DB with foreign keys
 /// enforced. Deletes every thread's children and the threads, then the
 /// workspace-scoped rows, then the workspace itself. Does not touch any files.
+///
+/// `scope` names the list the delete was started from, and it alone decides which
+/// half of the workspace goes (see [`DeleteScope`]).
 pub(super) fn delete_workspace_in(
     conn: &Connection,
     workspace_id: &str,
+    scope: DeleteScope,
 ) -> Result<(), crate::Error> {
-    // Which conversations outlive the workspace is decided by which list the
-    // delete was started from, and the rule is one sentence: a conversation is
-    // kept when the reader's own decision about it differs from the decision
-    // about its workspace.
+    // The two lists are independent: a delete takes exactly what the list it was
+    // started from shows, and the other half keeps living — still attached to a
+    // workspace of its own, still in its own status.
     //
-    // - From the active list, "delete this workspace" means this folder and what
-    //   it shows go: its live conversations are deleted with it, and the ones
-    //   already shelved out of it survive — the reader had already decided to
-    //   keep them without the folder.
-    // - From the archived shelf, "delete this workspace" means this folder and
-    //   what it was hiding go: the conversations still in it are deleted, and the
-    //   ones shelved out of it survive, still shelved.
+    // - From the workspace list, "delete this workspace" means this folder and
+    //   the conversations it shows go. The ones the reader had shelved out of it
+    //   survive, still shelved, in the conversations list's archived section.
+    // - From the archived shelf, "delete this workspace" means the conversations
+    //   the shelf drew go. The live ones survive, still live, in the
+    //   conversations list.
     //
-    // A kept conversation keeps its own status, which is what sends it to the
-    // right list afterwards: live out of a shelved workspace it appears in the
-    // conversations list ready to continue; shelved out of an active workspace it
-    // appears in that list's archived section, where it can be unarchived.
-    let workspace_archived_at: Option<i64> = conn
-        .query_row(
-            "SELECT archived_at FROM workspaces WHERE id = ?1",
-            params![workspace_id],
-            |row| row.get(0),
-        )
-        .optional()?
-        .flatten();
+    // A workspace sitting in both lists (in use, but still holding a shelved
+    // conversation) is the case this exists for: the two paths take opposite
+    // halves, so neither list can be silently emptied by a delete from the other.
     let kept: Vec<(String, String, String)> = {
         let mut stmt = conn.prepare(
-            // A shelved workspace keeps the live conversations it was hiding; an
-            // active one keeps the conversations shelved out of it. Exactly one
-            // arm applies to any given workspace.
+            // Keep the half this list does not show; delete the other.
             "SELECT id, title, status FROM threads
              WHERE workspace_id = ?1 AND deleted_at IS NULL
-               AND ((?2 IS NULL AND status = 'archived')
-                 OR (?2 IS NOT NULL AND status <> 'archived'))",
+               AND status = ?2",
         )?;
-        let rows = stmt.query_map(params![workspace_id, workspace_archived_at], |row| {
+        let kept_status = match scope {
+            DeleteScope::Active => "archived",
+            DeleteScope::Archived => "active",
+        };
+        let rows = stmt.query_map(params![workspace_id, kept_status], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -528,7 +546,7 @@ pub fn purge_soft_deleted_workspaces() -> Result<usize, crate::Error> {
     }
     let tx = conn.transaction()?;
     for id in &ids {
-        delete_workspace_in(&tx, id)?;
+        delete_workspace_in(&tx, id, DeleteScope::Active)?;
     }
     tx.commit()?;
     Ok(ids.len())
@@ -604,7 +622,7 @@ mod tests {
         seed_workspace(&conn, "drop");
         let keep_before = total(&conn);
 
-        delete_workspace_in(&conn, "drop").expect("cascade delete");
+        delete_workspace_in(&conn, "drop", DeleteScope::Active).expect("cascade delete");
 
         // "keep" and "drop" seeded identical graphs, so the surviving row count
         // across every table must be exactly half — proving "drop" was fully
@@ -651,7 +669,7 @@ mod tests {
         )
         .expect("seed");
 
-        delete_workspace_in(&conn, "ws1").expect("delete");
+        delete_workspace_in(&conn, "ws1", DeleteScope::Active).expect("delete");
 
         // The conversation still in the workspace went with it; the archived one
         // survives as a chat, still shelved, on a temporary shelf of its own.
@@ -725,10 +743,12 @@ mod tests {
         )
         .expect("seed");
 
-        delete_workspace_in(&conn, "ws2").expect("delete");
+        delete_workspace_in(&conn, "ws2", DeleteScope::Archived).expect("delete");
 
         // The conversation the folder was hiding lives on, as a live chat: the
-        // reader gets it back in the conversations list, ready to continue.
+        // reader gets it back in the conversations list, ready to continue. This
+        // is the half the shelf was NOT showing, so the delete from the shelf
+        // does not touch it.
         let (workspace_id, mode, status, archived_at): (String, String, String, Option<i64>) = conn
             .query_row(
                 "SELECT workspace_id, mode, status, archived_at FROM threads WHERE id = 't_hidden'",
@@ -751,8 +771,7 @@ mod tests {
             .expect("chat shelf");
         assert_eq!(kind, "temporary");
 
-        // The conversation the reader had shelved on its own goes with the
-        // folder: two shelvings of the same thing.
+        // The conversation the shelf drew is the one this delete answers for.
         let shelved_left: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM threads WHERE id = 't_shelf'",
@@ -762,6 +781,78 @@ mod tests {
             .unwrap();
         assert_eq!(shelved_left, 0);
         assert!(get_workspace("ws2").expect("get").is_none());
+    }
+
+    /// The two lists are independent, on the same workspace graph.
+    ///
+    /// `papers-weekly` in the 115 build was exactly this: in use (so it is in the
+    /// workspace list) but still holding one shelved conversation (so it is on the
+    /// shelf too). Deleting it from the shelf must take the shelved conversation
+    /// and leave the live one alone — the report was that the other half was being
+    /// deleted as well.
+    #[test]
+    fn deleting_a_workspace_from_one_list_leaves_the_other_list_alone() {
+        for (label, scope, kept_id, gone_id) in [
+            (
+                "ws_delete_scope_archived",
+                DeleteScope::Archived,
+                "t_live",
+                "t_shelf",
+            ),
+            (
+                "ws_delete_scope_active",
+                DeleteScope::Active,
+                "t_shelf",
+                "t_live",
+            ),
+        ] {
+            let (_home, conn) = guarded_conn(label);
+            conn.execute_batch(
+                "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                     VALUES ('ws', 'papers-weekly', 'user', '/tmp/ws', 1, 1);
+                 INSERT INTO threads (id, workspace_id, mode, title, status, agent_session_id,
+                     created_at, updated_at)
+                     VALUES ('t_live', 'ws', 'workspace', 'Live', 'active', 'sess_live', 1, 1),
+                            ('t_shelf', 'ws', 'workspace', 'Shelved', 'archived', 'sess_shelf', 1, 1);",
+            )
+            .expect("seed");
+
+            delete_workspace_in(&conn, "ws", scope).expect("delete");
+
+            let gone: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM threads WHERE id = '{gone_id}'"),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(gone, 0, "{label}: the list's own half must go");
+
+            let (workspace_id, status): (String, String) = conn
+                .query_row(
+                    &format!("SELECT workspace_id, status FROM threads WHERE id = '{kept_id}'"),
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap_or_else(|error| panic!("{label}: the other half must survive: {error}"));
+            // It keeps its own status, which is what puts it back in the list it
+            // came from.
+            assert_eq!(
+                status,
+                if kept_id == "t_live" {
+                    "active"
+                } else {
+                    "archived"
+                }
+            );
+            assert_eq!(
+                get_workspace(&workspace_id)
+                    .expect("get")
+                    .expect("chat")
+                    .kind,
+                "temporary"
+            );
+        }
     }
 
     /// A shelved conversation carries its review history out of the workspace.
@@ -793,7 +884,7 @@ mod tests {
         )
         .expect("seed");
 
-        delete_workspace_in(&conn, "ws1")
+        delete_workspace_in(&conn, "ws1", DeleteScope::Active)
             .expect("a kept conversation's review rows must not block the delete");
 
         let (thread_workspace, mode): (String, String) = conn
@@ -842,7 +933,7 @@ mod tests {
         )
         .expect("seed");
 
-        delete_workspace_in(&conn, "ws1").expect("delete");
+        delete_workspace_in(&conn, "ws1", DeleteScope::Active).expect("delete");
 
         for table in ["review_snapshots", "review_changesets"] {
             let left: i64 = conn
@@ -879,7 +970,7 @@ mod tests {
         )
         .expect("seed");
 
-        delete_workspace_in(&conn, "ws1").expect("delete");
+        delete_workspace_in(&conn, "ws1", DeleteScope::Active).expect("delete");
         drop(conn);
 
         // The archived stream is what the shelf's loose rows come from.
@@ -928,7 +1019,7 @@ mod tests {
         )
         .expect("seed threads");
 
-        delete_workspace_in(&conn, "ws_a").expect("delete");
+        delete_workspace_in(&conn, "ws_a", DeleteScope::Active).expect("delete");
 
         let tombstoned = |id: &str| {
             conn.query_row(
@@ -1323,10 +1414,13 @@ mod tests {
         .expect("seed");
         drop(conn);
 
-        let deleted = delete_workspace("ws1").expect("delete");
+        let deleted = delete_workspace("ws1", DeleteScope::Active).expect("delete");
         assert_eq!(deleted.id, "ws1");
         assert!(get_workspace("ws1").expect("get").is_none());
-        assert!(delete_workspace("ws1").is_err(), "second delete errors");
+        assert!(
+            delete_workspace("ws1", DeleteScope::Active).is_err(),
+            "second delete errors"
+        );
     }
 
     /// The delete confirmation's numbers are the store's, not the loaded pages':
@@ -1350,23 +1444,21 @@ mod tests {
         .expect("seed");
         drop(conn);
 
-        // From the active list: what it shows goes, what was already shelved out
-        // of it survives on the shelf.
-        let active = delete_summary("ws1").expect("summary");
+        // From the workspace list: what it shows goes, and the shelved
+        // conversation the shelf also draws survives on that shelf.
+        let active = delete_summary("ws1", DeleteScope::Active).expect("summary");
         assert_eq!(active.deleted_threads, 2);
         assert_eq!(active.kept_live_threads, 0);
         assert_eq!(active.kept_archived_threads, 1);
 
-        // From the archived shelf: what the folder hid goes, and the
-        // conversations it was hiding come back as live chats.
-        let shelved = delete_summary("ws2").expect("summary");
+        // From the archived shelf: the same workspace read the other way round.
+        let shelved = delete_summary("ws2", DeleteScope::Archived).expect("summary");
         assert_eq!(shelved.deleted_threads, 0);
         assert_eq!(shelved.kept_live_threads, 2);
         assert_eq!(shelved.kept_archived_threads, 0);
     }
 
-    /// The two halves of the rule, side by side: the same workspace graph
-    /// answers "delete" from one list and "keep" from the other.
+    /// The two lists answer independently, on one identical graph.
     #[test]
     fn delete_summary_treats_the_two_lists_differently() {
         let (_home, conn) = guarded_conn("ws_delete_summary_paths");
@@ -1374,7 +1466,6 @@ mod tests {
             "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
                  VALUES ('ws1', 'W', 'user', '/tmp/ws1', 1, 1),
                         ('ws2', 'S', 'user', '/tmp/ws2', 1, 1);
-             UPDATE workspaces SET archived_at = 9 WHERE id = 'ws2';
              INSERT INTO threads (id, workspace_id, mode, title, status, created_at, updated_at)
                  VALUES ('live_ws1', 'ws1', 'workspace', 'L1', 'active', 1, 1),
                         ('shelf_ws1', 'ws1', 'workspace', 'S1', 'archived', 1, 1),
@@ -1384,11 +1475,12 @@ mod tests {
         .expect("seed");
         drop(conn);
 
-        let from_active = delete_summary("ws1").expect("active summary");
-        let from_shelf = delete_summary("ws2").expect("shelved summary");
+        let from_active = delete_summary("ws1", DeleteScope::Active).expect("active summary");
+        let from_shelf = delete_summary("ws2", DeleteScope::Archived).expect("shelved summary");
 
-        // Same shape, opposite answers: the live one dies for the active folder
-        // and survives for the shelved one; the shelved one is the mirror image.
+        // Same shape, opposite answers: the live conversation goes for the
+        // workspace list and survives for the shelf; the shelved one is the
+        // mirror image. Neither list can take the other's half.
         assert_eq!(
             (
                 from_active.deleted_threads,
@@ -1400,6 +1492,9 @@ mod tests {
             (from_shelf.deleted_threads, from_shelf.kept_live_threads),
             (1, 1)
         );
+        // Both workspaces are the same shape, so the two reads cannot disagree
+        // about the total: one conversation goes whichever list is asked.
+        assert_eq!(from_active.deleted_threads, from_shelf.deleted_threads);
     }
 
     /// A folder on the shelf shows every conversation it holds — the ones it was

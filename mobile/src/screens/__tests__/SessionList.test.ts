@@ -1312,7 +1312,7 @@ test("deleting a workspace confirms with its session count and calls the desktop
       confirmAlert(); // A second tap while the request is in flight must not re-fire.
     });
     expect(activeCommands.deleteWorkspace).toHaveBeenCalledTimes(1);
-    expect(activeCommands.deleteWorkspace).toHaveBeenCalledWith("w1");
+    expect(activeCommands.deleteWorkspace).toHaveBeenCalledWith("w1", "active");
     // Everything the workspace held — the folded child included — left the batch
     // with it.
     expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:0").length).toBeGreaterThan(0);
@@ -1613,7 +1613,7 @@ test("a stale workspace delete item cannot queue a second confirmation while the
     expect(visibleDialogs()).toBe(1);
     await act(async () => { confirmAlert(); });
     expect(activeCommands.deleteWorkspace).toHaveBeenCalledTimes(1);
-    expect(activeCommands.deleteWorkspace).toHaveBeenCalledWith("w1");
+    expect(activeCommands.deleteWorkspace).toHaveBeenCalledWith("w1", "active");
     // The request really is in flight, so the guard's read at round 2 is a live
     // `true`; a delete that had already settled would make round 2 vacuous.
     expect(button("sessions.workspaceActions:Project").props.disabled).toBe(true);
@@ -2324,7 +2324,7 @@ test("renaming and deleting a peer workspace name it on its own machine", async 
 
   pressWorkspaceAction("Review", "sessions.deleteWorkspace");
   await act(async () => { confirmAlert(); });
-  expect(peerCommands.deleteWorkspace).toHaveBeenCalledWith("w9");
+  expect(peerCommands.deleteWorkspace).toHaveBeenCalledWith("w9", "active");
   expect(activeCommands.deleteWorkspace).not.toHaveBeenCalled();
 });
 
@@ -2780,6 +2780,37 @@ test("a shelved workspace's delete confirmation is not the active one's", () => 
   expect(dialogText()).not.toEqual(
     expect.arrayContaining(["sessions.deleteWorkspaceConfirm:Shut project"]),
   );
+});
+
+/**
+ * The shelf's delete names the shelf, so it can only take what the shelf drew.
+ *
+ * The host applies the scope: a workspace in both lists loses one half or the
+ * other depending on which click sent the command, and sending "active" from the
+ * shelf deleted the conversations the workspace list was still showing.
+ */
+test("deleting from the shelf asks the desktop for the shelf's half", async () => {
+  renderArchived(
+    [{
+      sessionId: "in-shelf",
+      threadId: "t1",
+      title: "Inside the shelf",
+      mode: "workspace",
+      workspaceId: "w-shut",
+      streaming: false,
+      archived: true,
+    }],
+    [{ id: "w-shut", name: "Shut project", path: "/tmp/shut", archived: true }],
+  );
+  pressWorkspaceAction("Shut project", "sessions.deleteWorkspace");
+  // The shelf's own commands are reached through the screen's provider; the
+  // delete has to name the shelf, or the host takes the conversations the
+  // workspace list is still showing.
+  const shelves = testCommandsFor(null);
+  await act(async () => {
+    confirmAlert();
+  });
+  expect(shelves!.deleteWorkspace).toHaveBeenCalledWith("w-shut", "archived");
 });
 
 test("the shelf's row opens on tap and offers its own actions menu", () => {

@@ -341,6 +341,14 @@
       "type": "string",
       "description": "prompt creation mode / existing workspace selection"
     },
+    "deleteScope": {
+      "x-rust-name": "delete_scope",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "delete_workspace: which list the delete was started from (active | archived). A workspace can sit in both lists at once, and each one asks a different question, so the delete has to be told which it answers. Absent keeps the active list's answer."
+    },
     "path": {
       "x-rust-name": "path",
       "x-rust-type": "String",

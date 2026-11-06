@@ -97,6 +97,7 @@ pub fn list_pinned_workspaces() -> Result<Vec<store::WorkspaceRecord>, crate::Er
 
 pub async fn delete_workspace(
     workspace_id: String,
+    scope: store::DeleteScope,
 ) -> Result<store::WorkspaceRecord, crate::Error> {
     // Resolve terminal ownership before deleting its conversation rows. The
     // optional entry presentation sink closes embedded GUI terminals after
@@ -111,7 +112,7 @@ pub async fn delete_workspace(
         Vec::new()
     };
     // Hard-delete the workspace, its threads, and all their child rows.
-    let workspace = store::delete_workspace(&workspace_id)?;
+    let workspace = store::delete_workspace(&workspace_id, scope)?;
     for thread_id in &thread_ids {
         crate::events::publish(crate::events::Event::CloseThreadTerminals(thread_id));
     }
@@ -130,8 +131,11 @@ pub async fn delete_workspace(
 ///
 /// The delete is not an archive delete; the confirmation names both numbers
 /// before the reader commits to it.
-pub fn delete_summary(workspace_id: String) -> Result<store::WorkspaceDeleteSummary, crate::Error> {
-    store::delete_summary(&workspace_id)
+pub fn delete_summary(
+    workspace_id: String,
+    scope: store::DeleteScope,
+) -> Result<store::WorkspaceDeleteSummary, crate::Error> {
+    store::delete_summary(&workspace_id, scope)
 }
 
 #[cfg(test)]
@@ -181,7 +185,9 @@ mod tests {
         assert!(pinned.pinned);
         assert!(list_workspaces().expect("list")[0].pinned);
 
-        let deleted = delete_workspace(created.id.clone()).await.expect("delete");
+        let deleted = delete_workspace(created.id.clone(), store::DeleteScope::Active)
+            .await
+            .expect("delete");
         assert_eq!(deleted.id, created.id);
         assert!(list_workspaces().expect("list after delete").is_empty());
     }

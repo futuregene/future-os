@@ -1745,6 +1745,9 @@ function ReadyAppShell({
     onDeleteThread: openDelete,
     onRenameThread: openRename,
     onDeleteWorkspace: openWorkspaceDelete,
+    // The shelf's own delete: the two lists take opposite halves of a workspace
+    // that sits in both, so the click has to name which one it came from.
+    onDeleteArchivedWorkspace: (workspace: StoredWorkspace) => openWorkspaceDelete(workspace, "archived"),
     onRenameWorkspace: openWorkspaceRename,
     onTogglePinWorkspace: handleTogglePinWorkspace,
     onRestoreThread: handleRestoreThread,

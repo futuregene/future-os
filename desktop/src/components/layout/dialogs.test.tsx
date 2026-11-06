@@ -454,7 +454,7 @@ describe("app shell dialogs", () => {
 describe("workspace dialogs", () => {
   const workspace = { cleanupStatus: "active" as const, createdAt: 0, id: "ws-1", kind: "user" as const, name: "Alpha", path: "/tmp/alpha", pinned: false, updatedAt: 0 };
 
-  function Harness({ handlers, initial }: { handlers: Record<string, () => void>; initial?: { deleteOpen?: boolean; summary?: { deletedThreads: number; keptLiveThreads: number; keptArchivedThreads: number } } }) {
+  function Harness({ handlers, initial }: { handlers: Record<string, () => void>; initial?: { deleteOpen?: boolean; scope?: "active" | "archived"; summary?: { deletedThreads: number; keptLiveThreads: number; keptArchivedThreads: number } } }) {
     const [renameDialog, setRenameDialog] = useState<WorkspaceRenameDialogState | null>(
       { error: "taken", submitting: false, value: "Alpha", workspace },
     );
@@ -463,6 +463,7 @@ describe("workspace dialogs", () => {
         ? {
             error: null,
             loadingSummary: false,
+            scope: initial.scope ?? "active",
             submitting: false,
             summary: initial.summary ?? { deletedThreads: 1, keptLiveThreads: 0, keptArchivedThreads: 2 },
             workspace,
@@ -520,34 +521,47 @@ describe("workspace dialogs", () => {
   });
 
   /**
-   * Deleting from the archived shelf says the opposite of deleting from the
-   * active list: the conversations the folder was hiding come back to the
-   * conversations list, and the ones the reader had shelved out of it are
-   * deleted with the folder.
+   * The shelf's sentence never mentions the conversations the workspace list
+   * still shows.
+   *
+   * This is the 115 build's report: deleting from the archived shelf said the
+   * workspace's active conversations would be deleted with it, and they were.
+   * The two lists are independent now — the shelf's click takes only what the
+   * shelf drew.
    */
-  it("says a shelved folder's hidden conversations come back live", () => {
+  it("says a shelved folder's delete leaves the workspace list's conversations alone", () => {
     const view = mount(createElement(Harness, {
       handlers: {},
-      initial: { deleteOpen: true, summary: { deletedThreads: 1, keptLiveThreads: 2, keptArchivedThreads: 0 } },
+      initial: {
+        deleteOpen: true,
+        scope: "archived",
+        summary: { deletedThreads: 1, keptLiveThreads: 2, keptArchivedThreads: 0 },
+      },
     }));
     const text = view.container.textContent ?? "";
     expect(text).toContain("its 1 archived conversations are deleted with it");
-    expect(text).toContain("its 2 active conversations are kept in the conversations list");
+    expect(text).toContain("its 2 active conversations are not touched");
+    // The active conversations must not be described as also being deleted, and
+    // the sentence must not send the reader to the shelf for them.
+    expect(text).not.toContain("active conversations are deleted");
     expect(text).not.toContain("under Archived");
     view.unmount();
   });
 
-  it("never calls an archived conversation one the reader shelved", () => {
-    // A conversation hidden by its folder was never archived by the reader; a
-    // sentence that says "archived conversations are kept" about it is the
-    // mistake the 115 build reported.
+  it("never calls a conversation the workspace list shows an archived one", () => {
+    // The same click from the workspace list: what it shows goes, and the
+    // shelved conversation is the one that survives.
     const view = mount(createElement(Harness, {
       handlers: {},
-      initial: { deleteOpen: true, summary: { deletedThreads: 1, keptLiveThreads: 3, keptArchivedThreads: 0 } },
+      initial: {
+        deleteOpen: true,
+        scope: "active",
+        summary: { deletedThreads: 1, keptLiveThreads: 0, keptArchivedThreads: 3 },
+      },
     }));
     const text = view.container.textContent ?? "";
-    expect(text).toContain("3 active conversations are kept in the conversations list");
-    expect(text).not.toContain("you can unarchive");
+    expect(text).toContain("3 archived conversations are kept");
+    expect(text).not.toContain("not touched");
     view.unmount();
   });
 

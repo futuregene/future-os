@@ -164,8 +164,9 @@
     "deleteMixedDescription": "此工作区将被移除：{{deleted}} 个未归档会话会一并删除；{{kept}} 个已归档会话会保留，出现在「对话」列表的已归档里，取消归档后即可继续对话。磁盘上的文件不会被删除。",
     "deleteKeptDescription": "此工作区将被移除：其中 {{kept}} 个已归档会话会保留，出现在「对话」列表的已归档里，取消归档后即可继续对话。磁盘上的文件不会被删除。",
     "nameEmpty": "名称不能为空。",
-    "deleteShelvedWorkspaceDescription": "此工作区将被移除：其中 {{deleted}} 个已归档会话会一并删除；{{kept}} 个未归档会话会保留到「对话」列表，可以继续对话。磁盘上的文件不会被删除。",
-    "deleteShelvedKeepsLiveDescription": "此工作区将被移除：其中 {{kept}} 个未归档会话会保留到「对话」列表，可以继续对话。磁盘上的文件不会被删除。"
+    "deleteShelvedWorkspaceDescription": "此工作区将被移除：{{deleted}} 个已归档会话会一并删除；另外 {{kept}} 个未归档会话不受影响，会保留到「对话」列表。磁盘上的文件不会被删除。",
+    "deleteShelvedKeepsLiveDescription": "此工作区将被移除：其 {{kept}} 个未归档会话不受影响，会保留到「对话」列表。磁盘上的文件不会被删除。",
+    "deleteShelvedOnlyDescription": "此工作区将被移除：其 {{deleted}} 个已归档会话会一并删除。磁盘上的文件不会被删除。"
   },
   "gate": {
     "title": "欢迎使用 FutureOS",

@@ -777,7 +777,7 @@ export function SessionList({
             // exactly that difference. `deleteWorkspace` re-reads the host's own
             // lists, so this only has to drop the heading it just removed.
             void commands
-              .deleteWorkspace(workspace.workspaceId)
+              .deleteWorkspace(workspace.workspaceId, shelved ? "archived" : "active")
               .then(() => {
                 // A selection holding rows that are gone must not keep them.
                 setSelected(current => {

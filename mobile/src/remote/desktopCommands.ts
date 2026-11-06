@@ -51,6 +51,9 @@ export interface DesktopCommands {
   archiveWorkspace(workspaceId: string): Promise<void>;
   /** Bring a shelved workspace, and the conversations it hid, back. */
   restoreWorkspace(workspaceId: string): Promise<void>;
-  /** Remove a workspace *and its conversations* on the machine that owns it. */
-  deleteWorkspace(workspaceId: string): Promise<void>;
+  /** Remove a workspace *and its conversations* on the machine that owns it.
+   *
+   * `scope` names the list the delete was started from: a workspace can sit in
+   * both lists at once, and each one's delete takes its own half. */
+  deleteWorkspace(workspaceId: string, scope?: "active" | "archived"): Promise<void>;
 }
