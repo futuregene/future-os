@@ -2751,6 +2751,37 @@ test("the shelf draws a shelved workspace with its conversations, then the loose
   expect(mergedTitles()).toEqual(["Inside the shelf", "On its own"]);
 });
 
+/**
+ * Deleting a shelved folder asks a different question than deleting an active
+ * one, and says so.
+ *
+ * From a shelved folder the delete takes what the folder was hiding and keeps
+ * only the conversations the reader never shelved — so the words may not call
+ * them "archived", which is what the 115 build said about conversations nobody
+ * had archived.
+ */
+test("a shelved workspace's delete confirmation is not the active one's", () => {
+  renderArchived(
+    [{
+      sessionId: "in-shelf",
+      threadId: "t1",
+      title: "Inside the shelf",
+      mode: "workspace",
+      workspaceId: "w-shut",
+      streaming: false,
+      archived: true,
+    }],
+    [{ id: "w-shut", name: "Shut project", path: "/tmp/shut", archived: true }],
+  );
+  pressWorkspaceAction("Shut project", "sessions.deleteWorkspace");
+  expect(dialogText()).toEqual(
+    expect.arrayContaining(["sessions.deleteWorkspaceConfirmArchived:Shut project"]),
+  );
+  expect(dialogText()).not.toEqual(
+    expect.arrayContaining(["sessions.deleteWorkspaceConfirm:Shut project"]),
+  );
+});
+
 test("the shelf's row opens on tap and offers its own actions menu", () => {
   onMenu.mockClear();
   mockRemote.selectSession.mockClear();

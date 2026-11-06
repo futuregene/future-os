@@ -694,40 +694,37 @@ export function useSessionCatalog(
       const client = clientRef.current;
       if (!client || !workspaceId) throw new Error("Workspace unavailable");
       const epoch = catalogEpoch.current;
-      const inWorkspace = sessionsRef.current.filter(
-        (session) => (session.workspaceId ?? "") === workspaceId,
-      );
-      // `archived` is the host's own marker (a shelved conversation, or one its
-      // shelved workspace is hiding), so this reads the same rule the shelf does.
-      const removed = inWorkspace.filter((session) => session.archived !== true);
+      const selectedInWorkspace =
+        (sessionsRef.current.find((session) => session.sessionId === selectedRef.current)
+          ?.workspaceId ?? "") === workspaceId;
       await client.request({ type: "delete_workspace", workspaceId }, "list");
       if (clientRef.current !== client || catalogEpoch.current !== epoch) return false;
+      // Which conversations survive depends on which list the delete was started
+      // from, and the rows this client holds cannot answer it: the host's
+      // `archived` flag means "shelved, or hidden by a shelved workspace" and
+      // merges the two cases the rule turns on. Guessing from it either dropped a
+      // conversation the desktop kept (an empty shelf until the next push) or
+      // kept one it deleted. So the host's own lists are re-read instead, and the
+      // optimistic set below is only what this client can be sure of.
       revisions.current.sessions += 1;
       revisions.current.workspaces += 1;
       setWorkspacesLocal((current) => current.filter((workspace) => workspace.id !== workspaceId));
-      const removedIds = new Set(removed.map((session) => session.sessionId));
-      setSessions((current) =>
-        current.filter((session) => !removedIds.has(session.sessionId)),
-      );
-      if (removed.length > 0) {
-        // Unread markers and title overrides for gone sessions would otherwise
-        // leak into a re-used id or linger in memory for the session's life.
-        setUnreadSessions((current) => {
-          if (![...removedIds].some((id) => current.has(id))) return current;
-          const next = new Set(current);
-          for (const id of removedIds) next.delete(id);
-          return next;
-        });
-        setTitleOverrides((current) => {
-          if (![...removedIds].some((id) => id in current)) return current;
-          const next = { ...current };
-          for (const id of removedIds) delete next[id];
-          return next;
-        });
-      }
-      return removed.some((session) => session.sessionId === selectedRef.current);
+      setTitleOverrides((current) => {
+        const gone = new Set(
+          sessionsRef.current
+            .filter((session) => (session.workspaceId ?? "") === workspaceId)
+            .map((session) => session.sessionId),
+        );
+        if (![...gone].some((id) => id in current)) return current;
+        const next = { ...current };
+        for (const id of gone) delete next[id];
+        return next;
+      });
+      void readSessions();
+      void refreshWorkspaces();
+      return selectedInWorkspace;
     },
-    [clientRef, selectedRef, setSessions, setTitleOverrides, setUnreadSessions],
+    [clientRef, readSessions, refreshWorkspaces, selectedRef, setTitleOverrides],
   );
 
   const setSessionPinned = useCallback(

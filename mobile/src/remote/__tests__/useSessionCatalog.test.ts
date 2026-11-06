@@ -1002,13 +1002,21 @@ describe("useSessionCatalog", () => {
     await act(async () => {
       selected = await result.current.deleteWorkspace("w1");
     });
-    expect(request).toHaveBeenLastCalledWith(
+    expect(request).toHaveBeenCalledWith(
       { type: "delete_workspace", workspaceId: "w1" },
       "list",
     );
     expect(result.current.workspaces).toEqual([]);
-    expect(result.current.sessions.map((s) => s.sessionId)).toEqual(["s2"]);
-    expect(result.current.unreadSessions).toEqual(new Set(["s2"]));
+    // The rows this client holds are not the authority on which conversations
+    // survive — the host's own lists are (a shelved folder keeps what it hid,
+    // an active one keeps what was shelved out of it). So the delete drops its
+    // heading and re-reads, rather than guessing from the catalogue's merged
+    // `archived` flag.
+    expect(request).toHaveBeenCalledWith({ type: "list_sessions" }, "list");
+    // Nothing is dropped locally until that read lands, which is why the rows
+    // are still here: a guess would either strand a conversation the desktop
+    // kept or keep one it deleted.
+    expect(result.current.sessions.map((s) => s.sessionId)).toEqual(["s1", "s2"]);
     // The selected session (none) was not inside the deleted workspace.
     expect(selected).toBe(false);
   });
@@ -1021,19 +1029,24 @@ describe("useSessionCatalog", () => {
       workspaceId: "w1",
     });
     act(() => void result.current.applySessionSnapshot([inWorkspace("s1")]));
+    selectedRef.current = "s1";
     request.mockResolvedValueOnce({ data: {} });
     let selected = false;
     await act(async () => {
       selected = await result.current.deleteWorkspace("w1");
     });
+    // The caller closes the open conversation because it was inside the
+    // workspace that just went — known without asking the host.
     expect(selected).toBe(true);
-    expect(result.current.sessions).toEqual([]);
   });
 
-  test("deleteWorkspace keeps the shelved conversations, which the desktop keeps too", async () => {
-    // The confirmation says the workspace's shelved conversations survive as
-    // independent ones. Dropping them here emptied the shelf until the next
-    // push, which is the one outcome the dialog rules out.
+  test("deleteWorkspace leaves the surviving conversations to the host's re-read", async () => {
+    // Which conversations survive depends on which list the delete started from
+    // (see `delete_workspace_in`), and this client cannot tell the two cases
+    // apart: the catalogue's `archived` flag means "shelved, or hidden by a
+    // shelved workspace". Guessing from it emptied the shelf when the desktop
+    // kept a row, or kept a row the desktop had deleted — so the rows stay until
+    // the host answers.
     render();
     const inWorkspace = (id: string, archived: boolean): RemoteSession => ({
       ...session(id),
@@ -1049,7 +1062,8 @@ describe("useSessionCatalog", () => {
     await act(async () => {
       await result.current.deleteWorkspace("w1");
     });
-    expect(result.current.sessions.map(item => item.sessionId)).toEqual(["shelved"]);
+    expect(request).toHaveBeenCalledWith({ type: "list_sessions" }, "list");
+    expect(result.current.sessions.map(item => item.sessionId)).toEqual(["live", "shelved"]);
   });
 
   test("deleteWorkspace keeps the local catalogue when the desktop refuses", async () => {
