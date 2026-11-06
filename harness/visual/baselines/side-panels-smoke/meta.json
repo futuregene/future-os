@@ -1,0 +1,12 @@
+{
+ "case": "side-panels-smoke",
+ "dirtyEnv": true,
+ "dirtyEnvNote": "dirty-env 采集：这批基线是用未隔离 FUTURE_HOME 的 cli.mjs 录的，那次运行会落到真后端、往真实会话库写空壳。像素本身可用作本轮对照，但不能当长期/CI 基准——必须在隔离 FUTURE_HOME 下重建一次。",
+ "rebuildWith": "node harness/scripts/visual-regression.mjs --case side-panels-smoke --update-baseline --reason 'rebuild under isolated FUTURE_HOME'",
+ "threshold": 0.01,
+ "frames": 24,
+ "updatedAt": "2026-11-06T00:00:00Z",
+ "updatedBy": "harness session",
+ "commit": "dirty-env capture",
+ "reason": "initial baseline (dirty env, see README)"
+}
