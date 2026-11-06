@@ -191,6 +191,12 @@ async function main() {
         }
       }
 
+      {
+        const { preflight, reportPreflight } = await import("./lib/preflight.mjs");
+        reportPreflight(preflight({ needsTui: bySurface("tui").length > 0,
+                                    needsCli: bySurface("cli").length > 0 }));
+      }
+
       for (const testCase of bySurface("cli")) {
         process.stdout.write(`\n▶ ${testCase.id} — ${testCase.title}\n`);
         record(await runCliCase({ testCase, runDir }));
