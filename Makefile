@@ -629,3 +629,12 @@ test-visual-changed:
 #   - run: make test-visual-changed REF=origin/main
 #     (needs a recorded baseline and a browser; see harness/visual/)
 .PHONY: test-visual test-visual-changed
+
+# A harness run must not touch this machine's real sessions. The fixture answers
+# most commands, but anything it does not handle falls through to a live backend —
+# that is how 130 empty sessions once landed in the real library. `run` now points
+# FUTURE_HOME at a throwaway directory; this target proves it stayed that way.
+#   make check-no-pollution CASE=open-conversation-list
+check-no-pollution:
+	node harness/scripts/assert-no-pollution.mjs -- node harness/cli.mjs run --case $(CASE) --analyze none
+.PHONY: check-no-pollution
