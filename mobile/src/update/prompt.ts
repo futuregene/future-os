@@ -13,7 +13,17 @@ function displayVersion(version: string, t: TFunction): string {
 }
 
 /** Upgrade dialog — confirm downloads/installs (iOS opens the App Store). */
-export function promptUpgrade(status: UpdateStatus, t: TFunction): void {
+export function promptUpgrade(
+  status: UpdateStatus,
+  t: TFunction,
+  /**
+   * Called when the user answers "later" (or dismisses the dialog), so a caller
+   * that reminds on its own schedule can remember not to ask again. Reached
+   * through the cancel button's onPress, which the dialog host also runs for a
+   * backdrop or back-button dismissal.
+   */
+  onDismiss?: () => void,
+): void {
   const appStore = Platform.OS === "ios";
   Alert.alert(
     t("update.title"),
@@ -22,7 +32,7 @@ export function promptUpgrade(status: UpdateStatus, t: TFunction): void {
       version: displayVersion(status.latestVersion, t),
     }),
     [
-      { text: t("update.cancel"), style: "cancel" },
+      { text: t("update.cancel"), style: "cancel", onPress: onDismiss },
       {
         text: t(appStore ? "update.appStore" : status.canInstallInApp ? "update.confirm" : "update.download"),
         onPress: () => {
