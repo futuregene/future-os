@@ -39,6 +39,16 @@ test("legacy development builds show channels and do not claim the nightly is ne
   expect(installUpdate).toHaveBeenCalledWith(status);
 });
 
+test("the dismissal callback is the \"later\" answer, not the download", () => {
+  const onDismiss = jest.fn();
+  promptUpgrade(status, t, onDismiss);
+  const buttons = jest.mocked(AppAlert.alert).mock.calls[0]?.[2];
+  buttons?.[1]?.onPress?.();
+  expect(onDismiss).not.toHaveBeenCalled();
+  buttons?.[0]?.onPress?.();
+  expect(onDismiss).toHaveBeenCalledTimes(1);
+});
+
 test.each([
   ["0.0.2-abc1234+dev", "开发构建 (abc1234)"],
   ["0.0.2-abc1234+local", "本地构建 (abc1234)"],
