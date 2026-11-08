@@ -3109,7 +3109,8 @@ async fn failed_coalesced_activation_preserves_each_input_without_restart() {
                 && entry
                     .content
                     .as_ref()
-                    .is_some_and(|value| value["run_id"] == run && value["state"] == "cancelled_before_start")));
+                    .is_some_and(|value| value["run_id"] == run
+                        && value["state"] == "cancelled_before_start")));
     }
     assert!(!entries
         .iter()
