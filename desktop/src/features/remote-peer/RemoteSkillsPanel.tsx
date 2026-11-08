@@ -3,7 +3,7 @@ import type {
   RemotePeer,
   RemoteSkillInfo,
 } from "./remotePeerClient";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { getLanguage } from "../../i18n";
@@ -89,6 +89,31 @@ export function RemoteSkillsPanel({
   const installable = catalogue.filter(
     skill => !installed.some(mine => mine.id === skill.id),
   );
+  const catalogueById = useMemo(
+    () => new Map(catalogue.map(skill => [skill.id, skill] as const)),
+    [catalogue],
+  );
+
+  /**
+   * A row's text in the app's language, for either list.
+   *
+   * An installed row is described by its own `SKILL.md`, and a package built from
+   * the repository carries only the English `description` — no `name_zh`, no
+   * `description_zh`. The host's catalogue has both for the same id, so the
+   * translation is taken from there first and the skill's own text is the
+   * fallback. Without this the installed half of the page read in English while
+   * the installable half beside it read in Chinese, which looked like the
+   * translations were missing rather than being somewhere else. The phone merges
+   * the two lists the same way (and the local Skills page does as well).
+   */
+  function localized(skill: RemoteSkillInfo | RemoteAvailableSkill) {
+    const entry = catalogueById.get(skill.id);
+    return localizedSkill({
+      ...skill,
+      nameZh: skill.nameZh || entry?.nameZh,
+      descriptionZh: skill.descriptionZh || entry?.descriptionZh,
+    }, language);
+  }
 
   return (
     <SettingsSection description={t("skillsHint")} title={t("skills")}>
@@ -99,12 +124,12 @@ export function RemoteSkillsPanel({
           ? <SettingsRow title={t("skillsNoneInstalled")}><span /></SettingsRow>
           : null}
         {installed.map((skill) => {
-          const localized = localizedSkill(skill, language);
+          const text = localized(skill);
           return (
             <SettingsRow
-              description={localized.description}
+              description={text.description}
               key={skill.id}
-              title={localized.name}
+              title={text.name}
             >
               <Button
                 disabled={!available || busySkill !== null}
@@ -118,12 +143,12 @@ export function RemoteSkillsPanel({
           );
         })}
         {installable.map((skill) => {
-          const localized = localizedSkill(skill, language);
+          const text = localized(skill);
           return (
             <SettingsRow
-              description={localized.description}
+              description={text.description}
               key={skill.id}
-              title={localized.name}
+              title={text.name}
             >
               <Button
                 disabled={!available || busySkill !== null}

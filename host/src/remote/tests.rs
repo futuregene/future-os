@@ -3543,10 +3543,20 @@ mod runtime_tests {
             small.len(),
             large.len()
         );
-        assert_eq!(
+        // Independent of the catalogue, not byte-identical to it. The body
+        // carries the catalogue's revision, a counter that gains a digit as the
+        // catalogue grows — so the two sizes differ by the width of that number
+        // and never by the rows it counts. Asserting equality made this fail
+        // whenever the revision crossed a power of ten (874 vs 875 on one run,
+        // 871 vs 871 on the next), which says nothing about the property under
+        // test. A small slack binds the answer to the counter's own width while
+        // still failing if any session row leaks into the body.
+        let slack = large.len().abs_diff(small.len());
+        assert!(
+            slack <= 3,
+            "the confirmation must not grow with the catalogue: {} vs {} bytes",
             small.len(),
-            large.len(),
-            "the confirmation must not grow with the catalogue"
+            large.len()
         );
         assert!(
             large.len() < 1024,

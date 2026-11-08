@@ -426,7 +426,9 @@ export const resources = {
         selectWorkspaceSessions: "Select all conversations in this workspace",
         deleteWorkspace: "Delete workspace",
         deleteWorkspaceConfirm:
-          'Delete the workspace "{{title}}"? Its active conversations are deleted with it; archived conversations are kept as independent conversations you can unarchive. The files in the workspace folder on the desktop are not deleted.',
+          'Delete the workspace "{{title}}"? Its {{count}} conversations are deleted with it. The conversations you archived out of it are not affected - they stay under Archived in the conversations list. The files in the workspace folder on the desktop are not deleted.',
+        deleteWorkspaceConfirmArchived:
+          'Delete this archived workspace "{{title}}"? Its {{count}} archived conversations are deleted with it. The conversations that are still active are not affected - they stay in the conversations list. The files in the workspace folder on the desktop are not deleted.',
         deleteWorkspaceFailed:
           "Could not delete the workspace. Reconnect and retry.",
         openOnDesktopFailed:
@@ -1599,7 +1601,9 @@ export const resources = {
         selectWorkspaceSessions: "全选该工作区的会话",
         deleteWorkspace: "删除工作区",
         deleteWorkspaceConfirm:
-          "删除工作区「{{title}}」？其中的未归档会话会一并删除；已归档的会话会保留为独立会话，取消归档后仍可继续对话。桌面端工作区文件夹里的文件不会被删除。",
+          "删除工作区「{{title}}」？其中 {{count}} 个会话会一并删除。你已归档的会话不受影响，会保留在「对话」列表的已归档里。桌面端工作区文件夹里的文件不会被删除。",
+        deleteWorkspaceConfirmArchived:
+          "删除已归档的工作区「{{title}}」？其中 {{count}} 个已归档会话会一并删除。仍在使用的会话不受影响，会保留在「对话」列表里。桌面端工作区文件夹里的文件不会被删除。",
         deleteWorkspaceFailed: "工作区删除失败，请恢复连接后重试。",
         openOnDesktopFailed:
           "切换到「{{name}}」打开该会话失败，请恢复连接后重试。",

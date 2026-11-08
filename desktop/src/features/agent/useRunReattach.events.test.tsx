@@ -162,14 +162,19 @@ describe("useRunReattach runtime updates", () => {
     harness.unmount();
   });
 
-  it("ignores remote activity while a local send owns the view", async () => {
+  // A queued send is started by the Agent at the turn boundary, and the view
+  // that queued it still holds `sendingRef` from the send that queued it. The
+  // signal has to get through *then* — skipping it was why a queued reply
+  // never streamed and instead appeared complete when the turn ended.
+  it("picks up a queued run that starts while a local send still holds the view", async () => {
     const { harness, refreshRecentRun, reloadThreadHistory, sending } = setup();
     await act(async () => {});
     sending().current = true;
 
     emit("remote-activity", "T1");
-    expect(refreshRecentRun).not.toHaveBeenCalled();
-    expect(reloadThreadHistory).not.toHaveBeenCalled();
+
+    expect(refreshRecentRun).toHaveBeenCalledWith("T1");
+    expect(reloadThreadHistory).toHaveBeenCalledWith("T1");
     harness.unmount();
   });
 

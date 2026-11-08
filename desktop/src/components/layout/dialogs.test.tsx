@@ -454,7 +454,7 @@ describe("app shell dialogs", () => {
 describe("workspace dialogs", () => {
   const workspace = { cleanupStatus: "active" as const, createdAt: 0, id: "ws-1", kind: "user" as const, name: "Alpha", path: "/tmp/alpha", pinned: false, updatedAt: 0 };
 
-  function Harness({ handlers, initial }: { handlers: Record<string, () => void>; initial?: { deleteOpen?: boolean; summary?: { deletedThreads: number; keptThreads: number } } }) {
+  function Harness({ handlers, initial }: { handlers: Record<string, () => void>; initial?: { deleteOpen?: boolean; scope?: "active" | "archived"; summary?: { deletedThreads: number; keptLiveThreads: number; keptArchivedThreads: number } } }) {
     const [renameDialog, setRenameDialog] = useState<WorkspaceRenameDialogState | null>(
       { error: "taken", submitting: false, value: "Alpha", workspace },
     );
@@ -463,8 +463,9 @@ describe("workspace dialogs", () => {
         ? {
             error: null,
             loadingSummary: false,
+            scope: initial.scope ?? "active",
             submitting: false,
-            summary: initial.summary ?? { deletedThreads: 1, keptThreads: 2 },
+            summary: initial.summary ?? { deletedThreads: 1, keptLiveThreads: 0, keptArchivedThreads: 2 },
             workspace,
           }
         : null,
@@ -503,6 +504,7 @@ describe("workspace dialogs", () => {
     // file-safety sentence the old confirmation carried.
     expect(view.container.textContent).toContain("1 active conversations are deleted with it");
     expect(view.container.textContent).toContain("2 archived conversations are kept");
+    expect(view.container.textContent).toContain("under Archived in the conversations list");
     expect(view.container.textContent).toContain("Files on disk are not deleted");
     view.unmount();
   });
@@ -510,11 +512,56 @@ describe("workspace dialogs", () => {
   it("keeps the old confirmation wording when nothing is archived", () => {
     const view = mount(createElement(Harness, {
       handlers: {},
-      initial: { deleteOpen: true, summary: { deletedThreads: 2, keptThreads: 0 } },
+      initial: { deleteOpen: true, summary: { deletedThreads: 2, keptLiveThreads: 0, keptArchivedThreads: 0 } },
     }));
     expect(view.container.textContent).toContain(
       "This workspace and its conversations are removed from the sidebar; files on disk are not deleted.",
     );
+    view.unmount();
+  });
+
+  /**
+   * The shelf's sentence never mentions the conversations the workspace list
+   * still shows.
+   *
+   * This is the 115 build's report: deleting from the archived shelf said the
+   * workspace's active conversations would be deleted with it, and they were.
+   * The two lists are independent now — the shelf's click takes only what the
+   * shelf drew.
+   */
+  it("says a shelved folder's delete leaves the workspace list's conversations alone", () => {
+    const view = mount(createElement(Harness, {
+      handlers: {},
+      initial: {
+        deleteOpen: true,
+        scope: "archived",
+        summary: { deletedThreads: 1, keptLiveThreads: 2, keptArchivedThreads: 0 },
+      },
+    }));
+    const text = view.container.textContent ?? "";
+    expect(text).toContain("its 1 archived conversations are deleted with it");
+    expect(text).toContain("its 2 active conversations are not touched");
+    // The active conversations must not be described as also being deleted, and
+    // the sentence must not send the reader to the shelf for them.
+    expect(text).not.toContain("active conversations are deleted");
+    expect(text).not.toContain("under Archived");
+    view.unmount();
+  });
+
+  it("never calls a conversation the workspace list shows an archived one", () => {
+    // The same click from the workspace list: what it shows goes, and the
+    // shelved conversation is the one that survives.
+    const view = mount(createElement(Harness, {
+      handlers: {},
+      initial: {
+        deleteOpen: true,
+        scope: "active",
+        summary: { deletedThreads: 1, keptLiveThreads: 0, keptArchivedThreads: 3 },
+      },
+    }));
+    const text = view.container.textContent ?? "";
+    expect(text).toContain("3 archived conversations are kept");
+    expect(text).not.toContain("not touched");
     view.unmount();
   });
 

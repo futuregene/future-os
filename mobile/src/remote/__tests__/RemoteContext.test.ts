@@ -4,7 +4,7 @@ import { prepareTaskNotifications } from "../../notifications/taskNotifications"
 import { DesktopScope, RemoteProvider, useRemote, useRemoteControls, type RemoteControls } from "../RemoteContext";
 import { claimPairingCode, serverRevoke } from "../pairing";
 import { mergeSessions } from "../mergeSessions";
-import { loadCredentials, loadPairedDesktops, savePendingRevoke } from "../storage";
+import { loadCredentials, loadPairedDesktops, labelDesktop, savePendingRevoke } from "../storage";
 import { currentAppAlert } from "../../components/appAlerts";
 import type { DownloadInfo, HistoryAttachment, Presence, RemoteCredentials, RemoteSession } from "../types";
 
@@ -723,6 +723,72 @@ describe("RemoteProvider over several desktops", () => {
     expect(remote.presence?.holder).toBeNull();
   });
 
+  /**
+   * Renaming a machine is a label, not a connection event.
+   *
+   * Reported from the phone's "已配对的桌面端" page: rename one desktop and every
+   * row under it starts reading "已被其他设备接管" — the standby line — all at
+   * once. The name is the phone's own record and never goes over the wire, so
+   * the only way it can reach a runtime is through state a runtime is keyed by,
+   * and a reconnect is what does this: a client that comes up again has no
+   * heartbeat yet, and a machine with no word on control is not this phone's to
+   * drive.
+   *
+   * The chain is `forgetUnpaired` (the provider's unpaired callback) closing over
+   * `pairing.desktops`. Renaming replaces that array with a new one, so the
+   * callback is a new function, so each host's `onUnpaired` is new, so
+   * `connect` is new, so the bootstrap effect that opens the connection re-runs
+   * — tearing down and rebuilding *every* machine's socket for a renamed label.
+   */
+  test("renaming a desktop rebuilds no machine's connection", async () => {
+    // The real store hands back a freshly parsed registry on every read, which
+    // is what makes a rename a *new* pairing list. A single shared array here
+    // would hide exactly the identity change this test is about.
+    let stored = [
+      { desktopId: "desktop_1", pairId: "pair-desktop_1", name: "Studio" },
+      { desktopId: "desktop_2", pairId: "pair-desktop_2", name: "Office" },
+    ];
+    jest.mocked(loadPairedDesktops).mockImplementation(async () => stored.map(desktop => ({ ...desktop })));
+    jest.mocked(labelDesktop).mockImplementation(async (desktopId: string, patch: { name?: string }) => {
+      stored = stored.map(desktop =>
+        desktop.desktopId === desktopId && patch.name !== undefined
+          ? { ...desktop, name: patch.name }
+          : desktop);
+    });
+
+    await mount();
+    await settle();
+    act(() => {
+      clientFor("desktop_1").callbacks.onPresence?.(onlinePresence("desktop_1") as never);
+      clientFor("desktop_2").callbacks.onPresence?.(onlinePresence("desktop_2") as never);
+    });
+    await settle();
+
+    const studio = clientFor("desktop_1");
+    const office = clientFor("desktop_2");
+    expect(clientsFor("desktop_1")).toHaveLength(1);
+    expect(clientsFor("desktop_2")).toHaveLength(1);
+    // Nothing has been torn down by getting this far.
+    expect(studio.close).not.toHaveBeenCalled();
+    expect(office.close).not.toHaveBeenCalled();
+
+    // The label dialog's own write: local, then the provider re-reads its list.
+    await act(async () => { await remote.labelDesktop("desktop_2", { name: "cs2 renamed" }); });
+    await settle();
+
+    // The same two sockets, still open, still holding their heartbeats. A rebuilt
+    // one would start from no presence — which the rows read as standby.
+    expect(studio.close).not.toHaveBeenCalled();
+    expect(office.close).not.toHaveBeenCalled();
+    expect(clientsFor("desktop_1")).toHaveLength(1);
+    expect(clientsFor("desktop_2")).toHaveLength(1);
+    // And the renamed machine is still the one this phone drives: a rebuilt
+    // client would have no heartbeat yet, and a machine with no word on control
+    // is the standby line the report shows.
+    expect(remote.catalogs.machines[0]!.control).toBeUndefined();
+    expect(remote.catalogs.machines[0]!.status).toBe("connected");
+  });
+
   test("a machine whose heartbeat stops reads offline while the other stays connected", async () => {
     await mount();
     await settle();
@@ -1070,7 +1136,7 @@ describe("RemoteProvider over several desktops", () => {
       // The name is trimmed here: the host applies its own rules to the rest.
       { type: "rename_workspace", workspaceId: "w1", name: "Renamed" },
       { type: "set_workspace_pinned", workspaceId: "w1", pinned: true },
-      { type: "delete_workspace", workspaceId: "w1" },
+      { type: "delete_workspace", workspaceId: "w1", deleteScope: "active" },
     ]));
     // The workspace verbs address the machine's list, not one of its sessions.
     expect(office.requests.filter((r) => r.command.type === "set_workspace_pinned")[0]!.sessionId)

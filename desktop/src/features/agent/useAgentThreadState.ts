@@ -34,9 +34,18 @@ interface UseAgentThreadStateInput {
   onThreadActivity: () => void;
 }
 
-// The run this thread is actively executing, or null.
+// The run this thread is actively EXECUTING, or null.
+//
+// A run the Agent accepted but holds queued is deliberately not it. That row
+// exists from the moment the message is written, and the Agent may fold it into
+// the run ahead so it never executes at all — anchoring the live preview on it
+// would watch a run with no events (no streaming) and keep failing against a
+// run id the Agent does not know ("sync paused"). The queue panel reports
+// those rows; the live lane belongs to whatever is running.
 function activeRunIdOf(recentRun: StoredRun | null): string | null {
-  return recentRun && !matchesSettledRun(recentRun.status)
+  return recentRun
+    && !matchesSettledRun(recentRun.status)
+    && recentRun.status !== "queued"
     ? recentRun.id
     : null;
 }

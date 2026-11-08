@@ -259,9 +259,20 @@ export function useArchiveView(): ArchiveView {
     if (cursor === null)
       return;
     const page = await listThreadsPage(`workspace-archived:${workspaceId}`, cursor, PAGE_SIZE);
+    // Keyed by id, not appended blindly. The archived conversation stream above
+    // has always merged its pages this way, and this one did not: a page landing
+    // twice for one group (a second click while the first read was still in
+    // flight, a refresh replaying a page a group still held) put the same
+    // conversation in the list twice. The rail flattens these groups into the
+    // batch a selection addresses, so one ticked row was counted and named twice
+    // in "delete 2 conversations" — and deleting it meant deleting one id twice.
     setWorkspaceThreads(previous => ({
       ...previous,
-      [workspaceId]: [...(previous[workspaceId] ?? []), ...page.threads],
+      [workspaceId]: [
+        ...new Map(
+          [...(previous[workspaceId] ?? []), ...page.threads].map(thread => [thread.id, thread] as const),
+        ).values(),
+      ],
     }));
     setWorkspaceNextCursor(previous => ({ ...previous, [workspaceId]: page.nextCursor }));
     workspaceCursorRef.current = { ...workspaceCursorRef.current, [workspaceId]: page.nextCursor };

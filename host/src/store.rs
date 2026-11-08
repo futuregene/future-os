@@ -84,14 +84,15 @@ pub use runs::{
     clear_run_event_buffer, create_run, delete_run_events_file, fail_run_if_active,
     find_run_by_trigger_message_id, get_tool_call_input, has_active_run, latest_run,
     latest_run_infos, list_run_events, list_runs, list_runs_in_window, mark_remote_prompt_accepted,
-    update_run_status_if_active, LatestRunInfo, RunEventRecord, RunRecord, ToolCallRecord,
-    ToolOutputRecord,
+    mark_run_queued, update_run_status_if_active, LatestRunInfo, RunEventRecord, RunRecord,
+    ToolCallRecord, ToolOutputRecord,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use runs::{append_run_event, flush_run_event_log_for_test, reset_run_event_writer_for_test};
 pub use skill_reco::{record_skill_reco, skill_reco_today, SkillRecoToday};
-/// Run-status vocabulary: terminal states, so callers stop re-listing them.
-pub use status::is_terminal_run_status;
+/// Run-status vocabulary: terminal states, so callers stop re-listing them, and
+/// `queued` — accepted but held behind another run, which is neither.
+pub use status::{is_queued_run_status, is_terminal_run_status, QUEUED_RUN_STATUS};
 pub use thread_sources::{record_thread_source, thread_source};
 pub use threads::{
     archive_thread, archive_thread_tree, batch_archive_threads, bind_thread_session_id,
@@ -110,8 +111,8 @@ pub use workspace_files::{search_workspace_files, WorkspaceFileResult, Workspace
 pub use workspaces::{
     archive_workspace, create_workspace, delete_summary, delete_workspace, file_session_workspace,
     get_or_create_chat_workspace, get_workspace, list_workspaces, pin_workspace,
-    purge_soft_deleted_workspaces, rename_workspace, restore_workspace, WorkspaceDeleteSummary,
-    WorkspaceRecord,
+    purge_soft_deleted_workspaces, rename_workspace, restore_workspace, DeleteScope,
+    WorkspaceDeleteSummary, WorkspaceRecord,
 };
 
 pub fn app_data_path() -> Result<AppDataPath, crate::Error> {

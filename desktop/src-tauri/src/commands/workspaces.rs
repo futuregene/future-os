@@ -82,16 +82,20 @@ pub fn list_pinned_workspaces() -> Result<Vec<store::WorkspaceRecord>, crate::Ap
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn delete_workspace(
     workspace_id: String,
+    delete_scope: Option<String>,
 ) -> Result<store::WorkspaceRecord, crate::AppError> {
-    future_host::workspaces::delete_workspace(workspace_id).await
+    let scope = store::DeleteScope::parse(delete_scope.as_deref().unwrap_or_default());
+    future_host::workspaces::delete_workspace(workspace_id, scope).await
 }
 
 /// What a workspace delete removes and what it keeps, for its confirmation.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub fn workspace_delete_summary(
     workspace_id: String,
+    delete_scope: Option<String>,
 ) -> Result<store::WorkspaceDeleteSummary, crate::AppError> {
-    future_host::workspaces::delete_summary(workspace_id)
+    let scope = store::DeleteScope::parse(delete_scope.as_deref().unwrap_or_default());
+    future_host::workspaces::delete_summary(workspace_id, scope)
 }
 
 #[cfg(all(test, feature = "gui"))]
@@ -182,7 +186,7 @@ mod tests {
             "a chat workspace is the per-conversation scratch workspace"
         );
 
-        let deleted = delete_workspace(created.id.clone())
+        let deleted = delete_workspace(created.id.clone(), None)
             .await
             .expect("delete workspace");
         assert_eq!(deleted.id, created.id);

@@ -138,6 +138,11 @@ export function useThreadDialogs({ activeThreadId, onArchived, refreshStore, thr
       invalidateAgentState(renameDialog.thread.id);
       prefetchAgentState(renameDialog.thread.id);
       await refreshStore(renameDialog.thread.id);
+      // The archived view keeps its own lists: a shelved conversation renamed
+      // from that list is not in the store's pages at all, so the refresh above
+      // cannot reach the row — it kept drawing the old title until the view was
+      // reloaded. Same event an archive, a restore or a delete already fires.
+      emitFutureEvent("archive-changed", undefined);
       setRenameDialog(null);
     }
     catch (error) {

@@ -706,6 +706,62 @@ describe("mergeConversations", () => {
       expect(grouped.chats).toEqual([]);
     });
 
+    /**
+     * This machine's own empty workspace has a heading in the merged list too.
+     *
+     * The bug this locks: under "本机" the rail draws its headings straight from
+     * the workspace store, so a folder shows whether or not anything has been
+     * said in it. The merged list ("全部设备") builds headings from the rows
+     * under them instead, and only *other* machines' workspaces were ever
+     * supplied to fill that gap. So the same folder — created from the "＋", or
+     * left empty after its one conversation was archived — appeared under one
+     * device filter and vanished under the other, and came back when unpairing
+     * dropped the list to this machine alone.
+     */
+    it("gives this machine's empty workspace a heading under the merged list", () => {
+      const grouped = groupMergedRows(
+        rows([], []),
+        new Map(),
+        // This machine travels under "local", the map's own key for it.
+        new Map<string, RemoteWorkspaceRow[]>([["local", [
+          { id: "ws_local_empty", name: "新建文件夹", path: "/Users/me/new", pinned: false, orderedAt: 700 },
+        ]]]),
+      );
+
+      expect(grouped.workspaces).toHaveLength(1);
+      const [group] = grouped.workspaces;
+      // The local key is the bare workspace id — the key a workspace *with*
+      // rows gets, which is what makes both folds one fold.
+      expect(group!.key).toBe("ws_local_empty");
+      // `null` is what tells the list to draw the rail's own heading (its menu,
+      // pin marker and click-to-select) rather than a remote one.
+      expect(group!.desktopId).toBeNull();
+      expect(group!.label).toBe("新建文件夹");
+      expect(group!.rows).toEqual([]);
+    });
+
+    /**
+     * ...and it does not become a second heading for a workspace that has rows.
+     *
+     * `hostWorkspaces` is the answer to "which folders exist", and the row-built
+     * groups above are the answer to "which have been written in". Both describe
+     * the same workspace, and adding it twice splits one folder's conversations
+     * across two headings with the same name.
+     */
+    it("does not duplicate a local workspace that already has rows", () => {
+      const grouped = groupMergedRows(
+        rows([thread({ id: "in_it", mode: "workspace", workspaceId: "ws_busy", updatedAt: 900 })], []),
+        new Map(),
+        new Map<string, RemoteWorkspaceRow[]>([["local", [
+          { id: "ws_busy", name: "future-os", path: "/Users/me/future-os", pinned: false, orderedAt: 100 },
+        ]]]),
+      );
+
+      expect(grouped.workspaces).toHaveLength(1);
+      expect(grouped.workspaces[0]!.key).toBe("ws_busy");
+      expect(grouped.workspaces[0]!.rows).toHaveLength(1);
+    });
+
     it("gives one heading to a workspace that has rows, not two", () => {
       const merged = rows([], [catalog("desktop_a", [
         {

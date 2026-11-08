@@ -3100,13 +3100,17 @@ async fn failed_coalesced_activation_preserves_each_input_without_restart() {
                 .meta
                 .as_ref()
                 .is_some_and(|meta| meta["run_id"] == run)));
+        // None of these runs ever started — asserted below, and by the absence
+        // of `run_started` — so their terminal is the withdrawal a never-sent
+        // prompt earns, not the "cancelled" a stopped reply earns (`8b8ac898`).
         assert!(entries
             .iter()
             .any(|entry| entry.entry_type == "run_terminal"
                 && entry
                     .content
                     .as_ref()
-                    .is_some_and(|value| value["run_id"] == run && value["state"] == "cancelled")));
+                    .is_some_and(|value| value["run_id"] == run
+                        && value["state"] == "cancelled_before_start")));
     }
     assert!(!entries
         .iter()

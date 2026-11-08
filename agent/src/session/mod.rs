@@ -76,6 +76,6 @@ pub use projection::{
 };
 pub use run_journal::{
     find_resumable_run, find_run_terminal, find_unterminated_run, is_run_marker, next_run_sequence,
-    RUN_STATE_CANCELLED, RUN_STATE_COMPLETED, RUN_STATE_ERROR, RUN_STATE_INCOMPLETE,
-    RUN_STATE_INTERRUPTED_BY_RESTART,
+    RUN_STATE_CANCELLED, RUN_STATE_CANCELLED_BEFORE_START, RUN_STATE_COMPLETED, RUN_STATE_ERROR,
+    RUN_STATE_INCOMPLETE, RUN_STATE_INTERRUPTED_BY_RESTART,
 };

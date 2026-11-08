@@ -46,6 +46,7 @@ import { ArchivedWorkspaceMenu, ChatSectionMenu, WorkspaceHeaderMenu } from "./A
 import { ActivityRailSelectionToolbar } from "./ActivityRailSelectionToolbar";
 import { ArchivedEmpty, ArchivedSectionHeading, ArchivedThreadRow, ArchivedWorkspaceContents, ArchivedWorkspaceGroup } from "./ArchivedRows";
 import { ArchiveGuideBubble } from "./ArchiveGuideBubble";
+import { archiveScopeEntries, archiveThreadScopes } from "./archiveScopes";
 import { ConversationSearch } from "./ConversationSearch";
 import { DeviceSelector } from "./DeviceSelector";
 import { useArchiveView } from "./hooks/useArchiveView";
@@ -124,6 +125,17 @@ interface ActivityRailProps {
   onRenameWorkspace: (workspace: StoredWorkspace) => void;
   onTogglePinWorkspace: (workspace: StoredWorkspace) => void;
   onDeleteWorkspace: (workspace: StoredWorkspace) => void;
+  /**
+   * Delete a workspace *from the archived shelf*.
+   *
+   * A workspace can sit in both lists at once — in use, but still holding a
+   * conversation the reader shelved — and the two deletes are opposites: the
+   * workspace list's takes its live conversations, the shelf's takes the
+   * shelved ones. The click says which, so the two entries carry it through;
+   * without it the shelf asks the workspace list's question, which is what every
+   * caller did before the two were told apart.
+   */
+  onDeleteArchivedWorkspace?: (workspace: StoredWorkspace) => void;
   onRestoreThread: (thread: StoredThread) => void;
   /** The workspace whose conversations are on screen; its heading reads as selected. */
   activeWorkspaceId?: string | null;
@@ -285,6 +297,7 @@ export function ActivityRail({
   onRenameWorkspace,
   onTogglePinWorkspace,
   onDeleteWorkspace,
+  onDeleteArchivedWorkspace,
   onRestoreThread,
   onArchiveThread,
   onArchiveWorkspace,
@@ -458,16 +471,12 @@ export function ActivityRail({
    */
   interface ArchivedScopeEntry { scope: string; thread: StoredThread }
   const archiveViewThreads = useMemo<ArchivedScopeEntry[]>(
-    () => [
-      ...archiveView.threads.map(thread => ({ scope: "archived", thread }) as ArchivedScopeEntry),
-      ...Object.entries(archiveView.workspaceThreads).flatMap(([workspaceId, rows]) =>
-        rows.map(thread => ({ scope: `archived-workspace:${workspaceId}`, thread }) as ArchivedScopeEntry)),
-    ],
+    () => archiveScopeEntries(archiveView.threads, archiveView.workspaceThreads),
     [archiveView.threads, archiveView.workspaceThreads],
   );
   const archivedThreadScopes = useMemo(
-    () => new Map(archiveViewThreads.map(entry => [entry.thread.id, entry.scope] as const)),
-    [archiveViewThreads],
+    () => archiveThreadScopes(archiveView.threads, archiveView.workspaceThreads),
+    [archiveView.threads, archiveView.workspaceThreads],
   );
   /** The archived rows the selection can address (flat, both kinds of shelf). */
   const archivedSelectableThreads = useMemo(
@@ -778,6 +787,37 @@ export function ActivityRail({
    */
   const mergedWorkspaces = useMemo(() => {
     const shown = new Map<string, RemoteWorkspaceRow[]>();
+    // This machine's own workspaces belong in this map too, and that was the
+    // bug: the merged list builds a workspace heading from the *rows* under it,
+    // so a folder nobody has written in — just created from the "＋", or one
+    // whose only conversations were archived — had nothing to be built from and
+    // went unlisted. Under "本机" the rail draws its headings straight from the
+    // workspace store and an empty folder shows, which is why the same folder
+    // appeared there and vanished under "全部设备".
+    //
+    // Not in the archived view (its headings come from `archivedRemoteShelves`,
+    // and the rail draws this machine's own shelf beside them), and not under a
+    // filter naming another machine.
+    const localShown = deviceFilter.kind === "device" && deviceFilter.desktopId !== null
+      ? false
+      : railView !== "archived";
+    if (localShown) {
+      const localRows: RemoteWorkspaceRow[] = workspaces
+        .filter(workspace =>
+          workspace.kind === "user"
+          && !workspace.archivedAt
+          && (!queryActive || workspace.name.toLowerCase().includes(normalizedQuery)))
+        .map(workspace => ({
+          id: workspace.id,
+          name: workspace.name,
+          path: workspace.path,
+          pinned: workspace.pinned === true,
+          kind: "user",
+          orderedAt: workspace.updatedAt,
+        }));
+      if (localRows.length > 0)
+        shown.set("local", localRows);
+    }
     for (const catalog of remoteCatalogs) {
       if (deviceFilter.kind === "device" && deviceFilter.desktopId !== catalog.desktopId)
         continue;
@@ -791,7 +831,7 @@ export function ActivityRail({
         shown.set(catalog.desktopId, rows);
     }
     return shown;
-  }, [deviceFilter, normalizedQuery, queryActive, remoteCatalogs]);
+  }, [deviceFilter, normalizedQuery, queryActive, railView, remoteCatalogs, workspaces]);
 
   // Filtering: include a row if its title or its workspace name matches.
   const rowMatchesQuery = useCallback((row: MergedConversation): boolean => {
@@ -1294,6 +1334,9 @@ export function ActivityRail({
         : mergedMode
           ? filteredVisibleThreads
           : visibleThreads,
+    // A batch belongs to the list it was opened from: switching lists ends it
+    // rather than leaving a toolbar over rows the reader can no longer see.
+    view: railView,
   });
 
   const showListTools = !selectionMode || Boolean(onChangeDeviceFilter && remotePeers.length > 0);
@@ -2138,7 +2181,7 @@ export function ActivityRail({
                                                   menu={(
                                                     <ArchivedWorkspaceMenu
                                                       open={openArchivedWorkspaceMenuId === workspace.id}
-                                                      onDelete={onDeleteWorkspace}
+                                                      onDelete={onDeleteArchivedWorkspace ?? onDeleteWorkspace}
                                                       onOpenChange={open => setOpenArchivedWorkspaceMenuId(open ? workspace.id : null)}
                                                       onRename={onRenameWorkspace}
                                                       onRestore={restoreArchivedWorkspace}

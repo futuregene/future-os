@@ -1299,6 +1299,12 @@ async fn handle_event_from(
     // mirrors/forwards those. Everything else is ours to project — persisted
     // BEFORE fan-out, so the mirror never announces what the store lacks.
     if let Some((thread_id, local_run_id)) = observer_run(session_id, shared, run_id).await {
+        // A run accepted queued carries the `queued` status until it actually
+        // starts. This is that moment: it has an event of its own and the
+        // observer is projecting it, so the row must say `running` — a view
+        // reads `queued` as "nothing is streaming here" and would keep its live
+        // preview off the very reply these events are building.
+        promote_queued_run(&local_run_id, &thread_id);
         stream::persist_run_event_off_thread(
             &thread_id,
             Some(&local_run_id),
@@ -1414,6 +1420,39 @@ async fn replay_session_events(
         }
     }
     true
+}
+
+/// A run the Agent accepted queued is `queued` until it actually starts. The
+/// observer projecting its first event is that moment.
+///
+/// Cheap on the hot path: the CAS is only issued for a row that really is
+/// `queued`, so a normal run's every event does not pay a status write.
+///
+/// `thread_id` is what the wake-up is addressed to. Nothing else tells an open
+/// view that this run started: it stayed idle through the whole queue wait
+/// (`queued` is deliberately not a live anchor, because such a run may never
+/// run at all), so it holds no run id to subscribe with. Without this signal
+/// the reply streamed with nobody watching and appeared in full at the turn
+/// boundary — the "queued send does not stream" report.
+fn promote_queued_run(local_run_id: &str, thread_id: &str) {
+    if !crate::store::get_run(local_run_id)
+        .ok()
+        .flatten()
+        .is_some_and(|run| crate::store::is_queued_run_status(&run.status))
+    {
+        return;
+    }
+    let _ = crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+        run_id: local_run_id.to_string(),
+        status: "running".to_string(),
+        error_message: None,
+        error_type: None,
+    });
+    // The row is live again, and the open view has to learn that: it pulls the
+    // thread's current run and arms the live preview from it. `remote-activity`
+    // is exactly this signal — "this conversation moved outside the view you
+    // are holding" — and its listener already owns the re-read.
+    crate::emit_remote_activity(thread_id);
 }
 
 fn note_run_active(shared: &Arc<ObserverShared>, state: &mut ObserverState, run_id: &str) {
@@ -2993,6 +3032,61 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(30)).await;
         // Reaching this line is the assertion: the pass logged its failure and
         // the loop went on to the next tick.
+    }
+
+    /// A run the Agent accepted queued becomes `running` the moment the
+    /// observer projects the first event it produces.
+    ///
+    /// The row says `queued` between acceptance and the turn boundary, and a
+    /// view reads that as "nothing is streaming here" — so leaving it queued
+    /// while the reply actually streams kept the live preview off the very
+    /// events building it, and the answer only appeared when the turn ended.
+    #[tokio::test]
+    async fn handle_event_promotes_a_queued_run_on_its_first_event() {
+        let home = TestHome::new("observer-promote");
+        let _mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-promote"));
+        let shared = Arc::new(ObserverShared::new(thread.id.clone()));
+        let mut state = ObserverState::default();
+
+        // The prompt path's shape: a local row already exists for the run, in
+        // the state its acceptance left it.
+        crate::store::create_run(crate::store::CreateRunInput {
+            id: Some("run-promote".to_string()),
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("seed the run row");
+        crate::store::mark_run_queued("run-promote");
+        assert!(crate::store::is_queued_run_status(
+            &crate::store::get_run("run-promote")
+                .expect("get")
+                .expect("some")
+                .status
+        ));
+
+        assert!(
+            handle_event(
+                "sess-promote",
+                &shared,
+                &mut state,
+                stream_event("agent_start", "run-promote", 0)
+            )
+            .await
+        );
+
+        let run = crate::store::get_run("run-promote")
+            .expect("get")
+            .expect("some");
+        assert_eq!(
+            run.status, "running",
+            "the turn started, so the row must stop claiming it is only waiting"
+        );
+        assert!(run.ended_at.is_none(), "nothing settled it yet");
+        assert_eq!(state.active_run.as_deref(), Some("run-promote"));
     }
 
     #[tokio::test]

@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use super::db::*;
 use super::records::*;
-use super::status::{TERMINAL_RUN_STATUSES, TERMINAL_RUN_STATUSES_SQL};
+use super::status::{
+    EXECUTING_RUN_STATUSES_SQL, QUEUED_RUN_STATUS, TERMINAL_RUN_STATUSES, TERMINAL_RUN_STATUSES_SQL,
+};
 use super::util::*;
 
 #[derive(Debug, Serialize)]
@@ -261,9 +263,22 @@ pub fn find_run_by_trigger_message_id(
     .map_err(crate::Error::from)
 }
 
-/// The thread's single most recent run (same ordering/tiebreak as
-/// [`latest_run_infos`]). Used by initial loads and pushed terminal
-/// reconciliation without transferring the thread's entire run history.
+/// The run this conversation is on: the one EXECUTING right now, or — when
+/// nothing is executing — the newest row.
+///
+/// The two cases are not the same question and must not share an ordering. A
+/// prompt written while a reply streams is accepted and held in the Agent's
+/// queue, and the desktop records a row for it immediately; that row is the
+/// newest, and it stays non-terminal until the turn boundary settles it. Order
+/// by `created_at` alone and it wins every read, so the view anchors its live
+/// preview on a run the Agent has not started — or, when the burst is folded
+/// into the run ahead, on one that will never run at all. The symptom is a
+/// reply that never streams, followed by "sync paused" over a run id the Agent
+/// answers `is not known by this session` for.
+///
+/// Executing rows therefore sort ahead of everything else, and only among
+/// equally-idle rows does recency decide. Same ordering/tiebreak as
+/// [`latest_run_infos`].
 pub fn latest_run(thread_id: &str) -> Result<Option<RunRecord>, crate::Error> {
     let conn = connect()?;
     let columns = run_columns(&conn)?;
@@ -272,8 +287,9 @@ pub fn latest_run(thread_id: &str) -> Result<Option<RunRecord>, crate::Error> {
             "SELECT {columns}
                  FROM runs
                  WHERE thread_id = ?1
-                 ORDER BY created_at DESC, id DESC
-                 LIMIT 1"
+                 ORDER BY {}
+                 LIMIT 1",
+            latest_run_ordering()
         ),
         params![thread_id],
         run_from_row,
@@ -282,9 +298,21 @@ pub fn latest_run(thread_id: &str) -> Result<Option<RunRecord>, crate::Error> {
     .map_err(crate::Error::from)
 }
 
-/// The single latest run's identity and status for each of `thread_ids`.
-/// Powers low-frequency thread-list reconciliation in one connection/query.
-/// Threads with no runs are omitted; callers treat missing as "no run yet".
+/// How "the current run of a conversation" is chosen: a run being executed now
+/// outranks any merely accepted one, whatever their creation times say.
+///
+/// Kept as one string because [`latest_run`] and [`latest_run_infos`] answer the
+/// same question for one thread and for a page of threads; letting them order
+/// differently made the sidebar and the open view disagree about which run was
+/// live.
+fn latest_run_ordering() -> String {
+    format!(
+        "CASE WHEN status IN ({EXECUTING_RUN_STATUSES_SQL}) THEN 0 ELSE 1 END, created_at DESC, id DESC"
+    )
+}
+
+/// One row of [`latest_run_infos`]: which run a conversation is on, and how it
+/// stands.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LatestRunInfo {
@@ -294,6 +322,12 @@ pub struct LatestRunInfo {
     pub ended_at: Option<i64>,
 }
 
+/// The run this conversation is on, identity and status only, for each of
+/// `thread_ids`. Powers low-frequency thread-list reconciliation in one
+/// connection/query. Threads with no runs are omitted; callers treat missing as
+/// "no run yet". Ordered exactly like [`latest_run`], so an executing run beats
+/// a newer queued one here too — otherwise the sidebar would spin on the queued
+/// row while the open view watched the executing one.
 pub fn latest_run_infos(thread_ids: &[String]) -> Result<Vec<LatestRunInfo>, crate::Error> {
     if thread_ids.is_empty() {
         return Ok(vec![]);
@@ -305,10 +339,11 @@ pub fn latest_run_infos(thread_ids: &[String]) -> Result<Vec<LatestRunInfo>, cra
     let sql = format!(
         "SELECT thread_id, id, status, ended_at FROM (
              SELECT thread_id, id, status, ended_at,
-                    ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY created_at DESC, id DESC) AS rn
+                    ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY {}) AS rn
              FROM runs
              WHERE thread_id IN ({})
          ) WHERE rn = 1",
+        latest_run_ordering(),
         placeholders.join(",")
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -357,6 +392,29 @@ pub(super) fn cancel_children_of_runs(
 /// terminal* — the guard is part of the `UPDATE`'s `WHERE`, so a concurrent
 /// `abort_run`/`fail_run_if_active` (which sets `cancelled`/`failed`) is never
 /// clobbered by a late read-then-write. Returns whether a row changed; the
+/// Mark an accepted-but-waiting run as `queued` rather than `running`.
+///
+/// The row was created `running` before the prompt left (the send pipeline
+/// records a run as it starts one), and the Agent then answered that the
+/// session was busy and it is holding this prompt. Leaving the row `running`
+/// makes it indistinguishable from a run that is actually executing — and,
+/// being the newest row, it wins every "latest run" read, so the view anchors
+/// its live preview on a run with no events. `queued` says what is true: the
+/// turn is owed, nothing is streaming, and the observer may project it the
+/// moment the Agent starts it.
+///
+/// Best-effort by design: a failure leaves `running`, which is wrong but
+/// self-heals at the turn boundary (the queue settles these rows from the
+/// Agent's own acks), and is not worth failing a prompt the Agent accepted.
+pub fn mark_run_queued(run_id: &str) {
+    let _ = update_run_status_if_active(UpdateRunStatusInput {
+        run_id: run_id.to_string(),
+        status: QUEUED_RUN_STATUS.to_string(),
+        error_message: None,
+        error_type: Some("queue_accepted".to_string()),
+    });
+}
+
 /// `cancelled` cascade runs only when it did.
 pub fn update_run_status_if_active(input: UpdateRunStatusInput) -> Result<bool, crate::Error> {
     let now = now_millis();
@@ -2265,6 +2323,69 @@ mod tests {
         assert_eq!(infos[0].run_id, "r1_new");
         assert_eq!(infos[1].run_id, "r2");
         assert_eq!(infos[1].status, "failed");
+    }
+
+    /// The reply a reader is watching stream must win over a newer row that is
+    /// only waiting its turn.
+    ///
+    /// A prompt written mid-reply is accepted and held in the Agent's queue, and
+    /// the desktop records its row at that moment — so it is the newest row of
+    /// the conversation while being the one run that cannot be streaming. Read
+    /// as "the latest run" it hijacked the live preview: the view anchored on a
+    /// run with no events (the answer arrived in one lump at the end) and asked
+    /// the Agent about an id it had never executed ("sync paused", over `run …
+    /// is not known by this session`). Both questions below — one thread, and a
+    /// page of threads — have to answer with the executing run.
+    #[test]
+    fn an_executing_run_outranks_a_newer_queued_one() {
+        let (_home, conn) = guarded_conn("runs_latest_executing");
+        conn.execute_batch(&format!(
+            "INSERT INTO workspaces (
+                 id, name, kind, path, cleanup_status, created_at, updated_at
+             ) VALUES ('ws1', 'WS', 'temporary', '/tmp/ws1', 'active', 1, 1);
+             INSERT INTO threads (
+                 id, workspace_id, mode, title, created_at, updated_at
+             ) VALUES
+                 ('t1', 'ws1', 'chat', 'T1', 1, 1),
+                 ('t2', 'ws1', 'chat', 'T2', 1, 1);
+             INSERT INTO runs (id, thread_id, status, created_at, updated_at)
+             VALUES
+                 ('running_old', 't1', 'running', 100, 100),
+                 ('queued_new', 't1', '{QUEUED_RUN_STATUS}', 200, 200),
+                 ('queued_only', 't2', '{QUEUED_RUN_STATUS}', 300, 300),
+                 ('exec_next', 't2', 'waiting_approval', 250, 250);"
+        ))
+        .expect("seed");
+
+        let latest = latest_run("t1").expect("latest").expect("a run");
+        assert_eq!(
+            latest.id, "running_old",
+            "the executing run is what the conversation is watching, not the newer waiting one"
+        );
+
+        let infos = latest_run_infos(&["t1".to_string(), "t2".to_string()]).expect("infos");
+        let by_thread: std::collections::HashMap<_, _> = infos
+            .iter()
+            .map(|info| (info.thread_id.as_str(), info.run_id.as_str()))
+            .collect();
+        assert_eq!(by_thread["t1"], "running_old");
+        assert_eq!(
+            by_thread["t2"], "exec_next",
+            "a waiting-on-approval run is executing too, and still beats a newer queued row"
+        );
+
+        // With nothing executing, recency is the whole answer again: a queued
+        // row is the best thing to report before the Agent starts it.
+        conn.execute(
+            "UPDATE runs SET status = 'completed' WHERE id = 'running_old'",
+            [],
+        )
+        .expect("settle the executing run");
+        assert_eq!(
+            latest_run("t1").expect("latest").expect("a run").id,
+            "queued_new",
+            "an idle conversation's newest row is still the one to show"
+        );
     }
 
     #[test]
