@@ -506,6 +506,11 @@ pub(crate) fn insert_transcript_entries(
             let state = match state {
                 "error" => "failed",
                 "incomplete" | "interrupted_by_restart" => "interrupted",
+                // A prompt withdrawn from the send queue before it ever ran is not
+                // a stopped reply, so the `runs` row a reader sees through history
+                // must not say `cancelled` either. `withdrawn` is what the
+                // projection drops instead of drawing a stopped-reply divider.
+                "cancelled_before_start" => "withdrawn",
                 state => state,
             };
             let run = crate::session::identity::BoundIdentity::run(db, session, run)?;
