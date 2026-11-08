@@ -143,8 +143,13 @@ async fn cli_prompt_and_follow_up_use_real_run_finalization_without_dequeuing_on
     let manager = crate::session::Manager::new(handle.state.session_manager.dir.clone());
     let loaded = manager.load("default").unwrap();
     for (run, expected) in [
+        // The run that was executing when the host stopped had a reply in
+        // flight, so the restart is what ended it.
         ("cli-first", "interrupted_by_restart"),
-        ("cli-follow-up", "cancelled"),
+        // The follow-up was accepted while that run was busy and never started:
+        // a prompt with no reply to mark interrupted ends as withdrawn
+        // (`8b8ac898`), not as a stopped reply.
+        ("cli-follow-up", "cancelled_before_start"),
     ] {
         assert_eq!(
             crate::session::find_run_terminal(&loaded.entries, run).unwrap()["state"],
