@@ -228,7 +228,23 @@ pub(super) fn read_display_page(
     // The canonical branch must never touch the compatibility body views:
     // even asking SQLite for a sliced payload first assembles their full JSON.
     let sql = if canonical {
-        let outcome = "json_object('status',CASE r.status WHEN 'error' THEN 'failed' WHEN 'incomplete' THEN 'interrupted' WHEN 'interrupted_by_restart' THEN 'interrupted' WHEN 'cancelled_before_start' THEN 'withdrawn' ELSE r.status END,'error',r.error,'durationMs',r.duration_ms)";
+        // A closed set of terminal states, plus the shape older sessions carry.
+        //
+        // `cancelled_before_start` is what a withdrawn queue prompt records now.
+        // Sessions written before that state existed kept the same situation under
+        // plain `cancelled` — with no tokens, no duration, and the queue's own
+        // sentence as the error, because nothing ran. Recognising that shape is
+        // what stops an already-recorded withdrawal from drawing a "you stopped
+        // this response" divider with a 0s footer, so the fix reaches the
+        // conversations that already hold one and not only new messages.
+        let outcome = "json_object('status',CASE \
+          WHEN r.status='cancelled_before_start' THEN 'withdrawn' \
+          WHEN r.status='cancelled' AND COALESCE(r.duration_ms,0)=0 AND COALESCE(r.output_tokens,0)=0 \
+            AND r.error='Queued run cancelled before execution.' THEN 'withdrawn' \
+          WHEN r.status='error' THEN 'failed' \
+          WHEN r.status='incomplete' THEN 'interrupted' \
+          WHEN r.status='interrupted_by_restart' THEN 'interrupted' \
+          ELSE r.status END,'error',r.error,'durationMs',r.duration_ms)";
         format!("SELECT d.ordinal,
         CASE WHEN r.run_id IS NOT NULL THEN
           CASE WHEN header.entry_type='assistant' AND header.position=(SELECT max(a.position) FROM entries a WHERE a.session_id=header.session_id AND a.run_id=header.run_id AND a.entry_type='assistant')

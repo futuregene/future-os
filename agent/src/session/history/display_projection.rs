@@ -43,6 +43,24 @@ pub(crate) fn project_entries(entries: &[SessionEntry]) -> Vec<serde_json::Value
             match status {
                 "error" => "failed",
                 "incomplete" | "interrupted_by_restart" => "interrupted",
+                // A prompt deleted from the send queue before it ever ran: nothing
+                // was sent, so there is no reply to report as stopped or failed.
+                // `withdrawn` is the state a client drops instead of drawing a
+                // stopped-reply divider with a 0s footer under it.
+                "cancelled_before_start" => "withdrawn",
+                // Sessions written before that state existed recorded the same
+                // situation as a plain cancellation: no tokens, no duration, and
+                // the queue's own sentence as the error. Recognising the shape is
+                // what fixes an already-recorded withdrawal, so the fix reaches
+                // conversations that already hold one rather than only new ones.
+                "cancelled"
+                    if content["run_duration_ms"].as_i64().unwrap_or(0) == 0
+                        && content["run_tokens"].as_i64().unwrap_or(0) == 0
+                        && content["error"].as_str()
+                            == Some("Queued run cancelled before execution.") =>
+                {
+                    "withdrawn"
+                }
                 other => other,
             }
             .to_owned()
@@ -224,6 +242,60 @@ mod metadata_tests {
 mod projection_guards {
     use super::*;
     use crate::session::SessionEntry;
+
+    /// A prompt deleted from the send queue never ran, so its terminal state must
+    /// not reach a client as a stopped reply. Both spellings are covered: the state
+    /// this situation records now, and the plain cancellation that sessions written
+    /// before it carry — the latter has to be recognised by its shape (no tokens, no
+    /// duration, the queue's own sentence), or an already-recorded withdrawal keeps
+    /// drawing a "you stopped this response" divider under a message that was never
+    /// sent.
+    #[test]
+    fn a_prompt_withdrawn_from_the_queue_reads_as_withdrawn_not_stopped() {
+        // The outcome attaches to the run's entries, so the marker travels with the
+        // prompt it settles — that is the shape a session holds.
+        let run_of = |terminal: SessionEntry| {
+            let user = SessionEntry {
+                meta: Some(serde_json::json!({"run_id": "r"})),
+                ..SessionEntry::new_user("user", serde_json::json!("hello"))
+            };
+            let projected = project_entries(&[user, terminal]);
+            projected
+                .iter()
+                .find_map(|row| row.get("run").cloned())
+                .and_then(|run| run["status"].as_str().map(str::to_owned))
+        };
+
+        assert_eq!(
+            run_of(SessionEntry::run_terminal(
+                "r",
+                "cancelled_before_start",
+                0,
+                0,
+                Some("Queued run cancelled before execution.")
+            )),
+            Some("withdrawn".to_string())
+        );
+        assert_eq!(
+            run_of(SessionEntry::run_terminal(
+                "r",
+                "cancelled",
+                0,
+                0,
+                Some("Queued run cancelled before execution.")
+            )),
+            Some("withdrawn".to_string()),
+            "the shape a session written before that state uses"
+        );
+
+        // A reply the reader really did stop keeps saying so: it ran, so it has a
+        // duration even when it produced no text.
+        assert_eq!(
+            run_of(SessionEntry::run_terminal("r", "cancelled", 0, 4200, None)),
+            Some("cancelled".to_string()),
+            "a stopped reply that ran is not a withdrawal"
+        );
+    }
 
     #[test]
     fn unusable_terminal_markers_change_nothing_and_stale_metadata_is_dropped() {
