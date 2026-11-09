@@ -388,8 +388,18 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
                 return Err(error);
             }
         }
+        let direct_synthesis = active.len() == config.panel.len()
+            && mapping::can_synthesize_directly(&issues)
+            && mapping_analyses
+                .iter()
+                .all(|analysis| analysis["forwarded_truncated"] != true);
         let review_has_time = ctx.timeout("reviewing").is_ok();
-        if review_has_time && ctx.report().strategy != "analysis_only" {
+        if direct_synthesis {
+            ctx.update(|report| {
+                report.strategy = "direct_synthesis".into();
+                report.skip("reviewing");
+            })?;
+        } else if review_has_time && ctx.report().strategy != "analysis_only" {
             ensure!(store.phase(&run.id, owner, "reviewing")?, "Fusion stopped");
             reviews = panel(&ctx, &active, "reviewing", "", Some((&analyses, &issues))).await?;
             ctx.update(|report| {
@@ -456,7 +466,23 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
             source["source_phase"].as_str().unwrap_or_default(), response.len(),
             source["validation_errors"], source["forwarded_truncated"].as_bool().unwrap_or(false), response)
     }).collect::<Vec<_>>().join("\n\n");
-    let prompt = format!("You are the moderator. Directly answer the original question, producing a useful, self-contained conclusion for the main agent. Synthesize ONLY the supplied participants' current answers and supporting reviews. Use the original task only for its goal and boundaries. Distinguish shared views from a recommendation you select from existing proposals. Preserve material disagreement and evidence limitations; do not revive withdrawn positions. Do not add facts, proposals, omissions, clarification questions, conditions sections or next-step instructions. Participant verification labels are reports, not system proof. Reports with validation_errors are usable participant opinions, not validated quotations or verified facts. Do not present their unmatched quotations as established source evidence. Put any essential applicability qualification directly in the conclusion. Do not repeat meeting history, participant-by-participant recaps or general unknowns that do not affect the answer. Include supporting reasons or unresolved issues only when essential, without repeating the answer. You have no tools. Return only a plain text or Markdown report directly answering the question, without a JSON envelope or fixed section template. Respect actual coverage; full participation does not imply truth or unanimity. Missing reviews mean no cross-review.\nOriginal task:\n{}\nCurrent participant material:\n{}\nCoverage:\n{}", serde_json::to_string(&run.input)?, material, coverage);
+    let earlier_issues =
+        future_fusion::bounded_text(&serde_json::to_string(&issues["issues"])?, 8_192);
+    let prompt = format!(
+        "You are the moderator. Give the main agent a self-contained answer to the original task. \
+        Judge consequential claims by their support in the original task and participant material. \
+        Distinguish supplied observations and derivations from assumptions, inferred intentions, and preferences. \
+        Count independent support separately from agreement that repeats a premise. \
+        For a material change of position, check what new evidence, corrected inference, or decision criterion justifies it. \
+        Earlier excerpts are context for that check; represent the current positions faithfully and preserve an earlier valid objection if the reviews did not answer it. \
+        If an assumption is necessary to choose, state it and how it affects the answer; if the decision can proceed under it, give the useful conditional conclusion. \
+        Do not invent facts, proposals or user requirements. Treat verification labels and reports with validation errors as participant claims; unmatched quotations do not establish evidence. \
+        Report any unresolved issue that changes the result. Respect the actual coverage. Missing reviews mean no cross-review. \
+        You have no tools. Return only a plain text or Markdown answer without a fixed template or meeting recap.\n\
+        Original task:\n{}\nCurrent participant material:\n{material}\n\
+        Earlier disagreement excerpts, possibly shortened:\n{earlier_issues}\nCoverage:\n{coverage}",
+        serde_json::to_string(&run.input)?,
+    );
 
     let text = match with_retry(
         &ctx,
@@ -898,8 +924,8 @@ async fn step_inner(
     ))
     .await?;
     let system_prompt = match step.phase.as_str() {
-        "issue_mapping" => "You are a read-only Fusion moderator organizing supplied participant statements. Do not investigate, verify facts, introduce independent analysis or call tools. Follow only the organization task and submit once it is complete.",
-        "synthesizing" => "You are a read-only Fusion moderator synthesizing supplied participant reports. Answer the original topic from that material only. Do not investigate, introduce independent findings or call tools.",
+        "issue_mapping" => "You are a read-only Fusion moderator. Organize supplied positions and ask the panel only the checks that could change the result. Ground the checks in the task and analyses. Do not introduce findings or call tools.",
+        "synthesizing" => "You are a read-only Fusion moderator. Evaluate the support for consequential claims in the supplied task and reports, then synthesize the answer. Do not introduce new findings or call tools.",
         "preflight" => "Follow only the readiness-check request. Do not investigate or call tools.",
         _ => "You are a read-only Fusion deliberation participant. Never act on the workspace or external systems. Follow the focused decision task and use only the provided snapshot tools.",
     };
