@@ -655,6 +655,53 @@ mod tests {
         assert_eq!(mock.requests_of("abort")[0].run_id, "queued");
     }
 
+    /// The same refusal, driven through the entry point a stop actually uses and
+    /// against a real row: the queued message keeps its `queued` status. This is
+    /// the assertion the 2026-11-09 incident failed - the row was rewritten to
+    /// `cancelled / abort_requested "Terminated by user."` while its run had
+    /// never started, and the reply the reader wanted stopped kept streaming.
+    #[tokio::test]
+    async fn stopping_a_queued_message_leaves_its_row_queued() {
+        let home = TestHome::new("rc-queued-row-intact");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-q"));
+        let run = seed_run(&thread.id);
+        crate::store::mark_run_queued(&run.id);
+        assert_eq!(
+            crate::store::get_run(&run.id)
+                .expect("run")
+                .expect("some")
+                .status,
+            "queued"
+        );
+
+        mock.push(
+            "abort",
+            Reply::Reject(format!("run `{}` is no longer active", run.id)),
+        );
+        mock.push_run_state(
+            &run.id,
+            serde_json::json!({
+                "activeRun": {"runId": "live"},
+                "queuedRuns": [{"runId": run.id}],
+            }),
+        );
+
+        let error = abort_run(thread.id.clone(), run.id.clone())
+            .await
+            .expect_err("a stop that stops nothing must not report success");
+        assert!(error.to_string().contains("has not started yet"));
+        assert_eq!(
+            crate::store::get_run(&run.id)
+                .expect("run")
+                .expect("some")
+                .status,
+            "queued",
+            "the waiting message is still waiting, not cancelled"
+        );
+    }
+
     /// A stale local row is a no-op while nothing is executing: the reader
     /// pressed stop and nothing is left to stop, which is the outcome they
     /// asked for. Once ANOTHER run is executing it is a failure instead  -?the
