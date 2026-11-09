@@ -9,9 +9,11 @@ import { PausedTimeline } from "../../components/PausedTimeline";
 import { ErrorBanner } from "../../components/ErrorBanner";
 import { StandbyNotice } from "../../components/StandbyNotice";
 import { useRemote, useRemoteControls } from "../../remote/RemoteContext";
-import { modelReference, type TimelineItem } from "../../remote/types";
+import { modelReference, type MobileAttachment, type TimelineItem } from "../../remote/types";
 import { spacing } from "../../theme/tokens";
 import { useTransferProgress } from "./useTransferProgress";
+import { File } from "expo-file-system";
+import { mimeFor, pickAttachments, pickFromAlbum, takePhoto } from "../../remote/files";
 import { useConversationOperation } from "./useConversationOperation";
 import { useComposerSubmission } from "./composer/useComposerSubmission";
 import { useComposerDraft } from "./useComposerDraft";
@@ -31,6 +33,8 @@ import { ChatTimeline, type SyncNoticeState } from "./components/ChatTimeline";
 import { ChatTopBar } from "./components/ChatTopBar";
 import { SessionFilesPanel } from "./components/SessionFilesPanel";
 import { ComposerDock } from "./components/ComposerDock";
+import { AttachmentSourceMenu, type AttachmentSource } from "./components/AttachmentSourceMenu";
+import type { SendQueueAttachmentItem } from "./components/SendQueuePanel";
 import { ModelSelectorSheet } from "./components/ModelSelectorSheet";
 import { DownloadProgressModal } from "./components/DownloadProgressModal";
 import { PreviewModal } from "./components/PreviewModal";
@@ -38,7 +42,7 @@ import { ImageViewer } from "./components/ImageViewer";
 import { SessionUsageSheet } from "./components/SessionUsageSheet";
 import { NativeFileActionSheet } from "./components/NativeFileActionSheet";
 import { newestFirst } from "./timelineListModel";
-import { isParkedSessionQueueRow, sessionQueueNoticeReason, useSessionQueue } from "../../remote/sessionQueue";
+import { isParkedSessionQueueRow, sessionQueueNoticeReason, useSessionQueue, type SessionQueueAttachment, type SessionQueueRow } from "../../remote/sessionQueue";
 import { showToast } from "./utils";
 
 const SYNC_NOTICE_MIN_MS = 750;
@@ -195,11 +199,13 @@ export function ChatScreen() {
 
   // Derived from the rows, which are already keyed to the session they were read
   // for — the panel cannot draw one conversation's queue under another's box.
-  // No attachment count: `get_queue` answers with a message's text and its
-  // acceptance time, never the files it was sent with, and a made-up zero would
-  // tell the reader a message was text-only when it may carry three photos.
+  // The files travel with the row (`get_queue` reports their paths), so the panel
+  // can show them and offer to open or drop one before it leaves. A desktop too
+  // old to report them leaves `attachments` undefined, and the panel then offers
+  // no file controls rather than guessing at what it cannot see.
   const queuePanelItems = useMemo(
     () => queuedRows.map(row => ({
+      attachments: row.attachments,
       content: row.text,
       id: row.runId,
       parked: isParkedSessionQueueRow(row),
@@ -253,34 +259,161 @@ export function ChatScreen() {
   }, [changeQueue, remote, sessionId]);
 
   /**
-   * Rewrite a waiting message: a queued prompt has no editable text on the
-   * session, so the row is taken back and the new words sent in its place — which
-   * also queues it behind whatever else is waiting, because that is where a new
-   * message goes.
+   * Replace a waiting message.
    *
-   * The row's files do not come with it: `get_queue` reports a message's text,
-   * never the uploads it was sent with, so the panel says that in the editor
-   * instead of claiming a count nobody has. And if the re-send is refused after
-   * the cancel, the words go back into the box — the row is gone on the desktop
-   * by then, and losing the correction as well would leave nothing to retry.
+   * The session has no rename and no attachment edit, so an edit is the row taken
+   * back and sent again: its files are copied down FIRST (a row cancelled before
+   * its files arrived would lose them), then the queued run is cancelled, then the
+   * new text and files are sent — which also queues it behind whatever else waits,
+   * because that is where a new message goes. A refused re-send puts the text and
+   * files back in the box: the row is gone on the desktop by then, and losing the
+   * correction as well would leave nothing to retry.
    */
-  const updateQueuedMessage = useCallback((id: string, content: string) => {
-    const text = content.trim();
-    // An empty edit is a deletion, and the panel already offers that.
-    if (!text)
-      return;
-    forgetQueuedRow(id);
+  const replaceQueuedMessage = useCallback((
+    row: SessionQueueRow,
+    text: string,
+    loadAttachments: () => Promise<MobileAttachment[]>,
+  ) => {
     changeQueue(async () => {
-      await remote.cancelQueuedRun(sessionId, id);
+      const attachments = await loadAttachments();
+      await remote.cancelQueuedRun(sessionId, row.runId);
+      forgetQueuedRow(row.runId);
       try {
-        await remote.sendMessage(text, [], undefined, { busyPolicy: QUEUED_SEND_POLICY });
+        await remote.sendMessage(text, attachments, undefined, { busyPolicy: QUEUED_SEND_POLICY });
       }
       catch (error) {
-        setMessage(current => current.trim() ? current : text);
+        setMessage(current => (current.trim() ? current : text));
+        setAttachments(current => [...attachments, ...current]);
         throw error;
       }
     });
-  }, [changeQueue, forgetQueuedRow, remote, sessionId, setMessage]);
+  }, [changeQueue, forgetQueuedRow, remote, sessionId, setAttachments, setMessage]);
+
+  /** A queued file as this phone can send it: a local copy, downloaded on demand. */
+  const materializeQueuedAttachment = useCallback(async (
+    attachment: SessionQueueAttachment,
+  ): Promise<MobileAttachment> => {
+    const kind: MobileAttachment["kind"] = attachment.kind === "image" ? "image" : "file";
+    // A path that is already a URI (an optimistic row from this phone) needs no
+    // transfer: the bytes are here.
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(attachment.path)) {
+      const file = new File(attachment.path);
+      return {
+        kind,
+        localUri: file.uri,
+        mimeType: mimeFor(attachment.name),
+        name: attachment.name,
+        originalSize: file.size,
+        transferSize: file.size,
+      };
+    }
+    const reference = { kind, name: attachment.name, path: attachment.path };
+    const info = await remote.prepareAttachment(reference);
+    const cached = remote.cachedAttachment(reference);
+    const file = cached?.file ?? (await remote.downloadAttachment(info));
+    return {
+      kind,
+      localUri: file.uri,
+      mimeType: info.mimeType,
+      name: attachment.name,
+      originalSize: info.size,
+      transferName: info.name,
+      transferSize: info.size,
+    };
+  }, [remote]);
+
+  /**
+   * Rewrite a waiting message, keeping the files it carries.
+   *
+   * The files used to be dropped here, which is what the editor warned about. Now
+   * the row reports them, so the correction keeps them: text changes, photos stay.
+   */
+  const updateQueuedMessage = useCallback((id: string, content: string) => {
+    const text = content.trim();
+    const row = queuedRows.find(item => item.runId === id);
+    // An empty edit is a deletion, and the panel already offers that.
+    if (!row || !text)
+      return;
+    const reported = row.attachments;
+    replaceQueuedMessage(row, text, () => reported === undefined
+      ? Promise.resolve([])
+      : Promise.all(reported.map(materializeQueuedAttachment)));
+  }, [materializeQueuedAttachment, queuedRows, replaceQueuedMessage]);
+
+  /** Open one file a waiting message carries, exactly as the transcript would. */
+  const previewQueuedAttachment = useCallback((attachment: SendQueueAttachmentItem) => {
+    void chatFiles.openAttachment({
+      kind: attachment.kind === "image" ? "image" : "file",
+      name: attachment.name,
+      path: attachment.path,
+    });
+  }, [chatFiles]);
+
+  /** Drop one file from a waiting message; the rest are re-sent with it. */
+  const removeQueuedAttachment = useCallback((id: string, path: string) => {
+    const row = queuedRows.find(item => item.runId === id);
+    if (!row || row.attachments === undefined)
+      return;
+    const kept = row.attachments.filter(attachment => attachment.path !== path);
+    replaceQueuedMessage(row, row.text, () => Promise.all(kept.map(materializeQueuedAttachment)));
+  }, [materializeQueuedAttachment, queuedRows, replaceQueuedMessage]);
+
+  /** Which waiting row's "add files" menu is open (it belongs to that row). */
+  const [queueAttachRow, setQueueAttachRow] = useState<SessionQueueRow | null>(null);
+  const openQueueAttachments = useCallback((id: string) => {
+    const row = queuedRows.find(item => item.runId === id);
+    // A row that does not report its files cannot be added to: the new ones would
+    // be sent and the ones this phone cannot see would be lost.
+    if (!row || row.attachments === undefined)
+      return;
+    Keyboard.dismiss();
+    setQueueAttachRow(row);
+  }, [queuedRows]);
+
+  const chooseQueueAttachments = useCallback((source: AttachmentSource) => {
+    const row = queueAttachRow;
+    setQueueAttachRow(null);
+    if (!row || row.attachments === undefined)
+      return;
+    const kept = row.attachments;
+    // The picker's quotas are counted against what the row already carries, from
+    // kinds and sizes alone: the kept files are copied down only once the reader
+    // actually picked something, so opening the picker costs nothing on a slow
+    // link. `localUri` is the desktop path here — nothing reads it before the
+    // real copies are made.
+    const existing: MobileAttachment[] = kept.map(attachment => ({
+      kind: attachment.kind === "image" ? "image" : "file",
+      localUri: attachment.path,
+      mimeType: mimeFor(attachment.name),
+      name: attachment.name,
+      originalSize: attachment.size,
+      transferSize: attachment.size,
+    }));
+    const launch = source === "camera"
+      ? takePhoto
+      : source === "album" ? pickFromAlbum : pickAttachments;
+    void (async () => {
+      let picked: MobileAttachment[];
+      try {
+        picked = await launch(existing);
+      }
+      catch (error) {
+        const key = error instanceof Error ? error.message : "attachment_failed";
+        showToast(t(`attachment.errors.${key}`));
+        return;
+      }
+      const known = new Set(existing.map(item => item.localUri));
+      const added = picked.filter(item => !known.has(item.localUri));
+      // The picker answers with the whole list; nothing new means the reader
+      // backed out, and the row is left exactly as it was.
+      if (added.length === 0)
+        return;
+      replaceQueuedMessage(row, row.text, async () => [
+        ...(await Promise.all(kept.map(materializeQueuedAttachment))),
+        ...added,
+      ]);
+    })();
+  }, [materializeQueuedAttachment, queueAttachRow, replaceQueuedMessage, t]);
 
   /** Send, then read the queue: the row that send may have made is now real. */
   const sendAndReadQueue = useCallback(async (
@@ -629,6 +762,16 @@ export function ChatScreen() {
         <SafeAreaView style={styles.safe}>
           {attachmentMenu}
           {albumPicker}
+          {/* Mounted only while open: a sheet that is not showing is not a
+              surface, and a permanently-mounted one would sit above the
+              transcript and answer for someone else's dismissal. */}
+          {queueAttachRow !== null && (
+            <AttachmentSourceMenu
+              visible
+              onClose={() => setQueueAttachRow(null)}
+              onPick={chooseQueueAttachments}
+            />
+          )}
           <KeyboardAvoidingView
             behavior={Platform.OS === "ios" ? "padding" : undefined}
             style={styles.keyboard}
@@ -755,6 +898,9 @@ export function ChatScreen() {
                     onQueueUpdate={updateQueuedMessage}
                     onQueueRemove={removeQueuedMessage}
                     onQueueRelease={releaseQueuedMessage}
+                    onQueuePreviewAttachment={previewQueuedAttachment}
+                    onQueueRemoveAttachment={removeQueuedAttachment}
+                    onQueueAddAttachments={openQueueAttachments}
                   />
                 </PausedTimeline>
               </View>

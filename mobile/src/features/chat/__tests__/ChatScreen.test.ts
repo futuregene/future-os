@@ -15,6 +15,7 @@ import { RenameModal } from "../components/RenameModal";
 import { ChatScreen } from "../ChatScreen";
 import { JUMP_VIEW_OFFSET } from "../useQuestionNav";
 import { ComposerDock } from "../components/ComposerDock";
+import { AttachmentSourceMenu } from "../components/AttachmentSourceMenu";
 import type { PendingSuggestion } from "../useSkillRecommendation";
 import type { TimelineCardProps } from "../messages/types";
 import { FloatingTimelineButton } from "../components/FloatingTimelineButton";
@@ -84,12 +85,27 @@ const mockRemote = {
   presence: null as { control?: string; holder?: { name?: string } | null } | null,
   takeControl: jest.fn(async () => {}),
   // The send queue's flush delivers through this, as `useSendMessage` does.
-  sendMessage: jest.fn<Promise<void>, [string, unknown[]?]>(async () => {}),
+  sendMessage: jest.fn<Promise<void>, [string, unknown[]?, unknown?, { busyPolicy?: string }?]>(async () => {}),
   // The conversation's queue, which lives on the desktop: the panel reads it and
   // the two verbs address the session's own run ids.
   getQueue: jest.fn<Promise<SessionQueueSnapshot>, [string]>(async () => ({ acks: [], rows: [] })),
   cancelQueuedRun: jest.fn<Promise<void>, [string, string]>(async () => {}),
   releaseQueuedRun: jest.fn<Promise<void>, [string, string]>(async () => {}),
+  // A waiting message's files are copied down before the row is cancelled, so an
+  // edit can send them again. These are the same transfer calls `retryMessage`
+  // makes for a sent message's attachments.
+  prepareAttachment: jest.fn(async (attachment: { name: string }) => ({
+    chunkBytes: 0,
+    contentHash: "",
+    mimeType: "image/png",
+    name: attachment.name,
+    previewKind: "image",
+    size: 2048,
+    transferId: "transfer-1",
+    variant: "preview",
+  })),
+  cachedAttachment: jest.fn(() => null),
+  downloadAttachment: jest.fn(async () => ({ uri: "file:///cache/shot.png", size: 2048 })),
 };
 jest.mock("../../../remote/RemoteContext", () => ({
   useRemote: () => mockRemote,
@@ -102,10 +118,29 @@ jest.mock("react-native-safe-area-context", () => ({
   SafeAreaView: "SafeAreaView",
   useSafeAreaInsets: () => ({ bottom: 0 }),
 }));
+// The pickers open native surfaces; the queue's "add files" only needs to see
+// what came back, and the composer's own menu is exercised elsewhere.
+jest.mock("../../../remote/files", () => ({
+  ...jest.requireActual("../../../remote/files"),
+  pickAttachments: jest.fn(async (existing: unknown[]) => existing),
+  pickFromAlbum: jest.fn(async (existing: unknown[]) => existing),
+  takePhoto: jest.fn(async (existing: unknown[]) => existing),
+}));
 jest.mock("lucide-react-native", () => ({
   ArrowDown: "ArrowDown",
   ArrowUp: "ArrowUp",
+  Camera: "Camera",
+  Check: "Check",
+  File: "File",
   History: "History",
+  Image: "Image",
+  Images: "Images",
+  Paperclip: "Paperclip",
+  Pencil: "Pencil",
+  Play: "Play",
+  Plus: "Plus",
+  Trash2: "Trash2",
+  X: "X",
 }));
 jest.mock("../messages/TimelineCard", () => ({
   TimelineCard: "TimelineCard",
@@ -1293,6 +1328,95 @@ test("an edit that empties the row is not a message, so nothing is sent", async 
   });
   expect(mockRemote.cancelQueuedRun).not.toHaveBeenCalled();
   expect(mockRemote.sendMessage).not.toHaveBeenCalled();
+});
+
+const queuedPhoto = {
+  kind: "image", name: "shot.png", path: "/Users/x/shot.png", size: 2048,
+};
+const queuedDoc = {
+  kind: "file", name: "notes.pdf", path: "/Users/x/notes.pdf", size: 4096,
+};
+
+test("editing a waiting message keeps the files it carries", async () => {
+  await mountWithQueue([
+    queueRow({ attachments: [queuedPhoto], runId: "run_a", text: "look" }),
+  ]);
+
+  await act(async () => {
+    tree.root.findByType(ComposerDock).props.onQueueUpdate("run_a", "look again");
+  });
+  await settleQueue();
+
+  // The file is copied down first: a row cancelled before its files arrived
+  // would lose the very files the edit is supposed to keep.
+  expect(mockRemote.prepareAttachment).toHaveBeenCalledWith(
+    expect.objectContaining({ path: queuedPhoto.path }),
+  );
+  expect(mockRemote.cancelQueuedRun).toHaveBeenCalledWith("history", "run_a");
+  expect(mockRemote.sendMessage).toHaveBeenCalledWith(
+    "look again",
+    [expect.objectContaining({ kind: "image", name: "shot.png" })],
+    undefined,
+    { busyPolicy: QUEUED_SEND_POLICY },
+  );
+});
+
+test("removing one file re-sends the message with the rest", async () => {
+  await mountWithQueue([
+    queueRow({ attachments: [queuedPhoto, queuedDoc], runId: "run_a", text: "see these" }),
+  ]);
+
+  await act(async () => {
+    tree.root.findByType(ComposerDock).props.onQueueRemoveAttachment("run_a", queuedPhoto.path);
+  });
+  await settleQueue();
+
+  // Only the kept file is fetched; the dropped one is never sent again.
+  expect(mockRemote.prepareAttachment).toHaveBeenCalledTimes(1);
+  expect(mockRemote.prepareAttachment).toHaveBeenCalledWith(
+    expect.objectContaining({ path: queuedDoc.path }),
+  );
+  const sent = mockRemote.sendMessage.mock.calls[0]![1]!;
+  expect(sent.map(item => (item as { name: string }).name)).toEqual(["notes.pdf"]);
+});
+
+test("adding a photo to a waiting message sends the kept files with it", async () => {
+  const remoteFiles = jest.requireMock("../../../remote/files") as {
+    pickAttachments: jest.Mock;
+  };
+  const added = {
+    kind: "image",
+    localUri: "file:///cache/new.png",
+    mimeType: "image/png",
+    name: "new.png",
+    originalSize: 100,
+    transferSize: 100,
+  };
+  // The picker answers with the whole list, the row's own file included.
+  remoteFiles.pickAttachments.mockResolvedValueOnce([
+    { ...added, localUri: queuedPhoto.path, name: queuedPhoto.name },
+    added,
+  ]);
+  await mountWithQueue([
+    queueRow({ attachments: [queuedPhoto], runId: "run_a", text: "look" }),
+  ]);
+  const dock = () => tree.root.findByType(ComposerDock).props;
+
+  await act(async () => { dock().onQueueAddAttachments("run_a"); });
+  const menu = tree.root.findByType(AttachmentSourceMenu);
+  expect(menu.props.visible).toBe(true);
+  // The picker's quotas count what the row already carries, without pulling the
+  // kept files down first.
+  await act(async () => { menu.props.onPick("files"); });
+  await settleQueue();
+
+  expect(remoteFiles.pickAttachments).toHaveBeenCalledWith([
+    expect.objectContaining({ localUri: queuedPhoto.path, name: "shot.png", originalSize: 2048 }),
+  ]);
+  const sent = mockRemote.sendMessage.mock.calls[0]!;
+  expect(sent[0]).toBe("look");
+  expect(sent[1]!.map(item => (item as { name: string }).name)).toEqual(["shot.png", "new.png"]);
+  expect(sent[3]).toEqual({ busyPolicy: QUEUED_SEND_POLICY });
 });
 
 test("a parked row offers 'send now', and pressing it releases that run", async () => {

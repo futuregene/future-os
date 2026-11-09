@@ -1,8 +1,6 @@
 import { Keyboard, Platform } from "react-native";
 import { useCallback, useLayoutEffect, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
-import { Camera, Images, File } from "lucide-react-native";
 import type { TFunction } from "i18next";
-import { ActionMenu } from "../../components/ActionMenu";
 import {
   deleteTemporaryAttachment,
   validateAttachmentBatch,
@@ -18,8 +16,8 @@ import type { AlbumImage } from "future-file-handler";
 import type { AlbumSource } from "../../remote/files";
 import type { MobileAttachment } from "../../remote/types";
 import { useCommittedRef } from "../../lib/useCommittedRef";
-import { useTheme } from "../../theme/ThemeContext";
 import { AlbumPickerModal } from "./components/AlbumPickerModal";
+import { AttachmentSourceMenu } from "./components/AttachmentSourceMenu";
 import { showToast } from "./utils";
 
 export interface AttachmentPickerApi {
@@ -38,7 +36,6 @@ export function useAttachmentPicker(
   t: TFunction,
   operation: { scope?: string | object; captureOperation?: () => () => boolean; } = {},
 ): AttachmentPickerApi {
-  const { colors } = useTheme();
   const [menuOpen, setMenuOpen] = useState(false);
   const [album, setAlbum] = useState<{ images: AlbumImage[] | null; error: string | null; } | null>(
     null,
@@ -157,15 +154,14 @@ export function useAttachmentPicker(
   // Only the source menu is app-styled. ActionMenu waits for dismissal before
   // handing presentation to the real OS camera/photo/document picker.
   const attachmentMenu = (
-    <ActionMenu
-      title={t("attachment.title")}
+    <AttachmentSourceMenu
       visible={menuOpen}
       onClose={() => setMenuOpen(false)}
-      actions={[
-        { label: t("attachment.takePhoto"), icon: <Camera size={18} color={colors.inkSoft} />, onPress: () => void capturePhoto() },
-        { label: t("attachment.chooseFromAlbum"), icon: <Images size={18} color={colors.inkSoft} />, onPress: () => void chooseFromAlbum() },
-        { label: t("attachment.chooseFiles"), icon: <File size={18} color={colors.inkSoft} />, onPress: () => void chooseFiles() },
-      ]}
+      onPick={source => {
+        if (source === "camera") void capturePhoto();
+        else if (source === "album") void chooseFromAlbum();
+        else void chooseFiles();
+      }}
     />
   );
   const albumPicker = (
