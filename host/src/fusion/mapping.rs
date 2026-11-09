@@ -6,14 +6,14 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(super) const INSTRUCTIONS: &str = r#"You are the moderator acting ONLY as a faithful organizer, not an analyst or judge. Return ONLY JSON with exactly these three arrays:
-{"consensus":[{"point":"existing shared view","sources":[{"participant":"P1","quote":"exact excerpt"}]}],"issues":[{"topic":"existing disagreement","stances":[{"participant":"P1","status":"stated","position":"faithful summary","quote":"exact excerpt"},{"participant":"P2","status":"not_mentioned","position":"","quote":""}]}],"excluded":[{"participant":"P1","quote":"exact excerpt of existing statement","reason":"why it is outside an existing boundary or unsuitable for continued discussion","basis":"exact excerpt of an existing task boundary from Decision input"}]}
+pub(super) const INSTRUCTIONS: &str = r#"You are the moderator organizing the supplied analyses and deciding what is worth checking. Return ONLY JSON with these four arrays:
+{"consensus":[{"point":"existing shared view","sources":[{"participant":"P1","quote":"exact excerpt"}]}],"issues":[{"topic":"existing disagreement","stances":[{"participant":"P1","status":"stated","position":"faithful summary","quote":"exact excerpt"},{"participant":"P2","status":"not_mentioned","position":"","quote":""}]}],"excluded":[{"participant":"P1","quote":"exact excerpt of existing statement","reason":"why it is outside an existing boundary or unsuitable for continued discussion","basis":"exact excerpt of an existing task boundary from Decision input"}],"review_focus":["question whose resolution could change the conclusion or next action"]}
 1. Consensus is ONLY the intersection explicitly stated by EVERY supplied participant. Cite an exact excerpt from each participant. Agreement does not establish truth. Do not upgrade shared assumptions to verified facts.
 2. Issues contain ONLY materially different existing claims, with at least two explicitly stated positions. Include every supplied participant once; mark an unmentioned position as not_mentioned with empty position and quote. Silence is not opposition. Preserve qualifications; do not invent a conflict from complementary details or omissions.
 3. Excluded contains ONLY existing statements that exceed explicit task constraints/scope or are otherwise unsuitable under an existing boundary in Decision input. Quote both the statement and that boundary. Do not exclude a minority view, an unfamiliar approach or a statement merely because you think it is wrong. With no applicable existing boundary, do not invent one.
-Granularity: organize substantive positions, not a point-by-point inventory of every report detail. Merge duplicate or synonymous views into one item, retaining material qualifications. Keep disagreements only where the existing positions could lead participants to maintain or revise different answers; complementary detail or different emphasis is not a disagreement. Select the shortest exact contiguous excerpt sufficient to support each recorded position; do not copy a paragraph when a shorter excerpt is sufficient.
-Completion: once the distinct shared positions, material disagreements and applicable exclusions are represented with sufficient source excerpts, submit the JSON immediately. Do not keep expanding, repeatedly reorganizing the same material, or searching for additional categories to fill. Use empty arrays when a category has no qualifying entries. Do not add a fixed item count or word count.
-Never add blind spots, omissions, clarification questions, new checks, new facts, proposed solutions, recommendations or your own technical judgment. Do not resolve disagreements or merge approaches. Use empty arrays when a category has no entries. Use only supplied participant IDs. Quotes must be exact contiguous excerpts of the supplied public answers, not paraphrases or background."#;
+4. Review focus contains up to three questions for the panel. Combine differences driven by the same premise. Ask what evidence, counterexample or decision criterion would distinguish the positions, including when all participants rely on the same unresolved assumption. Keep the original question and other plausible answers in scope. Ask for a concrete check, not a restatement of the choices. Include a check if the task explicitly requests cross-review. Leave review_focus empty only if there are no material disagreements or unresolved checks and the shared conclusion directly answers the task with adequate independent support.
+Granularity: organize substantive positions, not every report detail. Keep the grounds and qualifications that make a position consequential, including a well-supported minority position. Cite short, exact contiguous excerpts from the supplied public answers. Agreement based on the same source or premise is repeated support, not independent confirmation.
+Completion: submit once the material positions and focused checks are represented. Questions in review_focus are the moderator's requests for review, not sourced claims or task requirements. Do not answer those questions yourself in the map, invent facts or attribute your questions to participants."#;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -21,6 +21,8 @@ struct Mapping {
     consensus: Vec<Agreement>,
     issues: Vec<Issue>,
     excluded: Vec<Excluded>,
+    #[serde(default)]
+    review_focus: Option<Vec<String>>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -65,6 +67,16 @@ struct Excluded {
 
 pub(super) fn validate_shape(text: &str, participants: usize) -> Result<()> {
     let mapping: Mapping = parse_json(text)?;
+    if let Some(focus) = &mapping.review_focus {
+        ensure!(
+            focus.len() <= 3 && focus.iter().all(|question| !question.trim().is_empty()),
+            "Review focus must contain at most three nonempty questions"
+        );
+        ensure!(
+            !focus.is_empty() || (mapping.issues.is_empty() && !mapping.consensus.is_empty()),
+            "Direct synthesis requires a sourced shared view and no mapped issues"
+        );
+    }
     let valid_id = |id: &str| -> Result<()> {
         ensure!(
             (1..=participants).any(|n| id == format!("P{n}")),
@@ -120,6 +132,14 @@ pub(super) fn validate_shape(text: &str, participants: usize) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Called only with a validated map. Older maps without a review decision
+/// keep the normal cross-review path.
+pub(super) fn can_synthesize_directly(mapping: &Value) -> bool {
+    mapping["review_focus"]
+        .as_array()
+        .is_some_and(Vec::is_empty)
 }
 
 pub(super) fn validate_sources(text: &str, prompt: &str) -> Result<()> {
@@ -245,6 +265,23 @@ mod tests {
         let (mapping, prompt) = fixture();
         validate_shape(&mapping.to_string(), 5).unwrap();
         validate_sources(&mapping.to_string(), &prompt).unwrap();
+    }
+    #[test]
+    fn skipping_review_requires_an_explicit_decision_and_no_mapped_disagreement() {
+        let (mut mapping, prompt) = fixture();
+        assert!(!can_synthesize_directly(&mapping));
+
+        mapping["review_focus"] = json!(["Which approach preserves existing data?"]);
+        validate_shape(&mapping.to_string(), 5).unwrap();
+        assert!(!can_synthesize_directly(&mapping));
+
+        mapping["review_focus"] = json!([]);
+        assert!(validate_shape(&mapping.to_string(), 5).is_err());
+
+        mapping["issues"] = json!([]);
+        validate_shape(&mapping.to_string(), 5).unwrap();
+        validate_sources(&mapping.to_string(), &prompt).unwrap();
+        assert!(can_synthesize_directly(&mapping));
     }
     #[test]
     fn rejects_new_analysis_silence_as_opposition_and_invented_references() {
