@@ -176,6 +176,19 @@ export async function loadAgentModelOptions() {
   return normalizeAgentModelOptions(await invokeCommand<AgentModelOption[]>("list_agent_models"));
 }
 
+/**
+ * Apply an approval tier to one conversation, in force now.
+ *
+ * Written through the host rather than to the settings store alone, because the
+ * value a conversation shows is the one its Agent session reports: a local-only
+ * write left an old conversation's control where it was until the next prompt,
+ * which reads as the switch doing nothing. Resolves with the tier the machine
+ * accepted (an unenforceable sandbox is downgraded, not claimed).
+ */
+export async function applyThreadApprovalTier(threadId: string, tier: string) {
+  return invokeCommand<{ approvalTier: string }>("update_thread_approval_tier", { threadId, tier });
+}
+
 export interface CompactContextResult {
   operationId: string;
   accepted: true;

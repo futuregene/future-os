@@ -149,6 +149,55 @@ pub async fn update_thread_thinking_level(
     Ok(thread)
 }
 
+/// The approval tier for one conversation, in force now.
+///
+/// The tier is app-wide (there is no per-thread column), but the value a
+/// conversation *shows* is the one its Agent session reports — and that was only
+/// pushed before the next prompt. So a reader who switched an old conversation
+/// off automatic approval watched the control stay where it was, with nothing to
+/// tell them the change had landed at all: reported as "切换成其他等级，切换无效
+/// 选项没有变化". Model and thinking level already propagate the moment they are
+/// chosen; this does the same, and answers with the tier the machine accepted
+/// (a sandbox this desktop cannot enforce is downgraded, not claimed).
+///
+/// Best-effort for the session, like its siblings: a failure to reach the Agent
+/// must not fail the local preference, which is what the next prompt sends anyway.
+pub async fn update_thread_approval_tier(
+    thread_id: String,
+    tier: String,
+) -> Result<serde_json::Value, crate::Error> {
+    store::update_app_settings(store::UpdateAppSettingsInput {
+        approval_tier: Some(tier.clone()),
+        ..Default::default()
+    })?;
+    let thread = store::get_thread(&thread_id)?.ok_or("Thread not found.")?;
+    let session_id = thread
+        .agent_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned);
+    if let Some(session_id) = session_id {
+        if let Ok(mut client) = crate::agent_bridge::connect_agent().await {
+            if crate::agent_bridge::verify_session_database(&mut client, &session_id)
+                .await
+                .is_ok()
+            {
+                // Its own downgrade rules apply here too, and a downgrade is
+                // persisted — so the answer is read back rather than assumed.
+                let _ = crate::agent_bridge::set_agent_sandbox_policy_tier(
+                    &mut client,
+                    &session_id,
+                    &tier,
+                )
+                .await;
+            }
+        }
+    }
+    let approval_tier = store::get_app_settings()?.approval_tier;
+    Ok(serde_json::json!({ "approvalTier": approval_tier }))
+}
+
 pub fn pin_thread(input: store::PinThreadInput) -> Result<store::ThreadRecord, crate::Error> {
     store::pin_thread(input)
 }
@@ -1326,6 +1375,37 @@ mod tests {
         .await
         .expect("update level");
         assert_eq!(updated.id, thread.id);
+    }
+
+    /// Switching the tier reaches the conversation's own session, not just the
+    /// stored default.
+    ///
+    /// The chip draws what the Agent reports for *this* session, and that was
+    /// only pushed before the next prompt - so changing an old conversation's
+    /// tier left the control exactly where it was (reported as "switch does
+    /// nothing, the option never changes"). The tier is applied now, and the
+    /// answer names the tier the machine accepted.
+    #[tokio::test]
+    async fn update_thread_approval_tier_applies_to_the_session_now() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_tier_set");
+        let thread = make_thread(&_home, Some("sess_tier"));
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript::default());
+        let applied = update_thread_approval_tier(thread.id.clone(), "manual".into())
+            .await
+            .expect("apply tier");
+        assert_eq!(
+            applied["approvalTier"].as_str(),
+            Some("manual"),
+            "the stored default follows the choice: {applied}"
+        );
+        assert_eq!(
+            store::get_app_settings().unwrap().approval_tier,
+            "manual",
+            "a later prompt must send the tier the reader chose"
+        );
+        script_mock_agent(MockScript::default());
     }
 
     #[tokio::test]
