@@ -993,6 +993,62 @@ test("a streaming draft's send slot asks the queue question, and both rows reach
   }
 });
 
+test("a reply in flight does not keep a photo out of the queue", () => {
+  // The paperclip used to lock while a reply streamed, from when a send during a
+  // run could only be a refusal. A send now goes into the session's queue, so
+  // the control that adds the files has to stay open with the rest of the
+  // composer — a text-only draft could be queued and a photo draft could not.
+  const openAttachmentMenu = jest.fn();
+  const send = jest.fn(async () => true);
+  const props = baseProps({
+    message: "",
+    send,
+    openAttachmentMenu,
+    attachments: [{
+      localUri: "file:///photo.jpg", name: "photo.jpg", kind: "image",
+      mimeType: "image/jpeg", originalSize: 100, transferSize: 100,
+    }],
+    remote: {
+      draft: false, selectedSessionId: "s1", desktopOnline: true,
+      connectionPresentation: { level: "connected" }, models: [], modelId: "model",
+      streaming: true, busy: false, abort: jest.fn(), capabilities: new Set(),
+      fileTransferSupported: true,
+    },
+  });
+  let tree!: ReactTestRenderer;
+  act(() => { tree = create(createElement(ComposerDock, props)); });
+  const pressable = (label: string) => tree.root.findAll(node =>
+    node.props.accessibilityLabel === label && typeof node.props.onPress === "function")[0];
+  try {
+    const paperclip = pressable("attachment.add")!;
+    expect(paperclip.props.disabled).toBe(false);
+    act(() => paperclip.props.onPress());
+    expect(openAttachmentMenu).toHaveBeenCalledTimes(1);
+
+    // The photo alone is a draft: the slot is the queue question, and handing it
+    // over names the busy policy exactly as a text draft does.
+    expect(pressable("chat.stop")).toBeUndefined();
+    act(() => pressable("chat.chooseSend")!.props.onPress());
+    act(() => tree.root.findByType(SendChoiceSheet).props.onSend());
+    expect(send).toHaveBeenCalledWith({ busyPolicy: "enqueue_coalescing" });
+
+    // The short send/upload phase still locks it: a second pick there would
+    // fight the submission already in flight.
+    act(() => { tree.update(createElement(ComposerDock, {
+      ...props, remote: { ...props.remote, busy: true },
+    })); });
+    expect(pressable("attachment.add")!.props.disabled).toBe(true);
+
+    // A host with no file transfer never offers the picker at all.
+    act(() => { tree.update(createElement(ComposerDock, {
+      ...props, remote: { ...props.remote, busy: false, fileTransferSupported: false },
+    })); });
+    expect(pressable("attachment.add")!.props.disabled).toBe(true);
+  } finally {
+    act(() => tree.unmount());
+  }
+});
+
 test("an interrupt whose send was refused leaves the run alone", async () => {
   // The draft is back in the field and the reader still has it: stopping the
   // reply on top of a message that never left costs them both.
