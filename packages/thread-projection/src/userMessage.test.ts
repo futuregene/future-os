@@ -103,4 +103,31 @@ describe("upsertUserMessage", () => {
     const before = [assistant("same")];
     expect(upsertUserMessage(before, user("same")).map((message) => message.id)).toEqual(["same", "same"]);
   });
+
+  /**
+   * A prompt is never wedged between two halves of its own answer.
+   *
+   * Measured on the desktop: a reload during the run projects the agent's
+   * mid-run snapshot as a settled-looking reply with no run of its own, and the
+   * live bubble for that run is appended beside it. Placing the prompt before the
+   * live bubble then put it *between* the two — "7s reply" / question / "2s
+   * reply" — while the journal (and a full reload of it) had the pair right.
+   * The stale fragment is the reply above the matched one with nothing but
+   * replies in between, so it goes with the insertion.
+   */
+  it("places the prompt above a reply that was drawn twice for one turn", () => {
+    const fragment = { ...assistant("stale-partial"), status: "complete" as const };
+    const live = assistant("stream_r1", "r1");
+    const after = upsertUserMessage([fragment, live], user("u1", "r1"));
+    expect(after.map((message) => message.id)).toEqual(["u1", "stream_r1"]);
+  });
+
+  /** An older exchange's reply is left alone: only the contiguous run moves. */
+  it("keeps an earlier exchange when the turn's reply is doubled", () => {
+    const older = assistant("a0", "r0");
+    const fragment = assistant("stale-partial");
+    const live = assistant("stream_r1", "r1");
+    const after = upsertUserMessage([user("u0", "r0"), older, fragment, live], user("u1", "r1"));
+    expect(after.map((message) => message.id)).toEqual(["u0", "a0", "u1", "stream_r1"]);
+  });
 });

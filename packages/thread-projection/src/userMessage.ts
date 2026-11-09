@@ -1,5 +1,4 @@
 import type { AgentMessage } from "./model";
-import type { SessionEntry } from "./events";
 import { entriesToMessages } from "./projection";
 
 /** User events refer to the same persisted entry and run as history pages. */
@@ -11,7 +10,7 @@ export function userMessageFromEvent(payload: Record<string, unknown>): AgentMes
     !payload.run_id
   )
     return null;
-  const entry: SessionEntry = {
+  const entry: import("./events").SessionEntry = {
     id: payload.entry_id,
     kind: "user",
     role: "user",
@@ -52,6 +51,49 @@ export function upsertUserMessage<
         message.role === "assistant"
         && (message.runId === user.runId || message.inFlightRunId === user.runId))
     : -1;
-  const at = assistant < 0 ? messages.length : assistant;
-  return [...messages.slice(0, at), user, ...messages.slice(at)];
+  if (assistant < 0)
+    return [...messages, user];
+
+  // A reply can be on screen twice for one turn. A reload during the run
+  // projects the agent's mid-run snapshot into the array as a settled-looking
+  // reply carrying no run of its own, and the live bubble for the same run is
+  // appended beside it. The prompt then landed between the two halves of its own
+  // answer — measured as "7s reply" / question / "2s reply" in one case, where a
+  // reload from the journal rendered it correctly: the pair on disk is fine, only
+  // this array was wrong.
+  //
+  // The fragments directly above the matched reply are that snapshot: nothing
+  // but replies sits between them and the reply (they are contiguous), and they
+  // carry no run because its stamp is withheld while the run is in flight. They
+  // go, because with the prompt above the real reply they can only render as a
+  // second, stale copy of the same answer.
+  let at = assistant;
+  while (at > 0) {
+    const above = messages[at - 1];
+    if (!above || !isReplyFragment(above)) break;
+    at -= 1;
+  }
+  const head = [...messages.slice(0, at), user];
+  // Everything from `at` on, minus the swallowed fragments.
+  for (let index = at; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (!message || index >= assistant || !isReplyFragment(message))
+      head.push(message as T);
+  }
+  return head;
+}
+
+/**
+ * Whether a message is a snapshot of a reply whose run this client cannot name.
+ *
+ * That is the shape a mid-run reload leaves: an assistant that renders as
+ * settled but carries no run, because `applyRunMetadata` withholds the stamp so
+ * the live bubble keeps ownership of the reply. A live bubble is never one of
+ * these — it always carries the run it draws — so this cannot match the reply
+ * that is actually growing.
+ */
+function isReplyFragment(
+  message: { role?: string; runId?: string | null; inFlightRunId?: string | null },
+): boolean {
+  return message.role === "assistant" && !message.runId && !message.inFlightRunId;
 }
