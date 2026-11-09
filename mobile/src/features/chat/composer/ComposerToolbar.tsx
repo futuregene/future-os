@@ -134,18 +134,20 @@ export function ComposerToolbar({ remote, t, compactToolbar, compacting, activeM
           size={16}
         />
       </Pressable>
+      {/* Attaching stays available while a reply streams: the send it joins is
+          queued behind the run rather than refused, so the paperclip is not the
+          one control that keeps a photo out of the queue. `editable` still locks
+          it for the short upload/send phase, where a new pick would fight the
+          submission already in flight. */}
       <Pressable
         accessibilityLabel={t("attachment.add")}
         accessibilityRole="button"
-        disabled={
-          !editable || remote.streaming || !remote.fileTransferSupported
-        }
+        disabled={!editable || !remote.fileTransferSupported}
         onPress={openAttachmentMenu}
         style={({ pressed }) => [
           styles.attachmentButton,
           pressed && styles.selectorTriggerPressed,
-          (!editable || remote.streaming ||
-            !remote.fileTransferSupported) &&
+          (!editable || !remote.fileTransferSupported) &&
           styles.controlDisabled,
         ]}
       >
