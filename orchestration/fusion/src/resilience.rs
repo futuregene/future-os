@@ -14,6 +14,7 @@ pub enum FailureKind {
     Transient,
     Timeout,
     IdleTimeout,
+    PanelTimeout,
     OutputLimit,
     InvalidOutput,
     ModelUnavailable,
