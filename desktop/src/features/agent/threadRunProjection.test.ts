@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@future-os/thread-projection";
 import type { StoredRun, StoredRunEvent } from "../../integrations/storage/threadStore";
+import { upsertUserMessage } from "@future-os/thread-projection";
 import { describe, expect, it } from "vitest";
 import {
   applyJournalRunOutcomes,
@@ -456,6 +457,55 @@ describe("applyRunMetadata", () => {
     const base = streamingBubbleBase(result, "r2", "stream_r2", "ABCDE");
     expect(base).not.toBeNull();
     expect(base!.some(message => message.id === "a2-partial")).toBe(false);
+  });
+
+  /**
+   * A withheld stamp keeps the run it belongs to.
+   *
+   * Reported from the desktop: ask a question, queue a second prompt while the
+   * first is only *thinking* (nothing written yet), and the question rendered
+   * BELOW the reply it produced — a 7s “thinking” bubble, then the question, then
+   * the queued run's bubble. The prompt is placed by matching run ids
+   * (`upsertUserMessage`), and stripping the stamp above left it nothing to match,
+   * so it was appended past its own answer. The identity moves to
+   * `inFlightRunId` instead of being dropped, and the pairing is asserted here so
+   * the next strip cannot quietly reintroduce the swap.
+   */
+  it("keeps the owner of a mid-run partial, and its prompt stays above the reply", () => {
+    const result = applyRunMetadata(
+      [
+        user("u1"),
+        assistant("a1", { content: "first answer" }),
+        user("u2"),
+        assistant("a2-partial", { content: "", runId: "r2" }),
+      ],
+      [
+        run("r2", { status: "running", createdAt: 2 }),
+        run("r1", { status: "completed", createdAt: 1, modelId: "m-1" }),
+      ],
+    );
+    // Still withheld from the live-bubble guards…
+    expect(result[3]?.runId).toBeUndefined();
+    // …but the reply still knows which run and prompt it answers.
+    expect(result[3]?.inFlightRunId).toBe("r2");
+
+    // The queued prompt for that run lands above it, not below.
+    const placed = upsertUserMessage(result, {
+      authorKey: "author.you",
+      content: "second prompt",
+      createdAt: "2026-01-01T00:00:02.000Z",
+      id: "m-u3",
+      inFlightRunId: undefined,
+      role: "user",
+      runId: "r2",
+    });
+    expect(placed.map(message => message.id)).toEqual([
+      "u1",
+      "a1",
+      "u2",
+      "m-u3",
+      "a2-partial",
+    ]);
   });
 
   it("does not assign a stray failed run to a canonical in-flight reply", () => {
