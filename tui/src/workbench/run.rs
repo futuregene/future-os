@@ -5078,11 +5078,24 @@ mod driver_tests {
                 "the log never installed"
             );
             assert!(!root.quit_key("3").await, "3 left the app");
+            // The wait names the section, not just "a patch": a tab switch starts
+            // its read beside the surface and the panel keeps painting the view it
+            // already holds until that read lands (`open_git_panel` →
+            // `Live::begin_git_read`). The log's selected commit is *already* a
+            // `diff --git` body, so a wait on the patch alone returns on the log
+            // the frame still shows — fine while the switch lands inside the next
+            // paint, and wrong when it does not: on the Windows `tui-cli` leg (run
+            // 42689608460, attempt 2) the pane held `commit 42b37bf … diff --git
+            // a/a.txt` and no `+two`. Naming the section makes the wait end on the
+            // read `3` started, and `+two` on the working-tree patch itself.
             let patched = |driver: &Driver| {
                 driver.live.git().is_some_and(|view| {
-                    view.detail
-                        .iter()
-                        .any(|line| line.starts_with("diff --git"))
+                    view.section == crate::workbench::state::GitSection::Status
+                        && view
+                            .detail
+                            .iter()
+                            .any(|line| line.starts_with("diff --git"))
+                        && view.detail.iter().any(|line| line.contains("+two"))
                 })
             };
             let landed = root.wait_for(Duration::from_secs(20), patched).await;
