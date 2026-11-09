@@ -122,6 +122,20 @@ export interface AgentMessage {
   /** Canonical persisted Agent journal identity; never replaced by optimistic UI ids. */
   sourceEntryId?: string | null;
   runId?: string | null;
+  /**
+   * The run whose reply this is, while `runId` is deliberately withheld.
+   *
+   * A reload during a run finds the agent's mid-run assistant snapshot already
+   * on disk, stamped with the run it belongs to. `applyRunMetadata` strips that
+   * stamp so the live-bubble guards (which read `runId` as "this run settled")
+   * keep drawing the growing reply — but the identity is still needed elsewhere:
+   * a prompt is placed above the reply that answers it by matching run ids, and
+   * without one a queued prompt landed *below* its own answer (reported: reply
+   * bubble above the question, and the wrong order survived a thread switch
+   * because the warm snapshot kept it). So the stamp moves here instead of being
+   * dropped, and is cleared when the run settles and `runId` is restored.
+   */
+  inFlightRunId?: string | null;
   role: MessageRole;
   /**
    * i18n key (in the `agent` namespace) for the author, e.g. `author.you`. It is

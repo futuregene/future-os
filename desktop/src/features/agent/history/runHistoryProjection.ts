@@ -44,7 +44,11 @@ export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): A
       // alive, rendered plainly otherwise). Self-heals on settle: the on-disk
       // entry still carries meta.run_id, so the next settled reload re-binds it
       // through the canonical path.
-      patched[index] = { ...message, runId: undefined };
+      // …but the identity is not dropped with it: `inFlightRunId` keeps the run
+      // this reply belongs to, so a prompt arriving for that run is still placed
+      // above it (see `upsertUserMessage`). Only the live-bubble guards read
+      // `runId`, and they are the one thing this had to hide.
+      patched[index] = { ...message, inFlightRunId: message.runId, runId: undefined };
       continue;
     }
     patched[index] = applyRunToMessage(message, run);
@@ -57,8 +61,13 @@ export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): A
   const turnIndices = patched
     .map((message, index) => (
       // Stripping an active run's stamp above does not make its known owner
-      // legacy data. Never lend that reply to an unrelated failed run.
-      message.role === "assistant" && !messages[index]!.runId && !isCompactionDivider(message)
+      // legacy data — `inFlightRunId` says which run that reply is, so it stays
+      // out of the positional fallback the same way a stamped one does. Never
+      // lend that reply to an unrelated failed run.
+      message.role === "assistant"
+      && !messages[index]!.runId
+      && !messages[index]!.inFlightRunId
+      && !isCompactionDivider(message)
         ? index
         : -1
     ))
@@ -140,6 +149,8 @@ function applyRunToMessage(message: AgentMessage, run: StoredRun): AgentMessage 
   return {
     ...message,
     runId: run.id,
+    // The reply now has its settled stamp back; the withheld one is stale.
+    inFlightRunId: undefined,
     modelId: run.modelId ?? message.modelId,
     stopped,
     terminationNotice,

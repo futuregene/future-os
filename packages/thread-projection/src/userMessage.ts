@@ -27,10 +27,9 @@ export function userMessageFromEvent(payload: Record<string, unknown>): AgentMes
 }
 
 /** Identity, never text, distinguishes retries from a new identical prompt. */
-export function upsertUserMessage<T extends { id: string; role?: string; runId?: string | null }>(
-  messages: T[],
-  user: T,
-): T[] {
+export function upsertUserMessage<
+  T extends { id: string; role?: string; runId?: string | null; inFlightRunId?: string | null },
+>(messages: T[], user: T): T[] {
   const index = messages.findIndex(
     message =>
       message.role === "user" &&
@@ -41,9 +40,17 @@ export function upsertUserMessage<T extends { id: string; role?: string; runId?:
     next[index] = { ...messages[index]!, ...user, id: messages[index]!.id };
     return next;
   }
-  // The assistant can arrive first through a different subscription.
+  // The assistant can arrive first through a different subscription — and when
+  // this conversation was reloaded mid-run, that reply carries its run in
+  // `inFlightRunId` instead of `runId` (see `AgentMessage.inFlightRunId`): the
+  // stamp is withheld so the live-bubble guards keep drawing the growing reply,
+  // while the turn's identity survives for this pairing. Without it a prompt
+  // landed *below* its own answer, and the wrong order outlived a thread switch
+  // because the warm snapshot kept it.
   const assistant = user.runId
-    ? messages.findIndex(message => message.role === "assistant" && message.runId === user.runId)
+    ? messages.findIndex(message =>
+        message.role === "assistant"
+        && (message.runId === user.runId || message.inFlightRunId === user.runId))
     : -1;
   const at = assistant < 0 ? messages.length : assistant;
   return [...messages.slice(0, at), user, ...messages.slice(at)];

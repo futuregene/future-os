@@ -77,6 +77,21 @@ describe("upsertUserMessage", () => {
     expect(after.map((message) => message.id)).toEqual(["u1", "a1"]);
   });
 
+  /**
+   * A reply reloaded mid-run still owns its prompt.
+   *
+   * `applyRunMetadata` withholds an in-flight reply's `runId` (so the live bubble
+   * keeps growing) and keeps the identity in `inFlightRunId`. Reported from the
+   * desktop: ask, queue a second prompt while the first is only thinking, and the
+   * question rendered *below* the reply it produced — the pairing below is what
+   * that array looked like, and matching only on `runId` appended it.
+   */
+  it("places the prompt above a reply whose stamp is withheld while it runs", () => {
+    const inFlight: AgentMessage = { ...assistant("a1"), inFlightRunId: "r1" };
+    const after = upsertUserMessage([inFlight], user("u1", "r1"));
+    expect(after.map((message) => message.id)).toEqual(["u1", "a1"]);
+  });
+
   it("appends a new user message when no turn matches", () => {
     const before = [assistant("a1", "r1")];
     expect(upsertUserMessage(before, user("u2", "r2")).map((message) => message.id)).toEqual(["a1", "u2"]);
