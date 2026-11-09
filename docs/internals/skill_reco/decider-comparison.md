@@ -11,11 +11,11 @@ second model actually measured.
 93 of 100 questions correctly, and the questions they get wrong are almost disjoint — decider is
 3 questions better at picking the skill and 4 questions worse at refusing. That is not a
 difference the set can turn into a decision either way. What does decide it is latency: decider's
-cost is linear in the option table — ≈29 ms per option, so the evaluation's 142 options cost
-3.5–3.8 s and the 241 options the agent would send today cost 6.5 s, against a 2.5 s serving-path
-deadline (§6) — so as things stand every recommendation card would time out, and it would get
-slower as the catalogue grows. **This is not a model swap until the latency is dealt with**, and no
-accuracy number here argues for one.
+cost is per input token — ~0.6 ms per token, so the evaluation's 142 options (their text is ~8.7k
+tokens) cost 3.5–3.8 s and the 241 options the agent would send today cost 6.5 s, against a 2.5 s
+serving-path deadline (§6) — so as things stand every recommendation card would time out, and it
+would get slower as the catalogue grows. **This is not a model swap until the latency is dealt
+with**, and no accuracy number here argues for one.
 
 ## 1. Harness validation, 2026-11-02
 
@@ -304,6 +304,40 @@ Two things this rules out:
 - **The per-question latency in §4 is a property of that task's roster, not of the model.** Same
   run, same day, same endpoint — only the option count differs, and that is the whole difference.
 
+#### 6.2.1 The slope is per input token, not per option
+
+The option counts above move the token count with them, because every option is one roster line
+(`name — description`, truncated to 220 characters). Vary the two independently and the mechanism
+splits apart:
+
+| options | description, characters | input tokens | decider | Jev |
+|---|---|---|---|---|
+| 20 | 40 | 480 | 387 ms | 691 ms |
+| 60 | 40 | 1,243 | 720 ms | 583 ms |
+| 141 | 40 | 2,731 | 1,387 ms | 668 ms |
+| 20 | 220 | 1,154 | 681 ms | 723 ms |
+| 60 | 220 | 3,396 | 1,656 ms | 660 ms |
+| 20 | 900 | 3,712 | 1,882 ms | 611 ms |
+| 60 | 900 | 11,514 | 5,968 ms | 849 ms |
+| 141 | 900 | 27,107 | 16,762 ms | 821 ms |
+
+Fitting decider's time against **input tokens** gives **0.61 ms/token, R² = 0.995**. Against the
+**option count** it gives 67.7 ms/option, R² = 0.372, and a *negative* intercept — the option-count
+model is not the mechanism, it was the coincidence that every option in §6.2 costs the same ~62
+tokens. The steady-state rate is ~0.5 ms/token (≈1,700–2,000 tokens/s) with a 150–200 ms floor at
+small payloads. Same client and instructions as §6.2, three sequential calls per row, medians; the
+option text is one roster description cut or padded to the stated length.
+
+So "≈29 ms/option" in §6.2 and "0.61 ms/token" here describe the same runs; 29 ms is what 62
+tokens cost. Jev, on identical payloads, does not move: 480 tokens → 691 ms, 27,107 tokens → 821 ms.
+Its cost is a fixed per-call charge, which is why reading the table is free for it and dominant for
+decider.
+
+That adds a fourth dial: **the option text itself.** 141 options truncated to 40 characters are
+~2.7k tokens and answer in 1,387 ms — inside today's 2.5 s deadline with no shortlist stage. It is
+not a free win: the description is the only evidence the model has about a skill, so shortening it
+is a quality trade that has to be scored on the same gold set, not assumed.
+
 ### 6.3 What the current roster costs, through the shipped path
 
 The catalogue the agent would actually send, read from `skills/` by the same `loadRoster` the
@@ -353,7 +387,8 @@ Nothing about the accuracy numbers pays for that. The comparison is a draw on to
 top-1 answers — is at the resolution limit of the set.
 
 So the ending is not "Jev or decider", and it is not "cut a second off the call" either: the
-latency is bought per option, so the levers are the option table or the deadline.
+latency is bought per input token (§6.2.1), so the levers are the option table, its text, or the
+deadline.
 
 1. **Shrink the table.** At ≈29 ms/option, ~40 options would fit inside the current 2.5 s (≈1.1 s
    interpolated, unmeasured at that size). That means a shortlist stage in front of the Choice —
@@ -362,7 +397,10 @@ latency is bought per option, so the levers are the option table or the deadline
 2. **Move the deadline.** ~5 s on the serving path and ~6 s on the clients means the user waits
    ~3.6 s for a card that currently appears in ~0.7 s — and ~6.5 s on the 240-skill catalogue the
    agent sends today.
-3. **Make the deployment faster per option**, which is the deployer's side of the same number.
+3. **Shorten the option text.** 141 options at 40 characters ≈ 1.4 s, inside the current deadline
+   (§6.2.1) — but the description is the model's only evidence about a skill, so this is a quality
+   trade to be scored on the same gold set, not a free win.
+4. **Make the deployment faster per token**, which is the deployer's side of the same number.
 
 Until one of those happens, decider's accuracy is a number about a latency the product cannot use.
 
