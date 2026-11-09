@@ -120,6 +120,29 @@ function withMachine(row: CatalogRow, desktopId: string): CatalogRow {
   return { ...row, desktopId };
 }
 
+/**
+ * Whether a conversation and a workspace heading name the same machine.
+ *
+ * They describe one fact in two spellings. Every drawn row carries the active
+ * desktop's id — `withMachine` stamps it — while a conversation read from the
+ * single-machine catalogue carries no machine at all, because there is only one
+ * it could be (`listTargets` answers `null`). Comparing the raw values read
+ * those as different machines, so a workspace heading that plainly held
+ * conversations matched none of them and its delete confirmation reported "0
+ * conversations" under a count badge that said otherwise (reported 2026-11-09).
+ *
+ * `activeDesktopId` is what the missing spelling means, so it is what `null` is
+ * read as here. In the merged list both sides already carry an id and this
+ * changes nothing.
+ */
+function onSameMachine(
+  rowMachine: string | null | undefined,
+  workspaceMachine: string | null | undefined,
+  activeDesktopId: string | null,
+): boolean {
+  return (rowMachine ?? activeDesktopId) === (workspaceMachine ?? activeDesktopId);
+}
+
 /** A batch's rows, grouped by the machine that will delete them. */
 function groupByMachine(targets: SessionTarget[]): Map<string | null, SessionTarget[]> {
   const byMachine = new Map<string | null, SessionTarget[]>();
@@ -682,7 +705,7 @@ export function SessionList({
       target.session.mode === "workspace"
       && !target.session.pinned
       && (target.session.workspaceId ?? "") === workspace.workspaceId
-      && (target.desktopId ?? null) === (workspace.desktopId ?? null)
+      && onSameMachine(target.desktopId, workspace.desktopId, activeDesktopId)
       && commandsFor(target.desktopId) !== null);
 
   /**
@@ -740,16 +763,22 @@ export function SessionList({
     // component's own `archived` prop is the list actually on screen.
     const shelved = archived;
     const scope = shelved ? "archived" : "active";
-    const conversations = allSessions.filter(
+    // Both halves of the workspace, whatever page this is: the half that goes is
+    // chosen just below, and the other half is the one the sentence promises to
+    // leave alone. The batch list (`allSessions`) is the wrong source for that —
+    // on the shelf it is empty by design, and everywhere it has the shelved rows
+    // already filtered out, so a workspace holding only shelved conversations
+    // reported deleting nothing and a shelf delete always counted zero.
+    const held = listTargets(merged, remote.sessions).filter(
       target =>
         (target.session.workspaceId ?? "") === workspace.workspaceId
-        && (target.desktopId ?? null) === (workspace.desktopId ?? null),
+        && onSameMachine(target.desktopId, workspace.desktopId, activeDesktopId),
     );
     // Each sentence names only its own half, and the count is of the
     // conversations *that* half holds: the other list's rows are not part of
     // this click, so mentioning their number would repeat the mistake of
     // telling a reader their untouched conversations were about to go.
-    const removed = conversations.filter(target =>
+    const removed = held.filter(target =>
       shelved ? target.session.archived === true : target.session.archived !== true);
     Alert.alert(
       t("sessions.deleteWorkspace"),
@@ -784,7 +813,7 @@ export function SessionList({
                 // A selection holding rows that are gone must not keep them.
                 setSelected(current => {
                   const next = new Set(current);
-                  for (const target of conversations) next.delete(target.key);
+                  for (const target of removed) next.delete(target.key);
                   return next;
                 });
               })
