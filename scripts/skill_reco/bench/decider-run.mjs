@@ -156,6 +156,10 @@ async function run() {
     stage1: STAGE1_REVISION,
     chunk: CHUNK_SIZE,
     gate: NONE_GATE_THRESHOLD,
+    // Recorded from 2026-11-09 on. Runs written before this field existed carry no concurrency
+    // in their config, and are not re-run to acquire one: it is inferable from the command and
+    // from the spacing of the record files (see docs/internals/skill_reco/decider-comparison.md).
+    concurrency,
   };
   console.log(`run "${name}" → ${config.baseUrl}/v1/systemone · model ${config.model} · roster ${config.roster}`);
   console.log(`config ${JSON.stringify(config)}`);
