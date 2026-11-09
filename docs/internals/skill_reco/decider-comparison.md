@@ -11,9 +11,11 @@ second model actually measured.
 93 of 100 questions correctly, and the questions they get wrong are almost disjoint — decider is
 3 questions better at picking the skill and 4 questions worse at refusing. That is not a
 difference the set can turn into a decision either way. What does decide it is latency: decider's
-floor is 3.48 s per question against a 2.5 s serving-path deadline (§6), so as things stand every
-recommendation card would time out. **This is not a model swap until the latency is dealt with**,
-and no accuracy number here argues for one.
+cost is linear in the option table — ≈29 ms per option, so the evaluation's 142 options cost
+3.5–3.8 s and the 241 options the agent would send today cost 6.5 s, against a 2.5 s serving-path
+deadline (§6) — so as things stand every recommendation card would time out, and it would get
+slower as the catalogue grows. **This is not a model swap until the latency is dealt with**, and no
+accuracy number here argues for one.
 
 ## 1. Harness validation, 2026-11-02
 
@@ -78,8 +80,9 @@ to use it rather than the live `skills/` submodule:
 - the option table is the model's whole world here. 141 options cost ~8.7k input tokens; each
   extra skill adds a line to every request (evaluation §4.1).
 
-The live submodule has since grown to **242 skills** (17 builtin + 225 third-party, read by the
-same `loadRoster`). 242 is still under the 254-option ceiling, so a run on the current catalogue
+The live submodule has since grown to **240 skills** (17 builtin + 223 third-party as of
+2026-11-09, read by the same `loadRoster`; it was 242 when this page was first written). 240 is
+still under the 254-option ceiling, so a run on the current catalogue
 stays one Choice — but it is a *different* task: it needs a fresh gold pass (`ground-truth.mjs`)
 before it can be scored at all, and both models must be run in that same batch, because the
 categories of a new gold set cannot be compared with the old scores.
@@ -110,7 +113,7 @@ Everything that defines a run, so that a number can be re-obtained rather than t
 | roster | `dataset/roster.json` — 141 skills, materialised as a stub tree |
 | prompt | the shipped one: `stage1-one-choice-none-v3`, chunk 254, `none_of_these` gate 0.15 |
 | decoding | nothing is sent — the payload is `{state, model, questions}`, so the endpoint's default temperature applies (see §4.1 for what it behaves like) |
-| concurrency | 1 (the default); a parallel run measures gateway queueing, not the model |
+| concurrency | 1 (the default); a parallel run measures gateway queueing, not the model — see §3.1 |
 | rounds | a single run is the unit; §4 reports two decider rounds and one Jev round from the same sitting |
 
 - The credential is `~/.future/agent/auth.json`'s `future` entry, the same one the agent uses;
@@ -128,6 +131,30 @@ Everything that defines a run, so that a number can be re-obtained rather than t
 - Records land in `runs/<name>/`, which is gitignored, and carry their config (endpoint, model,
   roster, gate threshold, stage-1 revision). A re-run with a different config re-records instead
   of resuming into stale answers.
+
+### 3.1 Concurrency is recorded from 2026-11-09 onward
+
+`config` now carries `concurrency` (added 2026-11-09). The three runs this page reports were made
+before that field existed, so **their records do not contain it**, and they were deliberately not
+re-run to add it — two decider rounds cost 354 s each, which is not a price worth paying for a
+metadata field. The value is reconstructable instead: the runner is sequential by default
+(`--concurrency` was not passed), every record is written immediately after its own call, and the
+spacing between consecutive files therefore equals one call each.
+
+| run | wall time, 100 questions | median gap between records |
+|---|---|---|
+| `jev-test` | 67.5 s | 0.68 s |
+| `decider-test` | 354.8 s | 3.58 s |
+| `decider-test2` | 352.9 s | 3.56 s |
+
+A gap equal to the model's own per-call latency is what one call in flight looks like; with
+concurrency >1 the gaps would fall below it and the wall time would be a fraction of
+100 × latency. Both readings say **1**.
+
+One consequence worth knowing before re-running an old name: the config string now differs, so
+re-running `decider-test` today re-records all 100 questions instead of resuming — which is the
+documented behaviour on a config change, and the reason the numbers in §4 still come from the
+records that produced them.
 
 ## 4. `pplx-decider-v1.2` on the test deployment, 2026-11-09
 
@@ -236,29 +263,108 @@ changed* matters more than the fact that it works.
 
 ## 6. What stands between the two models is latency, not accuracy
 
-Decider's latency is not a tail, it is a floor: across 100 sequential questions its minimum was
-**3,481 ms**, median 3,581 ms, p90 3,650 ms, maximum 3,976 ms. Jev's whole distribution fits
-between 575 and 877 ms.
+### 6.1 A correction to this section's first version
 
-The serving path cannot absorb that. `agent/src/skill_reco/mod.rs:50` sets
-`TIMEOUT = 2500 ms` deliberately *inside* every client's own deadline
-(`RECOMMEND_TIMEOUT_MS = 3000`, `desktop/src/features/agent/useSkillRecommendation.ts:63`) so
-that a slow recommender is *decided* as a failure rather than abandoned after the user has waited.
-At 3.5 s per call, every call fails that decision. And the failure is not merely a missing card
-once: consecutive transient failures put the recommender into a 30 s stand-down
-(`agent/src/skill_reco/mod.rs`), during which it does not even open a connection — so switching
-models as things stand means cards stop appearing at all, silently, which is precisely the
-symptom the diagnostics page exists to explain.
+The first version of this section, written earlier on 2026-11-09, said decider's latency was a
+**floor** — a fixed per-call cost:
+
+> ~~Decider's latency is not a tail, it is a floor: across 100 sequential questions its minimum was
+> 3,481 ms, median 3,581 ms, p90 3,650 ms, maximum 3,976 ms. Jev's whole distribution fits
+> between 575 and 877 ms.~~
+
+That reading is **refuted** and the sentence is kept here struck through rather than deleted,
+because the numbers in it are still right and the inference from them was wrong. The tightness was
+an artefact of the experiment: all 100 questions were one Choice over the same 141-skill table, and
+if the cost is per option then a fixed option count looks exactly like a fixed cost. Vary the table
+and the latency moves with it — decider answers a 1-option question in 0.21 s and a 254-option one
+in 7.35 s.
+
+### 6.2 The cost is per option
+
+| options in the Choice | decider | Jev |
+|---|---|---|
+| 5 | 267 ms | 614 ms |
+| 20 | 614 ms | 554 ms |
+| 60 | 1,597 ms | 658 ms |
+| 141 (the frozen roster of §2) | 3,809 ms | 641 ms |
+| 242 | 6,975 ms | 727 ms |
+| 254 (the option ceiling) | 7,352 ms | 768 ms |
+
+Same client, same instructions and criteria as the shipped path, medians of 2–3 sequential calls,
+all through the test deployment; above 141 the table is padded with the frozen roster's own lines
+under synthetic names, so only the count is artificial. Decider's slope is **≈23–31 ms per
+option**; Jev's is ≈0.5 ms and effectively flat.
+
+Two things this rules out:
+
+- **It is not the network and not a queue.** Connect plus TLS is ~40 ms against a 3,500 ms call, a
+  one-question call answers in 0.21 s, and at 5 options decider is *faster* than Jev (267 vs
+  614 ms). The model is quick; the table is expensive. Retrying, a warm gateway, or a better
+  network change nothing.
+- **The per-question latency in §4 is a property of that task's roster, not of the model.** Same
+  run, same day, same endpoint — only the option count differs, and that is the whole difference.
+
+### 6.3 What the current roster costs, through the shipped path
+
+The catalogue the agent would actually send, read from `skills/` by the same `loadRoster` the
+serving path uses: **240 skills** (17 builtin + 223 third-party, measured 2026-11-09 — it was 242
+when §1 was written). With `none_of_these` that is **241 options**, under the 255-option ceiling,
+so it stays a single Choice of one HTTP call.
+
+The same `Suggester.rank` call, three times each, sequential:
+
+| model | input tokens | latency | answer |
+|---|---|---|---|
+| `decider` | 12,479 | 6,441 / 6,467 / 6,596 ms | `scanpy`, `none` 0.0001 |
+| `jev` | 15,195 | 693 / 794 / 1,153 ms | `scanpy`, `none` 0 |
+
+Latency and cost only: the 240-skill catalogue has no gold set (§2), so nothing here scores
+accuracy at that size. The 141-option figures in §4 and §6.2 are the ones with gold behind them.
+
+### 6.4 Against the deadline, as a number
+
+`agent/src/skill_reco/mod.rs:50` sets `TIMEOUT = 2500 ms`, deliberately *inside* every client's own
+deadline (`RECOMMEND_TIMEOUT_MS = 3000`,
+`desktop/src/features/agent/useSkillRecommendation.ts:63`) so that a slow recommender is *decided*
+as a failure rather than abandoned after the user has waited.
+
+| roster | options | decider | × the 2.5 s timeout |
+|---|---|---|---|
+| the evaluation's frozen set | 142 | 3.8 s | 1.5× |
+| `skills/` today | 241 | 6.5 s | 2.6× |
+| the ceiling, where the pipeline splits | 255 | 7.4 s | 2.9× |
+
+Every skill added to the catalogue adds ≈29 ms to every recommendation. That is a **stronger**
+objection than a fixed floor would have been: a floor is a constant you could wait out, tune once,
+or ask the deployer to shave, whereas a per-option cost means the card gets slower for every skill
+the catalogue gains — 240 today, ~15 more before the roster crosses `CHUNK_SIZE` and the pipeline
+splits into chunk Choices plus a second, merging Choice (whose own module warns that chunk
+probabilities are no longer comparable to each other). Latency is then no longer the only thing
+that moves.
+
+The consequence for the shipped path is what it was: every call fails the 2.5 s decision, and the
+failure is not merely a missing card once — consecutive transient failures put the recommender into
+a 30 s stand-down (`agent/src/skill_reco/mod.rs`) during which it does not even open a connection.
+So switching models as things stand means cards stop appearing at all, silently, which is exactly
+the symptom the diagnostics page exists to explain.
 
 Nothing about the accuracy numbers pays for that. The comparison is a draw on total correctness
 (93 vs 93) with disjoint mistakes, and the one metric where decider is clearly ahead — three more
 top-1 answers — is at the resolution limit of the set.
 
-So the ending is not "Jev or decider". It is: **any move to decider starts with the deadline** —
-either the serving path's timeout moves to ~5 s and the clients' budget to ~6 s (which means the
-user waits ~3.6 s before a card appears, for a feature that is currently invisible above ~0.7 s),
-or the deployment cuts about a second off the call. Until one of those happens, decider's
-accuracy is a number about a latency the product cannot use.
+So the ending is not "Jev or decider", and it is not "cut a second off the call" either: the
+latency is bought per option, so the levers are the option table or the deadline.
+
+1. **Shrink the table.** At ≈29 ms/option, ~40 options would fit inside the current 2.5 s (≈1.1 s
+   interpolated, unmeasured at that size). That means a shortlist stage in front of the Choice —
+   an architecture change to the serving path, not a flag, and one that has to be scored again
+   because the model's options *are* its world (evaluation §2.2.5).
+2. **Move the deadline.** ~5 s on the serving path and ~6 s on the clients means the user waits
+   ~3.6 s for a card that currently appears in ~0.7 s — and ~6.5 s on the 240-skill catalogue the
+   agent sends today.
+3. **Make the deployment faster per option**, which is the deployer's side of the same number.
+
+Until one of those happens, decider's accuracy is a number about a latency the product cannot use.
 
 ## 7. What these numbers can and cannot show
 
