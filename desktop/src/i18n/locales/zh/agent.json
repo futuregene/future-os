@@ -246,7 +246,7 @@
       "sandbox": "沙箱保护",
       "off": "完全访问",
       "auto": "自动审批",
-      "unknown": "按会话"
+      "unknown": "未知"
     },
     "approvalTierDesc": {
       "sandboxLinuxWriteOnly": "请升级系统 Bubblewrap 并重启 FutureOS，以启用完整沙箱保护。",
