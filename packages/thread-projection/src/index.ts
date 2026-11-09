@@ -88,3 +88,4 @@ export { fusionTask, fusionTranscript, fusionIssues, fusionProgress, fusionModel
 export type { FusionExecutionReport, FusionDegradation, FusionConclusion, FusionDiscussion, FusionStep, FusionReadRequest } from "./fusion";
 export { fusionSettingsIssue, newFusionParticipant } from "./fusionSettings";
 export type { FusionSettings, FusionSettingsPatch, FusionModelConfig, FusionConfiguration } from "./fusionSettings";
+export { collapseReplyDuplicates, withoutReplyDuplicates } from "./replyDuplicates";
