@@ -59,7 +59,7 @@ import { useTerminalPanel } from "../../features/terminal/useTerminalPanel";
 import { exitNativeFullscreen } from "../../features/vibe/fullscreen";
 import { VibeStage } from "../../features/vibe/VibeStage";
 import { applyThreadApprovalTier, defaultAgentModelId, modelOption, readLastUsedModel } from "../../integrations/agent/agentClient";
-import { installAgentEventListener, revalidateAgentState } from "../../integrations/agent/agentStateCache";
+import { installAgentEventListener, revalidateAgentState, updateCachedAgentState } from "../../integrations/agent/agentStateCache";
 import { getFutureEnvironment } from "../../integrations/agent/providers";
 import { refreshSkills } from "../../integrations/skills/skillsClient";
 import { isApprovalTier } from "../../integrations/storage/appSettings";
@@ -1796,9 +1796,17 @@ function ReadyAppShell({
    *
    * The chip draws the live Agent session's own tier, so writing only the
    * settings store left an existing conversation's control frozen at its old
-   * value — reported as "切换成其他等级，切换无效，选项没有变化". The host applies the
-   * tier to that session too and answers with the tier it accepted (an
-   * unenforceable sandbox is downgraded, not claimed), which is what is stored.
+   * value — reported as "切换成其他等级，切换无效，选项没有变化". Measured again after the
+   * host started applying the tier to that session directly: the choice did
+   * reach the gate (the next message ran with it) but the chip still showed the
+   * old mode until that message was sent, because it waits for a state read and
+   * the value only changed on the machine's next prompt.
+   *
+   * So the press updates the chip first — the reader's choice, which is also
+   * what the next prompt sends — and the machine's own answer then corrects it
+   * if it kept something else (an unenforceable sandbox is downgraded, never
+   * claimed). A failed round trip leaves the choice showing: the preference is
+   * durable and the next prompt applies it anyway.
    */
   const changeApprovalTier = useCallback(async (value: ApprovalTier) => {
     const conversation = activeThread?.agentSessionId ? activeThread : null;
@@ -1806,19 +1814,23 @@ function ReadyAppShell({
       await changeSettings({ approvalTier: value });
       return;
     }
+    // The chip reads this cache, so the mode changes under the reader's finger
+    // instead of after the next message.
+    updateCachedAgentState(conversation.id, { sandboxTier: value });
     try {
       const applied = await applyThreadApprovalTier(conversation.id, value);
       const tier = isApprovalTier(applied?.approvalTier) ? applied.approvalTier : value;
       await changeSettings({ approvalTier: tier });
-      // The chip reads the session, which just moved: re-read it rather than
-      // waiting for the next prompt to refresh the cached state.
-      revalidateAgentState(conversation.id);
+      if (tier !== value)
+        updateCachedAgentState(conversation.id, { sandboxTier: tier });
     }
     catch {
       // The local preference is still the user's choice, and it is what the next
       // prompt sends: keep it even when the machine could not be told now.
       await changeSettings({ approvalTier: value });
     }
+    // Confirm against the machine, and pick up anything else its state carries.
+    revalidateAgentState(conversation.id);
   }, [activeThread, changeSettings]);
 
   /**
