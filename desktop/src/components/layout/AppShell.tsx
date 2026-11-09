@@ -1823,14 +1823,20 @@ function ReadyAppShell({
       await changeSettings({ approvalTier: tier });
       if (tier !== value)
         updateCachedAgentState(conversation.id, { sandboxTier: tier });
+      // Only now is the machine's own state worth re-reading: it has just been
+      // told, so the snapshot agrees with the choice and carries anything else
+      // that changed with it.
+      revalidateAgentState(conversation.id);
     }
     catch {
       // The local preference is still the user's choice, and it is what the next
       // prompt sends: keep it even when the machine could not be told now.
+      // Deliberately NO revalidate here — asking the machine what tier it is on
+      // would answer with the old one and undo the choice the reader just made,
+      // which is exactly how this shipped looking like a dead control the second
+      // time (the re-read landed after the optimistic write).
       await changeSettings({ approvalTier: value });
     }
-    // Confirm against the machine, and pick up anything else its state carries.
-    revalidateAgentState(conversation.id);
   }, [activeThread, changeSettings]);
 
   /**
