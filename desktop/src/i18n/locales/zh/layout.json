@@ -218,8 +218,8 @@
     "incompatible": "Future Agent 与当前 FutureOS 版本不一致",
     "fixIncompatible": "请更新或停止外部 Agent，然后重启 FutureOS。存在冲突时不能通过启动内置服务绕过检查。",
     "stopping": "正在关闭 FutureOS",
-    "cleanupFailed": "FutureOS 未能完成清理",
-    "cleanupFailedHint": "更新、重置和重启已阻止。请保存诊断，退出整个进程后重新打开 FutureOS。",
+    "cleanupFailed": "FutureOS 已关闭，有一项后续清理待完成",
+    "cleanupFailedHint": "对话和设置不受影响。下次启动 FutureOS 时会自动重试；在此之前更新、重置和重启暂不可用。",
     "shutdownStages": {
       "admission": "正在停止接收新工作",
       "callers": "正在等待当前请求",
