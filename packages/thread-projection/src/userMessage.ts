@@ -1,4 +1,5 @@
 import type { AgentMessage } from "./model";
+import { collapseReplyDuplicates } from "./replyDuplicates";
 import { entriesToMessages } from "./projection";
 
 /** User events refer to the same persisted entry and run as history pages. */
@@ -29,14 +30,18 @@ export function userMessageFromEvent(payload: Record<string, unknown>): AgentMes
 export function upsertUserMessage<
   T extends { id: string; role?: string; runId?: string | null; inFlightRunId?: string | null },
 >(messages: T[], user: T): T[] {
-  const index = messages.findIndex(
+  // The turn's reply is drawn once before anything is placed: a reload during
+  // the run appends a snapshot of the answer beside the live bubble, and a prompt
+  // landing in an array like that is put between two halves of its own answer.
+  const base = collapseReplyDuplicates(messages);
+  const index = base.findIndex(
     message =>
       message.role === "user" &&
       (message.id === user.id || (!!user.runId && message.runId === user.runId)),
   );
   if (index >= 0) {
-    const next = [...messages];
-    next[index] = { ...messages[index]!, ...user, id: messages[index]!.id };
+    const next = [...base];
+    next[index] = { ...base[index]!, ...user, id: base[index]!.id };
     return next;
   }
   // The assistant can arrive first through a different subscription — and when
@@ -47,53 +52,10 @@ export function upsertUserMessage<
   // landed *below* its own answer, and the wrong order outlived a thread switch
   // because the warm snapshot kept it.
   const assistant = user.runId
-    ? messages.findIndex(message =>
+    ? base.findIndex(message =>
         message.role === "assistant"
         && (message.runId === user.runId || message.inFlightRunId === user.runId))
     : -1;
-  if (assistant < 0)
-    return [...messages, user];
-
-  // A reply can be on screen twice for one turn. A reload during the run
-  // projects the agent's mid-run snapshot into the array as a settled-looking
-  // reply carrying no run of its own, and the live bubble for the same run is
-  // appended beside it. The prompt then landed between the two halves of its own
-  // answer — measured as "7s reply" / question / "2s reply" in one case, where a
-  // reload from the journal rendered it correctly: the pair on disk is fine, only
-  // this array was wrong.
-  //
-  // The fragments directly above the matched reply are that snapshot: nothing
-  // but replies sits between them and the reply (they are contiguous), and they
-  // carry no run because its stamp is withheld while the run is in flight. They
-  // go, because with the prompt above the real reply they can only render as a
-  // second, stale copy of the same answer.
-  let at = assistant;
-  while (at > 0) {
-    const above = messages[at - 1];
-    if (!above || !isReplyFragment(above)) break;
-    at -= 1;
-  }
-  const head = [...messages.slice(0, at), user];
-  // Everything from `at` on, minus the swallowed fragments.
-  for (let index = at; index < messages.length; index += 1) {
-    const message = messages[index];
-    if (!message || index >= assistant || !isReplyFragment(message))
-      head.push(message as T);
-  }
-  return head;
-}
-
-/**
- * Whether a message is a snapshot of a reply whose run this client cannot name.
- *
- * That is the shape a mid-run reload leaves: an assistant that renders as
- * settled but carries no run, because `applyRunMetadata` withholds the stamp so
- * the live bubble keeps ownership of the reply. A live bubble is never one of
- * these — it always carries the run it draws — so this cannot match the reply
- * that is actually growing.
- */
-function isReplyFragment(
-  message: { role?: string; runId?: string | null; inFlightRunId?: string | null },
-): boolean {
-  return message.role === "assistant" && !message.runId && !message.inFlightRunId;
+  const at = assistant < 0 ? base.length : assistant;
+  return [...base.slice(0, at), user, ...base.slice(at)];
 }
