@@ -5293,7 +5293,7 @@ mod tests {
         let _guard = crate::test_env::lock_env().await;
         let _home = Home::new();
         let (code, _, stderr) = run(&["remote", "bogus"]).await;
-        assert_eq!(code, 1);
+        assert_eq!(code, crate::axi::EXIT_USAGE);
         assert!(stderr.contains("Unknown argument: bogus"), "{stderr}");
         let (code, _, stderr) = run(&["remote", "devices", "list", "--bogus"]).await;
         assert_eq!(code, 1);
@@ -5896,7 +5896,7 @@ mod tests {
         let _guard = crate::test_env::lock_env().await;
         let _home = Home::new();
         let (code, _, stderr) = run(&["remote", "devices", "bogus"]).await;
-        assert_eq!(code, 1);
+        assert_eq!(code, crate::axi::EXIT_USAGE);
         assert!(stderr.contains("Unknown argument: bogus"), "{stderr}");
         assert!(
             stderr.contains("Usage:"),

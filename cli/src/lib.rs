@@ -525,7 +525,14 @@ where
             Err(msg) if msg == HANDLED_EXIT => 1,
             Err(msg) => {
                 out.log_err(&msg);
-                1
+                // A usage mistake is exit 2 wherever it is raised: a group that
+                // has not adopted `axi::usage` still builds a `Usage: …` string,
+                // and the documented contract (`CLI.md`) must hold for it too.
+                if axi::is_usage_error(&msg) {
+                    axi::EXIT_USAGE
+                } else {
+                    1
+                }
             }
         };
         code.max(out.exit_code())
@@ -838,9 +845,10 @@ mod tests {
             "{stderr}"
         );
 
-        // An unknown subcommand reports the usage line.
+        // An unknown subcommand is a usage error: the reason and the usage
+        // line, and exit 2 (not "the command ran and failed").
         let (code, stdout, stderr) = run(&["desktop", "bogus"]).await;
-        assert_eq!(code, 1);
+        assert_eq!(code, crate::axi::EXIT_USAGE);
         assert_eq!(stdout, "");
         assert!(stderr.contains("Unknown argument: bogus"), "{stderr}");
     }

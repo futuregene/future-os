@@ -71,6 +71,29 @@ impl Format {
     }
 }
 
+/// Does this error text describe a usage mistake rather than a failure?
+///
+/// Groups that have not been converted to [`usage`] still raise a plain
+/// `Err("Usage: …")` string, and the dispatcher's `catch` used to turn every one
+/// of those into exit 1 — while `docs/wiki/{en,zh}/CLI.md` promises 2. Classifying
+/// here fixes the whole surface at once; converting a group to [`usage`] later
+/// keeps the same answer, so the two paths agree instead of drifting.
+pub fn is_usage_error(message: &str) -> bool {
+    let first = message.lines().next().unwrap_or("").trim_start();
+    first.starts_with("Usage: ")
+        || first.starts_with("usage: ")
+        || first.starts_with("Unknown argument")
+        || first.starts_with("unexpected argument")
+        || first.starts_with("missing ")
+        || first.contains("unknown option")
+        || first.starts_with("expected at most")
+        || first.starts_with("unknown mcp command")
+        || first.starts_with("unknown setting")
+        || first.starts_with("Invalid data command")
+        // A destructive command missing its confirmation is a usage mistake too.
+        || first.contains("re-run with --yes")
+}
+
 /// True when the command line asks for help.
 ///
 /// Every group checks this **before** it touches anything: `future skills update
