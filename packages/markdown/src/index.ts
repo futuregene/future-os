@@ -18,6 +18,7 @@ export { createStreamingMarkdownParser } from "./streamingMarkdown";
 export { plainTitleText } from "./title";
 export { remarkLatexMath } from "./remarkLatexMath";
 export { remarkMathFence } from "./remarkMathFence";
+export { remarkCurrencyMath } from "./remarkCurrencyMath";
 export { remarkCjkEmphasis } from "./remarkCjkEmphasis";
 export { remarkAutolinkBoundary } from "./remarkAutolinkBoundary";
 export { remarkUnclosedLink } from "./remarkUnclosedLink";
