@@ -1258,7 +1258,7 @@ async fn an_unknown_action_is_a_usage_error() {
     let _home = Home::new();
 
     let (code, _, stderr) = run(&["remote", "peers", "poke"]).await;
-    assert_eq!(code, 1);
+    assert_eq!(code, crate::axi::EXIT_USAGE);
     assert!(stderr.contains("Unknown argument: poke"), "{stderr}");
     assert!(stderr.contains("future remote peers"), "{stderr}");
 }
