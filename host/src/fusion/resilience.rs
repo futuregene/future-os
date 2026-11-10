@@ -13,6 +13,45 @@ static HEALTH: LazyLock<Mutex<BTreeMap<String, Instant>>> =
 static COOLDOWN: LazyLock<Mutex<BTreeMap<String, (Instant, FailureKind)>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
+#[derive(Default)]
+pub(super) struct PanelDeadline(Option<tokio::time::Instant>);
+
+impl PanelDeadline {
+    pub fn participant_finished(
+        &mut self,
+        now: tokio::time::Instant,
+        usable: bool,
+        remaining: usize,
+    ) {
+        if usable && self.0.is_none() {
+            self.0 = Some(now + Duration::from_secs(10 * 60));
+        }
+        if let Some(deadline) = self.0.as_mut().filter(|_| remaining == 1) {
+            *deadline = (*deadline).min(now + Duration::from_secs(5 * 60));
+        }
+    }
+
+    pub fn cutoff(&self) -> Option<tokio::time::Instant> {
+        self.0
+    }
+}
+
+pub(super) fn panel_timeout() -> anyhow::Error {
+    failure(
+        FailureKind::PanelTimeout,
+        "Fusion stopped waiting for this participant after the panel deadline",
+    )
+}
+
+pub(super) async fn wait_for_panel_timeout(stop: Option<&mut tokio::sync::watch::Receiver<bool>>) {
+    match stop {
+        Some(stop) => {
+            let _ = stop.wait_for(|expired| *expired).await;
+        }
+        None => std::future::pending().await,
+    }
+}
+
 pub(super) struct IdleProgress {
     last_content: Mutex<tokio::time::Instant>,
     duration: Duration,
@@ -246,6 +285,37 @@ pub(super) fn safe_error(error: &anyhow::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panel_wait_starts_with_a_usable_result_and_never_extends() {
+        let now = tokio::time::Instant::now();
+        let minutes = |count: u64| Duration::from_secs(count * 60);
+        let mut deadline = PanelDeadline::default();
+
+        deadline.participant_finished(now, false, 3);
+        assert_eq!(deadline.cutoff(), None);
+        deadline.participant_finished(now + minutes(1), true, 2);
+        assert_eq!(deadline.cutoff(), Some(now + minutes(11)));
+        deadline.participant_finished(now + minutes(8), true, 1);
+        assert_eq!(deadline.cutoff(), Some(now + minutes(11)));
+    }
+
+    #[test]
+    fn the_last_pending_participant_tightens_the_deadline_even_after_a_failure() {
+        let now = tokio::time::Instant::now();
+        let mut deadline = PanelDeadline::default();
+        deadline.participant_finished(now, true, 2);
+        deadline.participant_finished(now + Duration::from_secs(120), false, 1);
+        assert_eq!(deadline.cutoff(), Some(now + Duration::from_secs(420)));
+
+        let mut two_participants = PanelDeadline::default();
+        two_participants.participant_finished(now, true, 1);
+        assert_eq!(
+            two_participants.cutoff(),
+            Some(now + Duration::from_secs(300))
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn reasoning_can_continue_far_past_the_inactivity_interval() {
         let progress = IdleProgress::new(300_000);
