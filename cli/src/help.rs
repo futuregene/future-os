@@ -99,6 +99,22 @@ Usage:
 Installs all built-in skills. On macOS and Linux, also links future and, when
 available, its sibling future-agent into ~/.future/bin/ and prints a PATH setup hint."#;
 
+/// `future doctor --help` output. Doctor had none: `future doctor --help` ran a
+/// full environment diagnostic instead of printing anything.
+pub const DOCTOR_HELP: &str = r#"future doctor — check this machine's environment
+
+Usage:
+  future doctor
+
+Runs the environment checks and prints one block per check: the agent endpoint,
+the model providers, the sandbox, the disk and the local directories. It reads
+and diagnoses; it does not repair anything.
+
+Exit codes:
+  0  every check passed or only warned
+  1  the diagnostic itself could not run
+  (a warn is not a failure; read the blocks, not just the exit code)"#;
+
 /// `future config --help` output.
 pub const CONFIG_HELP: &str = r#"future config — configure a model provider, or read/write global settings
 
