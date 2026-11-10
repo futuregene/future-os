@@ -50,11 +50,13 @@ impl AgentScopeProjection {
     }
 }
 
-/// A todo is agent-owned work (advancement / monitor / blocker), not a user
-/// todo.
+/// A todo is agent-owned work (advancement / scout / monitor / blocker), not a
+/// user todo. `Scout` belongs here: a scout is a worker-claimable exploration
+/// node that produces a direction proposal instead of a deliverable.
 fn is_agent_work(todo: &Todo) -> bool {
     [
         TaskClass::Advancement,
+        TaskClass::Scout,
         TaskClass::Monitor,
         TaskClass::Blocker,
     ]

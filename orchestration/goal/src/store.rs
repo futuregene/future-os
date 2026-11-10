@@ -19,6 +19,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 use crate::state::{Goal, RunRecord, Todo, TodoStatus};
+use crate::work_items::direction::DirectionProposal;
 
 const REGISTRY_FILE: &str = "registry.json";
 const EVENTS_FILE: &str = "events.jsonl";
@@ -633,6 +634,44 @@ pub enum Event {
         agent_id: Option<String>,
         ts: u64,
     },
+    /// Exploration node (`TaskClass::Scout`): a scout proposed directions. The
+    /// proposal itself rides the event (candidates, acceptance criteria,
+    /// kill-when), so the direction ledger is rebuildable from the ledger
+    /// alone — see [`crate::work_items::direction::DirectionLedger`] and
+    /// [`Store::direction_ledger`]. Projection-only for goal state: replay
+    /// leaves the todo kanban untouched (a proposal is not work until it is
+    /// accepted).
+    DirectionProposed {
+        goal_id: String,
+        proposal: DirectionProposal,
+        ts: u64,
+    },
+    /// The operator accepted a direction proposal (the todo(s) that realise it
+    /// are separate `TodoAdded` events carrying `origin_proposal`).
+    DirectionAccepted {
+        goal_id: String,
+        proposal_id: String,
+        ts: u64,
+    },
+    /// The operator rejected a direction proposal, with the reason it was
+    /// rejected. `reason` is required: an unexplained rejection cannot be
+    /// re-evaluated later, so the constructor
+    /// ([`Event::direction_rejected`]) refuses an empty one.
+    DirectionRejected {
+        goal_id: String,
+        proposal_id: String,
+        reason: String,
+        ts: u64,
+    },
+    /// A direction proposal expired at `deadline` (epoch secs) without a
+    /// decision — the exploration budget ran out. Expiry frees the direction
+    /// for a later re-proposal (`DirectionStatus::is_live`).
+    DirectionExpired {
+        goal_id: String,
+        proposal_id: String,
+        deadline: u64,
+        ts: u64,
+    },
 }
 
 impl Event {
@@ -681,7 +720,61 @@ impl Event {
             | Event::SupervisorBatchPrepared { goal_id, .. }
             | Event::SupervisorBatchDelivered { goal_id, .. }
             | Event::WorkerStopped { goal_id, .. }
-            | Event::WorkerSessionBound { goal_id, .. } => goal_id,
+            | Event::WorkerSessionBound { goal_id, .. }
+            | Event::DirectionProposed { goal_id, .. }
+            | Event::DirectionAccepted { goal_id, .. }
+            | Event::DirectionRejected { goal_id, .. }
+            | Event::DirectionExpired { goal_id, .. } => goal_id,
+        }
+    }
+
+    // ── Direction proposal ledger (exploration node) ────────────────────
+
+    /// A scout (or an operator) proposed directions for this goal.
+    pub fn direction_proposed(proposal: DirectionProposal, ts: u64) -> Event {
+        Event::DirectionProposed {
+            goal_id: proposal.goal_id.clone(),
+            proposal,
+            ts,
+        }
+    }
+
+    /// Accept a direction proposal.
+    pub fn direction_accepted(goal_id: &str, proposal_id: &str, ts: u64) -> Event {
+        Event::DirectionAccepted {
+            goal_id: goal_id.to_string(),
+            proposal_id: proposal_id.to_string(),
+            ts,
+        }
+    }
+
+    /// Reject a direction proposal. Fails closed on an empty `reason`: a
+    /// rejection nobody explained cannot be re-evaluated, and the ledger keeps
+    /// the explanation as the record of why the route was dropped.
+    pub fn direction_rejected(
+        goal_id: &str,
+        proposal_id: &str,
+        reason: &str,
+        ts: u64,
+    ) -> Result<Event> {
+        if reason.trim().is_empty() {
+            bail!("direction rejection of `{proposal_id}` requires a non-empty reason");
+        }
+        Ok(Event::DirectionRejected {
+            goal_id: goal_id.to_string(),
+            proposal_id: proposal_id.to_string(),
+            reason: reason.to_string(),
+            ts,
+        })
+    }
+
+    /// Expire a direction proposal at `deadline` (epoch secs).
+    pub fn direction_expired(goal_id: &str, proposal_id: &str, deadline: u64, ts: u64) -> Event {
+        Event::DirectionExpired {
+            goal_id: goal_id.to_string(),
+            proposal_id: proposal_id.to_string(),
+            deadline,
+            ts,
         }
     }
 }
@@ -1147,6 +1240,24 @@ impl Store {
             .goal_schema_version(goal_id)
             .unwrap_or_else(|| LEGACY_EVENT_STORE_SCHEMA_VERSION.to_string());
         read_ledger(&dir, &from)
+    }
+
+    /// The goal's direction proposal ledger (exploration node): every
+    /// `direction_*` event folded into
+    /// [`DirectionLedger`](crate::work_items::direction::DirectionLedger).
+    ///
+    /// This is a projection over the event stream, NOT part of `Goal` — a
+    /// proposal never changes goal state, so the ledger is read where it is
+    /// needed (propose/accept/reject/expire, status) instead of being carried
+    /// in every replayed `Goal`.
+    pub fn direction_ledger(
+        &self,
+        goal_id: &str,
+    ) -> Result<crate::work_items::direction::DirectionLedger> {
+        let events = self.events(goal_id)?;
+        Ok(crate::work_items::direction::DirectionLedger::from_events(
+            events.iter().map(|stored| &stored.event),
+        ))
     }
 
     /// Ledger read diagnostics (O1): the sidecar written by the last ledger
@@ -2355,6 +2466,15 @@ fn apply(goal: &mut Goal, event: Event) {
         | Event::ControlAcknowledged { .. }
         | Event::SupervisorBatchPrepared { .. }
         | Event::SupervisorBatchDelivered { .. } => {}
+        // Projection-only: the direction proposal ledger is its own read model
+        // (`crate::work_items::direction::DirectionLedger`, built by
+        // `Store::direction_ledger`). A proposal is not work, so replaying it
+        // must never add, block or complete a todo — the todo that realises an
+        // accepted direction arrives as its own `TodoAdded`.
+        Event::DirectionProposed { .. }
+        | Event::DirectionAccepted { .. }
+        | Event::DirectionRejected { .. }
+        | Event::DirectionExpired { .. } => {}
     }
 }
 
