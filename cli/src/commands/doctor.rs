@@ -83,11 +83,18 @@ fn sessions_dir_path() -> PathBuf {
 // ── Entry ──────────────────────────────────────────────────────────────────
 
 /// `doctor()`.
-pub async fn doctor(out: &Output) -> Result<(), String> {
-    // `console.log(\`${C.bold}Future Doctor${C.reset} — checking environment...\n\`)`
-    out.log(&format!(
-        "{BOLD}Future Doctor{RESET} — checking environment...\n"
-    ));
+pub async fn doctor(args: &[String], out: &Output) -> Result<(), String> {
+    // Flags: `--json` for a parseable report, `--strict` to make a warning a
+    // failure. The default exit code stays 0 when only warnings were found — the
+    // release packaging probe and the CLI harness both depend on that.
+    let json = args.iter().any(|argument| argument == "--json");
+    let strict = args.iter().any(|argument| argument == "--strict");
+    if !json {
+        // `console.log(\`${C.bold}Future Doctor${C.reset} — checking environment...\n\`)`
+        out.log(&format!(
+            "{BOLD}Future Doctor{RESET} — checking environment...\n"
+        ));
+    }
 
     let mut results: Vec<CheckResult> = Vec::new();
 
@@ -111,15 +118,50 @@ pub async fn doctor(out: &Output) -> Result<(), String> {
     // 6. Skills.
     results.push(check_skills().await);
 
-    print_results(&results, out);
-
     let issues = results.iter().filter(|r| r.status == Status::Issue).count();
     let warns = results.iter().filter(|r| r.status == Status::Warn).count();
-    let problem_count = issues + warns;
+    let oks = results.iter().filter(|r| r.status == Status::Ok).count();
 
-    if problem_count == 0 {
-        // `console.log(\`${GREEN}All checks passed.${C.reset}\n\`)`
-        out.log(&format!("{GREEN}All checks passed.{RESET}\n"));
+    if json {
+        // The same facts as an object, ANSI-free: a caller that wants the verdict
+        // should not have to strip colour codes out of prose.
+        let checks: Vec<serde_json::Value> = results
+            .iter()
+            .map(|result| {
+                serde_json::json!({
+                    "name": result.name,
+                    "status": match result.status {
+                        Status::Ok => "ok",
+                        Status::Warn => "warn",
+                        Status::Issue => "issue",
+                    },
+                    "detail": result.lines.join("\n"),
+                })
+            })
+            .collect();
+        out.log(
+            &serde_json::to_string_pretty(&serde_json::json!({
+                "ok": issues == 0 && (!strict || warns == 0),
+                "counts": { "ok": oks, "warn": warns, "issue": issues },
+                "checks": checks,
+            }))
+            .unwrap_or_default(),
+        );
+    } else {
+        print_results(&results, out);
+        if issues + warns == 0 {
+            // `console.log(\`${GREEN}All checks passed.${C.reset}\n\`)`
+            out.log(&format!("{GREEN}All checks passed.{RESET}\n"));
+        }
+    }
+
+    // A warning is not a failure ... unless the caller asked for strict. A
+    // reported issue has never been a failure either — `doctor` diagnoses; it
+    // does not judge — so only `--strict` turns either into a non-zero exit.
+    if strict && issues + warns > 0 {
+        return Err(format!(
+            "{issues} issue(s), {warns} warning(s) — --strict treats both as failures"
+        ));
     }
     Ok(())
 }
@@ -987,7 +1029,7 @@ mod tests {
 
     async fn run_doctor() -> (i32, String, String) {
         let (out, cap) = Output::memory();
-        let result = doctor(&out).await;
+        let result = doctor(&[], &out).await;
         let code = if result.is_ok() { 0 } else { 1 };
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
@@ -1030,6 +1072,51 @@ mod tests {
         // An unknown code (a newer Desktop's diagnostic) still says something
         // actionable rather than promising isolation that is not there.
         assert!(sandbox_remedy("something_new").contains("without OS isolation"));
+    }
+
+    /// `--json` is the parseable report: one object, no ANSI, and the counts a
+    /// caller can branch on instead of counting coloured lines.
+    #[tokio::test]
+    async fn json_reports_the_same_checks_as_an_object() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let (out, captured) = Output::memory();
+        doctor(&["--json".to_string()], &out).await.unwrap();
+        let text = String::from_utf8(captured.out.lock().unwrap().clone()).unwrap();
+        assert!(
+            !text.contains('\x1b'),
+            "no ANSI in the machine form: {text}"
+        );
+        let report: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert!(report["counts"]["ok"].is_number(), "{text}");
+        assert!(report["counts"]["warn"].is_number(), "{text}");
+        let checks = report["checks"].as_array().expect("checks array");
+        assert!(checks.len() >= 10, "every check is reported: {text}");
+        assert!(
+            checks
+                .iter()
+                .all(|check| check["name"].is_string() && check["status"].is_string()),
+            "{text}"
+        );
+    }
+
+    /// `--strict` is opt-in: the default exit code must stay 0, because the
+    /// release packaging probe and the CLI harness both run `future doctor`.
+    #[tokio::test]
+    async fn strict_turns_a_warning_into_a_failure() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let (out, _captured) = Output::memory();
+        // The temp home has no login and no agent: there are warnings to find.
+        let default = doctor(&[], &out).await;
+        assert!(default.is_ok(), "a warning is not a failure by default");
+
+        let (out, _captured) = Output::memory();
+        let strict = doctor(&["--strict".to_string()], &out).await;
+        assert!(
+            strict.is_err(),
+            "--strict must refuse to report a clean machine when warnings exist"
+        );
     }
 
     #[tokio::test]
