@@ -60,10 +60,19 @@ def main():
         type=Path,
         default=Path(os.environ.get("FUTURE_HOME", Path.home() / ".future")),
     )
+    parser.add_argument(
+        "--single-only",
+        action="store_true",
+        help="start a single-model benchmark without reading saved Fusion settings",
+    )
     args = parser.parse_args()
     binary = args.binary.resolve()
-    settings = local_settings({"binary": binary, "home": args.source_home.resolve()})
-    if not settings["enabled"]:
+    settings = (
+        None
+        if args.single_only
+        else local_settings({"binary": binary, "home": args.source_home.resolve()})
+    )
+    if settings is not None and not settings["enabled"]:
         raise ValueError("Local Fusion is disabled")
     home = ROOT / ".local" / ("instance-" + uuid.uuid4().hex[:12])
     agent = home / "agent"
@@ -87,17 +96,18 @@ def main():
                 if filename != "settings.json":
                     private.append(destination)
         # Seed only settings, never source history, tasks, or pending discussions.
-        fusion = home / "fusion"
-        fusion.mkdir()
-        connection = sqlite3.connect(fusion / "fusion.db")
-        connection.execute(
-            "CREATE TABLE fusion_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)"
-        )
-        connection.execute(
-            "INSERT INTO fusion_meta VALUES('settings',?)", (json.dumps(settings),)
-        )
-        connection.commit()
-        connection.close()
+        if settings is not None:
+            fusion = home / "fusion"
+            fusion.mkdir()
+            connection = sqlite3.connect(fusion / "fusion.db")
+            connection.execute(
+                "CREATE TABLE fusion_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)"
+            )
+            connection.execute(
+                "INSERT INTO fusion_meta VALUES('settings',?)", (json.dumps(settings),)
+            )
+            connection.commit()
+            connection.close()
         with socket.socket() as reservation:
             reservation.bind(("127.0.0.1", 0))
             endpoint = f"127.0.0.1:{reservation.getsockname()[1]}"
