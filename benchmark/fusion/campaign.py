@@ -14,15 +14,36 @@ from future_runner import Future
 from scoring import bbeh_module
 
 NETWORK_HTTP = {408, 429, 500, 502, 503, 504}
+NETWORK_INTERRUPTION = ("[upstream_disconnected]", "[response_timeout]")
+
+
+def terminal_run_error(result):
+    run_id = result.get("run_id")
+    if (
+        result["status"] == "completed"
+        or run_id is None
+        or result.get("submission_uncertain")
+    ):
+        return ""
+    for entry in result.get("parent_usage_ledger", {}).get("ledger", []):
+        if entry.get("runId") == run_id and entry.get("status") in {
+            "interrupted",
+            "failed",
+            "error",
+        }:
+            return entry.get("error") or ""
+    return ""
 
 
 def network_failure(result):
-    # Only an accepted run's terminal ledger can authorize a new generation.
     # A CLI read failure or an ambiguous submission might still be running.
-    if result["status"] == "completed" or result.get("submission_uncertain"):
+    terminal_error = terminal_run_error(result).lower()
+    if not terminal_error:
         return False
     error = result.get("upstream_error", "").lower()
-    if not error or any(
+    if not error:
+        return terminal_error.startswith(NETWORK_INTERRUPTION)
+    if any(
         word in error
         for word in ("insufficient_quota", "quota_exceeded", "billing_hard_limit")
     ):
@@ -30,8 +51,7 @@ def network_failure(result):
     return result.get("http_status") in NETWORK_HTTP or any(
         word in error
         for word in (
-            "[upstream_disconnected]",
-            "[response_timeout]",
+            *NETWORK_INTERRUPTION,
             "connection reset",
             "connection refused",
             "dns error",
@@ -41,18 +61,7 @@ def network_failure(result):
 
 
 def output_limit(result):
-    run_id = result.get("run_id")
-    return (
-        result["status"] != "completed"
-        and run_id is not None
-        and not result.get("submission_uncertain")
-        and any(
-            entry.get("runId") == run_id
-            and entry.get("status") in {"interrupted", "failed", "error"}
-            and entry.get("error") == "[OUTPUT_LIMIT] finish_length"
-            for entry in result.get("parent_usage_ledger", {}).get("ledger", [])
-        )
-    )
+    return terminal_run_error(result) == "[OUTPUT_LIMIT] finish_length"
 
 
 def case_status(result):
