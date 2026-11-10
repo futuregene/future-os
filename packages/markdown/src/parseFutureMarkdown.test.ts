@@ -364,6 +364,33 @@ describe("parseFutureMarkdown — math", () => {
       { code: "x", type: "mathBlock" },
     ]);
   });
+
+  it("keeps money as text instead of turning the span between two `$` into math", () => {
+    // Prices are the reason: `$0.20/$0.60` used to swallow the whole sentence
+    // between the two dollar signs into a formula, which KaTeX renders as a
+    // run of raised glyphs.
+    expect(first("价格 $0.20/$0.60 与 $1,200。\n")).toMatchObject({
+      children: [text("价格 $0.20/$0.60 与 $1,200。")],
+    });
+    expect(first("合计 $10 到 $20\n")).toMatchObject({ children: [text("合计 $10 到 $20")] });
+    // A lone digit followed by prose stays text too, so emphasis inside the
+    // amount is still parsed by the ordinary emphasis pass.
+    expect(first("$10 买到的是**一份 $100 额度**\n")).toMatchObject({
+      children: [text("$10 买到的是"), { children: [text("一份 $100 额度")], type: "strong" }],
+    });
+    expect(first("合计 $5 首月优惠 与 $9 折扣\n")).toMatchObject({
+      children: [text("合计 $5 首月优惠 与 $9 折扣")],
+    });
+  });
+
+  it("still reads a formula whose body starts with a digit as math", () => {
+    expect(first("before $2^n$ after\n")).toMatchObject({
+      children: [text("before "), { code: "2^n", type: "mathInline" }, text(" after")],
+    });
+    expect(first("before $2\\pi$ after\n")).toMatchObject({
+      children: [text("before "), { code: "2\\pi", type: "mathInline" }, text(" after")],
+    });
+  });
 });
 
 describe("parseFutureMarkdown — $$ display blocks", () => {
