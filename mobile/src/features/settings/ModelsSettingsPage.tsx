@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react-native";
 import { Pressable, SectionList, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 import { useTranslation } from "react-i18next";
@@ -85,7 +85,14 @@ export function ModelsSettingsPage({ settings, disabled, onChange }: {
   const [pendingHidden, setPendingHidden] = useState<ReadonlySet<string> | null>(null);
   const hidden = pendingHidden
     ?? new Set<string>(settings?.hiddenModels ?? []);
-  useEffect(() => { setPendingHidden(null); }, [settings?.hiddenModels]);
+  // Adjust during render rather than in an effect: the overlay exists only
+  // until a snapshot that already carries the write arrives, and re-syncing it
+  // in an effect would paint one frame of the old value first.
+  const [seenSnapshot, setSeenSnapshot] = useState(settings?.hiddenModels);
+  if (seenSnapshot !== settings?.hiddenModels) {
+    setSeenSnapshot(settings?.hiddenModels);
+    if (pendingHidden !== null) setPendingHidden(null);
+  }
 
   const needle = query.trim().toLowerCase();
   const searching = needle.length > 0;
