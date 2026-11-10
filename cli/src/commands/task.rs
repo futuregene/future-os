@@ -1584,7 +1584,10 @@ fn wait_for_run(
                         out.log(s);
                     }
                     if let Some(e) = &run.error_message {
-                        out.log(&format!("error: {e}"));
+                        out.log(&format!(
+                            "error: {}",
+                            axi::clip(e, 400, "`future task show --json`")
+                        ));
                     }
                 }
                 return Ok(());
@@ -1666,7 +1669,13 @@ fn runs(args: &[String], out: &Output) -> Result<()> {
                 .as_deref()
                 .map(|reason| format!("[{reason}] "))
                 .unwrap_or_default(),
-            r.error_message.as_deref().unwrap_or("")
+            // One run's stored error can be hundreds of characters; the row is a
+            // summary, and `task shows <run-id>`/`--json` has the whole text.
+            axi::clip(
+                r.error_message.as_deref().unwrap_or(""),
+                120,
+                "`future task runs --json`"
+            )
         ));
     }
     Ok(())
