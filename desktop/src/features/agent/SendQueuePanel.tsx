@@ -129,7 +129,17 @@ export function SendQueuePanel({
               </span>
             )}
       </header>
-      <ol className="mt-1.5 space-y-1">
+      {/* The rows scroll inside the panel, not with the window.
+          This block floats over the conversation, so whatever it draws is taken
+          from the transcript underneath it — and it used to draw every waiting
+          row with no ceiling. A queue long enough to outgrow the window then had
+          its top rows clipped away by the frame's own `overflow-hidden`, which
+          is not merely unreadable: their edit and delete buttons could not be
+          hit at all (the Agent holds up to 128 rows for one conversation, see
+          `DEFAULT_SESSION_QUEUE_CAPACITY`). Capped here, the same rows are
+          reachable by scrolling the list. The list keeps at most 45% of the
+          window and never more than 26rem — past that the rows scroll. */}
+      <ol className="mt-1.5 max-h-[min(45vh,26rem)] space-y-1 overflow-y-auto overscroll-contain">
         {items.map((item, index) => {
           const editing = editingId === item.id;
           return (
