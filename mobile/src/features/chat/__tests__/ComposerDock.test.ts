@@ -24,7 +24,7 @@ jest.mock("react-native", () => {
   });
 });
 
-jest.mock("lucide-react-native", () => Object.fromEntries(["ArchiveRestore", "ArrowDown", "Check", "ChevronDown", "CircleAlert", "FileText", "Info", "Lightbulb", "ListPlus", "MessageCircle", "Paperclip", "Pencil", "Play", "RotateCcw", "Send", "Slash", "Square", "Trash2", "X", "Zap"].map(name => [name, () => null])));
+jest.mock("lucide-react-native", () => Object.fromEntries(["ArchiveRestore", "ArrowDown", "Check", "ChevronDown", "CircleAlert", "FileText", "Image", "Info", "Lightbulb", "ListPlus", "MessageCircle", "Paperclip", "Pencil", "Play", "Plus", "RotateCcw", "Send", "Slash", "Square", "Trash2", "X", "Zap"].map(name => [name, () => null])));
 // The composer takes `t` as a prop, but the details dialog and the surfaces
 // below it call `useTranslation` themselves. Standing up the real i18n module
 // would drag expo-localization into a component test; the translations are
@@ -993,6 +993,62 @@ test("a streaming draft's send slot asks the queue question, and both rows reach
   }
 });
 
+test("a reply in flight does not keep a photo out of the queue", () => {
+  // The paperclip used to lock while a reply streamed, from when a send during a
+  // run could only be a refusal. A send now goes into the session's queue, so
+  // the control that adds the files has to stay open with the rest of the
+  // composer — a text-only draft could be queued and a photo draft could not.
+  const openAttachmentMenu = jest.fn();
+  const send = jest.fn(async () => true);
+  const props = baseProps({
+    message: "",
+    send,
+    openAttachmentMenu,
+    attachments: [{
+      localUri: "file:///photo.jpg", name: "photo.jpg", kind: "image",
+      mimeType: "image/jpeg", originalSize: 100, transferSize: 100,
+    }],
+    remote: {
+      draft: false, selectedSessionId: "s1", desktopOnline: true,
+      connectionPresentation: { level: "connected" }, models: [], modelId: "model",
+      streaming: true, busy: false, abort: jest.fn(), capabilities: new Set(),
+      fileTransferSupported: true,
+    },
+  });
+  let tree!: ReactTestRenderer;
+  act(() => { tree = create(createElement(ComposerDock, props)); });
+  const pressable = (label: string) => tree.root.findAll(node =>
+    node.props.accessibilityLabel === label && typeof node.props.onPress === "function")[0];
+  try {
+    const paperclip = pressable("attachment.add")!;
+    expect(paperclip.props.disabled).toBe(false);
+    act(() => paperclip.props.onPress());
+    expect(openAttachmentMenu).toHaveBeenCalledTimes(1);
+
+    // The photo alone is a draft: the slot is the queue question, and handing it
+    // over names the busy policy exactly as a text draft does.
+    expect(pressable("chat.stop")).toBeUndefined();
+    act(() => pressable("chat.chooseSend")!.props.onPress());
+    act(() => tree.root.findByType(SendChoiceSheet).props.onSend());
+    expect(send).toHaveBeenCalledWith({ busyPolicy: "enqueue_coalescing" });
+
+    // The short send/upload phase still locks it: a second pick there would
+    // fight the submission already in flight.
+    act(() => { tree.update(createElement(ComposerDock, {
+      ...props, remote: { ...props.remote, busy: true },
+    })); });
+    expect(pressable("attachment.add")!.props.disabled).toBe(true);
+
+    // A host with no file transfer never offers the picker at all.
+    act(() => { tree.update(createElement(ComposerDock, {
+      ...props, remote: { ...props.remote, busy: false, fileTransferSupported: false },
+    })); });
+    expect(pressable("attachment.add")!.props.disabled).toBe(true);
+  } finally {
+    act(() => tree.unmount());
+  }
+});
+
 test("an interrupt whose send was refused leaves the run alone", async () => {
   // The draft is back in the field and the reader still has it: stopping the
   // reply on top of a message that never left costs them both.
@@ -1050,7 +1106,7 @@ test("the queue panel shows what is waiting and its three verbs reach the screen
   const { tree, unmount } = mountDock({
     message: "",
     queueItems: [
-      { attachmentCount: 0, content: "顺手把这个也改了", id: "run_a" },
+      { content: "顺手把这个也改了", id: "run_a" },
       { content: "", id: "run_b", parked: true },
     ],
     onQueueRemove,
@@ -1060,8 +1116,6 @@ test("the queue panel shows what is waiting and its three verbs reach the screen
   try {
     const panel = tree.root.findByType(SendQueuePanel);
     expect(panel.props.items.map((item: { id: string }) => item.id)).toEqual(["run_a", "run_b"]);
-    // The desktop's queue never says which files a waiting message carries.
-    expect(panel.props.attachmentsUnreported).toBe(true);
     act(() => panel.props.onUpdate("run_a", "改好了"));
     expect(onQueueUpdate).toHaveBeenCalledWith("run_a", "改好了");
     act(() => panel.props.onRemove("run_b"));
@@ -1069,6 +1123,70 @@ test("the queue panel shows what is waiting and its three verbs reach the screen
     // A parked row is the one the reader can start by hand.
     act(() => panel.props.onRelease("run_b"));
     expect(onQueueRelease).toHaveBeenCalledWith("run_b");
+  } finally {
+    unmount();
+  }
+});
+
+/**
+ * A waiting message's files are the row's, not a mystery: the panel draws them,
+ * opens one the way the transcript would, takes one off, and offers to add more.
+ * A desktop that does not report them gets no file controls (a removal there
+ * would drop files the phone cannot see).
+ */
+test("a waiting row's files can be opened, removed and added from the panel", () => {
+  const onQueuePreviewAttachment = jest.fn();
+  const onQueueRemoveAttachment = jest.fn();
+  const onQueueAddAttachments = jest.fn();
+  const photo = { kind: "image", name: "shot.png", path: "/Users/x/shot.png", size: 2048 };
+  const { tree, unmount } = mountDock({
+    message: "",
+    queueItems: [
+      { attachments: [photo], content: "看这张", id: "run_a" },
+      { content: "旧桌面", id: "run_b" },
+      { attachments: [], content: "只有文字", id: "run_c" },
+    ],
+    onQueueAddAttachments,
+    onQueuePreviewAttachment,
+    onQueueRemoveAttachment,
+  });
+  // Host elements only for counting: a Pressable's testID lands on its composite
+  // wrapper and its host node both, but only the wrapper carries `onPress`.
+  const host = (testID: string) => tree.root.findAll(
+    node => node.props.testID === testID && typeof node.type === "string",
+  );
+  const pressable = (testID: string) => tree.root.findAll(
+    node => node.props.testID === testID && typeof node.props.onPress === "function",
+  )[0]!;
+  try {
+    expect(host("send-queue-attachments")).toHaveLength(2);
+
+    const preview = pressable("send-queue-attachment-preview");
+    expect(preview.props.accessibilityLabel).toBe("chat.queue.previewAttachment");
+    act(() => preview.props.onPress());
+    expect(onQueuePreviewAttachment).toHaveBeenCalledWith(photo);
+
+    const remove = pressable("send-queue-attachment-remove");
+    act(() => remove.props.onPress());
+    expect(onQueueRemoveAttachment).toHaveBeenCalledWith("run_a", photo.path);
+
+    // Both a row with files and a text-only row offer the add control; the row
+    // whose desktop never reported its files does not.
+    expect(host("send-queue-attachment-add")).toHaveLength(2);
+    act(() => pressable("send-queue-attachment-add").props.onPress());
+    expect(onQueueAddAttachments).toHaveBeenCalledWith("run_a");
+
+    // The editor's file warning is about the unreported row only: the others can
+    // keep their files through a text edit.
+    const edits = tree.root.findAll(
+      node => node.props.testID === "send-queue-edit" && typeof node.props.onPress === "function",
+    );
+    act(() => edits[0]!.props.onPress());
+    expect(tree.root.findAll(node => node.props.children === "chat.queue.editDropsFiles")).toHaveLength(0);
+    act(() => edits[1]!.props.onPress());
+    expect(
+      tree.root.findAll(node => node.props.children === "chat.queue.editDropsFiles").length,
+    ).toBeGreaterThan(0);
   } finally {
     unmount();
   }

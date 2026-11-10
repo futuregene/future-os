@@ -1,9 +1,21 @@
-import { Check, Pencil, Play, Trash2 } from "lucide-react-native";
+import { Check, Image as ImageIcon, Paperclip, Pencil, Play, Plus, Trash2, X } from "lucide-react-native";
 import { useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { radius, spacing } from "../../../theme/tokens";
 import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
+import { formatBytes } from "../utils";
+
+/** One file a waiting message carries, as the panel draws it. */
+export interface SendQueueAttachmentItem {
+  /** The desktop path — the identity a removal addresses. */
+  path: string;
+  /** "image" | "file". */
+  kind: string;
+  name: string;
+  /** Byte size, or 0 when the desktop did not report one. */
+  size: number;
+}
 
 /**
  * One row of the panel: a message the session is holding behind its running turn.
@@ -16,14 +28,13 @@ export interface SendQueuePanelItem {
   /** The text as the session holds it (empty for an attachment-only message). */
   content: string;
   /**
-   * How many files travel with it — `undefined` when the queue that holds the row
-   * does not report it.
+   * The files the message carries.
    *
-   * A row read back from the session carries a message's text and its acceptance
-   * time, never the uploads it was sent with, so there is no number to show; the
-   * absence is spelled as absence rather than as a zero nobody measured.
+   * `undefined` means this row's queue did not report them (a desktop older than
+   * the field): the panel then says so in the editor and offers no file controls
+   * rather than guessing at a count or silently dropping what it cannot see.
    */
-  attachmentCount?: number;
+  attachments?: readonly SendQueueAttachmentItem[];
   /**
    * Parked by the session: it waited too long to run by itself and now starts
    * only when the reader says so. Absent means "runs at the next turn boundary".
@@ -35,8 +46,9 @@ export interface SendQueuePanelItem {
  * The send queue, above the box that filled it.
  *
  * A queued message is not yet gone, so this is the one place to read it, fix a
- * typo or take it back before the run it waits for ends. It disappears the moment
- * the queue empties, because an empty panel would only take space.
+ * typo, open a photo it carries or take one off before the run it waits for ends.
+ * It disappears the moment the queue empties, because an empty panel would only
+ * take space.
  *
  * The rows are the conversation's, not this phone's: the same list the desktop's
  * own window shows, because both read it from the session that holds it. That is
@@ -44,24 +56,25 @@ export interface SendQueuePanelItem {
  * new words" — there is no local record here to rename.
  */
 export function SendQueuePanel({
-  attachmentsUnreported,
   items,
+  onAddAttachments,
+  onPreviewAttachment,
   onRelease,
   onRemove,
+  onRemoveAttachment,
   onUpdate,
 }: {
-  /**
-   * The queue behind these rows does not say which files a message carries, so
-   * an edit — a removal and a re-send, the only kind there is — sends the new
-   * text and leaves those files behind. Said in the editor, where the reader is
-   * about to make that trade.
-   */
-  attachmentsUnreported?: boolean;
   items: readonly SendQueuePanelItem[];
   /** Start a parked row now. Offered only when the session can park one. */
   onRelease?: (id: string) => void;
   onRemove: (id: string) => void;
   onUpdate: (id: string, content: string) => void;
+  /** Open one file of a waiting message, exactly as the transcript would. */
+  onPreviewAttachment?: (attachment: SendQueueAttachmentItem) => void;
+  /** Take one file off a waiting message (the rest are re-sent with it). */
+  onRemoveAttachment?: (id: string, path: string) => void;
+  /** Add photos/files to a waiting message before it leaves. */
+  onAddAttachments?: (id: string) => void;
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -100,7 +113,7 @@ export function SendQueuePanel({
             {editing
               ? (
                   <View style={styles.editArea}>
-                    {attachmentsUnreported ? (
+                    {item.attachments === undefined ? (
                       <Text style={styles.editNote}>{t("chat.queue.editDropsFiles")}</Text>
                     ) : null}
                     <TextInput
@@ -144,10 +157,59 @@ export function SendQueuePanel({
                             </Text>
                           )
                         : <Text style={styles.attachmentsOnly}>{t("chat.queue.attachmentsOnly")}</Text>}
-                      {item.attachmentCount !== undefined && item.attachmentCount > 0 && (
-                        <Text style={styles.attachments}>
-                          {t("chat.queue.attachments", { count: item.attachmentCount })}
-                        </Text>
+                      {(item.attachments && item.attachments.length > 0
+                        || (onAddAttachments && item.attachments !== undefined)) && (
+                        <View style={styles.chips} testID="send-queue-attachments">
+                          {(item.attachments ?? []).map(attachment => (
+                            <View key={attachment.path} style={styles.chip}>
+                              <Pressable
+                                accessibilityLabel={t("chat.queue.previewAttachment", {
+                                  name: attachment.name,
+                                })}
+                                accessibilityRole="button"
+                                disabled={!onPreviewAttachment}
+                                onPress={() => onPreviewAttachment?.(attachment)}
+                                style={({ pressed }) => [styles.chipBody, pressed && styles.rowPressed]}
+                                testID="send-queue-attachment-preview"
+                              >
+                                {attachment.kind === "image"
+                                  ? <ImageIcon color={colors.inkMuted} size={11} />
+                                  : <Paperclip color={colors.inkMuted} size={11} />}
+                                <Text numberOfLines={1} style={styles.chipName}>
+                                  {attachment.name}
+                                </Text>
+                                {attachment.size > 0 && (
+                                  <Text style={styles.chipSize}>{formatBytes(attachment.size)}</Text>
+                                )}
+                              </Pressable>
+                              {onRemoveAttachment && (
+                                <Pressable
+                                  accessibilityLabel={t("chat.queue.removeAttachment", {
+                                    name: attachment.name,
+                                  })}
+                                  accessibilityRole="button"
+                                  hitSlop={6}
+                                  onPress={() => onRemoveAttachment(item.id, attachment.path)}
+                                  style={({ pressed }) => [styles.chipRemove, pressed && styles.rowPressed]}
+                                  testID="send-queue-attachment-remove"
+                                >
+                                  <X color={colors.inkMuted} size={10} />
+                                </Pressable>
+                              )}
+                            </View>
+                          ))}
+                          {onAddAttachments && (
+                            <Pressable
+                              accessibilityLabel={t("chat.queue.addAttachment")}
+                              accessibilityRole="button"
+                              onPress={() => onAddAttachments(item.id)}
+                              style={({ pressed }) => [styles.chipAdd, pressed && styles.rowPressed]}
+                              testID="send-queue-attachment-add"
+                            >
+                              <Plus color={colors.accent} size={11} />
+                            </Pressable>
+                          )}
+                        </View>
                       )}
                       {item.parked && onRelease
                         ? (
@@ -264,10 +326,50 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     fontSize: theme.font(12),
     fontStyle: "italic",
   },
-  attachments: {
-    marginTop: 1,
-    color: theme.colors.inkMuted,
+  chips: {
+    marginTop: 2,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: spacing.xs,
+  },
+  chip: {
+    maxWidth: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    borderRadius: radius.sm,
+    backgroundColor: theme.colors.surfaceSubtle,
+  },
+  chipBody: {
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    paddingLeft: spacing.xs,
+    paddingVertical: 2,
+  },
+  chipName: {
+    flexShrink: 1,
+    color: theme.colors.ink,
     fontSize: theme.font(11),
+  },
+  chipSize: {
+    color: theme.colors.inkMuted,
+    fontSize: theme.font(10),
+    fontVariant: ["tabular-nums"],
+  },
+  chipRemove: {
+    paddingHorizontal: 3,
+    paddingVertical: 3,
+  },
+  chipAdd: {
+    width: 22,
+    height: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.line,
   },
   release: {
     marginTop: 2,

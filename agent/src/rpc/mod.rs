@@ -610,6 +610,7 @@ fn get_state_internal(
                 queue_position: index + 1,
                 accepted_at: run.accepted_at,
                 display_text,
+                attachments: queued_attachments(&run.payload),
             }
         })
         .collect::<Vec<_>>();
@@ -740,6 +741,49 @@ fn get_state_internal(
     })
     .unwrap_or_default();
     Some(payload)
+}
+
+/// The files one queued prompt carries, as the queue reports them.
+///
+/// The payload is the frozen command the run was accepted with, so its
+/// `attachments` are the same paths the run will read when its turn comes. The
+/// size is measured here rather than carried in the payload (nothing needs it
+/// until a client draws the row), and an unreadable file is reported with 0
+/// instead of dropping the row's whole attachment list.
+fn queued_attachments(payload: &serde_json::Value) -> Vec<payloads::QueuedRunAttachment> {
+    payload
+        .get("attachments")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let path = item
+                        .get("path")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|path| !path.is_empty())?
+                        .to_string();
+                    let size = std::fs::metadata(&path)
+                        .map(|metadata| metadata.len())
+                        .unwrap_or(0);
+                    Some(payloads::QueuedRunAttachment {
+                        kind: item
+                            .get("kind")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        name: item
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        size,
+                        path,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The file path a tool call operates on: the first of `path` / `file_path` /

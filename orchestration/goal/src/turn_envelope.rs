@@ -31,6 +31,19 @@ pub const TURN_ENVELOPE_SCHEMA_VERSION: &str = "future_goal_turn_envelope_v0";
 const GOAL_MEMORY_SEMANTIC_EVENTS: usize = 5;
 /// Cap the failure-cause text so a runaway error never bloats the prompt.
 const GOAL_MEMORY_ERROR_CHARS: usize = 200;
+
+/// The failure-cause line for the envelope. A runaway narration error is capped,
+/// but an acceptance rejection is NOT: it is a short machine-written string whose
+/// point is the trailing `(missing: [...])` (or the "truncated before acceptance"
+/// byte offsets), and a 200-char cap cut a four-token list down to
+/// `(missing: [dispatches_…` — the worker read a fragment and re-guessed.
+fn failure_cause_text(error: &str) -> String {
+    if error.contains("acceptance contract unmet") {
+        error.to_string()
+    } else {
+        truncate(error, GOAL_MEMORY_ERROR_CHARS)
+    }
+}
 /// Summary byte budget shared across all upstream sources. Source index entries
 /// are retained separately, even when a wide fan-in exhausts summary space.
 const UPSTREAM_EVIDENCE_CHARS: usize = 1_200;
@@ -66,7 +79,7 @@ pub fn compose_goal_memory(goal: &Goal, todo: &Todo) -> String {
             failure_label(last)
         );
         if let Some(err) = &last.error {
-            line.push_str(&format!(": {}", truncate(err, GOAL_MEMORY_ERROR_CHARS)));
+            line.push_str(&format!(": {}", failure_cause_text(err)));
         } else if let Some(v) = &last.validation {
             if !v.ok {
                 line.push_str(&format!(
@@ -183,6 +196,14 @@ pub fn compose_turn_envelope(goal: &Goal, todo: &Todo, prev: Option<&RunRecord>)
     if let Some(acceptance) = &todo.acceptance {
         out.push_str(&format!(
             "Acceptance contract (do not silently weaken): {acceptance}\n"
+        ));
+        // Only the tail of the completion text is judged (see
+        // `completion::EVIDENCE_TAIL_BYTES`), so an acceptance line written
+        // earlier in the reply is invisible to the gate — say so BEFORE the
+        // attempt instead of rejecting it afterwards.
+        out.push_str(&format!(
+            "The final section of your completion must contain each of those strings verbatim — they must land inside the last {} bytes of your reply, which is all the acceptance gate reads.\n",
+            crate::completion::EVIDENCE_TAIL_BYTES
         ));
     }
     if let Some(validator) = &todo.validator {
@@ -308,6 +329,54 @@ mod tests {
             "completion contract footer present"
         );
         assert!(msg.contains("objective: Ship the thing"));
+    }
+
+    /// B: the acceptance rejection must reach the worker WHOLE. A four-token
+    /// list used to be cut at 200 chars to `(missing: [dequant_gemm_small_n,
+    /// matmul2d_int4…`, so the worker read a fragment of its own contract.
+    /// C: the envelope must also say the literal has to sit in the judged tail
+    /// BEFORE the attempt, not explain it after a rejection.
+    #[test]
+    fn acceptance_rejection_arrives_whole_and_the_tail_window_is_stated_up_front() {
+        use crate::state::{FailureKind, RunRecord};
+        let mut g = Goal::new("g", "o", "/tmp");
+        let mut todo = Todo::advancement("T1", "Work");
+        todo.acceptance = Some(
+            "dequant_gemm_small_n,matmul2d_int4b_executed,mlx_comparison,lever_status_updated"
+                .into(),
+        );
+        g.add(todo);
+        let rejection = "todo T1 acceptance contract unmet: evidence must contain [dequant_gemm_small_n,matmul2d_int4b_executed,mlx_comparison,lever_status_updated] (missing: [dequant_gemm_small_n, matmul2d_int4b_executed, mlx_comparison, lever_status_updated]); repair the handoff, not the criteria";
+        g.history.push(RunRecord {
+            agent_id: None,
+            turn: 1,
+            todo_id: "T1".to_string(),
+            run_id: "run-1".to_string(),
+            terminal_state: "completed".to_string(),
+            error: Some(rejection.to_string()),
+            tokens_in_delta: 0,
+            tokens_out_delta: 0,
+            cost_delta: 0.0,
+            tools: vec![],
+            evidence: "prose".to_string(),
+            recorded_at: 0,
+            spend_source: Some("run".to_string()),
+            failure_kind: Some(FailureKind::HardError),
+            validation: None,
+            truncation: None,
+        });
+
+        let msg = compose_turn_message(&g, g.todo("T1").unwrap(), None);
+        assert!(
+            msg.contains(
+                "(missing: [dequant_gemm_small_n, matmul2d_int4b_executed, mlx_comparison, lever_status_updated])"
+            ),
+            "the missing list must arrive complete: {msg}"
+        );
+        assert!(
+            msg.contains("must land inside the last 4000 bytes"),
+            "the judged window is stated before the attempt: {msg}"
+        );
     }
 
     #[test]

@@ -138,6 +138,16 @@ fn queued_run_to_proto(run: &crate::payloads::QueuedRunState) -> proto::QueuedRu
         queue_position: run.queue_position as i32,
         accepted_at: run.accepted_at.clone(),
         display_text: run.display_text.clone(),
+        attachments: run
+            .attachments
+            .iter()
+            .map(|attachment| proto::QueuedRunAttachment {
+                path: attachment.path.clone(),
+                kind: attachment.kind.clone(),
+                name: attachment.name.clone(),
+                size: attachment.size as i64,
+            })
+            .collect(),
     }
 }
 

@@ -13,22 +13,28 @@ import { useAgentThreadState } from "./useAgentThreadState";
  */
 const storage = vi.hoisted(() => ({
   abortRun: vi.fn(async () => {}),
+  createRun: vi.fn(),
   getLatestRun: vi.fn(),
   getRun: vi.fn(),
   getSessionEntriesPage: vi.fn(),
+  listRunEventsBulk: vi.fn(async () => []),
+  listRunEventsSince: vi.fn(async () => []),
 }));
 vi.mock("../../integrations/storage/threadStore", async original => ({
   ...await original<typeof import("../../integrations/storage/threadStore")>(),
   ...storage,
   listRunEventsBulk: vi.fn(async () => []),
 }));
-vi.mock("../../integrations/agent/agentClient", () => ({
-  sendPromptToFutureAgent: vi.fn(async () => {}),
+const agentClient = vi.hoisted(() => ({
+  // A send that never answers: the pipeline keeps its streaming bubble, which is
+  // the state "a reply is still being written" that the stop path reads.
+  sendPromptToFutureAgent: vi.fn(() => new Promise(() => {})),
 }));
+vi.mock("../../integrations/agent/agentClient", () => agentClient);
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 vi.mock("./threadAttachments", () => ({
   finalizeTemporaryAttachmentSources: vi.fn(async () => {}),
-  persistImageAttachments: vi.fn(async () => []),
+  persistImageAttachments: vi.fn(async () => ({ attachments: [], temporarySources: [], unpersisted: [] })),
 }));
 vi.mock("./buildReferencePrompt", () => ({ buildReferenceContext: vi.fn(async () => "") }));
 
@@ -44,6 +50,7 @@ beforeEach(() => {
   storage.getSessionEntriesPage.mockResolvedValue({ entries: [], hasMore: false, nextOffset: 0 });
   storage.getLatestRun.mockResolvedValue(null);
   storage.getRun.mockResolvedValue(null);
+  storage.createRun.mockResolvedValue(runningRun);
 });
 
 afterEach(() => {
@@ -86,6 +93,51 @@ describe("useAgentThreadState abort", () => {
     expect(storage.getLatestRun).toHaveBeenCalledWith("T1");
     // The refresh re-reads the run so the view can settle its bubble.
     expect(activity).toHaveBeenCalledTimes(1);
+    harness.unmount();
+  });
+
+  it("stops the reply that is streaming, not the message waiting in the queue", async () => {
+    // Regression for 2026-11-09. A reply (R9) is streaming; the reader then
+    // writes a message, which the Agent holds QUEUED and which becomes the
+    // newest local row. Pressing stop must name R9 - it used to name the queued
+    // row (newer, and not settled), the Agent answered "not started", and the
+    // stop silently became "removed from the send queue": four presses, and the
+    // reply kept billing.
+    //
+    // Reverting `activeRunIdOf`'s `status !== "queued"` makes this test stop Q1
+    // instead, and go red.
+    storage.getLatestRun.mockResolvedValue(runningRun);
+    const { harness, settled } = mountState();
+    await settled();
+
+    // The reply is mid-stream: the pipeline painted its bubble and is still
+    // waiting for the Agent.
+    await act(async () => {
+      void harness.current.handleSend({ attachments: [], content: "keep going" });
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    const streaming = harness.current.messages.filter(message => message.role === "assistant" && message.status === "streaming");
+    expect(streaming.map(message => message.runId)).toEqual(["R9"]);
+
+    // The message written while the reply streamed lands in the Agent's queue,
+    // so it is now the conversation's newest run row - and the view's own
+    // periodic refresh is what brings that row in.
+    const queuedRun = { id: "Q1", startedAt: 2, status: "queued", threadId: "T1" } as StoredRun;
+    storage.getLatestRun.mockResolvedValue(queuedRun);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31_000);
+    });
+    expect(storage.getLatestRun).toHaveBeenCalled();
+
+    await act(async () => {
+      await harness.current.handleAbort();
+    });
+
+    expect(storage.abortRun).toHaveBeenCalledTimes(1);
+    expect(storage.abortRun).toHaveBeenCalledWith({ runId: "R9", threadId: "T1" });
+    // The waiting message is not what a stop is for: taking it back is the
+    // queue panel's own action, and the host refuses an abort that names it.
+    expect(storage.abortRun).not.toHaveBeenCalledWith({ runId: "Q1", threadId: "T1" });
     harness.unmount();
   });
 

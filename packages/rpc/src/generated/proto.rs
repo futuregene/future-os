@@ -1305,6 +1305,26 @@ pub struct QueuedRunState {
     /// The user's prompt text, for queue display.
     #[prost(string, tag = "7")]
     pub display_text: ::prost::alloc::string::String,
+    /// The files the prompt carries. A waiting message is still editable, and a
+    /// reader cannot take a photo off a queue it cannot see.
+    #[prost(message, repeated, tag = "8")]
+    pub attachments: ::prost::alloc::vec::Vec<QueuedRunAttachment>,
+}
+/// One file a queued prompt carries.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct QueuedRunAttachment {
+    /// The desktop path the file already has — the same shape the transcript's
+    /// attachments report, so a paired client reads it with the same download.
+    #[prost(string, tag = "1")]
+    pub path: ::prost::alloc::string::String,
+    /// "image" | "file".
+    #[prost(string, tag = "2")]
+    pub kind: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub name: ::prost::alloc::string::String,
+    /// Byte size on disk, or 0 when it could not be read.
+    #[prost(int64, tag = "4")]
+    pub size: i64,
 }
 /// Canonical durable outcome of one requested run; independent of storage.
 #[derive(Clone, PartialEq, ::prost::Message)]
