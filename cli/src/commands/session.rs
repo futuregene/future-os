@@ -14,7 +14,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const SESSION_HELP: &str = "future session — manage agent sessions
 
 Usage:
-  future session list [--parent <id>] [--json]        List all sessions
+  future session                                    Sessions at a glance
+  future session list [--parent <id>] [--json|--format text|json|toon]
+                                                    List all sessions
   future session new [options]                       Create a session
   future session set <id> [options]                  Change settings on an existing session
   future session info <id> [--json]                  Show session details + stats
@@ -143,7 +145,7 @@ fn ago(iso: &str, now_ms: i64) -> String {
     relative_age(parse_timestamp_ms(iso), now_ms)
 }
 
-pub(super) fn relative_age(updated_ms: i64, now_ms: i64) -> String {
+pub(crate) fn relative_age(updated_ms: i64, now_ms: i64) -> String {
     let ms = now_ms - updated_ms;
     let mins = ms / 60_000;
     if mins < 1 {
@@ -188,8 +190,48 @@ pub(super) fn now_ms() -> i64 {
 
 // ─── List ─────────────────────────────────────────────────────────────────
 
+/// Usage line shared by the value errors below, so a refusal always says how to
+/// use the command.
+const LIST_USAGE: &str =
+    "Usage: future session list [--parent <session-id>] [--json|--format text|json|toon]";
+
+/// `future session list` — parse the (small) flag surface, then render.
+///
+/// Every flag is declared to [`crate::flags::parse_flags`], so an invented one is
+/// refused with exit code 2 instead of being ignored while the command prints a
+/// plausible list. `--help` wins over everything, like every other subcommand.
+async fn session_list(args: &[String], out: &Output) -> Result<(), String> {
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        out.log(LIST_HELP);
+        return Ok(());
+    }
+    let flags = crate::flags::parse_flags(args, &["--parent", "--format"], &[], &["--json"])
+        .map_err(|error| crate::axi::usage(out, &error, LIST_USAGE))?;
+    if let Some(extra) = flags.positional.first() {
+        return Err(crate::axi::usage(
+            out,
+            &format!("unexpected argument: {extra}"),
+            LIST_USAGE,
+        ));
+    }
+    let format = crate::axi::Format::resolve(&flags, crate::axi::Format::Text)
+        .map_err(|error| crate::axi::usage(out, &error, LIST_USAGE))?;
+    if flags.value("--parent") == Some("") {
+        return Err(crate::axi::usage(
+            out,
+            "--parent needs a session id",
+            LIST_USAGE,
+        ));
+    }
+    list_sessions(format, flags.value("--parent"), out).await
+}
+
 /// `listSessions(jsonFlag)`.
-async fn list_sessions(json_flag: bool, parent: Option<&str>, out: &Output) -> Result<(), String> {
+async fn list_sessions(
+    format: crate::axi::Format,
+    parent: Option<&str>,
+    out: &Output,
+) -> Result<(), String> {
     let client = RunClient::new(&grpc_addr());
     // Not wrapped in try/catch — errors propagate to main().catch.
     let data = client.list_sessions().await?;
@@ -208,16 +250,24 @@ async fn list_sessions(json_flag: bool, parent: Option<&str>, out: &Output) -> R
             .collect(),
         None => sessions,
     };
-    if json_flag {
+    if format == crate::axi::Format::Json {
         // Serializing plain JSON values is infallible.
         out.log(&serde_json::to_string_pretty(&json_value(&sessions)).expect("json serializes"));
         return Ok(());
     }
 
     if sessions.is_empty() {
-        match parent {
-            Some(parent) => out.log(&format!("No sessions found under {parent}.")),
-            None => out.log("No sessions found."),
+        // A definitive empty state: "no output" and "the command failed" must
+        // not look alike to a reader that cannot ask a follow-up question.
+        let message = match parent {
+            Some(parent) => format!("No sessions found under {parent}."),
+            None => "No sessions found.".to_string(),
+        };
+        if format == crate::axi::Format::Toon {
+            out.log(&crate::axi::toon_rows("sessions", SESSION_FIELDS, &[]));
+        } else {
+            crate::axi::empty_state(out, &message);
+            session_hints(out);
         }
         return Ok(());
     }
@@ -225,6 +275,28 @@ async fn list_sessions(json_flag: bool, parent: Option<&str>, out: &Output) -> R
     let mut sessions = sessions;
     sessions.sort_by_key(|s| std::cmp::Reverse(s["updatedAtMs"].as_i64().unwrap_or(0)));
 
+    let rows: Vec<SessionRow> = sessions.iter().map(session_row).collect();
+
+    if format == crate::axi::Format::Toon {
+        // Principle 1 + 2: the fields an agent needs to pick a session, in TOON.
+        let rows: Vec<Vec<String>> = rows
+            .iter()
+            .map(|row| {
+                vec![
+                    row.id.clone(),
+                    row.title.clone(),
+                    row.updated.clone(),
+                    row.model.clone(),
+                    row.queries.clone(),
+                ]
+            })
+            .collect();
+        out.log(&crate::axi::toon_rows("sessions", SESSION_FIELDS, &rows));
+        return Ok(());
+    }
+
+    // Principle 4: the aggregate the caller would otherwise compute by counting.
+    crate::axi::count_line(out, "", rows.len());
     // Header.
     out.log(&format!(
         "  {} {} {} {} QUERIES",
@@ -241,49 +313,81 @@ async fn list_sessions(json_flag: bool, parent: Option<&str>, out: &Output) -> R
         "—".repeat(28)
     ));
 
-    for s in &sessions {
-        let session_name = s.get("sessionName").and_then(Value::as_str).unwrap_or("");
-        let first_message = s.get("firstMessage").and_then(Value::as_str).unwrap_or("");
-        // `s.session_name || s.first_message ? truncate(...) : "(untitled)"`
-        let title = if !session_name.is_empty() || !first_message.is_empty() {
-            truncate(
-                if !session_name.is_empty() {
-                    session_name
-                } else {
-                    first_message
-                },
-                42,
-            )
-        } else {
-            "(untitled)".to_string()
-        };
-        // `s.model.length > 28 ? s.model.slice(0, 27) + "…" : s.model`
-        let model_raw = s.get("model").and_then(Value::as_str).unwrap_or("");
-        let model = if model_raw.chars().count() > 28 {
-            let mut m: String = model_raw.chars().take(27).collect();
-            m.push('…');
-            m
-        } else {
-            model_raw.to_string()
-        };
-        // `s.query_count ? \`${s.query_count}\` : "—"`
-        let q = match s.get("queryCount").and_then(Value::as_i64) {
-            Some(n) if n != 0 => n.to_string(),
-            _ => "—".to_string(),
-        };
-        let id = s.get("id").and_then(Value::as_str).unwrap_or("");
-        let updated = s["updatedAtMs"].as_i64().unwrap_or(0);
+    for row in &rows {
+        // The table is a fixed-width view, so it cuts what does not fit; the
+        // data formats above print the whole value, which is where an agent
+        // reads a title or a model id in full.
         out.log(&format!(
             "  {} {} {} {} {}",
-            pad_end(id, 24),
-            pad_end(&title, 38),
-            pad_end(&relative_age(updated, now_ms()), 10),
-            pad_end(&model, 28),
-            q
+            pad_end(&row.id, 24),
+            pad_end(&truncate(&row.title, 42), 38),
+            pad_end(&row.updated, 10),
+            pad_end(&truncate(&row.model, 28), 28),
+            row.queries
         ));
     }
-    out.log(&format!("\n{} sessions.", sessions.len()));
+    session_hints(out);
     Ok(())
+}
+
+/// The fields `--format toon` reports — kept to what picking a session needs
+/// (principle 2: a default schema of a few fields, not the whole record).
+const SESSION_FIELDS: &[&str] = &["id", "title", "updated", "model", "queries"];
+
+/// One rendered row, shared by the table and the TOON view so the two can never
+/// disagree about the same session.
+struct SessionRow {
+    id: String,
+    title: String,
+    updated: String,
+    model: String,
+    queries: String,
+}
+
+fn session_row(s: &Value) -> SessionRow {
+    let session_name = s.get("sessionName").and_then(Value::as_str).unwrap_or("");
+    let first_message = s.get("firstMessage").and_then(Value::as_str).unwrap_or("");
+    // `s.session_name || s.first_message ? truncate(...) : "(untitled)"` — the
+    // full text is kept here; the table truncates when it renders, so a data
+    // format never receives a title that was cut for column alignment.
+    let title = if !session_name.is_empty() {
+        session_name.to_string()
+    } else if !first_message.is_empty() {
+        first_message.to_string()
+    } else {
+        "(untitled)".to_string()
+    };
+    let queries = match s.get("queryCount").and_then(Value::as_i64) {
+        Some(n) if n != 0 => n.to_string(),
+        _ => "—".to_string(),
+    };
+    SessionRow {
+        id: s
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        title,
+        updated: relative_age(s["updatedAtMs"].as_i64().unwrap_or(0), now_ms()),
+        model: s
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        queries,
+    }
+}
+
+/// Principle 9: after the list, the concrete commands that continue from it.
+fn session_hints(out: &Output) {
+    crate::axi::hints(
+        out,
+        &[
+            "Run `future session info <id>` for one session's details.",
+            "Run `future session transcript --session <id>` to read a conversation.",
+            "Run `future session list --parent <id>` for the sessions it created.",
+        ],
+    );
 }
 
 /// `s.padEnd(n)`.
@@ -897,7 +1001,7 @@ it.";
 pub const LIST_HELP: &str = "future session list — list sessions
 
 Usage:
-  future session list [--parent <session-id>] [--json]
+  future session list [--parent <session-id>] [--json|--format text|json|toon]
 
 Options:
   --parent <session-id>  Only the sessions whose recorded parent is this one —
@@ -906,7 +1010,12 @@ Options:
                          status` reports, so a later
                          `session set <id> --parent` moves a session between
                          lists.
-  --json                 Machine-readable output.
+  --json                 The full record per session, as a JSON document.
+  --format toon          The same rows in TOON: one declared header, no braces,
+                         quotes or repeated keys. The form an agent should read
+                         — roughly 40% fewer tokens than the JSON.
+  --format text          The default: a count, one line per session, and the
+                         commands that continue from here.
   -h, --help             Show this help";
 
 // ─── Fork / clone / title / export ───────────────────────────────────────
@@ -1444,10 +1553,11 @@ pub async fn session(
     args: &[String],
     out: &Output,
 ) -> Result<(), String> {
-    // `if (subcommand === "--help" || subcommand === "-h" || !subcommand)`
+    // Bare `future session` shows the live list rather than the help screen
+    // (AXI principle 8): the help is one flag away, and an agent that typed the
+    // group name alone wants to know what conversations exist.
     let Some(subcommand) = subcommand else {
-        help(out);
-        return Ok(());
+        return session_list(&[], out).await;
     };
     if subcommand == "--help" || subcommand == "-h" {
         help(out);
@@ -1512,37 +1622,7 @@ pub async fn session(
     }
 
     if subcommand == "list" {
-        // `--parent` narrows the list to one session's children, so an agent can
-        // see what it already started without filtering the whole list itself.
-        let mut json_flag = false;
-        let mut parent: Option<String> = None;
-        let mut index = 0;
-        while index < args.len() {
-            match args[index].as_str() {
-                "--json" => {
-                    json_flag = true;
-                    index += 1;
-                }
-                "--parent" => {
-                    let Some(value) = args.get(index + 1).filter(|v| !v.starts_with("--")) else {
-                        out.log_err("Missing value for --parent");
-                        return Err(crate::HANDLED_EXIT.to_string());
-                    };
-                    parent = Some(value.clone());
-                    index += 2;
-                }
-                "--help" | "-h" => {
-                    out.log(LIST_HELP);
-                    return Ok(());
-                }
-                other => {
-                    out.log_err(&format!("Unknown option: {other}"));
-                    return Err(crate::HANDLED_EXIT.to_string());
-                }
-            }
-        }
-        list_sessions(json_flag, parent.as_deref(), out).await?;
-        return Ok(());
+        return session_list(args, out).await;
     }
 
     // `set` takes its options after the target id, so it does its own argument
@@ -1711,7 +1791,7 @@ mod tests {
             std::ffi::OsString::from("127.0.0.1:1"),
         )]);
         let (out, cap) = Output::memory();
-        let result = list_sessions(false, None, &out).await;
+        let result = list_sessions(crate::axi::Format::Text, None, &out).await;
         assert!(result.is_err());
         assert_eq!(
             String::from_utf8(cap.out.lock().unwrap().clone()).unwrap(),
@@ -1883,7 +1963,11 @@ mod tests {
             .await
             .expect("list --parent");
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
-        assert_eq!(stdout, "No sessions found under lonely.\n");
+        assert!(
+            stdout.starts_with("count: 0\nNo sessions found under lonely.\n"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("help["), "{stdout}");
     }
 
     #[tokio::test]
@@ -1894,7 +1978,10 @@ mod tests {
         let (out, cap) = Output::memory();
         session(Some("list"), &[], &out).await.expect("list");
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
-        assert_eq!(stdout, "No sessions found.\n");
+        assert!(
+            stdout.starts_with("count: 0\nNo sessions found.\n"),
+            "{stdout}"
+        );
     }
 
     #[tokio::test]
@@ -1943,12 +2030,74 @@ mod tests {
             stdout.contains(&format!("{}…", "a".repeat(27))),
             "stdout: {stdout}"
         );
-        assert!(stdout.ends_with("\n3 sessions.\n"), "stdout: {stdout}");
+        // Principle 4: the count is stated up front, and principle 9 follows
+        // the rows with the commands that continue from here.
+        assert!(stdout.starts_with("count: 3\n"), "stdout: {stdout}");
+        assert!(stdout.contains("\nhelp[3]:\n"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("Run `future session info <id>`"),
+            "stdout: {stdout}"
+        );
         // A row with a real query count renders the number (single line: a
         // short-circuit chain split across lines leaves the tail uncovered).
         let has_three =
             stdout.contains(" 3\n") || stdout.contains(" 3 \n") || stdout.contains("3\n");
         assert!(has_three, "stdout: {stdout}");
+    }
+
+    /// `--format toon` is the compact form an agent reads: one declared block,
+    /// no braces, no repeated keys, and no prose — the same rows as the table.
+    #[tokio::test]
+    async fn list_toon_declares_its_fields_once() {
+        let _guard = crate::test_env::lock_env().await;
+        let body = "{\"sessions\":[\
+            {\"id\":\"s1\",\"sessionName\":\"one\",\"model\":\"m\",\"queryCount\":2,\"updatedAtMs\":3000},\
+            {\"id\":\"s2\",\"firstMessage\":\"two, with a comma\",\"updatedAtMs\":2000}]}";
+        let agent = crate::test_server::MockAgent::respond("list_sessions", body);
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        session(Some("list"), &["--format".into(), "toon".into()], &out)
+            .await
+            .expect("list --format toon");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let mut lines = stdout.lines();
+        assert_eq!(
+            lines.next(),
+            Some("sessions[2]{id,title,updated,model,queries}:")
+        );
+        assert!(
+            lines.next().unwrap_or_default().starts_with(" s1,one,"),
+            "{stdout}"
+        );
+        // A value with a comma keeps its comma and is quoted, so the row still
+        // parses: `s2,"two, with a comma",...,—` .
+        assert!(stdout.contains("\"two, with a comma\""), "stdout: {stdout}");
+        // Data only: no count line, no help block.
+        assert!(!stdout.contains("help["), "stdout: {stdout}");
+        assert!(!stdout.contains("count:"), "stdout: {stdout}");
+    }
+
+    /// `--json` stays byte-identical to what it always printed, so an existing
+    /// script keeps working while `--format toon` is opt-in.
+    #[tokio::test]
+    async fn list_json_is_unaffected_by_the_new_format_flag() {
+        let _guard = crate::test_env::lock_env().await;
+        let agent = crate::test_server::MockAgent::respond(
+            "list_sessions",
+            "{\"sessions\":[{\"id\":\"s1\"}]}",
+        );
+        let (_agent, _env) = mock_env(agent).await;
+        let (bare, cap_bare) = Output::memory();
+        session(Some("list"), &["--json".into()], &bare)
+            .await
+            .expect("json");
+        let (spelled, cap_spelled) = Output::memory();
+        session(Some("list"), &["--format".into(), "json".into()], &spelled)
+            .await
+            .expect("format json");
+        let bare = String::from_utf8(cap_bare.out.lock().unwrap().clone()).unwrap();
+        let spelled = String::from_utf8(cap_spelled.out.lock().unwrap().clone()).unwrap();
+        assert_eq!(bare, spelled);
     }
 
     #[tokio::test]
@@ -2239,12 +2388,24 @@ mod tests {
         assert!(json_value(&[])["sessions"].as_array().unwrap().is_empty());
     }
 
+    /// Bare `future session` is content first (AXI principle 8): it shows the
+    /// live list, not the help screen, and reports a missing agent as a state
+    /// instead of printing help as though the group had no state at all.
     #[tokio::test]
-    async fn session_no_subcommand_prints_help() {
+    async fn session_no_subcommand_shows_the_live_list() {
+        let _guard = crate::test_env::lock_env().await;
+        let agent = crate::test_server::MockAgent::respond(
+            "list_sessions",
+            "{\"sessions\":[{\"id\":\"only\",\"sessionName\":\"one\",\"updatedAtMs\":3000}]}",
+        );
+        let (_agent, _env) = mock_env(agent).await;
         let (out, cap) = Output::memory();
         session(None, &[], &out).await.expect("ok");
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
-        assert_eq!(stdout, format!("{}\n", SESSION_HELP));
+        assert!(stdout.starts_with("count: 1\n"), "{stdout}");
+        assert!(stdout.contains("only"), "{stdout}");
+        assert!(stdout.contains("help["), "{stdout}");
+        assert_ne!(stdout, format!("{}\n", SESSION_HELP));
     }
 
     // ── `session set` ───────────────────────────────────────────────
@@ -3904,8 +4065,13 @@ mod tests {
         assert!(printed.contains("--parent"), "{printed}");
 
         // `--parent` with nothing after it, and `--parent` followed by another
-        // flag: the flag is not a session id.
-        for argv in [vec!["--parent"], vec!["--parent", "--json"]] {
+        // flag: the flag is not a session id. A usage error is exit 2, not 1 —
+        // "you asked wrong" is a different fact from "it did not work".
+        for argv in [
+            vec!["--parent"],
+            vec!["--parent", "--json"],
+            vec!["--parent", ""],
+        ] {
             let (out, cap) = Output::memory();
             let args: Vec<String> = argv.iter().map(|a| a.to_string()).collect();
             assert_eq!(
@@ -3913,17 +4079,30 @@ mod tests {
                 Err(crate::HANDLED_EXIT.to_string()),
                 "{argv:?}"
             );
+            assert_eq!(out.exit_code(), crate::axi::EXIT_USAGE, "{argv:?}");
             let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
-            assert_eq!(stderr, "Missing value for --parent\n", "{argv:?}");
+            assert!(stderr.contains("--parent"), "{argv:?}: {stderr}");
+            assert!(stderr.contains(LIST_USAGE), "{argv:?}: {stderr}");
         }
 
-        let (out, cap) = Output::memory();
-        assert_eq!(
-            session(Some("list"), &["--bogus".into()], &out).await,
-            Err(crate::HANDLED_EXIT.to_string())
-        );
-        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
-        assert_eq!(stderr, "Unknown option: --bogus\n");
+        // An invented flag is refused rather than ignored — the whole reason the
+        // parser is shared.
+        for argv in [
+            vec!["--bogus"],
+            vec!["--format", "yaml"],
+            vec!["--format", "toon", "--json"],
+        ] {
+            let (out, cap) = Output::memory();
+            let args: Vec<String> = argv.iter().map(|a| a.to_string()).collect();
+            assert_eq!(
+                session(Some("list"), &args, &out).await,
+                Err(crate::HANDLED_EXIT.to_string()),
+                "{argv:?}"
+            );
+            assert_eq!(out.exit_code(), crate::axi::EXIT_USAGE, "{argv:?}");
+            let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+            assert!(stderr.contains(LIST_USAGE), "{argv:?}: {stderr}");
+        }
     }
 
     /// A setting this build does not model is still printed by `session info` —

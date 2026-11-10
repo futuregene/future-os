@@ -6,6 +6,7 @@
 //! command never executes a run itself; `future task run` queues a request
 //! that the desktop (or headless desktop) consumes.
 
+use crate::axi;
 use crate::help;
 use crate::output::Output;
 use future_tasks::{RunStatus, Store, Task};
@@ -16,7 +17,10 @@ type Result<T> = std::result::Result<T, String>;
 /// `future task <command> [args]`.
 pub async fn task(command: Option<&str>, rest: &[String], out: &Output) -> Result<()> {
     match command {
-        None | Some("--help" | "-h") => {
+        // Bare `future task` shows the live list (AXI principle 8); the help is
+        // one flag away and a bare group name asks "what is scheduled?".
+        None => list(&[], out),
+        Some("--help" | "-h") => {
             out.log(help::TASK_HELP);
             Ok(())
         }
@@ -385,14 +389,36 @@ fn compute_next_due(t: &Task, now: i64) -> Option<i64> {
     future_tasks::next_due(&probe, now - 1)
 }
 
+const LIST_USAGE: &str = "Usage: future task list [--all] [--json|--format text|json|toon]";
+
+/// The fields `--format toon` reports: enough to pick a task, nothing else
+/// (AXI principle 2). `--json` keeps its full record.
+const LIST_FIELDS: &[&str] = &["name", "trigger", "state", "next", "id"];
+
 fn list(args: &[String], out: &Output) -> Result<()> {
-    let json_flag = args.iter().any(|a| a == "--json");
-    let include_deleted = args.iter().any(|a| a == "--all");
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        out.log(help::TASK_HELP);
+        return Ok(());
+    }
+    // Declared up front so an invented flag is refused (exit 2) instead of
+    // being ignored while a plausible list is printed.
+    let flags = crate::flags::parse_flags(args, &["--format"], &[], &["--json", "--all"])
+        .map_err(|e| axi::usage(out, &e, LIST_USAGE))?;
+    if let Some(extra) = flags.positional.first() {
+        return Err(axi::usage(
+            out,
+            &format!("unexpected argument: {extra}"),
+            LIST_USAGE,
+        ));
+    }
+    let format = crate::axi::Format::resolve(&flags, crate::axi::Format::Text)
+        .map_err(|e| axi::usage(out, &e, LIST_USAGE))?;
+    let include_deleted = flags.has("--all");
     let store = open_store()?;
     let tasks = store
         .list_tasks(include_deleted)
         .map_err(|e| e.to_string())?;
-    if json_flag {
+    if format == crate::axi::Format::Json {
         let items: Vec<_> = tasks
             .iter()
             .map(|t| {
@@ -416,31 +442,67 @@ fn list(args: &[String], out: &Output) -> Result<()> {
         out.log(&serde_json::to_string_pretty(&items).map_err(|e| e.to_string())?);
         return Ok(());
     }
-    if tasks.is_empty() {
-        out.log("No tasks. Create one with `future task add --name … --prompt … --cwd …`.");
+
+    // One rendered row per task, shared by the table and the TOON view so the
+    // two cannot drift apart.
+    let rows: Vec<[String; 5]> = tasks
+        .iter()
+        .map(|t| {
+            let state = if t.enabled { "on" } else { "off" };
+            let next = if t.trigger_kind == future_tasks::TriggerKind::Schedule {
+                format!(
+                    "{} ({})",
+                    format_ms(t.next_due_at, future_tasks::task_timezone(t)),
+                    future_tasks::task_timezone(t).name()
+                )
+            } else {
+                "manual".to_string()
+            };
+            [
+                t.name.clone(),
+                format_trigger(t),
+                state.to_string(),
+                next,
+                t.id.clone(),
+            ]
+        })
+        .collect();
+
+    if format == crate::axi::Format::Toon {
+        let rows: Vec<Vec<String>> = rows.iter().map(|row| row.to_vec()).collect();
+        out.log(&crate::axi::toon_rows("tasks", LIST_FIELDS, &rows));
         return Ok(());
     }
-    for t in &tasks {
-        let state = if t.enabled { "on" } else { "off" };
-        let next = if t.trigger_kind == future_tasks::TriggerKind::Schedule {
-            format!(
-                "next {} ({})",
-                format_ms(t.next_due_at, future_tasks::task_timezone(t)),
-                future_tasks::task_timezone(t).name()
-            )
-        } else {
-            "manual".to_string()
-        };
+
+    if tasks.is_empty() {
+        crate::axi::empty_state(
+            out,
+            "No tasks. Create one with `future task add --name … --prompt … --cwd …`.",
+        );
+        task_hints(out);
+        return Ok(());
+    }
+    crate::axi::count_line(out, "", tasks.len());
+    for row in &rows {
         out.log(&format!(
             "{:<24} {:<20} {:<4} {:<24} {}",
-            t.name,
-            format_trigger(t),
-            state,
-            next,
-            t.id
+            row[0], row[1], row[2], row[3], row[4]
         ));
     }
+    task_hints(out);
     Ok(())
+}
+
+/// Principle 9: the commands that continue from a task list.
+fn task_hints(out: &Output) {
+    crate::axi::hints(
+        out,
+        &[
+            "Run `future task show <id|name>` to inspect one task.",
+            "Run `future task runs <id>` for its run history.",
+            "Run `future task add --name <name> --prompt <prompt> --cwd <dir> --daily` to create one.",
+        ],
+    );
 }
 
 fn show(args: &[String], out: &Output) -> Result<()> {
@@ -1736,8 +1798,20 @@ mod tests {
             let result = task(Some(sub), &rest, &out).await;
             assert_eq!(result.is_ok(), expect_ok, "{values:?}");
         }
+        // Bare `future task` is content first (AXI principle 8): the live list,
+        // not the help screen. `--help` still prints the help.
         let (out, captured) = Output::memory();
         task(None, &[], &out).await.unwrap();
+        let bare = text(captured.out);
+        assert!(
+            !bare.contains("future task — manage scheduled tasks"),
+            "{bare}"
+        );
+        assert!(bare.starts_with("count: 0\n"), "{bare}");
+        assert!(bare.contains("future task add"), "{bare}");
+
+        let (out, captured) = Output::memory();
+        task(Some("--help"), &[], &out).await.unwrap();
         assert!(text(captured.out).contains("future task — manage scheduled tasks"));
     }
 
@@ -2704,6 +2778,52 @@ mod tests {
         assert_eq!(parsed[0]["name"], "j");
         assert_eq!(parsed[0]["trigger"], "every 120m");
         assert_eq!(parsed[0]["sessionPolicy"], "new");
+    }
+
+    /// `future task list` declares its flag surface: an invented flag is exit 2,
+    /// and `--format toon` gives the same rows without the prose.
+    #[tokio::test]
+    async fn list_flags_are_declared_and_toon_is_data_only() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        add(
+            &args(&[
+                "--name", "nightly", "--prompt", "p", "--cwd", "/tmp", "--every", "2h",
+            ]),
+            &Output::memory().0,
+        )
+        .unwrap();
+
+        let (out, captured) = Output::memory();
+        list(&args(&["--jsno"]), &out).unwrap_err();
+        assert_eq!(out.exit_code(), crate::axi::EXIT_USAGE);
+        assert_eq!(text(captured.out), "", "a refused list prints no rows");
+
+        let (out, captured) = Output::memory();
+        list(&args(&["--format", "toon"]), &out).unwrap();
+        let toon = text(captured.out);
+        let mut lines = toon.lines();
+        assert_eq!(
+            lines.next(),
+            Some("tasks[1]{name,trigger,state,next,id}:"),
+            "{toon}"
+        );
+        assert!(lines
+            .next()
+            .unwrap_or_default()
+            .starts_with(" nightly,every 120m,on,"));
+        assert!(!toon.contains("help["), "{toon}");
+        assert!(!toon.contains("count:"), "{toon}");
+
+        // The text view states the count and the next commands.
+        let (out, captured) = Output::memory();
+        list(&args(&[]), &out).unwrap();
+        let text_view = text(captured.out);
+        assert!(text_view.starts_with("count: 1\n"), "{text_view}");
+        assert!(
+            text_view.contains("Run `future task show <id|name>`"),
+            "{text_view}"
+        );
     }
 
     #[tokio::test]
