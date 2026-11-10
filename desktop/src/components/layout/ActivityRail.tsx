@@ -59,7 +59,7 @@ import { MergedRows } from "./MergedRows";
 import { RailDisclosure, RailHeaderButton } from "./RailChrome";
 import { RailLoadMoreRow } from "./RailRow";
 import { RailViewSwitch } from "./RailViewSwitch";
-import { expandRecent, isActiveRun, recentSplit, recentTree } from "./recentOrder";
+import { expandRecent, inFlightRowKeys, isActiveRun, recentSplit, recentTree } from "./recentOrder";
 import { RemoteConversationRow } from "./RemoteConversationRow";
 import { ThreadListItem } from "./ThreadListItem";
 import { buildThreadTree, buildTree, threadParentIds, visibleThreadRows, visibleTreeRows } from "./threadTree";
@@ -1150,12 +1150,14 @@ export function ActivityRail({
    * sessions, under the same filter the tree draws with. The local half is then
    * narrowed to the rows the `recent` stream has actually paged in — otherwise
    * the list would rank whatever a workspace group was expanded earlier, which
-   * is neither the view's page nor the whole store. Only one row is exempt: one
-   * whose run is in flight, because the active stretch is read whole. A pinned
-   * conversation is *not* exempt — the tree keeps the pinned section, and drawing
-   * a pin the stream has not reached interleaved a twelve-day-old conversation
-   * under yesterday's rows, which read as a hole in the list. Hosts' rows are not
-   * paged this way.
+   * is neither the view's page nor the whole store. Only one kind of row is
+   * exempt: a conversation with a run in flight, together with the rows under
+   * it, because the active stretch is read whole (`list_active_threads`) and a
+   * worker can be the only thing moving under a conversation the page never
+   * reached. A pinned conversation is *not* exempt — the tree keeps the pinned
+   * section, and drawing a pin the stream has not reached interleaved a
+   * twelve-day-old conversation under yesterday's rows, which read as a hole in
+   * the list. Hosts' rows are not paged this way.
    * A run's state is read per row: this machine's threads from the rail's own
    * per-thread run statuses (the same source the row's indicator uses), a host's
    * from what it reports on its row.
@@ -1166,12 +1168,16 @@ export function ActivityRail({
    *
    * A child — a fork, or a session an agent started for one piece of work — is
    * not ranked here: the stretches rank the conversations that have no parent in
-   * the list, and a row's children are drawn only inside its fold. The fold state
-   * is the rail's (`expandedThreads` / `expandedRemoteThreads`), the same one the
-   * tree folds with, so the two views cannot disagree about whether a row is open.
+   * the list, and a row's children are drawn only inside its fold. A run under a
+   * conversation is that conversation's, though, so one whose worker is still
+   * producing output is filed under "Active" with it (the split's rule, in
+   * `recentOrder.ts`) rather than sinking to "Earlier" while its work moved out
+   * of sight. The fold state is the rail's (`expandedThreads` /
+   * `expandedRemoteThreads`), the same one the tree folds with, so the two views
+   * cannot disagree about whether a row is open.
    */
   const recent = useMemo(() => {
-    const rows = activeRemoteRows
+    const listed = activeRemoteRows
       .filter(rowMatchesQuery)
       .map(row => ({
         ...row,
@@ -1184,21 +1190,27 @@ export function ActivityRail({
         createdAt: row.createdAt ?? null,
         lastActivityAt: row.lastMessageAt,
         parentKey: row.parentKey ?? null,
-      }))
-      .filter(row =>
-        row.desktopId !== null
-        || !recentThreadIds
-        || recentThreadIds.has(row.id)
-        // A search reaches the whole store: its rows are drawn here even
-        // though this view's stream never paged them in.
-        || queryActive
-        // A run in flight is drawn even before its page arrives: the active
-        // stretch is read whole from `list_active_threads`, so a conversation
-        // the reader just started (here or on the phone) is never missing from
-        // the top of the list.
-        || row.active);
+      }));
+    // Read the hierarchy *before* the window: which conversation a row hangs
+    // under is a fact about the store, and a conversation lifted into "Active"
+    // by a worker has to bring that worker's rows into the list with it, or the
+    // split would see a conversation with nothing running.
+    const loaded = recentTree(listed);
+    const inFlight = inFlightRowKeys(loaded);
+    const rows = listed.filter(row =>
+      row.desktopId !== null
+      || !recentThreadIds
+      || recentThreadIds.has(row.id)
+      // A search reaches the whole store: its rows are drawn here even
+      // though this view's stream never paged them in.
+      || queryActive
+      // A run in flight is drawn even before its page arrives: the active
+      // stretch is read whole from `list_active_threads`, so a conversation
+      // the reader just started (here or on the phone) is never missing from
+      // the top of the list.
+      || inFlight.has(row.key));
     const tree = recentTree(rows);
-    const split = recentSplit(tree.roots, -1);
+    const split = recentSplit(tree, -1);
     // One fold state, in the list's vocabulary: a local row's own expansion is
     // keyed by thread id and a host's by row key, so the local half is translated
     // into the key its merged row carries — the same translation the tree makes.
