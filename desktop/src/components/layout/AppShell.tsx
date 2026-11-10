@@ -59,7 +59,7 @@ import { useTerminalPanel } from "../../features/terminal/useTerminalPanel";
 import { exitNativeFullscreen } from "../../features/vibe/fullscreen";
 import { VibeStage } from "../../features/vibe/VibeStage";
 import { applyThreadApprovalTier, defaultAgentModelId, modelOption, readLastUsedModel } from "../../integrations/agent/agentClient";
-import { installAgentEventListener, revalidateAgentState, updateCachedAgentState } from "../../integrations/agent/agentStateCache";
+import { installAgentEventListener, revalidateAgentState } from "../../integrations/agent/agentStateCache";
 import { getFutureEnvironment } from "../../integrations/agent/providers";
 import { refreshSkills } from "../../integrations/skills/skillsClient";
 import { isApprovalTier } from "../../integrations/storage/appSettings";
@@ -1810,37 +1810,30 @@ function ReadyAppShell({
    * claimed). A failed round trip leaves the choice showing: the preference is
    * durable and the next prompt applies it anyway.
    */
-  const changeApprovalTier = useCallback(async (value: ApprovalTier) => {
+  const changeApprovalTier = useCallback((value: ApprovalTier) => {
     const conversation = activeThread?.agentSessionId ? activeThread : null;
-    if (!conversation) {
-      await changeSettings({ approvalTier: value });
+    // The reader's choice is written first, and synchronously: it is what the
+    // chip draws (the setting) and what the next prompt sends, so the control
+    // answers the press itself instead of waiting on a round trip.
+    void changeSettings({ approvalTier: value });
+    if (!conversation)
       return;
-    }
-    // The chip reads this cache, so the mode changes under the reader's finger
-    // instead of after the next message.
-    updateCachedAgentState(conversation.id, { sandboxTier: value });
-    try {
-      const applied = await applyThreadApprovalTier(conversation.id, value);
-      const tier = isApprovalTier(applied?.approvalTier) ? applied.approvalTier : value;
-      await changeSettings({ approvalTier: tier });
-      if (tier !== value)
-        updateCachedAgentState(conversation.id, { sandboxTier: tier });
-      // Only now is the machine's own state worth re-reading: it has just been
-      // told, so the snapshot agrees with the choice and carries anything else
-      // that changed with it.
-      revalidateAgentState(conversation.id);
-    }
-    catch {
-      // The local preference is still the user's choice, and it is what the next
-      // prompt sends: keep it even when the machine could not be told now.
-      // Deliberately NO revalidate here — asking the machine what tier it is on
-      // would answer with the old one and undo the choice the reader just made,
-      // which is exactly how this shipped looking like a dead control the second
-      // time (the re-read landed after the optimistic write).
-      await changeSettings({ approvalTier: value });
-    }
+    // Then the conversation is told, so the gate follows now rather than at the
+    // next message. Its answer is the machine's own verdict (an unenforceable
+    // sandbox is downgraded, never claimed) and is what the setting becomes.
+    void applyThreadApprovalTier(conversation.id, value)
+      .then((applied) => {
+        const tier = isApprovalTier(applied?.approvalTier) ? applied.approvalTier : value;
+        if (tier !== value)
+          void changeSettings({ approvalTier: tier });
+        // Only after the machine was told is its own state worth re-reading.
+        revalidateAgentState(conversation.id);
+      })
+      // A failed round trip keeps the stored choice, which the next prompt
+      // applies anyway. No re-read here: asking the machine what tier it is on
+      // would answer with the old one and undo what the reader just chose.
+      .catch(() => undefined);
   }, [activeThread, changeSettings]);
-
   /**
    * What a panel cell's conversation view needs from the shell.
    *
