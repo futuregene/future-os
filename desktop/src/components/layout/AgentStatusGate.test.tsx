@@ -32,7 +32,7 @@ describe("agent status gate", () => {
     expect(renderStatus("stopping", false, undefined, progress)).toContain("Finishing background work");
     const failed = renderStatus("stopping", false, "deadline exceeded", { ...progress, state: "failed", errors: ["deadline exceeded"] });
     expect(failed).toContain("deadline exceeded");
-    expect(failed).toContain("Updates, reset and restart are blocked");
+    expect(failed).toContain("Your conversations and settings are unaffected");
     expect(failed).not.toContain("Future Agent could not start");
   });
 

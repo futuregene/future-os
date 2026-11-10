@@ -149,6 +149,55 @@ pub async fn update_thread_thinking_level(
     Ok(thread)
 }
 
+/// The approval tier for one conversation, in force now.
+///
+/// The tier is app-wide (there is no per-thread column), but the value a
+/// conversation *shows* is the one its Agent session reports — and that was only
+/// pushed before the next prompt. So a reader who switched an old conversation
+/// off automatic approval watched the control stay where it was, with nothing to
+/// tell them the change had landed at all: reported as "切换成其他等级，切换无效
+/// 选项没有变化". Model and thinking level already propagate the moment they are
+/// chosen; this does the same, and answers with the tier the machine accepted
+/// (a sandbox this desktop cannot enforce is downgraded, not claimed).
+///
+/// Best-effort for the session, like its siblings: a failure to reach the Agent
+/// must not fail the local preference, which is what the next prompt sends anyway.
+pub async fn update_thread_approval_tier(
+    thread_id: String,
+    tier: String,
+) -> Result<serde_json::Value, crate::Error> {
+    store::update_app_settings(store::UpdateAppSettingsInput {
+        approval_tier: Some(tier.clone()),
+        ..Default::default()
+    })?;
+    let thread = store::get_thread(&thread_id)?.ok_or("Thread not found.")?;
+    let session_id = thread
+        .agent_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned);
+    if let Some(session_id) = session_id {
+        if let Ok(mut client) = crate::agent_bridge::connect_agent().await {
+            if crate::agent_bridge::verify_session_database(&mut client, &session_id)
+                .await
+                .is_ok()
+            {
+                // Its own downgrade rules apply here too, and a downgrade is
+                // persisted — so the answer is read back rather than assumed.
+                let _ = crate::agent_bridge::set_agent_sandbox_policy_tier(
+                    &mut client,
+                    &session_id,
+                    &tier,
+                )
+                .await;
+            }
+        }
+    }
+    let approval_tier = store::get_app_settings()?.approval_tier;
+    Ok(serde_json::json!({ "approvalTier": approval_tier }))
+}
+
 pub fn pin_thread(input: store::PinThreadInput) -> Result<store::ThreadRecord, crate::Error> {
     store::pin_thread(input)
 }
@@ -375,6 +424,37 @@ pub async fn get_thread_agent_state(thread_id: String) -> Result<serde_json::Val
             .to_string()
             .into());
     }
+    // A conversation from before the tier was ever pushed reports none at all,
+    // and the composer had no mode to draw for it: it showed a fifth "per
+    // session" chip that is not one of the four modes (reported as
+    // "审批那边显示的是按会话，但我们没有这个类型的模式"). Reading this conversation's
+    // state is the moment to settle it - push the stored default, which is
+    // what the next prompt would send anyway, and describe that so the chip
+    // names a real mode. Best-effort: an Agent too old to take the policy
+    // keeps answering as it does today.
+    let mut value = value;
+    if reported_sandbox_tier(&value).is_none() {
+        if let Ok(settings) = store::get_app_settings() {
+            let requested = settings.approval_tier;
+            if crate::agent_bridge::set_agent_sandbox_policy_tier(
+                &mut client,
+                session_id,
+                &requested,
+            )
+            .await
+            .is_ok()
+            {
+                // Its own downgrade rules apply, and a downgrade is persisted:
+                // report what the machine accepted, not what was asked.
+                let applied = store::get_app_settings()
+                    .map(|settings| settings.approval_tier)
+                    .unwrap_or(requested);
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("sandboxTier".to_string(), applied.into());
+                }
+            }
+        }
+    }
     // Converge the DB title toward the agent's session_name — the name shared
     // with every client (TUI `/name`, CLI, channels), whose renames never
     // reach the GUI DB. The sidebar treats the agent name as authoritative
@@ -393,6 +473,21 @@ pub async fn get_thread_agent_state(thread_id: String) -> Result<serde_json::Val
         }
     }
     Ok(value)
+}
+
+/// The sandbox tier a `get_state` payload reports, when it reports one.
+///
+/// Absent for a conversation whose session never chose a tier (anything
+/// created before the desktop pushed one) and for an Agent that predates the
+/// field - which is why the reader above settles it instead of leaving the
+/// composer to draw a mode that does not exist.
+fn reported_sandbox_tier(value: &serde_json::Value) -> Option<&str> {
+    value
+        .get("sandboxTier")
+        .or_else(|| value.get("sandbox_tier"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|tier| !tier.is_empty())
 }
 
 /// Manually compact the current Agent session without creating a user message.
@@ -1328,6 +1423,37 @@ mod tests {
         assert_eq!(updated.id, thread.id);
     }
 
+    /// Switching the tier reaches the conversation's own session, not just the
+    /// stored default.
+    ///
+    /// The chip draws what the Agent reports for *this* session, and that was
+    /// only pushed before the next prompt - so changing an old conversation's
+    /// tier left the control exactly where it was (reported as "switch does
+    /// nothing, the option never changes"). The tier is applied now, and the
+    /// answer names the tier the machine accepted.
+    #[tokio::test]
+    async fn update_thread_approval_tier_applies_to_the_session_now() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_tier_set");
+        let thread = make_thread(&_home, Some("sess_tier"));
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript::default());
+        let applied = update_thread_approval_tier(thread.id.clone(), "manual".into())
+            .await
+            .expect("apply tier");
+        assert_eq!(
+            applied["approvalTier"].as_str(),
+            Some("manual"),
+            "the stored default follows the choice: {applied}"
+        );
+        assert_eq!(
+            store::get_app_settings().unwrap().approval_tier,
+            "manual",
+            "a later prompt must send the tier the reader chose"
+        );
+        script_mock_agent(MockScript::default());
+    }
+
     #[tokio::test]
     async fn delete_thread_tombstones_and_reconciles() {
         let _lock = mock_agent_lock();
@@ -1579,6 +1705,38 @@ mod tests {
             .expect("get")
             .expect("thread");
         assert_eq!(reloaded.title, "Agent Name");
+        script_mock_agent(MockScript::default());
+    }
+
+    /// A conversation whose session reports no tier is settled on the stored
+    /// default, instead of leaving the composer to draw a mode that does not
+    /// exist ("审批那边显示的是按会话，但我们没有这个类型的模式"). The pushed value is
+    /// what the next prompt sends anyway, so the chip can name a real mode.
+    #[tokio::test]
+    async fn get_thread_agent_state_settles_a_session_that_reports_no_tier() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_agent_state_tier");
+        let thread = make_thread(&_home, Some("sess_tier_state"));
+        let agent = crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript::default());
+        let mut payload = crate::test_support::agent::get_state_payload("sess_tier_state", false);
+        payload["sandboxTier"] = serde_json::Value::Null;
+        agent.script_typed_for("get_state", "sess_tier_state", payload);
+        let value = get_thread_agent_state(thread.id.clone())
+            .await
+            .expect("state");
+        // The tier the machine accepted - the stored default, unless its own
+        // downgrade rules moved it (an unenforceable sandbox becomes manual).
+        let expected = store::get_app_settings().expect("settings").approval_tier;
+        assert_eq!(
+            value["sandboxTier"].as_str(),
+            Some(expected.as_str()),
+            "the chip must name a mode that exists: {value}"
+        );
+        assert!(
+            ["manual", "sandbox", "auto", "off"].contains(&expected.as_str()),
+            "and that mode must be one the user can pick: {expected}"
+        );
         script_mock_agent(MockScript::default());
     }
 

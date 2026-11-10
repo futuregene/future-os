@@ -1,6 +1,6 @@
 import type { AgentMessage, AssistantRunProjection, MessageSegment, PreviewSyncStall, RunProjector } from "@future-os/thread-projection";
 import type { Dispatch, SetStateAction } from "react";
-import { compactionCheckpoints, createRunProjector } from "@future-os/thread-projection";
+import { collapseReplyDuplicates, compactionCheckpoints, createRunProjector } from "@future-os/thread-projection";
 import { listRunEventsSince } from "../../../integrations/storage/threadStore";
 import { emitFutureEvent } from "../../../lib/futureEvents";
 import { isCompactionDivider, isSupersededCompactionDivider } from "../messages/compactionMarkers";
@@ -383,12 +383,19 @@ async function projectRunForLivePreview(
  * message — and drop it, so the exchange renders once.
  */
 export function streamingBubbleBase(
-  current: AgentMessage[],
+  incoming: AgentMessage[],
   runId: string,
   bubbleId: string,
   content: string,
   liveCheckpoints: ReadonlySet<string> = new Set(),
 ): AgentMessage[] | null {
+  // Every writer starts from an array where this turn's reply is drawn once.
+  // A reload during the run appends a snapshot of the answer beside the live
+  // bubble, and each further reload appended another — measured as one answer on
+  // screen three times ("49s · 2,557 tokens", then the same text under
+  // "✓ 13 · 思考 11 次", then a third), while the journal held it once. Collapsing
+  // here also gives the guards below a single message to reason about.
+  const current = collapseReplyDuplicates(incoming);
   // A persisted assistant message already carries this run — the run settled
   // and the thread was reloaded; don't resurrect a synthetic bubble.
   if (current.some(message => message.role === "assistant" && message.runId === runId && message.id !== bubbleId))

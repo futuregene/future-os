@@ -489,6 +489,30 @@ fn arm_force_exit() {
     }
 }
 
+/// What the failed-exit dialog says, and why it says that.
+///
+/// The raw error is a diagnostic string assembled from every stage of the stop,
+/// and it used to be shown verbatim under an error icon titled "Cleanup failed".
+/// Measured 2026-11-09: a user read one deferred sandbox-permission revoke as a
+/// broken install — "更新、重置和重启已阻止" on top of five lines of Rust error text,
+/// with the same sentence twice. Nothing had failed in a way that mattered: the
+/// leftovers are this instance's own capability ACEs, and the next start revokes
+/// them.
+///
+/// So the dialog leads with what is true (the app is closing; one housekeeping
+/// step did not finish) and keeps the diagnostic on its own line for a bug
+/// report. It is a warning, not an error: the exit path the buttons offer is the
+/// same one, and the wording has to match that.
+fn cleanup_failed_message(error: &str) -> String {
+    format!(
+        "FutureOS is closing. One cleanup step did not finish in time, so some temporary \
+         permissions will be removed the next time FutureOS starts.\n\n\
+         Your conversations and settings are not affected. Exiting now is safe; the only thing \
+         that changed is that updating or resetting needs a fresh start.\n\n\
+         Details for a bug report: {error}"
+    )
+}
+
 /// Intercept ordinary exits while the event loop can still render progress.
 /// This waiter is deliberately outside the task registry it must shut down.
 pub(crate) fn request_quit<R: tauri::Runtime>(app: tauri::AppHandle<R>, force: bool) {
@@ -515,9 +539,9 @@ pub(crate) fn request_quit<R: tauri::Runtime>(app: tauri::AppHandle<R>, force: b
         if let Err(error) = result {
             tracing::error!(event = "request_quit", %error, "FutureOS exit cleanup failed: {error}");
             if !FORCE_QUIT_REQUESTED.load(Ordering::Acquire) {
-                app.dialog().message(format!("FutureOS could not complete cleanup: {error}. Exit the process anyway?"))
-                    .title("Cleanup failed")
-                    .kind(MessageDialogKind::Error)
+                app.dialog().message(cleanup_failed_message(&error))
+                    .title("FutureOS could not finish closing")
+                    .kind(MessageDialogKind::Warning)
                     .buttons(MessageDialogButtons::OkCancelCustom("Exit anyway".into(), "Keep open".into()))
                     .show(move |confirmed| {
                         QUIT_PENDING.store(false, Ordering::Release);
@@ -575,6 +599,34 @@ mod tests {
         );
         assert_eq!(quit_decision(true, false, Ok(1)), QuitDecision::Proceed);
     }
+    /// The dialog that follows a failed exit must read as "one step was
+    /// deferred", not as a broken install, while still carrying the diagnostic
+    /// a bug report needs. Pinned because the two properties pull against each
+    /// other: the easy way to reassure is to drop the error, and the easy way to
+    /// stay diagnosable is to show nothing else.
+    #[test]
+    fn the_failed_exit_dialog_reassures_and_keeps_the_diagnostic() {
+        let error = "Agent failed to stop: Agent shutdown deadline exceeded during Windows \
+                     sandbox permissions; instance ownership retained";
+        let message = cleanup_failed_message(error);
+        assert!(
+            message.contains("not affected"),
+            "the user must be told their data is safe: {message}"
+        );
+        assert!(
+            message.contains("next time FutureOS starts"),
+            "the deferral must say when it is retried: {message}"
+        );
+        assert!(
+            message.contains(error),
+            "the diagnostic must survive for a bug report: {message}"
+        );
+        assert!(
+            !message.starts_with("FutureOS could not"),
+            "the dialog must not open with a failure: {message}"
+        );
+    }
+
     #[test]
     fn mock_gui_does_not_start_an_agent() {
         let app = tauri::test::mock_builder()

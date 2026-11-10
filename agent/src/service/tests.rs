@@ -307,7 +307,7 @@ async fn accepted_run_cancels_persists_and_releases_its_monitor_before_stop() {
 /// is a `try_` lock, so holding one produces a *different* error instead of a
 /// delay. That leaves one honest fixture: keep the revision moving on another
 /// thread and take the snapshot repeatedly, biased towards a hit. This is the
-/// F-43 pattern — the assertion is "at least one hit in N attempts", never an
+/// F-43 pattern 鈥?the assertion is "at least one hit in N attempts", never an
 /// exact count, because a pass is a matter of timing and pinning a number would
 /// make the test flake under load.
 ///
@@ -491,7 +491,7 @@ async fn a_dead_storage_worker_is_reported_by_the_journal_and_storage_stages() {
 async fn an_expired_deadline_reports_the_stage_that_never_settled() {
     let handle = fixture();
     // Never dropped: the drain's run/native-work wait can never settle, so the
-    // deadline — not a clean drain — is what ends this shutdown.
+    // deadline 鈥?not a clean drain 鈥?is what ends this shutdown.
     let _background = handle.state.service_work.background().unwrap();
 
     let report = handle.shutdown(Duration::from_millis(50)).await;
@@ -522,7 +522,7 @@ async fn an_expired_deadline_reports_the_stage_that_never_settled() {
 
 /// The scheduler/monitor stage is the last one the drain can time out in, and it
 /// is reachable when a session's scheduler worker is registered but can never be
-/// observed to finish — which is what a host whose runtime has stopped being
+/// observed to finish 鈥?which is what a host whose runtime has stopped being
 /// driven looks like from here. The worker is spawned on a second runtime that
 /// this test deliberately never blocks on, so its `Done` guard cannot drop and
 /// `scheduler_settled()` stays false while `service_work.counts()` is already
@@ -978,9 +978,8 @@ fn activity_is_unavailable_once_a_stop_has_failed() {
 /// The fixture drives `finish_scope` directly on a service whose `handle` slot is
 /// empty, which is exactly the state a failed start leaves: no `RunningAgent` was
 /// built, so there is nothing to `shutdown_blocking`, but a guard is still held
-/// by another thread. Before this test, the loop's body had never executed —
-/// `finish_scope`'s else-branch ran 51 times in the measured report and
-/// `counts()` was `(0, 0)` every one of them, so `while … {}` did no iterations.
+/// by another thread. Before this test, the loop's body had never executed 鈥?/// `finish_scope`'s else-branch ran 51 times in the measured report and
+/// `counts()` was `(0, 0)` every one of them, so `while 鈥?{}` did no iterations.
 ///
 /// `work::install` is deliberately **not** called: it registers the process-global
 /// `ACTIVE` slot, and a lib test that installs one would poison the data-root
@@ -989,14 +988,14 @@ fn activity_is_unavailable_once_a_stop_has_failed() {
 /// server's first poll: `service/mod.rs` 343, and with it the "Agent serving
 /// failed" report at 355-358.
 ///
-/// F-21 reasoned that nothing could schedule this window — every statement
+/// F-21 reasoned that nothing could schedule this window 鈥?every statement
 /// between the entry check (301) and the first poll (338) is synchronous, so
-/// "only another OS thread can hit it" — and left the line explicitly *flagged
+/// "only another OS thread can hit it" 鈥?and left the line explicitly *flagged
 /// for empirical falsification* rather than classified. Measured, F-21 is wrong,
 /// and the reason is worth keeping: the gap is not empty. Between setting
 /// `server_running` (324) and polling the server (338), `serve` subscribes to two
 /// `watch` channels and builds the guard and the pinned future, which is hundreds
-/// of nanoseconds of real work — while a thread already spinning on
+/// of nanoseconds of real work 鈥?while a thread already spinning on
 /// `server_running` sees the store in tens of nanoseconds. The spinner wins the
 /// window in **every** attempt of this fixture (40/40 when first measured, and it
 /// is the only thing that can: the entry check runs before `server_running` is
@@ -1218,4 +1217,36 @@ async fn a_start_permit_authorizes_only_the_endpoint_it_was_issued_for() {
             "{refused}: {error}"
         );
     }
+}
+
+/// The exit dialog shows one error chain, so a failure the scope cleanup merely
+/// repeats must not appear twice in it.
+///
+/// Measured 2026-11-09: a Desktop exit read "Agent failed to stop: Agent shutdown
+/// deadline exceeded during Windows sandbox permissions; instance ownership
+/// retained: Agent failed to stop: Agent shutdown deadline exceeded during
+/// Windows sandbox permissions; instance ownership retained" — one deferred
+/// cleanup step presented to the user as two.
+#[test]
+fn a_cleanup_failure_the_host_error_already_names_is_not_repeated() {
+    let repeated = "Agent failed to stop: Agent shutdown deadline exceeded during Windows sandbox permissions; instance ownership retained";
+    let host = anyhow::anyhow!("{repeated}");
+    let cleanup = anyhow::anyhow!("{repeated}");
+    let combined = format!("{:#}", describe_host_and_cleanup_failure(host, cleanup));
+    assert_eq!(
+        combined.matches("Windows sandbox permissions").count(),
+        1,
+        "the shared failure must be said once: {combined}"
+    );
+}
+
+/// A cleanup failure the host error does not name is a second, real failure:
+/// dropping it would hide the step that failed after the host was done.
+#[test]
+fn a_distinct_cleanup_failure_is_still_reported_alongside_the_host_error() {
+    let host = anyhow::anyhow!("Agent failed to stop: storage shutdown: disk is full");
+    let cleanup = anyhow::anyhow!("Agent work is not drained; instance ownership retained");
+    let combined = format!("{:#}", describe_host_and_cleanup_failure(host, cleanup));
+    assert!(combined.contains("disk is full"), "{combined}");
+    assert!(combined.contains("not drained"), "{combined}");
 }
