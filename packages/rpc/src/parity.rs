@@ -84,7 +84,13 @@ fn get_state_fixture() -> Value {
                 "state": "queued",
                 "queuePosition": 0,
                 "acceptedAt": "2026-08-06T10:00:00Z",
-                "displayText": "next"
+                "displayText": "next",
+                "attachments": [{
+                    "path": "/Users/x/shot.png",
+                    "kind": "image",
+                    "name": "shot.png",
+                    "size": 4096
+                }]
             }],
             "recentTerminalAcks": [{
                 "runId": "r0",

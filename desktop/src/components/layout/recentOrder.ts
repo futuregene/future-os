@@ -34,6 +34,11 @@
  * is the one place a reader is being waited on, and it is *not* streaming, so a
  * list that read `streaming` alone would file it under "earlier".
  *
+ * A run in a child session counts as the conversation's own (`isActiveConversation`
+ * has the rule and the reason): the child is inside the fold, so nothing else on
+ * the list would say the conversation is still working. The phone's 最近 page
+ * splits by the same rule, and the two lists are one list to the reader.
+ *
  * Kept free of React and of the rail's own types so the ordering, the split and
  * the window can be tested on their own — this is the part that must not drift
  * between the two lists (the rail's local one and the one that holds a paired
@@ -263,20 +268,75 @@ export function expandRecent<T extends RecentItem>(
 }
 
 /**
+ * Whether a conversation still has work in flight: its own run, or one a
+ * conversation it started is running.
+ *
+ * A child is drawn inside its conversation's fold (`recentTree`), so a worker
+ * still producing output is work the view cannot show as a row of its own.
+ * Filing the conversation under "Earlier" while that work ran made the reader
+ * hunt for the one conversation that was actually moving: the child is that
+ * conversation's work, not a conversation of its own, so the stretch it belongs
+ * in is the stretch its work is in. The walk descends, because a worker can
+ * start a worker.
+ *
+ * `children` must be `recentTree`'s, which has already broken a malformed ring,
+ * so the descent terminates.
+ */
+export function isActiveConversation<T extends RecentItem>(
+  row: T,
+  children: ReadonlyMap<string, T[]>,
+): boolean {
+  if (row.active)
+    return true;
+  return (children.get(row.key) ?? []).some(child => isActiveConversation(child, children));
+}
+
+/**
+ * The rows a conversation lifted into "Active" brings with it: the conversation
+ * itself and every row under it.
+ *
+ * The list is windowed to a page before it is split, and a conversation whose
+ * worker is running can be one the page has not reached — a long goal run is
+ * exactly the case where the parent has not spoken in a while. So the page's
+ * own filter has to keep those rows (`ActivityRail`), or the split would never
+ * see the run that lifts the conversation, and an opened fold would show a hole
+ * where its workers were.
+ */
+export function inFlightRowKeys<T extends RecentItem>(tree: RecentTree<T>): Set<string> {
+  const kept = new Set<string>();
+  const stack: T[] = tree.roots.filter(root => isActiveConversation(root, tree.children));
+  while (stack.length > 0) {
+    const row = stack.pop()!;
+    if (kept.has(row.key))
+      continue;
+    kept.add(row.key);
+    stack.push(...(tree.children.get(row.key) ?? []));
+  }
+  return kept;
+}
+
+/**
  * Split the list into its two stretches.
  *
- * `rows` must already be filtered by whatever the reader asked for (a device, a
- * search) and reduced to the conversations that rank on their own (`recentTree`'s
- * roots — a child is ranked by the conversation it belongs to, not by itself):
- * this function decides order and how much of it is drawn, nothing about what is
- * in the list.
+ * `tree` must already be filtered by whatever the reader asked for (a device, a
+ * search) and built from the rows the view is drawing: this function decides
+ * order and how much of it is drawn, nothing about what is in the list.
+ *
+ * A stretch ranks conversations, not sessions: only the roots are split, and a
+ * conversation goes to "Active" when it — or anything under it — still has work
+ * in flight (`isActiveConversation`). It keeps its own start time either way:
+ * the worker is part of that conversation rather than a row of its own to rank.
  */
 export function recentSplit<T extends RecentItem>(
-  rows: readonly T[],
+  tree: RecentTree<T>,
   limit: number = RECENT_PAGE_SIZE,
 ): RecentSplit<T> {
-  const active = rows.filter(row => row.active).sort(byCreation);
-  const earlier = rows.filter(row => !row.active).sort(byActivity);
+  const active: T[] = [];
+  const earlier: T[] = [];
+  for (const row of tree.roots)
+    (isActiveConversation(row, tree.children) ? active : earlier).push(row);
+  active.sort(byCreation);
+  earlier.sort(byActivity);
   const window = limit < 0 ? earlier : earlier.slice(0, Math.max(0, limit));
   const sections: RecentSection<T>[] = [];
   // An empty stretch is not a section: a caption over nothing reads as a list

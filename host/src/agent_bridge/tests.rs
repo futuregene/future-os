@@ -1973,6 +1973,40 @@ mod pipeline_tests {
         }
     }
 
+    /// A prompt carrying neither text nor an attachment never reaches the
+    /// Agent. It used to be admitted as an ordinary run (queued, on a busy
+    /// session), which produced exactly what nobody can act on: a run row, an
+    /// agent receipt whose user entry is empty, and - because a queued send
+    /// draws no bubble - no visible turn to retry or take back.
+    ///
+    /// Removing the guard in `agent_prompt_inner` turns both assertions red.
+    #[tokio::test]
+    async fn a_prompt_with_neither_text_nor_attachment_is_refused_before_the_agent() {
+        let fixture = pipeline_fixture("pipe-empty-prompt", "Empty");
+        let error = agent_prompt_with_model_context(AgentPromptRequest {
+            message: "   \r\n\t".to_string(),
+            model_context: String::new(),
+            attachments: Some(Vec::new()),
+            thread_id: fixture.thread.id.clone(),
+            session_id: None,
+            run_id: Some(fixture.run.id.clone()),
+            model_id: None,
+            thinking_level: None,
+            busy_policy: "enqueue_coalescing".to_string(),
+        })
+        .await
+        .expect_err("an empty prompt is not a turn");
+        assert_eq!(error.to_string(), "A message needs text or an attachment.");
+        assert!(
+            fixture.mock.requests_of("prompt").is_empty(),
+            "no prompt may be sent to the Agent"
+        );
+        assert!(
+            fixture.mock.requests_of("new_session").is_empty(),
+            "and no session is created for it either"
+        );
+    }
+
     fn prompt_args(fixture: &PipelineFixture) -> (String, String, String) {
         (
             "hello from the test".to_string(),

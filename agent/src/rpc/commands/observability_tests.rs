@@ -37,6 +37,75 @@ fn get_state_returns_session_info() {
 }
 
 #[test]
+fn get_state_reports_a_queued_prompts_files_with_their_size() {
+    // A waiting message is still editable, and a client cannot offer to take a
+    // photo off one it cannot see. The size is measured here so the row can be
+    // drawn (and its upload budget accounted for) without a second question.
+    let state = make_app_state();
+    let path = std::env::temp_dir().join(format!(
+        "futureos-queued-attachment-{}.txt",
+        crate::utils::generate_id()
+    ));
+    std::fs::write(&path, b"hello queue").expect("write attachment");
+    state
+        .get_session("default")
+        .unwrap()
+        .read()
+        .scheduler
+        .accept(
+            "queued-with-files",
+            Some("queued-files"),
+            crate::runtime::BusyPolicy::EnqueueCoalescing,
+            serde_json::json!({
+                "message": "look at this",
+                "attachments": [{
+                    "path": path.display().to_string(),
+                    "kind": "image",
+                    "name": "photo.png",
+                }],
+            }),
+        )
+        .unwrap();
+    let resp = parse_response(&handle_command_internal(&state, make_cmd("get_state")));
+    let rows = &resp["data"]["queuedRuns"];
+    assert_eq!(rows[0]["attachments"][0]["name"], "photo.png");
+    assert_eq!(rows[0]["attachments"][0]["kind"], "image");
+    assert_eq!(
+        rows[0]["attachments"][0]["path"],
+        path.display().to_string()
+    );
+    assert_eq!(rows[0]["attachments"][0]["size"], 11);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn get_state_reports_no_files_for_a_text_only_queued_prompt() {
+    // The older row shape (and every text-only send): an empty list, not a
+    // missing field a client would have to guess about.
+    let state = make_app_state();
+    state
+        .get_session("default")
+        .unwrap()
+        .read()
+        .scheduler
+        .accept(
+            "queued-text",
+            Some("queued-text"),
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+            serde_json::json!({"message": "later"}),
+        )
+        .unwrap();
+    let resp = parse_response(&handle_command_internal(&state, make_cmd("get_state")));
+    assert_eq!(
+        resp["data"]["queuedRuns"][0]["attachments"]
+            .as_array()
+            .expect("a list")
+            .len(),
+        0
+    );
+}
+
+#[test]
 fn get_state_reports_manual_compaction_in_progress() {
     let state = make_app_state();
     let session = state.get_session("default").unwrap();

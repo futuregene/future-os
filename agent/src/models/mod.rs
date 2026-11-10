@@ -537,6 +537,46 @@ pub fn request_future_models_refresh() -> bool {
     request_future_models_refresh_inner()
 }
 
+/// The effort values a hand-written provider entry may omit because its model
+/// id names the generation that fixes them.
+///
+/// Our thinking levels are one scale for every model, and a level travels
+/// verbatim unless the entry declares `compat.reasoningEffort`. A provider that
+/// validates `reasoning_effort` against its *own* fixed set therefore fails the
+/// whole turn when a level is spelled on our scale but not on theirs — the
+/// reported failure on `intranet/deepseek-v4.1-flash` (2026-11-10, session
+/// `8c9af0d2`), which sent `medium` and got:
+///
+/// ```text
+/// HTTP 400: DeepSeek V4.1 reasoning_effort must be low, high, xhigh, max,
+/// or an integer within [1, 100] in chat_template_kwargs
+/// ```
+///
+/// The model id is the only signal such an entry carries, and it is enough
+/// here because the *generation* fixes the dialect, not the family: the
+/// catalogue's `deepseek-v4-*` models accept `minimal|low|medium|high`, so only
+/// the `v4.1` spellings match. The declared parameter is `chat_template_kwargs`,
+/// the same place the identical message forced on `westlakehpc/deepseek-flash`.
+///
+/// This is a gap-filler, not a policy: an explicit `compat.reasoningEffort` on
+/// the model or on its provider always wins, and only user-configured entries
+/// are covered — the Future catalogue states its own vocabulary.
+fn implied_reasoning_effort(model_id: &str) -> Option<serde_json::Value> {
+    let key: String = model_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    if !key.contains("deepseekv41") {
+        return None;
+    }
+    Some(serde_json::json!({
+        "values": ["low", "high", "xhigh", "max"],
+        "integer": {"min": 1, "max": 100},
+        "param": "chat_template_kwargs.reasoning_effort"
+    }))
+}
+
 /// LoadUserModels reads a models.json file.
 /// Returns empty vec if file doesn't exist.
 /// Load user models + provider-level overrides from models.json.
@@ -634,6 +674,14 @@ fn load_user_models_with_overrides(
             if let Some(ref model_compat) = model.compat {
                 for (k, v) in model_compat {
                     m.compat.insert(k.clone(), v.clone());
+                }
+            }
+            // A generation whose endpoint fixes the effort vocabulary does not
+            // need the entry to spell it out (see `implied_reasoning_effort`);
+            // an explicit declaration merged above always wins.
+            if !m.compat.contains_key("reasoningEffort") {
+                if let Some(vocabulary) = implied_reasoning_effort(&m.id) {
+                    m.compat.insert("reasoningEffort".into(), vocabulary);
                 }
             }
             models.push(m);

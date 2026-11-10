@@ -121,6 +121,25 @@ pub struct QueuedRunState {
     pub queue_position: usize,
     pub accepted_at: String,
     pub display_text: String,
+    /// The files this prompt carries. Reported so a waiting row can show them
+    /// and let a reader take one off before it runs; an older Agent that has no
+    /// such field simply sends none.
+    #[serde(default)]
+    pub attachments: Vec<QueuedRunAttachment>,
+}
+
+/// One file a queued prompt carries (proto `QueuedRunAttachment`).
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedRunAttachment {
+    /// The desktop path the file already has — the same shape the transcript's
+    /// attachments report, so a paired client reads it with the same download.
+    pub path: String,
+    /// "image" | "file".
+    pub kind: String,
+    pub name: String,
+    /// Byte size on disk, or 0 when it could not be read.
+    pub size: u64,
 }
 
 /// A terminal acknowledgement (get_state `recentTerminalAcks`; proto
