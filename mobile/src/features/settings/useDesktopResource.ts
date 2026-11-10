@@ -34,5 +34,11 @@ export function useDesktopResource<T>(load: () => Promise<T>, revision: number, 
       subscription.remove();
     };
   }, [reload, revision]);
-  return { data: enabled ? data : null, loading, failed, reload };
+  // A reload with a snapshot already on screen is a refresh, not a load: the
+  // page keeps drawing what it has, and nothing reports "loading" for it.
+  // Reporting it as loading made a page that renders a spinner row jump the
+  // moment any write invalidated it (reported on the model-visibility list:
+  // every switch flipped the row's own resource and the list shifted under
+  // the reader's finger).
+  return { data: enabled ? data : null, loading: loading && data === null, failed, refresh: loading && data !== null, reload };
 }
