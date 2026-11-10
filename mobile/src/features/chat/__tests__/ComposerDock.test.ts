@@ -9,7 +9,7 @@ import { SessionPicker } from "../components/SessionPicker";
 import { SkillSuggestionCard } from "../components/SkillSuggestionCard";
 import { SkillDetailsDialog } from "../components/SkillDetailsDialog";
 import { SendChoiceSheet } from "../components/SendChoiceSheet";
-import { SendQueuePanel } from "../components/SendQueuePanel";
+import { SendQueuePanel, sendQueueListHeight } from "../components/SendQueuePanel";
 import { PendingApprovalCard } from "../messages/PendingApprovalCard";
 import { deleteTemporaryAttachment } from "../../../remote/files";
 import { resources } from "../../../i18n/locales";
@@ -24,7 +24,7 @@ jest.mock("react-native", () => {
   });
 });
 
-jest.mock("lucide-react-native", () => Object.fromEntries(["ArchiveRestore", "ArrowDown", "Check", "ChevronDown", "CircleAlert", "FileText", "Image", "Info", "Lightbulb", "ListPlus", "MessageCircle", "Paperclip", "Pencil", "Play", "Plus", "RotateCcw", "Send", "Slash", "Square", "Trash2", "X", "Zap"].map(name => [name, () => null])));
+jest.mock("lucide-react-native", () => Object.fromEntries(["ArchiveRestore", "ArrowDown", "Check", "ChevronDown", "ChevronUp", "CircleAlert", "FileText", "Image", "Info", "Lightbulb", "ListPlus", "MessageCircle", "Paperclip", "Pencil", "Play", "Plus", "RotateCcw", "Send", "Slash", "Square", "Trash2", "X", "Zap"].map(name => [name, () => null])));
 // The composer takes `t` as a prop, but the details dialog and the surfaces
 // below it call `useTranslation` themselves. Standing up the real i18n module
 // would drag expo-localization into a component test; the translations are
@@ -1116,6 +1116,9 @@ test("the queue panel shows what is waiting and its three verbs reach the screen
   try {
     const panel = tree.root.findByType(SendQueuePanel);
     expect(panel.props.items.map((item: { id: string }) => item.id)).toEqual(["run_a", "run_b"]);
+    // The room an open list may take is measured here, where the screen and the
+    // keyboard are known, not left to the panel's own default.
+    expect(panel.props.maxListHeight).toBe(sendQueueListHeight(844, 0));
     act(() => panel.props.onUpdate("run_a", "改好了"));
     expect(onQueueUpdate).toHaveBeenCalledWith("run_a", "改好了");
     act(() => panel.props.onRemove("run_b"));
@@ -1159,6 +1162,9 @@ test("a waiting row's files can be opened, removed and added from the panel", ()
     node => node.props.testID === testID && typeof node.props.onPress === "function",
   )[0]!;
   try {
+    // Three rows is a long queue: the panel opens as its header, and the rows
+    // (and the file controls on them) are behind one tap.
+    act(() => pressable("send-queue-toggle").props.onPress());
     expect(host("send-queue-attachments")).toHaveLength(2);
 
     const preview = pressable("send-queue-attachment-preview");
