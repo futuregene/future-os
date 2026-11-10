@@ -22,6 +22,7 @@
 
 use crate::flags::Flags;
 use crate::output::Output;
+use serde_json::Value;
 use std::path::Path;
 
 /// Exit code for a usage error: an unknown flag, an unknown value, a missing
@@ -69,6 +70,29 @@ impl Format {
     pub fn is_data(self) -> bool {
         !matches!(self, Format::Text)
     }
+}
+
+/// Does this error text describe a usage mistake rather than a failure?
+///
+/// Groups that have not been converted to [`usage`] still raise a plain
+/// `Err("Usage: …")` string, and the dispatcher's `catch` used to turn every one
+/// of those into exit 1 — while `docs/wiki/{en,zh}/CLI.md` promises 2. Classifying
+/// here fixes the whole surface at once; converting a group to [`usage`] later
+/// keeps the same answer, so the two paths agree instead of drifting.
+pub fn is_usage_error(message: &str) -> bool {
+    let first = message.lines().next().unwrap_or("").trim_start();
+    first.starts_with("Usage: ")
+        || first.starts_with("usage: ")
+        || first.starts_with("Unknown argument")
+        || first.starts_with("unexpected argument")
+        || first.starts_with("missing ")
+        || first.contains("unknown option")
+        || first.starts_with("expected at most")
+        || first.starts_with("unknown mcp command")
+        || first.starts_with("unknown setting")
+        || first.starts_with("Invalid data command")
+        // A destructive command missing its confirmation is a usage mistake too.
+        || first.contains("re-run with --yes")
 }
 
 /// True when the command line asks for help.
@@ -127,6 +151,38 @@ pub fn count_line(out: &Output, label: &str, count: usize) {
 pub fn empty_state(out: &Output, message: &str) {
     out.log("count: 0");
     out.log(message);
+}
+
+/// Clip a long value for the text view, with the size and the escape hatch named
+/// (AXI principle 3).
+///
+/// `desktop settings` printed one line of 2904 characters (108 hidden models),
+/// `task runs` inlined a 900-character `error_message`, and `mcp describe`
+/// pretty-printed an entire schema — each of them a single value that can eat a
+/// reader's whole budget while saying little. Data formats (`--json`) keep the
+/// complete value; this is for the view a person or an agent reads.
+pub fn clip(value: &str, limit: usize, full_flag: &str) -> String {
+    if value.chars().count() <= limit {
+        return value.to_string();
+    }
+    let head: String = value.chars().take(limit).collect();
+    format!(
+        "{head}… ({} chars total — add {full_flag} to see it in full)",
+        value.chars().count()
+    )
+}
+
+/// [`clip`] for a JSON value that is a list: `[108 items]` instead of 108 quoted
+/// names, because the count is the fact and the members are one command away.
+pub fn clip_list(value: &Value, limit: usize, full_flag: &str) -> Option<String> {
+    let items = value.as_array()?;
+    if items.len() <= limit {
+        return None;
+    }
+    Some(format!(
+        "[{} items — add {full_flag} to see them]",
+        items.len()
+    ))
 }
 
 /// TOON: `name[N]{a,b,c}:` then one comma-separated row per item.
@@ -255,6 +311,37 @@ mod tests {
             toon_rows("issues", &["number", "title", "state"], &rows),
             "issues[3]{number,title,state}:\n 42,Fix login bug,open\n 43,\"Add a,b\",open\n 44,\"say \\\"hi\\\"\",\"\""
         );
+    }
+
+    /// Principle 3: a long value is clipped *with* the size and the way back to
+    /// the whole thing, and a short one is left exactly as it was.
+    #[test]
+    fn clip_names_the_size_and_the_escape_hatch() {
+        assert_eq!(clip("short", 20, "--full"), "short");
+        let long = "x".repeat(300);
+        let clipped = clip(&long, 100, "--full");
+        assert!(clipped.starts_with(&"x".repeat(100)), "{clipped}");
+        assert!(clipped.contains("300 chars total"), "{clipped}");
+        assert!(clipped.contains("--full"), "{clipped}");
+        // Characters, not bytes: a CJK title must not be cut mid-character.
+        let cjk = "测试".repeat(80);
+        let clipped = clip(&cjk, 10, "--full");
+        assert!(clipped.starts_with(&"测试".repeat(5)), "{clipped}");
+    }
+
+    /// A list is summarised as its count, and `--full` (the caller's choice)
+    /// bypasses that — the member values are not lost, only folded away.
+    #[test]
+    fn clip_list_reports_the_count_only_past_the_threshold() {
+        let short = serde_json::json!(["a", "b"]);
+        assert_eq!(clip_list(&short, 8, "--full"), None);
+        let long = serde_json::json!((0..108).map(|i| format!("m{i}")).collect::<Vec<_>>());
+        assert_eq!(
+            clip_list(&long, 8, "--full").as_deref(),
+            Some("[108 items — add --full to see them]")
+        );
+        // Not a list: no summary, the caller renders the value itself.
+        assert_eq!(clip_list(&serde_json::json!("text"), 8, "--full"), None);
     }
 
     #[test]

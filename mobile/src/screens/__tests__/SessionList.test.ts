@@ -116,7 +116,7 @@ jest.mock("react-i18next", () => ({
     // a failing expectation, not an invisible one.
     t: (key: string, options?: { title?: string; count?: number; name?: string }) =>
       options?.title
-        ? `${key}:${options.title}`
+        ? `${key}:${options.title}${options.count !== undefined ? `:${options.count}` : ""}`
         : options?.count !== undefined
           ? `${key}:${options.count}`
           : options?.name
@@ -1294,6 +1294,39 @@ test("select all in a workspace selects nested sessions but not other chats", ()
   expect(button("sessions.deleteSelected").props.disabled).toBe(false);
 });
 
+/**
+ * A workspace heading that says it holds a conversation must confirm with that
+ * number, on the connected machine's own list.
+ *
+ * Every drawn row carries the active desktop's id (`withMachine`), while a
+ * conversation read from the single-machine catalogue carries no machine at all.
+ * Comparing those two spellings directly matched nothing, so the confirmation read
+ * "0 conversations will be deleted" under a heading whose badge said 1 (reported
+ * 2026-11-09).
+ */
+test("a workspace's delete confirmation counts what its heading counted", () => {
+  mockRemote.workspaces = [{ id: "w1", name: "Project", path: "/tmp/project" }];
+  mockRemote.sessions = [
+    { sessionId: "w1a", threadId: "tw1", title: "Plan", mode: "workspace", workspaceId: "w1", streaming: false },
+  ];
+  act(() => tree.update(createElement(SessionList, {
+    tab: "workspace",
+    empty: null,
+    onMenu,
+    onTabChange,
+    onExitArchived,
+    commandsFor: testCommandsFor,
+    ref: listRef,
+    // The app's own state: one paired desktop, so the list is not merged, and the
+    // connected machine is still named — which is what the two spellings needed.
+    activeDesktopId: "desk-a",
+  })));
+  pressWorkspaceMenu("sessions.deleteWorkspace");
+  expect(dialogText()).toEqual(
+    expect.arrayContaining(["sessions.deleteWorkspaceConfirm:Project:1"]),
+  );
+});
+
 test("deleting a workspace confirms with its session count and calls the desktop once", async () => {
   jest.useFakeTimers();
   try {
@@ -1306,7 +1339,7 @@ test("deleting a workspace confirms with its session count and calls the desktop
     act(() => button("sessions.selectVisible").props.onPress());
     expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:1").length).toBeGreaterThan(0);
     pressWorkspaceMenu("sessions.deleteWorkspace");
-    expect(dialogText()).toEqual(expect.arrayContaining(["sessions.deleteWorkspace", "sessions.deleteWorkspaceConfirm:Project"]));
+    expect(dialogText()).toEqual(expect.arrayContaining(["sessions.deleteWorkspace", "sessions.deleteWorkspaceConfirm:Project:2"]));
     await act(async () => {
       confirmAlert();
       confirmAlert(); // A second tap while the request is in flight must not re-fire.
@@ -2775,7 +2808,7 @@ test("a shelved workspace's delete confirmation is not the active one's", () => 
   );
   pressWorkspaceAction("Shut project", "sessions.deleteWorkspace");
   expect(dialogText()).toEqual(
-    expect.arrayContaining(["sessions.deleteWorkspaceConfirmArchived:Shut project"]),
+    expect.arrayContaining(["sessions.deleteWorkspaceConfirmArchived:Shut project:1"]),
   );
   expect(dialogText()).not.toEqual(
     expect.arrayContaining(["sessions.deleteWorkspaceConfirm:Shut project"]),
@@ -2809,7 +2842,7 @@ test("a workspace in both lists deletes from the shelf when the shelf is showing
   pressWorkspaceAction("Both lists", "sessions.deleteWorkspace");
   // The sentence is the shelf's, not the workspace list's.
   expect(dialogText()).toEqual(
-    expect.arrayContaining(["sessions.deleteWorkspaceConfirmArchived:Both lists"]),
+    expect.arrayContaining(["sessions.deleteWorkspaceConfirmArchived:Both lists:1"]),
   );
   expect(dialogText()).not.toEqual(
     expect.arrayContaining(["sessions.deleteWorkspaceConfirm:Both lists"]),

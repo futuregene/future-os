@@ -79,6 +79,15 @@ pub async fn update_thread_thinking_level(
     future_host::application::threads::update_thread_thinking_level(input).await
 }
 
+/// Apply an approval tier to the conversation the composer is showing.
+#[tauri::command]
+pub async fn update_thread_approval_tier(
+    thread_id: String,
+    tier: String,
+) -> Result<serde_json::Value, crate::AppError> {
+    future_host::application::threads::update_thread_approval_tier(thread_id, tier).await
+}
+
 #[tauri::command]
 pub fn pin_thread(input: store::PinThreadInput) -> Result<store::ThreadRecord, crate::AppError> {
     future_host::application::threads::pin_thread(input)
@@ -260,6 +269,7 @@ mod tests {
                 rename_thread,
                 update_thread_model,
                 update_thread_thinking_level,
+                update_thread_approval_tier,
                 delete_thread,
                 batch_delete_threads,
                 get_thread_agent_state,
@@ -273,6 +283,7 @@ mod tests {
                 "rename_thread",
                 "update_thread_model",
                 "update_thread_thinking_level",
+                "update_thread_approval_tier",
                 "delete_thread",
                 "batch_delete_threads",
                 "get_thread_agent_state",

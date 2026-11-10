@@ -218,8 +218,8 @@
     "incompatible": "Future Agent does not match this FutureOS version",
     "fixIncompatible": "Update or stop the external Agent, then restart FutureOS. A conflicting Agent cannot be bypassed by starting an embedded service.",
     "stopping": "Stopping FutureOS",
-    "cleanupFailed": "FutureOS cleanup could not finish",
-    "cleanupFailedHint": "Updates, reset and restart are blocked. Save diagnostics, then exit the process and reopen FutureOS.",
+    "cleanupFailed": "FutureOS is closing with one cleanup step pending",
+    "cleanupFailedHint": "Your conversations and settings are unaffected. FutureOS retries this the next time it starts; until then updates, reset and restart stay blocked.",
     "shutdownStages": {
       "admission": "Stopping new work",
       "callers": "Waiting for current requests",
