@@ -14,6 +14,7 @@ pub mod data;
 pub mod desktop;
 pub mod doctor;
 pub mod fusion;
+pub mod home;
 pub mod init;
 pub mod mcp;
 pub mod mcp_client;

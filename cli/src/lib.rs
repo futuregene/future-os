@@ -4,10 +4,12 @@
 //! `dispatch` is the port of `cli/src/index.ts` `main()`; command modules port
 //! `cli/src/commands/*`.
 
+pub mod axi;
 pub mod browser;
 pub mod commands;
 pub mod constants;
 pub mod dns;
+pub mod flags;
 pub mod headless;
 pub mod help;
 pub mod output;
@@ -220,12 +222,11 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
 
     // if (group === "auth") — unknown subcommand: show group help
     if group == Some("auth") {
-        out.log_err(&format!(
-            "Unknown command: {}\n",
-            command.unwrap_or("undefined")
-        ));
-        out.log(help::AUTH_GROUP_HELP_UNKNOWN);
-        return 0;
+        return unknown_subcommand(
+            out,
+            command.unwrap_or("undefined"),
+            help::AUTH_GROUP_HELP_UNKNOWN,
+        );
     }
 
     // if (group === "tools" && (!command || command === "--help" || command === "-h"))
@@ -244,20 +245,23 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
 
     // if (group === "tools") — unknown subcommand
     if group == Some("tools") {
-        out.log_err(&format!(
-            "Unknown command: {}\n",
-            command.unwrap_or("undefined")
-        ));
-        out.log(help::TOOLS_GROUP_HELP);
-        return 0;
+        return unknown_subcommand(out, command.unwrap_or("undefined"), help::TOOLS_GROUP_HELP);
     }
 
     // `future mcp` — the server list, their tools, and calling one.
-    if group == Some("mcp")
-        && (command.is_none() || command == Some("--help") || command == Some("-h"))
-    {
+    if group == Some("mcp") && matches!(command, Some("--help" | "-h")) {
         out.log(help::MCP_GROUP_HELP);
         return 0;
+    }
+
+    // Bare `future mcp` shows the configured servers rather than the help
+    // screen (AXI principle 8): the help is one flag away.
+    if group == Some("mcp") && command.is_none() {
+        return catch(
+            out,
+            std::future::ready(commands::mcp_servers::list_servers(out)),
+        )
+        .await;
     }
 
     if group == Some("mcp") && commands::mcp_servers::is_mcp_command(command) {
@@ -266,12 +270,7 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
     }
 
     if group == Some("mcp") {
-        out.log_err(&format!(
-            "Unknown command: {}\n",
-            command.unwrap_or("undefined")
-        ));
-        out.log(help::MCP_GROUP_HELP);
-        return 0;
+        return unknown_subcommand(out, command.unwrap_or("undefined"), help::MCP_GROUP_HELP);
     }
 
     // if (group === "skills" && (!command || command === "--help" || command === "-h"))
@@ -290,12 +289,7 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
 
     // if (group === "skills") — unknown subcommand
     if group == Some("skills") {
-        out.log_err(&format!(
-            "Unknown command: {}\n",
-            command.unwrap_or("undefined")
-        ));
-        out.log(help::SKILLS_GROUP_HELP);
-        return 0;
+        return unknown_subcommand(out, command.unwrap_or("undefined"), help::SKILLS_GROUP_HELP);
     }
 
     // if (group === "account" && (!command || command === "--help" || command === "-h"))
@@ -314,12 +308,11 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
 
     // if (group === "account") — unknown subcommand
     if group == Some("account") {
-        out.log_err(&format!(
-            "Unknown command: {}\n",
-            command.unwrap_or("undefined")
-        ));
-        out.log(help::ACCOUNT_GROUP_HELP);
-        return 0;
+        return unknown_subcommand(
+            out,
+            command.unwrap_or("undefined"),
+            help::ACCOUNT_GROUP_HELP,
+        );
     }
 
     // if (group === "run") — args.slice(1) is everything after "run"
@@ -369,9 +362,17 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
         return catch(out, commands::doctor::doctor(out)).await;
     }
 
-    // printHelp(): bare `future`, `--help`, `-h` and `help` print the main help
-    // and succeed. Only these: everything above is a known group.
-    if matches!(group, None | Some("--help" | "-h" | "help")) {
+    // Bare `future` is the home view, not the help screen (AXI principle 8:
+    // "content first"). It reports the state an agent opens with — agent,
+    // model, sessions, tasks, skills — and ends with the commands to run.
+    if group.is_none() {
+        commands::home::home(out).await;
+        return out.exit_code();
+    }
+
+    // `--help`, `-h` and `help` print the main help and succeed. Everything
+    // above is a known group; anything else is an error.
+    if matches!(group, Some("--help" | "-h" | "help")) {
         out.log(&help::main_help());
         return 0;
     }
@@ -382,7 +383,20 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
     let name = group.unwrap_or_default();
     out.log_err(&format!("Unknown group: {name}\n"));
     out.log_err("Run 'future --help' for the list of groups.");
-    1
+    axi::EXIT_USAGE
+}
+
+/// An unknown subcommand: the reason, the group's help, and a usage exit code.
+///
+/// AXI principle 6 — a mistyped subcommand must not read as a success. These
+/// groups used to print the help and exit 0, which made `future tools bogus`
+/// look like it had run. The help is still printed (the reader needs it), but
+/// the exit code now says "you asked for something that does not exist".
+fn unknown_subcommand(out: &Output, name: &str, help: &str) -> i32 {
+    out.log_err(&format!("Unknown command: {name}\n"));
+    out.log(help);
+    out.set_exit_code(axi::EXIT_USAGE);
+    out.exit_code()
 }
 
 /// Port of `main().catch(...)`: a rejected command promise becomes
@@ -479,11 +493,38 @@ mod tests {
         );
     }
 
+    /// Bare `future` is the home view, not the help screen: AXI principle 8
+    /// ("content first") asks a tool to show live state when run with no
+    /// arguments, because a help screen says what could be done and nothing
+    /// about what *is*. `--help` remains the way to get the help.
     #[tokio::test]
-    async fn no_args_prints_main_help() {
+    async fn no_args_prints_the_home_view() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let _addr = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_AGENT_GRPC_ADDR",
+            std::ffi::OsString::from("127.0.0.1:1"),
+        )]);
         let (code, stdout, stderr) = run(&[]).await;
         assert_eq!(code, 0);
-        assert_eq!(stdout, format!("{}\n", help::main_help()));
+        assert_ne!(stdout, format!("{}\n", help::main_help()));
+        // Every line states something an agent opens with, and the block ends
+        // with the commands that continue from it.
+        for prefix in [
+            "bin:",
+            "description:",
+            "version:",
+            "home:",
+            "agent:",
+            "sessions:",
+            "model:",
+            "tasks:",
+            "skills:",
+        ] {
+            assert!(stdout.contains(prefix), "missing {prefix} in: {stdout}");
+        }
+        assert!(stdout.contains("\nhelp["), "{stdout}");
+        assert!(stdout.contains("Run `future --help`"), "{stdout}");
         assert_eq!(stderr, "");
     }
 
@@ -503,13 +544,13 @@ mod tests {
     #[tokio::test]
     async fn unknown_group_is_an_error() {
         let (code, stdout, stderr) = run(&["bogus"]).await;
-        assert_eq!(code, 1);
+        assert_eq!(code, crate::axi::EXIT_USAGE);
         assert_eq!(stdout, "", "help must not be printed as if it succeeded");
         assert!(stderr.contains("Unknown group: bogus"), "{stderr}");
         // `future loop status` — the removed group - reports the same way rather
         // than looking like it ran.
         let (code, stdout, stderr) = run(&["loop", "status"]).await;
-        assert_eq!(code, 1);
+        assert_eq!(code, crate::axi::EXIT_USAGE);
         assert_eq!(stdout, "");
         assert!(stderr.contains("Unknown group: loop"), "{stderr}");
     }
@@ -705,9 +746,10 @@ mod tests {
         assert_eq!(stdout, format!("{}\n", help::AUTH_GROUP_HELP));
         assert_eq!(stderr, "");
 
-        // Unknown subcommand: error on stderr + the OTHER group-help variant.
+        // Unknown subcommand: error on stderr + the OTHER group-help variant,
+        // and a usage exit code — a typo must not read as a success.
         let (code, stdout, stderr) = run(&["auth", "bogus"]).await;
-        assert_eq!(code, 0);
+        assert_eq!(code, crate::axi::EXIT_USAGE);
         assert_eq!(stderr, "Unknown command: bogus\n\n");
         assert_eq!(stdout, format!("{}\n", help::AUTH_GROUP_HELP_UNKNOWN));
         assert_ne!(help::AUTH_GROUP_HELP, help::AUTH_GROUP_HELP_UNKNOWN);
@@ -836,9 +878,9 @@ mod tests {
         let (code, stdout, _) = run(&["tools", "list"]).await;
         assert_eq!(code, 0);
         assert!(stdout.contains("tools available."), "stdout: {stdout}");
-        // Unknown subcommand → stderr note + group help, exit 0.
+        // Unknown subcommand → stderr note + group help, and a usage exit code.
         let (code, stdout, stderr) = run(&["tools", "bogus"]).await;
-        assert_eq!(code, 0);
+        assert_eq!(code, crate::axi::EXIT_USAGE);
         assert_eq!(stderr, "Unknown command: bogus\n\n");
         assert_eq!(stdout, format!("{}\n", help::TOOLS_GROUP_HELP));
     }
@@ -884,8 +926,11 @@ mod tests {
         let (code, stdout, _) = run(&["mcp", "list"]).await;
         assert_eq!(code, 0);
         assert!(stdout.contains("rea --mcp"), "stdout: {stdout}");
+        // Principle 4: the count is stated, and the config path is still named.
+        assert!(stdout.starts_with("count: 1\n"), "stdout: {stdout}");
+        assert!(stdout.contains("config:"), "stdout: {stdout}");
         assert!(
-            stdout.contains("1 server(s) configured"),
+            stdout.contains("Run `future mcp status`"),
             "stdout: {stdout}"
         );
 
@@ -923,9 +968,9 @@ mod tests {
             "stderr: {stderr}"
         );
 
-        // Unknown subcommand → group help, exit 0 (the tools/skills shape).
+        // Unknown subcommand → group help, and a usage exit code.
         let (code, stdout, stderr) = run(&["mcp", "bogus"]).await;
-        assert_eq!(code, 0);
+        assert_eq!(code, crate::axi::EXIT_USAGE);
         assert_eq!(stderr, "Unknown command: bogus\n\n");
         assert_eq!(stdout, format!("{}\n", help::MCP_GROUP_HELP));
     }
@@ -946,9 +991,9 @@ mod tests {
             stderr.contains("Usage: future skills uninstall"),
             "stderr: {stderr}"
         );
-        // Unknown subcommand → group help.
+        // Unknown subcommand → group help, and a usage exit code.
         let (code, stdout, stderr) = run(&["skills", "bogus"]).await;
-        assert_eq!(code, 0);
+        assert_eq!(code, crate::axi::EXIT_USAGE);
         assert_eq!(stderr, "Unknown command: bogus\n\n");
         assert_eq!(stdout, format!("{}\n", help::SKILLS_GROUP_HELP));
     }
@@ -961,9 +1006,9 @@ mod tests {
         let (code, _, stderr) = run(&["account", "profile"]).await;
         assert_eq!(code, 1);
         assert!(stderr.contains("No API key found"), "stderr: {stderr}");
-        // Unknown subcommand → group help, exit 0.
+        // Unknown subcommand → group help, and a usage exit code.
         let (code, stdout, stderr) = run(&["account", "bogus"]).await;
-        assert_eq!(code, 0);
+        assert_eq!(code, crate::axi::EXIT_USAGE);
         assert_eq!(stderr, "Unknown command: bogus\n\n");
         assert_eq!(stdout, format!("{}\n", help::ACCOUNT_GROUP_HELP));
     }

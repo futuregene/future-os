@@ -38,6 +38,7 @@ Apps (run the FutureOS components — same as their standalone binaries):
   relay     Self-hosted, account-free NATS relay for remote control
 
 Quick start:
+  future                                     State at a glance: agent, model, sessions, tasks
   future init                                Initialize Future OS
   future config                              Configure a model provider
   future auth login                          Sign in to the Future platform
@@ -907,7 +908,8 @@ demand whenever you ask. Each run produces an ordinary conversation and a
 durable run-ledger entry.
 
 Usage:
-  future task list [--all] [--json]                 List scheduled tasks
+  future task                                                  What is scheduled now
+  future task list [--all] [--json|--format text|json|toon]     List scheduled tasks
   future task show <id|name> [--json] [--prompt]    Show one scheduled task
   future task add --name N --prompt P|--prompt-file F --cwd D
         [--model M] [--thinking L] [--timezone IANA] [--session new|existing]
@@ -1110,7 +1112,7 @@ FutureOS agent has no MCP client, so this CLI is how an MCP server is reached
 from an agent session.
 
 Usage:
-  future mcp list [--json]
+  future mcp list [--json|--format text|json|toon]
   future mcp status [<server>] [--json]
   future mcp tools <server> [--query <text>] [--limit <n>] [--offset <n>]
   future mcp describe <server> <tool>
