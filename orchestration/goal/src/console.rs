@@ -2784,6 +2784,55 @@ fn human_dur(secs: u64) -> String {
     }
 }
 
+/// Exploration-node completion floor: a scout's deliverable is not an artifact
+/// but the direction proposal it records, so a scout may not close before at
+/// least one proposal in the ledger names it. A model that reports "completed"
+/// having proposed nothing is exactly the empty exploration `TaskClass::Scout`
+/// exists to prevent.
+///
+/// Three callers share this one wording so the operator's refusal and the two
+/// automatic writebacks cannot drift apart:
+///   * the manual `todo complete` (`--force` is the reviewed override there),
+///   * the AUTOMATIC writeback in [`run_turns_inner`], which is the path
+///     `future goal run` takes, and
+///   * the AUTOMATIC writeback in [`crate::worker_bridge::run_bridge`], the
+///     stdio worker contract (`future goal worker-bridge`) — it selects from
+///     the same frontier, where a scout is runnable work, so it is a second
+///     door a scout could close through having proposed nothing.
+///
+/// `crate::completion::check_record` cannot host this check — it is a pure
+/// function over the `RunRecord` and returns early for every non-advancement
+/// class — so the floor that needs the ledger lives here.
+///
+/// `Ok(None)` = satisfied (or not a scout); `Ok(Some(text))` = the refusal. A
+/// failed ledger read is an `Err`, never a pass: a scout whose proposals cannot
+/// be read has not proven its output either.
+pub(crate) fn scout_proposal_error(
+    store: &Store,
+    goal_id: &str,
+    todo: &Todo,
+) -> Result<Option<String>> {
+    if todo.class != TaskClass::Scout {
+        return Ok(None);
+    }
+    let recorded = store
+        .direction_ledger(goal_id)?
+        .entries
+        .iter()
+        .any(|entry| entry.proposal.scout_todo.as_deref() == Some(todo.id.as_str()));
+    if recorded {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "todo {} is a scout and no direction proposal names it — a scout's output is the \
+         proposal it records, so complete it only after `{} direction propose --goal {goal_id} \
+         --scout-todo {} ...`",
+        todo.id,
+        prog(),
+        todo.id
+    )))
+}
+
 async fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut todo_id = None;
@@ -2891,24 +2940,11 @@ async fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
         }
         // Exploration node: a scout's deliverable is not an artifact but the
         // direction proposal it records, so a scout may not close before that
-        // output exists. Without this check `todo complete` accepted an empty
-        // evidence string on a scout and the ledger stayed untouched — the
-        // exploration node could report success having produced nothing.
-        if t.class == TaskClass::Scout {
-            let recorded = store
-                .direction_ledger(&goal_id)?
-                .entries
-                .iter()
-                .any(|entry| entry.proposal.scout_todo.as_deref() == Some(todo_id.as_str()));
-            if !recorded {
-                bail!(
-                    "todo {todo_id} is a scout and no direction proposal names it — a scout's \
-                     output is the proposal it records, so complete it only after \
-                     `{} direction propose --goal {goal_id} --scout-todo {todo_id} ...` \
-                     (or pass --force for a reviewed operator override)",
-                    prog()
-                );
-            }
+        // output exists. Shared with the automatic writeback in the run loop
+        // (`run_turns_inner`) — one wording, two entry points; only this manual
+        // path may override it with `--force`.
+        if let Some(error) = scout_proposal_error(store, &goal_id, t)? {
+            bail!("{error} (or pass --force for a reviewed operator override)");
         }
     }
     let successors = successor.clone().into_iter().collect::<Vec<_>>();
@@ -6143,7 +6179,29 @@ async fn run_turns_inner(
         let already_closed = g
             .todo(&todo_id)
             .is_none_or(|t| matches!(t.status, TodoStatus::Done | TodoStatus::Superseded));
-        let succeeded = !already_closed && crate::executor::turn_succeeded(&record);
+        let mut succeeded = !already_closed && crate::executor::turn_succeeded(&record);
+        // Exploration node, AUTOMATIC path — the same floor as the manual
+        // `todo complete` (see `scout_proposal_error`). This is the path a real
+        // worker takes: it reports a completed turn here, never through the CLI.
+        // `completion::check_record` above cannot cover it (pure function, no
+        // store, and it returns early for non-advancement classes), so without
+        // this a scout closed having proposed nothing — no artifact, no
+        // direction, no trace that the exploration happened at all.
+        //
+        // A rejection, not an aborted run: the turn is still recorded in full
+        // (spend, evidence, the model's own `completed` state), only the
+        // closure is refused. Stamping `record.error` before `succeeded` is
+        // consulted keeps the todo open for a bounded retry and makes
+        // `classify_failure` charge the repair budget exactly as an unmet
+        // acceptance contract does.
+        if succeeded {
+            if let Some(current) = g.todo(&todo_id) {
+                if let Some(error) = scout_proposal_error(store, goal_id, current)? {
+                    record.error = Some(error);
+                    succeeded = false;
+                }
+            }
+        }
         let completion = succeeded.then(|| (no_follow_up, successors.clone()));
         let monitor_changed = if mode == crate::contract::TurnMode::MonitorPoll {
             Some(record.evidence.to_uppercase().contains("EXISTS"))
@@ -13206,6 +13264,286 @@ mod rate_limit_backoff_tests {
         assert_eq!(record.terminal_state, "error");
         assert_eq!(record.error.as_deref(), Some("validator exited 1"));
         assert_eq!(record.failure_kind, Some(FailureKind::HardError));
+    }
+}
+
+/// Exploration-node completeness on the AUTOMATIC path.
+///
+/// `todo complete` has refused a scout with no recorded proposal since the
+/// exploration node landed, but a real worker never goes through the CLI: it
+/// reports a completed turn and `run_turns_inner` folds that into the ledger.
+/// `completion::check_record` returns early for every non-advancement class, so
+/// before this gate the writeback closed a scout that had produced nothing —
+/// the exact failure `TaskClass::Scout` exists to prevent.
+///
+/// These tests drive the REAL loop (claim → turn → writeback) against the
+/// crate's scripted agent rather than calling the helper by hand, because the
+/// bug being pinned is a missing call site, not a wrong predicate. The two
+/// cases differ only in whether a proposal naming the scout is in the ledger.
+#[cfg(test)]
+mod scout_writeback_gate_tests {
+    use super::*;
+    use crate::state::{FailureKind, Goal, Todo, TodoStatus};
+    use crate::store::{Event, Store};
+    use scripted_agent::{completed_events, spawn_mock, MockState};
+    use std::time::Duration;
+
+    /// Above the whole in-process drive (milliseconds), far below anything a
+    /// hanging run would need — a stale timeout here means the drive deadlocked,
+    /// not that the machine was slow.
+    const WATCH: Duration = Duration::from_secs(20);
+
+    fn worker_config() -> crate::worker_config::WorkerConfig {
+        crate::worker_config::WorkerConfig {
+            model: "future/test-model".to_string(),
+            thinking_level: "medium".to_string(),
+            source: crate::worker_config::ConfigSource::Default,
+        }
+    }
+
+    /// One scout todo, one registered agent, one scripted turn that the model
+    /// itself reports `completed` — what a worker returning from exploration
+    /// looks like to the writeback.
+    struct ScoutDrive {
+        _dir: tempfile::TempDir,
+        store: Store,
+        /// `None` when the run had not returned inside `WATCH`.
+        completed: Option<Result<(), String>>,
+        /// Prompts the scripted agent actually served (the turn reached the model).
+        prompts: u64,
+    }
+
+    /// `proposal_named_by` puts a recorded direction proposal in the ledger
+    /// before the turn runs; `None` is a scout that explored and recorded
+    /// nothing (the case under test), `Some("t1")` the honest one, and any other
+    /// id a proposal that names a DIFFERENT todo (also not this scout's output).
+    async fn drive_scout_turn(proposal_named_by: Option<&str>) -> ScoutDrive {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path().to_str().unwrap()).unwrap();
+        store.register(&Goal::new("g", "obj", "/tmp")).unwrap();
+        store
+            .append(Event::GoalStarted {
+                goal_id: "g".into(),
+                ts: 1,
+            })
+            .unwrap();
+        store
+            .append(Event::AgentRegistered {
+                goal_id: "g".into(),
+                agent_id: "agent-a".into(),
+                workspaces: vec![],
+                ts: 2,
+            })
+            .unwrap();
+        // A scout is claimable work like an advancement todo; the class is what
+        // changes (a scout's output is a proposal, not an artifact).
+        let mut todo = Todo::advancement("t1", "explore the object store direction");
+        todo.class = TaskClass::Scout;
+        todo.kill_when = Some("two designs dropped".into());
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo,
+                ts: 3,
+            })
+            .unwrap();
+        if let Some(named_by) = proposal_named_by {
+            store
+                .append(Event::DirectionProposed {
+                    goal_id: "g".into(),
+                    proposal: DirectionProposal::new(
+                        "prop_1",
+                        "g",
+                        "operator",
+                        "which object store route?",
+                        "reads dominate writes in the trace",
+                    )
+                    .with_scout_todo(named_by)
+                    .with_evidence(&["runs/mock-run-1.live.jsonl"]),
+                    ts: 4,
+                })
+                .unwrap();
+        }
+
+        let (addr, state) = spawn_mock(MockState {
+            events: completed_events("mock-run-1"),
+            ..Default::default()
+        })
+        .await;
+        let mut client = crate::agent_client::AgentClient::connect(&addr)
+            .await
+            .expect("the scripted mock is reachable");
+        let mut last_failure_kind = None;
+        let mut executed = false;
+        let config = worker_config();
+        // `max-turns 1`: one turn is the whole run, so both outcomes are visible
+        // in the ledger this single writeback wrote.
+        let run = run_turns(
+            &mut client,
+            &mut store,
+            "g",
+            "session-1",
+            1,
+            3600,
+            Some("agent-a"),
+            0,
+            false,
+            &mut last_failure_kind,
+            &mut executed,
+            false,
+            true,
+            &config,
+        );
+        let completed = tokio::time::timeout(WATCH, run)
+            .await
+            .ok()
+            .map(|result| result.map_err(|e| format!("{e:#}")));
+        let prompts = state.lock().unwrap_or_else(|e| e.into_inner()).prompts;
+        ScoutDrive {
+            _dir: dir,
+            store,
+            completed,
+            prompts,
+        }
+    }
+
+    fn completed_events_for(store: &Store, todo_id: &str) -> bool {
+        store.events("g").unwrap().into_iter().any(|stored| {
+            matches!(&stored.event, Event::TodoCompleted { todo_id: id, .. } if id == todo_id)
+        })
+    }
+
+    #[tokio::test]
+    async fn a_scout_that_records_no_proposal_stays_open_with_the_reason() {
+        let drive = drive_scout_turn(None).await;
+        assert_eq!(
+            drive.prompts, 1,
+            "the drive must reach the model, otherwise no writeback is under test"
+        );
+        let goal = drive.store.replay("g").unwrap().unwrap();
+        let todo = goal.todo("t1").unwrap();
+        assert_eq!(
+            todo.status,
+            TodoStatus::Open,
+            "a scout that recorded no direction proposal must not close: the writeback \
+             is the only place a real worker's completion is decided"
+        );
+        assert!(
+            !completed_events_for(&drive.store, "t1"),
+            "no TodoCompleted event may land for a scout with no recorded proposal"
+        );
+
+        // The turn itself is kept in full — this is a refused closure, not a
+        // discarded run: the model did finish, so terminal_state stays put.
+        let record = goal
+            .history
+            .last()
+            .expect("the writeback records the turn either way");
+        assert_eq!(record.terminal_state, "completed");
+        let error = record.error.as_deref().unwrap_or_default();
+        assert!(
+            error.contains("is a scout and no direction proposal names it"),
+            "the rejection must name the missing proposal, not just fail: {error}"
+        );
+        assert!(
+            error.contains("direction propose --goal g --scout-todo t1"),
+            "the rejection must carry the command that satisfies it: {error}"
+        );
+        // Classified as a science failure, so the repair budget applies (a 429
+        // or a transport drop must never be what stops a scout from retrying).
+        assert_eq!(record.failure_kind, Some(FailureKind::HardError));
+        // The run ends on its turn bound, not on a crash or a transport error.
+        let err = drive
+            .completed
+            .expect("the drive must return inside WATCH")
+            .expect_err("a refused closure is not a successful run");
+        assert!(err.contains("max-turns"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_scout_that_records_a_proposal_closes_normally() {
+        let drive = drive_scout_turn(Some("t1")).await;
+        assert_eq!(drive.prompts, 1, "the drive must reach the model");
+        let goal = drive.store.replay("g").unwrap().unwrap();
+        assert_eq!(
+            goal.todo("t1").unwrap().status,
+            TodoStatus::Done,
+            "with a proposal naming the scout, the same drive must close it — \
+             otherwise the gate blocks honest scouting"
+        );
+        assert!(
+            completed_events_for(&drive.store, "t1"),
+            "the closure must be durable (TodoCompleted), not just in-memory"
+        );
+        let record = goal.history.last().expect("the run record");
+        assert_eq!(record.error, None, "a satisfied scout has no rejection");
+        assert_eq!(record.failure_kind, Some(FailureKind::None));
+    }
+
+    /// A proposal that names a DIFFERENT todo is not this scout's output — the
+    /// gate keys on the scout's own id, not on "some proposal exists".
+    #[tokio::test]
+    async fn a_proposal_naming_another_todo_does_not_close_this_scout() {
+        let drive = drive_scout_turn(Some("t-other")).await;
+        let goal = drive.store.replay("g").unwrap().unwrap();
+        assert_eq!(goal.todo("t1").unwrap().status, TodoStatus::Open);
+        assert!(goal
+            .history
+            .last()
+            .and_then(|r| r.error.as_deref())
+            .is_some_and(|e| e.contains("no direction proposal names it")));
+    }
+
+    /// The predicate itself, without the loop: the two properties the call sites
+    /// depend on are "only scouts are gated" and "the ledger decides".
+    #[test]
+    fn only_scouts_are_gated_and_the_ledger_decides() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path().to_str().unwrap()).unwrap();
+        store.register(&Goal::new("g", "obj", "/tmp")).unwrap();
+        store
+            .append(Event::GoalStarted {
+                goal_id: "g".into(),
+                ts: 1,
+            })
+            .unwrap();
+        let mut scout = Todo::advancement("t1", "explore");
+        scout.class = TaskClass::Scout;
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: scout.clone(),
+                ts: 2,
+            })
+            .unwrap();
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("t2", "deliver"),
+                ts: 3,
+            })
+            .unwrap();
+
+        // An advancement todo is never gated here (its floor is evidence).
+        assert_eq!(
+            scout_proposal_error(&store, "g", &Todo::advancement("t2", "deliver")).unwrap(),
+            None
+        );
+        // A scout with an empty ledger is refused, and the refusal names it.
+        let refusal = scout_proposal_error(&store, "g", &scout)
+            .unwrap()
+            .expect("a scout with no proposal must be refused");
+        assert!(refusal.contains(&scout.id), "{refusal}");
+
+        store
+            .append(Event::DirectionProposed {
+                goal_id: "g".into(),
+                proposal: DirectionProposal::new("prop_1", "g", "operator", "q", "o")
+                    .with_scout_todo(&scout.id),
+                ts: 4,
+            })
+            .unwrap();
+        assert_eq!(scout_proposal_error(&store, "g", &scout).unwrap(), None);
     }
 }
 
