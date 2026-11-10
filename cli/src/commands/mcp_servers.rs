@@ -979,8 +979,16 @@ async fn mcp_call(args: &[String], out: &Output) -> Result<(), String> {
         return Err(crate::HANDLED_EXIT.to_string());
     }
 
-    for line in header {
-        out.log(&line);
+    // `--json` means "stdout is one JSON document": the notes that accompany a
+    // capped or mirrored result go to stderr instead, or the document stops
+    // parsing (the harness literally `JSON.parse`s the whole of stdout).
+    let notes_to_stderr = flags.has("--json");
+    for line in &header {
+        if notes_to_stderr {
+            out.log_err(line);
+        } else {
+            out.log(line);
+        }
     }
     out.log(&body);
     Ok(())
