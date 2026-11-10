@@ -109,11 +109,11 @@ describe("approval badge provenance", () => {
     expect(trigger!.textContent).toContain("Manual");
   });
 
-  it("says the session decides when the agent reports no tier, instead of falling back", async () => {
+  it("says the tier is unknown when the agent reports none", async () => {
     render("unknown");
     const trigger = [...container.querySelectorAll<HTMLButtonElement>("button[title]")]
       .find(candidate => candidate.getAttribute("title") === "Approval mode");
-    expect(trigger!.textContent).toContain("Per session");
+    expect(trigger!.textContent).toContain("Unknown");
     // The default would be the same wrong claim in a new wording.
     expect(trigger!.textContent).not.toContain("Full access");
   });

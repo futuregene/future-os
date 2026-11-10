@@ -73,7 +73,26 @@ export function ModelsSettingsPage({ settings, disabled, onChange }: {
   const providers = useDesktopResource(remote.listProviders, remote.desktopSettingsRevision, remote.desktopReadable && named);
   const [query, setQuery] = useState("");
   const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
-  const hidden = useMemo(() => new Set(settings?.hiddenModels ?? []), [settings?.hiddenModels]);
+  /**
+   * The switches as the reader just left them, until the write is acknowledged.
+   *
+   * The value comes from the desktop's settings snapshot, which only changes
+   * after a round trip — so without this the switch sat on its old position
+   * (disabled, because a save was in flight) and then jumped to the new one.
+   * Cleared the moment a fresh snapshot arrives, so the desktop stays the
+   * authority: a refused write falls back to what it holds.
+   */
+  const [pendingHidden, setPendingHidden] = useState<ReadonlySet<string> | null>(null);
+  const hidden = pendingHidden
+    ?? new Set<string>(settings?.hiddenModels ?? []);
+  // Adjust during render rather than in an effect: the overlay exists only
+  // until a snapshot that already carries the write arrives, and re-syncing it
+  // in an effect would paint one frame of the old value first.
+  const [seenSnapshot, setSeenSnapshot] = useState(settings?.hiddenModels);
+  if (seenSnapshot !== settings?.hiddenModels) {
+    setSeenSnapshot(settings?.hiddenModels);
+    if (pendingHidden !== null) setPendingHidden(null);
+  }
 
   const needle = query.trim().toLowerCase();
   const searching = needle.length > 0;
@@ -100,11 +119,12 @@ export function ModelsSettingsPage({ settings, disabled, onChange }: {
 
   const setVisibility = (models: RemoteModel[], visible: boolean) => {
     if (!settings || disabled) return;
-    const next = new Set(settings.hiddenModels);
+    const next = new Set(hidden);
     for (const model of models) {
       if (visible) next.delete(modelReference(model));
       else next.add(modelReference(model));
     }
+    setPendingHidden(next);
     onChange({ hiddenModels: [...next] });
   };
   const toggleFolded = (id: string) => setFolded(current => {
@@ -114,7 +134,9 @@ export function ModelsSettingsPage({ settings, disabled, onChange }: {
     return next;
   });
 
-  const rowsDisabled = disabled || !settings || resource.loading || resource.failed;
+  // A background refresh is not a reason to disable the rows: the reader is
+  // mid-gesture, and the page already draws a complete list.
+  const rowsDisabled = disabled || !settings || (resource.failed && resource.data === null);
   return <SectionList<RemoteModel, ModelGroup>
     sections={groups}
     keyExtractor={modelReference}
