@@ -5,7 +5,7 @@ import argparse
 import csv
 import datetime
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
@@ -15,23 +15,27 @@ from scoring import bbeh_module
 
 NETWORK_HTTP = {408, 429, 500, 502, 503, 504}
 NETWORK_INTERRUPTION = ("[upstream_disconnected]", "[response_timeout]")
+CASE_OUTCOMES = {"completed", "deferred", "output_limit", "empty_answer"}
 
 
-def terminal_run_error(result):
+def run_ledger_entry(result):
     run_id = result.get("run_id")
     if (
         result["status"] == "completed"
         or run_id is None
         or result.get("submission_uncertain")
     ):
-        return ""
+        return {}
     for entry in result.get("parent_usage_ledger", {}).get("ledger", []):
-        if entry.get("runId") == run_id and entry.get("status") in {
-            "interrupted",
-            "failed",
-            "error",
-        }:
-            return entry.get("error") or ""
+        if entry.get("runId") == run_id:
+            return entry
+    return {}
+
+
+def terminal_run_error(result):
+    entry = run_ledger_entry(result)
+    if entry.get("status") in {"interrupted", "failed", "error"}:
+        return entry.get("error") or ""
     return ""
 
 
@@ -69,6 +73,12 @@ def case_status(result):
         return "output_limit"
     if network_failure(result):
         return "deferred"
+    if (
+        run_ledger_entry(result).get("status") == "completed"
+        and not result.get("failure_evidence_error")
+        and f"run {result['run_id']} ended as empty_answer:" in result.get("error", "")
+    ):
+        return "empty_answer"
     return result["status"]
 
 
@@ -223,22 +233,22 @@ def execute(args):
         for group in groups:
             rows = [h for (name, _), h in histories.items() if name == group and h]
             latest = [h[-1] for h in rows]
+            states = Counter(map(case_status, latest))
             counts[group] = {
                 "binding": bindings.get(group, {}).get("baseline"),
                 "scheduled": len(identifiers),
                 "first_pass_done": len(rows),
                 "attempts": sum(map(len, rows)),
-                "answered": sum(row["status"] == "completed" for row in latest),
+                "answered": states["completed"],
                 "correct": sum(row["grade"]["correct"] for row in latest),
                 "parse_failures": sum(
                     row["status"] == "completed" and not row["grade"]["parsed"]
                     for row in latest
                 ),
-                "network_pending": sum(network_failure(row) for row in latest),
-                "output_limits": sum(
-                    case_status(row) == "output_limit" for row in latest
-                ),
-                "other_errors": sum(case_status(row) == "error" for row in latest),
+                "network_pending": states["deferred"],
+                "output_limits": states["output_limit"],
+                "empty_answers": states["empty_answer"],
+                "other_errors": states["error"],
                 "first_pass_network_errors": sum(network_failure(h[0]) for h in rows),
             }
         write_json(
@@ -290,18 +300,14 @@ def execute(args):
         state = case_status(result)
         print(f"{group} {identifier} attempt-{attempt}: {state}", flush=True)
         progress(phase)
-        if state not in {"completed", "deferred", "output_limit"}:
+        if state not in CASE_OUTCOMES:
             raise ValueError(
                 f"Inspect {attempt_path(args.out, group, identifier, attempt)}"
             )
 
     try:
         for key, history in histories.items():
-            if history and case_status(history[-1]) not in {
-                "completed",
-                "deferred",
-                "output_limit",
-            }:
+            if history and case_status(history[-1]) not in CASE_OUTCOMES:
                 raise ValueError(f"Unresolved non-network failure: {key}")
         bind_clients()
         phase = "first_pass"
@@ -359,13 +365,12 @@ def write_results(out, histories):
         writer.writeheader()
         for (group, identifier), rows in histories.items():
             result = rows[-1]
+            state = case_status(result)
             writer.writerow(
                 {
                     "group": group,
                     "case_id": identifier,
-                    "status": "output_limit"
-                    if output_limit(result)
-                    else result["status"],
+                    "status": result["status"] if state == "deferred" else state,
                     "correct": result["grade"]["correct"],
                     "parsed": result["grade"]["parsed"],
                     "attempts": len(rows),
