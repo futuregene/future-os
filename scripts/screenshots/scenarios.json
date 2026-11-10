@@ -3319,6 +3319,60 @@
       "mobile": true
     },
     "scenarios": {
+        "queue-collapsed": {
+          "note": "A conversation that is mid-run with eight messages waiting behind it — the burst of goal pokes that used to cover the whole conversation (`?queue=8`, `mobile/shot/mock/data.ts`). The panel is docked in the composer's own column, so what it draws is taken from the transcript: a queue of eight used to leave nothing above the box. Now it opens as one header line that counts what is waiting, and the rows are drawn only when the reader asks. Measured, not asserted from the source: no rows are drawn, the panel is a single line tall, and the header still names the queue and offers to open it.",
+          "query": "?session=sess_dopamine_review&streaming=1&queue=8",
+          "lang": "zh-CN",
+          "appearance": "dark",
+          "ready": "/发送队列/.test(document.body.innerText)",
+          "steps": [
+            {
+              "wait": 900
+            },
+            {
+              "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+            },
+            {
+              "wait": 900
+            },
+            {
+              "eval": "(() => {\n  const panel = document.querySelector('[data-testid=send-queue]');\n  if (!panel) throw new Error('no send queue panel');\n  const rows = document.querySelectorAll('[data-testid=send-queue-item]');\n  if (rows.length) throw new Error('a queue of eight drew its rows without being asked: ' + rows.length);\n  const text = panel.innerText;\n  if (!text.includes('发送队列')) throw new Error('the header does not name the queue: ' + text);\n  if (!text.includes('8 条等待中')) throw new Error('the header does not count the waiting messages: ' + text);\n  const toggle = panel.querySelector('[data-testid=send-queue-toggle]');\n  if (!toggle) throw new Error('the header is not a control, so a queue this long cannot be opened');\n  const label = toggle.getAttribute('aria-label');\n  if (label !== '展开队列中的消息') throw new Error('the closed panel does not offer to open: ' + label);\n  // The panel sits in the composer's column, so its height is what it took from the conversation.\n  const rect = panel.getBoundingClientRect();\n  if (rect.height > 64) throw new Error('the closed panel is ' + Math.round(rect.height) + 'px tall');\n  return 'one header line, ' + Math.round(rect.height) + 'px, 8 waiting, no rows drawn';\n})()"
+            },
+            {
+              "shot": "mobile-queue-collapsed-zh.png"
+            }
+          ]
+        },
+        "queue-expanded": {
+          "note": "The same queue opened by hand. The list is bounded by the room the reader's screen leaves (`sendQueueListHeight`), so expanding a long queue still does not take the conversation: past that height the rows scroll inside the panel instead. Measured: all eight rows are drawn, the list is under 245px, and its content is taller than its frame — it scrolls.",
+          "query": "?session=sess_dopamine_review&streaming=1&queue=8",
+          "lang": "zh-CN",
+          "appearance": "dark",
+          "ready": "/发送队列/.test(document.body.innerText)",
+          "steps": [
+            {
+              "wait": 900
+            },
+            {
+              "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+            },
+            {
+              "wait": 900
+            },
+            {
+              "tap": "展开队列中的消息"
+            },
+            {
+              "wait": 700
+            },
+            {
+              "eval": "(() => {\n  const panel = document.querySelector('[data-testid=send-queue]');\n  if (!panel) throw new Error('no send queue panel');\n  const rows = document.querySelectorAll('[data-testid=send-queue-item]');\n  if (rows.length !== 8) throw new Error('opening the queue did not draw its rows: ' + rows.length);\n  const toggle = panel.querySelector('[data-testid=send-queue-toggle]');\n  if (toggle.getAttribute('aria-label') !== '收起队列中的消息') throw new Error('the open panel does not offer to close: ' + toggle.getAttribute('aria-label'));\n  const list = panel.querySelector('[data-testid=send-queue-list]');\n  if (!list) throw new Error('no list under the open panel');\n  const height = list.getBoundingClientRect().height;\n  if (height > 245) throw new Error('the open list is ' + Math.round(height) + 'px tall, past the room it is allowed');\n  if (!(list.scrollHeight > list.clientHeight + 20)) throw new Error('the open list does not scroll: ' + list.scrollHeight + '/' + list.clientHeight);\n  return 'eight rows, list ' + Math.round(height) + 'px of ' + list.scrollHeight + 'px, scrolls inside the panel';\n})()"
+            },
+            {
+              "shot": "mobile-queue-expanded-zh.png"
+            }
+          ]
+        },
       "fleet-zh": {
         "note": "The home screen's recency page with five paired desktops merged into one list (`?fleet=1`, `mobile/shot/mock/fleet.ts`): fourteen settled conversations, ordered by the reply time each machine reported rather than by machine — no run state, so no approval alert on a row and no active stretch. Every row opens on the desktop it lives on; the machine is named by its glyph, and the picker above the list is where the five names are.",
         "query": "?fleet=1",
