@@ -760,6 +760,31 @@ describe("usePromptOutbox sendMessage", () => {
   });
 
   /**
+   * The combination the composer now allows: a message written (and given a
+   * photo) while a reply streamed, handed to the session to run at the turn
+   * boundary. The upload travels on the same command as the policy, and nothing
+   * is drawn into the transcript until the session runs it.
+   */
+  it("hands over an attachment-carrying prompt with the queueing policy", async () => {
+    mockedUploadAttachments.mockResolvedValue([{ ...attachment, uploadId: "u1" }]);
+    const h = await mountSend({ engine: fakeEngine() });
+    await act(async () => {
+      await h.result.sendMessage("看看这张", [attachment], undefined, {
+        busyPolicy: "enqueue_coalescing",
+      });
+    });
+    expect(mockedUploadAttachments).toHaveBeenCalled();
+    const prompt = h.requestRetry.mock.calls.find(([command]) => command.type === "prompt")![0];
+    expect(prompt).toEqual(expect.objectContaining({
+      type: "prompt",
+      busyPolicy: "enqueue_coalescing",
+      attachments: [{ uploadId: "u1" }],
+    }));
+    const engine = h.syncEngineRef.current as unknown as { mutate: jest.Mock };
+    expect(engine.mutate).not.toHaveBeenCalled();
+  });
+
+  /**
    * A send that names a busy policy is held by the session, so it has not been
    * sent: it belongs to the queue panel, not to the transcript. Committing a
    * bubble for it put a second copy of the text at the bottom of the

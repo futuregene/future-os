@@ -411,6 +411,16 @@ fn queued_run_from_proto(run: &proto::QueuedRunState) -> crate::payloads::Queued
         queue_position: run.queue_position.max(0) as usize,
         accepted_at: run.accepted_at.clone(),
         display_text: run.display_text.clone(),
+        attachments: run
+            .attachments
+            .iter()
+            .map(|attachment| crate::payloads::QueuedRunAttachment {
+                path: attachment.path.clone(),
+                kind: attachment.kind.clone(),
+                name: attachment.name.clone(),
+                size: attachment.size.max(0) as u64,
+            })
+            .collect(),
     }
 }
 

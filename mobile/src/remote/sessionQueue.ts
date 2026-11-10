@@ -17,6 +17,21 @@ import type { RemoteClient } from "./client";
  * early are the Agent's commands too, addressed by run id.
  */
 
+/** One file a waiting message carries, as the session reports it. */
+export interface SessionQueueAttachment {
+  /**
+   * The desktop path the file already has — the same shape the transcript's
+   * attachments report, so the preview/download path is the one already used for
+   * a message that has been sent.
+   */
+  path: string;
+  /** "image" | "file". */
+  kind: string;
+  name: string;
+  /** Byte size on disk, or 0 when the desktop could not read it. */
+  size: number;
+}
+
 /** One message the session holds behind its running turn. */
 export interface SessionQueueRow {
   runId: string;
@@ -32,6 +47,14 @@ export interface SessionQueueRow {
    * a message the conversation has moved past.
    */
   state: string;
+  /**
+   * The files this message carries, in the order it will send them.
+   *
+   * Empty means "no files". `undefined` means this queue did not report them at
+   * all — a desktop older than the field — and the panel then offers no file
+   * controls rather than guessing at a count it cannot see.
+   */
+  attachments?: SessionQueueAttachment[];
 }
 
 /** Whether a row is parked rather than about to run by itself. */
@@ -93,6 +116,24 @@ export function sessionQueueNoticeReason(
   }
 }
 
+function asAttachment(raw: unknown): SessionQueueAttachment | null {
+  if (!raw || typeof raw !== "object")
+    return null;
+  const attachment = raw as Record<string, unknown>;
+  if (typeof attachment.path !== "string" || !attachment.path)
+    return null;
+  return {
+    kind: typeof attachment.kind === "string" ? attachment.kind : "",
+    name: typeof attachment.name === "string" && attachment.name
+      ? attachment.name
+      : attachment.path.split(/[\\/]/).pop() || attachment.path,
+    path: attachment.path,
+    size: typeof attachment.size === "number" && attachment.size > 0
+      ? attachment.size
+      : 0,
+  };
+}
+
 function asRow(raw: unknown): SessionQueueRow | null {
   if (!raw || typeof raw !== "object")
     return null;
@@ -105,6 +146,11 @@ function asRow(raw: unknown): SessionQueueRow | null {
     runId: row.runId,
     state: typeof row.state === "string" && row.state ? row.state : "queued",
     text: typeof row.text === "string" ? row.text : "",
+    attachments: Array.isArray(row.attachments)
+      ? row.attachments.map(asAttachment).filter(
+        (attachment): attachment is SessionQueueAttachment => attachment !== null,
+      )
+      : undefined,
   };
 }
 
@@ -194,13 +240,22 @@ export const QUEUE_POLL_MS = 2000;
 function sameRows(left: readonly SessionQueueRow[], right: readonly SessionQueueRow[]): boolean {
   if (left.length !== right.length)
     return false;
+  const sameAttachments = (
+    a: readonly SessionQueueAttachment[] | undefined,
+    b: readonly SessionQueueAttachment[] | undefined,
+  ) => {
+    if (a === undefined || b === undefined)
+      return a === b;
+    return a.length === b.length && a.every((item, index) => item.path === b[index]?.path);
+  };
   return left.every((row, index) => {
     const other = right[index];
     return other !== undefined
       && row.runId === other.runId
       && row.state === other.state
       && row.position === other.position
-      && row.text === other.text;
+      && row.text === other.text
+      && sameAttachments(row.attachments, other.attachments);
   });
 }
 

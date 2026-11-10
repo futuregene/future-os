@@ -436,6 +436,9 @@ pub async fn execute_turn(
     let after = client.session_totals(session_id).await.unwrap_or(before);
     let terminal_state = summary.terminal_state.clone();
 
+    // The completion text as the agent produced it (bounded upstream by the
+    // client's own retention); `evidence` below is the tail the gate judges.
+    let full_text = summary.text;
     let mut record = RunRecord {
         agent_id: agent_id.map(str::to_string),
         turn,
@@ -447,7 +450,7 @@ pub async fn execute_turn(
         tokens_out_delta: after.tokens_out.saturating_sub(before.tokens_out),
         cost_delta: (after.cost - before.cost).max(0.0),
         tools: summary.tools,
-        evidence: crate::completion::tail(&summary.text, 4_000),
+        evidence: crate::completion::tail(&full_text, crate::completion::EVIDENCE_TAIL_BYTES),
         recorded_at: now_epoch(),
         // G-7: stamped by the caller (main.rs writeback) with the mode-based
         // spend source before the record hits the ledger.
@@ -468,6 +471,30 @@ pub async fn execute_turn(
         None
     };
     crate::completion::check_record(todo, &mut record);
+    // A completion that satisfied the acceptance contract EARLIER in its text
+    // but not inside the judged tail is not a missing literal: the worker wrote
+    // it and the window cut it. Name where it went (and require the resubmit to
+    // put the line inside the window) instead of saying "missing", which sends
+    // the next attempt back to rewriting prose.
+    //
+    // The verdict is unchanged — `record.error` is already set, and this only
+    // replaces its wording. A text that fails on the FULL completion text too
+    // keeps the plain `(missing: [...])` message.
+    if terminal_state == "completed"
+        && record
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("acceptance contract unmet"))
+    {
+        if let Some(named) = crate::completion::truncated_acceptance_rejection(
+            todo,
+            &full_text,
+            &record.evidence,
+            crate::completion::EVIDENCE_TAIL_BYTES,
+        ) {
+            record.error = Some(named.message);
+        }
+    }
     Ok(record)
 }
 

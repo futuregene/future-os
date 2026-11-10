@@ -1187,6 +1187,21 @@ message QueuedRunState {
   string accepted_at = 6;
   // The user's prompt text, for queue display.
   string display_text = 7;
+  // The files the prompt carries. A waiting message is still editable, and a
+  // reader cannot take a photo off a queue it cannot see.
+  repeated QueuedRunAttachment attachments = 8;
+}
+
+// One file a queued prompt carries.
+message QueuedRunAttachment {
+  // The desktop path the file already has — the same shape the transcript's
+  // attachments report, so a paired client reads it with the same download.
+  string path = 1;
+  // "image" | "file".
+  string kind = 2;
+  string name = 3;
+  // Byte size on disk, or 0 when it could not be read.
+  int64 size = 4;
 }
 
 // Canonical durable outcome of one requested run; independent of storage.

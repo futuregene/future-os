@@ -75,6 +75,20 @@ python3 benchmark/fusion/bench.py run --suite benchmark/fusion/suites/max-1000.j
 python3 benchmark/fusion/bench.py plan --counts bbeh=460,omni=540 --exclude omni:383,omni:2865 --seed future-deepseek-max-1000-20261104-v1 --out benchmark/fusion/suites/max-1000-reproduced.json
 ```
 
+## 多模型长测
+
+`campaign.py` 可用同一份冻结题包交错运行多组单模型基准。每组由模型 ID 和思考等级绑定，启动前核对可用档位，逐题核对实际生效的绑定。四组各 1000 题表示首轮共 4000 次生成。首轮只执行一次，答错或解析失败也原样保留。
+
+用 `runtime.py --single-only --binary <future>` 启动隔离 Host，再准备一个 JSON 文件。对象的键是组名，值包含 `model` 和 `thinking_level`，例如 `{"deepseek-flash-max":{"model":"future/deepseek-flash","thinking_level":"max"}}`。启动命令如下。
+
+```sh
+python3 benchmark/fusion/campaign.py --suite benchmark/fusion/suites/max-1000.json --binary <future> --runtime benchmark/fusion/.local/runtime.json --profiles <profiles.json> --out benchmark/fusion/runs/max-1000-campaign --jobs 4
+```
+
+首轮遇到已确认终态的模型网络故障时，保留原尝试并继续调度。所有组首轮结束后，按同一顺序补测这些题，默认最多补测三遍。认证、额度、回执不明和采证失败会暂停调度。续跑使用同一套参数与隔离 Host 数据目录，已接受但尚无结果的尝试只重新等待原请求。若进程非正常退出，确认旧进程已停止后再移除输出目录中的 `campaign.lock`。
+
+输出目录中的 `progress.json` 可随时查看，结束后生成 `results.csv`。逐题提示词、回答、公开转录、可获取的推理、用量和错误分别保存在各组的 `attempt-*/` 目录。首轮与补测的记录均留在本地。冻结清单记录题包、脚本和二进制哈希，模型目录与生效档位另存。
+
 ## 安装
 
 在仓库根目录执行（Python 3.9+）：
