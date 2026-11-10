@@ -603,9 +603,11 @@ function ReadyAppShell({
    * read, and the default IS what its session will be created with, so it shows
    * that.
    */
-  const approvalChipTier: ApprovalChipTier
-    = sessionApprovalTier
-      ?? (activeThread?.agentSessionId ? "unknown" : appSettings.approvalTier);
+  const approvalChipTier: ApprovalChipTier = appSettingsReady
+    ? appSettings.approvalTier
+    // Settings have not landed yet: show what the session reports (or nothing,
+    // rather than a mode nobody picked).
+    : (sessionApprovalTier ?? (activeThread?.agentSessionId ? "unknown" : appSettings.approvalTier));
   /**
    * Set by the Vibe panel's add tile right before it opens the new-conversation screen.
    *
