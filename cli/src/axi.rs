@@ -71,6 +71,25 @@ impl Format {
     }
 }
 
+/// True when the command line asks for help.
+///
+/// Every group checks this **before** it touches anything: `future skills update
+/// --help` used to run the update, `future auth logout --help` used to log the
+/// user out, and `future channel --help` used to start the bridge. A help
+/// request is a read, and must never reach a command body.
+pub fn wants_help(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--help" || arg == "-h")
+}
+
+/// [`usage`] for code that is not inside a command future (the dispatcher, where
+/// the exit code is returned rather than carried by an error).
+pub fn usage_exit(out: &Output, detail: &str, usage: &str) -> i32 {
+    out.log_err(detail);
+    out.log_err(usage);
+    out.set_exit_code(EXIT_USAGE);
+    out.exit_code()
+}
+
 /// Report a usage error: the detail on stderr, the usage line and where the full
 /// reference is, then the exit code that says "you asked wrong".
 ///

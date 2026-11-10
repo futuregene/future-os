@@ -14,8 +14,138 @@ use serde_json::json;
 
 type Result<T> = std::result::Result<T, String>;
 
+/// Every flag this group accepts, anywhere.
+///
+/// Validation is group-wide rather than per-subcommand on purpose: the bug this
+/// exists for is a *typo*, and a typo is refused by any set that lists the real
+/// flag. What it prevents is what actually happened — `future task run --yolo`
+/// queued a real run and exited 0, because the body never looked at its
+/// arguments. Listing them per subcommand would refuse more mistakes but would
+/// also refuse a legal flag placed on a neighbouring subcommand, which is a
+/// worse trade for a command whose flags overlap this much.
+const KNOWN_FLAGS: &[&str] = &[
+    "--all",
+    "--at",
+    "--conversation",
+    "--cwd",
+    "--daily",
+    "--day",
+    "--days",
+    "--disable",
+    "--disabled",
+    "--enable",
+    "--every",
+    "--format",
+    "--help",
+    "--json",
+    "--limit",
+    "--manual",
+    "--model",
+    "--month",
+    "--monthly",
+    "--name",
+    "--note",
+    "--prompt",
+    "--prompt-file",
+    "--session",
+    "--session-retention",
+    "--json",
+    "--tail",
+    "--thinking",
+    "--time",
+    "--timeout",
+    "--timezone",
+    "--wait",
+    "--weekly",
+    "--yearly",
+    "--yes",
+    "-h",
+];
+
+/// The value-taking flags among [`KNOWN_FLAGS`]; the rest are switches. A flag
+/// followed by a value is fine either way — this set only decides which ones
+/// *need* one, so `--json` never swallows the argument after it.
+const VALUE_FLAGS: &[&str] = &[
+    "--at",
+    "--conversation",
+    "--cwd",
+    "--day",
+    "--days",
+    "--every",
+    "--format",
+    "--limit",
+    "--model",
+    "--month",
+    "--name",
+    "--note",
+    "--prompt",
+    "--prompt-file",
+    "--session",
+    "--session-retention",
+    "--tail",
+    "--thinking",
+    "--time",
+    "--timeout",
+    "--timezone",
+];
+
+/// Refuse a flag this group does not know, before the subcommand body runs.
+fn reject_unknown_flags(args: &[String]) -> Result<()> {
+    for arg in args {
+        if !arg.starts_with('-') {
+            continue;
+        }
+        // `--flag=value` and bare `--flag` share the name before '='.
+        let name = arg.split('=').next().unwrap_or(arg);
+        if !KNOWN_FLAGS.contains(&name) {
+            return Err(format!("unknown option: {name}"));
+        }
+    }
+    Ok(())
+}
+
+/// True when `args` carries a flag this group knows and values, whose value is
+/// missing at the end of the line (`--session` as the last token). `parse_flags`
+/// refuses that in the lists; the ad-hoc readers elsewhere used to drop it.
+fn missing_value_flags(args: &[String]) -> Option<String> {
+    for (index, arg) in args.iter().enumerate() {
+        let name = arg.split('=').next().unwrap_or(arg);
+        if arg.contains('=') {
+            continue;
+        }
+        if !VALUE_FLAGS.contains(&name) {
+            continue;
+        }
+        match args.get(index + 1) {
+            // A following `--flag` means the value was forgotten.
+            None => return Some(name.to_string()),
+            Some(next) if next.starts_with("--") => return Some(name.to_string()),
+            _ => {}
+        }
+    }
+    None
+}
+
 /// `future task <command> [args]`.
 pub async fn task(command: Option<&str>, rest: &[String], out: &Output) -> Result<()> {
+    // A flag this group does not know is refused for every subcommand, before
+    // any of them reads the store — the difference between "typo" and "queued a
+    // real run".
+    if let Some(sub) = command {
+        if sub != "--help" && sub != "-h" {
+            let usage = format!("Usage: future task {sub} [options]");
+            if let Err(detail) = reject_unknown_flags(rest) {
+                return Err(axi::usage(out, &detail, &usage));
+            }
+            if let Some(missing) = missing_value_flags(rest) {
+                return Err(axi::usage(
+                    out,
+                    &format!("missing value for {missing}"),
+                    &usage,
+                ));
+            }
+        }
+    }
     match command {
         // Bare `future task` shows the live list (AXI principle 8); the help is
         // one flag away and a bare group name asks "what is scheduled?".
@@ -448,7 +578,14 @@ fn list(args: &[String], out: &Output) -> Result<()> {
     let rows: Vec<[String; 5]> = tasks
         .iter()
         .map(|t| {
-            let state = if t.enabled { "on" } else { "off" };
+            // A soft-deleted task is not "off": `task show <it>` answers
+            // "task not found", so calling it off made the two views disagree
+            // about the same row.
+            let state = match (t.deleted_at.is_some(), t.enabled) {
+                (true, _) => "deleted",
+                (false, true) => "on",
+                (false, false) => "off",
+            };
             let next = if t.trigger_kind == future_tasks::TriggerKind::Schedule {
                 format!(
                     "{} ({})",
@@ -1813,6 +1950,52 @@ mod tests {
         let (out, captured) = Output::memory();
         task(Some("--help"), &[], &out).await.unwrap();
         assert!(text(captured.out).contains("future task — manage scheduled tasks"));
+    }
+
+    /// The flag surface is declared for the whole group, so a typo is refused
+    /// before any subcommand reads the store. The case that matters is `run`:
+    /// it used to accept `--yolo` and queue a real run.
+    #[tokio::test]
+    async fn unknown_flags_and_missing_values_are_refused_before_the_store() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        add(
+            &args(&["--name", "t", "--prompt", "p", "--cwd", "/tmp"]),
+            &Output::memory().0,
+        )
+        .unwrap();
+
+        for argv in [
+            vec!["run", "t", "--yolo"],
+            vec!["show", "t", "--jsno"],
+            vec!["remove", "t", "--force-delete"],
+            vec!["list", "--bogus"],
+        ] {
+            let (out, _captured) = Output::memory();
+            let sub = argv[0];
+            let rest: Vec<String> = argv[1..].iter().map(|v| (*v).to_string()).collect();
+            let error = task(Some(sub), &rest, &out).await.unwrap_err();
+            assert_eq!(error, crate::HANDLED_EXIT, "{argv:?}");
+            assert_eq!(out.exit_code(), crate::axi::EXIT_USAGE, "{argv:?}");
+        }
+
+        // `--yolo` never queued anything: the task is still idle.
+        let (out, captured) = Output::memory();
+        list(&args(&["--json"]), &out).unwrap();
+        assert_eq!(text(captured.out).matches("\"queued\": false").count(), 1);
+
+        // A value-taking flag with no value is refused rather than dropped.
+        for argv in [
+            vec!["run", "t", "--session"],
+            vec!["show", "t", "--prompt", "--json"],
+        ] {
+            let (out, _captured) = Output::memory();
+            let sub = argv[0];
+            let rest: Vec<String> = argv[1..].iter().map(|v| (*v).to_string()).collect();
+            let error = task(Some(sub), &rest, &out).await.unwrap_err();
+            assert_eq!(error, crate::HANDLED_EXIT, "{argv:?}");
+            assert_eq!(out.exit_code(), crate::axi::EXIT_USAGE, "{argv:?}");
+        }
     }
 
     // ─── edit ─────────────────────────────────────────────────────────────

@@ -288,6 +288,9 @@ async fn list_sessions(
                     row.updated.clone(),
                     row.model.clone(),
                     row.queries.clone(),
+                    row.cwd.clone(),
+                    row.parent.clone(),
+                    row.streaming.to_string(),
                 ]
             })
             .collect();
@@ -332,7 +335,16 @@ async fn list_sessions(
 
 /// The fields `--format toon` reports — kept to what picking a session needs
 /// (principle 2: a default schema of a few fields, not the whole record).
-const SESSION_FIELDS: &[&str] = &["id", "title", "updated", "model", "queries"];
+const SESSION_FIELDS: &[&str] = &[
+    "id",
+    "title",
+    "updated",
+    "model",
+    "queries",
+    "cwd",
+    "parent",
+    "streaming",
+];
 
 /// One rendered row, shared by the table and the TOON view so the two can never
 /// disagree about the same session.
@@ -342,6 +354,12 @@ struct SessionRow {
     updated: String,
     model: String,
     queries: String,
+    /// The three fields picking a session needs that the payload already
+    /// carries: where it ran, whether it is a sub-session, and whether it is
+    /// live. They are TOON-only — the table has no room for them.
+    cwd: String,
+    parent: String,
+    streaming: bool,
 }
 
 fn session_row(s: &Value) -> SessionRow {
@@ -375,6 +393,20 @@ fn session_row(s: &Value) -> SessionRow {
             .unwrap_or("")
             .to_string(),
         queries,
+        cwd: s
+            .get("cwd")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        parent: s
+            .get("parentSessionId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        streaming: s
+            .get("isStreaming")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     }
 }
 
@@ -2051,7 +2083,7 @@ mod tests {
     async fn list_toon_declares_its_fields_once() {
         let _guard = crate::test_env::lock_env().await;
         let body = "{\"sessions\":[\
-            {\"id\":\"s1\",\"sessionName\":\"one\",\"model\":\"m\",\"queryCount\":2,\"updatedAtMs\":3000},\
+            {\"id\":\"s1\",\"sessionName\":\"one\",\"model\":\"m\",\"queryCount\":2,\"updatedAtMs\":3000,\"cwd\":\"/tmp/work\",\"parentSessionId\":\"parent-1\",\"isStreaming\":true},\
             {\"id\":\"s2\",\"firstMessage\":\"two, with a comma\",\"updatedAtMs\":2000}]}";
         let agent = crate::test_server::MockAgent::respond("list_sessions", body);
         let (_agent, _env) = mock_env(agent).await;
@@ -2063,11 +2095,16 @@ mod tests {
         let mut lines = stdout.lines();
         assert_eq!(
             lines.next(),
-            Some("sessions[2]{id,title,updated,model,queries}:")
+            Some("sessions[2]{id,title,updated,model,queries,cwd,parent,streaming}:")
         );
         assert!(
             lines.next().unwrap_or_default().starts_with(" s1,one,"),
             "{stdout}"
+        );
+        // The three extra columns come from the payload, not from a second call.
+        assert!(
+            stdout.contains("/tmp/work,,false") || stdout.contains("/tmp/work,parent-1,true"),
+            "cwd/parent/streaming must be rendered: {stdout}"
         );
         // A value with a comma keeps its comma and is quoted, so the row still
         // parses: `s2,"two, with a comma",...,—` .

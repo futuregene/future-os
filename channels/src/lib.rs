@@ -55,6 +55,21 @@ use transport::ws::Backoff;
 /// How often the published status snapshot is refreshed.
 const STATUS_FLUSH_INTERVAL: Duration = Duration::from_secs(2);
 
+/// `future channel --help` — what the bridge does and how to inspect it.
+pub const HELP: &str = r#"future channel — the IM channel bridge (Feishu, DingTalk, and the rest)
+
+Usage:
+  future channel                    Start the bridge for every configured channel
+  future channel list               The channels this build knows about
+  future channel status [--json]    Whether a bridge is running, and its counters
+  future channel test <channel>     Check one channel's credentials and reachability
+  future channel send <channel> <conversation> <text>
+                                    Send one message through a configured channel
+
+Configuration lives in ~/.future/channels/config.json (created with defaults on
+first run). `list`, `status`, `test` and `send` are diagnostics: they run before
+the bridge starts, so they answer with no bridge running."#;
+
 /// How often the durable outbound queue is retried.
 const OUTBOX_DRAIN_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -63,6 +78,12 @@ const OUTBOX_DRAIN_INTERVAL: Duration = Duration::from_secs(30);
 pub fn run(args: &[String]) -> Result<()> {
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("future-channel v{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    // A help request is a read: printing it must never start the bridge (it
+    // used to, and blocked forever once a channel was configured).
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{HELP}");
         return Ok(());
     }
 
