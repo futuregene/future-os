@@ -240,6 +240,38 @@ interface ShotQueuedRun {
  */
 const shotQueue = new Map<string, ShotQueuedRun[]>();
 const shotActiveRun = new Map<string, string>();
+
+/**
+ * How many waiting rows `?queue=<n>` seats in whichever conversation is read.
+ *
+ * The panel's own ceiling is the Agent's (`DEFAULT_SESSION_QUEUE_CAPACITY`, 128),
+ * and a queue that long is what pushes the panel's first rows out of the frame:
+ * the state a capture has to reach without pressing Send 128 times. Seeded on
+ * the first read of a conversation and never re-seeded, so a row the reader
+ * takes back stays taken back.
+ */
+function queuedFixtureSize(): number {
+  return Number(new URLSearchParams(window.location.search).get("queue") ?? "") || 0;
+}
+const seededQueues = new Set<string>();
+
+function seedQueuedFixture(threadId: string): void {
+  const size = queuedFixtureSize();
+  if (!threadId || size <= 0 || seededQueues.has(threadId))
+    return;
+  seededQueues.add(threadId);
+  const now = Date.now();
+  shotQueue.set(threadId, Array.from({ length: size }, (_, index) => ({
+    runId: `shot_queued_${index + 1}`,
+    // Three lines of the shape these rows arrive in: the panel clamps a row to
+    // three lines, so this is the tallest a row can get.
+    text: "[future-goal] goal goal_4ce46c920eb8: 1 event(s). Reconcile current status before acting; events may be stale. Read the goal's own state before answering.",
+    acceptedAt: new Date(now - (size - index) * 20_000).toISOString(),
+    state: "queued",
+    // Nothing here starts one of these runs, so no session is ever announced on.
+    sessionId: "",
+  })));
+}
 /**
  * What this page has actually said, so a reload shows it.
  *
@@ -1180,6 +1212,7 @@ const handlers: Record<string, (args: any) => unknown> = {
    */
   session_queue: (args: any) => {
     const threadId = String(args?.threadId ?? "");
+    seedQueuedFixture(threadId);
     const queued = (shotQueue.get(threadId) ?? []).map((row, index) => ({
       runId: row.runId,
       position: index + 1,

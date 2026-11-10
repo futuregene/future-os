@@ -136,14 +136,31 @@ describe("floating composer inset", () => {
 
   it("tracks footer changes beyond the editor and disconnects on unmount", () => {
     const h = setup();
-    h.resize(550); // Approval/connection notice or attachment preview appears.
-    expect(h.spacer.style.height).toBe("550px");
+    h.resize(470); // Approval/connection notice or attachment preview appears.
+    expect(h.spacer.style.height).toBe("470px");
     h.resize(260); // Notice disappears or the window becomes wider.
     expect(h.spacer.style.height).toBe("260px");
     h.dispose();
     expect(h.disconnect).toHaveBeenCalled();
     h.resize(400);
     expect(h.spacer.style.height).toBe("260px");
+  });
+
+  it("stops the reservation at the frame, keeping a band of transcript visible", () => {
+    // The footer floats over the transcript, and the transcript reserves its
+    // height: a footer taller than the frame leaves a scroll region made of
+    // blank space and hides the conversation entirely. Past that point the
+    // reservation holds at the frame minus a readable band — the transcript is
+    // then behind the footer rather than replaced by it.
+    const h = setup(); // frame is 600 tall
+    h.resize(550);
+    expect(h.spacer.style.height).toBe("480px");
+    h.resize(900);
+    expect(h.spacer.style.height).toBe("480px");
+    // Below the floor nothing changes: the whole footer is still reserved.
+    h.resize(420);
+    expect(h.spacer.style.height).toBe("420px");
+    h.dispose();
   });
 
   it("stays inert when the composer ref was never attached to an element", () => {
