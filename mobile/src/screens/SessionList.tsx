@@ -46,7 +46,7 @@ import { formatRelativeTime } from "./relativeTime";
 import { RECENT_PAGE_SIZE, recentRows } from "./recentRows";
 import type { MergedSessionRow } from "../remote/mergeSessions";
 import { activeWorkspaces, ARCHIVED_PAGE_SIZE, archivedCatalogRows, isArchivedSession, type ArchivedCatalog } from "./archived";
-import { archiveWorkspaceWithPrompt, runningInWorkspace } from "./archiveAction";
+import { archiveWhenStopped, archiveWorkspaceWithPrompt, runningInWorkspace } from "./archiveAction";
 import {
   archivedRows,
   catalogRows,
@@ -341,6 +341,9 @@ export function SessionList({
   const [pressedSessionId, setPressedSessionId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const deletingRef = useRef(false);
+  /** The batch archive, its own write and its own in-flight latch. */
+  const [archiving, setArchiving] = useState(false);
+  const archivingRef = useRef(false);
   /**
    * The shelved row being brought back, by row key.
    *
@@ -568,6 +571,16 @@ export function SessionList({
   const canDeleteSelected = targets.some(target => commandsFor(target.desktopId) !== null);
 
   /**
+   * Whether any machine in the batch answers the archive command.
+   *
+   * Same rule as the delete: the action is offered while at least one machine
+   * can carry it, and refused only when none can. A machine that predates
+   * `archive_v1` keeps its rows selected instead of failing them one by one.
+   */
+  const canArchiveSelected = targets.some(target =>
+    commandsFor(target.desktopId)?.capabilities.has("archive_v1") === true);
+
+  /**
    * The header's two entry points, as this component's own modes.
    *
    * Both are exclusive: the tab row is replaced by whichever is active, so
@@ -636,6 +649,71 @@ export function SessionList({
     else next.add(id);
     setExpanded(next);
   };
+  /**
+   * Archive the selected conversations, on the machines that hold them.
+   *
+   * The desktop has had this beside its batch delete since archiving shipped
+   * ("Select chats" then archive); the phone only offered delete, so a reader
+   * clearing a shelf had to open each conversation's own menu. Same shape as
+   * the delete: one machine at a time, one conversation at a time, failures
+   * left ticked for a retry. A conversation that is still running is asked
+   * about once for the whole batch, because archiving it means stopping it.
+   */
+  const archiveSelected = () => {
+    if (!targets.length || !canArchiveSelected || archivingRef.current || deletingRef.current) return;
+    const archiveAll = () => {
+      if (archivingRef.current) return;
+      archivingRef.current = true;
+      setArchiving(true);
+      void (async () => {
+        const failed = new Set<string>();
+        const byMachine = groupByMachine(targets);
+        for (const [desktopId, group] of byMachine) {
+          const commands = commandsFor(desktopId);
+          if (!commands || !commands.capabilities.has("archive_v1")) {
+            for (const row of group) failed.add(row.key);
+            continue;
+          }
+          for (const row of group) {
+            if (row.session.streaming)
+              await commands.abortSession(row.session.sessionId).catch(() => undefined);
+            try {
+              // The host settles its own row a moment after the abort, so the
+              // archive is retried while that lands (see archiveWhenStopped).
+              await archiveWhenStopped(() =>
+                commands.archiveSession(row.session.sessionId, row.session.threadId));
+            }
+            catch {
+              failed.add(row.key);
+            }
+          }
+        }
+        setSelected(failed);
+        setSelecting(failed.size > 0);
+        archivingRef.current = false;
+        setArchiving(false);
+        if (failed.size)
+          Alert.alert(
+            t("common.error"),
+            t("sessions.archivePartialFailure", { count: failed.size }),
+          );
+      })();
+    };
+    const running = targets.filter(target => target.session.streaming === true);
+    if (running.length === 0) {
+      archiveAll();
+      return;
+    }
+    Alert.alert(
+      t("sessions.archiveSelectedRunningTitle"),
+      t("sessions.archiveSelectedRunningConfirm", { count: running.length }),
+      [
+        { text: t("chat.cancel"), style: "cancel" },
+        { text: t("sessions.archiveStopAndArchive"), onPress: archiveAll },
+      ],
+    );
+  };
+
   const deleteSelected = () => {
     if (!targets.length || !canDeleteSelected || deletingRef.current) return;
     Alert.alert(
@@ -1384,6 +1462,22 @@ export function SessionList({
             <Text numberOfLines={1} style={styles.selectionCount}>
               {t("sessions.selectedCount", { count: targets.length })}
             </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("sessions.archiveSelected")}
+              disabled={archiving || deleting || !canArchiveSelected}
+              onPress={archiveSelected}
+              style={[
+                styles.iconButton,
+                (archiving || deleting || !canArchiveSelected) && styles.disabled,
+              ]}
+            >
+              {archiving ? (
+                <ActivityIndicator size={16} color={colors.accent} />
+              ) : (
+                <Archive size={18} color={colors.accent} />
+              )}
+            </Pressable>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={t("sessions.deleteSelected")}
