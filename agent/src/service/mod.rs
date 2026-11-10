@@ -37,6 +37,28 @@ use std::sync::{
 #[doc(hidden)]
 pub use work::ServiceWork;
 
+/// Combine the host closure's error with the scope cleanup's, without saying the
+/// same thing twice.
+///
+/// A failed host closure and a failed scope cleanup are often the *same*
+/// failure: the host's own final `ensure!` reports the drain verdict, and
+/// `finish_scope` then reports the identical report again. Concatenating them
+/// printed one problem twice in a row — measured 2026-11-09 in a Desktop exit
+/// dialog, where the user read it as two problems. A cleanup error the host
+/// error does not already name is still added, because that case is genuinely
+/// a second failure and the operator needs both.
+fn describe_host_and_cleanup_failure(
+    error: anyhow::Error,
+    cleanup: anyhow::Error,
+) -> anyhow::Error {
+    let cleanup_text = format!("{cleanup:#}");
+    if format!("{error:#}").contains(&cleanup_text) {
+        error
+    } else {
+        error.context(cleanup_text)
+    }
+}
+
 /// Cooperative startup cancellation, including checkpoints around synchronous
 /// initialization. It never force-kills a thread or releases another owner.
 #[derive(Clone, Debug, Default)]
@@ -203,7 +225,9 @@ impl AgentService<'_> {
                 (Ok(value), Ok(())) => Ok(value),
                 (Ok(_), Err(cleanup)) => Err(cleanup),
                 (Err(error), Ok(())) => Err(error),
-                (Err(error), Err(cleanup)) => Err(error.context(format!("{cleanup:#}"))),
+                (Err(error), Err(cleanup)) => {
+                    Err(describe_host_and_cleanup_failure(error, cleanup))
+                }
             },
             Err(panic) => std::panic::resume_unwind(panic),
         }
