@@ -475,6 +475,133 @@ fn a_declared_vocabulary_replaces_a_spelling_the_provider_refuses() {
     }
 }
 
+// ─── a generation whose endpoint fixes the vocabulary ────────────────────
+
+/// The reported live failure (2026-11-10, session `8c9af0d2`): a hand-written
+/// provider entry for a DeepSeek V4.1 endpoint, our full scale declared, and no
+/// `compat.reasoningEffort` — so `medium` travelled verbatim and the endpoint
+/// answered a hard
+///
+/// ```text
+/// HTTP 400: DeepSeek V4.1 reasoning_effort must be low, high, xhigh, max,
+/// or an integer within [1, 100] in chat_template_kwargs
+/// ```
+fn deepseek_v41_entry() -> Value {
+    json!({
+        "id": "deepseek-v4.1-flash",
+        "thinkingLevels": ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+    })
+}
+
+/// Where an effort value would be on the wire, wherever this access path puts
+/// it.
+fn effort_on_the_wire(body: &Value) -> Option<&Value> {
+    body.get("chat_template_kwargs")
+        .and_then(|kwargs| kwargs.get("reasoning_effort"))
+        .or_else(|| body.get("reasoning_effort"))
+}
+
+/// The values that endpoint names, as a predicate independent of our code's
+/// declaration: `low|high|xhigh|max` or an integer 1..=100.
+fn accepted_by_deepseek_v41(value: &Value) -> bool {
+    match value {
+        Value::String(spelling) => matches!(spelling.as_str(), "low" | "high" | "xhigh" | "max"),
+        Value::Number(number) => number
+            .as_i64()
+            .map(|number| (1..=100).contains(&number))
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+#[test]
+fn a_deepseek_v4_1_entry_sends_only_values_the_endpoint_accepts() {
+    let model = configured_model("openai-completions", deepseek_v41_entry());
+    // `medium` used to travel as the top-level string "medium", which the
+    // endpoint refuses. It now arrives as the integer its range makes it.
+    let body = request_at_level(&model, "medium");
+    assert_eq!(body["chat_template_kwargs"]["reasoning_effort"], json!(50));
+    assert!(
+        body.get("reasoning_effort").is_none(),
+        "the value must not also be written at the top level: {body}"
+    );
+    // `high` is one of its spellings and stays itself.
+    assert_eq!(
+        request_at_level(&model, "high")["chat_template_kwargs"]["reasoning_effort"],
+        json!("high")
+    );
+    // Every level the picker offers now lands on a value this endpoint accepts.
+    for level in levels(&model) {
+        if let Some(wire) = effort_on_the_wire(&request_at_level(&model, &level)) {
+            assert!(
+                accepted_by_deepseek_v41(wire),
+                "`{level}` travels as {wire}, which the endpoint refuses"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_deepseek_v4_1_entry_at_the_default_level_sends_no_effort() {
+    let model = configured_model("openai-completions", deepseek_v41_entry());
+    // `default` is legal by construction: the field is left out entirely.
+    let body = request_at_level(&model, DEFAULT_THINKING_LEVEL);
+    assert!(
+        effort_on_the_wire(&body).is_none(),
+        "`default` must send no effort at all: {body}"
+    );
+    // The level list the picker shows is expressible under that vocabulary —
+    // which is what makes `default` an option *next to* legal spellings rather
+    // than the only safe one.
+    let vocabulary = parse_reasoning_effort_vocabulary(&model)
+        .unwrap()
+        .expect("a DeepSeek V4.1 entry implies the endpoint's vocabulary");
+    assert_eq!(
+        vocabulary.param(),
+        "chat_template_kwargs.reasoning_effort",
+        "the endpoint reads the value inside chat_template_kwargs"
+    );
+    for level in levels(&model) {
+        if let Some(wire) = effort_wire_value(&level, Some(&vocabulary)) {
+            assert!(
+                vocabulary.accepts(&wire) && accepted_by_deepseek_v41(&wire),
+                "`{level}` travels as {wire}, outside the declared vocabulary"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_deepseek_v4_entry_keeps_its_own_vocabulary() {
+    // The catalogue's V4 generation accepts `minimal|low|medium|high`, so the
+    // implied V4.1 dialect must not reach it: `medium` stays itself.
+    let model = configured_model(
+        "openai-completions",
+        json!({"id": "deepseek-v4-flash", "thinkingLevels": ["minimal", "low", "medium", "high"]}),
+    );
+    assert!(parse_reasoning_effort_vocabulary(&model).unwrap().is_none());
+    let body = request_at_level(&model, "medium");
+    assert_eq!(body["reasoning_effort"], json!("medium"));
+    assert!(body.get("chat_template_kwargs").is_none(), "{body}");
+}
+
+#[test]
+fn an_explicit_vocabulary_beats_the_implied_one() {
+    // An entry that states its own accepted values is never overridden.
+    let model = configured_model(
+        "openai-completions",
+        json!({
+            "id": "deepseek-v4.1-flash",
+            "thinkingLevels": ["low", "medium", "high"],
+            "compat": {"reasoningEffort": {"values": ["low", "medium", "high"]}}
+        }),
+    );
+    assert_eq!(
+        request_at_level(&model, "medium")["reasoning_effort"],
+        json!("medium")
+    );
+}
+
 #[test]
 fn a_vocabulary_without_an_integer_range_snaps_to_a_spelling() {
     // A provider that names only two spellings and takes no number: the middle
