@@ -25,6 +25,9 @@ use crate::decision::{complete_todo, decide_for};
 use crate::executor::{execute_turn, writeback};
 use crate::state::{now_epoch, Goal, TaskClass, Todo, TodoStatus};
 use crate::store::{Event, Store};
+use crate::work_items::direction::{
+    normalize_title, Candidate, CandidateRelation, DirectionProposal, DirectionStatus,
+};
 use anyhow::{bail, Result};
 
 /// Materialize the project-local active-state projection for one goal:
@@ -236,6 +239,7 @@ fn dispatch_command<'a>(
         "backup" => Box::pin(std::future::ready(cmd_backup(store, &args[1..]))),
         "authority" => Box::pin(std::future::ready(cmd_authority(store, &args[1..]))),
         "replan" => Box::pin(std::future::ready(cmd_replan(store, &args[1..]))),
+        "direction" => Box::pin(std::future::ready(cmd_direction(store, &args[1..]))),
         "frontier" => Box::pin(std::future::ready(cmd_frontier(store, &args[1..]))),
         "profile" => Box::pin(std::future::ready(cmd_profile(store, &args[1..]))),
         "status" => Box::pin(cmd_status(store, &args[1..])),
@@ -295,6 +299,7 @@ const JOURNEY_ASSIGNMENTS: &[(&str, Journey)] = &[
     ("todo", Journey::Daily),
     ("gate", Journey::Daily),
     ("replan", Journey::Daily),
+    ("direction", Journey::Daily),
     ("frontier", Journey::Daily),
     ("lease", Journey::Daily),
     ("task-graph", Journey::Daily),
@@ -396,7 +401,7 @@ fn build_cli_registry() -> CommandRegistry {
         "todo",
         "add",
         "add a todo (hard checks: --verify gate, --acceptance tokens; --class / --owner scope)",
-        "add --goal G --text \"...\" [--priority P0|P1|P2] [--blocks T] [--verify \"cmd\"] [--acceptance \"a,b\"] [--owner A] [--class C]",
+        "add --goal G --text \"...\" [--priority P0|P1|P2] [--blocks T] [--verify \"cmd\"] [--acceptance \"a,b\"] [--owner A] [--class C] [--kill-when \"...\" (scout)]",
     );
     r.subcommand(
         "todo",
@@ -427,6 +432,42 @@ fn build_cli_registry() -> CommandRegistry {
         "replan",
         "ack a replan obligation / list obligations / inspect or set the replan rule set",
         "replan ack --goal G --delta-kind ... | replan obligations --goal G | replan rules show|set --goal G",
+    );
+    r.command(
+        todo,
+        "direction",
+        "direction proposal ledger (exploration node): propose / list / accept / reject / expire",
+        "direction propose --goal G --candidate \"title|class|fork|kill_when|a;b\" | list --goal G | accept --goal G --proposal P --candidate C | reject --goal G --proposal P --reason \"...\" | expire --goal G --proposal P [--deadline TS]",
+    );
+    r.subcommand(
+        "direction",
+        "propose",
+        "record a direction proposal (graph-validated first; no model, no network)",
+        "propose --goal G [--scout-todo T] --trigger KIND --question \"...\" --observation \"...\" --candidate \"title|class|fork|kill_when|a;b\" [--candidate ...] [--evidence PATH] [--deadline TS] [--format json]",
+    );
+    r.subcommand(
+        "direction",
+        "list",
+        "every proposal of the goal + its state + rejection reason",
+        "list --goal G [--format json]",
+    );
+    r.subcommand(
+        "direction",
+        "accept",
+        "turn an accepted candidate into a todo of the candidate's class (idempotent, linked by origin_proposal)",
+        "accept --goal G --proposal P --candidate C",
+    );
+    r.subcommand(
+        "direction",
+        "reject",
+        "reject a proposal; the reason is required",
+        "reject --goal G --proposal P --reason \"...\"",
+    );
+    r.subcommand(
+        "direction",
+        "expire",
+        "close a proposal whose evaluation window ran out (frees the direction)",
+        "expire --goal G --proposal P [--deadline TS]",
     );
     r.command(
         todo,
@@ -801,8 +842,13 @@ fn build_cli_registry() -> CommandRegistry {
             ("--verify CMD", "validator command", "e.g. `cargo check -p ...`; advisory for code-like todos so uncompilable work can't be marked done"),
             ("--acceptance a,b", "completion contract tokens", "evidence must contain every token (case-insensitive) before `todo complete` accepts"),
             ("--owner A", "pin the todo to agent A", "absent → shared pool any worker may claim"),
-            ("--class C", "task class", "see --role; combo is validated (advancement|monitor|blocker|coordination|user_gate|user_action)"),
-            ("--role R", "actor role", "agent|user; valid combos: agent+advancement/monitor/blocker/coordination, any+user_gate, user+user_action"),
+            ("--class C", "task class", "see --role; combo is validated (advancement|scout|monitor|blocker|coordination|user_gate|user_action)"),
+            ("--role R", "actor role", "agent|user; valid combos: agent+advancement/scout/monitor/blocker/coordination, any+user_gate, user+user_action"),
+            (
+                "--kill-when K",
+                "when to abandon the exploration",
+                "required for --class scout: a scout without a termination condition has no bounded evaluation window",
+            ),
             ("--gate-question Q", "gate question", "for user_gate; defaults to the text"),
             ("--action-kind K", "free-form action tag", "optional"),
             ("--defer-secs N", "defer N seconds from now", "marks the todo Deferred with a real resume_when deadline"),
@@ -931,6 +977,113 @@ fn build_cli_registry() -> CommandRegistry {
             ("--delta-kind K", "frontier-changing delta kind", "ack requires at least one frontier-changing kind (vision_patch|no_followup|successor_or_supersede|runnable_todo_set|...)"),
             ("--format json", "machine-readable output", "for `replan obligations` / `replan rules show`"),
             ("--rule-ids R1,R2", "explicit rule set for `replan rules set`", "full replace; `--rule-ids \"\"` resets to the default set"),
+        ],
+    );
+
+    r.subcommand_flags(
+        "direction",
+        "propose",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--scout-todo T",
+                "the scout todo that produced this proposal",
+                "optional; must be an existing scout todo of this goal (a scout cannot complete without one naming it)",
+            ),
+            (
+                "--trigger KIND",
+                "what fired the exploration",
+                "required; e.g. stall / oscillation / gate_decision / operator ask",
+            ),
+            (
+                "--question Q",
+                "the question the exploration answers",
+                "required",
+            ),
+            ("--observation O", "what makes it a live question", "required"),
+            (
+                "--candidate S",
+                "one candidate direction",
+                "repeatable; `\"title|class|relation|kill_when|acceptance1;acceptance2\"` with class = advancement|scout and relation = fork|revise:TODO_ID (the legacy `\"title|relation|kill_when|acceptance1\"` form means class=advancement); a scout needs a kill_when; ids are positional (c1, c2, …)",
+            ),
+            (
+                "--evidence PATH",
+                "pointer supporting the observation",
+                "repeatable; a path / event id / run id",
+            ),
+            (
+                "--deadline TS",
+                "evaluation deadline (epoch secs)",
+                "optional; default is created_at + 7 days, after which the direction reads as expired",
+            ),
+            ("--format json", "machine-readable output", "the recorded proposal"),
+        ],
+    );
+
+    r.subcommand_flags(
+        "direction",
+        "list",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--format json",
+                "machine-readable ledger",
+                "proposals + state + rejection reason",
+            ),
+        ],
+    );
+
+    r.subcommand_flags(
+        "direction",
+        "accept",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--proposal P", "proposal id", "required"),
+            (
+                "--candidate C",
+                "candidate id inside the proposal",
+                "required; creates a todo of the candidate's class (advancement → work, scout → deeper exploration) carrying origin_proposal; a second accept of the same candidate errors",
+            ),
+        ],
+    );
+
+    r.subcommand_flags(
+        "direction",
+        "reject",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--proposal P", "proposal id", "required"),
+            (
+                "--reason R",
+                "why the direction was dropped",
+                "required and non-empty — an unexplained rejection cannot be re-evaluated",
+            ),
+        ],
+    );
+
+    r.subcommand_flags(
+        "direction",
+        "expire",
+        &[
+            ("--goal G", "goal id", "required"),
+            ("--proposal P", "proposal id", "required"),
+            (
+                "--deadline TS",
+                "when the window closed (epoch secs)",
+                "optional; defaults to the proposal's own deadline (or created_at + 7 days), capped at now",
+            ),
+        ],
+    );
+
+    r.flags(
+        "direction",
+        &[
+            ("--goal G", "goal id", "required"),
+            (
+                "--format json",
+                "machine-readable output",
+                "for `propose` / `list`",
+            ),
         ],
     );
 
@@ -1929,6 +2082,7 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     let mut verify: Option<String> = None;
     let mut max_validation_attempts: Option<u32> = None;
     let mut acceptance: Option<String> = None;
+    let mut kill_when: Option<String> = None;
     let mut owner: Option<String> = None;
     let mut parent_id: Option<String> = None;
     reject_unknown_flags(
@@ -1945,6 +2099,7 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
             "--global-gate",
             "--goal",
             "--goal-bound",
+            "--kill-when",
             "--max-validation-attempts",
             "--monitor-policy",
             "--monitor-target",
@@ -1980,6 +2135,8 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
             verify = Some(v);
         } else if k == "--acceptance" {
             acceptance = Some(v);
+        } else if k == "--kill-when" {
+            kill_when = Some(v);
         } else if k == "--max-validation-attempts" {
             max_validation_attempts = v.parse().ok();
         } else if k == "--owner" {
@@ -2030,6 +2187,7 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     let valid_combo = matches!(
         (role.as_str(), class.as_str()),
         ("agent", "advancement")
+            | ("agent", "scout")
             | ("agent", "monitor")
             | ("agent", "blocker")
             | ("agent", "coordination")
@@ -2038,7 +2196,17 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     );
     if !valid_combo {
         bail!(
-            "unknown --role/--class combo `{role}`/`{class}` (agent: advancement|monitor|blocker|coordination; user_gate: any role; user: user_action)"
+            "unknown --role/--class combo `{role}`/`{class}` (agent: advancement|scout|monitor|blocker|coordination; user_gate: any role; user: user_action)"
+        );
+    }
+    // Exploration node contract: a scout's whole point is a bounded
+    // exploration window, so `--kill-when` is REQUIRED — a scout without a
+    // termination condition is an unbounded budget sink (`exploration_gap`
+    // raises the same condition for an existing scout whose kill_when is
+    // missing or runaway). Rejected here, before anything reaches the ledger.
+    if class == "scout" && kill_when.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        bail!(
+            "--class scout requires a non-empty --kill-when \"...\" (stop exploring this direction when <X>)"
         );
     }
     if let Some(p) = &priority {
@@ -2094,6 +2262,14 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
             Todo::blocker(&id, &text, &b)
         }
         ("agent", "coordination") => Todo::coordination(&id, &text),
+        // Exploration node: same claimable work shape as advancement (role
+        // agent, runnable), differing only in class — what it delivers is a
+        // direction proposal, not an artifact.
+        ("agent", "scout") => {
+            let mut t = Todo::advancement(&id, &text);
+            t.class = TaskClass::Scout;
+            t
+        }
         _ => Todo::advancement(&id, &text),
     };
     todo.parent_id = parent_id;
@@ -2173,6 +2349,11 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     }
     if let Some(a) = acceptance {
         todo.acceptance = Some(a);
+    }
+    // `--kill-when` is required for scout and optional elsewhere (the field is
+    // only meaningful for exploration, and `exploration_gap` reads it there).
+    if let Some(k) = kill_when {
+        todo.kill_when = Some(k);
     }
     if let Some(n) = max_validation_attempts {
         todo.max_validation_attempts = n.max(1);
@@ -2708,6 +2889,27 @@ async fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
         {
             bail!("{error}");
         }
+        // Exploration node: a scout's deliverable is not an artifact but the
+        // direction proposal it records, so a scout may not close before that
+        // output exists. Without this check `todo complete` accepted an empty
+        // evidence string on a scout and the ledger stayed untouched — the
+        // exploration node could report success having produced nothing.
+        if t.class == TaskClass::Scout {
+            let recorded = store
+                .direction_ledger(&goal_id)?
+                .entries
+                .iter()
+                .any(|entry| entry.proposal.scout_todo.as_deref() == Some(todo_id.as_str()));
+            if !recorded {
+                bail!(
+                    "todo {todo_id} is a scout and no direction proposal names it — a scout's \
+                     output is the proposal it records, so complete it only after \
+                     `{} direction propose --goal {goal_id} --scout-todo {todo_id} ...` \
+                     (or pass --force for a reviewed operator override)",
+                    prog()
+                );
+            }
+        }
     }
     let successors = successor.clone().into_iter().collect::<Vec<_>>();
     store.append(Event::TodoCompleted {
@@ -3083,6 +3285,636 @@ fn cmd_replan_rules(store: &mut Store, args: &[String]) -> Result<()> {
         decision.obligation_kind.as_deref().unwrap_or("-"),
         decision.reason
     );
+    Ok(())
+}
+
+// ── direction (exploration node ledger) ────────────────────────────────────
+
+/// `future goal direction propose|list|accept|reject --goal G ...` — the
+/// exploration node's ledger surface (`TaskClass::Scout`).
+///
+/// A scout answers "which way should we go", so what it delivers is a
+/// proposal, not an artifact: `propose` records one (validated FIRST — a
+/// proposal that fails validation never reaches the ledger), `list` reads the
+/// ledger, `accept` turns one candidate into a scout todo linked back through
+/// `origin_proposal`, `reject` records why a direction was dropped (reason
+/// required). Every verb is a pure ledger operation: no model call, no
+/// network.
+fn cmd_direction(store: &mut Store, args: &[String]) -> Result<()> {
+    match args.first().map(|s| s.as_str()) {
+        Some("propose") => direction_propose(store, &args[1..]),
+        Some("list") => direction_list(store, &args[1..]),
+        Some("accept") => direction_accept(store, &args[1..]),
+        Some("reject") => direction_reject(store, &args[1..]),
+        Some("expire") => direction_expire(store, &args[1..]),
+        _ => bail!(
+            "direction subcommand must be `propose`, `list`, `accept`, `reject` or `expire` (try `{} direction --help`)",
+            prog()
+        ),
+    }
+}
+
+/// Parse an epoch-seconds flag value. A deadline is an absolute point in time,
+/// so a non-numeric value is a usage error rather than a hint to store.
+fn parse_epoch_secs(flag: &str, raw: &str) -> Result<u64> {
+    raw.trim()
+        .parse::<u64>()
+        .map_err(|_| anyhow::anyhow!("{flag} must be epoch seconds (a whole number), got `{raw}`"))
+}
+
+/// Human-readable class token for CLI messages.
+fn task_class_label(class: TaskClass) -> &'static str {
+    match class {
+        TaskClass::Advancement => "advancement",
+        TaskClass::Scout => "scout",
+        TaskClass::UserGate => "user_gate",
+        TaskClass::UserAction => "user_action",
+        TaskClass::Monitor => "monitor",
+        TaskClass::Blocker => "blocker",
+        TaskClass::Coordination => "coordination",
+    }
+}
+
+/// Parse one `--candidate` spec.
+///
+/// Five fields: `"title|class|relation|kill_when|a;b"`. The legacy four-field
+/// form `"title|relation|kill_when|a;b"` is still accepted and means
+/// `class = advancement` — it is what every proposal recorded before the class
+/// field existed looks like. An empty class field (`"title||fork|…"`) is the
+/// same as omitting it.
+///
+/// The candidate id is positional (`c1`, `c2`, … in `--candidate` order), so
+/// `direction accept --candidate c2` addresses the second spec without the
+/// operator inventing ids. [`crate::work_items::direction::
+/// validate_candidates_against`] still owns every rule (duplicate direction,
+/// cycles, kill_when/acceptance); these checks only make a malformed spec
+/// report the spec the operator typed instead of a candidate id they never
+/// saw.
+fn parse_candidate_spec(index: usize, spec: &str) -> Result<Candidate> {
+    let parts: Vec<&str> = spec.split('|').collect();
+    let (title, class_spec, relation_spec, kill_when, acceptance_spec) = match parts.len() {
+        5 => (
+            parts[0].trim(),
+            Some(parts[1].trim()),
+            parts[2].trim(),
+            parts[3].trim(),
+            parts[4].trim(),
+        ),
+        4 => (
+            parts[0].trim(),
+            None,
+            parts[1].trim(),
+            parts[2].trim(),
+            parts[3].trim(),
+        ),
+        got => bail!(
+            "--candidate \"{spec}\" must have 5 `|`-separated fields \
+             (title|class|relation|kill_when|acceptance1;acceptance2) or the legacy \
+             4-field form (title|relation|kill_when|acceptance1); got {got}"
+        ),
+    };
+    if title.is_empty() {
+        bail!("--candidate \"{spec}\" has an empty title (field 1)");
+    }
+    let class = parse_candidate_class(spec, class_spec)?;
+    // A scout's whole point is a bounded exploration window, so its kill_when
+    // is required; an advancement candidate's termination condition is its
+    // acceptance contract, so kill_when may be omitted (and then is not
+    // written onto the todo).
+    if class == TaskClass::Scout && kill_when.is_empty() {
+        bail!(
+            "--candidate \"{spec}\" is a scout and has an empty kill_when \
+             (field 4) — when is this exploration abandoned?"
+        );
+    }
+    let relation = if relation_spec.eq_ignore_ascii_case("fork") {
+        CandidateRelation::Fork
+    } else if let Some(todo_id) = relation_spec.strip_prefix("revise:") {
+        if todo_id.trim().is_empty() {
+            bail!("--candidate \"{spec}\" has an empty revise target (use revise:TODO_ID)");
+        }
+        CandidateRelation::Revise {
+            todo_id: todo_id.trim().to_string(),
+        }
+    } else {
+        bail!(
+            "--candidate \"{spec}\" has relation `{relation_spec}` (field 3) — must be `fork` or `revise:TODO_ID`"
+        );
+    };
+    let acceptance: Vec<&str> = acceptance_spec
+        .split(';')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .collect();
+    if acceptance.is_empty() {
+        bail!("--candidate \"{spec}\" has no acceptance criteria (last field: \"a;b\")");
+    }
+    Ok(Candidate::new(&format!("c{index}"), title, relation)
+        .with_class(class)
+        .with_acceptance(&acceptance)
+        .with_kill_when(kill_when))
+}
+
+/// The class field of a candidate spec: `advancement` (default, also empty or
+/// omitted) or `scout`. Only these two can come out of a direction: a
+/// direction that becomes a gate / monitor / blocker is a different decision
+/// and is created with `todo add` directly.
+fn parse_candidate_class(spec: &str, class_spec: Option<&str>) -> Result<TaskClass> {
+    match class_spec.unwrap_or("").trim().to_ascii_lowercase().as_str() {
+        "" | "advancement" | "advancement_task" => Ok(TaskClass::Advancement),
+        "scout" => Ok(TaskClass::Scout),
+        other => bail!(
+            "--candidate \"{spec}\" has class `{other}` (field 2) — must be `advancement` or `scout`"
+        ),
+    }
+}
+
+fn direction_relation_label(relation: &CandidateRelation) -> String {
+    match relation {
+        CandidateRelation::Fork => "fork".to_string(),
+        CandidateRelation::Revise { todo_id } => format!("revise:{todo_id}"),
+    }
+}
+
+fn direction_class_label(class: &TaskClass) -> String {
+    format!("class={}", task_class_label(*class))
+}
+
+/// One-line status token for `direction list`. An entry whose deadline passed
+/// while still open reads as expired with its derivation spelled out — the
+/// ledger has no event for it, so a reader must not think it was written down.
+fn direction_status_label(
+    entry: &crate::work_items::direction::DirectionEntry,
+    now: u64,
+) -> String {
+    let label = match entry.effective_status(now) {
+        DirectionStatus::Proposed => "proposed".to_string(),
+        DirectionStatus::Accepted => "accepted".to_string(),
+        DirectionStatus::Rejected { reason } => format!("rejected: {reason}"),
+        DirectionStatus::Expired { deadline } => format!("expired (deadline {deadline})"),
+    };
+    if entry.expiry_is_derived(now) {
+        format!("{label} — window closed, no expire event (run `direction expire`)")
+    } else {
+        label
+    }
+}
+
+/// `future goal direction propose --goal G [--scout-todo T] --trigger KIND
+/// --question "..." --observation "..." --candidate "..." [--evidence PATH]...
+/// [--deadline TS] [--format json]`
+///
+/// Records a direction proposal. Validation runs first and the ledger is
+/// untouched when it fails, so a rejected proposal leaves no trace to clean
+/// up (and a re-proposal after the operator fixes the candidates is not
+/// itself a duplicate).
+///
+/// `--scout-todo` is a real reference, not a note: the todo must exist in this
+/// goal and must be a scout, otherwise the command refuses (nothing recorded).
+/// That reference is what `todo complete` checks before it lets a scout close —
+/// a scout whose output is not on the ledger has not explored anything.
+fn direction_propose(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut scout_todo = None;
+    let mut trigger = None;
+    let mut question = None;
+    let mut observation = None;
+    let mut deadline = None;
+    let mut candidate_specs: Vec<String> = vec![];
+    let mut evidence: Vec<String> = vec![];
+    reject_unknown_flags(
+        args,
+        &[
+            "--candidate",
+            "--deadline",
+            "--evidence",
+            "--format",
+            "--goal",
+            "--json",
+            "--observation",
+            "--question",
+            "--scout-todo",
+            "--trigger",
+        ],
+    )?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--deadline" {
+            deadline = Some(v);
+        } else if k == "--scout-todo" {
+            scout_todo = Some(v);
+        } else if k == "--trigger" {
+            trigger = Some(v);
+        } else if k == "--question" {
+            question = Some(v);
+        } else if k == "--observation" {
+            observation = Some(v);
+        } else if k == "--candidate" {
+            candidate_specs.push(v);
+        } else if k == "--evidence" {
+            evidence.push(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let trigger = trigger.ok_or_else(|| anyhow::anyhow!("--trigger required"))?;
+    let question = question.ok_or_else(|| anyhow::anyhow!("--question required"))?;
+    let observation = observation.ok_or_else(|| anyhow::anyhow!("--observation required"))?;
+    for (flag, value) in [
+        ("--trigger", &trigger),
+        ("--question", &question),
+        ("--observation", &observation),
+    ] {
+        if value.trim().is_empty() {
+            bail!("{flag} must be non-empty");
+        }
+    }
+    if candidate_specs.is_empty() {
+        bail!(
+            "--candidate required (at least one direction; see `{} direction propose --help`)",
+            prog()
+        );
+    }
+    let deadline = match deadline {
+        None => None,
+        Some(raw) => Some(parse_epoch_secs("--deadline", &raw)?),
+    };
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let mut proposal =
+        DirectionProposal::new(&gen_id("prop"), &goal_id, &trigger, &question, &observation);
+    if let Some(scout) = scout_todo {
+        // The link is the scout's completion evidence, so a dangling or
+        // non-scout reference is refused BEFORE the write: recording it would
+        // mean a scout that never produced this proposal could close on it.
+        let reference = goal.todo(&scout).ok_or_else(|| {
+            anyhow::anyhow!(
+                "--scout-todo {scout} is not a todo of {goal_id} — a proposal is linked to the scout \
+                 that produced it (see `{} status --goal {goal_id}`)",
+                prog()
+            )
+        })?;
+        if reference.class != TaskClass::Scout {
+            bail!(
+                "--scout-todo {scout} has class {} — only a scout todo records a direction proposal \
+                 (add one with `todo add --class scout --kill-when \"...\"`)",
+                task_class_label(reference.class)
+            );
+        }
+        proposal = proposal.with_scout_todo(&scout);
+    }
+    if let Some(deadline) = deadline {
+        proposal = proposal.with_deadline(deadline);
+    }
+    if !evidence.is_empty() {
+        let refs: Vec<&str> = evidence.iter().map(String::as_str).collect();
+        proposal = proposal.with_evidence(&refs);
+    }
+    for (index, spec) in candidate_specs.iter().enumerate() {
+        proposal = proposal.with_candidate(parse_candidate_spec(index + 1, spec)?);
+    }
+    // Graph + duplicate rules BEFORE the write: a rejected proposal must not
+    // land (the caller gets the reason on stderr and a non-zero exit).
+    {
+        let ledger = store.direction_ledger(&goal_id)?;
+        crate::work_items::direction::validate_candidates_against(
+            &goal,
+            &proposal,
+            &ledger.live_proposals(),
+        )
+        .map_err(|err| anyhow::anyhow!("direction proposal refused (nothing recorded): {err}"))?;
+    }
+    store.append(Event::direction_proposed(proposal.clone(), now_epoch()))?;
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&proposal)?);
+        return Ok(());
+    }
+    println!(
+        "direction proposal {} recorded for {goal_id} ({} candidate(s), dedupe_key {}) ✔",
+        proposal.id,
+        proposal.candidates.len(),
+        proposal.dedupe_key
+    );
+    for candidate in &proposal.candidates {
+        println!(
+            "  {} {} {} — {}; kill_when={}; acceptance={}",
+            candidate.id,
+            direction_class_label(&candidate.class),
+            direction_relation_label(&candidate.relation),
+            candidate.title,
+            if candidate.kill_when.trim().is_empty() {
+                "-".to_string()
+            } else {
+                format!("\"{}\"", candidate.kill_when)
+            },
+            candidate.acceptance.join(" | ")
+        );
+    }
+    Ok(())
+}
+
+/// `future goal direction list --goal G [--format json]` — every proposal of
+/// the goal with its state (and, for a rejection, the recorded reason).
+///
+/// A still-open proposal whose evaluation window has passed renders as
+/// `expired` even when no `DirectionExpired` event was written (the listing
+/// marks it `(derived …)`): a forgotten proposal frees its direction either
+/// way, and saying so is what tells the operator to run `direction expire` if
+/// they want the audit trail to match. JSON output keeps the raw ledger — the
+/// `status` field is the recorded state, so a consumer can tell the two apart.
+fn direction_list(store: &Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    reject_unknown_flags(args, &["--format", "--goal", "--json"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let ledger = store.direction_ledger(&goal_id)?;
+    if wants_json(args) {
+        println!("{}", serde_json::to_string_pretty(&ledger.entries)?);
+        return Ok(());
+    }
+    if ledger.entries.is_empty() {
+        println!("no direction proposals for {goal_id}");
+        return Ok(());
+    }
+    let now = now_epoch();
+    println!("direction proposals ({goal_id}):");
+    for entry in &ledger.entries {
+        println!(
+            "  {} [{}] trigger={} question=\"{}\" candidates={}",
+            entry.proposal.id,
+            direction_status_label(entry, now),
+            entry.proposal.trigger,
+            entry.proposal.question,
+            entry.proposal.candidates.len()
+        );
+        for candidate in &entry.proposal.candidates {
+            println!(
+                "    {} {} {} — {}; kill_when={}; acceptance={}",
+                candidate.id,
+                direction_class_label(&candidate.class),
+                direction_relation_label(&candidate.relation),
+                candidate.title,
+                if candidate.kill_when.trim().is_empty() {
+                    "-".to_string()
+                } else {
+                    format!("\"{}\"", candidate.kill_when)
+                },
+                candidate.acceptance.join(" | ")
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `future goal direction accept --goal G --proposal P --candidate C` — turn
+/// an accepted candidate into a todo.
+///
+/// The candidate's class decides the todo's class (`advancement` = the
+/// direction becomes work, `scout` = it opens a deeper exploration), the todo
+/// carries the candidate's `kill_when` (when it has one) and acceptance
+/// criteria, `origin_proposal` points back at the proposal, and the relation
+/// decides the dependency: `fork` opens a new route (no dependency),
+/// `revise:T` sets `blocked_by_gate = T` so the new todo continues after T
+/// rather than beside it.
+///
+/// Idempotent: a candidate of this proposal that already materialized as a
+/// todo is an error, not a second todo — accepted directions that duplicate
+/// each other are exactly what the ledger's dedupe rules exist to prevent.
+/// An open proposal past its deadline is refused too: the window closed, so
+/// re-propose or record the expiry first.
+fn direction_accept(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut proposal_id = None;
+    let mut candidate_id = None;
+    reject_unknown_flags(args, &["--candidate", "--goal", "--proposal"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--proposal" {
+            proposal_id = Some(v);
+        } else if k == "--candidate" {
+            candidate_id = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let proposal_id = proposal_id.ok_or_else(|| anyhow::anyhow!("--proposal required"))?;
+    let candidate_id = candidate_id.ok_or_else(|| anyhow::anyhow!("--candidate required"))?;
+    let goal = store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let ledger = store.direction_ledger(&goal_id)?;
+    let entry = ledger.proposal(&proposal_id).ok_or_else(|| {
+        anyhow::anyhow!(
+            "proposal `{proposal_id}` not found in {goal_id} (see `{} direction list --goal {goal_id}`)",
+            prog()
+        )
+    })?;
+    if matches!(
+        &entry.status,
+        DirectionStatus::Rejected { .. } | DirectionStatus::Expired { .. }
+    ) {
+        bail!(
+            "proposal `{proposal_id}` was {}; re-propose the direction instead of accepting it",
+            direction_status_label(entry, now_epoch())
+        );
+    }
+    // A deadline that silently passed frees the direction: accepting it would
+    // turn a window nobody kept open into scheduled work.
+    if entry.expiry_is_derived(now_epoch()) {
+        bail!(
+            "proposal `{proposal_id}` is past its evaluation deadline ({}); re-propose the direction \
+             or record the expiry with `{} direction expire --goal {goal_id} --proposal {proposal_id}`",
+            entry.proposal.effective_deadline(),
+            prog()
+        );
+    }
+    let candidate = entry
+        .proposal
+        .candidates
+        .iter()
+        .find(|candidate| candidate.id == candidate_id)
+        .cloned()
+        .ok_or_else(|| {
+            anyhow::anyhow!("proposal `{proposal_id}` has no candidate `{candidate_id}`")
+        })?;
+    // Idempotency: an accepted candidate already has its todo. Keyed on the
+    // origin link + normalized title, so a re-accept cannot mint a duplicate
+    // even if the proposal's state was somehow replayed oddly.
+    if let Some(existing) = goal.todos.iter().find(|todo| {
+        todo.origin_proposal.as_deref() == Some(proposal_id.as_str())
+            && normalize_title(&todo.title) == normalize_title(&candidate.title)
+    }) {
+        bail!(
+            "candidate `{candidate_id}` of proposal `{proposal_id}` is already accepted as todo {} — refusing to create a second todo",
+            existing.id
+        );
+    }
+    let ts = now_epoch();
+    let id = gen_id("todo");
+    // The candidate's class decides what acceptance produces: an `advancement`
+    // candidate becomes implementation work (the whole point of a direction
+    // ledger — a decided direction has to be able to become labour), a `scout`
+    // candidate becomes a deeper exploration and must carry its kill_when.
+    let mut todo = Todo::advancement(&id, &candidate.title);
+    todo.class = candidate.class;
+    todo.title = candidate.title.clone();
+    if !candidate.kill_when.trim().is_empty() {
+        todo.kill_when = Some(candidate.kill_when.clone());
+    }
+    todo.origin_proposal = Some(proposal_id.clone());
+    todo.acceptance = Some(candidate.acceptance.join(","));
+    if let CandidateRelation::Revise { todo_id } = &candidate.relation {
+        // A revision continues from its target: the new todo runs after T, not
+        // beside it. `fork` deliberately carries no dependency.
+        todo.blocked_by_gate = Some(todo_id.clone());
+    }
+    store.append_todo_change(Event::TodoAdded {
+        goal_id: goal_id.clone(),
+        todo,
+        ts,
+    })?;
+    store.append(Event::direction_accepted(&goal_id, &proposal_id, ts))?;
+    refresh_next_action(store, &goal_id)?;
+    sync_compat(store, &goal_id);
+    println!(
+        "todo {id} added to {goal_id} ({} {}) ✔",
+        task_class_label(candidate.class),
+        direction_relation_label(&candidate.relation)
+    );
+    println!("direction proposal {proposal_id} accepted (candidate `{candidate_id}`) ✔");
+    Ok(())
+}
+
+/// `future goal direction reject --goal G --proposal P --reason "..."` — drop
+/// a direction. The reason is required: a rejection nobody explained cannot be
+/// re-evaluated later, and `Event::direction_rejected` refuses an empty one.
+fn direction_reject(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut proposal_id = None;
+    let mut reason = None;
+    reject_unknown_flags(args, &["--goal", "--proposal", "--reason"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--proposal" {
+            proposal_id = Some(v);
+        } else if k == "--reason" {
+            reason = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let proposal_id = proposal_id.ok_or_else(|| anyhow::anyhow!("--proposal required"))?;
+    let reason = reason
+        .ok_or_else(|| anyhow::anyhow!("--reason required (why is this direction dropped?)"))?;
+    if reason.trim().is_empty() {
+        bail!("--reason must be non-empty (why is this direction dropped?)");
+    }
+    store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let ledger = store.direction_ledger(&goal_id)?;
+    let entry = ledger.proposal(&proposal_id).ok_or_else(|| {
+        anyhow::anyhow!(
+            "proposal `{proposal_id}` not found in {goal_id} (see `{} direction list --goal {goal_id}`)",
+            prog()
+        )
+    })?;
+    if entry.status == DirectionStatus::Accepted {
+        bail!(
+            "proposal `{proposal_id}` was already accepted; supersede the resulting todo instead"
+        );
+    }
+    store.append(Event::direction_rejected(
+        &goal_id,
+        &proposal_id,
+        &reason,
+        now_epoch(),
+    )?)?;
+    println!("direction proposal {proposal_id} rejected ✔");
+    Ok(())
+}
+
+/// `future goal direction expire --goal G --proposal P [--deadline TS]` —
+/// close a proposal whose evaluation window ran out.
+///
+/// The event is the audit record: it fixes the deadline the window closed at
+/// and releases the direction's dedupe capacity. The capacity is released by
+/// the deadline alone (see
+/// [`crate::work_items::direction::DirectionLedger::live_proposals`], which
+/// derives `Expired` for a proposal past its deadline even with no event), so
+/// this verb is not required for the ledger to stay honest — it is how the
+/// operator makes the record match what the projection already shows.
+///
+/// Refused when the proposal is already terminal (nothing to close) or was
+/// accepted: accepted means the direction became work, and expiring it would
+/// free the capacity for a second todo of the same direction — supersede the
+/// resulting todo instead.
+fn direction_expire(store: &mut Store, args: &[String]) -> Result<()> {
+    let mut goal_id = None;
+    let mut proposal_id = None;
+    let mut deadline = None;
+    reject_unknown_flags(args, &["--deadline", "--goal", "--proposal"])?;
+    parse_pairs(args, |k, v| {
+        if k == "--goal" {
+            goal_id = Some(v);
+        } else if k == "--proposal" {
+            proposal_id = Some(v);
+        } else if k == "--deadline" {
+            deadline = Some(v);
+        }
+    });
+    let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
+    let proposal_id = proposal_id.ok_or_else(|| anyhow::anyhow!("--proposal required"))?;
+    let deadline = match deadline {
+        None => None,
+        Some(raw) => Some(parse_epoch_secs("--deadline", &raw)?),
+    };
+    store
+        .replay(&goal_id)?
+        .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    let ledger = store.direction_ledger(&goal_id)?;
+    let entry = ledger.proposal(&proposal_id).ok_or_else(|| {
+        anyhow::anyhow!(
+            "proposal `{proposal_id}` not found in {goal_id} (see `{} direction list --goal {goal_id}`)",
+            prog()
+        )
+    })?;
+    match &entry.status {
+        DirectionStatus::Accepted => bail!(
+            "proposal `{proposal_id}` was already accepted — the direction became work; \
+             supersede the resulting todo instead of expiring it"
+        ),
+        DirectionStatus::Expired { deadline } => bail!(
+            "proposal `{proposal_id}` is already expired (deadline {deadline}) — nothing to close"
+        ),
+        DirectionStatus::Rejected { reason } => bail!(
+            "proposal `{proposal_id}` was rejected ({reason}) — a rejected direction is already \
+             closed; re-propose it with new evidence instead"
+        ),
+        DirectionStatus::Proposed => {}
+    }
+    let now = now_epoch();
+    // Default: the window the proposal already declared (explicit deadline, or
+    // the default TTL after creation), capped at now so the record can never
+    // claim a window that is still open.
+    let deadline = deadline
+        .unwrap_or_else(|| entry.proposal.effective_deadline().min(now))
+        .min(now);
+    store.append(Event::direction_expired(
+        &goal_id,
+        &proposal_id,
+        deadline,
+        now,
+    ))?;
+    println!("direction proposal {proposal_id} expired (deadline {deadline}) ✔");
     Ok(())
 }
 
@@ -3505,6 +4337,7 @@ fn status_label(goal: &Goal, t: &Todo) -> &'static str {
                     TaskClass::Monitor => "monitor",
                     TaskClass::Blocker => "blocker",
                     TaskClass::Coordination => "coord",
+                    TaskClass::Scout => "scout",
                 }
             }
         }
@@ -8846,6 +9679,34 @@ fn describe_event(event: &crate::store::Event) -> String {
                 "supervisor_note kind={note_kind} todo={todo_id} message=\"{message}\""
             );
         }
+        // Exploration node: the direction proposal ledger's events. Described
+        // here because this match is the exhaustive one — a new ledger kind
+        // that renders nothing would make `todo-event` / `evidence-log` lose
+        // the proposal trail.
+        Event::DirectionProposed { proposal, .. } => {
+            return format!(
+                "direction_proposed id={} candidates={}",
+                proposal.id,
+                proposal.candidates.len()
+            );
+        }
+        Event::DirectionAccepted { proposal_id, .. } => {
+            return format!("direction_accepted id={proposal_id}");
+        }
+        Event::DirectionRejected {
+            proposal_id,
+            reason,
+            ..
+        } => {
+            return format!("direction_rejected id={proposal_id} reason=\"{reason}\"");
+        }
+        Event::DirectionExpired {
+            proposal_id,
+            deadline,
+            ..
+        } => {
+            return format!("direction_expired id={proposal_id} deadline={deadline}");
+        }
     };
     kind.to_string()
 }
@@ -9781,6 +10642,9 @@ mod coverage_tests {
             (TaskClass::Monitor, "monitor"),
             (TaskClass::Blocker, "blocker"),
             (TaskClass::Coordination, "coord"),
+            // A scout is runnable work (not `coord`), but its label names the
+            // exploration node itself so an operator sees what it produces.
+            (TaskClass::Scout, "scout"),
         ] {
             let mut t = Todo::advancement("t", "x");
             t.class = class;
@@ -13072,6 +13936,856 @@ mod run_claim_release_tests {
         assert!(
             notes[0].contains("host_died") && notes[0].contains("t1"),
             "the note must name the todo and the cause: {notes:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod direction_cli_tests {
+    use super::*;
+    use crate::state::TodoRole;
+
+    fn tmp_store(tag: &str) -> Store {
+        let dir = std::env::temp_dir().join(format!(
+            "future-goal-direction-{tag}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        Store::open(dir.to_string_lossy().as_ref()).unwrap()
+    }
+
+    /// Register a goal and add one advancement todo per title. The titles
+    /// matter: candidate validation compares normalized titles against them.
+    fn open_goal(store: &mut Store, goal_id: &str, todo_titles: &[&str]) {
+        let goal = Goal::new(goal_id, "objective", "/tmp");
+        store.register(&goal).unwrap();
+        let ts = goal.created_at;
+        store
+            .append(Event::GoalStarted {
+                goal_id: goal_id.into(),
+                ts,
+            })
+            .unwrap();
+        for (index, title) in todo_titles.iter().enumerate() {
+            store
+                .append(Event::TodoAdded {
+                    goal_id: goal_id.into(),
+                    todo: Todo::advancement(&format!("T{}", index + 1), title),
+                    ts,
+                })
+                .unwrap();
+        }
+    }
+
+    fn propose_args(goal: &str, candidates: &[&str]) -> Vec<String> {
+        let mut args = vec![
+            "propose".to_string(),
+            "--goal".to_string(),
+            goal.to_string(),
+            "--trigger".to_string(),
+            "stall".to_string(),
+            "--question".to_string(),
+            "which way should we go?".to_string(),
+            "--observation".to_string(),
+            "two stalls in a row".to_string(),
+        ];
+        for candidate in candidates {
+            args.push("--candidate".to_string());
+            args.push((*candidate).to_string());
+        }
+        args
+    }
+
+    fn accept_args(goal: &str, proposal: &str, candidate: &str) -> Vec<String> {
+        vec![
+            "accept".to_string(),
+            "--goal".to_string(),
+            goal.to_string(),
+            "--proposal".to_string(),
+            proposal.to_string(),
+            "--candidate".to_string(),
+            candidate.to_string(),
+        ]
+    }
+
+    fn only_proposal(store: &Store, goal: &str) -> String {
+        let ledger = store.direction_ledger(goal).unwrap();
+        assert_eq!(ledger.entries.len(), 1, "expected exactly one proposal");
+        ledger.entries[0].proposal.id.clone()
+    }
+
+    #[test]
+    fn propose_records_a_validated_proposal() {
+        let mut store = tmp_store("propose-ok");
+        open_goal(&mut store, "g1", &["Implement the direction ledger"]);
+        cmd_direction(
+            &mut store,
+            &propose_args(
+                "g1",
+                &[
+                    "Parallelize the validator|fork|two candidates are rejected|proposal recorded;ledger lists it",
+                ],
+            ),
+        )
+        .unwrap();
+
+        let ledger = store.direction_ledger("g1").unwrap();
+        assert_eq!(ledger.entries.len(), 1);
+        let entry = &ledger.entries[0];
+        assert_eq!(entry.status, DirectionStatus::Proposed);
+        assert_eq!(entry.proposal.goal_id, "g1");
+        assert_eq!(entry.proposal.trigger, "stall");
+        assert_eq!(entry.proposal.candidates.len(), 1);
+        assert_eq!(entry.proposal.candidates[0].id, "c1");
+        assert_eq!(
+            entry.proposal.candidates[0].relation,
+            CandidateRelation::Fork
+        );
+        assert_eq!(
+            entry.proposal.candidates[0].acceptance,
+            vec![
+                "proposal recorded".to_string(),
+                "ledger lists it".to_string()
+            ]
+        );
+        assert_eq!(
+            entry.proposal.candidates[0].kill_when,
+            "two candidates are rejected"
+        );
+        assert_eq!(entry.proposal.dedupe_key.len(), 16);
+
+        // The read surface works on the same ledger (human + json).
+        cmd_direction(
+            &mut store,
+            &["list".to_string(), "--goal".to_string(), "g1".to_string()],
+        )
+        .unwrap();
+        cmd_direction(
+            &mut store,
+            &[
+                "list".to_string(),
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--format".to_string(),
+                "json".to_string(),
+            ],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn duplicate_direction_is_refused_and_leaves_the_ledger_untouched() {
+        let mut store = tmp_store("propose-dup");
+        open_goal(&mut store, "g1", &["Implement the direction ledger"]);
+        let err = cmd_direction(
+            &mut store,
+            &propose_args(
+                "g1",
+                &["Add the Direction-Ledger|fork|the ledger lands|ledger lists it"],
+            ),
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("duplicate direction: T1"),
+            "got: {err}"
+        );
+        // Nothing reached the ledger: the next (fixed) proposal is not a
+        // duplicate of the refused one.
+        let ledger = store.direction_ledger("g1").unwrap();
+        assert!(
+            ledger.entries.is_empty(),
+            "a refused proposal must not land"
+        );
+
+        cmd_direction(
+            &mut store,
+            &propose_args(
+                "g1",
+                &["Parallelize the validator|fork|two candidates are rejected|ledger lists it"],
+            ),
+        )
+        .unwrap();
+        assert_eq!(store.direction_ledger("g1").unwrap().entries.len(), 1);
+    }
+
+    #[test]
+    fn candidate_spec_parsing_reads_both_forms_and_rejects_garbage() {
+        // Legacy four-field form: class defaults to advancement, kill_when
+        // optional-but-accepted.
+        let fork = parse_candidate_spec(1, "Wire the CLI|fork|cli ships|works;tests pass").unwrap();
+        assert_eq!(fork.id, "c1");
+        assert_eq!(fork.title, "Wire the CLI");
+        assert_eq!(fork.class, TaskClass::Advancement);
+        assert_eq!(fork.relation, CandidateRelation::Fork);
+        assert_eq!(fork.kill_when, "cli ships");
+        assert_eq!(
+            fork.acceptance,
+            vec!["works".to_string(), "tests pass".to_string()]
+        );
+
+        // Five-field form: title|class|relation|kill_when|acceptance.
+        let scout = parse_candidate_spec(
+            2,
+            "Explore the cache|scout|fork|two candidates dropped|routes compared;ledger updated",
+        )
+        .unwrap();
+        assert_eq!(scout.class, TaskClass::Scout);
+        assert_eq!(scout.relation, CandidateRelation::Fork);
+        assert_eq!(scout.kill_when, "two candidates dropped");
+
+        // An empty class field means advancement (the omitted form).
+        let empty_class = parse_candidate_spec(1, "Plain work||fork||done;a,b").unwrap();
+        assert_eq!(empty_class.class, TaskClass::Advancement);
+        assert_eq!(
+            empty_class.kill_when, "",
+            "an advancement candidate may omit kill_when"
+        );
+
+        let revise = parse_candidate_spec(
+            3,
+            "Revise it|advancement|revise:T1|out of scope|revision recorded",
+        )
+        .unwrap();
+        assert_eq!(revise.id, "c3");
+        assert_eq!(revise.class, TaskClass::Advancement);
+        assert_eq!(
+            revise.relation,
+            CandidateRelation::Revise {
+                todo_id: "T1".to_string()
+            }
+        );
+        // ...and the legacy form addresses the same relation.
+        let legacy_revise =
+            parse_candidate_spec(2, "Revise it|revise:T1|out of scope|revision recorded").unwrap();
+        assert_eq!(legacy_revise.relation, revise.relation);
+
+        for (spec, needle) in [
+            ("no pipes here", "5 `|`-separated fields"),
+            ("|fork|kill|a", "empty title"),
+            (
+                "Title|scout|fork||a",
+                "is a scout and has an empty kill_when",
+            ),
+            ("Title|blue|fork|kill|a", "must be `advancement` or `scout`"),
+            ("Title|blue|kill|a", "must be `fork` or `revise:TODO_ID`"),
+            ("Title|scout|revise:|kill|a", "empty revise target"),
+            ("Title|fork|kill|", "no acceptance criteria"),
+        ] {
+            let err = parse_candidate_spec(1, spec).unwrap_err();
+            assert!(
+                format!("{err}").contains(needle),
+                "spec `{spec}` must fail with `{needle}`, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn accept_creates_a_scout_todo_linked_to_the_proposal() {
+        let mut store = tmp_store("accept-ok");
+        open_goal(&mut store, "g1", &["Implement the direction ledger"]);
+        cmd_direction(
+            &mut store,
+            &propose_args(
+                "g1",
+                &["Parallelize the validator|scout|fork|two candidates are rejected|proposal recorded;ledger lists it"],
+            ),
+        )
+        .unwrap();
+        let proposal = only_proposal(&store, "g1");
+        cmd_direction(&mut store, &accept_args("g1", &proposal, "c1")).unwrap();
+
+        let goal = store.replay("g1").unwrap().unwrap();
+        let scout = goal
+            .todos
+            .iter()
+            .find(|todo| todo.origin_proposal.as_deref() == Some(proposal.as_str()))
+            .expect("accept must add a todo carrying origin_proposal");
+        assert_eq!(scout.class, TaskClass::Scout);
+        assert_eq!(scout.role, TodoRole::Agent);
+        assert_eq!(scout.title, "Parallelize the validator");
+        assert_eq!(
+            scout.kill_when.as_deref(),
+            Some("two candidates are rejected")
+        );
+        assert_eq!(
+            scout.acceptance.as_deref(),
+            Some("proposal recorded,ledger lists it")
+        );
+        // `fork` opens a new route: no dependency on anything.
+        assert_eq!(scout.blocked_by_gate, None);
+        assert!(scout.class.is_runnable_work());
+
+        let ledger = store.direction_ledger("g1").unwrap();
+        assert_eq!(
+            ledger.proposal(&proposal).unwrap().status,
+            DirectionStatus::Accepted
+        );
+    }
+
+    #[test]
+    fn accept_of_an_advancement_candidate_creates_work() {
+        let mut store = tmp_store("accept-advancement");
+        open_goal(&mut store, "g1", &["Implement the direction ledger"]);
+        // Legacy four-field candidate (no class) + five-field advancement one
+        // with no kill_when: both must become implementation work.
+        cmd_direction(
+            &mut store,
+            &propose_args(
+                "g1",
+                &[
+                    "Parallelize the validator|fork||proposal recorded",
+                    "Move the cache to the reader|advancement|fork||reader latency measured",
+                ],
+            ),
+        )
+        .unwrap();
+        let proposal = only_proposal(&store, "g1");
+        for candidate in ["c1", "c2"] {
+            cmd_direction(&mut store, &accept_args("g1", &proposal, candidate)).unwrap();
+        }
+
+        let goal = store.replay("g1").unwrap().unwrap();
+        let accepted: Vec<_> = goal
+            .todos
+            .iter()
+            .filter(|todo| todo.origin_proposal.as_deref() == Some(proposal.as_str()))
+            .collect();
+        assert_eq!(accepted.len(), 2, "one todo per accepted candidate");
+        for todo in accepted {
+            assert_eq!(
+                todo.class,
+                TaskClass::Advancement,
+                "an accepted direction must be able to become work: {}",
+                todo.title
+            );
+            assert_eq!(
+                todo.kill_when, None,
+                "an empty kill_when is not written onto the todo"
+            );
+            assert_eq!(todo.role, TodoRole::Agent);
+        }
+    }
+
+    #[test]
+    fn accept_of_a_revise_candidate_blocks_on_its_target() {
+        let mut store = tmp_store("accept-revise");
+        open_goal(&mut store, "g1", &["Implement the direction ledger"]);
+        cmd_direction(
+            &mut store,
+            &propose_args(
+                "g1",
+                &["Implement the direction ledger|scout|revise:T1|the revision is out of scope|revision recorded"],
+            ),
+        )
+        .unwrap();
+        let proposal = only_proposal(&store, "g1");
+        cmd_direction(&mut store, &accept_args("g1", &proposal, "c1")).unwrap();
+
+        let goal = store.replay("g1").unwrap().unwrap();
+        let scout = goal
+            .todos
+            .iter()
+            .find(|todo| todo.origin_proposal.as_deref() == Some(proposal.as_str()))
+            .expect("accept must add the revision scout todo");
+        assert_eq!(scout.class, TaskClass::Scout);
+        assert_eq!(scout.blocked_by_gate.as_deref(), Some("T1"));
+    }
+
+    #[test]
+    fn accepting_the_same_candidate_twice_errors_without_a_second_todo() {
+        let mut store = tmp_store("accept-twice");
+        open_goal(&mut store, "g1", &["Implement the direction ledger"]);
+        cmd_direction(
+            &mut store,
+            &propose_args(
+                "g1",
+                &["Parallelize the validator|fork|two candidates are rejected|proposal recorded"],
+            ),
+        )
+        .unwrap();
+        let proposal = only_proposal(&store, "g1");
+        cmd_direction(&mut store, &accept_args("g1", &proposal, "c1")).unwrap();
+        let err = cmd_direction(&mut store, &accept_args("g1", &proposal, "c1")).unwrap_err();
+        assert!(
+            format!("{err}").contains("already accepted"),
+            "the second accept must be refused, got: {err}"
+        );
+        let goal = store.replay("g1").unwrap().unwrap();
+        let scouts = goal
+            .todos
+            .iter()
+            .filter(|todo| todo.origin_proposal.as_deref() == Some(proposal.as_str()))
+            .count();
+        assert_eq!(scouts, 1, "a re-accept must not mint a second todo");
+    }
+
+    #[test]
+    fn reject_requires_a_reason_and_records_it() {
+        let mut store = tmp_store("reject");
+        open_goal(&mut store, "g1", &[]);
+        cmd_direction(
+            &mut store,
+            &propose_args(
+                "g1",
+                &["Parallelize the validator|fork|two candidates are rejected|proposal recorded"],
+            ),
+        )
+        .unwrap();
+        let proposal = only_proposal(&store, "g1");
+
+        // Missing --reason entirely.
+        let err = cmd_direction(
+            &mut store,
+            &[
+                "reject".to_string(),
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--proposal".to_string(),
+                proposal.clone(),
+            ],
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("--reason"), "got: {err}");
+        // Present but blank.
+        let err = cmd_direction(
+            &mut store,
+            &[
+                "reject".to_string(),
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--proposal".to_string(),
+                proposal.clone(),
+                "--reason".to_string(),
+                "   ".to_string(),
+            ],
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("non-empty"), "got: {err}");
+        // Neither refusal touched the ledger.
+        assert_eq!(
+            store
+                .direction_ledger("g1")
+                .unwrap()
+                .proposal(&proposal)
+                .unwrap()
+                .status,
+            DirectionStatus::Proposed
+        );
+
+        cmd_direction(
+            &mut store,
+            &[
+                "reject".to_string(),
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--proposal".to_string(),
+                proposal.clone(),
+                "--reason".to_string(),
+                "too costly right now".to_string(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            store
+                .direction_ledger("g1")
+                .unwrap()
+                .proposal(&proposal)
+                .unwrap()
+                .status,
+            DirectionStatus::Rejected {
+                reason: "too costly right now".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn todo_add_scout_requires_kill_when() {
+        let mut store = tmp_store("add-scout");
+        open_goal(&mut store, "g1", &[]);
+        let missing = vec![
+            "--goal".to_string(),
+            "g1".to_string(),
+            "--text".to_string(),
+            "explore the caching route".to_string(),
+            "--class".to_string(),
+            "scout".to_string(),
+        ];
+        let err = todo_add(&mut store, &missing).unwrap_err();
+        assert!(format!("{err}").contains("--kill-when"), "got: {err}");
+        // Nothing was added.
+        assert!(store.replay("g1").unwrap().unwrap().todos.is_empty());
+
+        let mut with_kill = missing.clone();
+        with_kill.push("--kill-when".to_string());
+        with_kill.push("two directions evaluated".to_string());
+        todo_add(&mut store, &with_kill).unwrap();
+        let goal = store.replay("g1").unwrap().unwrap();
+        let scout = goal.todos.last().expect("scout todo added");
+        assert_eq!(scout.class, TaskClass::Scout);
+        assert_eq!(scout.role, TodoRole::Agent);
+        assert_eq!(scout.kill_when.as_deref(), Some("two directions evaluated"));
+        assert_eq!(scout.origin_proposal, None);
+
+        // A non-scout class keeps its old behavior: --kill-when optional.
+        let advancement = vec![
+            "--goal".to_string(),
+            "g1".to_string(),
+            "--text".to_string(),
+            "plain work".to_string(),
+        ];
+        todo_add(&mut store, &advancement).unwrap();
+        let goal = store.replay("g1").unwrap().unwrap();
+        assert_eq!(goal.todos.last().unwrap().class, TaskClass::Advancement);
+    }
+
+    #[test]
+    fn scout_with_a_non_agent_role_is_refused() {
+        let mut store = tmp_store("add-scout-role");
+        open_goal(&mut store, "g1", &[]);
+        let err = todo_add(
+            &mut store,
+            &[
+                "--goal".to_string(),
+                "g1".to_string(),
+                "--text".to_string(),
+                "explore".to_string(),
+                "--class".to_string(),
+                "scout".to_string(),
+                "--role".to_string(),
+                "user".to_string(),
+                "--kill-when".to_string(),
+                "two directions evaluated".to_string(),
+            ],
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("unknown --role/--class combo"),
+            "got: {err}"
+        );
+        assert!(store.replay("g1").unwrap().unwrap().todos.is_empty());
+    }
+
+    // ── --scout-todo is a reference, not a note ───────────────────────────
+
+    fn scout_add_args(goal: &str, text: &str) -> Vec<String> {
+        vec![
+            "--goal".to_string(),
+            goal.to_string(),
+            "--text".to_string(),
+            text.to_string(),
+            "--class".to_string(),
+            "scout".to_string(),
+            "--kill-when".to_string(),
+            "two candidates evaluated".to_string(),
+        ]
+    }
+
+    fn propose_for_scout_args(goal: &str, scout: &str) -> Vec<String> {
+        let mut args = propose_args(
+            goal,
+            &["Explore a two-tier cache|scout|fork|two candidates dropped|routes compared"],
+        );
+        args.push("--scout-todo".to_string());
+        args.push(scout.to_string());
+        args
+    }
+
+    fn last_todo_id(store: &Store, goal: &str) -> String {
+        store
+            .replay(goal)
+            .unwrap()
+            .unwrap()
+            .todos
+            .last()
+            .expect("a todo must exist")
+            .id
+            .clone()
+    }
+
+    #[test]
+    fn propose_refuses_an_invalid_scout_todo_reference() {
+        let mut store = tmp_store("scout-reference");
+        open_goal(&mut store, "g1", &["Implement the direction ledger"]);
+        open_goal(&mut store, "g2", &[]);
+        todo_add(&mut store, &scout_add_args("g2", "explore in another goal")).unwrap();
+        let foreign = last_todo_id(&store, "g2");
+
+        for (scout, needle) in [
+            ("todo_missing", "is not a todo of g1"),
+            (foreign.as_str(), "is not a todo of g1"),
+            ("T1", "has class advancement"),
+        ] {
+            let err = cmd_direction(&mut store, &propose_for_scout_args("g1", scout)).unwrap_err();
+            assert!(
+                format!("{err}").contains(needle),
+                "--scout-todo `{scout}` must fail with `{needle}`, got: {err}"
+            );
+        }
+        assert!(
+            store.direction_ledger("g1").unwrap().entries.is_empty(),
+            "a refused proposal must not reach the ledger"
+        );
+
+        // The real thing: a scout of this goal, linked back.
+        todo_add(
+            &mut store,
+            &scout_add_args("g1", "explore the caching route"),
+        )
+        .unwrap();
+        let scout = last_todo_id(&store, "g1");
+        cmd_direction(&mut store, &propose_for_scout_args("g1", &scout)).unwrap();
+        let ledger = store.direction_ledger("g1").unwrap();
+        assert_eq!(
+            ledger.entries[0].proposal.scout_todo.as_deref(),
+            Some(scout.as_str())
+        );
+    }
+
+    // ── scout completion gate: the proposal is the deliverable ────────────
+
+    fn complete_args(goal: &str, todo: &str, force: bool) -> Vec<String> {
+        let mut args = vec![
+            "--goal".to_string(),
+            goal.to_string(),
+            "--todo-id".to_string(),
+            todo.to_string(),
+            "--no-follow-up".to_string(),
+            "--evidence".to_string(),
+            "explored".to_string(),
+        ];
+        if force {
+            args.push("--force".to_string());
+        }
+        args
+    }
+
+    #[tokio::test]
+    async fn a_scout_cannot_complete_without_a_recorded_proposal() {
+        let mut store = tmp_store("scout-gate");
+        open_goal(&mut store, "g1", &[]);
+        todo_add(
+            &mut store,
+            &scout_add_args("g1", "explore the caching route"),
+        )
+        .unwrap();
+        let scout = last_todo_id(&store, "g1");
+
+        let err = todo_complete(&mut store, &complete_args("g1", &scout, false))
+            .await
+            .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("no direction proposal names it"),
+            "an empty exploration must not close, got: {msg}"
+        );
+        assert!(
+            msg.contains("--scout-todo"),
+            "the error must say how to fix it: {msg}"
+        );
+        assert_eq!(
+            store
+                .replay("g1")
+                .unwrap()
+                .unwrap()
+                .todo(&scout)
+                .unwrap()
+                .status,
+            TodoStatus::Open,
+            "the refused completion wrote nothing"
+        );
+
+        // Record the proposal that names this scout → the completion lands.
+        cmd_direction(&mut store, &propose_for_scout_args("g1", &scout)).unwrap();
+        todo_complete(&mut store, &complete_args("g1", &scout, false))
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .replay("g1")
+                .unwrap()
+                .unwrap()
+                .todo(&scout)
+                .unwrap()
+                .status,
+            TodoStatus::Done
+        );
+    }
+
+    #[tokio::test]
+    async fn a_scout_completion_can_still_be_forced_by_an_operator() {
+        let mut store = tmp_store("scout-gate-force");
+        open_goal(&mut store, "g1", &[]);
+        todo_add(
+            &mut store,
+            &scout_add_args("g1", "explore the caching route"),
+        )
+        .unwrap();
+        let scout = last_todo_id(&store, "g1");
+        todo_complete(&mut store, &complete_args("g1", &scout, true))
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .replay("g1")
+                .unwrap()
+                .unwrap()
+                .todo(&scout)
+                .unwrap()
+                .status,
+            TodoStatus::Done
+        );
+    }
+
+    // ── expire: the fourth state finally has a producer ───────────────────
+
+    fn propose_with_deadline(goal: &str, candidates: &[&str], deadline: u64) -> Vec<String> {
+        let mut args = propose_args(goal, candidates);
+        args.push("--deadline".to_string());
+        args.push(deadline.to_string());
+        args
+    }
+
+    fn expire_args(goal: &str, proposal: &str, deadline: Option<u64>) -> Vec<String> {
+        let mut args = vec![
+            "expire".to_string(),
+            "--goal".to_string(),
+            goal.to_string(),
+            "--proposal".to_string(),
+            proposal.to_string(),
+        ];
+        if let Some(deadline) = deadline {
+            args.push("--deadline".to_string());
+            args.push(deadline.to_string());
+        }
+        args
+    }
+
+    #[test]
+    fn expire_writes_the_event_and_a_past_deadline_derives_expiry() {
+        let mut store = tmp_store("expire");
+        open_goal(&mut store, "g1", &[]);
+        let now = now_epoch();
+
+        // p1: a window the operator closes by hand.
+        cmd_direction(
+            &mut store,
+            &propose_with_deadline(
+                "g1",
+                &["Two-tier cache|scout|fork|hit rate stays below 0.5|routes compared"],
+                now + 3_600,
+            ),
+        )
+        .unwrap();
+        let p1 = only_proposal(&store, "g1");
+        cmd_direction(&mut store, &expire_args("g1", &p1, Some(now - 10))).unwrap();
+        let ledger = store.direction_ledger("g1").unwrap();
+        assert_eq!(
+            ledger.proposal(&p1).unwrap().status,
+            DirectionStatus::Expired { deadline: now - 10 },
+            "the event records the deadline the window closed at"
+        );
+        assert!(
+            !ledger.proposal(&p1).unwrap().expiry_is_derived(now),
+            "a recorded expiry must not render as derived"
+        );
+
+        // Closing it twice is refused (the state is already terminal).
+        let err = cmd_direction(&mut store, &expire_args("g1", &p1, None)).unwrap_err();
+        assert!(format!("{err}").contains("already expired"), "got: {err}");
+
+        // p2: no event at all — only a deadline that has passed.
+        cmd_direction(
+            &mut store,
+            &propose_with_deadline(
+                "g1",
+                &["Move the cache to the reader|advancement|fork||latency measured"],
+                now - 100,
+            ),
+        )
+        .unwrap();
+        let ledger = store.direction_ledger("g1").unwrap();
+        let p2 = ledger
+            .entries
+            .iter()
+            .find(|entry| {
+                entry
+                    .proposal
+                    .candidates
+                    .iter()
+                    .any(|candidate| candidate.title == "Move the cache to the reader")
+            })
+            .expect("the second proposal is on the ledger");
+        assert_eq!(
+            p2.status,
+            DirectionStatus::Proposed,
+            "nothing wrote the state"
+        );
+        assert!(p2.expiry_is_derived(now));
+        let label = direction_status_label(p2, now);
+        assert!(label.contains("expired"), "got: {label}");
+        assert!(
+            label.contains("no expire event"),
+            "the listing must say the expiry is derived: {label}"
+        );
+
+        // ...and accepting a closed window is refused.
+        let p2_id = p2.proposal.id.clone();
+        let err = cmd_direction(&mut store, &accept_args("g1", &p2_id, "c1")).unwrap_err();
+        assert!(
+            format!("{err}").contains("past its evaluation deadline"),
+            "got: {err}"
+        );
+
+        // The derived expiry frees the direction: the same one can be
+        // proposed again without a manual `expire`.
+        cmd_direction(
+            &mut store,
+            &propose_args(
+                "g1",
+                &["Move the cache to the reader|advancement|fork||latency measured"],
+            ),
+        )
+        .unwrap();
+        assert_eq!(store.direction_ledger("g1").unwrap().entries.len(), 3);
+    }
+
+    #[test]
+    fn a_reworded_direction_is_refused_by_propose() {
+        let mut store = tmp_store("propose-reworded");
+        open_goal(&mut store, "g1", &[]);
+        cmd_direction(
+            &mut store,
+            &propose_args(
+                "g1",
+                &["Two-tier cache|scout|fork|two candidates dropped|routes compared"],
+            ),
+        )
+        .unwrap();
+
+        // Same direction, new wording, plus a second candidate so the
+        // whole-set dedupe_key differs.
+        let err = cmd_direction(
+            &mut store,
+            &propose_args(
+                "g1",
+                &[
+                    "Add a two-tier cache to the reader|scout|fork|hit rate stays below 0.5|latency recorded",
+                    "Move the validator elsewhere|advancement|fork||validator rewritten",
+                ],
+            ),
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("duplicate direction: candidate `c1` of live proposal"),
+            "got: {err}"
+        );
+        assert_eq!(
+            store.direction_ledger("g1").unwrap().entries.len(),
+            1,
+            "the refused proposal must not land"
         );
     }
 }

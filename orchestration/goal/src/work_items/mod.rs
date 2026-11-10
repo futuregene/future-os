@@ -7,6 +7,8 @@
 pub mod attention;
 pub mod delivery;
 pub mod delivery_outcome;
+// The exploration node's output: direction proposals, not artifacts.
+pub mod direction;
 pub mod operator_inbox;
 pub mod replan_obligation;
 pub mod task_graph;

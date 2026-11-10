@@ -73,6 +73,7 @@ fn class_label(t: &Todo) -> &'static str {
         TaskClass::Monitor => "monitor",
         TaskClass::Blocker => "blocker",
         TaskClass::Coordination => "coordination",
+        TaskClass::Scout => "scout",
     }
 }
 
