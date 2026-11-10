@@ -414,7 +414,7 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
 
     // if (group === "doctor")
     if group == Some("doctor") {
-        return catch(out, commands::doctor::doctor(out)).await;
+        return catch(out, commands::doctor::doctor(rest, out)).await;
     }
 
     // Bare `future` is the home view, not the help screen (AXI principle 8:
