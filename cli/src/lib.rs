@@ -414,7 +414,10 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
 
     // if (group === "doctor")
     if group == Some("doctor") {
-        return catch(out, commands::doctor::doctor(rest, out)).await;
+        // `doctor` has no subcommand, so its flags arrive in `command`, not in
+        // `rest`: pass everything after the group name, or `future doctor
+        // --json` silently runs the text report.
+        return catch(out, commands::doctor::doctor(&args[1..], out)).await;
     }
 
     // Bare `future` is the home view, not the help screen (AXI principle 8:
@@ -898,6 +901,25 @@ mod tests {
         assert_eq!(code, crate::axi::EXIT_USAGE);
         assert_eq!(stdout, "");
         assert!(stderr.contains("unexpected argument: extra"), "{stderr}");
+    }
+
+    /// Flags of a subcommand-less group arrive as `command`, not `rest`:
+    /// `future doctor --json` must actually print JSON. (The unit test for
+    /// `doctor()` passes its args directly, which is exactly why this bug
+    /// survived it.)
+    #[tokio::test]
+    async fn doctor_flags_reach_the_command_from_the_dispatcher() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let (code, stdout, _) = run(&["doctor", "--json"]).await;
+        assert_eq!(code, 0);
+        let report: serde_json::Value =
+            serde_json::from_str(&stdout).expect("doctor --json must print a JSON document");
+        assert!(report["checks"].is_array(), "{stdout}");
+
+        // `--strict` travels the same way and is a failure in a bare home.
+        let (code, _, _) = run(&["doctor", "--strict"]).await;
+        assert_eq!(code, 1, "--strict with warnings is a non-zero exit");
     }
 
     /// `--help` is a read. These four used to reach a command body: one logged
