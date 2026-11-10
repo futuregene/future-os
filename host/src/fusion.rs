@@ -13,10 +13,11 @@ mod reports;
 mod resilience;
 mod review;
 use future_fusion::{failure, failure_kind, FailureKind};
-use resilience::{IdleProgress, Runtime};
+use resilience::{panel_timeout, wait_for_panel_timeout, IdleProgress, PanelDeadline, Runtime};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+use tokio::sync::watch;
 
 static STARTED: AtomicBool = AtomicBool::new(false);
 static STOPPING: AtomicBool = AtomicBool::new(false);
@@ -249,7 +250,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     )?);
     let probe = async {
         if !ctx.healthy() {
-            with_retry(&ctx, "preflight", &config.moderator, "moderator", "This is a Fusion readiness check. Reply READY. Do not investigate, use tools, or discuss a task.").await?;
+            with_retry(&ctx, "preflight", &config.moderator, "moderator", "This is a Fusion readiness check. Reply READY. Do not investigate, use tools, or discuss a task.", None).await?;
             ctx.mark_healthy();
         }
         ctx.update(|report| report.complete("preflight"))
@@ -343,6 +344,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
             &config.moderator,
             "moderator",
             &prompt,
+            None,
         )
         .await
         {
@@ -490,6 +492,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         &config.moderator,
         "moderator",
         &prompt,
+        None,
     )
     .await
     {
@@ -538,6 +541,7 @@ async fn panel(
     review_material: Option<(&[Value], &Value)>,
 ) -> Result<Vec<Value>> {
     let mut pending = futures::stream::FuturesUnordered::new();
+    let (stop, panel_stop) = watch::channel(false);
     for &index in indices {
         let model = &ctx.config.panel[index];
         let participant = format!("P{}", index + 1);
@@ -546,14 +550,42 @@ async fn panel(
         } else {
             format!("Your participant ID is {participant}.\n{prompt}")
         };
+        let panel_stop = panel_stop.clone();
         pending.push(async move {
-            let answer = with_retry(ctx, phase, model, &participant, &participant_prompt).await;
+            let answer = with_retry(
+                ctx,
+                phase,
+                model,
+                &participant,
+                &participant_prompt,
+                Some(panel_stop),
+            )
+            .await;
             (participant, model, answer)
         });
     }
     let mut good = vec![];
     let mut persistence_error = None;
-    while let Some((participant, model, result)) = pending.next().await {
+    let mut deadline = PanelDeadline::default();
+    loop {
+        let next = if let Some(cutoff) = deadline.cutoff().filter(|_| !*stop.borrow()) {
+            tokio::select! {
+                biased;
+                _ = tokio::time::sleep_until(cutoff) => {
+                    // Keep polling the workers so they can abort their own Agent
+                    // requests and persist the outcome before we synthesize.
+                    stop.send_replace(true);
+                    continue;
+                }
+                next = pending.next() => next,
+            }
+        } else {
+            pending.next().await
+        };
+        let Some((participant, model, result)) = next else {
+            break;
+        };
+        deadline.participant_finished(tokio::time::Instant::now(), result.is_ok(), pending.len());
         match result {
             Ok(report) => good.push(json!({"participant": participant, "model": model.model, "response": report.text, "validation_errors":report.validation_errors})),
             Err(error) => {
@@ -644,6 +676,7 @@ async fn with_retry(
     model: &ModelConfig,
     participant: &str,
     prompt: &str,
+    mut panel_stop: Option<watch::Receiver<bool>>,
 ) -> Result<reports::Report> {
     if let Err(error) = ctx
         .ensure_provider(&model.model)
@@ -661,6 +694,9 @@ async fn with_retry(
     let mut last = failure(FailureKind::Unknown, "Fusion step not started");
     let mut retry_reason = None;
     for attempt in 0..2 {
+        if panel_stop.as_ref().is_some_and(|stop| *stop.borrow()) {
+            return Err(panel_timeout());
+        }
         if let Err(error) = ctx.ensure_provider(&model.model) {
             if attempt == 0 {
                 ctx.skip(
@@ -744,7 +780,14 @@ async fn with_retry(
             report_quality: None,
         };
         ctx.store.record_step(&step)?;
-        let task = step_inner(ctx, &mut step, prompt, idle_progress.clone());
+        // Keep the nested RPC/report future out of each panel worker's frame.
+        let task = Box::pin(step_inner(
+            ctx,
+            &mut step,
+            prompt,
+            idle_progress.clone(),
+            panel_stop.clone(),
+        ));
         let result = if let Some(progress) = &idle_progress {
             progress.guard(task).await
         } else if let Some(milliseconds) = timeout_ms {
@@ -822,7 +865,11 @@ async fn with_retry(
                             "Fusion retry would consume final summary reserve",
                         ));
                     }
-                    tokio::time::sleep(delay).await;
+                    tokio::select! {
+                        biased;
+                        _ = wait_for_panel_timeout(panel_stop.as_mut()) => return Err(panel_timeout()),
+                        _ = tokio::time::sleep(delay) => {}
+                    }
                 }
             }
         }
@@ -896,6 +943,7 @@ async fn step_inner(
     step: &mut Step,
     source_prompt: &str,
     idle_progress: Option<std::sync::Arc<IdleProgress>>,
+    panel_stop: Option<watch::Receiver<bool>>,
 ) -> Result<reports::Report> {
     let store = ctx.store;
     let run = ctx.run;
@@ -948,6 +996,7 @@ async fn step_inner(
         step,
         generation: 0,
         idle_progress,
+        panel_stop,
     };
     let report = reports::collect(&mut child, input, &phase, capacity, |text| {
         validate_step_output(&phase, text, ctx.config.panel.len())?;
@@ -989,9 +1038,13 @@ struct ChildSession<'a, 'b, 'c> {
     step: &'c mut Step,
     generation: u32,
     idle_progress: Option<std::sync::Arc<IdleProgress>>,
+    panel_stop: Option<watch::Receiver<bool>>,
 }
 impl reports::ReportSession for ChildSession<'_, '_, '_> {
     async fn generate(&mut self, message: String, report_only: bool) -> Result<String> {
+        if self.panel_stop.as_ref().is_some_and(|stop| *stop.borrow()) {
+            return Err(panel_timeout());
+        }
         let ctx = self.ctx;
         let step = &mut *self.step;
         ctx.ensure_provider(&step.model)?;
@@ -1019,6 +1072,21 @@ impl reports::ReportSession for ChildSession<'_, '_, '_> {
         );
         step.status = "running".into();
         ctx.store.record_step(step)?;
+        // Finish the admission RPC before observing the panel deadline, so
+        // cancellation always fences the exact accepted Agent request.
+        let mut panel_stop = self.panel_stop.clone();
+        tokio::select! {
+            biased;
+            result = self.wait_for_output() => result,
+            _ = wait_for_panel_timeout(panel_stop.as_mut()) => Err(panel_timeout()),
+        }
+    }
+}
+
+impl ChildSession<'_, '_, '_> {
+    async fn wait_for_output(&mut self) -> Result<String> {
+        let ctx = self.ctx;
+        let step = &mut *self.step;
         let mut observed_bytes = 0;
         loop {
             if STOPPING.load(Ordering::Acquire) || ctx.store.get(&ctx.run.id)?.terminal() {
