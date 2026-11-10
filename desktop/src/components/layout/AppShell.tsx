@@ -6,6 +6,7 @@ import type { RemotePeer, RemoteWorkspaceRow } from "../../features/remote-peer/
 import type { SettingsTab } from "../../features/settings/SettingsDialog";
 import type { VibeThreadViewProps } from "../../features/vibe/VibeStage";
 import type { FutureAuthState, ProvidersView } from "../../integrations/agent/providers";
+import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ActivitySection } from "./ActivityRail";
 import type { ArchiveWorkspaceDialogState } from "./AppShellDialogs";
@@ -57,10 +58,11 @@ import { TerminalToggleButton } from "../../features/terminal/TerminalToggleButt
 import { useTerminalPanel } from "../../features/terminal/useTerminalPanel";
 import { exitNativeFullscreen } from "../../features/vibe/fullscreen";
 import { VibeStage } from "../../features/vibe/VibeStage";
-import { defaultAgentModelId, modelOption, readLastUsedModel } from "../../integrations/agent/agentClient";
+import { applyThreadApprovalTier, defaultAgentModelId, modelOption, readLastUsedModel } from "../../integrations/agent/agentClient";
 import { installAgentEventListener, revalidateAgentState } from "../../integrations/agent/agentStateCache";
 import { getFutureEnvironment } from "../../integrations/agent/providers";
 import { refreshSkills } from "../../integrations/skills/skillsClient";
+import { isApprovalTier } from "../../integrations/storage/appSettings";
 import { openExternalUrl } from "../../integrations/storage/files";
 import {
   archiveWorkspace,
@@ -601,9 +603,11 @@ function ReadyAppShell({
    * read, and the default IS what its session will be created with, so it shows
    * that.
    */
-  const approvalChipTier: ApprovalChipTier
-    = sessionApprovalTier
-      ?? (activeThread?.agentSessionId ? "unknown" : appSettings.approvalTier);
+  const approvalChipTier: ApprovalChipTier = appSettingsReady
+    ? appSettings.approvalTier
+    // Settings have not landed yet: show what the session reports (or nothing,
+    // rather than a mode nobody picked).
+    : (sessionApprovalTier ?? (activeThread?.agentSessionId ? "unknown" : appSettings.approvalTier));
   /**
    * Set by the Vibe panel's add tile right before it opens the new-conversation screen.
    *
@@ -1790,6 +1794,47 @@ function ReadyAppShell({
   };
 
   /**
+   * Switch the approval tier: for the conversation on screen, and for new ones.
+   *
+   * The chip draws the live Agent session's own tier, so writing only the
+   * settings store left an existing conversation's control frozen at its old
+   * value — reported as "切换成其他等级，切换无效，选项没有变化". Measured again after the
+   * host started applying the tier to that session directly: the choice did
+   * reach the gate (the next message ran with it) but the chip still showed the
+   * old mode until that message was sent, because it waits for a state read and
+   * the value only changed on the machine's next prompt.
+   *
+   * So the press updates the chip first — the reader's choice, which is also
+   * what the next prompt sends — and the machine's own answer then corrects it
+   * if it kept something else (an unenforceable sandbox is downgraded, never
+   * claimed). A failed round trip leaves the choice showing: the preference is
+   * durable and the next prompt applies it anyway.
+   */
+  const changeApprovalTier = useCallback((value: ApprovalTier) => {
+    const conversation = activeThread?.agentSessionId ? activeThread : null;
+    // The reader's choice is written first, and synchronously: it is what the
+    // chip draws (the setting) and what the next prompt sends, so the control
+    // answers the press itself instead of waiting on a round trip.
+    void changeSettings({ approvalTier: value });
+    if (!conversation)
+      return;
+    // Then the conversation is told, so the gate follows now rather than at the
+    // next message. Its answer is the machine's own verdict (an unenforceable
+    // sandbox is downgraded, never claimed) and is what the setting becomes.
+    void applyThreadApprovalTier(conversation.id, value)
+      .then((applied) => {
+        const tier = isApprovalTier(applied?.approvalTier) ? applied.approvalTier : value;
+        if (tier !== value)
+          void changeSettings({ approvalTier: tier });
+        // Only after the machine was told is its own state worth re-reading.
+        revalidateAgentState(conversation.id);
+      })
+      // A failed round trip keeps the stored choice, which the next prompt
+      // applies anyway. No re-read here: asking the machine what tier it is on
+      // would answer with the old one and undo what the reader just chose.
+      .catch(() => undefined);
+  }, [activeThread, changeSettings]);
+  /**
    * What a panel cell's conversation view needs from the shell.
    *
    * Built here because only the shell has it: the agent connection, the model
@@ -1805,7 +1850,7 @@ function ReadyAppShell({
     loadingStore,
     modelId: activeThreadModelId,
     modelOptions: visibleModelOptions,
-    onChangeApprovalTier: value => void changeSettings({ approvalTier: value }),
+    onChangeApprovalTier: value => void changeApprovalTier(value),
     // A decision is persisted by the panel's own queue; this only brings the
     // shell's view back in step with it.
     onApprovalDecided: () => void refreshStore(activeThread?.id ?? undefined),
@@ -1829,8 +1874,8 @@ function ReadyAppShell({
     agentConnection,
     appSettings.approvalTier,
     appSettings.skillRecommend,
+    changeApprovalTier,
     changeModel,
-    changeSettings,
     changeThinkingLevel,
     futureBalance,
     futureSessionStatus,

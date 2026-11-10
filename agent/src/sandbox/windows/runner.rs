@@ -6,7 +6,7 @@ use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use std::fs::File;
 use std::os::windows::io::AsRawHandle;
@@ -403,7 +403,7 @@ fn reconcile_stale_records(
     state.records.retain(|record| {
         current.contains(record.name.as_str())
             || active.contains(&record.name)
-            || revoke_record(record).is_err()
+            || revoke_record(record, None).is_err()
     });
     if state.records.len() != before {
         state.save_atomic(state_path)?;
@@ -411,7 +411,14 @@ fn reconcile_stale_records(
     Ok(())
 }
 
-fn revoke_record(record: &CapabilityRecord) -> io::Result<()> {
+/// Revoke one record's ACEs from its writable root and every carveout.
+///
+/// `deadline` is checked before each target, which is the only granularity that
+/// exists: one `SetSecurityInfo` on a writable root can rewrite the DACL of an
+/// entire directory tree, so the check cannot split that call. It still stops a
+/// record list from being walked end to end once the budget is gone, and it
+/// leaves the unvisited records in the metadata file for the next attempt.
+fn revoke_record(record: &CapabilityRecord, deadline: Option<Instant>) -> io::Result<()> {
     let sid = derive_capability_sid(&record.name)?;
     let mut paths = std::iter::once(&record.writable_root)
         .chain(record.write_carveouts.iter())
@@ -419,6 +426,12 @@ fn revoke_record(record: &CapabilityRecord) -> io::Result<()> {
     paths.sort();
     paths.dedup();
     for path in paths {
+        if deadline.is_some_and(|expires| Instant::now() >= expires) {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "Windows sandbox reset ran out of time revoking capability ACEs",
+            ));
+        }
         let target = match FrozenPath::open_local_ntfs(path) {
             Ok(target) => target,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
@@ -584,15 +597,17 @@ pub(crate) fn reset_capabilities_bounded(
     };
     let before = state.records.len();
     let mut first_error = None;
-    state.records.retain(|record| match revoke_record(record) {
-        Ok(()) => false,
-        Err(error) => {
-            if first_error.is_none() {
-                first_error = Some(error);
+    state
+        .records
+        .retain(|record| match revoke_record(record, deadline) {
+            Ok(()) => false,
+            Err(error) => {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+                true
             }
-            true
-        }
-    });
+        });
     if state.records.is_empty() {
         match std::fs::remove_file(state_path) {
             Ok(()) => {}

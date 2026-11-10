@@ -53,10 +53,21 @@ const LISTENER_GRACE: Duration = Duration::from_millis(500);
 /// steps together are what actually exhausts the budget.
 const SLOW_SHUTDOWN_STEP: Duration = Duration::from_millis(250);
 
-/// How long the drain waits for the Windows capability locks before skipping
-/// the revoke. Well above the 10 ms retry interval a contended lock needs once
-/// its holder finishes, far below the five-second stop budget, so the last
-/// drain step always leaves room for the rest of shutdown to run.
+/// How long the drain waits for the Windows capability revoke before leaving it
+/// to the next startup.
+///
+/// The step used to be bounded only around its *locks*, which said nothing about
+/// the work: one `SetSecurityInfo` on a writable root rewrites the DACL of the
+/// whole tree below it, so a large workspace or temp root can hold that call far
+/// past any per-lock budget. Measured 2026-11-09: a stop entered this stage at
+/// 08:37:49.86 and the deadline watcher fired at 08:37:54.35 — the step, not a
+/// lock, consumed the rest of the five-second stop and reported the whole drain
+/// as failed, which blocked update/reset/restart until the process exited.
+///
+/// So the revoke runs on its own thread and this is the whole time the drain
+/// gives it. Being abandoned is safe and expected: the ACEs only grant FutureOS's
+/// own capability SID access to paths it already owns, no restricted process is
+/// alive after the drain, and the next startup revokes whatever is left.
 #[cfg(windows)]
 const SANDBOX_RESET_BUDGET: Duration = Duration::from_millis(500);
 
@@ -429,17 +440,48 @@ impl AgentHandle {
         }
         *self.shutdown.stage.lock() = "Windows sandbox permissions";
         #[cfg(windows)]
-        if let Err(error) =
-            crate::sandbox::reset_windows_sandbox_capabilities_bounded(SANDBOX_RESET_BUDGET)
-        {
-            // A contended capability lock must not consume the drain: the ACEs
-            // it would revoke are harmless while the process is exiting, and
-            // the next startup cleanup revokes them. Record and move on so
-            // shutdown finishes inside its budget instead of timing out into
-            // an unrecoverable update state.
-            tracing::warn!(%error, "Skipping Windows sandbox cleanup at shutdown; startup will retry");
-        }
+        self.revoke_windows_sandbox_capabilities();
         errors
+    }
+
+    /// Revoke this instance's Windows capability ACEs without letting that work
+    /// decide the stop's verdict.
+    ///
+    /// The revoke is a disk walk, not a lock: it cannot be made cheap by a
+    /// better budget on the same thread, and a stop that reports itself failed
+    /// blocks update/reset/restart for the life of the process. Running it off
+    /// the drain thread means the deadline watcher can never catch the drain
+    /// inside it, so the worst case is a deferred cleanup the next startup
+    /// performs instead of a failed stop.
+    #[cfg(windows)]
+    fn revoke_windows_sandbox_capabilities(&self) {
+        let (done, finished) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("agent-sandbox-reset".into())
+            .spawn(move || {
+                let _ = done.send(crate::sandbox::reset_windows_sandbox_capabilities_bounded(
+                    SANDBOX_RESET_BUDGET,
+                ));
+            });
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "Skipping Windows sandbox cleanup at shutdown; startup will retry");
+            return;
+        }
+        match finished.recv_timeout(SANDBOX_RESET_BUDGET) {
+            Ok(Ok(removed)) => {
+                tracing::info!(removed, "Cleaned Windows sandbox permissions on shutdown")
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "Skipping Windows sandbox cleanup at shutdown; startup will retry")
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => tracing::warn!(
+                budget_ms = SANDBOX_RESET_BUDGET.as_millis() as u64,
+                "Windows sandbox cleanup exceeded its share of the stop; startup will retry"
+            ),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => tracing::warn!(
+                "Windows sandbox cleanup worker stopped without a result; startup will retry"
+            ),
+        }
     }
 }
 

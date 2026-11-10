@@ -414,6 +414,12 @@ export const resources = {
         actionsOnDesktop: "On {{name}}",
         expandChildren: "Expand child conversations",
         collapseChildren: "Collapse child conversations",
+        archiveSelected: "Archive selected conversations",
+        archivePartialFailure:
+          "{{count}} conversations could not be archived. They remain selected; reconnect and retry.",
+        archiveSelectedRunningTitle: "Some selected conversations are running",
+        archiveSelectedRunningConfirm:
+          "{{count}} selected conversations are still running. Stop them and archive the batch?",
         deleteSelected: "Delete selected conversations",
         deleteSelectedConfirm:
           "Delete {{count}} selected conversations from the desktop? This cannot be undone. Unselected child conversations will be kept.",
@@ -1593,6 +1599,12 @@ export const resources = {
         actionsOnDesktop: "在「{{name}}」上",
         expandChildren: "展开子会话",
         collapseChildren: "折叠子会话",
+        archiveSelected: "归档所选会话",
+        archivePartialFailure:
+          "{{count}} 个会话归档失败，已保留选中状态，请恢复连接后重试。",
+        archiveSelectedRunningTitle: "所选会话里有正在进行的",
+        archiveSelectedRunningConfirm:
+          "所选会话中有 {{count}} 个正在进行。停止它们并归档这一批吗？",
         deleteSelected: "删除所选会话",
         deleteSelectedConfirm:
           "将从桌面端删除选中的 {{count}} 个会话，无法恢复。未选中的子会话会保留。",
