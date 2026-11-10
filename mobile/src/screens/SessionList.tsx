@@ -46,7 +46,7 @@ import { formatRelativeTime } from "./relativeTime";
 import { RECENT_PAGE_SIZE, recentRows } from "./recentRows";
 import type { MergedSessionRow } from "../remote/mergeSessions";
 import { activeWorkspaces, ARCHIVED_PAGE_SIZE, archivedCatalogRows, isArchivedSession, type ArchivedCatalog } from "./archived";
-import { archiveWorkspaceWithPrompt, runningInWorkspace } from "./archiveAction";
+import { archiveWhenStopped, archiveWorkspaceWithPrompt, runningInWorkspace } from "./archiveAction";
 import {
   archivedRows,
   catalogRows,
@@ -118,6 +118,29 @@ export type SessionListHandle = {
 function withMachine(row: CatalogRow, desktopId: string): CatalogRow {
   if (row.kind === "section" || row.desktopId) return row;
   return { ...row, desktopId };
+}
+
+/**
+ * Whether a conversation and a workspace heading name the same machine.
+ *
+ * They describe one fact in two spellings. Every drawn row carries the active
+ * desktop's id — `withMachine` stamps it — while a conversation read from the
+ * single-machine catalogue carries no machine at all, because there is only one
+ * it could be (`listTargets` answers `null`). Comparing the raw values read
+ * those as different machines, so a workspace heading that plainly held
+ * conversations matched none of them and its delete confirmation reported "0
+ * conversations" under a count badge that said otherwise (reported 2026-11-09).
+ *
+ * `activeDesktopId` is what the missing spelling means, so it is what `null` is
+ * read as here. In the merged list both sides already carry an id and this
+ * changes nothing.
+ */
+function onSameMachine(
+  rowMachine: string | null | undefined,
+  workspaceMachine: string | null | undefined,
+  activeDesktopId: string | null,
+): boolean {
+  return (rowMachine ?? activeDesktopId) === (workspaceMachine ?? activeDesktopId);
 }
 
 /** A batch's rows, grouped by the machine that will delete them. */
@@ -318,6 +341,9 @@ export function SessionList({
   const [pressedSessionId, setPressedSessionId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const deletingRef = useRef(false);
+  /** The batch archive, its own write and its own in-flight latch. */
+  const [archiving, setArchiving] = useState(false);
+  const archivingRef = useRef(false);
   /**
    * The shelved row being brought back, by row key.
    *
@@ -545,6 +571,16 @@ export function SessionList({
   const canDeleteSelected = targets.some(target => commandsFor(target.desktopId) !== null);
 
   /**
+   * Whether any machine in the batch answers the archive command.
+   *
+   * Same rule as the delete: the action is offered while at least one machine
+   * can carry it, and refused only when none can. A machine that predates
+   * `archive_v1` keeps its rows selected instead of failing them one by one.
+   */
+  const canArchiveSelected = targets.some(target =>
+    commandsFor(target.desktopId)?.capabilities.has("archive_v1") === true);
+
+  /**
    * The header's two entry points, as this component's own modes.
    *
    * Both are exclusive: the tab row is replaced by whichever is active, so
@@ -613,6 +649,71 @@ export function SessionList({
     else next.add(id);
     setExpanded(next);
   };
+  /**
+   * Archive the selected conversations, on the machines that hold them.
+   *
+   * The desktop has had this beside its batch delete since archiving shipped
+   * ("Select chats" then archive); the phone only offered delete, so a reader
+   * clearing a shelf had to open each conversation's own menu. Same shape as
+   * the delete: one machine at a time, one conversation at a time, failures
+   * left ticked for a retry. A conversation that is still running is asked
+   * about once for the whole batch, because archiving it means stopping it.
+   */
+  const archiveSelected = () => {
+    if (!targets.length || !canArchiveSelected || archivingRef.current || deletingRef.current) return;
+    const archiveAll = () => {
+      if (archivingRef.current) return;
+      archivingRef.current = true;
+      setArchiving(true);
+      void (async () => {
+        const failed = new Set<string>();
+        const byMachine = groupByMachine(targets);
+        for (const [desktopId, group] of byMachine) {
+          const commands = commandsFor(desktopId);
+          if (!commands || !commands.capabilities.has("archive_v1")) {
+            for (const row of group) failed.add(row.key);
+            continue;
+          }
+          for (const row of group) {
+            if (row.session.streaming)
+              await commands.abortSession(row.session.sessionId).catch(() => undefined);
+            try {
+              // The host settles its own row a moment after the abort, so the
+              // archive is retried while that lands (see archiveWhenStopped).
+              await archiveWhenStopped(() =>
+                commands.archiveSession(row.session.sessionId, row.session.threadId));
+            }
+            catch {
+              failed.add(row.key);
+            }
+          }
+        }
+        setSelected(failed);
+        setSelecting(failed.size > 0);
+        archivingRef.current = false;
+        setArchiving(false);
+        if (failed.size)
+          Alert.alert(
+            t("common.error"),
+            t("sessions.archivePartialFailure", { count: failed.size }),
+          );
+      })();
+    };
+    const running = targets.filter(target => target.session.streaming === true);
+    if (running.length === 0) {
+      archiveAll();
+      return;
+    }
+    Alert.alert(
+      t("sessions.archiveSelectedRunningTitle"),
+      t("sessions.archiveSelectedRunningConfirm", { count: running.length }),
+      [
+        { text: t("chat.cancel"), style: "cancel" },
+        { text: t("sessions.archiveStopAndArchive"), onPress: archiveAll },
+      ],
+    );
+  };
+
   const deleteSelected = () => {
     if (!targets.length || !canDeleteSelected || deletingRef.current) return;
     Alert.alert(
@@ -682,7 +783,7 @@ export function SessionList({
       target.session.mode === "workspace"
       && !target.session.pinned
       && (target.session.workspaceId ?? "") === workspace.workspaceId
-      && (target.desktopId ?? null) === (workspace.desktopId ?? null)
+      && onSameMachine(target.desktopId, workspace.desktopId, activeDesktopId)
       && commandsFor(target.desktopId) !== null);
 
   /**
@@ -740,16 +841,22 @@ export function SessionList({
     // component's own `archived` prop is the list actually on screen.
     const shelved = archived;
     const scope = shelved ? "archived" : "active";
-    const conversations = allSessions.filter(
+    // Both halves of the workspace, whatever page this is: the half that goes is
+    // chosen just below, and the other half is the one the sentence promises to
+    // leave alone. The batch list (`allSessions`) is the wrong source for that —
+    // on the shelf it is empty by design, and everywhere it has the shelved rows
+    // already filtered out, so a workspace holding only shelved conversations
+    // reported deleting nothing and a shelf delete always counted zero.
+    const held = listTargets(merged, remote.sessions).filter(
       target =>
         (target.session.workspaceId ?? "") === workspace.workspaceId
-        && (target.desktopId ?? null) === (workspace.desktopId ?? null),
+        && onSameMachine(target.desktopId, workspace.desktopId, activeDesktopId),
     );
     // Each sentence names only its own half, and the count is of the
     // conversations *that* half holds: the other list's rows are not part of
     // this click, so mentioning their number would repeat the mistake of
     // telling a reader their untouched conversations were about to go.
-    const removed = conversations.filter(target =>
+    const removed = held.filter(target =>
       shelved ? target.session.archived === true : target.session.archived !== true);
     Alert.alert(
       t("sessions.deleteWorkspace"),
@@ -784,7 +891,7 @@ export function SessionList({
                 // A selection holding rows that are gone must not keep them.
                 setSelected(current => {
                   const next = new Set(current);
-                  for (const target of conversations) next.delete(target.key);
+                  for (const target of removed) next.delete(target.key);
                   return next;
                 });
               })
@@ -1355,6 +1462,22 @@ export function SessionList({
             <Text numberOfLines={1} style={styles.selectionCount}>
               {t("sessions.selectedCount", { count: targets.length })}
             </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("sessions.archiveSelected")}
+              disabled={archiving || deleting || !canArchiveSelected}
+              onPress={archiveSelected}
+              style={[
+                styles.iconButton,
+                (archiving || deleting || !canArchiveSelected) && styles.disabled,
+              ]}
+            >
+              {archiving ? (
+                <ActivityIndicator size={16} color={colors.accent} />
+              ) : (
+                <Archive size={18} color={colors.accent} />
+              )}
+            </Pressable>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={t("sessions.deleteSelected")}
