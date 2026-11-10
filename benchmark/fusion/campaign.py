@@ -5,6 +5,7 @@ import argparse
 import csv
 import datetime
 import re
+from collections import defaultdict
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
@@ -39,6 +40,29 @@ def network_failure(result):
     )
 
 
+def output_limit(result):
+    run_id = result.get("run_id")
+    return (
+        result["status"] != "completed"
+        and run_id is not None
+        and not result.get("submission_uncertain")
+        and any(
+            entry.get("runId") == run_id
+            and entry.get("status") in {"interrupted", "failed", "error"}
+            and entry.get("error") == "[OUTPUT_LIMIT] finish_length"
+            for entry in result.get("parent_usage_ledger", {}).get("ledger", [])
+        )
+    )
+
+
+def case_status(result):
+    if output_limit(result):
+        return "output_limit"
+    if network_failure(result):
+        return "deferred"
+    return result["status"]
+
+
 def attempt_path(out, group, case_id, attempt):
     return out / "groups" / group / case_id.replace(":", "-") / f"attempt-{attempt}"
 
@@ -59,24 +83,32 @@ def read_profiles(path):
     return profiles
 
 
-def run_window(items, jobs, worker, record):
+def run_window(items, jobs, jobs_per_group, worker, record):
+    if jobs_per_group is None:
+        queues = {None: iter(items)}
+    else:
+        grouped = defaultdict(list)
+        for item in items:
+            grouped[item[0]].append(item)
+        queues = {group: iter(rows) for group, rows in grouped.items()}
+    slots = jobs if jobs_per_group is None else jobs_per_group
     # Bound submissions so a protocol, billing, or storage error can stop new work.
     with ThreadPoolExecutor(max_workers=jobs) as pool:
-        items = iter(items)
-        pending = {pool.submit(worker, item) for item in take(items, jobs)}
+        pending = {}
+        for _ in range(slots):
+            for group, queue in queues.items():
+                item = next(queue, None)
+                if item is not None:
+                    pending[pool.submit(worker, item)] = group
         while pending:
-            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            done, _ = wait(pending, return_when=FIRST_COMPLETED)
             for future in done:
                 record(*future.result())
-            pending.update(pool.submit(worker, item) for item in take(items, len(done)))
-
-
-def take(items, count):
-    for _ in range(count):
-        item = next(items, None)
-        if item is None:
-            return
-        yield item
+            for future in done:
+                group = pending.pop(future)
+                item = next(queues[group], None)
+                if item is not None:
+                    pending[pool.submit(worker, item)] = group
 
 
 def prepare(args):
@@ -85,15 +117,22 @@ def prepare(args):
     if any(case["scorer"] == "bbeh" for case in cases.values()):
         bbeh_module()
     identifiers = [case["id"] for case in suite["cases"]]
+    profiles = read_profiles(args.profiles)
+    jobs = (
+        args.jobs
+        if args.jobs_per_group is None
+        else len(profiles) * args.jobs_per_group
+    )
     config = {
         "suite": suite,
         "bundle_sha256": digest(bundle),
         "binary_sha256": digest(args.binary.read_bytes()),
         "runtime_home": read_json(args.runtime)["home"],
-        "profiles": read_profiles(args.profiles),
+        "profiles": profiles,
         "timeout": args.timeout,
         "makeup_passes": args.makeup_passes,
-        "jobs": args.jobs,
+        "jobs": jobs,
+        "jobs_per_group": args.jobs_per_group,
         "harness_sha256": {
             name: digest((ROOT / name).read_bytes())
             for name in ("campaign.py", "future_runner.py", "scoring.py", "datasets.py")
@@ -101,7 +140,9 @@ def prepare(args):
     }
     manifest = args.out / "manifest.json"
     if manifest.exists():
-        if read_json(manifest)["configuration"] != config:
+        original = read_json(manifest)["configuration"]
+        # The scheduler can evolve without changing what any model sees or how it is scored.
+        if frozen_inputs(original) != frozen_inputs(config):
             raise ValueError(
                 "Campaign inputs changed; use the frozen settings to resume"
             )
@@ -121,11 +162,36 @@ def prepare(args):
                 ).isoformat(),
             },
         )
-    return config["profiles"], identifiers, cases
+    runs_path = args.out / "executions.json"
+    runs = read_json(runs_path) if runs_path.exists() else []
+    runs.append(
+        {
+            "started_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "jobs": jobs,
+            "jobs_per_group": args.jobs_per_group,
+            "campaign_sha256": config["harness_sha256"]["campaign.py"],
+        }
+    )
+    write_json(runs_path, runs)
+    return profiles, identifiers, cases, jobs
+
+
+def frozen_inputs(config):
+    inputs = {
+        key: value
+        for key, value in config.items()
+        if key not in {"jobs", "jobs_per_group"}
+    }
+    inputs["harness_sha256"] = {
+        name: sha
+        for name, sha in config["harness_sha256"].items()
+        if name != "campaign.py"
+    }
+    return inputs
 
 
 def execute(args):
-    profiles, identifiers, cases = prepare(args)
+    profiles, identifiers, cases, jobs = prepare(args)
     groups = list(profiles)
     histories = {}
     for group in groups:
@@ -160,10 +226,10 @@ def execute(args):
                     for row in latest
                 ),
                 "network_pending": sum(network_failure(row) for row in latest),
-                "other_errors": sum(
-                    row["status"] != "completed" and not network_failure(row)
-                    for row in latest
+                "output_limits": sum(
+                    case_status(row) == "output_limit" for row in latest
                 ),
+                "other_errors": sum(case_status(row) == "error" for row in latest),
                 "first_pass_network_errors": sum(network_failure(h[0]) for h in rows),
             }
         write_json(
@@ -174,6 +240,8 @@ def execute(args):
                     datetime.timezone.utc
                 ).isoformat(),
                 "groups": counts,
+                "jobs": jobs,
+                "jobs_per_group": args.jobs_per_group,
                 "error": error,
             },
         )
@@ -210,21 +278,21 @@ def execute(args):
     def record(item, result):
         group, identifier, attempt = item
         histories[group, identifier].append(result)
-        state = "deferred" if network_failure(result) else result["status"]
+        state = case_status(result)
         print(f"{group} {identifier} attempt-{attempt}: {state}", flush=True)
         progress(phase)
-        if result["status"] != "completed" and not network_failure(result):
+        if state not in {"completed", "deferred", "output_limit"}:
             raise ValueError(
                 f"Inspect {attempt_path(args.out, group, identifier, attempt)}"
             )
 
     try:
         for key, history in histories.items():
-            if (
-                history
-                and history[-1]["status"] != "completed"
-                and not network_failure(history[-1])
-            ):
+            if history and case_status(history[-1]) not in {
+                "completed",
+                "deferred",
+                "output_limit",
+            }:
                 raise ValueError(f"Unresolved non-network failure: {key}")
         bind_clients()
         phase = "first_pass"
@@ -236,7 +304,8 @@ def execute(args):
                 for group in groups
                 if not histories[group, identifier]
             ),
-            args.jobs,
+            jobs,
+            args.jobs_per_group,
             worker,
             record,
         )
@@ -252,7 +321,8 @@ def execute(args):
                     if len(histories[group, identifier]) == attempt - 1
                     and network_failure(histories[group, identifier][-1])
                 ),
-                args.jobs,
+                jobs,
+                args.jobs_per_group,
                 worker,
                 record,
             )
@@ -284,7 +354,9 @@ def write_results(out, histories):
                 {
                     "group": group,
                     "case_id": identifier,
-                    "status": result["status"],
+                    "status": "output_limit"
+                    if output_limit(result)
+                    else result["status"],
                     "correct": result["grade"]["correct"],
                     "parsed": result["grade"]["parsed"],
                     "attempts": len(rows),
@@ -303,11 +375,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("suite", "binary", "runtime", "profiles", "out"):
         parser.add_argument(f"--{name}", required=True, type=Path)
-    parser.add_argument("--jobs", type=int, default=4)
+    concurrency = parser.add_mutually_exclusive_group()
+    concurrency.add_argument("--jobs", type=int, default=4)
+    concurrency.add_argument("--jobs-per-group", type=int)
     parser.add_argument("--timeout", type=int, default=0)
     parser.add_argument("--makeup-passes", type=int, default=3)
     args = parser.parse_args()
-    if args.jobs < 1 or args.timeout < 0 or args.makeup_passes < 1:
+    if (
+        args.jobs < 1
+        or (args.jobs_per_group is not None and args.jobs_per_group < 1)
+        or args.timeout < 0
+        or args.makeup_passes < 1
+    ):
         parser.error("jobs and makeup passes must be positive, timeout nonnegative")
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / ".gitignore").write_text("*\n", encoding="utf-8")
