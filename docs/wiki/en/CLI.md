@@ -19,15 +19,38 @@ The tool travels with the app:
 
 The CLI ships in **every** download — both the installer and the portable package include it, sitting next to the app.
 
+### Reading the output
+
+Output is meant to be read by a person *and* by an agent driving the CLI. A list states its size
+up front (`count: 3`), states an empty result instead of printing nothing (`count: 0`, then why),
+and ends with a `help[n]:` block of the concrete commands that continue from there. Data formats
+carry the data and nothing else: `--json` is unchanged, and `--format toon` prints the same rows in
+[TOON](https://axi.md/) — one declared header, no braces or repeated keys, roughly 40% fewer tokens.
+
+Exit codes separate the two kinds of failure: **2** means the request itself was wrong — an unknown
+group or subcommand, or an unsupported flag on a command that validates its flags — with the reason
+and the usage line on stderr (`unknown option: --jsno`); **1** means the command ran and failed.
+
 ---
 
 ## Running it
 
-Open a terminal in the folder that contains the binary, then run it with `--help` to see everything:
+Open a terminal in the folder that contains the binary, then run it with no arguments for a
+one-screen view of what is going on right now — the binary you are running, whether the agent is
+up, the default model, how many conversations and scheduled tasks there are, and what to run next:
+
+```bash
+future
+```
+
+`future --help` lists every group and app instead:
 
 ```bash
 future --help
 ```
+
+Every command group works the same way: the group name alone shows its live state
+(`future session`, `future task`, `future mcp`), and `<group> --help` shows its reference.
 
 To make it easier to run from anywhere, add its folder to your `PATH`, or set up an alias. For example, on macOS:
 

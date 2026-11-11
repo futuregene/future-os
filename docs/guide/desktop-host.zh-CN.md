@@ -272,6 +272,12 @@ Ctrl+C 在配对、连接启动和正常运行阶段都可用。退出会先停�
 Unix 也处理 SIGTERM 和 SIGHUP。SSH 断开后不承诺继续运行；若确实需要跨 SSH 会话保活，
 可以由用户显式选择 tmux 或系统服务托管，但这不是主机模式的默认行为。
 
+### 窗口一直不出现（从 SSH 或后台会话启动）
+
+- **现象：** `futureos` 起来了但没有窗口，`desktop.log` 停在 `startup has not finished after …s; it is at step 'event loop'` 并反复打印这一行，后面没有任何记录，也没有崩溃条目。
+- **判据：** 这次启动拿不到显示连接，所以 `Ready` 永远不会到：`lsappinfo list` 里该进程是 `type="BackgroundOnly"` 且带 `!cgsConnection`，`/dev/console` 的属主是 `root`（没人在本机屏幕登录），SSH shell 里 `launchctl managername` 输出 `Background`。这是前提不成立，不是死锁——没有东西卡住，事件循环只是在等一个不会来的事件。
+- **处置：** 到 Mac 本机屏幕（或 Screen Sharing/VNC）上启动 FutureOS，这种启动会被立即拒绝并打印 `FutureOS needs a graphical session…`、以退出码 1 结束；没有显示器的服务器改用 `future host`，它不需要窗口，仍然向已配对设备提供远程桌面。
+
 ## 5. 无图形依赖的服务器构建
 
 统一 CLI 直接调用无 GUI 的 `future-host` 库，不加载 Tauri、GTK、WebKit，
@@ -397,3 +403,63 @@ NFS 模式使用 PERSIST 回滚日志和 FULL 同步，停用 Agent 的 WAL 检�
 Host 若连接到已在运行的另一种模式的 Agent，会报告模式不匹配并要求重启。
 NFS 仍必须提供可靠的跨节点文件锁和持久化同步；该模式不能消除服务端 I/O 停顿。
 同一数据根只运行一个服务实例，其他终端通过该服务访问。
+
+## 已经在前台服务的主机，怎么换二进制
+
+正在跑的主机用它**启动时**那个二进制回答，不是 `/usr/local/bin/future` 现在是什么：
+文件换掉直到进程重启都不生效。`future remote status` 的 `Desktop build:` 那一行说的
+就是进程，也是区分"升级了安装"和"升级了构建"的唯一办法。
+
+**别人的机器，动手前先问。** 在一台共享服务器上做 `install`、`rm`、`systemctl`——
+实验室的 GPU 机器、同事的工作站——是机主决定的事，不是运维细节。本项目已经因为把
+这样的机器当成自己的，停过一次别人的 host；这条规矩存在的原因是：问的代价是一条
+消息，不问的代价是别人的服务中断。
+
+替换本身是四步：
+
+```bash
+# 1. 留下此刻正在跑的那个二进制。
+cp -p /usr/local/bin/future /usr/local/bin/future.bak-$(date +%Y%m%d-%H%M)
+
+# 2. 装新的。用 `install`，不要 `cp`：覆盖一个正在执行的程序可能留下截断的镜像。
+install -m 0755 /path/to/new/future /usr/local/bin/future
+
+# 3. 在它原来那个终端（或服务）里重启——Ctrl+C，再 `future host`。
+#    第二个 `future host` 抢不到数据根，会直接退出。
+
+# 4. 看真正在服务的是谁。
+future remote status | head -4    # Desktop build: <commit>
+```
+
+回滚就是第 2、3 步，把备份换回去：
+
+```bash
+install -m 0755 /usr/local/bin/future.bak-20261111-1808 /usr/local/bin/future
+```
+
+### 一次安装的记录
+
+2026-11-11，那台作为配对远程桌面的共享 Rocky 9 GPU 主机，从安装包换成了源码构建：
+因为跑安装包的主机从未宣告过 `terminal_v1`，配对桌面上那个面板因此从不出现
+（§[远程终端](../internals/desktop/embedded-terminal.zh-CN.md#远程)）。
+
+| | |
+| --- | --- |
+| 装入 | `/usr/local/bin/future`，由 `3de0419ce`（main）+ feature 清单修复构建；`future version` 报 `v0.0.2-3de0419ce+local.dirty`，`x86_64-unknown-linux-gnu`，release |
+| 被替换 | `/usr/local/bin/future.bak-20261111-1808`——v2.1.0 的 CLI 归档，与发布的产物逐字节一致 |
+| 重启方式 | 同一个 tmux pane 里 `Ctrl+C` 再 `future host`；`future remote status` → `Remote desktop: on — serving` |
+| 验证 | `cargo run -p future-host --example peer_features` → `terminal=true` |
+
+### 源码构建会留下什么
+
+下面这些**运行主机都不需要**——只有编下一个二进制时需要——删不删由机器主人决定，
+不是可以顺手做的清理。删掉之后再编，需要重新准备 Rust 工具链和可用的 crate 源
+（这台机器连 crates.io 不可靠，所以当初是从别处拷的缓存，不是下载的）。
+
+| 路径 | 大小 | 是什么 | 运行是否需要 |
+| --- | --- | --- | --- |
+| `/opt/rust` | 1.9 GB | 从独立 tar 包装的 rustc/cargo 1.99.1 | 否 |
+| `/root/future-os-src` | 1.9 GB | 源码检出 + `target/` | 否 |
+| `/root/.cargo` | 528 MB | 从另一台机器拷来的 crate 缓存 | 否 |
+| `/root/*.tar.gz`、`/root/*.tgz`、`/root/*.patch` | 约 860 MB | 上面那些的来源压缩包 | 否 |
+| `/usr/local/bin/future.bak-*` | 72 MB | 被替换的那个二进制 | 仅回滚用 |

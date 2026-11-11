@@ -486,6 +486,43 @@ describe("the list", () => {
     expect(container.querySelectorAll("button[role='switch']").length).toBe(1);
   });
 
+  it("tells two phones of one model apart by the id each declared", async () => {
+    // A pair id names the connection and is minted again on the next pairing,
+    // so before the device id rode the presence beat these two rows were the
+    // same words and there was nothing on either phone to match them by.
+    const firstPhone = {
+      ...control,
+      client: { kind: "mobile", name: "PJZ110", deviceId: "dev_1a2b3c4d5e6f7a8b" },
+    };
+    const secondPhone = {
+      ...standby,
+      client: { kind: "mobile", name: "PJZ110", deviceId: "dev_9f8e7d6c5b4a3928" },
+    };
+    await mount({
+      remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [firstPhone, secondPhone] }),
+    });
+
+    const rows = [...container.querySelectorAll<HTMLLIElement>("li")].map(row => row.textContent ?? "");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toContain("PJZ110 (a phone) · dev_1a2b3c4d");
+    expect(rows[1]).toContain("PJZ110 (a phone) · dev_9f8e7d6c");
+    expect(rows[0]).not.toBe(rows[1]);
+    // Only the short form reaches this page.
+    expect(container.textContent).not.toContain("dev_1a2b3c4d5e6f7a8b");
+  });
+
+  it("keeps a row readable for a device that never declared an id", async () => {
+    // Every client older than the field sends none; the row must be exactly
+    // what it always was, not a dangling separator or the word "undefined".
+    await mount({
+      remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control] }),
+    });
+    const row = container.querySelector<HTMLLIElement>("li")!;
+    expect(row.textContent).toContain("Pixel 9 (a phone)");
+    expect(row.textContent).not.toContain("undefined");
+    expect(row.textContent).not.toContain("·");
+  });
+
   it("stops calling a device in control once its client has left", async () => {
     // The bridge keeps serving a pairing whose client was disconnected, so the
     // row has to read the client half: driving a machine that is not there is

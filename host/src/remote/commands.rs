@@ -636,11 +636,18 @@ mod bridge_tests {
             .await;
         assert_eq!(reply["success"], json!(true), "got: {reply}");
         assert_eq!(reply["data"]["confirmed"], json!(true));
-        // Everything this build always speaks, in order. `terminal_v1` is
-        // filtered out because it is the one capability a *process* decides
-        // (`terminal::install_service`), and another test in this binary may
-        // have installed a registry already; its composition is pinned in
-        // `remote_server::commands::feature_tests`.
+        // Everything this build always speaks, in order — the one list the
+        // protocol crate owns (`future_remote_protocol::handshake::
+        // advertised_features`), which both handshake paths answer with, so that
+        // a client gating a feature on one of these flags sees the same answer
+        // whichever path it took. `terminal_v1` is filtered out because it is
+        // the one capability a *process* decides (`terminal::install_service`),
+        // and another test in this binary may have installed a registry already;
+        // its composition is pinned in `remote_server::commands::feature_tests`.
+        // `e2ee_v2`, `auto_approval_v1` and the two `fusion_*` flags were the
+        // secure list's own flags before the two lists were unified; they were
+        // always what a paired desktop read, and this reply now answers with
+        // them too.
         let features: Vec<&str> = reply["data"]["features"]
             .as_array()
             .expect("a feature list")
@@ -651,9 +658,11 @@ mod bridge_tests {
         assert_eq!(
             features,
             vec![
+                "e2ee_v2",
                 "file_transfer_v1",
                 "file_download_v2",
                 "approval_tier_v1",
+                "auto_approval_v1",
                 "continue_run_v1",
                 "prompt_receipt_v1",
                 "session_files_v1",
@@ -665,6 +674,8 @@ mod bridge_tests {
                 "desktop_settings_v1",
                 "skill_management_v1",
                 "compaction_v1",
+                "fusion_v1",
+                "fusion_settings_v1",
                 "provider_management_v1",
                 "fork_v1",
                 "tasks_v1",

@@ -17,7 +17,19 @@ pub(super) fn initialize_schema(
     crate::session::content::install_functions(connection)?;
     #[cfg(test)]
     migration_fault(connection, "before-install")?;
-    let tx = connection.transaction()?;
+    // Take the write lock at BEGIN. This transaction reads the projection
+    // identity and then writes the whole DDL batch, and in WAL mode a deferred
+    // read-then-write upgrade cannot wait: while another connection holds the
+    // write lock, SQLite fails the upgrade immediately with
+    // SQLITE_BUSY_SNAPSHOT ("database is locked") and never invokes
+    // `busy_timeout`, so no timeout setting rescues it. Another connection is
+    // the ordinary case here — the writer lane reclaims space on its own
+    // connection in short slices, and a CLI command can open agent.db beside a
+    // running Agent — so an open that lands in one of those slices must wait it
+    // out instead of failing the start. `begin_write_transaction` is the same
+    // waited acquisition the session writes use, and the retry ladder under it
+    // covers a holder that outlasts the busy timeout.
+    let tx = super::begin_write_transaction(connection)?;
     let missing_projection: bool = tx.query_row(
         "SELECT count(*)!=2 FROM sqlite_schema WHERE type='table' AND name IN ('history_shapes','history_display')",
         [], |row| row.get(0),

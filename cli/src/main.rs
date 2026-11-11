@@ -162,8 +162,8 @@ mod tests {
         assert_eq!(run_from_args(&["--version".to_string()]), ExitCode::SUCCESS);
         // A bare `future` prints the main help and succeeds.
         assert_eq!(run_from_args(&[]), ExitCode::SUCCESS);
-        // An unknown group is an error, not a silent help print.
-        assert_eq!(run_from_args(&["bogus".to_string()]), ExitCode::from(1));
+        // An unknown group is a usage error (exit 2), not a silent help print.
+        assert_eq!(run_from_args(&["bogus".to_string()]), ExitCode::from(2));
     }
 
     #[test]

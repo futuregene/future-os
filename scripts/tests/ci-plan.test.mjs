@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { timedCommand } from '../ci/timed-command.mjs';
 import { affected, catalog, manualPlan, rustTestGroups } from '../ci/affected.mjs';
-import { checkResult } from '../ci/ci-result.mjs';
+import { checkResult, GROUPS, requiredGroups, runJobs } from '../ci/ci-result.mjs';
 
 // Exercise the real manifests so newly introduced path dependencies participate.
 const projects = catalog();
@@ -146,43 +146,201 @@ test('invalid changed-file input fails planning', () => {
   }
 });
 
-const names = ['rust-linux-test', 'rust-windows-test', 'rust-macos-test', 'rust-check',
-  'typescript-test', 'typescript-check', 'android-test', 'ios-test'];
-function results(required = false) {
-  return {
-    affected: { result: 'success', outputs: { rust: required ? '[{}]' : '[]',
-      typescript: required ? '[{}]' : '[]', android: String(required), ios: String(required) } },
-    ...Object.fromEntries(names.map(name => [name, { result: required ? 'success' : 'skipped' }])),
-  };
+// The gate decides one verdict per planned caller group from that group's own
+// jobs, judging each row's newest completed attempt. Cases marked ①-④ are the
+// regression that kept a fully green PR permanently red after a rerun or a
+// close/reopen.
+const OUTPUTS = {
+  rust: JSON.stringify([{ name: 'libraries' }]),
+  rust_tests: JSON.stringify([{ name: 'libraries' }]),
+  typescript: JSON.stringify([{ name: '@future-os/mobile' }]),
+  android: 'true',
+  ios: 'false',
+};
+const needsWith = outputs => ({ affected: { result: 'success', outputs } });
+const SUBJECT_GROUP = 'Rust Linux test';
+const SUBJECT = `${SUBJECT_GROUP} / host-core`;
+const passingJobs = () => requiredGroups(OUTPUTS).map((group, index) => ({
+  id: index + 1,
+  // A native suite is its own job; a reusable workflow row carries the caller prefix.
+  name: group.prefix === SUBJECT_GROUP ? SUBJECT
+    : group.need === 'android' || group.need === 'ios' ? group.prefix : `${group.prefix} / row`,
+  conclusion: 'success',
+  attempt: 1,
+}));
+// Everything else passes in the final attempt; only SUBJECT carries the case's
+// attempt history, oldest attempt first.
+const withHistory = history => [
+  ...passingJobs().filter(job => job.name !== SUBJECT),
+  ...history.map(([conclusion, attempt]) => ({ id: attempt, name: SUBJECT, conclusion, attempt })),
+];
+const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+test('gate requires exactly the caller groups the planner selects', () => {
+  assert.deepEqual(requiredGroups(OUTPUTS).map(group => group.prefix), [
+    'Rust Linux test', 'Rust Windows test', 'Rust macOS test', 'Rust check',
+    'TypeScript test', 'TypeScript check', 'Android test',
+  ]);
+  const nothing = { rust: '[]', rust_tests: '[]', typescript: '[]', android: 'false', ios: 'false' };
+  assert.deepEqual(requiredGroups(nothing), []);
+  assert.deepEqual(requiredGroups({ ...OUTPUTS, ios: 'true' }).map(group => group.key).at(-1), 'ios-test');
+});
+
+const gateCases = [
+  // ① A rerun leaves the attempt it replaced behind as `abandoned`.
+  { title: 'an abandoned (superseded) attempt yields to the newer passing attempt',
+    history: [['abandoned', 1], ['success', 2]], accepted: true },
+  // ② Cancelling the whole CI run still fails the gate.
+  { title: 'a sole cancelled attempt stays red',
+    history: [['cancelled', 1]], accepted: false },
+  // ③ A real failure is never exempted.
+  { title: 'a failure stays red',
+    history: [['failure', 1]], accepted: false },
+  { title: 'a timed out attempt stays red',
+    history: [['timed_out', 1]], accepted: false },
+  // ④ The same supersession marker that shows up as `cancelled`.
+  { title: 'a cancelled (superseded) attempt yields to the newer passing attempt',
+    history: [['cancelled', 1], ['success', 2]], accepted: true },
+  { title: 'a newer failure is not hidden by an older success',
+    history: [['success', 1], ['failure', 2]], accepted: false },
+  { title: 'an unfinished newer attempt does not paper over a failure',
+    history: [['failure', 1], [null, 2]], accepted: false },
+  { title: 'a planned group that ran no rows and has no caller result is red',
+    history: [], accepted: false },
+];
+
+for (const { title, history, accepted } of gateCases) {
+  test(`gate: ${title}`, () => {
+    const jobs = withHistory(history);
+    const run = () => checkResult({ needs: needsWith(OUTPUTS), jobs });
+    if (accepted) assert.doesNotThrow(run);
+    else assert.throws(run, new RegExp(`${escape(SUBJECT)}: (?!success)|missing`));
+  });
 }
 
-test('gate accepts success and explicitly unneeded skips', () => {
-  assert.doesNotThrow(() => checkResult(results()));
-  assert.doesNotThrow(() => checkResult(results(true)));
+test('gate judges every planned group, not just the one under test', () => {  for (const group of requiredGroups(OUTPUTS)) {
+    const jobs = passingJobs().map(job => (job.name.startsWith(group.prefix)
+      ? { ...job, conclusion: 'failure' } : job));
+    assert.throws(() => checkResult({ needs: needsWith(OUTPUTS), jobs }), new RegExp(escape(group.prefix)));
+  }
 });
 
-test('gate rejects failures, cancellations, missing jobs and required skips', () => {
-  for (const name of names) {
-    for (const result of ['failure', 'cancelled', 'skipped', undefined]) {
-      const needs = results(true);
-      needs[name].result = result;
-      assert.throws(() => checkResult(needs), new RegExp(name));
+test('gate falls back to the caller result only when the run lists no row of a group', () => {
+  const jobs = passingJobs().filter(job => !job.name.startsWith(SUBJECT_GROUP));
+  const withCaller = result => ({ ...needsWith(OUTPUTS), 'rust-linux-test': { result } });
+  assert.doesNotThrow(() => checkResult({ needs: withCaller('success'), jobs }));
+  for (const result of ['abandoned', 'cancelled', 'failure', 'skipped', undefined]) {
+    assert.throws(() => checkResult({ needs: withCaller(result), jobs }), /Rust Linux test: /);
+  }
+});
+
+test('gate accepts a plan that requires nothing and ignores unrelated jobs', () => {  const outputs = { rust: '[]', rust_tests: '[]', typescript: '[]', android: 'false', ios: 'false' };
+  assert.doesNotThrow(() => checkResult({ needs: needsWith(outputs), jobs: [] }));
+  assert.doesNotThrow(() => checkResult({
+    needs: needsWith(outputs),
+    jobs: [{ id: 1, name: 'Rust Linux test / tui-cli', conclusion: 'failure', attempt: 1 }],
+  }));
+});
+
+test('gate rejects a failed planner and malformed planner outputs', () => {
+  for (const result of ['failure', 'cancelled', 'skipped', undefined]) {
+    assert.throws(() => checkResult({ needs: { affected: { result } }, jobs: passingJobs() }),
+      /Affected CI planning failed/);
+  }
+  for (const [key, value] of [['rust', '{}'], ['typescript', 'null'], ['android', ''], ['ios', null]]) {
+    const outputs = { ...OUTPUTS, [key]: value };
+    assert.throws(() => checkResult({ needs: needsWith(outputs), jobs: passingJobs() }),
+      /Invalid affected CI outputs/);
+  }
+});
+
+test("gate reads this run's job attempts with the permissions the workflow grants", () => {
+  const workflow = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /permissions:[\s\S]*?actions: read/);
+  // The jobs API of a public repository is readable anonymously, so the workflow
+  // hands the gate the aggregated `needs` and no token; the read itself must not
+  // depend on one being added back.
+  assert.match(workflow, /ci-result:[\s\S]*?CI_NEEDS: \$\{\{ toJSON\(needs\) \}\}/);
+  for (const { prefix } of GROUPS) assert.ok(workflow.includes(`name: ${prefix}`), prefix);
+  // The caller fallback reads needs.<key>.result, so the gate must need every group.
+  const needsLine = /ci-result:[\s\S]*?needs: \[([^\]]*)\]/.exec(workflow)?.[1] ?? '';
+  for (const { key } of GROUPS) assert.ok(needsLine.includes(key), key);
+});
+
+// The jobs API is stubbed rather than reached: these tests pin the request shape
+// (anonymous vs. signed) and what an unavailable anonymous read degrades to.
+const jobsResponse = jobs => ({
+  ok: true, status: 200, statusText: 'OK',
+  json: async () => ({ total_count: jobs.length, jobs }),
+  text: async () => JSON.stringify({ total_count: jobs.length, jobs }),
+});
+const deniedResponse = status => ({
+  ok: false, status, statusText: status === 429 ? 'Too Many Requests' : 'Forbidden',
+  text: async () => '{"message":"API rate limit exceeded"}',
+});
+const stubFetch = handler => {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, headers: options.headers });
+    return handler(url);
+  };
+  fetchImpl.calls = calls;
+  return fetchImpl;
+};
+const apiJobs = () => passingJobs().map(job => ({
+  id: job.id, name: job.name, conclusion: job.conclusion, run_attempt: job.attempt,
+}));
+
+test("gate reads this run's jobs anonymously and signs the request only when a token exists", async () => {
+  const anonymous = stubFetch(() => jobsResponse(apiJobs()));
+  const read = await runJobs({ fetch: anonymous, token: '', repository: 'o/r', runId: '42986018813' });
+  assert.deepEqual(read, passingJobs());
+  assert.equal(anonymous.calls.length, 1);
+  assert.match(anonymous.calls[0].url, /\/repos\/o\/r\/actions\/runs\/42986018813\/jobs\?filter=all&per_page=100/);
+  assert.equal(anonymous.calls[0].headers.authorization, undefined, 'anonymous request carries no credentials');
+  // What the read returned is judged exactly as before.
+  assert.doesNotThrow(() => checkResult({ needs: needsWith(OUTPUTS), jobs: read }));
+  assert.throws(() => checkResult({
+    needs: needsWith(OUTPUTS),
+    jobs: read.map(job => (job.name === SUBJECT ? { ...job, conclusion: 'failure' } : job)),
+  }), new RegExp(`${escape(SUBJECT)}: failure`));
+
+  const signed = stubFetch(() => jobsResponse(apiJobs()));
+  await runJobs({ fetch: signed, token: 'workflow-token', repository: 'o/r', runId: '1' });
+  assert.equal(signed.calls[0].headers.authorization, 'Bearer workflow-token');
+});
+
+test('gate degrades to the caller results when the anonymous jobs API is unavailable', async () => {
+  for (const status of [403, 429]) {
+    const lines = [];
+    const log = console.log;
+    console.log = (...args) => lines.push(args.join(' '));
+    let read;
+    try {
+      read = await runJobs({ fetch: stubFetch(() => deniedResponse(status)), token: '',
+        repository: 'o/r', runId: '1', retryDelayMs: 1 });
+    } finally {
+      console.log = log;
     }
-    const needs = results();
-    needs[name].result = 'failure';
-    assert.throws(() => checkResult(needs));
+    assert.deepEqual(read, []);
+    assert.ok(lines.some(line => line.includes(`anonymous jobs API unavailable (${status})`)),
+      lines.join('\n'));
+    // No rows means every planned group falls back to its caller result: an
+    // all-green run stays green instead of turning red on the API's answer, and a
+    // caller that did not succeed is still red.
+    const callers = result => ({
+      ...needsWith(OUTPUTS),
+      ...Object.fromEntries(requiredGroups(OUTPUTS).map(({ key }) => [key, { result }])),
+    });
+    assert.doesNotThrow(() => checkResult({ needs: callers('success'), jobs: read }));
+    assert.throws(() => checkResult({
+      needs: { ...callers('success'), 'rust-linux-test': { result: 'failure' } }, jobs: read,
+    }), /Rust Linux test: failure/);
   }
-  const needs = results();
-  needs.affected.result = 'failure';
-  assert.throws(() => checkResult(needs));
-});
-
-test('gate rejects malformed planner outputs', () => {
-  for (const [key, value] of [['rust', '{}'], ['typescript', 'null'], ['android', ''], ['ios', 'garbage']]) {
-    const needs = results();
-    needs.affected.outputs[key] = value;
-    assert.throws(() => checkResult(needs));
-  }
+  // The same status with a token is a real failure: the fallback covers an
+  // anonymous read, never one the workflow authorized.
+  await assert.rejects(runJobs({ fetch: stubFetch(() => deniedResponse(403)), token: 'workflow-token',
+    repository: 'o/r', runId: '1', retryDelayMs: 1 }), /403/);
 });
 
 test('regular CI contains no specialty commands and has a stable always-run gate', () => {

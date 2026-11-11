@@ -33,6 +33,43 @@ fn now_id() -> String {
         .to_string()
 }
 
+/// The terminal record of a streamed run: `agent_end`'s state, and the reason a
+/// caller must be told about — the run's own `error`, or the `incomplete`
+/// marker the agent sets when the stream was cut short.
+///
+/// `Some` means "this run did not deliver an answer", so the caller can turn it
+/// into a non-zero exit: `error`, `incomplete`, `cancelled`,
+/// `cancelled_before_start`, `interrupted_by_restart`, and a `completed` whose
+/// stream was flagged `reason=incomplete`. Only a clean `completed` returns
+/// `None`. The state names are the agent's
+/// (`agent/src/session/run_journal.rs`).
+fn terminal_outcome(events: &[Value]) -> Option<(String, Option<String>)> {
+    let data = events
+        .iter()
+        .rev()
+        .filter_map(|event| event.get("data"))
+        .find(|data| data.get("type").and_then(Value::as_str) == Some("agent_end"))?;
+    let state = data
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("completed")
+        .to_string();
+    let incomplete = data.get("reason").and_then(Value::as_str) == Some("incomplete");
+    let error = data
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let failed = matches!(
+        state.as_str(),
+        "error" | "incomplete" | "cancelled" | "cancelled_before_start" | "interrupted_by_restart"
+    );
+    if failed || incomplete {
+        let reason = error.or_else(|| incomplete.then(|| "stream incomplete".to_string()));
+        return Some((state, reason));
+    }
+    None
+}
+
 /// Port of `RunClient` — fire-and-forget one-shot gRPC calls.
 pub struct RunClient {
     addr: String,
@@ -1385,6 +1422,21 @@ impl RunClient {
                 .await?
         };
 
+        // 6b. A run that ended in failure must not look like a successful one.
+        //
+        // `agent_end` carries the terminal state, and nothing used to read it:
+        // a run the agent ended with `state="error"` printed nothing, exited 0,
+        // and left a caller to conclude the answer was simply empty. The
+        // partial text has already been streamed (that is the honest thing to
+        // show), so this turns the exit status into the signal instead.
+        if let Some((state, detail)) = terminal_outcome(&events) {
+            if let Some(reason) = detail.as_deref() {
+                return Err(format!(
+                    "the run ended {state} ({reason}); the answer above is incomplete"
+                ));
+            }
+        }
+
         // 7. Get final state for model info (query the run's own session)
         let mut model: Option<String> = None;
         let mut thinking_level: Option<String> = None;
@@ -2329,6 +2381,55 @@ mod tests {
         assert_eq!(
             client.delete_session("s1").await.unwrap_err(),
             "transport down"
+        );
+    }
+
+    /// The terminal record decides the exit status: a run the agent ended with
+    /// `state="error"` used to print nothing and exit 0.
+    #[test]
+    fn terminal_outcome_reports_only_failures() {
+        let end = |data: serde_json::Value| json!({ "type": "agent_end", "data": data });
+
+        assert_eq!(
+            terminal_outcome(&[end(json!({"type": "agent_end", "state": "completed"}))]),
+            None
+        );
+        let (state, reason) = terminal_outcome(&[end(json!({
+            "type": "agent_end",
+            "state": "error",
+            "error": "provider refused"
+        }))])
+        .expect("an error run is a failure");
+        assert_eq!(state, "error");
+        assert_eq!(reason.as_deref(), Some("provider refused"));
+
+        // Cancelled and restart-interrupted runs are not answers either.
+        for state in [
+            "cancelled",
+            "interrupted_by_restart",
+            "cancelled_before_start",
+        ] {
+            let (reported, _) =
+                terminal_outcome(&[end(json!({ "type": "agent_end", "state": state }))])
+                    .unwrap_or_else(|| panic!("{state} must be reported"));
+            assert_eq!(reported, state);
+        }
+
+        // A `completed` whose stream was cut short says so.
+        let (state, reason) = terminal_outcome(&[end(json!({
+            "type": "agent_end",
+            "state": "completed",
+            "reason": "incomplete"
+        }))])
+        .expect("an incomplete stream is a failure");
+        assert_eq!(state, "completed");
+        assert_eq!(reason.as_deref(), Some("stream incomplete"));
+
+        // No terminal record at all is not a failure claim.
+        assert_eq!(terminal_outcome(&[]), None);
+        assert_eq!(
+            terminal_outcome(&[json!({"type": "text", "data": {"type": "text"}})]),
+            None
         );
     }
 

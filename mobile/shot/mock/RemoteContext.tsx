@@ -18,6 +18,7 @@ import fusionFixture from "../../../scripts/screenshots/fixtures/fusion.json";
  * new field added to the real context never hard-fails a capture run.
  */
 import type { PropsWithChildren, ReactNode } from "react";
+import type { SessionQueueSnapshot } from "../../src/remote/sessionQueue";
 import type {
   AvailableSkill,
   DesktopSettings,
@@ -47,6 +48,7 @@ import {
   demoAvailableSkills,
   demoModels,
   demoProviders,
+  demoQueueRows,
   demoRefreshedSessionUsage,
   demoSessionUsage,
   demoSkills,
@@ -312,6 +314,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const primarySessionId = parserDemo ? parserSessionId : "sess_dopamine_review";
   const [compactionFinished, setCompactionFinished] = useState(false);
   const scriptedCompaction = compactionFinished || new URLSearchParams(window.location.search).get("compacted") === "1";
+  // `?queue=<n>` puts that many messages behind the conversation's running turn.
+  // The send queue's panel only exists while rows wait, and the state behind the
+  // report it exists for — a burst long enough to cover the conversation — needs a
+  // queue to draw.
+  const queueSize = Number(new URLSearchParams(window.location.search).get("queue") ?? "") || 0;
   // `?multiTurnOlder=1` keeps one page of history above the multi-turn
   // conversation: the question-nav ↑ can then page it in for real.
   const withOlder = new URLSearchParams(window.location.search).get("multiTurnOlder") === "1";
@@ -526,6 +533,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     draftMode: "chat",
     draftWorkspaceId: "",
     timeline,
+    // Read once when the conversation opens, so the panel is drawn without a run
+    // having to be in flight.
+    getQueue: async (): Promise<SessionQueueSnapshot> => ({ acks: [], rows: demoQueueRows(queueSize) }),
     timelinePending: false,
     timelineSyncStatus: "idle",
     timelineError: null,
