@@ -34,7 +34,11 @@ use rusqlite::{params, Connection};
 /// appended at the end of the transcript: the same entries, in the wrong order
 /// (measured on a 2,287-entry conversation: the eleven entries that ended one
 /// run were displayed after a window twenty user turns later).
-pub(crate) const PROJECTION_VERSION: i64 = 5;
+///
+/// 6: keep a run's late tool results/final answer in the same healing window,
+/// even when newer user entries were stored before those results arrived.
+/// Version 5 could show both a lost-tool placeholder and the real late result.
+pub(crate) const PROJECTION_VERSION: i64 = 6;
 
 /// Keep healthy reads on a read transaction. If reconstruction is needed,
 /// release that snapshot before reserving a writer and recheck under the lock.
@@ -423,6 +427,7 @@ mod tests {
             .unwrap()
             .db
             .call(move |db| {
+                let id = crate::session::identity::BoundIdentity::session(db, &id)?;
                 db.execute("DELETE FROM history_shapes WHERE session_id=?1", [&id])?;
                 db.execute(
                     "DELETE FROM history_display WHERE session_id=?1 AND ordinal=0",

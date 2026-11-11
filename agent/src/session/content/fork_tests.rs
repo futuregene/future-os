@@ -25,7 +25,7 @@ fn setup() -> (tempfile::TempDir, Manager) {
 }
 
 #[test]
-fn legacy_parent_forks_into_native_compact_child_without_rewriting_history() {
+fn legacy_parent_migrates_and_forks_without_changing_history() {
     let root = tempfile::tempdir().unwrap();
     let sessions = root.path().join("sessions");
     let manager = Manager::new(sessions.clone());
@@ -59,7 +59,7 @@ fn legacy_parent_forks_into_native_compact_child_without_rewriting_history() {
         store.storage_format(&result.session_id).unwrap(),
         FORMAT_VERSION
     );
-    assert_eq!(store.storage_format(&parent).unwrap(), 1);
+    assert_eq!(store.storage_format(&parent).unwrap(), FORMAT_VERSION);
     assert_eq!(store.entries(&parent).unwrap(), before);
     let child = store.entries(&result.session_id).unwrap();
     let answer = child

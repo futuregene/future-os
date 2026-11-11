@@ -119,7 +119,7 @@ fn rewrite_retires_old_receipts_and_error_owners_but_preserves_current_legacy_an
                     [],
                     |row| row.get::<_, i64>(0)
                 )?,
-                0
+                1
             );
             assert!(!db.prepare("PRAGMA foreign_key_check")?.exists([])?);
             Ok(())

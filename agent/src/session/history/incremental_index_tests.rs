@@ -4,8 +4,21 @@ use crate::session::{Manager, Session};
 
 fn assert_projection(manager: &Manager, id: &str) {
     let expected = project_entries(&manager.load(id).unwrap().entries);
-    let actual = manager.history_page(id, None, Some(0), Some(1000)).unwrap();
-    assert_eq!(actual["entries"], json!(expected));
+    let mut actual = Vec::new();
+    let mut offset = 0;
+    loop {
+        let page = manager
+            .history_page(id, None, Some(offset), Some(1000))
+            .unwrap();
+        actual.extend(page["entries"].as_array().unwrap().iter().cloned());
+        if page["hasMore"] == false {
+            break;
+        }
+        let next = page["nextOffset"].as_i64().unwrap();
+        assert!(next > offset, "a bounded page must advance");
+        offset = next;
+    }
+    assert_eq!(actual, expected);
 }
 
 #[test]

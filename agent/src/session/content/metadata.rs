@@ -149,7 +149,7 @@ impl SqliteStore {
             let tx=database::begin_write_transaction(db)?;
             let s=crate::session::identity::BoundIdentity::session(&tx,&s)?;
             let revision:Option<i64>=tx.query_row("SELECT revision FROM sessions WHERE id=?1 AND revision>=0",[&s],|row|row.get(0)).optional()?;
-            let revision=revision.context("session not found: metadata update requires a live session")?;
+            let revision=revision.with_context(||format!("session not found: no row for {s}"))?;
             let resetting:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM content_operations WHERE session_id=?1 AND kind='reset')",[&s],|row|row.get(0))?;
             ensure!(!resetting,"session history reset is in progress");
             tx.execute("INSERT INTO content_operations(operation_id,session_id,owner_prefix,expected_revision,kind) VALUES (?1,?2,?3,?4,'metadata')",params![op,s,p,revision])?;

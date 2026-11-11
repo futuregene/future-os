@@ -23,6 +23,12 @@ impl SqliteStore {
     /// Runtime opens and mutation admission converge here. Listing/deletion do
     /// not: deleting historical data never needs to convert it first.
     pub(crate) fn ensure_canonical(&self, session: &str) -> Result<bool> {
+        Ok(self.prepare_canonical(session)?.0)
+    }
+
+    /// Returns (converted now, canonical format ready), without allocating a
+    /// missing conversation or replacing the caller's missing-session error.
+    pub(crate) fn prepare_canonical(&self, session: &str) -> Result<(bool, bool)> {
         let requested = session.to_owned();
         let ready = self.db.fence(move |db| {
             let key = crate::session::identity::session_key(db, &requested)?;
@@ -34,7 +40,7 @@ impl SqliteStore {
                 )?)
         })?;
         if ready {
-            return Ok(false);
+            return Ok((false, true));
         }
         // Independent Managers can own handles to this same database. Share
         // only this conversion; unrelated conversations continue normally.
@@ -52,11 +58,11 @@ impl SqliteStore {
         };
         let _guard = lock.lock();
         let Some(conversion) = capture(self, session)? else {
-            return Ok(false);
+            return Ok((false, self.storage_format(session)? == FORMAT_VERSION));
         };
         publish(self, session, conversion)?;
         self.db.request_space_reclamation();
-        Ok(true)
+        Ok((true, true))
     }
 }
 
@@ -115,7 +121,9 @@ fn capture(store: &SqliteStore, session: &str) -> Result<Option<Conversion>> {
         let tx=database::begin_write_transaction(db)?;
         let key=crate::session::identity::BoundIdentity::session(&tx,&session)?;
         let revision:Option<i64>=tx.query_row("SELECT revision FROM sessions WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM session_tombstones WHERE session_id=?1)",[&key],|r|r.get(0)).optional()?;
-        let revision=revision.context("session is missing or deleted")?;
+        // Unknown identities are diagnosed by their caller (read, metadata,
+        // queue recovery); preparing a format must not create a session.
+        let Some(revision)=revision else {return Ok(None);};
         let pending:Option<String>=tx.query_row("SELECT payloads FROM legacy_conversions WHERE session_id=?1",[&key],|r|r.get(0)).optional()?;
         if pending.is_none() && format_bound(&tx,&key)?==FORMAT_VERSION {return Ok(None);}
         let busy:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE session_id=?1 AND status IN ('running','recovery_failed')) OR EXISTS(SELECT 1 FROM queued_run_receipts WHERE session_id=?1 AND status IN ('queued','cancel_requested','recovery_failed')) OR EXISTS(SELECT 1 FROM compaction_operations WHERE session_id=?1 AND state='started')",[&key],|r|r.get(0))?;
@@ -145,6 +153,13 @@ fn capture(store: &SqliteStore, session: &str) -> Result<Option<Conversion>> {
 }
 
 fn publish(store: &SqliteStore, session: &str, conversion: Conversion) -> Result<()> {
+    ensure!(
+        conversion
+            .entries
+            .iter()
+            .all(|entry| entry["id"].as_str().is_some_and(|id| !id.trim().is_empty())),
+        "history contains an entry without a persisted identity; preserve the legacy source"
+    );
     let headers =
         super::entries::prepare_staged(store, session, conversion.entries, &conversion.prefix)?;
     let session = session.to_owned();
