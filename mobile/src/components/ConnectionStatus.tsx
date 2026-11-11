@@ -4,6 +4,7 @@ import type { ConnectionPresentation } from "../remote/connectionPresentation";
 import type { MachineStatus, MachineSummary } from "../remote/desktopStatus";
 import { machinesConnected, machinesPartlyConnected } from "../remote/desktopStatus";
 import { disconnectedCopy } from "../remote/disconnectedCopy";
+import { readableDeviceName } from "../remote/deviceName";
 import { radius, spacing, type Palette } from "../theme/tokens";
 import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 import { Button } from "./Button";
@@ -191,7 +192,7 @@ export function useConnectionSummary({
   const standbyHere = activeHeld && !partial;
   // The holder belongs to the open machine (`remote.presence`), so it names the
   // device this phone would displace even when peers are paired too.
-  const holderName = standbyHere ? holder?.name?.trim() ?? null : null;
+  const holderName = standbyHere ? readableDeviceName(holder?.name) ?? null : null;
   const label = partial
     ? t("connection.machinesPartial")
     : standbyHere
