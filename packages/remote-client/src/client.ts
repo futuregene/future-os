@@ -1698,13 +1698,19 @@ export class RemoteClient {
     if (!channel) return;
     const subject = `p.${this.credentials.pairId}.cmd.client_presence`;
     // The beat is the one message this client already sends on a timer, so it is
-    // where a stage rides rather than a command of its own: the desktop reads
-    // the same message it always read, and only a host that knows the field
-    // looks at it. Absent means "nothing to report" — the healthy case and the
-    // too-old-to-say case, which the desktop treats identically.
-    const beat = this.syncStage
-      ? { type: "client_presence", syncStage: this.syncStage }
-      : { type: "client_presence" };
+    // where the rest of what the desktop needs to know rides rather than a
+    // command of its own: the stage its sync is stuck at, and the id this device
+    // is paired under. A host that does not know either field reads the beat it
+    // always read. An absent stage means "nothing to report"; the id is on every
+    // beat, because without it two phones of one model look identical on the
+    // machine they are connected to — a pair id names the connection, not the
+    // device — and neither phone can show a pair id to the person trying to tell
+    // them apart.
+    const beat = {
+      type: "client_presence",
+      deviceId: this.credentials.deviceId,
+      ...(this.syncStage ? { syncStage: this.syncStage } : {}),
+    };
     try {
       connection.publish(subject, channel.seal(subject, encoder.encode(JSON.stringify(beat))));
     }

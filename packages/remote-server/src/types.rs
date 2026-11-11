@@ -254,6 +254,10 @@ impl std::fmt::Debug for RemoteDevice {
 /// version against a minimum: the desktop stopped having a version gate the day
 /// pairing became capability-negotiated, and re-introducing one here to make a
 /// diagnostic field convenient would trade a working older client for a label.
+///
+/// `device_id` is the identity half: it answers "which device", which neither
+/// the name (two phones of one model report the same one) nor the pair id (a
+/// connection, minted again on the next pairing) can.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientIdentity {
@@ -270,6 +274,19 @@ pub struct ClientIdentity {
     /// a page nobody reloaded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sync_stage: Option<String>,
+    /// The id this client is paired under (`dev_…`), as the platform issued it.
+    ///
+    /// It names the *device*, where the pair id names a connection that is
+    /// minted again on the next pairing. That difference is the whole reason
+    /// the field exists: two phones of the same model report the same `name`,
+    /// and the person looking at the device list had nothing but a pair id to
+    /// tell them apart — a value neither phone can show.
+    ///
+    /// Optional by construction. Every client that predates the field sends
+    /// none, which reads as "did not say" (no id on the row), never as an
+    /// error or a reason to refuse it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
 }
 
 pub fn retryable_start_status(status: &RemoteStatus) -> bool {
