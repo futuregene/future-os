@@ -1286,33 +1286,7 @@ async fn handle_pair_handshake(
 /// by a host that installed a terminal registry. Everything else here is a wire
 /// shape the code always speaks.
 pub fn advertised_features(terminal: bool) -> Vec<&'static str> {
-    let mut features = vec![
-        "file_transfer_v1",
-        "file_download_v2",
-        "approval_tier_v1",
-        "continue_run_v1",
-        "prompt_receipt_v1",
-        "session_files_v1",
-        "skills_v1",
-        "selective_events_v1",
-        "workspace_pinning_v1",
-        "workspace_create_v1",
-        "archive_v1",
-        "desktop_settings_v1",
-        "skill_management_v1",
-        "compaction_v1",
-        "provider_management_v1",
-        "fork_v1",
-        "tasks_v1",
-        "task_deps_v1",
-        future_remote_protocol::READ_BINARY_FEATURE,
-        future_remote_protocol::SEGMENTED_CONTENT_FEATURE,
-        future_remote_protocol::REASONING_FETCH_FEATURE,
-    ];
-    if terminal {
-        features.push(future_remote_protocol::TERMINAL_FEATURE);
-    }
-    features
+    future_remote_protocol::handshake::advertised_features(terminal)
 }
 
 async fn handle_pair_handshake_confirm(
