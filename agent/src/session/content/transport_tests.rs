@@ -23,7 +23,6 @@ fn store() -> (tempfile::TempDir, SqliteStore) {
 
 fn facts(output: &str) -> future_rpc::shell_result::ShellResult {
     future_rpc::shell_result::ShellResult {
-        command: "printf hi".into(),
         cwd: "/w".into(),
         duration_ms: 3,
         status: future_rpc::shell_result::ShellStatus::Exited,

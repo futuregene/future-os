@@ -112,6 +112,12 @@ pub(crate) fn project_entries(entries: &[SessionEntry]) -> Vec<serde_json::Value
             use crate::rpc::payloads::SessionEntryPayload;
             use future_rpc::message::MessageBlock;
             let mut metadata = e.meta.clone();
+            if let Some(facts) = metadata
+                .as_mut()
+                .and_then(|meta| meta.get_mut("shell_result"))
+            {
+                future_rpc::shell_result::strip_legacy_command(facts);
+            }
             let run_id = metadata
                 .as_mut()
                 .and_then(serde_json::Value::as_object_mut)

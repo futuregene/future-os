@@ -76,7 +76,11 @@ impl SqliteStore {
                 let metadata = metadata.map(|s| serde_json::from_str::<Value>(&s)).transpose()?;
                 let facts = metadata.as_ref().and_then(|meta| meta.get("meta")).and_then(|meta| meta.get("shell_result"));
                 let mut output = json!({"toolCallId":call,"runId":run,"text":row.get::<_,Option<String>>(0)?,"isError":row.get::<_,Option<bool>>(1)?.unwrap_or(false),"createdAtMs":row.get::<_,Option<i64>>(2)?});
-                if let Some(facts) = facts { output["shell_result"] = facts.clone(); }
+                if let Some(facts) = facts {
+                    let mut facts = facts.clone();
+                    future_rpc::shell_result::strip_legacy_command(&mut facts);
+                    output["shell_result"] = facts;
+                }
                 Some(output)
             }else{None};
             Ok(json!({"output":output}))
@@ -183,7 +187,7 @@ mod tests {
         let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
         store.reserve_segmented("s").unwrap();
         let args = json!({"path":"/tmp/result","body":"工具参数🙂".repeat(30_000)});
-        let facts = json!({"command":"action","cwd":"/repo","duration_ms":1,"status":"exited",
+        let facts = json!({"cwd":"/repo","duration_ms":1,"status":"exited",
             "exit_code":2,"is_soft_fail":false,"is_error":true,
             "attempts":[{"status":"exited","exit_code":2,"duration_ms":1,"output":"失败🙂".repeat(30_000),"output_truncated":false,"escalated":false}],
             "approval":null,"note":null});
@@ -437,20 +441,37 @@ mod shell_history_tests {
     use super::*;
     #[test]
     fn structured_attempts_survive_sqlite_reopen_and_tool_inspection() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("agent.db");
-        let facts = json!({"command":"action", "cwd":"/repo", "duration_ms":8,
+        for canonical in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("agent.db");
+            let facts = json!({"command":"action", "cwd":"/repo", "duration_ms":8,
         "status":"exited", "exit_code":2, "is_soft_fail":false, "is_error":true,
         "attempts":[{"status":"exited","exit_code":7,"duration_ms":4,"output":"original [exit: 0]","output_truncated":false,"escalated":false},
         {"status":"exited","exit_code":2,"duration_ms":4,"output":"retry","output_truncated":false,"escalated":true}],
         "approval":"approved","note":null});
-        let store = SqliteStore::open(&path).unwrap();
-        store.replace("s", vec![json!({"id":"out","type":"tool","role":"tool","timestamp":"2026-10-09T00:00:00Z","meta":{"run_id":"r","shell_result":facts},"content":[{"type":"tool_result","tool_call_id":"t","content":"summary","is_error":true}]})]).unwrap();
-        drop(store);
-        let reopened = SqliteStore::open(&path).unwrap();
-        let output = reopened.tool_output("s", "r", "t").unwrap();
-        assert_eq!(output["output"]["shell_result"], facts);
-        assert_eq!(output["output"]["isError"], true);
-        assert!(reopened.tool_output("s", "other", "t").unwrap()["output"].is_null());
+            let store = SqliteStore::open(&path).unwrap();
+            if canonical {
+                store.reserve_segmented("s").unwrap();
+            }
+            store.replace("s", vec![
+            json!({"id":"call","type":"assistant","role":"assistant","timestamp":"2026-10-09T00:00:00Z","meta":{"run_id":"r"},"content":[{"type":"tool_call","id":"t","name":"shell","args":{"command":"action"}}]}),
+            json!({"id":"out","type":"tool","role":"tool","timestamp":"2026-10-09T00:00:00Z","meta":{"run_id":"r","shell_result":facts},"content":[{"type":"tool_result","tool_call_id":"t","content":"summary","is_error":true}]})
+        ]).unwrap();
+            drop(store);
+            let reopened = SqliteStore::open(&path).unwrap();
+            let before = reopened.entries("s").unwrap();
+            let output = reopened.tool_output("s", "r", "t").unwrap();
+            let mut public_facts = facts.clone();
+            future_rpc::shell_result::strip_legacy_command(&mut public_facts);
+            assert_eq!(output["output"]["shell_result"], public_facts);
+            assert_eq!(reopened.entries("s").unwrap(), before);
+            assert_eq!(before[1]["meta"]["shell_result"]["command"], "action");
+            assert_eq!(
+                reopened.tool_call_args("s", "r", "t").unwrap()["arguments"]["command"],
+                "action"
+            );
+            assert_eq!(output["output"]["isError"], true);
+            assert!(reopened.tool_output("s", "other", "t").unwrap()["output"].is_null());
+        }
     }
 }
