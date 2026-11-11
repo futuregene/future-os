@@ -27,6 +27,12 @@ import { resolve } from 'node:path';
 // Scoping to this run's own jobs (rather than every check run on the commit) also
 // keeps an unrelated run of the same commit — a workflow_dispatch full run, say —
 // from deciding this run's verdict.
+//
+// Reading those jobs does not require a workflow token: this repository is public
+// and `GET /actions/runs/{id}/jobs` answers anonymously. So the token is optional —
+// it is sent when the workflow happens to provide one — and a denial or throttle of
+// the anonymous request is not evidence about the checks: it degrades to the
+// `needs` caller results below instead of failing an all-green run.
 
 // Caller job names from ci.yml; `needs` names the planner output that schedules
 // the group. Renaming a caller there breaks the guard test in
@@ -135,13 +141,17 @@ export function checkResult({ needs, jobs } = {}) {
 
 const API = (process.env.GITHUB_API_URL ?? 'https://api.github.com').replace(/\/+$/, '');
 
-async function get(path) {
-  const token = process.env.GITHUB_TOKEN;
-  if (!token) throw new Error("GITHUB_TOKEN is required to read this run's jobs");
+// Statuses that only say the anonymous read was refused or throttled; the jobs
+// behind them are public and their outcome is still read through `needs`. A token
+// is never optional in that sense: with one, the same status is a real failure.
+const ANONYMOUS_UNAVAILABLE = new Set([403, 429]);
+
+async function get(path, { token, fetch: fetchImpl, retryDelayMs = 1000 }) {
   for (let attempt = 1; ; attempt += 1) {
-    const response = await fetch(`${API}${path}`, {
+    const response = await fetchImpl(`${API}${path}`, {
       headers: {
-        authorization: `Bearer ${token}`,
+        // Anonymous when the workflow provides no token; authenticated otherwise.
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
         accept: 'application/vnd.github+json',
         'x-github-api-version': '2022-11-28',
         'user-agent': 'future-os-ci-result',
@@ -150,22 +160,38 @@ async function get(path) {
     if (response.ok) return response.json();
     const detail = `${response.status} ${response.statusText}: ${(await response.text()).slice(0, 300)}`;
     const transient = response.status >= 500 || response.status === 429;
-    if (!transient || attempt >= 3) throw new Error(`${path} failed: ${detail}`);
-    await new Promise(done => setTimeout(done, 1000 * attempt));
+    if (!transient || attempt >= 3) {
+      throw Object.assign(new Error(`${path} failed: ${detail}`),
+        { status: response.status, anonymous: !token });
+    }
+    await new Promise(done => setTimeout(done, retryDelayMs * attempt));
   }
 }
 
 // Every attempt of every job in this run (`filter=all`), one entry per attempt.
-async function runJobs() {
-  const repository = process.env.GITHUB_REPOSITORY;
-  const runId = process.env.GITHUB_RUN_ID;
+// An empty list means "this run listed no rows", which is the state each group
+// already falls back to its caller result from; that is how an unavailable
+// anonymous API degrades instead of turning a green run red.
+export async function runJobs({ fetch: fetchImpl = globalThis.fetch, token, repository, runId,
+  retryDelayMs = 1000 } = {}) {
+  token ??= process.env.GITHUB_TOKEN;
+  repository ??= process.env.GITHUB_REPOSITORY;
+  runId ??= process.env.GITHUB_RUN_ID;
   if (!repository || !runId) throw new Error('GITHUB_REPOSITORY and GITHUB_RUN_ID are required');
   const jobs = [];
-  for (let page = 1; ; page += 1) {
-    const body = await get(`/repos/${repository}/actions/runs/${runId}/jobs?filter=all&per_page=100&page=${page}`);
-    const batch = body?.jobs ?? [];
-    jobs.push(...batch);
-    if (!batch.length || jobs.length >= (body?.total_count ?? 0)) break;
+  try {
+    for (let page = 1; ; page += 1) {
+      const body = await get(
+        `/repos/${repository}/actions/runs/${runId}/jobs?filter=all&per_page=100&page=${page}`,
+        { token, fetch: fetchImpl, retryDelayMs });
+      const batch = body?.jobs ?? [];
+      jobs.push(...batch);
+      if (!batch.length || jobs.length >= (body?.total_count ?? 0)) break;
+    }
+  } catch (error) {
+    if (!error.anonymous || !ANONYMOUS_UNAVAILABLE.has(error.status)) throw error;
+    console.log(`anonymous jobs API unavailable (${error.status}), falling back to caller results`);
+    return [];
   }
   return jobs.map(job => ({ id: job.id, name: job.name, conclusion: job.conclusion, attempt: job.run_attempt }));
 }

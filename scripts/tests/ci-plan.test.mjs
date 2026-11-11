@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { timedCommand } from '../ci/timed-command.mjs';
 import { affected, catalog, manualPlan, rustTestGroups } from '../ci/affected.mjs';
-import { checkResult, GROUPS, requiredGroups } from '../ci/ci-result.mjs';
+import { checkResult, GROUPS, requiredGroups, runJobs } from '../ci/ci-result.mjs';
 
 // Exercise the real manifests so newly introduced path dependencies participate.
 const projects = catalog();
@@ -257,11 +257,90 @@ test('gate rejects a failed planner and malformed planner outputs', () => {
 test("gate reads this run's job attempts with the permissions the workflow grants", () => {
   const workflow = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
   assert.match(workflow, /permissions:[\s\S]*?actions: read/);
-  assert.ok(workflow.includes('GITHUB_TOKEN: ${{ github.token }}'), 'actions API token');
+  // The jobs API of a public repository is readable anonymously, so the workflow
+  // hands the gate the aggregated `needs` and no token; the read itself must not
+  // depend on one being added back.
+  assert.match(workflow, /ci-result:[\s\S]*?CI_NEEDS: \$\{\{ toJSON\(needs\) \}\}/);
   for (const { prefix } of GROUPS) assert.ok(workflow.includes(`name: ${prefix}`), prefix);
   // The caller fallback reads needs.<key>.result, so the gate must need every group.
   const needsLine = /ci-result:[\s\S]*?needs: \[([^\]]*)\]/.exec(workflow)?.[1] ?? '';
   for (const { key } of GROUPS) assert.ok(needsLine.includes(key), key);
+});
+
+// The jobs API is stubbed rather than reached: these tests pin the request shape
+// (anonymous vs. signed) and what an unavailable anonymous read degrades to.
+const jobsResponse = jobs => ({
+  ok: true, status: 200, statusText: 'OK',
+  json: async () => ({ total_count: jobs.length, jobs }),
+  text: async () => JSON.stringify({ total_count: jobs.length, jobs }),
+});
+const deniedResponse = status => ({
+  ok: false, status, statusText: status === 429 ? 'Too Many Requests' : 'Forbidden',
+  text: async () => '{"message":"API rate limit exceeded"}',
+});
+const stubFetch = handler => {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, headers: options.headers });
+    return handler(url);
+  };
+  fetchImpl.calls = calls;
+  return fetchImpl;
+};
+const apiJobs = () => passingJobs().map(job => ({
+  id: job.id, name: job.name, conclusion: job.conclusion, run_attempt: job.attempt,
+}));
+
+test("gate reads this run's jobs anonymously and signs the request only when a token exists", async () => {
+  const anonymous = stubFetch(() => jobsResponse(apiJobs()));
+  const read = await runJobs({ fetch: anonymous, token: '', repository: 'o/r', runId: '42986018813' });
+  assert.deepEqual(read, passingJobs());
+  assert.equal(anonymous.calls.length, 1);
+  assert.match(anonymous.calls[0].url, /\/repos\/o\/r\/actions\/runs\/42986018813\/jobs\?filter=all&per_page=100/);
+  assert.equal(anonymous.calls[0].headers.authorization, undefined, 'anonymous request carries no credentials');
+  // What the read returned is judged exactly as before.
+  assert.doesNotThrow(() => checkResult({ needs: needsWith(OUTPUTS), jobs: read }));
+  assert.throws(() => checkResult({
+    needs: needsWith(OUTPUTS),
+    jobs: read.map(job => (job.name === SUBJECT ? { ...job, conclusion: 'failure' } : job)),
+  }), new RegExp(`${escape(SUBJECT)}: failure`));
+
+  const signed = stubFetch(() => jobsResponse(apiJobs()));
+  await runJobs({ fetch: signed, token: 'workflow-token', repository: 'o/r', runId: '1' });
+  assert.equal(signed.calls[0].headers.authorization, 'Bearer workflow-token');
+});
+
+test('gate degrades to the caller results when the anonymous jobs API is unavailable', async () => {
+  for (const status of [403, 429]) {
+    const lines = [];
+    const log = console.log;
+    console.log = (...args) => lines.push(args.join(' '));
+    let read;
+    try {
+      read = await runJobs({ fetch: stubFetch(() => deniedResponse(status)), token: '',
+        repository: 'o/r', runId: '1', retryDelayMs: 1 });
+    } finally {
+      console.log = log;
+    }
+    assert.deepEqual(read, []);
+    assert.ok(lines.some(line => line.includes(`anonymous jobs API unavailable (${status})`)),
+      lines.join('\n'));
+    // No rows means every planned group falls back to its caller result: an
+    // all-green run stays green instead of turning red on the API's answer, and a
+    // caller that did not succeed is still red.
+    const callers = result => ({
+      ...needsWith(OUTPUTS),
+      ...Object.fromEntries(requiredGroups(OUTPUTS).map(({ key }) => [key, { result }])),
+    });
+    assert.doesNotThrow(() => checkResult({ needs: callers('success'), jobs: read }));
+    assert.throws(() => checkResult({
+      needs: { ...callers('success'), 'rust-linux-test': { result: 'failure' } }, jobs: read,
+    }), /Rust Linux test: failure/);
+  }
+  // The same status with a token is a real failure: the fallback covers an
+  // anonymous read, never one the workflow authorized.
+  await assert.rejects(runJobs({ fetch: stubFetch(() => deniedResponse(403)), token: 'workflow-token',
+    repository: 'o/r', runId: '1', retryDelayMs: 1 }), /403/);
 });
 
 test('regular CI contains no specialty commands and has a stable always-run gate', () => {
