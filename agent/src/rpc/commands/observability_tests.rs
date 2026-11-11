@@ -761,7 +761,7 @@ fn get_session_events_since_returns_empty_tail() {
 
 #[test]
 fn get_session_events_since_returns_events_then_journal_error() {
-    let state = make_legacy_app_state();
+    let state = make_app_state();
     // Broadcast a session-level event so the journal has content.
     let mut cmd = make_cmd("set_model");
     cmd.model_id = "mock".to_string();
@@ -777,7 +777,9 @@ fn get_session_events_since_returns_events_then_journal_error() {
     assert_eq!(events[0]["type"], "model_changed");
 
     // A directory where the journal file should be breaks reads.
-    state.session_manager.test_execute("DROP TABLE run_events");
+    state
+        .session_manager
+        .test_execute("DROP TABLE stream_changes");
     let resp = parse_response(&handle_command_internal(
         &state,
         make_cmd("get_session_events_since"),

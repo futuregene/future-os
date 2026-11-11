@@ -16,7 +16,7 @@ fn completed_journal_is_replayable_after_reopen_and_old_cursor_resync() {
     drop(store);
     let manager = crate::session::Manager::new(dir.path().to_path_buf());
     let broadcaster = SseBroadcaster::new();
-    broadcaster.configure_journal("s", &manager).unwrap();
+    broadcaster.configure_legacy_journal("s", &manager).unwrap();
     let historical = broadcaster.events_since("run", 123).unwrap();
     assert!(historical.1.is_empty());
     assert_eq!(historical.3.unwrap().cursor, 1001);

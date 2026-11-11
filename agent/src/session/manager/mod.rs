@@ -76,6 +76,19 @@ impl Manager {
             .unwrap();
     }
 
+    /// Seed released storage directly. Runtime save/open paths deliberately
+    /// migrate now and must not be used to manufacture historical fixtures.
+    #[cfg(test)]
+    pub(crate) fn seed_legacy_fixture(&self, session: &Session) -> Result<()> {
+        let store = self.storage()?;
+        if !store.contains(&session.id)?
+            && store.storage_format(&session.id)? != super::content::FORMAT_VERSION
+        {
+            store.bind_legacy_events(&session.id)?;
+        }
+        store.replace(&session.id, Self::encoded(&session.entries)?)
+    }
+
     pub fn database_path(&self) -> PathBuf {
         if self.dir.file_name().and_then(|s| s.to_str()) == Some("sessions") {
             self.dir.parent().unwrap_or(&self.dir).join("agent.db")
@@ -122,11 +135,12 @@ impl Manager {
     }
 
     /// Open a conversation for use, unlike listing or deleting its identity.
-    pub(crate) fn prepare_session(&self, id: &str) -> Result<()> {
-        if self.storage()?.ensure_canonical(id)? {
+    pub(crate) fn prepare_session(&self, id: &str) -> Result<bool> {
+        let (migrated, canonical) = self.storage()?.prepare_canonical(id)?;
+        if migrated {
             self.invalidate_display_projection(id);
         }
-        Ok(())
+        Ok(canonical)
     }
 
     fn storage_cancellable(
