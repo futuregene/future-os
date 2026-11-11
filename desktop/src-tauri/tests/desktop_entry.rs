@@ -95,6 +95,14 @@ fn a_launch_without_a_graphical_session_refuses_instead_of_waiting_for_ready() {
     let log = std::fs::read_to_string(home.path().join(".future/app/logs/desktop.log"))
         .expect("the host log written before the refusal");
     assert!(log.contains("'graphical session'"), "{log}");
+    // The refusal also came before the window build, which is where the toolkit is
+    // initialized. A build reached first is not a cosmetic difference: on Linux it
+    // is what turned this launch into a GTK abort ("Failed to initialize gtk
+    // backend!", exit 101) instead of the exit code and message asserted above.
+    assert!(
+        !log.contains("startup step 'window build' reached"),
+        "{log}"
+    );
     // The step itself never ran: the refusal quotes "step 'event loop'" in its
     // own wording, so the check has to name the discarded report instead.
     assert!(!log.contains("startup step 'event loop' reached"), "{log}");

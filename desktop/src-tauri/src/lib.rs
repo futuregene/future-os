@@ -971,6 +971,17 @@ mod gui {
             startup.failed();
             return Err(error);
         }
+        // Whether this launch can reach a display is decided here, before the
+        // window build rather than after it. That build is what initializes the
+        // toolkit, and a toolkit with no display never returns to let a later
+        // check speak: on Linux `gtk_init` aborts the process inside tao ("Failed
+        // to initialize gtk backend!"), so a check placed after it could only
+        // report exit 101 and a panic instead of the message a user can act on.
+        // Asking first is also what keeps a background session on macOS out of an
+        // event loop that never becomes ready — see `gui_session`.
+        if let Err(refusal) = crate::gui_session::require() {
+            return Err(refuse_no_display(startup, refusal));
+        }
         startup.enter("window");
         let mut context = tauri::generate_context!();
         context.config_mut().identifier = instance::gui_identifier(&context.config().identifier)?;
@@ -1226,18 +1237,6 @@ mod gui {
             retire_logging(&app);
             return Err(error);
         }
-        // A launch with no display connection cannot open a window: AppKit never
-        // posts `applicationDidFinishLaunching`, so `RunEvent::Ready` never
-        // arrives and the loop below would wait forever with a blank window —
-        // indistinguishable from a deadlock. Refuse here instead, where stderr and
-        // the host log are both live and the exit code reaches the caller.
-        startup.enter("graphical session");
-        if let Err(refusal) = crate::gui_session::require() {
-            tracing::error!(event = "run_with", "startup refused: {refusal}");
-            startup.failed();
-            retire_logging(&app);
-            return Err(refusal.into());
-        }
         // Keep inherited terminal handles valid for the process lifetime. GUI
         // launches have already redirected missing streams during preparation;
         // detaching here would invalidate handles we deliberately preserved.
@@ -1252,6 +1251,29 @@ mod gui {
             "event loop returned; the process is exiting"
         );
         Ok(())
+    }
+
+    /// End a launch that cannot reach a display, before any window is built.
+    ///
+    /// Tauri's `setup` hook is what opens the host log, and a refused launch
+    /// never builds an app to run it in — so "why did nothing appear" would have
+    /// no answer afterwards. Open the log here instead, but only while holding the
+    /// instance lock: opening it trims the live file, and a Desktop already running
+    /// on another session owns that file.
+    fn refuse_no_display(startup: &future_host::startup::Tracker, refusal: String) -> AppError {
+        if let Ok(lock) = instance::InstanceGuard::acquire() {
+            if let Ok(logging) = crate::host_environment::start_logging() {
+                // The step is entered again here on purpose: the first report had
+                // no file sink to land in, and the log is where this launch is read
+                // back from.
+                startup.enter("graphical session");
+                tracing::error!(event = "run_with", "startup refused: {refusal}");
+                drop(logging);
+            }
+            drop(lock);
+        }
+        startup.failed();
+        refusal.into()
     }
 
     struct HostLogging(std::sync::Mutex<Option<future_logging::FileGuard>>);
