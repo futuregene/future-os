@@ -361,6 +361,12 @@ Unix also handles SIGTERM and SIGHUP. Continuity after SSH disconnect is not
 promised. If you deliberately need it, use tmux or a service manager; this is not
 the default behavior of host mode.
 
+### When the window never appears (an SSH or background launch)
+
+- **Symptom:** `futureos` starts, no window opens, and `desktop.log` stops at `startup has not finished after …s; it is at step 'event loop'` and then only repeats that line — nothing after it, no crash entry.
+- **Criterion:** the launch has no display connection, so `Ready` can never arrive: `lsappinfo list` reports the process as `type="BackgroundOnly"` with `!cgsConnection`, `/dev/console` is owned by `root` (nobody is signed in at this Mac's screen), and a shell over SSH reports `launchctl managername` = `Background`. It is a missing precondition, not a deadlock — nothing is stuck, the loop is simply waiting for an event that will not come.
+- **Action:** start FutureOS from the Mac's own screen (or a Screen Sharing/VNC session), where such a launch is refused immediately with `FutureOS needs a graphical session…` and exit code 1; on a server with no display run `future host` instead, which needs no window and still serves remote devices.
+
 ## 5. Server build without graphical dependencies
 
 The unified CLI calls the GUI-free `future-host` library directly. It does not
