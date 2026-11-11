@@ -63,23 +63,40 @@ pub async fn reset_for_test(_home: &crate::remote::test_support::HomeGuard) {
 }
 
 pub fn device_name() -> String {
-    device_name_from(
-        std::env::var("COMPUTERNAME")
-            .or_else(|_| std::env::var("HOSTNAME"))
-            .ok(),
-    )
+    device_name_from(super::system_name::computer_name(), forwarded_name())
 }
 
-/// The formatting half, split out so both arms are testable without mutating
-/// the process environment (which no test can do safely alongside others).
-fn device_name_from(host: Option<String>) -> String {
-    let host = host
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    match host {
-        Some(host) => format!("FutureOS Desktop ({host})"),
+/// The environment's copy of the machine name — a *forwarded* value, never the
+/// source. See [`super::system_name`] for why: a launcher in between can decode
+/// it with a local code page, which turns a Chinese computer name into a label
+/// nobody can read. It is consulted only when the OS cannot answer at all.
+fn forwarded_name() -> Option<String> {
+    std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .ok()
+}
+
+/// The label, from the OS answer and the environment's copy of it.
+///
+/// Both sources are arguments so the precedence and the rejection are testable
+/// without mutating the process environment (which no test can do safely
+/// alongside others) and without owning a machine whose name is mojibake.
+fn device_name_from(system: Option<String>, forwarded: Option<String>) -> String {
+    match usable_name(system).or_else(|| usable_name(forwarded)) {
+        Some(name) => format!("FutureOS Desktop ({name})"),
         None => "FutureOS Desktop".to_string(),
     }
+}
+
+/// A machine name worth showing: trimmed, non-empty, and free of the U+FFFD a
+/// lossy decode leaves behind. Whitespace is not a hostname — an empty one would
+/// produce a trailing "()" that reads like a bug in the host's UI — and a name
+/// full of replacements cannot be read, searched for, or matched to the machine
+/// it claims to be, so "unnamed" is the honest answer.
+fn usable_name(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty() && !value.contains(char::REPLACEMENT_CHARACTER))
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -475,29 +492,72 @@ mod tests {
     // retries forever is indistinguishable from one that hung.
 
     #[test]
-    fn the_hostname_is_used_when_present_and_omitted_when_not() {
+    fn the_os_name_is_used_when_present_and_omitted_when_not() {
         assert_eq!(
-            device_name_from(Some("studio-imac".into())),
+            device_name_from(Some("studio-imac".into()), None),
             "FutureOS Desktop (studio-imac)"
         );
         // Whitespace is not a hostname; an empty name would produce a trailing
         // "()" that reads like a bug in the host's UI.
-        assert_eq!(device_name_from(Some("   ".into())), "FutureOS Desktop");
         assert_eq!(
-            device_name_from(Some("  padded  ".into())),
+            device_name_from(Some("   ".into()), None),
+            "FutureOS Desktop"
+        );
+        assert_eq!(
+            device_name_from(Some("  padded  ".into()), None),
             "FutureOS Desktop (padded)"
         );
-        assert_eq!(device_name_from(None), "FutureOS Desktop");
+        assert_eq!(device_name_from(None, None), "FutureOS Desktop");
     }
 
-    // The environment-reading wrapper still resolves to a usable name. It is
-    // asserted as an *invariant* rather than a specific value, because the host
-    // it produces depends on the machine running the test.
+    /// The name that reached a real host was `FutureOS Desktop (␦␦␦␦␦␦ļ␦)`:
+    /// U+FFFD with one GBK sequence in the middle, which is what an environment
+    /// copy looks like after a launcher decodes it with a local code page.
+    ///
+    /// Reverting to the environment as the *source* turns the first assertion
+    /// red; dropping the precedence check turns the second red; dropping the
+    /// U+FFFD filter turns the last one red.
     #[test]
-    fn the_live_hostname_resolves_to_a_usable_name() {
+    fn a_forwarded_copy_of_the_name_never_wins_and_never_shows_replacements() {
+        let mangled =
+            "FutureOS Desktop (\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{13c}\u{fffd})"
+                .to_string();
+        assert!(mangled.contains(char::REPLACEMENT_CHARACTER));
+
+        // The OS answered, so its name is the label — a clean result even
+        // though the environment copy alongside it is unreadable.
+        let named = device_name_from(Some("陈辉的MacBook".into()), Some(mangled.clone()));
+        assert_eq!(named, "FutureOS Desktop (陈辉的MacBook)");
+        assert!(!named.contains(char::REPLACEMENT_CHARACTER), "{named}");
+
+        // …and a copy that is merely *stale* does not win either: precedence
+        // belongs to the OS, not to whichever value is consulted first.
+        assert_eq!(
+            device_name_from(Some("studio-imac".into()), Some("old-name".into())),
+            "FutureOS Desktop (studio-imac)"
+        );
+
+        // With no OS answer a clean copy is still better than no name…
+        assert_eq!(
+            device_name_from(None, Some("  studio-imac  ".into())),
+            "FutureOS Desktop (studio-imac)"
+        );
+        // …but a mangled one is not a name at all, so the device stays unnamed
+        // rather than wearing a label nobody can read.
+        let unnamed = device_name_from(None, Some(mangled));
+        assert_eq!(unnamed, "FutureOS Desktop");
+        assert!(!unnamed.contains(char::REPLACEMENT_CHARACTER), "{unnamed}");
+    }
+
+    // The live path answers from this machine. It is asserted as an *invariant*
+    // rather than a specific value, because the name depends on the host running
+    // the test.
+    #[test]
+    fn the_live_name_resolves_to_a_usable_label() {
         let name = device_name();
         assert!(name.starts_with("FutureOS Desktop"), "{name}");
         assert!(!name.ends_with("()"), "{name}");
+        assert!(!name.contains(char::REPLACEMENT_CHARACTER), "{name}");
     }
 
     // The reset between tests must take a retry loop with it.

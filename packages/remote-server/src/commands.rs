@@ -143,14 +143,12 @@ fn record_client_identity(runtime: &dyn CommandRuntime, pair_id: &str, command: 
 /// What a `secure_ready` declared, normalised.
 ///
 /// Pure, so every rule is testable without a running bridge: a name is trimmed,
-/// a blank one means "did not say", and the kind is kept verbatim because it is
-/// opaque to this side — an unknown kind is a rendering question for the UI, not
-/// a reason to discard the name it came with.
+/// a blank one means "did not say", a name the wire mangled means the same (see
+/// [`declared_name`]), and the kind is kept verbatim because it is opaque to this
+/// side — an unknown kind is a rendering question for the UI, not a reason to
+/// discard the name it came with.
 fn declared_identity(command: &IncomingCmd) -> Option<crate::types::ClientIdentity> {
-    let name = command.device_name.trim();
-    if name.is_empty() {
-        return None;
-    }
+    let name = declared_name(&command.device_name)?;
     Some(crate::types::ClientIdentity {
         name: name.to_string(),
         kind: command.device_kind.trim().to_string(),
@@ -164,6 +162,23 @@ fn declared_identity(command: &IncomingCmd) -> Option<crate::types::ClientIdenti
         // saying who it is.
         device_id: None,
     })
+}
+
+/// A name worth showing, or `None` when there is none.
+///
+/// Blank and *blanked out* are the same answer. U+FFFD is what a lossy decode
+/// leaves behind — a launcher that decoded the machine name with a local code
+/// page turns a Chinese name into `␦␦␦␦␦␦ļ␦`, one replacement per lost byte —
+/// and those leftovers name the device worse than "unknown" does: a reader
+/// cannot pronounce, search for, or match them to the machine in front of them.
+/// The UI already has wording for an unnamed device, and none for a mislabelled
+/// one, so a mangled declaration is dropped like a missing one.
+///
+/// Only the *name* is filtered: a version or a kind that arrived mangled is
+/// still the value the client sent, and nothing renders it as a label.
+fn declared_name(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty() && !trimmed.contains(char::REPLACEMENT_CHARACTER)).then_some(trimmed)
 }
 
 /// A string a client declared, as the identity keeps it: trimmed, and absent
@@ -1718,6 +1733,40 @@ mod identity_tests {
             None
         );
         assert_eq!(declared_identity(&IncomingCmd::default()), None);
+    }
+    /// A name the wire mangled is not a name.
+    ///
+    /// This is the exact shape a real host received from a desktop whose name
+    /// had been decoded with a local code page on the way — six replacement
+    /// characters, one GBK pair (`C4 BC` = `ļ`), and a lost tail byte. Rendering
+    /// that verbatim is worse than naming nothing: the page has wording for an
+    /// unnamed device and none for `FutureOS Desktop (␦␦␦␦␦␦ļ␦)`. So it is
+    /// dropped like a blank declaration, and the device reads as unknown.
+    #[test]
+    fn a_name_the_wire_mangled_is_not_declared() {
+        let mangled =
+            "FutureOS Desktop (\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{13c}\u{fffd})";
+        assert_eq!(
+            declared_identity(&IncomingCmd {
+                device_name: mangled.into(),
+                device_kind: "desktop".into(),
+                ..Default::default()
+            }),
+            None,
+            "replacements are leftovers, not a label"
+        );
+        // The rule is about lost bytes, not about non-ASCII: a name in Chinese
+        // is a name, and dropping it would hide every device whose owner named
+        // the machine in their own language.
+        assert_eq!(
+            declared_identity(&IncomingCmd {
+                device_name: "  陈辉的MacBook  ".into(),
+                device_kind: "desktop".into(),
+                ..Default::default()
+            })
+            .map(|client| client.name),
+            Some("陈辉的MacBook".to_string())
+        );
     }
     #[test]
     fn an_unknown_kind_is_kept_verbatim() {
