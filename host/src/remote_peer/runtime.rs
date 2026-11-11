@@ -153,10 +153,12 @@ pub async fn pair_with_emitter(
     invitation: &str,
     emitter: Option<Emitter>,
 ) -> Result<PeerSummary, crate::Error> {
-    client()
+    let peer = client()
         .pair_with_emitter(invitation, emitter)
         .await
-        .map_err(Into::into)
+        .map_err(crate::Error::from)?;
+    log_connected(std::slice::from_ref(&peer));
+    Ok(peer)
 }
 
 pub async fn list() -> Result<Vec<PeerSummary>, crate::Error> {
@@ -177,17 +179,42 @@ pub async fn connect(desktop_id: &str) -> Result<PeerSummary, crate::Error> {
 }
 
 pub async fn connect_all(emitter: Option<Emitter>) -> Result<Vec<PeerSummary>, crate::Error> {
-    client().connect_all(emitter).await.map_err(Into::into)
+    let peers = client()
+        .connect_all(emitter)
+        .await
+        .map_err(crate::Error::from)?;
+    log_connected(&peers);
+    Ok(peers)
 }
 
 pub async fn connect_with_emitter(
     desktop_id: &str,
     emitter: Option<Emitter>,
 ) -> Result<PeerSummary, crate::Error> {
-    client()
+    let peer = client()
         .connect_with_emitter(desktop_id, emitter)
         .await
-        .map_err(Into::into)
+        .map_err(crate::Error::from)?;
+    log_connected(std::slice::from_ref(&peer));
+    Ok(peer)
+}
+
+/// Write down what a host advertised, once, as the connection comes up.
+///
+/// The list is what decides which controls the window offers, and until now it
+/// lived only in memory: a machine on a build without `terminal_v1` simply had
+/// no terminal button, and nothing anywhere said so. One line per connection is
+/// what turns that into an answer (`grep remote_peer_connected` in the host log).
+fn log_connected(peers: &[PeerSummary]) {
+    for peer in peers.iter().filter(|peer| peer.connected) {
+        tracing::info!(
+            event = "remote_peer_connected",
+            desktop_id = %peer.desktop_id,
+            features = %peer.features.join(","),
+            "remote_peer: connected to a host that advertised {} feature(s)",
+            peer.features.len()
+        );
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]

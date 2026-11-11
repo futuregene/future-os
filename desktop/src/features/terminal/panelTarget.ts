@@ -66,3 +66,24 @@ export function terminalScope(input: TerminalScopeInput): TerminalScope | null {
     return null;
   return { kind: "local", threadId: input.threadId, key: input.threadId };
 }
+
+/**
+ * A remote conversation that would have a terminal, if only its host served one.
+ *
+ * `terminalScope` answers "offer the panel"; this answers the narrower question
+ * its refusal leaves open: *which* refusal is it. A conversation on a host that
+ * does not advertise `terminal_v1` is a different situation from a draft or a
+ * view with no conversation at all — the machine is fine, it just serves no
+ * shells — and the two must not look alike. The header renders a disabled
+ * affordance for this case so the reader sees why the control is missing;
+ * silence reads as a bug, and did (a paired machine on a build without the
+ * capability looked exactly like a broken window).
+ */
+export function remoteTerminalUnsupported(input: TerminalScopeInput): boolean {
+  if (input.centerMode !== "thread")
+    return false;
+  if (input.section !== "chat" && input.section !== "workspace")
+    return false;
+  const remote = input.remote;
+  return Boolean(remote && remote.sessionId && !remote.terminalSupported);
+}

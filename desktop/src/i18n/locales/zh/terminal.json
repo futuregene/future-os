@@ -25,5 +25,6 @@
   "workingDirectory": "工作目录：{{path}}",
   "serverUnavailable": "终端服务不可用",
   "reconnecting": "正在重连…",
-  "onHost": "在 {{host}} 上"
+  "onHost": "在 {{host}} 上",
+  "unsupported": "{{machine}} 不向配对设备提供终端"
 }
