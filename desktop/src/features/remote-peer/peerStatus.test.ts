@@ -119,6 +119,19 @@ describe("being held by another paired device", () => {
     expect(peerHolderName(peer({ control: "standby", holder: { name: "   " } }))).toBeNull();
   });
 
+  it("says nothing for a name the wire mangled, rather than showing it", () => {
+    // A desktop whose Chinese computer name went through a launcher's local code
+    // page declares `FutureOS Desktop (␦␦␦␦␦␦ļ␦)`. Rendering it verbatim puts a
+    // row of replacement boxes in the sentence that explains the machine is
+    // somebody else's; the neutral wording is what an unnamed holder gets.
+    const mangled = "FutureOS Desktop (\uFFFD\uFFFD\uFFFD\uFFFD\uFFFD\uFFFD\u013C\uFFFD)";
+    expect(peerHolderName(peer({ control: "standby", holder: { name: mangled } }))).toBeNull();
+    // Not about non-ASCII: the same machine named in Chinese is a name.
+    expect(
+      peerHolderName(peer({ control: "standby", holder: { name: "陈辉的MacBook" } })),
+    ).toBe("陈辉的MacBook");
+  });
+
   it("is not held while the link is down, whatever the last state said", () => {
     expect(peerHeld(peer({ control: "standby", connected: false, error: "gone" }))).toBe(false);
     expect(peerDrivable(peer({ control: "standby", connected: false, error: "gone" }))).toBe(false);

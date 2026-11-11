@@ -44,6 +44,23 @@ describe("the standby notice in the conversation", () => {
     expect(painted(tree)).toContain("Taken over by another device — messages will not send.");
   });
 
+  it("never paints a name the wire mangled", () => {
+    // A desktop whose Chinese computer name was decoded with a local code page
+    // declares this, and this line used to show it verbatim: a row of
+    // replacement boxes where the name should be, on the one notice that
+    // explains why nothing will send.
+    let tree!: ReactTestRenderer;
+    act(() => {
+      tree = create(createElement(StandbyNotice, {
+        holder: { name: "FutureOS Desktop (\uFFFD\uFFFD\uFFFD\uFFFD\uFFFD\uFFFD\u013C\uFFFD)" },
+        onTakeControl: () => undefined,
+      }));
+    });
+    const shown = painted(tree);
+    expect(shown).toContain("Taken over by another device — messages will not send.");
+    expect(shown).not.toContain("\uFFFD");
+  });
+
   it("offers the way out beside the reason, and only acts when pressed", async () => {
     const take = jest.fn().mockResolvedValue(undefined);
     let tree!: ReactTestRenderer;

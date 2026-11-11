@@ -15,6 +15,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Button } from "../components/Button";
 import { useAppDialog } from "../components/useAppDialog";
 import { DesktopScope, useRemoteControls } from "../remote/RemoteContext";
+import { readableDeviceName } from "../remote/deviceName";
 import { machineConfigurable, machineStatusKey, pairedMachines } from "../remote/desktopStatus";
 import { SettingsScreen, type SettingsScreenHandle } from "../features/settings/SettingsScreen";
 import type { PairedDesktop } from "../remote/types";
@@ -22,7 +23,12 @@ import { layout, radius, slopToTouchTarget, spacing } from "../theme/tokens";
 import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 import { DesktopLabelDialog } from "./DesktopLabelDialog";
 
-const label = (desktop: PairedDesktop) => desktop.name ?? desktop.desktopId;
+/**
+ * What this row calls the machine: the name the user gave it, or the id when it
+ * has none this phone can read — a stored name carrying replacement characters
+ * is not a name, and an id at least says which machine the row is.
+ */
+const label = (desktop: PairedDesktop) => readableDeviceName(desktop.name) ?? desktop.desktopId;
 
 /**
  * The paired desktops: the phone's device management page, and the way in to
@@ -171,7 +177,12 @@ export function DesktopsScreen({ onBack, onAdd, onOpenConversation }: {
             // with no explanation reads as a broken app.
             const configurable = machineConfigurable(machine);
             const held = machine?.status === "connected" && machine.control === "standby";
-            const holderName = held ? machine?.holder?.name?.trim() : undefined;
+            const holderName = held ? readableDeviceName(machine?.holder?.name) : undefined;
+            // The name this row shows, and whether it is the row's own: a
+            // fallback to the id is drawn in the muted style, so the two never
+            // read as the same fact.
+            const shownName = readableDeviceName(desktop.name);
+            const cardLabel = shownName ?? desktop.desktopId;
             // `machine` undefined cannot be here: an unreported machine is
             // configurable (see `machineConfigurable`).
             const stateLine = configurable || !machine
@@ -190,9 +201,9 @@ export function DesktopsScreen({ onBack, onAdd, onOpenConversation }: {
                   <View style={styles.nameRow}>
                     <Text
                       numberOfLines={1}
-                      style={[styles.name, desktop.name ? null : styles.nameFallback]}
+                      style={[styles.name, shownName ? null : styles.nameFallback]}
                     >
-                      {label(desktop)}
+                      {cardLabel}
                     </Text>
                     {/* Beside the label it edits, not among the row's actions:
                         the name and the icon are this phone's own record, so
@@ -222,7 +233,7 @@ export function DesktopsScreen({ onBack, onAdd, onOpenConversation }: {
                       explaining the gear beside it. */}
                   {stateLine
                     ? <Text numberOfLines={1} style={[styles.id, held ? styles.held : null]}>{stateLine}</Text>
-                    : desktop.name
+                    : shownName
                       ? <Text numberOfLines={1} style={styles.id}>{desktop.desktopId}</Text>
                       : null}
                 </View>

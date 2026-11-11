@@ -8,6 +8,7 @@ import { LanguageSettings } from "../../i18n/LanguageSettings";
 import { getTaskFinishedReminders, initializeTaskFinishedReminders, setTaskFinishedReminders, subscribeTaskFinishedReminders } from "../../notifications/preferences";
 import { AppearanceSettings } from "../../theme/AppearanceSettings";
 import { PeerIconChip } from "../../remote/PeerIconChip";
+import { readableDeviceName } from "../../remote/deviceName";
 import { useRemoteControls } from "../../remote/RemoteContext";
 import type { DesktopSettings, RemoteBuiltinProvider, RemoteCustomProvider } from "../../remote/types";
 import { IS_RELEASE, VERSION } from "../../version.generated";
@@ -142,7 +143,7 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
   const writing = useRef(false);
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
   const device = deviceId ? remote.desktops.find(item => item.desktopId === deviceId) : undefined;
-  const deviceName = device ? device.name || device.desktopId : t("desktops.title");
+  const deviceName = device ? readableDeviceName(device.name) ?? device.desktopId : t("desktops.title");
   // Which of the two surfaces this stack is: this phone's own settings, or one
   // paired desktop's.
   const deviceMode = deviceId !== undefined;
@@ -153,7 +154,7 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
   // This machine is somebody else's right now: pages read nothing, and the way
   // out is the same takeover the session list offers.
   const standby = remote.presence?.control === "standby";
-  const holderName = remote.presence?.holder?.name?.trim();
+  const holderName = readableDeviceName(remote.presence?.holder?.name);
   const [takingControl, setTakingControl] = useState(false);
   const [takeControlFailed, setTakeControlFailed] = useState(false);
   const takeControl = async () => {
