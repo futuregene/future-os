@@ -6544,6 +6544,15 @@ mod tests {
             }
         }
         persist_transcript(&session);
+        if legacy {
+            // Opening the persisted historical fixture upgrades it and binds
+            // the current writer before a new compaction request is admitted.
+            session
+                .broadcaster
+                .configure_journal(&session.session_id, &session.session_manager)
+                .unwrap();
+            assert!(session.broadcaster.uses_segmented_storage());
+        }
         session.compact("").unwrap();
 
         let total = |split: crate::models::CostSplit| {
