@@ -103,7 +103,7 @@ reopen, integrity and direct deletion. It refuses a directory without a
 
 ## Developer database organization
 
-Settings → Debug → Reset has an independent **Organize database (developer)**
+Settings → Debug → Reset has an independent **Organize database**
 action above Clear data. It freezes the published conversation list and processes
 one conversation at a time: convert to format 2, preserve pricing inputs while
 removing old journals/snapshots, retire eligible settled streams, and gzip sealed

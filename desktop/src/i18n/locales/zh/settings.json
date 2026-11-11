@@ -369,8 +369,8 @@
     "connectFailed": "连接失败。"
   },
   "reset": {
-    "organizeDatabase": "整理数据库（开发者）",
-    "organizeDescription": "逐个升级旧对话、回收可清理的过程数据并压缩正文。进行中、格式异常或整理失败的对话会跳过。保留聊天内容，不重启应用。占用统计包含 Agent 数据库及 WAL，不含备份。",
+    "organizeDatabase": "整理数据库",
+    "organizeDescription": "逐个升级旧对话、回收可清理的过程数据并压缩正文。进行中、格式异常或整理失败的对话会跳过。保留聊天内容，不重启应用。",
     "organizeStart": "开始整理数据库",
     "organizeRunning": "正在整理…",
     "organizeFinishing": "正在回收空间并整理文件…",
