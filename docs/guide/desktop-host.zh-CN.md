@@ -272,6 +272,12 @@ Ctrl+C 在配对、连接启动和正常运行阶段都可用。退出会先停�
 Unix 也处理 SIGTERM 和 SIGHUP。SSH 断开后不承诺继续运行；若确实需要跨 SSH 会话保活，
 可以由用户显式选择 tmux 或系统服务托管，但这不是主机模式的默认行为。
 
+### 窗口一直不出现（从 SSH 或后台会话启动）
+
+- **现象：** `futureos` 起来了但没有窗口，`desktop.log` 停在 `startup has not finished after …s; it is at step 'event loop'` 并反复打印这一行，后面没有任何记录，也没有崩溃条目。
+- **判据：** 这次启动拿不到显示连接，所以 `Ready` 永远不会到：`lsappinfo list` 里该进程是 `type="BackgroundOnly"` 且带 `!cgsConnection`，`/dev/console` 的属主是 `root`（没人在本机屏幕登录），SSH shell 里 `launchctl managername` 输出 `Background`。这是前提不成立，不是死锁——没有东西卡住，事件循环只是在等一个不会来的事件。
+- **处置：** 到 Mac 本机屏幕（或 Screen Sharing/VNC）上启动 FutureOS，这种启动会被立即拒绝并打印 `FutureOS needs a graphical session…`、以退出码 1 结束；没有显示器的服务器改用 `future host`，它不需要窗口，仍然向已配对设备提供远程桌面。
+
 ## 5. 无图形依赖的服务器构建
 
 统一 CLI 直接调用无 GUI 的 `future-host` 库，不加载 Tauri、GTK、WebKit，

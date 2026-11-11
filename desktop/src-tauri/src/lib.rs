@@ -21,6 +21,8 @@ mod future_login;
 mod future_platform;
 #[cfg(feature = "gui")]
 mod git_review;
+#[cfg(feature = "gui")]
+mod gui_session;
 mod host_environment;
 mod instance;
 pub mod launch;
@@ -1223,6 +1225,18 @@ mod gui {
             startup.failed();
             retire_logging(&app);
             return Err(error);
+        }
+        // A launch with no display connection cannot open a window: AppKit never
+        // posts `applicationDidFinishLaunching`, so `RunEvent::Ready` never
+        // arrives and the loop below would wait forever with a blank window —
+        // indistinguishable from a deadlock. Refuse here instead, where stderr and
+        // the host log are both live and the exit code reaches the caller.
+        startup.enter("graphical session");
+        if let Err(refusal) = crate::gui_session::require() {
+            tracing::error!(event = "run_with", "startup refused: {refusal}");
+            startup.failed();
+            retire_logging(&app);
+            return Err(refusal.into());
         }
         // Keep inherited terminal handles valid for the process lifetime. GUI
         // launches have already redirected missing streams during preparation;
