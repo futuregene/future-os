@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { remoteScopeKey, terminalScope } from "./panelTarget";
+import { remoteScopeKey, remoteTerminalUnsupported, terminalScope } from "./panelTarget";
 
 describe("terminalScope", () => {
   it("offers the terminal for a workspace conversation", () => {
@@ -67,5 +67,35 @@ describe("terminalScope", () => {
         remote: { desktopId: "desk-b", sessionId: "", terminalSupported: true },
       }),
     ).toBeNull();
+  });
+});
+
+describe("remoteTerminalUnsupported", () => {
+  // The refusal `terminalScope` makes has two very different shapes, and only
+  // one of them is worth explaining in the header: this machine cannot serve a
+  // shell, as opposed to "there is nothing to attach to yet".
+  const input = (remote: { desktopId: string; sessionId: string; terminalSupported: boolean } | null) => ({
+    section: "chat",
+    centerMode: "thread" as const,
+    threadId: null,
+    remote,
+  });
+
+  it("is true for a conversation on a host that serves no terminals", () => {
+    expect(remoteTerminalUnsupported(input({ desktopId: "desk-old", sessionId: "sess-1", terminalSupported: false }))).toBe(true);
+  });
+
+  it("is false when the host does serve them", () => {
+    expect(remoteTerminalUnsupported(input({ desktopId: "desk-b", sessionId: "sess-1", terminalSupported: true }))).toBe(false);
+  });
+
+  it("is false for a draft, where no shell exists to be served", () => {
+    expect(remoteTerminalUnsupported(input({ desktopId: "desk-old", sessionId: "", terminalSupported: false }))).toBe(false);
+  });
+
+  it("is false off a remote conversation", () => {
+    expect(remoteTerminalUnsupported({ ...input(null), section: "skill" })).toBe(false);
+    expect(remoteTerminalUnsupported({ ...input(null), centerMode: "new-chat" })).toBe(false);
+    expect(remoteTerminalUnsupported(input(null))).toBe(false);
   });
 });

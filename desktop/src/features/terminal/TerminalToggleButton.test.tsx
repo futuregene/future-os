@@ -9,14 +9,18 @@ import { TerminalToggleButton } from "./TerminalToggleButton";
 let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 
-async function mount(props: { open: boolean; onToggle: () => void; shortcut?: string }) {
+async function mount(
+  props: { open: boolean; onToggle: () => void; shortcut?: string; unavailableReason?: string },
+) {
   await act(async () => {
     root.render(createElement(TerminalToggleButton, { shortcut: "Ctrl+J", ...props }));
   });
 }
 
 function button(): HTMLButtonElement {
-  return container.querySelector<HTMLButtonElement>("button[data-component='terminal-toggle']")!;
+  return container.querySelector<HTMLButtonElement>(
+    "button[data-component='terminal-toggle'], button[data-component='terminal-toggle-unavailable']",
+  )!;
 }
 
 beforeEach(() => {
@@ -56,5 +60,23 @@ describe("terminalToggleButton", () => {
       button().click();
     });
     expect(onToggle).toHaveBeenCalledTimes(1);
+  });
+
+  it("is disabled and says why when the host serves no terminals", async () => {
+    // The case that read as a bug: nothing was rendered at all, so "this
+    // machine cannot serve a shell" looked like "the window is broken".
+    const onToggle = vi.fn();
+    await mount({
+      onToggle,
+      open: false,
+      unavailableReason: "Build Box serves no terminals to paired devices",
+    });
+    expect(button().disabled).toBe(true);
+    expect(button().getAttribute("aria-label")).toBe("Build Box serves no terminals to paired devices");
+    expect(button().getAttribute("title")).toBe("Build Box serves no terminals to paired devices");
+    await act(async () => {
+      button().click();
+    });
+    expect(onToggle).not.toHaveBeenCalled();
   });
 });
