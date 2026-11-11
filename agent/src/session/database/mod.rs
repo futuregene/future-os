@@ -117,6 +117,10 @@ fn raise_descriptor_limit_for_tests() {
 }
 
 impl Database {
+    pub(crate) fn path(&self) -> &Path {
+        &self.inner.fence_path
+    }
+
     pub(crate) fn open(path: &Path) -> Result<Self> {
         Self::open_cancellable(path, crate::service::StartupCancellation::default())
     }

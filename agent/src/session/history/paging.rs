@@ -531,6 +531,7 @@ impl Manager {
         limit: Option<i64>,
         fragment_offset: Option<i64>,
     ) -> Result<serde_json::Value> {
+        self.prepare_session(id)?;
         let started = std::time::Instant::now();
         let mut cache_hit = false;
         let mut index_rebuilt = false;

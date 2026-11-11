@@ -46,6 +46,7 @@ impl Manager {
 
     /// Decode authoritative blocks without manufacturing lost-tool results.
     pub(crate) fn load_unrepaired_entries(&self, id: &str) -> Result<Vec<SessionEntry>> {
+        self.prepare_session(id)?;
         let mut entries: Vec<SessionEntry> = self.storage()?.typed_entries(id)?;
         for entry in &mut entries {
             hydrate_entry_projections(entry);
@@ -70,6 +71,7 @@ impl Manager {
 
     /// Runtime configuration and identities; no historical message bodies.
     pub(crate) fn load_metadata(&self, id: &str) -> Result<Session> {
+        self.prepare_session(id)?;
         let store = self.storage()?;
         if store.storage_format(id)? == crate::session::content::FORMAT_VERSION {
             let scope = crate::session::content::reader::Snapshot::capture(store, id)?;
@@ -153,6 +155,7 @@ impl Manager {
         offset: usize,
         limit: usize,
     ) -> Result<(Vec<SessionEntry>, usize)> {
+        self.prepare_session(id)?;
         const MESSAGE_ROLES: &str = "'user','system','assistant','tool'";
         enum Rows {
             Canonical(Vec<crate::session::content::reader::Entry>),
