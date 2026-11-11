@@ -193,7 +193,7 @@ fn publish(store: &SqliteStore, session: &str, conversion: Conversion) -> Result
     })
 }
 
-fn preserve_pricing(db: &Connection, session: &impl rusqlite::ToSql) -> Result<()> {
+pub(crate) fn preserve_pricing(db: &Connection, session: &impl rusqlite::ToSql) -> Result<()> {
     db.execute("INSERT OR IGNORE INTO run_pricing(session_id,run_id,sequence,payload)
         SELECT session_id,run_id,sequence,payload FROM run_events e WHERE session_id=?1
         AND json_extract(payload,'$.event_type') IN ('usage','model_changed')

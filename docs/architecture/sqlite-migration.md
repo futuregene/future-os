@@ -101,6 +101,30 @@ checks list-without-conversion, message preservation, run-ledger preservation,
 reopen, integrity and direct deletion. It refuses a directory without a
 `DISPOSABLE_FIXTURE` marker. Never run it on the live database or an original fixture.
 
+## Developer database organization
+
+Settings → Debug → Reset has an independent **Organize database (developer)**
+action above Clear data. It freezes the published conversation list and processes
+one conversation at a time: convert to format 2, preserve pricing inputs while
+removing old journals/snapshots, retire eligible settled streams, and gzip sealed
+bodies and large entry metadata when compression saves space. It preserves chat
+values, identities, timestamps and run totals. It does not restart the app.
+
+Live runs, queued work, recovery failures and conflicting maintenance are skipped;
+malformed or failed conversations are reported and the next conversation continues.
+Each request reacquires admission and performs bounded retirement/compression slices.
+The existing replay grace period still applies to recently settled streams.
+Finally, ownership-aware collection drains retired/unowned data, then VACUUM and a
+WAL checkpoint return file space when the database is idle. Busy/failed file
+compaction is reported as deferred. Before/after sizes count the Agent database
+plus WAL, excluding backups; skipped counts and failures stay visible.
+
+The `database_organization_probe` example exercises this path against a directory
+with a `DISPOSABLE_FIXTURE` marker, comparing every readable conversation and the
+run ledger before/after, then checking SQLite integrity. `--inject-failures` adds
+a busy conversation, malformed metadata and an injected compression failure to
+verify isolation. Use only disposable copies; never point it at the live database or an original fixture.
+
 ## Older Desktop databases
 
 The `v1.2.4-history-preservation` migration runs transactionally before legacy
