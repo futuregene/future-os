@@ -38,7 +38,10 @@ use rusqlite::{params, Connection};
 /// 6: keep a run's late tool results/final answer in the same healing window,
 /// even when newer user entries were stored before those results arrived.
 /// Version 5 could show both a lost-tool placeholder and the real late result.
-pub(crate) const PROJECTION_VERSION: i64 = 6;
+///
+/// 7: completed repair windows do not re-append filtered duplicate results,
+/// and a real result removes the placeholder from an earlier index pass.
+pub(crate) const PROJECTION_VERSION: i64 = 7;
 
 /// Keep healthy reads on a read transaction. If reconstruction is needed,
 /// release that snapshot before reserving a writer and recheck under the lock.

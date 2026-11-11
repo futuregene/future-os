@@ -296,10 +296,16 @@ pub(crate) fn update_display_index_from(
             if !rewrite_healed_window(db, &stored_session, from, to)? {
                 append_plain_shapes(db, &stored_session, from, to)?;
             }
+        } else if to > from {
+            // A partial batch can publish its plain shapes; a later batch
+            // finishes this window and replaces them with the healed view.
+            append_plain_shapes(db, &stored_session, from, to)?;
         }
         from = to;
     }
-    append_plain_shapes(db, &stored_session, first, last + 1)?;
+    // Completed windows already decided which source entries remain visible.
+    // Revisiting them here would resurrect duplicate/empty rows they removed.
+    append_plain_shapes(db, &stored_session, from, last + 1)?;
     Ok(last + 1)
 }
 
@@ -428,7 +434,15 @@ fn rewrite_healed_window(
     repair::repair_dangling_tool_calls(&mut healed);
     let projected = project_entries(&healed);
     if projected == plain {
-        return Ok(false);
+        let stale_placeholder: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM history_display WHERE session_id=?1 AND source_position IS NULL
+               AND ordinal>=?2 AND ordinal<coalesce(
+                 (SELECT min(ordinal) FROM history_display WHERE session_id=?1 AND source_position>=?3),
+                 (SELECT max(ordinal)+1 FROM history_display WHERE session_id=?1),0))",
+            params![stored_session,ordinal,end],|row|row.get(0))?;
+        if !stale_placeholder {
+            return Ok(false);
+        }
     }
     let mut upsert = db.prepare_cached("INSERT INTO history_display(session_id,ordinal,source_position,is_user,payload) VALUES (?1,?2,?3,?4,?5)
         ON CONFLICT(session_id,ordinal) DO UPDATE SET source_position=excluded.source_position,is_user=excluded.is_user,payload=excluded.payload

@@ -148,6 +148,59 @@ fn late_results_and_reused_tool_ids_expand_the_dirty_tail_to_their_old_owner() {
     assert_projection(&manager, &session.id);
 }
 
+#[test]
+fn a_real_result_replaces_its_placeholder_and_duplicates_stay_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = Manager::new(dir.path().join("sessions"));
+    let mut session = Session::new("/synthetic", "mock");
+    session
+        .entries
+        .push(SessionEntry::new_user("user", json!("read it")));
+    session.entries.push(SessionEntry::new_assistant(
+        json!(""),
+        vec![crate::types::ToolCall {
+            id: "call".into(),
+            call_type: "function".into(),
+            function: crate::types::ToolCallFn {
+                name: "read".into(),
+                arguments: json!({}),
+            },
+        }],
+    ));
+    manager.save(&session).unwrap();
+    let before = manager
+        .history_page(&session.id, None, Some(0), Some(100))
+        .unwrap();
+    assert!(before
+        .to_string()
+        .contains(crate::session::repair::TOOL_LOST_PLACEHOLDER_PREFIX));
+    manager
+        .append_entries(
+            &session.id,
+            &[SessionEntry::new_tool("call", "real result")],
+        )
+        .unwrap();
+    assert_projection(&manager, &session.id);
+    let after = manager
+        .history_page(&session.id, None, Some(0), Some(100))
+        .unwrap();
+    assert!(!after
+        .to_string()
+        .contains(crate::session::repair::TOOL_LOST_PLACEHOLDER_PREFIX));
+    assert!(after.to_string().contains("real result"));
+    manager
+        .append_entries(
+            &session.id,
+            &[SessionEntry::new_tool("call", "duplicate result")],
+        )
+        .unwrap();
+    assert_projection(&manager, &session.id);
+    let after = manager
+        .history_page(&session.id, None, Some(0), Some(100))
+        .unwrap();
+    assert!(!after.to_string().contains("duplicate result"));
+}
+
 /// A canonical conversation whose run was cut off between a tool call and its
 /// result displays the row that says the result is unknown — the same row a
 /// legacy conversation shows, because both are the healing projection of the
