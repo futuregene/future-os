@@ -372,8 +372,8 @@
     "connectFailed": "Connection failed."
   },
   "reset": {
-    "organizeDatabase": "Organize database (developer)",
-    "organizeDescription": "Upgrade old conversations one at a time, reclaim disposable process data and compress content. Busy, malformed or failed conversations are skipped. Chat history is preserved and the app stays open. Sizes include the Agent database and WAL, excluding backups.",
+    "organizeDatabase": "Organize database",
+    "organizeDescription": "Upgrade old conversations one at a time, reclaim disposable process data and compress content. Busy, malformed or failed conversations are skipped. Chat history is preserved and the app stays open.",
     "organizeStart": "Organize database",
     "organizeRunning": "Organizing…",
     "organizeFinishing": "Reclaiming space and compacting the file…",

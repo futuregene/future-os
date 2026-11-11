@@ -160,7 +160,7 @@ describe("resetPage database organization", () => {
       .mockResolvedValueOnce({ hasMore: true })
       .mockResolvedValueOnce({ hasMore: false, compacted: true, storage: { totalBytes: 2048 } });
     const container = mount(<ResetPage />);
-    expect(container.textContent).toContain("Organize database (developer)");
+    expect(container.textContent).toContain("Organize database");
     await act(async () => button(container, "Organize database")!.click());
     expect(button(container, "Clear data")!.disabled).toBe(true);
     await act(async () => resolvePlan({ sessionIds: ["a", "b", "c", "d", "e"], storage: { totalBytes: 8192 } }));
