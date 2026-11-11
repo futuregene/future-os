@@ -143,6 +143,54 @@ describe("resetPage clear data", () => {
   });
 });
 
+describe("resetPage database organization", () => {
+  it("processes conversations sequentially and continues past busy and failed items", async () => {
+    let resolvePlan!: (value: unknown) => void;
+    const plan = new Promise<unknown>((resolve) => {
+      resolvePlan = resolve;
+    });
+    mocks.invokeCommand
+      .mockReturnValueOnce(plan)
+      .mockResolvedValueOnce({ status: "done", hasMore: true })
+      .mockResolvedValueOnce({ status: "done", hasMore: false })
+      .mockResolvedValueOnce({ status: "skipped", reason: "busy", hasMore: false })
+      .mockResolvedValueOnce({ status: "failed", reason: "invalid body", hasMore: false })
+      .mockRejectedValueOnce(new Error("write failure"))
+      .mockResolvedValueOnce({ status: "done", hasMore: false })
+      .mockResolvedValueOnce({ hasMore: true })
+      .mockResolvedValueOnce({ hasMore: false, compacted: true, storage: { totalBytes: 2048 } });
+    const container = mount(<ResetPage />);
+    expect(container.textContent).toContain("Organize database (developer)");
+    await act(async () => button(container, "Organize database")!.click());
+    expect(button(container, "Clear data")!.disabled).toBe(true);
+    await act(async () => resolvePlan({ sessionIds: ["a", "b", "c", "d", "e"], storage: { totalBytes: 8192 } }));
+    expect(mocks.invokeCommand.mock.calls).toEqual([
+      ["organize_agent_database", { phase: "plan", sessionId: null }],
+      ...["a", "a", "b", "c", "d", "e"].map(sessionId => ["organize_agent_database", { phase: "session", sessionId }]),
+      ["organize_agent_database", { phase: "finish", sessionId: null }],
+      ["organize_agent_database", { phase: "finish", sessionId: null }],
+    ]);
+    expect(container.textContent).toContain("Processed 5 / 5 conversations");
+    expect(container.textContent).toContain("Busy skipped 1 · Failed skipped 2");
+    expect(container.textContent).toContain("6.0 KiB");
+    expect(container.textContent).toContain("invalid body");
+    expect(container.textContent).toContain("write failure");
+    expect(container.textContent).toContain("Organization complete.");
+    expect(button(container, "Clear data")!.disabled).toBe(false);
+  });
+
+  it("reports deferred file compaction and keeps the action available", async () => {
+    mocks.invokeCommand
+      .mockResolvedValueOnce({ sessionIds: [], storage: { totalBytes: 8192 } })
+      .mockResolvedValueOnce({ hasMore: false, compacted: false, storage: { totalBytes: 4096 } });
+    const container = mount(<ResetPage />);
+    await act(async () => button(container, "Organize database")!.click());
+    expect(container.textContent).toContain("file compaction was deferred");
+    expect(container.textContent).not.toContain("Organization complete.");
+    expect(button(container, "Organize database")!.disabled).toBe(false);
+  });
+});
+
 describe("communityEditionSection", () => {
   it("only saves a changed selection", async () => {
     const onChange = vi.fn().mockResolvedValue(undefined);

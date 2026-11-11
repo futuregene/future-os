@@ -6,6 +6,14 @@ use serde_json::Value;
 use crate::future_platform::{PRODUCTION_PLATFORM_URL, TEST_PLATFORM_URL};
 use crate::{auth_store, store, AppError};
 
+#[tauri::command]
+pub async fn organize_agent_database(
+    phase: String,
+    session_id: Option<String>,
+) -> Result<Value, AppError> {
+    crate::agent_bridge::organize_agent_database(phase, session_id).await
+}
+
 /// Clear all GUI-local data (SQLite + temp workspaces + shadow review) and
 /// relaunch the app. Login / provider config is preserved. `restart()` does not
 /// return, so the frontend invoke promise never resolves — the app restarts.

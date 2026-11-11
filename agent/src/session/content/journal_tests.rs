@@ -1193,6 +1193,29 @@ fn folding_a_settled_run_coalesces_fragments_the_writer_would_have_merged() {
 
 /// A settled run's journal is retired; its transcript and bodies stay.
 #[test]
+fn scoped_retirement_preserves_pricing_events() {
+    let (_root, store) = store();
+    let mut writer = Writer::default();
+    let usage = event(0, "usage", json!({"input_tokens":123,"output_tokens":7}));
+    let model = event(1, "model_changed", json!({"model":"kept-model"}));
+    writer.persist(&store, "s", [&usage, &model]).unwrap();
+    store.db.call(|db| {
+        db.execute("INSERT INTO runs(session_id,run_id,status,started_at_ms,completed_at_ms) VALUES ('s','r','completed',1,2)", [])?;
+        Ok(())
+    }).unwrap();
+    let before = store.pricing_event_payloads("s").unwrap();
+    assert_eq!(before.len(), 2);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let (retired, _) = store
+        .db
+        .call(move |db| super::retire::apply_for_session(db, "s", 4, deadline))
+        .unwrap();
+    assert_eq!(retired, 1);
+    assert_eq!(store.pricing_event_payloads("s").unwrap(), before);
+    assert!(store.events("s", "r").unwrap().is_empty());
+}
+
+#[test]
 fn retiring_a_settled_stream_drops_the_journal_and_keeps_the_transcript() {
     let (_root, store) = store();
     let mut writer = Writer::default();
