@@ -129,7 +129,16 @@ async fn separate_verification_does_not_overwrite_completed_action() {
     assert_eq!(second.exit_code, Some(2));
     assert!(!first.is_error);
     assert!(second.is_error);
-    assert_ne!(first.command, second.command);
+    assert_eq!(first.attempts[0].exit_code, Some(0));
+    assert_eq!(second.attempts[0].exit_code, Some(2));
+    assert!(serde_json::to_value(&first)
+        .unwrap()
+        .get("command")
+        .is_none());
+    assert!(serde_json::to_value(&second)
+        .unwrap()
+        .get("command")
+        .is_none());
 }
 
 #[cfg(unix)]
@@ -280,7 +289,6 @@ fn model_projection_keeps_retry_evidence_without_repeating_generic_caveats() {
         escalated: true,
     };
     let mut facts = ShellResult {
-        command: "action".into(),
         cwd: "/workspace".into(),
         duration_ms: 20,
         status: ShellStatus::Exited,
@@ -465,7 +473,7 @@ async fn pre_execution_gate_retains_provenance_without_inventing_attempts() {
             "all".into(),
             capture(async {
                 record_gate_outcome(status);
-                record_gated(&json!({"command":"echo changed > done"}), "approval ended");
+                record_gated("approval ended");
             }),
         )
         .await;

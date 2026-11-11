@@ -55,6 +55,13 @@ and replay semantics byte-compatible.
   policy, CLI capability discovery, and `select_agent`'s external-first
   selection.
 
+The complete shell command belongs only to `command` in the paired tool-call
+arguments. `ShellResult` does not duplicate it. Clients read the arguments,
+using `get_tool_call_args` on demand. A historical `shell_result.command` is
+ignored during decoding or public projection; this does not reorganize history,
+migrate the database, or change the conversation format. Output text, execution
+cwd, and outcome facts remain available.
+
 ## Proto codegen
 
 Regeneration is opt-in and gated behind the `REGENERATE_PROTO` env var so

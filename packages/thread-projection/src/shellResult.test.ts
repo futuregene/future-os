@@ -7,7 +7,7 @@ import { shellResult } from "./shellResult";
 
 function facts(code: number | null, status: ShellStatus = "exited"): ShellResult {
   return {
-    command: "action", cwd: "/repo", duration_ms: 1, status, exit_code: code, is_soft_fail: false,
+    cwd: "/repo", duration_ms: 1, status, exit_code: code, is_soft_fail: false,
     attempts: status === "not_started" ? [] : [{ status, exit_code: code, duration_ms: 1, output: "[exit: 0]", output_truncated: false, escalated: false }],
     approval: null, note: null, is_error: status !== "exited" || code !== 0,
   };
@@ -30,6 +30,13 @@ function replayActivities(entries: SessionEntry[]) {
 }
 
 describe("single-command facts across live and history projections", () => {
+  it("accepts historical command copies without exposing or mutating them", () => {
+    const current = facts(0);
+    const historical = { ...current, command: "printf original" };
+    expect(shellResult(historical)).toEqual(current);
+    expect(historical.command).toBe("printf original");
+    expect(replayActivities(history(historical))[0]?.shellResult).toEqual(current);
+  });
   it.each([
     facts(7), facts(0), facts(null, "timed_out"), facts(null, "cancelled"),
     facts(null, "launch_failed"), facts(null, "not_started"),
@@ -69,7 +76,7 @@ describe("single-command facts across live and history projections", () => {
 
   it("keeps completed command grouping compact without losing child facts in live or history", () => {
     const first = facts(0);
-    const second = { ...facts(0), command: "verify" };
+    const second = { ...facts(0), duration_ms: 2 };
     const live = buildAssistantRunProjection([
       event("tool_start", { tool_id: "t", tool_name: "shell" }, 1),
       event("tool_end", { tool_id: "t", shell_result: first }, 2),

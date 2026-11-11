@@ -487,7 +487,6 @@ fn consecutive_fragments_publish_a_single_range_and_reuse_the_sealed_transcript_
 fn shell_stream_and_entry_share_facts_and_derive_the_model_summary() {
     let (_root, store) = store();
     let facts = future_rpc::shell_result::ShellResult {
-        command: "printf retained".into(),
         cwd: ".".into(),
         duration_ms: 1,
         status: future_rpc::shell_result::ShellStatus::Exited,
