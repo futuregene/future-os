@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 import { isWindows } from "../../lib/platform";
+import { DatabaseOrganization } from "./DatabaseOrganization";
 import { SettingsSection } from "./SettingsPrimitives";
 
 export function ResetPage() {
@@ -11,6 +12,7 @@ export function ResetPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sandboxBusy, setSandboxBusy] = useState(false);
+  const [organizing, setOrganizing] = useState(false);
   const [sandboxStatus, setSandboxStatus] = useState<"success" | "error" | null>(null);
 
   async function handleClear() {
@@ -59,13 +61,14 @@ export function ResetPage() {
                 </div>
                 {sandboxStatus === "success" ? <p className="text-xs text-success">{t("reset.writeProtectionSuccess")}</p> : null}
                 {sandboxStatus === "error" ? <p className="text-xs text-danger">{t("reset.writeProtectionFailed")}</p> : null}
-                <Button disabled={sandboxBusy} onClick={() => void handleResetWriteProtection()} size="sm" variant="secondary">
+                <Button disabled={sandboxBusy || organizing} onClick={() => void handleResetWriteProtection()} size="sm" variant="secondary">
                   {sandboxBusy ? t("reset.writeProtectionResetting") : t("reset.writeProtectionReset")}
                 </Button>
               </div>
             </SettingsSection>
           )
         : null}
+      <DatabaseOrganization disabled={busy || sandboxBusy} onBusyChange={setOrganizing} />
       <SettingsSection>
         <div className="space-y-3 rounded-lg border border-line-soft p-4">
           <div>
@@ -81,7 +84,7 @@ export function ResetPage() {
             ? (
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-xs text-ink-muted">{t("reset.confirmClear")}</span>
-                  <Button disabled={busy} onClick={() => void handleClear()} size="sm" variant="danger">
+                  <Button disabled={busy || organizing} onClick={() => void handleClear()} size="sm" variant="danger">
                     {busy ? t("reset.clearing") : t("reset.confirmClearButton")}
                   </Button>
                   <Button disabled={busy} onClick={() => setConfirming(false)} size="sm" variant="secondary">
@@ -90,7 +93,7 @@ export function ResetPage() {
                 </div>
               )
             : (
-                <Button onClick={() => setConfirming(true)} size="sm" variant="danger">
+                <Button disabled={organizing} onClick={() => setConfirming(true)} size="sm" variant="danger">
                   {t("reset.clearData")}
                 </Button>
               )}

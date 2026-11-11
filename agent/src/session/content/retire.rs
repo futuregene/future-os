@@ -68,17 +68,38 @@ impl SqliteStore {
 /// row is touched, so an interruption leaves a stream nobody can read and the
 /// next pass finishes it.
 pub(crate) fn apply(db: &mut Connection, limit: i64, deadline: Instant) -> Result<(i64, i64)> {
+    apply_scoped(db, None, limit, deadline)
+}
+
+pub(crate) fn apply_for_session(
+    db: &mut Connection,
+    session: &str,
+    limit: i64,
+    deadline: Instant,
+) -> Result<(i64, i64)> {
+    apply_scoped(db, Some(session), limit, deadline)
+}
+
+fn apply_scoped(
+    db: &mut Connection,
+    session: Option<&str>,
+    limit: i64,
+    deadline: Instant,
+) -> Result<(i64, i64)> {
+    let session = session
+        .map(|id| crate::session::identity::session_key(db, id))
+        .transpose()?;
     let candidates: Vec<i64> = {
         let mut statement = db.prepare_cached(&format!(
             "SELECT r.id FROM stream_runs r
                JOIN runs u ON u.session_id=r.session_id AND u.run_id=r.run_id
-              WHERE u.status IN ('completed','failed','cancelled','interrupted')
+              WHERE (?2 IS NULL OR r.session_id=?2) AND u.status IN ('completed','failed','cancelled','interrupted')
                 AND {SETTLED_LONG_AGO}
                 AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=r.id)
               ORDER BY coalesce(u.started_at_ms,0), r.id LIMIT ?1",
         ))?;
         let rows = statement
-            .query_map(params![limit], |row| row.get(0))?
+            .query_map(params![limit, session], |row| row.get(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows
     };
@@ -89,6 +110,9 @@ pub(crate) fn apply(db: &mut Connection, limit: i64, deadline: Instant) -> Resul
         }
         // Hide it first: an interrupted drain must never be visible.
         crate::session::database::try_maintenance_transaction(db, |tx| {
+            if session.is_some() {
+                preserve_pricing(tx, id)?;
+            }
             tx.execute(
                 "INSERT OR IGNORE INTO retired_streams(stream_id) VALUES (?1)",
                 [id],
@@ -110,6 +134,26 @@ pub(crate) fn apply(db: &mut Connection, limit: i64, deadline: Instant) -> Resul
         }
     }
     Ok((streams, deleted))
+}
+
+/// Manual organization preserves the per-step pricing projection before its
+/// source stream disappears, in the same transaction that hides the stream.
+fn preserve_pricing(tx: &Transaction<'_>, stream: i64) -> Result<()> {
+    let ids = {
+        let mut query = tx.prepare("SELECT id FROM stream_changes WHERE stream_id=?1 AND event_type IN ('usage','model_changed') ORDER BY id")?;
+        let rows = query
+            .query_map([stream], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<i64>>>()?;
+        rows
+    };
+    let changes = super::compact::read_ids(tx, &ids)?;
+    ensure!(ids.len() == changes.len(), "incomplete pricing stream");
+    for (id, change) in ids.into_iter().zip(changes) {
+        let mut payload = change.metadata;
+        payload["event_type"] = serde_json::json!(change.event_type);
+        tx.execute("INSERT OR IGNORE INTO run_pricing(session_id,run_id,sequence,payload) SELECT session_id,run_id,?2,?3 FROM stream_runs WHERE id=?1",params![stream,id,payload.to_string()])?;
+    }
+    Ok(())
 }
 
 /// One bounded slice: the change rows first, then what only they were keeping.

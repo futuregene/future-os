@@ -127,6 +127,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "prune_run_events",
     "refresh_skills",
     "reclaim_run_journals",
+    "organize_database",
     "recover_session",
     "release_queued_run",
     "reload_auth",
@@ -286,7 +287,7 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
         // Explicit, resumable journal maintenance: each call takes the next
         // bounded slice, so a retry would only duplicate a slice already
         // applied — never retry automatically.
-        "reclaim_run_journals" => policy(
+        "reclaim_run_journals" | "organize_database" => policy(
             MAINTENANCE_TIMEOUT,
             RetryPolicy::Never,
             ExecutionKind::Bounded,

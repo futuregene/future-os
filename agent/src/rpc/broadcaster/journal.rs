@@ -28,7 +28,7 @@ impl SseBroadcaster {
     ) -> anyhow::Result<()> {
         let session_id = session_id.into();
         manager.storage()?.bind_legacy_events(&session_id)?;
-        self.configure_journal(session_id, manager)
+        self.configure_journal_inner(session_id, manager, true, false)
     }
 
     /// Bind this session's broadcaster to the Agent-owned SQLite writer.
@@ -39,7 +39,7 @@ impl SseBroadcaster {
         session_id: impl Into<String>,
         manager: &crate::session::Manager,
     ) -> anyhow::Result<()> {
-        self.configure_journal_inner(session_id.into(), manager, true)
+        self.configure_journal_inner(session_id.into(), manager, true, true)
     }
 
     pub(crate) fn configure_created_journal(
@@ -47,7 +47,7 @@ impl SseBroadcaster {
         session_id: String,
         manager: &crate::session::Manager,
     ) -> anyhow::Result<()> {
-        self.configure_journal_inner(session_id, manager, false)
+        self.configure_journal_inner(session_id, manager, false, true)
     }
 
     fn configure_journal_inner(
@@ -55,6 +55,7 @@ impl SseBroadcaster {
         session_id: String,
         manager: &crate::session::Manager,
         reserve: bool,
+        migrate: bool,
     ) -> anyhow::Result<()> {
         {
             let run = self.run.lock();
@@ -72,6 +73,9 @@ impl SseBroadcaster {
             let store = manager.storage()?.clone();
             if reserve {
                 store.bind_events(&session_id)?;
+            }
+            if migrate {
+                manager.prepare_session(&session_id)?;
             }
             let (identity, (session_idx, loose_idx), segmented) =
                 store.journal_binding(&session_id)?;

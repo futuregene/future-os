@@ -325,6 +325,38 @@ impl ServerSession {
         )
     }
 
+    /// Construct an already-running released-format fixture. Production
+    /// constructors always migrate before binding their writer.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn legacy_fixture(
+        session_id: String,
+        agent_loop: Arc<tokio::sync::RwLock<crate::agent::Loop>>,
+        manager: Arc<Manager>,
+        cwd: &str,
+        broadcaster: Arc<SseBroadcaster>,
+        approval_gate: ApprovalGate,
+        model_registry: Arc<parking_lot::RwLock<crate::models::Registry>>,
+        queue_budget: Arc<crate::runtime::GlobalQueueBudget>,
+    ) -> Self {
+        broadcaster
+            .configure_legacy_journal(&session_id, &manager)
+            .unwrap();
+        let mut fixture = Self::build_with_queue_budget(
+            session_id,
+            agent_loop,
+            manager,
+            cwd,
+            broadcaster,
+            approval_gate,
+            model_registry,
+            queue_budget,
+            false,
+        );
+        fixture.initializing = false;
+        fixture
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn build_with_queue_budget(
         session_id: String,
@@ -2617,7 +2649,12 @@ mod tests {
         if legacy {
             manager.storage().unwrap().bind_legacy_events(id).unwrap();
         }
-        ServerSession::new(
+        let constructor = if legacy {
+            ServerSession::legacy_fixture
+        } else {
+            ServerSession::new_with_queue_budget
+        };
+        constructor(
             id.to_string(),
             Arc::new(tokio::sync::RwLock::new(Loop::new(
                 Arc::new(EmptyProvider),
@@ -2628,6 +2665,7 @@ mod tests {
             Arc::new(SseBroadcaster::new()),
             ApprovalGate::default(),
             Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
+            Arc::new(crate::runtime::GlobalQueueBudget::defaults()),
         )
     }
 
@@ -2642,7 +2680,12 @@ mod tests {
         if legacy {
             manager.storage().unwrap().bind_legacy_events(id).unwrap();
         }
-        ServerSession::new(
+        let constructor = if legacy {
+            ServerSession::legacy_fixture
+        } else {
+            ServerSession::new_with_queue_budget
+        };
+        constructor(
             id.to_string(),
             Arc::new(tokio::sync::RwLock::new(Loop::new(
                 Arc::new(EmptyProvider),
@@ -2653,6 +2696,7 @@ mod tests {
             Arc::new(SseBroadcaster::new()),
             ApprovalGate::default(),
             Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
+            Arc::new(crate::runtime::GlobalQueueBudget::defaults()),
         )
     }
 
@@ -3915,57 +3959,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn healing_rewrite_preserves_run_markers() {
-        let mut session = make_persistent_test_session_with_format("rewrite-markers", true);
+    async fn canonical_commit_failure_keeps_run_markers_through_explicit_recovery() {
+        let mut session = make_persistent_test_session("rewrite-markers");
         std::fs::create_dir_all(&session.cwd).unwrap();
         session.set_auto_retry(false);
-        // Refuse the append-only commit once. The fallback rewrite must heal
-        // the snapshot without erasing the current lifecycle boundary.
         session.persistence.fail_next_commit();
-        // Wait on the runtime's own settled signal rather than polling the
-        // control state against a wall clock. The monitor that owns a run's task
-        // slot sends this lease once the run task has returned, its terminal
-        // record (here: the healing rewrite) has been committed, `finish` has
-        // released the session and that slot has been dropped — the same
-        // boundary this test used to approximate by polling `snapshot()`.
-        //
-        // The 5 s budget it replaced measured the machine, not the run: the
-        // terminal commit fsyncs inside `spawn_blocking`, and a parallel run of
-        // this crate can push that past any fixed number while the run is making
-        // progress the whole time (`Elapsed(())` here and on `main`).
-        let (settled_tx, mut settled_rx) = tokio::sync::mpsc::unbounded_channel();
-        session.runtime.set_completion_sender(settled_tx);
         session
-            .prompt("heal the journal", &[], &[], Some("run-healed"), None)
+            .prompt("retain the journal", &[], &[], Some("run-healed"), None)
             .unwrap();
 
-        // A guard for a genuine hang — a run that never settles — not a budget
-        // the success path races: a slow machine cannot make this fire while the
-        // run is still moving towards its terminal record.
-        let settled = tokio::time::timeout(std::time::Duration::from_secs(120), settled_rx.recv())
-            .await
-            .expect("the run never reported that it settled")
-            .expect("the run's completion signal was dropped without a lease");
-        assert_eq!(settled.run_id, "run-healed");
-        assert!(
-            session.runtime.snapshot().is_none(),
-            "a settled run must have released the session"
-        );
-
+        // Canonical persistence keeps its committed prefix and fences the run;
+        // it never silently replaces history after an uncertain commit.
+        tokio::time::timeout(std::time::Duration::from_secs(120), async {
+            loop {
+                if session
+                    .runtime
+                    .snapshot()
+                    .is_some_and(|run| run.phase == crate::runtime::RunPhase::PersistenceDegraded)
+                    && !session.runtime.has_owned_task()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the failed run task must leave a recoverable lease");
+        let recovered = session.recover_persistence_degraded().unwrap();
+        assert_eq!(recovered.run_id, "run-healed");
+        assert!(session.runtime.snapshot().is_none());
         let loaded = session.session_manager.load(&session.session_id).unwrap();
-        assert!(loaded.entries.iter().any(|entry| {
-            entry.entry_type == crate::session::ENTRY_TYPE_RUN_STARTED
-                && entry
-                    .content
-                    .as_ref()
-                    .and_then(|content| content.get("run_id"))
-                    .and_then(serde_json::Value::as_str)
-                    == Some("run-healed")
-        }));
-        let terminal = loaded.entries.last().expect("terminal record");
+        assert!(loaded.entries.iter().any(|entry| entry.entry_type
+            == crate::session::ENTRY_TYPE_RUN_STARTED
+            && entry
+                .content
+                .as_ref()
+                .is_some_and(|v| v["run_id"] == "run-healed")));
+        let terminal = loaded.entries.last().expect("recovered terminal");
         assert_eq!(terminal.entry_type, crate::session::ENTRY_TYPE_RUN_TERMINAL);
         assert_eq!(terminal.content.as_ref().unwrap()["run_id"], "run-healed");
-
+        assert_eq!(
+            terminal.content.as_ref().unwrap()["state"],
+            crate::session::RUN_STATE_INTERRUPTED_BY_RESTART
+        );
         let _ = std::fs::remove_dir_all(&session.cwd);
     }
 
@@ -4337,7 +4373,7 @@ mod tests {
 
         use crate::rpc::SseEvent;
 
-        let mut session = make_legacy_test_session("compact-keeps-journal");
+        let mut session = make_test_session("compact-keeps-journal");
 
         // History to compact, so the manual compaction takes its real path
         // (the summary request degrades to the evidence index offline).
@@ -4387,8 +4423,8 @@ mod tests {
             .broadcaster
             .configure_journal(&session.session_id, &session.session_manager)
             .unwrap();
-        // A run that completed and was handed to the journal compactor, which
-        // published its snapshot and deleted its raw rows.
+        // A settled canonical run must remain readable while a subsequent
+        // manual compaction publishes its own lifecycle and checkpoint.
         session.broadcaster.start_run("run-settled".to_string(), 1);
         session.broadcaster.broadcast(SseEvent::new(
             "agent_end",
@@ -4403,13 +4439,16 @@ mod tests {
             store
                 .compact_run("compact-keeps-journal", "run-settled")
                 .unwrap(),
-            1
+            0,
+            "canonical runs do not create legacy snapshots"
         );
-        assert!(store
-            .replay_page("compact-keeps-journal", "run-settled", -1, false, None)
-            .unwrap()
-            .snapshot
-            .is_some());
+        assert!(
+            !store
+                .events("compact-keeps-journal", "run-settled")
+                .unwrap()
+                .is_empty(),
+            "the settled canonical run remains readable before manual compaction"
+        );
 
         let result = session.compact("").unwrap();
         assert!(
@@ -4749,7 +4788,7 @@ mod tests {
     /// charge, and retrying would pay for the same history twice.
     #[test]
     fn a_usage_write_that_cannot_land_fails_the_compaction_receipt() {
-        let mut session = make_legacy_test_session("compact-usage-persist-fail");
+        let mut session = make_test_session("compact-usage-persist-fail");
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         session.agent_loop.try_write().unwrap().provider =
             Arc::new(CountingUsageSummaryProvider(calls.clone()));
@@ -4790,10 +4829,10 @@ mod tests {
             message.ensure_journal_entry_id();
         }
         *session.messages.write() = messages.clone();
-        // The store can be written to and claimed from, but its latest
-        // session_info is not an object, so the usage merge has nowhere to land.
+        // Start with readable canonical history; inject the failure only at
+        // metadata publication, after the summarizer has charged its usage.
         let mut entries = vec![crate::session::SessionEntry::session_info(
-            serde_json::json!("not an object"),
+            serde_json::json!({"cwd":session.cwd,"model":session.model}),
             session.model.clone(),
             session.thinking_level.clone(),
         )];
@@ -4810,6 +4849,7 @@ mod tests {
             ))
             .unwrap();
 
+        session.session_manager.test_execute("CREATE TRIGGER refuse_metadata BEFORE INSERT ON entries WHEN NEW.entry_type='session_info' BEGIN SELECT RAISE(ABORT,'injected metadata write failure'); END");
         let mut events = session.broadcaster.subscribe();
         let error = session.compact("").unwrap_err();
         assert!(
@@ -5836,7 +5876,7 @@ mod tests {
         session.model_registry = two_priced_models();
         session
             .session_manager
-            .save(&crate::session::Session::snapshot(
+            .seed_legacy_fixture(&crate::session::Session::snapshot(
                 session.session_id.clone(),
                 session.cwd.clone(),
                 session.model.clone(),
@@ -5967,7 +6007,7 @@ mod tests {
         session.model_registry = two_priced_models();
         session
             .session_manager
-            .save(&crate::session::Session::snapshot(
+            .seed_legacy_fixture(&crate::session::Session::snapshot(
                 session.session_id.clone(),
                 session.cwd.clone(),
                 session.model.clone(),
@@ -6006,9 +6046,9 @@ mod tests {
         // The live session must not be blocked by a store it cannot update, but a
         // failed durable write must not be reported as success either: the value
         // stays changed in memory and the disk keeps what it had.
-        let mut session = make_legacy_test_session("auto-compaction-persist-failure");
+        let mut session = make_test_session("auto-compaction-persist-failure");
         let info = crate::session::SessionEntry::session_info(
-            serde_json::json!("not an object"),
+            serde_json::json!({"cwd":session.cwd,"model":session.model}),
             session.model.clone(),
             session.thinking_level.clone(),
         );
@@ -6023,15 +6063,15 @@ mod tests {
                 vec![info],
             ))
             .unwrap();
+        session.session_manager.test_execute("CREATE TRIGGER refuse_metadata BEFORE INSERT ON entries WHEN NEW.entry_type='session_info' BEGIN SELECT RAISE(ABORT,'injected metadata write failure'); END");
         assert!(session.auto_compaction);
         session.set_auto_compaction(false);
         assert!(
             !session.auto_compaction,
             "the live toggle must apply even when its write fails"
         );
-        // The store still carries the unreadable row: the failed update left no
-        // half-written metadata behind, and the next read sees no auto_compaction
-        // key at all (so a reload falls back to the default, not to `false`).
+        // The failed publication leaves the original metadata intact, so a
+        // reload keeps the default rather than a half-written toggle.
         let stored = session.session_manager.load(&session.session_id).unwrap();
         let persisted = stored
             .entries
@@ -6055,7 +6095,7 @@ mod tests {
         session.model_registry = two_priced_models();
         session
             .session_manager
-            .save(&crate::session::Session::snapshot(
+            .seed_legacy_fixture(&crate::session::Session::snapshot(
                 session.session_id.clone(),
                 session.cwd.clone(),
                 session.model.clone(),
@@ -6100,7 +6140,7 @@ mod tests {
         session.model_registry = two_priced_models();
         session
             .session_manager
-            .save(&crate::session::Session::snapshot(
+            .seed_legacy_fixture(&crate::session::Session::snapshot(
                 session.session_id.clone(),
                 session.cwd.clone(),
                 session.model.clone(),
@@ -6147,7 +6187,7 @@ mod tests {
         session.model_registry = two_priced_models();
         session
             .session_manager
-            .save(&crate::session::Session::snapshot(
+            .seed_legacy_fixture(&crate::session::Session::snapshot(
                 session.session_id.clone(),
                 session.cwd.clone(),
                 session.model.clone(),
@@ -6504,6 +6544,15 @@ mod tests {
             }
         }
         persist_transcript(&session);
+        if legacy {
+            // Opening the persisted historical fixture upgrades it and binds
+            // the current writer before a new compaction request is admitted.
+            session
+                .broadcaster
+                .configure_journal(&session.session_id, &session.session_manager)
+                .unwrap();
+            assert!(session.broadcaster.uses_segmented_storage());
+        }
         session.compact("").unwrap();
 
         let total = |split: crate::models::CostSplit| {
@@ -7157,7 +7206,7 @@ mod tests {
         // complete cached split would be trusted and the journal never read.
         session
             .session_manager
-            .save(&crate::session::Session::snapshot(
+            .seed_legacy_fixture(&crate::session::Session::snapshot(
                 session.session_id.clone(),
                 session.cwd.clone(),
                 session.model.clone(),
@@ -7189,7 +7238,11 @@ mod tests {
         // The event table is gone: reading is now an error, not an empty result.
         session
             .session_manager
-            .test_execute("DROP TABLE run_events");
+            .prepare_session(&session.session_id)
+            .unwrap();
+        session
+            .session_manager
+            .test_execute("DROP TABLE run_pricing");
 
         let id = session.session_id.clone();
         session
@@ -7214,7 +7267,7 @@ mod tests {
         session.model_registry = two_priced_models();
         session
             .session_manager
-            .save(&crate::session::Session::snapshot(
+            .seed_legacy_fixture(&crate::session::Session::snapshot(
                 session.session_id.clone(),
                 session.cwd.clone(),
                 session.model.clone(),

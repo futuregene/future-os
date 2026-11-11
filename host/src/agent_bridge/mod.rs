@@ -69,11 +69,11 @@ use self::queries::reload_agent_credentials;
 pub use self::queries::{
     generate_session_title, get_available_models, get_events_since, get_events_since_payload,
     get_session_entries, get_session_entries_before, get_session_messages,
-    get_session_messages_page, get_session_state, get_session_storage_format, probe_sandbox,
-    probe_windows_sandbox, rename_session, request_future_models_refresh, reset_windows_sandbox,
-    set_default_model, set_session_model, set_session_thinking_level, sync_future_models,
-    RequestFutureModelsRefreshResult, SandboxProbeResult, SyncFutureModelsResult,
-    WindowsSandboxProbeResult,
+    get_session_messages_page, get_session_state, get_session_storage_format,
+    organize_agent_database, probe_sandbox, probe_windows_sandbox, rename_session,
+    request_future_models_refresh, reset_windows_sandbox, set_default_model, set_session_model,
+    set_session_thinking_level, sync_future_models, RequestFutureModelsRefreshResult,
+    SandboxProbeResult, SyncFutureModelsResult, WindowsSandboxProbeResult,
 };
 pub use self::queries::{
     get_event_content_range, get_events_since_page, get_events_since_page_until, get_reasoning,

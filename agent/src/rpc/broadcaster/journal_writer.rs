@@ -3,6 +3,7 @@ use super::BROADCAST_RING_CAPACITY;
 use crate::session::sqlite_store::is_event_rejected;
 pub(super) type AppendReceipt = super::journal_control::WorkerReceipt<Result<(), AppendFailure>>;
 
+#[cfg(test)]
 pub(super) const EVENT_BATCH_WINDOW: std::time::Duration = std::time::Duration::from_millis(100);
 /// How long a batch that could not be committed waits before the writer tries
 /// the same events again. A storage failure is usually contention on a shared
@@ -16,6 +17,52 @@ pub(super) const EVENT_RETRY_INTERVAL: std::time::Duration = std::time::Duration
 const EVENT_BATCH_MAX_EVENTS: usize = 128;
 const EVENT_BATCH_MAX_BYTES: usize = 64 * 1024;
 const EVENT_BATCH_QUEUE_CAPACITY: usize = BROADCAST_RING_CAPACITY;
+
+/// Production has a single event encoder. The legacy variant is only for
+/// historical fixtures exercising the old replay/compaction contract.
+enum JournalWriter {
+    Canonical(crate::session::content::journal::Writer),
+    #[cfg(test)]
+    Legacy,
+}
+
+impl JournalWriter {
+    fn new(
+        store: &crate::session::sqlite_store::SqliteStore,
+        session: &str,
+    ) -> anyhow::Result<Self> {
+        match store.storage_format(session)? {
+            crate::session::content::FORMAT_VERSION => Ok(Self::Canonical(Default::default())),
+            #[cfg(test)]
+            _ => Ok(Self::Legacy),
+            #[cfg(not(test))]
+            _ => {
+                anyhow::bail!("conversation must finish migration before binding its event writer")
+            }
+        }
+    }
+
+    fn persist<'a>(
+        &mut self,
+        store: &crate::session::sqlite_store::SqliteStore,
+        session: &str,
+        events: impl IntoIterator<Item = &'a serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        match self {
+            Self::Canonical(writer) => writer.persist(store, session, events),
+            #[cfg(test)]
+            Self::Legacy => store.append_events(session, events.into_iter().cloned().collect()),
+        }
+    }
+
+    fn window(&self) -> std::time::Duration {
+        match self {
+            Self::Canonical(_) => std::time::Duration::from_millis(25),
+            #[cfg(test)]
+            Self::Legacy => EVENT_BATCH_WINDOW,
+        }
+    }
+}
 
 #[derive(Default)]
 pub(super) struct EventJournalHealth {
@@ -397,11 +444,8 @@ fn run_event_batch_writer(
         None,
     )
     .enter();
-    let mut canonical = match store.storage_format(&session_id) {
-        Ok(crate::session::content::FORMAT_VERSION) => {
-            Some(crate::session::content::journal::Writer::default())
-        }
-        Ok(_) => None,
+    let mut canonical = match JournalWriter::new(&store, &session_id) {
+        Ok(writer) => writer,
         Err(error) => {
             health.fail(format!("cannot determine journal format: {error:#}"));
             return;
@@ -409,10 +453,8 @@ fn run_event_batch_writer(
     };
     let window = if store.db.is_nfs() {
         std::time::Duration::from_millis(250)
-    } else if canonical.is_some() {
-        std::time::Duration::from_millis(25)
     } else {
-        EVENT_BATCH_WINDOW
+        canonical.window()
     };
     let mut pending = Vec::<PendingEvent>::new();
     let mut pending_bytes = 0usize;
@@ -565,7 +607,7 @@ fn flush_and_schedule(
     session_id: &str,
     health: &EventJournalHealth,
     pending: &mut Vec<PendingEvent>,
-    canonical: &mut Option<crate::session::content::journal::Writer>,
+    canonical: &mut JournalWriter,
     window: std::time::Duration,
     #[cfg(test)] commits: &std::sync::atomic::AtomicU64,
 ) -> (bool, usize, Option<std::time::Instant>) {
@@ -592,7 +634,7 @@ fn flush_event_batch(
     session_id: &str,
     health: &EventJournalHealth,
     pending: &mut Vec<PendingEvent>,
-    canonical: &mut Option<crate::session::content::journal::Writer>,
+    canonical: &mut JournalWriter,
     #[cfg(test)] commits: &std::sync::atomic::AtomicU64,
 ) -> bool {
     if pending.is_empty() {
@@ -606,13 +648,7 @@ fn flush_event_batch(
         return false;
     }
     let started = std::time::Instant::now();
-    let result = match canonical.as_mut() {
-        Some(writer) => writer.persist(store, session_id, pending.iter().map(|item| &item.event)),
-        None => store.append_events(
-            session_id,
-            pending.iter().map(|item| item.event.clone()).collect(),
-        ),
-    };
+    let result = canonical.persist(store, session_id, pending.iter().map(|item| &item.event));
     health.metrics.record(
         pending.len(),
         pending.iter().map(|item| item.bytes).sum(),
@@ -672,10 +708,7 @@ fn flush_event_batch(
                 // (it has no raw journal), so the retry has to keep going
                 // through the semantic writer it just used — otherwise a single
                 // refusal would drop the whole batch instead of one event.
-                let appended = match canonical.as_mut() {
-                    Some(writer) => writer.persist(store, session_id, std::iter::once(&item.event)),
-                    None => store.append_events(session_id, vec![item.event.clone()]),
-                };
+                let appended = canonical.persist(store, session_id, std::iter::once(&item.event));
                 match appended {
                     Ok(()) => {
                         #[cfg(test)]

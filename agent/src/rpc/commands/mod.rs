@@ -8,6 +8,7 @@
 //! - `settings`: model/thinking/tools/sandbox/permission/cwd and config reload
 //! - `observability`: state/messages/events/stats/export
 
+mod database_maintenance;
 mod observability;
 mod providers;
 mod run_control;
@@ -147,6 +148,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
 
     // ── Sessionless commands: dispatched WITHOUT resolving a target session.
     match cmd_type.as_str() {
+        "organize_database" => return database_maintenance::handle(state, &cmd, id),
         "shutdown" => return session_lifecycle::cmd_shutdown(state, id),
         "list_sessions" => return session_lifecycle::cmd_list_sessions(state, &cmd, id),
         "get_session_presence" => return session_lifecycle::cmd_session_presence(state, &cmd, id),

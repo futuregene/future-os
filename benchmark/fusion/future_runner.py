@@ -16,11 +16,17 @@ BASE_THINKING = "max"
 
 
 class Future:
-    def __init__(self, binary, runtime=None):
+    def __init__(
+        self, binary, runtime=None, model=None, thinking=None, full_trace=False
+    ):
         self.binary = str(Path(binary).resolve())
+        self.model = BASE_MODEL if model is None else model
+        self.thinking = BASE_THINKING if thinking is None else thinking
+        self.full_trace = full_trace
         self.env = os.environ.copy()
         if runtime:
             settings = read_json(runtime)
+            self.env.pop("FUTURE_AGENT_SOCKET", None)
             self.env.update(
                 FUTURE_HOME=settings["home"],
                 FUTURE_AGENT_GRPC_ADDR=settings["endpoint"],
@@ -53,7 +59,8 @@ class Future:
             for provider, rows in models["models"].items()
             for row in rows
         }
-        profiles = [{"model": BASE_MODEL, "thinking_level": BASE_THINKING}]
+        baseline = {"model": self.model, "thinking_level": self.thinking}
+        profiles = [baseline]
         if not single_only:
             profiles += settings["configuration"]["panel"] + [
                 settings["configuration"]["moderator"]
@@ -69,7 +76,7 @@ class Future:
                 )
         return {
             "fusion": settings,
-            "baseline": {"model": BASE_MODEL, "thinking_level": BASE_THINKING},
+            "baseline": baseline,
             "catalogue": models,
             "binary": self.call(["version", "--json"]),
             "system_prompt": "product default, with project-context files disabled for the closed-text task",
@@ -85,7 +92,9 @@ class Future:
                 "--session",
                 session,
                 "--select",
-                "assistant,tool-call,tool-result",
+                "assistant,thinking,tool-call,tool-result"
+                if self.full_trace
+                else "assistant,tool-call,tool-result",
                 "--all",
                 "--max-bytes",
                 "0",
@@ -160,6 +169,7 @@ class Future:
             "primary_endpoint": "daily_final_answer",
         }
         session = None
+        submitting = False
         answer_received = False
         try:
             if existing:
@@ -178,9 +188,9 @@ class Future:
                     "--session",
                     session,
                     "--model",
-                    BASE_MODEL,
+                    self.model,
                     "--thinking",
-                    BASE_THINKING,
+                    self.thinking,
                     "--no-tools",
                     "--no-title",
                     "--permission",
@@ -193,6 +203,7 @@ class Future:
                     "--message-file",
                     str((directory / "prompt.txt").resolve()),
                 ]
+                submitting = True
                 ack = self.call(args)
                 write_json(directory / "ack.json", ack)
             session = ack["sessionId"]
@@ -227,11 +238,11 @@ class Future:
             result["effective_parent_model"] = state.get("model")
             result["effective_parent_thinking"] = state.get("thinkingLevel")
             if (
-                state.get("model") != BASE_MODEL
-                or state.get("thinkingLevel") != BASE_THINKING
+                state.get("model") != self.model
+                or state.get("thinkingLevel") != self.thinking
             ):
                 raise ValueError(
-                    "Effective model/thinking differs from DeepSeek Flash max"
+                    f"Effective model/thinking differs from {self.model} {self.thinking}"
                 )
             if ledger.get("hasMore") or parent_transcript.get("hasMore"):
                 raise ValueError("Incomplete parent transcript or usage ledger")
@@ -302,6 +313,8 @@ class Future:
                 result.update(status="completed", grade=result["outer_grade"])
         except (RuntimeError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
             result["error"] = str(error)
+            if submitting and not result.get("run_id"):
+                result["submission_uncertain"] = True
             # CLI wait errors can hide the upstream HTTP status. Use the accepted
             # run's terminal ledger, never text from the model, to classify 502s.
             if session and result.get("run_id"):
@@ -325,16 +338,23 @@ class Future:
                         [item.get("usage") for item in ledger.get("ledger", [])]
                     )
                     for item in ledger.get("ledger", []):
-                        if (
-                            item.get("runId") == result["run_id"]
-                            and item.get("status") == "failed"
-                            and re.search(r"\bHTTP\s+502\b", item.get("error") or "")
-                        ):
+                        if item.get("runId") != result["run_id"]:
+                            continue
+                        if item.get("status") not in ("failed", "error"):
+                            continue
+                        upstream = item.get("error") or ""
+                        result["upstream_error"] = upstream
+                        status = re.search(r"\bHTTP\s+(\d{3})\b", upstream)
+                        if status:
+                            code = int(status.group(1))
                             result.update(
-                                http_status=502,
-                                error_category="http_502",
-                                upstream_error=item["error"],
+                                http_status=code, error_category=f"http_{code}"
                             )
+                    if self.full_trace:
+                        write_json(
+                            directory / "parent-transcript.json",
+                            self.transcript(session),
+                        )
                 except (
                     RuntimeError,
                     ValueError,

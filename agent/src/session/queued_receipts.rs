@@ -33,37 +33,28 @@ impl Manager {
         request: &str,
         ack: &crate::runtime::RunAck,
         fingerprint: &str,
-        payload: &Value,
+        _payload: &Value,
         user: &SessionEntry,
     ) -> Result<()> {
+        self.prepare_session(session)?;
         let sequence = i64::try_from(
             ack.run_sequence
                 .ok_or_else(|| anyhow::anyhow!("queued acknowledgement has no sequence"))?,
         )?;
         let store = self.storage()?;
-        let segmented = store.storage_format(session)? == super::content::FORMAT_VERSION;
-        let mut prepared = if segmented {
-            Some(super::content::entries::prepare(
-                store,
-                session,
-                vec![serde_json::from_str(&Self::serialize_entry(user)?)?],
-            )?)
-        } else {
-            None
-        };
-        let user = if let Some(prepared) = prepared.as_mut() {
-            prepared
-                .take()
-                .pop()
-                .expect("one prepared user")
-                .to_string()
-        } else {
-            Self::serialize_entry(user)?
-        };
-        // Restart never executes the request payload; the in-memory scheduler
-        // owns it. Only the durable user entry and acceptance fingerprint are
-        // consumed by recovery, so new-format receipts omit this unused copy.
-        let payload = (!segmented).then(|| payload.to_string());
+        let mut prepared = super::content::entries::prepare(
+            store,
+            session,
+            vec![serde_json::from_str(&Self::serialize_entry(user)?)?],
+        )?;
+        let user = prepared
+            .take()
+            .pop()
+            .expect("one prepared user")
+            .to_string();
+        // Execution payloads belong to the in-memory scheduler. Recovery only
+        // needs the canonical user header and its durable body references.
+        let payload = None::<String>;
         let (session, request, run, fingerprint) = (
             session.to_owned(),
             request.to_owned(),
