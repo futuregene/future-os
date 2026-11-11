@@ -11,6 +11,7 @@ import {
 import type { RemoteClient, RecoveryReason } from "./client";
 import { peerMachineStatus } from "./desktopStatus";
 import type { MachineSummary, MachineStatus } from "./desktopStatus";
+import { readableDeviceName } from "./deviceName";
 import type { DesktopCommands } from "./desktopCommands";
 import { prepareTaskNotifications } from "../notifications/taskNotifications";
 import i18n from "../i18n";
@@ -1327,7 +1328,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
             <DesktopRuntimeHost
               key={`${desktop.desktopId}:${pairing.generations[desktop.desktopId] ?? 0}`}
               desktopId={desktop.desktopId}
-              label={desktop.name ?? desktop.desktopId}
+              label={readableDeviceName(desktop.name) ?? desktop.desktopId}
               icon={desktop.icon}
               active={desktop.desktopId === activeDesktopId}
               foreground={foreground}
