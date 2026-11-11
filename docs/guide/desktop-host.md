@@ -510,3 +510,72 @@ manually remove WAL, SHM or rollback-journal files. A Host explicitly requesting
 mode refuses to attach to an Agent reporting another mode. NFS must still supply
 reliable server-side locking and stable writes; server I/O stalls can still delay
 commits. Only one service instance owns a data root; other terminals use its RPC.
+
+## Replacing the binary of a host that is already serving
+
+A running host answers with the binary it was started from, not with whatever
+`/usr/local/bin/future` is now: replacing the file changes nothing until the
+process restarts. `future remote status` names the process in its
+`Desktop build:` line, which is the only way to tell an upgraded installation
+from an upgraded *build*.
+
+**On a machine that is not yours, ask before you touch it.** `install`, `rm`
+and `systemctl` on a shared server — a lab GPU box, a colleague's workstation —
+are the owner's decision, not an operational detail. This project has already
+stopped somebody else's host once by treating such a machine as its own; the
+rule exists because the cost of asking is a message and the cost of not asking
+is someone's service going down.
+
+The replacement itself is four steps:
+
+```bash
+# 1. Keep the binary that is running right now.
+cp -p /usr/local/bin/future /usr/local/bin/future.bak-$(date +%Y%m%d-%H%M)
+
+# 2. Install the new one. `install`, not `cp`: copying over a running
+#    executable can leave a truncated image behind.
+install -m 0755 /path/to/new/future /usr/local/bin/future
+
+# 3. Restart it in the terminal (or service) it was started in — Ctrl+C, then
+#    `future host` again. A second `future host` cannot take the data root from
+#    the first; it exits instead.
+
+# 4. Check what is actually serving.
+future remote status | head -4    # Desktop build: <commit>
+```
+
+Rollback is step 2 and 3 with the backup in place of the new build:
+
+```bash
+install -m 0755 /usr/local/bin/future.bak-20261111-1808 /usr/local/bin/future
+```
+
+### One install, recorded
+
+On 2026-11-11 the shared Rocky 9 GPU host that serves as a paired remote
+desktop was moved from the packaged CLI to a source build, because a host
+running the package never advertised `terminal_v1` and the panel therefore
+never appeared on the paired desktop (§[Remote terminal](../internals/desktop/embedded-terminal.md#remote)).
+
+| | |
+| --- | --- |
+| Installed | `/usr/local/bin/future`, built from `3de0419ce` (main) with the feature-list fix; it reports `future v0.0.2-3de0419ce+local.dirty`, `x86_64-unknown-linux-gnu`, release |
+| Replaced | `/usr/local/bin/future.bak-20261111-1808` — the v2.1.0 CLI archive, byte-identical to the released asset |
+| Restart | `Ctrl+C` then `future host` in the same tmux pane; `future remote status` → `Remote desktop: on — serving` |
+| Verified | `cargo run -p future-host --example peer_features` → `terminal=true` |
+
+### What a source build leaves behind
+
+None of this is needed to *run* the host — only to build the next binary — and
+removing it is the machine owner's call, not a cleanup step to take on one's
+own. If it is removed, the next build needs a Rust toolchain and a working
+crate source again (this host cannot reach crates.io reliably, which is why the
+crate cache was copied rather than downloaded).
+
+| Path | Size | What it is | Needed to run |
+| --- | --- | --- | --- |
+| `/opt/rust` | 1.9 GB | rustc/cargo 1.99.1 from the standalone tarball | no |
+| `/root/future-os-src` | 1.9 GB | source checkout plus `target/` | no |
+| `/root/.cargo` | 528 MB | crate cache copied from another machine | no |
+| `/root/*.tar.gz`, `/root/*.tgz`, `/root/*.patch` | ~860 MB | the archives those came from | no |
+| `/usr/local/bin/future.bak-*` | 72 MB | the replaced binary | rollback only |
