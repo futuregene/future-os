@@ -46,6 +46,11 @@ Agent 只在 RPC 边界把 typed run 事件投影到 `StreamEvent`。线上信�
   / `connection.rs` — 共享消息与 shell 结果形状、按命令的策略、CLI 能力发现，以及
   `select_agent` 的“先外部”选择逻辑。
 
+Shell 完整命令仅保存在工具调用参数的 `command` 字段中；`ShellResult` 不再
+重复携带命令。客户端通过工具调用参数（按需使用 `get_tool_call_args`）读取命令。
+旧记录多出的 `shell_result.command` 在解码或对外投影时忽略，不触发历史整理、
+数据库迁移或会话格式升级。输出正文、执行目录和执行状态继续保留。
+
 ## Proto 代码生成
 
 重新生成是可选行为，由 `REGENERATE_PROTO` 环境变量门控，正常构建不需要 `protoc`：

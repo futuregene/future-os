@@ -180,6 +180,27 @@ fn rpc_command_compact_with_instructions() {
 // ─── RpcResponse serialization ───────────────────────────────────────────
 
 #[test]
+fn replay_responses_hide_old_command_copies_without_changing_the_source() {
+    let event_data = serde_json::json!({
+        "shell_result":{"command":"printf original","cwd":"/original"},
+        "tool_args":{"command":"printf original"},"text":"complete output"
+    });
+    let event = serde_json::json!({"type":"tool_end","data":event_data.to_string()});
+    let source = serde_json::json!({"events":[event],"projection":{"events":[event]}});
+    let encoded = RpcResponse::ok("old", "get_events_since", source.clone());
+    let public: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    for pointer in ["/data/events/0/data", "/data/projection/events/0/data"] {
+        let data: serde_json::Value =
+            serde_json::from_str(public.pointer(pointer).unwrap().as_str().unwrap()).unwrap();
+        assert!(data["shell_result"].get("command").is_none());
+        assert_eq!(data["shell_result"]["cwd"], "/original");
+        assert_eq!(data["tool_args"]["command"], "printf original");
+        assert_eq!(data["text"], "complete output");
+    }
+    assert_eq!(source["events"][0]["data"], event_data.to_string());
+}
+
+#[test]
 fn rpc_response_ok_format() {
     let json_str = RpcResponse::ok("id1", "get_state", serde_json::json!({"model": "gpt-4o"}));
     let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();

@@ -519,7 +519,7 @@ impl Loop {
             };
             if let Some(result_val) = result_val {
                 if tool_name == "shell" {
-                    crate::tools::shell::record_gated(&effective_args, &result_val.result);
+                    crate::tools::shell::record_gated(&result_val.result);
                 }
                 if result_val.is_error {
                     return (

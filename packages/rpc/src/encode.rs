@@ -379,9 +379,11 @@ fn projection_to_proto(projection: &ProjectionPayload) -> proto::ProjectionSnaps
 }
 
 fn replay_event_to_proto(event: &ReplayEventPayload) -> proto::ReplayEvent {
+    let mut data = event.data.clone();
+    crate::shell_result::strip_legacy_event_command(&mut data);
     proto::ReplayEvent {
         r#type: event.event_type.clone(),
-        data: event.data.clone(),
+        data,
         run_id: event.run_id.clone(),
         idx: event.idx,
         session_id: event.session_id.clone(),

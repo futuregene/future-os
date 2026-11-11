@@ -528,7 +528,6 @@ fn targeted_fields_read_one_block_without_loading_the_entry() {
 fn a_derived_summary_field_pages_from_its_projection() {
     let (_dir, store) = store();
     let result = future_rpc::shell_result::ShellResult {
-        command: "printf hi".into(),
         cwd: "/w".into(),
         duration_ms: 3,
         status: future_rpc::shell_result::ShellStatus::Exited,
@@ -586,7 +585,6 @@ fn a_derived_summary_field_pages_from_its_projection() {
 fn a_projected_shell_body_is_paged_through_its_summary() {
     let (_dir, store) = store();
     let result = future_rpc::shell_result::ShellResult {
-        command: "printf hi".into(),
         cwd: "/w".into(),
         duration_ms: 3,
         status: future_rpc::shell_result::ShellStatus::Exited,

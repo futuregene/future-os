@@ -11,7 +11,6 @@ export interface ShellAttempt {
   escalated: boolean;
 }
 export interface ShellResult {
-  command: string;
   cwd: string;
   duration_ms: number;
   status: ShellStatus;
@@ -30,7 +29,7 @@ const exitCode = (value: unknown) => value === null || Number.isInteger(value);
 
 /** Validate the envelope; never derive status from output or shell syntax. */
 export function shellResult(value: unknown): ShellResult | undefined {
-  if (!isRecord(value) || typeof value.command !== "string" || typeof value.cwd !== "string"
+  if (!isRecord(value) || typeof value.cwd !== "string"
     || !duration(value.duration_ms) || typeof value.status !== "string" || !statuses.has(value.status)
     || !exitCode(value.exit_code) || typeof value.is_soft_fail !== "boolean" || typeof value.is_error !== "boolean"
     || !nullableString(value.approval) || !nullableString(value.note)
@@ -39,5 +38,12 @@ export function shellResult(value: unknown): ShellResult | undefined {
       && exitCode(attempt.exit_code) && duration(attempt.duration_ms) && typeof attempt.output === "string"
       && typeof attempt.output_truncated === "boolean" && typeof attempt.escalated === "boolean"))
     return undefined;
+  // Old hosts may still send the redundant command. Keep it out of the
+  // projected contract; callers use the paired tool-call arguments instead.
+  if (Object.prototype.hasOwnProperty.call(value, "command")) {
+    const facts = { ...value };
+    delete facts.command;
+    return facts as unknown as ShellResult;
+  }
   return value as unknown as ShellResult;
 }

@@ -413,7 +413,6 @@ fn the_registered_sql_projections_agree_with_their_rust_implementations() {
     let dir = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
     let result = future_rpc::shell_result::ShellResult {
-        command: "printf hi".into(),
         cwd: "/w".into(),
         duration_ms: 3,
         status: future_rpc::shell_result::ShellStatus::Exited,
@@ -489,7 +488,6 @@ fn a_shell_result_entry_binds_its_facts_and_summary_as_bodies() {
         })
         .unwrap();
     let result = future_rpc::shell_result::ShellResult {
-        command: "printf hi".into(),
         cwd: "/w".into(),
         duration_ms: 3,
         status: future_rpc::shell_result::ShellStatus::Exited,
