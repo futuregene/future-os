@@ -231,17 +231,35 @@ pub fn bin_path() -> String {
 
 /// Render `path` with the user's home directory as `~`.
 pub fn tilde(path: &Path) -> String {
+    match user_home() {
+        Some(home) => tilde_within(path, &home),
+        None => path.display().to_string(),
+    }
+}
+
+/// [`tilde`] against an explicit home, so the shortening is a property of the two
+/// strings rather than of the machine the test happens to run on.
+fn tilde_within(path: &Path, home: &Path) -> String {
     let rendered = path.display().to_string();
-    if let Some(home) = user_home() {
-        let prefix = home.display().to_string();
-        if rendered == prefix {
-            return "~".to_string();
-        }
-        if let Some(rest) = rendered.strip_prefix(&(prefix + std::path::MAIN_SEPARATOR_STR)) {
-            return format!("~{}{rest}", std::path::MAIN_SEPARATOR);
+    let prefix = home.display().to_string();
+    if rendered == prefix {
+        return "~".to_string();
+    }
+    // Only a *separator* may be dropped after the prefix, so a sibling whose name
+    // merely starts with it (`/home/me2`) keeps its full path. Both separators are
+    // accepted on every host: Windows renders paths with `\`, and a Windows process
+    // can be handed either one, so the rule has to hold for the separator the path
+    // actually uses — not for whatever `MAIN_SEPARATOR` this build was compiled with.
+    if let Some(rest) = rendered.strip_prefix(&prefix) {
+        if let Some(separator) = rest.chars().next().filter(|c| is_separator(*c)) {
+            return format!("~{separator}{}", &rest[separator.len_utf8()..]);
         }
     }
     rendered
+}
+
+fn is_separator(c: char) -> bool {
+    c == '/' || c == '\\'
 }
 
 /// The user's home, resolved the way the FutureOS home does (`HOME`, then
@@ -378,10 +396,47 @@ mod tests {
     fn tilde_shortens_the_home_prefix_only() {
         let home = user_home().expect("home");
         let inside = home.join("x").join("future");
-        assert!(tilde(&inside).starts_with("~/"), "{}", tilde(&inside));
+        // The separator this host renders with, not a hardcoded `/`: Windows
+        // prints `~\x\future` here, which is the same shortening.
+        let separator = std::path::MAIN_SEPARATOR;
+        assert_eq!(
+            tilde(&inside),
+            format!("~{separator}x{separator}future"),
+            "{}",
+            tilde(&inside)
+        );
         assert_eq!(tilde(&home), "~");
         // A sibling directory that merely shares a prefix is left alone.
         let sibling = std::path::PathBuf::from(format!("{}2/x", home.display()));
         assert_eq!(tilde(&sibling), sibling.display().to_string());
+    }
+
+    /// Windows renders paths with `\`, which is the case CI failed on: the check
+    /// above asked for `~/`, so a correct `~\x\future` read as a broken shortening.
+    /// This pins the Windows string on every host — `tilde_within` is the function
+    /// `tilde` itself calls, and it works on rendered text, so what it decides here
+    /// is what it decides on Windows. An implementation that only recognized `/`
+    /// returns the whole home path back and turns this red.
+    #[test]
+    fn a_backslashed_path_shortens_against_a_backslashed_home() {
+        let home = Path::new(r"C:\Users\runneradmin");
+        assert_eq!(
+            tilde_within(Path::new(r"C:\Users\runneradmin\x\future"), home),
+            r"~\x\future"
+        );
+        assert_eq!(tilde_within(home, home), "~");
+        // The prefix has to end at a separator, or a sibling that merely starts
+        // with the same characters would lose its own path.
+        assert_eq!(
+            tilde_within(Path::new(r"C:\Users\runneradmin2\x"), home),
+            r"C:\Users\runneradmin2\x"
+        );
+        // A forward-slash path against a backslashed home is a different string, not
+        // a different rendering of the same one: both sides come from `Path::display`,
+        // which uses one separator per platform, so this one keeps its full path.
+        assert_eq!(
+            tilde_within(Path::new("C:/Users/runneradmin/x"), home),
+            "C:/Users/runneradmin/x"
+        );
     }
 }
