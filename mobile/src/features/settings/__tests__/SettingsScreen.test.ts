@@ -1,9 +1,11 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { Linking, ScrollView, SectionList, StyleSheet, Switch, Text, TextInput } from "react-native";
+import { Linking, Modal, ScrollView, SectionList, StyleSheet, Switch, Text, TextInput } from "react-native";
+import * as Clipboard from "expo-clipboard";
 import { Button } from "../../../components/Button";
 import { SettingsScreen, TITLED_SETTINGS_PAGES, type SettingsScreenHandle } from "../SettingsScreen";
+import { loadDeviceId } from "../../../remote/storage";
 import { resources } from "../../../i18n/locales";
 import { SettingsLink, SettingsSwitch, useSettingsStyles } from "../SettingsPrimitives";
 import { getTaskFinishedReminders, setTaskFinishedReminders } from "../../../notifications/preferences";
@@ -53,6 +55,14 @@ const mockRemote = {
   uninstallSkill: jest.fn(async () => true),
 };
 jest.mock("../../../remote/RemoteContext", () => ({ useRemoteControls: () => mockRemote }));
+// The phone's own id: minted at pairing and kept in the system keychain, so a
+// test pins what the row reads rather than touching a real store.
+jest.mock("../../../remote/storage", () => ({
+  __esModule: true,
+  loadDeviceId: jest.fn(async () => null),
+}));
+jest.mock("expo-clipboard", () => ({ __esModule: true, setStringAsync: jest.fn(async () => {}) }));
+const mockedLoadDeviceId = loadDeviceId as jest.Mock;
 jest.mock("../../../i18n/LanguageSettings", () => ({ LanguageSettings: () => null }));
 jest.mock("../TasksSettingsPage", () => ({ TasksSettingsPage: (props: { desktopOnline: boolean; settings: unknown }) => { tasksPageProps = props as never; return null; } }));
 jest.mock("lucide-react-native", () => ({ ArrowLeft: "ArrowLeft", Monitor: "Monitor", Check: "Check", ChevronDown: "ChevronDown", ChevronRight: "ChevronRight" }));
@@ -104,6 +114,8 @@ beforeEach(async () => {
   stored = { autoTitleFirstTurn: true, autoUpgradeSkills: true, autoConnectRemote: false, hiddenModels: ["one/same", "other/hidden"] };
   installed = [{ id: "skill", name: "Skill", description: "", version: "1.0.0" }];
   mockLanguage = "en";
+  // An unpaired phone: the device-id row exists only once pairing minted one.
+  mockedLoadDeviceId.mockResolvedValue(null);
   mockRemote.desktops = pairedDesktops();
   mockRemote.credentials = { pairId: "pair", expectedDesktopId: "desktop" };
   mockRemote.desktopOnline = true;
@@ -434,6 +446,42 @@ test("the phone's own screen holds no device settings", async () => {
   expect(text).toContain("desktopSettings.language");
   expect(text).toContain("desktopSettings.thisPhone");
   expect(text).not.toContain("desktopSettings.boundDesktop: Work computer");
+});
+
+test("the phone's own screen names its device id in the short form a desktop prints", async () => {
+  // The machine's device list names a connected phone by the id it declared,
+  // and prints the same eight characters. That agreement is the whole point of
+  // the row: it is what lets a person match the two screens.
+  mockedLoadDeviceId.mockResolvedValue("dev_1a2b3c4d5e6f7a8b");
+  await remountPhone();
+  expect(link("desktopSettings.thisDeviceId").props.description).toBe("dev_1a2b3c4d");
+});
+
+test("tapping the device id shows the whole value, and the copy button copies it", async () => {
+  mockedLoadDeviceId.mockResolvedValue("dev_1a2b3c4d5e6f7a8b");
+  await remountPhone();
+  // The row prints the short form; the full id is only behind the tap.
+  expect(texts()).not.toContain("dev_1a2b3c4d5e6f7a8b");
+  act(() => link("desktopSettings.thisDeviceId").props.onPress());
+  const modal = tree.root.findAllByType(Modal).find(node => node.props.visible)!;
+  expect(modal.findAllByType(Text).map(node => node.props.children)).toContain("dev_1a2b3c4d5e6f7a8b");
+  act(() => modal.findAllByType(Button)
+    .find(node => node.props.label === "desktopSettings.thisDeviceIdCopy")!.props.onPress());
+  // The dialog dismisses first, and the copy runs after it — the same order the
+  // confirmations on the paired list use.
+  await act(async () => { modal.props.onDismiss(); });
+  expect(Clipboard.setStringAsync).toHaveBeenCalledWith("dev_1a2b3c4d5e6f7a8b");
+});
+
+test("no device id is shown before a pairing minted one, and an unreadable keychain does not fail the page", async () => {
+  await remountPhone();
+  expect(link("desktopSettings.thisDeviceId")).toBeUndefined();
+  mockedLoadDeviceId.mockRejectedValue(new Error("no keychain access"));
+  await remountPhone();
+  expect(link("desktopSettings.thisDeviceId")).toBeUndefined();
+  // The rest of the phone's own screen still works: a store that cannot be read
+  // costs this one row, not the settings page.
+  expect(link("desktopSettings.followAccount")).toBeDefined();
 });
 
 test("every titled settings level has a header in both languages", () => {

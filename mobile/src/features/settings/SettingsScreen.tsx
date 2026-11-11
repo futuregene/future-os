@@ -24,6 +24,7 @@ import { SkillsSettingsPage } from "./SkillsSettingsPage";
 import { TasksSettingsPage } from "./TasksSettingsPage";
 import type { SettingsPageBack } from "./pageBack";
 import { ResourceStatus, SettingsLink, SettingsSection, SettingsSwitch, createSettingsStyles, useSettingsStyles } from "./SettingsPrimitives";
+import { ThisDeviceIdRow } from "./ThisDeviceIdRow";
 import { useDesktopResource } from "./useDesktopResource";
 import { useKeyboardHeight } from "../../lib/useKeyboardHeight";
 
@@ -339,6 +340,9 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
         {/* Deliberately never disabled: following the official account needs no
             desktop connection, unlike every other row that used to be here. */}
         <SettingsLink label={t("desktopSettings.followAccount")} onPress={() => push({ name: "followAccount" })} />
+        {/* Identity of this phone, not of a paired machine: the id a machine
+            records when it pairs here, so the two screens can be matched. */}
+        <ThisDeviceIdRow />
         {onCheckUpdate
           ? <SettingsLink label={t("update.check")} disabled={checkingUpdate} loading={checkingUpdate} onPress={onCheckUpdate} />
           : null}

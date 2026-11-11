@@ -69,6 +69,16 @@ export interface RemoteDevice {
     kind: string;
     version?: string | null;
     syncStage?: string | null;
+    /**
+     * The device's own id, when that client declared one.
+     *
+     * Absent for every client that predates the field. It names the device
+     * where `pairId` names the connection — a pair id is minted again on the
+     * next pairing, so two phones of one model were indistinguishable on this
+     * page. Rendered in its short form only (`shortDeviceId` in
+     * `remoteHostFormat`); the full value is never shown here.
+     */
+    deviceId?: string | null;
   } | null;
   /** An invitation for this device that nobody has claimed yet. */
   pairingCode: string | null;
@@ -108,6 +118,8 @@ export interface RemoteStatus {
     kind: string;
     version?: string | null;
     syncStage?: string | null;
+    /** The controlling device's own id, when it declared one; see `RemoteDevice.client`. */
+    deviceId?: string | null;
   } | null;
   /**
    * Every paired device. Absent from a backend that predates multi-device, so
