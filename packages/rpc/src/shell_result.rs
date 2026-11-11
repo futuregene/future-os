@@ -22,10 +22,11 @@ pub struct ShellAttempt {
     pub escalated: bool,
 }
 
-/// One command invocation. New calls run once; attempts also preserve historical retry records.
+/// One command invocation. The command lives only in the paired tool-call
+/// arguments. Historical `command` fields are accepted and ignored on decode.
+/// New calls run once; attempts also preserve historical retry records.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShellResult {
-    pub command: String,
     pub cwd: String,
     pub duration_ms: u64,
     pub status: ShellStatus,
@@ -35,6 +36,32 @@ pub struct ShellResult {
     pub attempts: Vec<ShellAttempt>,
     pub approval: Option<String>,
     pub note: Option<String>,
+}
+
+/// Project historical facts into the current public contract without changing
+/// their stored representation. Tool-call arguments own the command.
+pub fn strip_legacy_command(facts: &mut serde_json::Value) -> bool {
+    facts
+        .as_object_mut()
+        .and_then(|facts| facts.remove("command"))
+        .is_some()
+}
+
+/// Old replay data is opaque JSON on disk. Normalize only its reserved facts
+/// envelope at the wire boundary, never the tool arguments or output text.
+pub fn strip_legacy_event_command(data: &mut String) {
+    if !data.contains("\"command\"") || !data.contains("\"shell_result\"") {
+        return;
+    }
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(data) else {
+        return;
+    };
+    if value
+        .get_mut("shell_result")
+        .is_some_and(strip_legacy_command)
+    {
+        *data = value.to_string();
+    }
 }
 
 impl ShellResult {
@@ -101,9 +128,41 @@ fn bounded(text: &str, max: usize) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn historical_command_decodes_but_is_never_serialized_again() {
+        let current = result(ShellStatus::Exited, Some(0));
+        let expected = model_summary(&current);
+        let mut historical = serde_json::to_value(&current).unwrap();
+        historical["command"] = serde_json::json!("printf unchanged");
+        let decoded: ShellResult = serde_json::from_value(historical.clone()).unwrap();
+        assert_eq!(model_summary(&decoded), expected);
+        assert_eq!(
+            serde_json::to_value(decoded).unwrap(),
+            serde_json::to_value(current).unwrap()
+        );
+        assert_eq!(historical["command"], "printf unchanged");
+    }
+
+    #[test]
+    fn historical_replay_drops_only_the_duplicate_command() {
+        let original = serde_json::json!({
+            "shell_result": {"command":"printf output", "cwd":"/original", "attempts":[{"output":"all output"}]},
+            "tool_args":{"command":"printf output"}, "text":"all output"
+        });
+        let mut data = original.to_string();
+        strip_legacy_event_command(&mut data);
+        let public: serde_json::Value = serde_json::from_str(&data).unwrap();
+        let mut expected = original.clone();
+        expected["shell_result"]
+            .as_object_mut()
+            .unwrap()
+            .remove("command");
+        assert_eq!(public, expected);
+        assert_eq!(original["shell_result"]["command"], "printf output");
+    }
+
     fn result(status: ShellStatus, exit_code: Option<i32>) -> ShellResult {
         ShellResult {
-            command: "cargo test".into(),
             cwd: "/w".into(),
             duration_ms: 1,
             status,

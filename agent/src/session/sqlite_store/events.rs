@@ -79,8 +79,18 @@ impl SqliteStore {
         let canonical = self.storage_format(session)? == crate::session::content::FORMAT_VERSION;
         let session = session.to_owned();
         if canonical {
+            let requested = session.clone();
+            let mut result = self.db.read(move |db| {
+                let key = crate::session::identity::session_key(db, &requested)?;
+                let mut query = db.prepare_cached(
+                    "SELECT payload FROM run_pricing WHERE session_id=?1 ORDER BY sequence",
+                )?;
+                let rows = query
+                    .query_map([key], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })?;
             let mut after = 0i64;
-            let mut result = Vec::new();
             let expected_identity = self.storage_identity()?;
             loop {
                 let (scope, expected) = (session.clone(), expected_identity.clone());

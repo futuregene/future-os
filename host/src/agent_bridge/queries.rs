@@ -703,6 +703,27 @@ pub async fn reset_windows_sandbox() -> Result<usize, crate::Error> {
         .ok_or_else(|| "Invalid Windows sandbox reset response.".into())
 }
 
+/// One sequential maintenance step; the UI owns the frozen conversation list.
+pub async fn organize_agent_database(
+    phase: String,
+    session_id: Option<String>,
+) -> Result<serde_json::Value, crate::Error> {
+    if !matches!(phase.as_str(), "plan" | "session" | "finish") {
+        return Err("Unknown database organization phase.".into());
+    }
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(future_rpc::proto::RpcCommand {
+            custom_instructions: phase,
+            ..base_command("organize_database", session_id.unwrap_or_default())
+        })
+        .await
+        .map_err(|status| format!("organize_database failed: {status}"))?
+        .into_inner()
+        .ok_or_rpc_error("Database organization failed.")?;
+    Ok(future_rpc::decode::response_data(&response))
+}
+
 /// Set the model on a live agent session (remote bridge).
 pub async fn set_session_model(session_id: String, model_id: String) -> Result<(), crate::Error> {
     let mut client = connect_agent().await?;

@@ -27,13 +27,13 @@ impl Manager {
         &self,
         request: crate::session::ForkRequest,
     ) -> Result<crate::session::fork::ForkIdentity> {
-        self.ensure_execution_allowed(&request.parent_session_id)?;
         if request.request_id.trim().is_empty() {
             return Err(anyhow!("fork request id is required"));
         }
         if request.parent_session_id.trim().is_empty() {
             return Err(anyhow!("fork parent session id is required"));
         }
+        self.ensure_execution_allowed(&request.parent_session_id)?;
         let creation = fork_lock(self)?;
         let _creation = creation.lock();
         self.create_segmented_fork(request)

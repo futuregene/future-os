@@ -88,7 +88,8 @@ pub(super) fn output(store: &SqliteStore, session: &str, run: &str, call: &str) 
         let facts = scope.field(store, &entry.entry, "/meta/shell_result")?;
         let mut value = json!({"toolCallId":call,"runId":run,"text":text,
             "isError":entry.error.unwrap_or(false),"createdAtMs":entry.time});
-        if let Some(facts) = facts {
+        if let Some(mut facts) = facts {
+            future_rpc::shell_result::strip_legacy_command(&mut facts);
             value["shell_result"] = facts;
         }
         Some(value)

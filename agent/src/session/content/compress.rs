@@ -80,38 +80,90 @@ pub(crate) fn apply(db: &mut Connection, limit: i64) -> Result<(i64, i64, i64)> 
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows
     };
+    apply_ids(db, candidates)
+}
+
+/// Operator maintenance only visits bodies owned by this conversation. Shared
+/// sealed bodies can be encoded once; their logical bytes/ranges never change.
+pub(crate) fn apply_for_session(
+    db: &mut Connection,
+    session: &str,
+    limit: i64,
+) -> Result<(i64, i64, i64, usize)> {
+    let key = crate::session::identity::session_key(db, session)?;
+    let candidates = {
+        let mut query = db.prepare_cached(&format!(
+            "SELECT o.id FROM content_objects o WHERE o.sealed=1 AND o.byte_length>={COMPRESS_MIN_BODY_BYTES}
+             AND NOT EXISTS(SELECT 1 FROM content_compressed c WHERE c.content_id=o.id)
+             AND EXISTS(SELECT 1 FROM content_references r WHERE r.content_id=o.id AND r.session_id=?1)
+             ORDER BY o.id LIMIT ?2"))?;
+        let rows = query
+            .query_map(params![key, limit], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<i64>>>()?;
+        rows
+    };
+    let examined = candidates.len();
+    let (objects, before, after) = apply_ids(db, candidates)?;
+    Ok((objects, before, after, examined))
+}
+
+fn apply_ids(db: &mut Connection, candidates: Vec<i64>) -> Result<(i64, i64, i64)> {
     let (mut objects, mut before, mut after) = (0i64, 0i64, 0i64);
     for id in candidates {
         let done = crate::session::database::try_maintenance_transaction(db, |tx| {
-            let segments: Vec<Vec<u8>> = {
+            let segments: Vec<(i64, Vec<u8>)> = {
                 let mut statement = tx.prepare_cached(
-                    "SELECT CAST(body AS BLOB) FROM content_segments
+                    "SELECT byte_offset,CAST(body AS BLOB) FROM content_segments
                       WHERE content_id=?1 ORDER BY byte_offset",
                 )?;
                 let rows = statement
-                    .query_map([id], |row| row.get::<_, Vec<u8>>(0))?
+                    .query_map([id], |row| Ok((row.get(0)?, row.get(1)?)))?
                     .collect::<rusqlite::Result<Vec<_>>>()?;
                 rows
             };
-            if segments.is_empty() {
-                return Ok(None);
-            }
-            // Chunks are cut on the boundaries the writer already chose, so a
-            // chunk boundary is always a char boundary.
+            ensure!(!segments.is_empty(), "sealed body has no segments");
+            // Reframe at UTF-8 boundaries within the encoding budget. Original
+            // writer segments can be larger than a compressed chunk.
             let mut chunks: Vec<(i64, Vec<u8>)> = Vec::new();
             let mut at = 0i64;
-            for segment in &segments {
-                match chunks.last_mut() {
-                    Some((_, pending))
-                        if pending.len() + segment.len() <= COMPRESSED_CHUNK_BYTES =>
+            let mut digest = Sha256::new();
+            for (offset, segment) in &segments {
+                ensure!(*offset == at, "sealed body has non-contiguous segments");
+                let mut text = std::str::from_utf8(segment)?;
+                digest.update(segment);
+                while !text.is_empty() {
+                    let available = chunks
+                        .last()
+                        .map_or(0, |(_, b)| COMPRESSED_CHUNK_BYTES - b.len());
+                    if available
+                        < text
+                            .chars()
+                            .next()
+                            .context("missing content character")?
+                            .len_utf8()
                     {
-                        pending.extend_from_slice(segment);
+                        chunks.push((at, Vec::new()));
                     }
-                    _ => chunks.push((at, segment.clone())),
+                    let (_, pending) = chunks.last_mut().context("missing compression chunk")?;
+                    let mut end = text.len().min(COMPRESSED_CHUNK_BYTES - pending.len());
+                    while !text.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    pending.extend_from_slice(&text.as_bytes()[..end]);
+                    at += i64::try_from(end)?;
+                    text = &text[end..];
                 }
-                at += segment.len() as i64;
             }
-            let plain: i64 = segments.iter().map(|s| s.len() as i64).sum();
+            let plain = at;
+            let (length, hash): (i64, String) = tx.query_row(
+                "SELECT byte_length,sha256 FROM content_objects WHERE id=?1 AND sealed=1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            ensure!(
+                length == plain && hash == format!("{:x}", digest.finalize()),
+                "sealed body length or digest mismatch"
+            );
             let mut encoded: Vec<(i64, Vec<u8>)> = Vec::with_capacity(chunks.len());
             for (offset, chunk) in chunks {
                 encoded.push((offset, encode(&chunk)?));

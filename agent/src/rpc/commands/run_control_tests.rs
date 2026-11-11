@@ -704,9 +704,11 @@ fn prompt_supersede_replaces_queued_run() {
 
 #[test]
 fn prompt_duplicate_run_id_maps_to_scheduler_error() {
-    let state = make_legacy_app_state();
-    // Plant a journal for run-dupe so the id is rejected as reused.
-    state.session_manager.storage().unwrap().append_event("default", serde_json::json!({"run_id":"run-dupe","epoch":1,"idx":0,"event_type":"agent_start","data":"{}"})).unwrap();
+    let state = make_app_state();
+    // The durable run ledger rejects reuse independently of replay encoding.
+    state.session_manager.test_execute(
+        "INSERT INTO runs(session_id,run_id,status) VALUES ('default','run-dupe','completed')",
+    );
 
     let mut cmd = make_cmd("prompt");
     cmd.message = "dupe".to_string();

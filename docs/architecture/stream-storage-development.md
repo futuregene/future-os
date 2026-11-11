@@ -52,8 +52,8 @@ See the [baseline ledger](stream-storage-space-baselines.md). Final automation u
 
 | Source | Required treatment |
 |---|---|
-| Released Agent schemas 2–7 | Frozen original fixtures; supported upgrade into the final layout. Existing conversations remain legacy format 1; do not convert their bodies/events |
-| Released JSONL/event sources and skills-only bootstrap | Preserve import/admission rules; imported history remains legacy, including skipped/retried/deleted identity behavior |
+| Released Agent schemas 2–7 | Frozen original fixtures; supported upgrade into the final layout. Existing conversations stay format 1 at admission; first open/mutation converts the transcript through the canonical writer, preserving identities and pricing |
+| Released JSONL/event sources and skills-only bootstrap | Preserve import/admission rules; imported history remains legacy until first open/mutation; preserve skipped/retried/deleted identity behavior |
 | Released Desktop layouts and contracts 1–3 | Preserve released SQL/checksums, identities and transaction boundaries; converge on the final target contract |
 | Empty database / new conversation | Create the final layout directly; new conversations use logical format 2 |
 | Previous unpublished schema-8/format-2 development database | No upgrade, compatibility decoder or conversion; reject a mismatching layout explicitly and preserve its files |
@@ -164,7 +164,7 @@ This is the requested migration revalidation; previous green results cannot subs
 
 | Source/fault | Required evidence |
 |---|---|
-| Released Agent schemas 2, 3, 4, 5, 6, 7, each frozen DDL | Real open/upgrade into the target; original messages/blocks/events/snapshots/pricing/skills/metadata and identity preserved. Continue old conversations as legacy; create new compact format-2 conversations |
+| Released Agent schemas 2, 3, 4, 5, 6, 7, each frozen DDL | Real open/upgrade into the target; original messages/blocks/events/snapshots/pricing/skills/metadata and identity preserved. Open/continue old conversations through on-demand format-2 conversion; listing and deletion must not convert them; create new compact format-2 conversations |
 | Empty Agent and supported skills-only bootstrap | Correct initialization; foreign applications, forged versions and unsupported development layouts rejected before schema writes |
 | JSONL and separate event sources | Import, skipped reports, explicit retry, repeated startup, changing source, deletion tombstones and GUI binding; no overwrite of successful/deleted identities |
 | Desktop pre-agent, v1.2.1, CLI settings/workspace bootstrap and contracts 1–3 | Released step order/checksums, lossless archive, FK rebuild, unique binding, source ownership and exact M0 deletion scope; preserve business data/attachment ownership |
@@ -236,12 +236,12 @@ User decision: new generated identities omit time and use the complete UUID v4. 
 
 - Model generated session/message/run identities separately from opaque provider IDs and local integer keys. Preserve provider values. Generated approval/operation identities also omit classification prefixes; their owning module controls storage adaptation.
 - Preserve and return released historical identities exactly, including time-prefixed IDs and UUID-looking TEXT. Never truncate suffixes, infer type from string length, batch-convert on startup or rewrite historical foreign keys.
-- The typed storage boundary handles UUID BLOBs versus historical TEXT. Decode actual storage classes and preserve legacy writer semantics.
+- The typed storage boundary handles UUID BLOBs versus historical TEXT. Decode actual storage classes and preserve historical identities during on-demand conversion.
 - Integrate primary/foreign-key bindings, indexed lookups, JSON projections, fork/reset, deletion, queued receipts and reopen together. A single converted column or symbol-table BLOB test is not completion of business identity storage.
 - Store business keys as 16-byte UUIDs, intern stable per-stream values and retain integer references for high-frequency changes. Audit parent duplication in content keys and body owners structurally; removing prefixes cannot break client deduplication or recovery.
 - Supply read-only inspection views using built-in SQLite SQL, rendering the same UUID as the API without another persisted text copy.
 
-Compatibility boundary: the 36-character output guarantee applies to newly generated UUIDs. Historical API IDs and opaque provider IDs keep their original values. A historical non-UUID cannot become a UUID while retaining its original value; this implementation does not add a historical alias catalog. Historical conversations retain their existing write contract; new conversations use the new format from their first write.
+Compatibility boundary: the 36-character output guarantee applies to newly generated UUIDs. Historical API IDs and opaque provider IDs keep their original values. A historical non-UUID cannot become a UUID while retaining its original value; this implementation does not add a historical alias catalog. Historical conversations retain their stored identities and convert on first open/mutation; runtime writes use the canonical format. New conversations use that format from their first write.
 
 In SQLite, equally spelled TEXT and UUID BLOB values are different index keys. Resolve the session's actual storage representation and bind consistent types for child primary/foreign keys. Parsing an API string alone cannot determine the historical key type; casting whole columns must not hide mismatches. If historical UUID-looking TEXT and its corresponding UUID BLOB create an ambiguous public identity, reject that ambiguity explicitly and preserve the database for recovery.
 

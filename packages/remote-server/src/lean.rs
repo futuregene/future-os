@@ -176,11 +176,27 @@ pub fn lean_event_data<'a>(event_type: &str, data: &'a str) -> Option<Cow<'a, st
         // shape, where there is no outcome to read and that footer is the only
         // signal there is.
         "tool_end" | "tool_result" => {
-            if keeps_legacy_exit_footer(data) {
-                Some(Cow::Borrowed(data))
+            let lean = if keeps_legacy_exit_footer(data) {
+                Cow::Borrowed(data)
             } else {
-                Some(without(data, &["text", "result"]))
+                without(data, &["text", "result"])
+            };
+            if !lean.contains("\"command\"") {
+                return Some(lean);
             }
+            let Ok(mut current) = serde_json::from_str::<Value>(&lean) else {
+                return Some(lean);
+            };
+            let removed = current
+                .get_mut("shell_result")
+                .and_then(Value::as_object_mut)
+                .and_then(|facts| facts.remove("command"))
+                .is_some();
+            Some(if removed {
+                Cow::Owned(current.to_string())
+            } else {
+                lean
+            })
         }
         // The folded events are the same reasoning and argument fragments again.
         // The client treats this event as a "resync me" signal and never reads
@@ -609,10 +625,9 @@ fn narrow_execution_cwd(entry: &mut Value) {
 /// carries it again per attempt. The block's copy is dropped above; this is the
 /// second one, and on a real three-exchange page it was the **largest single
 /// survivor of the trim** — 39,280 of the 116,102 bytes that remained, with the
-/// `command` (9,459) and `cwd` (1,170) beside it the same duplication in
-/// miniature: a shell row's command is fetched by identity when the row is
-/// opened (its `tool_call.arguments` are gone for exactly that reason), and the
-/// entry already carries `metadata.execution_cwd`.
+/// historical `command` (9,459) and `cwd` (1,170) beside it the same duplication
+/// in miniature. Commands now belong only to tool-call arguments; old copies
+/// are removed on this boundary. The cwd remains a required string.
 ///
 /// The values are emptied rather than removed. The client validates this
 /// envelope and then reads only facts out of it (`status`, `exit_code`,
@@ -662,10 +677,9 @@ fn narrow_shell_result(entry: &mut Value) {
     else {
         return;
     };
-    for key in ["command", "cwd"] {
-        if facts.get(key).is_some_and(Value::is_string) {
-            facts.insert(key.to_owned(), Value::String(String::new()));
-        }
+    facts.remove("command");
+    if facts.get("cwd").is_some_and(Value::is_string) {
+        facts.insert("cwd".to_owned(), Value::String(String::new()));
     }
     let attempts = facts.get_mut("attempts").and_then(Value::as_array_mut);
     for attempt in attempts.into_iter().flatten() {
@@ -1975,7 +1989,9 @@ mod shell_attempts_tests {
             serde_json::from_str(&lean_event_data("tool_end", &data).unwrap()).unwrap();
         // The live lane is one message per call, not a page: it keeps the
         // envelope whole and drops only the duplicated text body.
-        assert_eq!(lean["shell_result"], facts);
+        let mut current = facts.clone();
+        current.as_object_mut().unwrap().remove("command");
+        assert_eq!(lean["shell_result"], current);
         assert!(lean.get("text").is_none());
         let mut entries = json!([{"metadata":{"shell_result":facts},"blocks":[{"kind":"tool_result","toolCallId":"t","text":"summary","isError":true}]}]);
         lean_entries(&mut entries);
@@ -1989,7 +2005,7 @@ mod shell_attempts_tests {
         assert_eq!(narrowed["attempts"][1]["escalated"], json!(true));
         assert_eq!(narrowed["attempts"][0]["output"], json!(""));
         assert_eq!(narrowed["attempts"][1]["output"], json!(""));
-        assert_eq!(narrowed["command"], json!(""));
+        assert!(narrowed.get("command").is_none());
         assert_eq!(narrowed["cwd"], json!(""));
         assert_eq!(entries[0]["blocks"][0]["text"], Value::Null);
         assert_eq!(entries[0]["blocks"][0]["isError"], true);
@@ -2055,7 +2071,7 @@ mod shell_attempts_tests {
         assert_eq!(entries[0]["metadata"], json!({}), "nothing read: both go");
         let kept = &entries[1]["metadata"]["shell_result"];
         assert_eq!(kept["is_error"], json!(true));
-        assert_eq!(kept["command"], json!(""));
+        assert!(kept.get("command").is_none());
         assert_eq!(kept["attempts"][0]["output"], json!(""));
         assert_eq!(
             entries[2]["metadata"]["shell_result"]["is_error"],

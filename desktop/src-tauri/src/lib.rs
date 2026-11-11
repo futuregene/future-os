@@ -1068,6 +1068,7 @@ mod gui {
                 update_app_settings,
                 generate_thread_title,
                 clear_app_data,
+                organize_agent_database,
                 get_future_environment,
                 set_future_environment,
                 list_agent_providers,

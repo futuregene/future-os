@@ -180,7 +180,7 @@ pub(crate) fn refresh_session_metadata(db: &Connection, session: &str) -> Result
 }
 
 /// Rebuild the display rows from `changed_position` on for a legacy session, and
-/// for exactly one exchange of a canonical one.
+/// for exchanges belonging to the same run in a canonical one.
 ///
 /// **The projection is the healed conversation, not the stored rows.**
 /// `Manager::load` repairs a transcript before anything reads it — an assistant
@@ -250,9 +250,31 @@ pub(crate) fn update_display_index_from(
         params![&stored_session, last + 1],
         |row| row.get(0),
     )?;
-    for to in boundaries {
+    for &boundary in &boundaries {
         if from > last {
             break;
+        }
+        if boundary <= from {
+            continue;
+        }
+        let mut to = boundary;
+        // A late result/final message can belong to a run that started before
+        // intervening user entries. Heal that run together: splitting it at
+        // those entries manufactures a lost-tool result and leaves the real
+        // result at the wrong display position. Only header keys are read.
+        loop {
+            let related: i64 = db.query_row(
+                "SELECT coalesce(max(position)+1,?3) FROM entries WHERE session_id=?1 AND run_id IN
+                 (SELECT run_id FROM entries WHERE session_id=?1 AND position>=?2 AND position<?3 AND run_id IS NOT NULL)",
+                params![&stored_session,from,to], |row| row.get(0))?;
+            if related <= to {
+                break;
+            }
+            to = boundaries
+                .iter()
+                .copied()
+                .find(|end| *end >= related)
+                .unwrap_or(related);
         }
         // A window that runs past the shapes on disk is an exchange a batch
         // stopped inside; the next batch walks back to its start and heals it once
@@ -274,10 +296,16 @@ pub(crate) fn update_display_index_from(
             if !rewrite_healed_window(db, &stored_session, from, to)? {
                 append_plain_shapes(db, &stored_session, from, to)?;
             }
+        } else if to > from {
+            // A partial batch can publish its plain shapes; a later batch
+            // finishes this window and replaces them with the healed view.
+            append_plain_shapes(db, &stored_session, from, to)?;
         }
         from = to;
     }
-    append_plain_shapes(db, &stored_session, first, last + 1)?;
+    // Completed windows already decided which source entries remain visible.
+    // Revisiting them here would resurrect duplicate/empty rows they removed.
+    append_plain_shapes(db, &stored_session, from, last + 1)?;
     Ok(last + 1)
 }
 
@@ -406,7 +434,15 @@ fn rewrite_healed_window(
     repair::repair_dangling_tool_calls(&mut healed);
     let projected = project_entries(&healed);
     if projected == plain {
-        return Ok(false);
+        let stale_placeholder: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM history_display WHERE session_id=?1 AND source_position IS NULL
+               AND ordinal>=?2 AND ordinal<coalesce(
+                 (SELECT min(ordinal) FROM history_display WHERE session_id=?1 AND source_position>=?3),
+                 (SELECT max(ordinal)+1 FROM history_display WHERE session_id=?1),0))",
+            params![stored_session,ordinal,end],|row|row.get(0))?;
+        if !stale_placeholder {
+            return Ok(false);
+        }
     }
     let mut upsert = db.prepare_cached("INSERT INTO history_display(session_id,ordinal,source_position,is_user,payload) VALUES (?1,?2,?3,?4,?5)
         ON CONFLICT(session_id,ordinal) DO UPDATE SET source_position=excluded.source_position,is_user=excluded.is_user,payload=excluded.payload
