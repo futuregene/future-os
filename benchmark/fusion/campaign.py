@@ -14,7 +14,11 @@ from future_runner import Future
 from scoring import bbeh_module
 
 NETWORK_HTTP = {408, 429, 500, 502, 503, 504}
-NETWORK_INTERRUPTION = ("[upstream_disconnected]", "[response_timeout]")
+NETWORK_INTERRUPTION = (
+    "[upstream_disconnected]",
+    "[response_timeout]",
+    "[response_unconfirmed]",
+)
 CASE_OUTCOMES = {"completed", "deferred", "output_limit", "empty_answer"}
 
 
@@ -98,6 +102,8 @@ def technical_failure_kind(result):
         return "gateway_error"
     if terminal_run_error(result).startswith("[RESPONSE_TIMEOUT]"):
         return "response_timeout"
+    if terminal_run_error(result).startswith("[RESPONSE_UNCONFIRMED]"):
+        return "response_unconfirmed"
     return result.get("error_category") or "transport_error"
 
 
