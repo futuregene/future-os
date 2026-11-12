@@ -588,10 +588,34 @@ mod tests {
             msg.contains("do not edit existing files"),
             "the read-only constraint must be spelled out: {msg}"
         );
+        // The contract echoes the scope the guard resolved (canonicalized parent
+        // + relative tail), which is platform-spelled — `D:\tmp\papers\route-a.md`
+        // on Windows, `/private/tmp/papers/route-a.md` on macOS — so a literal
+        // "/"-separated path never matches there. Compare the line's payload
+        // against the same resolver's output (the whole payload, not a
+        // substring), and separately check the declared relative tail survives
+        // resolution with the separators normalized, which holds on every
+        // platform and would fail if the contract echoed anything else.
+        let resolved = crate::agents::workspace_guard::normalize_workspace_path_at(
+            "papers/route-a.md",
+            std::path::Path::new(&g.cwd),
+        );
+        let read_scope_line = msg
+            .lines()
+            .find(|line| line.starts_with("Read scope for this turn (read it, never modify it): "))
+            .unwrap_or_else(|| {
+                panic!("the contract must state the declared scope as a read scope: {msg}")
+            });
+        assert_eq!(
+            read_scope_line,
+            format!("Read scope for this turn (read it, never modify it): {resolved}"),
+            "the read scope line must carry the resolved declared scope: {msg}"
+        );
         assert!(
-            msg.contains("Read scope for this turn (read it, never modify it): ")
-                && msg.contains("papers/route-a.md"),
-            "the declared scope must reach the contract as a read scope: {msg}"
+            read_scope_line
+                .replace('\\', "/")
+                .ends_with("papers/route-a.md"),
+            "the declared relative path must survive resolution: {read_scope_line}"
         );
         assert!(
             !msg.contains("Declared write set"),
