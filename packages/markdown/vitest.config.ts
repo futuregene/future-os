@@ -1,7 +1,8 @@
 /**
- * Test project for the three pure-logic workspace packages consumed by the
- * desktop app: `@future-os/markdown`, `@future-os/thread-projection` and
- * `@future-os/json-preview`.
+ * Test project for the pure-logic workspace packages consumed by the desktop
+ * and mobile apps: `@future-os/markdown`, `@future-os/thread-projection`,
+ * `@future-os/json-preview`, `@future-os/peer-icons` and
+ * `@future-os/git-graph`.
  *
  * They had no test project of their own, so their tests were neither run nor
  * measured: desktop's vitest root is `desktop/`, and a `**` include glob cannot
