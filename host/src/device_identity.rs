@@ -48,6 +48,19 @@ pub fn device_id_or_empty() -> String {
     device_id().unwrap_or_default()
 }
 
+/// The identity a sign-in presents to the platform.
+///
+/// The id is the same durable installation identity every other device-scoped
+/// feature uses, and the name is the half a person recognizes in a list. Both
+/// are best-effort: a login must not fail because the local identity store is
+/// momentarily locked, and the platform records a creator-less key anyway.
+pub fn login_device() -> (String, String) {
+    (
+        device_id_or_empty(),
+        crate::remote_peer::runtime::device_name(),
+    )
+}
+
 fn legacy_pairing_device_id() -> Option<String> {
     // The multi-device book is the modern location; the single-pairing file is
     // what an installation paired before it holds. Either one describes this
@@ -92,6 +105,15 @@ mod tests {
         let second = device_id().expect("second id");
         assert_eq!(first, second);
         assert!(first.starts_with("desktop_"));
+    }
+
+    #[test]
+    fn login_device_reports_the_installation_identity() {
+        let _home = crate::store::test_schema_home("device_identity_login");
+        let (reported, name) = login_device();
+        assert_eq!(reported, device_id().expect("id"));
+        assert!(reported.starts_with("desktop_"));
+        assert!(!name.trim().is_empty());
     }
 
     #[test]
