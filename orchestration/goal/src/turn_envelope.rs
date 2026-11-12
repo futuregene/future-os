@@ -156,6 +156,11 @@ const SCOUT_KILL_WHEN_CHARS: usize = 240;
 /// `scout_contract_stays_within_its_budget`).
 pub const SCOUT_CONTRACT_MAX_CHARS: usize = 1_500;
 
+/// Byte cap on the declared scope echoed into the exploration contract. Two
+/// ordinary paths fit; a directory-heavy declaration is truncated rather than
+/// allowed to compete with the contract itself for the prompt.
+const SCOUT_SCOPE_BYTES: usize = 160;
+
 /// Is this todo an exploration node? A scout's product is a direction
 /// proposal, so it gets the exploration contract and is spared the delivery
 /// contract (acceptance literals, successor declaration) — the two do not
@@ -175,12 +180,28 @@ fn is_exploring(todo: &Todo) -> bool {
 /// have to GUESS the CLI syntax of the one step that matters. Empty for every
 /// other class. Fixed text (bounded by [`SCOUT_CONTRACT_MAX_CHARS`]) plus the
 /// todo's own `kill_when` (capped), in the same style as the other blocks here.
-pub fn compose_scout_contract(goal: &Goal, todo: &Todo) -> String {
+///
+/// `read_scope` is the turn's declared workspace. The contract states it as a
+/// READ scope rather than a write set because that is the constraint 50 tool
+/// calls of unrequested implementation violate: a scout proposes, so the only
+/// writes it may make are evidence notes, and only inside the declared paths.
+/// Stating it here (instead of only in the envelope's write-set paragraph)
+/// means the constraint and the command that satisfies it arrive together.
+pub fn compose_scout_contract(goal: &Goal, todo: &Todo, read_scope: &[String]) -> String {
     if !is_exploring(todo) {
         return String::new();
     }
     let mut out = String::new();
     out.push_str("\nYou are EXPLORING, not delivering. The product of this turn is a direction proposal, not a finished artifact.\n");
+    out.push_str("READ-ONLY turn: do not edit existing files or build the implementation — the proposal ledger is your only write; evidence notes are the only files.\n");
+    if read_scope.is_empty() {
+        out.push_str("Read scope: none declared — make no file writes at all.\n");
+    } else {
+        out.push_str(&format!(
+            "Read scope for this turn (read it, never modify it): {}\n",
+            capped_scope(read_scope)
+        ));
+    }
     out.push_str("Record it with one command (candidate ids are positional: c1, c2, …):\n");
     out.push_str(&format!(
         "  future goal direction propose --goal {} --scout-todo {} --trigger \"<stall|oscillation|gate_decision|…>\" \\\n",
@@ -190,7 +211,7 @@ pub fn compose_scout_contract(goal: &Goal, todo: &Todo) -> String {
     out.push_str(
         "      --evidence <path> --candidate \"title|class|relation|kill_when|acceptance1;acceptance2\"\n",
     );
-    out.push_str("Each --candidate has 5 `|`-separated fields: title | class | relation | kill_when | acceptance (`;`-separated). class is `scout` (a deeper exploration — then kill_when, the observation that drops it, is REQUIRED) or `advancement` (implementation work — then kill_when may be empty and the acceptance items carry the contract); relation is `fork` (a new route) or `revise:<TODO_ID>` (change an existing todo). At least one acceptance item is always required.\n");
+    out.push_str("Fields 2–4: class is `scout` (a deeper exploration — kill_when, the observation that drops it, is REQUIRED) or `advancement` (kill_when may be empty; acceptance carries the contract); the route is `fork` or `revise:<TODO_ID>`; at least one acceptance item is always required.\n");
     out.push_str("A candidate without a kill_when is a guess, not a proposal. Answer the question you were given; do not pick a winner the evidence does not settle.\n");
     out.push_str(&format!(
         "Completion gate: at least one direction proposal naming this scout must be recorded before it is completed — `future goal direction list --goal {}` shows what is already there.\n",
@@ -210,6 +231,26 @@ pub fn compose_scout_contract(goal: &Goal, todo: &Todo) -> String {
         ));
     }
     out
+}
+
+/// The declared scope as one bounded line: joined, byte-capped on a char
+/// boundary. A declaration is documentation, not a filesystem sandbox, so a
+/// path the contract cannot show in full is still enforced by the guard — only
+/// the prompt text is truncated.
+fn capped_scope(scopes: &[String]) -> String {
+    let joined = scopes
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if joined.len() <= SCOUT_SCOPE_BYTES {
+        return joined;
+    }
+    let mut end = SCOUT_SCOPE_BYTES;
+    while end > 0 && !joined.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &joined[..end])
 }
 
 /// Compose the per-turn packet: todo + resolved gate decisions + upstream
@@ -248,15 +289,20 @@ pub fn compose_turn_envelope(goal: &Goal, todo: &Todo, prev: Option<&RunRecord>)
 
     // Instruction.
     out.push_str(&format!("TODO {}: {}\n", todo.id, todo.text));
-    // Exploration turns get their own output contract (empty for non-scouts).
-    out.push_str(&compose_scout_contract(goal, todo));
+    // The declared workspace is what the scout contract re-states as its READ
+    // scope, so it is resolved before the contract and printed ONCE: for an
+    // exploration turn the write-set paragraph would contradict the contract's
+    // "read it, never modify it" and invite the implementation a scout is not
+    // supposed to produce.
     let writer = todo
         .claimed_by
         .as_deref()
         .or(todo.owner.as_deref())
         .unwrap_or("");
     let scopes = crate::agents::workspace_guard::todo_workspaces(goal, writer, todo);
-    if !scopes.is_empty() {
+    // Exploration turns get their own output contract (empty for non-scouts).
+    out.push_str(&compose_scout_contract(goal, todo, &scopes));
+    if !scopes.is_empty() && !is_exploring(todo) {
         out.push_str(&format!(
             "Declared write set (coordination contract, not a filesystem sandbox): {}\nStay within these paths, including logs/caches; if additional writes are needed, stop and ask the supervisor to revise the plan.\n",
             scopes.join(", ")
@@ -499,16 +545,104 @@ mod tests {
         scout.class = TaskClass::Scout;
         scout.kill_when = Some("x".repeat(SCOUT_KILL_WHEN_CHARS * 4));
         g.add(scout);
-        let block = compose_scout_contract(&g, g.todo("todo_0123456789ab").unwrap());
-        let stop_line = block
-            .lines()
-            .find(|line| line.starts_with("Stop condition for this scout"))
-            .expect("the capped stop condition is still emitted")
-            .len();
-        let fixed = block.len() - stop_line;
+        let todo = g.todo("todo_0123456789ab").unwrap();
+        // Both the bare contract and the one carrying a long (truncated) scope
+        // must fit: the scope is caller-supplied text, so its cap is part of the
+        // budget rather than an assumption about short paths.
+        for scope in [
+            vec![],
+            vec![
+                "a-rather-long-directory-name/nested/deeper/and-deeper/evidence-one/".to_string(),
+                "another-long-directory/with/a/long/suffix/evidence-two/".to_string(),
+            ],
+        ] {
+            let block = compose_scout_contract(&g, todo, &scope);
+            let stop_line = block
+                .lines()
+                .find(|line| line.starts_with("Stop condition for this scout"))
+                .expect("the capped stop condition is still emitted")
+                .len();
+            let fixed = block.len() - stop_line;
+            assert!(
+                fixed <= SCOUT_CONTRACT_MAX_CHARS,
+                "the fixed exploration contract is {fixed} bytes with scope {scope:?}, over its {SCOUT_CONTRACT_MAX_CHARS}-byte budget"
+            );
+        }
+    }
+
+    /// The exploration contract is a READ-ONLY contract with a named scope:
+    /// the failure it prevents is a scout turn that spends its budget building
+    /// the implementation instead of proposing a direction. Both constraints
+    /// must be stated mechanically, and the delivery write-set paragraph must
+    /// not reappear to contradict them.
+    #[test]
+    fn scout_contract_states_read_only_and_its_read_scope() {
+        let mut g = Goal::new("g1", "o", "/tmp");
+        let mut scout = Todo::advancement("S1", "Find the right approach");
+        scout.class = TaskClass::Scout;
+        scout.required_write_scope = vec!["papers/route-a.md".to_string()];
+        g.add(scout);
+        let msg = compose_turn_message(&g, g.todo("S1").unwrap(), None);
+        assert!(msg.contains("READ-ONLY"), "{msg}");
         assert!(
-            fixed <= SCOUT_CONTRACT_MAX_CHARS,
-            "the fixed exploration contract is {fixed} bytes, over its {SCOUT_CONTRACT_MAX_CHARS}-byte budget"
+            msg.contains("do not edit existing files"),
+            "the read-only constraint must be spelled out: {msg}"
+        );
+        // The contract echoes the scope the guard resolved (canonicalized parent
+        // + relative tail), which is platform-spelled — `D:\tmp\papers\route-a.md`
+        // on Windows, `/private/tmp/papers/route-a.md` on macOS — so a literal
+        // "/"-separated path never matches there. Compare the line's payload
+        // against the same resolver's output (the whole payload, not a
+        // substring), and separately check the declared relative tail survives
+        // resolution with the separators normalized, which holds on every
+        // platform and would fail if the contract echoed anything else.
+        let resolved = crate::agents::workspace_guard::normalize_workspace_path_at(
+            "papers/route-a.md",
+            std::path::Path::new(&g.cwd),
+        );
+        let read_scope_line = msg
+            .lines()
+            .find(|line| line.starts_with("Read scope for this turn (read it, never modify it): "))
+            .unwrap_or_else(|| {
+                panic!("the contract must state the declared scope as a read scope: {msg}")
+            });
+        assert_eq!(
+            read_scope_line,
+            format!("Read scope for this turn (read it, never modify it): {resolved}"),
+            "the read scope line must carry the resolved declared scope: {msg}"
+        );
+        assert!(
+            read_scope_line
+                .replace('\\', "/")
+                .ends_with("papers/route-a.md"),
+            "the declared relative path must survive resolution: {read_scope_line}"
+        );
+        assert!(
+            !msg.contains("Declared write set"),
+            "an exploration turn must not also be handed a write set: {msg}"
+        );
+
+        // No declaration: the contract still closes the write surface instead of
+        // leaving it to the model's judgement.
+        let mut bare = Todo::advancement("S2", "probe");
+        bare.class = TaskClass::Scout;
+        g.add(bare);
+        let bare_msg = compose_turn_message(&g, g.todo("S2").unwrap(), None);
+        assert!(
+            bare_msg.contains("Read scope: none declared — make no file writes at all."),
+            "{bare_msg}"
+        );
+
+        // Delivery work keeps the ordinary write set.
+        let mut work = Todo::advancement("T1", "Do the work");
+        work.required_write_scope = vec!["papers/final.md".to_string()];
+        g.add(work);
+        let work_msg = compose_turn_message(&g, g.todo("T1").unwrap(), None);
+        assert!(work_msg.contains("Declared write set"), "{work_msg}");
+        assert!(!work_msg.contains("READ-ONLY"), "{work_msg}");
+        assert!(
+            !compose_scout_contract(&g, g.todo("T1").unwrap(), &[]).contains("READ-ONLY"),
+            "the scout contract is empty for delivery work"
         );
     }
 
