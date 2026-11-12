@@ -27,6 +27,7 @@ const prompt = vi.fn<(
 ) => Promise<{ sessionId: string; threadId: string }>>();
 const abort = vi.fn<(desktopId: string, sessionId: string) => Promise<unknown>>();
 const upload = vi.fn<(input: { desktopId: string; path: string }) => Promise<{ uploadId: string; name: string; contentHash: string }>>();
+const previewRemote = vi.fn<(input: { desktopId: string; sessionId: string; path: string; name: string }) => Promise<{ name: string; path: string }>>();
 const listSkills = vi.fn<(desktopId: string) => Promise<unknown[]>>();
 const getPromptReceipt = vi.fn<(desktopId: string, commandId: string) => Promise<{ sessionId: string; threadId: string; runId: string } | null>>();
 vi.mock("./remotePeerClient", () => ({
@@ -34,6 +35,7 @@ vi.mock("./remotePeerClient", () => ({
   getRemotePromptReceipt: (...args: Parameters<typeof getPromptReceipt>) => getPromptReceipt(...args),
   abortRemoteRun: (...args: Parameters<typeof abort>) => abort(...args),
   uploadRemoteFile: (...args: Parameters<typeof upload>) => upload(...args),
+  previewRemoteFile: (...args: Parameters<typeof previewRemote>) => previewRemote(...args),
   // The `/` menu's skills, which are the host's own list.
   listRemoteInstalledSkills: (...args: Parameters<typeof listSkills>) => listSkills(...args),
   // The control row carries the host's own approval mode, which the composer
@@ -234,6 +236,7 @@ beforeEach(() => {
   getPromptReceipt.mockReset().mockResolvedValue(null);
   abort.mockReset().mockResolvedValue(undefined);
   upload.mockReset().mockResolvedValue({ uploadId: "upload_1", name: "notes.txt", contentHash: "abc" });
+  previewRemote.mockReset().mockImplementation(async input => ({ name: input.name, path: `/cache/${input.name}` }));
   openDialog.mockReset().mockResolvedValue("/local/notes.txt");
   // The host's queue: empty unless a test says what that machine holds.
   queueRows = [];
@@ -1744,6 +1747,104 @@ describe("a send made behind a running reply", () => {
     // An empty message is not a message: nothing is re-sent.
     expect(prompt).not.toHaveBeenCalled();
     await view.unmount();
+  });
+
+  /**
+   * A message with photos, whose typo is being fixed.
+   *
+   * The files were invisible to this client and were dropped by the re-send, so
+   * "fix a typo" quietly removed the pictures. The host's path is only readable
+   * there, so the bytes come down before the row is cancelled and go back up as
+   * the upload the new prompt names.
+   */
+  it("keeps a waiting message's files when its text is edited", async () => {
+    queueRows = [hostRow({
+      attachments: [{ kind: "image", name: "shot.png", path: "/Users/x/shot.png", size: 4096 }],
+      text: "look at this",
+    })];
+    upload.mockResolvedValue({ uploadId: "upload_kept", name: "shot.png", contentHash: "hash" });
+    const view = await mount({ streaming: true });
+    await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
+    const box = view.container.querySelector<HTMLTextAreaElement>("[data-queue-item] textarea")!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "look at this instead");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-save]")!.click());
+    await settle();
+
+    // Fetched first, then staged back: the host's path is not something this
+    // machine can attach.
+    expect(previewRemote).toHaveBeenCalledWith({
+      desktopId: "desktop_a",
+      name: "shot.png",
+      path: "/Users/x/shot.png",
+      sessionId: "sess_1",
+    });
+    expect(upload).toHaveBeenCalledWith({ desktopId: "desktop_a", name: "shot.png", path: "/cache/shot.png" });
+    // The cancel happens after the files are here, not before.
+    expect(previewRemote.mock.invocationCallOrder[0]!)
+      .toBeLessThan(cancelQueued.mock.invocationCallOrder[0]!);
+    expect(prompt.mock.calls[0]![3]).toEqual(["upload_kept"]);
+    await view.unmount();
+  });
+
+  it("leaves the row alone when its files could not be fetched for an edit", async () => {
+    queueRows = [hostRow({
+      attachments: [{ kind: "image", name: "shot.png", path: "/Users/x/shot.png", size: 4096 }],
+      text: "look at this",
+    })];
+    previewRemote.mockRejectedValue(new Error("peer_not_connected"));
+    const view = await mount({ streaming: true });
+    await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
+    const box = view.container.querySelector<HTMLTextAreaElement>("[data-queue-item] textarea")!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "still look at this");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-save]")!.click());
+    await settle();
+
+    // Nothing left the queue: an edit that cannot carry the photos does not get
+    // to silently become "remove the photos".
+    expect(cancelQueued).not.toHaveBeenCalled();
+    expect(prompt).not.toHaveBeenCalled();
+    expect(view.text()).toContain("peer_not_connected");
+    await view.unmount();
+  });
+
+  /**
+   * The files of a waiting message, named before the run takes them.
+   *
+   * The host's path belongs to the host, so a click fetches the bytes into this
+   * app's preview cache and shows them the way a transcript chip would.
+   */
+  it("shows the files a waiting message carries", async () => {
+    queueRows = [hostRow({
+      attachments: [{ kind: "file", name: "notes.md", path: "/Users/x/notes.md", size: 12 }],
+    })];
+    const view = await mount({ streaming: true });
+    try {
+      const chip = view.container.querySelector<HTMLButtonElement>("[data-queue-attachment]")!;
+      expect(chip.textContent).toContain("notes.md");
+      await act(async () => chip.click());
+      await settle();
+      expect(previewRemote).toHaveBeenCalledWith({
+        desktopId: "desktop_a",
+        name: "notes.md",
+        path: "/Users/x/notes.md",
+        sessionId: "sess_1",
+      });
+      // Markdown has a reader in the overlay, so the fetched copy is what the
+      // overlay is pointed at (the overlay's own rendering is `filepreview`'s
+      // subject; here what matters is where the bytes came from).
+      expect(previewRemote.mock.calls[0]![0].path).toBe("/Users/x/notes.md");
+    }
+    finally {
+      await view.unmount();
+    }
   });
 
   it("starts a parked row now, on the host that parked it", async () => {

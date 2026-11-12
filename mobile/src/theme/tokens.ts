@@ -139,7 +139,38 @@ export const darkColors: Palette = {
   overlay: "rgba(0, 0, 0, 0.7)",
 };
 
-/** Syntax categories on the code surface (not status colours). */
+/**
+ * The colours a Git lane cycles through, in both schemes.
+ *
+ * A lane is a column in the history graph, and its colour is what lets a reader
+ * follow one line of work down the page without reading the glyphs. The set is
+ * the TUI Git panel's (`lane_colour` in `tui/src/workbench/screen.rs`): accent,
+ * iris, amber, green, red, purple — the order matters, because adjacent lanes
+ * must never share a colour and the cycle is what guarantees it.
+ *
+ * Six is not arbitrary either: a page of lanes past six reuses colours, but the
+ * lanes that collide are six columns apart, which reads as two different
+ * columns rather than as one line skipping a row.
+ */
+export type GraphPalette = readonly string[];
+
+export const lightGraphColors: GraphPalette = [
+  "#2563eb", // accent
+  "#0e7490", // iris
+  "#a16207", // amber
+  "#15803d", // green
+  "#b91c1c", // red
+  "#7e22ce", // purple
+];
+
+export const darkGraphColors: GraphPalette = [
+  "#60a5fa", // accent
+  "#38bdf8", // iris
+  "#fbbf24", // amber
+  "#4ade80", // green
+  "#f87171", // red
+  "#c084fc", // purple
+];
 export type CodePalette = {
   comment: string;
   keyword: string;

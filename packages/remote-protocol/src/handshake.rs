@@ -71,6 +71,12 @@ pub fn advertised_features(terminal: bool) -> Vec<&'static str> {
         // A reasoning row's body on demand. The catalogue says a row exists; this
         // flag is what says the text behind it can be fetched.
         crate::REASONING_FETCH_FEATURE,
+        // The session workspace's Git history, drawn as a lane graph. The
+        // catalogue cannot say whether a workspace is a repository (it is a
+        // property of the directory, not of the conversation), so the flag is
+        // what tells the phone the entry can be offered at all; whether *this*
+        // workspace has history is answered by the read itself.
+        crate::GIT_GRAPH_FEATURE,
     ];
     if terminal {
         features.push(crate::TERMINAL_FEATURE);

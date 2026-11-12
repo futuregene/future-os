@@ -30,7 +30,17 @@ import { requestRemotePeer } from "./remotePeerClient";
  */
 export const QUEUED_SEND_POLICY = "enqueue_coalescing";
 
-/** One message waiting behind a conversation's run, as the host reports it. */
+/** One file a waiting message carries, as the host reports it. */
+export interface RemoteQueueAttachment {
+  /** The host's own absolute path — what a download addresses, never opened here. */
+  path: string;
+  /** "image" | "file". */
+  kind: string;
+  name: string;
+  /** Byte size, or 0 when the host did not report one. */
+  size: number;
+}
+
 export interface RemoteQueueRow {
   runId: string;
   /** 1-based place in the queue, as the Agent reports it. */
@@ -39,6 +49,14 @@ export interface RemoteQueueRow {
   acceptedAt: string;
   /** The message as the Agent holds it (empty for an attachment-only send). */
   text: string;
+  /**
+   * The files the message carries, named by the host.
+   *
+   * `undefined` when this host's queue does not report them (a build older than
+   * the field): the panel then says an edit sends the words alone rather than
+   * claiming the message carries none. A message with no files reports `[]`.
+   */
+  attachments?: RemoteQueueAttachment[];
   /**
    * `queued` runs at the turn boundary. `stale…` waited too long: the Agent
    * parked it rather than spend credits on a message the conversation moved past,
@@ -99,6 +117,24 @@ export function isParkedRemoteQueueRow(row: RemoteQueueRow): boolean {
   return row.state.startsWith("stale");
 }
 
+function asAttachment(raw: unknown): RemoteQueueAttachment | null {
+  if (!raw || typeof raw !== "object")
+    return null;
+  const attachment = raw as Record<string, unknown>;
+  // A file with no path could neither be opened nor named again in a re-send, so
+  // it is dropped rather than drawn as a chip that does nothing.
+  if (typeof attachment.path !== "string" || !attachment.path)
+    return null;
+  return {
+    kind: typeof attachment.kind === "string" ? attachment.kind : "",
+    name: typeof attachment.name === "string" && attachment.name
+      ? attachment.name
+      : attachment.path.split(/[\\/]/).pop() || attachment.path,
+    path: attachment.path,
+    size: typeof attachment.size === "number" && attachment.size > 0 ? attachment.size : 0,
+  };
+}
+
 function asRow(raw: unknown): RemoteQueueRow | null {
   if (!raw || typeof raw !== "object")
     return null;
@@ -113,6 +149,11 @@ function asRow(raw: unknown): RemoteQueueRow | null {
     acceptedAt: typeof row.acceptedAt === "string" ? row.acceptedAt : "",
     text: typeof row.text === "string" ? row.text : "",
     state: typeof row.state === "string" && row.state ? row.state : "queued",
+    attachments: Array.isArray(row.attachments)
+      ? row.attachments.map(asAttachment).filter(
+          (attachment): attachment is RemoteQueueAttachment => attachment !== null,
+        )
+      : undefined,
   };
 }
 

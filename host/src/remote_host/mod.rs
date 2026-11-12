@@ -5,6 +5,9 @@ pub(crate) mod business;
 pub(crate) mod catalog;
 mod command_diagnostics;
 pub(crate) mod files;
+/// Read-only Git history for the phone's tunnel-graph sheet. Kept next to the
+/// file browser because it answers the same question from the same workspace.
+pub(crate) mod git_graph;
 #[cfg(test)]
 mod latency_probe;
 pub(crate) mod lean;

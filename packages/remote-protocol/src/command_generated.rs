@@ -118,6 +118,8 @@ pub struct IncomingCmd {
     pub cols: u32,
     /// Embedded terminal viewport height in cells (`terminal_create` / `terminal_update`).
     pub rows: u32,
+    /// The commit a `get_git_commit` read is about: a sha (abbreviated or full), never a path.
+    pub git_ref: String,
 }
 impl Default for IncomingCmd {
     fn default() -> Self {
@@ -198,6 +200,7 @@ impl Default for IncomingCmd {
             title: String::new(),
             cols: 0,
             rows: 0,
+            git_ref: String::new(),
         }
     }
 }

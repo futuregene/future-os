@@ -686,7 +686,12 @@ mod bridge_tests {
                 "segmented_content_v1",
                 // Advertised so a reasoning row only offers to open on a host
                 // that can actually answer the fetch.
-                "reasoning_fetch_v1"
+                "reasoning_fetch_v1",
+                // Advertised so the conversation's overflow menu only offers the
+                // Git history entry on a host that can answer it. Whether *this*
+                // workspace is a repository is answered by the read itself
+                // (`isRepo`), not by this flag.
+                "git_graph_v1"
             ]
         );
         assert!(bridge.handshake.active_flag().load(Ordering::Acquire));

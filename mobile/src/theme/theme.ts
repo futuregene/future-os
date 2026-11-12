@@ -2,10 +2,13 @@ import {
   FONT_SIZE_SCALE,
   darkCodeColors,
   darkColors,
+  darkGraphColors,
   lightCodeColors,
   lightColors,
+  lightGraphColors,
   type CodePalette,
   type FontSizePreference,
+  type GraphPalette,
   type Palette,
   type ThemeScheme,
 } from "./tokens";
@@ -26,6 +29,8 @@ export type Theme = {
   scheme: ThemeScheme;
   colors: Palette;
   codeColors: CodePalette;
+  /** The colours a Git lane cycles through; see `tokens.ts`. */
+  graphColors: GraphPalette;
   /** The message body scale at the reader's size. */
   chat: { fontSize: number; lineHeight: number };
   /** A design-time font size, at the reader's text size. */
@@ -60,6 +65,7 @@ export function buildTheme(scheme: ThemeScheme, textSize: FontSizePreference): T
     scheme,
     colors: scheme === "dark" ? darkColors : lightColors,
     codeColors: scheme === "dark" ? darkCodeColors : lightCodeColors,
+    graphColors: scheme === "dark" ? darkGraphColors : lightGraphColors,
     chat: { fontSize: scaleSize(chatType.fontSize), lineHeight: scaleSize(chatType.lineHeight) },
     // Font sizes and line heights take the same scale, so the leading a style
     // was designed with survives at every text size.
