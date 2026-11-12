@@ -89,6 +89,38 @@ def case_status(result):
     return result["status"]
 
 
+def case_outcome(history, max_attempts):
+    result = history[-1]
+    state = case_status(result)
+    failed_twice = len(history) >= 2 and all(
+        not row["grade"]["correct"] for row in history
+    )
+    retry_allowed = network_failure(result) and len(history) < max_attempts
+    passed = bool(result["grade"]["correct"])
+    reason = state
+    if state == "completed":
+        reason = None if passed else "incorrect_answer"
+    if state == "deferred":
+        reason = (
+            result.get("error_category")
+            or terminal_run_error(result)
+            or "network_error"
+        )
+        if result.get("benchmark_deadline_exceeded"):
+            reason = "benchmark_timeout"
+    return {
+        "passed": passed,
+        "attempts": len(history),
+        "max_attempts": max_attempts,
+        "failed_after_two_attempts": failed_twice,
+        "retry_allowed": retry_allowed,
+        "status": "failed_after_two_attempts"
+        if failed_twice and not retry_allowed
+        else state,
+        "failure_reason": reason,
+    }
+
+
 def attempt_path(out, group, case_id, attempt):
     return out / "groups" / group / case_id.replace(":", "-") / f"attempt-{attempt}"
 
@@ -238,6 +270,7 @@ def prepare(args):
             "harness_sha256": config["harness_sha256"],
             "allow_runner_update": args.allow_runner_update,
             "timeout": args.timeout,
+            "makeup_passes": args.makeup_passes,
             "routes": routes,
         }
     )
@@ -249,7 +282,7 @@ def frozen_inputs(config, allow_runner_update=False):
     inputs = {
         key: value
         for key, value in config.items()
-        if key not in {"jobs", "jobs_per_group", "timeout"}
+        if key not in {"jobs", "jobs_per_group", "timeout", "makeup_passes"}
     }
     inputs["harness_sha256"] = {
         name: sha
@@ -263,11 +296,14 @@ def frozen_inputs(config, allow_runner_update=False):
 def execute(args):
     profiles, identifiers, cases, jobs, routes = prepare(args)
     groups = list(profiles)
+    max_attempts = args.makeup_passes + 1
     histories = {}
     for group in groups:
         for identifier in identifiers:
             history = []
-            for attempt in range(1, args.makeup_passes + 2):
+            case_directory = attempt_path(args.out, group, identifier, 1).parent
+            attempts = list(case_directory.glob("attempt-*"))
+            for attempt in range(1, len(attempts) + 1):
                 result = (
                     attempt_path(args.out, group, identifier, attempt) / "result.json"
                 )
@@ -285,6 +321,7 @@ def execute(args):
             rows = [h for (name, _), h in histories.items() if name == group and h]
             latest = [h[-1] for h in rows]
             states = Counter(map(case_status, latest))
+            outcomes = [case_outcome(history, max_attempts) for history in rows]
             counts[group] = {
                 "binding": bindings.get(group, {}).get("baseline"),
                 "scheduled": len(identifiers),
@@ -296,7 +333,14 @@ def execute(args):
                     row["status"] == "completed" and not row["grade"]["parsed"]
                     for row in latest
                 ),
-                "network_pending": states["deferred"],
+                "network_pending": sum(row["retry_allowed"] for row in outcomes),
+                "failed_after_two_attempts": sum(
+                    row["failed_after_two_attempts"] for row in outcomes
+                ),
+                "network_exhausted": sum(
+                    network_failure(history[-1]) and len(history) >= max_attempts
+                    for history in rows
+                ),
                 "output_limits": states["output_limit"],
                 "empty_answers": states["empty_answer"],
                 "deadline_timeouts": sum(
@@ -317,6 +361,7 @@ def execute(args):
                 "jobs_per_group": args.jobs_per_group,
                 "routes": routes,
                 "timeout": args.timeout,
+                "max_attempts": max_attempts,
                 "error": error,
             },
         )
@@ -390,9 +435,19 @@ def execute(args):
         )
         return item, result
 
+    def mark_case(group, identifier):
+        history = histories[group, identifier]
+        if history:
+            write_json(
+                attempt_path(args.out, group, identifier, 1).parent
+                / "case-status.json",
+                case_outcome(history, max_attempts),
+            )
+
     def record(item, result):
         group, identifier, attempt = item
         histories[group, identifier].append(result)
+        mark_case(group, identifier)
         state = case_status(result)
         print(f"{group} {identifier} attempt-{attempt}: {state}", flush=True)
         progress(phase)
@@ -406,6 +461,8 @@ def execute(args):
             if history and case_status(history[-1]) not in CASE_OUTCOMES:
                 raise ValueError(f"Unresolved non-network failure: {key}")
         bind_clients()
+        for group, identifier in histories:
+            mark_case(group, identifier)
         phase = "first_pass_and_makeup" if routes else "first_pass"
         progress(phase)
         initial = [
@@ -448,15 +505,18 @@ def execute(args):
                 worker,
                 record,
             )
-        write_results(args.out, histories)
-        unresolved = any(network_failure(rows[-1]) for rows in histories.values())
+        write_results(args.out, histories, max_attempts)
+        unresolved = any(
+            case_outcome(rows, max_attempts)["retry_allowed"]
+            for rows in histories.values()
+        )
         progress("completed_with_network_errors" if unresolved else "completed")
     except Exception as error:
         progress("stopped", str(error))
         raise
 
 
-def write_results(out, histories):
+def write_results(out, histories, max_attempts):
     temporary = out / "results.csv.tmp"
     with temporary.open("w", encoding="utf-8", newline="") as handle:
         fields = [
@@ -467,20 +527,28 @@ def write_results(out, histories):
             "parsed",
             "attempts",
             "result",
+            "passed",
+            "failed_after_two_attempts",
+            "retry_allowed",
+            "failure_reason",
         ]
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         for (group, identifier), rows in histories.items():
             result = rows[-1]
-            state = case_status(result)
+            outcome = case_outcome(rows, max_attempts)
             writer.writerow(
                 {
                     "group": group,
                     "case_id": identifier,
-                    "status": result["status"] if state == "deferred" else state,
+                    "status": outcome["status"],
                     "correct": result["grade"]["correct"],
                     "parsed": result["grade"]["parsed"],
                     "attempts": len(rows),
+                    "passed": outcome["passed"],
+                    "failed_after_two_attempts": outcome["failed_after_two_attempts"],
+                    "retry_allowed": outcome["retry_allowed"],
+                    "failure_reason": outcome["failure_reason"],
                     "result": str(
                         (
                             attempt_path(out, group, identifier, len(rows))
