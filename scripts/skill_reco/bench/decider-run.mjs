@@ -27,7 +27,6 @@ import {
   Suggester,
   INSTRUCTIONS,
   NONE_OF_THESE,
-  NONE_GATE_THRESHOLD,
   STAGE1_REVISION,
   CHUNK_SIZE,
 } from "../suggest.mjs";
@@ -155,7 +154,7 @@ async function run() {
     roster: roster.skills.length,
     stage1: STAGE1_REVISION,
     chunk: CHUNK_SIZE,
-    gate: NONE_GATE_THRESHOLD,
+    gate: suggester.gate,
     // Recorded from 2026-11-09 on. Runs written before this field existed carry no concurrency
     // in their config, and are not re-run to acquire one: it is inferable from the command and
     // from the spacing of the record files (see docs/internals/skill_reco/decider-comparison.md).
@@ -206,7 +205,7 @@ async function run() {
       if (result.backend !== "gateway") {
         throw new Error(`${question.id}: fell back to local ranking (${suggester.note})`);
       }
-      const gate = result.gate.noneProbability < NONE_GATE_THRESHOLD ? result.top.map((entry) => entry.name) : [];
+      const gate = result.gate.noneProbability < result.gate.threshold ? result.top.map((entry) => entry.name) : [];
       fs.writeFileSync(
         path.join(dir, `${question.id}.json`),
         `${JSON.stringify(
