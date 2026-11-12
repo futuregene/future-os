@@ -854,8 +854,13 @@ export const demoTaskDetails = demoTasks.map(task => ({
  * cover the conversation under it — need a queue the fixture can hand over.
  * `?queue=<n>` (see `shot/mock/RemoteContext.tsx`) is what asks for one; the text
  * is the shape those rows really arrive in.
+ *
+ * `?queueFiles=1` gives the rows the files a message sent with photos really
+ * carries, which is the only way the panel's attachment chips can be drawn: an
+ * attachment-only row (the one that carried a picture with no words) first, then
+ * a message whose text and files travel together.
  */
-export function demoQueueRows(count: number) {
+export function demoQueueRows(count: number, withFiles = false) {
   return Array.from({ length: count }, (_, index) => ({
     runId: `run_queued_${index + 1}`,
     position: index + 1,
@@ -863,6 +868,22 @@ export function demoQueueRows(count: number) {
     text: "[future-goal] goal goal_4ce46c920eb8: 1 event(s). Reconcile current status before acting; events may be stale. Read the goal's own state before answering.",
     // `queued` runs at the next turn boundary; a `stale…` state parks the row.
     state: "queued",
+    ...(withFiles && index === 0
+      ? {
+          // The reported shape of an attachment-only send: no words, one photo.
+          attachments: [
+            { kind: "image", name: "IMG_2851.png", path: "/Users/demo/Pictures/IMG_2851.png", size: 1_843_200 },
+          ],
+          text: "",
+        }
+      : withFiles && index === 1
+        ? {
+            attachments: [
+              { kind: "image", name: "dashboard.png", path: "/Users/demo/Desktop/dashboard.png", size: 486_400 },
+              { kind: "file", name: "queue-notes.pdf", path: "/Users/demo/Documents/queue-notes.pdf", size: 2_310_144 },
+            ],
+          }
+        : {}),
   }));
 }
 

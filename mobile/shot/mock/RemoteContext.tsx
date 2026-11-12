@@ -326,6 +326,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // report it exists for — a burst long enough to cover the conversation — needs a
   // queue to draw.
   const queueSize = Number(new URLSearchParams(window.location.search).get("queue") ?? "") || 0;
+  // `?queueFiles=1` gives those rows the files a message sent with a photo really
+  // carries, so the panel's attachment chips can be drawn.
+  const queueFiles = new URLSearchParams(window.location.search).get("queueFiles") === "1";
   // `?multiTurnOlder=1` keeps one page of history above the multi-turn
   // conversation: the question-nav ↑ can then page it in for real.
   const withOlder = new URLSearchParams(window.location.search).get("multiTurnOlder") === "1";
@@ -542,7 +545,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     timeline,
     // Read once when the conversation opens, so the panel is drawn without a run
     // having to be in flight.
-    getQueue: async (): Promise<SessionQueueSnapshot> => ({ acks: [], rows: demoQueueRows(queueSize) }),
+    getQueue: async (): Promise<SessionQueueSnapshot> => ({ acks: [], rows: demoQueueRows(queueSize, queueFiles) }),
     timelinePending: false,
     timelineSyncStatus: "idle",
     timelineError: null,
