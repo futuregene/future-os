@@ -48,6 +48,9 @@ pub(crate) use events::{
 };
 
 pub mod device_identity;
+/// Read-only Git history as a lane graph: the TUI's `/git` algorithm, shared by
+/// the phone's sheet and the desktop window's history view.
+pub mod git_history;
 pub mod git_review;
 pub mod instance;
 pub mod shadow_review;

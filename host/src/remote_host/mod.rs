@@ -5,9 +5,10 @@ pub(crate) mod business;
 pub(crate) mod catalog;
 mod command_diagnostics;
 pub(crate) mod files;
-/// Read-only Git history for the phone's tunnel-graph sheet. Kept next to the
-/// file browser because it answers the same question from the same workspace.
-pub(crate) mod git_graph;
+/// Read-only Git history. The algorithm lives at [`crate::git_history`] because
+/// the desktop window draws the same history the phone's sheet does; this alias
+/// keeps the phone's route pointing at it under the name it was written with.
+pub(crate) use crate::git_history as git_graph;
 #[cfg(test)]
 mod latency_probe;
 pub(crate) mod lean;
