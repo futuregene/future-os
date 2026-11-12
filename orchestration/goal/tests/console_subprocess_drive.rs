@@ -236,6 +236,201 @@ fn worker_bridge_rejects_a_result_for_a_different_todo() {
     );
 }
 
+/// Set up a goal whose only runnable work is one scout todo, and return it.
+/// The bootstrap todo is superseded so the bridge's own decision selects the
+/// scout (the bridge refuses a result naming a todo it did not select).
+fn goal_with_one_scout(root: &str, text: &str) -> (String, String) {
+    let gid = init_goal(root, "bridge scout floor");
+    let store = future_goal::store::Store::open(root).unwrap();
+    let bootstrap = store.replay(&gid).unwrap().unwrap().todos[0].id.clone();
+    assert_eq!(
+        run(
+            root,
+            &[
+                "todo",
+                "supersede",
+                "--goal",
+                &gid,
+                "--todo-id",
+                &bootstrap,
+                "--reason",
+                "setup",
+            ],
+        )
+        .2,
+        0
+    );
+    assert_eq!(
+        run(
+            root,
+            &[
+                "todo",
+                "add",
+                "--goal",
+                &gid,
+                "--text",
+                text,
+                "--class",
+                "scout",
+                "--kill-when",
+                "the candidate layouts are measured",
+            ],
+        )
+        .2,
+        0
+    );
+    let scout = store
+        .replay(&gid)
+        .unwrap()
+        .unwrap()
+        .todos
+        .iter()
+        .find(|t| t.text == text)
+        .expect("the scout was added")
+        .id
+        .clone();
+    assert_eq!(
+        store
+            .replay(&gid)
+            .unwrap()
+            .unwrap()
+            .todo(&scout)
+            .unwrap()
+            .class,
+        future_goal::state::TaskClass::Scout
+    );
+    (gid, scout)
+}
+
+/// The stdio bridge is the SECOND automatic writeback path (the first is
+/// `future goal run`), and it selects from the same frontier
+/// `runnable_advancement_for`, where a scout is runnable work. A scout that
+/// reports `completed` having recorded nothing in the direction ledger must be
+/// refused here exactly as the other two entry points refuse it — otherwise the
+/// bridge stays a door a scout closes through with no proposal, no direction and
+/// no trace that the exploration happened.
+#[test]
+fn worker_bridge_refuses_a_scout_that_recorded_no_proposal() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    let (gid, scout) = goal_with_one_scout(root, "explore storage layouts");
+    let store = future_goal::store::Store::open(root).unwrap();
+
+    let input = format!(
+        "{}\nBRIDGE done\n",
+        serde_json::json!({
+            "todo_id": scout,
+            "terminal_state": "completed",
+            "evidence": "read three benchmark papers; no direction recorded yet",
+        })
+    );
+    let (out, err, code) = run_stdin(root, &["worker-bridge", "--goal", &gid], &input);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("BRIDGE writeback"), "{out}");
+
+    let after = store.replay(&gid).unwrap().unwrap();
+    let record = after.history.last().unwrap();
+    let error = record
+        .error
+        .as_deref()
+        .expect("the refusal must be the run error");
+    assert!(
+        error.contains("no direction proposal names it"),
+        "the refusal must name the missing proposal: {error}"
+    );
+    assert!(
+        error.contains(&scout),
+        "the refusal must name the scout it is about: {error}"
+    );
+    assert!(
+        !future_goal::executor::turn_succeeded(record),
+        "a scout with no proposal is not a successful turn"
+    );
+    // A rejection, not an aborted turn: the worker's own report is retained in
+    // full, only the closure is refused — and the run is classified as a hard
+    // error so the repair budget is charged, not silently refunded.
+    assert_eq!(record.terminal_state, "completed");
+    assert_eq!(
+        record.evidence,
+        "read three benchmark papers; no direction recorded yet"
+    );
+    assert_eq!(
+        record.failure_kind,
+        Some(future_goal::state::FailureKind::HardError)
+    );
+    assert_eq!(
+        after.todo(&scout).unwrap().status,
+        future_goal::state::TodoStatus::Open,
+        "the scout must stay open for a bounded retry"
+    );
+}
+
+/// The other side of the same gate: a scout that DID record a proposal naming it
+/// completes normally through the bridge — the floor blocks empty exploration,
+/// not exploration.
+#[test]
+fn worker_bridge_completes_a_scout_that_recorded_a_proposal() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    let (gid, scout) = goal_with_one_scout(root, "explore storage layouts");
+    let store = future_goal::store::Store::open(root).unwrap();
+
+    let (out, err, code) = run(
+        root,
+        &[
+            "direction",
+            "propose",
+            "--goal",
+            &gid,
+            "--scout-todo",
+            &scout,
+            "--trigger",
+            "stall",
+            "--question",
+            "which storage layout should the next milestone build on?",
+            "--observation",
+            "a log-structured layout fits the measured write budget",
+            "--candidate",
+            "log structured store with measured append throughput|advancement|fork||append \
+             throughput measured on the real corpus",
+        ],
+    );
+    assert_eq!(code, 0, "{err}{out}");
+    assert_eq!(
+        store.direction_ledger(&gid).unwrap().entries.len(),
+        1,
+        "the proposal must be on the ledger before the turn"
+    );
+
+    let input = format!(
+        "{}\nBRIDGE done\n",
+        serde_json::json!({
+            "todo_id": scout,
+            "terminal_state": "completed",
+            "evidence": "proposed one direction with its kill condition; see direction list",
+        })
+    );
+    let (out, err, code) = run_stdin(root, &["worker-bridge", "--goal", &gid], &input);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("BRIDGE writeback"), "{out}");
+
+    let after = store.replay(&gid).unwrap().unwrap();
+    let record = after.history.last().unwrap();
+    assert_eq!(
+        record.error, None,
+        "a recorded proposal satisfies the floor"
+    );
+    assert!(
+        future_goal::executor::turn_succeeded(record),
+        "the scout's turn must count as a success"
+    );
+    assert_eq!(
+        after.todo(&scout).unwrap().status,
+        future_goal::state::TodoStatus::Done,
+        "a scout with a proposal closes through the bridge"
+    );
+}
+
 /// The bridge decides which todo a turn is for BEFORE it reads the worker's
 /// result line, and it re-reads the goal at writeback. An out-of-band operator
 /// action inside that window (here: the goal's state is replaced, so the ids the

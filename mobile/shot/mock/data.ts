@@ -845,3 +845,24 @@ export const demoTaskDetails = demoTasks.map(task => ({
   conversationMode: demoTaskDetail.conversationMode,
 }));
 
+/**
+ * The messages a session is holding behind its running turn, as `get_queue`
+ * reports them.
+ *
+ * The panel above the composer only exists while a queue has rows, so the states
+ * worth a capture — a short queue, and the burst of goal pokes long enough to
+ * cover the conversation under it — need a queue the fixture can hand over.
+ * `?queue=<n>` (see `shot/mock/RemoteContext.tsx`) is what asks for one; the text
+ * is the shape those rows really arrive in.
+ */
+export function demoQueueRows(count: number) {
+  return Array.from({ length: count }, (_, index) => ({
+    runId: `run_queued_${index + 1}`,
+    position: index + 1,
+    acceptedAt: new Date(now - (count - index) * 20 * minute).toISOString(),
+    text: "[future-goal] goal goal_4ce46c920eb8: 1 event(s). Reconcile current status before acting; events may be stale. Read the goal's own state before answering.",
+    // `queued` runs at the next turn boundary; a `stale…` state parks the row.
+    state: "queued",
+  }));
+}
+

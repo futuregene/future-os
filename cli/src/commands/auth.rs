@@ -175,36 +175,79 @@ pub async fn login(platform_url_override: Option<String>, out: &Output) -> Resul
     Err("Device authorization expired.".to_string())
 }
 
-/// `status()` — show login state.
-pub async fn status(out: &Output) -> Result<(), String> {
-    let result: Result<(), String> = async {
+/// `status(json)` — show login state.
+///
+/// Three states, because "not logged in" used to cover two different facts and
+/// the difference decides what the reader should do: no entry at all (log in),
+/// an entry whose `key` is gone (the credential was cleared — log in; this is
+/// exactly the state the 2026-11-10 incident left behind), or a live
+/// credential. `--json` reports the same three as one machine-readable object.
+pub async fn status(json: bool, out: &Output) -> Result<(), String> {
+    let auth_file_path = auth_file_path();
+    let state: Result<Option<(String, String)>, String> = async {
         let auth_file = load_auth_file().await?;
-        let auth = get_future_auth_entry(&auth_file);
-        let Some(auth) = auth else {
-            out.log("Not logged in.");
-            return Ok(());
+        let Some(auth) = get_future_auth_entry(&auth_file) else {
+            return Ok(None);
         };
         if auth.key.is_none() {
-            out.log("Not logged in.");
-            return Ok(());
+            return Ok(None);
         }
         // `auth.base_url ? auth.base_url.replace(/\/api\/?$/, "") : await getPlatformUrl()`
         let platform_url = match &auth.base_url {
             Some(base_url) => strip_api_suffix(base_url),
             None => get_platform_url(None).await,
         };
-        out.log(&format!("Platform: {platform_url}"));
-        out.log(&format!("API: {platform_url}/api/v1"));
-        Ok(())
+        Ok(Some((
+            platform_url.clone(),
+            format!("{platform_url}/api/v1"),
+        )))
     }
     .await;
-    match result {
-        Ok(()) => Ok(()),
-        Err(_) => {
-            out.log("Not logged in.");
-            Ok(())
-        }
+
+    // A `key`-less entry is a fourth case: the file exists and names the
+    // provider, but holds no credential.
+    let has_entry = load_auth_file()
+        .await
+        .ok()
+        .map(|file| get_future_auth_entry(&file).is_some())
+        .unwrap_or(false);
+    let state = state.ok().flatten();
+
+    if json {
+        let document = match &state {
+            Some((platform, api)) => json!({
+                "loggedIn": true,
+                "platform": platform,
+                "api": api,
+                "authFile": auth_file_path.display().to_string(),
+            }),
+            None => json!({
+                "loggedIn": false,
+                "reason": if has_entry { "credential-cleared" } else { "no-credential" },
+                "authFile": auth_file_path.display().to_string(),
+            }),
+        };
+        out.log(&serde_json::to_string_pretty(&document).expect("json serializes"));
+        return Ok(());
     }
+
+    match state {
+        Some((platform, api)) => {
+            out.log(&format!("Platform: {platform}"));
+            out.log(&format!("API: {api}"));
+        }
+        None if has_entry => {
+            // The entry survived but its key did not: say which file, and what
+            // fixes it, instead of the ambiguous "Not logged in."
+            out.log(&format!(
+                "Not logged in: {} has a future entry with no credential.",
+                auth_file_path.display()
+            ));
+            out.log("Run `future auth login` to sign in again.");
+        }
+        None => out.log("Not logged in."),
+    }
+    Ok(())
 }
 
 /// `credential({ json })` — output the API key + endpoint for scripting.
@@ -334,6 +377,7 @@ async fn logout_via_file(out: &Output) -> Result<(), String> {
         "Removed Future API key from {}",
         auth_file_path().display()
     ));
+    out.log("Run `future auth login` to sign in again.");
     Ok(())
 }
 
@@ -853,9 +897,14 @@ mod tests {
 
         let (code, stdout, _) = run(&["auth", "logout"]).await;
         assert_eq!(code, 0);
+        // Logging out names the way back in: after this the next command anyone
+        // runs is `auth login`, so the command says it.
         assert_eq!(
             stdout,
-            format!("Removed Future API key from {}\n", path.display())
+            format!(
+                "Removed Future API key from {}\nRun `future auth login` to sign in again.\n",
+                path.display()
+            )
         );
         // Other providers untouched; future entry keeps type + base_url.
         let after: Value =
@@ -1532,13 +1581,27 @@ mod tests {
             format!("Platform: {DEFAULT_PLATFORM_URL}\nAPI: {DEFAULT_PLATFORM_URL}/api/v1\n")
         );
 
-        // Entry present but key missing → Not logged in.
+        // Entry present but key missing is its own state — the one the
+        // 2026-11-10 incident left behind — and it names the file and the fix
+        // instead of the ambiguous "Not logged in."
         tokio::fs::write(&path, "{\"future\": {\"type\": \"api_key\"}}")
             .await
             .unwrap();
         let (code, stdout, _) = run(&["auth", "status"]).await;
         assert_eq!(code, 0);
-        assert_eq!(stdout, "Not logged in.\n");
+        assert_eq!(
+            stdout,
+            format!(
+                "Not logged in: {} has a future entry with no credential.\nRun `future auth login` to sign in again.\n",
+                path.display()
+            )
+        );
+        // The machine-readable form says which of the two states it is.
+        let (code, stdout, _) = run(&["auth", "status", "--json"]).await;
+        assert_eq!(code, 0);
+        let document: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(document["loggedIn"], serde_json::json!(false));
+        assert_eq!(document["reason"], "credential-cleared");
         let (code, stdout, _) = run(&["auth", "credential"]).await;
         assert_eq!(code, 0);
         assert_eq!(stdout, "Not logged in.\n");

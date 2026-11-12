@@ -9,6 +9,7 @@ import { PausedTimeline } from "../../components/PausedTimeline";
 import { ErrorBanner } from "../../components/ErrorBanner";
 import { StandbyNotice } from "../../components/StandbyNotice";
 import { useRemote, useRemoteControls } from "../../remote/RemoteContext";
+import { readableDeviceName } from "../../remote/deviceName";
 import { modelReference, type MobileAttachment, type TimelineItem } from "../../remote/types";
 import { spacing } from "../../theme/tokens";
 import { useTransferProgress } from "./useTransferProgress";
@@ -240,7 +241,7 @@ export function ChatScreen() {
   const changeQueue = useCallback((action: () => Promise<void>) => {
     void action()
       .catch((error: unknown) => {
-        const failure = sendFailureText(error, remote.presence?.holder?.name?.trim());
+        const failure = sendFailureText(error, readableDeviceName(remote.presence?.holder?.name));
         showToast(t(failure.key, failure.params));
       })
       .finally(refreshQueue);

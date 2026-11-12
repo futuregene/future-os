@@ -170,6 +170,31 @@ fn runtime_instances_isolate_access_identity_and_declared_capabilities() {
     assert!(b.access_current());
 }
 
+/// The device list names a device by what it declared, and the page has wording
+/// of its own for one that declared nothing. A declaration the wire mangled has
+/// to leave that slot empty — otherwise the leftovers are rendered as the
+/// device's name (`FutureOS Desktop (␦␦␦␦␦␦ļ␦)` was a real one), which names
+/// the machine worse than "unknown" does.
+///
+/// Through the call site rather than the pure rule: what matters is the slot the
+/// status page reads.
+#[test]
+fn a_mangled_declaration_leaves_the_device_unnamed() {
+    let runtime = Arc::new(MemoryRuntime::default());
+    record_client_identity(
+        runtime.as_ref(),
+        "pair_fixture",
+        &IncomingCmd {
+            device_name:
+                "FutureOS Desktop (\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{13c}\u{fffd})"
+                    .into(),
+            device_kind: "desktop".into(),
+            ..Default::default()
+        },
+    );
+    assert!(runtime.identity.lock().unwrap().is_none());
+}
+
 #[test]
 fn operator_gzip_is_scoped_to_the_runtime_serving_the_request() {
     let compress: Arc<dyn CommandRuntime> = Arc::new(MemoryRuntime {

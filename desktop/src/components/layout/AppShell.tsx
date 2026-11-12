@@ -52,7 +52,7 @@ import { RemoteHubView } from "../../features/remote/RemoteHubView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { SkillsView } from "../../features/skills/SkillsView";
 import { TasksView } from "../../features/tasks/TasksView";
-import { terminalScope } from "../../features/terminal/panelTarget";
+import { remoteTerminalUnsupported, terminalScope } from "../../features/terminal/panelTarget";
 import { RemoteTerminalPanel, TerminalPanel } from "../../features/terminal/TerminalPanel";
 import { TerminalToggleButton } from "../../features/terminal/TerminalToggleButton";
 import { useTerminalPanel } from "../../features/terminal/useTerminalPanel";
@@ -162,6 +162,8 @@ function ReadyAppShell({
   // The remote peer's own namespace: its strings describe another machine, and
   // folding them into `layout` would put them where no other remote string is.
   const { t: tRemotePeer } = useTranslation("remotePeer");
+  /** The terminal's own words: the header's disabled affordance needs a key. */
+  const { t: tTerminal } = useTranslation("terminal");
   // The local new-conversation screen's words, for its remote twin: a draft on
   // another machine is titled and described exactly as this machine's is, and
   // its header reads "新对话" for the same reason.
@@ -690,7 +692,7 @@ function ReadyAppShell({
   // to the new-chat / skills / phone-control views. A remote conversation's
   // shells run on *its* machine, which is why the target names a host rather
   // than a local thread id (see `terminalScope`).
-  const terminalTarget = terminalScope({
+  const terminalInput = {
     section,
     centerMode,
     threadId: activeThread?.id,
@@ -701,10 +703,15 @@ function ReadyAppShell({
           terminalSupported: (activeRemotePeer?.features ?? []).includes("terminal_v1"),
         }
       : null,
-  });
+  };
+  const terminalTarget = terminalScope(terminalInput);
   // Preferences are per conversation, and a remote conversation's key is
   // namespaced by host, so the two machines never share one panel state.
   const terminalPanel = useTerminalPanel(terminalTarget?.key ?? null);
+  // A remote conversation whose host serves no shells: the header says so
+  // instead of leaving the control out. An absent button and a broken one look
+  // the same, which is exactly how this was reported.
+  const terminalUnavailable = remoteTerminalUnsupported(terminalInput);
   const terminalHeaderAction = terminalTarget
     ? (
         <TerminalToggleButton
@@ -713,7 +720,20 @@ function ReadyAppShell({
           shortcut={terminalPanel.shortcut}
         />
       )
-    : null;
+    : terminalUnavailable && activeRemote
+      ? (
+          <TerminalToggleButton
+            onToggle={terminalPanel.toggle}
+            open={false}
+            shortcut=""
+            unavailableReason={tTerminal("unsupported", {
+              machine: activeRemotePeer
+                ? peerBadgeText(activeRemotePeer, activeRemote.desktopId)
+                : activeRemote.desktopId,
+            })}
+          />
+        )
+      : null;
 
   /**
    * Which machine a local conversation is on — this one.

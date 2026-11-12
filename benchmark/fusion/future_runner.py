@@ -15,6 +15,10 @@ BASE_MODEL = "future/deepseek-flash"
 BASE_THINKING = "max"
 
 
+class RunDeadlineExceeded(RuntimeError):
+    pass
+
+
 class Future:
     def __init__(
         self, binary, runtime=None, model=None, thinking=None, full_trace=False
@@ -39,6 +43,7 @@ class Future:
             text=True,
             encoding="utf-8",
             capture_output=True,
+            check=False,
             timeout=timeout,
         )
         if proc.returncode:
@@ -102,6 +107,59 @@ class Future:
             ]
         )
 
+    def terminal_output(self, session, run_id):
+        ledger = self.call(
+            [
+                "session",
+                "transcript",
+                "--session",
+                session,
+                "--runs",
+                "--all",
+                "--max-bytes",
+                "0",
+                "--json",
+            ]
+        )
+        if ledger.get("hasMore"):
+            raise RuntimeError("Incomplete run ledger during terminal recovery")
+        run = next(
+            (row for row in ledger.get("ledger", []) if row.get("runId") == run_id), {}
+        )
+        state = run.get("status")
+        if state in {"failed", "error", "interrupted", "cancelled"}:
+            raise RuntimeError(
+                f"run {run_id} ended as error: {run.get('error') or state}"
+            )
+        if state != "completed":
+            return None
+        transcript = self.transcript(session)
+        if transcript.get("hasMore"):
+            raise RuntimeError("Incomplete transcript during terminal recovery")
+        answers = [
+            "\n".join(
+                block.get("text", "")
+                for block in entry.get("blocks", [])
+                if block.get("kind") == "text"
+            )
+            for entry in transcript.get("entries", [])
+            if entry.get("runId") == run_id and entry.get("role") == "assistant"
+        ]
+        text = next((answer for answer in reversed(answers) if answer.strip()), "")
+        if not text:
+            raise RuntimeError(
+                f"run {run_id} ended as empty_answer: terminal transcript has no final answer"
+            )
+        return {
+            "sessionId": session,
+            "runId": run_id,
+            "text": text,
+            "finishReason": "answer",
+            "messages": [],
+            "benchmark_recovered_from": "terminal_transcript",
+            "benchmark_run_duration_ms": run.get("durationMs"),
+        }
+
     def wait(self, session, run_id, timeout, fusion=False):
         # CLI has a 300s event-idle limit independent of its --timeout. Reattach
         # to the same accepted run on that read-only transport failure; never
@@ -109,8 +167,26 @@ class Future:
         deadline = time.monotonic() + timeout if timeout else None
         reconnects = 0
         while True:
+            recovered = self.terminal_output(session, run_id)
+            if recovered is not None:
+                recovered["benchmark_wait_reconnects"] = reconnects
+                return recovered
+            if deadline and time.monotonic() >= deadline:
+                self.call(["session", "abort", session], json_output=False)
+                try:
+                    recovered = self.terminal_output(session, run_id)
+                except RuntimeError as error:
+                    raise RunDeadlineExceeded(
+                        f"Benchmark deadline exceeded for run {run_id}"
+                    ) from error
+                if recovered is not None:
+                    recovered["benchmark_wait_reconnects"] = reconnects
+                    return recovered
+                raise RunDeadlineExceeded(
+                    f"Benchmark deadline exceeded for run {run_id}"
+                )
             remaining = max(1, int(deadline - time.monotonic())) if deadline else 300
-            read_timeout = min(60 if fusion else 300, remaining)
+            read_timeout = min(60, remaining)
             try:
                 output = self.call(
                     [
@@ -131,9 +207,7 @@ class Future:
             except RuntimeError as error:
                 idle = "Event stream timed out waiting for an event" in str(error)
                 read_expired = "Timed out waiting for run" in str(error)
-                if not (idle or read_expired) or (
-                    deadline and time.monotonic() >= deadline
-                ):
+                if not (idle or read_expired):
                     raise
                 reconnects += 1
                 # Observe the same daily run through a failed consultation too.
@@ -153,6 +227,10 @@ class Future:
             )
         directory.mkdir(parents=True, exist_ok=resume)
         (directory / ".gitignore").write_text("*\n", encoding="utf-8")
+        write_json(
+            directory / "model-binding.json",
+            {"model": self.model, "thinking_level": self.thinking},
+        )
         workspace = directory / "workspace"
         workspace.mkdir(exist_ok=resume)
         prompt = prompt_for(case)
@@ -208,7 +286,18 @@ class Future:
                 write_json(directory / "ack.json", ack)
             session = ack["sessionId"]
             result.update(session_id=session, run_id=ack["runId"])
-            output = self.wait(session, ack["runId"], timeout, fusion=arm == "fusion")
+            wait_timeout = (
+                max(
+                    1,
+                    timeout
+                    - int(time.time() - (directory / "ack.json").stat().st_mtime),
+                )
+                if timeout
+                else 0
+            )
+            output = self.wait(
+                session, ack["runId"], wait_timeout, fusion=arm == "fusion"
+            )
             answer_received = True
             write_json(directory / "output.json", output)
             result["answer_wall_seconds"] = time.monotonic() - started
@@ -313,6 +402,12 @@ class Future:
                 result.update(status="completed", grade=result["outer_grade"])
         except (RuntimeError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
             result["error"] = str(error)
+            if isinstance(error, RunDeadlineExceeded) and session:
+                try:
+                    self.call(["session", "abort", session], json_output=False)
+                    result["benchmark_deadline_exceeded"] = True
+                except (RuntimeError, subprocess.TimeoutExpired) as abort_error:
+                    result["abort_error"] = str(abort_error)
             if submitting and not result.get("run_id"):
                 result["submission_uncertain"] = True
             # CLI wait errors can hide the upstream HTTP status. Use the accepted
@@ -332,6 +427,8 @@ class Future:
                             "--json",
                         ]
                     )
+                    if ledger.get("hasMore"):
+                        raise ValueError("Incomplete terminal failure ledger")
                     write_json(directory / "failure-ledger.json", ledger)
                     result["parent_usage_ledger"] = ledger
                     result["parent_usage"] = sum_usage(

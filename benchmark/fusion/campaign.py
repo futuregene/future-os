@@ -41,6 +41,13 @@ def terminal_run_error(result):
 
 def network_failure(result):
     # A CLI read failure or an ambiguous submission might still be running.
+    if (
+        result.get("benchmark_deadline_exceeded")
+        and not result.get("failure_evidence_error")
+        and run_ledger_entry(result).get("status")
+        in {"interrupted", "cancelled", "failed", "error"}
+    ):
+        return True
     terminal_error = terminal_run_error(result).lower()
     if not terminal_error:
         return False
@@ -102,32 +109,68 @@ def read_profiles(path):
     return profiles
 
 
-def run_window(items, jobs, jobs_per_group, worker, record):
-    if jobs_per_group is None:
+def read_routes(args, profiles):
+    if args.routes is None:
+        return {}
+    routes = read_json(args.routes)
+    if set(routes) != set(profiles):
+        raise ValueError("Routes must cover exactly the frozen profile groups")
+    for group, lanes in routes.items():
+        if not isinstance(lanes, list) or not lanes:
+            raise ValueError(f"Missing provider routes for {group}")
+        for lane in lanes:
+            if (
+                set(lane) != {"model", "thinking_level", "jobs"}
+                or not isinstance(lane["model"], str)
+                or not lane["model"]
+                or lane["thinking_level"] != profiles[group]["thinking_level"]
+                or type(lane["jobs"]) is not int
+                or lane["jobs"] < 1
+            ):
+                raise ValueError(f"Invalid provider route for {group}")
+        if len({lane["model"] for lane in lanes}) != len(lanes):
+            raise ValueError(f"Duplicate provider route for {group}")
+    return routes
+
+
+def run_window(items, jobs, jobs_per_group, routes, worker, record):
+    if jobs_per_group is None and not routes:
         queues = {None: iter(items)}
     else:
         grouped = defaultdict(list)
         for item in items:
             grouped[item[0]].append(item)
         queues = {group: iter(rows) for group, rows in grouped.items()}
-    slots = jobs if jobs_per_group is None else jobs_per_group
+    lanes = (
+        [
+            (f"{group}/{index}", group, route["jobs"])
+            for group, rows in routes.items()
+            for index, route in enumerate(rows)
+        ]
+        if routes
+        else [
+            (group, group, jobs if jobs_per_group is None else jobs_per_group)
+            for group in queues
+        ]
+    )
     # Bound submissions so a protocol, billing, or storage error can stop new work.
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         pending = {}
-        for _ in range(slots):
-            for group, queue in queues.items():
+        for lane, group, slots in lanes:
+            queue = queues.get(group, iter(()))
+            for _ in range(slots):
                 item = next(queue, None)
                 if item is not None:
-                    pending[pool.submit(worker, item)] = group
+                    pending[pool.submit(worker, item, lane)] = (lane, group)
         while pending:
             done, _ = wait(pending, return_when=FIRST_COMPLETED)
             for future in done:
                 record(*future.result())
             for future in done:
-                group = pending.pop(future)
+                lane, group = pending.pop(future)
                 item = next(queues[group], None)
                 if item is not None:
-                    pending[pool.submit(worker, item)] = group
+                    pending[pool.submit(worker, item, lane)] = (lane, group)
 
 
 def prepare(args):
@@ -137,11 +180,12 @@ def prepare(args):
         bbeh_module()
     identifiers = [case["id"] for case in suite["cases"]]
     profiles = read_profiles(args.profiles)
-    jobs = (
-        args.jobs
-        if args.jobs_per_group is None
-        else len(profiles) * args.jobs_per_group
-    )
+    routes = read_routes(args, profiles)
+    jobs = args.jobs
+    if args.jobs_per_group is not None:
+        jobs = len(profiles) * args.jobs_per_group
+    if routes:
+        jobs = sum(lane["jobs"] for lanes in routes.values() for lane in lanes)
     config = {
         "suite": suite,
         "bundle_sha256": digest(bundle),
@@ -161,7 +205,9 @@ def prepare(args):
     if manifest.exists():
         original = read_json(manifest)["configuration"]
         # The scheduler can evolve without changing what any model sees or how it is scored.
-        if frozen_inputs(original) != frozen_inputs(config):
+        if frozen_inputs(original, args.allow_runner_update) != frozen_inputs(
+            config, args.allow_runner_update
+        ):
             raise ValueError(
                 "Campaign inputs changed; use the frozen settings to resume"
             )
@@ -189,28 +235,33 @@ def prepare(args):
             "jobs": jobs,
             "jobs_per_group": args.jobs_per_group,
             "campaign_sha256": config["harness_sha256"]["campaign.py"],
+            "harness_sha256": config["harness_sha256"],
+            "allow_runner_update": args.allow_runner_update,
+            "timeout": args.timeout,
+            "routes": routes,
         }
     )
     write_json(runs_path, runs)
-    return profiles, identifiers, cases, jobs
+    return profiles, identifiers, cases, jobs, routes
 
 
-def frozen_inputs(config):
+def frozen_inputs(config, allow_runner_update=False):
     inputs = {
         key: value
         for key, value in config.items()
-        if key not in {"jobs", "jobs_per_group"}
+        if key not in {"jobs", "jobs_per_group", "timeout"}
     }
     inputs["harness_sha256"] = {
         name: sha
         for name, sha in config["harness_sha256"].items()
         if name != "campaign.py"
+        and not (allow_runner_update and name == "future_runner.py")
     }
     return inputs
 
 
 def execute(args):
-    profiles, identifiers, cases, jobs = prepare(args)
+    profiles, identifiers, cases, jobs, routes = prepare(args)
     groups = list(profiles)
     histories = {}
     for group in groups:
@@ -248,6 +299,9 @@ def execute(args):
                 "network_pending": states["deferred"],
                 "output_limits": states["output_limit"],
                 "empty_answers": states["empty_answer"],
+                "deadline_timeouts": sum(
+                    bool(row.get("benchmark_deadline_exceeded")) for row in latest
+                ),
                 "other_errors": states["error"],
                 "first_pass_network_errors": sum(network_failure(h[0]) for h in rows),
             }
@@ -261,6 +315,8 @@ def execute(args):
                 "groups": counts,
                 "jobs": jobs,
                 "jobs_per_group": args.jobs_per_group,
+                "routes": routes,
+                "timeout": args.timeout,
                 "error": error,
             },
         )
@@ -285,11 +341,51 @@ def execute(args):
                 f"Bound {group}: {profile['model']} {profile['thinking_level']}",
                 flush=True,
             )
+        lane_bindings = {}
+        for group, lanes in routes.items():
+            for index, route in enumerate(lanes):
+                key = f"{group}/{index}"
+                client = Future(
+                    args.binary,
+                    args.runtime,
+                    route["model"],
+                    route["thinking_level"],
+                    full_trace=True,
+                )
+                lane_bindings[key] = client.preflight(single_only=True)
+                clients[key] = client
+                print(
+                    f"Bound route {key}: {route['model']} {route['thinking_level']} jobs={route['jobs']}",
+                    flush=True,
+                )
+        if lane_bindings:
+            route_log = args.out / "route-bindings.json"
+            snapshots = read_json(route_log) if route_log.exists() else []
+            snapshots.append(
+                {
+                    "at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "bindings": lane_bindings,
+                }
+            )
+            write_json(route_log, snapshots)
 
-    def worker(item):
+    def worker(item, lane):
         group, identifier, attempt = item
         path = attempt_path(args.out, group, identifier, attempt)
-        result = clients[group].run_case(
+        client = clients[lane or group]
+        if (path / "ack.json").exists():
+            binding_path = path / "model-binding.json"
+            binding = (
+                read_json(binding_path) if binding_path.exists() else profiles[group]
+            )
+            client = Future(
+                args.binary,
+                args.runtime,
+                binding["model"],
+                binding["thinking_level"],
+                full_trace=True,
+            )
+        result = client.run_case(
             cases[identifier], "single", path, args.timeout, resume=path.exists()
         )
         return item, result
@@ -310,17 +406,27 @@ def execute(args):
             if history and case_status(history[-1]) not in CASE_OUTCOMES:
                 raise ValueError(f"Unresolved non-network failure: {key}")
         bind_clients()
-        phase = "first_pass"
+        phase = "first_pass_and_makeup" if routes else "first_pass"
         progress(phase)
+        initial = [
+            (group, identifier, len(history) + 1)
+            for (group, identifier), history in histories.items()
+            if routes
+            and history
+            and len(history) <= args.makeup_passes
+            and network_failure(history[-1])
+        ]
+        initial.extend(
+            (group, identifier, 1)
+            for identifier in identifiers
+            for group in groups
+            if not histories[group, identifier]
+        )
         run_window(
-            (
-                (group, identifier, 1)
-                for identifier in identifiers
-                for group in groups
-                if not histories[group, identifier]
-            ),
+            initial,
             jobs,
             args.jobs_per_group,
+            routes,
             worker,
             record,
         )
@@ -338,6 +444,7 @@ def execute(args):
                 ),
                 jobs,
                 args.jobs_per_group,
+                routes,
                 worker,
                 record,
             )
@@ -392,6 +499,12 @@ def main():
     concurrency = parser.add_mutually_exclusive_group()
     concurrency.add_argument("--jobs", type=int, default=4)
     concurrency.add_argument("--jobs-per-group", type=int)
+    concurrency.add_argument("--routes", type=Path)
+    parser.add_argument(
+        "--allow-runner-update",
+        action="store_true",
+        help="audit an explicit waiter recovery upgrade when resuming",
+    )
     parser.add_argument("--timeout", type=int, default=0)
     parser.add_argument("--makeup-passes", type=int, default=3)
     args = parser.parse_args()

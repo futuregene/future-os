@@ -38,6 +38,7 @@ Apps (run the FutureOS components — same as their standalone binaries):
   relay     Self-hosted, account-free NATS relay for remote control
 
 Quick start:
+  future                                     State at a glance: agent, model, sessions, tasks
   future init                                Initialize Future OS
   future config                              Configure a model provider
   future auth login                          Sign in to the Future platform
@@ -97,6 +98,22 @@ Usage:
 
 Installs all built-in skills. On macOS and Linux, also links future and, when
 available, its sibling future-agent into ~/.future/bin/ and prints a PATH setup hint."#;
+
+/// `future doctor --help` output. Doctor had none: `future doctor --help` ran a
+/// full environment diagnostic instead of printing anything.
+pub const DOCTOR_HELP: &str = r#"future doctor — check this machine's environment
+
+Usage:
+  future doctor
+
+Runs the environment checks and prints one block per check: the agent endpoint,
+the model providers, the sandbox, the disk and the local directories. It reads
+and diagnoses; it does not repair anything.
+
+Exit codes:
+  0  every check passed or only warned
+  1  the diagnostic itself could not run
+  (a warn is not a failure; read the blocks, not just the exit code)"#;
 
 /// `future config --help` output.
 pub const CONFIG_HELP: &str = r#"future config — configure a model provider, or read/write global settings
@@ -907,7 +924,8 @@ demand whenever you ask. Each run produces an ordinary conversation and a
 durable run-ledger entry.
 
 Usage:
-  future task list [--all] [--json]                 List scheduled tasks
+  future task                                                  What is scheduled now
+  future task list [--all] [--json|--format text|json|toon]     List scheduled tasks
   future task show <id|name> [--json] [--prompt]    Show one scheduled task
   future task add --name N --prompt P|--prompt-file F --cwd D
         [--model M] [--thinking L] [--timezone IANA] [--session new|existing]
@@ -1110,7 +1128,7 @@ FutureOS agent has no MCP client, so this CLI is how an MCP server is reached
 from an agent session.
 
 Usage:
-  future mcp list [--json]
+  future mcp list [--json|--format text|json|toon]
   future mcp status [<server>] [--json]
   future mcp tools <server> [--query <text>] [--limit <n>] [--offset <n>]
   future mcp describe <server> <tool>

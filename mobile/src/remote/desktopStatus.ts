@@ -1,4 +1,5 @@
 import type { ConnectionPresentation } from "./connectionPresentation";
+import { readableDeviceName } from "./deviceName";
 import type { PairedDesktop, Presence } from "./types";
 
 /**
@@ -116,7 +117,7 @@ export function pairedMachines({
   return [
     {
       desktopId: activeDesktopId,
-      label: paired?.name || activeDesktopId,
+      label: readableDeviceName(paired?.name) ?? activeDesktopId,
       ...(paired?.icon ? { icon: paired.icon } : {}),
       active: true,
       status: activeMachineStatus(presentation),

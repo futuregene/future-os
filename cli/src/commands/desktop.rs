@@ -11,6 +11,7 @@
 //! settings, these values are read from disk when they are used. A running app
 //! notices a change the next time it reads them.
 
+use crate::axi;
 use crate::help;
 use crate::output::Output;
 use serde_json::{json, Value};
@@ -50,7 +51,10 @@ fn settings(args: &[String], out: &Output) -> Result<(), String> {
             out.log(help::DESKTOP_HELP);
             Ok(())
         }
-        // `future desktop settings [<key>] [--json]` reads, like `config get`.
+        // `future desktop settings [<key>] [--json] [--full]` reads, like
+        // `config get`. `--full` prints list values in full instead of their
+        // count — one setting (`hiddenModels`) is otherwise a 2904-character
+        // line.
         _ => get(args, out),
     }
 }
@@ -133,9 +137,16 @@ fn get(args: &[String], out: &Output) -> Result<(), String> {
     }
     out.log(&format!("Settings database: {}", path.display()));
     out.log("");
+    let full = args.iter().any(|argument| argument == "--full");
     for setting in future_app_settings::SETTINGS {
         let value = settings.value(setting.key).unwrap_or(Value::Null);
-        out.log(&format!("{} = {}", setting.key, display(&value)));
+        // A list that would swallow the block is shown as its count: the number
+        // is the fact, and `--full` (or `--json`) has the members.
+        let rendered = match axi::clip_list(&value, 8, "--full") {
+            Some(summary) if !full => summary,
+            _ => display(&value),
+        };
+        out.log(&format!("{} = {}", setting.key, rendered));
     }
     Ok(())
 }

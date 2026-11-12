@@ -46,15 +46,23 @@ impl std::fmt::Display for Priority {
     }
 }
 
-/// Task class — LoopX's six-way todo taxonomy. Serialized with the EXACT
-/// reference values (advancement_task / continuous_monitor / user_gate /
-/// user_action / blocker). The Kanban "column" is a projection of these axes,
-/// never a single stored string.
+/// Task class — LoopX's todo taxonomy plus our extensions. Serialized with the
+/// EXACT reference values (advancement_task / continuous_monitor / user_gate /
+/// user_action / blocker); `coordination` and `scout` are ours (`scout` is the
+/// exploration node: it delivers a direction proposal, not an artifact). The
+/// Kanban "column" is a projection of these axes, never a single stored string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TaskClass {
     /// Runnable agent work (advancement).
     #[serde(rename = "advancement_task")]
     Advancement,
+    /// 探索节点 (scout): produces a direction proposal, not a deliverable.
+    /// A scout todo answers "which way should we go", so completing it yields
+    /// a proposal for the ledger (`propose`), never a delivered artifact.
+    /// Runnable like `Advancement` (a worker may claim it), but classified as
+    /// non-delivery for delivery accounting.
+    #[serde(rename = "scout")]
+    Scout,
     /// A concrete human decision is required before dependent work may run.
     #[serde(rename = "user_gate")]
     UserGate,
@@ -78,6 +86,17 @@ pub enum TaskClass {
     /// lapses (the "worker steals the orchestrator's todo" failure mode).
     #[serde(rename = "coordination")]
     Coordination,
+}
+
+impl TaskClass {
+    /// Runnable worker work: a worker may claim it from the frontier.
+    ///
+    /// Scout belongs here — exploration is claimable work like advancement.
+    /// What differs is the *output* (a direction proposal, not a deliverable),
+    /// which is why scout stays out of delivery accounting instead.
+    pub fn is_runnable_work(self) -> bool {
+        matches!(self, TaskClass::Advancement | TaskClass::Scout)
+    }
 }
 
 /// Lifecycle status — reference values open/done/blocked/deferred, plus our
@@ -148,6 +167,15 @@ pub struct Todo {
     pub monitor_cadence: Option<String>,
     /// Advancement only: which user gate ids block this todo.
     pub blocked_by_gate: Option<String>,
+    /// Scout only (required for a scout): a machine-checkable termination
+    /// condition. "Stop exploring when <X> is true" — without it a scout
+    /// would never run out of budget. Absent on old ledgers → `None`.
+    #[serde(default)]
+    pub kill_when: Option<String>,
+    /// Provenance: which direction proposal produced this todo ("this todo is
+    /// the execution of proposal P"). Absent on old ledgers → `None`.
+    #[serde(default)]
+    pub origin_proposal: Option<String>,
     /// Repair bookkeeping: failed attempts so far.
     pub failed_attempts: u32,
     /// Completion contract (LoopX): a completed advancement todo must declare
@@ -333,6 +361,8 @@ impl Todo {
             monitor_policy: None,
             monitor_cadence: None,
             blocked_by_gate: None,
+            kill_when: None,
+            origin_proposal: None,
             failed_attempts: 0,
             successor_ids: vec![],
             no_follow_up: false,
@@ -1221,8 +1251,10 @@ impl Goal {
             .unwrap_or_default()
             .as_secs();
         self.todos.iter().filter(move |t| {
-            // Open OR due-deferred (returns to the frontier) advancement.
-            (t.class == TaskClass::Advancement
+            // Open OR due-deferred (returns to the frontier) runner work.
+            // Scout is runnable like advancement: a worker may claim it — what
+            // differs is the output (a direction proposal, not a deliverable).
+            (t.class.is_runnable_work()
                 && (t.status == TodoStatus::Open || t.is_due_deferred(now_sys)))
                 && !t.claimed_by_other(agent_id, now)
                 // Owner scope: an `owner`-scoped todo is only runnable by its
@@ -1264,7 +1296,7 @@ impl Goal {
         let mut claimable = vec![];
         let mut owner_scoped = vec![];
         for t in &self.todos {
-            let open = t.class == TaskClass::Advancement
+            let open = t.class.is_runnable_work()
                 && (t.status == TodoStatus::Open || t.is_due_deferred(now_sys))
                 && !self.is_blocked_at(t, now_sys);
             if !open {
@@ -1598,4 +1630,53 @@ pub fn now_epoch_millis() -> u64 {
 /// the replay fold so a stored deadline comes back as the exact instant).
 pub fn epoch_millis_as_time(ms: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(ms)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The wire token is `"scout"` (explicit serde rename, not a derived one):
+    /// the ledger and every projection key off the reference spelling, so a
+    /// rename here would silently turn old scouts into parse errors.
+    #[test]
+    fn scout_task_class_roundtrips_as_scout() {
+        assert_eq!(
+            serde_json::to_string(&TaskClass::Scout).unwrap(),
+            "\"scout\""
+        );
+        let back: TaskClass = serde_json::from_str("\"scout\"").unwrap();
+        assert_eq!(back, TaskClass::Scout);
+    }
+
+    /// A ledger written before the scout fields existed has neither key; both
+    /// are `#[serde(default)]`, so an old todo must still deserialize (and a
+    /// missing field must not be read as an error).
+    #[test]
+    fn old_todo_json_without_scout_fields_deserializes() {
+        let todo = Todo::advancement("t1", "pre-scout ledger entry");
+        let mut json = serde_json::to_value(&todo).unwrap();
+        let object = json.as_object_mut().unwrap();
+        assert!(object.remove("kill_when").is_some());
+        assert!(object.remove("origin_proposal").is_some());
+
+        let back: Todo = serde_json::from_value(json).unwrap();
+        assert_eq!(back.id, "t1");
+        assert_eq!(back.class, TaskClass::Advancement);
+        assert!(back.kill_when.is_none());
+        assert!(back.origin_proposal.is_none());
+    }
+
+    /// A scout carries both new fields through a round trip unchanged.
+    #[test]
+    fn scout_todo_roundtrips_its_scout_fields() {
+        let mut scout = Todo::new("s1", "explore the direction", TaskClass::Scout);
+        scout.kill_when = Some("two proposals evaluated".to_string());
+        scout.origin_proposal = Some("prop_1".to_string());
+
+        let back: Todo = serde_json::from_str(&serde_json::to_string(&scout).unwrap()).unwrap();
+        assert_eq!(back.class, TaskClass::Scout);
+        assert_eq!(back.kill_when.as_deref(), Some("two proposals evaluated"));
+        assert_eq!(back.origin_proposal.as_deref(), Some("prop_1"));
+    }
 }

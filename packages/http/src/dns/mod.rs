@@ -155,6 +155,15 @@ fn plan() -> &'static Plan {
 /// resolver this process actually used. One line at startup makes that
 /// answerable without strace.
 fn announce(plan: &Plan) {
+    // Printed only when asked for. The line answers a real question ("which
+    // resolver did this process use?"), but it answered it on every networked
+    // command — first line of `future doctor`'s and `future skills list`'s
+    // stderr, and in the middle of bare `future`'s home view. `future doctor`
+    // reports it deliberately instead; this switch is for the support call
+    // that needs it on the exact command that failed.
+    if std::env::var_os("FUTURE_DNS_DEBUG").is_none_or(|value| value.is_empty()) {
+        return;
+    }
     for line in announcement(plan, config::compiled_resolv_conf()) {
         eprintln!("{line}");
     }

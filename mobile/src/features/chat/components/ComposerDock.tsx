@@ -23,7 +23,7 @@ import { SkillSuggestionCard } from "./SkillSuggestionCard";
 import { ComposerToolbar } from "../composer/ComposerToolbar";
 import { useStyles } from "../composer/composerStyles";
 import { SendChoiceSheet } from "./SendChoiceSheet";
-import { SendQueuePanel, type SendQueueAttachmentItem, type SendQueuePanelItem } from "./SendQueuePanel";
+import { SendQueuePanel, sendQueueListHeight, type SendQueueAttachmentItem, type SendQueuePanelItem } from "./SendQueuePanel";
 import { SkillPicker, skillPickerHeight } from "./SkillPicker";
 import { SessionPicker, sessionPickerHeight } from "./SessionPicker";
 import { FloatingTimelineButton } from "./FloatingTimelineButton";
@@ -284,6 +284,9 @@ function ComposerDockView({
     keyboardHeight,
     sessionMentions.length,
   );
+  // How tall an expanded send queue may draw before its rows scroll: the reply
+  // above it keeps the rest of the room (see `sendQueueListHeight`).
+  const queueListHeight = sendQueueListHeight(height, keyboardHeight);
   const maxInputHeight = Math.max(
     INPUT_MIN_HEIGHT,
     Math.min(
@@ -378,6 +381,7 @@ function ComposerDockView({
       {queueItems.length > 0 && (
         <SendQueuePanel
           items={queueItems}
+          maxListHeight={queueListHeight}
           onAddAttachments={id => onQueueAddAttachments?.(id)}
           onPreviewAttachment={attachment => onQueuePreviewAttachment?.(attachment)}
           onRelease={id => onQueueRelease?.(id)}
