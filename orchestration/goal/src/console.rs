@@ -3373,11 +3373,20 @@ fn task_class_label(class: TaskClass) -> &'static str {
 
 /// Parse one `--candidate` spec.
 ///
-/// Five fields: `"title|class|relation|kill_when|a;b"`. The legacy four-field
-/// form `"title|relation|kill_when|a;b"` is still accepted and means
+/// Five fields: `"title|class|route|kill_when|a;b"`. The legacy four-field
+/// form `"title|route|kill_when|a;b"` is still accepted and means
 /// `class = advancement` — it is what every proposal recorded before the class
 /// field existed looks like. An empty class field (`"title||fork|…"`) is the
 /// same as omitting it.
+///
+/// The two forms share positions but not meanings: field 2 is the class in the
+/// five-field form and the route in the four-field one. A four-field spec whose
+/// field 2 is a class token is therefore reported as a MISSING FIELD, not as a
+/// bad route — otherwise the parser blames a field the caller never wrote
+/// (`scout` in position 2 of a five-field spec means class, yet used to come
+/// back as "route `scout` is invalid", which is both wrong and unactionable).
+/// Every message below names the field by its POSITION in the spec the caller
+/// typed, because that is the only numbering they can act on.
 ///
 /// The candidate id is positional (`c1`, `c2`, … in `--candidate` order), so
 /// `direction accept --candidate c2` addresses the second spec without the
@@ -3403,14 +3412,31 @@ fn parse_candidate_spec(index: usize, spec: &str) -> Result<Candidate> {
             parts[2].trim(),
             parts[3].trim(),
         ),
+        // (the ambiguity guard runs below, before field 2 is read as a route)
         got => bail!(
             "--candidate \"{spec}\" must have 5 `|`-separated fields \
-             (title|class|relation|kill_when|acceptance1;acceptance2) or the legacy \
-             4-field form (title|relation|kill_when|acceptance1); got {got}"
+             (title|class|route|kill_when|acceptance1;acceptance2) or the legacy \
+             4-field form (title|route|kill_when|acceptance1); got {got}"
         ),
     };
     if title.is_empty() {
         bail!("--candidate \"{spec}\" has an empty title (field 1)");
+    }
+    // Four fields with a class in position 2 is the five-field form missing a
+    // field, not a legacy spec with a broken route. Say which field and which
+    // shape, so the caller can fix the spec they meant instead of hunting a
+    // field number that does not exist in what they typed.
+    if class_spec.is_none() {
+        let token = relation_spec.to_ascii_lowercase();
+        if matches!(token.as_str(), "advancement" | "advancement_task" | "scout") {
+            bail!(
+                "--candidate \"{spec}\" has 4 `|`-separated fields and field 2 is the class \
+                 `{relation_spec}` — the class belongs to the 5-field form \
+                 (title|class|fork|kill_when|acceptance); a 4-field spec is \
+                 title|fork|kill_when|acceptance, so field 2 must be `fork` or `revise:TODO_ID` \
+                 (legal classes: `advancement`, `scout`)"
+            );
+        }
     }
     let class = parse_candidate_class(spec, class_spec)?;
     // A scout's whole point is a bounded exploration window, so its kill_when
@@ -3433,8 +3459,13 @@ fn parse_candidate_spec(index: usize, spec: &str) -> Result<Candidate> {
             todo_id: todo_id.trim().to_string(),
         }
     } else {
+        // The route's position depends on the form: field 2 in a 4-field spec,
+        // field 3 in the 5-field one. Naming the wrong one sends the caller to
+        // a field whose content is correct.
+        let route_field = if class_spec.is_some() { 3 } else { 2 };
         bail!(
-            "--candidate \"{spec}\" has relation `{relation_spec}` (field 3) — must be `fork` or `revise:TODO_ID`"
+            "--candidate \"{spec}\" has route `{relation_spec}` in field {route_field} — a route \
+             must be `fork` or `revise:TODO_ID`"
         );
     };
     let acceptance: Vec<&str> = acceptance_spec
@@ -3659,6 +3690,12 @@ fn direction_propose(store: &mut Store, args: &[String]) -> Result<()> {
 /// way, and saying so is what tells the operator to run `direction expire` if
 /// they want the audit trail to match. JSON output keeps the raw ledger — the
 /// `status` field is the recorded state, so a consumer can tell the two apart.
+///
+/// Each entry also carries the todos its accepted candidates became
+/// (`accepted_todos`, and `; todo=<id>` in the text listing). That mapping is
+/// the other half of the link `status --format json` exposes as
+/// `origin_proposal`: the ledger says a direction was accepted, this says what
+/// work it turned into, and neither surface can answer the question alone.
 fn direction_list(store: &Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     reject_unknown_flags(args, &["--format", "--goal", "--json"])?;
@@ -3668,12 +3705,35 @@ fn direction_list(store: &Store, args: &[String]) -> Result<()> {
         }
     });
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
-    store
+    let goal = store
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
     let ledger = store.direction_ledger(&goal_id)?;
     if wants_json(args) {
-        println!("{}", serde_json::to_string_pretty(&ledger.entries)?);
+        // The ledger is the recorded state; `accepted_todos` is derived from the
+        // goal's todos on read, so a replayed ledger cannot disagree with the
+        // board about what a direction became.
+        let entries: Vec<serde_json::Value> = ledger
+            .entries
+            .iter()
+            .map(|entry| {
+                let mut value = serde_json::to_value(entry).unwrap_or(serde_json::Value::Null);
+                if let Some(object) = value.as_object_mut() {
+                    object.insert(
+                        "accepted_todos".to_string(),
+                        serde_json::json!(accepted_candidate_todos(&goal, &entry.proposal)
+                            .into_iter()
+                            .map(|(candidate, todo)| serde_json::json!({
+                                "candidate": candidate,
+                                "todo": todo,
+                            }))
+                            .collect::<Vec<_>>()),
+                    );
+                }
+                value
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&entries)?);
         return Ok(());
     }
     if ledger.entries.is_empty() {
@@ -3692,8 +3752,17 @@ fn direction_list(store: &Store, args: &[String]) -> Result<()> {
             entry.proposal.candidates.len()
         );
         for candidate in &entry.proposal.candidates {
+            // Show the todo an accepted candidate became, next to the candidate
+            // itself: an operator reading the ledger needs to jump to the work,
+            // and the link lives on the todo rather than in the ledger event.
+            let accepted = accepted_candidate_todos(&goal, &entry.proposal);
+            let todo_suffix = accepted
+                .iter()
+                .find(|(accepted_candidate, _)| accepted_candidate == &candidate.id)
+                .map(|(_, todo)| format!("; todo={todo}"))
+                .unwrap_or_default();
             println!(
-                "    {} {} {} — {}; kill_when={}; acceptance={}",
+                "    {} {} {} — {}; kill_when={}; acceptance={}{}",
                 candidate.id,
                 direction_class_label(&candidate.class),
                 direction_relation_label(&candidate.relation),
@@ -3703,11 +3772,38 @@ fn direction_list(store: &Store, args: &[String]) -> Result<()> {
                 } else {
                     format!("\"{}\"", candidate.kill_when)
                 },
-                candidate.acceptance.join(" | ")
+                candidate.acceptance.join(" | "),
+                todo_suffix
             );
         }
     }
     Ok(())
+}
+
+/// `(candidate id, todo id)` for every candidate of `proposal` that has already
+/// been accepted.
+///
+/// Matched on `origin_proposal` plus the normalized title — the same key
+/// `direction accept` uses for its idempotency check — so the listing cannot
+/// claim a link the accept path would refuse to create.
+fn accepted_candidate_todos(
+    goal: &Goal,
+    proposal: &crate::work_items::direction::DirectionProposal,
+) -> Vec<(String, String)> {
+    proposal
+        .candidates
+        .iter()
+        .filter_map(|candidate| {
+            goal.todos
+                .iter()
+                .find(|todo| {
+                    todo.origin_proposal.as_deref() == Some(proposal.id.as_str())
+                        && crate::work_items::direction::normalize_title(&todo.title)
+                            == crate::work_items::direction::normalize_title(&candidate.title)
+                })
+                .map(|todo| (candidate.id.clone(), todo.id.clone()))
+        })
+        .collect()
 }
 
 /// `future goal direction accept --goal G --proposal P --candidate C` — turn
@@ -4209,6 +4305,20 @@ async fn cmd_webui(args: &[String]) -> Result<()> {
 /// with priority/class/status/blocks, terminal flag). Added because piping
 /// the human-readable status used to silently yield nothing scriptable.
 fn print_status_json(store: &Store, goal_filter: Option<String>) -> Result<()> {
+    let value = status_json_value(store, goal_filter)?;
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
+/// The value `goal status --format json` prints, split from the printer so a
+/// test can assert on the fields a script consumes instead of scraping stdout.
+///
+/// The todo object carries `origin_proposal` because it is the ONLY machine
+/// -readable link between an accepted direction and the work it became: the
+/// ledger knows what was accepted and the todo knows where it came from, and a
+/// consumer that can read only one of them cannot follow the decision into the
+/// board.
+fn status_json_value(store: &Store, goal_filter: Option<String>) -> Result<serde_json::Value> {
     let mut out = vec![];
     let ids: Vec<String> = match &goal_filter {
         Some(g) => vec![g.clone()],
@@ -4241,11 +4351,11 @@ fn print_status_json(store: &Store, goal_filter: Option<String>) -> Result<()> {
                 "claimed_by": t.claimed_by,
                 "lease_expires_at": t.lease_expires_at,
                 "holder_pid": t.holder_pid,
+                "origin_proposal": t.origin_proposal,
             })).collect::<Vec<_>>(),
         }));
     }
-    println!("{}", serde_json::to_string_pretty(&out)?);
-    Ok(())
+    Ok(serde_json::Value::Array(out))
 }
 
 fn print_goal_status(goal: &Goal) {
@@ -14518,6 +14628,110 @@ mod direction_cli_tests {
                 "spec `{spec}` must fail with `{needle}`, got: {err}"
             );
         }
+    }
+
+    /// A four-field spec whose field 2 is a CLASS is the five-field form with a
+    /// field missing. The message must name that position and the legal values,
+    /// and must not talk about the route: the route is not where the caller's
+    /// mistake is, and the old message sent them to a field number that does not
+    /// exist in what they typed.
+    #[test]
+    fn four_field_spec_with_a_class_points_at_field_two() {
+        for spec in [
+            "换存储引擎|scout|fork|两周内基准无改善",
+            "Add a two-tier cache|advancement|fork|读吞吐提升",
+        ] {
+            let err = format!("{}", parse_candidate_spec(1, spec).unwrap_err());
+            assert!(err.contains("field 2"), "must name field 2, got: {err}");
+            assert!(
+                err.contains("5-field form"),
+                "must name the shape this spec belongs to, got: {err}"
+            );
+            assert!(
+                err.contains("`advancement`") && err.contains("`scout`"),
+                "must list the legal classes, got: {err}"
+            );
+            assert!(
+                err.contains("`fork`") && err.contains("revise:TODO_ID"),
+                "must list the legal routes, got: {err}"
+            );
+            assert!(
+                !err.to_ascii_lowercase().contains("relation"),
+                "a class in field 2 is not a broken route, got: {err}"
+            );
+        }
+        // A plain four-field spec with a bad route still reports the route — in
+        // field 2, which is where the route lives in this form.
+        let err = format!(
+            "{}",
+            parse_candidate_spec(1, "Title|blue|kill|a").unwrap_err()
+        );
+        assert!(err.contains("field 2"), "got: {err}");
+        assert!(!err.contains("field 3"), "got: {err}");
+        assert!(!err.to_ascii_lowercase().contains("relation"), "got: {err}");
+        // The five-field form keeps reporting field 3, where its route lives.
+        let err = format!(
+            "{}",
+            parse_candidate_spec(1, "Title|advancement|blue|kill|a").unwrap_err()
+        );
+        assert!(err.contains("field 3"), "got: {err}");
+    }
+
+    /// `status --format json` is what scripts read. The todo → proposal link is
+    /// the only machine-readable way back from an accepted direction to the
+    /// work it became, so the projection must carry it — and the ledger listing
+    /// must agree on the same link (both sides pinned here).
+    #[test]
+    fn status_json_exposes_the_proposal_a_todo_came_from() {
+        let mut store = tmp_store("status-json-origin");
+        open_goal(&mut store, "g1", &["Implement the direction ledger"]);
+        cmd_direction(
+            &mut store,
+            &propose_args(
+                "g1",
+                &["Parallelize the validator|scout|fork|two candidates are rejected|proposal recorded"],
+            ),
+        )
+        .unwrap();
+        let proposal = only_proposal(&store, "g1");
+        cmd_direction(&mut store, &accept_args("g1", &proposal, "c1")).unwrap();
+
+        let value = status_json_value(&store, Some("g1".to_string())).unwrap();
+        let goal = value
+            .as_array()
+            .expect("status json is an array of goals")
+            .iter()
+            .find(|goal| goal["goal_id"] == "g1")
+            .expect("goal g1");
+        let todos = goal["todos"].as_array().expect("todos array");
+        let from_proposal: Vec<_> = todos
+            .iter()
+            .filter(|todo| todo["origin_proposal"] == serde_json::json!(proposal))
+            .collect();
+        assert_eq!(
+            from_proposal.len(),
+            1,
+            "the accepted candidate's todo must name its proposal, got: {goal}"
+        );
+        assert_eq!(from_proposal[0]["class"], "Scout");
+        let accepted_todo = from_proposal[0]["id"].as_str().unwrap().to_string();
+        // The bootstrap todo (or any todo that did not come from the ledger)
+        // carries no origin, so the field distinguishes the two rather than
+        // appearing on everything.
+        assert!(
+            todos.iter().any(|todo| todo["origin_proposal"].is_null()),
+            "a todo without a proposal must read as null, not as a link: {goal}"
+        );
+
+        // The other half of the same link: `direction list` derives the todos an
+        // accepted candidate became, so the two surfaces cannot disagree.
+        let goal_state = store.replay("g1").unwrap().unwrap();
+        let ledger = store.direction_ledger("g1").unwrap();
+        let entry = ledger.proposal(&proposal).unwrap();
+        assert_eq!(
+            accepted_candidate_todos(&goal_state, &entry.proposal),
+            vec![("c1".to_string(), accepted_todo)]
+        );
     }
 
     #[test]

@@ -134,6 +134,41 @@ worker 回复全文以 `text_chunk.text` 写入各 run 的 live 日志；有界�
 provider input/execution 阶段不重复计数。真实进展来自新产物、验证结果、指标改善或假设
 被排除。读论文可能有进展，反复写进度文件也可能没有。
 
+## 探索节点与方向账本
+
+「往哪个方向走」本身是可以被指派、被记账的工作。`--class scout` 的 todo（探索节点）
+带一个必填的 `--kill-when`；它的交付物不是工件，而是一份**方向提案**：若干条候选方向，
+每条自带验收条目与终止条件（`kill_when`），并声明自己变成实现工作（`advancement`）
+还是更深一层探索（`scout`）。规则在 `orchestration/goal/src/work_items/direction.rs`，
+提示词一侧在 `orchestration/goal/src/turn_envelope.rs::compose_scout_contract`。
+
+账本操作是纯记录，不调模型、不联网：
+
+- `direction propose`：写提案。校验在写入之前完成（重复方向、循环依赖、scout 候选缺
+  `kill_when`、验收为空都不落账），所以被拒的提案不会留下需要清理的痕迹。候选规格是
+  `title|class|route|kill_when|acceptance1;acceptance2`（五段）；四段旧式
+  `title|route|kill_when|acceptance` 仍接受，等价于 `class=advancement`。四段但第 2 段
+  写成 class 时，报错点名第 2 段与两种形态，而不是把 class 当路径值拒绝。
+- `direction list`：读账本，并列出每条已被接受的候选变成了哪个 todo。
+- `direction accept`：把候选变成 todo。**提案本身不建任何 todo**——「接受」是人的决定，
+  不是提议者的。`fork` 无依赖，`revise:<TODO_ID>` 让新 todo 的 `blocked_by_gate`
+  指向该 TODO（接着它跑，而不是原地改它）。todo 记录 `origin_proposal`，
+  `status --format json` 也投影该字段，这是「决定 → 工作」唯一机器可读的链接。
+- `direction reject` / `expire`：拒绝必须给理由；过期释放该方向的去重容量。
+
+scout 的完成门禁在账本上：至少有一份提案点名它，否则 `todo complete` 拒绝
+（`--force` 是人工覆盖）。内核另有 `exploration_gap`：同一个切片连续失败两次（或被
+验证器连拒两次）后，`replan obligations` 提出「该目标欠一次探索」——只投影事实，
+不自动建 scout todo，派不派探索是编排者的判断。
+
+探索回合的提示词是**只读**契约：不改已有文件、不做实现，唯一允许的写入是证据笔记，
+且只能落在声明作用域内（未声明则不写任何文件）。固定文本有 1500 字节预算，因为每个
+scout 回合都会重发。它与交付契约互斥：scout 回合不出现验收字面量和 successor 声明，
+否则模型会把「没实现完」当成失败。
+
+已知限制：方向去重只做标题归一化（英文动词前缀 + 包含匹配），**中英同义表达会被当成
+两条不同方向**。跨语言归一化需要词表或模型，收益不抵成本，本阶段不做。
+
 ## 适度编排与诚实停止
 
 根据不确定性和风险选择轻量、标准、重型流程。一次代码复盘不强制固定引用数量或多 worker。
