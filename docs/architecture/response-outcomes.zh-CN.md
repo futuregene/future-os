@@ -20,6 +20,7 @@
 | 上下文压缩 | 原有压缩进度／完成／失败分割线 |
 | 单次输出上限（续写预算用尽） | 输出上限分割线；不混同上下文压缩 |
 | 单次输出上限但仍在续写 | 无分割线；`output_stream_continuing` 不作说明文字，回复继续增长 |
+| 单次输出上限且 `outputContinuation` 关闭 | 输出上限分割线，行为同特性之前 |
 | 明确连接读取错误 | 模型服务连接中断 |
 | 请求超时 | 模型服务响应超时 |
 | 缺少或未知模型终态 | 回复意外结束，原因暂未确认 |
@@ -55,15 +56,68 @@
 
 回归覆盖（`agent/src/agent/run_loop.rs` 测试）：`spent_output_budget_continues_the_same_run`、`reasoning_only_cut_steps_thinking_down_before_continuing`、`output_budget_continuation_is_bounded_and_stays_incomplete`、`auto_retry_disabled_does_not_continue_output_budget`、`shallower_thinking_level_walks_down_the_scale`。
 
+### 开关与默认值
+
+| 配置 | 默认值 | 关掉之后 |
+| --- | --- | --- |
+| `~/.future/agent/settings.json` 的 `"outputContinuation"` | `true`（开启） | 行为回到特性之前的语义：撞上限即以 `incomplete` 结束、写 `[OUTPUT_LIMIT]`、桌面/手机出现「继续」按钮 |
+
+这是**唯一会自己增加 token 的路径**——用户按量付费，所以它必须可关，且默认值必须写在这里，而不是只写在代码里。开关按 `settings.json` 在会话创建时应用（`Settings::output_continuation_enabled()` → `Session::set_output_continuation()`），与 `auto_retry` 刻意分开：关掉自动重试（或 fusion 显式置 `max_retries = 0`）并不是在说「不要续写」，把两者混在一起会让一个开关静默改变两件花钱的事。
+
+实际生效需要**两个**条件同时成立：`outputContinuation` 为真 **且** `max_retries > 0`。后者是既有约束，不是新开关。
+
+### 成本上限
+
+一次 LLM 回合的输出上限是 `max_tokens`（本机 `intranet/deepseek-v4.1-flash` 声明 `32768`，服务端硬限亦为 32 768）。续写把「一个回合一次请求」变成「一个回合最多 `1 + MAX_OUTPUT_LIMIT_CONTINUATIONS` 次请求」，因此：
+
+```
+单个 LLM 回合最坏输出 token
+  = (1 + MAX_OUTPUT_LIMIT_CONTINUATIONS) × max_tokens
+  = 3 × 32 768
+  = 98 304
+```
+
+这个 3 倍是**每一回合**的乘数，不是每次 run 的。run 内的工具循环每推进一步就是新的一回合，各自都享有这份余量；降档降低的是实际消耗，不改变这个声明上限。
+
+两个实测点：
+
+- **不降档（`default` / `high`）**：单个回合吃满 `32 768` 后截断，`reasoning_tokens` 为 32 761–32 767、正文 0 字。三轮连续如此——即续写会连续三次撞同一面墙、每次都付满 32 768。
+- **降档到 `low`**：峰值 `17 701`（`reasoning_tokens` 16 801），18 次 LLM 调用、零截断（`run_07e4c985f8074ff5baba0fd9421da35a`）。约为上限的 54%，同样一次续写余量下能少烧近一半。
+
+**缺口（不要当成已测）**：一次**真实续写**的 token 增量尚无实测——这个特性合入后还没有任何一次真实 run 撞到上限并走到续写分支。可给出的只是算术边界：续写请求会把已生成正文重新作为输入计费（输入增加约 `output_len`），其输出不超过 `max_tokens`；因而单回合总输出不会超过上面的 98 304。第一次真实续写发生时应当把它记下来补进本节。
+
+## 判定顺序：截断之后谁先接管
+
+两层重试活在不同层，**内层先接管**，这是本节存在的唯一理由——顺序不定，下一个人只能拿日志去猜。
+
+| 步骤 | 层 | 触发条件 | 动作 | 上层看到什么 |
+| --- | --- | --- | --- | --- |
+| 1 | agent run loop | `detected_by == "finish_length"` 且 `outputContinuation` 且 `max_retries > 0` | 在**同一个 run 内**续写，发 `output_stream_continuing`，最多 2 次；正文 0 字时先降一档思考 | 什么也看不到——`agent_client.rs` 的流消费者对该事件是 `_ => {}`，且 run 尚未结束 |
+| 2 | agent run loop | 续写预算（2 次）耗尽仍截断 | 置 `stream_incomplete`、写 `truncation`、`agent_end` 报 `incomplete` + `[OUTPUT_LIMIT]` | 一个 `incomplete` 终态 |
+| 3 | goal worker | `terminal_state == "incomplete"` | `incomplete_streak` 计数，注入 `CONTINUE:` 便条，`InfraRecoverable` 不扣 repair budget | 下一轮 turn 的报文 |
+| 4 | goal worker | `streak >= DEFAULT_MAX_INCOMPLETE_RETRIES`（3） | 判 `incomplete_budget`，停下并 `notify_infra_stop` 上报 supervisor | 运行结束 |
+
+关键推论，也是这次必须改文案的原因：**goal worker 的每一轮 run 都用 `AgentConfig::default().max_retries = 3`**（goal 侧没有任何 `max_retries` / `auto_retry` 设置），所以第 1 步永远先发生。worker 只在续写预算耗尽之后才可能看到 `incomplete`。因此 `incomplete_continue_note` 的便条不能读起来像「还没人试过接着写」，它现在明确说了「agent 已经在该 run 内重试过这次截断，原样重发同一请求必然撞同一面墙」。
+
+回到上面的成本算式：一次 goal turn 最坏会先花掉 98 304（三回合），再乘以 `DEFAULT_MAX_INCOMPLETE_RETRIES`（3）次 `incomplete` 重试的 run——这是真正需要留意的量级，而不是单个回合的 3 倍。
+
+顺序断言（`orchestration/goal/tests/agent_run_drive.rs`）：
+
+- `in_run_continuation_settles_before_the_worker_can_retry`——run 内续写后只报一个 `completed` 终态时，worker **只发一次 prompt**、报文**不含** `CONTINUE:`、ledger **只有一条**记录且 `truncation` 为 `None`、todo 当轮关闭。把头一个 mock 的终态改成 `incomplete` 会让它立刻变红（worker 变成 3 次 prompt）。
+- `incomplete_continue_note_does_not_replay_completed_work`——续写预算耗尽、run 真的报了 `incomplete` 之后，第 3–4 步仍然成立。
+- `incomplete_continue_note_says_the_in_run_continuation_already_ran`（`executor.rs` 单测）——钉住便条的措辞，防止它退回「像第一次尝试」。
+
 ## goal worker 的 incomplete 重试 ≠ 续写
 
 对话里的「继续」和 goal worker 的「重试」是两件事。前者是字面续写，后者是重发同一个任务；两者共用同一个截断判定，但携带的上下文完全不同。
 
 ### 实际会发生什么
 
+下面这套流程**只在 run 内续写预算耗尽之后**才会被走到；顺序见上一节的判定顺序表。
+
 1. `run_loop.rs` 判定流被截断（`finish_length` / `eof_no_terminal` / …），本次 run 以 `incomplete` 结束，`run_terminal.error` 写入 `[OUTPUT_LIMIT] finish_length` 这类分类码，并记下 `truncation = {turns_so_far, output_len, tool_calls_so_far, detected_by}`。`output_len` 是**截断那一刻当前 LLM 回合**的正文长度，不是整个 run 的。
 2. `console.rs` 看到 `terminal_state == "incomplete"`，用 `incomplete_streak`（从 ledger 重放，重启不重置）计数，并请求 `incomplete_continue_note`。截断不扣 repair budget（分类为 `InfraRecoverable`），只受自己的上限约束。
-3. 下一轮 turn 的报文最前面加上一条便条：`CONTINUE: your previous turn for todo <id> ended INCOMPLETE … Pick up exactly where you left off — do not restart work that already completed.`，连续 `DEFAULT_MAX_INCOMPLETE_RETRIES`（3）次都截断则判 `incomplete_budget`，停下并上报 supervisor。
+3. 下一轮 turn 的报文最前面加上一条便条：`CONTINUE: your previous turn for todo <id> ended INCOMPLETE … Pick up exactly where you left off — do not restart work that already completed. The agent already retried the cut inside that run before giving up, so repeating the same request unchanged will hit the same wall: narrow the step, or work from the artifacts already on disk.`，连续 `DEFAULT_MAX_INCOMPLETE_RETRIES`（3）次都截断则判 `incomplete_budget`，停下并上报 supervisor。
 
 ### 为什么它退化成重做
 
@@ -91,7 +145,7 @@
 
 还缺一条真正的判据：现在没有任何机器可读的信号区分「接着写」与「重做」。建议的形态是**重叠率**——截断点之前最后 N 个 token 与续写首 N 个 token 的重叠比例，N 取 64 与 128 两档，低于阈值即判为「重做」。它只依赖两侧都已持久化的文本，不需要额外埋点，也不受 `run_loop.rs` 截断判定改写的影响。
 
-run 内自动续写（上一节）已经把「同一次 run 里额度用尽」这一层接住：它会自动降档再试，因此 worker 不再需要靠重试去撞同一面墙。只有续写预算也耗尽、run 仍以 `incomplete` 结束之后，才轮到下面这些手段——此时问题已不在额度，而在任务本身超出了单次输出能装下的规模：把大任务按批拆成多个 todo（每批控制在 ~20k 输出以内），并在 todo 文本里显式写出「续跑时从 `<中间结果目录>` 读回已有结果」。
+run 内自动续写（上面两节）已经把「同一次 run 里额度用尽」这一层接住：它会自动降档再试，因此 worker 通常不再需要靠重试去撞同一面墙，也就不会走到这一节的流程。只有当续写预算也耗尽、run 仍以 `incomplete` 结束之后，才轮到下面这些手段——此时问题多半不在额度本身，而在任务超出了单次输出能装下的规模：把大任务按批拆成多个 todo（每批控制在 ~20k 输出以内），并在 todo 文本里显式写出「续跑时从 `<中间结果目录>` 读回已有结果」。
 
 ## 诊断与验证
 

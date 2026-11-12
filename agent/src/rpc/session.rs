@@ -1650,6 +1650,15 @@ impl ServerSession {
         self.agent_loop.try_write().unwrap().config.max_retries = if enabled { 3 } else { 0 };
     }
 
+    /// Apply the `outputContinuation` setting to this session's loop. Kept
+    /// separate from [`Self::set_auto_retry`] on purpose: disabling automatic
+    /// retry is not a statement about whether a spent output budget should keep
+    /// writing, and conflating them would make one switch silently change two
+    /// cost-relevant behaviours.
+    pub fn set_output_continuation(&mut self, enabled: bool) {
+        self.agent_loop.try_write().unwrap().output_continuation = enabled;
+    }
+
     pub fn set_system_prompt(&mut self, prompt: &str) {
         self.approval_gate.invalidate();
         // Stored with the session and fed to `build_prompt` as `custom_prompt`
@@ -5241,6 +5250,32 @@ mod tests {
         assert!(session.auto_retry);
         session.set_auto_retry(false);
         assert!(!session.auto_retry);
+    }
+
+    /// The output-continuation switch reaches the live loop, and is NOT the
+    /// same field as `auto_retry`: turning one off must leave the other alone,
+    /// because they gate two different billed behaviours.
+    #[test]
+    fn set_output_continuation_toggles_independently_of_auto_retry() {
+        let mut session = make_test_session("s1");
+        assert!(
+            session.agent_loop.try_read().unwrap().output_continuation,
+            "continuation starts enabled"
+        );
+        session.set_output_continuation(false);
+        assert!(!session.agent_loop.try_read().unwrap().output_continuation);
+        assert!(session.auto_retry, "auto_retry is untouched");
+        assert_eq!(
+            session.agent_loop.try_read().unwrap().config.max_retries,
+            3,
+            "the retry budget is untouched"
+        );
+
+        // And the reverse: disabling auto-retry says nothing about continuing.
+        session.set_output_continuation(true);
+        session.set_auto_retry(false);
+        assert!(session.agent_loop.try_read().unwrap().output_continuation);
+        assert_eq!(session.agent_loop.try_read().unwrap().config.max_retries, 0);
     }
 
     /// The whole-prompt replacement is stored with the session, for the same
