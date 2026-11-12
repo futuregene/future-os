@@ -722,6 +722,10 @@ impl crate::types::LLMProvider for Client {
         generation.thinking_level = level.to_string();
         generation.thinking_budget = budget;
     }
+
+    fn thinking_level(&self) -> Option<String> {
+        Some(self.generation.read().thinking_level.clone())
+    }
 }
 
 /// The phrase a provider uses when it rejects a `reasoning_effort` value it does

@@ -1568,7 +1568,7 @@ pub struct StreamRequest {
     /// Valid types: "ping", "agent_start", "agent_end", "text_chunk",
     /// "thinking_start", "thinking_delta", "thinking_end", "tool_start",
     /// "tool_delta", "tool_end", "approval_request", "error", "stop",
-    /// "stream_retry", "stream_resumed",
+    /// "stream_retry", "stream_resumed", "output_stream_continuing",
     /// plus "session_created" and "session_deleted" on the global control-plane
     /// stream.
     #[prost(string, repeated, tag = "1")]
@@ -1605,6 +1605,16 @@ pub struct StreamEvent {
     ///                                 initial request, delayMs is the backoff
     ///    stream_resumed               model output resumed after reconnecting;
     ///                                 clear retry state (also on error/agent_end)
+    ///    output_stream_continuing     the model's output budget (finish_reason
+    ///                                 "length") ran out and this same run is
+    ///                                 writing the rest of the reply instead of
+    ///                                 ending at the cut. Not a reconnect: the
+    ///                                 answer keeps growing across it. attempt is
+    ///                                 1-based against maxContinuations;
+    ///                                 thinkingLevel is present only when the cut
+    ///                                 produced no visible output at all (the whole
+    ///                                 budget went to reasoning) and the
+    ///                                 continuation was started one level shallower
     ///    user_message                 the user's prompt message
     ///    text_chunk                   assistant text token (the projected token stream)
     ///    thinking_start / thinking_delta / thinking_end   reasoning stream
@@ -1639,6 +1649,9 @@ pub struct StreamEvent {
     /// Examples:
     ///    stream_retry:  {"type":"stream_retry","attempt":1,"maxRetries":5,"delayMs":2000}
     ///    stream_resumed: {"type":"stream_resumed"}
+    ///    output_stream_continuing: {"type":"output_stream_continuing","attempt":1,
+    ///                   "maxContinuations":2,"thinkingLevel":"low"}
+    ///                   (thinkingLevel omitted when the level was left alone)
     ///    text_chunk:    {"text": "Hello"}
     ///    thinking_delta: {"text": "I need to..."}
     ///    tool_start:    {"tool_id": "...", "tool_name": "read"}
