@@ -308,11 +308,15 @@ impl Loop {
         // visible text. Decides which instruction the continuation carries.
         let mut output_limit_continuation_had_visible_output = false;
         let mut output_limit_continuations = 0;
-        let max_output_limit_continuations = if self.config.max_retries > 0 {
-            MAX_OUTPUT_LIMIT_CONTINUATIONS
-        } else {
-            0
-        };
+        // Two independent gates: the user's switch for this path at all, and
+        // the existing auto-retry budget (fusion and `set_auto_retry(false)`
+        // callers ask for one request per step).
+        let max_output_limit_continuations =
+            if self.output_continuation && self.config.max_retries > 0 {
+                MAX_OUTPUT_LIMIT_CONTINUATIONS
+            } else {
+                0
+            };
         let mut provider_limit_checkpoint_id: Option<String> = None;
 
         if self.verbose {
@@ -4431,6 +4435,90 @@ mod tests {
         assert!(loop_
             .stream_incomplete
             .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn output_continuation_switch_off_restores_the_incomplete_ending() {
+        // The user-facing switch (`"outputContinuation": false`). It must be
+        // honoured even when automatic retry is on, because it is the only gate
+        // on a path that spends tokens the user did not ask for one request at
+        // a time.
+        crate::test_support::ensure_fd_headroom();
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            ev_text("cut off"),
+            ModelStreamEvent::Finish {
+                reason: FinishReason::Length,
+                usage: None,
+            },
+        ])]);
+        let mut loop_ = Loop::new(provider.clone(), "mock").with_output_continuation(false);
+        // Auto-retry deliberately left enabled: the switch must stand alone.
+        loop_.config.max_retries = 3;
+        let _ = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            provider.requests.lock().len(),
+            1,
+            "a switched-off run must issue exactly one request"
+        );
+        // The pre-feature ending is preserved verbatim.
+        assert!(loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+        let truncation = loop_.stream_truncation.lock().clone().expect("truncation");
+        assert_eq!(truncation.detected_by, "finish_length");
+        assert!(truncation.error_message().starts_with("[OUTPUT_LIMIT]"));
+    }
+
+    /// A goal worker drives a run to completion, sees its terminal state, and
+    /// decides from that alone whether to re-offer the todo. The continuation
+    /// lives inside the run, so the worker must never see the intermediate cut —
+    /// this is the order the whole goal integration depends on.
+    #[tokio::test(flavor = "current_thread")]
+    async fn continuation_settles_inside_the_run_before_the_worker_sees_a_state() {
+        crate::test_support::ensure_fd_headroom();
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                ev_text("batch 3 of 7 done"),
+                ModelStreamEvent::Finish {
+                    reason: FinishReason::Length,
+                    usage: None,
+                },
+            ]),
+            Script::Events(vec![ev_text("; batch 7 of 7 done"), ev_stop()]),
+        ]);
+        let loop_ = Loop::new(provider.clone(), "mock");
+        let _ = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+
+        // One uninterrupted run with two billed requests. No `incomplete`
+        // terminal state was ever produced, so a worker has nothing to retry:
+        // `incomplete_streak` cannot even start.
+        assert_eq!(provider.requests.lock().len(), 2);
+        assert!(
+            !loop_
+                .stream_incomplete
+                .load(std::sync::atomic::Ordering::SeqCst),
+            "the continuation must settle the cut, not surface it"
+        );
+        assert!(loop_.stream_truncation.lock().is_none());
     }
 
     #[test]

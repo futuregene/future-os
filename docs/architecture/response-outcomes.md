@@ -34,6 +34,7 @@
 | Context compaction | the original compaction progress/completed/failed divider |
 | Single-output limit, continuation allowance spent | the output-limit divider; not conflated with context compaction |
 | Single-output limit, still continuing | no divider; `output_stream_continuing` is not explanatory copy, the reply keeps growing |
+| Single-output limit with `outputContinuation` off | the output-limit divider, behaviour as before the feature |
 | Explicit connection read error | model service connection interrupted |
 | Request timeout | model service response timeout |
 | Missing or unknown model terminal state | reply ended unexpectedly, cause not yet confirmed |
@@ -117,6 +118,99 @@ Regression cover (`agent/src/agent/run_loop.rs` tests):
 `auto_retry_disabled_does_not_continue_output_budget`,
 `shallower_thinking_level_walks_down_the_scale`.
 
+### The switch and its default
+
+| Setting | Default | When switched off |
+| --- | --- | --- |
+| `"outputContinuation"` in `~/.future/agent/settings.json` | `true` (on) | behaviour reverts to pre-feature semantics: the cut ends the run as `incomplete`, writes `[OUTPUT_LIMIT]`, and Desktop/Mobile show the "继续" button |
+
+This is **the only path that adds tokens on its own** — users pay per use, so it
+must be switchable, and the default belongs here, not only in the code. The
+setting is applied at session creation
+(`Settings::output_continuation_enabled()` → `Session::set_output_continuation()`)
+and is deliberately separate from `auto_retry`: disabling automatic retry (or a
+fusion caller setting `max_retries = 0`) is not a statement about continuing, and
+conflating them would make one switch silently change two cost-bearing
+behaviours.
+
+Two conditions must hold for a continuation to happen: `outputContinuation` is
+true **and** `max_retries > 0`. The second is pre-existing, not a new switch.
+
+### The cost ceiling
+
+One LLM round's output ceiling is `max_tokens` (this machine's
+`intranet/deepseek-v4.1-flash` declares `32768`; the server hard limit is also
+32,768). Continuation turns "one request per round" into "at most
+`1 + MAX_OUTPUT_LIMIT_CONTINUATIONS` requests per round", so:
+
+```
+worst case output tokens for one LLM round
+  = (1 + MAX_OUTPUT_LIMIT_CONTINUATIONS) × max_tokens
+  = 3 × 32,768
+  = 98,304
+```
+
+That 3× is **per LLM round**, not per run. The tool loop starts a fresh round for
+each step, and each round gets its own allowance; stepping the thinking level
+down lowers actual spend but does not move this declared ceiling.
+
+Two measured points:
+
+- **No step-down (`default` / `high`)**: one round spends `32,768` and is cut,
+  with `reasoning_tokens` at 32,761–32,767 and zero visible characters. Three
+  consecutive rounds looked exactly like this — i.e. continuation spends the full
+  32,768 three times over.
+- **Stepped down to `low`**: peak `17,701` (`reasoning_tokens` 16,801) across 18
+  LLM calls with no cut (`run_07e4c985f8074ff5baba0fd9421da35a`) — about 54 % of
+  the ceiling, so the same allowance buys nearly twice as much.
+
+**Gap (do not read this as measured):** the token delta of one *real*
+continuation is not measured yet — since the feature landed, no live run has hit
+the limit and taken the continuation branch. Only the arithmetic bound is
+available: a continuation re-bills the delivered text as input (roughly
+`output_len` more input) and its own output cannot exceed `max_tokens`, so a
+round's total output cannot exceed the 98,304 above. The first real continuation
+should be recorded here.
+
+## Ordering: who takes over after a cut
+
+Two retry layers live at different depths, and **the inner one wins**. That is
+the only reason this section exists — with the order unwritten, the next person
+can only guess from logs.
+
+| Step | Layer | Trigger | Action | What the layer above sees |
+| --- | --- | --- | --- | --- |
+| 1 | agent run loop | `detected_by == "finish_length"`, `outputContinuation` on, `max_retries > 0` | continue **inside the same run**, emit `output_stream_continuing`, at most twice; step thinking down first when the round wrote nothing | nothing — the goal plane's stream consumer ignores that event (`_ => {}`), and the run has not ended |
+| 2 | agent run loop | the allowance (2) is spent and the reply is still cut | set `stream_incomplete`, record `truncation`, `agent_end` reports `incomplete` + `[OUTPUT_LIMIT]` | one `incomplete` terminal state |
+| 3 | goal worker | `terminal_state == "incomplete"` | count `incomplete_streak`, inject the `CONTINUE:` note, classify `InfraRecoverable` (no repair budget spent) | the next turn's envelope |
+| 4 | goal worker | `streak >= DEFAULT_MAX_INCOMPLETE_RETRIES` (3) | judge `incomplete_budget`, stop and `notify_infra_stop` the supervisor | the run ends |
+
+The key corollary — and the reason the note's wording had to change — is that
+**every goal worker turn runs with `AgentConfig::default().max_retries = 3`**
+(goal sets no `max_retries` / `auto_retry` anywhere), so step 1 always happens
+first. A worker can only see `incomplete` once the in-run allowance is spent.
+`incomplete_continue_note` therefore must not read like "nobody has tried
+continuing yet"; it now says the agent already retried the cut inside that run,
+so repeating the same request unchanged will hit the same wall.
+
+Back to the cost formula: one goal turn can spend 98,304 (three rounds) and then
+be multiplied by `DEFAULT_MAX_INCOMPLETE_RETRIES` (3) `incomplete` retries — that
+is the magnitude worth watching, not a single round's 3×.
+
+Ordering assertions (`orchestration/goal/tests/agent_run_drive.rs`):
+
+- `in_run_continuation_settles_before_the_worker_can_retry` — when an in-run
+  continuation reports a single `completed` state, the worker issues **one**
+  prompt, its envelope carries **no** `CONTINUE:`, the ledger holds **one**
+  record with `truncation` `None`, and the todo closes on that turn. Switching
+  the first mock's terminal state to `incomplete` turns it red immediately (three
+  prompts).
+- `incomplete_continue_note_does_not_replay_completed_work` — steps 3–4 still
+  hold once the allowance is spent and the run really reports `incomplete`.
+- `incomplete_continue_note_says_the_in_run_continuation_already_ran` (an
+  `executor.rs` unit test) — pins the note's wording so it cannot drift back into
+  reading like a first attempt.
+
 ## A goal worker's incomplete retry is not a continuation
 
 "Continue" in a conversation and "retry" in a goal worker are different
@@ -125,6 +219,9 @@ task. Both share one truncation verdict, but what they carry into the next
 attempt is completely different.
 
 ### What actually happens
+
+This flow is reached **only after the in-run continuation allowance is spent**;
+see the ordering table above.
 
 1. `run_loop.rs` judges the stream truncated (`finish_length` /
    `eof_no_terminal` / …). The run ends `incomplete`, `run_terminal.error`
@@ -138,7 +235,10 @@ attempt is completely different.
    repair budget (classified `InfraRecoverable`); only its own bound applies.
 3. The next turn's message is prefixed with:
    `CONTINUE: your previous turn for todo <id> ended INCOMPLETE … Pick up
-   exactly where you left off — do not restart work that already completed.`
+   exactly where you left off — do not restart work that already completed. The
+   agent already retried the cut inside that run before giving up, so repeating
+   the same request unchanged will hit the same wall: narrow the step, or work
+   from the artifacts already on disk.`
    After `DEFAULT_MAX_INCOMPLETE_RETRIES` (3) consecutive truncations the run
    stops as `incomplete_budget` and reports to the supervisor.
 
@@ -215,11 +315,12 @@ of the continuation, run at both N = 64 and N = 128, with a low ratio judged a
 redo. It needs only text both sides already persist, no extra instrumentation,
 and it is unaffected by rewrites of the truncation verdict in `run_loop.rs`.
 
-The automatic continuation described in the previous section already covers "the
-allowance ran out inside one run": it steps the level down and tries again, so a
-worker no longer has to bang against the same wall through a retry. Only after
-that allowance is spent too and the run still ends `incomplete` do the measures
-below apply — and by then the problem is no longer the allowance but the task
+The automatic continuation described in the ordering section above already
+covers "the allowance ran out inside one run": it steps the level down and tries
+again, so a worker usually no longer has to bang against the same wall through a
+retry, and it never reaches the flow in this section at all. Only after that
+allowance is spent too and the run still ends `incomplete` do the measures below
+apply — and by then the problem is usually no longer the allowance but the task
 outgrowing one response: split it into per-batch todos (each within ~20k output)
 and state in the todo text that the continuation must read existing results back
 from the artifact directory.

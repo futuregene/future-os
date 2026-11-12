@@ -79,6 +79,20 @@ pub struct Settings {
     /// Maximum LLM + tool turns per prompt (0 = unlimited).
     #[serde(default)]
     pub max_turns: i32,
+    /// Whether a run whose model reply hits the output limit keeps writing
+    /// inside the same run instead of ending `incomplete`.
+    ///
+    /// This is the only path that spends tokens the user did not ask for one
+    /// request at a time — a continued run issues up to two extra billed
+    /// requests — so it is switchable. Absent means enabled; set
+    /// `"outputContinuation": false` to make a truncated reply end exactly as it
+    /// did before the feature existed (the `incomplete` / `[OUTPUT_LIMIT]`
+    /// semantics, with the desktop/mobile "继续" button).
+    #[serde(
+        default = "default_output_continuation",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub output_continuation: Option<bool>,
     #[serde(
         default = "default_permission_level",
         skip_serializing_if = "String::is_empty"
@@ -94,6 +108,13 @@ pub struct Settings {
 }
 
 // ─── Defaults ──────────────────────────────────────────────────────────────
+
+/// Absent `outputContinuation` means enabled: continuing a cut reply is what
+/// most users want, and they paid for the tokens either way. The switch exists
+/// so it can be turned off deliberately, not so it starts off.
+fn default_output_continuation() -> Option<bool> {
+    Some(true)
+}
 
 /// Default permission level for new installs: "all" (unrestricted) is the
 /// deliberate product default — matches rpc::session::DEFAULT_PERMISSION_LEVEL.
@@ -144,6 +165,11 @@ impl Settings {
     pub fn retry_enabled(&self) -> bool {
         self.retry.as_ref().and_then(|r| r.enabled).unwrap_or(true)
     }
+    /// Whether a reply cut off by the output limit is continued inside the run.
+    /// Absent means enabled (see [`default_output_continuation`]).
+    pub fn output_continuation_enabled(&self) -> bool {
+        self.output_continuation.unwrap_or(true)
+    }
     /// Retry budget per request. Mirrors the serde default so a caller that
     /// needs the *effective* value never has to restate the number.
     pub fn retry_max_retries(&self) -> i32 {
@@ -191,6 +217,7 @@ impl Default for Settings {
             max_turns: 0,
             default_permission_level: default_permission_level(),
             default_model: String::new(),
+            output_continuation: default_output_continuation(),
         }
     }
 }
@@ -299,6 +326,40 @@ mod tests {
             ..Default::default()
         };
         assert!(s.retry_enabled());
+    }
+
+    /// The output-continuation switch is the only gate on the one path that
+    /// spends tokens the user did not request one at a time, so both its
+    /// default and its JSON spelling are pinned here.
+    #[test]
+    fn output_continuation_defaults_on_and_is_switchable() {
+        // Absent setting (every existing install) must continue, not silently
+        // fall back to the pre-feature behaviour.
+        assert!(Settings::default().output_continuation_enabled());
+        assert!(Settings {
+            output_continuation: None,
+            ..Default::default()
+        }
+        .output_continuation_enabled());
+
+        // The documented on-disk spelling is camelCase, like its siblings.
+        let off: Settings = serde_json::from_str(r#"{"outputContinuation": false}"#).unwrap();
+        assert!(!off.output_continuation_enabled());
+        let on: Settings = serde_json::from_str(r#"{"outputContinuation": true}"#).unwrap();
+        assert!(on.output_continuation_enabled());
+
+        // An explicit value round-trips instead of being dropped as a default.
+        let explicit = Settings {
+            output_continuation: Some(false),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&explicit).unwrap();
+        assert!(
+            json.contains(r#""outputContinuation":false"#),
+            "got: {json}"
+        );
+        let restored: Settings = serde_json::from_str(&json).unwrap();
+        assert!(!restored.output_continuation_enabled());
     }
 
     /// The three effective-value accessors are what a caller reads when it

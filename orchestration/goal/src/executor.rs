@@ -265,6 +265,14 @@ pub fn transport_failure_streak(history: &[RunRecord], todo_id: &str) -> u32 {
 /// the run must stop. A truncated stream is an infra event, not a science
 /// failure — the agent gets an explicit "continue where you left off" instead
 /// of a bare re-offer of the same todo (which invites restarting from scratch).
+///
+/// This is the FALLBACK, not the first line of defence: the agent continues a
+/// spent output budget inside the same run (`MAX_OUTPUT_LIMIT_CONTINUATIONS`),
+/// and a worker only ever sees `incomplete` once that in-run budget is spent
+/// too. The note says so, because the distinction decides what the model should
+/// do differently: repeating the same request is known to have already failed,
+/// twice, without the outer note ever being consulted. See the ordering table in
+/// `docs/architecture/response-outcomes.zh-CN.md`.
 pub fn incomplete_continue_note(streak: u32, max_retries: u32, todo_id: &str) -> Option<String> {
     if max_retries == 0 || streak >= max_retries {
         return None;
@@ -273,6 +281,9 @@ pub fn incomplete_continue_note(streak: u32, max_retries: u32, todo_id: &str) ->
         "CONTINUE: your previous turn for todo {todo_id} ended INCOMPLETE \
          (the model stream was truncated mid-reply). Pick up exactly where \
          you left off — do not restart work that already completed. \
+         The agent already retried the cut inside that run before giving up, so \
+         repeating the same request unchanged will hit the same wall: narrow the \
+         step, or work from the artifacts already on disk. \
          (incomplete attempt {streak}/{max_retries})"
     ))
 }
@@ -842,6 +853,24 @@ mod validator_tests {
         assert!(incomplete_continue_note(4, 3, "T1").is_none());
         // a zero bound disables retries entirely
         assert!(incomplete_continue_note(1, 0, "T1").is_none());
+    }
+
+    /// The note is the FALLBACK behind the agent's in-run continuation, so it
+    /// has to warn that repeating the request unchanged already failed. Without
+    /// this line the envelope reads as "nobody has tried continuing yet", which
+    /// is what made a truncation loop look like a first attempt every turn.
+    #[test]
+    fn incomplete_continue_note_says_the_in_run_continuation_already_ran() {
+        use super::incomplete_continue_note;
+        let note = incomplete_continue_note(1, 3, "T1").expect("retry allowed");
+        assert!(
+            note.contains("already retried the cut inside that run"),
+            "the note must not read like a first attempt: {note}"
+        );
+        assert!(
+            note.contains("hit the same wall"),
+            "the note must say an identical repeat is known to fail: {note}"
+        );
     }
 
     #[test]
