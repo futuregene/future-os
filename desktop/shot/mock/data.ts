@@ -1978,3 +1978,98 @@ export const remoteFileListing = {
     { name: "archive.zip", path: "/Users/studio/papers/figures/archive.zip", isDir: false, size: 2_048_576 },
   ],
 };
+
+/**
+ * A demo history for the lane picture, with gutters produced by the *host's* own
+ * layout function (`host/src/git_history.rs::graph`) rather than drawn by hand:
+ * the decoder reads glyphs, so an invented grid decodes into a picture nobody
+ * asked for.
+ *
+ * This is a trunk with three branches feeding it — one merged back, one still
+ * open beside it, one joining later — which is the smallest history that contains
+ * every shape the drawer has: a commit, a merge opening a lane, a crossing where
+ * a horizontal passes a live vertical, and a lane closing. Three colours are in
+ * it, so a picture that came out in one colour is visibly wrong.
+ */
+export const gitHistoryCommits = [
+  { short: "9f2c1a7", when: "12 minutes ago", who: "Rin", decorations: "HEAD -> main, origin/main", subject: "Show the lane picture in review", graph: "o     " },
+  { short: "4b8e03c", when: "48 minutes ago", who: "Rin", decorations: "", subject: "Merge branch 'feat/lane-graph'", graph: "M─┐   " },
+  { short: "c17d5b2", when: "1 hour ago", who: "Kai", decorations: "", subject: "Decode the gutter into strokes", graph: "│ o   " },
+  { short: "8a44f19", when: "2 hours ago", who: "Kai", decorations: "", subject: "Draw turns as quadratic curves", graph: "│ o   " },
+  { short: "2e5b7a8", when: "3 hours ago", who: "Jun", decorations: "", subject: "Merge branch 'release/1.4'", graph: "M─┤   " },
+  { short: "d90c6e3", when: "4 hours ago", who: "Jun", decorations: "", subject: "Merge branch 'fix/patch-bound'", graph: "M─│─┐ " },
+  { short: "b0f39d1", when: "5 hours ago", who: "Dee", decorations: "", subject: "Bound the patch at a page size", graph: "│ o │ " },
+  { short: "6cd2e84", when: "6 hours ago", who: "Dee", decorations: "", subject: "Colour a patch line by its role", graph: "│ │ o " },
+  { short: "77b0f4e", when: "7 hours ago", who: "Jun", decorations: "origin/release/1.4", subject: "Keep the abbreviated sha as the key", graph: "│ o │ " },
+  { short: "1a2b3c4", when: "9 hours ago", who: "Dee", decorations: "", subject: "Read the log once per page", graph: "│ │ o " },
+  { short: "f58a1b9", when: "11 hours ago", who: "Rin", decorations: "", subject: "Report a plain directory as not a repo", graph: "o─│─┘ " },
+  { short: "38e7c0a", when: "13 hours ago", who: "Rin", decorations: "tag: v1.3.2", subject: "Close the feature branch", graph: "o─┘   " },
+  { short: "5d6e7f8", when: "yesterday", who: "Rin", decorations: "", subject: "Start the lane picture", graph: "o     " },
+];
+
+/**
+ * The patch a demo commit opens onto: a stat summary, then a diff with every
+ * kind of line the pane colours (added, removed, a hunk header, context). Real
+ * `git show` output, so the role split is exercised against its actual shape.
+ */
+export const gitHistoryPatch = `commit 9f2c1a7c8d4e2b1a0f9e8d7c6b5a4938271605f4
+Author: Rin <rin@example.org>
+Date:   Wed Nov 12 09:41:02 2026 +0800
+
+    Show the lane picture in the review panel
+
+ desktop/src/features/git-history/GitHistoryPanel.tsx | 42 +++++++++++++++-----
+ desktop/src/features/git-history/LaneGraph.tsx      | 28 +++++++++++++
+ 2 files changed, 60 insertions(+), 10 deletions(-)
+
+diff --git a/desktop/src/features/git-history/GitHistoryPanel.tsx b/desktop/src/features/git-history/GitHistoryPanel.tsx
+index 3b1d7c0..8a4e912 100644
+--- a/desktop/src/features/git-history/GitHistoryPanel.tsx
++++ b/desktop/src/features/git-history/GitHistoryPanel.tsx
+@@ -118,12 +118,20 @@ export function GitHistoryPanel({ source, onClose }: Props) {
+   const commits = useMemo(() => listing?.commits ?? [], [listing]);
+   const lanes = useMemo(() => Math.max(1, laneCount(commits)), [commits]);
++  // Decoded once for the page, not once per row: a row cannot be decoded alone
++  // anyway — whether a thread reaches above a dot depends on the row before it.
+   const geometry = useMemo(() => graphGeometry(commits, palette), [commits, palette]);
+   const pictureWidth = lanes * LANE_PITCH + GUTTER_PAD;
+ 
+   if (selected) {
+-    return <CommitPatchPane commit={selected} source={source} onBack={() => setSelected(null)} />;
++    return (
++      <CommitPatchPane
++        commit={selected}
++        source={source}
++        onBack={() => setSelected(null)}
++      />
++    );
+   }
+ 
+   return (
+diff --git a/desktop/src/features/git-history/LaneGraph.tsx b/desktop/src/features/git-history/LaneGraph.tsx
+new file mode 100644
+index 0000000..c4f8a21
+--- /dev/null
++++ b/desktop/src/features/git-history/LaneGraph.tsx
+@@ -0,0 +1,28 @@
++import { laneDrawing } from "@future-os/git-graph";
++
++/**
++ * One commit's lane picture, drawn as strokes.
++ *
++ * Nothing here paints a glyph: the host's box-drawing grid is a description of
++ * the picture, and at any size a column of characters reads as broken marks.
++ */
++export function LaneGraph({ geometry, height, width }: Props) {
++  if (!geometry)
++    return null;
++  const drawing = laneDrawing(geometry, LANE_METRICS, height);
++  return (
++    <svg width={width} height={height} aria-hidden="true">
++      {drawing.threads.map(thread => (
++        <line key={thread.x} x1={thread.x} y1={thread.y1} x2={thread.x} y2={thread.y2} stroke={thread.color} />
++      ))}
++    </svg>
++  );
++}
+`;
