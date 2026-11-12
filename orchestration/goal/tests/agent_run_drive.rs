@@ -329,6 +329,250 @@ fn run_applies_model_and_thinking_level_only_when_asked() {
     );
 }
 
+// ── incomplete retry: continue, do not replay ──────────────────────────────
+//
+// A truncated model stream is an infra event: the todo stays runnable, no
+// repair budget is spent, and the next turn carries a `CONTINUE:` note. What
+// that note MEANS is "pick up where you left off" — so the two properties
+// asserted here are the ones that make it true rather than decorative:
+//   1. the truncated turn's own partial text reaches the next turn's envelope
+//      (that text is the only carrier of "where you left off" a worker has —
+//      an interactive session keeps the assistant message in history, a worker
+//      does not), and
+//   2. the interrupted todo is not re-split, re-added or otherwise reset, and
+//      `failed_attempts` stays 0.
+// `incomplete_continue_note_carries_no_progress_when_the_cut_left_no_body`
+// pins the inverse: with `output_len == 0` there is no text to carry, which is
+// exactly the shape that degrades into "redo the whole turn".
+
+/// One turn that ends `incomplete` from an output-limit cut AFTER writing a
+/// partial body, then a second turn that completes. The scripted run ids are
+/// `mock-run-1` / `mock-run-2` (the mock numbers them in prompt order).
+fn truncated_then_completed_events() -> Vec<future_rpc::proto::StreamEvent> {
+    vec![
+        ev("mock-run-1", 0, "agent_start", "{}"),
+        ev(
+            "mock-run-1",
+            1,
+            "tool_start",
+            "{\"tool_name\":\"write\",\"phase\":\"execution\"}",
+        ),
+        // The partial body — a prefix, not a finished answer.
+        ev(
+            "mock-run-1",
+            2,
+            "text_chunk",
+            "{\"text\":\"PARTIAL-PREFIX: batch 3 of 7 written to heavy/w2/out3.json\"}",
+        ),
+        ev(
+            "mock-run-1",
+            3,
+            "agent_end",
+            "{\"state\":\"incomplete\",\"error\":\"[OUTPUT_LIMIT] finish_length\",\
+             \"truncation\":{\"turns_so_far\":6,\"output_len\":512,\
+             \"tool_calls_so_far\":1,\"detected_by\":\"finish_length\"}}",
+        ),
+        ev("mock-run-2", 10, "agent_start", "{}"),
+        ev(
+            "mock-run-2",
+            11,
+            "text_chunk",
+            "{\"text\":\"batches 4-7 written; all seven artifacts present\"}",
+        ),
+        ev("mock-run-2", 12, "agent_end", "{\"state\":\"completed\"}"),
+    ]
+}
+
+#[test]
+fn incomplete_continue_note_does_not_replay_completed_work() {
+    let cr = cli_root();
+    let (_rt, shared) = mock_env(MockState {
+        events: truncated_then_completed_events(),
+        ..Default::default()
+    });
+    let goal = init_goal(&cr, "continue after truncation");
+    let todo = first_todo_id(&cr.root, &goal);
+    let todos_before = open_store(&cr).replay(&goal).unwrap().unwrap().todos.len();
+    // max-turns 2: the truncated turn and its continuation. The run exits on
+    // this budget (the todo is runnable again after the continuation turn's
+    // evidence is judged), which is the outcome under test — not a closure.
+    let _ = cli(&["run", "--goal", &goal, "--anonymous", "--max-turns", "2"]);
+
+    let st = shared.lock().unwrap();
+    let worker_prompts: Vec<&String> = st
+        .prompt_messages
+        .iter()
+        .zip(st.prompt_calls.iter())
+        .filter(|(_, call)| call.0 != "sup-sess")
+        .map(|(message, _)| message)
+        .collect();
+    assert_eq!(
+        worker_prompts.len(),
+        2,
+        "one truncated turn + one continuation: {:?}",
+        st.prompt_calls
+    );
+
+    // (a) The continuation turn is TOLD to continue, not to start over.
+    let continuation = worker_prompts[1];
+    assert!(
+        continuation.contains("CONTINUE:"),
+        "the second turn must carry the continue note: {continuation}"
+    );
+    assert!(
+        continuation.contains(&format!("todo {todo}")),
+        "the note names the interrupted todo: {continuation}"
+    );
+    assert!(
+        continuation.contains("do not restart work that already completed"),
+        "the note forbids replaying finished work: {continuation}"
+    );
+
+    // (b) ... and it can actually obey: the truncated body is in the envelope
+    //     (the only "where you left off" a worker has).
+    assert!(
+        continuation.contains("PARTIAL-PREFIX: batch 3 of 7"),
+        "the truncated turn's partial text must reach the next envelope: {continuation}"
+    );
+
+    // (c) No replay machinery was engaged: the todo was not re-added or
+    //     re-split, and the truncation spent no repair budget.
+    drop(st);
+    let g = open_store(&cr).replay(&goal).unwrap().unwrap();
+    assert_eq!(
+        g.todos.len(),
+        todos_before,
+        "a continuation must not re-add or re-split the todo: {:?}",
+        g.todos.iter().map(|t| t.id.clone()).collect::<Vec<_>>()
+    );
+    let on_todo: Vec<&future_goal::state::RunRecord> =
+        g.history.iter().filter(|r| r.todo_id == todo).collect();
+    let t = g.todo(&todo).expect("the todo survives the truncation");
+    // The durable form of "no repair budget was spent": the ledger's own
+    // classification of the truncated turn. (`t.failed_attempts` is NOT a valid
+    // witness here — it is an in-memory counter that `writeback` increments but
+    // no event carries, so a replayed goal always reads 0; see the durability
+    // gap noted in docs/architecture/response-outcomes.zh-CN.md.)
+    assert_eq!(
+        on_todo[0].failure_kind,
+        Some(future_goal::state::FailureKind::InfraRecoverable),
+        "a truncated stream is infra, not a science failure: {t:?}"
+    );
+    // The continuation, not a replay, carried the todo to completion: two
+    // records on the same todo, in order, and no third "restart" record.
+    assert_eq!(
+        on_todo.len(),
+        2,
+        "exactly two attempts on the todo (truncated + continuation): {:?}",
+        on_todo
+            .iter()
+            .map(|r| (r.terminal_state.clone(), r.error.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(on_todo[0].terminal_state, "incomplete");
+    assert_eq!(on_todo[1].terminal_state, "completed");
+    assert_eq!(
+        t.status,
+        TodoStatus::Done,
+        "the continuation completed the same todo: {t:?}"
+    );
+}
+
+/// The inverse of assertion (b): when the cut left NO body (`output_len == 0`,
+/// the shape measured on a thinking-only truncation loop — 32768 completion
+/// tokens all spent on reasoning), there is nothing to carry, so the
+/// continuation turn's envelope is indistinguishable from a first attempt.
+///
+/// This test pins the CURRENT behaviour and the gap it leaves: `turns_so_far`
+/// / `output_len` / `tool_calls_so_far` are recorded in the ledger but never
+/// reach the worker, so the model cannot know how much of its budget the
+/// interrupted attempt consumed and re-derives the same plan until the retry
+/// bound stops the run. When the envelope starts carrying the truncation
+/// progress (or a token-overlap judge replaces the note), the negative
+/// assertion below is what flips.
+#[test]
+fn incomplete_turn_without_a_body_does_not_surface_its_progress() {
+    let cr = cli_root();
+    let (_rt, shared) = mock_env(MockState {
+        events: vec![
+            ev("mock-run-1", 0, "agent_start", "{}"),
+            // No text_chunk at all: the whole budget went to reasoning.
+            ev(
+                "mock-run-1",
+                1,
+                "agent_end",
+                "{\"state\":\"incomplete\",\"error\":\"[OUTPUT_LIMIT] finish_length\",\
+                 \"truncation\":{\"turns_so_far\":14,\"output_len\":0,\
+                 \"tool_calls_so_far\":0,\"detected_by\":\"finish_length\"}}",
+            ),
+            ev("mock-run-2", 10, "agent_start", "{}"),
+            ev(
+                "mock-run-2",
+                11,
+                "text_chunk",
+                "{\"text\":\"second attempt\"}",
+            ),
+            ev("mock-run-2", 12, "agent_end", "{\"state\":\"completed\"}"),
+        ],
+        ..Default::default()
+    });
+    let goal = init_goal(&cr, "bodyless truncation");
+    let _ = cli(&["run", "--goal", &goal, "--anonymous", "--max-turns", "2"]);
+
+    let st = shared.lock().unwrap();
+    assert_eq!(st.prompt_messages.len(), 2, "{:?}", st.prompt_calls);
+    let continuation = &st.prompt_messages[1];
+    // The note itself still fires — it is the only signal the worker gets.
+    assert!(
+        continuation.contains("CONTINUE:"),
+        "the continue note must still fire: {continuation}"
+    );
+    // ... but it carries no progress: no turns, no output length, no tool count.
+    for fragment in [
+        "turns_so_far",
+        "output_len",
+        "tool_calls_so_far",
+        "14 turns",
+    ] {
+        assert!(
+            !continuation.contains(fragment),
+            "the envelope does not yet carry truncation progress ({fragment}), \
+             so a bodyless cut is indistinguishable from a first attempt: {continuation}"
+        );
+    }
+    // The previous-turn evidence block is emitted but EMPTY — the block that is
+    // supposed to say "where you left off" says nothing.
+    assert!(
+        continuation.contains("Evidence from the previous turn"),
+        "the previous-turn block is still emitted: {continuation}"
+    );
+    assert!(
+        !continuation.contains("PARTIAL"),
+        "a bodyless cut carries no partial text: {continuation}"
+    );
+    // Nothing was produced by the truncated turn either, so no partial-body
+    // evidence exists to carry.
+    let g = open_store(&cr).replay(&goal).unwrap().unwrap();
+    let truncated = g
+        .history
+        .iter()
+        .find(|r| r.terminal_state == "incomplete")
+        .expect("the incomplete turn is on the ledger");
+    assert_eq!(
+        truncated.evidence, "",
+        "a bodyless truncation leaves no evidence: {truncated:?}"
+    );
+    assert_eq!(
+        truncated
+            .truncation
+            .as_ref()
+            .and_then(|t| t.get("turns_so_far"))
+            .and_then(|v| v.as_u64()),
+        Some(14),
+        "the lost progress IS recorded — just not surfaced to the worker: {truncated:?}"
+    );
+}
+
 #[test]
 fn run_anonymous_single_todo_to_terminal() {
     let cr = cli_root();
