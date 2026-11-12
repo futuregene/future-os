@@ -3,7 +3,8 @@
   "tab": {
     "branch": "分支",
     "uncommitted": "未提交",
-    "lastRun": "上一轮"
+    "lastRun": "上一轮",
+    "history": "历史"
   },
   "workingTree": {
     "emptyTitle": "工作区没有未提交的更改",

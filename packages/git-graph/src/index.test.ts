@@ -1,5 +1,6 @@
-import { graphGeometry, laneCount, laneDrawing, patchLines } from "../gitGraph";
-import type { LaneMetrics } from "../gitGraph";
+import { describe, expect, it } from "vitest";
+import { graphGeometry, laneCount, laneDrawing, patchLines } from "./index";
+import type { LaneMetrics } from "./index";
 
 /** A palette whose entries are their own index, so a stroke's colour says which
  * lane it came from without the test having to know the theme's hex values. */
@@ -37,7 +38,7 @@ const MERGED = ["o     ", "│ M─┐ ", "│ │ o ", "│ o │ ", "o─┴�
  * connection instead of a new branch at every elbow.
  */
 describe("graphGeometry", () => {
-  test("a commit's thread wears its own lane's colour", () => {
+  it("a commit's thread wears its own lane's colour", () => {
     const [commit] = geometry("o │ ");
     expect(commit!.marker).toEqual({ lane: 0, color: "L0", merged: false });
     expect(commit!.threads.map(entry => [entry.lane, entry.color])).toEqual([
@@ -46,29 +47,29 @@ describe("graphGeometry", () => {
     ]);
   });
 
-  test("a commit on the right lane wears that lane, not the leftmost", () => {
+  it("a commit on the right lane wears that lane, not the leftmost", () => {
     expect(geometry("│ o ")[0]!.marker).toEqual({ lane: 1, color: "L1", merged: false });
   });
 
-  test("a merge is marked as one, so the row can draw a ring instead of a disc", () => {
+  it("a merge is marked as one, so the row can draw a ring instead of a disc", () => {
     expect(geometry(...MERGED)[1]!.marker).toEqual({ lane: 1, color: "L1", merged: true });
   });
 
-  test("a connection wears the commit's colour, not the colour of the lane it enters", () => {
+  it("a connection wears the commit's colour, not the colour of the lane it enters", () => {
     // The merge row: `M` on lane 1 opening lane 2. The horizontal is the merge
     // commit's own connection, so all of it is lane 1's colour — painted per
     // lane it would read as a different branch either side of the elbow.
     expect(geometry(...MERGED)[1]!.runs).toEqual([{ from: 1, to: 2, color: "L1" }]);
   });
 
-  test("a connection across two lanes is one run, not two collinear ones", () => {
+  it("a connection across two lanes is one run, not two collinear ones", () => {
     // `o─┴─┘`: lane 0's commit connects to lane 2. The `┴` between them is a
     // lane that ends on this row, so the horizontal carries on across it — and
     // painted as two runs there would be a seam at the junction.
     expect(geometry(...MERGED)[4]!.runs).toEqual([{ from: 0, to: 2, color: "L0" }]);
   });
 
-  test("a thread reaches only as far as there is a lane to reach", () => {
+  it("a thread reaches only as far as there is a lane to reach", () => {
     // The newest commit: nothing above it, and lane 0 carries on below it.
     const tip = geometry(...MERGED)[0]!;
     expect(thread(tip, 0)).toMatchObject({ fromTop: false, toBottom: true });
@@ -89,7 +90,7 @@ describe("graphGeometry", () => {
  * Lane centres are `pitch/2 + lane*pitch`, so 7, 21, 35 for three lanes.
  */
 describe("laneDrawing", () => {
-  test("verticals run the row's full height so consecutive rows join up", () => {
+  it("verticals run the row's full height so consecutive rows join up", () => {
     expect(draw(...MERGED)[2]!.threads).toEqual([
       { x: 7, y1: 0, y2: HEIGHT, color: "L0" },
       { x: 21, y1: 0, y2: HEIGHT, color: "L1" },
@@ -97,7 +98,7 @@ describe("laneDrawing", () => {
     ]);
   });
 
-  test("a lane starting below gets a rounded corner, not a right angle", () => {
+  it("a lane starting below gets a rounded corner, not a right angle", () => {
     // `┐`: the lane exists only below this row, so the horizontal bends down
     // into it. The corner curves onto the lane's axis, and the vertical starts
     // where the curve ends — starting it at the centre line would draw the
@@ -111,7 +112,7 @@ describe("laneDrawing", () => {
     );
   });
 
-  test("a fork closing above is the mirror: it bends up and stops short", () => {
+  it("a fork closing above is the mirror: it bends up and stops short", () => {
     // `┘`: the lane exists only above this row, so the corner rises out of the
     // centre line and the vertical ends where the curve begins.
     const base = draw(...MERGED)[4]!;
@@ -123,7 +124,7 @@ describe("laneDrawing", () => {
     );
   });
 
-  test("a crossing keeps its thread whole and breaks the stroke around it", () => {
+  it("a crossing keeps its thread whole and breaks the stroke around it", () => {
     // A lane in the middle of a run is one the horizontal *passes*. Its thread
     // runs the full row and the stroke is cut either side of it, so the picture
     // reads as one line crossing another rather than as a `+` junction. The two
@@ -148,7 +149,7 @@ describe("laneDrawing", () => {
     expect(crossing.runs.every(run => !run.path.includes("Q"))).toBe(true);
   });
 
-  test("a commit is a disc at the tip of its lane, with no thread over its dot", () => {
+  it("a commit is a disc at the tip of its lane, with no thread over its dot", () => {
     const tip = draw(...MERGED)[0]!;
     expect(tip.dots).toEqual([{ x: 7, color: "L0", merged: false }]);
     // Nothing above the newest commit, so its thread starts at the dot and runs
@@ -156,7 +157,7 @@ describe("laneDrawing", () => {
     expect(tip.threads).toEqual([{ x: 7, y1: CENTER, y2: HEIGHT, color: "L0" }]);
   });
 
-  test("a commit alone in its lane paints no zero-length thread over its dot", () => {
+  it("a commit alone in its lane paints no zero-length thread over its dot", () => {
     // A stroke whose start and end coincide paints nothing, but with a round cap
     // it still paints — a second dot, slightly offset, on top of the real one.
     const lone = laneDrawing(
@@ -172,7 +173,7 @@ describe("laneDrawing", () => {
     expect(lone.dots).toEqual([{ x: 7, color: "L0", merged: false }]);
   });
 
-  test("a run with no length between two turns paints no stroke", () => {
+  it("a run with no length between two turns paints no stroke", () => {
     for (const row of draw(...MERGED)) {
       for (const run of row.runs) {
         expect(run.path).not.toMatch(/^M ([\d.-]+) ([\d.]+) L \1 \2$/);
@@ -180,7 +181,7 @@ describe("laneDrawing", () => {
     }
   });
 
-  test("every row of a real history draws something, so no row is a gap", () => {
+  it("every row of a real history draws something, so no row is a gap", () => {
     for (const row of draw(...MERGED)) {
       expect(row.threads.length + row.runs.length).toBeGreaterThan(0);
     }
@@ -188,12 +189,12 @@ describe("laneDrawing", () => {
 });
 
 describe("laneCount", () => {
-  test("is the width of the widest row", () => {
+  it("is the width of the widest row", () => {
     expect(laneCount(rows("o ", "│ │ o "))).toBe(3);
     expect(laneCount(rows(...MERGED))).toBe(3);
   });
 
-  test("an empty listing has no lanes at all", () => {
+  it("an empty listing has no lanes at all", () => {
     expect(laneCount([])).toBe(0);
   });
 });
@@ -204,7 +205,7 @@ describe("laneCount", () => {
  * colours are the theme's.
  */
 describe("patchLines", () => {
-  test("splits a real patch into roles", () => {
+  it("splits a real patch into roles", () => {
     const patch = [
       "commit 4c1a7e2",
       "Author: Lixin Zhou <lixin@example.com>",
@@ -230,16 +231,16 @@ describe("patchLines", () => {
     ]);
   });
 
-  test("the diff's own header fields are header, not metadata", () => {
+  it("the diff's own header fields are header, not metadata", () => {
     expect(patchLines("diff --git a/x b/x\nindex 111..222 100644\n--- a/x\n+++ b/x\n")
       .map(line => line.role)).toEqual(["header", "header", "header", "header"]);
   });
 
-  test("a trailing newline does not paint an empty line under every commit", () => {
+  it("a trailing newline does not paint an empty line under every commit", () => {
     expect(patchLines("a\n")).toHaveLength(1);
   });
 
-  test("prose in the commit message reads as prose, not as a header field", () => {
+  it("prose in the commit message reads as prose, not as a header field", () => {
     expect(patchLines("commit abc\n\nAuthor notes go here\n").map(line => line.role))
       .toEqual(["meta", "plain", "plain"]);
   });

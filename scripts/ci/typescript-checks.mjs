@@ -16,7 +16,8 @@ const pkg = JSON.parse(readFileSync(resolve(root, directory, 'package.json'), 'u
 // A new package of this kind must be registered here; otherwise the `shared`
 // branches below fall through to `script(...)` and fail on a missing script,
 // which is the intended loud failure rather than a silently skipped project.
-const shared = ['markdown', 'thread-projection', 'json-preview', 'peer-icons'].includes(directory.split('/')[1]);
+const shared = ['markdown', 'thread-projection', 'json-preview', 'peer-icons', 'git-graph']
+  .includes(directory.split('/')[1]);
 const cwd = resolve(root, directory);
 async function run(command, args, workingDirectory = cwd) {
   const result = await timedCommand(command, args, { cwd: workingDirectory });

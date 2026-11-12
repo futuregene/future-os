@@ -24,10 +24,17 @@ vi.mock("../fusion/FusionDiscussionPanel", () => ({
 const list = vi.fn<(desktopId: string, sessionId: string, path?: string) => Promise<RemoteFileListing>>();
 const download = vi.fn<(input: Record<string, unknown>) => Promise<string>>();
 const preview = vi.fn<(input: Record<string, unknown>) => Promise<{ name: string; path: string }>>();
+/**
+ * The panel probes the peer's Git history to decide whether to offer the tab.
+ * The probe is per-*workspace*, and its answer is what the tab's presence hangs
+ * on, so it is a mock of its own rather than a default.
+ */
+const gitCommits = vi.fn<(desktopId: string, sessionId: string) => Promise<{ commits: unknown[]; isRepo: boolean; path: string; repoName: string; truncated: boolean }>>();
 vi.mock("./remotePeerClient", () => ({
   listRemoteSessionFiles: (...args: Parameters<typeof list>) => list(...args),
   downloadRemoteFile: (...args: Parameters<typeof download>) => download(...args),
   previewRemoteFile: (...args: Parameters<typeof preview>) => preview(...args),
+  listRemoteGitCommits: (...args: Parameters<typeof gitCommits>) => gitCommits(...args),
 }));
 
 /**
@@ -80,6 +87,76 @@ beforeEach(() => {
   download.mockReset().mockResolvedValue("report.txt");
   preview.mockReset().mockResolvedValue({ name: "forest.png", path: "/home/me/.future/app/remote-previews/abc__forest.png" });
   save.mockReset().mockResolvedValue("/Users/me/report.txt");
+  // Default: the peer's workspace is a plain directory, so the tab strip stays
+  // as it was. Tests that want the history tab say so.
+  gitCommits.mockReset().mockResolvedValue({
+    commits: [],
+    isRepo: false,
+    path: "/home/me/notes",
+    repoName: "",
+    truncated: false,
+  });
+});
+
+/**
+ * The History tab exists only where that machine's workspace is a repository.
+ *
+ * The probe is the same read the history itself uses, so this is also the test
+ * for "a plain directory costs one round trip and no tab".
+ */
+it("offers no History tab when the peer's workspace is not a repository", async () => {
+  const view = await mount();
+  await act(async () => {
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+  expect(gitCommits).toHaveBeenCalledWith("desktop_a", "sess_1");
+  expect(view.container.textContent).not.toContain("History");
+  // …and the plain files title is still there, unchanged.
+  expect(view.container.textContent).toContain("Studio iMac");
+  await view.unmount();
+});
+
+it("offers the History tab, and switches to it, when the workspace is a repository", async () => {
+  gitCommits.mockResolvedValue({
+    commits: [{
+      decorations: "",
+      graph: "o ",
+      short: "abc123",
+      subject: "a commit on the peer",
+      when: "2 hours ago",
+      who: "Rin",
+    }],
+    isRepo: true,
+    path: "/home/me/repo",
+    repoName: "repo",
+    truncated: false,
+  });
+  const view = await mount();
+  await act(async () => {
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+
+  const tabs = [...view.container.querySelectorAll<HTMLButtonElement>("button[aria-pressed]")];
+  const historyTab = tabs.find(tab => tab.textContent === "History");
+  expect(historyTab).toBeDefined();
+
+  await act(async () => historyTab!.click());
+  // The columns is the peer's, addressed the way its other reads are.
+  expect(view.container.textContent).toContain("a commit on the peer");
+  await view.unmount();
+});
+
+it("keeps files visible when the peer cannot answer the probe at all", async () => {
+  // An older build, or one that is offline: there is nothing to offer and
+  // nothing a reader could do about it in this panel.
+  gitCommits.mockRejectedValue(new Error("peer offline"));
+  const view = await mount();
+  await act(async () => {
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+  expect(view.container.textContent).not.toContain("History");
+  expect(list).toHaveBeenCalled();
+  await view.unmount();
 });
 
 it("opens a selected discussion with its original remote reader and returns to files", async () => {
