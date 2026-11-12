@@ -156,10 +156,20 @@ flowchart TD
     json --> mobile
 ```
 
+New TypeScript workspace packages must be registered here **and** in the
+`shared` list of [`scripts/ci/typescript-checks.mjs`](../../scripts/ci/typescript-checks.mjs).
+The planner reads the npm workspaces, so it plans any package on its own, but
+the shared runners only cover a registered one: an unregistered source-only
+package fails every phase on a missing script — `@future-os/git-graph` did
+exactly that (`must define typecheck`, same for lint and test). Nothing
+validates this table; `make check-docs` covers placement and links only.
+
 | TypeScript project | Direct workspace dependencies |
 |---|---|
+| git-graph | — |
 | json-preview | — |
 | markdown | — |
+| peer-icons | — |
 | thread-projection | — |
 | remote-crypto | — |
 | remote-protocol | remote-crypto, thread-projection |
