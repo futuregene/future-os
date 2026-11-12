@@ -258,13 +258,17 @@ box (`ctrl+q` holds the language and the theme) or its own printable key (`?`)
 — is not listed: the menu is where a reader looks for what they cannot find
 anywhere else, and a second name for something already on the screen only
 pushes a verb that has no other door below the fold. So the palette offers
-sixteen verbs — listed alphabetically, from `/approval` to `/worktree`, because a
+seventeen verbs — listed alphabetically, from `/approval` to `/worktree`, because a
 reader opens the menu holding the name of the verb they want — and not `/new`,
 `/stop`, `/paste`, `/git`, `/files`, `/mode`, `/sessions`, `/model`,
-`/thinking`, `/workspace`, `/quit`, `/help`, `/theme`, `/lang`, `/mouse`,
-`/preferences` or the older `/sandbox`. Unlisted is not unhandled: every one of
-them still works when typed, so a reader with an old spelling in their fingers
-reaches the verb instead of sending `/theme` to the agent as a prompt.
+`/thinking`, `/workspace`, `/quit`, `/help`, `/theme`, `/lang`,
+`/preferences` or the older `/sandbox`. `/mouse` is the one exception: it does
+have a row in `ctrl+q`, but the reader who needs it is the one whose pointer
+just stopped selecting, which is the moment a switch hidden inside a menu does
+not get found — so its typed spelling is listed here. Unlisted is not unhandled:
+every one of them still works when typed, so a reader with an old spelling in
+their fingers reaches the verb instead of sending `/theme` to the agent as a
+prompt.
 
 The map stops there because the letters do: a terminal sends Backspace, Tab,
 `\n` and Enter for `ctrl+h`/`i`/`j`/`m`; `ctrl+a` and `ctrl+b` are the default
@@ -444,12 +448,12 @@ click on the rail's tab strip are the doors to the same places.
 | `esc` (in the preview box) | Back one level, not out of the tree: a file opened from the files panel or the `/git` browser returns to that panel, and only its own `esc` reaches the chat. A picture opened from the draft had nothing under it, so it closes onto the chat |
 | `/copy` | Copy the last assistant answer as clean content, without terminal chrome |
 | `[复制]` under a reply (or `tab` to it and `enter`) | Copy **that** reply's own text, quoted elsewhere: the desktop's per-reply copy button, made permanent because a terminal has no hover to reveal it under, one blank line below the answer so the chips do not read as its last paragraph. A click anywhere on the chip is the same press. A reply that only called tools has nothing to copy, so it draws no copy chip. A **prompt** gets no controls of its own — the reader can retype or select what they wrote |
-| `/mouse` | Toggle and persist mouse capture off/on for native terminal selection (the 鼠标捕获 row in `ctrl+q` is the same switch) |
+| `/mouse` | Toggle and persist mouse capture off/on for native terminal selection (the 鼠标捕获 row in `ctrl+q` is the same switch, and this is the one preferences-row verb the palette also lists — see "A palette row is a verb…" above) |
 | `ctrl+t` | Thinking effort: opens the six-level chooser (`/thinking`); on the launchpad the level is staged for the session the first message creates |
 | `ctrl+s` | Approval mode: opens the four-tier chooser, the desktop composer's own values — 手动审批 / 沙箱保护 / 自动审批 / 完全访问 |
 | `ctrl+l` | Workspaces: opens the workspace chooser — every directory this client has a conversation in, a row that creates one from the path typed into its search line (`/workspace <path>` prefills that line), and a row that is a plain chat instead: no workspace at all, which mints `~/.future/workspaces/chat/<session id>` for the conversation and is filed under 对话会话 |
 | `ctrl+d` | Sidebar: show / hide (it never takes the keyboard, so there is no third state); full-screen on a narrow terminal. The rail's own `›` edge button does the same with one click. The choice is written to `sidebarVisible` and is where the next start begins (a first start begins hidden) |
-| `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run. It lists the verbs with no other door (see "A palette row is a verb…" above); one whose chord or preferences row already names it is typed-only and does not spend a row here. From 96 columns the box draws two columns: the surface's verbs on the left, the agent's skills on the right, each under its own heading. `←`/`→` step between them (landing on the neighbouring column's row at the same line); `↑`/`↓`, `tab` and `enter` still walk one list — commands first, then skills. Narrower frames keep the single column with a heading per kind |
+| `/` or `ctrl+p` | Command palette (`/` requires an empty draft) — type to filter, `enter` to run. It lists the verbs with no other door (see "A palette row is a verb…" above); one whose chord or preferences row already names it is typed-only and does not spend a row here, except `/mouse`, whose row is inside `ctrl+q` and is listed because the reader who needs it cannot select with the pointer. From 96 columns the box draws two columns: the surface's verbs on the left, the agent's skills on the right, each under its own heading. `←`/`→` step between them (landing on the neighbouring column's row at the same line); `↑`/`↓`, `tab` and `enter` still walk one list — commands first, then skills. Narrower frames keep the single column with a heading per kind |
 | `ctrl+r`, or `[ctrl+r] 会话` in the header | Session picker (name, workspace and age of each conversation). Its search line filters title, workspace and id, so this is where a reader finds a conversation by name — the rail paints no search line of its own. The header's button is both the pointer's door to it and the place the key is spelled — the hint row leaves this one out, so the chord is not taught twice — and it is the one button a narrow frame keeps |
 | `ctrl+q` or `/preferences` | Preferences, in the order the box lists them: interface language and color theme first (the two rows that repaint the whole surface — the language leads, because every other label there is written in whatever it says), then sidebar position, width and visibility, mouse capture, notifications, the shortcut editor and restore defaults. The key is also printed in the footer hint row, so it is on screen while the reader is wondering |
 | `?` (or the full-width `？`) | Help overlay (effective keys, grouped by area; the key requires an empty draft). Rows are listed only where an action has a chord — a verb with none is the palette's (`/` or `ctrl+p`), which is named in the same box and prints the list once |

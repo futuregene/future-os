@@ -4560,15 +4560,22 @@ fn floor_char_boundary(text: &str, at: usize) -> usize {
 /// [`TYPED_ONLY`] is where those verbs live. The two lists are the whole
 /// vocabulary, and `every_palette_entry_has_a_handler` walks both.
 ///
-/// **The order is a name order, not a rank.** These sixteen are a list a reader
+/// `/mouse` is the one exception, and it is here because its second door is not
+/// on the surface: the 鼠标捕获 row lives three keystrokes inside `ctrl+q`, and
+/// the reader who needs the switch is the one whose pointer just stopped
+/// selecting text — the moment a menu they have to go looking for is a menu they
+/// will not find. A row here is the only door spelled where they are already
+/// typing.
+///
+/// **The order is a name order, not a rank.** These seventeen are a list a reader
 /// reads *for a name they already have in mind* (`/fork`, `/export`), and an
 /// alphabetical column is the only order that answers "where is it?" without
 /// being memorised — the surface's other ordering rules ("most used first",
 /// "what the next message runs with") describe sets that fit on one line, not
-/// sixteen rows. A consequence worth naming: `enter` on an empty query runs the
+/// seventeen rows. A consequence worth naming: `enter` on an empty query runs the
 /// first row by name (`/approval`), so the top of this list is a letter and not
 /// a recommendation.
-pub const COMMANDS: [(&str, Key); 16] = [
+pub const COMMANDS: [(&str, Key); 17] = [
     ("/approval", Key::CmdApproval),
     ("/compact", Key::CmdCompact),
     ("/copy", Key::CmdCopy),
@@ -4578,6 +4585,7 @@ pub const COMMANDS: [(&str, Key); 16] = [
     ("/fusion", Key::CmdFusion),
     ("/fusion-log", Key::CmdFusionLog),
     ("/fusion-settings", Key::CmdFusionSettings),
+    ("/mouse", Key::CmdMouse),
     ("/pin", Key::CmdPin),
     ("/queue", Key::CmdQueue),
     ("/refresh", Key::CmdRefresh),
@@ -4600,7 +4608,9 @@ pub const COMMANDS: [(&str, Key); 16] = [
 ///
 /// Nothing here is offered by the palette, so the description is read by the
 /// test alone — it is the copy the row would carry if it were listed.
-pub const TYPED_ONLY: [(&str, Key); 16] = [
+/// `/mouse` is the one verb whose preferences row is not enough of a door and
+/// is listed in [`COMMANDS`] instead; every other row in `ctrl+q` stays here.
+pub const TYPED_ONLY: [(&str, Key); 15] = [
     // A chord of their own.
     ("/new", Key::CmdNew),             // ctrl+n
     ("/stop", Key::CmdStop),           // ctrl+c
@@ -4617,7 +4627,6 @@ pub const TYPED_ONLY: [(&str, Key); 16] = [
     // A row in the preferences box `ctrl+q` opens.
     ("/theme", Key::CmdTheme),
     ("/lang", Key::CmdLanguage),
-    ("/mouse", Key::CmdMouse),
     ("/preferences", Key::CmdPreferences),
 ];
 
@@ -5508,16 +5517,19 @@ mod tests {
         }
     }
 
-    /// The menu lists only the verbs without a door of their own, and the two
-    /// lists never overlap.
+    /// The palette offers exactly [`COMMANDS`], and the two lists never
+    /// overlap.
     ///
     /// A verb in [`TYPED_ONLY`] answers to a chord, a preferences row or `?`;
     /// listing it as well spent a row of a one-screen menu on a second name.
+    /// The one listed verb with a preferences row, `/mouse`, is there on
+    /// purpose (see [`COMMANDS`]): that row is hidden inside a menu, and the
+    /// verb is what a reader reaches for while their pointer cannot select.
     /// The query is checked as well as the unfiltered list, because filtering is
     /// the other way a row reaches the screen — `model` must not find `/model`
     /// while `ctrl+o` is what opens that chooser.
     #[test]
-    fn the_palette_offers_only_the_verbs_with_no_other_door() {
+    fn the_palette_offers_exactly_its_list_and_no_typed_only_verb() {
         let data = demo::chat();
         let (mut workbench, _rows) = frame(&data, 120, 38);
         let mut listed: Vec<String> = COMMANDS
@@ -5547,6 +5559,29 @@ mod tests {
                 "{hidden} is still offered by a query that names it"
             );
         }
+    }
+    /// `/mouse` is in the palette, not merely typed-only: its preferences row
+    /// sits inside `ctrl+q`, and the reader who needs native selection is the
+    /// one least able to go looking for it.
+    #[test]
+    fn the_palette_offers_mouse_capture_and_runs_it() {
+        let data = demo::chat();
+        let (mut workbench, _rows) = frame(&data, 120, 38);
+        workbench.handle(WbEvent::Key("/".into()), &data);
+        for key in ["m", "o", "u", "s", "e"] {
+            workbench.handle(WbEvent::Key(key.into()), &data);
+        }
+        assert_eq!(
+            workbench
+                .palette_selection(&data)
+                .map(|row| row.command().to_string()),
+            Some("/mouse".to_string()),
+            "typing the name filters to its row"
+        );
+        assert_eq!(
+            workbench.handle(WbEvent::Key("enter".into()), &data),
+            vec![WbAction::Command("/mouse".into())]
+        );
     }
     /// `/recent` and `/workspaces` name the rail's two panels. With room for a
     /// rail they switch it on (showing it if the reader had hidden it); on a
