@@ -69,6 +69,29 @@ fn a_plain_directory_is_not_a_repository() {
     assert!(listing.commits.is_empty());
 }
 
+/// The root the host reports never carries the Windows extended-length prefix:
+/// it is the one spelling a client renders verbatim and would send straight back,
+/// so `\\?\C:\…` would surface as the workspace's own path. The inputs here do
+/// not resolve on any platform, so the read falls back to the spelling it was
+/// given and this is the removal alone — the rule holds off Windows too, where a
+/// Windows-spelled path can still arrive from a paired desktop.
+#[test]
+fn a_reported_root_never_carries_the_windows_extended_length_prefix() {
+    assert_eq!(
+        reported_root(Path::new(r"\\?\C:\future-os")),
+        Path::new(r"C:\future-os")
+    );
+    assert_eq!(
+        reported_root(Path::new(r"\\?\UNC\server\share\checkout")),
+        Path::new(r"\\server\share\checkout")
+    );
+    // An ordinary spelling is untouched: the phone shows what the file system
+    // says, not a form this boundary invented.
+    let dir = tempfile::tempdir().unwrap();
+    let root = crate::store::strip_verbatim_prefix(dir.path().canonicalize().unwrap());
+    assert_eq!(reported_root(&root), root);
+}
+
 /// A workspace *inside* a repository is a repository: the phone's session
 /// workspace is often a subdirectory of a checkout, and `git_review`'s
 /// equality-of-toplevel rule would wrongly hide the history there.
@@ -80,11 +103,21 @@ fn a_subdirectory_of_a_repository_reports_the_repository() {
     std::fs::create_dir_all(&nested).unwrap();
     let listing = list(&nested.display().to_string()).unwrap();
     assert!(listing.is_repo);
+    // Spelled the way the file system spells it: `fs::canonicalize` produces the
+    // extended-length form (`\\?\C:\…`) on Windows, and a phone given that string
+    // would show it — or send it back — as the workspace it is not. Asserting the
+    // absence catches a regression the equality below cannot: two canonicalised
+    // spellings agree whatever prefix either one carries.
+    assert!(!listing.path.starts_with(r"\\?\"), "{}", listing.path);
+    // The repository's root, not the nested workspace the listing was asked for.
+    // Compared in canonical form on both sides: a client renders the reported
+    // string verbatim, so its *spelling* is the assertion above, and this one is
+    // about which directory it names.
     assert_eq!(
-        listing.path,
-        crate::git_review::canonical_or_raw(repo.path())
-            .display()
-            .to_string()
+        Path::new(&listing.path)
+            .canonicalize()
+            .expect("the reported root exists"),
+        repo.path().canonicalize().expect("the fixture root exists"),
     );
     assert_eq!(listing.commits.len(), 1);
 }

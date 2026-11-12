@@ -115,8 +115,11 @@ pub struct GraphListing {
     /// The repository's directory name, for the sheet's title. Empty when the
     /// workspace is not a repository.
     pub repo_name: String,
-    /// The workspace the history was read in — the phone shows it, because a
-    /// workspace can hold several checkouts.
+    /// The repository root the history was read from, in the file system's own
+    /// spelling — a client renders this string verbatim, so it carries neither a
+    /// Windows extended-length prefix nor Git's own separator style (see
+    /// `reported_root`). The phone shows it, because a workspace can hold
+    /// several checkouts.
     pub path: String,
     pub commits: Vec<GraphRow>,
     /// The log was cut at [`COMMIT_LIMIT`]; the oldest row is not the root.
@@ -264,6 +267,27 @@ fn failure(output: &Output) -> String {
     }
 }
 
+/// The repository root in the spelling this host reports it in.
+///
+/// `git rev-parse --show-toplevel` prints the path in Git's own spelling: forward
+/// slashes on Windows, where the file system (and every other path this host
+/// hands a client) uses backslashes. A client renders the string verbatim, as it
+/// does the session file listing's paths, so it is normalised once here, at the
+/// boundary, rather than by each reader: the directory's canonical form
+/// (`fs::canonicalize`, which also resolves a symlinked spelling such as macOS's
+/// `/var`), with the Windows extended-length prefix (`\\?\`) removed — that
+/// prefix is a long-path implementation detail, not part of a path a reader
+/// should see. `crate::store::strip_verbatim_prefix` is the same removal the
+/// stored workspace paths and `remote_host::session_files` use.
+///
+/// Only the reply is normalised: `git` is still run in Git's own spelling, so a
+/// Windows path that needs the extended-length form (past `MAX_PATH`) keeps it.
+/// A directory that no longer resolves (removed between the two reads) keeps
+/// Git's own spelling rather than failing the listing.
+fn reported_root(toplevel: &Path) -> std::path::PathBuf {
+    crate::store::strip_verbatim_prefix(crate::git_review::canonical_or_raw(toplevel))
+}
+
 /// The repository whose history this is: its toplevel and its own directory
 /// name. `None` when `cwd` is not inside a working tree (or `git` is missing, or
 /// the directory is gone) — every one of those answers "no history to show"
@@ -362,7 +386,9 @@ pub fn list(workspace: &str) -> Result<GraphListing, crate::Error> {
     Ok(GraphListing {
         is_repo: true,
         repo_name,
-        path: toplevel.display().to_string(),
+        // The root in the spelling a client may render and send back, while the
+        // log above was read in Git's own (`reported_root`).
+        path: reported_root(&toplevel).display().to_string(),
         commits,
         truncated,
     })
