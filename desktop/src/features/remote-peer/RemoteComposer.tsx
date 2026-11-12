@@ -4,6 +4,7 @@ import type { RemoteSessionRow } from "./mergeConversations";
 import type { RemoteCommand, RemoteSkillChoice, RemoteSlashItem } from "./remoteCommands";
 import type { RemotePeer, RemoteSkillInfo, RemoteUpload } from "./remotePeerClient";
 import type { PendingPrompt } from "./remotePromptOutbox";
+import type { RemoteQueueAttachment } from "./remoteQueue";
 import type { RemoteReferenceMap, RemoteReferenceOption } from "./remoteSessionReference";
 import { fusionTask } from "@future-os/thread-projection";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -11,7 +12,7 @@ import { ArrowUp, Loader2, Paperclip, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
-import { readNativeClipboardFilePaths, readNativeClipboardImage, savePastedFile, savePastedImage } from "../../integrations/storage/threadStore";
+import { openPath, readNativeClipboardFilePaths, readNativeClipboardImage, savePastedFile, savePastedImage } from "../../integrations/storage/threadStore";
 import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { cn } from "../../lib/cn";
 import { EMPTY_EDITOR_ATTR } from "../../lib/editableTarget";
@@ -21,10 +22,12 @@ import { useImeEnterGuard } from "../../lib/useImeEnterGuard";
 import { imageExtensionFromMime, splitFileName } from "../agent/attachments";
 import { SendQueuePanel } from "../agent/SendQueuePanel";
 import { SkillRecommendCard } from "../agent/SkillRecommendCard";
+import { FilePreviewOverlay } from "../filepreview/FilePreviewOverlay";
+import { previewKindForPath } from "../filepreview/previewKind";
 import { RemoteApprovalMenu } from "./RemoteApprovalMenu";
 import { buildRemoteSlashMenu, insertRemoteSkill, remoteSlashItems, slashQuery, withoutSlashWord } from "./remoteCommands";
 import { clearRemoteComposerDraft, loadRemoteComposerDraft, saveRemoteComposerDraft } from "./remoteComposerDraft";
-import { abortRemoteRun, listRemoteInstalledSkills, uploadRemoteFile } from "./remotePeerClient";
+import { abortRemoteRun, listRemoteInstalledSkills, previewRemoteFile, uploadRemoteFile } from "./remotePeerClient";
 import { getRemoteOutbox, isRecoverableSendError, recoverRemoteOutbox, sendRemotePrompt } from "./remotePromptOutbox";
 import {
   cancelRemoteQueuedRun,
@@ -316,6 +319,14 @@ export function RemoteComposer({
   const [busy, setBusy] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * A file of a waiting message, fetched so this window can show it.
+   *
+   * The path in the host's queue belongs to the host, so looking at it means
+   * pulling the bytes into this app's preview cache first — the same overlay a
+   * transcript chip opens, one transfer later.
+   */
+  const [queuePreview, setQueuePreview] = useState<{ name: string; path: string } | null>(null);
   const [installingSkill, setInstallingSkill] = useState(false);
   const [evaluating, setEvaluating] = useState(false);
   /**
@@ -690,11 +701,13 @@ export function RemoteComposer({
    * to tell which will run. An emptied row is not an edit — the panel's own rule
    * — so it is only removed.
    *
-   * The row's files do not travel with the new text: the host's queue reports a
-   * message's text and its acceptance time, never the upload ids it was sent with,
-   * so this client cannot name them again. The panel says so in the editor, where
-   * the reader is about to make that trade, instead of showing a count it would
-   * have had to invent.
+   * The row's files travel with the correction. A host path is not something this
+   * machine can upload, so each one is fetched and staged back — the same round
+   * trip the phone makes, and the only way to keep a photo in a message whose typo
+   * is being fixed. They are fetched BEFORE the row is cancelled: a row taken back
+   * while its files were still coming down would lose them. A host too old to
+   * report them sends the words alone, and the panel's editor says so before
+   * saving.
    *
    * If the re-send is refused after the removal, the words are put back in the
    * box: the row is gone on the host, and losing the text as well would leave the
@@ -706,13 +719,25 @@ export function RemoteComposer({
       await cancelQueued(runId);
       return;
     }
+    const row = queue.rows.find(item => item.runId === runId);
     setError(null);
+    let carried: RemoteUpload[] = [];
+    try {
+      carried = await Promise.all((row?.attachments ?? []).map(attachment =>
+        carryQueuedAttachment(attachment)));
+    }
+    catch (err) {
+      // Nothing has been cancelled yet, so the row is exactly as it was: the
+      // failure is said, and the reader can try again or edit the words alone.
+      setError(errorMessage(err));
+      return;
+    }
     try {
       await cancelRemoteQueuedRun(desktopId, sessionId, runId);
       queue.forget(runId);
       await sendRemotePrompt(desktopId, sessionId, {
         text: next,
-        attachments: [],
+        attachments: carried,
         workspaceId,
         freshModelId,
         freshThinkingLevel,
@@ -730,6 +755,50 @@ export function RemoteComposer({
     }
     finally {
       queue.refresh();
+    }
+  }
+
+  /**
+   * One file of a waiting message, as this client can send it again.
+   *
+   * The host's path is only readable there, so the bytes are fetched into this
+   * app's transfer cache and staged back to the host, which is what mints the
+   * upload id a prompt names.
+   */
+  async function carryQueuedAttachment(attachment: RemoteQueueAttachment): Promise<RemoteUpload> {
+    const fetched = await previewRemoteFile({
+      desktopId,
+      name: attachment.name,
+      path: attachment.path,
+      sessionId,
+    });
+    return uploadRemoteFile({ desktopId, name: fetched.name, path: fetched.path });
+  }
+
+  /**
+   * Look at one file a waiting message carries, before the run takes it.
+   *
+   * The path is the host's, so nothing here can open it directly: the bytes are
+   * fetched into this app's preview cache and shown by the same overlay a
+   * transcript chip uses. A file the overlay has no reader for is handed to the
+   * OS instead of being refused.
+   */
+  async function previewQueued(attachment: RemoteQueueAttachment) {
+    setError(null);
+    try {
+      const fetched = await previewRemoteFile({
+        desktopId,
+        name: attachment.name,
+        path: attachment.path,
+        sessionId,
+      });
+      if (previewKindForPath(fetched.name))
+        setQueuePreview(fetched);
+      else
+        await openPath(fetched.path);
+    }
+    catch (err) {
+      setError(errorMessage(err));
     }
   }
 
@@ -1128,15 +1197,17 @@ export function RemoteComposer({
         ? (
             <div className="mb-2">
               <SendQueuePanel
-                // The host's queue reports a message's text and its acceptance
-                // time, never the uploads it was sent with, so the panel is told
-                // that rather than handed a count of zero it would have invented.
+                // A host older than the field answers without a row's files: that
+                // row's editor then says an edit sends the words alone. A row that
+                // does report them shows them, and carries them into the re-send.
                 attachmentsUnreported
                 items={queue.rows.map(row => ({
+                  attachments: row.attachments,
                   content: row.text,
                   id: row.runId,
                   parked: isParkedRemoteQueueRow(row),
                 }))}
+                onPreviewAttachment={attachment => void previewQueued(attachment)}
                 onRelease={id => void releaseQueued(id)}
                 onRemove={id => void cancelQueued(id)}
                 onUpdate={(id, content) => void replaceQueued(id, content)}
@@ -1415,6 +1486,15 @@ export function RemoteComposer({
               )}
         </div>
       </div>
+      {/* A file of a waiting message, opened from its chip: the same overlay a
+          transcript attachment opens, reading the copy this window just fetched. */}
+      <FilePreviewOverlay
+        kind={previewKindForPath(queuePreview?.name ?? "") ?? "text"}
+        name={queuePreview?.name ?? ""}
+        onClose={() => setQueuePreview(null)}
+        open={queuePreview !== null}
+        path={queuePreview?.path ?? ""}
+      />
     </form>
   );
 }

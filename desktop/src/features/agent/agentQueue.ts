@@ -2,6 +2,21 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 
 /**
+ * One file a waiting message carries, as the queue reports it.
+ *
+ * `path` is this machine's own path (the Agent runs here), which is also the
+ * identity a later re-send names.
+ */
+export interface AgentQueueAttachment {
+  path: string;
+  /** "image" | "file". */
+  kind: string;
+  name: string;
+  /** Byte size, or 0 when the Agent did not report one. */
+  size: number;
+}
+
+/**
  * The conversation's queue, read from the Agent instead of remembered here.
  *
  * A message written while a reply streams is sent at once and held by the
@@ -22,6 +37,14 @@ export interface AgentQueueRow {
   acceptedAt: string;
   /** The message as the Agent holds it (empty for an attachment-only send). */
   text: string;
+  /**
+   * The files the message carries.
+   *
+   * `undefined` means this queue does not report them (an Agent older than the
+   * field): the panel then says an edit sends the words alone rather than
+   * claiming a message carries none. A message with no files reports `[]`.
+   */
+  attachments?: AgentQueueAttachment[];
   /**
    * `queued` runs at the turn boundary. `stale…` waited too long — the Agent
    * parks it and waits for a person to start it rather than spending credits on
@@ -91,6 +114,23 @@ export function isParkedRow(row: AgentQueueRow): boolean {
   return row.state.startsWith("stale");
 }
 
+/** One reported file, or null when it has no path to address or re-send. */
+function asAttachment(raw: unknown): AgentQueueAttachment | null {
+  if (!raw || typeof raw !== "object")
+    return null;
+  const attachment = raw as Record<string, unknown>;
+  if (typeof attachment.path !== "string" || !attachment.path)
+    return null;
+  return {
+    kind: typeof attachment.kind === "string" ? attachment.kind : "",
+    name: typeof attachment.name === "string" && attachment.name
+      ? attachment.name
+      : attachment.path.split(/[\\/]/).pop() || attachment.path,
+    path: attachment.path,
+    size: typeof attachment.size === "number" && attachment.size > 0 ? attachment.size : 0,
+  };
+}
+
 function asRow(raw: unknown): AgentQueueRow | null {
   if (!raw || typeof raw !== "object")
     return null;
@@ -103,6 +143,11 @@ function asRow(raw: unknown): AgentQueueRow | null {
     acceptedAt: typeof row.acceptedAt === "string" ? row.acceptedAt : "",
     text: typeof row.text === "string" ? row.text : "",
     state: typeof row.state === "string" && row.state ? row.state : "queued",
+    attachments: Array.isArray(row.attachments)
+      ? row.attachments.map(asAttachment).filter(
+          (attachment): attachment is AgentQueueAttachment => attachment !== null,
+        )
+      : undefined,
   };
 }
 
