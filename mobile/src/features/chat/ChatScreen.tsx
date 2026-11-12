@@ -33,6 +33,10 @@ import { useDesktopResource } from "../settings/useDesktopResource";
 import { ChatTimeline, type SyncNoticeState } from "./components/ChatTimeline";
 import { ChatTopBar } from "./components/ChatTopBar";
 import { SessionFilesPanel } from "./components/SessionFilesPanel";
+import { GitGraphPanel } from "./components/GitGraphPanel";
+import { ActionMenu, type MenuAction } from "../../components/ActionMenu";
+import { FolderOpen, GitBranch, ReceiptText } from "lucide-react-native";
+import { useTheme } from "../../theme/ThemeContext";
 import { ComposerDock } from "./components/ComposerDock";
 import { AttachmentSourceMenu, type AttachmentSource } from "./components/AttachmentSourceMenu";
 import type { SendQueueAttachmentItem } from "./components/SendQueuePanel";
@@ -50,6 +54,7 @@ const SYNC_NOTICE_MIN_MS = 750;
 
 export function ChatScreen() {
   const styles = useStyles();
+  const { colors } = useTheme();
   const { t, i18n } = useTranslation();
   const remote = useRemote();
   const controls = useRemoteControls();
@@ -63,15 +68,79 @@ export function ChatScreen() {
   const [filesSession, setFilesSession] = useState<string | null>(null);
   // The spend icon in the top bar opens the conversation's account book.
   const [usageOpen, setUsageOpen] = useState(false);
+  // The three-dot menu's own sheet, and the two in-screen surfaces it opens.
+  const [menuOpen, setMenuOpen] = useState(false);
+  // Whether the session's workspace is a Git repository, keyed by the
+  // conversation it was read for. `null` is "not asked yet": the menu is built
+  // once the desktop has answered, so a workspace that is a plain directory never
+  // shows the entry at all. Kept per conversation so switching away and back
+  // re-asks instead of inheriting the previous workspace's answer.
+  const [gitProbe, setGitProbe] = useState<{ key: string; isRepo: boolean } | null>(null);
+  const [gitSession, setGitSession] = useState<string | null>(null);
   const conversationKey = `${remote.credentials?.expectedDesktopId ?? ""}:${remote.selectedSessionId}`;
   const filesOpen = !remote.draft && filesSession === conversationKey;
+  const gitOpen = !remote.draft && gitSession === conversationKey;
+  const gitSupported = remote.capabilities.has("git_graph_v1");
+  const gitRepo = gitProbe?.key === conversationKey ? gitProbe.isRepo : null;
   const goBack = useCallback(() => {
-    if (filesOpen) setFilesSession(null);
+    if (gitOpen) setGitSession(null);
+    else if (filesOpen) setFilesSession(null);
     else {
       Keyboard.dismiss();
       closeConversation();
     }
-  }, [filesOpen, closeConversation]);
+  }, [filesOpen, gitOpen, closeConversation]);
+
+  // ── The conversation's menu ─────────────────────────────────────────────
+  // One button in the bar holds the three things that act on the whole
+  // conversation. The Git entry is the only one that depends on what the
+  // workspace *is*, so it is probed when the menu is asked for rather than on
+  // every render: a plain directory never shows the row at all, and a workspace
+  // that just became a repository shows it the next time the menu is opened.
+  const openMenu = useCallback(() => {
+    Keyboard.dismiss();
+    setMenuOpen(true);
+    if (!gitSupported) return;
+    // Asked on every open, not once per conversation: the reader may have run
+    // `git init` on the desktop since the last look, and a cached "no" would
+    // keep the row away for the rest of the session. The previous answer stays on
+    // screen until this one lands, so the row does not blink out and back.
+    const key = conversationKey;
+    void remote.listGitCommits().then(
+      (listing) => setGitProbe({ key, isRepo: listing.isRepo }),
+      () => setGitProbe({ key, isRepo: false }),
+    );
+  }, [conversationKey, gitSupported, remote]);
+  const menuActions = useMemo<MenuAction[]>(() => {
+    const actions: MenuAction[] = [
+      {
+        label: t("files.title"),
+        icon: <FolderOpen color={colors.inkSoft} size={18} />,
+        onPress: () => setFilesSession(conversationKey),
+      },
+      {
+        label: t("chat.usageOpen"),
+        icon: <ReceiptText color={colors.inkSoft} size={18} />,
+        onPress: () => {
+          // The sheet shows the session's spend, so read it as it opens: the
+          // figure is only as fresh as the last get_state, and this is the
+          // moment it is being looked at.
+          void remote.refreshSessionUsage();
+          setUsageOpen(true);
+        },
+      },
+    ];
+    // Only a repository has a history: the row appears once the desktop has
+    // said the workspace is one, and is absent (not disabled) otherwise.
+    if (gitRepo) {
+      actions.push({
+        label: t("git.open"),
+        icon: <GitBranch color={colors.inkSoft} size={18} />,
+        onPress: () => setGitSession(conversationKey),
+      });
+    }
+    return actions;
+  }, [colors.inkSoft, conversationKey, gitRepo, remote, t]);
   // Android edge-to-edge: the built-in KeyboardAvoidingView is a no-op here
   // (behavior is undefined on Android) and RN's KAV mis-measures the keyboard
   // under edge-to-edge, so we inset the chat flex column by the measured
@@ -718,9 +787,10 @@ export function ChatScreen() {
   );
 
   useEffect(() => {
-    // While browsing files, the panel owns system back so it can pop a folder
-    // first. Do not rely on child/parent effect subscription order.
-    if (filesOpen) return;
+    // While browsing files or the Git graph, the panel owns system back so it can
+    // pop a folder or a commit first. Do not rely on child/parent effect
+    // subscription order.
+    if (filesOpen || gitOpen) return;
     const subscription = BackHandler.addEventListener(
       "hardwareBackPress",
       () => {
@@ -729,7 +799,7 @@ export function ChatScreen() {
       },
     );
     return () => subscription.remove();
-  }, [filesOpen, goBack]);
+  }, [filesOpen, gitOpen, goBack]);
 
   // Measure both platforms to bound skill suggestions above the keyboard.
   // Only Android applies this as compensation below; iOS already uses KAV.
@@ -783,22 +853,16 @@ export function ChatScreen() {
               draft={remote.draft}
               machine={machine}
               backLabel={t("common.back")}
-              usageLabel={t("chat.usageOpen")}
+              menuLabel={t("chat.moreOpen")}
+              menuOpen={menuOpen}
               onBack={goBack}
-              onUsage={() => {
-                Keyboard.dismiss();
-                // The sheet shows the session's spend, so read it as it opens: the
-                // figure is only as fresh as the last get_state, and this is the
-                // moment it is being looked at.
-                void remote.refreshSessionUsage();
-                setUsageOpen(true);
-              }}
-              filesLabel={t("files.title")}
-              filesOpen={filesOpen}
-              onFiles={() => {
-                Keyboard.dismiss();
-                setFilesSession(filesOpen ? null : conversationKey);
-              }}
+              onMenu={openMenu}
+            />
+            <ActionMenu
+              title={t("chat.moreOpen")}
+              visible={menuOpen}
+              onClose={() => setMenuOpen(false)}
+              actions={menuActions}
             />
 
             {remote.error && connection.level === "connected" && (
@@ -821,14 +885,14 @@ export function ChatScreen() {
             >
               <View
                 style={styles.chatContent}
-                accessibilityElementsHidden={filesOpen}
+                accessibilityElementsHidden={filesOpen || gitOpen}
                 importantForAccessibility={
-                  filesOpen ? "no-hide-descendants" : "auto"
+                  filesOpen || gitOpen ? "no-hide-descendants" : "auto"
                 }
               >
                 <PausedTimeline
                   key={conversationKey}
-                  paused={filesOpen || chatFiles.preview !== null || chatFiles.activeDownload !== null}
+                  paused={filesOpen || gitOpen || chatFiles.preview !== null || chatFiles.activeDownload !== null}
                 >
                   <ChatTimeline
                     remote={remote}
@@ -919,6 +983,17 @@ export function ChatScreen() {
                   listFiles={remote.listSessionFiles}
                   onOpenFile={(path) => chatFiles.openFileLink(path, true)}
                   onClose={() => setFilesSession(null)}
+                />
+              )}
+
+              {gitOpen && (
+                <GitGraphPanel
+                  key={conversationKey}
+                  online={remote.desktopOnline}
+                  supported={gitSupported}
+                  listCommits={remote.listGitCommits}
+                  getCommit={remote.getGitCommit}
+                  onClose={() => setGitSession(null)}
                 />
               )}
 

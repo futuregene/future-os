@@ -112,3 +112,14 @@ pub const READ_BINARY_FEATURE: &str = "read_binary_v1";
 /// the fetch with "Unsupported command", i.e. a row that promises content and
 /// produces an error, so the row only offers to open when this is advertised.
 pub const REASONING_FETCH_FEATURE: &str = "reasoning_fetch_v1";
+
+/// Capability a host advertises when it can answer `list_git_commits` and
+/// `get_git_commit` — the session workspace's Git history, drawn as a lane graph,
+/// and one commit's patch.
+///
+/// Whether a *workspace* is a repository is not in the catalogue: it is a
+/// property of the directory a session works in, not of the conversation, and a
+/// workspace can be re-pointed (`set_cwd`) at any time. `list_git_commits`
+/// answers `isRepo` itself and the phone draws no entry when it is false, so this
+/// flag gates only the desktop's ability to answer at all.
+pub const GIT_GRAPH_FEATURE: &str = "git_graph_v1";

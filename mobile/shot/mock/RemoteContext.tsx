@@ -32,6 +32,8 @@ import type {
   RemoteModel,
   RemoteSessionUsage,
   SessionFileListing,
+  GitCommitDetail,
+  GitGraphListing,
 } from "../../src/remote/types";
 import { createContext, useContext, useMemo, useRef, useState } from "react";
 import { connectionPresentation as buildConnectionPresentation } from "../../src/remote/connectionPresentation";
@@ -44,6 +46,8 @@ import {
   demoDesktops,
   demoEntries,
   demoFiles,
+  demoGitCommitDetail,
+  demoGitListing,
   demoInstalledSkills,
   demoAvailableSkills,
   demoModels,
@@ -193,6 +197,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // the three workspace groups, the conversation. Everything else — screens,
   // projection, i18n — is untouched, so a capture is still the real phone UI.
   const parserDemo = new URLSearchParams(window.location.search).get("parser") === "1";
+  // A workspace that is a plain directory: the conversation menu then has no Git
+  // row at all, which is the case worth a capture of its own.
+  const noRepo = new URLSearchParams(window.location.search).get("norepo") === "1";
   // `?fleet=1` pairs the phone with five desktops and merges their conversations
   // into the home screen's recency page (`shot/mock/fleet.ts`). The product
   // already draws a merged list — the picker's "all desktops", a machine glyph per
@@ -575,6 +582,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       "prompt_receipt_v1",
       "selective_events_v1",
       "session_files_v1",
+      "git_graph_v1",
       "skills_v1",
       "desktop_settings_v1",
       "skill_management_v1",
@@ -719,6 +727,17 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
     // Files
     listSessionFiles: async (): Promise<SessionFileListing> => demoFiles,
+    // Git. The listing doubles as the repository probe: `isRepo` is what the
+    // top bar's menu reads before it offers the entry at all. `?norepo=1`
+    // answers as a plain directory would, which is the case a capture has to
+    // show the menu *without* the Git row.
+    listGitCommits: async (): Promise<GitGraphListing> => (noRepo
+      ? { isRepo: false, repoName: "", path: "", commits: [], truncated: false }
+      : demoGitListing),
+    getGitCommit: async (gitRef: string): Promise<GitCommitDetail> => ({
+      ...demoGitCommitDetail,
+      short: gitRef,
+    }),
     listSkills: async () => demoSkills,
 
     // Attachments: hand back an inline preview image so image rendering

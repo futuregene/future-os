@@ -30,6 +30,8 @@ import { DEFAULT_THINKING_LEVEL } from "./types";
 import type {
   ConnectionPhase,
   DownloadInfo,
+  GitCommitDetail,
+  GitGraphListing,
   HistoryAttachment,
   MobileAttachment,
   PairedDesktop,
@@ -220,6 +222,15 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
     signal?: AbortSignal,
   ): Promise<import("./types").CompactionOutcome>;
   listSessionFiles(path?: string): Promise<SessionFileListing>;
+  /**
+   * The conversation's workspace history, drawn as a lane graph. `isRepo: false`
+   * means the workspace is not a Git repository — the sheet offers no Git entry
+   * in that case, so this is called when the sheet opens and the entry appears
+   * only after the desktop has said yes.
+   */
+  listGitCommits(): Promise<GitGraphListing>;
+  /** One commit's stat and patch, by abbreviated id. */
+  getGitCommit(gitRef: string): Promise<GitCommitDetail>;
   listSkills(): Promise<RemoteSkill[]>;
   /**
    * Fetch a tool call's display target on demand — the arguments a lean
@@ -606,6 +617,12 @@ function machineSurface(
       ?? (async (_sessionId: string, _operationId: string): Promise<import("./types").CompactionOutcome> => ({ status: "timeout" })),
     listSkills: runtime?.conversation.listSkills ?? (async () => []),
     listSessionFiles: runtime?.conversation.listSessionFiles ?? (async () => {
+      throw new Error("not_connected");
+    }),
+    listGitCommits: runtime?.conversation.listGitCommits ?? (async () => {
+      throw new Error("not_connected");
+    }),
+    getGitCommit: runtime?.conversation.getGitCommit ?? (async () => {
       throw new Error("not_connected");
     }),
     resolveToolCallTarget: runtime?.conversation.resolveToolCallTarget ?? (async () => null),
@@ -1203,6 +1220,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     activeRuntime?.conversation.downloadAttachment,
     activeRuntime?.conversation.forkConversation,
     activeRuntime?.conversation.listSessionFiles,
+    activeRuntime?.conversation.listGitCommits,
+    activeRuntime?.conversation.getGitCommit,
     activeRuntime?.conversation.listSkills,
     activeRuntime?.conversation.modelId,
     activeRuntime?.conversation.newConversation,
