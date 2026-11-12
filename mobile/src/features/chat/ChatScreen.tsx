@@ -346,6 +346,13 @@ export function ChatScreen() {
   ) => {
     changeQueue(async () => {
       const attachments = await loadAttachments();
+      // A message needs words or files. Refusing before the cancel is what keeps
+      // the row: the sender answers an empty prompt by doing nothing, so a cancel
+      // first would take the message away and send nothing in its place.
+      if (!text.trim() && attachments.length === 0) {
+        showToast(t("chat.queue.emptyMessage"));
+        return;
+      }
       await remote.cancelQueuedRun(sessionId, row.runId);
       forgetQueuedRow(row.runId);
       try {
@@ -357,7 +364,7 @@ export function ChatScreen() {
         throw error;
       }
     });
-  }, [changeQueue, forgetQueuedRow, remote, sessionId, setAttachments, setMessage]);
+  }, [changeQueue, forgetQueuedRow, remote, sessionId, setAttachments, setMessage, t]);
 
   /** A queued file as this phone can send it: a local copy, downloaded on demand. */
   const materializeQueuedAttachment = useCallback(async (
@@ -401,14 +408,19 @@ export function ChatScreen() {
   const updateQueuedMessage = useCallback((id: string, content: string) => {
     const text = content.trim();
     const row = queuedRows.find(item => item.runId === id);
-    // An empty edit is a deletion, and the panel already offers that.
-    if (!row || !text)
+    if (!row)
       return;
+    // An empty edit is a deletion, and the panel's own bin says that plainly.
+    // Saved here it would only close the editor over an unchanged row.
+    if (!text) {
+      showToast(t("chat.queue.emptyEdit"));
+      return;
+    }
     const reported = row.attachments;
     replaceQueuedMessage(row, text, () => reported === undefined
       ? Promise.resolve([])
       : Promise.all(reported.map(materializeQueuedAttachment)));
-  }, [materializeQueuedAttachment, queuedRows, replaceQueuedMessage]);
+  }, [materializeQueuedAttachment, queuedRows, replaceQueuedMessage, t]);
 
   /** Open one file a waiting message carries, exactly as the transcript would. */
   const previewQueuedAttachment = useCallback((attachment: SendQueueAttachmentItem) => {
@@ -425,8 +437,16 @@ export function ChatScreen() {
     if (!row || row.attachments === undefined)
       return;
     const kept = row.attachments.filter(attachment => attachment.path !== path);
+    // The last file of a message with no words is the whole message. Dropping it
+    // used to re-send an empty prompt, which the sender refuses, so the row was
+    // already cancelled and the message vanished with nothing said. Refused here
+    // instead: the bin beside the row is what removes a message.
+    if (kept.length === 0 && !row.text.trim()) {
+      showToast(t("chat.queue.removeLastAttachment"));
+      return;
+    }
     replaceQueuedMessage(row, row.text, () => Promise.all(kept.map(materializeQueuedAttachment)));
-  }, [materializeQueuedAttachment, queuedRows, replaceQueuedMessage]);
+  }, [materializeQueuedAttachment, queuedRows, replaceQueuedMessage, t]);
 
   /** Which waiting row's "add files" menu is open (it belongs to that row). */
   const [queueAttachRow, setQueueAttachRow] = useState<SessionQueueRow | null>(null);

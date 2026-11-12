@@ -1461,6 +1461,7 @@ test("editing a waiting message takes the row back and queues the new words", as
 });
 
 test("an edit that empties the row is not a message, so nothing is sent", async () => {
+  const toast = jest.spyOn(chatUtils, "showToast").mockImplementation(() => {});
   await mountWithQueue([queueRow({ runId: "run_a", text: "typo" })]);
 
   await act(async () => {
@@ -1468,6 +1469,9 @@ test("an edit that empties the row is not a message, so nothing is sent", async 
   });
   expect(mockRemote.cancelQueuedRun).not.toHaveBeenCalled();
   expect(mockRemote.sendMessage).not.toHaveBeenCalled();
+  // Closed over an unchanged row it reads as "saved", so the refusal has to be
+  // said out loud, and it has to point at the control that does remove a row.
+  expect(toast).toHaveBeenCalled();
 });
 
 const queuedPhoto = {
@@ -1518,6 +1522,25 @@ test("removing one file re-sends the message with the rest", async () => {
   );
   const sent = mockRemote.sendMessage.mock.calls[0]![1]!;
   expect(sent.map(item => (item as { name: string }).name)).toEqual(["notes.pdf"]);
+});
+
+test("a row carrying only files keeps the last one instead of vanishing with it", async () => {
+  const toast = jest.spyOn(chatUtils, "showToast").mockImplementation(() => {});
+  await mountWithQueue([
+    queueRow({ attachments: [queuedPhoto], runId: "run_a", text: "" }),
+  ]);
+
+  await act(async () => {
+    tree.root.findByType(ComposerDock).props.onQueueRemoveAttachment("run_a", queuedPhoto.path);
+  });
+  await settleQueue();
+
+  // Dropping the only file would leave an empty prompt: the sender answers one
+  // by doing nothing, so cancelling first took the whole message with it. The
+  // row stays, nothing is re-sent, and the reader is told which control does it.
+  expect(mockRemote.cancelQueuedRun).not.toHaveBeenCalled();
+  expect(mockRemote.sendMessage).not.toHaveBeenCalled();
+  expect(toast).toHaveBeenCalled();
 });
 
 test("adding a photo to a waiting message sends the kept files with it", async () => {
