@@ -82,7 +82,7 @@ python3 benchmark/fusion/bench.py plan --counts bbeh=460,omni=540 --exclude omni
 用 `runtime.py --single-only --binary <future>` 启动隔离 Host，再准备一个 JSON 文件。对象的键是组名，值包含 `model` 和 `thinking_level`，例如 `{"deepseek-flash-max":{"model":"future/deepseek-flash","thinking_level":"max"}}`。启动命令如下。
 
 ```sh
-python3 benchmark/fusion/campaign.py --suite benchmark/fusion/suites/max-1000.json --binary <future> --runtime benchmark/fusion/.local/runtime.json --profiles <profiles.json> --out benchmark/fusion/runs/max-1000-campaign --jobs-per-group 2
+python3 benchmark/fusion/campaign.py --suite benchmark/fusion/suites/max-1000.json --binary <future> --runtime benchmark/fusion/.local/runtime.json --profiles <profiles.json> --out benchmark/fusion/runs/max-1000-campaign --jobs-per-group 2 --makeup-passes 1
 ```
 
 `--jobs-per-group 2` 为每组保留两路，四组最多同时运行八个对话。`--jobs` 则设置所有组共享的并发上限。续跑可以调整并发，原始清单继续保留，`executions.json` 记录每次续跑采用的并发配置和调度脚本摘要。
@@ -94,6 +94,8 @@ python3 benchmark/fusion/campaign.py --suite benchmark/fusion/suites/max-1000.js
 首轮遇到已确认终态的模型网络故障时，保留原尝试并继续调度。所有组首轮结束后补测这些题，默认最多补测三遍。终态账本确认触及输出上限时，该题记录为 `output_limit`，后续题继续运行。认证、额度、回执不明和采证失败会暂停调度。续跑使用原题包、模型绑定、二进制、判分脚本与隔离 Host 数据目录。已接受但尚无结果的尝试只重新等待原请求。隔离 Host 已停止时，可用 `runtime.py --single-only --resume-home <原隔离数据目录>` 重启。若进程非正常退出，确认旧进程已停止后再移除输出目录中的 `campaign.lock`。
 
 输出目录中的 `progress.json` 可随时查看，结束后生成 `results.csv`。逐题提示词、回答、公开转录、可获取的推理、用量和错误分别保存在各组的 `attempt-*/` 目录。首轮与补测的记录均留在本地。冻结清单记录题包、脚本和二进制哈希，模型目录与生效档位另存。
+
+`--makeup-passes 1` 限制每题最多两次生成。两次都未通过时，`case-status.json` 和最终 CSV 标记 `failed_after_two_attempts`，保留失败原因并将 `retry_allowed` 设为 `false`。进度中的 `network_pending` 只统计仍有补测机会的题目，`network_exhausted` 统计补测机会已用完的网络失败。续跑调整补测上限时，历史尝试继续保留，新规则写入执行记录。
 
 ## 安装
 
