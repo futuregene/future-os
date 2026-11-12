@@ -13,7 +13,7 @@ Fusion 是主 Agent 可调用的多模型思考工具，编排内核位于 `orch
 - 初始默认主持模型为 `future/deepseek-flash`；三个默认参与者为 `future/deepseek-flash`、`future/glm-5.3-flash`、`future/qwen3.7-plus`。最后一个型号按当前 Future 目录和用户确认选择，不使用不存在的 `qwen3.8-plus`，主持人缺失时明确失败，参与者缺失时记录原因并排除该角色，不替换成默认模型。
 - 启动 Desktop 或 `future host`，在 Desktop、Mobile 或 TUI 输入 `/fusion <任务>`。主 Agent 本次获得 `fusion`，对需要判断的问题按下述主动讨论策略调用；健康路径按 N→1→N→1 讨论（N 为 2–5）；故障分支可跳过阶段或返回无结论结果，外层收到唯一工具结果后继续原任务。普通后续 run 不继承该工具。
 - Desktop/Mobile 展开回复的过程，再展开 Fusion，仅显示标题四段圆环与各模型的图标状态，使用 `user-round-group` 图标；详细发言、诊断和工具证据继续保存在数据库；桌面右侧“运行”面板提供 Fusion 讨论明细，终端查询仍可复盘原文。TUI 使用 `/fusion-log` 查看当前父会话最近一次讨论，`/fusion-log <step-id>` 查看原始步骤。CLI 使用 `future fusion show <parent-session-id> [--run <id> --tool <id>] [--step <id>] [--offset <bytes>] --json`，查询不调用模型。
-- 共享 Host 通过 `~/.future/fusion/fusion.db` 的有界持久队列接收 Agent 工具调用，避免 Agent 反向依赖 Host。Host 实例锁保证执行器唯一，事务认领每次讨论，最多同时执行两个讨论。服务不可用或旧 Agent/Host 不支持时明确失败。
+- 共享 Host 通过 `~/.future/fusion/fusion.db` 的有界持久队列接收 Agent 工具调用，避免 Agent 反向依赖 Host。Host 实例锁保证执行器唯一，事务认领每次讨论，最多同时执行五个讨论。服务不可用或旧 Agent/Host 不支持时明确失败。
 - Agent 从原始用户提交开头的独立命令 token 验证启用，并冻结到 `ScheduledSettingsSnapshot.fusion_enabled`，同原文与请求键一起持久化；不新增持久会话开关。Remote outbox 保留原始 `/fusion`，重发继续使用原请求键。内层会话标记为 `created_by=fusion`，每次运行都强制替换成四个快照工具，不从普通会话设置继承 shell/写工具。
 - 本次讨论策略必须进入实际模型请求使用的 `StreamContext.system_prompt`，自定义系统提示词也不能遗漏；先复制提示词再追加策略，会造成工具可见但系统级规则丢失。普通后续 run 不继承该工具或策略。推导答案、解决推理问题和检查论证都属于讨论触发范围；Fusion 是内部思考，不等同于外部查询或行动。仍使用模型正常的自动工具选择，不强制派发，也不加入评测专用触发指令。
 - 调用时仅捕获显式 `read_scope` 中经父权限允许的 UTF-8 文件，生成同一份有哈希的文件快照，所有轮次读取它；空范围适用于纯概念问题。拒绝越界、链接/reparse point、特殊文件和越限资料。单文件 1 MiB、合计 16 MiB、最多 1024 个文件/目录；记录捕获起止时间并检测观察到的变化，不声称文件系统原子快照。

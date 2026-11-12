@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run comparable single-model cohorts, with network makeups after the first pass."""
+"""Run frozen single-model or Fusion campaigns with technical makeups."""
 
 import argparse
 import csv
@@ -229,6 +229,13 @@ def prepare(args):
         bbeh_module()
     identifiers = [case["id"] for case in suite["cases"]]
     profiles = read_profiles(args.profiles)
+    fusion_configuration = None
+    if args.arm == "fusion":
+        profile = next(iter(profiles.values()))
+        client = Future(
+            args.binary, args.runtime, profile["model"], profile["thinking_level"]
+        )
+        fusion_configuration = client.preflight()["fusion"]["configuration"]
     routes = read_routes(args, profiles)
     jobs = args.jobs
     if args.jobs_per_group is not None:
@@ -241,6 +248,8 @@ def prepare(args):
         "binary_sha256": digest(args.binary.read_bytes()),
         "runtime_home": read_json(args.runtime)["home"],
         "profiles": profiles,
+        "arm": args.arm,
+        "fusion_configuration": fusion_configuration,
         "timeout": args.timeout,
         "makeup_passes": args.makeup_passes,
         "jobs": jobs,
@@ -254,9 +263,9 @@ def prepare(args):
     if manifest.exists():
         original = read_json(manifest)["configuration"]
         # The scheduler can evolve without changing what any model sees or how it is scored.
-        if frozen_inputs(original, args.allow_runner_update) != frozen_inputs(
-            config, args.allow_runner_update
-        ):
+        if frozen_inputs(
+            original, args.allow_runner_update, args.allow_binary_update
+        ) != frozen_inputs(config, args.allow_runner_update, args.allow_binary_update):
             raise ValueError(
                 "Campaign inputs changed; use the frozen settings to resume"
             )
@@ -286,16 +295,20 @@ def prepare(args):
             "campaign_sha256": config["harness_sha256"]["campaign.py"],
             "harness_sha256": config["harness_sha256"],
             "allow_runner_update": args.allow_runner_update,
+            "binary_sha256": config["binary_sha256"],
+            "allow_binary_update": args.allow_binary_update,
             "timeout": args.timeout,
             "makeup_passes": args.makeup_passes,
             "routes": routes,
+            "arm": args.arm,
+            "fusion_configuration": fusion_configuration,
         }
     )
     write_json(runs_path, runs)
-    return profiles, identifiers, cases, jobs, routes
+    return profiles, identifiers, cases, jobs, routes, fusion_configuration
 
 
-def frozen_inputs(config, allow_runner_update=False):
+def frozen_inputs(config, allow_runner_update=False, allow_binary_update=False):
     inputs = {
         key: value
         for key, value in config.items()
@@ -307,11 +320,15 @@ def frozen_inputs(config, allow_runner_update=False):
         if name != "campaign.py"
         and not (allow_runner_update and name == "future_runner.py")
     }
+    inputs.setdefault("arm", "single")
+    inputs.setdefault("fusion_configuration", None)
+    if allow_binary_update:
+        inputs.pop("binary_sha256", None)
     return inputs
 
 
 def execute(args):
-    profiles, identifiers, cases, jobs, routes = prepare(args)
+    profiles, identifiers, cases, jobs, routes, fusion_configuration = prepare(args)
     groups = list(profiles)
     max_attempts = args.makeup_passes + 1
     histories = {}
@@ -384,6 +401,13 @@ def execute(args):
                 "other_errors": states["error"],
                 "first_pass_network_errors": sum(network_failure(h[0]) for h in rows),
             }
+            if args.arm == "fusion":
+                counts[group]["fusion_invoked"] = sum(
+                    bool(row.get("fusion_invocations")) for row in latest
+                )
+                counts[group]["completed_consultations"] = sum(
+                    row.get("completed_consultations", 0) for row in latest
+                )
         write_json(
             args.out / "progress.json",
             {
@@ -397,6 +421,8 @@ def execute(args):
                 "routes": routes,
                 "timeout": args.timeout,
                 "max_attempts": max_attempts,
+                "arm": args.arm,
+                "fusion_configuration": fusion_configuration,
                 "error": error,
             },
         )
@@ -412,7 +438,12 @@ def execute(args):
                 profile["thinking_level"],
                 full_trace=True,
             )
-            preflight = client.preflight(single_only=True)
+            preflight = client.preflight(single_only=args.arm == "single")
+            if (
+                args.arm == "fusion"
+                and preflight["fusion"]["configuration"] != fusion_configuration
+            ):
+                raise ValueError("Effective Fusion configuration changed")
             if group not in bindings:
                 bindings[group] = preflight
                 write_json(bindings_path, bindings)
@@ -432,7 +463,13 @@ def execute(args):
                     route["thinking_level"],
                     full_trace=True,
                 )
-                lane_bindings[key] = client.preflight(single_only=True)
+                lane_bindings[key] = client.preflight(single_only=args.arm == "single")
+                if (
+                    args.arm == "fusion"
+                    and lane_bindings[key]["fusion"]["configuration"]
+                    != fusion_configuration
+                ):
+                    raise ValueError("Effective Fusion configuration changed for route")
                 clients[key] = client
                 print(
                     f"Bound route {key}: {route['model']} {route['thinking_level']} jobs={route['jobs']}",
@@ -465,8 +502,15 @@ def execute(args):
                 binding["thinking_level"],
                 full_trace=True,
             )
+        if args.arm == "fusion":
+            settings = client.call(["fusion", "settings", "--json"])
+            if (
+                not settings["enabled"]
+                or settings["configuration"] != fusion_configuration
+            ):
+                raise ValueError("Fusion configuration changed before submission")
         result = client.run_case(
-            cases[identifier], "single", path, args.timeout, resume=path.exists()
+            cases[identifier], args.arm, path, args.timeout, resume=path.exists()
         )
         return item, result
 
@@ -603,6 +647,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("suite", "binary", "runtime", "profiles", "out"):
         parser.add_argument(f"--{name}", required=True, type=Path)
+    parser.add_argument("--arm", choices=("single", "fusion"), default="single")
     concurrency = parser.add_mutually_exclusive_group()
     concurrency.add_argument("--jobs", type=int, default=4)
     concurrency.add_argument("--jobs-per-group", type=int)
@@ -611,6 +656,11 @@ def main():
         "--allow-runner-update",
         action="store_true",
         help="audit an explicit waiter recovery upgrade when resuming",
+    )
+    parser.add_argument(
+        "--allow-binary-update",
+        action="store_true",
+        help="audit an explicitly requested binary upgrade when resuming",
     )
     parser.add_argument("--timeout", type=int, default=0)
     parser.add_argument("--makeup-passes", type=int, default=3)

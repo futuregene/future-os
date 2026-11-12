@@ -11,7 +11,7 @@ import subprocess
 import uuid
 from pathlib import Path
 
-from datasets import ROOT, write_json
+from datasets import ROOT, read_json, write_json
 
 
 def local_settings(source):
@@ -66,33 +66,52 @@ def main():
         help="start a single-model benchmark without reading saved Fusion settings",
     )
     parser.add_argument(
-        "--resume-home", type=Path, help="reuse a stopped single-model runtime home"
+        "--resume-home", type=Path, help="reuse a stopped benchmark runtime home"
+    )
+    parser.add_argument(
+        "--fusion-settings",
+        type=Path,
+        help="explicit Fusion settings snapshot for the isolated run",
     )
     args = parser.parse_args()
+    if args.single_only and args.fusion_settings:
+        parser.error("--fusion-settings requires a Fusion runtime")
     local = (ROOT / ".local").resolve()
     if args.resume_home is None:
         home = local / ("instance-" + uuid.uuid4().hex[:12])
     else:
         home = args.resume_home.resolve()
         if (
-            not args.single_only
-            or home.parent != local
+            home.parent != local
             or not home.name.startswith("instance-")
             or not (home / "agent").is_dir()
         ):
-            parser.error("--resume-home requires a stopped local single-model instance")
+            parser.error("--resume-home requires a stopped local benchmark instance")
         if (home / "agent").resolve() != home / "agent":
             parser.error("--resume-home requires a private agent directory")
     if home == args.source_home.resolve():
         parser.error("source and benchmark runtime must use separate homes")
     binary = args.binary.resolve()
-    settings = (
-        None
-        if args.single_only
-        else local_settings({"binary": binary, "home": args.source_home.resolve()})
-    )
+    settings = None
+    if not args.single_only:
+        settings = (
+            read_json(args.fusion_settings)
+            if args.fusion_settings
+            else local_settings({"binary": binary, "home": args.source_home.resolve()})
+        )
     if settings is not None and not settings["enabled"]:
         raise ValueError("Local Fusion is disabled")
+    if args.resume_home:
+        previous = ROOT / ".local/runtime.json"
+        if previous.exists():
+            saved = read_json(previous)
+            if (
+                saved["home"] == str(home)
+                and saved["stored_local_fusion_settings"] != settings
+            ):
+                raise ValueError("Stored Fusion snapshot changed while resuming")
+        if settings is not None and not (home / "fusion/fusion.db").exists():
+            raise ValueError("The resumed Fusion runtime has no saved configuration")
     agent = home / "agent"
     agent.mkdir(parents=True, mode=0o700, exist_ok=args.resume_home is not None)
     home.chmod(0o700)
@@ -116,7 +135,7 @@ def main():
                 if filename != "settings.json":
                     private.append(destination)
         # Seed only settings, never source history, tasks, or pending discussions.
-        if settings is not None:
+        if settings is not None and args.resume_home is None:
             fusion = home / "fusion"
             fusion.mkdir()
             connection = sqlite3.connect(fusion / "fusion.db")

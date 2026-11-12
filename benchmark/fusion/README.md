@@ -99,6 +99,16 @@ python3 benchmark/fusion/campaign.py --suite benchmark/fusion/suites/max-1000.js
 
 技术失败不消耗模型结果的“两次未通过”标记。只有存在两次实际模型结果且均未通过时，才标记 `failed_after_two_attempts`。续跑调整补测上限时，历史尝试继续保留，新规则写入执行记录。
 
+同一套长测调度器支持 `--arm fusion`。用 `runtime.py --fusion-settings <settings.json>` 启动带显式配置快照的隔离 Host，配置文件包含 `enabled` 和 `configuration`。模型与思考等级在启动前验证，实际生效的 Fusion 配置写入清单，每道题提交前再次核对。下例同时运行五道题，`profiles.json` 为父会话模型绑定，参与模型与主持模型来自 Fusion 快照。
+
+```sh
+python3 benchmark/fusion/campaign.py --arm fusion --suite benchmark/fusion/suites/max-1000.json --binary <future> --runtime benchmark/fusion/.local/runtime.json --profiles <profiles.json> --out benchmark/fusion/runs/fusion-max-1000 --jobs 5 --timeout 7200 --makeup-passes 3
+```
+
+Fusion 使用正常的 `/fusion` 入口，逐次记录是否实际调用讨论工具、父会话答案、参与者与主持人的公开转录、讨论结论、用量及失败原因。主成绩取父会话最终答案。完整答案答错后不重跑，技术补测仍保留每次尝试。`--timeout` 是整道题的保护上限，参与者之间的等待策略由冻结的 Fusion 实现和配置决定。
+
+单个 Host 最多同时执行五场 Fusion 讨论。因明确请求升级二进制而续跑时，需要 `--allow-binary-update`，执行记录保留新二进制摘要，原始清单和已生成结果继续作为历史记录。
+
 ## 安装
 
 在仓库根目录执行（Python 3.9+）：
