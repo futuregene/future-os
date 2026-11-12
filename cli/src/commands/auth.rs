@@ -92,11 +92,19 @@ pub async fn login(platform_url_override: Option<String>, out: &Output) -> Resul
     let platform_url = resolve_login_platform_url(platform_url_override).await;
 
     let client = http_client();
+    // The platform records this on the key it issues, so the console can say
+    // which machine a key belongs to. Best-effort: a login still works when no
+    // identity can be resolved (the key is then recorded as creator-less).
+    let (device_id, device_name) = future_host::device_identity::login_device();
     let device: DeviceCodeResponse = post(
         &client,
         &platform_url,
         "/client/v1/oauth/device/code",
-        &json!({ "client_name": "Future OS CLI" }),
+        &json!({
+            "client_name": "Future OS CLI",
+            "device_id": device_id,
+            "device_name": device_name,
+        }),
     )
     .await?;
 
@@ -791,6 +799,88 @@ mod tests {
         tokio::fs::write(&path, "{not json").await.unwrap();
         let (code, _, _) = run(&["auth", "login", "--url", "http://127.0.0.1:1"]).await;
         assert_eq!(code, 1);
+    }
+
+    /// Read one HTTP request through the end of its body.
+    ///
+    /// A single `read` can return headers only; the device identity this test
+    /// looks for lives in the JSON body, so wait for `content-length` bytes.
+    #[cfg(not(windows))]
+    async fn read_http_request(socket: &mut tokio::net::TcpStream) -> String {
+        use tokio::io::AsyncReadExt;
+        let mut data = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = match socket.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            data.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&data);
+            let Some(head_end) = text.find("\r\n\r\n") else {
+                continue;
+            };
+            let length = text[..head_end]
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            if data.len() >= head_end + 4 + length {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&data).into_owned()
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn login_declares_this_device_to_the_platform() {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured = std::sync::Arc::new(tokio::sync::Mutex::new(String::new()));
+        let seen = captured.clone();
+        let server = tokio::spawn(async move {
+            // First request: the device-code POST. Capture it and answer with
+            // a valid code so login reaches the poll loop.
+            let (mut socket, _) = listener.accept().await.unwrap();
+            *seen.lock().await = read_http_request(&mut socket).await;
+            let body = "{\"device_code\":\"dc\",\"user_code\":\"U\",\"verification_uri\":\"https://x\",\"verification_uri_complete\":\"\",\"expires_in\":60,\"interval\":0}";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.shutdown().await;
+            // The poll connection is dropped unread; login ends in a network
+            // error, which is all this test needs.
+            let (socket, _) = listener.accept().await.expect("poll connection");
+            drop(socket);
+        });
+
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        let opener = fake_opener_dir();
+        let _env = EnvGuard::set(&[("PATH", opener.path().as_os_str().to_os_string())]);
+        let (code, _, _) = run(&["auth", "login", "--url", &format!("http://{addr}")]).await;
+        assert_eq!(code, 1);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
+
+        let request = captured.lock().await.clone();
+        assert!(
+            request.contains("\"device_id\":\"desktop_"),
+            "the installation id is declared: {request}"
+        );
+        assert!(
+            request.contains("\"device_name\":\""),
+            "a readable device name is declared: {request}"
+        );
     }
 
     #[cfg(not(windows))]
