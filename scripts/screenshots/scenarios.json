@@ -3388,6 +3388,66 @@
             }
           ]
         },
+      "queue-attachments-dark": {
+        "note": "A short queue where the messages carry files (`?queue=3&queueFiles=1`): the first waiting row is the attachment-only send — a picture with no words, which used to be the row with no controls at all — and the second carries a photo and a document with text. The queue reports those files, so the panel draws one chip each: the icon names the kind, the name is what a re-send addresses, and the size is what the reader is about to send. Measured, not assumed from the source: the attachment-only row draws a chip and no edit button, a row with words draws its own controls, and every chip is the thing under the pointer.",
+        "query": "?session=sess_dopamine_review&streaming=1&queue=3&queueFiles=1",
+        "lang": "zh-CN",
+        "appearance": "dark",
+        "ready": "/发送队列/.test(document.body.innerText)",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "展开队列中的消息"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "(() => {\n  const panel = document.querySelector('[data-testid=send-queue]');\n  if (!panel) throw new Error('no send queue panel');\n  const rows = [...document.querySelectorAll('[data-testid=send-queue-item]')];\n  if (rows.length !== 3) throw new Error('the queue did not draw its three rows: ' + rows.length);\n  // 1. The attachment-only row is the one this change exists for: a picture, no\n  // words, a chip to open or drop it, and no edit button (an empty save would be\n  // a removal).\n  const only = rows[0];\n  const onlyChips = only.querySelectorAll('[data-testid=send-queue-attachment-preview]');\n  if (onlyChips.length !== 1) throw new Error('the attachment-only row draws ' + onlyChips.length + ' file chips');\n  if (only.querySelector('[data-testid=send-queue-edit]')) throw new Error('the attachment-only row offers an editor, which could only save an empty message');\n  if (!only.querySelector('[data-testid=send-queue-remove]')) throw new Error('the attachment-only row has no bin');\n  if (!only.querySelector('[data-testid=send-queue-attachment-add]')) throw new Error('the attachment-only row cannot take another file');\n  // 2. A row with words draws both controls, and both its files.\n  const both = rows[1];\n  if (both.querySelectorAll('[data-testid=send-queue-attachment-preview]').length !== 2) throw new Error('the mixed row does not draw its two files');\n  if (!both.querySelector('[data-testid=send-queue-edit]')) throw new Error('the mixed row cannot be edited');\n  // 3. A chip is really painted and really under the pointer: a chip the reader\n  // cannot hit is a file they cannot open.\n  const chip = onlyChips[0];\n  const box = chip.getBoundingClientRect();\n  if (box.width < 20 || box.height < 8) throw new Error('the chip has no box: ' + Math.round(box.width) + 'x' + Math.round(box.height));\n  const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);\n  if (!hit || !(chip === hit || chip.contains(hit))) throw new Error('the chip is not what the pointer lands on: ' + (hit ? hit.tagName : 'nothing'));\n  const names = [...panel.querySelectorAll('[data-testid=send-queue-attachment-preview]')].map(el => el.innerText.replace(/\\s+/g, ' ').trim());\n  if (!names.some(n => n.includes('IMG_2851.png'))) throw new Error('the picture is not named: ' + JSON.stringify(names));\n  if (!names.some(n => n.includes('queue-notes.pdf'))) throw new Error('the document is not named: ' + JSON.stringify(names));\n  return 'three rows, ' + names.length + ' chips: ' + names.join(' | ');\n})()"
+          },
+          {
+            "shot": "mobile-queue-attachments-dark-zh.png"
+          }
+        ]
+      },
+      "queue-attachments-light": {
+        "note": "The same queue in the light scheme. Both palettes are drawn from the same tokens, so a chip that only reads in one of them is a chip with a hard-coded colour; this is the second half of that check.",
+        "query": "?session=sess_dopamine_review&streaming=1&queue=3&queueFiles=1",
+        "lang": "zh-CN",
+        "appearance": "light",
+        "ready": "/发送队列/.test(document.body.innerText)",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "展开队列中的消息"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "(() => {\n  const chips = [...document.querySelectorAll('[data-testid=send-queue-attachment-preview]')];\n  if (chips.length !== 3) throw new Error('the light scheme drew ' + chips.length + ' chips, not three');\n  return 'three chips in the light scheme';\n})()"
+          },
+          {
+            "shot": "mobile-queue-attachments-light-zh.png"
+          }
+        ]
+      },
       "fleet-zh": {
         "note": "The home screen's recency page with five paired desktops merged into one list (`?fleet=1`, `mobile/shot/mock/fleet.ts`): fourteen settled conversations, ordered by the reply time each machine reported rather than by machine — no run state, so no approval alert on a row and no active stretch. Every row opens on the desktop it lives on; the machine is named by its glyph, and the picker above the list is where the five names are.",
         "query": "?fleet=1",
