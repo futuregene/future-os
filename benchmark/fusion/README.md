@@ -87,6 +87,10 @@ python3 benchmark/fusion/campaign.py --suite benchmark/fusion/suites/max-1000.js
 
 `--jobs-per-group 2` 为每组保留两路，四组最多同时运行八个对话。`--jobs` 则设置所有组共享的并发上限。续跑可以调整并发，原始清单继续保留，`executions.json` 记录每次续跑采用的并发配置和调度脚本摘要。
 
+`--routes <routes.json>` 可以为每组指定多个提供商，例如 `{"qwen-3-7-plus-high":[{"model":"future/qwen3.7-plus","thinking_level":"high","jobs":3},{"model":"alibaba-cn/qwen3.7-plus","thinking_level":"high","jobs":3}]}`。配置需要覆盖所有组，每条路由独立限制并发，同一组共享待测队列。启用路由后，已有网络失败与剩余首轮题目一起调度。原绑定与历史结果继续保存，每次执行记录路由和实际模型绑定，续接原请求时使用该请求原来的提供商。
+
+等待程序每分钟核对一次终态账本。已完成的请求可以按 run ID 从完整转录取回最终答案。`--timeout 1800` 设置单题 30 分钟上限，超时后中止该请求，并在账本确认终态后进入补测队列。更新等待程序后续跑需要显式指定 `--allow-runner-update`，每次采用的脚本摘要与超时配置写入 `executions.json`。
+
 首轮遇到已确认终态的模型网络故障时，保留原尝试并继续调度。所有组首轮结束后补测这些题，默认最多补测三遍。终态账本确认触及输出上限时，该题记录为 `output_limit`，后续题继续运行。认证、额度、回执不明和采证失败会暂停调度。续跑使用原题包、模型绑定、二进制、判分脚本与隔离 Host 数据目录。已接受但尚无结果的尝试只重新等待原请求。隔离 Host 已停止时，可用 `runtime.py --single-only --resume-home <原隔离数据目录>` 重启。若进程非正常退出，确认旧进程已停止后再移除输出目录中的 `campaign.lock`。
 
 输出目录中的 `progress.json` 可随时查看，结束后生成 `results.csv`。逐题提示词、回答、公开转录、可获取的推理、用量和错误分别保存在各组的 `attempt-*/` 目录。首轮与补测的记录均留在本地。冻结清单记录题包、脚本和二进制哈希，模型目录与生效档位另存。
