@@ -92,7 +92,7 @@ async fn serve() -> Result<()> {
                 tracing::error!("Fusion worker failed: {error}");
             }
         }
-        if active.len() < 2 {
+        if active.len() < 5 {
             if let Some(run) = store.claim(&owner)? {
                 let store = store.clone();
                 let owner = owner.clone();

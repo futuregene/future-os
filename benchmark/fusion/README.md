@@ -107,6 +107,8 @@ python3 benchmark/fusion/campaign.py --arm fusion --suite benchmark/fusion/suite
 
 Fusion 使用正常的 `/fusion` 入口，逐次记录是否实际调用讨论工具、父会话答案、参与者与主持人的公开转录、讨论结论、用量及失败原因。主成绩取父会话最终答案。完整答案答错后不重跑，技术补测仍保留每次尝试。`--timeout` 是整道题的保护上限，参与者之间的等待策略由冻结的 Fusion 实现和配置决定。
 
+单个 Host 最多同时执行五场 Fusion 讨论。因明确请求升级二进制而续跑时，需要 `--allow-binary-update`，执行记录保留新二进制摘要，原始清单和已生成结果继续作为历史记录。
+
 ## 安装
 
 在仓库根目录执行（Python 3.9+）：

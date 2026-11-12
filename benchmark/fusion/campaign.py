@@ -263,9 +263,9 @@ def prepare(args):
     if manifest.exists():
         original = read_json(manifest)["configuration"]
         # The scheduler can evolve without changing what any model sees or how it is scored.
-        if frozen_inputs(original, args.allow_runner_update) != frozen_inputs(
-            config, args.allow_runner_update
-        ):
+        if frozen_inputs(
+            original, args.allow_runner_update, args.allow_binary_update
+        ) != frozen_inputs(config, args.allow_runner_update, args.allow_binary_update):
             raise ValueError(
                 "Campaign inputs changed; use the frozen settings to resume"
             )
@@ -295,6 +295,8 @@ def prepare(args):
             "campaign_sha256": config["harness_sha256"]["campaign.py"],
             "harness_sha256": config["harness_sha256"],
             "allow_runner_update": args.allow_runner_update,
+            "binary_sha256": config["binary_sha256"],
+            "allow_binary_update": args.allow_binary_update,
             "timeout": args.timeout,
             "makeup_passes": args.makeup_passes,
             "routes": routes,
@@ -306,7 +308,7 @@ def prepare(args):
     return profiles, identifiers, cases, jobs, routes, fusion_configuration
 
 
-def frozen_inputs(config, allow_runner_update=False):
+def frozen_inputs(config, allow_runner_update=False, allow_binary_update=False):
     inputs = {
         key: value
         for key, value in config.items()
@@ -320,6 +322,8 @@ def frozen_inputs(config, allow_runner_update=False):
     }
     inputs.setdefault("arm", "single")
     inputs.setdefault("fusion_configuration", None)
+    if allow_binary_update:
+        inputs.pop("binary_sha256", None)
     return inputs
 
 
@@ -652,6 +656,11 @@ def main():
         "--allow-runner-update",
         action="store_true",
         help="audit an explicit waiter recovery upgrade when resuming",
+    )
+    parser.add_argument(
+        "--allow-binary-update",
+        action="store_true",
+        help="audit an explicitly requested binary upgrade when resuming",
     )
     parser.add_argument("--timeout", type=int, default=0)
     parser.add_argument("--makeup-passes", type=int, default=3)
