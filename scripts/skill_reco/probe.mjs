@@ -6,7 +6,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadRoster } from "./roster.mjs";
-import { Suggester, NONE_GATE_THRESHOLD } from "./suggest.mjs";
+import { Suggester } from "./suggest.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const skillsRoot = process.env.SKILLS_ROOT ?? path.join(here, "..", "..", "skills");
@@ -50,9 +50,10 @@ console.log("  usage:", JSON.stringify(rank.usage));
 // One call, one threshold — the same decision the server makes. There is no stage 2 to mirror any
 // more; if you want to see what the removed second call would have answered, the benchmark does
 // that (bench/predict-jev.mjs) and REPORT §2.2.5 records why it is not here.
-const gatePasses = (rank.gate.noneProbability ?? 0) < NONE_GATE_THRESHOLD;
+const gateThreshold = rank.gate.threshold;
+const gatePasses = (rank.gate.noneProbability ?? 0) < gateThreshold;
 console.log(
   gatePasses
-    ? `\n决定：推荐 ${rank.top[0]?.name}（none ${rank.gate.noneProbability} < ${NONE_GATE_THRESHOLD}）`
-    : `\n决定：没有合适技能（none ${rank.gate.noneProbability} ≥ ${NONE_GATE_THRESHOLD}）`,
+    ? `\n决定：推荐 ${rank.top[0]?.name}（none ${rank.gate.noneProbability} < ${gateThreshold}）`
+    : `\n决定：没有合适技能（none ${rank.gate.noneProbability} ≥ ${gateThreshold}）`,
 );

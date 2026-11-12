@@ -27,6 +27,23 @@ use serde::{Deserialize, Serialize};
 /// Refusal gate: `none_of_these` probability at or above this means "no
 /// recommendation" (caller-side, because Jev never self-refuses).
 const NONE_GATE_THRESHOLD: f64 = 0.15;
+/// Refusal gate for the decider family. At 141 options its answerable and
+/// refusable groups separated at 0.005; on the live 240-skill catalogue they
+/// overlap, and 0.015 is the balanced cut it produced there (0 false refusals,
+/// 1 false suggestion, 96.0% agreement — `docs/internals/skill_reco/decider-comparison.md`
+/// §4.2). The value still awaits a 240-question gold pass.
+const NONE_GATE_THRESHOLD_DECIDER: f64 = 0.015;
+
+/// The refusal gate belongs to the model, not to the pipeline: the same
+/// `none_of_these` number separates the two groups at a different place in
+/// each model's distribution.
+fn none_gate(model: &str) -> f64 {
+    if model.to_ascii_lowercase().contains("decider") {
+        NONE_GATE_THRESHOLD_DECIDER
+    } else {
+        NONE_GATE_THRESHOLD
+    }
+}
 /// How many candidates one call may carry: a Choice accepts at most 255 options
 /// and `none_of_these` occupies one of them (measured in
 /// `bench/option-limit.mjs`).
@@ -66,9 +83,7 @@ const DESC_CHARS: usize = 220;
 
 const NONE_OPTION: &str = "none_of_these";
 
-#[cfg(test)]
-use crate::system_one::JEV_MODEL;
-use crate::system_one::{endpoint, Endpoint};
+use crate::system_one::{endpoint, Endpoint, SKILL_RECO_MODEL};
 
 /// One skill candidate offered to Jev (also the recommendation shape).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -355,12 +370,14 @@ pub fn suggest_skill(query: &str, candidates: &[SkillCandidate]) -> Option<Skill
 /// Runs one attempt and reports how it ended, with the token usage when the
 /// call actually reached Jev.
 fn attempt(query: &str, candidates: &[SkillCandidate]) -> (Outcome, Attempt) {
-    let Some(endpoint) = endpoint() else {
+    let Some(mut endpoint) = endpoint() else {
         // Deliberately not memoized: no credential means no call either way, so
         // there is nothing to save, and a sign-in must be picked up by the very
         // next message rather than up to a TTL later.
         return (Outcome::NoKey, Attempt::default());
     };
+    // The endpoint is shared with the approval reviewer; the model is not.
+    endpoint.model = SKILL_RECO_MODEL.to_string();
     attempt_with(
         &HTTP_CLIENT,
         &endpoint,
@@ -490,7 +507,7 @@ fn one_call(
         served_by: body.model.clone(),
         counts: Counts::default(),
     };
-    (decide(&body, candidates), attempt)
+    (decide(&body, candidates, &endpoint.model), attempt)
 }
 
 /// One block's call and what it decided.
@@ -662,7 +679,7 @@ fn status_kind(status: u16) -> FailureKind {
 }
 
 /// Apply the refusal gate and pick the top-1 skill, as an [`Outcome`].
-fn decide(body: &JevResponse, candidates: &[SkillCandidate]) -> Outcome {
+fn decide(body: &JevResponse, candidates: &[SkillCandidate], model: &str) -> Outcome {
     let Some(probabilities) = body
         .answers
         .get("chunk_0")
@@ -675,7 +692,7 @@ fn decide(body: &JevResponse, candidates: &[SkillCandidate]) -> Outcome {
     };
 
     let none_probability = probabilities.get(NONE_OPTION).copied().unwrap_or(0.0);
-    if none_probability >= NONE_GATE_THRESHOLD {
+    if none_probability >= none_gate(model) {
         return Outcome::Refused { none_probability };
     }
 
@@ -760,7 +777,7 @@ fn log_outcome(outcome: &Outcome, attempt: Attempt, query: &str, elapsed: std::t
         Outcome::Refused { none_probability } => tracing::info!(
             query = %crate::session::truncate_visible(query.trim(), 40),
             none_probability,
-            threshold = NONE_GATE_THRESHOLD,
+            threshold = none_gate(served_by),
             candidates,
             chunks,
             truncated,
@@ -865,8 +882,12 @@ fn option_text(c: &SkillCandidate) -> String {
 /// Kept as the plain "what should we show" view over [`decide`]; the tests use
 /// it, and `suggest_skill` needs the reasoning too, so both go through `decide`.
 #[cfg(test)]
-fn pick_from_response(body: &JevResponse, candidates: &[SkillCandidate]) -> Option<SkillCandidate> {
-    match decide(body, candidates) {
+fn pick_from_response(
+    body: &JevResponse,
+    candidates: &[SkillCandidate],
+    model: &str,
+) -> Option<SkillCandidate> {
+    match decide(body, candidates, model) {
         Outcome::Recommended { skill, .. } => candidates.iter().find(|c| c.name == skill).cloned(),
         _ => None,
     }
@@ -933,6 +954,7 @@ mod tests {
                 (NONE_OPTION, 0.1),
             ]),
             &cands,
+            "jev",
         );
         assert_eq!(
             picked,
@@ -947,6 +969,7 @@ mod tests {
         let refused = decide(
             &response_with(&[("future-web", 0.4), (NONE_OPTION, 0.6)]),
             &cands,
+            "jev",
         );
         assert_eq!(
             refused,
@@ -968,6 +991,7 @@ mod tests {
                     model: None,
                 },
                 &cands,
+                "jev",
             ),
             Outcome::Failed { .. }
         ));
@@ -976,6 +1000,7 @@ mod tests {
         let unknown = decide(
             &response_with(&[("future-ghost", 0.9), (NONE_OPTION, 0.05)]),
             &cands,
+            "jev",
         );
         assert!(
             matches!(&unknown, Outcome::Failed { reason, kind } if reason.contains("future-ghost") && *kind == FailureKind::Transient),
@@ -1140,6 +1165,7 @@ mod tests {
         let reason = match decide(
             &response_with(&[("future-ghost", 0.9), (NONE_OPTION, 0.05)]),
             &[cand("future-web")],
+            "jev",
         ) {
             Outcome::Failed { reason, .. } => reason,
             other => panic!("expected a failure, got {other:?}"),
@@ -1221,7 +1247,7 @@ mod tests {
             ("future-paper", 0.2),
             (NONE_OPTION, 0.1),
         ]);
-        let pick = pick_from_response(&body, &cands);
+        let pick = pick_from_response(&body, &cands, "jev");
         assert_eq!(pick.as_ref().map(|c| c.name.as_str()), Some("future-web"));
     }
 
@@ -1229,7 +1255,7 @@ mod tests {
     fn refuses_when_none_meets_gate() {
         let cands = vec![cand("future-web")];
         let body = response_with(&[("future-web", 0.5), (NONE_OPTION, 0.5)]);
-        assert!(pick_from_response(&body, &cands).is_none());
+        assert!(pick_from_response(&body, &cands, "jev").is_none());
     }
 
     #[test]
@@ -1237,10 +1263,39 @@ mod tests {
         let cands = vec![cand("future-web")];
         // Just under the gate: still recommend.
         let body = response_with(&[("future-web", 0.9), (NONE_OPTION, 0.149)]);
-        assert!(pick_from_response(&body, &cands).is_some());
+        assert!(pick_from_response(&body, &cands, "jev").is_some());
         // Exactly at the gate: refuse.
         let body = response_with(&[("future-web", 0.85), (NONE_OPTION, 0.15)]);
-        assert!(pick_from_response(&body, &cands).is_none());
+        assert!(pick_from_response(&body, &cands, "jev").is_none());
+    }
+
+    /// The same number means different things in the two distributions, so the
+    /// gate is chosen by the model that produced it.
+    #[test]
+    fn the_refusal_gate_follows_the_model() {
+        let cands = vec![cand("future-web")];
+        let body = response_with(&[("future-web", 0.98), (NONE_OPTION, 0.02)]);
+        assert!(matches!(
+            decide(&body, &cands, "jev"),
+            Outcome::Recommended { .. }
+        ));
+        assert_eq!(
+            decide(&body, &cands, "pplx-decider-v1.2"),
+            Outcome::Refused {
+                none_probability: 0.02
+            }
+        );
+        // Below both gates, decider still recommends.
+        let low = response_with(&[("future-web", 0.99), (NONE_OPTION, 0.01)]);
+        assert!(matches!(
+            decide(&low, &cands, "pplx-decider-v1.2"),
+            Outcome::Recommended { .. }
+        ));
+        assert_eq!(none_gate("typesafe/jev-1.13-20260917"), NONE_GATE_THRESHOLD);
+        assert_eq!(
+            none_gate("pplx-decider-flash-v1.2"),
+            NONE_GATE_THRESHOLD_DECIDER
+        );
     }
 
     #[test]
@@ -1251,7 +1306,7 @@ mod tests {
             usage: None,
             model: None,
         };
-        assert!(pick_from_response(&body, &cands).is_none());
+        assert!(pick_from_response(&body, &cands, "jev").is_none());
     }
 
     #[test]
@@ -1273,7 +1328,7 @@ mod tests {
     #[test]
     fn build_request_matches_the_gateway_shape() {
         let cands = vec![cand("a"), cand("b")];
-        let req = build_request("hello", &cands, "jev");
+        let req = build_request("hello", &cands, "pplx-decider-v1.2");
         let question = &req["questions"]["chunk_0"];
         let opts = &question["criteria"];
         assert!(
@@ -1304,7 +1359,7 @@ mod tests {
             "dropping this collapsed refusal in the evaluation: {instructions}"
         );
         assert_eq!(req["state"]["request"], serde_json::json!("hello"));
-        assert_eq!(req["model"], serde_json::json!("jev"));
+        assert_eq!(req["model"], serde_json::json!("pplx-decider-v1.2"));
     }
 
     #[test]
@@ -1540,7 +1595,7 @@ mod tests {
         Endpoint {
             url: url.to_string(),
             key: "acct-key".to_string(),
-            model: JEV_MODEL.to_string(),
+            model: SKILL_RECO_MODEL.to_string(),
         }
     }
 
@@ -1549,7 +1604,9 @@ mod tests {
     fn gateway_response(pick: &str) -> String {
         let mut probabilities = serde_json::Map::new();
         probabilities.insert(pick.to_string(), serde_json::json!(0.9));
-        probabilities.insert(NONE_OPTION.to_string(), serde_json::json!(0.01));
+        // Below both gates (Jev 0.15, decider 0.005): this fixture is the
+        // "answered with a skill" shape.
+        probabilities.insert(NONE_OPTION.to_string(), serde_json::json!(0.001));
         serde_json::json!({
             "answers": { "chunk_0": { "probabilities": probabilities } },
             "usage": { "input_tokens": 447, "output_tokens": 54, "cost": 1.8774e-05 },
@@ -1575,7 +1632,7 @@ mod tests {
             Outcome::Recommended {
                 skill: "future-web".to_string(),
                 probability: 0.9,
-                none_probability: 0.01,
+                none_probability: 0.001,
             }
         );
         let usage = attempt.usage.expect("the response reported usage");
@@ -1598,7 +1655,7 @@ mod tests {
             "the account credential must authenticate the call: {head}"
         );
         let body: serde_json::Value = serde_json::from_str(body).unwrap();
-        assert_eq!(body["model"], serde_json::json!("jev"));
+        assert_eq!(body["model"], serde_json::json!("pplx-decider-v1.2"));
         assert_eq!(
             body["state"]["request"],
             serde_json::json!("帮我把这张照片转成水彩风格")
@@ -1833,7 +1890,7 @@ mod tests {
             Outcome::Recommended {
                 skill: "skill-000".to_string(),
                 probability: 0.9,
-                none_probability: 0.01,
+                none_probability: 0.001,
             }
         );
         assert_eq!(attempt.counts, Counts::of(MAX_CANDIDATES + 1, 2));
@@ -1996,6 +2053,7 @@ mod tests {
         let outcome = decide(
             &response_with(&[(NONE_OPTION, 0.05)]),
             &[cand("future-web")],
+            "jev",
         );
         assert_eq!(
             outcome,
