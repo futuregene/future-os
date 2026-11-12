@@ -52,7 +52,7 @@ the wire shape.
 
 Other parameters (each with an identically named environment variable): `--port` / `PORT`,
 `--skills` / `SKILLS_ROOT`, `FUTURE_BASE_URL` / `FUTURE_MODEL` (the account's `base_url` wins, and
-the model is `jev`), `LOCAL_ONLY=1` (force local fallback), `NONE_GATE_THRESHOLD=0.15`,
+the model is `pplx-decider-v1.2`), `LOCAL_ONLY=1` (force local fallback), `NONE_GATE_THRESHOLD` (0.15 for Jev) / `NONE_GATE_THRESHOLD_DECIDER` (0.015),
 `CHUNK_SIZE=254`, `SHORTLIST=3`, `MIN_QUERY_CHARS=6`.
 
 `SHORTLIST` **does not participate in the decision** (that reads the top-1 name plus the none
@@ -169,7 +169,7 @@ be answered sit near 0, with nothing in between.
 
 | threshold | default | effect |
 |---|---|---|
-| `NONE_GATE_THRESHOLD` | 0.15 | the Choice's probability on `none_of_these`, at or above which nothing is suggested |
+| `NONE_GATE_THRESHOLD` | 0.15 (Jev) / 0.015 (decider) | the Choice's probability on `none_of_these`, at or above which nothing is suggested; the gate follows the model |
 | `CHUNK_SIZE` | 254 (one block) | skills per Choice; capped at 254 (255 options − none), so a catalogue above it must lower this |
 | `FITS_THRESHOLD` | 0.75 | **not part of serving**: the removed call's threshold, now defined in `bench/second-call.mjs` |
 

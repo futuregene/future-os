@@ -25,8 +25,8 @@ const RETRYABLE = new Set([429, 500, 502, 503, 529]);
 
 /** The gateway's origin when the account has no `base_url` of its own. */
 export const DEFAULT_FUTURE_BASE = "https://future-os.cn/api";
-/** The model id the gateway resolves to a Jev build. */
-export const DEFAULT_JEV_MODEL = "jev";
+/** The model id the gateway resolves for the skill recommender. */
+export const DEFAULT_SKILL_RECO_MODEL = "pplx-decider-v1.2";
 /** The `auth.json` entry that authorises the call — the Future account itself. */
 export const FUTURE_PROVIDER = "future";
 /** The system-one endpoint under the gateway origin. */
@@ -79,7 +79,7 @@ export class JevClient {
     this.apiKey = apiKey || account?.key || "";
     // The account's own base URL wins; the documented origin is the fallback.
     this.baseUrl = (baseUrl || account?.base || DEFAULT_FUTURE_BASE).replace(/\/+$/, "");
-    this.model = model || process.env.FUTURE_MODEL || DEFAULT_JEV_MODEL;
+    this.model = model || process.env.FUTURE_MODEL || DEFAULT_SKILL_RECO_MODEL;
     this.timeoutMs = timeoutMs;
     this.maxRetries = maxRetries;
   }

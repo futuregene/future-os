@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import { DEFAULT_DESC_CHARS } from "../roster.mjs";
 import {
   DEFAULT_FUTURE_BASE,
-  DEFAULT_JEV_MODEL,
+  DEFAULT_SKILL_RECO_MODEL,
   FUTURE_PROVIDER,
   JEV_PATH,
   USD_PER_MTOK_INPUT,
@@ -33,6 +33,7 @@ import {
   MAX_CHOICE_OPTIONS,
   MAX_CHUNK_SIZE,
   NONE_GATE_THRESHOLD,
+  NONE_GATE_THRESHOLD_DECIDER,
   NONE_OF_THESE,
 } from "../suggest.mjs";
 
@@ -42,12 +43,16 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const agentSource =
   process.env.AGENT_SKILL_RECO ??
   path.join(here, "..", "..", "..", "agent", "src", "skill_reco", "mod.rs");
+// The transport constants live one directory up, in system_one.rs (the endpoint, provider
+// and default model are shared with the approval reviewer). Read both, so a value that moves
+// between them does not read as drift.
+const agentTransport = path.join(path.dirname(path.dirname(agentSource)), "system_one.rs");
 
 let rust;
 try {
-  rust = fs.readFileSync(agentSource, "utf8");
+  rust = [agentSource, agentTransport].map((file) => fs.readFileSync(file, "utf8")).join("\n");
 } catch {
-  console.error(`cannot read the agent's source at ${agentSource}`);
+  console.error(`cannot read the agent's source at ${agentSource} (and ${agentTransport})`);
   console.error("set AGENT_SKILL_RECO to agent/src/skill_reco/mod.rs");
   process.exit(2);
 }
@@ -75,10 +80,11 @@ const agentPath = rust.match(/ends_with\("([^"]*\/v1\/systemone)"\)/)?.[1];
 const rows = [
   ["instructions", agentInstructions, INSTRUCTIONS],
   ["none gate", rustNumber("NONE_GATE_THRESHOLD"), NONE_GATE_THRESHOLD],
+  ["decider gate", rustNumber("NONE_GATE_THRESHOLD_DECIDER"), NONE_GATE_THRESHOLD_DECIDER],
   ["candidate cap", rustNumber("MAX_CANDIDATES"), MAX_CHUNK_SIZE],
   ["desc chars", rustNumber("DESC_CHARS"), DEFAULT_DESC_CHARS],
   ["none option", rustText("NONE_OPTION"), NONE_OF_THESE],
-  ["model", rustText("JEV_MODEL"), DEFAULT_JEV_MODEL],
+  ["model", rustText("SKILL_RECO_MODEL"), DEFAULT_SKILL_RECO_MODEL],
   ["base origin", rustText("DEFAULT_FUTURE_BASE"), DEFAULT_FUTURE_BASE],
   ["provider key", rustText("FUTURE_PROVIDER"), FUTURE_PROVIDER],
   ["endpoint path", agentPath, JEV_PATH],
