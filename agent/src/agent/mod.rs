@@ -158,6 +158,15 @@ pub struct Loop {
     /// mid-run compaction is disabled, so selecting a smaller model never
     /// mutates history at click time and cannot send an oversized next request.
     pub preflight_context_check: bool,
+    /// Whether a reply cut off by the model's output limit is continued inside
+    /// the same run. Mirrors `Settings::output_continuation_enabled` for
+    /// session runs and defaults to enabled for every other `Loop` user.
+    ///
+    /// This is the only code path that issues billed requests the user did not
+    /// ask for one at a time, so it is explicit rather than implied by
+    /// `max_retries`: turning automatic retry off for unrelated reasons must
+    /// not silently change how a spent output budget is handled.
+    pub output_continuation: bool,
 }
 
 impl Loop {
@@ -190,6 +199,7 @@ impl Loop {
             stream_truncation: Arc::new(parking_lot::Mutex::new(None)),
             model_registry: None,
             preflight_context_check: false,
+            output_continuation: true,
         }
     }
 
@@ -200,6 +210,13 @@ impl Loop {
 
     pub fn with_system_prompt(mut self, prompt: &str) -> Self {
         self.system_prompt = prompt.to_string();
+        self
+    }
+
+    /// Enable or disable continuing a reply that hits the output limit.
+    /// See [`Loop::output_continuation`].
+    pub fn with_output_continuation(mut self, enabled: bool) -> Self {
+        self.output_continuation = enabled;
         self
     }
 
@@ -233,6 +250,7 @@ impl Loop {
         copy.parallel_tools = self.parallel_tools;
         copy.model_registry = self.model_registry.clone();
         copy.preflight_context_check = self.preflight_context_check;
+        copy.output_continuation = self.output_continuation;
         copy.context_manager = self.context_manager.clone();
         // A template copy must not share mutable compaction state across sessions.
         // Run snapshots explicitly reconnect to their session's checkpoint cell.
