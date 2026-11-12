@@ -32,7 +32,8 @@
 | Normal completion with no body and no tool results | neutral divider: the model finished generating without providing a final reply |
 | User cancelled | the original manual-stop divider |
 | Context compaction | the original compaction progress/completed/failed divider |
-| Single-output limit | the output-limit divider; not conflated with context compaction |
+| Single-output limit, continuation allowance spent | the output-limit divider; not conflated with context compaction |
+| Single-output limit, still continuing | no divider; `output_stream_continuing` is not explanatory copy, the reply keeps growing |
 | Explicit connection read error | model service connection interrupted |
 | Request timeout | model service response timeout |
 | Missing or unknown model terminal state | reply ended unexpectedly, cause not yet confirmed |
@@ -44,6 +45,77 @@ never written into the model body. Turning off thinking display does not affect
 dividers. A tool round ending does not error just because there is no text. A
 normal empty reply is not rewritten as failure and is not automatically
 re-requested.
+
+## Continuing inside the run (output limit)
+
+Hitting the per-response output limit no longer hands control straight back to
+the user: the run keeps writing, inside itself. An interactive session does not
+need a "继续" button, and an unattended goal worker does not have to redo the
+work through a retry.
+
+### Trigger and boundary
+
+Only `detected_by == "finish_length"` continues. Every other upstream stop
+(content filter, provider cancel, pause, timeout, stream error) is not a spent
+budget — re-sending the identical request only buys the identical refusal — so
+those still end immediately as `incomplete`. A user interrupt outranks all of
+them.
+
+The allowance is `MAX_OUTPUT_LIMIT_CONTINUATIONS = 2` (at most two continuations
+past the initial request), independent of the reconnect budget
+(`MAX_STREAM_RETRIES = 5`) so a flaky link and a long answer cannot spend each
+other's. It follows the same `max_retries > 0` switch, so `set_auto_retry(false)`
+and fusion (which sets it to 0 explicitly) are unaffected: those callers asked
+for one request per step.
+
+### Two kinds of cut, two instructions
+
+- **This attempt wrote visible text**: the partial answer is a prefix, so the
+  instruction is to keep writing from the break — do not restart, do not repeat
+  delivered text, do not redo tool calls that already ran.
+- **This attempt wrote nothing visible** (the whole budget went to reasoning):
+  there is no prefix to extend, and a reasoning-only assistant message is
+  dropped by `convert_to_llm`, so upstream cannot see it either. The
+  instruction becomes "stop deliberating and produce the answer", and the run
+  **steps the thinking level down one notch** — repeating an identical request
+  provably hits the identical wall (measured: three turns at 32,768 tokens, all
+  of it reasoning, zero visible characters). Stepping down touches only this
+  run's private provider snapshot (`snapshot()`), never the session setting, so
+  the user's next message still runs at the level they chose.
+
+Stepping down walks one level on the fixed scale (`high → medium → low → off`)
+filtered through the model's own `thinkingLevels`, so a level the model does not
+declare never reaches the wire. `default` hides the real depth and cannot be
+stepped relatively, so `low` is tried first and the model's shallowest declared
+level is the fallback; at `off` there is nothing left to give up.
+
+### Event and recovery semantics
+
+A continuation emits `output_stream_continuing`
+(`{type, attempt, maxContinuations, thinkingLevel?}`). Unlike `stream_retry`,
+nothing is being reconnected and the reply keeps growing; `thinkingLevel` is
+present only when the level was stepped down. Clients should clear a
+`reconnecting` banner on it.
+
+The truncated turn's assistant message is **not rebound**: it was already
+pushed and persisted under this step's `stream_entry_id`, and writing a second
+payload under one identity is rejected by the transcript store as
+`conflicting entry identity`. The continuation path only appends placeholder
+results for unexecuted tool calls and reuses the existing `retry_text` mechanism
+to carry the delivered text into the next request.
+
+When the allowance is spent and the reply is still cut, the original semantics
+apply unchanged: `stream_incomplete` is set, `StreamTruncation` is recorded,
+`run_terminal.error = [OUTPUT_LIMIT] …`, and the path in "A goal worker's
+incomplete retry is not a continuation" takes over. Automatic continuation is a
+layer *before* the final failure; it does not replace `incomplete`.
+
+Regression cover (`agent/src/agent/run_loop.rs` tests):
+`spent_output_budget_continues_the_same_run`,
+`reasoning_only_cut_steps_thinking_down_before_continuing`,
+`output_budget_continuation_is_bounded_and_stays_incomplete`,
+`auto_retry_disabled_does_not_continue_output_budget`,
+`shallower_thinking_level_walks_down_the_scale`.
 
 ## A goal worker's incomplete retry is not a continuation
 
@@ -143,11 +215,14 @@ of the continuation, run at both N = 64 and N = 128, with a low ratio judged a
 redo. It needs only text both sides already persist, no extra instrumentation,
 and it is unaffected by rewrites of the truncation verdict in `run_loop.rs`.
 
-Until that verdict exists, a truncation with `output_len == 0` should be
-handled as follows rather than by re-running `future goal run` repeatedly:
-lower the thinking level (`--thinking-level low` / `off`); split the large task
-into per-batch todos (each within ~20k output); and state in the todo text that
-the continuation must read existing results back from the artifact directory.
+The automatic continuation described in the previous section already covers "the
+allowance ran out inside one run": it steps the level down and tries again, so a
+worker no longer has to bang against the same wall through a retry. Only after
+that allowance is spent too and the run still ends `incomplete` do the measures
+below apply — and by then the problem is no longer the allowance but the task
+outgrowing one response: split it into per-batch todos (each within ~20k output)
+and state in the todo text that the continuation must read existing results back
+from the artifact directory.
 
 ## Diagnostics and verification
 

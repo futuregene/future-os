@@ -229,6 +229,14 @@ describe("usage and terminal events", () => {
       event("error", "boom"),
     ]);
     expect(errored.reconnecting).toBeUndefined();
+
+    // The model's output budget ran out and the run is still writing: this is
+    // not a reconnect, so any banner from an earlier one must not survive it.
+    const continuing = buildAssistantRunProjection([
+      event("stream_retry", { attempt: 1, delayMs: 0, maxRetries: 1 }),
+      event("output_stream_continuing", { attempt: 1, maxContinuations: 2 }),
+    ]);
+    expect(continuing.reconnecting).toBeUndefined();
   });
 
   it.each<[unknown]>([

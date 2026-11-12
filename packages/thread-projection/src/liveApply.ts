@@ -237,7 +237,8 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
       return;
     }
 
-    if (event.eventType === "stream_resumed" || event.eventType === "error" || event.eventType === "agent_end")
+    if (event.eventType === "stream_resumed" || event.eventType === "output_stream_continuing"
+      || event.eventType === "error" || event.eventType === "agent_end")
       reconnecting = undefined;
 
     if (event.eventType === "usage") {

@@ -888,14 +888,29 @@ async fn incomplete_reason_is_identical_in_live_event_and_sqlite_history() {
     .into_iter()
     .enumerate()
     {
+        // A spent output budget is continued inside the run before it becomes
+        // terminal, so this reason needs one scripted response per attempt;
+        // every other reason ends the run on its first one.
+        let attempts = if matches!(reason, FinishReason::Length) {
+            // The initial attempt plus the run's continuation allowance
+            // (`MAX_OUTPUT_LIMIT_CONTINUATIONS`, private to the run loop).
+            3
+        } else {
+            1
+        };
+        let scripts = (0..attempts)
+            .map(|_| {
+                Script::Events(vec![
+                    text_event("synthetic partial"),
+                    ModelStreamEvent::Finish {
+                        reason: reason.clone(),
+                        usage: None,
+                    },
+                ])
+            })
+            .collect();
         let fixture = run_fixture(
-            ScriptedProvider::new(vec![Script::Events(vec![
-                text_event("synthetic partial"),
-                ModelStreamEvent::Finish {
-                    reason,
-                    usage: None,
-                },
-            ])]),
+            ScriptedProvider::new(scripts),
             &format!("terminal-reason-{index}"),
         );
         let mut session = fixture.session;

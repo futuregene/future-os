@@ -18,7 +18,8 @@
 | 正常完成、无正文和工具结果 | 中性分割线：模型已结束生成，未提供最终回复 |
 | 用户取消 | 原有手动停止分割线 |
 | 上下文压缩 | 原有压缩进度／完成／失败分割线 |
-| 单次输出上限 | 输出上限分割线；不混同上下文压缩 |
+| 单次输出上限（续写预算用尽） | 输出上限分割线；不混同上下文压缩 |
+| 单次输出上限但仍在续写 | 无分割线；`output_stream_continuing` 不作说明文字，回复继续增长 |
 | 明确连接读取错误 | 模型服务连接中断 |
 | 请求超时 | 模型服务响应超时 |
 | 缺少或未知模型终态 | 回复意外结束，原因暂未确认 |
@@ -26,6 +27,33 @@
 | 软件处理／保存失败 | 软件处理或保存回复失败 |
 
 已生成的文本、思考和工具记录始终保留。说明不作为模型正文写入。关闭思考显示不影响分割线。工具回合结束不会仅因没有文本报错。正常空回复不修改为失败，不自动重复请求。
+
+## run 内自动续写（输出上限）
+
+撞到单次输出上限时，run **不再直接把控制权交回用户**，而是在同一个 run 里继续写。这样交互会话不必点「继续」，无人值守的 goal worker 也不必靠「重试」去重做。
+
+### 触发与边界
+
+只有 `detected_by == "finish_length"` 会续写。上游明确的其它终止（内容限制、provider 取消、暂停、超时、流错误）都不是「额度用尽」，重发同一请求只会换回同一个拒绝，因此照旧立即以 `incomplete` 结束。用户中断优先级最高，任何情况下都不续写。
+
+预算 `MAX_OUTPUT_LIMIT_CONTINUATIONS = 2`（初始请求之外最多两次续写），与断线重试预算（`MAX_STREAM_RETRIES = 5`）互相独立，避免一条抖动的链路和一次长回答吃掉彼此的额度。它沿用 `max_retries > 0` 这个开关：`set_auto_retry(false)` 与 fusion（显式置 0）因此不受影响，那些调用方要的是「一步一个请求」。
+
+### 两种截断，两种续写指令
+
+- **本轮写出了可见正文**：部分是前缀，续写指令是「从断点接着写，不要重来、不要重复已发出内容、不要重跑已执行过的工具」。
+- **本轮正文 0 字（额度全被思考吃掉）**：没有可见前缀可续，而且 reasoning-only 的 assistant 消息在 `convert_to_llm` 里会被丢弃，上游看不到它。此时续写指令改为「停止推理，直接给出完整答案」。同时**降一档思考档位**——重复同一个请求必然再撞同一面墙，这是实测过的形态（三轮 32 768 token 全是 reasoning、正文 0 字）。降档只作用于本次 run 的 provider 私有快照（`snapshot()`），不写会话设置，用户下一条消息仍用他自己选的档位。
+
+降档沿固定刻度走一级（`high → medium → low → off`），并经过模型自己声明的 `thinkingLevels` 过滤——模型没声明的档位不会发上线。`default` 隐藏了真实深度、无法做相对步进，此时先试 `low`，再退到该模型声明的最浅档；已在 `off` 则不再降。
+
+### 事件与恢复语义
+
+续写发出 `output_stream_continuing`（`{type, attempt, maxContinuations, thinkingLevel?}`），与 `stream_retry` 的区别是：没有重连、回答仍在增长。`thinkingLevel` 只在降档时出现。客户端见到它应清除 `reconnecting` 横幅。
+
+被截断轮已经 push 并持久化的 assistant 消息**不重建**：同一个 `stream_entry_id` 再写第二份载荷会被 transcript store 以 `conflicting entry identity` 拒绝。续写路径只补上未执行工具调用的占位结果，然后复用既有的 `retry_text` 机制把已生成正文带进下一次请求。
+
+预算耗尽仍截断时，回落到原有语义：置 `stream_incomplete`、写 `StreamTruncation`、`run_terminal.error = [OUTPUT_LIMIT] …`，随后交由「goal worker 的 incomplete 重试 ≠ 续写」那一节的路径处理。自动续写是最终失败**之前**的一层，不替换 `incomplete`。
+
+回归覆盖（`agent/src/agent/run_loop.rs` 测试）：`spent_output_budget_continues_the_same_run`、`reasoning_only_cut_steps_thinking_down_before_continuing`、`output_budget_continuation_is_bounded_and_stays_incomplete`、`auto_retry_disabled_does_not_continue_output_budget`、`shallower_thinking_level_walks_down_the_scale`。
 
 ## goal worker 的 incomplete 重试 ≠ 续写
 
@@ -63,7 +91,7 @@
 
 还缺一条真正的判据：现在没有任何机器可读的信号区分「接着写」与「重做」。建议的形态是**重叠率**——截断点之前最后 N 个 token 与续写首 N 个 token 的重叠比例，N 取 64 与 128 两档，低于阈值即判为「重做」。它只依赖两侧都已持久化的文本，不需要额外埋点，也不受 `run_loop.rs` 截断判定改写的影响。
 
-在判据落地之前，撞到 `output_len == 0` 的截断应按下面处理，而不是反复 `future goal run`：降低思考档位（`--thinking-level low`／`off`）；把大任务按批拆成多个 todo（每批控制在 ~20k 输出以内）；在 todo 文本里显式写出「续跑时从 `<中间结果目录>` 读回已有结果」。
+run 内自动续写（上一节）已经把「同一次 run 里额度用尽」这一层接住：它会自动降档再试，因此 worker 不再需要靠重试去撞同一面墙。只有续写预算也耗尽、run 仍以 `incomplete` 结束之后，才轮到下面这些手段——此时问题已不在额度，而在任务本身超出了单次输出能装下的规模：把大任务按批拆成多个 todo（每批控制在 ~20k 输出以内），并在 todo 文本里显式写出「续跑时从 `<中间结果目录>` 读回已有结果」。
 
 ## 诊断与验证
 
