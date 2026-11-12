@@ -89,34 +89,51 @@ def case_status(result):
     return result["status"]
 
 
+def technical_failure_kind(result):
+    if not network_failure(result):
+        return None
+    if result.get("benchmark_deadline_exceeded"):
+        return "benchmark_timeout"
+    if result.get("http_status") == 502:
+        return "gateway_error"
+    if terminal_run_error(result).startswith("[RESPONSE_TIMEOUT]"):
+        return "response_timeout"
+    return result.get("error_category") or "transport_error"
+
+
 def case_outcome(history, max_attempts):
     result = history[-1]
     state = case_status(result)
-    failed_twice = len(history) >= 2 and all(
-        not row["grade"]["correct"] for row in history
+    model_results = [
+        row
+        for row in history
+        if case_status(row) in {"completed", "output_limit", "empty_answer"}
+    ]
+    graded = state in {"completed", "output_limit", "empty_answer"}
+    failed_twice = len(model_results) >= 2 and all(
+        not row["grade"]["correct"] for row in model_results
     )
     retry_allowed = network_failure(result) and len(history) < max_attempts
-    passed = bool(result["grade"]["correct"])
+    passed = bool(result["grade"]["correct"]) if graded else None
     reason = state
+    status = state
     if state == "completed":
         reason = None if passed else "incorrect_answer"
     if state == "deferred":
-        reason = (
-            result.get("error_category")
-            or terminal_run_error(result)
-            or "network_error"
-        )
-        if result.get("benchmark_deadline_exceeded"):
-            reason = "benchmark_timeout"
+        reason = technical_failure_kind(result)
+        status = "technical_pending" if retry_allowed else "technical_incomplete"
     return {
         "passed": passed,
+        "graded": graded,
         "attempts": len(history),
         "max_attempts": max_attempts,
+        "model_attempts": len(model_results),
+        "technical_failure_attempts": sum(network_failure(row) for row in history),
         "failed_after_two_attempts": failed_twice,
         "retry_allowed": retry_allowed,
         "status": "failed_after_two_attempts"
         if failed_twice and not retry_allowed
-        else state,
+        else status,
         "failure_reason": reason,
     }
 
@@ -322,13 +339,31 @@ def execute(args):
             latest = [h[-1] for h in rows]
             states = Counter(map(case_status, latest))
             outcomes = [case_outcome(history, max_attempts) for history in rows]
+            graded = sum(row["graded"] for row in outcomes)
+            correct = sum(row["grade"]["correct"] for row in latest)
             counts[group] = {
                 "binding": bindings.get(group, {}).get("baseline"),
                 "scheduled": len(identifiers),
                 "first_pass_done": len(rows),
                 "attempts": sum(map(len, rows)),
                 "answered": states["completed"],
-                "correct": sum(row["grade"]["correct"] for row in latest),
+                "correct": correct,
+                "graded_cases": graded,
+                "accuracy": correct / graded if graded else None,
+                "technical_pending": sum(
+                    row["status"] == "technical_pending" for row in outcomes
+                ),
+                "technical_incomplete": sum(
+                    row["status"] == "technical_incomplete" for row in outcomes
+                ),
+                "technical_failure_attempts": dict(
+                    Counter(
+                        technical_failure_kind(result)
+                        for history in rows
+                        for result in history
+                        if network_failure(result)
+                    )
+                ),
                 "parse_failures": sum(
                     row["status"] == "completed" and not row["grade"]["parsed"]
                     for row in latest
@@ -528,6 +563,7 @@ def write_results(out, histories, max_attempts):
             "attempts",
             "result",
             "passed",
+            "graded",
             "failed_after_two_attempts",
             "retry_allowed",
             "failure_reason",
@@ -542,10 +578,13 @@ def write_results(out, histories, max_attempts):
                     "group": group,
                     "case_id": identifier,
                     "status": outcome["status"],
-                    "correct": result["grade"]["correct"],
+                    "correct": result["grade"]["correct"]
+                    if outcome["graded"]
+                    else None,
                     "parsed": result["grade"]["parsed"],
                     "attempts": len(rows),
                     "passed": outcome["passed"],
+                    "graded": outcome["graded"],
                     "failed_after_two_attempts": outcome["failed_after_two_attempts"],
                     "retry_allowed": outcome["retry_allowed"],
                     "failure_reason": outcome["failure_reason"],

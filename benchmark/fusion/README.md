@@ -82,7 +82,7 @@ python3 benchmark/fusion/bench.py plan --counts bbeh=460,omni=540 --exclude omni
 用 `runtime.py --single-only --binary <future>` 启动隔离 Host，再准备一个 JSON 文件。对象的键是组名，值包含 `model` 和 `thinking_level`，例如 `{"deepseek-flash-max":{"model":"future/deepseek-flash","thinking_level":"max"}}`。启动命令如下。
 
 ```sh
-python3 benchmark/fusion/campaign.py --suite benchmark/fusion/suites/max-1000.json --binary <future> --runtime benchmark/fusion/.local/runtime.json --profiles <profiles.json> --out benchmark/fusion/runs/max-1000-campaign --jobs-per-group 2 --makeup-passes 1
+python3 benchmark/fusion/campaign.py --suite benchmark/fusion/suites/max-1000.json --binary <future> --runtime benchmark/fusion/.local/runtime.json --profiles <profiles.json> --out benchmark/fusion/runs/max-1000-campaign --jobs-per-group 2 --makeup-passes 3
 ```
 
 `--jobs-per-group 2` 为每组保留两路，四组最多同时运行八个对话。`--jobs` 则设置所有组共享的并发上限。续跑可以调整并发，原始清单继续保留，`executions.json` 记录每次续跑采用的并发配置和调度脚本摘要。
@@ -95,7 +95,9 @@ python3 benchmark/fusion/campaign.py --suite benchmark/fusion/suites/max-1000.js
 
 输出目录中的 `progress.json` 可随时查看，结束后生成 `results.csv`。逐题提示词、回答、公开转录、可获取的推理、用量和错误分别保存在各组的 `attempt-*/` 目录。首轮与补测的记录均留在本地。冻结清单记录题包、脚本和二进制哈希，模型目录与生效档位另存。
 
-`--makeup-passes 1` 限制每题最多两次生成。两次都未通过时，`case-status.json` 和最终 CSV 标记 `failed_after_two_attempts`，保留失败原因并将 `retry_allowed` 设为 `false`。进度中的 `network_pending` 只统计仍有补测机会的题目，`network_exhausted` 统计补测机会已用完的网络失败。续跑调整补测上限时，历史尝试继续保留，新规则写入执行记录。
+`--makeup-passes` 设置技术失败的补测轮数，默认 3 轮，合计最多 4 次尝试。响应时限超时、网关错误等技术失败单独记录，预算用尽仍无结果时标为 `technical_incomplete`，`graded=false`、`passed=null`。它们不作为模型答错计入能力正确率，报告另列完成率与技术失败次数。已返回的完整答案按对错判分，答错不重跑。输出上限和空答计入模型未通过。`case-status.json` 记录每题状态，最终 CSV 保留同样的标记，进度中的 `accuracy` 只按 `graded_cases` 计算。
+
+技术失败不消耗模型结果的“两次未通过”标记。只有存在两次实际模型结果且均未通过时，才标记 `failed_after_two_attempts`。续跑调整补测上限时，历史尝试继续保留，新规则写入执行记录。
 
 ## 安装
 
