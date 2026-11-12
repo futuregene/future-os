@@ -573,6 +573,119 @@ fn incomplete_turn_without_a_body_does_not_surface_its_progress() {
     );
 }
 
+/// ORDERING: the agent's in-run output-limit continuation takes over BEFORE the
+/// goal plane's `incomplete` retry can see anything.
+///
+/// `response-outcomes.zh-CN.md` has the full table; the short version is that
+/// the two retry paths live at different layers and the inner one wins:
+///
+///   agent run loop  ── finish_length ──▶ continue inside the SAME run
+///                    (MAX_OUTPUT_LIMIT_CONTINUATIONS = 2, bounded by
+///                     `outputContinuation` + `max_retries > 0`)
+///   goal worker     ── sees only the run's TERMINAL state ──▶ nothing to retry
+///
+/// So a worker whose agent has continuation enabled never observes the cut:
+/// it gets one `completed` state, its todo closes on the first turn, and
+/// `incomplete_continue_note` (the `CONTINUE:` injection) never fires. This
+/// test pins that, because the outer retry exists and would otherwise be the
+/// first thing anyone assumed had handled the truncation.
+///
+/// The complement — the fallback that DOES reach the worker — is
+/// `incomplete_continue_note_does_not_replay_completed_work`, which scripts a
+/// run whose continuation budget was already exhausted (it ends `incomplete`).
+#[test]
+fn in_run_continuation_settles_before_the_worker_can_retry() {
+    let cr = cli_root();
+    let (_rt, shared) = mock_env(MockState {
+        events: vec![
+            ev("mock-run-1", 0, "agent_start", "{}"),
+            ev(
+                "mock-run-1",
+                1,
+                "text_chunk",
+                "{\"text\":\"PARTIAL-PREFIX: batch 3 of 7 written\"}",
+            ),
+            // The output budget ran out and the SAME run kept writing. The
+            // goal plane's stream consumer does not special-case this event
+            // (`_ => {}` in `agent_client.rs`), which is exactly the point:
+            // the cut never becomes an observable state out here.
+            ev(
+                "mock-run-1",
+                2,
+                "output_stream_continuing",
+                "{\"attempt\":1,\"max_continuations\":2}",
+            ),
+            ev(
+                "mock-run-1",
+                3,
+                "text_chunk",
+                "{\"text\":\" — batches 4-7 written by the continuation\"}",
+            ),
+            // ONE terminal event: the run reports the continuation's outcome,
+            // not the cut's.
+            ev("mock-run-1", 4, "agent_end", "{\"state\":\"completed\"}"),
+        ],
+        ..Default::default()
+    });
+    let goal = init_goal(&cr, "continuation settles in-run");
+    let todo = first_todo_id(&cr.root, &goal);
+    cli_ok(&["run", "--goal", &goal, "--anonymous", "--max-turns", "3"]);
+
+    let st = shared.lock().unwrap();
+    let worker_prompts: Vec<&String> = st
+        .prompt_messages
+        .iter()
+        .zip(st.prompt_calls.iter())
+        .filter(|(_, call)| call.0 != "sup-sess")
+        .map(|(message, _)| message)
+        .collect();
+    // The whole cut-and-continue happened inside one agent run, so the worker
+    // spent exactly one turn on the todo.
+    assert_eq!(
+        worker_prompts.len(),
+        1,
+        "the continuation is in-run: one prompt, not a retry: {:?}",
+        st.prompt_calls
+    );
+    for (i, prompt) in worker_prompts.iter().enumerate() {
+        assert!(
+            !prompt.contains("CONTINUE:"),
+            "the goal-plane continue note must NOT fire when the agent already \
+             continued in-run (prompt {i}): {prompt}"
+        );
+    }
+    drop(st);
+
+    let g = open_store(&cr).replay(&goal).unwrap().unwrap();
+    // One ledger record, and it is the continuation's outcome.
+    let on_todo: Vec<&future_goal::state::RunRecord> =
+        g.history.iter().filter(|r| r.todo_id == todo).collect();
+    assert_eq!(
+        on_todo.len(),
+        1,
+        "the cut must not become a second ledger record: {:?}",
+        on_todo
+            .iter()
+            .map(|r| (r.terminal_state.clone(), r.error.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        on_todo[0].terminal_state, "completed",
+        "the worker sees the continuation's outcome: {:?}",
+        on_todo[0]
+    );
+    assert_eq!(
+        on_todo[0].truncation, None,
+        "no truncation reaches the ledger — the cut was absorbed in-run: {:?}",
+        on_todo[0]
+    );
+    assert_eq!(
+        g.todo(&todo).map(|t| t.status),
+        Some(TodoStatus::Done),
+        "the todo closed on the continuation's turn"
+    );
+}
+
 #[test]
 fn run_anonymous_single_todo_to_terminal() {
     let cr = cli_root();
