@@ -10,6 +10,7 @@ import { SettingsList, SettingsRow, SettingsSection } from "../settings/Settings
 import {
   deleteRemoteCustomProvider,
   listRemoteProviders,
+  probeRemoteThinkingLevel,
   updateRemoteBuiltinProvider,
   upsertRemoteCustomProvider,
 } from "./remotePeerClient";
@@ -20,7 +21,9 @@ import {
  * The two dialogs are this app's own — the shape of a write to a host is the
  * same shape this app writes locally, and the validation is the same backend
  * code either way. What differs is where the write lands, which is the only
- * thing this panel supplies.
+ * thing this panel supplies. The custom-provider dialog's "detect thinking
+ * levels" button is wired the same way: the probe runs on the host, so the
+ * answer is about the request that host will send.
  *
  * A key is never read back: the view carries `hasApiKey`, so a key can be set or
  * cleared from here but never displayed. That is the host's contract, not a
@@ -177,6 +180,12 @@ export function RemoteProvidersPanel({
         existing={[...builtin, ...custom].map(provider => ({ id: provider.id, name: provider.name }))}
         initial={editing}
         onClose={() => setDialogOpen(false)}
+        // Thinking-level detection runs on the host, against the provider being
+        // edited there — the same probe this app runs for its own — so the
+        // levels offered are the ones that host will accept after a save.
+        // Without a live connection the control is hidden rather than failing
+        // on the first round trip.
+        onProbe={available ? input => probeRemoteThinkingLevel(peer.desktopId, input) : undefined}
         onSubmit={submitCustom}
         open={dialogOpen}
       />

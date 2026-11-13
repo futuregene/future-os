@@ -295,6 +295,13 @@
       "x-ts-type": "CustomProviderUpsert | BuiltinProviderUpdate",
       "description": "Provider configuration: one whole provider write (see `list_providers` in `remote_host::business`)."
     },
+    "probe": {
+      "x-rust-name": "probe",
+      "x-rust-type": "serde_json::Value",
+      "default": null,
+      "x-ts-type": "ThinkingLevelProbeInput",
+      "description": "probe_thinking_level: one thinking-level probe of the provider the client is editing (`ThinkingLevelProbeInput`). The host asks its Agent, which builds the same request a real call would; nothing is saved."
+    },
     "tier": {
       "x-rust-name": "tier",
       "x-rust-type": "String",

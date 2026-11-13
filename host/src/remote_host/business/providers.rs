@@ -1,4 +1,5 @@
-//! Provider and model configuration for a paired phone.
+//! Provider and model configuration for a paired client (phone or another
+//! desktop).
 //!
 //! Every write goes through the same `agent_providers` command paths the
 //! desktop Settings dialog uses, so a phone is subject to exactly the same
@@ -16,8 +17,8 @@
 //! shape the desktop forms send.
 
 use crate::agent_providers::{
-    delete_custom_provider, list_agent_providers, update_builtin_provider, upsert_custom_provider,
-    ProvidersView,
+    delete_custom_provider, list_agent_providers, probe_thinking_level, update_builtin_provider,
+    upsert_custom_provider, ProvidersView, ThinkingLevelProbeInput,
 };
 use future_remote_protocol::IncomingCmd;
 use future_remote_server::services::ReplySink;
@@ -39,6 +40,28 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
         "delete_custom_provider" => {
             reply_view(sink, delete_custom_provider(cmd.provider_id.clone()).await).await;
         }
+        // One level of a provider the peer is still editing: nothing is saved,
+        // and a refused level is a *reply* (`ok: false`) rather than an error.
+        // The caller treats a failed reply as "stop detecting" and an `ok: false`
+        // as "this level is not offered", which is why the two stay distinct.
+        "probe_thinking_level" => match parse::<ThinkingLevelProbeInput>(cmd.probe.clone()) {
+            Ok(input) => match probe_thinking_level(input).await {
+                Ok(outcome) => match serde_json::to_value(outcome) {
+                    Ok(value) => reply(sink, true, value, None).await,
+                    Err(_) => {
+                        reply(
+                            sink,
+                            false,
+                            Value::Null,
+                            Some("Could not serialize the thinking-level result."),
+                        )
+                        .await
+                    }
+                },
+                Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+            },
+            Err(error) => reply(sink, false, Value::Null, Some(&error)).await,
+        },
         _ => unreachable!("provider handler received {}", cmd.cmd_type),
     }
 }
@@ -72,7 +95,7 @@ async fn reply_view(sink: &dyn ReplySink, result: Result<ProvidersView, crate::E
 mod dispatch_tests {
     use super::*;
 
-    /// Only the four provider commands the dispatcher routes here may reach this
+    /// Only the provider commands the dispatcher routes here may reach this
     /// handler. Anything else is a routing bug and must panic rather than reply.
     #[tokio::test]
     #[should_panic(expected = "handler received")]

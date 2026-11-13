@@ -2675,6 +2675,62 @@ mod bridge_tests {
         bridge.stop().await;
     }
 
+    /// A thinking-level probe is a shared provider command: the peer's payload
+    /// travels to the host's Agent unchanged, and a refused level comes back as
+    /// an answer (`ok: false`) rather than as a failed call.
+    #[tokio::test]
+    async fn a_thinking_level_probe_is_a_shared_provider_command() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-provider-probe").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        agent.script(
+            "probe_thinking_level",
+            true,
+            json!({"level":"high","ok":false,"error":"unsupported value"}),
+            "",
+        );
+
+        let probes = |command: &str| {
+            agent
+                .requests()
+                .iter()
+                .filter(|(served, _)| served == command)
+                .count()
+        };
+        let before = probes("probe_thinking_level");
+
+        let reply = bridge
+            .call(json!({
+                "type": "probe_thinking_level",
+                "probe": {
+                    "api": "openai-completions",
+                    "baseUrl": "https://gw.example.com/v1",
+                    "modelId": "acme-large",
+                    "providerId": "acme",
+                    "level": "high"
+                }
+            }))
+            .await;
+        assert_eq!(reply["success"], true, "{reply}");
+        assert_eq!(reply["data"]["level"], "high");
+        assert_eq!(reply["data"]["ok"], false);
+        assert_eq!(reply["data"]["error"], "unsupported value");
+        assert_eq!(probes("probe_thinking_level"), before + 1);
+
+        // An incomplete form is refused before the agent is asked: a peer that
+        // forgets the Base URL must not spend a model call finding that out.
+        let reply = bridge
+            .call(json!({
+                "type": "probe_thinking_level",
+                "probe": { "api": "", "baseUrl": "", "modelId": "acme-large" }
+            }))
+            .await;
+        assert_eq!(reply["success"], false, "{reply}");
+        assert_eq!(probes("probe_thinking_level"), before + 1);
+        bridge.stop().await;
+    }
+
     #[tokio::test]
     async fn model_catalog_respects_desktop_visibility() {
         let _agent_lock = mock_agent_lock();

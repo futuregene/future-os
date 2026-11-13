@@ -1,5 +1,9 @@
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
-import type { ProvidersView } from "../../integrations/agent/providers";
+import type {
+  ProvidersView,
+  ThinkingLevelProbeInput,
+  ThinkingLevelProbeOutcome,
+} from "../../integrations/agent/providers";
 import type { GitCommitDetail, GitGraphListing } from "../git-history/types";
 import type { RemoteCatalog, RemoteSessionRow, RemoteWorkspaceRow } from "./mergeConversations";
 import { requestNativeRead } from "../../integrations/storage/historyTransfer";
@@ -1431,6 +1435,26 @@ export async function generateRemoteTitle(
  */
 export async function listRemoteProviders(desktopId: string): Promise<ProvidersView> {
   return await requestRemotePeer<ProvidersView>(desktopId, { type: "list_providers" }, "list");
+}
+
+/**
+ * Ask that host whether one thinking level works for the provider its user is
+ * editing.
+ *
+ * Its own invoke rather than `requestRemotePeer`, because the round trip waits
+ * for the provider's first stream frame: the host bounds that at 30 s, and the
+ * ordinary 10 s command budget would report a slow provider as a transport
+ * failure. `ok: false` is an answer about the level; a rejection here means the
+ * call itself failed and the caller must stop detecting.
+ */
+export async function probeRemoteThinkingLevel(
+  desktopId: string,
+  probe: ThinkingLevelProbeInput,
+): Promise<ThinkingLevelProbeOutcome> {
+  return await invokeCommand<ThinkingLevelProbeOutcome>("remote_peer_probe_thinking_level", {
+    desktopId,
+    probe,
+  });
 }
 
 /**
