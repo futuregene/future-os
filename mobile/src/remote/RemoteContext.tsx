@@ -515,6 +515,7 @@ const NO_MANAGEMENT = {
   updateBuiltinProvider: noop as never,
   upsertCustomProvider: noop as never,
   deleteCustomProvider: noop as never,
+  probeThinkingLevel: noop as never,
   listTasks: noop as never,
   getTask: noop as never,
   createTask: noop as never,

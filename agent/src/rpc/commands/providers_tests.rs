@@ -1069,13 +1069,73 @@ fn probe_thinking_level_rejects_a_missing_or_incomplete_payload() {
     assert_eq!(resp["success"], false);
     assert!(resp["error"].as_str().unwrap().contains("thinking_probe"));
 
+    // No model id: there is nothing to ask about, whatever else the form said.
     let mut cmd = make_cmd("probe_thinking_level");
     let mut spec = probe_spec("", "high");
     spec.model_id = "  ".to_string();
     cmd.thinking_probe = Some(spec);
     let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], false);
-    assert!(resp["error"].as_str().unwrap().contains("base_url"));
+    assert!(resp["error"].as_str().unwrap().contains("model_id"));
+
+    // A model that is not configured has no wire details to inherit, so the
+    // caller has to carry them.
+    let mut cmd = make_cmd("probe_thinking_level");
+    let mut spec = probe_spec("", "high");
+    spec.provider_id = "not-configured".to_string();
+    cmd.thinking_probe = Some(spec);
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], false);
+    let error = resp["error"].as_str().unwrap();
+    assert!(error.contains("api and base_url"), "{error}");
+}
+
+/// A probe of a *configured* model may leave the wire details out: the
+/// registered model already knows its API type and base URL, which is what lets
+/// a client probe `provider/model` without restating them (the CLI does exactly
+/// that). The endpoint here is closed, so what the test proves is that the
+/// filled-in Base URL was really used.
+#[test]
+fn probe_thinking_level_infers_a_configured_models_wire_details() {
+    let home = TestHome::new();
+    let endpoint = closed_endpoint();
+    std::fs::create_dir_all(home.models_path().parent().unwrap()).unwrap();
+    std::fs::write(
+        home.models_path(),
+        serde_json::json!({
+            "providers": {
+                "acme": {
+                    "name": "Acme",
+                    "api": "openai-completions",
+                    "baseUrl": endpoint,
+                    "models": [{
+                        "id": "m1",
+                        "name": "Model One",
+                        "modalities": ["text"],
+                        "contextWindow": 1000,
+                        "maxTokens": 100
+                    }]
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let state = make_app_state();
+
+    let mut cmd = make_cmd("probe_thinking_level");
+    let mut spec = probe_spec("", "high");
+    spec.api = String::new();
+    spec.model_id = "m1".to_string();
+    cmd.thinking_probe = Some(spec);
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true, "{resp}");
+    assert_eq!(resp["data"]["ok"], false);
+    let error = resp["data"]["error"].as_str().unwrap();
+    assert!(
+        error.contains(&endpoint) || error.contains("connect"),
+        "the stored Base URL has to be the one that was dialled: {error}"
+    );
 }
 
 /// A level the endpoint does not accept is an answer, not a command failure:

@@ -1586,10 +1586,16 @@ pairing management remain in a separate This phone section.
   above. Writes are partial, allowlisted, and committed by the existing Desktop
   settings store, never persisted or queued on the phone. `list_settings_models`
   reads the unfiltered Agent catalogue.
-- `list_providers`, `update_builtin_provider`, `upsert_custom_provider` and
-  `delete_custom_provider` are the Provider page: one Desktop write per
-  submission, through the same `agent_providers` paths the Desktop Settings
-  dialog uses, so identical validation and catalog-collision rules apply. A key
+- `list_providers`, `update_builtin_provider`, `upsert_custom_provider`,
+  `delete_custom_provider` and `probe_thinking_level` are the Provider page: one
+  Desktop write per submission, through the same `agent_providers` paths the
+  Desktop Settings dialog uses, so identical validation and catalog-collision
+  rules apply. The probe is the dialog's "detect thinking levels" button: one
+  level per call against the provider being edited (nothing is saved), answered
+  by the host's Agent, so a level it accepts is a level that host will accept
+  once the provider is saved there. Over the remote lane it gets a longer
+  deadline than ordinary commands (`remote_peer_probe_thinking_level`), because
+  it waits for the provider's first stream frame. A key
   travels one way only — the view reports `hasApiKey`, never key material — and
   the account provider (`future`) stays uneditable, built-in providers
   undeletable, and a custom provider's id immutable after creation. Custom

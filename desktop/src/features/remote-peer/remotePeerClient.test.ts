@@ -44,6 +44,7 @@ const {
   listRemoteWorkspaces,
   localizedSkill,
   pinRemoteConversation,
+  probeRemoteThinkingLevel,
   promptRemoteConversation,
   remoteModelProvider,
   remoteModelReference,
@@ -1255,6 +1256,32 @@ describe("remote machine commands", () => {
     expect(lastCall()).toEqual({
       args: { desktopId: "desktop_a", command: { type: "get_prompt_receipt", promptId: "cmd_1" }, lane: "list" },
       command: "remote_peer_request",
+    });
+  });
+});
+
+describe("probing a host's provider", () => {
+  /**
+   * Its own command rather than `remote_peer_request`: a probe waits for the
+   * provider's first stream frame, and the ordinary command budget is shorter
+   * than that wait — routed through it, a slow provider would be reported as a
+   * transport failure instead of as its own answer.
+   */
+  it("sends the form's inputs to the dedicated probe command", async () => {
+    const outcome = { level: "high", ok: false, error: "unsupported value" };
+    invokeMock.mockResolvedValue(outcome);
+    const probe = {
+      api: "anthropic",
+      baseUrl: "https://api.example.test",
+      modelId: "claude-ish",
+      level: "high",
+      providerId: "acme",
+    };
+
+    await expect(probeRemoteThinkingLevel("desktop_a", probe)).resolves.toEqual(outcome);
+    expect(lastCall()).toEqual({
+      args: { desktopId: "desktop_a", probe },
+      command: "remote_peer_probe_thinking_level",
     });
   });
 });

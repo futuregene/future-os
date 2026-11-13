@@ -1224,6 +1224,7 @@ mod gui {
                 remote_peer_preview_file,
                 remote_peer_upload_file,
                 remote_peer_request,
+                remote_peer_probe_thinking_level,
                 terminal_server_info,
                 open_url
             ])

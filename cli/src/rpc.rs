@@ -14,6 +14,7 @@
 use crate::output::Output;
 use future_rpc::proto::{
     Attachment, AuthUpdate, ProviderUpsert, RpcCommand, StreamEvent, StreamRequest,
+    ThinkingLevelProbe,
 };
 use serde_json::{json, Map, Value};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -366,6 +367,40 @@ impl RunClient {
             "upsert_provider",
             RpcCommand {
                 provider_config: Some(provider),
+                ..Default::default()
+            },
+            None,
+            10,
+        )
+        .await
+    }
+
+    /// Remove a provider's `models.json` and `auth.json` entries.
+    pub async fn delete_provider(&self, id: &str) -> Result<Value, String> {
+        self.execute_command(
+            "delete_provider",
+            RpcCommand {
+                provider_config: Some(ProviderUpsert {
+                    id: id.to_string(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            None,
+            10,
+        )
+        .await
+    }
+
+    /// Ask the agent whether one thinking level is accepted by a provider.
+    ///
+    /// A refused level is a successful call carrying `ok: false`; only an
+    /// unreachable agent or a malformed request is an error here.
+    pub async fn probe_thinking_level(&self, probe: ThinkingLevelProbe) -> Result<Value, String> {
+        self.execute_command(
+            "probe_thinking_level",
+            RpcCommand {
+                thinking_probe: Some(probe),
                 ..Default::default()
             },
             None,
