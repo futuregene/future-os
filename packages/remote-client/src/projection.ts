@@ -289,12 +289,21 @@ export function stripRunItems(timeline: TimelineState, runId: string): TimelineS
  * bubble renders the same checkpoint from the run's journal. Every path that
  * (re)builds the bubble must drop that row, so both the per-event and the
  * batched folding go through here.
+ *
+ * A settled reply with nothing to draw (`item === null`, see
+ * `buildLiveAssistantItem`) removes the bubble instead: an accumulator exists
+ * for every run any frame named, and the run that ends without content must not
+ * leave a card behind.
  */
 function upsertLiveAssistantItem(
   items: TimelineItem[],
   assistantId: string,
-  item: TimelineItem,
+  item: TimelineItem | null,
 ): TimelineItem[] {
+  if (!item) {
+    const next = items.filter(entry => entry.id !== assistantId);
+    return next.length === items.length ? items : next;
+  }
   const next = upsertItem(items, assistantId, () => item, () => item);
   // Hot path: this runs per event (and per batch flush). Only scan for the
   // checkpoint identity when a divider-only row is actually present.
@@ -919,7 +928,7 @@ function buildLiveAssistantItem(
     truncated: boolean;
   },
   durationMs: number | undefined,
-): TimelineItem {
+): TimelineItem | null {
   const segments = projection.segments.map(segmentToTimeline);
   // Copyable/render text: the ordered text blocks (desktop parity) — the
   // flattened content field is only a fallback for segment-less projections.
@@ -949,7 +958,37 @@ function buildLiveAssistantItem(
   };
   if (acc.failed) item.failed = true;
   if (acc.error) item.error = acc.error;
-  return item;
+  return isBlankReply(item) ? null : item;
+}
+
+/**
+ * Whether a reply would draw nothing but its own footer.
+ *
+ * The live bubble is materialized from the run's projector on every event, so
+ * an accumulator exists for any run an envelope named — including runs that
+ * never wrote a word of their own (a run that settled the moment it started, a
+ * session-scoped frame folded into a run bucket of its own). While the run is
+ * live that empty bubble is the footer's generating indicator, which is worth
+ * drawing. Once it settles there is nothing left: no prose, no rows, no clock,
+ * no token count and no verdict, so the card is one line of the footer's own
+ * fallback label ("Completed"). Measured on a phone (2026-11-13): such a row
+ * sat between a prompt and the reply that was still being written below it, and
+ * read as "the reply already finished" in the middle of the answer.
+ *
+ * A verdict is content even without words — a failed, stopped or truncated run
+ * says so in its bubble — so only a reply with no outcome at all is blank.
+ */
+function isBlankReply(item: TimelineItem): boolean {
+  return item.kind === "message"
+    && item.role === "assistant"
+    && !item.streaming
+    && item.text.trim().length === 0
+    && (item.segments ?? []).length === 0
+    && item.durationMs == null
+    && (item.outputTokens ?? 0) === 0
+    && !item.failed
+    && !item.stopped
+    && !item.truncated;
 }
 
 /**
@@ -1024,18 +1063,17 @@ function applyRunError(
   acc.failed = true;
   acc.streaming = false;
   if (acc.durationMs == null && acc.startedAt > 0) acc.durationMs = Date.now() - acc.startedAt;
+  // A failed run always carries its verdict, so the builder never calls this
+  // one blank; the null check is its contract, not this path's expectation.
   const assistantItem = buildLiveAssistantItem(
     acc,
     runId,
     acc.projector.ingest([]),
     acc.durationMs,
   );
-  const items = upsertItem(
-    state.items,
-    acc.assistantId,
-    () => assistantItem,
-    () => assistantItem,
-  );
+  const items = assistantItem
+    ? upsertItem(state.items, acc.assistantId, () => assistantItem, () => assistantItem)
+    : state.items;
   return { items, streaming: acc.streaming, liveRuns: runs };
 }
 
