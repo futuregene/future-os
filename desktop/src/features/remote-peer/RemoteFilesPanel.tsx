@@ -1,7 +1,8 @@
 import type { FutureEventMap } from "../../lib/futureEvents";
+import type { GitHistorySource } from "../git-history/gitHistorySource";
 import type { RemotePeer } from "./remotePeerClient";
 import { ArrowUp, Download, File, Folder, Loader2, PanelRightClose, PanelRightOpen, RefreshCw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { IconButton } from "../../components/ui/IconButton";
 import { cn } from "../../lib/cn";
@@ -9,7 +10,9 @@ import { onFutureEvent } from "../../lib/futureEvents";
 import { FilePreviewOverlay } from "../filepreview/FilePreviewOverlay";
 import { previewKindForPath } from "../filepreview/previewKind";
 import { FusionDiscussionPanel } from "../fusion/FusionDiscussionPanel";
+import { GitHistoryPanel } from "../git-history/GitHistoryPanel";
 import { peerBadgeText } from "./peerIcons";
+import { listRemoteGitCommits } from "./remotePeerClient";
 import { formatSize } from "./remotePeerFiles";
 import { useRemoteFiles } from "./useRemoteFiles";
 
@@ -47,6 +50,48 @@ export function RemoteFilesPanel({
 }) {
   const { t } = useTranslation("remotePeer");
   const scope = `${desktopId}:${sessionId}`;
+  const [view, setView] = useState<"files" | "history">("files");
+  /**
+   * Whether the conversation's workspace on that machine is a Git repository.
+   *
+   * Asked once per conversation because it decides whether the History tab
+   * exists at all — the same read the history itself uses, so a plain directory
+   * costs one probe and no round trip on every open. `null` while in flight:
+   * the tab appears when the answer arrives rather than offering a page that
+   * would only say "not a repository".
+   */
+  const [isRepo, setIsRepo] = useState<boolean | null>(null);
+  // Re-asked each time the panel is opened, not once per conversation: a
+  // workspace that is a plain directory when the panel first mounts may be
+  // `git init`-ed by the agent a moment later, and a tab that never appears
+  // again would leave the reader with a stale answer they cannot correct.
+  useEffect(() => {
+    if (!expanded) {
+      // Closed, nothing is offered from it; keeping the last answer is right,
+      // so re-opening does not flash the tab strip out and back in.
+      return;
+    }
+    let current = true;
+    void listRemoteGitCommits(desktopId, sessionId).then(
+      (listing) => {
+        if (current)
+          setIsRepo(listing.isRepo);
+      },
+      // A peer that cannot answer (offline, older build) simply gets no History
+      // tab: there is nothing to show and no action a reader could take here.
+      () => {
+        if (current)
+          setIsRepo(false);
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [desktopId, sessionId, expanded]);
+  const historySource = useMemo<GitHistorySource | null>(
+    () => (isRepo ? { kind: "remote", desktopId, sessionId } : null),
+    [isRepo, desktopId, sessionId],
+  );
   const [selection, setSelection] = useState<{ scope: string; detail: FutureEventMap["inspect-fusion"] } | null>(null);
   const fusion = selection?.scope === scope ? selection.detail : null;
   const files = useRemoteFiles(desktopId, sessionId, expanded && !fusion);
@@ -57,6 +102,10 @@ export function RemoteFilesPanel({
     if (!expanded)
       onToggleExpanded();
   }), [scope, expanded, onToggleExpanded]);
+  // The view can outlive its tab: a re-probe may answer "not a repository" while
+  // "history" is the selected view, and the tab strip is then gone. Derived
+  // rather than reset in an effect, so the two cannot disagree for a frame.
+  const showingHistory = view === "history" && historySource !== null;
   const preview = files.previewTarget;
   const previewKind = preview ? previewKindForPath(preview.name) : null;
 
@@ -100,15 +149,40 @@ export function RemoteFilesPanel({
       }
     >
       <header className="flex h-12 shrink-0 items-center gap-1 px-4">
-        <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">
-          {t("filesOn", { name: peer ? peerBadgeText(peer, peer.desktopId) : desktopId })}
-        </span>
-        <IconButton
-          disabled={files.loading}
-          icon={<RefreshCw className={cn("size-3.5", files.loading && "animate-spin")} />}
-          label={t("filesRefresh")}
-          onClick={() => void files.refresh()}
-        />
+        {historySource
+          ? (
+              // Two pages of one conversation on that machine: what is in its
+              // workspace now, and how that workspace got here. The switch takes
+              // the title's place rather than sitting under it — the panel is a
+              // column, and a title plus a switch would cost two rows of it.
+              <div className="grid min-w-0 flex-1 grid-cols-2 gap-1 rounded-md border border-line-soft p-0.5">
+                <PeerPanelTab
+                  active={!showingHistory}
+                  label={t("filesTab")}
+                  onClick={() => setView("files")}
+                />
+                <PeerPanelTab
+                  active={showingHistory}
+                  label={t("historyTab")}
+                  onClick={() => setView("history")}
+                />
+              </div>
+            )
+          : (
+              <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">
+                {t("filesOn", { name: peer ? peerBadgeText(peer, peer.desktopId) : desktopId })}
+              </span>
+            )}
+        {!showingHistory
+          ? (
+              <IconButton
+                disabled={files.loading}
+                icon={<RefreshCw className={cn("size-3.5", files.loading && "animate-spin")} />}
+                label={t("filesRefresh")}
+                onClick={() => void files.refresh()}
+              />
+            )
+          : null}
         <IconButton
           icon={<PanelRightClose className="size-3.5" />}
           label={t("filesClose")}
@@ -116,7 +190,20 @@ export function RemoteFilesPanel({
         />
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col px-3 pb-3">
+      {showingHistory && historySource
+        ? (
+            <div className="min-h-0 flex-1">
+              <GitHistoryPanel source={historySource} />
+            </div>
+          )
+        : null}
+
+      <div
+        className={cn(
+          "flex min-h-0 flex-1 flex-col px-3 pb-3",
+          showingHistory && "hidden",
+        )}
+      >
         <div className="mb-2 flex items-center gap-1">
           <IconButton
             disabled={files.loading || files.parent === null}
@@ -218,5 +305,30 @@ export function RemoteFilesPanel({
           )
         : null}
     </aside>
+  );
+}
+
+/** One page of the peer panel: the workspace's files, or its history. */
+function PeerPanelTab({
+  active,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      className={cn(
+        "h-7 truncate rounded px-2 text-xs font-medium transition-colors",
+        active ? "bg-accent-soft/70 text-accent" : "text-ink-muted hover:text-ink",
+      )}
+      onClick={onClick}
+    >
+      {label}
+    </button>
   );
 }

@@ -20,6 +20,8 @@ import {
   compactResumeEntries,
   demoFileContents,
   entriesByThread,
+  gitHistoryCommits,
+  gitHistoryPatch,
   HOME,
   installedSkills,
   models,
@@ -50,6 +52,12 @@ import {
 import { emit } from "./event";
 import { replayPage, replayState, sessionEntries, streamRemoteRun } from "./remoteStream";
 import { quotedPrompt } from "./replyQuote";
+
+/**
+ * `?norepo=1` makes the demo workspace a plain directory, so the History tab's
+ * absence is something the harness captures rather than merely claims.
+ */
+const noRepo = new URLSearchParams(window.location.search).get("norepo") === "1";
 
 // The console output doubles as the "what is missing" list while iterating on
 // the harness, which is why this one log call is intentional.
@@ -1072,14 +1080,17 @@ const handlers: Record<string, (args: any) => unknown> = {
   save_approval_rules: () => null,
 
   // ── Review ─────────────────────────────────────────────────────────────
+  // `isGitWorkspace` is what the review panel gates its history tab on, so the
+  // `norepo` flag has to answer here as well as in `get_git_history`: a demo
+  // workspace that is a plain directory is one in every read, not just one.
   get_workspace_review_capabilities: () => ({
-    isGitWorkspace: true,
-    views: ["git_changes", "last_run"],
-    defaultView: "git_changes",
+    isGitWorkspace: !noRepo,
+    views: noRepo ? ["last_run"] : ["git_changes", "last_run"],
+    defaultView: noRepo ? "last_run" : "git_changes",
     changePreview: "ready",
   }),
   get_git_review: () => ({
-    isGitWorkspace: true,
+    isGitWorkspace: !noRepo,
     workspacePath: `${HOME}/Research/dopamine-decision`,
     branch: "main",
     upstream: "origin/main",
@@ -1096,6 +1107,25 @@ const handlers: Record<string, (args: any) => unknown> = {
       binary: file.path.endsWith(".png"),
       diffTruncated: false,
     })),
+  }),
+  /**
+   * The demo checkout's history, in the shape the phone's sheet reads too.
+   *
+   * The gutters are the host's own layout output, not hand-drawn: the decoder
+   * reads glyphs, so an invented grid would decode into a picture nobody asked
+   * for.
+   */
+  get_git_history: () => ({
+    isRepo: !noRepo,
+    repoName: noRepo ? "" : "dopamine-decision",
+    path: noRepo ? `${HOME}/Research/notes` : `${HOME}/Research/dopamine-decision`,
+    commits: noRepo ? [] : gitHistoryCommits,
+    truncated: false,
+  }),
+  get_git_commit: () => ({
+    short: "9f2c1a7",
+    patch: gitHistoryPatch,
+    truncated: false,
   }),
   get_last_run_review: () => ({
     changeset: {

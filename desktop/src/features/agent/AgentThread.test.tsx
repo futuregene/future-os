@@ -7,6 +7,7 @@ import type {
   StoredApprovalRequest,
   StoredThread,
 } from "../../integrations/storage/threadStore";
+import type { AgentQueueRow } from "./agentQueue";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -55,7 +56,7 @@ const h = vi.hoisted(() => ({
       forget: vi.fn(),
       notice: null as { reason: string; count: number } | null,
       refresh: vi.fn(),
-      rows: [] as { acceptedAt: string; position: number; runId: string; state: string; text: string }[],
+      rows: [] as AgentQueueRow[],
     },
     cancel: vi.fn(async (_threadId: string, _runId: string) => {}),
     release: vi.fn(async (_threadId: string, _runId: string) => {}),
@@ -1176,6 +1177,95 @@ describe("agentThread send while the reply streams", () => {
     // and a row the Agent accepted from somewhere else has no local run to look
     // the conversation up from.
     expect(h.queue.cancel).toHaveBeenCalledWith("T1", "run-7");
+  });
+
+  /**
+   * Fixing a typo in a waiting message keeps the photos it carries.
+   *
+   * The Agent's queue reports them, and on this machine they are ordinary local
+   * paths — so the re-send names them again instead of sending the words alone and
+   * leaving the pictures behind with nobody told.
+   */
+  it("carries a waiting message's files into the edit that rewrites it", async () => {
+    h.queue.value = {
+      forget: vi.fn(),
+      notice: null,
+      refresh: vi.fn(),
+      rows: [{
+        acceptedAt: "2026-11-03T10:00:00Z",
+        attachments: [
+          { kind: "image", name: "shot.png", path: "/Users/x/shot.png", size: 4096 },
+          { kind: "file", name: "doc.pdf", path: "/Users/x/doc.pdf", size: 0 },
+        ],
+        position: 1,
+        runId: "run-9",
+        state: "queued",
+        text: "look at this",
+      }],
+    };
+    render();
+
+    // The files are named before the run takes them.
+    expect(container.querySelectorAll("[data-queue-attachment]")).toHaveLength(2);
+
+    await act(async () => container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
+    const box = container.querySelector<HTMLTextAreaElement>("[data-queue-item] textarea")!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "look at this instead");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("[data-queue-save]")!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(h.queue.cancel).toHaveBeenCalledWith("T1", "run-9");
+    expect(h.state.handleQueuedSend).toHaveBeenCalledWith({
+      attachments: [
+        { kind: "image", name: "shot.png", path: "/Users/x/shot.png" },
+        { kind: "file", name: "doc.pdf", path: "/Users/x/doc.pdf" },
+      ],
+      content: "look at this instead",
+    });
+  });
+
+  /**
+   * An emptied row is a deletion, and the bin says so.
+   *
+   * Saving it used to remove the row while the reader believed they were editing,
+   * so the message they meant to correct was gone with nothing said.
+   */
+  it("says an empty edit is a removal instead of quietly taking the row", async () => {
+    h.queue.value = {
+      forget: vi.fn(),
+      notice: null,
+      refresh: vi.fn(),
+      rows: [{ acceptedAt: "2026-11-03T10:00:00Z", position: 1, runId: "run-10", state: "queued", text: "waiting" }],
+    };
+    render();
+    const toasts: { message: string; tone?: string }[] = [];
+    const off = onFutureEvent("toast", toast => void toasts.push(toast));
+
+    await act(async () => container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
+    const box = container.querySelector<HTMLTextAreaElement>("[data-queue-item] textarea")!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "   ");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("[data-queue-save]")!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    off();
+
+    expect(h.queue.cancel).not.toHaveBeenCalled();
+    expect(h.state.handleQueuedSend).not.toHaveBeenCalled();
+    // Said, not done: the row is where it was and the reader learns why.
+    expect(toasts).toEqual([{ message: "A message needs some text. Use the bin to remove it.", tone: "error" }]);
   });
 
   it("offers a parked row a start, because the Agent will not run it alone", async () => {

@@ -17,6 +17,7 @@
     "desktop:package": "node ../scripts/build/build-desktop.mjs"
   },
   "dependencies": {
+    "@future-os/git-graph": "*",
     "@future-os/json-preview": "*",
     "@future-os/markdown": "*",
     "@future-os/peer-icons": "*",

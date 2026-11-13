@@ -485,6 +485,7 @@ export function ContextPanel({
                 isGitWorkspace={reviewCapabilities?.isGitWorkspace ?? null}
                 uncommittedReview={gitReviews.uncommitted}
                 threadId={activeThread.id}
+                workspacePath={activeWorkspacePath}
               />
             )
           : null}
