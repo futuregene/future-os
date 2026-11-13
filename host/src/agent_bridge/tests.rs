@@ -3533,3 +3533,95 @@ mod presence_fence_tests {
         assert_eq!(mock.requests_of("get_session_presence").len(), 1);
     }
 }
+
+/// Measure a run's first paint against the live Agent, both ways.
+///
+/// Read-only: it asks the same `get_events_since` and `get_state` the remote
+/// path asks, and never issues a command that writes. Run it with real ids:
+///
+/// ```text
+/// $env:FUTURE_REPLAY_SESSION = "<session of an in-flight run>"
+/// $env:FUTURE_REPLAY_RUN     = "<its run id>"
+/// cargo test -p future-host --lib measure_first_paint_on_a_real_run -- --ignored --nocapture
+/// ```
+#[cfg(test)]
+mod first_paint_measurement {
+    use std::time::Instant;
+
+    /// The number of events a client page carries (`REPLAY_PAGE_EVENTS`).
+    const CLIENT_PAGE: usize = 1_000;
+
+    /// The Agent channel is entry-owned (the probe documents the same
+    /// precondition): the library needs a process-lifetime runtime before it can
+    /// dial the running Agent.
+    fn runtime() {
+        crate::install_rustls_provider();
+        let _ = crate::agent_client::provide_channel_runtime("first-paint-measure", || {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .thread_name("first-paint-measure")
+                .build()
+                .expect("build the measurement's Agent channel runtime")
+        });
+    }
+
+    #[ignore = "live measurement: reads the running Agent"]
+    #[tokio::test]
+    async fn measure_first_paint_on_a_real_run() {
+        let Ok(session) = std::env::var("FUTURE_REPLAY_SESSION") else {
+            return;
+        };
+        let run = std::env::var("FUTURE_REPLAY_RUN").expect("FUTURE_REPLAY_RUN");
+        runtime();
+
+        // Before: the run from its beginning, paged the way a client pages it.
+        let started = Instant::now();
+        let mut cursor = -1i64;
+        let (mut pages, mut events) = (0usize, 0usize);
+        let mut watermark = None;
+        loop {
+            let page = crate::agent_bridge::get_events_since_page_until(
+                session.clone(),
+                run.clone(),
+                cursor,
+                CLIENT_PAGE,
+                watermark,
+            )
+            .await
+            .expect("page");
+            pages += 1;
+            events += page["events"].as_array().map_or(0, Vec::len);
+            watermark = page["watermark"].as_i64();
+            let next = page["nextSinceIdx"].as_i64().unwrap_or(-1);
+            if page["hasMore"].as_bool() != Some(true) || next <= cursor || pages >= 64 {
+                break;
+            }
+            cursor = next;
+        }
+        let before = started.elapsed();
+
+        // After: the same run, from the boundary the handler chooses — the newest
+        // index (the watermark the read above pinned) minus one client page.
+        let newest = watermark.unwrap_or(-1);
+        let start = (newest - (CLIENT_PAGE as i64 - 1)).max(0);
+        let started = Instant::now();
+        let page = crate::agent_bridge::get_events_since_page_until(
+            session.clone(),
+            run.clone(),
+            start,
+            CLIENT_PAGE,
+            Some(newest),
+        )
+        .await
+        .expect("page");
+        let first_paint_events = page["events"].as_array().map_or(0, Vec::len);
+        let after = started.elapsed();
+
+        println!(
+            "run {run}: from the beginning = {pages} round trips, {events} events, {before:?}; \
+             first paint = 1 round trip from idx {start} (watermark {newest}), \
+             {first_paint_events} events, {after:?}"
+        );
+    }
+}

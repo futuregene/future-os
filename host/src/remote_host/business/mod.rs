@@ -17,6 +17,17 @@ mod wire_limits;
 pub(crate) use prompt::*;
 pub(crate) use wire_limits::*;
 
+/// Test-only: make a whole-run replay start at the run's beginning again.
+///
+/// The assertions that a first paint is bounded are written against the
+/// shipping boundary; this is the switch that has to make them fail, so the
+/// reverse direction of the proof is a test rather than a paragraph. It lives
+/// here rather than in `history` because the bridge harness that drives the
+/// handler for real is `crate::remote`, not the module itself.
+#[cfg(test)]
+pub(crate) static FORCE_FULL_REPLAY_START: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// The module that owns an incoming command.
 ///
 /// Routing is a pure step, separate from executing the handler, so the phone's
