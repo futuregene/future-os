@@ -484,6 +484,10 @@ pub async fn get_session_entries_before_with_client(
         "entries": page.entries,
         "hasMore": page.has_more,
         "nextOffset": page.next_offset,
+        // A turn too large to complete is served as its tail by the assembly
+        // above; the reader is told, so "this page starts mid-run" is a fact the
+        // page states rather than one the client infers from a missing prompt.
+        "truncated": page.truncated,
     }))
 }
 

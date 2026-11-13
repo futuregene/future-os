@@ -9,6 +9,13 @@ use std::future::Future;
 pub trait HistoryEntry: serde::de::DeserializeOwned {
     fn entry_id(&self) -> Option<&str>;
     fn needs_user_prefix(&self) -> bool;
+    /// What this row adds to a page once the page is encoded.
+    ///
+    /// [`FIRST_PAGE_BYTE_BUDGET`] bounds bytes, so the assembly loop has to be
+    /// able to weigh what it is holding. The number is the row's own JSON: a page
+    /// is an array of them, and the envelope's brackets and commas are a few
+    /// bytes per row against pages measured in hundreds of kilobytes.
+    fn page_bytes(&self) -> usize;
 }
 impl HistoryEntry for crate::payloads::SessionEntryPayload {
     fn entry_id(&self) -> Option<&str> {
@@ -16,6 +23,9 @@ impl HistoryEntry for crate::payloads::SessionEntryPayload {
     }
     fn needs_user_prefix(&self) -> bool {
         needs_user_prefix(Some(&self.role), Some(&self.kind), self.checkpoint.as_ref())
+    }
+    fn page_bytes(&self) -> usize {
+        serde_json::to_vec(self).map_or(0, |bytes| bytes.len())
     }
 }
 impl HistoryEntry for serde_json::Value {
@@ -28,6 +38,9 @@ impl HistoryEntry for serde_json::Value {
             self.get("kind").and_then(Self::as_str),
             self.get("checkpoint"),
         )
+    }
+    fn page_bytes(&self) -> usize {
+        serde_json::to_vec(self).map_or(0, |bytes| bytes.len())
     }
 }
 
@@ -58,7 +71,10 @@ fn needs_user_prefix(
 /// * [`ExchangeStart::Complete`] — the host's history read (`host::agent_bridge`)
 ///   behind the desktop and mobile apps. A page there is a slice of a
 ///   conversation being read front to back, so it begins at the question its
-///   reply answers; completing the exchange costs one small extra fetch.
+///   reply answers; completing the exchange costs one small extra fetch, and the
+///   walk that would grow the page to the turn's size is bounded by
+///   [`FIRST_PAGE_BYTE_BUDGET`] — a turn too big to complete comes back as its
+///   tail, saying so.
 /// * [`ExchangeStart::Anywhere`] — the terminal's conversation switch
 ///   (`GrpcClient::session_tail_page`). That first page is not a slice to read
 ///   but a *tail to look at*: the reader wants the newest rows as fast as the
@@ -82,6 +98,24 @@ pub enum ExchangeStart {
     /// not be grown back to the turn it lands in.
     Anywhere,
 }
+
+/// The most one assembled backward page may weigh before the walk that
+/// completes its exchange is cut short.
+///
+/// This is the host's own reply budget, not a second one: `wire_limits`
+/// (`BACKWARD_HISTORY_PAGE_BYTES`, 512 KiB) is what a history reply promises to
+/// fit, and it keeps that promise by deferring whole exchanges. A turn larger
+/// than the budget on its own is one exchange, so there is nothing there to
+/// defer — the page leaves whole. Measured on the reported conversation
+/// (2026-11-13): one turn of 1,113 rows, 10.35 MB raw and 5.22 MB after the lean
+/// trim, pulled in full on every open.
+///
+/// So the bound has to be applied where the page is *assembled*. Completing an
+/// exchange is worth one small extra fetch; it is not worth a turn's whole body.
+/// A page that cannot reach its question within this budget is served as the
+/// newest rows that fit and says so (`truncated`), which keeps the promise above
+/// for any data: no single turn can turn an open into a multi-megabyte transfer.
+pub const FIRST_PAGE_BYTE_BUDGET: usize = 512 * 1024;
 
 /// Assemble oversized entries before exposing them to message projection.
 ///
@@ -116,8 +150,26 @@ where
 
 /// [`read_page`], naming what a page may do to the exchange it starts in.
 pub async fn read_page_from<Entry, F, Fut>(
+    command: RpcCommand,
+    start: ExchangeStart,
+    execute: F,
+) -> Result<SessionEntriesPage<Entry>, String>
+where
+    Entry: HistoryEntry,
+    F: FnMut(RpcCommand) -> Fut,
+    Fut: Future<Output = Result<SessionEntriesPage<Entry>, String>>,
+{
+    read_page_with_budget(command, start, FIRST_PAGE_BYTE_BUDGET, execute).await
+}
+
+/// [`read_page_from`], naming the budget the exchange-completion walk may spend.
+///
+/// A test drives a small budget to pin the truncation; production callers go
+/// through [`read_page_from`] and get [`FIRST_PAGE_BYTE_BUDGET`].
+pub async fn read_page_with_budget<Entry, F, Fut>(
     mut command: RpcCommand,
     start: ExchangeStart,
+    budget: usize,
     mut execute: F,
 ) -> Result<SessionEntriesPage<Entry>, String>
 where
@@ -185,6 +237,21 @@ where
                 {
                     return Err("history returned a non-advancing backward cursor".into());
                 }
+                // Ask for the next older slice only while the page so far is
+                // still a page: completing an exchange is worth one small extra
+                // fetch, not a turn's whole body. When the turn is bigger than
+                // the budget on its own, no number of further slices can reach
+                // its question, and the page is served as that turn's tail.
+                let dropped = trim_to_budget(&mut accumulated, budget);
+                if dropped > 0 {
+                    page.entries = accumulated;
+                    // What left the page is reachable, not lost: the cursor names
+                    // the first row this page still carries.
+                    page.next_offset += dropped as i64;
+                    page.has_more = true;
+                    page.truncated = true;
+                    return Ok(page);
+                }
                 command.before = Some(page.next_offset);
                 command.limit = Some(1);
                 continue;
@@ -193,6 +260,27 @@ where
         }
         return Ok(page);
     }
+}
+
+/// Drop the oldest rows of a page until it fits `budget`, and say how many left.
+///
+/// At least one row always stays. A single row can be larger than the budget on
+/// its own — an entry is the smallest unit a page can carry, and the body that
+/// makes it big is what the fragment path and the client's on-demand fetch are
+/// for — so the promise is "a page is the newest rows that fit, or one row",
+/// never "an empty page".
+fn trim_to_budget<Entry: HistoryEntry>(entries: &mut Vec<Entry>, budget: usize) -> usize {
+    let weights: Vec<usize> = entries.iter().map(HistoryEntry::page_bytes).collect();
+    let mut total: usize = weights.iter().sum();
+    let mut dropped = 0;
+    while dropped + 1 < entries.len() && total > budget {
+        total -= weights[dropped];
+        dropped += 1;
+    }
+    if dropped > 0 {
+        entries.drain(..dropped);
+    }
+    dropped
 }
 
 #[cfg(test)]
@@ -208,6 +296,7 @@ mod tests {
             has_more: false,
             next_offset: 1,
             total: None,
+            truncated: false,
             fragment: Some(HistoryEntryFragment {
                 entry_id: "large".into(),
                 ordinal: 0,
@@ -283,6 +372,7 @@ mod tests {
             next_offset,
             total: None,
             fragment,
+            truncated: false,
         }
     }
 
@@ -307,6 +397,19 @@ mod tests {
     where
         Entry: HistoryEntry + DeserializeOwned,
     {
+        scripted_with_budget(command, start, FIRST_PAGE_BYTE_BUDGET, pages).await
+    }
+
+    /// [`scripted_from`], naming the budget the exchange-completion walk may spend.
+    async fn scripted_with_budget<Entry>(
+        command: RpcCommand,
+        start: ExchangeStart,
+        budget: usize,
+        pages: Vec<SessionEntriesPage<Entry>>,
+    ) -> (Result<SessionEntriesPage<Entry>, String>, Vec<RpcCommand>)
+    where
+        Entry: HistoryEntry + DeserializeOwned,
+    {
         let mut pages = std::collections::VecDeque::from(pages);
         let seen = std::cell::RefCell::new(Vec::new());
         let result = {
@@ -314,9 +417,115 @@ mod tests {
                 seen.borrow_mut().push(command);
                 std::future::ready(Ok(pages.pop_front().expect("scripted page")))
             };
-            read_page_from::<Entry, _, _>(command, start, &mut execute).await
+            read_page_with_budget::<Entry, _, _>(command, start, budget, &mut execute).await
         };
         (result, seen.into_inner())
+    }
+
+    /// The assertions that follow are written against this number, so changing
+    /// it has to be a failing test rather than a quiet widening: a budget that is
+    /// "no bound" restores the transfer they exist to prevent.
+    #[test]
+    fn the_first_page_budget_is_the_host_reply_budget() {
+        assert_eq!(FIRST_PAGE_BYTE_BUDGET, 512 * 1024);
+    }
+
+    /// Rows shaped like the reported turn's: an assistant step per row, each
+    /// carrying a body worth tens of kilobytes.
+    fn turn_rows(rows: usize, each: usize) -> Vec<Value> {
+        (0..rows)
+            .map(|index| {
+                json!({
+                    "id": format!("a{index}"),
+                    "kind": "assistant",
+                    "role": "assistant",
+                    "blocks": [{"kind": "text", "text": "x".repeat(each)}],
+                })
+            })
+            .collect()
+    }
+
+    /// A turn too big to complete is served as its tail, not as itself.
+    ///
+    /// This is the reported conversation (2026-11-13): one turn of 1,113 rows
+    /// and 10.35 MB. Completing it means walking back until the page starts at
+    /// its question, which for that turn is the whole thing — the pages here are
+    /// rows of it, and the walk must stop instead of asking for the rest.
+    ///
+    /// Removing the tail (returning the accumulated page) makes the `<=
+    /// FIRST_PAGE_BYTE_BUDGET` line below fail, which is the point of writing it
+    /// against the constant.
+    #[tokio::test]
+    async fn a_turn_larger_than_the_budget_comes_back_as_its_tail() {
+        let rows = turn_rows(30, 40_000);
+        let whole: usize = rows.iter().map(HistoryEntry::page_bytes).sum();
+        assert!(
+            whole > FIRST_PAGE_BYTE_BUDGET,
+            "the fixture has to be the case this bound is for: {whole} bytes"
+        );
+        let command = RpcCommand {
+            before: Some(i64::MAX),
+            ..Default::default()
+        };
+        let (result, seen) =
+            scripted::<Value>(command, vec![page(None, rows.clone(), true, 1_000)]).await;
+
+        let served = result.expect("a truncated page is a page");
+        assert_eq!(
+            seen.len(),
+            1,
+            "the walk stops at the budget instead of fetching the rest of the turn"
+        );
+        assert!(served.truncated, "the page says what it left behind");
+        let bytes: usize = served.entries.iter().map(HistoryEntry::page_bytes).sum();
+        assert!(
+            bytes <= FIRST_PAGE_BYTE_BUDGET,
+            "a first page is bounded whatever the turn weighs: {bytes} bytes"
+        );
+        // The newest rows are the ones kept, and the cursor names the first of
+        // them: what left the page is still reachable on the next pull.
+        let kept = served.entries.len();
+        assert_eq!(
+            served.entries.last().map(HistoryEntry::entry_id),
+            rows.last().map(HistoryEntry::entry_id),
+            "the tail is the newest row"
+        );
+        assert_eq!(served.next_offset, 1_000 + (rows.len() - kept) as i64);
+        assert!(served.has_more, "the rest of the turn is behind the cursor");
+    }
+
+    /// An exchange that fits is still completed to its question.
+    ///
+    /// The budget bounds the walk; it does not change what a page is for readers
+    /// the walk can finish. This is the ordinary conversation: one small older
+    /// slice, and the page begins at the prompt it answers.
+    #[tokio::test]
+    async fn an_exchange_that_fits_is_still_completed_to_its_question() {
+        let answer = || json!({"id": "a1", "kind": "assistant", "role": "assistant"});
+        let question = || json!({"id": "u0", "kind": "user", "role": "user"});
+        let command = RpcCommand {
+            before: Some(i64::MAX),
+            ..Default::default()
+        };
+        let (result, seen) = scripted::<Value>(
+            command,
+            vec![
+                page(None, vec![answer()], true, 10),
+                page(None, vec![question(), answer()], true, 3),
+            ],
+        )
+        .await;
+
+        let served = result.expect("page");
+        assert_eq!(seen.len(), 2, "one completion fetch, then the question");
+        assert!(!served.truncated, "nothing was left behind");
+        assert_eq!(served.entries.len(), 3);
+        assert_eq!(
+            served.entries[0],
+            question(),
+            "the page begins at the question"
+        );
+        assert_eq!(served.next_offset, 3);
     }
 
     /// A page that is allowed to begin anywhere is returned as the agent cut it.

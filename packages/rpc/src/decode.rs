@@ -171,6 +171,10 @@ pub fn decode_session_entries_page(resp: &proto::RpcResponse) -> Option<SessionE
             has_more: response.has_more,
             next_offset: response.next_offset,
             total: response.total,
+            // The agent never truncates a page: it cuts slices by rows and
+            // bytes, and this flag is about the walk that completes an
+            // exchange, which happens here on the host (`history::read_page`).
+            truncated: false,
         });
     }
     fallback_value(resp).and_then(|value| {
@@ -198,6 +202,10 @@ pub fn decode_session_entries_page(resp: &proto::RpcResponse) -> Option<SessionE
                 .and_then(Value::as_i64)
                 .unwrap_or_default(),
             total: value.get("total").and_then(Value::as_i64),
+            truncated: value
+                .get("truncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         })
     })
 }
