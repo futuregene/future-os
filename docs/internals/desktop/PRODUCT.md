@@ -870,7 +870,9 @@ The same rule holds for every client that drives a conversation: this app's view
 of another computer's conversation and the phone both hand a queued message to
 the session that will run it (`enqueue_coalescing`, and the remote prompt's
 `busyPolicy`), then read the waiting rows back from that host's `get_queue` —
-delete cancels the run id, edit cancels and re-sends, a parked row is released.
+delete cancels the run id, edit corrects that row's words where it already waits
+(`edit_queued_run`: the same run id, position and files, so a queue the reader
+ordered is never reordered by a typo fix), a parked row is released.
 No client keeps a queue of its own: a message written on the phone survives the
 app being closed or uninstalled because it was never the phone's, and the
 controlling computer going away does not strand it either. The terminal has no

@@ -21,6 +21,7 @@ const {
   QUEUED_SEND_POLICY,
   QUEUE_NOTICE_MS,
   cancelRemoteQueuedRun,
+  editRemoteQueuedRun,
   getRemoteQueue,
   isParkedRemoteQueueRow,
   parseRemoteQueueAcks,
@@ -165,7 +166,7 @@ describe("getRemoteQueue", () => {
 });
 
 describe("the queue's commands", () => {
-  it("cancels and releases by run id, on the conversation's lane", async () => {
+  it("cancels, releases and edits by run id, on the conversation's lane", async () => {
     request.mockResolvedValue(undefined);
 
     await cancelRemoteQueuedRun("desktop_a", "sess_1", "run_7");
@@ -179,6 +180,15 @@ describe("the queue's commands", () => {
     expect(request).toHaveBeenLastCalledWith(
       "desktop_a",
       { runId: "run_7", sessionId: "sess_1", type: "release_queued_run" },
+      "sess_1",
+    );
+
+    // An edit names the row and the new words: the host corrects that row where
+    // it waits instead of queueing a new one behind the reader's later messages.
+    await editRemoteQueuedRun("desktop_a", "sess_1", "run_7", "fixed");
+    expect(request).toHaveBeenLastCalledWith(
+      "desktop_a",
+      { message: "fixed", runId: "run_7", sessionId: "sess_1", type: "edit_queued_run" },
       "sess_1",
     );
   });

@@ -219,6 +219,14 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   cancelQueuedRun(sessionId: string, runId: string): Promise<void>;
   /** Start a parked waiting row now, because the reader asked for it. */
   releaseQueuedRun(sessionId: string, runId: string): Promise<void>;
+  /**
+   * Correct one waiting message's words where it already holds its place.
+   *
+   * Not a cancel and a re-send: the queue is ordered, and a re-send would put the
+   * corrected message at the back, after everything the reader wrote later. The
+   * files the row carries stay with it.
+   */
+  editQueuedRun(sessionId: string, runId: string, message: string): Promise<void>;
   /** Request manual context compaction; resolves with the operation to correlate. */
   compactContext(): Promise<{ sessionId: string; operationId: string }>;
   /** Await that operation's terminal outcome (never rejects; `timeout` on expiry). */
@@ -617,6 +625,9 @@ function machineSurface(
       throw new Error("not_connected");
     }),
     releaseQueuedRun: runtime?.queue?.release ?? (async () => {
+      throw new Error("not_connected");
+    }),
+    editQueuedRun: runtime?.queue?.edit ?? (async () => {
       throw new Error("not_connected");
     }),
     compactContext: runtime?.conversation.compactContext ?? (async () => {

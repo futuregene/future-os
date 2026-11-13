@@ -3,9 +3,9 @@
 //! and the parent module's prompt finalization.
 
 use super::client::{
-    cancel_queued_run_command, compact_command, connect_agent, get_state_command,
-    is_session_not_found, map_rpc_error, release_queued_run_command, run_control_command,
-    RpcResponseExt,
+    cancel_queued_run_command, compact_command, connect_agent, edit_queued_run_command,
+    get_state_command, is_session_not_found, map_rpc_error, release_queued_run_command,
+    run_control_command, RpcResponseExt,
 };
 use super::replica::AGENT_REPLICAS;
 use crate::store;
@@ -339,6 +339,46 @@ pub async fn release_queued_run(session_id: &str, run_id: &str) -> Result<(), cr
     if !response.success {
         return Err(format!(
             "Future Agent did not release the queued message: {}",
+            response.error
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Correct one waiting prompt's words, in the place it already holds.
+///
+/// The reader ordered this queue by hand, so a corrected message stays in its
+/// slot: the Agent replaces the text of the accepted prompt in place instead of
+/// dropping the row and sending a new one, which would have put the correction at
+/// the back. Everything else about the accepted prompt — its files, images, model
+/// context and frozen run settings — is untouched, which is also why nothing has
+/// to be re-read here.
+pub async fn edit_queued_run(
+    session_id: &str,
+    run_id: &str,
+    message: &str,
+) -> Result<(), crate::Error> {
+    if run_id.trim().is_empty() {
+        return Err("Run id is required to change a queued message.".into());
+    }
+    if message.trim().is_empty() {
+        return Err("A queued message needs some text; remove it instead.".into());
+    }
+    let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, session_id).await?;
+    let response = client
+        .execute_command(edit_queued_run_command(
+            run_id.to_string(),
+            message.to_string(),
+            session_id.to_string(),
+        ))
+        .await
+        .map_err(|error| format!("Unable to change the queued message: {error}"))?
+        .into_inner();
+    if !response.success {
+        return Err(format!(
+            "Future Agent did not change the queued message: {}",
             response.error
         )
         .into());

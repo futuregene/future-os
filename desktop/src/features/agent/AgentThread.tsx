@@ -29,7 +29,7 @@ import { useCommittedRef } from "../../lib/useCommittedRef";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { useCommand } from "../keyboard/commands";
 import { installRecommendedSkill } from "../skills/installRecommendedSkill";
-import { agentQueueNoticeReason, cancelAgentQueuedRun, isParkedRow, releaseAgentQueuedRun, useAgentQueue } from "./agentQueue";
+import { agentQueueNoticeReason, cancelAgentQueuedRun, editAgentQueuedRun, isParkedRow, releaseAgentQueuedRun, useAgentQueue } from "./agentQueue";
 import { ApprovalPrompt } from "./ApprovalPrompt";
 import {
   buildContinuePrompt,
@@ -400,48 +400,25 @@ export function AgentThread({
       });
     });
   }, [t]);
-  // Editing a waiting message: the Agent has no "update this row" command, so
-  // the corrected text is a new prompt behind the same run boundary — take the
-  // old row back first, or both would run. The files travel with the correction:
-  // the queue reports them (local paths, since the Agent runs here), so a typo
-  // fixed in a message with photos keeps the photos instead of sending the words
-  // alone. A row whose queue reports no files is the one case that sends text
-  // only, and the panel's editor says so before the reader saves. A re-send that
-  // the Agent refuses is not a lost message: the send pipeline puts the words in
-  // the thread as a failed bubble, which is where the retry lives. A *removal*
-  // the Agent refuses stops the edit: sending the corrected text while the old
-  // row stays queued would run both.
+  // Editing a waiting message corrects its words where it already waits. It is
+  // deliberately NOT a removal and a re-send: a re-send enters the queue at the
+  // back, so fixing a typo in the second of four messages put it after the fourth
+  // — the order the reader built, arriving as an order they never chose. The Agent
+  // has an in-place edit (`edit_queued_run`), so the row keeps its run id, its
+  // position, and the files, images and frozen settings it was accepted with;
+  // saving only changes the text. An empty edit is a deletion, and the panel's own
+  // bin says that plainly, so it is refused where the reader is looking.
   const handleQueueUpdate = useCallback((runId: string, content: string) => {
     if (!thread?.id)
       return;
-    const row = agentQueue.rows.find(item => item.runId === runId);
-    // An empty edit is a deletion, and the panel's own bin says that plainly.
-    // Saved here it would remove the row while the reader expected an edit, so it
-    // is refused where the reader is looking instead of reported as a failure.
     if (!content.trim()) {
       emitFutureEvent("toast", { message: t("composer.queue.emptyEdit"), tone: "error" });
       return;
     }
-    void (async () => {
-      try {
-        await cancelAgentQueuedRun(thread.id, runId);
-      }
-      catch (error) {
-        reportQueueFailure(error);
-        return;
-      }
-      agentQueue.forget(runId);
-      await handleQueuedSend({
-        attachments: (row?.attachments ?? []).map(attachment => ({
-          kind: attachment.kind === "image" ? "image" : "file",
-          name: attachment.name,
-          path: attachment.path,
-        })),
-        content,
-      });
-      agentQueue.refresh();
-    })();
-  }, [agentQueue, handleQueuedSend, reportQueueFailure, t, thread?.id]);
+    void editAgentQueuedRun(thread.id, runId, content)
+      .catch(reportQueueFailure)
+      .finally(() => agentQueue.refresh());
+  }, [agentQueue, reportQueueFailure, t, thread?.id]);
 
   // Settings → Keyboard: the same interrupt the send button turns into while a
   // reply streams. Registered only then, so the key is unclaimed whenever there

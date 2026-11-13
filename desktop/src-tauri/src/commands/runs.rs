@@ -93,6 +93,20 @@ pub async fn release_queued_run(thread_id: String, run_id: String) -> Result<(),
     future_host::application::queue::release_queued_run(&thread_id, &run_id).await
 }
 
+/// Correct one waiting message's words, in the place it already holds.
+///
+/// The panel's pencil. Not a cancel and a re-send: the queue is ordered, and a
+/// re-send would put the corrected message behind everything the reader wrote
+/// after it.
+#[tauri::command]
+pub async fn edit_queued_run(
+    thread_id: String,
+    run_id: String,
+    message: String,
+) -> Result<(), crate::AppError> {
+    future_host::application::queue::edit_queued_run(&thread_id, &run_id, &message).await
+}
+
 #[tauri::command]
 pub async fn list_run_events(
     run_id: String,
