@@ -89,6 +89,47 @@ join content_segments cs on cs.content_id = scc.content_id
 where sc.stream_id = (select id from stream_runs where run_id = ?);
 ```
 
+## 4 预算改按“发送字节”计，并加一道行数闸（`perf/first-paint-lean`）
+
+第一节那个 512 KiB 量的是 **Agent 出来的原始条目字节**，可客户端收到的只是 lean 之后的部分：
+思考正文、工具输出正文、工具参数、`shell_result` 内文、`provider_metadata` 都不上线。拿同一轮
+（`8ac7afd8` 的最后一条提问之后）按字段拆开：
+
+| 内容 | 字节 | 占比 | lean 后 |
+| --- | ---: | ---: | --- |
+| 工具输出正文 `tool_result.text` | 6.03 MB | 46.5% | 丢 |
+| `metadata.shell_result` 内文 | 2.92 MB | 22.5% | 丢（留判定字段） |
+| `provider_metadata` | 2.43 MB | 18.8% | 丢 |
+| 工具参数 `tool_call.arguments` | 0.36 MB | 2.8% | 只留标签 key |
+| 行骨架（shape JSON） | 0.48 MB | 3.7% | 留 |
+| `summary` | 0.22 MB | 1.7% | 留 |
+| 可见正文（用户/助手） | 0.19 MB | 1.4% | 留 |
+
+整轮 **12.99 MB → 1.75 MB（13.5%，约 7.4 倍）**。所以现在：
+
+- **字节预算（512 KiB）按“实际会发出的字节”计**：`read_page_with` 接受调用方的权重，host 在客户端
+  声明了 lean 时用 `lean_entries` 的结果当权重（`page_weight_as_sent`），未声明就是原始字节。
+- **另加 300 行上限**（`PageBudget::FIRST_PAINT`）：字节便宜不等于渲染便宜，一千行两百字节的条目照样是
+  一千个行模型。两条独立上限，取先到的那个。
+
+同一轮的效果（按同一份 store 的字段级模型）：
+
+| | 首屏行数 | 首屏上线字节 | 读完这一轮的翻页次数 |
+| --- | ---: | ---: | ---: |
+| 改前（raw 512 KiB） | 33 | 0.29 MB | 约 50 |
+| 改后（lean 512 KiB + 300 行闸） | **300**（行闸封顶） | 约 0.35 MB | **约 6** |
+
+行闸是这次收益的封顶：把 `PageBudget::FIRST_PAINT.rows` 调大，行数与首帧成本一起涨。
+
+**副作用**（写进提交信息，`git log -1` 可查）：
+
+1. 首屏行数变多 → 客户端要建更多行模型，首帧比“33 行”那版慢一点，但远少于原来 1,100 行那次；
+2. 为了填满 512 KiB 的**发送**字节，host 可能多读 1–2 个 Agent 切片（本机 gRPC，不上线）；
+3. 未声明 lean 的老客户端完全不变（权重仍是原始字节，行为与改前一致）。
+
+复现：与第 1 节同一段 SQL，把 `/content/N/text`（kind 为 `tool_result`/`reasoning`）、
+`/content/N/provider_metadata`、`/meta/shell_result` 划到“丢”，其余求和，即得上表两列。
+
 ## 3 反向可证
 
 | 断言 | 把改动改回去之后 |

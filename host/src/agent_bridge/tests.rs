@@ -3625,3 +3625,68 @@ mod first_paint_measurement {
         );
     }
 }
+
+/// The first paint's budget is spent on what the lean lane will send.
+///
+/// The weight is the number the completion walk spends, so it has to be the
+/// bytes the client receives: a tool row's body and shell envelope are removed
+/// by the trim, and counting them would buy thirty rows where the shipped bytes
+/// hold a few hundred.
+#[cfg(test)]
+mod first_paint_weight {
+    use serde_json::json;
+
+    fn tool_row() -> future_rpc::payloads::SessionEntryPayload {
+        serde_json::from_value(json!({
+            "id": "e1",
+            "kind": "tool",
+            "role": "tool",
+            "createdAtMs": 1,
+            "runId": "r",
+            "blocks": [{
+                "kind": "tool_result",
+                "toolCallId": "c1",
+                "text": "x".repeat(50_000),
+            }],
+            "metadata": {"shell_result": {
+                "status": "exited",
+                "is_error": false,
+                "command": "future session transcript",
+                "attempts": [{"output": "y".repeat(50_000)}],
+            }},
+        }))
+        .expect("a tool row")
+    }
+
+    #[tokio::test]
+    async fn a_lean_row_weighs_what_the_trim_leaves() {
+        let entry = tool_row();
+        let raw = crate::agent_bridge::queries::page_weight_as_sent(&entry);
+        assert!(
+            raw > 100_000,
+            "the row itself is what the Agent sent: {raw}"
+        );
+        let lean = crate::remote_host::lean::in_request(true, async {
+            crate::agent_bridge::queries::page_weight_as_sent(&entry)
+        })
+        .await;
+        assert!(
+            lean * 4 < raw,
+            "a lean page is weighed after the trim, not before it: {lean} of {raw}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_client_without_the_lane_is_weighed_by_its_own_bytes() {
+        let entry = tool_row();
+        let plain = crate::remote_host::lean::in_request(false, async {
+            crate::agent_bridge::queries::page_weight_as_sent(&entry)
+        })
+        .await;
+        assert_eq!(
+            plain,
+            crate::agent_bridge::queries::page_weight_as_sent(&entry),
+            "nothing is removed for this client, so nothing is discounted"
+        );
+    }
+}
