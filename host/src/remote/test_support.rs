@@ -39,8 +39,16 @@ pub fn unique(tag: &str) -> String {
 
 /// Initialize the GUI store (SQLite schema + dirs) under the current
 /// (HomeGuard-redirected) HOME.
+///
+/// Through the shared retrying initializer rather than
+/// `store::initialize_app_store` directly: this fixture publishes a HOME and
+/// leaves the store to the test body, so the same writer that makes
+/// `TestHome`'s initialization flaky (`SQLITE_BUSY`, "database is locked") can
+/// answer this one, and a bounded retry there must not turn into a suite-wide
+/// failure here.
 pub fn init_store() {
-    crate::store::initialize_app_store().expect("store init under test HOME");
+    crate::test_support::agent::initialize_store_retrying_busy()
+        .expect("store init under test HOME");
 }
 
 /// A string compression cannot shrink.
