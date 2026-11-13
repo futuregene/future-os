@@ -4,7 +4,9 @@
 import argparse
 import csv
 import datetime
+import json
 import re
+import time
 from collections import Counter, defaultdict
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
@@ -188,7 +190,63 @@ def read_routes(args, profiles):
     return routes
 
 
-def run_window(items, jobs, jobs_per_group, routes, worker, record):
+class TechnicalBackoff:
+    """Slow new submissions during an outage without resubmitting accepted runs."""
+
+    def __init__(self, out):
+        self.path = out / "technical-backoff.json"
+        self.events = out / "technical-backoff-events.jsonl"
+        self.state = (
+            read_json(self.path)
+            if self.path.exists()
+            else {"consecutive_failures": 0, "delay_seconds": 0, "pause_until": 0}
+        )
+
+    def save(self, event=None):
+        write_json(self.path, self.state)
+        if event:
+            with self.events.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps({"event": event, "at": time.time(), **self.state}) + "\n"
+                )
+
+    def observe(self, result):
+        if network_failure(result):
+            self.state["last_failure_kind"] = technical_failure_kind(result)
+            self.state["consecutive_failures"] += 1
+            if (
+                self.state["consecutive_failures"] >= 5
+                and self.state["pause_until"] <= time.time()
+            ):
+                delay = min(3600, (self.state["delay_seconds"] or 150) * 2)
+                self.state.update(
+                    consecutive_failures=0,
+                    delay_seconds=delay,
+                    pause_until=time.time() + delay,
+                )
+                self.save("cooldown_started")
+                print(
+                    f"Technical outage: pause new submissions for {delay}s", flush=True
+                )
+                return
+        else:
+            self.state.update(consecutive_failures=0, delay_seconds=0, pause_until=0)
+        self.save()
+
+    def wait(self, heartbeat):
+        if self.state["pause_until"] <= 0:
+            return
+        while self.state["pause_until"] > time.time():
+            heartbeat()
+            time.sleep(min(60, max(0, self.state["pause_until"] - time.time())))
+        self.state["pause_until"] = 0
+        self.save("cooldown_finished")
+
+
+def run_window(items, jobs, jobs_per_group, routes, worker, record, before_submit=None):
+    items = list(items)
+    if not items:
+        return
     if jobs_per_group is None and not routes:
         queues = {None: iter(items)}
     else:
@@ -209,6 +267,8 @@ def run_window(items, jobs, jobs_per_group, routes, worker, record):
         ]
     )
     # Bound submissions so a protocol, billing, or storage error can stop new work.
+    if before_submit:
+        before_submit()
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         pending = {}
         for lane, group, slots in lanes:
@@ -221,11 +281,16 @@ def run_window(items, jobs, jobs_per_group, routes, worker, record):
             done, _ = wait(pending, return_when=FIRST_COMPLETED)
             for future in done:
                 record(*future.result())
+            replacements = []
             for future in done:
                 lane, group = pending.pop(future)
                 item = next(queues[group], None)
                 if item is not None:
-                    pending[pool.submit(worker, item, lane)] = (lane, group)
+                    replacements.append((item, lane, group))
+            if replacements and before_submit:
+                before_submit()
+            for item, lane, group in replacements:
+                pending[pool.submit(worker, item, lane)] = (lane, group)
 
 
 def prepare(args):
@@ -354,6 +419,21 @@ def execute(args):
     bindings_path = args.out / "bindings.json"
     bindings = read_json(bindings_path) if bindings_path.exists() else {}
     clients = {}
+    backoff = TechnicalBackoff(args.out) if args.arm == "fusion" else None
+    if backoff is not None and not backoff.path.exists():
+        recent = sorted(
+            (
+                (
+                    attempt_path(args.out, group, identifier, len(history))
+                    / "result.json"
+                )
+                for (group, identifier), history in histories.items()
+                if history
+            ),
+            key=lambda path: path.stat().st_mtime,
+        )[-5:]
+        for path in recent:
+            backoff.observe(read_json(path))
 
     def progress(phase, error=None):
         counts = {}
@@ -429,6 +509,7 @@ def execute(args):
                 "max_attempts": max_attempts,
                 "arm": args.arm,
                 "fusion_configuration": fusion_configuration,
+                "technical_backoff": backoff.state if backoff else None,
                 "error": error,
             },
         )
@@ -534,12 +615,19 @@ def execute(args):
         histories[group, identifier].append(result)
         mark_case(group, identifier)
         state = case_status(result)
+        if backoff is not None:
+            backoff.observe(result)
         print(f"{group} {identifier} attempt-{attempt}: {state}", flush=True)
         progress(phase)
         if state not in CASE_OUTCOMES:
             raise ValueError(
                 f"Inspect {attempt_path(args.out, group, identifier, attempt)}"
             )
+
+    def before_submit():
+        if backoff is not None:
+            backoff.wait(lambda: progress("technical_backoff"))
+            progress(phase)
 
     try:
         for key, history in histories.items():
@@ -571,6 +659,7 @@ def execute(args):
             routes,
             worker,
             record,
+            before_submit if backoff is not None else None,
         )
 
         for attempt in range(2, args.makeup_passes + 2):
@@ -589,6 +678,7 @@ def execute(args):
                 routes,
                 worker,
                 record,
+                before_submit if backoff is not None else None,
             )
         write_results(args.out, histories, max_attempts)
         unresolved = any(
