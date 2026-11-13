@@ -846,7 +846,12 @@ display, and approval store — never a second copy of conversation bodies.
 While a reply streams, the send control offers what "send" can mean instead of
 refusing it — the Agent answers one prompt at a time. With nothing typed it is
 the interrupt control; with a draft it offers **Add to the send queue** or
-**Interrupt and send**. A queued message is not held by the window: it leaves at
+**Interrupt and send**. Neither row needs a pointer: the caret stays in the
+field, `↑`/`↓` walk the two rows and `Enter` runs the highlighted one, with
+**Add to the send queue** selected when the menu opens — so the press that
+asked the question confirms, on the next one, the answer that spends nothing
+and loses nothing (`Esc` closes it; a `⇧`/`⌘`/`⌥`/`⌃` chord stays a text-editing
+key, and `⇧Enter` still inserts a newline). A queued message is not held by the window: it leaves at
 once and the Agent holds it (`enqueue_coalescing`), so a burst of queued messages
 folds into **one** turn (their texts joined in order, one paragraph each, their
 attachments together) at the run boundary, and the row is the session's — the
