@@ -1,0 +1,11 @@
+{
+  "title": "历史",
+  "close": "关闭历史",
+  "refresh": "刷新历史",
+  "loading": "正在读取历史…",
+  "empty": "该仓库还没有提交。",
+  "notRepo": "当前工作区不是 Git 仓库。",
+  "truncated": "更早的提交未显示。",
+  "back": "返回提交列表",
+  "openCommit": "打开提交 {{sha}}：{{subject}}"
+}

@@ -213,12 +213,19 @@ pub struct RpcResponse {
 
 impl RpcResponse {
     pub(super) fn ok(id: &str, command: &str, data: impl Into<serde_json::Value>) -> String {
+        let mut data = data.into();
+        if matches!(command, "get_events_since" | "get_session_events_since") {
+            strip_legacy_event_commands(&mut data);
+            if let Some(projection) = data.get_mut("projection") {
+                strip_legacy_event_commands(projection);
+            }
+        }
         let resp = Self {
             resp_type: "response".to_string(),
             id: id.to_string(),
             command: command.to_string(),
             success: true,
-            data: Some(data.into()),
+            data: Some(data),
             error: None,
             error_code: None,
             error_data: None,
@@ -258,6 +265,19 @@ impl RpcResponse {
             error_data: Some(details.into()),
         };
         serde_json::to_string(&resp).unwrap_or_default()
+    }
+}
+
+fn strip_legacy_event_commands(payload: &mut serde_json::Value) {
+    if let Some(events) = payload
+        .get_mut("events")
+        .and_then(|events| events.as_array_mut())
+    {
+        for event in events {
+            if let Some(serde_json::Value::String(data)) = event.get_mut("data") {
+                future_rpc::shell_result::strip_legacy_event_command(data);
+            }
+        }
     }
 }
 

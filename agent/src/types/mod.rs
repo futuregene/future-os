@@ -1045,6 +1045,17 @@ pub trait LLMProvider: Send + Sync {
     /// Update thinking level and budget at runtime (after set_thinking_level / cycle_thinking_level).
     fn update_thinking(&self, _level: &str, _budget: i32) {}
 
+    /// The thinking level this provider will send on its next request.
+    ///
+    /// Read by the run loop when a reply was cut off with no visible output at
+    /// all — the budget went entirely to reasoning — so the continuation can be
+    /// attempted one level shallower instead of repeating the identical request
+    /// that just ran out. Immutable providers keep the default: they have no
+    /// level to deepen, so there is nothing to step down from.
+    fn thinking_level(&self) -> Option<String> {
+        None
+    }
+
     /// Snapshot mutable generation settings for an accepted run. Immutable
     /// providers can keep the default; providers implementing update_thinking
     /// should return a private configuration copy.

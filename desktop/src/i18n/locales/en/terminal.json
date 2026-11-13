@@ -25,5 +25,6 @@
   "workingDirectory": "Working directory: {{path}}",
   "serverUnavailable": "Terminal server unavailable",
   "reconnecting": "Reconnecting…",
-  "onHost": "on {{host}}"
+  "onHost": "on {{host}}",
+  "unsupported": "{{machine}} serves no terminals to paired devices"
 }

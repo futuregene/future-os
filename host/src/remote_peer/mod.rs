@@ -30,6 +30,7 @@ pub(crate) mod platform;
 pub mod runtime;
 #[cfg(test)]
 pub(crate) mod session;
+mod system_name;
 pub mod transfer;
 
 // Only the GUI command layer consumes these; a headless build (no `gui`

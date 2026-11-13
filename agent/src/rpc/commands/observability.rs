@@ -258,6 +258,9 @@ fn context_message(message: &crate::types::AgentMessage) -> future_rpc::message:
             .collect(),
         metadata: message.metadata.clone().and_then(|mut meta| {
             meta.remove("run_id");
+            if let Some(facts) = meta.get_mut("shell_result") {
+                future_rpc::shell_result::strip_legacy_command(facts);
+            }
             (!meta.is_empty()).then_some(serde_json::Value::Object(meta))
         }),
     }

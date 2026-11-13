@@ -332,6 +332,40 @@ A push lane (`p.{pair}.term.{id}` with the same cursor contract) is the upgrade
 this design leaves room for — the transport seam is where it lands — and it is
 not needed to make the feature correct.
 
+### The panel is missing? Ask the host what it advertises
+
+The panel exists only while the host's handshake lists `terminal_v1`, and a host
+that does not is deliberately given no control at all — so "this machine serves
+no shells" and "the window is broken" look exactly alike. Nothing in the window
+says which it is, so ask the host:
+
+```bash
+cargo run -p future-host --example peer_features
+desktop_AZYJSK5RT6PC5BQZ connected=true terminal=true features=["e2ee_v2", …, "terminal_v1"]
+```
+
+`terminal=false` is the host's own answer that it will not serve a shell, and
+`features` is the rest of the list — the same list every other gated control
+reads. The probe opens a client connection of its own (a host serves one live
+session per pairing), so a window already connected to that host reconnects
+afterwards; close the window first when the printed list has to be the only
+connection.
+
+Until 2026-11-11 that answer was `terminal=false` on **every** host, whatever
+its build. The secure handshake (`secure_open` / `secure_finish`) — the only
+path a current client takes — sealed `remote-protocol`'s own `SERVER_FEATURES`
+literal, while the list that grows with each feature lived in
+`remote-server::advertised_features`, which only the legacy
+`pair_handshake_confirm` reply used. `terminal_v1` was added on 2026-11-04 and
+never reached a paired desktop. Both paths now build one list, in
+`remote-protocol`, and the confirmation takes it from the process that serves
+the shells (`remote-server/src/secure.rs`); a test asserts the sealed body
+equals what the process advertises, so the two cannot drift apart again.
+
+`future remote peers list` still prints connection state rather than
+capabilities; the probe above is the answer, and its output is what a support
+note should quote.
+
 ## Differences from opencode
 
 Same architecture; the deliberate deviations, so a future reader does not treat
@@ -353,5 +387,8 @@ them as accidents:
 * A paired **desktop** sees this machine's terminals (§[Remote](#remote)); the
   phone surface and the mobile app do not, and the phone has no terminal
   renderer at all.
+* `future remote peers list` prints connection state, not the host's advertised
+  capabilities — a missing panel is diagnosed with
+  `cargo run -p future-host --example peer_features` (§[Remote](#remote)).
 * The panel's open/height preferences and the tab view state live in
   `localStorage`; a cleared store loses the *view*, never the shell.

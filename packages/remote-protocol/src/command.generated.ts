@@ -116,6 +116,8 @@ export interface RemoteCommand {
   cols?: number;
   /** Embedded terminal viewport height in cells (`terminal_create` / `terminal_update`). */
   rows?: number;
+  /** The commit a `get_git_commit` read is about: a sha (abbreviated or full), never a path. */
+  gitRef?: string;
 }
 
 export interface UploadReference {

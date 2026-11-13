@@ -199,7 +199,8 @@ impl BoundIdentity {
         }
         let format: i64 = db
             .query_row(
-                "SELECT format FROM session_formats WHERE session_id=?1",
+                "SELECT format FROM session_formats WHERE session_id=?1
+                 AND NOT EXISTS(SELECT 1 FROM legacy_conversions WHERE session_id=?1)",
                 [&parent],
                 |r| r.get(0),
             )

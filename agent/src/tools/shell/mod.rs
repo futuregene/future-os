@@ -113,7 +113,7 @@ fn record_approval_end(status: &str, note: &str) {
         facts.note = Some(bounded(note, 2048));
     });
 }
-fn empty_result(command: String) -> Result<ShellResult> {
+fn empty_result() -> Result<ShellResult> {
     let cwd = active_workspace()?.to_string_lossy().into_owned();
     if serde_json::to_string(&cwd)?.len() > 262_144 {
         return Err(anyhow!(
@@ -121,7 +121,6 @@ fn empty_result(command: String) -> Result<ShellResult> {
         ));
     }
     Ok(ShellResult {
-        command,
         cwd,
         duration_ms: 0,
         status: ShellStatus::NotStarted,
@@ -135,12 +134,8 @@ fn empty_result(command: String) -> Result<ShellResult> {
 }
 
 /// Preserve approval provenance when the normal pre-execution hook stops a call.
-pub(crate) fn record_gated(args: &serde_json::Value, note: &str) {
-    let command = args
-        .get("command")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
-    if let Ok(mut result) = empty_result(command.into()) {
+pub(crate) fn record_gated(note: &str) {
+    if let Ok(mut result) = empty_result() {
         result.approval = GATE_OUTCOME
             .try_with(|slot| slot.borrow_mut().take())
             .ok()
@@ -158,7 +153,7 @@ pub(crate) async fn execute(args: serde_json::Value) -> Result<String> {
     let params = ShellParams::parse(args)?;
     let timeout = params.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
     let start = Instant::now();
-    let mut result = empty_result(params.command.clone())?;
+    let mut result = empty_result()?;
     result.approval = GATE_OUTCOME
         .try_with(|slot| slot.borrow_mut().take())
         .ok()

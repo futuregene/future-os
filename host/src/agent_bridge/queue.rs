@@ -67,6 +67,22 @@ pub fn queue_state_json(state: &Value) -> Value {
                 // "queued" runs at the turn boundary; "stale" waited too long and
                 // waits for a person instead. Same row, one different sentence.
                 "state": field(row, "state", "state").and_then(|v| v.as_str().map(str::to_string)).unwrap_or_else(|| "queued".to_string()),
+                // The files the message carries, so the reader can see (and take
+                // one off) a waiting row instead of only its words. An older
+                // Agent sends none, which reads as "a message with no files".
+                "attachments": field(row, "attachments", "attachments")
+                    .and_then(|rows| rows.as_array().cloned())
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|attachment| {
+                        json!({
+                            "path": field(attachment, "path", "path").and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
+                            "kind": field(attachment, "kind", "kind").and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
+                            "name": field(attachment, "name", "name").and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
+                            "size": field(attachment, "size", "size").and_then(|v| v.as_i64()).unwrap_or(0),
+                        })
+                    })
+                    .collect::<Vec<_>>(),
             })
         })
         .collect::<Vec<_>>();
@@ -169,6 +185,38 @@ mod tests {
         assert_eq!(queued[0]["position"], 1);
         assert_eq!(queued[0]["text"], "second");
         assert_eq!(queued[0]["acceptedAt"], "2026-11-03T10:00:00Z");
+    }
+
+    /// A waiting row reports the files it carries, so a client can show them and
+    /// take one off before the run takes them; a row with none (and an older
+    /// Agent that has no such field) reads as a message with no files.
+    #[test]
+    fn a_queued_row_reports_the_files_it_carries() {
+        let state = json!({
+            "queuedRuns": [
+                {
+                    "runId": "run_files",
+                    "displayText": "look at this",
+                    "attachments": [
+                        { "path": "/Users/x/shot.png", "kind": "image", "name": "shot.png", "size": 4096 },
+                        { "path": "/Users/x/doc.pdf", "kind": "file", "name": "doc.pdf", "size": 0 }
+                    ]
+                },
+                { "runId": "run_text", "displayText": "later" }
+            ]
+        });
+        let snapshot = queue_state_json(&state);
+        let rows = snapshot["queued"].as_array().expect("a list");
+        assert_eq!(rows[0]["attachments"][0]["path"], "/Users/x/shot.png");
+        assert_eq!(rows[0]["attachments"][0]["kind"], "image");
+        assert_eq!(rows[0]["attachments"][0]["name"], "shot.png");
+        assert_eq!(rows[0]["attachments"][0]["size"], 4096);
+        assert_eq!(rows[0]["attachments"][1]["size"], 0);
+        assert_eq!(
+            rows[1]["attachments"].as_array().expect("a list").len(),
+            0,
+            "no files is an empty list, not a missing field"
+        );
     }
 
     /// An older Agent spells the same fields with underscores.

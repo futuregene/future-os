@@ -2,6 +2,7 @@ import type {
   GitReview,
   LastRunReviewData,
 } from "../../integrations/storage/types";
+import type { GitHistorySource } from "../git-history/gitHistorySource";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -11,10 +12,11 @@ import {
 import { errorMessage } from "../../lib/errors";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { useAsyncResource } from "../../lib/useAsyncResource";
+import { GitHistoryPanel } from "../git-history/GitHistoryPanel";
 import { WorkingTreeReview } from "./GitChangesReview";
 import { LastRunReview } from "./LastRunReview";
 
-type ReviewView = "branch" | "uncommitted" | "last_run";
+type ReviewView = "branch" | "uncommitted" | "last_run" | "history";
 
 export function ReviewPanel({
   changePreview = "ready",
@@ -22,12 +24,21 @@ export function ReviewPanel({
   threadId,
   uncommittedReview,
   isGitWorkspace,
+  workspacePath,
 }: {
   branchReview: GitReview | null;
   changePreview?: "ready" | "unsupported_too_large";
   isGitWorkspace: boolean | null;
   threadId: string;
   uncommittedReview: GitReview | null;
+  /**
+   * The thread's own workspace path, for the history view. The *thread's*, not
+   * the store's active workspace: the store falls back to the first user
+   * workspace while a thread's own is unresolved, and reading another project's
+   * log under this conversation's title is worse than showing nothing
+   * (issue #1541 is the same mistake on the Files tab).
+   */
+  workspacePath: string | null;
 }) {
   const { t } = useTranslation("review");
   const review = uncommittedReview ?? branchReview;
@@ -123,10 +134,20 @@ export function ReviewPanel({
   }
 
   const reviewData = activeView === "branch" ? branchReview : uncommittedReview;
+  // The history is offered only where there is one, and only once the thread's
+  // own workspace path is known: the read is rooted at that path, and offering
+  // the tab before it resolves would open onto another workspace's log (see the
+  // `workspacePath` prop).
+  const historySource: GitHistorySource | null
+    = isGit && workspacePath ? { kind: "local", path: workspacePath } : null;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="mx-4 grid shrink-0 grid-cols-3 gap-1 rounded-md border border-line-soft bg-transparent p-1">
+      <div
+        className={`mx-4 grid shrink-0 gap-1 rounded-md border border-line-soft bg-transparent p-1 ${
+          historySource ? "grid-cols-4" : "grid-cols-3"
+        }`}
+      >
         <ViewTab
           active={activeView === "branch"}
           label={t("tab.branch")}
@@ -142,19 +163,30 @@ export function ReviewPanel({
           label={t("tab.lastRun")}
           onClick={() => setActiveView("last_run")}
         />
+        {historySource
+          ? (
+              <ViewTab
+                active={activeView === "history"}
+                label={t("tab.history")}
+                onClick={() => setActiveView("history")}
+              />
+            )
+          : null}
       </div>
       {activeView === "last_run"
         ? (
             lastRun
           )
-        : reviewData
-          ? (
-              <WorkingTreeReview
-                review={reviewData}
-                showBranch={activeView === "branch"}
-              />
-            )
-          : null}
+        : activeView === "history" && historySource
+          ? <GitHistoryPanel source={historySource} />
+          : reviewData
+            ? (
+                <WorkingTreeReview
+                  review={reviewData}
+                  showBranch={activeView === "branch"}
+                />
+              )
+            : null}
     </div>
   );
 }

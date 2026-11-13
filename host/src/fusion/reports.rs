@@ -69,7 +69,9 @@ pub(super) async fn collect(
             if matches!(phase, "analyzing" | "reviewing")
                 && matches!(
                     failure_kind(&error),
-                    FailureKind::InvalidOutput | FailureKind::OutputLimit
+                    FailureKind::InvalidOutput
+                        | FailureKind::OutputLimit
+                        | FailureKind::PanelTimeout
                 )
                 && !original.trim().is_empty() =>
         {

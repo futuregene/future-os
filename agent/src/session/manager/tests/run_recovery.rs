@@ -278,7 +278,7 @@ fn a_durable_user_stop_settles_as_cancelled_on_the_next_start() {
     // A conversation written before the canonical format existed: it exists,
     // but its event journal is the legacy one.
     manager
-        .save(&Session::snapshot(
+        .seed_legacy_fixture(&Session::snapshot(
             "s-stop".to_string(),
             "/a".to_string(),
             "m".to_string(),
@@ -288,19 +288,23 @@ fn a_durable_user_stop_settles_as_cancelled_on_the_next_start() {
         ))
         .unwrap();
     store.bind_legacy_events("s-stop").unwrap();
-    manager
-        .append_entries(
+    store
+        .append(
             "s-stop",
-            &[
-                SessionEntry::run_started("run-stop", 1),
-                SessionEntry::new_user("user", serde_json::json!("quit")),
+            vec![
+                serde_json::to_value(SessionEntry::run_started("run-stop", 1)).unwrap(),
+                serde_json::to_value(SessionEntry::new_user("user", serde_json::json!("quit")))
+                    .unwrap(),
             ],
         )
         .unwrap();
     // The stop request is durable, but the process died before the
     // cancellation committed.
-    manager
-        .append_entries("s-stop", &[SessionEntry::run_stop_requested("run-stop")])
+    store
+        .append(
+            "s-stop",
+            vec![serde_json::to_value(SessionEntry::run_stop_requested("run-stop")).unwrap()],
+        )
         .unwrap();
     // The run row exists (the journal created it with the started marker) and
     // still reads as in flight: this is what the startup pass selects on.

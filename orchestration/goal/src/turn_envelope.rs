@@ -13,7 +13,7 @@
 //! and operator, not the worker (ARCHITECTURE.md "Not in the envelope").
 
 use crate::decision::truncate;
-use crate::state::{FailureKind, Goal, RunRecord, Todo, TodoStatus};
+use crate::state::{FailureKind, Goal, RunRecord, TaskClass, Todo, TodoStatus};
 
 /// Recompute the todo's advisory signals from the ledger, using the SAME
 /// kernel detectors the delivery reason uses (shared text in
@@ -31,6 +31,19 @@ pub const TURN_ENVELOPE_SCHEMA_VERSION: &str = "future_goal_turn_envelope_v0";
 const GOAL_MEMORY_SEMANTIC_EVENTS: usize = 5;
 /// Cap the failure-cause text so a runaway error never bloats the prompt.
 const GOAL_MEMORY_ERROR_CHARS: usize = 200;
+
+/// The failure-cause line for the envelope. A runaway narration error is capped,
+/// but an acceptance rejection is NOT: it is a short machine-written string whose
+/// point is the trailing `(missing: [...])` (or the "truncated before acceptance"
+/// byte offsets), and a 200-char cap cut a four-token list down to
+/// `(missing: [dispatches_…` — the worker read a fragment and re-guessed.
+fn failure_cause_text(error: &str) -> String {
+    if error.contains("acceptance contract unmet") {
+        error.to_string()
+    } else {
+        truncate(error, GOAL_MEMORY_ERROR_CHARS)
+    }
+}
 /// Summary byte budget shared across all upstream sources. Source index entries
 /// are retained separately, even when a wide fan-in exhausts summary space.
 const UPSTREAM_EVIDENCE_CHARS: usize = 1_200;
@@ -66,7 +79,7 @@ pub fn compose_goal_memory(goal: &Goal, todo: &Todo) -> String {
             failure_label(last)
         );
         if let Some(err) = &last.error {
-            line.push_str(&format!(": {}", truncate(err, GOAL_MEMORY_ERROR_CHARS)));
+            line.push_str(&format!(": {}", failure_cause_text(err)));
         } else if let Some(v) = &last.validation {
             if !v.ok {
                 line.push_str(&format!(
@@ -131,6 +144,115 @@ fn failure_label(r: &RunRecord) -> String {
     }
 }
 
+/// Byte cap on a scout's own `kill_when` text in the envelope, so a verbose
+/// termination condition cannot bloat the prompt.
+const SCOUT_KILL_WHEN_CHARS: usize = 240;
+
+/// Byte budget for the scout contract's FIXED text (everything except the
+/// scout's own capped `kill_when`). The block is fixed prose plus one command
+/// line, so it is bounded by construction; the budget is what keeps a later
+/// edit from quietly turning the exploration contract into a wall of text
+/// (enforced by `compose_scout_contract`, and asserted by
+/// `scout_contract_stays_within_its_budget`).
+pub const SCOUT_CONTRACT_MAX_CHARS: usize = 1_500;
+
+/// Byte cap on the declared scope echoed into the exploration contract. Two
+/// ordinary paths fit; a directory-heavy declaration is truncated rather than
+/// allowed to compete with the contract itself for the prompt.
+const SCOUT_SCOPE_BYTES: usize = 160;
+
+/// Is this todo an exploration node? A scout's product is a direction
+/// proposal, so it gets the exploration contract and is spared the delivery
+/// contract (acceptance literals, successor declaration) — the two do not
+/// coexist.
+fn is_exploring(todo: &Todo) -> bool {
+    todo.class == TaskClass::Scout
+}
+
+/// The scout contract paragraph — what a scout turn must produce, including the
+/// exact command that records it.
+///
+/// A scout is an exploration node (`TaskClass::Scout`), so its output is a
+/// direction proposal, not a delivered artifact. The rest of the envelope is
+/// written for delivery work (acceptance literals, verify gates, successor
+/// declaration), so without this block a scout worker reads a delivery
+/// contract and reports an unfinished implementation as failure — and it would
+/// have to GUESS the CLI syntax of the one step that matters. Empty for every
+/// other class. Fixed text (bounded by [`SCOUT_CONTRACT_MAX_CHARS`]) plus the
+/// todo's own `kill_when` (capped), in the same style as the other blocks here.
+///
+/// `read_scope` is the turn's declared workspace. The contract states it as a
+/// READ scope rather than a write set because that is the constraint 50 tool
+/// calls of unrequested implementation violate: a scout proposes, so the only
+/// writes it may make are evidence notes, and only inside the declared paths.
+/// Stating it here (instead of only in the envelope's write-set paragraph)
+/// means the constraint and the command that satisfies it arrive together.
+pub fn compose_scout_contract(goal: &Goal, todo: &Todo, read_scope: &[String]) -> String {
+    if !is_exploring(todo) {
+        return String::new();
+    }
+    let mut out = String::new();
+    out.push_str("\nYou are EXPLORING, not delivering. The product of this turn is a direction proposal, not a finished artifact.\n");
+    out.push_str("READ-ONLY turn: do not edit existing files or build the implementation — the proposal ledger is your only write; evidence notes are the only files.\n");
+    if read_scope.is_empty() {
+        out.push_str("Read scope: none declared — make no file writes at all.\n");
+    } else {
+        out.push_str(&format!(
+            "Read scope for this turn (read it, never modify it): {}\n",
+            capped_scope(read_scope)
+        ));
+    }
+    out.push_str("Record it with one command (candidate ids are positional: c1, c2, …):\n");
+    out.push_str(&format!(
+        "  future goal direction propose --goal {} --scout-todo {} --trigger \"<stall|oscillation|gate_decision|…>\" \\\n",
+        goal.goal_id, todo.id
+    ));
+    out.push_str("      --question \"<what this turn settles>\" --observation \"<what you actually saw>\" \\\n");
+    out.push_str(
+        "      --evidence <path> --candidate \"title|class|relation|kill_when|acceptance1;acceptance2\"\n",
+    );
+    out.push_str("Fields 2–4: class is `scout` (a deeper exploration — kill_when, the observation that drops it, is REQUIRED) or `advancement` (kill_when may be empty; acceptance carries the contract); the route is `fork` or `revise:<TODO_ID>`; at least one acceptance item is always required.\n");
+    out.push_str("A candidate without a kill_when is a guess, not a proposal. Answer the question you were given; do not pick a winner the evidence does not settle.\n");
+    out.push_str(&format!(
+        "Completion gate: at least one direction proposal naming this scout must be recorded before it is completed — `future goal direction list --goal {}` shows what is already there.\n",
+        goal.goal_id
+    ));
+    // The prompt is re-sent on every scout turn: an edit that spends more of it
+    // than the budget is a defect here, not something to discover in a log.
+    debug_assert!(
+        out.len() <= SCOUT_CONTRACT_MAX_CHARS,
+        "the exploration contract grew to {} bytes (budget {SCOUT_CONTRACT_MAX_CHARS}); trim it before shipping",
+        out.len()
+    );
+    if let Some(kill_when) = &todo.kill_when {
+        out.push_str(&format!(
+            "Stop condition for this scout (kill_when): {}\n",
+            truncate(kill_when, SCOUT_KILL_WHEN_CHARS)
+        ));
+    }
+    out
+}
+
+/// The declared scope as one bounded line: joined, byte-capped on a char
+/// boundary. A declaration is documentation, not a filesystem sandbox, so a
+/// path the contract cannot show in full is still enforced by the guard — only
+/// the prompt text is truncated.
+fn capped_scope(scopes: &[String]) -> String {
+    let joined = scopes
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if joined.len() <= SCOUT_SCOPE_BYTES {
+        return joined;
+    }
+    let mut end = SCOUT_SCOPE_BYTES;
+    while end > 0 && !joined.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &joined[..end])
+}
+
 /// Compose the per-turn packet: todo + resolved gate decisions + upstream
 /// evidence + prior evidence (+ signals when available).///
 /// P0 signature (executor + worker paths) — delegates to the full envelope
@@ -167,13 +289,20 @@ pub fn compose_turn_envelope(goal: &Goal, todo: &Todo, prev: Option<&RunRecord>)
 
     // Instruction.
     out.push_str(&format!("TODO {}: {}\n", todo.id, todo.text));
+    // The declared workspace is what the scout contract re-states as its READ
+    // scope, so it is resolved before the contract and printed ONCE: for an
+    // exploration turn the write-set paragraph would contradict the contract's
+    // "read it, never modify it" and invite the implementation a scout is not
+    // supposed to produce.
     let writer = todo
         .claimed_by
         .as_deref()
         .or(todo.owner.as_deref())
         .unwrap_or("");
     let scopes = crate::agents::workspace_guard::todo_workspaces(goal, writer, todo);
-    if !scopes.is_empty() {
+    // Exploration turns get their own output contract (empty for non-scouts).
+    out.push_str(&compose_scout_contract(goal, todo, &scopes));
+    if !scopes.is_empty() && !is_exploring(todo) {
         out.push_str(&format!(
             "Declared write set (coordination contract, not a filesystem sandbox): {}\nStay within these paths, including logs/caches; if additional writes are needed, stop and ask the supervisor to revise the plan.\n",
             scopes.join(", ")
@@ -181,9 +310,24 @@ pub fn compose_turn_envelope(goal: &Goal, todo: &Todo, prev: Option<&RunRecord>)
     }
 
     if let Some(acceptance) = &todo.acceptance {
-        out.push_str(&format!(
-            "Acceptance contract (do not silently weaken): {acceptance}\n"
-        ));
+        // A scout is judged by its proposal ledger, not by delivery literals:
+        // the acceptance paragraph (and its "last N bytes" note) belongs to
+        // delivery work only. Keeping it for a scout made the envelope
+        // self-contradictory — "you are exploring" immediately followed by
+        // "your completion must contain each of those strings verbatim".
+        if !is_exploring(todo) {
+            out.push_str(&format!(
+                "Acceptance contract (do not silently weaken): {acceptance}\n"
+            ));
+            // Only the tail of the completion text is judged (see
+            // `completion::EVIDENCE_TAIL_BYTES`), so an acceptance line written
+            // earlier in the reply is invisible to the gate — say so BEFORE the
+            // attempt instead of rejecting it afterwards.
+            out.push_str(&format!(
+                "The final section of your completion must contain each of those strings verbatim — they must land inside the last {} bytes of your reply, which is all the acceptance gate reads.\n",
+                crate::completion::EVIDENCE_TAIL_BYTES
+            ));
+        }
     }
     if let Some(validator) = &todo.validator {
         out.push_str(&format!("Machine verification: {validator}\nA manual completion is a reviewed override, not a machine pass.\n"));
@@ -231,7 +375,13 @@ pub fn compose_turn_envelope(goal: &Goal, todo: &Todo, prev: Option<&RunRecord>)
     }
     // Completion contract footer (LoopX: completion must declare closure intent).
     out.push_str("\n\nComplete the todo and report what you did and observed.");
-    out.push_str("\nOn completion, declare the successor todo or --no-follow-up.");
+    if !is_exploring(todo) {
+        // Delivery closure: an advancement turn must say what comes next. A
+        // scout's closure intent is its proposal ledger (stated above), so the
+        // successor sentence — and `--no-follow-up` with it — would only ask it
+        // to declare work it is not qualified to sequence.
+        out.push_str("\nOn completion, declare the successor todo or --no-follow-up.");
+    }
     out.push_str("\nHandoff: identify artifacts and paths, new evidence versus the previous attempt, rejected approaches, uncertainties and the next useful check. Activity alone is not progress; budget exhaustion is not successful completion.");
     out
 }
@@ -295,6 +445,232 @@ mod tests {
     use crate::state::Todo;
     use std::time::Duration;
 
+    /// A scout is an exploration node: its envelope states the proposal
+    /// contract — INCLUDING the exact command and candidate syntax, so the
+    /// worker never guesses — and carries the scout's own stop condition.
+    ///
+    /// The scout block REPLACES the delivery contract rather than stacking on
+    /// top of it: no acceptance-literals paragraph (there is no delivery gate
+    /// for a scout) and no "declare the successor todo" sentence. An
+    /// advancement turn keeps both, so the replacement is exact — not a
+    /// general loosening of the delivery envelope.
+    #[test]
+    fn scout_envelope_states_the_proposal_contract_and_advancement_does_not() {
+        let mut g = Goal::new("g1", "o", "/tmp");
+        let mut scout = Todo::advancement("S1", "Find the right approach");
+        scout.class = TaskClass::Scout;
+        scout.kill_when = Some("two candidates evaluated against the fixture".into());
+        // Accepted candidates carry acceptance criteria; a scout must not be
+        // handed the literals-verbatim contract for them.
+        scout.acceptance = Some("hit-rate measured,latency p50 recorded".into());
+        g.add(scout);
+        let mut work = Todo::advancement("T1", "Do the work");
+        work.acceptance = Some("report.md landed".into());
+        g.add(work);
+
+        let scout_msg = compose_turn_message(&g, g.todo("S1").unwrap(), None);
+        assert!(
+            scout_msg.contains("You are EXPLORING, not delivering."),
+            "scout: {scout_msg}"
+        );
+        // The executable step, spelled out with the real CLI surface.
+        assert!(
+            scout_msg.contains("future goal direction propose --goal g1 --scout-todo S1"),
+            "the recording command must be exact: {scout_msg}"
+        );
+        assert!(
+            scout_msg.contains("\"title|class|relation|kill_when|acceptance1;acceptance2\""),
+            "the candidate syntax must be exact: {scout_msg}"
+        );
+        assert!(
+            scout_msg.contains("`revise:<TODO_ID>`"),
+            "the revise relation must be named: {scout_msg}"
+        );
+        assert!(
+            scout_msg.contains("class is `scout`")
+                && scout_msg.contains("`advancement`")
+                && scout_msg.contains("is REQUIRED"),
+            "the class rule (scout needs kill_when) must be stated: {scout_msg}"
+        );
+        // The completion gate is stated up front, not discovered on rejection.
+        assert!(
+            scout_msg
+                .contains("at least one direction proposal naming this scout must be recorded"),
+            "the proposal gate must be stated: {scout_msg}"
+        );
+        assert!(
+            scout_msg.contains("two candidates evaluated against the fixture"),
+            "the scout's own stop condition must reach the worker: {scout_msg}"
+        );
+        // ...and NOT the delivery contract it replaces.
+        assert!(
+            !scout_msg.contains("Acceptance contract"),
+            "a scout is not judged on delivery literals: {scout_msg}"
+        );
+        assert!(
+            !scout_msg.contains("must contain each of those strings verbatim"),
+            "the acceptance gate is not part of an exploration turn: {scout_msg}"
+        );
+        assert!(
+            !scout_msg.contains("declare the successor todo")
+                && !scout_msg.contains("--no-follow-up"),
+            "a scout does not declare successors: {scout_msg}"
+        );
+
+        let adv_msg = compose_turn_message(&g, g.todo("T1").unwrap(), None);
+        assert!(
+            !adv_msg.contains("You are EXPLORING, not delivering."),
+            "advancement: {adv_msg}"
+        );
+        assert!(!adv_msg.contains("candidates"), "advancement: {adv_msg}");
+        assert!(
+            !adv_msg.contains("direction propose"),
+            "advancement: {adv_msg}"
+        );
+        // Still the ordinary delivery contract, unchanged.
+        assert!(adv_msg.contains("Acceptance contract (do not silently weaken): report.md landed"));
+        assert!(adv_msg.contains("must contain each of those strings verbatim"));
+        assert!(adv_msg.contains("Complete the todo and report what you did and observed."));
+        assert!(adv_msg.contains("declare the successor todo or --no-follow-up"));
+    }
+
+    /// The exploration contract is bounded text plus one capped `kill_when`: a
+    /// later edit must not grow it into a wall of prose (the prompt is spent on
+    /// every scout turn). Measured with realistic id lengths, since the ids are
+    /// part of the command line.
+    #[test]
+    fn scout_contract_stays_within_its_budget() {
+        let mut g = Goal::new("goal_0123456789ab", "o", "/tmp");
+        let mut scout = Todo::advancement("todo_0123456789ab", "probe");
+        scout.class = TaskClass::Scout;
+        scout.kill_when = Some("x".repeat(SCOUT_KILL_WHEN_CHARS * 4));
+        g.add(scout);
+        let todo = g.todo("todo_0123456789ab").unwrap();
+        // Both the bare contract and the one carrying a long (truncated) scope
+        // must fit: the scope is caller-supplied text, so its cap is part of the
+        // budget rather than an assumption about short paths.
+        for scope in [
+            vec![],
+            vec![
+                "a-rather-long-directory-name/nested/deeper/and-deeper/evidence-one/".to_string(),
+                "another-long-directory/with/a/long/suffix/evidence-two/".to_string(),
+            ],
+        ] {
+            let block = compose_scout_contract(&g, todo, &scope);
+            let stop_line = block
+                .lines()
+                .find(|line| line.starts_with("Stop condition for this scout"))
+                .expect("the capped stop condition is still emitted")
+                .len();
+            let fixed = block.len() - stop_line;
+            assert!(
+                fixed <= SCOUT_CONTRACT_MAX_CHARS,
+                "the fixed exploration contract is {fixed} bytes with scope {scope:?}, over its {SCOUT_CONTRACT_MAX_CHARS}-byte budget"
+            );
+        }
+    }
+
+    /// The exploration contract is a READ-ONLY contract with a named scope:
+    /// the failure it prevents is a scout turn that spends its budget building
+    /// the implementation instead of proposing a direction. Both constraints
+    /// must be stated mechanically, and the delivery write-set paragraph must
+    /// not reappear to contradict them.
+    #[test]
+    fn scout_contract_states_read_only_and_its_read_scope() {
+        let mut g = Goal::new("g1", "o", "/tmp");
+        let mut scout = Todo::advancement("S1", "Find the right approach");
+        scout.class = TaskClass::Scout;
+        scout.required_write_scope = vec!["papers/route-a.md".to_string()];
+        g.add(scout);
+        let msg = compose_turn_message(&g, g.todo("S1").unwrap(), None);
+        assert!(msg.contains("READ-ONLY"), "{msg}");
+        assert!(
+            msg.contains("do not edit existing files"),
+            "the read-only constraint must be spelled out: {msg}"
+        );
+        // The contract echoes the scope the guard resolved (canonicalized parent
+        // + relative tail), which is platform-spelled — `D:\tmp\papers\route-a.md`
+        // on Windows, `/private/tmp/papers/route-a.md` on macOS — so a literal
+        // "/"-separated path never matches there. Compare the line's payload
+        // against the same resolver's output (the whole payload, not a
+        // substring), and separately check the declared relative tail survives
+        // resolution with the separators normalized, which holds on every
+        // platform and would fail if the contract echoed anything else.
+        let resolved = crate::agents::workspace_guard::normalize_workspace_path_at(
+            "papers/route-a.md",
+            std::path::Path::new(&g.cwd),
+        );
+        let read_scope_line = msg
+            .lines()
+            .find(|line| line.starts_with("Read scope for this turn (read it, never modify it): "))
+            .unwrap_or_else(|| {
+                panic!("the contract must state the declared scope as a read scope: {msg}")
+            });
+        assert_eq!(
+            read_scope_line,
+            format!("Read scope for this turn (read it, never modify it): {resolved}"),
+            "the read scope line must carry the resolved declared scope: {msg}"
+        );
+        assert!(
+            read_scope_line
+                .replace('\\', "/")
+                .ends_with("papers/route-a.md"),
+            "the declared relative path must survive resolution: {read_scope_line}"
+        );
+        assert!(
+            !msg.contains("Declared write set"),
+            "an exploration turn must not also be handed a write set: {msg}"
+        );
+
+        // No declaration: the contract still closes the write surface instead of
+        // leaving it to the model's judgement.
+        let mut bare = Todo::advancement("S2", "probe");
+        bare.class = TaskClass::Scout;
+        g.add(bare);
+        let bare_msg = compose_turn_message(&g, g.todo("S2").unwrap(), None);
+        assert!(
+            bare_msg.contains("Read scope: none declared — make no file writes at all."),
+            "{bare_msg}"
+        );
+
+        // Delivery work keeps the ordinary write set.
+        let mut work = Todo::advancement("T1", "Do the work");
+        work.required_write_scope = vec!["papers/final.md".to_string()];
+        g.add(work);
+        let work_msg = compose_turn_message(&g, g.todo("T1").unwrap(), None);
+        assert!(work_msg.contains("Declared write set"), "{work_msg}");
+        assert!(!work_msg.contains("READ-ONLY"), "{work_msg}");
+        assert!(
+            !compose_scout_contract(&g, g.todo("T1").unwrap(), &[]).contains("READ-ONLY"),
+            "the scout contract is empty for delivery work"
+        );
+    }
+
+    /// A scout without a declared `kill_when` (old ledgers) still gets the
+    /// contract, without a dangling "Stop condition" line, and a runaway
+    /// kill_when is capped instead of bloating the prompt.
+    #[test]
+    fn scout_contract_handles_a_missing_or_runaway_kill_when() {
+        let mut g = Goal::new("g1", "o", "/tmp");
+        let mut bare = Todo::advancement("S1", "probe");
+        bare.class = TaskClass::Scout;
+        g.add(bare);
+        let msg = compose_turn_message(&g, g.todo("S1").unwrap(), None);
+        assert!(msg.contains("You are EXPLORING, not delivering."), "{msg}");
+        assert!(!msg.contains("Stop condition for this scout"), "{msg}");
+
+        let mut runaway = Todo::advancement("S2", "probe");
+        runaway.class = TaskClass::Scout;
+        runaway.kill_when = Some("x".repeat(4_000));
+        g.add(runaway);
+        let msg = compose_turn_message(&g, g.todo("S2").unwrap(), None);
+        assert!(
+            !msg.contains(&"x".repeat(SCOUT_KILL_WHEN_CHARS + 1)),
+            "the stop condition must be capped: {} bytes",
+            msg.len()
+        );
+    }
+
     #[test]
     fn envelope_carries_schema_and_instruction() {
         let mut g = Goal::new("g1", "Ship the thing", "/tmp");
@@ -308,6 +684,54 @@ mod tests {
             "completion contract footer present"
         );
         assert!(msg.contains("objective: Ship the thing"));
+    }
+
+    /// B: the acceptance rejection must reach the worker WHOLE. A four-token
+    /// list used to be cut at 200 chars to `(missing: [dequant_gemm_small_n,
+    /// matmul2d_int4…`, so the worker read a fragment of its own contract.
+    /// C: the envelope must also say the literal has to sit in the judged tail
+    /// BEFORE the attempt, not explain it after a rejection.
+    #[test]
+    fn acceptance_rejection_arrives_whole_and_the_tail_window_is_stated_up_front() {
+        use crate::state::{FailureKind, RunRecord};
+        let mut g = Goal::new("g", "o", "/tmp");
+        let mut todo = Todo::advancement("T1", "Work");
+        todo.acceptance = Some(
+            "dequant_gemm_small_n,matmul2d_int4b_executed,mlx_comparison,lever_status_updated"
+                .into(),
+        );
+        g.add(todo);
+        let rejection = "todo T1 acceptance contract unmet: evidence must contain [dequant_gemm_small_n,matmul2d_int4b_executed,mlx_comparison,lever_status_updated] (missing: [dequant_gemm_small_n, matmul2d_int4b_executed, mlx_comparison, lever_status_updated]); repair the handoff, not the criteria";
+        g.history.push(RunRecord {
+            agent_id: None,
+            turn: 1,
+            todo_id: "T1".to_string(),
+            run_id: "run-1".to_string(),
+            terminal_state: "completed".to_string(),
+            error: Some(rejection.to_string()),
+            tokens_in_delta: 0,
+            tokens_out_delta: 0,
+            cost_delta: 0.0,
+            tools: vec![],
+            evidence: "prose".to_string(),
+            recorded_at: 0,
+            spend_source: Some("run".to_string()),
+            failure_kind: Some(FailureKind::HardError),
+            validation: None,
+            truncation: None,
+        });
+
+        let msg = compose_turn_message(&g, g.todo("T1").unwrap(), None);
+        assert!(
+            msg.contains(
+                "(missing: [dequant_gemm_small_n, matmul2d_int4b_executed, mlx_comparison, lever_status_updated])"
+            ),
+            "the missing list must arrive complete: {msg}"
+        );
+        assert!(
+            msg.contains("must land inside the last 4000 bytes"),
+            "the judged window is stated before the attempt: {msg}"
+        );
     }
 
     #[test]

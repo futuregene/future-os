@@ -164,10 +164,10 @@ fn map_broadcast_event(
     session_id: &str,
 ) -> Result<proto::StreamEvent, tonic::Status> {
     match result {
-        Ok(event) => {
-            // Typed-RPC dual-write: encode the JSON payload into its typed
-            // form alongside the unchanged `data` string (pass-through event
-            // types return None and stay JSON-only).
+        Ok(mut event) => {
+            future_rpc::shell_result::strip_legacy_event_command(&mut event.data);
+            // Both wire representations use the current facts contract. Any
+            // historical command copy remains untouched in storage.
             let payload = future_rpc::encode::event_payload(&event.event_type, &event.data);
             Ok(proto::StreamEvent {
                 r#type: event.event_type,
@@ -686,7 +686,8 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                     snapshot_events: projection
                         .events
                         .into_iter()
-                        .map(|event| {
+                        .map(|mut event| {
+                            future_rpc::shell_result::strip_legacy_event_command(&mut event.data);
                             let payload =
                                 future_rpc::encode::event_payload(&event.event_type, &event.data);
                             proto::ProjectedRunEvent {
@@ -707,7 +708,8 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                     payload: None,
                 });
             }
-            initial.extend(attachment.events.into_iter().map(|event| {
+            initial.extend(attachment.events.into_iter().map(|mut event| {
+                future_rpc::shell_result::strip_legacy_event_command(&mut event.data);
                 let payload = future_rpc::encode::event_payload(&event.event_type, &event.data);
                 proto::StreamEvent {
                     r#type: event.event_type,

@@ -191,6 +191,58 @@ input/execution phases are not double-counted. Actual progress requires evidence
 new artifacts, validation, measured improvements or falsified hypotheses. Neither
 file churn nor uninterrupted thinking proves progress or lack of it.
 
+## Exploration nodes and the direction ledger
+
+Deciding *which way to go* is work that can be assigned and accounted for. A
+`--class scout` todo (an exploration node) carries a required `--kill-when`, and
+what it delivers is a **direction proposal**, not an artifact: a small set of
+candidate directions, each with its own acceptance items and termination
+condition (`kill_when`), each declaring whether it becomes implementation work
+(`advancement`) or a deeper exploration (`scout`). The rules live in
+`orchestration/goal/src/work_items/direction.rs`; the prompt side is
+`orchestration/goal/src/turn_envelope.rs::compose_scout_contract`.
+
+Ledger operations are pure records — no model call, no network:
+
+- `direction propose` writes a proposal. Validation runs before the write
+  (duplicate direction, dependency cycle, a scout candidate without `kill_when`,
+  empty acceptance all refuse), so a rejected proposal leaves nothing to clean
+  up. A candidate is `title|class|route|kill_when|acceptance1;acceptance2`
+  (five fields); the four-field `title|route|kill_when|acceptance` is still
+  accepted and means `class=advancement`. When a four-field spec puts a class in
+  field 2, the error names field 2 and both shapes instead of reading the class
+  as a broken route.
+- `direction list` reads the ledger and also names the todo each accepted
+  candidate became.
+- `direction accept` turns a candidate into a todo. **A proposal never creates a
+  todo by itself** — accepting is the operator's decision, not the proposer's.
+  `fork` carries no dependency; `revise:<TODO_ID>` sets the new todo's
+  `blocked_by_gate` to that todo (it continues after it rather than editing it in
+  place). The todo records `origin_proposal`, which `status --format json` also
+  projects: that is the only machine-readable link from the decision to the work.
+- `direction reject` / `expire` close a proposal; a rejection needs a reason,
+  and expiry frees the direction's dedupe capacity.
+
+A scout's completion gate is the ledger: at least one proposal must name it,
+otherwise `todo complete` refuses (`--force` is a reviewed override). Separately,
+the kernel raises `exploration_gap` after two consecutive failures on one slice
+(or two verify-gate rejections): `replan obligations` then reports that the goal
+*owes* an exploration. That is a projection — it never creates a scout todo;
+whether to dispatch exploration is the orchestrator's call.
+
+The exploration turn's prompt is a **read-only** contract: do not edit existing
+files, do not build the implementation, and the only permitted writes are
+evidence notes inside the declared scope (none declared means no file writes at
+all). Its fixed text has a 1500-byte budget because every scout turn re-sends it.
+It is mutually exclusive with the delivery contract — a scout turn carries
+neither acceptance literals nor a successor declaration, or the model reads
+"not implemented" as failure.
+
+Known limitation: direction dedupe normalizes titles only (English verb prefixes
+plus containment), so **a Chinese and an English phrasing of one direction are
+two directions**. Cross-language normalization needs a lexicon or a model, and
+the benefit does not pay for it yet.
+
 ## Proportional orchestration and honest stopping
 
 Use light, standard or heavy workflows according to uncertainty/risk. A code

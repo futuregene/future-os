@@ -69,6 +69,7 @@ entry point; the [wiki](wiki/en/Home.md) is the user-facing app guide.
 | Doc | What it covers |
 |---|---|
 | [Workspace & conversation pagination and archive](design/workspace-thread-archive-and-paging.md) ([中文](design/workspace-thread-archive-and-paging.zh-CN.md)) | Finalized design: tree-level archiving with a uniform no-active-runs rule, workspace archive with container wake, read-only archived details, first-archive guide, and keyset pagination for the workspace list, workspace conversations and chats |
+| [Conversation archive cleanup and automatic archiving](design/archive-run-log-cleanup-and-auto-archive.md) ([中文](design/archive-run-log-cleanup-and-auto-archive.zh-CN.md)) | Settled run-log cleanup boundary and first-use UX, plus a proposed idle-archive policy based on meaningful fork-tree activity, daily scans, exclusions, restore grace, and cleanup interaction |
 
 ## Internals (`internals/`)
 

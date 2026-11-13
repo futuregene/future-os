@@ -402,7 +402,10 @@
           "fork_v1",
           "tasks_v1",
           "task_deps_v1",
-          "read_binary_v1"
+          "read_binary_v1",
+          "segmented_content_v1",
+          "reasoning_fetch_v1",
+          "git_graph_v1"
         ],
         "presence": {
           "online": true,

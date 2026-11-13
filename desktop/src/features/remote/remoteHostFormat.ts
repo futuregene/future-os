@@ -76,16 +76,39 @@ export function addDeviceErrorText(err: unknown, t: TFunction<"remote">): string
   return t("error.generic");
 }
 
+/**
+ * Short display form of a device id: the `dev_` prefix and the first eight hex
+ * characters (`dev_1a2b3c4d`).
+ *
+ * The desktop shows this and never the full value: the id is a lookup key for a
+ * person matching this row against the phone in their hand, not a secret to be
+ * read aloud or copied off this machine. An unknown shape passes through
+ * unchanged, and an absent id is the empty string — the caller prints nothing,
+ * which is how every client that predates the field reads.
+ */
+export function shortDeviceId(deviceId: string | null | undefined): string {
+  const id = deviceId?.trim();
+  if (!id)
+    return "";
+  const body = id.startsWith("dev_") ? id.slice(4) : id;
+  return `dev_${body.slice(0, 8)}`;
+}
+
 /** What to call a device: what it said it was, else what we can see. */
 export function deviceLabel(
   device: Pick<RemoteDevice, "client" | "connected">,
   t: TFunction<"remote">,
 ): string {
   if (device.client) {
-    return t(`clientKind.${device.client.kind}`, {
+    const label = t(`clientKind.${device.client.kind}`, {
       defaultValue: t("clientKind.other"),
       name: device.client.name,
     });
+    // The id follows the name rather than replacing the pair id beside it: a
+    // pair id names this connection, and this names the device the connection
+    // belongs to. Silently absent for a client that never declared one.
+    const id = shortDeviceId(device.client.deviceId);
+    return id ? `${label} · ${id}` : label;
   }
   return device.connected ? t("clientUnknown") : t("devicePaired");
 }

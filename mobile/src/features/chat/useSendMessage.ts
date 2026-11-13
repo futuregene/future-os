@@ -2,6 +2,7 @@ import { useCallback, useMemo, type Dispatch, type SetStateAction } from "react"
 import type { TFunction } from "i18next";
 import { File } from "expo-file-system";
 import { classifyNatsError } from "@future-os/remote-client/natsErrors";
+import { readableDeviceName } from "../../remote/deviceName";
 import { mimeFor } from "../../remote/files";
 import { useRemote } from "../../remote/RemoteContext";
 import type { MobileAttachment, SessionReferenceMap, TimelineItem } from "../../remote/types";
@@ -150,7 +151,7 @@ export function useSendMessage(options: SendMessageOptions): SendMessageApi {
     } catch (error) {
       if (!isCurrent()) return false;
       if (sameText()) setMessage(draftValue);
-      const failure = sendFailureText(error, remote.presence?.holder?.name?.trim());
+      const failure = sendFailureText(error, readableDeviceName(remote.presence?.holder?.name));
       showToast(t(failure.key, failure.params));
       return false;
     } finally {
@@ -230,7 +231,7 @@ export function useSendMessage(options: SendMessageOptions): SendMessageApi {
         .continueRun(remote.selectedSessionId, item.runId)
         .catch((error: unknown) => {
           if (!isCurrent()) return;
-          const failure = sendFailureText(error, remote.presence?.holder?.name?.trim());
+          const failure = sendFailureText(error, readableDeviceName(remote.presence?.holder?.name));
           showToast(t(failure.key, failure.params));
         });
     },

@@ -155,6 +155,33 @@ pub async fn run_bridge(store: &mut Store, opts: &BridgeOptions) -> Result<()> {
                 record.error = Some("worker result names a missing todo".into());
             }
         }
+        // Exploration node, AUTOMATIC path #2 — the same floor as the manual
+        // `todo complete` and the `run_turns_inner` writeback (all three share
+        // `console::scout_proposal_error`). The stdio bridge is the other entry
+        // point that closes a todo without a human: it selects from the same
+        // frontier `runnable_advancement_for` (a scout is runnable work), so
+        // without this a worker could report `completed` for a scout here having
+        // recorded nothing in the direction ledger — the exact empty exploration
+        // `TaskClass::Scout` exists to prevent. `completion::check_record` above
+        // cannot cover it (pure, and advancement-only).
+        //
+        // A rejection, not an aborted turn: the worker's result is still recorded
+        // in full (terminal state, evidence, tools) and only the closure is
+        // refused. Stamping `record.error` BEFORE `classify_failure` keeps the
+        // todo open — no `TodoCompleted` is appended below, so the todo stays on
+        // the frontier for a bounded retry — and charges the repair budget
+        // exactly as an unmet acceptance contract does. The `TodoCompleted`
+        // branch below is left as it is: it already keys on `succeeded`, which
+        // re-reads this stamp through `turn_succeeded`.
+        if turn_succeeded(&record) {
+            if let Some(todo) = goal.todo(&result.todo_id) {
+                if let Some(error) =
+                    crate::console::scout_proposal_error(store, &opts.goal_id, todo)?
+                {
+                    record.error = Some(error);
+                }
+            }
+        }
         record.failure_kind = Some(classify_failure(&record));
         let successors = goal
             .todo(&result.todo_id)

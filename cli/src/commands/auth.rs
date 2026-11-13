@@ -92,11 +92,19 @@ pub async fn login(platform_url_override: Option<String>, out: &Output) -> Resul
     let platform_url = resolve_login_platform_url(platform_url_override).await;
 
     let client = http_client();
+    // The platform records this on the key it issues, so the console can say
+    // which machine a key belongs to. Best-effort: a login still works when no
+    // identity can be resolved (the key is then recorded as creator-less).
+    let (device_id, device_name) = future_host::device_identity::login_device();
     let device: DeviceCodeResponse = post(
         &client,
         &platform_url,
         "/client/v1/oauth/device/code",
-        &json!({ "client_name": "Future OS CLI" }),
+        &json!({
+            "client_name": "Future OS CLI",
+            "device_id": device_id,
+            "device_name": device_name,
+        }),
     )
     .await?;
 
@@ -175,36 +183,79 @@ pub async fn login(platform_url_override: Option<String>, out: &Output) -> Resul
     Err("Device authorization expired.".to_string())
 }
 
-/// `status()` — show login state.
-pub async fn status(out: &Output) -> Result<(), String> {
-    let result: Result<(), String> = async {
+/// `status(json)` — show login state.
+///
+/// Three states, because "not logged in" used to cover two different facts and
+/// the difference decides what the reader should do: no entry at all (log in),
+/// an entry whose `key` is gone (the credential was cleared — log in; this is
+/// exactly the state the 2026-11-10 incident left behind), or a live
+/// credential. `--json` reports the same three as one machine-readable object.
+pub async fn status(json: bool, out: &Output) -> Result<(), String> {
+    let auth_file_path = auth_file_path();
+    let state: Result<Option<(String, String)>, String> = async {
         let auth_file = load_auth_file().await?;
-        let auth = get_future_auth_entry(&auth_file);
-        let Some(auth) = auth else {
-            out.log("Not logged in.");
-            return Ok(());
+        let Some(auth) = get_future_auth_entry(&auth_file) else {
+            return Ok(None);
         };
         if auth.key.is_none() {
-            out.log("Not logged in.");
-            return Ok(());
+            return Ok(None);
         }
         // `auth.base_url ? auth.base_url.replace(/\/api\/?$/, "") : await getPlatformUrl()`
         let platform_url = match &auth.base_url {
             Some(base_url) => strip_api_suffix(base_url),
             None => get_platform_url(None).await,
         };
-        out.log(&format!("Platform: {platform_url}"));
-        out.log(&format!("API: {platform_url}/api/v1"));
-        Ok(())
+        Ok(Some((
+            platform_url.clone(),
+            format!("{platform_url}/api/v1"),
+        )))
     }
     .await;
-    match result {
-        Ok(()) => Ok(()),
-        Err(_) => {
-            out.log("Not logged in.");
-            Ok(())
-        }
+
+    // A `key`-less entry is a fourth case: the file exists and names the
+    // provider, but holds no credential.
+    let has_entry = load_auth_file()
+        .await
+        .ok()
+        .map(|file| get_future_auth_entry(&file).is_some())
+        .unwrap_or(false);
+    let state = state.ok().flatten();
+
+    if json {
+        let document = match &state {
+            Some((platform, api)) => json!({
+                "loggedIn": true,
+                "platform": platform,
+                "api": api,
+                "authFile": auth_file_path.display().to_string(),
+            }),
+            None => json!({
+                "loggedIn": false,
+                "reason": if has_entry { "credential-cleared" } else { "no-credential" },
+                "authFile": auth_file_path.display().to_string(),
+            }),
+        };
+        out.log(&serde_json::to_string_pretty(&document).expect("json serializes"));
+        return Ok(());
     }
+
+    match state {
+        Some((platform, api)) => {
+            out.log(&format!("Platform: {platform}"));
+            out.log(&format!("API: {api}"));
+        }
+        None if has_entry => {
+            // The entry survived but its key did not: say which file, and what
+            // fixes it, instead of the ambiguous "Not logged in."
+            out.log(&format!(
+                "Not logged in: {} has a future entry with no credential.",
+                auth_file_path.display()
+            ));
+            out.log("Run `future auth login` to sign in again.");
+        }
+        None => out.log("Not logged in."),
+    }
+    Ok(())
 }
 
 /// `credential({ json })` — output the API key + endpoint for scripting.
@@ -334,6 +385,7 @@ async fn logout_via_file(out: &Output) -> Result<(), String> {
         "Removed Future API key from {}",
         auth_file_path().display()
     ));
+    out.log("Run `future auth login` to sign in again.");
     Ok(())
 }
 
@@ -749,6 +801,88 @@ mod tests {
         assert_eq!(code, 1);
     }
 
+    /// Read one HTTP request through the end of its body.
+    ///
+    /// A single `read` can return headers only; the device identity this test
+    /// looks for lives in the JSON body, so wait for `content-length` bytes.
+    #[cfg(not(windows))]
+    async fn read_http_request(socket: &mut tokio::net::TcpStream) -> String {
+        use tokio::io::AsyncReadExt;
+        let mut data = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = match socket.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            data.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&data);
+            let Some(head_end) = text.find("\r\n\r\n") else {
+                continue;
+            };
+            let length = text[..head_end]
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            if data.len() >= head_end + 4 + length {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&data).into_owned()
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn login_declares_this_device_to_the_platform() {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured = std::sync::Arc::new(tokio::sync::Mutex::new(String::new()));
+        let seen = captured.clone();
+        let server = tokio::spawn(async move {
+            // First request: the device-code POST. Capture it and answer with
+            // a valid code so login reaches the poll loop.
+            let (mut socket, _) = listener.accept().await.unwrap();
+            *seen.lock().await = read_http_request(&mut socket).await;
+            let body = "{\"device_code\":\"dc\",\"user_code\":\"U\",\"verification_uri\":\"https://x\",\"verification_uri_complete\":\"\",\"expires_in\":60,\"interval\":0}";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.shutdown().await;
+            // The poll connection is dropped unread; login ends in a network
+            // error, which is all this test needs.
+            let (socket, _) = listener.accept().await.expect("poll connection");
+            drop(socket);
+        });
+
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        let opener = fake_opener_dir();
+        let _env = EnvGuard::set(&[("PATH", opener.path().as_os_str().to_os_string())]);
+        let (code, _, _) = run(&["auth", "login", "--url", &format!("http://{addr}")]).await;
+        assert_eq!(code, 1);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
+
+        let request = captured.lock().await.clone();
+        assert!(
+            request.contains("\"device_id\":\"desktop_"),
+            "the installation id is declared: {request}"
+        );
+        assert!(
+            request.contains("\"device_name\":\""),
+            "a readable device name is declared: {request}"
+        );
+    }
+
     #[cfg(not(windows))]
     #[tokio::test]
     async fn login_poll_failure_arms() {
@@ -853,9 +987,14 @@ mod tests {
 
         let (code, stdout, _) = run(&["auth", "logout"]).await;
         assert_eq!(code, 0);
+        // Logging out names the way back in: after this the next command anyone
+        // runs is `auth login`, so the command says it.
         assert_eq!(
             stdout,
-            format!("Removed Future API key from {}\n", path.display())
+            format!(
+                "Removed Future API key from {}\nRun `future auth login` to sign in again.\n",
+                path.display()
+            )
         );
         // Other providers untouched; future entry keeps type + base_url.
         let after: Value =
@@ -1532,13 +1671,27 @@ mod tests {
             format!("Platform: {DEFAULT_PLATFORM_URL}\nAPI: {DEFAULT_PLATFORM_URL}/api/v1\n")
         );
 
-        // Entry present but key missing → Not logged in.
+        // Entry present but key missing is its own state — the one the
+        // 2026-11-10 incident left behind — and it names the file and the fix
+        // instead of the ambiguous "Not logged in."
         tokio::fs::write(&path, "{\"future\": {\"type\": \"api_key\"}}")
             .await
             .unwrap();
         let (code, stdout, _) = run(&["auth", "status"]).await;
         assert_eq!(code, 0);
-        assert_eq!(stdout, "Not logged in.\n");
+        assert_eq!(
+            stdout,
+            format!(
+                "Not logged in: {} has a future entry with no credential.\nRun `future auth login` to sign in again.\n",
+                path.display()
+            )
+        );
+        // The machine-readable form says which of the two states it is.
+        let (code, stdout, _) = run(&["auth", "status", "--json"]).await;
+        assert_eq!(code, 0);
+        let document: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(document["loggedIn"], serde_json::json!(false));
+        assert_eq!(document["reason"], "credential-cleared");
         let (code, stdout, _) = run(&["auth", "credential"]).await;
         assert_eq!(code, 0);
         assert_eq!(stdout, "Not logged in.\n");

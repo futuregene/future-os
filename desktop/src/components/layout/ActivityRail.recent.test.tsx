@@ -415,10 +415,12 @@ describe("child conversations in the recent view", () => {
     view.unmount();
   });
 
-  it("keeps a running worker out of the active stretch", () => {
-    // A child is never a row of the view's own: filing a goal's worker under
-    // "Active" would put a session in the list that the list is supposed to
-    // leave to its conversation.
+  it("files the conversation under Active while its worker runs", () => {
+    // A child is never a row of the view's own: its work is its conversation's.
+    // So the conversation is what the stretch moves, not the worker — filing the
+    // conversation under "Earlier" while a worker produced output put the one
+    // conversation that was working with the ones that had stopped. The phone's
+    // 最近 page splits by the same rule; this is the two lists being one list.
     const view = mount(
       <ActivityRail {...props(goal(), {
         threadRunStatuses: { worker: { status: "running", endedAt: null } },
@@ -427,7 +429,30 @@ describe("child conversations in the recent view", () => {
     );
     showRecent(view.container);
 
-    expect(captions(view.container)).toEqual(["earlier:Earlier:2"]);
+    expect(captions(view.container)).toEqual(["active:Active:1", "earlier:Earlier:1"]);
+    // The conversation leads, and its worker is still inside the fold rather
+    // than drawn as a row that claimed to be running.
+    expect(drawnTitles(view.container)).toEqual(["Goal", "Other"]);
+    expect(view.container.querySelector("[data-recent-row=\"local::worker\"]")).toBeNull();
+    view.unmount();
+  });
+
+  it("keeps the conversation even when its page has not arrived", () => {
+    // A long goal run speaks through its worker, not through the conversation:
+    // the conversation's own reply can be older than the page's window, so the
+    // rows that make it "active" have to be kept by the promotion, not by
+    // whatever the stream happened to page in.
+    const view = mount(
+      <ActivityRail {...props(goal(), {
+        recentThreadIds: new Set(["other", "worker"]),
+        threadRunStatuses: { worker: { status: "running", endedAt: null } },
+      })}
+      />,
+    );
+    showRecent(view.container);
+
+    expect(drawnTitles(view.container)).toEqual(["Goal", "Other"]);
+    expect(captions(view.container)).toEqual(["active:Active:1", "earlier:Earlier:1"]);
     view.unmount();
   });
 
@@ -459,6 +484,43 @@ describe("child conversations in the recent view", () => {
     act(() => toggle("goal").click());
     // Folding the conversation takes its whole subtree with it.
     expect(drawnTitles(view.container)).toEqual(["Goal", "Other"]);
+    view.unmount();
+  });
+
+  it("lifts a conversation on another machine by its worker's run the same way", () => {
+    // The merged list is one list: whose catalogue named the child does not
+    // change the rule, and the host reports its worker's state on the row it
+    // sent.
+    const view = mount(
+      <ActivityRail {...props([], {
+        remoteCatalogs: [{
+          desktopId: "desk-b",
+          sessions: [
+            {
+              sessionId: "parent",
+              title: "Remote goal",
+              mode: "chat",
+              createdAt: now - hour,
+              lastMessageAt: now - 10 * minute,
+            },
+            {
+              sessionId: "worker",
+              title: "Remote worker",
+              mode: "chat",
+              parentSessionId: "parent",
+              status: "running",
+              createdAt: now - minute,
+              lastMessageAt: now - 30_000,
+            },
+          ],
+        }],
+      })}
+      />,
+    );
+    showRecent(view.container);
+
+    expect(captions(view.container)).toEqual(["active:Active:1"]);
+    expect(drawnTitles(view.container)).toEqual(["Remote goal · desk-b"]);
     view.unmount();
   });
 

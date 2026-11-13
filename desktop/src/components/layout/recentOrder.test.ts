@@ -4,6 +4,7 @@ import {
   byActivity,
   byCreation,
   expandRecent,
+  inFlightRowKeys,
   isActiveRun,
   RECENT_PAGE_SIZE,
 
@@ -196,8 +197,11 @@ describe("the recent view's hierarchy", () => {
 });
 
 describe("the recent view's split", () => {
+  /** The stretches a flat list of rows splits into — the tree, then the split. */
+  const stretches = (rows: RecentItem[], limit?: number) => recentSplit(recentTree(rows), limit);
+
   it("puts the running rows above the rest, ranked within each stretch", () => {
-    const split = recentSplit([
+    const split = stretches([
       item("idle-new", { lastActivityAt: now - minute }),
       item("busy-old", { active: true, createdAt: now - 10 * minute }),
       item("idle-old", { lastActivityAt: now - hour }),
@@ -210,8 +214,41 @@ describe("the recent view's split", () => {
     expect(countOf(split, "earlier")).toBe(2);
   });
 
+  it("brings the conversation a run hangs under into the active stretch", () => {
+    // The `/future-goal` shape: a conversation whose worker is still producing
+    // output. The worker is not a row of the list, so a split that read only the
+    // parent's own run filed it under "Earlier" — the one conversation the
+    // reader could see working, filed with the ones that had stopped.
+    const split = stretches([
+      item("goal", { createdAt: now - 3 * hour, lastActivityAt: now - 5 * minute }),
+      item("worker", { parentKey: "goal", active: true, createdAt: now - minute }),
+      item("quiet", { lastActivityAt: now - hour }),
+    ]);
+    expect(sectionKinds(split)).toEqual(["active", "earlier"]);
+    // The conversation is the row, not its worker, and it keeps its own start
+    // time — the stretch ranks conversations.
+    expect(keys(split.rows)).toEqual(["goal", "quiet"]);
+    expect(countOf(split, "active")).toBe(1);
+  });
+
+  it("follows a run two levels down, and a waiting child too", () => {
+    // A worker can start a worker, and a child blocked on an approval is work
+    // that is going nowhere until the reader answers.
+    const tree = recentTree([
+      item("goal", { createdAt: now - 3 * hour }),
+      item("worker", { parentKey: "goal", createdAt: now - hour }),
+      item("helper", { parentKey: "worker", active: true, createdAt: now - minute }),
+    ]);
+    expect(keys(recentSplit(tree).rows)).toEqual(["goal"]);
+    expect(sectionKinds(recentSplit(tree))).toEqual(["active"]);
+    // The rows the page has to keep for that: the conversation and everything
+    // under it, so the fold has no hole where its workers were.
+    expect([...inFlightRowKeys(tree)].sort()).toEqual(["goal", "helper", "worker"]);
+    expect(inFlightRowKeys(recentTree([item("quiet")])).size).toBe(0);
+  });
+
   it("ignores pinning for the order — a pin is a marker here, not a place", () => {
-    const split = recentSplit([
+    const split = stretches([
       item("pinned-stale", { pinned: true, lastActivityAt: now - 90 * minute }),
       item("fresh", { lastActivityAt: now - minute }),
     ]);
@@ -220,15 +257,15 @@ describe("the recent view's split", () => {
 
   it("draws no caption over an empty stretch", () => {
     // A lone "Active" heading over nothing reads as a list that failed to load.
-    expect(sectionKinds(recentSplit([item("idle")]))).toEqual(["earlier"]);
-    expect(sectionKinds(recentSplit([item("busy", { active: true })]))).toEqual(["active"]);
-    expect(recentSplit([]).rows).toEqual([]);
+    expect(sectionKinds(stretches([item("idle")]))).toEqual(["earlier"]);
+    expect(sectionKinds(stretches([item("busy", { active: true })]))).toEqual(["active"]);
+    expect(stretches([]).rows).toEqual([]);
   });
 
   it("windows the finished stretch and says how much it holds back", () => {
     const many = Array.from({ length: 60 }, (_, index) =>
       item(`idle-${index}`, { lastActivityAt: now - (index + 1) * minute }));
-    const split = recentSplit([item("busy", { active: true, createdAt: now }), ...many]);
+    const split = stretches([item("busy", { active: true, createdAt: now }), ...many]);
     expect(split.rows).toHaveLength(RECENT_PAGE_SIZE + 1);
     // The newest of the window, not an arbitrary slice.
     expect(split.rows[0]!.key).toBe("busy");
@@ -243,16 +280,16 @@ describe("the recent view's split", () => {
   it("never windows what is still running, and opens the window on request", () => {
     const busy = Array.from({ length: 40 }, (_, index) =>
       item(`busy-${index}`, { active: true, createdAt: now - index * minute }));
-    expect(recentSplit(busy, 5).rows).toHaveLength(40);
+    expect(stretches(busy, 5).rows).toHaveLength(40);
 
     const many = Array.from({ length: 40 }, (_, index) =>
       item(`idle-${index}`, { lastActivityAt: now - (index + 1) * minute }));
-    expect(recentSplit(many, 10).rows).toHaveLength(10);
-    expect(recentSplit(many, 10).more).toBe(30);
-    expect(recentSplit(many, 40).more).toBe(0);
+    expect(stretches(many, 10).rows).toHaveLength(10);
+    expect(stretches(many, 10).more).toBe(30);
+    expect(stretches(many, 40).more).toBe(0);
     // A window that has not opened draws no caption over nothing, but the footer
     // still has the whole stretch to offer: the view shows the offer alone.
-    expect(sectionKinds(recentSplit(many, 0))).toEqual([]);
-    expect(recentSplit(many, 0).more).toBe(40);
+    expect(sectionKinds(stretches(many, 0))).toEqual([]);
+    expect(stretches(many, 0).more).toBe(40);
   });
 });

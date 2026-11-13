@@ -100,7 +100,12 @@ fn make_app_state_with_format(
     let approval_gate = ApprovalGate::default();
     // One live session named "default" — sessions are equal peers now,
     // so tests address it explicitly by id.
-    let session = ServerSession::new_with_queue_budget(
+    let constructor = if legacy {
+        ServerSession::legacy_fixture
+    } else {
+        ServerSession::new_with_queue_budget
+    };
+    let session = constructor(
         "default".to_string(),
         Arc::new(tokio::sync::RwLock::new(Loop::new(
             provider.clone(),

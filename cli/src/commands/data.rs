@@ -111,6 +111,16 @@ pub fn data(command: Option<&str>, args: &[String], out: &Output) -> Result<(), 
                 out.log("Recovery operation completed; startup is available again.");
                 Ok(())
             })?,
+            // `restore <dir>` without `--yes` is a missing confirmation, not an
+            // unknown command — saying which makes the next attempt the right
+            // one (the generic "Invalid data command." did not).
+            (Some("restore"), [source]) => bail!(
+                "restore rewrites history in place; re-run with --yes to confirm:\n  \
+                 future data restore {source} --yes"
+            ),
+            (Some("restore"), args) if !args.is_empty() => {
+                bail!("Usage: future data restore <backup-directory> --yes")
+            }
             _ => bail!("Invalid data command.\n{HELP}"),
         }
         Ok(())
@@ -1620,7 +1630,7 @@ mod tests {
         // An action this build does not have is refused, not guessed at, and
         // the refusal carries the usage so the next attempt can be the right one.
         let (code, stdout, stderr) = run(&["frobnicate"]).await;
-        assert_eq!(code, 1);
+        assert_eq!(code, crate::axi::EXIT_USAGE);
         assert_eq!(stdout, "");
         assert!(stderr.contains("Invalid data command."), "{stderr}");
         assert!(stderr.contains("future data backup"), "{stderr}");
@@ -1642,10 +1652,12 @@ mod tests {
 
         // Without `--yes` a restore is refused, and nothing has moved: the
         // confirmation is what stands between a typo and a rewritten history.
+        // The refusal names the missing flag instead of "Invalid data command.",
+        // and a missing confirmation is a usage error (exit 2).
         change_current(&home);
         let (code, _, stderr) = run(&["restore", archive.to_str().unwrap()]).await;
-        assert_eq!(code, 1);
-        assert!(stderr.contains("Invalid data command."), "{stderr}");
+        assert_eq!(code, crate::axi::EXIT_USAGE, "{stderr}");
+        assert!(stderr.contains("re-run with --yes"), "{stderr}");
         assert_title(&home, "new title");
 
         // With it, both databases and the managed files come back.

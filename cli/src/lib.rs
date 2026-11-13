@@ -4,10 +4,12 @@
 //! `dispatch` is the port of `cli/src/index.ts` `main()`; command modules port
 //! `cli/src/commands/*`.
 
+pub mod axi;
 pub mod browser;
 pub mod commands;
 pub mod constants;
 pub mod dns;
+pub mod flags;
 pub mod headless;
 pub mod help;
 pub mod output;
@@ -78,10 +80,24 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
         return 0;
     }
 
+    // `--help` is a read: it must never reach a command body. Groups that have a
+    // dedicated page for a subcommand print it themselves (the pairs listed in
+    // `help_page`), and everything else gets its group page here. Before this
+    // gate, `future skills update --help` ran the update, `future auth logout
+    // --help` signed the user out, and `future channel --help` started the
+    // bridge — a help request with a side effect.
+    if let Some(name) = group {
+        if axi::wants_help(args) {
+            if let Some(page) = help_page(name, command) {
+                out.log(page);
+                return 0;
+            }
+        }
+    }
+
     if group == Some("fusion") {
         return catch(out, commands::fusion::fusion(command, rest, out)).await;
     }
-
     if group == Some("data") {
         return catch(out, async { commands::data::data(command, rest, out) }).await;
     }
@@ -177,55 +193,95 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
             out.log(help::AUTH_LOGIN_HELP);
             return 0;
         }
-        // const urlIdx = rest.indexOf("--url");
-        // if (urlIdx !== -1 && urlIdx + 1 < rest.length) { urlOverride = rest[urlIdx + 1]; }
-        // else { const urlEq = rest.find(a => a.startsWith("--url=")); urlOverride = urlEq?.slice("--url=".length); }
-        let url_override: Option<String> = match rest.iter().position(|a| a == "--url") {
-            Some(i) if i + 1 < rest.len() => Some(rest[i + 1].clone()),
-            _ => rest
-                .iter()
-                .find(|a| a.starts_with("--url="))
-                .map(|a| a["--url=".len()..].to_string()),
+        // `auth login` starts a device-code flow against the platform, so an
+        // argument it does not understand must stop it here — never start a
+        // login because of a typo (AXI principle 6; see the 2026-11-10
+        // incident: a stray argument reached a destructive command body).
+        let flags = match flags::parse_flags(rest, &["--url"], &[], &[]) {
+            Ok(flags) => flags,
+            Err(error) => return axi::usage_exit(out, &error, AUTH_LOGIN_USAGE),
         };
-        return catch(out, commands::auth::login(url_override, out)).await;
+        if let Some(extra) = flags.positional.first() {
+            return axi::usage_exit(
+                out,
+                &format!("unexpected argument: {extra}"),
+                AUTH_LOGIN_USAGE,
+            );
+        }
+        return catch(
+            out,
+            commands::auth::login(flags.value("--url").map(str::to_string), out),
+        )
+        .await;
     }
 
     // if (group === "auth" && command === "status")
     if group == Some("auth") && command == Some("status") {
-        if rest.iter().any(|a| a == "--help" || a == "-h") {
+        if axi::wants_help(rest) {
             out.log(help::AUTH_STATUS_HELP);
             return 0;
         }
-        return catch(out, commands::auth::status(out)).await;
+        let flags = match flags::parse_flags(rest, &[], &[], &["--json"]) {
+            Ok(flags) => flags,
+            Err(error) => return axi::usage_exit(out, &error, AUTH_STATUS_USAGE),
+        };
+        if let Some(extra) = flags.positional.first() {
+            return axi::usage_exit(
+                out,
+                &format!("unexpected argument: {extra}"),
+                AUTH_STATUS_USAGE,
+            );
+        }
+        return catch(out, commands::auth::status(flags.has("--json"), out)).await;
     }
 
     // if (group === "auth" && command === "credential")
     if group == Some("auth") && command == Some("credential") {
-        if rest.iter().any(|a| a == "--help" || a == "-h") {
+        if axi::wants_help(rest) {
             out.log(help::AUTH_CREDENTIAL_HELP);
             return 0;
         }
-        let json_flag = rest.iter().any(|a| a == "--json");
-        return catch(out, commands::auth::credential(json_flag, out)).await;
+        let flags = match flags::parse_flags(rest, &[], &[], &["--json"]) {
+            Ok(flags) => flags,
+            Err(error) => return axi::usage_exit(out, &error, AUTH_CREDENTIAL_USAGE),
+        };
+        if let Some(extra) = flags.positional.first() {
+            return axi::usage_exit(
+                out,
+                &format!("unexpected argument: {extra}"),
+                AUTH_CREDENTIAL_USAGE,
+            );
+        }
+        return catch(out, commands::auth::credential(flags.has("--json"), out)).await;
     }
 
     // if (group === "auth" && command === "logout")
     if group == Some("auth") && command == Some("logout") {
-        if rest.iter().any(|a| a == "--help" || a == "-h") {
+        if axi::wants_help(rest) {
             out.log(help::AUTH_LOGOUT_HELP);
             return 0;
+        }
+        // The incident this guard exists for: `future auth logout bogus` used
+        // to sign the user out, because the body never looked at its arguments.
+        // A destructive command takes no arguments, so anything here is refused
+        // before it can run.
+        if let Some(extra) = rest.first() {
+            return axi::usage_exit(
+                out,
+                &format!("unexpected argument: {extra}"),
+                AUTH_LOGOUT_USAGE,
+            );
         }
         return catch(out, commands::auth::logout(out)).await;
     }
 
     // if (group === "auth") — unknown subcommand: show group help
     if group == Some("auth") {
-        out.log_err(&format!(
-            "Unknown command: {}\n",
-            command.unwrap_or("undefined")
-        ));
-        out.log(help::AUTH_GROUP_HELP_UNKNOWN);
-        return 0;
+        return unknown_subcommand(
+            out,
+            command.unwrap_or("undefined"),
+            help::AUTH_GROUP_HELP_UNKNOWN,
+        );
     }
 
     // if (group === "tools" && (!command || command === "--help" || command === "-h"))
@@ -244,20 +300,23 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
 
     // if (group === "tools") — unknown subcommand
     if group == Some("tools") {
-        out.log_err(&format!(
-            "Unknown command: {}\n",
-            command.unwrap_or("undefined")
-        ));
-        out.log(help::TOOLS_GROUP_HELP);
-        return 0;
+        return unknown_subcommand(out, command.unwrap_or("undefined"), help::TOOLS_GROUP_HELP);
     }
 
     // `future mcp` — the server list, their tools, and calling one.
-    if group == Some("mcp")
-        && (command.is_none() || command == Some("--help") || command == Some("-h"))
-    {
+    if group == Some("mcp") && matches!(command, Some("--help" | "-h")) {
         out.log(help::MCP_GROUP_HELP);
         return 0;
+    }
+
+    // Bare `future mcp` shows the configured servers rather than the help
+    // screen (AXI principle 8): the help is one flag away.
+    if group == Some("mcp") && command.is_none() {
+        return catch(
+            out,
+            std::future::ready(commands::mcp_servers::list_servers(out)),
+        )
+        .await;
     }
 
     if group == Some("mcp") && commands::mcp_servers::is_mcp_command(command) {
@@ -266,12 +325,7 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
     }
 
     if group == Some("mcp") {
-        out.log_err(&format!(
-            "Unknown command: {}\n",
-            command.unwrap_or("undefined")
-        ));
-        out.log(help::MCP_GROUP_HELP);
-        return 0;
+        return unknown_subcommand(out, command.unwrap_or("undefined"), help::MCP_GROUP_HELP);
     }
 
     // if (group === "skills" && (!command || command === "--help" || command === "-h"))
@@ -290,12 +344,7 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
 
     // if (group === "skills") — unknown subcommand
     if group == Some("skills") {
-        out.log_err(&format!(
-            "Unknown command: {}\n",
-            command.unwrap_or("undefined")
-        ));
-        out.log(help::SKILLS_GROUP_HELP);
-        return 0;
+        return unknown_subcommand(out, command.unwrap_or("undefined"), help::SKILLS_GROUP_HELP);
     }
 
     // if (group === "account" && (!command || command === "--help" || command === "-h"))
@@ -314,12 +363,11 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
 
     // if (group === "account") — unknown subcommand
     if group == Some("account") {
-        out.log_err(&format!(
-            "Unknown command: {}\n",
-            command.unwrap_or("undefined")
-        ));
-        out.log(help::ACCOUNT_GROUP_HELP);
-        return 0;
+        return unknown_subcommand(
+            out,
+            command.unwrap_or("undefined"),
+            help::ACCOUNT_GROUP_HELP,
+        );
     }
 
     // if (group === "run") — args.slice(1) is everything after "run"
@@ -366,12 +414,23 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
 
     // if (group === "doctor")
     if group == Some("doctor") {
-        return catch(out, commands::doctor::doctor(out)).await;
+        // `doctor` has no subcommand, so its flags arrive in `command`, not in
+        // `rest`: pass everything after the group name, or `future doctor
+        // --json` silently runs the text report.
+        return catch(out, commands::doctor::doctor(&args[1..], out)).await;
     }
 
-    // printHelp(): bare `future`, `--help`, `-h` and `help` print the main help
-    // and succeed. Only these: everything above is a known group.
-    if matches!(group, None | Some("--help" | "-h" | "help")) {
+    // Bare `future` is the home view, not the help screen (AXI principle 8:
+    // "content first"). It reports the state an agent opens with — agent,
+    // model, sessions, tasks, skills — and ends with the commands to run.
+    if group.is_none() {
+        commands::home::home(out).await;
+        return out.exit_code();
+    }
+
+    // `--help`, `-h` and `help` print the main help and succeed. Everything
+    // above is a known group; anything else is an error.
+    if matches!(group, Some("--help" | "-h" | "help")) {
         out.log(&help::main_help());
         return 0;
     }
@@ -382,7 +441,72 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
     let name = group.unwrap_or_default();
     out.log_err(&format!("Unknown group: {name}\n"));
     out.log_err("Run 'future --help' for the list of groups.");
-    1
+    axi::EXIT_USAGE
+}
+
+const AUTH_LOGIN_USAGE: &str = "Usage: future auth login [--url <platform-url>]";
+const AUTH_STATUS_USAGE: &str = "Usage: future auth status [--json]";
+const AUTH_CREDENTIAL_USAGE: &str = "Usage: future auth credential [--json]";
+const AUTH_LOGOUT_USAGE: &str = "Usage: future auth logout"; // takes no arguments: it removes the credential
+
+/// The help page a `--help` request gets, or `None` when the group's own handler
+/// prints a more specific page for this subcommand.
+///
+/// `None` is the delicate half: it means "the handler already does the right
+/// thing", so this table must list exactly the pairs whose dedicated pages are
+/// asserted by `all_help_outputs_match_help_constants` and by the `remote` /
+/// `desktop settings` / `config get|set` pages. Everything else gets the group
+/// page, which is the behaviour a help request is allowed to have: print text,
+/// touch nothing.
+fn help_page(group: &str, command: Option<&str>) -> Option<&'static str> {
+    let sub = match command {
+        Some("--help" | "-h") | None => None,
+        other => other,
+    };
+    match (group, sub) {
+        // Pairs that own a dedicated page (their handler prints it).
+        ("session", Some("list" | "set" | "archive")) => None,
+        ("workspace", Some("archive")) => None,
+        ("desktop", Some("settings")) => None,
+        ("desktop", None) | ("workspace", None) => None,
+        ("config", None) | ("config", Some("get" | "set")) => None,
+        ("auth", Some("login" | "status" | "credential" | "logout")) => None,
+        ("auth", None) => None,
+        // `remote` carries a page per subcommand.
+        ("remote", _) => None,
+        // `init` only has its own page.
+        ("init", _) => None,
+        // `task`/`mcp` list have their own page; the rest get the group page.
+        ("task", Some("list")) => None,
+        ("mcp", Some("list")) => None,
+
+        ("skills", _) => Some(help::SKILLS_GROUP_HELP),
+        ("account", _) => Some(help::ACCOUNT_GROUP_HELP),
+        ("tools", _) => Some(help::TOOLS_GROUP_HELP),
+        ("models", _) => Some(help::MODELS_HELP),
+        ("doctor", _) => Some(help::DOCTOR_HELP),
+        ("session", _) => Some(commands::session::SESSION_HELP),
+        ("task", _) => Some(help::TASK_HELP),
+        ("mcp", _) => Some(help::MCP_GROUP_HELP),
+        ("workspace", _) => Some(help::WORKSPACE_HELP),
+        ("data", _) => Some(commands::data::HELP),
+        ("fusion", _) => Some(commands::fusion::HELP),
+        ("logs", _) => Some(commands::logs::HELP),
+        ("version", _) => Some(help::VERSION_HELP),
+        _ => None,
+    }
+}
+
+/// An unknown subcommand: the reason, the group's help, and a usage exit code.
+/// AXI principle 6 — a mistyped subcommand must not read as a success. These
+/// groups used to print the help and exit 0, which made `future tools bogus`
+/// look like it had run. The help is still printed (the reader needs it), but
+/// the exit code now says "you asked for something that does not exist".
+fn unknown_subcommand(out: &Output, name: &str, help: &str) -> i32 {
+    out.log_err(&format!("Unknown command: {name}\n"));
+    out.log(help);
+    out.set_exit_code(axi::EXIT_USAGE);
+    out.exit_code()
 }
 
 /// Port of `main().catch(...)`: a rejected command promise becomes
@@ -404,7 +528,14 @@ where
             Err(msg) if msg == HANDLED_EXIT => 1,
             Err(msg) => {
                 out.log_err(&msg);
-                1
+                // A usage mistake is exit 2 wherever it is raised: a group that
+                // has not adopted `axi::usage` still builds a `Usage: …` string,
+                // and the documented contract (`CLI.md`) must hold for it too.
+                if axi::is_usage_error(&msg) {
+                    axi::EXIT_USAGE
+                } else {
+                    1
+                }
             }
         };
         code.max(out.exit_code())
@@ -479,11 +610,38 @@ mod tests {
         );
     }
 
+    /// Bare `future` is the home view, not the help screen: AXI principle 8
+    /// ("content first") asks a tool to show live state when run with no
+    /// arguments, because a help screen says what could be done and nothing
+    /// about what *is*. `--help` remains the way to get the help.
     #[tokio::test]
-    async fn no_args_prints_main_help() {
+    async fn no_args_prints_the_home_view() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let _addr = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_AGENT_GRPC_ADDR",
+            std::ffi::OsString::from("127.0.0.1:1"),
+        )]);
         let (code, stdout, stderr) = run(&[]).await;
         assert_eq!(code, 0);
-        assert_eq!(stdout, format!("{}\n", help::main_help()));
+        assert_ne!(stdout, format!("{}\n", help::main_help()));
+        // Every line states something an agent opens with, and the block ends
+        // with the commands that continue from it.
+        for prefix in [
+            "bin:",
+            "description:",
+            "version:",
+            "home:",
+            "agent:",
+            "sessions:",
+            "model:",
+            "tasks:",
+            "skills:",
+        ] {
+            assert!(stdout.contains(prefix), "missing {prefix} in: {stdout}");
+        }
+        assert!(stdout.contains("\nhelp["), "{stdout}");
+        assert!(stdout.contains("Run `future --help`"), "{stdout}");
         assert_eq!(stderr, "");
     }
 
@@ -503,13 +661,13 @@ mod tests {
     #[tokio::test]
     async fn unknown_group_is_an_error() {
         let (code, stdout, stderr) = run(&["bogus"]).await;
-        assert_eq!(code, 1);
+        assert_eq!(code, crate::axi::EXIT_USAGE);
         assert_eq!(stdout, "", "help must not be printed as if it succeeded");
         assert!(stderr.contains("Unknown group: bogus"), "{stderr}");
         // `future loop status` — the removed group - reports the same way rather
         // than looking like it ran.
         let (code, stdout, stderr) = run(&["loop", "status"]).await;
-        assert_eq!(code, 1);
+        assert_eq!(code, crate::axi::EXIT_USAGE);
         assert_eq!(stdout, "");
         assert!(stderr.contains("Unknown group: loop"), "{stderr}");
     }
@@ -690,9 +848,10 @@ mod tests {
             "{stderr}"
         );
 
-        // An unknown subcommand reports the usage line.
+        // An unknown subcommand is a usage error: the reason and the usage
+        // line, and exit 2 (not "the command ran and failed").
         let (code, stdout, stderr) = run(&["desktop", "bogus"]).await;
-        assert_eq!(code, 1);
+        assert_eq!(code, crate::axi::EXIT_USAGE);
         assert_eq!(stdout, "");
         assert!(stderr.contains("Unknown argument: bogus"), "{stderr}");
     }
@@ -705,9 +864,10 @@ mod tests {
         assert_eq!(stdout, format!("{}\n", help::AUTH_GROUP_HELP));
         assert_eq!(stderr, "");
 
-        // Unknown subcommand: error on stderr + the OTHER group-help variant.
+        // Unknown subcommand: error on stderr + the OTHER group-help variant,
+        // and a usage exit code — a typo must not read as a success.
         let (code, stdout, stderr) = run(&["auth", "bogus"]).await;
-        assert_eq!(code, 0);
+        assert_eq!(code, crate::axi::EXIT_USAGE);
         assert_eq!(stderr, "Unknown command: bogus\n\n");
         assert_eq!(stdout, format!("{}\n", help::AUTH_GROUP_HELP_UNKNOWN));
         assert_ne!(help::AUTH_GROUP_HELP, help::AUTH_GROUP_HELP_UNKNOWN);
@@ -715,7 +875,7 @@ mod tests {
 
     #[tokio::test]
     async fn auth_login_url_parsing_reaches_login() {
-        // All three forms route into login; with an unreachable --url the
+        // Both value forms route into login; with an unreachable --url the
         // device-code POST fails fast with a Network error and exit code 1.
         // Isolated HOME: login reads ~/.future/agent/auth.json, and the
         // shared env lock prevents other env-mutating tests from racing us.
@@ -724,7 +884,6 @@ mod tests {
         for args in [
             &["auth", "login", "--url", "http://127.0.0.1:1"][..],
             &["auth", "login", "--url=http://127.0.0.1:1"][..],
-            &["auth", "login", "--url", "http://127.0.0.1:1", "extra"][..],
         ] {
             let (code, _, stderr) = run(args).await;
             assert_eq!(code, 1);
@@ -733,6 +892,108 @@ mod tests {
                 "args={args:?} stderr={stderr:?}"
             );
         }
+
+        // A stray argument is a usage error, not a login attempt: `auth login`
+        // starts a device-code flow against the platform, so it must not start
+        // one because of a typo (nor must a destructive command).
+        let (code, stdout, stderr) =
+            run(&["auth", "login", "--url", "http://127.0.0.1:1", "extra"]).await;
+        assert_eq!(code, crate::axi::EXIT_USAGE);
+        assert_eq!(stdout, "");
+        assert!(stderr.contains("unexpected argument: extra"), "{stderr}");
+    }
+
+    /// Flags of a subcommand-less group arrive as `command`, not `rest`:
+    /// `future doctor --json` must actually print JSON. (The unit test for
+    /// `doctor()` passes its args directly, which is exactly why this bug
+    /// survived it.)
+    #[tokio::test]
+    async fn doctor_flags_reach_the_command_from_the_dispatcher() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let (code, stdout, _) = run(&["doctor", "--json"]).await;
+        assert_eq!(code, 0);
+        let report: serde_json::Value =
+            serde_json::from_str(&stdout).expect("doctor --json must print a JSON document");
+        assert!(report["checks"].is_array(), "{stdout}");
+
+        // `--strict` travels the same way and is a failure in a bare home.
+        let (code, _, _) = run(&["doctor", "--strict"]).await;
+        assert_eq!(code, 1, "--strict with warnings is a non-zero exit");
+    }
+
+    /// `--help` is a read. These four used to reach a command body: one logged
+    /// the user out, one ran a skill sync (a write), one started the channel
+    /// bridge, and one ran a full environment diagnostic.
+    #[tokio::test]
+    async fn help_never_runs_a_command() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        for (args, expected) in [
+            (&["skills", "update", "--help"][..], help::SKILLS_GROUP_HELP),
+            (
+                &["skills", "install", "--help"][..],
+                help::SKILLS_GROUP_HELP,
+            ),
+            (
+                &["account", "balance", "--help"][..],
+                help::ACCOUNT_GROUP_HELP,
+            ),
+            (&["tools", "list", "--help"][..], help::TOOLS_GROUP_HELP),
+            (&["doctor", "--help"][..], help::DOCTOR_HELP),
+            (
+                &["session", "info", "--help"][..],
+                commands::session::SESSION_HELP,
+            ),
+            (&["task", "run", "--help"][..], help::TASK_HELP),
+            (&["mcp", "status", "--help"][..], help::MCP_GROUP_HELP),
+            (&["workspace", "list", "--help"][..], help::WORKSPACE_HELP),
+        ] {
+            let (code, stdout, stderr) = run(args).await;
+            assert_eq!(code, 0, "{args:?} stderr={stderr}");
+            assert_eq!(stdout, format!("{expected}\n"), "{args:?}");
+            assert_eq!(stderr, "", "{args:?}");
+        }
+    }
+
+    /// `auth logout` takes no arguments, so a stray one is refused *before* the
+    /// credential is touched. This is the 2026-11-10 incident as a test: the
+    /// audit worker ran `future auth logout bogus` as a "usage error probe" and
+    /// really signed the user out.
+    #[tokio::test]
+    async fn auth_logout_refuses_arguments_without_touching_the_credential() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = crate::test_env::EnvGuard::temp_home();
+        let path = future_agent::utils::default_config_dir().join("auth.json");
+        std::fs::create_dir_all(path.parent().expect("parent")).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"future": {"type": "api_key", "key": "SYNTHETIC", "base_url": "https://x/api"}}"#,
+        )
+        .unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        for args in [
+            &["auth", "logout", "bogus"][..],
+            &["auth", "logout", "--yolo"][..],
+        ] {
+            let (code, stdout, stderr) = run(args).await;
+            assert_eq!(code, crate::axi::EXIT_USAGE, "{args:?}");
+            assert_eq!(stdout, "", "{args:?}");
+            assert!(stderr.contains("unexpected argument"), "{args:?}: {stderr}");
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                before,
+                "{args:?} must not rewrite auth.json"
+            );
+        }
+        let _ = home;
+
+        // `--help` is a read too, and reports the page.
+        let (code, stdout, _) = run(&["auth", "logout", "--help"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stdout, format!("{}\n", help::AUTH_LOGOUT_HELP));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 
     #[tokio::test]
@@ -836,9 +1097,9 @@ mod tests {
         let (code, stdout, _) = run(&["tools", "list"]).await;
         assert_eq!(code, 0);
         assert!(stdout.contains("tools available."), "stdout: {stdout}");
-        // Unknown subcommand → stderr note + group help, exit 0.
+        // Unknown subcommand → stderr note + group help, and a usage exit code.
         let (code, stdout, stderr) = run(&["tools", "bogus"]).await;
-        assert_eq!(code, 0);
+        assert_eq!(code, crate::axi::EXIT_USAGE);
         assert_eq!(stderr, "Unknown command: bogus\n\n");
         assert_eq!(stdout, format!("{}\n", help::TOOLS_GROUP_HELP));
     }
@@ -884,8 +1145,11 @@ mod tests {
         let (code, stdout, _) = run(&["mcp", "list"]).await;
         assert_eq!(code, 0);
         assert!(stdout.contains("rea --mcp"), "stdout: {stdout}");
+        // Principle 4: the count is stated, and the config path is still named.
+        assert!(stdout.starts_with("count: 1\n"), "stdout: {stdout}");
+        assert!(stdout.contains("config:"), "stdout: {stdout}");
         assert!(
-            stdout.contains("1 server(s) configured"),
+            stdout.contains("Run `future mcp status`"),
             "stdout: {stdout}"
         );
 
@@ -923,9 +1187,9 @@ mod tests {
             "stderr: {stderr}"
         );
 
-        // Unknown subcommand → group help, exit 0 (the tools/skills shape).
+        // Unknown subcommand → group help, and a usage exit code.
         let (code, stdout, stderr) = run(&["mcp", "bogus"]).await;
-        assert_eq!(code, 0);
+        assert_eq!(code, crate::axi::EXIT_USAGE);
         assert_eq!(stderr, "Unknown command: bogus\n\n");
         assert_eq!(stdout, format!("{}\n", help::MCP_GROUP_HELP));
     }
@@ -946,9 +1210,9 @@ mod tests {
             stderr.contains("Usage: future skills uninstall"),
             "stderr: {stderr}"
         );
-        // Unknown subcommand → group help.
+        // Unknown subcommand → group help, and a usage exit code.
         let (code, stdout, stderr) = run(&["skills", "bogus"]).await;
-        assert_eq!(code, 0);
+        assert_eq!(code, crate::axi::EXIT_USAGE);
         assert_eq!(stderr, "Unknown command: bogus\n\n");
         assert_eq!(stdout, format!("{}\n", help::SKILLS_GROUP_HELP));
     }
@@ -961,9 +1225,9 @@ mod tests {
         let (code, _, stderr) = run(&["account", "profile"]).await;
         assert_eq!(code, 1);
         assert!(stderr.contains("No API key found"), "stderr: {stderr}");
-        // Unknown subcommand → group help, exit 0.
+        // Unknown subcommand → group help, and a usage exit code.
         let (code, stdout, stderr) = run(&["account", "bogus"]).await;
-        assert_eq!(code, 0);
+        assert_eq!(code, crate::axi::EXIT_USAGE);
         assert_eq!(stderr, "Unknown command: bogus\n\n");
         assert_eq!(stdout, format!("{}\n", help::ACCOUNT_GROUP_HELP));
     }

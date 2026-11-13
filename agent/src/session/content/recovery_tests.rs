@@ -470,7 +470,6 @@ fn a_crashed_shell_result_is_recovered_with_both_of_its_bodies() {
     let (session, run) = seed(&manager, false);
     let store = manager.storage().unwrap().clone();
     let result = future_rpc::shell_result::ShellResult {
-        command: "exit 3".into(),
         cwd: "/w".into(),
         duration_ms: 7,
         status: future_rpc::shell_result::ShellStatus::Exited,

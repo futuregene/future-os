@@ -215,6 +215,26 @@ describe("RemoteClient connection handoff", () => {
     expect(stages().at(-1)?.syncStage).toBeUndefined();
   });
 
+  // The device's own id rides the same beat. A pair id names the connection and
+  // is minted again on the next pairing, so without this a machine serving two
+  // phones of one model had no way to say which one is connected — and the phone
+  // had no way to say it either.
+  test("the device id rides every presence beat", async () => {
+    const live = socket();
+    (wsconnect as jest.Mock).mockResolvedValue(live.connection);
+    await client.open();
+    (client as unknown as { startPresenceBeats: () => void }).startPresenceBeats();
+    // A stage coming and going must not take the id with it: one is state, the
+    // other is identity.
+    client.setSyncStage("history");
+    client.setSyncStage(null);
+    const beats = live.publish.mock.calls
+      .filter(([subject]) => String(subject) === `p.${credentials.pairId}.cmd.client_presence`)
+      .map(([, payload]) => JSON.parse(new TextDecoder().decode(payload as Uint8Array)) as { deviceId?: string });
+    expect(beats.length).toBeGreaterThanOrEqual(3);
+    expect(beats.every(beat => beat.deviceId === credentials.deviceId)).toBe(true);
+  });
+
   // Disconnecting is the user's own stop, and the desktop has to hear it at that
   // moment: without a goodbye the row keeps saying "in control" until the lease
   // lapses. It is also the last message this client ever sends, so it is flushed

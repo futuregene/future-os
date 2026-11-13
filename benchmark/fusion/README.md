@@ -75,6 +75,22 @@ python3 benchmark/fusion/bench.py run --suite benchmark/fusion/suites/max-1000.j
 python3 benchmark/fusion/bench.py plan --counts bbeh=460,omni=540 --exclude omni:383,omni:2865 --seed future-deepseek-max-1000-20261104-v1 --out benchmark/fusion/suites/max-1000-reproduced.json
 ```
 
+## 多模型长测
+
+`campaign.py` 可用同一份冻结题包交错运行多组单模型基准。每组由模型 ID 和思考等级绑定，启动前核对可用档位，逐题核对实际生效的绑定。四组各 1000 题表示首轮共 4000 次生成。首轮只执行一次，答错或解析失败也原样保留。
+
+用 `runtime.py --single-only --binary <future>` 启动隔离 Host，再准备一个 JSON 文件。对象的键是组名，值包含 `model` 和 `thinking_level`，例如 `{"deepseek-flash-max":{"model":"future/deepseek-flash","thinking_level":"max"}}`。启动命令如下。
+
+```sh
+python3 benchmark/fusion/campaign.py --suite benchmark/fusion/suites/max-1000.json --binary <future> --runtime benchmark/fusion/.local/runtime.json --profiles <profiles.json> --out benchmark/fusion/runs/max-1000-campaign --jobs-per-group 2
+```
+
+`--jobs-per-group 2` 为每组保留两路，四组最多同时运行八个对话。`--jobs` 则设置所有组共享的并发上限。续跑可以调整并发，原始清单继续保留，`executions.json` 记录每次续跑采用的并发配置和调度脚本摘要。
+
+首轮遇到已确认终态的模型网络故障时，保留原尝试并继续调度。所有组首轮结束后补测这些题，默认最多补测三遍。终态账本确认触及输出上限时，该题记录为 `output_limit`，后续题继续运行。认证、额度、回执不明和采证失败会暂停调度。续跑使用原题包、模型绑定、二进制、判分脚本与隔离 Host 数据目录。已接受但尚无结果的尝试只重新等待原请求。隔离 Host 已停止时，可用 `runtime.py --single-only --resume-home <原隔离数据目录>` 重启。若进程非正常退出，确认旧进程已停止后再移除输出目录中的 `campaign.lock`。
+
+输出目录中的 `progress.json` 可随时查看，结束后生成 `results.csv`。逐题提示词、回答、公开转录、可获取的推理、用量和错误分别保存在各组的 `attempt-*/` 目录。首轮与补测的记录均留在本地。冻结清单记录题包、脚本和二进制哈希，模型目录与生效档位另存。
+
 ## 安装
 
 在仓库根目录执行（Python 3.9+）：
@@ -274,8 +290,9 @@ Agent/Host 自身的阶段修正和上游重试仍按实际策略执行，
 | 单模型基线 | `future/deepseek-flash` | `max` |
 
 生成策略 3 不设置步骤或整场固定总时长：`step_timeout_secs=0`、`run_timeout_secs=0`，
-`idle_timeout_secs=300`。连续 300 秒没有新增推理或正文才终止对应子请求；心跳、usage、状态通知
-及只读回放不算内容进展。旧设置读取时升级，但模型、思考等级和历史讨论快照保持原值。
+`idle_timeout_secs=300`。连续 300 秒没有新增推理或正文会触发空闲超时。心跳、usage、状态通知
+及只读回放不算内容进展。分析和评议另有并行收束规则，首份有效报告后最多等 10 分钟，
+只剩一路时最多再等 5 分钟，取较早的截止时间。旧设置读取时升级，但模型、思考等级和历史讨论快照保持原值。
 Fusion 子请求也不再受原 30 分钟 HTTP 总时限截断，普通会话的传输配置不随之改变。
 以每次运行的有效配置快照为准。
 

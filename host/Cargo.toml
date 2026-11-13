@@ -66,6 +66,12 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 portable-pty = "0.9"
 libc = "0.2"
 
+# The Windows computer name for the device label (`remote_peer::system_name`):
+# the OS answer, not the `COMPUTERNAME` copy a launcher may have re-encoded.
+# Same crate and feature the instance lock already uses for the same reason.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_WindowsProgramming"] }
+
 
 [dev-dependencies]
 future-remote-server = { path = "../packages/remote-server", features = ["test-support"] }

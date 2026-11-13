@@ -145,6 +145,7 @@ impl<'a> PagedReply<'a> {
                         | "get_events_since"
                         | "get_messages"
                         | "list_session_files"
+                        | "list_git_commits"
                         | "list_settings_models"
                         | "list_providers"
                         | "list_available_skills"
@@ -258,6 +259,7 @@ mod tests {
             "get_events_since",
             "get_messages",
             "list_session_files",
+            "list_git_commits",
             "list_settings_models",
             "list_providers",
             "list_available_skills",

@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, Text, View } from "react-native";
 import { Button } from "../components/Button";
+import { readableDeviceName } from "../remote/deviceName";
 import { spacing } from "../theme/tokens";
 import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 
@@ -31,7 +32,7 @@ export function StandbyScreen({
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
-  const name = holder?.name?.trim();
+  const name = readableDeviceName(holder?.name);
 
   const take = async () => {
     if (busy) return;

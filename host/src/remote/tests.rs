@@ -3504,8 +3504,12 @@ mod runtime_tests {
         // serialized with the protocol's own envelope.
         let confirmation = || {
             let presence = SUPERVISOR.handshake_presence(&pair, "bridge_confirm");
-            let body =
-                future_remote_protocol::handshake::confirmation(&pair, "bridge_confirm", presence);
+            let body = future_remote_protocol::handshake::confirmation(
+                &pair,
+                "bridge_confirm",
+                &future_remote_protocol::handshake::advertised_features(false),
+                presence,
+            );
             serde_json::to_vec(&body).expect("a confirmation body serializes")
         };
 

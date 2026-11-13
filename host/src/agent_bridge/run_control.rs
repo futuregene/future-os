@@ -114,29 +114,46 @@ async fn abort_run_on_agent(
                 .as_array()
                 .is_some_and(|runs| runs.iter().any(|run| run["runId"] == run_id));
             if queued {
-                let cancelled = client
-                    .execute_command(run_control_command(
-                        "cancel_queued_run",
-                        session_id.to_owned(),
-                        Some(run_id),
-                    ))
-                    .await
-                    .map_err(|status| map_rpc_error(context, status))?
-                    .into_inner();
-                if is_session_not_found(&cancelled) {
-                    return Ok(AbortSessionOutcome::SessionMissing);
-                }
-                return cancelled
-                    .ok_or_rpc_error("Unable to cancel queued Future Agent run")
-                    .map(|_| AbortSessionOutcome::AbortRequested);
+                // The caller asked to stop a run that has NOT started. Cancelling
+                // it is a different command with a different meaning (taking a
+                // waiting message back, `cancel_queued_run`), and doing it here
+                // turned a failed stop into a success report: measured
+                // 2026-11-09, four `abort` calls for a run that was streaming
+                // all answered `is no longer active`, each "succeeded" by
+                // cancelling the queued message instead, and the reply the
+                // reader wanted to stop kept streaming.
+                //
+                // So report the mismatch and touch nothing: a stop that stopped
+                // nothing is a failure, and a message the reader is still
+                // waiting for must survive it.
+                return Err(format!(
+                    "run `{run_id}` has not started yet, so there was nothing to abort; \
+                     take the waiting message back through the send queue instead"
+                )
+                .into());
             }
-            if state
+            let active = state
                 .pointer("/activeRun/runId")
                 .and_then(serde_json::Value::as_str)
-                != Some(run_id.as_str())
-            {
-                // This exact run has already ended. Do not let a stale local
-                // row block termination or abort a newer client's live run.
+                .filter(|run_id| !run_id.is_empty());
+            if active != Some(run_id.as_str()) {
+                // This exact run has already ended. Nothing to stop, unless the
+                // conversation is still streaming something else, which is the
+                // one case the caller must NOT read as "stopped": the same
+                // measured session pressed stop four times while another run
+                // kept billing, and every press answered success.
+                //
+                // The live run is still not aborted from here (it may belong to
+                // another client), so say so instead of substituting one run for
+                // another.
+                if let Some(active) = active {
+                    if active != run_id {
+                        return Err(format!(
+                            "run `{run_id}` is no longer executing; `{active}` is and was not aborted"
+                        )
+                        .into());
+                    }
+                }
                 return Ok(AbortSessionOutcome::AbortRequested);
             }
         }
@@ -596,35 +613,134 @@ mod tests {
         assert!(!idle, "an unanswered RPC cannot prove the session stopped");
     }
 
+    /// A stop that names a run the Agent is only holding queued stops nothing,
+    /// and must say so. It must also leave the waiting message alone: cancelling
+    /// it is `cancel_queued_run`'s job, asked for by the queue panel.
+    ///
+    /// Measured 2026-11-09 on a real conversation: the view kept naming the
+    /// queued row while another run streamed, every `abort` answered `is no
+    /// longer active`, and this fallback "succeeded" by cancelling the waiting
+    /// message  -?so the reader's stop report was a lie and the reply kept
+    /// streaming. Reverting the branch to cancel-and-report-success turns the
+    /// three assertions below red.
     #[tokio::test]
-    async fn stale_local_rows_can_stop_without_cancelling_a_newer_run_and_queued_rows_are_cancelled_exactly(
-    ) {
-        let _home = TestHome::new("rc-stale-stop");
+    async fn a_queued_run_cannot_be_aborted_and_the_waiting_message_survives() {
+        let _home = TestHome::new("rc-queued-stop");
         let mock = mock_agent();
         let mut client = connect_agent().await.unwrap();
-        mock.push(
-            "abort",
-            Reply::Reject("run `old` is no longer active; current run is `new`".into()),
-        );
-        mock.push_run_state("old", serde_json::json!({"activeRun":{"runId":"new"}}));
-        abort_run_on_agent(&mut client, "abort", "session", Some("old".into()))
-            .await
-            .unwrap();
-        assert_eq!(mock.requests_of("abort").len(), 1);
-        assert_eq!(mock.requests_of("abort")[0].run_id, "old");
         mock.push(
             "abort",
             Reply::Reject("run `queued` is no longer active".into()),
         );
         mock.push_run_state(
             "queued",
-            serde_json::json!({"activeRun":{"runId":"new"},"queuedRuns":[{"runId":"queued"}]}),
+            serde_json::json!({"activeRun":{"runId":"live"},"queuedRuns":[{"runId":"queued"}]}),
         );
-        mock.push_data("cancel_queued_run", serde_json::json!({}));
-        abort_run_on_agent(&mut client, "abort", "session", Some("queued".into()))
+        let error = abort_run_on_agent(&mut client, "abort", "session", Some("queued".into()))
             .await
-            .unwrap();
-        assert_eq!(mock.requests_of("cancel_queued_run")[0].run_id, "queued");
+            .expect_err("a queued run is not something an abort can stop");
+        assert!(
+            error.to_string().contains("has not started yet"),
+            "the failure has to name what is wrong, got: {error}"
+        );
+        assert!(
+            mock.requests_of("cancel_queued_run").is_empty(),
+            "an abort must not take the waiting message back as a side effect"
+        );
+        assert_eq!(
+            mock.requests_of("abort").len(),
+            1,
+            "the live run is not aborted from here either"
+        );
+        assert_eq!(mock.requests_of("abort")[0].run_id, "queued");
+    }
+
+    /// The same refusal, driven through the entry point a stop actually uses and
+    /// against a real row: the queued message keeps its `queued` status. This is
+    /// the assertion the 2026-11-09 incident failed - the row was rewritten to
+    /// `cancelled / abort_requested "Terminated by user."` while its run had
+    /// never started, and the reply the reader wanted stopped kept streaming.
+    #[tokio::test]
+    async fn stopping_a_queued_message_leaves_its_row_queued() {
+        let home = TestHome::new("rc-queued-row-intact");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-q"));
+        let run = seed_run(&thread.id);
+        crate::store::mark_run_queued(&run.id);
+        assert_eq!(
+            crate::store::get_run(&run.id)
+                .expect("run")
+                .expect("some")
+                .status,
+            "queued"
+        );
+
+        mock.push(
+            "abort",
+            Reply::Reject(format!("run `{}` is no longer active", run.id)),
+        );
+        mock.push_run_state(
+            &run.id,
+            serde_json::json!({
+                "activeRun": {"runId": "live"},
+                "queuedRuns": [{"runId": run.id}],
+            }),
+        );
+
+        let error = abort_run(thread.id.clone(), run.id.clone())
+            .await
+            .expect_err("a stop that stops nothing must not report success");
+        assert!(error.to_string().contains("has not started yet"));
+        assert_eq!(
+            crate::store::get_run(&run.id)
+                .expect("run")
+                .expect("some")
+                .status,
+            "queued",
+            "the waiting message is still waiting, not cancelled"
+        );
+    }
+
+    /// A stale local row is a no-op while nothing is executing: the reader
+    /// pressed stop and nothing is left to stop, which is the outcome they
+    /// asked for. Once ANOTHER run is executing it is a failure instead  -?the
+    /// conversation is still streaming and nothing was stopped. The live run is
+    /// never aborted from here (it may belong to another client).
+    #[tokio::test]
+    async fn a_stale_row_reports_a_still_streaming_conversation_instead_of_success() {
+        let _home = TestHome::new("rc-stale-stop");
+        let mock = mock_agent();
+        let mut client = connect_agent().await.unwrap();
+
+        mock.push(
+            "abort",
+            Reply::Reject("run `old` is no longer active; current run is `new`".into()),
+        );
+        mock.push_run_state("old", serde_json::json!({"activeRun":{"runId":"new"}}));
+        let error = abort_run_on_agent(&mut client, "abort", "session", Some("old".into()))
+            .await
+            .expect_err("the conversation keeps streaming, so this stop failed");
+        assert!(
+            error.to_string().contains("`new` is and was not aborted"),
+            "the failure has to name the run that is still live, got: {error}"
+        );
+        assert_eq!(mock.requests_of("abort").len(), 1);
+        assert_eq!(mock.requests_of("abort")[0].run_id, "old");
+        assert!(mock.requests_of("cancel_queued_run").is_empty());
+
+        // Same shape, nothing executing: a stop that arrives after the run
+        // ended settles as a no-op, because the reader's goal (nothing running)
+        // already holds.
+        mock.push(
+            "abort",
+            Reply::Reject("run `old` is no longer active; current run is `new`".into()),
+        );
+        mock.push_run_state("old", serde_json::json!({}));
+        abort_run_on_agent(&mut client, "abort", "session", Some("old".into()))
+            .await
+            .expect("nothing is executing, so there is nothing to report");
+        assert_eq!(mock.requests_of("abort").len(), 2);
     }
 
     #[tokio::test]
@@ -1673,8 +1789,10 @@ mod tests {
             AbortSessionOutcome::SessionMissing
         );
 
-        // Queued when probed, and its session is gone by the time the cancel
-        // lands: the same answer instead of a failure no caller can act on.
+        // Queued when probed: nothing was aborted, so the queue is not touched
+        // either - not even to cancel the waiting message. (That used to be the
+        // substitute for a failed stop; see
+        // `a_queued_run_cannot_be_aborted_and_the_waiting_message_survives`.)
         mock.push(
             "abort",
             Reply::Reject("run `r2` is no longer active".into()),
@@ -1683,17 +1801,15 @@ mod tests {
             "get_state#r2",
             Reply::Data(serde_json::json!({"queuedRuns": [{"runId": "r2"}]}).to_string()),
         );
-        mock.push(
-            "cancel_queued_run",
-            Reply::RejectCode(not_found, "session not found".into()),
-        );
+        let error = abort_run_on_agent(&mut client, "abort", "session-r2", Some("r2".into()))
+            .await
+            .expect_err("a queued run is not something an abort can stop");
+        assert!(error.to_string().contains("has not started yet"));
         assert_eq!(
-            abort_run_on_agent(&mut client, "abort", "session-r2", Some("r2".into()))
-                .await
-                .expect("a session that vanished mid-cancel has nothing to abort"),
-            AbortSessionOutcome::SessionMissing
+            mock.requests_of("cancel_queued_run").len(),
+            0,
+            "a failed stop must not take the waiting message back"
         );
-        assert_eq!(mock.requests_of("cancel_queued_run").len(), 1);
 
         // A refusal with no message is still reported, and it names what failed
         // rather than surfacing an empty error to the composer.

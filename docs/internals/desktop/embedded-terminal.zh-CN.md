@@ -249,6 +249,34 @@ shell，以 **ibus-libpinyin** 作为输入法，经 `WebKitWebDriver`——IME 
 `vim` 不好用。推流通道（`p.{pair}.term.{id}`，同一套游标契约）是这套设计留出的
 升级位——落点是传输接缝——但要让功能正确并不需要它。
 
+### 面板不出现？去问主机宣告了什么
+
+只有当主机的握手清单里有 `terminal_v1` 时面板才存在，而没有它的主机会被**故意**
+不给任何入口——于是"这台机器不提供 shell"和"窗口坏了"看起来一模一样。窗口里没有
+任何东西能区分这两件事，所以直接问主机：
+
+```bash
+cargo run -p future-host --example peer_features
+desktop_AZYJSK5RT6PC5BQZ connected=true terminal=true features=["e2ee_v2", …, "terminal_v1"]
+```
+
+`terminal=false` 是主机自己给的答案——它不提供 shell；`features` 是剩下的清单，也是
+其他所有按能力开关的控件读取的同一份。这个探针会自己开一条客户端连接（一台主机对
+每个配对只维持一条活动会话），所以已经连着那台主机的窗口之后会重连；要让打印出来的
+清单是唯一连接，先把窗口关掉。
+
+直到 2026-11-11，这个答案在**每一台**主机上都是 `terminal=false`，与构建无关：
+安全握手（`secure_open` / `secure_finish`，也是当前客户端唯一会走的路）封的是
+`remote-protocol` 里那份自己的 `SERVER_FEATURES` 字面量，而随功能增长的那份清单在
+`remote-server::advertised_features`，只有旧的 `pair_handshake_confirm` 回复在用。
+`terminal_v1` 于 2026-11-04 加入，却从未到达过任何一台配对桌面。现在两条路只有一份
+清单（在 `remote-protocol`），确认体由提供 shell 的进程传入
+（`remote-server/src/secure.rs`），并有测试断言"封出去的确认体 == 本进程宣告的清单"，
+两者不会再各走各的。
+
+`future remote peers list` 仍然只打印连接状态、不打印能力；答案是上面这条探针，支持
+记录里应当直接引用它的输出。
+
 ## 与 opencode 的差异
 
 架构相同；以下是有意为之的偏差，免得未来读者把它们当事故：
@@ -267,5 +295,7 @@ shell，以 **ibus-libpinyin** 作为输入法，经 `WebKitWebDriver`——IME 
 * 还没有终端内搜索、链接处理、粘贴确认。
 * 已配对的**桌面**能看到本机的终端（§[远程](#远程)）；手机遥控界面与移动端应用
   看不到，而且手机端根本没有终端渲染器。
+* `future remote peers list` 打印的是连接状态，不是主机宣告的能力——面板不出现时用
+  `cargo run -p future-host --example peer_features` 判定（§[远程](#远程)）。
 * 面板的打开/高度偏好与 tab 视图状态在 `localStorage` 里；清掉存储丢的是*视图*，
   永远不会丢 shell。

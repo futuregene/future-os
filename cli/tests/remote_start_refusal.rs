@@ -633,6 +633,52 @@ impl ChildRun {
         }
     }
 
+    /// Wait for the entry to *settle on* a phase, ending on that outcome rather than on a
+    /// duration.
+    ///
+    /// The `Remote: <phase>` line trails the state it reports by design: the headless loop
+    /// prints the phase it read on the **previous** iteration (`cli/src/headless/mod.rs`,
+    /// the state print at the top) and then sleeps a second at the end, so a transition
+    /// announces itself one tick — plus whatever scheduling the runner owes it — later than
+    /// the event that caused it. A fixed sleep after that event therefore prices the runner,
+    /// and this is the same class as the windows `docs/testing/remote-start-refusal-wait-2026-10-26.md`
+    /// replaced with outcome waits.
+    ///
+    /// Measured on the Windows `tui-cli` leg (run 42689608460, attempt 1,
+    /// `a_reconnect_with_a_pre_v2_slot_forgets_it`): two seconds after `critical task
+    /// stopped` the transcript already carried the `Enabled`-only notice — "No device is
+    /// paired yet…", printed from the same freshly-read status whose phase line the next
+    /// iteration prints — while the last `Remote: …` line still read `Reconnecting`, so the
+    /// assertion reported a runtime that had in fact stopped. The runtime had stopped; only
+    /// the announcement was late.
+    ///
+    /// Nothing here asserts *when* the phase line arrives, only that it does (or that the
+    /// child ended without it); `cap` is the backstop [`TERMINAL_CAP`] describes.
+    fn await_phase(&mut self, phase: &str, cap: Duration) -> Verdict {
+        let deadline = Instant::now() + cap;
+        loop {
+            if last_phase(&self.text()).as_deref() == Some(phase) {
+                return Verdict::Reported;
+            }
+            match self.child.try_wait() {
+                // The pipes drain a moment after the process ends, so judge the settled
+                // transcript the way `await_line` does.
+                Ok(Some(_)) => {
+                    return if last_phase(&self.settled_text()).as_deref() == Some(phase) {
+                        Verdict::Reported
+                    } else {
+                        Verdict::EndedWithoutReport
+                    };
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                Err(_) => return Verdict::TimedOut,
+            }
+            if Instant::now() >= deadline {
+                return Verdict::TimedOut;
+            }
+        }
+    }
+
     /// Wait for the child to end *by itself*, returning its exit status.
     ///
     /// `None` means it was still running when the budget ran out, which is what an
@@ -1617,13 +1663,17 @@ fn a_reconnect_for_a_device_the_book_no_longer_holds_stops_that_runtime() {
     // book is a state to pair again from (`future remote devices add`), not a
     // reason to exit — so neither a rebuild failure nor the terminal `Stopped`
     // may appear.
-    std::thread::sleep(Duration::from_secs(2));
+    //
+    // "Settles" is waited for, not slept through: the phase line trails the state it
+    // reports by one loop tick, which is what `await_phase` is for.
+    let settled = child.await_phase("Enabled", TERMINAL_CAP);
     let transcript = child.text();
     assert_eq!(
         last_phase(&transcript).as_deref(),
         Some("Enabled"),
-        "a missing credential must stop its runtime and leave the entry serving nothing; \
-         transcript:\n{transcript}"
+        "a missing credential must stop its runtime and leave the entry serving nothing \
+         ({}); transcript:\n{transcript}",
+        settled.describe()
     );
     assert!(
         !transcript.contains("automatic bridge reconnect failed"),
@@ -1706,13 +1756,18 @@ fn a_reconnect_with_a_pre_v2_slot_forgets_it() {
         child.text()
     );
     // Forgetting the only slot leaves nothing to serve: the runtime stops and the
-    // entry reports "on, serving nothing" instead of exiting.
-    std::thread::sleep(Duration::from_secs(2));
+    // entry reports "on, serving nothing" instead of exiting. The phase line trails
+    // that state by one loop tick (see `await_phase`), which is why this waits for it
+    // rather than sleeping past it: on the Windows `tui-cli` leg two seconds were not
+    // enough and the transcript still read `Reconnecting` after the runtime had
+    // already stopped.
+    let settled = child.await_phase("Enabled", TERMINAL_CAP);
     let transcript = child.text();
     assert_eq!(
         last_phase(&transcript).as_deref(),
         Some("Enabled"),
-        "a pre-v2 credential must stop its runtime; transcript:\n{transcript}"
+        "a pre-v2 credential must stop its runtime ({}); transcript:\n{transcript}",
+        settled.describe()
     );
     for path in [
         home.join(".future/remote_pairings.json"),

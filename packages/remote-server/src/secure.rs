@@ -461,7 +461,13 @@ fn confirmation(
             .and_then(Value::as_array)
             .map_or(0, Vec::len),
     );
-    let body = future_remote_protocol::handshake::confirmation(pair_id, bridge, presence);
+    // The endpoint that owns the host services names what this process serves;
+    // the protocol crate only seals the envelope. Reading it here (rather than
+    // from a constant) is what lets `terminal_v1` be advertised by the hosts that
+    // actually installed the terminal registry.
+    let features = crate::commands::advertised_features(crate::services::terminal_available());
+    let body =
+        future_remote_protocol::handshake::confirmation(pair_id, bridge, &features, presence);
     let payload = serde_json::to_vec(&body).map_err(error)?;
     let payload = within_client_ceiling(payload, counts)?;
     Ok(URL_SAFE_NO_PAD.encode(
@@ -678,6 +684,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(confirm["confirmed"], true);
+        // The sealed confirmation must advertise exactly what this process
+        // serves — not a literal of its own. Two copies of that list is how
+        // `terminal_v1` stayed invisible to every paired desktop while the
+        // legacy reply kept advertising it.
+        let expected = crate::commands::advertised_features(crate::services::terminal_available());
+        assert_eq!(
+            confirm["features"],
+            serde_json::to_value(&expected).unwrap(),
+            "the secure handshake must advertise the process's own feature list"
+        );
         assert!(confirm["features"]
             .as_array()
             .unwrap()

@@ -10,6 +10,22 @@ use super::{Loop, RunEvent, C_GREEN, C_MAGENTA, C_RESET, DEFAULT_MAX_TURNS};
 // Separate from HTTP request retries: five additional attempts per model step.
 const MAX_STREAM_RETRIES: usize = 5;
 
+/// How many times one run keeps writing after the model's output budget ran
+/// out (`finish_reason=length`) before the truncation becomes the run's end.
+///
+/// A run hits this for two very different reasons, and both are worth
+/// continuing rather than handing the user a "继续" button:
+///
+/// - the reply was cut mid-sentence or mid-tool-arguments (the ordinary case),
+/// - the entire budget went to reasoning and not one visible character was
+///   produced. Leaving that to a manual retry is what made an unattended goal
+///   worker burn its whole retry budget re-thinking the same prompt (see
+///   `docs/architecture/response-outcomes.zh-CN.md`).
+///
+/// Bounded because a model that cannot finish inside its budget will not
+/// finish on the fifth identical attempt either, and every attempt is billed.
+const MAX_OUTPUT_LIMIT_CONTINUATIONS: usize = 2;
+
 #[derive(Debug, Default)]
 struct AccumulatedReasoningBlock {
     id: String,
@@ -283,6 +299,24 @@ impl Loop {
         let mut stream_retry_attempt = 0;
         let mut reconnecting = false;
         let mut retry_text = String::new();
+        // Set when this run schedules a continuation after the model's output
+        // budget ran out, and consumed by the next request. Separate from
+        // `stream_retry_attempt` (a connection budget) so a flaky link and a
+        // long answer cannot spend each other's allowance.
+        let mut output_limit_continuation_pending = false;
+        // Whether the cut that scheduled the continuation had already written
+        // visible text. Decides which instruction the continuation carries.
+        let mut output_limit_continuation_had_visible_output = false;
+        let mut output_limit_continuations = 0;
+        // Two independent gates: the user's switch for this path at all, and
+        // the existing auto-retry budget (fusion and `set_auto_retry(false)`
+        // callers ask for one request per step).
+        let max_output_limit_continuations =
+            if self.output_continuation && self.config.max_retries > 0 {
+                MAX_OUTPUT_LIMIT_CONTINUATIONS
+            } else {
+                0
+            };
         let mut provider_limit_checkpoint_id: Option<String> = None;
 
         if self.verbose {
@@ -569,6 +603,38 @@ impl Loop {
                 };
                 recovery.ensure_journal_entry_id();
                 work_messages.push(recovery);
+            }
+
+            // Same shape for a reply that ran into the model's output budget
+            // and is being continued inside this run. The preserved partial
+            // response is already in the history above, so this only tells the
+            // model to pick it up mid-thought instead of starting over — the
+            // failure mode that made an unattended worker re-solve the same
+            // task from scratch on every retry.
+            if output_limit_continuation_pending
+                && work_messages
+                    .last()
+                    .is_some_and(|message| message.role == "assistant")
+            {
+                // A cut mid-reply leaves a prefix the model can keep extending;
+                // a cut where the whole budget went to reasoning leaves nothing
+                // visible to extend (and that reasoning is filtered out before
+                // the request), so telling the model to "continue where it
+                // stopped" would point at content it cannot see. Ask for the
+                // answer itself instead, which is what the stepped-down level
+                // is meant to make possible.
+                let instruction = if output_limit_continuation_had_visible_output {
+                    "[Your previous response was cut off by the model's output limit. Continue exactly where it stopped: keep writing the same answer or the same tool call from the point it broke off. Do not restart the answer, do not repeat text already delivered, and do not redo tool calls that already ran.]"
+                } else {
+                    "[Your previous attempt ran out of the model's output limit before producing any answer, because it spent the whole budget reasoning. Stop deliberating and produce the answer now, directly and completely. Do not restate the problem or repeat earlier analysis.]"
+                };
+                let mut continuation = AgentMessage {
+                    role: "user".into(),
+                    content: vec![ContentBlock::text(instruction)],
+                    ..Default::default()
+                };
+                continuation.ensure_journal_entry_id();
+                work_messages.push(continuation);
             }
 
             // Emit message_start
@@ -1502,6 +1568,95 @@ impl Loop {
             // every tool_call_id must still get a placeholder result or the
             // next LLM request is rejected with HTTP 400.
             if stream_truncated {
+                // Only a spent output budget is worth continuing inside the
+                // run; every other cut (content filter, provider cancel,
+                // timeout, stream error) means the provider itself stopped
+                // answering, and re-sending the same request would just buy
+                // the same refusal. A user interrupt outranks both.
+                let output_budget_spent = truncation_detected_by == Some("finish_length");
+                if output_budget_spent
+                    && !interrupted_after_stream
+                    && output_limit_continuations < max_output_limit_continuations
+                {
+                    // This attempt's visible output decides whether repeating
+                    // the request is even plausible: when the whole budget went
+                    // to reasoning, the identical request is known to hit the
+                    // identical wall (measured: three turns at 32,768 tokens,
+                    // 32,761 of them reasoning, zero visible characters), so
+                    // the continuation buys room by thinking less.
+                    let produced_visible_output = text_blocks
+                        .iter()
+                        .any(|block| !block.text.trim().is_empty());
+                    // `assistant_text` carries the previous attempt's text
+                    // forward (`retry_text`), so it can never answer "how much
+                    // did *this* attempt write" — the per-attempt blocks can.
+                    let visible_bytes: usize =
+                        text_blocks.iter().map(|block| block.text.len()).sum();
+                    let reasoning_bytes: usize =
+                        reasoning_blocks.iter().map(|block| block.text.len()).sum();
+                    let stepped_down_to = if produced_visible_output {
+                        None
+                    } else {
+                        self.step_down_thinking_level()
+                    };
+
+                    // The partial answer is a prefix of the reply the model was
+                    // writing, so it stays in the history as the message this
+                    // step produced — which it already is: the block above
+                    // pushed and persisted it under this step's
+                    // `stream_entry_id`. Re-binding that same entry id to a
+                    // rebuilt message would write a second payload under one
+                    // identity and the transcript store rejects it.
+                    //
+                    // A cut mid-tool-call still has to be closed out: those
+                    // calls were never executed and their arguments may be
+                    // partial, but every tool_call_id needs a result or the
+                    // continuation request is rejected.
+                    append_skipped_tool_placeholders(
+                        messages,
+                        &agent_tool_calls,
+                        "output limit reached (continuing)",
+                        ctx.save_callback.as_ref(),
+                    );
+                    for tc in &agent_tool_calls {
+                        let output = format!(
+                            "[Tool execution skipped — {} was not executed because output limit reached (continuing)]",
+                            tc.name
+                        );
+                        on_event(RunEvent::ToolExecutionFinished {
+                            id: tc.id.clone(),
+                            name: tc.name.clone(),
+                            output: output.clone(),
+                            error: Some(output),
+                            exit_code: None,
+                            is_soft_fail: None,
+                            target_path: None,
+                            shell_result: None,
+                        });
+                    }
+                    retry_text = assistant_text;
+                    output_limit_continuations += 1;
+                    output_limit_continuation_pending = true;
+                    output_limit_continuation_had_visible_output = produced_visible_output;
+                    reconnecting = false;
+                    on_event(RunEvent::OutputStreamContinuing {
+                        attempt: output_limit_continuations,
+                        max_continuations: max_output_limit_continuations,
+                        thinking_level: stepped_down_to.clone(),
+                    });
+                    tracing::warn!(
+                        turn,
+                        attempt = output_limit_continuations,
+                        max_continuations = max_output_limit_continuations,
+                        visible_output = produced_visible_output,
+                        visible_bytes,
+                        reasoning_bytes,
+                        stepped_down_to = stepped_down_to.as_deref().unwrap_or("-"),
+                        "model output budget spent; continuing the same reply"
+                    );
+                    continue;
+                }
+
                 self.stream_incomplete
                     .store(true, std::sync::atomic::Ordering::SeqCst);
                 // Capture how far the run had progressed and how the cut was
@@ -1535,6 +1690,11 @@ impl Loop {
 
             stream_retry_attempt = 0;
             retry_text.clear();
+            // A complete model step ends the output-budget episode: the next
+            // cut of either kind starts from a fresh allowance.
+            output_limit_continuations = 0;
+            output_limit_continuation_pending = false;
+            output_limit_continuation_had_visible_output = false;
 
             // Check stop condition. The is_some_and closure keeps the None
             // edge branchless (a nested if's closing brace here collected a
@@ -1713,6 +1873,40 @@ impl Loop {
             Some(total) => total.merge_later_chunk(u),
             None => *total_usage = Some(u.clone()),
         }
+    }
+
+    /// Lower this run's thinking level by one step, returning the level the
+    /// continuation will run at, or `None` when nothing was lowered.
+    ///
+    /// Only called when an attempt spent its *entire* output budget on
+    /// reasoning and emitted no visible character: re-sending the identical
+    /// request provably hits the identical wall, so the continuation trades
+    /// thinking room for answer room. The provider is this run's private
+    /// snapshot (`snapshot()` on accepted runs), so stepping down cannot leak
+    /// into the session's own setting — the user's next message still runs at
+    /// the level they chose.
+    fn step_down_thinking_level(&self) -> Option<String> {
+        let current = self.provider.thinking_level()?;
+        let allowed = self.resolved_allowed_thinking_levels();
+        let lower = shallower_thinking_level(&current, allowed.as_deref())?;
+        self.provider
+            .update_thinking(&lower, crate::rpc::thinking_budget_for(&lower));
+        Some(lower)
+    }
+
+    /// The thinking levels the request's model offers, when a registry is
+    /// available to resolve it. `None` leaves the fixed product scale in charge.
+    fn resolved_allowed_thinking_levels(&self) -> Option<Vec<String>> {
+        let registry = self.model_registry.as_ref()?;
+        let model_ref = if self.model_ref.is_empty() {
+            self.model.as_str()
+        } else {
+            self.model_ref.as_str()
+        };
+        registry
+            .read()
+            .resolve_request_target(model_ref)
+            .map(|(_identity, model, _api_key)| model.allowed_thinking_levels())
     }
 
     /// Charge one model request: its tokens once, its cost once, both taken
@@ -1930,6 +2124,53 @@ fn has_unclosed_string(value: &str) -> bool {
     future_rpc::tool_arguments::has_unclosed_string(value)
 }
 
+/// One thinking level shallower than `current`, or `None` when there is no
+/// shallower level this model would accept.
+///
+/// Used when an attempt spent its *entire* output budget on reasoning and
+/// produced no visible character: repeating the identical request is known to
+/// fail the same way, so the continuation is attempted with less room to think
+/// rather than being handed to a user who would have to press "继续" — which in
+/// that case repeats the same wall.
+///
+/// `allowed` is the model's own level list (display order, weakest first); when
+/// the loop has no registry it is `None` and the product's fixed scale is used
+/// as-is. `default` (and any wire value this build does not name) hides the real
+/// depth inside the provider's choice, so the step cannot be relative: `low` is
+/// tried first — the shallowest level the product ships wording for above `off`
+/// — and the model's shallowest offered level is the fallback.
+fn shallower_thinking_level(current: &str, allowed: Option<&[String]>) -> Option<String> {
+    use crate::llm::schema::{clamp_thinking_level, thinking_level_rank, KNOWN_THINKING_LEVELS};
+
+    // A model is free to declare levels this build does not name; asking for one
+    // it does not offer would put an unhonored value on the wire.
+    let offered = |level: &str| -> Option<String> {
+        match allowed {
+            Some(allowed) => (clamp_thinking_level(level, allowed) == level).then(|| level.into()),
+            None => Some(level.to_string()),
+        }
+    };
+
+    match thinking_level_rank(current.trim()) {
+        // Already at the shallowest named level: nothing left to give up.
+        Some(0) => None,
+        // Relative step: walk down the fixed scale to the nearest level this
+        // model actually offers, `off` included — a run that has already burned
+        // its whole budget thinking twice is better off answering plainly.
+        Some(rank) => KNOWN_THINKING_LEVELS[..rank]
+            .iter()
+            .rev()
+            .find_map(|level| offered(level)),
+        None => offered("low").or_else(|| {
+            allowed?
+                .iter()
+                .map(String::as_str)
+                .filter(|level| *level != crate::llm::schema::DEFAULT_THINKING_LEVEL)
+                .find_map(offered)
+        }),
+    }
+}
+
 /// Append placeholder tool-result messages for tool calls that were never
 /// executed (truncated stream or stop condition). Without a matching tool
 /// message per tool_call_id, the LLM API rejects the conversation on the
@@ -2005,6 +2246,11 @@ mod tests {
         /// summary that matches no documented section at all.
         summary_text: parking_lot::Mutex<Option<String>>,
         summary_calls: std::sync::atomic::AtomicUsize,
+        /// Current thinking level, when the script opts into being mutable.
+        /// `None` models an immutable provider, whose level cannot be read.
+        thinking_level: parking_lot::Mutex<Option<String>>,
+        /// Every `update_thinking` this provider was asked for.
+        thinking_updates: parking_lot::Mutex<Vec<String>>,
     }
     impl ScriptedProvider {
         fn new(scripts: Vec<Script>) -> Arc<Self> {
@@ -2018,6 +2264,8 @@ mod tests {
                 summary_unpriced: std::sync::atomic::AtomicBool::new(false),
                 summary_calls: std::sync::atomic::AtomicUsize::new(0),
                 summary_text: parking_lot::Mutex::new(None),
+                thinking_level: parking_lot::Mutex::new(None),
+                thinking_updates: parking_lot::Mutex::new(vec![]),
             })
         }
     }
@@ -2129,6 +2377,18 @@ mod tests {
                 }
                 Script::Fail(error) => Err(anyhow!(error)),
             }
+        }
+
+        fn update_thinking(&self, level: &str, _budget: i32) {
+            self.thinking_updates.lock().push(level.to_string());
+            let mut current = self.thinking_level.lock();
+            if current.is_some() {
+                *current = Some(level.to_string());
+            }
+        }
+
+        fn thinking_level(&self) -> Option<String> {
+            self.thinking_level.lock().clone()
         }
     }
 
@@ -3773,7 +4033,12 @@ mod tests {
                     usage: None,
                 },
             ])]);
-            let loop_ = Loop::new(provider, "mock");
+            let mut loop_ = Loop::new(provider, "mock");
+            // Automatic continuation is a separate behaviour with its own
+            // tests; this table is about how a terminal reason is classified,
+            // so a spent output budget must end the run on its first attempt
+            // rather than being continued.
+            loop_.config.max_retries = 0;
             let (_, messages) = loop_
                 .run_streaming_with_messages(
                     user_messages("hi"),
@@ -3871,13 +4136,31 @@ mod tests {
         // fd budget: this test builds a runtime and holds its own
         // descriptors while its neighbours do the same.
         crate::test_support::ensure_fd_headroom();
-        let provider = ScriptedProvider::new(vec![Script::Events(vec![
-            ev_text("cut off at max tokens"),
-            ModelStreamEvent::Finish {
-                reason: FinishReason::Length,
-                usage: None,
-            },
-        ])]);
+        // Two attempts: the first spends the output budget, the continuation
+        // spends it too, and only then does the run end as `incomplete`.
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                ev_text("cut off at max tokens"),
+                ModelStreamEvent::Finish {
+                    reason: FinishReason::Length,
+                    usage: None,
+                },
+            ]),
+            Script::Events(vec![
+                ev_text(" and then cut off again"),
+                ModelStreamEvent::Finish {
+                    reason: FinishReason::Length,
+                    usage: None,
+                },
+            ]),
+            Script::Events(vec![
+                ev_text(" a third time"),
+                ModelStreamEvent::Finish {
+                    reason: FinishReason::Length,
+                    usage: None,
+                },
+            ]),
+        ]);
         let loop_ = Loop::new(provider, "mock");
         let (text, _) = loop_
             .run_streaming_with_messages(
@@ -3889,7 +4172,12 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(text, "cut off at max tokens");
+        // Every continuation's text is preserved: the cut never loses what was
+        // already written.
+        assert_eq!(
+            text,
+            "cut off at max tokens and then cut off again a third time"
+        );
         assert!(loop_
             .stream_incomplete
             .load(std::sync::atomic::Ordering::SeqCst));
@@ -3901,6 +4189,395 @@ mod tests {
                 .map(|truncation| truncation.detected_by),
             Some("finish_length".to_string())
         );
+    }
+
+    /// One `output_stream_continuing` signal: (attempt, max, stepped-down level).
+    type ContinuingSignals =
+        std::sync::Arc<parking_lot::Mutex<Vec<(usize, usize, Option<String>)>>>;
+
+    /// The `output_stream_continuing` signals a run emitted, in order.
+    fn output_continuing_events(seen: &ContinuingSignals) -> Vec<(usize, usize, Option<String>)> {
+        seen.lock().clone()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn spent_output_budget_continues_the_same_run() {
+        // The reply is cut mid-sentence. The run must not hand the user a
+        // "继续" button: it asks the model to keep going, inside this run.
+        crate::test_support::ensure_fd_headroom();
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                ev_text("PARTIAL-PREFIX: batch 3 of 7"),
+                ModelStreamEvent::Finish {
+                    reason: FinishReason::Length,
+                    usage: None,
+                },
+            ]),
+            Script::Events(vec![ev_text("PARTIAL-SUFFIX: batch 7 of 7"), ev_stop()]),
+        ]);
+        let loop_ = Loop::new(provider.clone(), "mock");
+        let seen = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let (text, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                move |event| {
+                    if let RunEvent::OutputStreamContinuing {
+                        attempt,
+                        max_continuations,
+                        thinking_level,
+                    } = event
+                    {
+                        sink.lock()
+                            .push((attempt, max_continuations, thinking_level));
+                    }
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Both halves of the answer survive, in order.
+        assert_eq!(
+            text,
+            "PARTIAL-PREFIX: batch 3 of 7PARTIAL-SUFFIX: batch 7 of 7"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.text().contains("PARTIAL-SUFFIX")),
+            "the continuation's text is part of the conversation, not just the return value"
+        );
+
+        // Exactly one continuation, announced once, and no level was touched:
+        // this attempt had visible output, so repeating it is plausible.
+        assert_eq!(output_continuing_events(&seen), vec![(1, 2, None)]);
+        assert!(
+            provider.thinking_updates.lock().is_empty(),
+            "a cut with visible output must not change how the model thinks"
+        );
+
+        // Two model calls: the cut attempt, then the continuation.
+        assert_eq!(provider.requests.lock().len(), 2);
+        // The continuation request carries the partial answer it must extend,
+        // plus the instruction that stops it from starting over.
+        let second = &provider.requests.lock()[1];
+        assert!(
+            second
+                .iter()
+                .any(|message| message.text().contains("PARTIAL-PREFIX")),
+            "the continuation must see the text already delivered"
+        );
+        let instruction = second.last().expect("instruction appended").text();
+        assert!(
+            instruction.contains("Continue exactly where it stopped"),
+            "got: {instruction}"
+        );
+        // A continued run is not an incomplete one: the answer finished.
+        assert!(!loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+        assert!(loop_.stream_truncation.lock().is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reasoning_only_cut_steps_thinking_down_before_continuing() {
+        // The measured failure: the whole output budget went to reasoning and
+        // the reply had zero visible characters. Repeating that request hits
+        // the same wall, so the continuation must be attempted shallower.
+        crate::test_support::ensure_fd_headroom();
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                ModelStreamEvent::ReasoningDelta {
+                    id: "r".into(),
+                    text: "endless deliberation".into(),
+                },
+                ModelStreamEvent::Finish {
+                    reason: FinishReason::Length,
+                    usage: None,
+                },
+            ]),
+            Script::Events(vec![ev_text("the answer, at last"), ev_stop()]),
+        ]);
+        *provider.thinking_level.lock() = Some("high".to_string());
+        let loop_ = Loop::new(provider.clone(), "mock");
+        let seen = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                move |event| {
+                    if let RunEvent::OutputStreamContinuing {
+                        attempt,
+                        max_continuations,
+                        thinking_level,
+                    } = event
+                    {
+                        sink.lock()
+                            .push((attempt, max_continuations, thinking_level));
+                    }
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(text, "the answer, at last");
+        // Stepped down from `high` to the next level the product names below it.
+        assert_eq!(
+            *provider.thinking_updates.lock(),
+            vec!["medium".to_string()],
+            "a cut with no visible output must buy room by thinking less"
+        );
+        assert_eq!(
+            output_continuing_events(&seen),
+            vec![(1, 2, Some("medium".to_string()))],
+            "the signal must say which level the continuation runs at"
+        );
+        // Reasoning alone is not "visible output": the continuation gets the
+        // instruction that asks for an answer instead of a continuation.
+        let second = &provider.requests.lock()[1];
+        let instruction = second.last().expect("instruction appended").text();
+        assert!(
+            instruction.contains("Stop deliberating and produce the answer"),
+            "got: {instruction}"
+        );
+        // The reasoning-only prefix is what the API rejects on resend, so it
+        // must not be in the continuation request.
+        assert!(
+            !second
+                .iter()
+                .any(|message| message.text().contains("endless deliberation")),
+            "a reasoning-only assistant message must not be replayed upstream"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn output_budget_continuation_is_bounded_and_stays_incomplete() {
+        // A model that cannot finish inside its budget will not finish on the
+        // Nth attempt either: the allowance is spent, then the run ends exactly
+        // as it did before this feature existed.
+        crate::test_support::ensure_fd_headroom();
+        let provider = ScriptedProvider::new(
+            (0..3)
+                .map(|index| {
+                    Script::Events(vec![
+                        ev_text(&format!("piece {index} ")),
+                        ModelStreamEvent::Finish {
+                            reason: FinishReason::Length,
+                            usage: None,
+                        },
+                    ])
+                })
+                .collect(),
+        );
+        let loop_ = Loop::new(provider.clone(), "mock");
+        let _ = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+
+        // One initial attempt plus the whole allowance, and no more.
+        assert_eq!(provider.requests.lock().len(), 3);
+        let truncation = loop_
+            .stream_truncation
+            .lock()
+            .clone()
+            .expect("a spent allowance still ends as a truncation");
+        assert_eq!(truncation.detected_by, "finish_length");
+        assert!(truncation.error_message().starts_with("[OUTPUT_LIMIT]"));
+        assert!(loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn auto_retry_disabled_does_not_continue_output_budget() {
+        // `max_retries == 0` is how a caller says "one request per step"
+        // (fusion, and the session setting behind it). Continuation must honour
+        // that rather than spending requests the caller opted out of.
+        crate::test_support::ensure_fd_headroom();
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            ev_text("cut off"),
+            ModelStreamEvent::Finish {
+                reason: FinishReason::Length,
+                usage: None,
+            },
+        ])]);
+        let mut loop_ = Loop::new(provider.clone(), "mock");
+        loop_.config.max_retries = 0;
+        let _ = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            provider.requests.lock().len(),
+            1,
+            "an opted-out run must not be continued"
+        );
+        assert!(loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn output_continuation_switch_off_restores_the_incomplete_ending() {
+        // The user-facing switch (`"outputContinuation": false`). It must be
+        // honoured even when automatic retry is on, because it is the only gate
+        // on a path that spends tokens the user did not ask for one request at
+        // a time.
+        crate::test_support::ensure_fd_headroom();
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            ev_text("cut off"),
+            ModelStreamEvent::Finish {
+                reason: FinishReason::Length,
+                usage: None,
+            },
+        ])]);
+        let mut loop_ = Loop::new(provider.clone(), "mock").with_output_continuation(false);
+        // Auto-retry deliberately left enabled: the switch must stand alone.
+        loop_.config.max_retries = 3;
+        let _ = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            provider.requests.lock().len(),
+            1,
+            "a switched-off run must issue exactly one request"
+        );
+        // The pre-feature ending is preserved verbatim.
+        assert!(loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+        let truncation = loop_.stream_truncation.lock().clone().expect("truncation");
+        assert_eq!(truncation.detected_by, "finish_length");
+        assert!(truncation.error_message().starts_with("[OUTPUT_LIMIT]"));
+    }
+
+    /// A goal worker drives a run to completion, sees its terminal state, and
+    /// decides from that alone whether to re-offer the todo. The continuation
+    /// lives inside the run, so the worker must never see the intermediate cut —
+    /// this is the order the whole goal integration depends on.
+    #[tokio::test(flavor = "current_thread")]
+    async fn continuation_settles_inside_the_run_before_the_worker_sees_a_state() {
+        crate::test_support::ensure_fd_headroom();
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                ev_text("batch 3 of 7 done"),
+                ModelStreamEvent::Finish {
+                    reason: FinishReason::Length,
+                    usage: None,
+                },
+            ]),
+            Script::Events(vec![ev_text("; batch 7 of 7 done"), ev_stop()]),
+        ]);
+        let loop_ = Loop::new(provider.clone(), "mock");
+        let _ = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+
+        // One uninterrupted run with two billed requests. No `incomplete`
+        // terminal state was ever produced, so a worker has nothing to retry:
+        // `incomplete_streak` cannot even start.
+        assert_eq!(provider.requests.lock().len(), 2);
+        assert!(
+            !loop_
+                .stream_incomplete
+                .load(std::sync::atomic::Ordering::SeqCst),
+            "the continuation must settle the cut, not surface it"
+        );
+        assert!(loop_.stream_truncation.lock().is_none());
+    }
+
+    #[test]
+    fn shallower_thinking_level_walks_down_the_scale() {
+        // The shallowest named level has nothing left to give up.
+        assert_eq!(shallower_thinking_level("off", None), None);
+        // A relative step on the fixed scale: one level down, not to the floor.
+        assert_eq!(
+            shallower_thinking_level("high", None).as_deref(),
+            Some("medium")
+        );
+        assert_eq!(
+            shallower_thinking_level("medium", None).as_deref(),
+            Some("low")
+        );
+        assert_eq!(
+            shallower_thinking_level("max", None).as_deref(),
+            Some("xhigh")
+        );
+        // `default` hides the real depth inside the provider's choice, so the
+        // step cannot be relative: it starts at the shallowest usable level.
+        assert_eq!(
+            shallower_thinking_level("default", None).as_deref(),
+            Some("low")
+        );
+        // A model that declares only some levels gets one it actually offers.
+        let allowed = vec![
+            "default".to_string(),
+            "off".to_string(),
+            "low".to_string(),
+            "high".to_string(),
+        ];
+        assert_eq!(
+            shallower_thinking_level("high", Some(&allowed)).as_deref(),
+            Some("low")
+        );
+        // A model offering nothing between `high` and `off` still steps down
+        // rather than reporting that it cannot.
+        let off_first = vec!["default".to_string(), "off".to_string(), "high".to_string()];
+        assert_eq!(
+            shallower_thinking_level("high", Some(&off_first)).as_deref(),
+            Some("off")
+        );
+        // The measured model: `["default","off","low","high"]`. Its `high` has
+        // `low` below it, so a real step down is available.
+        let measured = vec![
+            "default".to_string(),
+            "off".to_string(),
+            "low".to_string(),
+            "high".to_string(),
+        ];
+        assert_eq!(
+            shallower_thinking_level("high", Some(&measured)).as_deref(),
+            Some("low")
+        );
+        // Asked for a level this model does not offer: `default` is the only
+        // safe fallback, so it is not a valid step-down target.
+        let only_high = vec!["default".to_string(), "high".to_string()];
+        assert_eq!(shallower_thinking_level("high", Some(&only_high)), None);
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -12,9 +12,11 @@
 //! `--out` for the rest. Nothing here writes an unbounded amount of text to a
 //! terminal an agent is reading.
 
+use crate::axi;
 use crate::commands::mcp_client::{
     max_frame_bytes_from_env, Connection, ServerSpec, DEFAULT_TIMEOUT,
 };
+use crate::flags::{parse_flags, Flags};
 use crate::output::Output;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -130,98 +132,9 @@ fn resolve<'config>(config: &'config McpConfig, name: &str) -> Result<&'config S
 
 // ── Argument parsing ───────────────────────────────────────────────────────
 
-/// Parsed `future mcp` arguments: positional values, `--flag value` pairs,
-/// repeatable flags and bare switches.
-#[derive(Debug)]
-struct Flags {
-    positional: Vec<String>,
-    values: BTreeMap<String, String>,
-    lists: BTreeMap<String, Vec<String>>,
-    switches: Vec<String>,
-}
-
-/// Parse `--key value` pairs, `--key=value`, repeatable flags into `lists`, and
-/// bare switches into `switches`.
-fn parse_flags(
-    args: &[String],
-    taking_value: &[&str],
-    repeatable: &[&str],
-    switches: &[&str],
-) -> Result<Flags, String> {
-    let mut parsed = Flags {
-        positional: Vec::new(),
-        values: BTreeMap::new(),
-        lists: BTreeMap::new(),
-        switches: Vec::new(),
-    };
-    let mut index = 0;
-    while index < args.len() {
-        let arg = args[index].as_str();
-        if !arg.starts_with("--") {
-            parsed.positional.push(arg.to_string());
-            index += 1;
-            continue;
-        }
-        let (flag, inline) = match arg.split_once('=') {
-            Some((flag, value)) => (flag, Some(value.to_string())),
-            None => (arg, None),
-        };
-        if switches.contains(&flag) {
-            if inline.is_some() {
-                return Err(format!("{flag} does not take a value"));
-            }
-            parsed.switches.push(flag.to_string());
-            index += 1;
-            continue;
-        }
-        if !taking_value.contains(&flag) && !repeatable.contains(&flag) {
-            return Err(format!("unknown option: {flag}"));
-        }
-        let value = match inline {
-            Some(value) => value,
-            None => {
-                // Repeatable flags take their value verbatim: `--arg --mcp` is
-                // how an MCP server is spawned, so a leading `--` is data here,
-                // not the next option. Single-value flags keep the guard, where
-                // a following `--flag` means the value was forgotten.
-                let next = args.get(index + 1);
-                let value = if repeatable.contains(&flag) {
-                    next.ok_or_else(|| format!("missing value for {flag}"))?
-                } else {
-                    next.filter(|value| !value.starts_with("--"))
-                        .ok_or_else(|| format!("missing value for {flag}"))?
-                };
-                index += 1;
-                value.clone()
-            }
-        };
-        if repeatable.contains(&flag) {
-            parsed
-                .lists
-                .entry(flag.to_string())
-                .or_default()
-                .push(value);
-        } else {
-            parsed.values.insert(flag.to_string(), value);
-        }
-        index += 1;
-    }
-    Ok(parsed)
-}
-
+/// The flags shared with every other list command (see [`crate::flags`]);
+/// these are the `future mcp`-only readers on top of it.
 impl Flags {
-    fn has(&self, flag: &str) -> bool {
-        self.switches.iter().any(|switch| switch == flag)
-    }
-
-    fn value(&self, flag: &str) -> Option<&str> {
-        self.values.get(flag).map(String::as_str)
-    }
-
-    fn list(&self, flag: &str) -> &[String] {
-        self.lists.get(flag).map(Vec::as_slice).unwrap_or(&[])
-    }
-
     fn usize_value(&self, flag: &str, default: usize, max: usize) -> Result<usize, String> {
         let Some(raw) = self.value(flag) else {
             return Ok(default);
@@ -594,16 +507,50 @@ async fn serve_requests<R: tokio::io::AsyncBufRead + Unpin>(
 
 // ── list ───────────────────────────────────────────────────────────────────
 
-const LIST_USAGE: &str = "Usage: future mcp list [--json]";
+const LIST_USAGE: &str = "Usage: future mcp list [--json|--format text|json|toon]";
+
+pub const LIST_HELP: &str = "future mcp list — the configured MCP servers
+
+Usage:
+  future mcp list [--json] [--format text|json|toon]
+
+Options:
+  --json                 The full record per server, as a JSON document.
+  --format toon          The same rows in TOON (no braces, quotes or repeated
+                         keys); the compact form an agent should read.
+  --format text          The default: a count, one line per server, and the
+                         commands that continue from here.
+  -h, --help             Show this help";
+
+/// `future mcp` with no subcommand shows the server list (AXI principle 8).
+pub fn list_servers(out: &Output) -> Result<(), String> {
+    mcp_list(&[], out)
+}
+
+/// The fields `--format toon` reports for a server.
+const LIST_FIELDS: &[&str] = &["name", "transport", "endpoint", "state"];
 
 fn mcp_list(args: &[String], out: &Output) -> Result<(), String> {
-    let flags = parse_flags(args, &[], &[], &["--json"])?;
-    if let Some(extra) = flags.positional.first() {
-        return Err(format!("unexpected argument: {extra}\n\n{LIST_USAGE}"));
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        out.log(LIST_HELP);
+        return Ok(());
     }
+    // Declared up front: an invented flag is refused with exit 2 rather than
+    // silently ignored while the configured servers are printed anyway.
+    let flags = parse_flags(args, &["--format"], &[], &["--json"])
+        .map_err(|error| axi::usage(out, &error, LIST_USAGE))?;
+    if let Some(extra) = flags.positional.first() {
+        return Err(axi::usage(
+            out,
+            &format!("unexpected argument: {extra}"),
+            LIST_USAGE,
+        ));
+    }
+    let format = axi::Format::resolve(&flags, axi::Format::Text)
+        .map_err(|error| axi::usage(out, &error, LIST_USAGE))?;
     let config = load_config()?;
 
-    if flags.has("--json") {
+    if format == axi::Format::Json {
         let servers: Vec<Value> = config
             .servers
             .iter()
@@ -632,13 +579,37 @@ fn mcp_list(args: &[String], out: &Output) -> Result<(), String> {
         return Ok(());
     }
 
-    if config.servers.is_empty() {
-        out.log(&format!(
-            "No MCP servers are configured.\n\nConfiguration file: {}\nAdd one:            future mcp add rea --command rea --arg --mcp\n                    future mcp add remote --url https://example.com/mcp",
-            config_path().display()
-        ));
+    if format == axi::Format::Toon {
+        let rows: Vec<Vec<String>> = config
+            .servers
+            .iter()
+            .map(|(name, spec)| {
+                vec![
+                    name.clone(),
+                    transport_name(spec).to_string(),
+                    spec.endpoint(),
+                    if spec.enabled { "on" } else { "off" }.to_string(),
+                ]
+            })
+            .collect();
+        out.log(&axi::toon_scalar("configPath", &axi::tilde(&config_path())));
+        out.log(&axi::toon_rows("servers", LIST_FIELDS, &rows));
         return Ok(());
     }
+
+    if config.servers.is_empty() {
+        // Definitive empty state, and the two commands that fix it.
+        axi::empty_state(
+            out,
+            &format!(
+                "No MCP servers are configured.\nConfiguration file: {}\nAdd one:            future mcp add rea --command rea --arg --mcp\n                    future mcp add remote --url https://example.com/mcp",
+                axi::tilde(&config_path())
+            ),
+        );
+        mcp_list_hints(out);
+        return Ok(());
+    }
+    axi::count_line(out, "", config.servers.len());
     for (name, spec) in &config.servers {
         let state = if spec.enabled { "" } else { "  [disabled]" };
         // The transport is named on the row: a `command` and a URL look alike
@@ -649,12 +620,20 @@ fn mcp_list(args: &[String], out: &Output) -> Result<(), String> {
             spec.endpoint()
         ));
     }
-    out.log(&format!(
-        "\n{} server(s) configured in {}",
-        config.servers.len(),
-        config_path().display()
-    ));
+    out.log(&format!("config: {}", axi::tilde(&config_path())));
+    mcp_list_hints(out);
     Ok(())
+}
+
+/// Principle 9: what to run next once the servers are listed.
+fn mcp_list_hints(out: &Output) {
+    axi::hints(
+        out,
+        &[
+            "Run `future mcp status` to check whether each server is usable.",
+            "Run `future mcp tools <server>` to list one server's tools.",
+        ],
+    );
 }
 
 // ── tools ──────────────────────────────────────────────────────────────────
@@ -1000,8 +979,16 @@ async fn mcp_call(args: &[String], out: &Output) -> Result<(), String> {
         return Err(crate::HANDLED_EXIT.to_string());
     }
 
-    for line in header {
-        out.log(&line);
+    // `--json` means "stdout is one JSON document": the notes that accompany a
+    // capped or mirrored result go to stderr instead, or the document stops
+    // parsing (the harness literally `JSON.parse`s the whole of stdout).
+    let notes_to_stderr = flags.has("--json");
+    for line in &header {
+        if notes_to_stderr {
+            out.log_err(line);
+        } else {
+            out.log(line);
+        }
     }
     out.log(&body);
     Ok(())
@@ -1783,9 +1770,16 @@ mod tests {
                  } }"#,
         ));
 
-        let (out, _sink) = Output::memory();
+        // A stray argument is a usage error: exit code 2, the reason on stderr,
+        // and no list printed for an agent to mistake for a result.
+        let (out, sink) = Output::memory();
         let error = mcp_list(&args(&["extra"]), &out).unwrap_err();
-        assert!(error.contains("unexpected argument: extra"), "{error}");
+        assert_eq!(error, crate::HANDLED_EXIT);
+        assert_eq!(out.exit_code(), crate::axi::EXIT_USAGE);
+        let (stdout, stderr) = rendered(&sink);
+        assert_eq!(stdout, "");
+        assert!(stderr.contains("unexpected argument: extra"), "{stderr}");
+        assert!(stderr.contains(LIST_USAGE), "{stderr}");
 
         let (out, sink) = Output::memory();
         mcp_list(&args(&["--json"]), &out).unwrap();

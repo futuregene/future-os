@@ -18,6 +18,21 @@
       "mobile": false
     },
     "scenarios": {
+      "queue-many": {
+        "note": "The send queue at the Agent's own ceiling (`?queue=128`, `DEFAULT_SESSION_QUEUE_CAPACITY` in `agent/src/runtime/scheduler_queue.rs`). The panel floats over the transcript inside an `overflow-hidden` frame and used to draw every waiting row at full height, so a queue this long had its first rows clipped away above the frame — not unreadable but unreachable: their edit and delete buttons could not be hit, and the frame's footer, taller than the frame itself, turned the transcript into blank space. Nothing here is asserted from pixels: every claim is a measured rect or a hit test, so reverting the panel to an unbounded list turns this scenario red on the first check.",
+        "query": "?queue=128",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => {\n  const panel = document.querySelector('[data-send-queue]');\n  if (!panel) throw new Error('no send queue panel');\n  const rows = [...panel.querySelectorAll('[data-queue-item]')];\n  if (rows.length !== 128) throw new Error('the queue is not at the Agent ceiling: ' + rows.length);\n  const chat = document.querySelector('[data-chat-scroll]');\n  if (!chat) throw new Error('no transcript');\n  const frame = chat.parentElement;\n  const chatBox = chat.getBoundingClientRect();\n  const frameBox = frame.getBoundingClientRect();\n  const panelBox = panel.getBoundingClientRect();\n  // The panel is the footer, so it must fit inside the frame it floats in: a\n  // top edge above the frame's own top edge is a row the reader cannot reach.\n  if (panelBox.top < frameBox.top - 1)\n    throw new Error('the panel starts ' + Math.round(frameBox.top - panelBox.top) + 'px above the frame: its top rows are clipped');\n  const list = panel.querySelector('ol');\n  if (!list) throw new Error('the panel has no list');\n  if (!(list.scrollHeight > list.clientHeight + 40))\n    throw new Error('the list does not scroll inside the panel: ' + list.scrollHeight + ' of ' + list.clientHeight);\n  const hitOf = (el) => {\n    if (!el) return { ok: false, why: 'missing' };\n    const r = el.getBoundingClientRect();\n    if (r.width < 4 || r.height < 4) return { ok: false, why: 'no box (' + Math.round(r.width) + 'x' + Math.round(r.height) + ')' };\n    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);\n    return { ok: !!hit && (el === hit || el.contains(hit)), why: hit ? hit.tagName + '.' + String(hit.className || '').slice(0, 60) : 'nothing is painted there', rect: r };\n  };\n  // 1. With the list at its top, the first row's delete button is the thing the\n  // pointer lands on — not the transcript behind a clipped panel.\n  list.scrollTop = 0;\n  const first = rows[0].querySelector('[data-queue-remove]');\n  const firstHit = hitOf(first);\n  if (!firstHit.ok) throw new Error('the first waiting row cannot be deleted: ' + firstHit.why);\n  // 2. The composer is still on screen and still the thing under the pointer.\n  const editor = document.querySelector('[contenteditable=\"true\"][role=\"textbox\"]');\n  const editorHit = hitOf(editor);\n  if (!editorHit.ok) throw new Error('the composer is not usable: ' + editorHit.why);\n  // 3. The transcript keeps a real, painted band above the footer.\n  const visible = Math.round(panelBox.top - chatBox.top);\n  if (visible < 120) throw new Error('the footer left the transcript ' + visible + 'px');\n  const painted = [...chat.querySelectorAll('[data-message-id]')].some((el) => {\n    const r = el.getBoundingClientRect();\n    return r.bottom > chatBox.top + 1 && r.top < panelBox.top - 1;\n  });\n  if (!painted) throw new Error('no message is painted in the ' + visible + 'px the transcript kept');\n  // 4. The other end of the queue is reachable the same way: the list scrolls,\n  // the window does not.\n  const windowScroll = window.scrollY;\n  list.scrollTop = list.scrollHeight;\n  const last = rows[rows.length - 1].querySelector('[data-queue-remove]');\n  const lastHit = hitOf(last);\n  if (!lastHit.ok) throw new Error('the last waiting row cannot be deleted: ' + lastHit.why);\n  if (window.scrollY !== windowScroll) throw new Error('scrolling the queue moved the window');\n  // Back to the head for the picture: the rows the report could not reach.\n  list.scrollTop = 0;\n  return '128 rows, list ' + Math.round(list.clientHeight) + 'px of ' + Math.round(list.scrollHeight)\n    + 'px, first and last removable, composer ' + Math.round(editorHit.rect.height)\n    + 'px, transcript ' + visible + 'px';\n})()"
+          },
+          {
+            "shot": "d-queue-many.png"
+          }
+        ]
+      },
       "rail-tree": {
         "steps": [
           {
@@ -2086,6 +2101,9 @@
           }
         ]
       },
+      "git-history-local": {"note": "The local history tab: a conversation's own workspace, read on this machine. Lanes are drawn as strokes — threads, rounded turns and a ring for a merge — with one colour per lane, and no box-drawing character survives into the DOM.", "url": "http://localhost:5299/shot/?lang=zh", "steps": [{"wait": 2500}, {"tap": "展开上下文面板"}, {"wait": 1200}, {"eval": "(() => { const sel = document.querySelector('#context-panel-view'); if (!sel) throw new Error('the context panel has no view selector'); const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set; setter.call(sel, 'review'); sel.dispatchEvent(new Event('change', { bubbles: true })); return 'switched to ' + sel.value; })()"}, {"wait": 2000}, {"eval": "(() => { const tabs = [...document.querySelectorAll('button')].map(b => b.textContent).filter(Boolean); if (!tabs.includes('历史')) throw new Error('no History tab for a Git workspace; the strip is: ' + tabs.join('|').slice(0, 160)); return 'strip ok'; })()"}, {"eval": "(() => { const tab = [...document.querySelectorAll('button')].find(b => b.textContent === '历史'); tab.click(); return 'opened history'; })()"}, {"wait": 1500}, {"eval": "(() => { const pictures = [...document.querySelectorAll('[data-lane-graph]')]; if (pictures.length < 5) throw new Error('expected the demo history as lane pictures, saw ' + pictures.length); const strokes = pictures.flatMap(svg => [...svg.querySelectorAll('line, path, circle')]); if (strokes.length < 20) throw new Error('the pictures have too few strokes: ' + strokes.length); const colours = new Set(strokes.map(node => node.getAttribute('stroke') || node.getAttribute('fill')).filter(Boolean)); if (colours.size < 3) throw new Error('the lanes are not coloured distinctly: ' + [...colours].join(',')); const curves = pictures.flatMap(svg => [...svg.querySelectorAll('path')]).filter(p => (p.getAttribute('d') || '').includes('Q')); if (curves.length === 0) throw new Error('no rounded turn was drawn'); const text = document.body.textContent || ''; for (const glyph of ['│', '─', '└', '┘', '┐', '┤']) { if (text.includes(glyph)) throw new Error('a box-drawing glyph reached the DOM: ' + glyph); } return pictures.length + ' pictures, ' + strokes.length + ' strokes, ' + colours.size + ' colours, ' + curves.length + ' curves'; })()"}, {"shot": "d-git-history-local.png"}]},
+      "git-history-patch": {"note": "One commit open: the stat summary and the patch, coloured by line role (added, removed, hunk header, context) rather than by git's ANSI.", "url": "http://localhost:5299/shot/?lang=zh", "steps": [{"wait": 2500}, {"tap": "展开上下文面板"}, {"wait": 1200}, {"eval": "(() => { const sel = document.querySelector('#context-panel-view'); if (!sel) throw new Error('the context panel has no view selector'); const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set; setter.call(sel, 'review'); sel.dispatchEvent(new Event('change', { bubbles: true })); return 'switched to ' + sel.value; })()"}, {"wait": 2000}, {"eval": "(() => { const tab = [...document.querySelectorAll('button')].find(b => b.textContent === '历史'); if (!tab) throw new Error('no History tab'); tab.click(); return 'opened history'; })()"}, {"wait": 1500}, {"eval": "(() => { const rows = [...document.querySelectorAll('[data-git-commit]')]; if (rows.length === 0) throw new Error('the history has no commit rows'); rows[0].click(); return 'opened ' + rows[0].getAttribute('data-git-commit'); })()"}, {"wait": 1200}, {"eval": "(() => { const roles = [...document.querySelectorAll('[data-patch-role]')].map(n => n.getAttribute('data-patch-role')); const want = ['added', 'removed', 'hunk', 'header', 'meta']; for (const role of want) { if (!roles.includes(role)) throw new Error('the patch has no ' + role + ' line; roles present: ' + [...new Set(roles)].join(',')); } return 'roles: ' + [...new Set(roles)].join(','); })()"}, {"shot": "d-git-history-patch.png"}]},
+      "git-history-not-a-repo": {"note": "The same panel when the conversation's workspace is not a Git repository: no History tab at all, and the strip keeps its three views.", "url": "http://localhost:5299/shot/?lang=zh&norepo=1", "steps": [{"wait": 2500}, {"tap": "展开上下文面板"}, {"wait": 1200}, {"eval": "(() => { const sel = document.querySelector('#context-panel-view'); if (!sel) throw new Error('the context panel has no view selector'); const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set; setter.call(sel, 'review'); sel.dispatchEvent(new Event('change', { bubbles: true })); return 'switched to ' + sel.value; })()"}, {"wait": 2000}, {"eval": "(() => { const labels = [...document.querySelectorAll('button')].map(b => b.textContent).filter(Boolean); if (labels.includes('历史')) throw new Error('a plain directory still offers the History tab'); if (document.querySelector('[data-git-commit]')) throw new Error('a plain directory still lists commits'); if (document.querySelector('[data-lane-graph]')) throw new Error('a plain directory still draws lanes'); if (document.querySelector('.grid')) throw new Error('a tab strip rendered outside a Git workspace'); return 'no history tab, no lanes, no strip'; })()"}, {"shot": "d-git-history-not-a-repo.png"}]},
       "review-file-hover": {
         "note": "The same rule for a review file's chevron (#1050): the file list is wrapped in an unnamed `group`, so a bare `group-hover:` on the row's chevron was revealed from anywhere in the list. Measured: with the pointer on the second file's row, exactly that row's chevron is at opacity 1 and the first row's is 0.",
         "url": "http://localhost:5299/shot/?lang=zh",
@@ -3319,6 +3337,120 @@
       "mobile": true
     },
     "scenarios": {
+        "queue-collapsed": {
+          "note": "A conversation that is mid-run with eight messages waiting behind it — the burst of goal pokes that used to cover the whole conversation (`?queue=8`, `mobile/shot/mock/data.ts`). The panel is docked in the composer's own column, so what it draws is taken from the transcript: a queue of eight used to leave nothing above the box. Now it opens as one header line that counts what is waiting, and the rows are drawn only when the reader asks. Measured, not asserted from the source: no rows are drawn, the panel is a single line tall, and the header still names the queue and offers to open it.",
+          "query": "?session=sess_dopamine_review&streaming=1&queue=8",
+          "lang": "zh-CN",
+          "appearance": "dark",
+          "ready": "/发送队列/.test(document.body.innerText)",
+          "steps": [
+            {
+              "wait": 900
+            },
+            {
+              "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+            },
+            {
+              "wait": 900
+            },
+            {
+              "eval": "(() => {\n  const panel = document.querySelector('[data-testid=send-queue]');\n  if (!panel) throw new Error('no send queue panel');\n  const rows = document.querySelectorAll('[data-testid=send-queue-item]');\n  if (rows.length) throw new Error('a queue of eight drew its rows without being asked: ' + rows.length);\n  const text = panel.innerText;\n  if (!text.includes('发送队列')) throw new Error('the header does not name the queue: ' + text);\n  if (!text.includes('8 条等待中')) throw new Error('the header does not count the waiting messages: ' + text);\n  const toggle = panel.querySelector('[data-testid=send-queue-toggle]');\n  if (!toggle) throw new Error('the header is not a control, so a queue this long cannot be opened');\n  const label = toggle.getAttribute('aria-label');\n  if (label !== '展开队列中的消息') throw new Error('the closed panel does not offer to open: ' + label);\n  // The panel sits in the composer's column, so its height is what it took from the conversation.\n  const rect = panel.getBoundingClientRect();\n  if (rect.height > 64) throw new Error('the closed panel is ' + Math.round(rect.height) + 'px tall');\n  return 'one header line, ' + Math.round(rect.height) + 'px, 8 waiting, no rows drawn';\n})()"
+            },
+            {
+              "shot": "mobile-queue-collapsed-zh.png"
+            }
+          ]
+        },
+        "queue-expanded": {
+          "note": "The same queue opened by hand. The list is bounded by the room the reader's screen leaves (`sendQueueListHeight`), so expanding a long queue still does not take the conversation: past that height the rows scroll inside the panel instead. Measured: all eight rows are drawn, the list is under 245px, and its content is taller than its frame — it scrolls.",
+          "query": "?session=sess_dopamine_review&streaming=1&queue=8",
+          "lang": "zh-CN",
+          "appearance": "dark",
+          "ready": "/发送队列/.test(document.body.innerText)",
+          "steps": [
+            {
+              "wait": 900
+            },
+            {
+              "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+            },
+            {
+              "wait": 900
+            },
+            {
+              "tap": "展开队列中的消息"
+            },
+            {
+              "wait": 700
+            },
+            {
+              "eval": "(() => {\n  const panel = document.querySelector('[data-testid=send-queue]');\n  if (!panel) throw new Error('no send queue panel');\n  const rows = document.querySelectorAll('[data-testid=send-queue-item]');\n  if (rows.length !== 8) throw new Error('opening the queue did not draw its rows: ' + rows.length);\n  const toggle = panel.querySelector('[data-testid=send-queue-toggle]');\n  if (toggle.getAttribute('aria-label') !== '收起队列中的消息') throw new Error('the open panel does not offer to close: ' + toggle.getAttribute('aria-label'));\n  const list = panel.querySelector('[data-testid=send-queue-list]');\n  if (!list) throw new Error('no list under the open panel');\n  const height = list.getBoundingClientRect().height;\n  if (height > 245) throw new Error('the open list is ' + Math.round(height) + 'px tall, past the room it is allowed');\n  if (!(list.scrollHeight > list.clientHeight + 20)) throw new Error('the open list does not scroll: ' + list.scrollHeight + '/' + list.clientHeight);\n  return 'eight rows, list ' + Math.round(height) + 'px of ' + list.scrollHeight + 'px, scrolls inside the panel';\n})()"
+            },
+            {
+              "shot": "mobile-queue-expanded-zh.png"
+            }
+          ]
+        },
+      "queue-attachments-dark": {
+        "note": "A short queue where the messages carry files (`?queue=3&queueFiles=1`): the first waiting row is the attachment-only send — a picture with no words, which used to be the row with no controls at all — and the second carries a photo and a document with text. The queue reports those files, so the panel draws one chip each: the icon names the kind, the name is what a re-send addresses, and the size is what the reader is about to send. Measured, not assumed from the source: the attachment-only row draws a chip and no edit button, a row with words draws its own controls, and every chip is the thing under the pointer.",
+        "query": "?session=sess_dopamine_review&streaming=1&queue=3&queueFiles=1",
+        "lang": "zh-CN",
+        "appearance": "dark",
+        "ready": "/发送队列/.test(document.body.innerText)",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "展开队列中的消息"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "(() => {\n  const panel = document.querySelector('[data-testid=send-queue]');\n  if (!panel) throw new Error('no send queue panel');\n  const rows = [...document.querySelectorAll('[data-testid=send-queue-item]')];\n  if (rows.length !== 3) throw new Error('the queue did not draw its three rows: ' + rows.length);\n  // 1. The attachment-only row is the one this change exists for: a picture, no\n  // words, a chip to open or drop it, and no edit button (an empty save would be\n  // a removal).\n  const only = rows[0];\n  const onlyChips = only.querySelectorAll('[data-testid=send-queue-attachment-preview]');\n  if (onlyChips.length !== 1) throw new Error('the attachment-only row draws ' + onlyChips.length + ' file chips');\n  if (only.querySelector('[data-testid=send-queue-edit]')) throw new Error('the attachment-only row offers an editor, which could only save an empty message');\n  if (!only.querySelector('[data-testid=send-queue-remove]')) throw new Error('the attachment-only row has no bin');\n  if (!only.querySelector('[data-testid=send-queue-attachment-add]')) throw new Error('the attachment-only row cannot take another file');\n  // 2. A row with words draws both controls, and both its files.\n  const both = rows[1];\n  if (both.querySelectorAll('[data-testid=send-queue-attachment-preview]').length !== 2) throw new Error('the mixed row does not draw its two files');\n  if (!both.querySelector('[data-testid=send-queue-edit]')) throw new Error('the mixed row cannot be edited');\n  // 3. A chip is really painted and really under the pointer: a chip the reader\n  // cannot hit is a file they cannot open.\n  const chip = onlyChips[0];\n  const box = chip.getBoundingClientRect();\n  if (box.width < 20 || box.height < 8) throw new Error('the chip has no box: ' + Math.round(box.width) + 'x' + Math.round(box.height));\n  const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);\n  if (!hit || !(chip === hit || chip.contains(hit))) throw new Error('the chip is not what the pointer lands on: ' + (hit ? hit.tagName : 'nothing'));\n  const names = [...panel.querySelectorAll('[data-testid=send-queue-attachment-preview]')].map(el => el.innerText.replace(/\\s+/g, ' ').trim());\n  if (!names.some(n => n.includes('IMG_2851.png'))) throw new Error('the picture is not named: ' + JSON.stringify(names));\n  if (!names.some(n => n.includes('queue-notes.pdf'))) throw new Error('the document is not named: ' + JSON.stringify(names));\n  return 'three rows, ' + names.length + ' chips: ' + names.join(' | ');\n})()"
+          },
+          {
+            "shot": "mobile-queue-attachments-dark-zh.png"
+          }
+        ]
+      },
+      "queue-attachments-light": {
+        "note": "The same queue in the light scheme. Both palettes are drawn from the same tokens, so a chip that only reads in one of them is a chip with a hard-coded colour; this is the second half of that check.",
+        "query": "?session=sess_dopamine_review&streaming=1&queue=3&queueFiles=1",
+        "lang": "zh-CN",
+        "appearance": "light",
+        "ready": "/发送队列/.test(document.body.innerText)",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "展开队列中的消息"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "(() => {\n  const chips = [...document.querySelectorAll('[data-testid=send-queue-attachment-preview]')];\n  if (chips.length !== 3) throw new Error('the light scheme drew ' + chips.length + ' chips, not three');\n  return 'three chips in the light scheme';\n})()"
+          },
+          {
+            "shot": "mobile-queue-attachments-light-zh.png"
+          }
+        ]
+      },
       "fleet-zh": {
         "note": "The home screen's recency page with five paired desktops merged into one list (`?fleet=1`, `mobile/shot/mock/fleet.ts`): fourteen settled conversations, ordered by the reply time each machine reported rather than by machine — no run state, so no approval alert on a row and no active stretch. Every row opens on the desktop it lives on; the machine is named by its glyph, and the picker above the list is where the five names are.",
         "query": "?fleet=1",
@@ -3806,6 +3938,11 @@
           }
         ]
       },
+      "chat-menu": {
+        "steps": [{"wait": 900}, {"tap": "稍后再说"}, {"wait": 1200}, {"tap": "工作区"}, {"wait": 1200}, {"tapText": "整理两篇文献的结论对比表"}, {"wait": 2500}, {"eval": "(() => {\n  // The bar has one trailing control, and it is the menu: files and the spend\n  // breakdown moved behind it, and neither may come back as an icon of its own.\n  const buttons = [...document.querySelectorAll('[role=\"button\"]')];\n  const menu = buttons.filter(el => (el.getAttribute('aria-label') || '') === '会话操作');\n  if (menu.length !== 1) throw new Error('the bar does not carry exactly one conversation-actions button: ' + menu.length);\n  if (buttons.some(el => ['会话文件', 'Token 用量与金额'].includes(el.getAttribute('aria-label') || '')))\n    throw new Error('the two old icons are still in the bar instead of inside the menu');\n  return 'one menu button';\n})()"}, {"wait": 400}, {"tap": "会话操作"}, {"wait": 900}, {"eval": "(() => {\n  // The menu is the sheet, and its rows are the two originals plus Git: this\n  // workspace is a repository, so the history is offered.\n  const rows = [...document.querySelectorAll('[role=\"button\"]')]\n    .map(el => el.getAttribute('aria-label') || '');\n  for (const want of ['会话文件', 'Token 用量与金额', '查看 Git 历史'])\n    if (!rows.includes(want)) throw new Error('the menu is missing ' + want + ': ' + JSON.stringify(rows.filter(Boolean)));\n  return rows.filter(Boolean).join(' | ');\n})()"}, {"shot": "m-chat-menu.png"}, {"tap": "查看 Git 历史"}, {"wait": 1200}, {"eval": "(() => {\n  // The lanes are *drawn*, not written: the host sends box-drawing glyphs and the\n  // panel turns them into strokes. What a capture has to prove is that the lines\n  // are real vector lines in per-lane colour, and that no glyph leaked to screen.\n  const glyphs = [...document.querySelectorAll('div,span')]\n    .map(el => el.textContent || '').join('');\n  const leaked = glyphs.match(/[│─┐┘┴┬┤]/g);\n  if (leaked) throw new Error('box-drawing glyphs reached the screen: ' + leaked.slice(0, 4).join(''));\n  const strokes = [...document.querySelectorAll('svg line, svg path')]\n    .map(el => el.getAttribute('stroke') || '');\n  const lanes = new Set(strokes.filter(Boolean));\n  if (strokes.length < 8) throw new Error('the lanes are not drawn as strokes: ' + strokes.length);\n  if (lanes.size < 3)\n    throw new Error('the strokes carry no per-lane colour: ' + [...lanes].join(', '));\n  // Rounded corners, not right angles: a turn is one quadratic curve.\n  const curves = [...document.querySelectorAll('svg path')]\n    .filter(el => (el.getAttribute('d') || '').includes('Q'));\n  if (!curves.length) throw new Error('no lane turn was drawn as a curve');\n  return strokes.length + ' strokes, ' + lanes.size + ' lane colours, ' + curves.length + ' curves';\n})()"}, {"wait": 300}, {"eval": "(() => {\n  // Neither page carries a header: no title bar, no refresh button, no close X.\n  // The one control is the way out, in the top-left corner.\n  const labelled = [...document.querySelectorAll('[role=\"button\"]')]\n    .map(el => el.getAttribute('aria-label') || '');\n  if (labelled.some(label => /刷新|Refresh/i.test(label)))\n    throw new Error('a header control survived: ' + JSON.stringify(labelled.filter(Boolean)));\n  if (!labelled.includes('关闭') && !labelled.includes('Close'))\n    throw new Error('there is no way out of the page: ' + JSON.stringify(labelled.filter(Boolean)));\n  // Nothing naming the repository is stacked above the first commit.\n  const firstRow = [...document.querySelectorAll('[role=\"button\"]')]\n    .find(el => (el.getAttribute('aria-label') || '').startsWith('打开提交'));\n  if (!firstRow) throw new Error('no commit row rendered');\n  const top = Math.round(firstRow.getBoundingClientRect().top);\n  if (top > window.innerHeight * 0.25)\n    throw new Error('something is stacked above the first commit row: row starts at ' + top);\n  return 'no header, content starts at ' + top;\n})()"}, {"shot": "m-chat-git-graph.png"}, {"eval": "(() => {\n  // One commit is addressable by name, so a tap can open it.\n  const row = [...document.querySelectorAll('[role=\"button\"]')]\n    .find(el => (el.getAttribute('aria-label') || '').startsWith('打开提交'));\n  if (!row) throw new Error('no commit row is addressable');\n  return row.getAttribute('aria-label');\n})()"}, {"tap": "打开提交 4c1a7e2：Add reversal-learning model comparison to the supplement"}, {"wait": 1200}, {"eval": "(() => {\n  // The patch is coloured by line role: an addition and a removal must be told\n  // apart by colour, not by the character that happens to start the line.\n  const lines = [...document.querySelectorAll('div,span')]\n    .filter(el => /Menlo|monospace/i.test(getComputedStyle(el).fontFamily || ''))\n    .filter(el => el.children.length === 0 && /^\\+/.test((el.textContent || '').trim()));\n  if (!lines.length) throw new Error('the patch shows no added line');\n  return 'added lines: ' + lines.length;\n})()"}, {"shot": "m-chat-git-commit.png"}],
+        "note": "The conversation's own menu behind the bar's three dots: the session files, the spend breakdown, and — because this workspace is a repository — its Git history. The second half is that history as the TUI draws it: one row per commit, a lane per column of work, coloured so a line of work can be followed down the page, and a tap opening the commit's patch, itself coloured by line role."
+      },
+      "chat-menu-plain": {"url": "http://localhost:8099/?norepo=1", "steps": [{"wait": 900}, {"tap": "稍后再说"}, {"wait": 1200}, {"tap": "工作区"}, {"wait": 1200}, {"tapText": "整理两篇文献的结论对比表"}, {"wait": 2500}, {"tap": "会话操作"}, {"wait": 900}, {"eval": "(() => {\n  // A plain directory has no history: the row is absent rather than disabled, and\n  // the menu is exactly the two originals.\n  const rows = [...document.querySelectorAll('[role=\"button\"]')]\n    .map(el => el.getAttribute('aria-label') || '');\n  for (const want of ['会话文件', 'Token 用量与金额'])\n    if (!rows.includes(want)) throw new Error('the menu is missing ' + want);\n  if (rows.includes('查看 Git 历史'))\n    throw new Error('a workspace that is not a repository still offers Git history');\n  return 'two rows, no Git';\n})()"}, {"shot": "m-chat-menu-plain.png"}], "note": "Conversation actions in a workspace that is not a Git repository: the same menu without the history row, because there is nothing to show."},
       "chat": {
         "steps": [
           {

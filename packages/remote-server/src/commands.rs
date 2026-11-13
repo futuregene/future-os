@@ -143,14 +143,12 @@ fn record_client_identity(runtime: &dyn CommandRuntime, pair_id: &str, command: 
 /// What a `secure_ready` declared, normalised.
 ///
 /// Pure, so every rule is testable without a running bridge: a name is trimmed,
-/// a blank one means "did not say", and the kind is kept verbatim because it is
-/// opaque to this side — an unknown kind is a rendering question for the UI, not
-/// a reason to discard the name it came with.
+/// a blank one means "did not say", a name the wire mangled means the same (see
+/// [`declared_name`]), and the kind is kept verbatim because it is opaque to this
+/// side — an unknown kind is a rendering question for the UI, not a reason to
+/// discard the name it came with.
 fn declared_identity(command: &IncomingCmd) -> Option<crate::types::ClientIdentity> {
-    let name = command.device_name.trim();
-    if name.is_empty() {
-        return None;
-    }
+    let name = declared_name(&command.device_name)?;
     Some(crate::types::ClientIdentity {
         name: name.to_string(),
         kind: command.device_kind.trim().to_string(),
@@ -158,7 +156,29 @@ fn declared_identity(command: &IncomingCmd) -> Option<crate::types::ClientIdenti
         // can *name* what is talking to it. Blank means the client did not say.
         version: declared_text(&command.device_version),
         sync_stage: None,
+        // The device's own id is declared on the presence beat, not here (see
+        // `record_client_presence`): this message also carries the signed
+        // pairing handshake's `deviceId`, and a handshake is not a device
+        // saying who it is.
+        device_id: None,
     })
+}
+
+/// A name worth showing, or `None` when there is none.
+///
+/// Blank and *blanked out* are the same answer. U+FFFD is what a lossy decode
+/// leaves behind — a launcher that decoded the machine name with a local code
+/// page turns a Chinese name into `␦␦␦␦␦␦ļ␦`, one replacement per lost byte —
+/// and those leftovers name the device worse than "unknown" does: a reader
+/// cannot pronounce, search for, or match them to the machine in front of them.
+/// The UI already has wording for an unnamed device, and none for a mislabelled
+/// one, so a mangled declaration is dropped like a missing one.
+///
+/// Only the *name* is filtered: a version or a kind that arrived mangled is
+/// still the value the client sent, and nothing renders it as a label.
+fn declared_name(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty() && !trimmed.contains(char::REPLACEMENT_CHARACTER)).then_some(trimmed)
 }
 
 /// A string a client declared, as the identity keeps it: trimmed, and absent
@@ -170,30 +190,37 @@ fn declared_text(value: &str) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
-/// Record the reconcile stage a client reports on its presence beat.
+/// Record what a client says about itself on its presence beat.
 ///
-/// This is the second half of the version field's job: a version says which
-/// build a device runs, and this says where its conversation sync is stuck. It
-/// rides the beat the client already sends while connected, so it costs no new
-/// command, subject or connection — and a host that does not know the field sees
-/// exactly the beat it always saw.
+/// The beat is a message the client already sends while connected, so it is
+/// where two facts ride rather than costing a command, subject or connection of
+/// their own — and a host that does not know either field sees exactly the beat
+/// it always saw:
 ///
-/// A stage with no identity to hang it on is dropped: the UI names a device by
-/// what it declared, and an unnamed row with a stage would describe trouble on a
-/// device it cannot even call by name. `secure_ready` always precedes the first
-/// beat on a healthy connection, so this only skips a client that never declared
-/// itself. A later beat without the field clears the stage, because a recovered
-/// client must stop reading as broken without anyone reloading the page.
-fn record_client_sync_stage(runtime: &dyn CommandRuntime, pair_id: &str, command: &IncomingCmd) {
+/// - the reconcile stage its conversation sync is stuck at (a version says which
+///   build a device runs; this says where it died);
+/// - the id the device is paired under (`dev_…`). A pair id names a connection
+///   and is minted again on the next pairing, so two phones of the same model
+///   were indistinguishable to the person looking at the device list. The
+///   device's own id is not, and it is the same value the phone can show its
+///   user.
+///
+/// Both are dropped when there is no identity to hang them on: the UI names a
+/// device by what it declared, and `secure_ready` always precedes the first
+/// beat on a healthy connection, so this only skips a client that never
+/// declared itself. A later beat without the fields then means different things
+/// for the two — see [`with_sync_stage`] and [`with_device_id`].
+fn record_client_presence(runtime: &dyn CommandRuntime, pair_id: &str, command: &IncomingCmd) {
     let Some(slot) = runtime.client_identity(pair_id) else {
         return;
     };
     let stage = declared_text(&command.sync_stage);
+    let device_id = declared_text(&command.device_id);
     let mut current = slot.lock().unwrap();
-    *current = with_sync_stage(current.take(), stage);
+    *current = with_device_id(with_sync_stage(current.take(), stage), device_id);
 }
 
-/// The stage half of [`record_client_sync_stage`], split out because it is the
+/// The stage half of [`record_client_presence`], split out because it is the
 /// rule that matters: a stage describes the device that reported it, so it can
 /// only ever be written *onto* an identity that already exists.
 ///
@@ -207,6 +234,24 @@ fn with_sync_stage(
 ) -> Option<crate::types::ClientIdentity> {
     current.map(|mut identity| {
         identity.sync_stage = stage;
+        identity
+    })
+}
+
+/// The device-id half of [`record_client_presence`], with the opposite rule for
+/// silence: a beat that names no id leaves the one already known in place.
+///
+/// The asymmetry is the whole point. A stage describes the current connection,
+/// so silence means "nothing to report". A device id names the *device*, so
+/// silence means "this client is too old to say" — and an older client must
+/// neither erase an id a newer one established nor be given one here. Like the
+/// stage it can only be written onto an identity that already exists.
+fn with_device_id(
+    current: Option<crate::types::ClientIdentity>,
+    device_id: Option<String>,
+) -> Option<crate::types::ClientIdentity> {
+    current.map(|mut identity| {
+        identity.device_id = device_id.or(identity.device_id);
         identity
     })
 }
@@ -1010,9 +1055,9 @@ async fn handle_command_inner(
         // device keeps proving it is present without being allowed to command
         // anything — presence and authority are different questions.
         "client_presence" => {
-            // The beat is also where a client says it is stuck, if it is: the
-            // stage rides this existing message instead of a command of its own.
-            record_client_sync_stage(handshake.runtime.as_ref(), &handshake.creds.pair_id, &cmd);
+            // The beat is also where a client says what it is, if it can: the
+            // stage its sync is stuck at, and the device id it is paired under.
+            record_client_presence(handshake.runtime.as_ref(), &handshake.creds.pair_id, &cmd);
             reply(client, &msg, true, json!({}), None).await;
         }
         // The client is leaving.
@@ -1241,33 +1286,7 @@ async fn handle_pair_handshake(
 /// by a host that installed a terminal registry. Everything else here is a wire
 /// shape the code always speaks.
 pub fn advertised_features(terminal: bool) -> Vec<&'static str> {
-    let mut features = vec![
-        "file_transfer_v1",
-        "file_download_v2",
-        "approval_tier_v1",
-        "continue_run_v1",
-        "prompt_receipt_v1",
-        "session_files_v1",
-        "skills_v1",
-        "selective_events_v1",
-        "workspace_pinning_v1",
-        "workspace_create_v1",
-        "archive_v1",
-        "desktop_settings_v1",
-        "skill_management_v1",
-        "compaction_v1",
-        "provider_management_v1",
-        "fork_v1",
-        "tasks_v1",
-        "task_deps_v1",
-        future_remote_protocol::READ_BINARY_FEATURE,
-        future_remote_protocol::SEGMENTED_CONTENT_FEATURE,
-        future_remote_protocol::REASONING_FETCH_FEATURE,
-    ];
-    if terminal {
-        features.push(future_remote_protocol::TERMINAL_FEATURE);
-    }
-    features
+    future_remote_protocol::handshake::advertised_features(terminal)
 }
 
 async fn handle_pair_handshake_confirm(
@@ -1689,6 +1708,40 @@ mod identity_tests {
         );
         assert_eq!(declared_identity(&IncomingCmd::default()), None);
     }
+    /// A name the wire mangled is not a name.
+    ///
+    /// This is the exact shape a real host received from a desktop whose name
+    /// had been decoded with a local code page on the way — six replacement
+    /// characters, one GBK pair (`C4 BC` = `ļ`), and a lost tail byte. Rendering
+    /// that verbatim is worse than naming nothing: the page has wording for an
+    /// unnamed device and none for `FutureOS Desktop (␦␦␦␦␦␦ļ␦)`. So it is
+    /// dropped like a blank declaration, and the device reads as unknown.
+    #[test]
+    fn a_name_the_wire_mangled_is_not_declared() {
+        let mangled =
+            "FutureOS Desktop (\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{13c}\u{fffd})";
+        assert_eq!(
+            declared_identity(&IncomingCmd {
+                device_name: mangled.into(),
+                device_kind: "desktop".into(),
+                ..Default::default()
+            }),
+            None,
+            "replacements are leftovers, not a label"
+        );
+        // The rule is about lost bytes, not about non-ASCII: a name in Chinese
+        // is a name, and dropping it would hide every device whose owner named
+        // the machine in their own language.
+        assert_eq!(
+            declared_identity(&IncomingCmd {
+                device_name: "  陈辉的MacBook  ".into(),
+                device_kind: "desktop".into(),
+                ..Default::default()
+            })
+            .map(|client| client.name),
+            Some("陈辉的MacBook".to_string())
+        );
+    }
     #[test]
     fn an_unknown_kind_is_kept_verbatim() {
         assert_eq!(
@@ -1762,6 +1815,47 @@ mod identity_tests {
         // No identity, no device invented: an unnamed client cannot be
         // described as stuck without a name to put on the row.
         assert_eq!(with_sync_stage(None, declared_text("replay")), None);
+    }
+    /// The id names the device, not the connection, so its rule is the opposite
+    /// of the stage's: a beat that omits it — every older client — leaves what
+    /// the identity already holds untouched instead of clearing it.
+    #[test]
+    fn a_reported_device_id_attaches_to_the_device_and_survives_a_silent_beat() {
+        let identity = crate::types::ClientIdentity {
+            name: "PJZ110".into(),
+            kind: "mobile".into(),
+            ..Default::default()
+        };
+        let named = with_device_id(Some(identity), declared_text("  dev_1a2b3c4d5e6f  "))
+            .expect("an id rides the identity that reported it");
+        assert_eq!(named.device_id.as_deref(), Some("dev_1a2b3c4d5e6f"));
+        // Everything the identity said about itself survives the id.
+        assert_eq!(named.name, "PJZ110");
+        assert_eq!(named.kind, "mobile");
+        let silent = with_device_id(Some(named), declared_text(""))
+            .expect("the identity is not the id's to remove");
+        assert_eq!(silent.device_id.as_deref(), Some("dev_1a2b3c4d5e6f"));
+        // And an id never invents a row of its own: the UI names a device by
+        // what it declared, not by the id alone.
+        assert_eq!(
+            with_device_id(None, declared_text("dev_1a2b3c4d5e6f")),
+            None
+        );
+    }
+    /// `deviceId` is also a field of the signed pairing handshake, so a
+    /// `secure_ready` could in principle carry one. It must not be read there:
+    /// the beat is what declares it, and a handshake alone is not a device
+    /// having said who it is.
+    #[test]
+    fn a_handshake_declares_no_device_id() {
+        let identity = declared_identity(&IncomingCmd {
+            device_name: "PJZ110".into(),
+            device_kind: "mobile".into(),
+            device_id: "dev_1a2b3c4d5e6f".into(),
+            ..Default::default()
+        })
+        .expect("a name was declared");
+        assert_eq!(identity.device_id, None);
     }
 }
 

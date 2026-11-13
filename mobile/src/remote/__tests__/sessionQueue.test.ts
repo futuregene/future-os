@@ -52,6 +52,40 @@ describe("reading the session's queue", () => {
     expect(await fetchSessionQueue(clientFor(null), "s")).toEqual({ acks: [], rows: [] });
   });
 
+  /**
+   * A waiting message's files travel with the row now, which is what lets the
+   * panel open one or take it off. Three states, and the difference between the
+   * last two matters: no files at all is an empty list, while a desktop that does
+   * not report them leaves the field absent — a client that reads both as "none"
+   * would offer to add a photo and quietly drop the ones it cannot see.
+   */
+  test("reads the files a waiting message carries, and tells 'none' from 'not reported'", async () => {
+    const client = clientFor({
+      queued: [
+        {
+          attachments: [
+            { kind: "image", name: "shot.png", path: "/Users/x/shot.png", size: 2048 },
+            { kind: "", name: "", path: "/Users/x/doc.pdf" },
+            { name: "no path" },
+          ],
+          runId: "run_files",
+          text: "look",
+        },
+        { attachments: [], runId: "run_text", text: "later" },
+        { runId: "run_old", text: "older desktop" },
+      ],
+    });
+    const { rows } = await fetchSessionQueue(client, "session-1");
+    expect(rows[0]!.attachments).toEqual([
+      { kind: "image", name: "shot.png", path: "/Users/x/shot.png", size: 2048 },
+      // A file with no name is still a file: the path's last segment stands in.
+      { kind: "", name: "doc.pdf", path: "/Users/x/doc.pdf", size: 0 },
+    ]);
+    expect(rows[0]!.attachments).toHaveLength(2);
+    expect(rows[1]!.attachments).toEqual([]);
+    expect(rows[2]!.attachments).toBeUndefined();
+  });
+
   test("a draft with no session asks nothing at all", async () => {
     const client = clientFor({ queued: [] });
     expect(await fetchSessionQueue(client, "  ")).toEqual({ acks: [], rows: [] });
@@ -199,6 +233,26 @@ describe("the panel's view", () => {
     read.mockRejectedValueOnce(new Error("not_connected"));
     await act(async () => { jest.advanceTimersByTime(QUEUE_POLL_MS); });
     expect(view.rows.map(item => item.runId)).toEqual(["run_a"]);
+  });
+
+  /**
+   * The poll's "nothing changed, do not re-render" comparison has to include the
+   * files: a row whose text and place are the same but whose files changed (a
+   * removal on another device) would otherwise keep drawing the old chips.
+   */
+  test("a poll that changes only a row's files still redraws it", async () => {
+    const read = jest.fn(async () => reply([row("run_a")]));
+    await mount(read, "s1", true);
+    expect(view.rows[0]!.attachments).toBeUndefined();
+
+    read.mockResolvedValue(reply([{
+      ...row("run_a"),
+      attachments: [{ kind: "image", name: "a.png", path: "/x/a.png", size: 12 }],
+    }]));
+    await act(async () => { jest.advanceTimersByTime(QUEUE_POLL_MS); });
+    expect(view.rows[0]!.attachments).toEqual([
+      { kind: "image", name: "a.png", path: "/x/a.png", size: 12 },
+    ]);
   });
 
   test("another conversation's rows are never handed to this one", async () => {

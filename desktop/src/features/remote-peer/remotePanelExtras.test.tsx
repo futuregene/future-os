@@ -10,6 +10,15 @@ const list = vi.fn();
 vi.mock("./remotePeerClient", () => ({
   listRemoteSessionFiles: (...args: unknown[]) => list(...args),
   downloadRemoteFile: vi.fn(),
+  // The panel probes the peer's history to decide whether to offer that tab;
+  // a plain directory keeps this file's panel to its files.
+  listRemoteGitCommits: vi.fn(async () => ({
+    commits: [],
+    isRepo: false,
+    path: "/home/studio",
+    repoName: "",
+    truncated: false,
+  })),
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: vi.fn(async () => null) }));
 

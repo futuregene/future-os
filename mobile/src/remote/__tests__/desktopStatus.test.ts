@@ -175,6 +175,27 @@ describe("one list of the paired machines", () => {
     expect(open!.icon).toBeUndefined();
   });
 
+  test("falls back to the id for a stored name this phone cannot read", () => {
+    // The name was learned when the machine was paired, from a declaration that
+    // had already been through a launcher's code page: replacement characters
+    // are all this phone kept, and the row is more use as the id it files the
+    // machine under than as boxes nobody can read.
+    const [open] = pairedMachines({
+      desktops: [
+        {
+          desktopId: "broken",
+          pairId: "pair-3",
+          name: "FutureOS Desktop (\uFFFD\uFFFD\uFFFD\uFFFD\uFFFD\uFFFD\u013C\uFFFD)",
+        },
+      ],
+      activeDesktopId: "broken",
+      presence: null,
+      presentation: ready,
+      others: [],
+    });
+    expect(open!.label).toBe("broken");
+  });
+
   test("keeps the other machines' own report, and never lists one twice", () => {
     const peer: MachineSummary = {
       desktopId: "other",

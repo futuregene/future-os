@@ -238,6 +238,17 @@ chosen on one half and scored on the other.
 Until then `NONE_GATE_THRESHOLD` stays 0.15. Moving it is a product-behaviour change for Jev
 today, and it must not ride along with a model comparison.
 
+**Update, 2026-11-10.** The serving path now carries a per-model gate:
+`NONE_GATE_THRESHOLD_DECIDER = 0.015` for the decider family, 0.15 for Jev
+(`agent/src/skill_reco/mod.rs`, `scripts/skill_reco/suggest.mjs`). Re-running the same 100
+questions against the live **240-skill** catalogue shows the 141-question gap does not survive
+the larger table: the largest answerable `none` (p001, 0.0209) is now above the smallest
+refusable one (p037, 0.0055). At 0.015 the run scores 96.0% agreement, 0/65 false refusals and
+1/35 false suggestion; 0.005 would refuse two answerable questions (p001, n032), and 0.021
+would recommend two refusable ones (p037, n026). p001's gold (`future-account`) no longer
+exists in the catalogue (top-1 `future-self`), so one of the 0.005 false refusals may be a
+stale label. A 240-question gold pass is still what settles the value.
+
 ## 5. What the test deployment needed
 
 The previous version of this page ended on an open item: `pplx-decider-v1.2` answered

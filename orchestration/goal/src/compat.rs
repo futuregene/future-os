@@ -51,6 +51,7 @@ pub fn future_goal_task_class(c: TaskClass) -> &'static str {
         TaskClass::Monitor => "continuous_monitor",
         TaskClass::Blocker => "blocker",
         TaskClass::Coordination => "coordination",
+        TaskClass::Scout => "scout",
     }
 }
 

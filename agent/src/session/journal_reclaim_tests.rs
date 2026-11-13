@@ -645,7 +645,18 @@ fn a_legacy_session_converts_through_the_writer() {
         crate::session::content::legacy_migrate::apply(&store, 4).unwrap();
     assert_eq!(converted, 1);
     assert_eq!(entries, 1);
-    assert_eq!(bodies, 0, "no block bodies remain for the session");
+    assert_eq!(bodies, 1, "one legacy block body was converted");
+    assert_eq!(
+        store
+            .db
+            .read(|db| Ok(db.query_row(
+                "SELECT count(*) FROM message_block_bodies WHERE session_id='s'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?))
+            .unwrap(),
+        0
+    );
 
     let (pending, canonical): (i64, i64) = store
         .db
@@ -747,9 +758,16 @@ fn converting_a_legacy_session_keeps_the_row_an_interrupted_call_displays() {
 
     let (converted, entries, bodies) =
         crate::session::content::legacy_migrate::apply(&store, 4).unwrap();
-    assert_eq!(converted, 1);
-    assert_eq!(entries, 3, "the entry list is rebuilt unchanged");
-    assert_eq!(bodies, 0, "no block bodies remain for the session");
+    assert_eq!(
+        store.storage_format("s").unwrap(),
+        2,
+        "the first history read already converted the session"
+    );
+    assert_eq!(
+        (converted, entries, bodies),
+        (0, 0, 0),
+        "an explicit sweep must not redo the conversion"
+    );
 
     let after = page(&manager);
     assert_eq!(after, before, "the reader sees the same conversation");

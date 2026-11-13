@@ -205,6 +205,24 @@ pub(super) async fn agent_prompt_inner(
     request: AgentPromptRequest,
     mut accepted: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> Result<AgentPromptResponse, crate::Error> {
+    // A prompt with neither text nor an attachment is not a turn, and nothing
+    // below this line can tell: the Agent admits it (an empty user entry, a run
+    // row, a queued receipt), and a queued send deliberately draws no bubble in
+    // the transcript, so the reader gets an invisible turn they cannot see,
+    // retry or take back. Measured 2026-11-09: three such sends were admitted on
+    // a busy conversation, and the only trace was the host failing to persist
+    // their user entry.
+    //
+    // The composer checks this for itself, but every other caller would have to
+    // re-implement that check (the queue panel's edit, the dictation layer, a
+    // staged prompt, a phone client), so the boundary is where it belongs.
+    let has_attachment = request
+        .attachments
+        .as_ref()
+        .is_some_and(|attachments| !attachments.is_empty());
+    if request.message.trim().is_empty() && !has_attachment {
+        return Err("A message needs text or an attachment.".into());
+    }
     if let Some(task) = future_fusion::fusion_prompt(&request.message) {
         if task.is_empty() {
             return Err(crate::Error::Message(

@@ -1,7 +1,6 @@
 //! Atomic updates of the authoritative current session metadata.
 use super::Manager;
-use crate::session::SessionEntry;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use rusqlite::OptionalExtension;
 
 impl Manager {
@@ -39,70 +38,9 @@ impl Manager {
         id: &str,
         fields: serde_json::Map<String, serde_json::Value>,
     ) -> Result<()> {
-        let store = self.storage()?;
-        if store.storage_format(id)? == crate::session::content::FORMAT_VERSION {
-            store.patch_segmented_metadata(id, fields)?;
-            self.invalidate_display_projection(id);
-            return Ok(());
-        }
-        let id = id.to_owned();
-        self.storage()?.db.call(move |db| {
-            // Reads the current metadata before it writes: take the write lock
-            // at BEGIN, or a concurrent connection's commit invalidates this
-            // snapshot and the upgrade fails instantly (SQLITE_BUSY_SNAPSHOT).
-            let tx = crate::session::database::begin_write_transaction(db)?;
-            // The authoritative current metadata is `sessions.current_metadata_json`
-            // — `entry_records` *projects* a `session_info` entry's content from
-            // it (`entry_records.rs` `ENTRY_RECORD_VIEWS_SQL`), so reading the entry adds nothing and
-            // makes the update depend on an entry that may not exist. A
-            // legacy-imported transcript has no `session_info` entry at all, so
-            // the previous `query_row(..)` on that entry failed with a bare
-            // "Query returned no rows": `future session set --title/--thinking`
-            // on an imported session reported success while persisting nothing.
-            //
-            // Three distinct cases, deliberately not collapsed:
-            //   no row          -> the session does not exist (caller's bug)
-            //   NULL column     -> nothing recorded yet; start empty (the
-            //                      legacy-import case this fixes)
-            //   non-object JSON -> corrupt metadata; report it rather than
-            //                      silently replacing it and dropping every
-            //                      other field it held
-            // Outer `Option` = is there a row; inner = is the column NULL.
-            let existing: Option<Option<String>> = tx
-                .query_row(
-                    "SELECT current_metadata_json FROM sessions WHERE id=?1",
-                    [&id],
-                    |row| row.get::<_, Option<String>>(0),
-                )
-                .optional()
-                .context("session metadata could not be read")?;
-            let Some(existing) = existing else {
-                // The row itself is missing, so the appended entry would fail on
-                // its foreign key. Name the real cause instead of surfacing a
-                // constraint error.
-                return Err(anyhow!("session not found: no row for {id}"));
-            };
-            let mut info = match existing {
-                None => serde_json::Map::new(),
-                Some(json) => serde_json::from_str::<serde_json::Value>(&json)
-                    .ok()
-                    .and_then(|value| value.as_object().cloned())
-                    .ok_or_else(|| anyhow!("session has no session_info object"))?,
-            };
-            info.extend(fields);
-            let entry = SessionEntry::session_info(
-                serde_json::Value::Object(info),
-                String::new(),
-                String::new(),
-            );
-            crate::session::sqlite_store::insert_transcript_entries(
-                &tx,
-                &id,
-                Self::encoded(&[entry])?,
-            )?;
-            tx.execute("UPDATE sessions SET revision=revision+1 WHERE id=?1", [&id])?;
-            tx.commit()?;
-            Ok(())
-        })
+        self.prepare_session(id)?;
+        self.storage()?.patch_segmented_metadata(id, fields)?;
+        self.invalidate_display_projection(id);
+        Ok(())
     }
 }

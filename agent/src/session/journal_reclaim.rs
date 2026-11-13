@@ -536,6 +536,7 @@ pub(crate) fn compress_entry_bodies(db: &mut Connection, limit: i64) -> Result<(
 
 impl SqliteStore {
     /// Finish any conversion a previous process left behind.
+    #[cfg(test)]
     pub(crate) fn recover_legacy_conversions(&self, limit: i64) -> Result<usize> {
         super::content::legacy_migrate::recover(self, limit)
     }

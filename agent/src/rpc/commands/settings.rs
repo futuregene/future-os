@@ -487,14 +487,40 @@ pub(crate) fn handle_shell(
             std::time::Duration::from_secs(30 * 60),
         )
     };
-    let (cwd, cancellation, generation) = {
+    // The generation is read *before* this command asks admission, and that
+    // order is the whole point: a stop advances the generation once and then
+    // waits for admitted work to settle, so a shell that read it afterwards
+    // would run to its own timeout with nothing left to cancel it. That is a
+    // stop that fails with "deadline exceeded during admitted commands" while a
+    // 30-second shell is still running (measured on a loaded macOS runner:
+    // admission is counted when the RPC is accepted, `spawn_blocking` and this
+    // handler then run some time later).
+    let (cwd, cancellation, generation, work) = {
         let sess = session.read();
         (
             sess.cwd.clone(),
             sess.shell_cancel_generation.clone(),
             sess.shell_cancel_generation
                 .load(std::sync::atomic::Ordering::SeqCst),
+            sess.service_work.clone(),
         )
+    };
+    // Registering here, rather than relying on the admission the dispatcher
+    // already took, is what covers that window: a shell that got through
+    // admission before the stop is refused before a process exists, while one
+    // that read the generation before the stop is cancelled by the advance. No
+    // ordering of the two leaves a shell running with nothing to stop it.
+    let _admitted = match work.enter() {
+        Ok(guard) => guard,
+        Err(error) => {
+            return RpcResponse::build_fail_code(
+                id,
+                "shell",
+                "agent_stopping",
+                &error.to_string(),
+                serde_json::json!({"retryable": false}),
+            )
+        }
     };
     let result =
         ServerSession::execute_shell_at(&cwd, &cmd.command, timeout, &cancellation, generation);

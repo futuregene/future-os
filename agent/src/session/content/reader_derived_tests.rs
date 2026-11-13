@@ -76,7 +76,6 @@ fn repaired_argument_fragments_share_a_disposable_representation_and_recheck_own
 #[test]
 fn shell_original_text_is_the_shared_summary_and_keeps_full_execution_facts() {
     let facts = future_rpc::shell_result::ShellResult {
-        command: "synthetic".into(),
         cwd: "/synthetic".into(),
         duration_ms: 2,
         status: future_rpc::shell_result::ShellStatus::Exited,
