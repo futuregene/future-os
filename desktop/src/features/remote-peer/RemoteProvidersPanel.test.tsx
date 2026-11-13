@@ -242,6 +242,46 @@ it("edits an existing custom provider in place", async () => {
   await panel.unmount();
 });
 
+/**
+ * Detection runs on the host, not here.
+ *
+ * The dialog's probe is the one thing that has to cross the connection: the
+ * answer is about the request that host will send after a save, and the panel
+ * supplies it through the dedicated probe command (which has the longer
+ * deadline a probe needs).
+ */
+it("detects thinking levels on that host", async () => {
+  invoke.mockImplementation(async (_command, args) => {
+    const payload = args as { command?: { type?: string }; probe?: { level?: string } };
+    if (payload.command?.type === "list_providers")
+      return hostView();
+    if (payload.probe)
+      return { level: payload.probe.level || "default", ok: true };
+    return undefined;
+  });
+  const panel = await mount();
+  await act(async () => panel.button("Edit")!.click());
+  await settle();
+
+  await act(async () => panel.button("Detect")!.click());
+  await settle();
+
+  const probes = invoke.mock.calls
+    .filter(([command]) => command === "remote_peer_probe_thinking_level")
+    .map(([, args]) => (args as { probe: Record<string, unknown> }).probe);
+  // The form's own values, addressed to that host; the calibration call comes
+  // first and sends no thinking parameter at all.
+  expect(probes[0]).toMatchObject({
+    api: "openai-completions",
+    baseUrl: "https://example.test",
+    level: "default",
+    modelId: "m",
+    providerId: "mine",
+  });
+  expect(probes.length).toBeGreaterThan(1);
+  await panel.unmount();
+});
+
 /** Closing the key dialog without saving writes nothing. */
 it("writes nothing when the key dialog is dismissed", async () => {
   const panel = await mount();

@@ -535,21 +535,18 @@ pub(crate) fn cmd_upsert_provider(state: &AppState, id: &str, cmd: &RpcCommand) 
 /// editing (see [`crate::llm::probe`]). Sessionless: it writes nothing and
 /// touches no conversation.
 pub(crate) fn cmd_probe_thinking_level(state: &AppState, id: &str, cmd: &RpcCommand) -> String {
-    let Some(spec) = cmd.thinking_probe.as_ref() else {
+    let Some(probe) = cmd.thinking_probe.as_ref() else {
         return RpcResponse::build_fail(
             id,
             "probe_thinking_level",
             "missing thinking_probe payload",
         );
     };
-    if spec.api.trim().is_empty()
-        || spec.base_url.trim().is_empty()
-        || spec.model_id.trim().is_empty()
-    {
+    if probe.model_id.trim().is_empty() {
         return RpcResponse::build_fail(
             id,
             "probe_thinking_level",
-            "thinking_probe needs api, base_url and model_id",
+            "thinking_probe needs a model_id",
         );
     }
     // Inherit an already-saved model's wire settings when the editor is editing
@@ -557,8 +554,8 @@ pub(crate) fn cmd_probe_thinking_level(state: &AppState, id: &str, cmd: &RpcComm
     // and a probe without them would test a different request than the one the
     // agent makes right after the save.
     let inherited = {
-        let provider = spec.provider_id.trim();
-        let model_id = spec.model_id.trim();
+        let provider = probe.provider_id.trim();
+        let model_id = probe.model_id.trim();
         if provider.is_empty() {
             None
         } else {
@@ -568,7 +565,28 @@ pub(crate) fn cmd_probe_thinking_level(state: &AppState, id: &str, cmd: &RpcComm
                 .resolve(&format!("{provider}/{model_id}"))
         }
     };
-    let model = crate::llm::probe::probe_model(spec, inherited.as_ref());
+    let mut spec = probe.clone();
+    // A probe of a configured model may leave the wire details out: the
+    // registered model already knows how it is addressed (its catalog base URL
+    // with any user override), and a client probing `provider/model` — the CLI
+    // does exactly that — should not have to restate them. The caller still
+    // supplies them for a provider it is only editing.
+    if let Some(model) = inherited.as_ref() {
+        if spec.api.trim().is_empty() {
+            spec.api = model.api.clone();
+        }
+        if spec.base_url.trim().is_empty() {
+            spec.base_url = model.base_url.clone();
+        }
+    }
+    if spec.api.trim().is_empty() || spec.base_url.trim().is_empty() {
+        return RpcResponse::build_fail(
+            id,
+            "probe_thinking_level",
+            "thinking_probe needs api and base_url for a model that is not configured yet",
+        );
+    }
+    let model = crate::llm::probe::probe_model(&spec, inherited.as_ref());
     // An empty key means "the key this provider already has": the editor's key
     // field is blank when the user is keeping the stored one, and the agent —
     // not the client — owns auth.json.

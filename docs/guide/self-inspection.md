@@ -23,6 +23,9 @@ themselves.
 | `future doctor` | One pass over login, agent connectivity, sandbox, providers, sessions and skills |
 | `future models --json` | Models this agent can use |
 | `future models refresh` | Pull the Future platform catalogue (the desktop's "Update model list"), so a model published after the app started appears without a restart |
+| `future models providers [--json]` | Every provider and model setting: built-in providers (key present, base URL, model count) and each custom provider's models with their limits, image input, thinking levels and prices |
+| `future models provider set\|remove`, `future models model set\|remove` | Write those settings from the terminal: a provider's key and base URL (built-in) or name/API/address (custom), and one model's name, limits, image input, thinking levels and per-1M prices |
+| `future models probe <provider>/<model> [--json]` | Which thinking levels that model's endpoint actually accepts, measured through the Agent's own adapters; nothing is saved |
 | `future version --json` | Which build this is: version, commit, target, dirty state |
 | `future auth status` | Whether a platform login is configured (and to what) |
 | `future account profile` / `balance` | The user's account and remaining credits |

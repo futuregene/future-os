@@ -107,7 +107,8 @@ pub(crate) fn route(cmd_type: &str) -> Option<Route> {
         "list_providers"
         | "update_builtin_provider"
         | "upsert_custom_provider"
-        | "delete_custom_provider" => Route::Providers,
+        | "delete_custom_provider"
+        | "probe_thinking_level" => Route::Providers,
         // The embedded terminal, driven by a paired desktop. Deliberately not in
         // `needs_content_capability`: a shell is not conversation content, and
         // the preflight would make every keystroke wait on the Agent twice.
@@ -309,6 +310,7 @@ mod tests {
         "list_git_commits",
         "list_models",
         "list_providers",
+        "probe_thinking_level",
         "list_session_files",
         "list_sessions",
         "list_settings_models",

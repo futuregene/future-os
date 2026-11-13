@@ -307,6 +307,34 @@ export interface BuiltinProviderUpdate {
   updateApiKey: boolean;
 }
 
+/**
+ * One thinking-level probe against the provider a client is editing
+ * (mirrors `agent_providers::ThinkingLevelProbeInput`).
+ *
+ * The payload is the form's live state, not stored config: nothing is saved
+ * before a probe. `apiKey` absent/empty means "use the key the host already
+ * stores for `providerId`", and `level` absent/empty is the calibration call,
+ * which sends no thinking parameter at all.
+ */
+export interface ThinkingLevelProbeInput {
+  api: string;
+  baseUrl: string;
+  apiKey?: string | null;
+  providerId?: string;
+  modelId: string;
+  level?: string;
+}
+
+/** One probe's verdict, as the editor renders it. */
+export interface ThinkingLevelProbeOutcome {
+  /** `default` for the calibration call, else the level that was tested. */
+  level: string;
+  /** True when the endpoint accepted the request carrying this level. */
+  ok: boolean;
+  /** The provider's own message when it did not. */
+  error?: string;
+}
+
 export interface InstalledSkill extends RemoteSkill {
   id: string;
   version?: string | null;

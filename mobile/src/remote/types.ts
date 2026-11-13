@@ -18,6 +18,8 @@ export {
   ProvidersView,
   CustomProviderUpsert,
   BuiltinProviderUpdate,
+  ThinkingLevelProbeInput,
+  ThinkingLevelProbeOutcome,
   InstalledSkill,
   AvailableSkill,
   RemoteModel,
