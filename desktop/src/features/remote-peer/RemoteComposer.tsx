@@ -31,6 +31,7 @@ import { abortRemoteRun, listRemoteInstalledSkills, previewRemoteFile, uploadRem
 import { getRemoteOutbox, isRecoverableSendError, recoverRemoteOutbox, sendRemotePrompt } from "./remotePromptOutbox";
 import {
   cancelRemoteQueuedRun,
+  editRemoteQueuedRun,
   isParkedRemoteQueueRow,
   QUEUED_SEND_POLICY,
   releaseRemoteQueuedRun,
@@ -68,6 +69,19 @@ function growToContent(node: HTMLTextAreaElement): void {
   node.style.height = "auto";
   const ceiling = window.innerHeight * MAX_FIELD_HEIGHT_RATIO;
   node.style.height = `${Math.min(node.scrollHeight, ceiling)}px`;
+}
+
+/**
+ * Whether the host answered a command it does not have.
+ *
+ * Two machines are updated on their own schedules, so a command this build sends
+ * can reach a paired computer that predates it; that host says "Unsupported
+ * command", which is not a failure of the reader's action but the absence of the
+ * verb. Callers use it to fall back to what an older host can do, instead of
+ * reporting an error for a feature it simply does not know.
+ */
+function isUnsupportedCommandError(error: unknown): boolean {
+  return errorMessage(error).includes("Unsupported command");
 }
 
 /**
@@ -693,8 +707,44 @@ export function RemoteComposer({
   }
 
   /**
-   * Change a waiting message: remove it from the host's queue, then send the new
-   * text behind the same running turn.
+   * Change a waiting message: correct its words where it already waits.
+   *
+   * The host edits the accepted prompt in place, so the row keeps its place in
+   * the queue and the files it carries. That is the whole point: an edit used to
+   * be a removal plus a re-send, and a re-send enters at the back — fixing a typo
+   * in the second of four messages sent it after the fourth, an order the reader
+   * never chose (reported 2026-11-14).
+   *
+   * A host too old to know the command answers "Unsupported command", and is
+   * edited the only way that version can: [`replaceQueuedByResend`]. The panel's
+   * editor already warns about the files such a host cannot carry, which is why
+   * that has not become a silent difference between two machines.
+   */
+  async function replaceQueued(runId: string, content: string) {
+    const next = content.trim();
+    if (!next) {
+      await cancelQueued(runId);
+      return;
+    }
+    setError(null);
+    try {
+      await editRemoteQueuedRun(desktopId, sessionId, runId, next);
+      queue.refresh();
+      return;
+    }
+    catch (err) {
+      if (!isUnsupportedCommandError(err)) {
+        setError(errorMessage(err));
+        queue.refresh();
+        return;
+      }
+    }
+    await replaceQueuedByResend(runId, next);
+  }
+
+  /**
+   * The edit an older host understands: take the waiting message back out of its
+   * queue, then send the new text behind the same running turn.
    *
    * Removed first, deliberately: a re-send that failed while the old row was
    * still queued would leave the reader with two copies of one message and no way
@@ -713,12 +763,7 @@ export function RemoteComposer({
    * box: the row is gone on the host, and losing the text as well would leave the
    * reader nothing to retry with.
    */
-  async function replaceQueued(runId: string, content: string) {
-    const next = content.trim();
-    if (!next) {
-      await cancelQueued(runId);
-      return;
-    }
+  async function replaceQueuedByResend(runId: string, next: string) {
     const row = queue.rows.find(item => item.runId === runId);
     setError(null);
     let carried: RemoteUpload[] = [];

@@ -35,6 +35,21 @@ pub async fn cancel_queued_run(thread_id: &str, run_id: &str) -> Result<(), crat
     agent_bridge::cancel_queued_run(&session_id, &run_id).await
 }
 
+/// Correct one waiting message's words, without moving it in the queue.
+///
+/// The queue is the Agent's and it is ordered, so an edit is not a removal and a
+/// re-send: a re-send would enter at the back, after messages the reader wrote
+/// later. The words change where the row already waits; its files, images and
+/// frozen run settings stay as they were accepted.
+pub async fn edit_queued_run(
+    thread_id: &str,
+    run_id: &str,
+    message: &str,
+) -> Result<(), crate::Error> {
+    let (session_id, run_id) = queued_run_session(thread_id, run_id)?;
+    agent_bridge::edit_queued_run(&session_id, &run_id, message).await
+}
+
 /// The conversation a queued run belongs to, and the run id to address.
 ///
 /// The conversation comes from the caller — it is rendering that conversation's

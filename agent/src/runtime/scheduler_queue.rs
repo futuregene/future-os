@@ -126,6 +126,8 @@ pub enum RunQueueError {
     QueueEmpty,
     #[error("run `{0}` is not queued")]
     RunNotQueued(String),
+    #[error("run `{0}` has no editable prompt payload")]
+    PayloadNotEditable(String),
     #[error("run `{actual}` cannot become terminal; active run is {expected:?}")]
     RunNotActive {
         expected: Option<String>,
@@ -172,6 +174,15 @@ pub struct ParkedRun {
 struct HeldRun {
     request: ScheduledRunRequest,
     reason: ParkReason,
+}
+
+/// Where one waiting prompt currently lives: the startable queue or the parked
+/// list. Both are the reader's rows; a command that takes one back, or corrects
+/// its words, has to reach either.
+#[derive(Debug, Clone, Copy)]
+enum At {
+    Queued(usize),
+    Held(usize),
 }
 
 #[derive(Debug)]
@@ -262,6 +273,24 @@ impl GlobalQueueBudget {
             });
         }
         state.count = base_count + 1;
+        state.bytes = projected_bytes;
+        Ok(())
+    }
+
+    /// Same reservation, new size: one waiting prompt was edited in place, so
+    /// the row count does not move and only its bytes change.
+    fn resize(&self, from_bytes: usize, to_bytes: usize) -> Result<(), RunQueueError> {
+        let mut state = self.state.lock();
+        let projected_bytes = state
+            .bytes
+            .saturating_sub(from_bytes)
+            .saturating_add(to_bytes);
+        if projected_bytes > self.max_bytes {
+            return Err(RunQueueError::GlobalQueueBytesExceeded {
+                actual: projected_bytes,
+                limit: self.max_bytes,
+            });
+        }
         state.bytes = projected_bytes;
         Ok(())
     }
@@ -710,6 +739,90 @@ impl InMemoryRunQueue {
             self.recent_ack_limit,
         );
         Ok(cancelled)
+    }
+
+    /// Replace the words of one waiting prompt, leaving its place in the queue
+    /// and everything else about it exactly as accepted.
+    ///
+    /// Editing is not a removal followed by a re-send. A re-send enters at the
+    /// back of the queue, so a reader who fixes a typo in the second of four
+    /// waiting messages would send it *after* the fourth — the queue they built
+    /// would arrive in an order they never chose (reported 2026-11-14). Swapping
+    /// the payload's `message` keeps the row where it is: same run id, same
+    /// sequence, same position, and the same frozen settings, images, model
+    /// context and attachments the prompt was accepted with. A correction can
+    /// therefore change the words and nothing else.
+    ///
+    /// A parked row is editable too — the reader is looking right at it — and
+    /// stays parked: editing is not the press that starts it, and refreshing its
+    /// acceptance time would silently extend the window the parking rule
+    /// applied.
+    pub fn edit_queued(
+        &self,
+        run_id: &str,
+        message: &str,
+    ) -> Result<ScheduledRunRequest, RunQueueError> {
+        let mut state = self.state.lock();
+        let at = if let Some(index) = state.queued.iter().position(|run| run.run_id == run_id) {
+            At::Queued(index)
+        } else if let Some(index) = state
+            .held
+            .iter()
+            .position(|held| held.request.run_id == run_id)
+        {
+            At::Held(index)
+        } else {
+            return Err(RunQueueError::RunNotQueued(run_id.to_string()));
+        };
+        let (old_bytes, mut fields) = {
+            let request = match at {
+                At::Queued(index) => &state.queued[index],
+                At::Held(index) => &state.held[index].request,
+            };
+            let Value::Object(fields) = request.payload.clone() else {
+                return Err(RunQueueError::PayloadNotEditable(run_id.to_string()));
+            };
+            (request.payload_bytes, fields)
+        };
+        fields.insert("message".to_string(), Value::String(message.to_string()));
+        let payload = Value::Object(fields);
+        let new_bytes = serde_json::to_vec(&payload)
+            .expect("JSON value serialization cannot fail")
+            .len();
+        if new_bytes > self.max_request_bytes {
+            return Err(RunQueueError::RequestTooLarge {
+                actual: new_bytes,
+                limit: self.max_request_bytes,
+            });
+        }
+        let projected_bytes = state
+            .queued_bytes
+            .saturating_sub(old_bytes)
+            .saturating_add(new_bytes);
+        if projected_bytes > self.max_queue_bytes {
+            return Err(RunQueueError::QueueBytesExceeded {
+                actual: projected_bytes,
+                limit: self.max_queue_bytes,
+            });
+        }
+        // One row, still one row: only its weight changes.
+        self.global_budget.resize(old_bytes, new_bytes)?;
+        state.queued_bytes = projected_bytes;
+        let request = match at {
+            At::Queued(index) => {
+                let row = &mut state.queued[index];
+                row.payload = payload;
+                row.payload_bytes = new_bytes;
+                row
+            }
+            At::Held(index) => {
+                let row = &mut state.held[index].request;
+                row.payload = payload;
+                row.payload_bytes = new_bytes;
+                row
+            }
+        };
+        Ok(request.clone())
     }
 
     pub fn cancel_all_queued(&self, reason: QueuedCancellationReason) -> Vec<ScheduledRunRequest> {
@@ -1565,6 +1678,148 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(error, RunQueueError::DuplicateRequestConflict(_)));
+    }
+
+    /// Editing a waiting message corrects its words and nothing else: the queue
+    /// is an order the reader built, so a fix to the second of four messages must
+    /// not send it after the fourth (reported 2026-11-14).
+    #[test]
+    fn an_edited_prompt_keeps_its_place_and_its_other_fields() {
+        let queue = queue();
+        for (request, run) in [("r1", "run-1"), ("r2", "run-2"), ("r3", "run-3")] {
+            queue
+                .accept(
+                    request,
+                    Some(run),
+                    BusyPolicy::EnqueueIfBusy,
+                    serde_json::json!({"message":run, "model_context":"sidecar"}),
+                )
+                .unwrap();
+        }
+        let edited = queue.edit_queued("run-2", "corrected").expect("edit");
+        assert_eq!(edited.run_id, "run-2");
+        assert_eq!(edited.run_sequence, 2, "the sequence is the row's identity");
+        assert_eq!(edited.client_request_id, "r2");
+        assert_eq!(edited.payload["message"], "corrected");
+        assert_eq!(
+            edited.payload["model_context"], "sidecar",
+            "everything the prompt was accepted with stays"
+        );
+        assert_eq!(
+            queue
+                .queued()
+                .iter()
+                .map(|run| run.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run-1", "run-2", "run-3"],
+            "the row did not move"
+        );
+        assert_eq!(queue.next_startable().unwrap().run_id, "run-1");
+        // The queue's own visibility reads the same field, so the client sees the
+        // corrected words without any other change.
+        assert_eq!(queue.queued()[1].payload["message"], "corrected");
+        // It still runs exactly once, second.
+        queue.start_next(1).unwrap();
+        queue.finish_active("run-1").unwrap();
+        assert_eq!(queue.start_next(2).unwrap().0.run_id, "run-2");
+    }
+
+    /// A parked row is still the reader's to correct, and correcting it is not
+    /// the press that starts it: it stays parked, keeping both its place and the
+    /// wait that parked it.
+    #[test]
+    fn an_edited_parked_row_stays_parked_in_its_place() {
+        use std::time::Duration;
+
+        let queue = queue();
+        for (request, run) in [("r1", "run-old"), ("r2", "run-new")] {
+            queue
+                .accept(
+                    request,
+                    Some(run),
+                    BusyPolicy::EnqueueCoalescing,
+                    serde_json::json!({"message":run}),
+                )
+                .unwrap();
+        }
+        queue.test_backdate("run-old", Duration::from_secs(3_600));
+        assert_eq!(queue.park_stale(QueueBoundary::Idle).len(), 1);
+
+        let edited = queue.edit_queued("run-old", "fixed typo").expect("edit");
+        assert_eq!(edited.accepted_at, queue.queued()[0].accepted_at);
+        assert!(queue.is_held("run-old"), "editing does not start it");
+        assert_eq!(
+            queue
+                .queued()
+                .iter()
+                .map(|run| run.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run-old", "run-new"],
+            "a parked row keeps its slot"
+        );
+        assert_eq!(queue.queued()[0].payload["message"], "fixed typo");
+        assert_eq!(
+            queue.next_startable().unwrap().run_id,
+            "run-new",
+            "editing is not the release that makes it startable"
+        );
+    }
+
+    /// An edit the queue cannot hold is refused whole: no partial reservation, no
+    /// changed row.
+    #[test]
+    fn an_edit_that_does_not_fit_changes_nothing() {
+        let payload = serde_json::json!({"message":"x".repeat(8)});
+        let cap = bytes(&payload) + 1;
+        let global = std::sync::Arc::new(GlobalQueueBudget::new(8, cap));
+        let queue = InMemoryRunQueue::with_limits_and_global(
+            "session-a",
+            1,
+            8,
+            cap,
+            cap,
+            256,
+            global.clone(),
+        );
+        queue
+            .accept(
+                "r1",
+                Some("run-1"),
+                BusyPolicy::EnqueueIfBusy,
+                payload.clone(),
+            )
+            .unwrap();
+        let error = queue
+            .edit_queued("run-1", &"y".repeat(cap))
+            .expect_err("the corrected text does not fit");
+        assert!(matches!(error, RunQueueError::RequestTooLarge { .. }));
+        assert_eq!(queue.queued()[0].payload, payload);
+        assert_eq!(queue.queued_bytes(), bytes(&payload));
+        assert_eq!(global.usage(), (1, bytes(&payload)));
+    }
+
+    #[test]
+    fn editing_a_prompt_that_is_not_queued_is_refused() {
+        let queue = queue();
+        assert!(matches!(
+            queue.edit_queued("run-ghost", "words").unwrap_err(),
+            RunQueueError::RunNotQueued(id) if id == "run-ghost"
+        ));
+        // A prompt that already started is not the queue's any more: the words the
+        // model is reading are not something an edit can reach.
+        queue
+            .accept("r1", Some("run-1"), BusyPolicy::EnqueueIfBusy, Value::Null)
+            .unwrap();
+        queue.start_next(1).unwrap();
+        assert!(matches!(
+            queue.edit_queued("run-1", "words").unwrap_err(),
+            RunQueueError::RunNotQueued(_)
+        ));
+        queue.finish_active("run-1").unwrap();
+        assert!(matches!(
+            queue.edit_queued("run-1", "words").unwrap_err(),
+            RunQueueError::RunNotQueued(_)
+        ));
     }
 
     #[test]

@@ -89,7 +89,8 @@ pub use self::run_control::{
     abort_run, compact_agent_session, compact_thread_context, stop_thread,
 };
 pub use self::run_control::{
-    abort_session, cancel_queued_run, release_queued_run, wait_for_agent_idle, AbortSessionOutcome,
+    abort_session, cancel_queued_run, edit_queued_run, release_queued_run, wait_for_agent_idle,
+    AbortSessionOutcome,
 };
 pub use self::session::fork_agent_session;
 pub use self::session::set_agent_sandbox_policy_tier;

@@ -141,6 +141,73 @@ pub(crate) fn handle_release_queued_run(
     }
 }
 
+/// Correct one waiting prompt's words, in the place it already holds.
+///
+/// Not a cancel and a re-send: that would put the corrected message at the back
+/// of a queue the reader ordered. An empty message is refused here rather than
+/// treated as a deletion — the panel's own bin is what removes a row, and an
+/// edit that quietly removed one would be a surprise, not a correction.
+pub(crate) fn handle_edit_queued_run(
+    session: &Arc<parking_lot::RwLock<ServerSession>>,
+    cmd: &RpcCommand,
+    id: &str,
+) -> String {
+    if cmd.run_id.is_empty() {
+        return RpcResponse::build_fail_code(
+            id,
+            "edit_queued_run",
+            "run_not_queued",
+            "run_id is required",
+            serde_json::json!({}),
+        );
+    }
+    if cmd.message.trim().is_empty() {
+        return RpcResponse::build_fail_code(
+            id,
+            "edit_queued_run",
+            "empty_message",
+            "a queued message needs some text; remove it instead",
+            serde_json::json!({"run_id": cmd.run_id}),
+        );
+    }
+    match session.write().edit_queued_run(&cmd.run_id, &cmd.message) {
+        Ok(()) => RpcResponse::ok(
+            id,
+            "edit_queued_run",
+            serde_json::json!({ "run_id": cmd.run_id, "state": "queued" }),
+        ),
+        Err(error) => match error.downcast_ref::<crate::runtime::RunQueueError>() {
+            Some(crate::runtime::RunQueueError::RequestTooLarge { actual, limit }) => {
+                RpcResponse::build_fail_code(
+                    id,
+                    "edit_queued_run",
+                    "request_too_large",
+                    &error.to_string(),
+                    serde_json::json!({"actual_bytes": actual, "limit_bytes": limit}),
+                )
+            }
+            Some(
+                crate::runtime::RunQueueError::QueueBytesExceeded { actual, limit }
+                | crate::runtime::RunQueueError::GlobalQueueBytesExceeded { actual, limit },
+            ) => RpcResponse::build_fail_code(
+                id,
+                "edit_queued_run",
+                "queue_memory_limit",
+                &error.to_string(),
+                serde_json::json!({"actual_bytes": actual, "limit_bytes": limit}),
+            ),
+            Some(crate::runtime::RunQueueError::RunNotQueued(_)) => RpcResponse::build_fail_code(
+                id,
+                "edit_queued_run",
+                "run_not_queued",
+                &error.to_string(),
+                serde_json::json!({"run_id": cmd.run_id}),
+            ),
+            _ => RpcResponse::build_fail(id, "edit_queued_run", &error.to_string()),
+        },
+    }
+}
+
 pub(crate) fn handle_cancel_queued_run(
     session: &Arc<parking_lot::RwLock<ServerSession>>,
     cmd: &RpcCommand,
