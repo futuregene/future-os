@@ -107,22 +107,44 @@ class Future:
             ]
         )
 
+    def run_ledger(self, session, run_id, wait_terminal=0):
+        deadline = time.monotonic() + wait_terminal
+        while True:
+            ledger = self.call(
+                [
+                    "session",
+                    "transcript",
+                    "--session",
+                    session,
+                    "--runs",
+                    "--all",
+                    "--max-bytes",
+                    "0",
+                    "--json",
+                ]
+            )
+            if ledger.get("hasMore"):
+                raise RuntimeError("Incomplete run ledger during terminal recovery")
+            run = next(
+                (row for row in ledger.get("ledger", []) if row.get("runId") == run_id),
+                {},
+            )
+            if not wait_terminal or run.get("status") in {
+                "completed",
+                "failed",
+                "error",
+                "interrupted",
+                "cancelled",
+            }:
+                return ledger
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"Terminal ledger not yet available for run {run_id}"
+                )
+            time.sleep(0.25)
+
     def terminal_output(self, session, run_id):
-        ledger = self.call(
-            [
-                "session",
-                "transcript",
-                "--session",
-                session,
-                "--runs",
-                "--all",
-                "--max-bytes",
-                "0",
-                "--json",
-            ]
-        )
-        if ledger.get("hasMore"):
-            raise RuntimeError("Incomplete run ledger during terminal recovery")
+        ledger = self.run_ledger(session, run_id)
         run = next(
             (row for row in ledger.get("ledger", []) if row.get("runId") == run_id), {}
         )
@@ -174,6 +196,7 @@ class Future:
             if deadline and time.monotonic() >= deadline:
                 self.call(["session", "abort", session], json_output=False)
                 try:
+                    self.run_ledger(session, run_id, wait_terminal=30)
                     recovered = self.terminal_output(session, run_id)
                 except RuntimeError as error:
                     raise RunDeadlineExceeded(
@@ -414,18 +437,12 @@ class Future:
             # run's terminal ledger, never text from the model, to classify 502s.
             if session and result.get("run_id"):
                 try:
-                    ledger = self.call(
-                        [
-                            "session",
-                            "transcript",
-                            "--session",
-                            session,
-                            "--runs",
-                            "--all",
-                            "--max-bytes",
-                            "0",
-                            "--json",
-                        ]
+                    ledger = self.run_ledger(
+                        session,
+                        result["run_id"],
+                        wait_terminal=30
+                        if result.get("benchmark_deadline_exceeded")
+                        else 0,
                     )
                     if ledger.get("hasMore"):
                         raise ValueError("Incomplete terminal failure ledger")
