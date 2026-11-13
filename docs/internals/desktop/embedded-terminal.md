@@ -117,15 +117,23 @@ replays). A detached viewer never grows memory without bound.
   emits `futureos:focus-composer` and the Composer answers it (declining while
   it cannot hold a caret). Otherwise focus would sit on an unmounted terminal
   and the next keystrokes would go nowhere.
-* **Placement is the panel's own.** It docks at the bottom row or as a column
-  between the conversation and the files panel, and can take the whole content
-  area — `features/terminal/useTerminalPanel.ts` keeps the dock, the two sizes
-  and the per-conversation open state, and the shell only decides which slot
-  draws it. While it is maximized the conversation and the files panel stay
-  **mounted** behind `hidden`, so coming back keeps the transcript, its scroll
-  position and the draft. A paired desktop's panel is the same component
+* **Placement is the panel's own.** It docks at the bottom row or as a column at
+  the window's right edge, and can take the whole content area —
+  `features/terminal/useTerminalPanel.ts` keeps the dock, the two sizes and the
+  per-conversation open state, and the shell only decides which slot draws it.
+  While it is maximized the conversation and the files panel stay **mounted**
+  behind `hidden`, so coming back keeps the transcript, its scroll position and
+  the draft. A paired desktop's panel is the same component
   (`RemoteTerminalPanel`), so both moves work there too: they are this window's
   layout, never a command on the host.
+* **The content column is the anchor for what floats over the conversation.**
+  The collapsed files panel's button and that panel's drawer are absolutely
+  positioned against the column that holds the conversation and the files panel,
+  not against the window: with a terminal docked at the right edge, a
+  window-anchored button lands on the terminal's own header (measured: the
+  button overlapped the panel's close control). The right-docked terminal is
+  therefore a sibling of that column, not a child of it — which is also what
+  keeps the drawer from covering the terminal.
 * **A right dock is offered only while the window can host the column** beside
   the conversation's width floor; below that the panel draws at the bottom and
   the header leaves the dock button out rather than showing a control that

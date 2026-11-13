@@ -716,10 +716,10 @@ function ReadyAppShell({
       : null,
   };
   const terminalTarget = terminalScope(terminalInput);
-  // A right-docked terminal is a column of its own, between the conversation and
-  // the files panel, so the conversation's floor has to leave room for it: the
-  // rail when it is a column, the center's own floor, and the files column when
-  // that one is a column too (a floating drawer takes no layout space).
+  // A right-docked terminal is a column of its own at the window's edge, so the
+  // conversation's floor has to leave room for it: the rail when it is a column,
+  // the center's own floor, and the files column when that one is a column too
+  // (a floating drawer takes no layout space).
   const rightColumnWidth = hideRightPanel
     ? 0
     : activeRemote
@@ -780,11 +780,11 @@ function ReadyAppShell({
   /**
    * The panel itself, built once and placed by where it is docked.
    *
-   * Three slots, never two at a time: the right column (between the
-   * conversation and the files panel), the bottom row (under both of them), or
-   * the whole content area when maximized. One element rather than three
-   * conditions means the dock and the maximize state cannot disagree about
-   * which panel is on screen. Both owner kinds go through it — a paired
+   * Three slots, never two at a time: the window's right edge (a column beside
+   * the content column), the bottom row (under the conversation and the files
+   * panel), or the whole content area when maximized. One element rather than
+   * three conditions means the dock and the maximize state cannot disagree
+   * about which panel is on screen. Both owner kinds go through it — a paired
    * desktop's shells are the same panel with another host (see
    * `RemoteTerminalPanel`), so a dock or a maximize works there for free.
    */
@@ -2071,7 +2071,13 @@ function ReadyAppShell({
                     </div>
                   )
                 : null}
-              <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+              {/* `relative` is the anchor for the affordances drawn over the
+                conversation — the collapsed files panel's button and the panel's
+                own drawer. They used to resolve against the window, which was
+                the same thing only while nothing sat to the right of this
+                column; a right-docked terminal does, and the button landed on
+                the terminal's header. */}
+              <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
                 {/* A maximized terminal takes the column; the conversation and
             the files panel stay mounted behind `hidden` (not unmounted), so
             scroll positions, a draft and the mounted transcript all survive
@@ -2308,10 +2314,6 @@ function ReadyAppShell({
                                     />
                                   )}
                   </main>
-                  {/* A right-docked terminal is the next column: the conversation,
-            the terminal, then the files panel — the order a workbench has
-            (the panel takes the edge, the conversation keeps the inside). */}
-                  {terminalRightDocked ? terminalPanelElement : null}
                   {/* Views without thread context hide the right panel entirely, including
           the collapsed expand affordance. */}
                   {/* A remote conversation's right panel reads that machine's files
@@ -2354,14 +2356,21 @@ function ReadyAppShell({
                     : null}
                 </div>
                 {/* The terminal takes the edge it is docked to: a row under the
-            conversation and the files panel (both of which it spans), or a
-            column of its own between them. Collapsing it removes it from the
-            layout entirely, so the conversation keeps the full space. */}
+            conversation and the files panel (both of which it spans), or —
+            rendered outside this column, below — a column at the window's edge.
+            Collapsing it removes it from the layout entirely, so the
+            conversation keeps the full space. */}
                 {terminalMaximized ? terminalPanelElement : null}
                 {terminalPanelElement && !terminalMaximized && terminalPanel.dock === "bottom"
                   ? terminalPanelElement
                   : null}
               </div>
+              {/* The right-docked terminal takes the window's edge as a column of
+            its own, a sibling of the content column rather than a child of it:
+            that is what leaves the column (conversation + files panel) as the
+            containing block for the affordances anchored above, so they never
+            land on the terminal. */}
+              {terminalRightDocked ? terminalPanelElement : null}
             </>
           )}
       <AppShellDialogs
