@@ -683,6 +683,99 @@ fn a_cached_fold_is_byte_identical_to_folding_the_journal() {
 }
 
 #[test]
+fn a_canonical_run_reports_its_epoch_and_hits_the_cached_fold() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("agent.db");
+    let store = SqliteStore::open(&path).unwrap();
+    // A conversation written by today's agent: canonical entries and a canonical
+    // journal, so every event lives in the stream tables and none in
+    // `run_events`. Before the fix `run_epoch` asked only the legacy table, got
+    // `None`, and `uncaptured_run_snapshot` never reached the cache: every open
+    // of this run outside the agent's memory paid the whole fold again.
+    store.reserve_segmented("s").unwrap();
+    store
+        .replace(
+            "s",
+            vec![json!({"id":"info","type":"session_info","timestamp":"2026-10-26T00:00:00Z","content":{"cwd":".","model":"mock"}})],
+        )
+        .unwrap();
+    let mut writer = crate::session::content::journal::Writer::default();
+    for (idx, kind, data) in [
+        (0i64, "agent_start", json!({})),
+        (1, "agent_end", json!({"state":"completed"})),
+    ] {
+        writer
+            .persist(
+                &store,
+                "s",
+                [&json!({"session_id":"s","run_id":"run","epoch":1,"idx":idx,"session_idx":-1,
+                         "run_sequence":0,"event_id":format!("s:run:1:{idx}"),
+                         "timestamp":"2026-10-26T00:00:00Z","event_type":kind,"data":data.to_string()})],
+            )
+            .unwrap();
+    }
+    let legacy_rows: i64 = store
+        .db
+        .call(|db| Ok(db.query_row("SELECT count(*) FROM run_events", [], |row| row.get(0))?))
+        .unwrap();
+    assert_eq!(legacy_rows, 0, "a canonical run writes no legacy events");
+
+    let epoch = store
+        .run_epoch("s", "run")
+        .unwrap()
+        .expect("the canonical journal is this run's epoch");
+    assert_eq!(epoch, 1);
+    let snapshot = RunJournalSnapshot {
+        run_id: "run".into(),
+        epoch,
+        run_sequence: 0,
+        cursor: 1,
+        events: vec![SseEvent {
+            run_id: "run".into(),
+            idx: 1,
+            epoch: 1,
+            ..SseEvent::new("agent_end", json!({"state":"completed"}))
+        }],
+    };
+    assert!(
+        store
+            .cached_run_snapshot("s", "run", epoch)
+            .unwrap()
+            .is_none(),
+        "nothing is cached until the first fold is kept"
+    );
+    store.store_run_snapshot_cache("s", &snapshot).unwrap();
+    assert!(
+        store
+            .cached_run_snapshot("s", "run", epoch)
+            .unwrap()
+            .is_some(),
+        "the epoch the journal reports is the one the cached fold is keyed by"
+    );
+    // A restart or fork opens another epoch of the same run (a new stream row); a
+    // fold taken before it is not this run's projection any more — the same rule
+    // the legacy table already had.
+    store
+        .db
+        .call(|db| {
+            let key = crate::session::identity::session_key(db, "s")?;
+            db.execute(
+                "INSERT INTO stream_runs(session_id,run_id,epoch,durable_cursor)
+                 VALUES (?1,'run',2,2)",
+                params![&key],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let epoch = store.run_epoch("s", "run").unwrap().unwrap();
+    assert_eq!(epoch, 2, "the newest epoch wins");
+    assert!(store
+        .cached_run_snapshot("s", "run", epoch)
+        .unwrap()
+        .is_none());
+}
+
+#[test]
 fn a_cache_from_another_epoch_is_a_miss() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("agent.db");
