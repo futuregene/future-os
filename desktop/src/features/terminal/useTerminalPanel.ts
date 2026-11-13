@@ -31,8 +31,8 @@ const HEADER_RESERVE = 240;
  *
  * Both are columns of the shell, not two different panels: the same tabs, the
  * same shells, the same preferences. A bottom dock takes the width of the
- * conversation and the files panel; a right dock is a column between them (see
- * `AppShell`), which is why the two keep separate sizes.
+ * conversation and the files panel; a right dock is a column at the window's
+ * edge beside them (see `AppShell`), which is why the two keep separate sizes.
  */
 export type TerminalDock = "bottom" | "right";
 
