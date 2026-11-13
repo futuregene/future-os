@@ -113,6 +113,7 @@ interface Props {
   isGitWorkspace?: boolean | null;
   threadId?: string;
   uncommittedReview?: GitReview | null;
+  workspacePath?: string | null;
 }
 
 let container: HTMLDivElement;
@@ -125,6 +126,9 @@ async function mount(overrides: Props = {}, extra: { flush?: boolean } = {}) {
     isGitWorkspace: true as boolean | null,
     threadId: "thread-1",
     uncommittedReview: gitReview({ files: [gitFile({ path: "src/uncommitted.ts", diff: "@@ -1 +1 @@\n-old\n+from-uncommitted" })] }),
+    // No path by default: the thread's workspace arrives with its first context
+    // refresh, so this is the state the panel spends its first frames in.
+    workspacePath: null,
     ...overrides,
   };
   await act(async () => {
@@ -160,7 +164,7 @@ function deferred<T>() {
 
 function tabs(): HTMLButtonElement[] {
   return [...container.querySelectorAll<HTMLButtonElement>("button")]
-    .filter(button => ["Branch", "Uncommitted", "Last run"].includes(button.textContent ?? ""));
+    .filter(button => ["Branch", "Uncommitted", "Last run", "History"].includes(button.textContent ?? ""));
 }
 
 function fileHeaders(): HTMLButtonElement[] {
@@ -273,6 +277,23 @@ describe("reviewPanel view selection", () => {
   it("falls back to the branch review when there is no uncommitted diff", async () => {
     await mount({ uncommittedReview: null });
     expect(container.textContent).toContain("src/working-tree.ts");
+  });
+
+  it("offers the history tab for a Git workspace, with the thread's own path", async () => {
+    await mount({ workspacePath: "/Users/reader/repo" });
+    expect(tabs().map(tab => tab.textContent)).toEqual(["Branch", "Uncommitted", "Last run", "History"]);
+  });
+
+  it("offers no history tab outside a Git workspace", async () => {
+    await mount({ isGitWorkspace: false, branchReview: null, uncommittedReview: null, workspacePath: "/Users/reader/notes" });
+    expect(tabs()).toHaveLength(0);
+  });
+
+  it("offers no history tab when the thread has no workspace path yet", async () => {
+    // The workspace arrives with the thread; a tab that opened on "" would read
+    // the wrong directory. The other tabs are unaffected.
+    await mount({ workspacePath: null });
+    expect(tabs().map(tab => tab.textContent)).toEqual(["Branch", "Uncommitted", "Last run"]);
   });
 
   it("returns to the branch view after visiting another tab", async () => {

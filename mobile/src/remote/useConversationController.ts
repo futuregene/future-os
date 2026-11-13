@@ -18,6 +18,8 @@ import { DEFAULT_THINKING_LEVEL, modelProviderFromReference, modelReference, res
 import type {
   AvailableSkill,
   DownloadInfo,
+  GitCommitDetail,
+  GitGraphListing,
   HistoryAttachment,
   RemoteModel,
   RemoteSessionState,
@@ -361,6 +363,46 @@ export function useConversationController({
     return response.data;
   }, [clientRef, selectedRef, conversationEpochRef]);
 
+  /** The conversation's Git history, drawn as a lane graph.
+   *
+   * The workspace is the *desktop's* for this session — the request names the
+   * session and the host resolves the directory — so the phone never has to know
+   * where the checkout is. A workspace that is not a repository answers
+   * `isRepo: false` with an empty list rather than an error, which is what lets
+   * the sheet decide to offer Nothing.
+   */
+  const listGitCommits = useCallback(async () => {
+    const client = clientRef.current;
+    const sessionId = selectedRef.current;
+    const epoch = conversationEpochRef.current;
+    if (!client || !sessionId) throw new Error("git_no_session");
+    const response = await requestReadPage<GitGraphListing>(
+      client,
+      { type: "list_git_commits", sessionId },
+      sessionId,
+      () => clientRef.current === client && selectedRef.current === sessionId
+        && conversationEpochRef.current === epoch,
+    );
+    return response.data;
+  }, [clientRef, selectedRef, conversationEpochRef]);
+
+  /** One commit's stat and patch. `gitRef` is a sha, never a path. */
+  const getGitCommit = useCallback(async (gitRef: string) => {
+    const client = clientRef.current;
+    const sessionId = selectedRef.current;
+    const epoch = conversationEpochRef.current;
+    if (!client || !sessionId) throw new Error("git_no_session");
+    const response = await client.requestRetry<GitCommitDetail>(
+      { type: "get_git_commit", sessionId, gitRef },
+      sessionId,
+    );
+    if (clientRef.current !== client || selectedRef.current !== sessionId
+      || conversationEpochRef.current !== epoch) {
+      throw new Error("stale_sync_lane");
+    }
+    return response.data;
+  }, [clientRef, selectedRef, conversationEpochRef]);
+
   const prepareAttachment = useCallback(
     async (
       attachment: HistoryAttachment,
@@ -591,6 +633,8 @@ export function useConversationController({
     selectSession,
     newConversation,
     listSessionFiles,
+    listGitCommits,
+    getGitCommit,
     listSkills,
     resolveToolCallTarget,
     resolveReasoning,

@@ -1158,6 +1158,8 @@ mod gui {
                 save_approval_rule,
                 save_approval_rules,
                 get_git_review,
+                get_git_history,
+                get_git_commit,
                 get_workspace_review_capabilities,
                 get_last_run_review,
                 retry_run_review,

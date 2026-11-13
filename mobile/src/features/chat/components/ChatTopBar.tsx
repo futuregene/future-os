@@ -1,4 +1,4 @@
-import { ArrowLeft, FolderOpen, ReceiptText } from "lucide-react-native";
+import { ArrowLeft, Ellipsis } from "lucide-react-native";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { PeerIconGlyph } from "../../../remote/PeerIconGlyph";
 import { layout, radius, spacing } from "../../../theme/tokens";
@@ -10,12 +10,10 @@ export function ChatTopBar({
   draft,
   machine,
   backLabel,
-  usageLabel,
+  menuLabel,
+  menuOpen,
   onBack,
-  onUsage,
-  filesLabel,
-  filesOpen,
-  onFiles,
+  onMenu,
 }: {
   title: string;
   contextLabel: string;
@@ -31,18 +29,18 @@ export function ChatTopBar({
   machine?: { icon: string | undefined; label: string };
   backLabel: string;
   /**
-   * Opens the conversation's token/amount breakdown. An icon rather than the
-   * amount: the bar belongs to the conversation, and a number that changes
-   * every turn competes with the title for attention. Renaming is not here
-   * either — the session list already owns that, so repeating it in the
-   * conversation only lengthens the row.
+   * Opens the conversation's own menu: the session's files, its token/amount
+   * breakdown, and — when the workspace is a Git repository — its history.
+   *
+   * One control rather than one per action: the bar belongs to the conversation
+   * and every action in it is occasional, so a row of icons spent the title's
+   * width on things the reader opens once a session. What is inside is the
+   * caller's: this bar draws a button, not a list.
    */
-  usageLabel: string;
+  menuLabel: string;
+  menuOpen: boolean;
   onBack: () => void;
-  onUsage: () => void;
-  filesLabel: string;
-  filesOpen: boolean;
-  onFiles: () => void;
+  onMenu: () => void;
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -92,29 +90,18 @@ export function ChatTopBar({
       </View>
       {!draft && (
         <Pressable
-          accessibilityLabel={filesLabel}
+          accessibilityLabel={menuLabel}
           accessibilityRole="button"
-          accessibilityState={{ expanded: filesOpen }}
-          onPress={onFiles}
-          style={({ pressed }) => [styles.iconButton, (pressed || filesOpen) && styles.pressed]}
+          accessibilityState={{ expanded: menuOpen }}
+          onPress={onMenu}
+          style={({ pressed }) => [styles.iconButton, (pressed || menuOpen) && styles.pressed]}
         >
-          <FolderOpen color={filesOpen ? colors.accent : colors.ink} size={20} />
+          <Ellipsis color={menuOpen ? colors.accent : colors.ink} size={22} />
         </Pressable>
       )}
-      {!draft && (
-        <Pressable
-          accessibilityLabel={usageLabel}
-          accessibilityRole="button"
-          onPress={onUsage}
-          style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
-        >
-          <ReceiptText color={colors.ink} size={20} />
-        </Pressable>
-      )}
-      {/* A draft has no session, so neither icon applies; the two spacers keep
-          the centered title from jumping sideways when the first message is
-          sent and they appear. */}
-      {draft && <View style={styles.iconButton} />}
+      {/* A draft has no session, so no action applies; the spacer keeps the
+          centered title from jumping sideways when the first message is sent and
+          the button appears. */}
       {draft && <View style={styles.iconButton} />}
     </View>
   );

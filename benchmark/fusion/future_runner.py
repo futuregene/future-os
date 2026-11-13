@@ -554,23 +554,38 @@ class Future:
 
 
 def unexecuted_consultation(discussion, tool_id, transcript):
-    """A truncated tool call can have a terminal result without a durable run."""
-    results = [
-        block.get("text", "")
+    """Rejected inputs and cancelled calls have receipts but no durable run."""
+    receipts = [
+        block
         for entry in transcript.get("entries", [])
         for block in entry.get("blocks", [])
         if block.get("kind") == "tool_result" and block.get("toolCallId") == tool_id
     ]
-    if discussion.get("pending") is not True or not any(
+    results = [block.get("text", "") for block in receipts]
+    cancelled = any(
         "fusion was not executed due to connection interruption" in text
         for text in results
-    ):
+    )
+    rejected = any(
+        block.get("isError") is True
+        and (
+            re.fullmatch(r"Error: missing field `[a-z_]+`", block.get("text", ""))
+            or block.get("text")
+            in {
+                "Error: Fusion requires question",
+                "Error: Fusion requires goal",
+                "Error: Fusion requires background",
+            }
+        )
+        for block in receipts
+    )
+    if discussion.get("pending") is not True or not (cancelled or rejected):
         raise ValueError("Missing Fusion record without an unexecuted tool receipt")
     return {
         "id": None,
         "tool_call_id": tool_id,
         "status": "not_started",
-        "error_category": "tool_not_executed",
+        "error_category": "tool_input_rejected" if rejected else "tool_not_executed",
         "tool_result": "\n".join(results),
         "configuration": None,
         "completeness": "none",

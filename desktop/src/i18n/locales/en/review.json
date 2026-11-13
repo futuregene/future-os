@@ -3,7 +3,8 @@
   "tab": {
     "branch": "Branch",
     "uncommitted": "Uncommitted",
-    "lastRun": "Last run"
+    "lastRun": "Last run",
+    "history": "History"
   },
   "workingTree": {
     "emptyTitle": "No uncommitted changes in the working tree",

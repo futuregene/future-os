@@ -1,7 +1,23 @@
-import { Check, Pencil, Play, RotateCcw, Trash2 } from "lucide-react";
+import { Check, Image as ImageIcon, Paperclip, Pencil, Play, RotateCcw, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/cn";
+
+/**
+ * One file a waiting message carries, as the panel draws it.
+ *
+ * Both queues report this shape — this machine's Agent (a local path) and a
+ * paired host's (a path only that host can serve) — so the panel is written
+ * against the file, not against the machine it came from.
+ */
+export interface SendQueueAttachmentItem {
+  path: string;
+  /** "image" | "file". */
+  kind: string;
+  name: string;
+  /** Byte size, or 0 when the queue did not report one. */
+  size: number;
+}
 
 /** One row of the panel: a message waiting for the run to finish. */
 export interface SendQueuePanelItem {
@@ -9,16 +25,15 @@ export interface SendQueuePanelItem {
   /** The text as it will be sent (empty for an attachment-only message). */
   content: string;
   /**
-   * How many files travel with it — `undefined` when the queue that holds the
-   * row does not report it.
+   * The files the message carries.
    *
-   * A row read back from the Agent's own queue has no count to show: `get_state`
-   * answers with a message's text and its acceptance time, never the uploads it
-   * was sent with. Zero used to be hard-coded for those rows, which claimed a
-   * message carried no files when it may well have carried several, so the
-   * absence is now spelled as absence.
+   * `undefined` when the queue behind this row does not report them (an Agent
+   * older than the field, or a client that has not read it yet). One of those is
+   * then told, in the editor, that saving sends the words alone — which is why
+   * absence is spelled as absence and never as a count of zero. A message with
+   * no files reports `[]`.
    */
-  attachmentCount?: number;
+  attachments?: readonly SendQueueAttachmentItem[];
   /**
    * Parked by the Agent: it waited too long to run by itself and now starts only
    * when the reader says so. Undefined means "will run at the next turn
@@ -44,21 +59,34 @@ export function SendQueuePanel({
   attachmentsUnreported,
   failed,
   items,
-  onRelease,
+  onPreviewAttachment,
   onRemove,
   onRetry,
+  onRelease,
   onUpdate,
 }: {
   /**
-   * The queue behind these rows does not say which files a message carries, so
-   * an edit — a removal and a re-send, the only kind there is — sends the new
-   * text and leaves those files behind. Said in the editor, where the reader is
-   * about to make that trade, rather than as a number the panel cannot know.
+   * No row's queue reports which files a message carries, so an edit — a removal
+   * and a re-send, the only kind there is — sends the new text and leaves those
+   * files behind. Said in the editor, where the reader is about to make that
+   * trade, rather than as a number the panel cannot know.
+   *
+   * A row that does report its files overrides this: that row's edit keeps them,
+   * and warning about a loss that will not happen would be wrong.
    */
   attachmentsUnreported?: boolean;
   /** The last automatic delivery failed; offer a retry instead of the hint. */
   failed?: boolean;
   items: readonly SendQueuePanelItem[];
+  /**
+   * Open one file of a waiting message, exactly as the transcript would.
+   *
+   * Given by the composer that knows where the file is: the same panel draws this
+   * machine's queue (a local path to open) and a paired computer's (a path only
+   * that host can serve, which has to be fetched first). Absent, the chips are
+   * still named but not clickable.
+   */
+  onPreviewAttachment?: (attachment: SendQueueAttachmentItem) => void;
   /** Start a parked row now. Offered only when the queue can hold one (Agent-side queues). */
   onRelease?: (id: string) => void;
   onRemove: (id: string) => void;
@@ -154,7 +182,7 @@ export function SendQueuePanel({
               {editing
                 ? (
                     <div className="min-w-0 flex-1">
-                      {attachmentsUnreported
+                      {attachmentsUnreported && item.attachments === undefined
                         ? (
                             <p className="mb-1 text-[11px] leading-4 text-ink-muted">
                               {t("composer.queue.editDropsFiles")}
@@ -209,11 +237,33 @@ export function SendQueuePanel({
                                 {t("composer.queue.attachmentsOnly")}
                               </p>
                             )}
-                        {item.attachmentCount !== undefined && item.attachmentCount > 0
+                        {item.attachments && item.attachments.length > 0
                           ? (
-                              <p className="text-[11px] leading-4 text-ink-muted">
-                                {t("composer.queue.attachments", { count: item.attachmentCount })}
-                              </p>
+                              <ul className="mt-1 flex flex-wrap items-center gap-1" data-queue-attachments="">
+                                {item.attachments.map(attachment => (
+                                  <li
+                                    className="flex max-w-full items-center gap-1 rounded bg-surface-subtle pl-1"
+                                    key={attachment.path}
+                                  >
+                                    <button
+                                      className={cn(
+                                        "inline-flex min-w-0 items-center gap-1 py-0.5 text-[11px] text-ink transition-colors",
+                                        onPreviewAttachment ? "hover:text-accent" : "cursor-default",
+                                      )}
+                                      data-queue-attachment={attachment.path}
+                                      disabled={!onPreviewAttachment}
+                                      onClick={() => onPreviewAttachment?.(attachment)}
+                                      title={t("composer.queue.previewAttachment", { name: attachment.name })}
+                                      type="button"
+                                    >
+                                      {attachment.kind === "image"
+                                        ? <ImageIcon className="size-2.5 shrink-0 text-ink-muted" />
+                                        : <Paperclip className="size-2.5 shrink-0 text-ink-muted" />}
+                                      <span className="truncate">{attachment.name}</span>
+                                    </button>
+                                  </li>
+                                ))}
+                              </ul>
                             )
                           : null}
                         {item.parked && onRelease

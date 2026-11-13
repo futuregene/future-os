@@ -12,13 +12,14 @@ import type {
 } from "../../integrations/storage/threadStore";
 import type { ComposerSendPayload } from "./Composer";
 import type { ApprovalChipTier } from "./composer/ComposerControls";
+import type { SendQueueAttachmentItem } from "./SendQueuePanel";
 import type { SessionMentionOption } from "./sessionMention";
 import { ArrowDown, History } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
-import { forkThread } from "../../integrations/storage/threadStore";
+import { forkThread, openPath } from "../../integrations/storage/threadStore";
 import { copyText } from "../../lib/clipboard";
 import { cn } from "../../lib/cn";
 import { errorMessage } from "../../lib/errors";
@@ -384,11 +385,28 @@ export function AgentThread({
       .catch(reportQueueFailure)
       .finally(() => agentQueue.refresh());
   }, [agentQueue, reportQueueFailure, thread?.id]);
+  /**
+   * Look at one file a waiting message carries, before the run takes it.
+   *
+   * The path belongs to this machine (the Agent runs here), so this is the same
+   * gesture the transcript's chips offer — open it the way the OS would — and not
+   * a fetch from another host.
+   */
+  const handleQueuePreviewAttachment = useCallback((attachment: SendQueueAttachmentItem) => {
+    void openPath(attachment.path).catch(() => {
+      emitFutureEvent("toast", {
+        message: t("attachment.fileMissing", { name: attachment.name }),
+        tone: "error",
+      });
+    });
+  }, [t]);
   // Editing a waiting message: the Agent has no "update this row" command, so
   // the corrected text is a new prompt behind the same run boundary — take the
-  // old row back first, or both would run. Attachments cannot be recovered from
-  // the queue row (it carries text only), which is why the panel edits words and
-  // says so in the editor rather than claiming a count of zero. A re-send that
+  // old row back first, or both would run. The files travel with the correction:
+  // the queue reports them (local paths, since the Agent runs here), so a typo
+  // fixed in a message with photos keeps the photos instead of sending the words
+  // alone. A row whose queue reports no files is the one case that sends text
+  // only, and the panel's editor says so before the reader saves. A re-send that
   // the Agent refuses is not a lost message: the send pipeline puts the words in
   // the thread as a failed bubble, which is where the retry lives. A *removal*
   // the Agent refuses stops the edit: sending the corrected text while the old
@@ -396,6 +414,14 @@ export function AgentThread({
   const handleQueueUpdate = useCallback((runId: string, content: string) => {
     if (!thread?.id)
       return;
+    const row = agentQueue.rows.find(item => item.runId === runId);
+    // An empty edit is a deletion, and the panel's own bin says that plainly.
+    // Saved here it would remove the row while the reader expected an edit, so it
+    // is refused where the reader is looking instead of reported as a failure.
+    if (!content.trim()) {
+      emitFutureEvent("toast", { message: t("composer.queue.emptyEdit"), tone: "error" });
+      return;
+    }
     void (async () => {
       try {
         await cancelAgentQueuedRun(thread.id, runId);
@@ -405,11 +431,17 @@ export function AgentThread({
         return;
       }
       agentQueue.forget(runId);
-      if (content.trim())
-        await handleQueuedSend({ attachments: [], content });
+      await handleQueuedSend({
+        attachments: (row?.attachments ?? []).map(attachment => ({
+          kind: attachment.kind === "image" ? "image" : "file",
+          name: attachment.name,
+          path: attachment.path,
+        })),
+        content,
+      });
       agentQueue.refresh();
     })();
-  }, [agentQueue, handleQueuedSend, reportQueueFailure, thread?.id]);
+  }, [agentQueue, handleQueuedSend, reportQueueFailure, t, thread?.id]);
 
   // Settings → Keyboard: the same interrupt the send button turns into while a
   // reply streams. Registered only then, so the key is unclaimed whenever there
@@ -750,15 +782,18 @@ export function AgentThread({
           ? (
               <div className="pointer-events-auto mx-auto w-full max-w-3xl">
                 <SendQueuePanel
-                  // The Agent's queue carries a message's text and its acceptance
-                  // time, never the files it was sent with: the panel says that
-                  // rather than being handed a count of zero it would have made up.
+                  // An Agent too old to report a row's files answers without the
+                  // field: that row's editor then says an edit sends the words
+                  // alone. A row that does report them carries them into the
+                  // re-send, and shows them before that.
                   attachmentsUnreported
                   items={agentQueue.rows.map(row => ({
+                    attachments: row.attachments,
                     content: row.text,
                     id: row.runId,
                     parked: isParkedRow(row),
                   }))}
+                  onPreviewAttachment={handleQueuePreviewAttachment}
                   onRelease={handleQueueRelease}
                   onRemove={handleQueueRemove}
                   onUpdate={handleQueueUpdate}

@@ -594,6 +594,15 @@
       "type": "integer",
       "description": "Embedded terminal viewport height in cells (`terminal_create` / `terminal_update`)."
     }
+,
+    "gitRef": {
+      "x-rust-name": "git_ref",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "The commit a `get_git_commit` read is about: a sha (abbreviated or full), never a path."
+    }
   },
   "$defs": {
     "UploadReference": {
