@@ -41,7 +41,7 @@ desktop/src/features/terminal/
   client.ts         control routes; typed errors with the server's code
   tabs.ts           per-conversation tab state (persisted view + labels)
   useTerminalTabs.ts  reconciliation with the server, create/close/restart
-  useTerminalPanel.ts open/height preferences + the global shortcut
+  useTerminalPanel.ts open/dock/size preferences, maximize + the global shortcut
   TerminalView.tsx  xterm + WebSocket (lazily loaded chunk)
   TerminalPanel.tsx tab strip, notices, exits
   TerminalToggleButton.tsx header affordance
@@ -117,6 +117,22 @@ replays). A detached viewer never grows memory without bound.
   emits `futureos:focus-composer` and the Composer answers it (declining while
   it cannot hold a caret). Otherwise focus would sit on an unmounted terminal
   and the next keystrokes would go nowhere.
+* **Placement is the panel's own.** It docks at the bottom row or as a column
+  between the conversation and the files panel, and can take the whole content
+  area — `features/terminal/useTerminalPanel.ts` keeps the dock, the two sizes
+  and the per-conversation open state, and the shell only decides which slot
+  draws it. While it is maximized the conversation and the files panel stay
+  **mounted** behind `hidden`, so coming back keeps the transcript, its scroll
+  position and the draft. A paired desktop's panel is the same component
+  (`RemoteTerminalPanel`), so both moves work there too: they are this window's
+  layout, never a command on the host.
+* **A right dock is offered only while the window can host the column** beside
+  the conversation's width floor; below that the panel draws at the bottom and
+  the header leaves the dock button out rather than showing a control that
+  cannot do anything (the stored choice is kept and comes back when the window
+  grows). The context panel's clamp reserves the terminal's column
+  (`useRightPanelWidth`'s `reserveRight`), so a wide terminal never squeezes the
+  conversation below its floor.
 * The shortcut (`Ctrl+J`, `⌘J` on macOS, rebindable in Settings → Keyboard
   shortcuts) belongs to the app, not to the shell. `TerminalView` releases it from
   xterm's key handling so the window listener still sees it while the terminal has

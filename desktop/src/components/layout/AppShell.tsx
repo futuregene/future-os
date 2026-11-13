@@ -32,7 +32,7 @@ import { rememberRemoteIdentities, remoteConversationIdentity } from "../../feat
 import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
 import { RemoteDraftTargetChooser } from "../../features/remote-peer/RemoteDraftTargetChooser";
-import { RemoteFilesPanel } from "../../features/remote-peer/RemoteFilesPanel";
+import { REMOTE_FILES_PANEL_WIDTH, RemoteFilesPanel } from "../../features/remote-peer/RemoteFilesPanel";
 import { compactRemoteConversation, deleteRemoteConversation, forkRemoteConversation, installRemoteSkill, pinRemoteConversation, takeoverRemotePeer } from "../../features/remote-peer/remotePeerClient";
 import { sendRemoteContinuation } from "../../features/remote-peer/remotePromptOutbox";
 import { RemoteRenameDialog } from "../../features/remote-peer/RemoteRenameDialog";
@@ -89,7 +89,7 @@ import {
   defaultNewConversationTarget,
   readNewConversationTarget,
 } from "./hooks/newConversationTarget";
-import { canShowLeftPanel, canShowRightPanel, MIN_LEFT_PANEL_WIDTH } from "./hooks/panelGeometry";
+import { canShowLeftPanel, canShowRightPanel, MIN_CENTER_PANEL_WIDTH, MIN_LEFT_PANEL_WIDTH } from "./hooks/panelGeometry";
 import { useAgentConnection } from "./hooks/useAgentConnection";
 import { useAgentDoneBell } from "./hooks/useAgentDoneBell";
 import { useAgentStatus } from "./hooks/useAgentStatus";
@@ -361,13 +361,24 @@ function ReadyAppShell({
   const showLeftPanel = leftExpanded && canShowLeftPanel(windowWidth);
   const leftPanel = useLeftPanelWidth(rightPanelOpen && rightPanelAvailable);
   const centerRef = useRef<HTMLElement>(null);
+  /**
+   * Width of the right-docked terminal's column, read by the context panel's
+   * clamp.
+   *
+   * A ref rather than the hook's own state because of the order of the two
+   * hooks: the terminal's preferences belong to a conversation, so that hook can
+   * only be declared after the thread list is. The clamp paths run from events
+   * and effects, where this holds the latest render's value, so nothing is
+   * stale by the time it is read.
+   */
+  const terminalColumnRef = useRef(0);
   const {
     width: rightPanelWidth,
     resizing: rightPanelResizing,
     startResize: startRightPanelResize,
     reclamp: reclampRightPanel,
     nudge: nudgeRightPanel,
-  } = useRightPanelWidth(centerRef);
+  } = useRightPanelWidth(centerRef, () => terminalColumnRef.current);
 
   // The left rail's width changes the center's left edge, so a collapse/expand
   // can shrink the space available to the center — re-clamp the right panel.
@@ -705,9 +716,40 @@ function ReadyAppShell({
       : null,
   };
   const terminalTarget = terminalScope(terminalInput);
+  // A right-docked terminal is a column of its own, between the conversation and
+  // the files panel, so the conversation's floor has to leave room for it: the
+  // rail when it is a column, the center's own floor, and the files column when
+  // that one is a column too (a floating drawer takes no layout space).
+  const rightColumnWidth = hideRightPanel
+    ? 0
+    : activeRemote
+      // That panel is a fixed `w-80`; it is not drag-resized.
+      ? (rightPanelOpen && rightPanelAvailable ? REMOTE_FILES_PANEL_WIDTH : 0)
+      : (rightPanelOpen && rightPanelAvailable ? rightPanelWidth : 0);
   // Preferences are per conversation, and a remote conversation's key is
   // namespaced by host, so the two machines never share one panel state.
-  const terminalPanel = useTerminalPanel(terminalTarget?.key ?? null);
+  const terminalPanel = useTerminalPanel(terminalTarget?.key ?? null, {
+    reservedWidth: (showLeftPanel ? leftPanel.width : 0) + MIN_CENTER_PANEL_WIDTH + rightColumnWidth,
+  });
+  // The panel has the whole content area (its own "fullscreen"): the conversation
+  // and the files panel stay mounted but leave the layout, so returning from it
+  // restores the same scroll position and the same draft.
+  const terminalMaximized = Boolean(terminalTarget) && terminalPanel.open && terminalPanel.maximized;
+  const terminalRightDocked
+    = Boolean(terminalTarget) && terminalPanel.open && !terminalMaximized && terminalPanel.dock === "right";
+  // The context panel's clamp reserves this column, read through
+  // `terminalColumnRef` so the shell declares the terminal's hook after the
+  // conversation's (see its declaration).
+  const terminalColumnWidth = terminalRightDocked ? terminalPanel.width : 0;
+  useEffect(() => {
+    terminalColumnRef.current = terminalColumnWidth;
+  }, [terminalColumnWidth]);
+  // The column appearing takes room from the right panel the same way the rail's
+  // width does; it is never given back automatically, exactly like a rail that
+  // was collapsed and re-expanded.
+  useEffect(() => {
+    reclampRightPanel();
+  }, [terminalRightDocked, reclampRightPanel]);
   // A remote conversation whose host serves no shells: the header says so
   // instead of leaving the control out. An absent button and a broken one look
   // the same, which is exactly how this was reported.
@@ -734,6 +776,37 @@ function ReadyAppShell({
           />
         )
       : null;
+
+  /**
+   * The panel itself, built once and placed by where it is docked.
+   *
+   * Three slots, never two at a time: the right column (between the
+   * conversation and the files panel), the bottom row (under both of them), or
+   * the whole content area when maximized. One element rather than three
+   * conditions means the dock and the maximize state cannot disagree about
+   * which panel is on screen. Both owner kinds go through it — a paired
+   * desktop's shells are the same panel with another host (see
+   * `RemoteTerminalPanel`), so a dock or a maximize works there for free.
+   */
+  const terminalPanelElement = terminalTarget && terminalPanel.open
+    ? terminalTarget.kind === "remote"
+      ? (
+          <RemoteTerminalPanel
+            desktopId={terminalTarget.desktopId}
+            hostLabel={activeRemotePeer
+              ? peerBadgeText(activeRemotePeer, terminalTarget.desktopId)
+              : terminalTarget.desktopId}
+            panel={terminalPanel}
+            sessionId={terminalTarget.sessionId}
+          />
+        )
+      : (
+          <TerminalPanel
+            panel={terminalPanel}
+            threadId={terminalTarget.threadId}
+          />
+        )
+    : null;
 
   /**
    * Which machine a local conversation is on — this one.
@@ -1999,7 +2072,12 @@ function ReadyAppShell({
                   )
                 : null}
               <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-                <div className="flex min-h-0 min-w-0 flex-1">
+                {/* A maximized terminal takes the column; the conversation and
+            the files panel stay mounted behind `hidden` (not unmounted), so
+            scroll positions, a draft and the mounted transcript all survive
+            the trip. One display utility or the other, never both: the winner
+            would depend on Tailwind's ordering rather than on this comment. */}
+                <div className={terminalMaximized ? "hidden" : "flex min-h-0 min-w-0 flex-1"}>
                   <main ref={centerRef} className="min-w-0 flex-1 bg-surface">
                     {centerMode === "new-chat"
                       ? (
@@ -2230,6 +2308,10 @@ function ReadyAppShell({
                                     />
                                   )}
                   </main>
+                  {/* A right-docked terminal is the next column: the conversation,
+            the terminal, then the files panel — the order a workbench has
+            (the panel takes the edge, the conversation keeps the inside). */}
+                  {terminalRightDocked ? terminalPanelElement : null}
                   {/* Views without thread context hide the right panel entirely, including
           the collapsed expand affordance. */}
                   {/* A remote conversation's right panel reads that machine's files
@@ -2271,27 +2353,13 @@ function ReadyAppShell({
                     ? <div className="fixed inset-0 z-50 cursor-col-resize select-none" />
                     : null}
                 </div>
-                {/* The terminal spans the conversation *and* the right panel: it is a
-            sibling of that row, not of the left rail. Collapsing it removes its
-            height entirely, so the conversation keeps the full space. */}
-                {terminalTarget && terminalPanel.open
-                  ? terminalTarget.kind === "remote"
-                    ? (
-                        <RemoteTerminalPanel
-                          desktopId={terminalTarget.desktopId}
-                          hostLabel={activeRemotePeer
-                            ? peerBadgeText(activeRemotePeer, terminalTarget.desktopId)
-                            : terminalTarget.desktopId}
-                          panel={terminalPanel}
-                          sessionId={terminalTarget.sessionId}
-                        />
-                      )
-                    : (
-                        <TerminalPanel
-                          panel={terminalPanel}
-                          threadId={terminalTarget.threadId}
-                        />
-                      )
+                {/* The terminal takes the edge it is docked to: a row under the
+            conversation and the files panel (both of which it spans), or a
+            column of its own between them. Collapsing it removes it from the
+            layout entirely, so the conversation keeps the full space. */}
+                {terminalMaximized ? terminalPanelElement : null}
+                {terminalPanelElement && !terminalMaximized && terminalPanel.dock === "bottom"
+                  ? terminalPanelElement
                   : null}
               </div>
             </>
