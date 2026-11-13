@@ -29,6 +29,82 @@ fn enforce_backward_page_bytes(chunked_read: bool, before: Option<i64>) -> bool 
     !chunked_read || is_newest_page(before)
 }
 
+/// Events one first paint of a run may carry.
+///
+/// A run's log leaves the host page by page, and the client's own page is a
+/// thousand events wide (`REPLAY_PAGE_EVENTS`). A whole-run read therefore costs
+/// one round trip per thousand events: measured 2026-11-13 on a 10,345-event
+/// run, ten round trips and ~7 s from the first page to the last — for a reader
+/// who only ever sees the newest screen.
+pub(super) const REPLAY_FIRST_PAINT_EVENTS: i64 = 1_000;
+
+/// Bytes one first paint of a run may carry: the same reply budget the history
+/// page uses, for the same reason — one reply the relay can deliver promptly.
+/// The event count above is a guess about sizes (one tool event can outweigh a
+/// thousand token deltas); this is the guarantee.
+pub(super) const REPLAY_FIRST_PAINT_BYTES: usize = 512 * 1024;
+
+/// Where a whole-run replay begins when a conversation is being opened.
+///
+/// The boundary is the run's **newest event index**, which the Agent already
+/// reports in `get_state` (`activeRun.lastEventIdx`): one cheap local read
+/// instead of a probe for the tail. The window is counted in **events**, because
+/// an event's `idx` is the only coordinate both ends already share and it is
+/// what the client's paging counts; a byte budget alone cannot choose a start
+/// without first reading the range it is choosing, and a time budget cannot name
+/// a cursor at all.
+///
+/// `None` means "no better start than the beginning": a settled run (no
+/// `activeRun`), a run shorter than the window, or a state read that failed —
+/// each falls back to exactly the read this host has always served.
+async fn first_paint_start(session_id: &str, run_id: &str) -> Option<i64> {
+    #[cfg(test)]
+    if super::FORCE_FULL_REPLAY_START.load(std::sync::atomic::Ordering::Relaxed) {
+        return None;
+    }
+    let state = crate::agent_bridge::get_session_state(session_id.to_owned())
+        .await
+        .ok()?;
+    let active = state.get("activeRun")?;
+    if active.get("runId").and_then(Value::as_str) != Some(run_id) {
+        return None;
+    }
+    let newest = active.get("lastEventIdx").and_then(Value::as_i64)?;
+    let start = newest.saturating_sub(REPLAY_FIRST_PAINT_EVENTS - 1).max(0);
+    (start > 0).then_some(start)
+}
+
+/// Drop the oldest events of a first-paint page until it fits `budget`, and
+/// answer where the feed now begins.
+fn trim_replay_head(page: &mut Value, budget: usize) -> Option<i64> {
+    let sizes: Vec<usize> = {
+        let events = page.get("events")?.as_array()?;
+        events
+            .iter()
+            .map(|event| serde_json::to_vec(event).map_or(0, |bytes| bytes.len()) + 1)
+            .collect()
+    };
+    if sizes.is_empty() {
+        return None;
+    }
+    let mut total: usize = sizes.iter().sum();
+    let mut dropped = 0usize;
+    while dropped + 1 < sizes.len() && total > budget {
+        total -= sizes[dropped];
+        dropped += 1;
+    }
+    let first = page.get_mut("events")?.as_array_mut().and_then(|events| {
+        if dropped > 0 {
+            events.drain(..dropped);
+        }
+        events.first().and_then(|event| event["idx"].as_i64())
+    });
+    if dropped > 0 {
+        page["skippedEvents"] = json!(dropped);
+    }
+    first
+}
+
 pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
     // A remote history/event request means this conversation is actively open
     // on a client. Arm exactly its observer; discovery-only paths deliberately
@@ -377,11 +453,24 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             };
             let mut slice_offset = offset;
             let mut sought = false;
+            // A whole-run read is a first paint, so it begins near the run's
+            // newest event instead of at its beginning: the replay must show the
+            // newest screen, not re-transport the run. What it skips is a head
+            // that stays reachable through the same run's history rows (the
+            // scroll-up path), never a hole: the client is told where the feed
+            // starts (`startIdx`) and its own cursor moves from there.
+            let paint_start = if cmd.since_idx < 0 && offset == 0 && cmd.replay_until_idx.is_none()
+            {
+                first_paint_start(&cmd.session_id, &cmd.run_id).await
+            } else {
+                None
+            };
+            let since_idx = paint_start.unwrap_or(cmd.since_idx);
             let data = if cmd.chunked_read && offset == 0 {
                 crate::agent_bridge::get_events_since_page_until(
                     cmd.session_id.clone(),
                     cmd.run_id.clone(),
-                    cmd.since_idx,
+                    since_idx,
                     limit,
                     cmd.replay_until_idx,
                 )
@@ -476,7 +565,7 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                         .and_then(|event| event.get("idx"))
                         .cloned()
                         .unwrap_or(json!(cmd.since_idx));
-                    let next = page["nextSinceIdx"].as_i64().unwrap_or(cmd.since_idx);
+                    let next = page["nextSinceIdx"].as_i64().unwrap_or(since_idx);
                     if page["events"].as_array().is_some_and(|events| {
                         events.iter().any(|event| {
                             event["data"].as_str().is_some_and(|raw| {
@@ -486,7 +575,7 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                             })
                         })
                     }) {
-                        page["rawEvents"] = json!(next.saturating_sub(cmd.since_idx));
+                        page["rawEvents"] = json!(next.saturating_sub(since_idx));
                     }
                     page["hasMore"] = json!(
                         next < watermark
@@ -495,6 +584,25 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                     // Only now, with the page's cursors fixed: the lean rewrite
                     // drops events, and dropping one must not move the resume
                     // point (see `lean_replay_page`).
+                    //
+                    // A first paint pays the byte budget before that: the event
+                    // count the start was chosen with is a guess about sizes, and
+                    // one tool event can outweigh a thousand token deltas.
+                    if paint_start.is_some() {
+                        let trimmed = trim_replay_head(&mut page, REPLAY_FIRST_PAINT_BYTES);
+                        let starts_at = trimmed.or_else(|| {
+                            page["events"]
+                                .as_array()
+                                .and_then(|events| events.first())
+                                .and_then(|event| event["idx"].as_i64())
+                        });
+                        if let Some(start) = starts_at {
+                            // Where this feed begins. Everything before it is the
+                            // run's head, which the history rows of the same run
+                            // still carry.
+                            page["startIdx"] = json!(start);
+                        }
+                    }
                     crate::remote_host::lean::lean_replay_page(
                         &mut page,
                         crate::remote_host::lean::enabled(),

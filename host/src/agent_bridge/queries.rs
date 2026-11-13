@@ -484,6 +484,10 @@ pub async fn get_session_entries_before_with_client(
         "entries": page.entries,
         "hasMore": page.has_more,
         "nextOffset": page.next_offset,
+        // A turn too large to complete is served as its tail by the assembly
+        // above; the reader is told, so "this page starts mid-run" is a fact the
+        // page states rather than one the client infers from a missing prompt.
+        "truncated": page.truncated,
     }))
 }
 
@@ -586,7 +590,12 @@ async fn read_history_page_with_client(
     client: &super::client::AgentClient,
     command: future_rpc::proto::RpcCommand,
 ) -> Result<future_rpc::payloads::SessionEntriesPage, crate::Error> {
-    future_rpc::history::read_page(command, |command| {
+    future_rpc::history::read_page_with(
+        command,
+        future_rpc::history::ExchangeStart::Complete,
+        future_rpc::history::PageBudget::FIRST_PAINT,
+        page_weight_as_sent,
+        |command| {
         // Cloning a tonic client shares the existing channel/connection.
         let mut client = client.clone();
         async move {
@@ -604,9 +613,34 @@ async fn read_history_page_with_client(
             future_rpc::decode::decode_session_entries_page(&response)
                 .ok_or_else(|| "invalid history page".to_owned())
         }
-    })
+    },
+    )
     .await
     .map_err(Into::into)
+}
+
+/// What a history row will weigh once it is on the wire to *this* client.
+///
+/// A page leaves the host through the lean trim when the client declared it, and
+/// that trim removes reasoning bodies, tool-result bodies, tool arguments and
+/// provider bookkeeping: measured 2026-11-13 on the reported conversation, one
+/// turn of 1,602 rows weighed 12.99 MB raw and 1.75 MB once those were gone
+/// (13.5%). A first paint that spent its budget on the raw page was paying for
+/// content the client never receives, so the budget weighs the row the way the
+/// trim will leave it.
+///
+/// A client that did not declare the lane gets the row's own bytes, because for
+/// it nothing is removed.
+pub(crate) fn page_weight_as_sent(entry: &future_rpc::payloads::SessionEntryPayload) -> usize {
+    use future_rpc::history::HistoryEntry as _;
+    if !crate::remote_host::lean::enabled() {
+        return entry.page_bytes();
+    }
+    let mut page = serde_json::Value::Array(vec![
+        serde_json::to_value(entry).unwrap_or(serde_json::Value::Null)
+    ]);
+    crate::remote_host::lean::lean_entries(&mut page);
+    serde_json::to_vec(&page[0]).map_or(0, |bytes| bytes.len())
 }
 
 /// Fetch the session's current state (model, thinkingLevel, isStreaming, etc.)
