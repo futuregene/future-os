@@ -117,6 +117,41 @@ pub enum ExchangeStart {
 /// for any data: no single turn can turn an open into a multi-megabyte transfer.
 pub const FIRST_PAGE_BYTE_BUDGET: usize = 512 * 1024;
 
+/// How much one first paint may carry, and how a row is counted against it.
+///
+/// Two independent bounds, because they pay for different things:
+///
+/// * `bytes` is the transfer, measured with the caller's **weight** — that is,
+///   by how the page will be *sent*. The host weighs a lean page by what the
+///   lean trim leaves behind, not by what the Agent handed it: measured
+///   2026-11-13 on the reported conversation, one turn was 12.99 MB raw and
+///   1.75 MB once the unread bodies were gone (13.5%). Counting the raw bytes
+///   kept 33 rows; the same 512 KiB of shipped bytes holds several hundred.
+/// * `rows` is the render. A thousand rows of two hundred bytes each are cheap
+///   to move and expensive to draw, and "big enough to page" is a different
+///   question from "big enough to show".
+#[derive(Clone, Copy, Debug)]
+pub struct PageBudget {
+    /// Bytes as the caller will send them, weighed by its own function.
+    pub bytes: usize,
+    /// Rows, whatever they weigh.
+    pub rows: usize,
+}
+
+impl PageBudget {
+    /// What a first paint gets: 512 KiB as they are sent, and at most 300 rows.
+    ///
+    /// Three hundred is a render bound, not a transfer one: a tool-dense run
+    /// writes an assistant step and a result per call, and a page of a thousand
+    /// of them is a thousand row models to build before the newest screen is on
+    /// screen. The rows a reader actually reads in one screenful are far fewer;
+    /// the rest is a scroll away, one page per scroll.
+    pub const FIRST_PAINT: PageBudget = PageBudget {
+        bytes: FIRST_PAGE_BYTE_BUDGET,
+        rows: 300,
+    };
+}
+
 /// Assemble oversized entries before exposing them to message projection.
 ///
 /// A backward transport page may split an exchange; the missing prefix is
@@ -159,21 +194,32 @@ where
     F: FnMut(RpcCommand) -> Fut,
     Fut: Future<Output = Result<SessionEntriesPage<Entry>, String>>,
 {
-    read_page_with_budget(command, start, FIRST_PAGE_BYTE_BUDGET, execute).await
+    read_page_with(
+        command,
+        start,
+        PageBudget::FIRST_PAINT,
+        |entry: &Entry| entry.page_bytes(),
+        execute,
+    )
+    .await
 }
 
-/// [`read_page_from`], naming the budget the exchange-completion walk may spend.
+/// [`read_page_from`], naming the budget and how a row is weighed against it.
 ///
-/// A test drives a small budget to pin the truncation; production callers go
-/// through [`read_page_from`] and get [`FIRST_PAGE_BYTE_BUDGET`].
-pub async fn read_page_with_budget<Entry, F, Fut>(
+/// The weight is the caller's, because the caller is the one that knows what it
+/// will send: the host weighs a page the way its lean lane will ship it, the
+/// terminal weighs the row itself. A test drives a small budget to pin the
+/// truncation; production callers go through [`read_page_from`].
+pub async fn read_page_with<Entry, F, Fut, W>(
     mut command: RpcCommand,
     start: ExchangeStart,
-    budget: usize,
+    budget: PageBudget,
+    weigh: W,
     mut execute: F,
 ) -> Result<SessionEntriesPage<Entry>, String>
 where
     Entry: HistoryEntry,
+    W: Fn(&Entry) -> usize,
     F: FnMut(RpcCommand) -> Fut,
     Fut: Future<Output = Result<SessionEntriesPage<Entry>, String>>,
 {
@@ -242,7 +288,7 @@ where
                 // fetch, not a turn's whole body. When the turn is bigger than
                 // the budget on its own, no number of further slices can reach
                 // its question, and the page is served as that turn's tail.
-                let dropped = trim_to_budget(&mut accumulated, budget);
+                let dropped = trim_to_budget(&mut accumulated, budget, &weigh);
                 if dropped > 0 {
                     page.entries = accumulated;
                     // What left the page is reachable, not lost: the cursor names
@@ -269,11 +315,16 @@ where
 /// makes it big is what the fragment path and the client's on-demand fetch are
 /// for — so the promise is "a page is the newest rows that fit, or one row",
 /// never "an empty page".
-fn trim_to_budget<Entry: HistoryEntry>(entries: &mut Vec<Entry>, budget: usize) -> usize {
-    let weights: Vec<usize> = entries.iter().map(HistoryEntry::page_bytes).collect();
+fn trim_to_budget<Entry, W>(entries: &mut Vec<Entry>, budget: PageBudget, weigh: &W) -> usize
+where
+    W: Fn(&Entry) -> usize,
+{
+    let weights: Vec<usize> = entries.iter().map(weigh).collect();
     let mut total: usize = weights.iter().sum();
     let mut dropped = 0;
-    while dropped + 1 < entries.len() && total > budget {
+    while dropped + 1 < entries.len()
+        && (total > budget.bytes || entries.len() - dropped > budget.rows)
+    {
         total -= weights[dropped];
         dropped += 1;
     }
@@ -397,14 +448,22 @@ mod tests {
     where
         Entry: HistoryEntry + DeserializeOwned,
     {
-        scripted_with_budget(command, start, FIRST_PAGE_BYTE_BUDGET, pages).await
+        scripted_with_budget(
+            command,
+            start,
+            PageBudget::FIRST_PAINT,
+            |entry: &Entry| entry.page_bytes(),
+            pages,
+        )
+        .await
     }
 
-    /// [`scripted_from`], naming the budget the exchange-completion walk may spend.
+    /// [`scripted_from`], naming the budget and how a row is weighed against it.
     async fn scripted_with_budget<Entry>(
         command: RpcCommand,
         start: ExchangeStart,
-        budget: usize,
+        budget: PageBudget,
+        weigh: fn(&Entry) -> usize,
         pages: Vec<SessionEntriesPage<Entry>>,
     ) -> (Result<SessionEntriesPage<Entry>, String>, Vec<RpcCommand>)
     where
@@ -417,7 +476,7 @@ mod tests {
                 seen.borrow_mut().push(command);
                 std::future::ready(Ok(pages.pop_front().expect("scripted page")))
             };
-            read_page_with_budget::<Entry, _, _>(command, start, budget, &mut execute).await
+            read_page_with::<Entry, _, _, _>(command, start, budget, weigh, &mut execute).await
         };
         (result, seen.into_inner())
     }
@@ -860,5 +919,79 @@ mod tests {
             "phase": "post_turn",
             "trigger": "manual"
         })));
+    }
+
+    /// A first paint is bounded by rows as well as bytes.
+    ///
+    /// A thousand rows of a few bytes each are nowhere near the byte budget and
+    /// are still a thousand row models to build before the newest screen is on
+    /// screen, so the page stops at the row bound and says what it left behind.
+    #[tokio::test]
+    async fn a_first_paint_is_bounded_by_rows_as_well_as_bytes() {
+        let rows = turn_rows(1_000, 10);
+        let command = RpcCommand {
+            before: Some(i64::MAX),
+            ..Default::default()
+        };
+        let (result, _) =
+            scripted::<Value>(command, vec![page(None, rows.clone(), true, 5_000)]).await;
+        let served = result.expect("page");
+        assert!(served.truncated, "the page says what it left behind");
+        assert_eq!(
+            served.entries.len(),
+            PageBudget::FIRST_PAINT.rows,
+            "the row bound is what stopped it, not the bytes"
+        );
+        assert_eq!(
+            served.next_offset,
+            5_000 + (rows.len() - PageBudget::FIRST_PAINT.rows) as i64
+        );
+    }
+
+    /// The budget is spent on what will be sent, not on what was read.
+    ///
+    /// The host weighs a lean page by what its trim leaves; the same bytes then
+    /// buy several times the rows a raw weight buys. This is the property the
+    /// two weights differ for — if the caller's weight were ignored, the two
+    /// pages would be identical.
+    #[tokio::test]
+    async fn a_cheaper_weight_fits_more_rows_in_the_same_budget() {
+        let rows = turn_rows(400, 4_000);
+        let command = RpcCommand {
+            before: Some(i64::MAX),
+            ..Default::default()
+        };
+        let (raw, _) = scripted_with_budget(
+            command.clone(),
+            ExchangeStart::Complete,
+            PageBudget::FIRST_PAINT,
+            |entry: &Value| entry.page_bytes(),
+            vec![page(None, rows.clone(), true, 1_000)],
+        )
+        .await;
+        let raw = raw.expect("page");
+        // The lean lane keeps the row's identity and drops the bodies, so a row
+        // weighs about what its id and kind do.
+        let (lean, _) = scripted_with_budget(
+            command,
+            ExchangeStart::Complete,
+            PageBudget::FIRST_PAINT,
+            |entry: &Value| entry["blocks"][0]["text"].as_str().map_or(80, |_| 80),
+            vec![page(None, rows.clone(), true, 1_000)],
+        )
+        .await;
+        let lean = lean.expect("page");
+        assert!(
+            lean.entries.len() > raw.entries.len() * 2,
+            "the same 512 KiB of sent bytes holds far more rows than the raw page did: \
+             {} against {}",
+            lean.entries.len(),
+            raw.entries.len()
+        );
+        assert!(
+            lean.entries.len() <= PageBudget::FIRST_PAINT.rows,
+            "and the row bound still applies: {}",
+            lean.entries.len()
+        );
     }
 }
