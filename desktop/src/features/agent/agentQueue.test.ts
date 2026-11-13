@@ -5,6 +5,7 @@ import { renderHook } from "../../test/renderHook";
 import {
   agentQueueNoticeReason,
   cancelAgentQueuedRun,
+  editAgentQueuedRun,
   fetchAgentQueue,
   isParkedRow,
   releaseAgentQueuedRun,
@@ -142,10 +143,14 @@ describe("queue mutations", () => {
   it("addresses the row by its conversation and run id through the Agent's own commands", async () => {
     await cancelAgentQueuedRun("thread-1", "run-9");
     await releaseAgentQueuedRun("thread-1", "run-9");
+    await editAgentQueuedRun("thread-1", "run-9", "corrected");
 
     expect(mocks.invokeCommand.mock.calls).toEqual([
       ["cancel_queued_run", { runId: "run-9", threadId: "thread-1" }],
       ["release_queued_run", { runId: "run-9", threadId: "thread-1" }],
+      // The edit is its own command, not a cancel plus a send: the row keeps the
+      // place the reader gave it.
+      ["edit_queued_run", { message: "corrected", runId: "run-9", threadId: "thread-1" }],
     ]);
   });
 });

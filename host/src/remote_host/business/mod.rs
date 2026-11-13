@@ -64,7 +64,7 @@ pub(crate) fn route(cmd_type: &str) -> Option<Route> {
         "upload_init" | "upload_complete" | "upload_cancel" | "list_session_files"
         | "download_prepare" | "download_cancel" => Route::Transfers,
         "prompt" | "get_prompt_receipt" | "get_queue" | "cancel_queued_run" | "release_queued_run"
-        | "abort" | "continue_run" | "approval_decision" => Route::Prompt,
+        | "edit_queued_run" | "abort" | "continue_run" | "approval_decision" => Route::Prompt,
         "compact_context" => Route::Compaction,
         "get_fusion_settings"
         | "update_fusion_settings"
@@ -292,6 +292,7 @@ mod tests {
         "abort",
         "apply_task_revision",
         "approval_decision",
+        "cancel_queued_run",
         "compact_context",
         "continue_run",
         "create_task",
@@ -302,6 +303,7 @@ mod tests {
         "delete_workspace",
         "download_cancel",
         "download_prepare",
+        "edit_queued_run",
         "fork_session",
         "generate_session_title",
         "get_fusion_settings",
@@ -333,6 +335,7 @@ mod tests {
         "list_workspaces",
         "prompt",
         "record_skill_reco",
+        "release_queued_run",
         "remove_task_dep",
         "run_task",
         "set_approval_tier",

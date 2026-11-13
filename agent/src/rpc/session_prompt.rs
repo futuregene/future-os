@@ -501,6 +501,58 @@ impl ServerSession {
         Ok(ack)
     }
 
+    /// Correct the words of one waiting prompt, keeping where it waits.
+    ///
+    /// The queue moves the row in place (see `InMemoryRunQueue::edit_queued`), and
+    /// this is the half that has to follow it: a queued prompt also owns a durable
+    /// acceptance, and that copy is what a restart restores. Left alone, it would
+    /// replay the message as it was written rather than as it was corrected —
+    /// losing the reader's fix at the one moment it is all that survives.
+    ///
+    /// The acceptance's identity is deliberately *not* rewritten: the run id, its
+    /// sequence and the fingerprint stay the ones the submission was accepted as,
+    /// so a client retrying that request id is still answered as a duplicate of
+    /// the same acceptance and not as a conflict with a different one.
+    ///
+    /// The in-memory queue is the visible truth and is already changed when the
+    /// durable copy is written, so a storage failure here is reported loudly and
+    /// not thrown back at the reader: their row says what they just typed, and
+    /// only a restart would reveal the older words.
+    pub fn edit_queued_run(&mut self, run_id: &str, message: &str) -> Result<()> {
+        let edited = self.scheduler.edit_queued(run_id, message)?;
+        if self.ephemeral {
+            return Ok(());
+        }
+        let payload: ScheduledPromptPayload = serde_json::from_value(edited.payload)?;
+        let mut user = build_user_message_with_model_context(
+            &payload.message,
+            &payload.model_context,
+            &payload.images,
+            &payload.attachments,
+            false,
+            &|_| None,
+        );
+        let metadata = user.metadata.get_or_insert_with(serde_json::Map::new);
+        metadata.insert("run_id".into(), edited.run_id.clone().into());
+        metadata.insert(
+            "client_request_id".into(),
+            edited.client_request_id.clone().into(),
+        );
+        let user = crate::session::agent_message_to_entry(&user);
+        if let Err(error) =
+            self.session_manager
+                .replace_queued_receipt_input(&self.session_id, run_id, &user)
+        {
+            tracing::error!(
+                session_id = %self.session_id,
+                run_id = %run_id,
+                %error,
+                "edited queued prompt: the durable acceptance keeps its older words"
+            );
+        }
+        Ok(())
+    }
+
     pub(super) fn start_next_scheduled(&mut self) -> Result<crate::runtime::RunAck> {
         self.start_next_scheduled_at(crate::runtime::QueueBoundary::Idle)
     }
