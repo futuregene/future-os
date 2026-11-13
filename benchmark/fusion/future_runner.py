@@ -570,11 +570,23 @@ def unexecuted_consultation(discussion, tool_id, transcript):
         block.get("isError") is True
         and (
             re.fullmatch(r"Error: missing field `[a-z_]+`", block.get("text", ""))
+            # serde rejects these arguments before store.prepare creates a run.
+            or block.get("text", "").startswith(
+                (
+                    "Error: invalid type:",
+                    "Error: invalid value:",
+                    "Error: unknown field ",
+                    "Error: unknown variant ",
+                    "Error: duplicate field ",
+                )
+            )
             or block.get("text")
             in {
                 "Error: Fusion requires question",
                 "Error: Fusion requires goal",
                 "Error: Fusion requires background",
+                "Error: At most 16 read scopes are allowed",
+                "Error: Fusion no longer accepts options; attribute user-provided proposals in background",
             }
         )
         for block in receipts

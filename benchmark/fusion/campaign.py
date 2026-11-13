@@ -20,6 +20,8 @@ NETWORK_INTERRUPTION = (
     "[upstream_disconnected]",
     "[response_timeout]",
     "[response_unconfirmed]",
+    "[model_response_error] model_response_error",
+    "[model_response_error] finish_error",
 )
 CASE_OUTCOMES = {"completed", "deferred", "output_limit", "empty_answer"}
 
@@ -106,6 +108,8 @@ def technical_failure_kind(result):
         return "response_timeout"
     if terminal_run_error(result).startswith("[RESPONSE_UNCONFIRMED]"):
         return "response_unconfirmed"
+    if terminal_run_error(result).startswith("[MODEL_RESPONSE_ERROR]"):
+        return "provider_response_error"
     return result.get("error_category") or "transport_error"
 
 
