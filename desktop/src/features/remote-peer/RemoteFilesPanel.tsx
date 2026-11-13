@@ -17,6 +17,14 @@ import { formatSize } from "./remotePeerFiles";
 import { useRemoteFiles } from "./useRemoteFiles";
 
 /**
+ * Width of the files column as a number.
+ *
+ * The panel draws itself with `w-80`; the shell needs the same number to reserve
+ * the column beside a right-docked terminal (see `AppShell`). Keep them equal.
+ */
+export const REMOTE_FILES_PANEL_WIDTH = 320;
+
+/**
  * Remote files, or a selected Fusion discussion read from that same host.
  *
  * The local panel's other tabs describe *this* machine
