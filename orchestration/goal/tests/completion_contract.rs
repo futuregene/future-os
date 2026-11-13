@@ -250,3 +250,70 @@ fn late_result_survives_stream_ledger_and_structured_notice_with_other_owners_pe
         .collect();
     assert_eq!(full_text, format!("{early}{final_text}"));
 }
+
+/// The evidence the gate judges is the last 4000 bytes of the completion text,
+/// and nothing else. Measured on a real goal: a 5648-byte completion carried
+/// `dispatches_per_step<500` at byte 1547 — inside the text, outside the judged
+/// tail — and came back as a bare `(missing: [...])`, so the worker rewrote its
+/// prose and lost the literal the same way again.
+///
+/// The refusal must now name the truncation and say how to resubmit, and it must
+/// still be a refusal (the todo stays open, no completion event). Revert the
+/// executor's diagnostic and this test goes red.
+#[test]
+fn a_literal_outside_the_judged_tail_is_reported_as_truncation_not_as_missing() {
+    const TOKEN: &str = "dispatches_per_step<500";
+    let mut narrative = "x".repeat(1547);
+    narrative.push_str(TOKEN);
+    narrative.push_str(&"y".repeat(5648 - narrative.len()));
+    assert_eq!(narrative.len(), 5648);
+    assert_eq!(narrative.find(TOKEN), Some(1547));
+
+    let cr = cli_root();
+    let (_runtime, _state) = mock(&narrative);
+    let goal = prepared_goal(&cr);
+    cli_ok(&[
+        "todo",
+        "add",
+        "--goal",
+        &goal,
+        "--text",
+        "deliver speed",
+        "--owner",
+        "solver",
+        "--acceptance",
+        TOKEN,
+    ]);
+    let todo = todo_id_by_text(&cr.root, &goal, "deliver speed");
+    let _ = cli_err(&[
+        "run",
+        "--goal",
+        &goal,
+        "--agent-id",
+        "solver",
+        "--max-turns",
+        "1",
+    ]);
+
+    let store = open_store(&cr);
+    let current = store.replay(&goal).unwrap().unwrap();
+    let record = current.history.iter().find(|r| r.todo_id == todo).unwrap();
+    let error = record.error.as_deref().expect("the turn must be rejected");
+    assert!(
+        error.contains("occurs at byte 1547 of 5648, outside the 4000-byte judged tail"),
+        "{error}"
+    );
+    assert!(
+        error.contains("resubmit with the acceptance line inside the final 4000 bytes"),
+        "{error}"
+    );
+    assert!(
+        !error.contains("(missing:"),
+        "the literal was written and cut, not missing: {error}"
+    );
+    // Still a refusal: the gate did not get weaker.
+    assert_eq!(current.todo(&todo).unwrap().status, TodoStatus::Open);
+    assert!(!store.events(&goal).unwrap().iter().any(|e| matches!(
+        &e.event, Event::TodoCompleted { todo_id, .. } if todo_id == &todo
+    )));
+}

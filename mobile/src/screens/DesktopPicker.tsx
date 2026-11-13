@@ -15,6 +15,7 @@ import { useTranslation } from "react-i18next";
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import { DialogSurface } from "../components/DialogSurface";
 import { PeerIconGlyph } from "../remote/PeerIconGlyph";
+import { readableDeviceName } from "../remote/deviceName";
 import { layout, radius, spacing } from "../theme/tokens";
 import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 
@@ -95,7 +96,8 @@ export function DesktopPicker({
   if (!active && open) setOpen(false);
   const status = useConnectionSummary({ machines, ...connection });
   const { dot: dotColor } = connectionStateColors(colors)[status.state];
-  const desktopName = (desktop: PairedDesktop) => desktop.name ?? desktop.desktopId;
+  const desktopName = (desktop: PairedDesktop) =>
+    readableDeviceName(desktop.name) ?? desktop.desktopId;
   const selected = filter.kind === "desktop"
     ? desktops.find(desktop => desktop.desktopId === filter.desktopId)
     : undefined;

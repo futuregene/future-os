@@ -8,7 +8,7 @@ pub mod schema;
 mod sse;
 #[cfg(test)]
 mod stream_wait_tests;
-use adapters::AdapterRegistry;
+use adapters::{AdapterRegistry, ProtocolAdapter};
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
 use parking_lot::RwLock;
@@ -223,6 +223,148 @@ impl Client {
         self.generation.write().max_output_tokens = Some(max_tokens);
         self
     }
+
+    /// POST one built request body, retrying once without the reasoning effort
+    /// when the provider says it refuses the effort value we sent.
+    ///
+    /// A provider that enumerates what it accepts (`… reasoning_effort must be
+    /// low, high, xhigh, max, or an integer within [1, 100] …`) answered 400 for
+    /// a level spelled on our scale but not on theirs, which fails the whole
+    /// turn. The same request with the effort left out is legal by construction
+    /// — that is the shape the level `default` sends, and what the
+    /// custom-provider probe calibrates on — so one request degrades to the
+    /// provider's own default depth and says so in the log. A second failure is
+    /// the caller's error to report: nothing is swallowed, and a 400 that does
+    /// not name the effort is never retried.
+    async fn send_model_request(
+        &self,
+        target: &schema::ResolvedModelTarget,
+        adapter: &dyn ProtocolAdapter,
+        request: &schema::ModelRequest,
+        body: &Value,
+    ) -> Result<reqwest::Response> {
+        let body_bytes = serde_json::to_vec(body)?;
+        let body_len = body_bytes.len();
+        // Serialize once. `RequestBuilder::json` would serialize the body again
+        // just so the diagnostics below could report its length, which costs a
+        // full pass and an extra copy on every model step.
+        tracing::debug!(
+            protocol = target.protocol.protocol().canonical_name(),
+            model = %request.model,
+            body_kb = body_len / 1024,
+            "LLM request"
+        );
+        let resp = self.post_model_body(target, adapter, body_bytes).await?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(resp);
+        }
+        let text = resp.text().await.unwrap_or_default();
+        let error = normalize_http_error(status.as_u16(), &text, &request.model, body_len);
+        if !names_a_rejected_reasoning_effort(status.as_u16(), &text) {
+            return Err(error);
+        }
+        let level = target.generation.thinking_level.trim().to_string();
+        if schema::effort_value(&level).is_none() {
+            // No effort was on the wire, so the 400 cannot be about our level.
+            return Err(error);
+        }
+        let mut degraded = target.clone();
+        degraded.generation.thinking_level = schema::DEFAULT_THINKING_LEVEL.to_string();
+        let retry_body = adapter.build_body(&degraded, request)?;
+        if retry_body == *body {
+            // Nothing was dropped: the provider objects to something else.
+            return Err(error);
+        }
+        tracing::warn!(
+            provider = %target.route.provider_id,
+            model = %request.model,
+            level = %level,
+            status = status.as_u16(),
+            response = %text,
+            "[llm] the provider refused this reasoning_effort; retrying this request once without it, at the provider's default depth"
+        );
+        let retry_bytes = serde_json::to_vec(&retry_body)?;
+        let retry_len = retry_bytes.len();
+        let retry = self.post_model_body(target, adapter, retry_bytes).await?;
+        let retry_status = retry.status();
+        if retry_status.is_success() {
+            tracing::warn!(
+                provider = %target.route.provider_id,
+                model = %request.model,
+                level = %level,
+                degraded_level = schema::DEFAULT_THINKING_LEVEL,
+                "[llm] the retried request was accepted; this request ran degraded"
+            );
+            return Ok(retry);
+        }
+        let retry_text = retry.text().await.unwrap_or_default();
+        Err(anyhow!(
+            "[DEGRADED] the provider refused our reasoning_effort ({}); this is the retry it was \
+             given without that parameter, which also failed. {}",
+            text,
+            normalize_http_error(
+                retry_status.as_u16(),
+                &retry_text,
+                &request.model,
+                retry_len
+            )
+        ))
+    }
+
+    /// One HTTP POST to the model's access path, with the target's route.
+    async fn post_model_body(
+        &self,
+        target: &schema::ResolvedModelTarget,
+        adapter: &dyn ProtocolAdapter,
+        body_bytes: Vec<u8>,
+    ) -> Result<reqwest::Response> {
+        let url = format!(
+            "{}{}",
+            target.route.base_url.trim_end_matches('/'),
+            adapter.endpoint_path()
+        );
+        let mut builder = self
+            .http
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header(
+                "User-Agent",
+                concat!("future-agent/", env!("FUTURE_VERSION")),
+            );
+        for (name, value) in &target.route.headers {
+            let lower = name.to_ascii_lowercase();
+            if matches!(
+                lower.as_str(),
+                "authorization" | "x-api-key" | "content-type" | "anthropic-version"
+            ) {
+                continue;
+            }
+            builder = builder.header(name, value);
+        }
+        builder = match target.route.auth {
+            schema::AuthScheme::Bearer => {
+                builder.header("Authorization", format!("Bearer {}", target.route.api_key))
+            }
+            schema::AuthScheme::AnthropicApiKey => {
+                let version = match &target.protocol {
+                    schema::ProtocolConfig::AnthropicMessages(config) => config.version.as_str(),
+                    _ => "2023-06-01",
+                };
+                builder
+                    .header("x-api-key", &target.route.api_key)
+                    .header("anthropic-version", version)
+            }
+        };
+        let req = builder.body(body_bytes).build()?;
+        self.http.execute(req).await.map_err(|error| {
+            if error.is_timeout() {
+                anyhow!("[RESPONSE_TIMEOUT] {error}")
+            } else {
+                anyhow!(error)
+            }
+        })
+    }
 }
 
 #[async_trait::async_trait]
@@ -287,72 +429,10 @@ impl crate::types::LLMProvider for Client {
         }
         let adapter = self.adapters.get(target.protocol.protocol())?;
         let body = adapter.build_body(&target, &request)?;
-        let url = format!(
-            "{}{}",
-            target.route.base_url.trim_end_matches('/'),
-            adapter.endpoint_path()
-        );
-        let mut builder = self
-            .http
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header(
-                "User-Agent",
-                concat!("future-agent/", env!("FUTURE_VERSION")),
-            );
-        for (name, value) in &target.route.headers {
-            let lower = name.to_ascii_lowercase();
-            if matches!(
-                lower.as_str(),
-                "authorization" | "x-api-key" | "content-type" | "anthropic-version"
-            ) {
-                continue;
-            }
-            builder = builder.header(name, value);
-        }
-        builder = match target.route.auth {
-            schema::AuthScheme::Bearer => {
-                builder.header("Authorization", format!("Bearer {}", target.route.api_key))
-            }
-            schema::AuthScheme::AnthropicApiKey => {
-                let version = match &target.protocol {
-                    schema::ProtocolConfig::AnthropicMessages(config) => config.version.as_str(),
-                    _ => "2023-06-01",
-                };
-                builder
-                    .header("x-api-key", &target.route.api_key)
-                    .header("anthropic-version", version)
-            }
-        };
-        // Serialize once. `RequestBuilder::json` would serialize the body again
-        // just so the diagnostics below could report its length, which costs a
-        // full pass and an extra copy on every model step.
-        let body_bytes = serde_json::to_vec(&body)?;
-        let body_len = body_bytes.len();
-        let req = builder.body(body_bytes).build()?;
-        tracing::debug!(
-            protocol = target.protocol.protocol().canonical_name(),
-            model = %request.model,
-            body_kb = body_len / 1024,
-            "LLM request"
-        );
-        let resp = self.http.execute(req).await.map_err(|error| {
-            if error.is_timeout() {
-                anyhow!("[RESPONSE_TIMEOUT] {error}")
-            } else {
-                anyhow!(error)
-            }
-        })?;
+        let resp = self
+            .send_model_request(&target, adapter.as_ref(), &request, &body)
+            .await?;
         let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(normalize_http_error(
-                status.as_u16(),
-                &text,
-                &request.model,
-                body_len,
-            ));
-        }
 
         let (tx, rx) = mpsc::channel(32);
         let response_status = status.as_u16();
@@ -642,6 +722,26 @@ impl crate::types::LLMProvider for Client {
         generation.thinking_level = level.to_string();
         generation.thinking_budget = budget;
     }
+
+    fn thinking_level(&self) -> Option<String> {
+        Some(self.generation.read().thinking_level.clone())
+    }
+}
+
+/// The phrase a provider uses when it rejects a `reasoning_effort` value it does
+/// not spell.
+///
+/// Matched as a phrase rather than as a whole sentence on purpose: the accepted
+/// list, the integer range and the required parameter path differ per
+/// deployment (`DeepSeek V4.1 reasoning_effort must be low, high, xhigh, max, or
+/// an integer within [1, 100] in chat_template_kwargs` is one), while "…
+/// reasoning_effort must be …" is the part that says *our value* is what was
+/// refused.
+fn names_a_rejected_reasoning_effort(status: u16, text: &str) -> bool {
+    status == 400
+        && text
+            .to_ascii_lowercase()
+            .contains("reasoning_effort must be")
 }
 
 fn normalize_http_error(status: u16, text: &str, model: &str, body_bytes: usize) -> anyhow::Error {
@@ -923,6 +1023,113 @@ mod tests {
         let target = client.target_for_request().unwrap();
         assert_eq!(target.route.base_url, "https://test.future-os.cn/api/v1");
         assert_eq!(target.route.api_key, "future-key");
+    }
+
+    // ─── a refused reasoning_effort degrades instead of failing the turn ────
+
+    /// The reported hard failure: the provider enumerates the effort values it
+    /// accepts, so the level we sent is the whole problem. One retry without the
+    /// parameter turns a failed run into a degraded one — and the second request
+    /// really has no effort on the wire.
+    #[tokio::test]
+    async fn a_refused_reasoning_effort_is_retried_once_without_it() {
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = attempts.clone();
+        let server = mock_server(move |_| {
+            if seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                (
+                    400,
+                    "application/json",
+                    r#"{"error":{"message":"DeepSeek V4.1 reasoning_effort must be low, high, xhigh, max, or an integer within [1, 100] in chat_template_kwargs"}}"#.to_string(),
+                )
+            } else {
+                (
+                    200,
+                    "text/event-stream",
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".to_string(),
+                )
+            }
+        });
+        let mut target = chat_target(&server.base_url, "test-only-key", None, None);
+        target.generation.thinking_level = "medium".into();
+        let client = Client::from_target(target);
+        let events: Vec<_> = client
+            .stream_model(canonical_request())
+            .await
+            .expect("the degraded retry must keep the turn alive")
+            .collect()
+            .await;
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, schema::ModelStreamEvent::Finish { .. })),
+            "the retried request must stream normally: {events:?}"
+        );
+        let requests = server.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2, "exactly one retry");
+        let refused: Value = serde_json::from_str(&requests[0]).unwrap();
+        assert_eq!(refused["reasoning_effort"], "medium");
+        let retried: Value = serde_json::from_str(&requests[1]).unwrap();
+        assert!(
+            retried.get("reasoning_effort").is_none(),
+            "the retry must carry no effort at all: {retried}"
+        );
+    }
+
+    /// The gate is the phrase, not the status: an unrelated 400 is reported to
+    /// the caller as before, with no second request behind the user's back.
+    #[tokio::test]
+    async fn a_400_that_does_not_name_the_effort_is_not_retried() {
+        let server = mock_server(|_| {
+            (
+                400,
+                "application/json",
+                r#"{"error":{"code":"invalid_request_error","message":"Unsupported parameter: stream_options"}}"#
+                    .to_string(),
+            )
+        });
+        let mut target = chat_target(&server.base_url, "test-only-key", None, None);
+        target.generation.thinking_level = "medium".into();
+        let client = Client::from_target(target);
+        let error = client
+            .stream_model(canonical_request())
+            .await
+            .expect_err("a 400 about another parameter is the caller's error");
+        assert!(error.to_string().contains("HTTP 400"), "{error}");
+        assert!(
+            !error.to_string().contains("[DEGRADED]"),
+            "nothing was degraded: {error}"
+        );
+        assert_eq!(server.requests.lock().unwrap().len(), 1);
+    }
+
+    /// When the degraded retry fails too, the caller gets *that* failure and is
+    /// told the request had already been degraded — never a silent success.
+    #[tokio::test]
+    async fn a_degraded_retry_that_also_fails_is_reported_as_degraded() {
+        let server = mock_server(|_| {
+            (
+                400,
+                "application/json",
+                r#"{"error":{"message":"DeepSeek V4.1 reasoning_effort must be low, high, xhigh, max, or an integer within [1, 100] in chat_template_kwargs"}}"#
+                    .to_string(),
+            )
+        });
+        let mut target = chat_target(&server.base_url, "test-only-key", None, None);
+        target.generation.thinking_level = "medium".into();
+        let client = Client::from_target(target);
+        let error = client
+            .stream_model(canonical_request())
+            .await
+            .expect_err("the retry failed too");
+        let text = error.to_string();
+        assert!(text.contains("[DEGRADED]"), "{text}");
+        assert!(text.contains("reasoning_effort must be"), "{text}");
+        assert_eq!(
+            server.requests.lock().unwrap().len(),
+            2,
+            "one retry, no loop"
+        );
     }
 
     #[test]

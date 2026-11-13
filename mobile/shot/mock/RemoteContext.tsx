@@ -18,6 +18,7 @@ import fusionFixture from "../../../scripts/screenshots/fixtures/fusion.json";
  * new field added to the real context never hard-fails a capture run.
  */
 import type { PropsWithChildren, ReactNode } from "react";
+import type { SessionQueueSnapshot } from "../../src/remote/sessionQueue";
 import type {
   AvailableSkill,
   DesktopSettings,
@@ -31,6 +32,8 @@ import type {
   RemoteModel,
   RemoteSessionUsage,
   SessionFileListing,
+  GitCommitDetail,
+  GitGraphListing,
 } from "../../src/remote/types";
 import { createContext, useContext, useMemo, useRef, useState } from "react";
 import { connectionPresentation as buildConnectionPresentation } from "../../src/remote/connectionPresentation";
@@ -43,10 +46,13 @@ import {
   demoDesktops,
   demoEntries,
   demoFiles,
+  demoGitCommitDetail,
+  demoGitListing,
   demoInstalledSkills,
   demoAvailableSkills,
   demoModels,
   demoProviders,
+  demoQueueRows,
   demoRefreshedSessionUsage,
   demoSessionUsage,
   demoSkills,
@@ -191,6 +197,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // the three workspace groups, the conversation. Everything else — screens,
   // projection, i18n — is untouched, so a capture is still the real phone UI.
   const parserDemo = new URLSearchParams(window.location.search).get("parser") === "1";
+  // A workspace that is a plain directory: the conversation menu then has no Git
+  // row at all, which is the case worth a capture of its own.
+  const noRepo = new URLSearchParams(window.location.search).get("norepo") === "1";
   // `?fleet=1` pairs the phone with five desktops and merges their conversations
   // into the home screen's recency page (`shot/mock/fleet.ts`). The product
   // already draws a merged list — the picker's "all desktops", a machine glyph per
@@ -312,6 +321,14 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const primarySessionId = parserDemo ? parserSessionId : "sess_dopamine_review";
   const [compactionFinished, setCompactionFinished] = useState(false);
   const scriptedCompaction = compactionFinished || new URLSearchParams(window.location.search).get("compacted") === "1";
+  // `?queue=<n>` puts that many messages behind the conversation's running turn.
+  // The send queue's panel only exists while rows wait, and the state behind the
+  // report it exists for — a burst long enough to cover the conversation — needs a
+  // queue to draw.
+  const queueSize = Number(new URLSearchParams(window.location.search).get("queue") ?? "") || 0;
+  // `?queueFiles=1` gives those rows the files a message sent with a photo really
+  // carries, so the panel's attachment chips can be drawn.
+  const queueFiles = new URLSearchParams(window.location.search).get("queueFiles") === "1";
   // `?multiTurnOlder=1` keeps one page of history above the multi-turn
   // conversation: the question-nav ↑ can then page it in for real.
   const withOlder = new URLSearchParams(window.location.search).get("multiTurnOlder") === "1";
@@ -526,6 +543,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     draftMode: "chat",
     draftWorkspaceId: "",
     timeline,
+    // Read once when the conversation opens, so the panel is drawn without a run
+    // having to be in flight.
+    getQueue: async (): Promise<SessionQueueSnapshot> => ({ acks: [], rows: demoQueueRows(queueSize, queueFiles) }),
     timelinePending: false,
     timelineSyncStatus: "idle",
     timelineError: null,
@@ -565,6 +585,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       "prompt_receipt_v1",
       "selective_events_v1",
       "session_files_v1",
+      "git_graph_v1",
       "skills_v1",
       "desktop_settings_v1",
       "skill_management_v1",
@@ -709,6 +730,17 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
     // Files
     listSessionFiles: async (): Promise<SessionFileListing> => demoFiles,
+    // Git. The listing doubles as the repository probe: `isRepo` is what the
+    // top bar's menu reads before it offers the entry at all. `?norepo=1`
+    // answers as a plain directory would, which is the case a capture has to
+    // show the menu *without* the Git row.
+    listGitCommits: async (): Promise<GitGraphListing> => (noRepo
+      ? { isRepo: false, repoName: "", path: "", commits: [], truncated: false }
+      : demoGitListing),
+    getGitCommit: async (gitRef: string): Promise<GitCommitDetail> => ({
+      ...demoGitCommitDetail,
+      short: gitRef,
+    }),
     listSkills: async () => demoSkills,
 
     // Attachments: hand back an inline preview image so image rendering

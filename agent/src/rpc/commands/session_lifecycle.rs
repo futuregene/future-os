@@ -818,6 +818,7 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
         }
         new_sess.set_auto_compaction(settings.compaction_enabled());
         new_sess.set_auto_retry(settings.retry_enabled());
+        new_sess.set_output_continuation(settings.output_continuation_enabled());
     }
 
     // Default created_by to "tui" for sessions created without explicit

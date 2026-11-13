@@ -505,6 +505,59 @@ export interface SessionFileListing {
   entries: SessionFileEntry[];
 }
 
+/**
+ * One row of the session workspace's Git history.
+ *
+ * `graph` is the lane gutter for this row: two characters per lane, spaces where
+ * nothing is drawn, and every row of one listing the same length so the subjects
+ * line up in one column. A lane `n` sits at character `2n`, and the character to
+ * its right carries the connection toward the next lane — which is what lets the
+ * phone colour a glyph by its column (`index / 2`) instead of parsing the
+ * drawing.
+ *
+ * The vocabulary is the TUI Git panel's (`tui/src/workbench/git_panel.rs`): `o` a
+ * commit that continues its line, `M` one that joins lines, `│ ─ ┐ ┘ ┤ ┬ ┴` the
+ * connections, and a space where nothing is drawn.
+ */
+export interface GitGraphRow {
+  /** The abbreviated id — the row's key, and what a tap asks the detail for. */
+  short: string;
+  /** `YYYY-MM-DD HH:MM`, minute precision and no zone. */
+  when: string;
+  /** The committer's name, as git prints it. */
+  who: string;
+  /** `HEAD -> main, origin/main, tag: v1`, empty when the commit has no refs. */
+  decorations: string;
+  subject: string;
+  graph: string;
+}
+
+/**
+ * The history list's reply.
+ *
+ * `isRepo` is answered by the same read rather than by a probe command of its
+ * own: whether a workspace is a repository is a property of the directory, not of
+ * the conversation, and the phone draws no Git entry at all when this is false.
+ */
+export interface GitGraphListing {
+  isRepo: boolean;
+  /** The repository's directory name, for the sheet's title. Empty when `!isRepo`. */
+  repoName: string;
+  /** The workspace the history was read in — a workspace can hold several checkouts. */
+  path: string;
+  commits: GitGraphRow[];
+  /** The log was cut at the page size; the oldest row is not the root. */
+  truncated: boolean;
+}
+
+/** One commit's `git show --stat --patch`, already bounded by the host. */
+export interface GitCommitDetail {
+  short: string;
+  patch: string;
+  /** The host cut the patch at its row/byte ceiling and said so in `patch`. */
+  truncated: boolean;
+}
+
 export interface DownloadInfo {
   transferId: string;
   name: string;

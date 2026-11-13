@@ -1,0 +1,11 @@
+{
+  "title": "History",
+  "close": "Close history",
+  "refresh": "Refresh history",
+  "loading": "Loading history...",
+  "empty": "This repository has no commits yet.",
+  "notRepo": "This workspace is not a Git repository.",
+  "truncated": "The oldest commits are not shown.",
+  "back": "Back to commits",
+  "openCommit": "Open commit {{sha}}: {{subject}}"
+}

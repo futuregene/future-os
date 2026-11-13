@@ -276,16 +276,15 @@ fn a_reset_that_applies_but_cannot_be_reloaded_reports_reload_failed() {
     hydrate(&state, &id);
 
     // Damage the store in the window between the rewrite committing and the
-    // reload reading it back. The read path is the `entry_records` **view**; the
-    // reset's own planning read goes through the same view, which is why the
-    // damage has to land in that window — see the hook's own note and F-53.
+    // reload reading canonical bodies. Planning must still see healthy content,
+    // so the body table is damaged only after the rewrite commits.
     let damage = state.clone();
     super::session_reset::set_reload_failure_hook(
         &id,
         Box::new(move || {
             damage
                 .session_manager
-                .test_execute("DROP VIEW entry_records")
+                .test_execute("DROP TABLE content_segments")
         }),
     );
     let response = run(&state, &id, apply(keep_last(2)));
@@ -378,12 +377,12 @@ fn dropped_content_cannot_come_back_through_any_replay_path() {
         )
         .unwrap();
     for (run, text) in [("r1", "FIRST-QUESTION"), ("r4", "FOURTH-QUESTION")] {
-        store
-            .append_event(
-                "s1",
-                json!({"run_id": run, "epoch": 0, "idx": 0, "event_type": "text_chunk",
-                    "data": json!({"text": text}).to_string()}),
-            )
+        let event = json!({"session_id":"s1", "run_id":run,"epoch":0,"idx":0,
+            "session_idx":-1,"event_id":format!("s1:{run}:0:0"),"run_sequence":1,
+            "timestamp":"2026-01-01T00:00:00Z","event_type":"text_chunk",
+            "data":json!({"text":text}).to_string()});
+        crate::session::content::journal::Writer::default()
+            .persist(&store, "s1", [&event])
             .unwrap();
     }
     hydrate(&state, "s1");

@@ -34,8 +34,13 @@ pub(crate) fn choice(instructions: &str, options: &[(&str, &str)]) -> Value {
             .collect::<serde_json::Map<String, Value>>()})
 }
 
-/// Model id the gateway resolves (`jev` → `typesafe/jev-1.13-…`).
+/// Model id the approval reviewer asks the gateway for (`jev` →
+/// `typesafe/jev-1.13-…`).
 pub(crate) const JEV_MODEL: &str = "jev";
+/// Model id the skill recommender asks for. The endpoint, request shape and
+/// response shape are the same as [`JEV_MODEL`]'s, which is why the two callers
+/// only differ in this id — and why the approval reviewer keeps its own.
+pub(crate) const SKILL_RECO_MODEL: &str = "pplx-decider-v1.2";
 /// Fallback origin when the Future provider has no `base_url` configured.
 const DEFAULT_FUTURE_BASE: &str = "https://future-os.cn/api";
 /// The provider whose credential authenticates the call.

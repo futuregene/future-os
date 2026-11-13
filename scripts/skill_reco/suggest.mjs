@@ -92,6 +92,18 @@ export const NONE_OF_THESE = "none_of_these";
  * changes.
  */
 export const NONE_GATE_THRESHOLD = Number(process.env.NONE_GATE_THRESHOLD ?? 0.15);
+/**
+ * decider's refusal gate. At 141 options its answerable and refusable groups
+ * separated at 0.005; on the live 240-skill catalogue they overlap and 0.015 is
+ * the balanced cut measured there (0 false refusals, 1 false suggestion).
+ * See docs/internals/skill_reco/decider-comparison.md §4.2.
+ */
+export const NONE_GATE_THRESHOLD_DECIDER = Number(process.env.NONE_GATE_THRESHOLD_DECIDER ?? 0.015);
+
+/** The gate belongs to the model, not to the pipeline. */
+export function noneGateFor(model) {
+  return /decider/i.test(model ?? "") ? NONE_GATE_THRESHOLD_DECIDER : NONE_GATE_THRESHOLD;
+}
 
 /**
  * The Choice question, byte-identical to the agent's `build_request`
@@ -125,6 +137,7 @@ export class Suggester {
   constructor(roster, { apiKey, baseUrl, model, insecureLocalOnly = false } = {}) {
     this.roster = roster;
     this.client = new JevClient({ apiKey, baseUrl, model });
+    this.gate = noneGateFor(this.client.model);
     // The client resolves the credential (explicit key, else the Future account),
     // so the mode follows it rather than a key this object never received.
     this.apiKey = this.client.apiKey;
@@ -151,7 +164,7 @@ export class Suggester {
         thirdParty: this.roster.thirdPartyCount,
       },
       thresholds: {
-        noneGate: NONE_GATE_THRESHOLD,
+        noneGate: this.gate,
         chunkSize: CHUNK_SIZE,
         shortlist: SHORTLIST,
         minChars: MIN_QUERY_CHARS,
@@ -357,7 +370,7 @@ export class Suggester {
     const totalTokens = (route.firstUsage?.input_tokens ?? 0) + (route.secondUsage?.input_tokens ?? 0);
     const gate = {
       noneProbability: route.noneProbability,
-      threshold: NONE_GATE_THRESHOLD,
+      threshold: this.gate,
       chunkCount: route.chunkCount,
       declinedChunks: route.declinedChunks.length,
       survivorCount: route.survivors.length,
@@ -413,6 +426,9 @@ export class Suggester {
       // refusal derived from its own coverage score. The UI labels it as the fallback either way.
       gate: {
         noneProbability: round(1 - gate.needs_skill) ?? null,
+        // The lexical stand-in scores coverage, not the model's `none` probability, so the
+        // model-specific gate would be measuring the wrong scale here (decider's 0.005 would
+        // refuse almost everything). Keep the heuristic's own threshold.
         threshold: NONE_GATE_THRESHOLD,
         chunkCount: null,
         declinedChunks: null,

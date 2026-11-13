@@ -76,6 +76,19 @@ impl Manager {
             .unwrap();
     }
 
+    /// Seed released storage directly. Runtime save/open paths deliberately
+    /// migrate now and must not be used to manufacture historical fixtures.
+    #[cfg(test)]
+    pub(crate) fn seed_legacy_fixture(&self, session: &Session) -> Result<()> {
+        let store = self.storage()?;
+        if !store.contains(&session.id)?
+            && store.storage_format(&session.id)? != super::content::FORMAT_VERSION
+        {
+            store.bind_legacy_events(&session.id)?;
+        }
+        store.replace(&session.id, Self::encoded(&session.entries)?)
+    }
+
     pub fn database_path(&self) -> PathBuf {
         if self.dir.file_name().and_then(|s| s.to_str()) == Some("sessions") {
             self.dir.parent().unwrap_or(&self.dir).join("agent.db")
@@ -121,6 +134,15 @@ impl Manager {
         self.storage_cancellable(&crate::service::StartupCancellation::default())
     }
 
+    /// Open a conversation for use, unlike listing or deleting its identity.
+    pub(crate) fn prepare_session(&self, id: &str) -> Result<bool> {
+        let (migrated, canonical) = self.storage()?.prepare_canonical(id)?;
+        if migrated {
+            self.invalidate_display_projection(id);
+        }
+        Ok(canonical)
+    }
+
     fn storage_cancellable(
         &self,
         cancellation: &crate::service::StartupCancellation,
@@ -164,12 +186,8 @@ impl Manager {
             startup::step(&database, "recover_segmented_runs", || {
                 store.recover_segmented_runs_cancellable(cancellation)
             })?;
-            // A conversion records its payloads before it drops the session's
-            // rows, so a start that finds a record finishes the rewrite instead
-            // of leaving the session empty.
-            startup::step(&database, "recover_legacy_conversions", || {
-                store.recover_legacy_conversions(16).map(|_| ())
-            })?;
+            // Conversion receipts resume on access, not at startup. This also
+            // lets a user delete a failed conversion without retrying it first.
             // A settled run replays its transcript, not its token stream, so its
             // journal is retired automatically once it has been settled for a
             // while: the sweep handles the bulk, this keeps a long-running store
@@ -198,6 +216,7 @@ impl Manager {
     /// History remains addressable, but a failed recovery must never become
     /// model input or authorize new tools from a silently truncated prefix.
     pub fn ensure_execution_allowed(&self, session: &str) -> Result<()> {
+        self.prepare_session(session)?;
         let session = session.to_owned();
         self.storage()?.db.fence(move |db| {
             use rusqlite::OptionalExtension;
@@ -226,6 +245,7 @@ impl Manager {
     }
 
     pub fn append_entries(&self, id: &str, entries: &[SessionEntry]) -> Result<()> {
+        self.prepare_session(id)?;
         self.storage()?.append(id, Self::encoded(entries)?)?;
         self.invalidate_display_projection(id);
         Ok(())
@@ -242,34 +262,31 @@ impl Manager {
         id: &str,
         entries: &[SessionEntry],
     ) -> Result<()> {
+        self.prepare_session(id)?;
         let store = self.storage()?;
-        let values = if store.storage_format(id)? == super::content::FORMAT_VERSION {
-            entries
-                .iter()
-                .map(|entry| {
-                    if entry.entry_type == super::ENTRY_TYPE_SESSION_INFO {
-                        let fields = super::content::metadata::run_fields(
-                            entry
-                                .content
-                                .as_ref()
-                                .ok_or_else(|| anyhow::anyhow!("run metadata has no content"))?,
-                        )?;
-                        let mut thin = SessionEntry::session_info(
-                            serde_json::Value::Object(fields),
-                            String::new(),
-                            String::new(),
-                        );
-                        thin.id = entry.id.clone();
-                        thin.timestamp = entry.timestamp;
-                        Ok(serde_json::from_str(&Self::serialize_entry(&thin)?)?)
-                    } else {
-                        Ok(serde_json::from_str(&Self::serialize_entry(entry)?)?)
-                    }
-                })
-                .collect::<Result<Vec<_>>>()?
-        } else {
-            Self::encoded(entries)?
-        };
+        let values = entries
+            .iter()
+            .map(|entry| {
+                if entry.entry_type == super::ENTRY_TYPE_SESSION_INFO {
+                    let fields = super::content::metadata::run_fields(
+                        entry
+                            .content
+                            .as_ref()
+                            .ok_or_else(|| anyhow::anyhow!("run metadata has no content"))?,
+                    )?;
+                    let mut thin = SessionEntry::session_info(
+                        serde_json::Value::Object(fields),
+                        String::new(),
+                        String::new(),
+                    );
+                    thin.id = entry.id.clone();
+                    thin.timestamp = entry.timestamp;
+                    Ok(serde_json::from_str(&Self::serialize_entry(&thin)?)?)
+                } else {
+                    Ok(serde_json::from_str(&Self::serialize_entry(entry)?)?)
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
         store.commit_terminal_entries(id, values)?;
         self.invalidate_display_projection(id);
         Ok(())
@@ -281,6 +298,7 @@ impl Manager {
         user: SessionEntry,
         started: SessionEntry,
     ) -> Result<()> {
+        self.prepare_session(id)?;
         let id = id.to_owned();
         let run_id = started
             .content
@@ -509,6 +527,11 @@ impl Manager {
             self.fail_saves_remaining
                 .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
             return Err(anyhow!("injected session save failure"));
+        }
+        if self.storage()?.contains(&session.id)? {
+            self.prepare_session(&session.id)?;
+        } else {
+            self.storage()?.bind_events(&session.id)?;
         }
         self.storage()?
             .replace(&session.id, Self::encoded(&session.entries)?)?;

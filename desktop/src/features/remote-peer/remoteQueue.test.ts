@@ -81,6 +81,44 @@ describe("getRemoteQueue", () => {
     expect(rows[0]!.state).toBe("queued");
   });
 
+  /**
+   * A queued message's files, so the panel can show (and keep) them.
+   *
+   * The host's queue used to answer with text and an acceptance time only, which
+   * left an edit — a cancel and a re-send, the only kind there is — no way to name
+   * the files again, and left the reader looking at a message whose photos were
+   * invisible.
+   */
+  it("reads the files a waiting message carries", async () => {
+    request.mockResolvedValue({
+      queued: [
+        {
+          runId: "run_files",
+          text: "look at this",
+          attachments: [
+            { kind: "image", name: "shot.png", path: "/Users/x/shot.png", size: 4096 },
+            { kind: "file", name: "doc.pdf", path: "/Users/x/doc.pdf", size: 0 },
+          ],
+        },
+        // A file with no path could not be opened or named again, so it is not
+        // drawn as a chip that does nothing.
+        { runId: "run_partial", attachments: [{ name: "nameless.png" }] },
+        { runId: "run_text", text: "later" },
+      ],
+    });
+
+    const { rows } = await getRemoteQueue("desktop_a", "sess_1");
+
+    expect(rows[0]!.attachments).toEqual([
+      { kind: "image", name: "shot.png", path: "/Users/x/shot.png", size: 4096 },
+      { kind: "file", name: "doc.pdf", path: "/Users/x/doc.pdf", size: 0 },
+    ]);
+    expect(rows[1]!.attachments).toEqual([]);
+    // Absent is absence, not "a message with no files": an older host is told
+    // apart from one that reported none.
+    expect(rows[2]!.attachments).toBeUndefined();
+  });
+
   it("reads an empty or unusable answer as an empty queue", async () => {
     request.mockResolvedValue(null);
     await expect(getRemoteQueue("desktop_a", "sess_1")).resolves.toEqual({ acks: [], rows: [] });

@@ -279,6 +279,7 @@ fn the_projected_page_is_never_larger_than_the_bytes_that_were_read() {
         .unwrap()
         .db
         .call(move |db| {
+            let id=crate::session::identity::BoundIdentity::session(db,&id)?;
             let rows: i64 = db
                 .query_row(
                     "SELECT count(*) FROM history_display WHERE session_id=?1",
@@ -288,7 +289,8 @@ fn the_projected_page_is_never_larger_than_the_bytes_that_were_read() {
                 .unwrap();
             let stored: i64 = db
                 .query_row(
-                    "SELECT coalesce(sum(length(d.payload) + coalesce(length(e.payload),0)),0)
+                    "SELECT coalesce(sum(length(CAST(d.payload AS BLOB)) + coalesce(length(CAST(e.payload AS BLOB)),0)),0)
+                   + (SELECT coalesce(sum(byte_length),0) FROM content_references WHERE session_id=?1 AND owner_kind='entry')
                  FROM history_display d LEFT JOIN entry_records e
                    ON e.session_id=d.session_id AND e.position=d.source_position
                  WHERE d.session_id=?1",
@@ -462,6 +464,7 @@ fn compaction_display_row(manager: &Manager, id: &str) -> serde_json::Value {
         .unwrap()
         .db
         .call(move |db| {
+            let id=crate::session::identity::BoundIdentity::session(db,&id)?;
             Ok(db.query_row(
                 "SELECT payload FROM history_display WHERE session_id=?1 AND json_extract(payload,'$.kind')='compaction'",
                 rusqlite::params![id],
@@ -557,12 +560,13 @@ fn a_version_one_row_is_rebuilt_on_its_next_read() {
     let (_dir, manager, session) = session_with_checkpoint();
     let id = session.id;
     // Exactly what the previous projection produced, plus its version stamp.
-    manager.test_execute(&format!(
-        "UPDATE history_display SET payload=json_set(payload,'$.checkpoint','')
-           WHERE session_id='{id}' AND json_extract(payload,'$.kind')='compaction';
-         INSERT OR REPLACE INTO history_index_state(session_id,projection_version)
-           VALUES ('{id}',1);"
-    ));
+    let target = id.clone();
+    manager.storage().unwrap().db.call(move |db| {
+        let id=crate::session::identity::BoundIdentity::session(db,&target)?;
+        db.execute("UPDATE history_display SET payload=json_set(payload,'$.checkpoint','') WHERE session_id=?1 AND json_extract(payload,'$.kind')='compaction'",[&id])?;
+        db.execute("INSERT OR REPLACE INTO history_index_state(session_id,projection_version) VALUES (?1,1)",[&id])?;
+        Ok(())
+    }).unwrap();
     assert_eq!(
         compaction_display_row(&manager, &id)["checkpoint"],
         json!(""),

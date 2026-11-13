@@ -132,6 +132,13 @@ fn load_effective() -> Result<Settings, String> {
         .map_err(|error| format!("could not read {}: {error}", path.display()))
 }
 
+/// The configured default model, readable without the agent — the home view
+/// reports it before any session exists. An empty string is the documented
+/// "no explicit choice" state, not an error.
+pub(crate) fn default_model() -> Result<String, String> {
+    Ok(load_effective()?.default_model)
+}
+
 /// Read the settings document as raw JSON. A missing file is `{}`; a file that
 /// is not a JSON object is refused rather than overwritten.
 fn read_document(path: &Path) -> Result<Value, String> {

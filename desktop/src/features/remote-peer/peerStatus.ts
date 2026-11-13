@@ -136,15 +136,30 @@ export function peerLabelTone(
 }
 
 /**
- * The name of the device holding the machine, when it declared one.
+ * A byte the wire lost (U+FFFD) is not part of a name; a control character is
+ * never part of a label a person typed and reads as a broken glyph.
+ */
+const ILLEGIBLE_NAME = /[\uFFFD\p{Cc}]/u;
+
+/**
+ * The name of the device holding the machine, when it declared one this app can
+ * read.
  *
- * `null` covers both "nobody holds it" and "the holder never said who it is";
- * the caller asks [`peerHeld`] and falls back to neutral wording instead of
- * inventing an identity.
+ * `null` covers three cases, and the caller answers all of them the same way:
+ * nobody holds the machine, the holder never said who it is, and the holder
+ * said something the wire mangled. That last one is not hypothetical — a
+ * desktop whose Chinese computer name went through a launcher's local code page
+ * declares `FutureOS Desktop (␦␦␦␦␦␦ļ␦)`, one replacement per lost byte — and the
+ * neutral wording exists for exactly the reader who cannot use that. The rule
+ * matches the one applied where a name enters the system
+ * (`host/src/remote_peer/runtime.rs::usable_name`); a name in Chinese still is a
+ * name, so the test is replacements, not non-ASCII.
  */
 export function peerHolderName(peer: RemotePeer): string | null {
   const name = peer.holder?.name?.trim();
-  return name || null;
+  if (!name)
+    return null;
+  return ILLEGIBLE_NAME.test(name) ? null : name;
 }
 
 /**

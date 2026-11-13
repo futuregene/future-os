@@ -23,7 +23,7 @@ import { SkillSuggestionCard } from "./SkillSuggestionCard";
 import { ComposerToolbar } from "../composer/ComposerToolbar";
 import { useStyles } from "../composer/composerStyles";
 import { SendChoiceSheet } from "./SendChoiceSheet";
-import { SendQueuePanel, type SendQueuePanelItem } from "./SendQueuePanel";
+import { SendQueuePanel, sendQueueListHeight, type SendQueueAttachmentItem, type SendQueuePanelItem } from "./SendQueuePanel";
 import { SkillPicker, skillPickerHeight } from "./SkillPicker";
 import { SessionPicker, sessionPickerHeight } from "./SessionPicker";
 import { FloatingTimelineButton } from "./FloatingTimelineButton";
@@ -67,6 +67,9 @@ function ComposerDockView({
   onQueueUpdate,
   onQueueRemove,
   onQueueRelease,
+  onQueuePreviewAttachment,
+  onQueueRemoveAttachment,
+  onQueueAddAttachments,
   archived = false,
   onRestore,
   restoringArchived = false,
@@ -149,6 +152,12 @@ function ComposerDockView({
   onQueueUpdate?: (id: string, content: string) => void;
   /** Start a parked row now. */
   onQueueRelease?: (id: string) => void;
+  /** Open a file a waiting message carries, as the transcript would. */
+  onQueuePreviewAttachment?: (attachment: SendQueueAttachmentItem) => void;
+  /** Take one file off a waiting message (the rest are re-sent with it). */
+  onQueueRemoveAttachment?: (id: string, path: string) => void;
+  /** Add photos/files to a waiting message before it leaves. */
+  onQueueAddAttachments?: (id: string) => void;
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -275,6 +284,9 @@ function ComposerDockView({
     keyboardHeight,
     sessionMentions.length,
   );
+  // How tall an expanded send queue may draw before its rows scroll: the reply
+  // above it keeps the rest of the room (see `sendQueueListHeight`).
+  const queueListHeight = sendQueueListHeight(height, keyboardHeight);
   const maxInputHeight = Math.max(
     INPUT_MIN_HEIGHT,
     Math.min(
@@ -368,13 +380,13 @@ function ComposerDockView({
       ) : null}
       {queueItems.length > 0 && (
         <SendQueuePanel
-          // The desktop's queue reports a message's text, never the files it was
-          // sent with, so the panel is told that rather than handed a count of
-          // zero the phone would have invented.
-          attachmentsUnreported
           items={queueItems}
+          maxListHeight={queueListHeight}
+          onAddAttachments={id => onQueueAddAttachments?.(id)}
+          onPreviewAttachment={attachment => onQueuePreviewAttachment?.(attachment)}
           onRelease={id => onQueueRelease?.(id)}
           onRemove={id => onQueueRemove?.(id)}
+          onRemoveAttachment={(id, path) => onQueueRemoveAttachment?.(id, path)}
           onUpdate={(id, content) => onQueueUpdate?.(id, content)}
         />
       )}

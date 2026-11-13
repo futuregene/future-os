@@ -138,6 +138,16 @@ fn queued_run_to_proto(run: &crate::payloads::QueuedRunState) -> proto::QueuedRu
         queue_position: run.queue_position as i32,
         accepted_at: run.accepted_at.clone(),
         display_text: run.display_text.clone(),
+        attachments: run
+            .attachments
+            .iter()
+            .map(|attachment| proto::QueuedRunAttachment {
+                path: attachment.path.clone(),
+                kind: attachment.kind.clone(),
+                name: attachment.name.clone(),
+                size: attachment.size as i64,
+            })
+            .collect(),
     }
 }
 
@@ -369,9 +379,11 @@ fn projection_to_proto(projection: &ProjectionPayload) -> proto::ProjectionSnaps
 }
 
 fn replay_event_to_proto(event: &ReplayEventPayload) -> proto::ReplayEvent {
+    let mut data = event.data.clone();
+    crate::shell_result::strip_legacy_event_command(&mut data);
     proto::ReplayEvent {
         r#type: event.event_type.clone(),
-        data: event.data.clone(),
+        data,
         run_id: event.run_id.clone(),
         idx: event.idx,
         session_id: event.session_id.clone(),

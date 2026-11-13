@@ -247,9 +247,17 @@ fn client() -> &'static reqwest::Client {
 /// not the model API base — mirror the CLI (`cli/src/commands/auth.ts`).
 pub async fn start() -> Result<FutureLoginStart, AppError> {
     let platform = crate::future_platform::checked_platform_url()?;
+    // Who is asking. The platform records this on the key it issues, so the
+    // console can say which machine a key belongs to — the id is a lookup key,
+    // the name is what a person recognizes.
+    let (device_id, device_name) = crate::device_identity::login_device();
     let response = client()
         .post(format!("{platform}/client/v1/oauth/device/code"))
-        .json(&json!({ "client_name": CLIENT_NAME }))
+        .json(&json!({
+            "client_name": CLIENT_NAME,
+            "device_id": device_id,
+            "device_name": device_name,
+        }))
         .send()
         .await
         .map_err(|error| AppError::Message(format!("Failed to request device code: {error}")))?;

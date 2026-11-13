@@ -139,7 +139,22 @@ export const darkColors: Palette = {
   overlay: "rgba(0, 0, 0, 0.7)",
 };
 
-/** Syntax categories on the code surface (not status colours). */
+/**
+ * The colours a Git lane cycles through, in both schemes.
+ *
+ * A lane is a column in the history graph, and its colour is what lets a reader
+ * follow one line of work down the page without reading the glyphs. The values
+ * come from `@future-os/git-graph`, which the desktop reads too: one history is
+ * drawn by two front ends, and the palette is part of the drawing's contract
+ * rather than of either screen's styling. The order matters — adjacent lanes
+ * must never share a colour, and cycling is what guarantees it.
+ */
+export {
+  LIGHT_GRAPH_COLORS as lightGraphColors,
+  DARK_GRAPH_COLORS as darkGraphColors,
+  type GraphPalette,
+} from "@future-os/git-graph";
+
 export type CodePalette = {
   comment: string;
   keyword: string;

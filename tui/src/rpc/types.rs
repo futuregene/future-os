@@ -581,7 +581,7 @@ mod tests {
     #[test]
     fn get_state_wire_round_trip_parses_into_client_state() {
         use future_rpc::payloads::{
-            GetStatePayload, QueuedRunState, RunStateSnapshot, TerminalAck,
+            GetStatePayload, QueuedRunAttachment, QueuedRunState, RunStateSnapshot, TerminalAck,
         };
         let payload = GetStatePayload {
             agent_instance_id: "agent_x".into(),
@@ -634,6 +634,12 @@ mod tests {
                 queue_position: 1,
                 accepted_at: "2026-08-07T00:00:00Z".into(),
                 display_text: "hi".into(),
+                attachments: vec![QueuedRunAttachment {
+                    path: "/tmp/queued.png".into(),
+                    kind: "image".into(),
+                    name: "queued.png".into(),
+                    size: 2048,
+                }],
             }],
             recent_terminal_acks: vec![TerminalAck {
                 run_id: "run_0".into(),

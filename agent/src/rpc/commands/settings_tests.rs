@@ -608,6 +608,49 @@ fn shell_echo() {
     assert_eq!(resp["data"]["exitCode"], 0);
 }
 
+/// A stop advances the shell cancel generation once and then waits for admitted
+/// work to settle. A shell the dispatcher admitted *before* that point can still
+/// reach its handler after both — admission is counted when the RPC is accepted,
+/// the handler runs on a blocking thread later — so a handler that simply reads
+/// the generation it finds there would start a process nothing is left to
+/// cancel. The stop then reports "deadline exceeded during admitted commands"
+/// while the shell runs on, and the retained instance ownership blocks the
+/// restart. macOS CI produced exactly that on 2026-11-11 with a 30-second shell.
+#[test]
+fn a_shell_reaching_its_handler_after_the_stop_is_refused_instead_of_starting() {
+    use std::sync::atomic::Ordering;
+
+    let state = make_app_state();
+    std::fs::create_dir_all(&state.welcome_cwd).unwrap();
+    let session = state.get_session("default").unwrap();
+    // Production sessions carry the Agent's own `ServiceWork` (`create_session`
+    // and the hydration path both install it); this fixture builds one directly,
+    // so the wiring the stop relies on is made explicit here.
+    session.write().service_work = state.service_work.clone();
+    // The two steps a stop takes before it starts waiting for admitted work.
+    session
+        .read()
+        .shell_cancel_generation
+        .fetch_add(1, Ordering::SeqCst);
+    state.service_work.close();
+
+    let mut cmd = make_cmd("shell");
+    cmd.command = if cfg!(windows) {
+        "ping -n 6 127.0.0.1 > NUL"
+    } else {
+        "sleep 5"
+    }
+    .to_string();
+    let started = std::time::Instant::now();
+    let resp = parse_response(&super::settings::handle_shell(&session, &cmd, &cmd.id));
+    assert_eq!(resp["error_code"], "agent_stopping", "{resp}");
+    assert_eq!(resp["success"], false, "{resp}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "a stopping Agent must refuse the shell instead of running it: {resp}"
+    );
+}
+
 #[test]
 fn reload_config_rejects_busy_loop() {
     let state = make_app_state();

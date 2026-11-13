@@ -1,6 +1,7 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { useState } from "react";
+import { readableDeviceName } from "../remote/deviceName";
 import { layout, radius, spacing } from "../theme/tokens";
 import { createThemedStyles } from "../theme/ThemeContext";
 
@@ -24,7 +25,7 @@ export function StandbyNotice({
   const styles = useStyles();
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
-  const name = holder?.name?.trim();
+  const name = readableDeviceName(holder?.name);
 
   const take = async () => {
     if (busy) return;

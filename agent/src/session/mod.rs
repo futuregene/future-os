@@ -43,6 +43,7 @@ pub use legacy_import::ImportRecord;
 mod entry;
 mod entry_records;
 mod fork;
+mod maintenance;
 mod manager;
 mod model;
 mod persistence;

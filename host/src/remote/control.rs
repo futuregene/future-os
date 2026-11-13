@@ -2103,6 +2103,7 @@ mod tests {
             kind: "mobile".into(),
             version: Some("2.0.1".into()),
             sync_stage: Some("history".into()),
+            device_id: None,
         });
         let value = serde_json::to_value(&described).unwrap();
         assert_eq!(value["name"], "PJZ110");

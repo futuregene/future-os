@@ -84,7 +84,13 @@ fn get_state_fixture() -> Value {
                 "state": "queued",
                 "queuePosition": 0,
                 "acceptedAt": "2026-08-06T10:00:00Z",
-                "displayText": "next"
+                "displayText": "next",
+                "attachments": [{
+                    "path": "/Users/x/shot.png",
+                    "kind": "image",
+                    "name": "shot.png",
+                    "size": 4096
+                }]
             }],
             "recentTerminalAcks": [{
                 "runId": "r0",
@@ -1035,7 +1041,7 @@ fn thread_cpu_time() -> std::time::Duration {
 
 #[test]
 fn shell_attempts_event_and_history_metadata_survive_typed_transport() {
-    let facts = json!({"command":"action", "cwd":"/repo", "duration_ms":8,
+    let facts = json!({"cwd":"/repo", "duration_ms":8,
         "status":"exited", "exit_code":2, "is_soft_fail":false, "is_error":true,
         "attempts":[{"status":"exited","exit_code":7,"duration_ms":4,"output":"original [exit: 0]","output_truncated":false,"escalated":false},
         {"status":"exited","exit_code":2,"duration_ms":4,"output":"retry","output_truncated":false,"escalated":true}],

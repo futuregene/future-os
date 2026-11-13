@@ -888,14 +888,29 @@ async fn incomplete_reason_is_identical_in_live_event_and_sqlite_history() {
     .into_iter()
     .enumerate()
     {
+        // A spent output budget is continued inside the run before it becomes
+        // terminal, so this reason needs one scripted response per attempt;
+        // every other reason ends the run on its first one.
+        let attempts = if matches!(reason, FinishReason::Length) {
+            // The initial attempt plus the run's continuation allowance
+            // (`MAX_OUTPUT_LIMIT_CONTINUATIONS`, private to the run loop).
+            3
+        } else {
+            1
+        };
+        let scripts = (0..attempts)
+            .map(|_| {
+                Script::Events(vec![
+                    text_event("synthetic partial"),
+                    ModelStreamEvent::Finish {
+                        reason: reason.clone(),
+                        usage: None,
+                    },
+                ])
+            })
+            .collect();
         let fixture = run_fixture(
-            ScriptedProvider::new(vec![Script::Events(vec![
-                text_event("synthetic partial"),
-                ModelStreamEvent::Finish {
-                    reason,
-                    usage: None,
-                },
-            ])]),
+            ScriptedProvider::new(scripts),
             &format!("terminal-reason-{index}"),
         );
         let mut session = fixture.session;
@@ -4473,10 +4488,8 @@ async fn a_supersede_whose_receipt_cannot_be_cancelled_leaves_no_successor() {
 
 // ─── the legacy (non-segmented) conversation path ──────────────────────────
 
-/// A conversation whose storage format is the plain transcript, with the
-/// format selected **before** the session configures its journal: the
-/// broadcaster reads the format once and never reconsiders it, so binding it
-/// afterwards would silently keep the canonical path under test.
+/// Start from released transcript storage, then open it through the normal
+/// runtime constructor so migration and writer binding follow production.
 fn run_fixture_legacy(provider: Arc<dyn LLMProvider>, name: &str, session_id: &str) -> RunFixture {
     let dir = test_path(name);
     let workspace = dir.join("ws");
@@ -4487,6 +4500,10 @@ fn run_fixture_legacy(provider: Arc<dyn LLMProvider>, name: &str, session_id: &s
         .unwrap()
         .bind_legacy_events(session_id)
         .unwrap();
+    manager.storage().unwrap().replace(session_id,vec![serde_json::json!({
+        "id":"historical-info","type":"session_info","timestamp":"2024-01-01T00:00:00Z",
+        "content":{"cwd":workspace.to_string_lossy(),"model":"mock","created_by":"desktop","creator_id":"device-1","source_meta":{"threadId":"thread-1"}}
+    })]).unwrap();
     let agent_loop = Loop::new(provider, "mock").with_tools(coding_tools());
     let session = crate::rpc::ServerSession::new_with_queue_budget(
         session_id.to_string(),
@@ -4501,12 +4518,10 @@ fn run_fixture_legacy(provider: Arc<dyn LLMProvider>, name: &str, session_id: &s
     RunFixture { workspace, session }
 }
 
-/// A legacy conversation writes each message straight into the transcript and
-/// keeps the session's provenance on the run's own `session_info` entry — the
-/// canonical path deliberately drops `source_meta` (a stream run has no place
-/// for it), so this is the only branch that carries it forward.
+/// Opening historical storage upgrades its writer while preserving the
+/// original conversation provenance and all newly produced answer text.
 #[tokio::test(flavor = "current_thread")]
-async fn a_legacy_run_writes_plain_transcript_entries_and_keeps_its_provenance() {
+async fn a_legacy_run_migrates_to_canonical_and_keeps_its_provenance() {
     let provider = ScriptedProvider::new(vec![text_turn("legacy answer")]);
     let mut fixture = run_fixture_legacy(provider, "legacy-run", "leg-run");
     let session = &mut fixture.session;
@@ -4520,8 +4535,8 @@ async fn a_legacy_run_writes_plain_transcript_entries_and_keeps_its_provenance()
     wait_for_run_end(session).await;
 
     assert!(
-        !session.broadcaster.uses_segmented_storage(),
-        "the fixture must exercise the plain transcript path"
+        session.broadcaster.uses_segmented_storage(),
+        "opening historical storage must select the canonical writer"
     );
 
     let loaded = session.session_manager.load("leg-run").unwrap();
@@ -4536,7 +4551,7 @@ async fn a_legacy_run_writes_plain_transcript_entries_and_keeps_its_provenance()
     assert_eq!(info["creator_id"], "device-1", "{info}");
     assert_eq!(info["source_meta"]["threadId"], "thread-1", "{info}");
 
-    // The answer is a plain assistant entry: no stream staging on this path.
+    // The upgraded writer publishes the same logical assistant answer.
     let answer = loaded
         .entries
         .iter()
@@ -4618,7 +4633,7 @@ async fn a_run_whose_event_journal_dies_mid_way_is_abandoned_as_failed() {
     // admission and before the batch that carries the answer.
     session
         .session_manager
-        .test_execute("DROP TABLE run_events");
+        .test_execute("DROP TABLE stream_changes");
     gate.notify_one();
 
     let mut degraded = false;

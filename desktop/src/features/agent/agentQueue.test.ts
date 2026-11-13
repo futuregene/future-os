@@ -71,6 +71,40 @@ describe("fetchAgentQueue", () => {
   });
 
   /**
+   * A waiting message's files.
+   *
+   * They are on this machine (the Agent runs here), which is what makes them both
+   * openable from the panel and re-sendable by an edit. Without them an edit sent
+   * the words alone and the photos the message carried were gone.
+   */
+  it("reads the files a waiting message carries, and tells absence from none", async () => {
+    mocks.invokeCommand.mockResolvedValue({
+      queued: [
+        row({
+          attachments: [
+            { kind: "image", name: "shot.png", path: "/tmp/shot.png", size: 4096 },
+            // No path: nothing to open and nothing to name again, so it is not
+            // drawn as a chip that would do nothing.
+            { name: "nameless.png" },
+          ],
+        }),
+        row({ runId: "run-empty", attachments: [] }),
+        row({ runId: "run-old" }),
+      ],
+    });
+
+    const { rows } = await fetchAgentQueue("thread-1");
+
+    expect(rows[0]!.attachments).toEqual([
+      { kind: "image", name: "shot.png", path: "/tmp/shot.png", size: 4096 },
+    ]);
+    expect(rows[1]!.attachments).toEqual([]);
+    // An Agent older than the field says nothing; the editor then warns that a
+    // save sends the text alone instead of claiming the message carried no files.
+    expect(rows[2]!.attachments).toBeUndefined();
+  });
+
+  /**
    * The other half of the answer: rows that left the queue without running.
    * Reading only `queued` is what let a cancelled or merged message disappear
    * with nobody told.

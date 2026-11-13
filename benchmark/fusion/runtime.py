@@ -60,14 +60,41 @@ def main():
         type=Path,
         default=Path(os.environ.get("FUTURE_HOME", Path.home() / ".future")),
     )
+    parser.add_argument(
+        "--single-only",
+        action="store_true",
+        help="start a single-model benchmark without reading saved Fusion settings",
+    )
+    parser.add_argument(
+        "--resume-home", type=Path, help="reuse a stopped single-model runtime home"
+    )
     args = parser.parse_args()
+    local = (ROOT / ".local").resolve()
+    if args.resume_home is None:
+        home = local / ("instance-" + uuid.uuid4().hex[:12])
+    else:
+        home = args.resume_home.resolve()
+        if (
+            not args.single_only
+            or home.parent != local
+            or not home.name.startswith("instance-")
+            or not (home / "agent").is_dir()
+        ):
+            parser.error("--resume-home requires a stopped local single-model instance")
+        if (home / "agent").resolve() != home / "agent":
+            parser.error("--resume-home requires a private agent directory")
+    if home == args.source_home.resolve():
+        parser.error("source and benchmark runtime must use separate homes")
     binary = args.binary.resolve()
-    settings = local_settings({"binary": binary, "home": args.source_home.resolve()})
-    if not settings["enabled"]:
+    settings = (
+        None
+        if args.single_only
+        else local_settings({"binary": binary, "home": args.source_home.resolve()})
+    )
+    if settings is not None and not settings["enabled"]:
         raise ValueError("Local Fusion is disabled")
-    home = ROOT / ".local" / ("instance-" + uuid.uuid4().hex[:12])
     agent = home / "agent"
-    agent.mkdir(parents=True, mode=0o700)
+    agent.mkdir(parents=True, mode=0o700, exist_ok=args.resume_home is not None)
     home.chmod(0o700)
     private = []
     process = None
@@ -82,22 +109,25 @@ def main():
             source = args.source_home / "agent" / filename
             if source.exists():
                 destination = agent / filename
+                if args.resume_home is not None and filename == "settings.json":
+                    continue
                 shutil.copyfile(source, destination)
                 destination.chmod(0o600)
                 if filename != "settings.json":
                     private.append(destination)
         # Seed only settings, never source history, tasks, or pending discussions.
-        fusion = home / "fusion"
-        fusion.mkdir()
-        connection = sqlite3.connect(fusion / "fusion.db")
-        connection.execute(
-            "CREATE TABLE fusion_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)"
-        )
-        connection.execute(
-            "INSERT INTO fusion_meta VALUES('settings',?)", (json.dumps(settings),)
-        )
-        connection.commit()
-        connection.close()
+        if settings is not None:
+            fusion = home / "fusion"
+            fusion.mkdir()
+            connection = sqlite3.connect(fusion / "fusion.db")
+            connection.execute(
+                "CREATE TABLE fusion_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)"
+            )
+            connection.execute(
+                "INSERT INTO fusion_meta VALUES('settings',?)", (json.dumps(settings),)
+            )
+            connection.commit()
+            connection.close()
         with socket.socket() as reservation:
             reservation.bind(("127.0.0.1", 0))
             endpoint = f"127.0.0.1:{reservation.getsockname()[1]}"
@@ -108,7 +138,9 @@ def main():
         }
         env = dict(os.environ, FUTURE_HOME=str(home), FUTURE_AGENT_GRPC_ADDR=endpoint)
         env.pop("FUTURE_AGENT_SOCKET", None)
-        log = (home / "host-stdio.log").open("w", encoding="utf-8")
+        log = (home / "host-stdio.log").open(
+            "w" if args.resume_home is None else "a", encoding="utf-8"
+        )
         process = subprocess.Popen(
             [str(binary), "host", "--agent-grpc-addr", endpoint],
             env=env,

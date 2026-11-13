@@ -687,19 +687,18 @@ fn paged_history_reports_a_skipped_migration_as_unreadable() {
         .contains("Unable to load session history"));
     assert_eq!(resp["error_data"]["sessionId"], "migrated-skip");
 
-    // Without a page cursor the same session is served from the cached
-    // projection — the refusal is specific to paged reads, not the session.
+    // Canonical history also rejects the unbounded compatibility read; it
+    // cannot bypass the skipped-source protection with a whole-history call.
     let cmd = make_cmd_for("get_session_entries", "migrated-skip");
     let resp = parse_response(&handle_command_internal(&state, cmd));
-    assert_eq!(resp["success"], true, "{resp}");
+    assert_eq!(resp["success"], false, "{resp}");
+    assert_eq!(resp["error_code"], "history_paging_required");
 }
 
 #[test]
-fn repeated_entry_reads_are_served_from_the_cached_projection() {
-    // The first read projects and caches; the second must hit that cache
-    // (same revision) and return identical entries. Asserting the cache
-    // directly is what proves the second read took the cached branch instead
-    // of re-projecting and merely producing equal output.
+fn repeated_paged_entry_reads_reuse_the_materialized_page() {
+    // Repeating a bounded page returns identical values with fewer reader
+    // handoffs, proving its bodies were served from the materialized cache.
     let state = make_app_state();
     save_via(
         &state,
@@ -711,21 +710,22 @@ fn repeated_entry_reads_are_served_from_the_cached_projection() {
         ],
     );
 
-    let cmd = make_cmd_for("get_session_entries", "cache-me");
+    let mut cmd = make_cmd_for("get_session_entries", "cache-me");
+    cmd.offset = Some(0);
+    let store = state.session_manager.storage().unwrap();
+    let before = store.db.metrics()["readerJob"]["count"].as_u64().unwrap();
     let first = parse_response(&handle_command_internal(&state, cmd.clone()));
+    let first_jobs = store.db.metrics()["readerJob"]["count"].as_u64().unwrap() - before;
     assert_eq!(first["success"], true, "{first}");
-    let entries = first["data"]["entries"].as_array().unwrap();
-    assert!(!entries.is_empty(), "{first}");
-    assert!(state
-        .session_manager
-        .cached_display_projection(
-            "cache-me",
-            &state.session_manager.session_revision("cache-me").unwrap()
-        )
-        .is_some());
-
+    assert!(!first["data"]["entries"].as_array().unwrap().is_empty());
+    let before = store.db.metrics()["readerJob"]["count"].as_u64().unwrap();
     let second = parse_response(&handle_command_internal(&state, cmd));
+    let repeated_jobs = store.db.metrics()["readerJob"]["count"].as_u64().unwrap() - before;
     assert_eq!(second["data"], first["data"]);
+    assert!(
+        repeated_jobs < first_jobs,
+        "a repeated page must avoid body materialization ({first_jobs} -> {repeated_jobs})"
+    );
 }
 
 #[test]
@@ -1563,7 +1563,7 @@ fn get_session_entries_marks_failed_tool_result_is_error() {
 }
 
 #[test]
-fn get_session_entries_paginates_only_when_offset_is_explicit() {
+fn canonical_session_entries_require_a_page_cursor() {
     let state = make_legacy_app_state();
     let entries = (0..5)
         .map(|i| crate::session::SessionEntry::new_user("user", serde_json::json!(format!("q{i}"))))
@@ -1604,8 +1604,14 @@ fn get_session_entries_paginates_only_when_offset_is_explicit() {
         &state,
         make_cmd("get_session_entries"),
     ));
-    assert_eq!(legacy["data"]["entries"].as_array().unwrap().len(), 5);
-    assert!(legacy["data"].get("hasMore").is_none());
+    assert_eq!(legacy["success"], false);
+    assert_eq!(legacy["error_code"], "history_paging_required");
+    let mut tail = make_cmd("get_session_entries");
+    tail.offset = Some(4);
+    tail.limit = Some(2);
+    let tail = parse_response(&handle_command_internal(&state, tail));
+    assert_eq!(tail["data"]["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(tail["data"]["hasMore"], false);
 
     save_via(
         &state,
@@ -2042,7 +2048,17 @@ fn clone_rejects_disk_session_with_idless_last_entry() {
     // resolves empty and hits the "no messages found" arm.
     let mut entry = crate::session::SessionEntry::new_user("user", serde_json::json!("legacy"));
     entry.id = "valid-before-corruption".into();
-    save_via(&state, "default", "mock", vec![entry]);
+    state
+        .session_manager
+        .seed_legacy_fixture(&crate::session::Session::snapshot(
+            "default".into(),
+            state.welcome_cwd.clone(),
+            "mock".into(),
+            String::new(),
+            String::new(),
+            vec![entry],
+        ))
+        .unwrap();
     state
         .session_manager
         .test_execute("UPDATE entries SET entry_id=''");
@@ -2824,10 +2840,9 @@ fn reclaim_run_journals_refuses_a_mode_marker_it_cannot_interpret() {
     assert_eq!(resp["error_data"], serde_json::json!({}));
 
     // The refused request reclaimed nothing: the session still loads.
-    let resp = parse_response(&handle_command_internal(
-        &state,
-        make_cmd_for("get_session_entries", "reclaim-guard"),
-    ));
+    let mut read = make_cmd_for("get_session_entries", "reclaim-guard");
+    read.offset = Some(0);
+    let resp = parse_response(&handle_command_internal(&state, read));
     assert_eq!(resp["success"], true, "{resp}");
 }
 

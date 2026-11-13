@@ -5,15 +5,13 @@ import { ChatTopBar } from "../components/ChatTopBar";
 
 jest.mock("lucide-react-native", () => ({
   ArrowLeft: "ArrowLeft",
-  FolderOpen: "FolderOpen",
-  ReceiptText: "ReceiptText",
+  Ellipsis: "Ellipsis",
 }));
 let tree: ReactTestRenderer;
 const props = {
   title: "Session", contextLabel: "Non-workspace conversation", draft: false, backLabel: "Back",
-  usageLabel: "Token usage and amount",
-  filesLabel: "Files", filesOpen: false,
-  onBack: jest.fn(), onUsage: jest.fn(), onFiles: jest.fn(),
+  menuLabel: "Conversation actions", menuOpen: false,
+  onBack: jest.fn(), onMenu: jest.fn(),
 };
 const button = (label: string) => tree.root.findAll(node => node.props.accessibilityLabel === label && node.props.onPress);
 // The rendered order, so a bar that grows an extra trailing control fails here.
@@ -24,30 +22,39 @@ const labels = () => tree.root
 beforeEach(() => jest.clearAllMocks());
 afterEach(() => act(() => tree.unmount()));
 
-test("a session shows files and the spend breakdown, plus back — and nothing else", () => {
+/**
+ * The bar carries one trailing control, and it opens the conversation's menu.
+ *
+ * The session's files and its spend breakdown used to be two icons; they are
+ * occasional actions on a whole conversation, and two of them spent the title's
+ * width on things opened once a session. What is behind the dots is the caller's
+ * (`ChatScreen`), so this file checks the button and the bar's shape, not the
+ * list.
+ */
+test("a session shows one trailing menu button beside back, and nothing else", () => {
   act(() => { tree = create(createElement(ChatTopBar, props)); });
-  expect(button("Files")[0]!.props.accessibilityState.expanded).toBe(false);
-  act(() => button("Files")[0]!.props.onPress());
-  expect(props.onFiles).toHaveBeenCalledTimes(1);
-  act(() => { tree.update(createElement(ChatTopBar, { ...props, filesOpen: true })); });
-  expect(button("Files")[0]!.props.accessibilityState.expanded).toBe(true);
-  // The spend entry is an icon, not the amount: the bar must not carry a
-  // number that changes every turn.
-  const usageButton = button("Token usage and amount")[0]!;
-  expect(usageButton.findAll(node => String(node.type) === "ReceiptText")).toHaveLength(1);
+  expect(button("Conversation actions")[0]!.props.accessibilityState.expanded).toBe(false);
+  act(() => button("Conversation actions")[0]!.props.onPress());
+  expect(props.onMenu).toHaveBeenCalledTimes(1);
+  act(() => { tree.update(createElement(ChatTopBar, { ...props, menuOpen: true })); });
+  expect(button("Conversation actions")[0]!.props.accessibilityState.expanded).toBe(true);
+  // The dot glyph itself, not a number: the bar must not carry a figure that
+  // changes every turn.
+  expect(button("Conversation actions")[0]!.findAll(node => String(node.type) === "Ellipsis")).toHaveLength(1);
   expect(tree.root.findAll(node => typeof node.children[0] === "string" && node.children[0].startsWith("¥"))).toHaveLength(0);
-  act(() => usageButton.props.onPress());
   act(() => button("Back")[0]!.props.onPress());
-  expect(props.onUsage).toHaveBeenCalledTimes(1);
   expect(props.onBack).toHaveBeenCalledTimes(1);
-  // Renaming lives in the session list; the conversation bar must not repeat it.
-  expect(labels()).toEqual(["Back", "Files", "Token usage and amount"]);
+  // Files and the spend breakdown are in the menu now; renaming lives in the
+  // session list. Neither may come back as a bar control.
+  expect(labels()).toEqual(["Back", "Conversation actions"]);
+  expect(tree.root.findAll(node => node.props.accessibilityLabel === "Files")).toHaveLength(0);
+  expect(tree.root.findAll(node => node.props.accessibilityLabel === "Token usage and amount")).toHaveLength(0);
 });
 
 test.each(["Non-workspace conversation", "Workspace · Research", "Workspace conversation"])("unsent drafts show %s before the first message", contextLabel => {
   act(() => { tree = create(createElement(ChatTopBar, { ...props, draft: true, contextLabel })); });
-  // Neither action applies to a session-less draft; the spacers that replace
-  // them carry no label, which is what keeps the title centered.
+  // The menu does not apply to a session-less draft; the spacer that replaces it
+  // carries no label, which is what keeps the title centered.
   expect(labels()).toEqual(["Back"]);
   expect(tree.root.findAll(node => node.props.accessibilityLabel === contextLabel).length).toBeGreaterThan(0);
 });
@@ -86,8 +93,9 @@ test("the context line carries the machine, and both halves stay addressable", (
   expect(hostRow[0]!.findAllByType(PeerIconGlyph).map(node => node.props.id)).toEqual(["laptop"]);
   // The workspace it sits beside is still named, and the bar's controls are
   // untouched by the extra element.
+  expect(hostRow[0]!.findAllByType(PeerIconGlyph)).toHaveLength(1);
   expect(tree.root.findAll(node => node.props.accessibilityLabel === "Workspace · Research").length).toBeGreaterThan(0);
-  expect(labels()).toEqual(["Back", "Files", "Token usage and amount"]);
+  expect(labels()).toEqual(["Back", "Conversation actions"]);
 
   // A bar built without a machine (the tests, and any caller that has none)
   // renders exactly what it did before.

@@ -74,10 +74,16 @@ fn shared_protocol_fixtures() {
             }
             "handshake-confirmation" => {
                 let input = &case["input"];
+                // A host without a terminal registry is the fixture's subject:
+                // the list the *process* serves is the caller's, so the shared
+                // case pins the base set and `advertised_features(true)` is
+                // covered by the protocol's own tests.
+                let features = future_remote_protocol::handshake::advertised_features(false);
                 assert_eq!(
                     future_remote_protocol::handshake::confirmation(
                         input["pairId"].as_str().unwrap(),
                         input["bridgeInstanceId"].as_str().unwrap(),
+                        &features,
                         input["presence"].clone(),
                     ),
                     case["expected"],

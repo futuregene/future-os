@@ -10,11 +10,14 @@ import {
 } from "react-native";
 import { ChatTopBar } from "../components/ChatTopBar";
 import { SessionFilesPanel } from "../components/SessionFilesPanel";
+import { GitGraphPanel } from "../components/GitGraphPanel";
+import { ActionMenu, type MenuAction } from "../../../components/ActionMenu";
 import { SessionUsageSheet } from "../components/SessionUsageSheet";
 import { RenameModal } from "../components/RenameModal";
 import { ChatScreen } from "../ChatScreen";
 import { JUMP_VIEW_OFFSET } from "../useQuestionNav";
 import { ComposerDock } from "../components/ComposerDock";
+import { AttachmentSourceMenu } from "../components/AttachmentSourceMenu";
 import type { PendingSuggestion } from "../useSkillRecommendation";
 import type { TimelineCardProps } from "../messages/types";
 import { FloatingTimelineButton } from "../components/FloatingTimelineButton";
@@ -76,6 +79,10 @@ const mockRemote = {
   // row has none (see `RemoteControls.resolveToolCallTarget`).
   resolveToolCallTarget: jest.fn<Promise<string | null>, [string, string]>(async () => null),
   listSessionFiles: jest.fn(async () => null),
+  // The top bar's menu asks this before it offers the Git entry, and the sheet
+  // reads the history through the same two calls.
+  listGitCommits: jest.fn(async () => ({ isRepo: false, repoName: "", path: "", commits: [], truncated: false })),
+  getGitCommit: jest.fn(async () => ({ short: "", patch: "", truncated: false })),
   desktopOnline: true,
   // The model's own generation state, separate from the lane's sync status.
   streaming: false,
@@ -84,12 +91,27 @@ const mockRemote = {
   presence: null as { control?: string; holder?: { name?: string } | null } | null,
   takeControl: jest.fn(async () => {}),
   // The send queue's flush delivers through this, as `useSendMessage` does.
-  sendMessage: jest.fn<Promise<void>, [string, unknown[]?]>(async () => {}),
+  sendMessage: jest.fn<Promise<void>, [string, unknown[]?, unknown?, { busyPolicy?: string }?]>(async () => {}),
   // The conversation's queue, which lives on the desktop: the panel reads it and
   // the two verbs address the session's own run ids.
   getQueue: jest.fn<Promise<SessionQueueSnapshot>, [string]>(async () => ({ acks: [], rows: [] })),
   cancelQueuedRun: jest.fn<Promise<void>, [string, string]>(async () => {}),
   releaseQueuedRun: jest.fn<Promise<void>, [string, string]>(async () => {}),
+  // A waiting message's files are copied down before the row is cancelled, so an
+  // edit can send them again. These are the same transfer calls `retryMessage`
+  // makes for a sent message's attachments.
+  prepareAttachment: jest.fn(async (attachment: { name: string }) => ({
+    chunkBytes: 0,
+    contentHash: "",
+    mimeType: "image/png",
+    name: attachment.name,
+    previewKind: "image",
+    size: 2048,
+    transferId: "transfer-1",
+    variant: "preview",
+  })),
+  cachedAttachment: jest.fn(() => null),
+  downloadAttachment: jest.fn(async () => ({ uri: "file:///cache/shot.png", size: 2048 })),
 };
 jest.mock("../../../remote/RemoteContext", () => ({
   useRemote: () => mockRemote,
@@ -102,10 +124,29 @@ jest.mock("react-native-safe-area-context", () => ({
   SafeAreaView: "SafeAreaView",
   useSafeAreaInsets: () => ({ bottom: 0 }),
 }));
+// The pickers open native surfaces; the queue's "add files" only needs to see
+// what came back, and the composer's own menu is exercised elsewhere.
+jest.mock("../../../remote/files", () => ({
+  ...jest.requireActual("../../../remote/files"),
+  pickAttachments: jest.fn(async (existing: unknown[]) => existing),
+  pickFromAlbum: jest.fn(async (existing: unknown[]) => existing),
+  takePhoto: jest.fn(async (existing: unknown[]) => existing),
+}));
 jest.mock("lucide-react-native", () => ({
   ArrowDown: "ArrowDown",
   ArrowUp: "ArrowUp",
+  Camera: "Camera",
+  Check: "Check",
+  File: "File",
   History: "History",
+  Image: "Image",
+  Images: "Images",
+  Paperclip: "Paperclip",
+  Pencil: "Pencil",
+  Play: "Play",
+  Plus: "Plus",
+  Trash2: "Trash2",
+  X: "X",
 }));
 jest.mock("../messages/TimelineCard", () => ({
   TimelineCard: "TimelineCard",
@@ -199,6 +240,12 @@ jest.mock("../components/ChatTopBar", () => ({ ChatTopBar: "ChatTopBar" }));
 jest.mock("../components/SessionFilesPanel", () => ({
   SessionFilesPanel: "SessionFilesPanel",
 }));
+jest.mock("../components/GitGraphPanel", () => ({
+  GitGraphPanel: "GitGraphPanel",
+}));
+// The sheet stays a plain presenter: it renders whatever actions it is handed, so
+// the screen's own list is what these tests read and press.
+jest.mock("../../../components/ActionMenu", () => ({ ActionMenu: "ActionMenu" }));
 jest.mock("../components/ComposerDock", () => ({
   ComposerDock: "ComposerDock",
 }));
@@ -238,6 +285,11 @@ beforeEach(async () => {
   mockRemote.timelineError = null;
   mockRemote.retryTimeline = jest.fn();
   mockRemote.listSessionFiles = jest.fn(async () => null);
+  mockRemote.capabilities = new Set();
+  mockRemote.listGitCommits = jest.fn(async () => ({
+    isRepo: false, repoName: "", path: "", commits: [], truncated: false,
+  }));
+  mockRemote.getGitCommit = jest.fn(async () => ({ short: "", patch: "", truncated: false }));
   mockRemote.models = [];
   mockRemote.modelId = undefined;
   mockRemote.decideApproval = jest.fn<Promise<void>, [string, string]>();
@@ -276,6 +328,29 @@ afterEach(async () => {
 const refreshControl = () =>
   tree.root.findByType(FlatList).props.refreshControl;
 
+/** The rows the top bar's menu is holding right now. */
+const menuActions = (root: ReactTestRenderer["root"]) =>
+  (root.findByType("ActionMenu" as never).props.actions ?? []) as MenuAction[];
+
+/**
+ * Open the conversation's menu, let the open-time repository probe land, and
+ * press one of its rows.
+ *
+ * The real sheet closes and *then* hands the press back (its `pending` payload),
+ * so the helper closes it first too — otherwise a row that opens a panel would
+ * leave the modal stacked over the surface it just opened. Opening the menu also
+ * starts the Git probe; the flush is what keeps a test from reading the list
+ * before the desktop's answer has landed.
+ */
+const pressMenuAction = async (root: ReactTestRenderer["root"], label: string) => {
+  await act(async () => { root.findByType(ChatTopBar).props.onMenu(); });
+  const action = menuActions(root).find(row => row.label === label);
+  const press = action?.onPress;
+  if (!press) throw new Error(`no menu row labelled ${label}`);
+  act(() => root.findByType("ActionMenu" as never).props.onClose());
+  act(() => press());
+};
+
 const olderCollision = () => {
   const list = tree.root.findByType(FlatList);
   act(() => list.props.onScrollBeginDrag({
@@ -311,12 +386,12 @@ test("a desktop another device took over says so where the user is typing", asyn
   expect(notice()).toHaveLength(0);
 });
 
-test.each(["files", "preview", "download"])("%s retains the list while covered and catches up without remounting", surface => {
+test.each(["files", "preview", "download"])("%s retains the list while covered and catches up without remounting", async surface => {
   const original = mockRemote.timeline;
   const list = tree.root.findByType(FlatList);
   const before = list.props.data;
   try {
-    if (surface === "files") act(() => tree.root.findByType(ChatTopBar).props.onFiles());
+    if (surface === "files") await pressMenuAction(tree.root, "files.title");
     else {
       if (surface === "preview") mockFileDownload.preview = {};
       else mockFileDownload.activeDownload = {};
@@ -338,9 +413,9 @@ test.each(["files", "preview", "download"])("%s retains the list while covered a
   } finally { mockRemote.timeline = original; }
 });
 
-test("file browsing owns system back while the header still returns directly to chat", () => {
+test("file browsing owns system back while the header still returns directly to chat", async () => {
   expect(BackHandler.addEventListener).toHaveBeenCalledTimes(1);
-  act(() => tree.root.findByType(ChatTopBar).props.onFiles());
+  await pressMenuAction(tree.root, "files.title");
   expect(tree.root.findByType(SessionFilesPanel)).toBeDefined();
   expect(removeBack).toHaveBeenCalledTimes(1);
   // The parent must not install a later listener that swallows folder back.
@@ -353,7 +428,22 @@ test("file browsing owns system back while the header still returns directly to 
   expect(mockRemote.closeConversation).toHaveBeenCalledTimes(1);
 });
 
-test("the spend icon opens the usage sheet, and renaming is not duplicated here", () => {
+test("the menu holds files and the spend breakdown, so the bar carries no such buttons", async () => {
+  const bar = tree.root.findByType(ChatTopBar);
+  expect(bar.props.onFiles).toBeUndefined();
+  expect(bar.props.onUsage).toBeUndefined();
+  expect(bar.props.menuLabel).toBe("chat.moreOpen");
+  expect(bar.props.menuOpen).toBe(false);
+  // Closed until asked for: the sheet is not a surface of its own while shut.
+  expect(tree.root.findByType(ActionMenu).props.visible).toBe(false);
+  await act(async () => { bar.props.onMenu(); });
+  expect(tree.root.findByType(ActionMenu).props.visible).toBe(true);
+  // A plain directory has no history to show, so the row is absent — not
+  // disabled — and the two originals are all the menu has.
+  expect(menuActions(tree.root).map(action => action.label)).toEqual(["files.title", "chat.usageOpen"]);
+});
+
+test("the spend entry opens the usage sheet, and renaming is not duplicated here", async () => {
   mockRemote.sessionUsage = {
     inputTokens: 2_000, outputTokens: 500, cacheReadTokens: 0, cacheWriteTokens: 0,
     costCny: 0.5, costInputCny: 0.3, costOutputCny: 0.2, costCacheReadCny: 0, costCacheWriteCny: 0,
@@ -366,7 +456,7 @@ test("the spend icon opens the usage sheet, and renaming is not duplicated here"
   expect(tree.root.findAllByType(RenameModal)).toHaveLength(0);
   expect(tree.root.findByType(SessionUsageSheet).props.visible).toBe(false);
 
-  act(() => bar.props.onUsage());
+  await pressMenuAction(tree.root, "chat.usageOpen");
   const sheet = tree.root.findByType(SessionUsageSheet);
   expect(sheet.props.visible).toBe(true);
   expect(sheet.props.usage).toBe(mockRemote.sessionUsage);
@@ -377,11 +467,97 @@ test("the spend icon opens the usage sheet, and renaming is not duplicated here"
   expect(sheet.props.onRename).toBeUndefined();
 });
 
-test("a conversation without reported usage still opens the sheet", () => {
-  act(() => tree.root.findByType(ChatTopBar).props.onUsage());
+test("a conversation without reported usage still opens the sheet", async () => {
+  await pressMenuAction(tree.root, "chat.usageOpen");
   const sheet = tree.root.findByType(SessionUsageSheet);
   expect(sheet.props.visible).toBe(true);
   expect(sheet.props.usage).toBeNull();
+});
+
+/**
+ * The Git entry exists only where there is a history to show.
+ *
+ * Whether a workspace is a repository is a property of its directory, so the menu
+ * asks every time it opens rather than the bar deciding once — a workspace that is
+ * a plain folder never grows a row that would open on nothing, and one where the
+ * reader has just run `git init` grows the row on the next look. A desktop that
+ * does not advertise the feature is the same case from the phone's side: it cannot
+ * answer, so the entry is absent rather than broken.
+ */
+test("a plain directory keeps the menu at its two originals", async () => {
+  const original = mockRemote.capabilities;
+  mockRemote.capabilities = new Set(["git_graph_v1"]);
+  try {
+    act(() => tree.update(createElement(ChatScreen)));
+    await act(async () => { tree.root.findByType(ChatTopBar).props.onMenu(); });
+    expect(mockRemote.listGitCommits).toHaveBeenCalledTimes(1);
+    expect(menuActions(tree.root).map(action => action.label))
+      .toEqual(["files.title", "chat.usageOpen"]);
+  } finally {
+    mockRemote.capabilities = original;
+  }
+});
+
+test("a host that cannot report a repository is never asked, and offers no row", async () => {
+  // No `git_graph_v1`: the command would be refused, so it is not sent at all.
+  await act(async () => { tree.root.findByType(ChatTopBar).props.onMenu(); });
+  expect(mockRemote.listGitCommits).not.toHaveBeenCalled();
+  expect(menuActions(tree.root).map(action => action.label))
+    .toEqual(["files.title", "chat.usageOpen"]);
+});
+
+test("a repository grows the Git row, and the sheet reads through the controller", async () => {
+  const original = mockRemote.capabilities;
+  mockRemote.capabilities = new Set(["git_graph_v1"]);
+  mockRemote.listGitCommits = jest.fn(async () => ({
+    isRepo: true, repoName: "dopamine-decision", path: "/Users/lixin/Research/dopamine-decision",
+    commits: [], truncated: false,
+  }));
+  try {
+    act(() => tree.update(createElement(ChatScreen)));
+    await act(async () => { tree.root.findByType(ChatTopBar).props.onMenu(); });
+    expect(menuActions(tree.root).map(action => action.label))
+      .toEqual(["files.title", "chat.usageOpen", "git.open"]);
+
+    // The panel is handed the controller's own reads, not a copy: a second
+    // implementation on this screen would drift from the one the mock and the
+    // capability check agree with.
+    act(() => menuActions(tree.root).find(row => row.label === "git.open")!.onPress!());
+    const panel = tree.root.findByType(GitGraphPanel);
+    expect(panel.props.listCommits).toBe(mockRemote.listGitCommits);
+    expect(panel.props.getCommit).toBe(mockRemote.getGitCommit);
+    expect(panel.props.supported).toBe(true);
+    expect(panel.props.online).toBe(true);
+  } finally {
+    mockRemote.capabilities = original;
+  }
+});
+
+test("the Git graph owns system back and freezes the transcript like the file panel", async () => {
+  const original = mockRemote.capabilities;
+  mockRemote.capabilities = new Set(["git_graph_v1"]);
+  mockRemote.listGitCommits = jest.fn(async () => ({
+    isRepo: true, repoName: "repo", path: "/repo", commits: [], truncated: false,
+  }));
+  try {
+    act(() => tree.update(createElement(ChatScreen)));
+    act(() => tree.root.findByType(ChatTopBar).props.onMenu());
+    await act(async () => { await Promise.resolve(); });
+    act(() => menuActions(tree.root).find(row => row.label === "git.open")!.onPress!());
+    expect(tree.root.findByType(GitGraphPanel)).toBeDefined();
+    // The transcript underneath is frozen and hidden from the screen reader: the
+    // sheet is a surface of its own, not an overlay on a live list.
+    expect(tree.root.findAll(node => node.props.accessibilityElementsHidden === true).length).toBeGreaterThan(0);
+    // The bar's back returns to the conversation from here…
+    act(() => tree.root.findByType(ChatTopBar).props.onBack());
+    expect(tree.root.findAllByType(GitGraphPanel)).toHaveLength(0);
+    expect(mockRemote.closeConversation).not.toHaveBeenCalled();
+    // …and a second press leaves the conversation, as it always did.
+    act(() => tree.root.findByType(ChatTopBar).props.onBack());
+    expect(mockRemote.closeConversation).toHaveBeenCalledTimes(1);
+  } finally {
+    mockRemote.capabilities = original;
+  }
 });
 
 test("an ordinary conversation does not expose its internal storage workspace", () => {
@@ -990,12 +1166,12 @@ describe("ChatScreen wiring", () => {
     }
   });
 
-  test("the file panel is told about the conversation and routes its file opens", () => {
+  test("the file panel is told about the conversation and routes its file opens", async () => {
     mockRemote.sessions = [
       { sessionId: "history", threadId: "t", title: "History", mode: "workspace", streaming: false },
     ];
     mockRemote.listSessionFiles = jest.fn(async () => null);
-    act(() => view().findByType(ChatTopBar).props.onFiles());
+    await pressMenuAction(view(), "files.title");
     act(() => screen.update(createElement(ChatScreen)));
 
     const panel = view().findByType(SessionFilesPanel);
@@ -1009,7 +1185,7 @@ describe("ChatScreen wiring", () => {
     // surface the header toggles, and the transcript underneath stays frozen
     // (PausedTimeline) rather than remounting.
     act(() => panel.props.onClose());
-    act(() => view().findByType(ChatTopBar).props.onFiles());
+    await pressMenuAction(view(), "files.title");
     act(() => screen.update(createElement(ChatScreen)));
     expect(view().findAllByType(SessionFilesPanel)).toHaveLength(1);
   });
@@ -1066,18 +1242,17 @@ describe("ChatScreen wiring", () => {
     }
   });
 
-  test("the spend sheet opens from the header and closes from its own dismiss", () => {
-    const sheet = () => view().findAll(node =>
-      node.props.visible !== undefined && typeof node.props.onClose === "function")[0]!;
-    const usage = () => view().findAll(node =>
-      node.props.usage !== undefined && node.props.title !== undefined)[0]!;
+  test("the spend sheet opens from the header and closes from its own dismiss", async () => {
+    // The usage sheet itself, not "the first dismissible surface": the menu is
+    // mounted (closed) on every render now, and it also answers to `onClose`.
+    const usage = () => view().findByType(SessionUsageSheet);
     expect(usage().props.visible).toBe(false);
-    act(() => view().findByType(ChatTopBar).props.onUsage());
+    await pressMenuAction(view(), "chat.usageOpen");
     act(() => screen.update(createElement(ChatScreen)));
     expect(usage().props.visible).toBe(true);
     // The sheet closes through its own callback, so a dismissal gesture cannot
     // leave it mounted over the transcript.
-    act(() => sheet().props.onClose());
+    act(() => usage().props.onClose());
     act(() => screen.update(createElement(ChatScreen)));
     expect(usage().props.visible).toBe(false);
   });
@@ -1286,6 +1461,7 @@ test("editing a waiting message takes the row back and queues the new words", as
 });
 
 test("an edit that empties the row is not a message, so nothing is sent", async () => {
+  const toast = jest.spyOn(chatUtils, "showToast").mockImplementation(() => {});
   await mountWithQueue([queueRow({ runId: "run_a", text: "typo" })]);
 
   await act(async () => {
@@ -1293,6 +1469,117 @@ test("an edit that empties the row is not a message, so nothing is sent", async 
   });
   expect(mockRemote.cancelQueuedRun).not.toHaveBeenCalled();
   expect(mockRemote.sendMessage).not.toHaveBeenCalled();
+  // Closed over an unchanged row it reads as "saved", so the refusal has to be
+  // said out loud, and it has to point at the control that does remove a row.
+  expect(toast).toHaveBeenCalled();
+});
+
+const queuedPhoto = {
+  kind: "image", name: "shot.png", path: "/Users/x/shot.png", size: 2048,
+};
+const queuedDoc = {
+  kind: "file", name: "notes.pdf", path: "/Users/x/notes.pdf", size: 4096,
+};
+
+test("editing a waiting message keeps the files it carries", async () => {
+  await mountWithQueue([
+    queueRow({ attachments: [queuedPhoto], runId: "run_a", text: "look" }),
+  ]);
+
+  await act(async () => {
+    tree.root.findByType(ComposerDock).props.onQueueUpdate("run_a", "look again");
+  });
+  await settleQueue();
+
+  // The file is copied down first: a row cancelled before its files arrived
+  // would lose the very files the edit is supposed to keep.
+  expect(mockRemote.prepareAttachment).toHaveBeenCalledWith(
+    expect.objectContaining({ path: queuedPhoto.path }),
+  );
+  expect(mockRemote.cancelQueuedRun).toHaveBeenCalledWith("history", "run_a");
+  expect(mockRemote.sendMessage).toHaveBeenCalledWith(
+    "look again",
+    [expect.objectContaining({ kind: "image", name: "shot.png" })],
+    undefined,
+    { busyPolicy: QUEUED_SEND_POLICY },
+  );
+});
+
+test("removing one file re-sends the message with the rest", async () => {
+  await mountWithQueue([
+    queueRow({ attachments: [queuedPhoto, queuedDoc], runId: "run_a", text: "see these" }),
+  ]);
+
+  await act(async () => {
+    tree.root.findByType(ComposerDock).props.onQueueRemoveAttachment("run_a", queuedPhoto.path);
+  });
+  await settleQueue();
+
+  // Only the kept file is fetched; the dropped one is never sent again.
+  expect(mockRemote.prepareAttachment).toHaveBeenCalledTimes(1);
+  expect(mockRemote.prepareAttachment).toHaveBeenCalledWith(
+    expect.objectContaining({ path: queuedDoc.path }),
+  );
+  const sent = mockRemote.sendMessage.mock.calls[0]![1]!;
+  expect(sent.map(item => (item as { name: string }).name)).toEqual(["notes.pdf"]);
+});
+
+test("a row carrying only files keeps the last one instead of vanishing with it", async () => {
+  const toast = jest.spyOn(chatUtils, "showToast").mockImplementation(() => {});
+  await mountWithQueue([
+    queueRow({ attachments: [queuedPhoto], runId: "run_a", text: "" }),
+  ]);
+
+  await act(async () => {
+    tree.root.findByType(ComposerDock).props.onQueueRemoveAttachment("run_a", queuedPhoto.path);
+  });
+  await settleQueue();
+
+  // Dropping the only file would leave an empty prompt: the sender answers one
+  // by doing nothing, so cancelling first took the whole message with it. The
+  // row stays, nothing is re-sent, and the reader is told which control does it.
+  expect(mockRemote.cancelQueuedRun).not.toHaveBeenCalled();
+  expect(mockRemote.sendMessage).not.toHaveBeenCalled();
+  expect(toast).toHaveBeenCalled();
+});
+
+test("adding a photo to a waiting message sends the kept files with it", async () => {
+  const remoteFiles = jest.requireMock("../../../remote/files") as {
+    pickAttachments: jest.Mock;
+  };
+  const added = {
+    kind: "image",
+    localUri: "file:///cache/new.png",
+    mimeType: "image/png",
+    name: "new.png",
+    originalSize: 100,
+    transferSize: 100,
+  };
+  // The picker answers with the whole list, the row's own file included.
+  remoteFiles.pickAttachments.mockResolvedValueOnce([
+    { ...added, localUri: queuedPhoto.path, name: queuedPhoto.name },
+    added,
+  ]);
+  await mountWithQueue([
+    queueRow({ attachments: [queuedPhoto], runId: "run_a", text: "look" }),
+  ]);
+  const dock = () => tree.root.findByType(ComposerDock).props;
+
+  await act(async () => { dock().onQueueAddAttachments("run_a"); });
+  const menu = tree.root.findByType(AttachmentSourceMenu);
+  expect(menu.props.visible).toBe(true);
+  // The picker's quotas count what the row already carries, without pulling the
+  // kept files down first.
+  await act(async () => { menu.props.onPick("files"); });
+  await settleQueue();
+
+  expect(remoteFiles.pickAttachments).toHaveBeenCalledWith([
+    expect.objectContaining({ localUri: queuedPhoto.path, name: "shot.png", originalSize: 2048 }),
+  ]);
+  const sent = mockRemote.sendMessage.mock.calls[0]!;
+  expect(sent[0]).toBe("look");
+  expect(sent[1]!.map(item => (item as { name: string }).name)).toEqual(["shot.png", "new.png"]);
+  expect(sent[3]).toEqual({ busyPolicy: QUEUED_SEND_POLICY });
 });
 
 test("a parked row offers 'send now', and pressing it releases that run", async () => {

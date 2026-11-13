@@ -20,6 +20,8 @@ import {
   compactResumeEntries,
   demoFileContents,
   entriesByThread,
+  gitHistoryCommits,
+  gitHistoryPatch,
   HOME,
   installedSkills,
   models,
@@ -50,6 +52,12 @@ import {
 import { emit } from "./event";
 import { replayPage, replayState, sessionEntries, streamRemoteRun } from "./remoteStream";
 import { quotedPrompt } from "./replyQuote";
+
+/**
+ * `?norepo=1` makes the demo workspace a plain directory, so the History tab's
+ * absence is something the harness captures rather than merely claims.
+ */
+const noRepo = new URLSearchParams(window.location.search).get("norepo") === "1";
 
 // The console output doubles as the "what is missing" list while iterating on
 // the harness, which is why this one log call is intentional.
@@ -240,6 +248,38 @@ interface ShotQueuedRun {
  */
 const shotQueue = new Map<string, ShotQueuedRun[]>();
 const shotActiveRun = new Map<string, string>();
+
+/**
+ * How many waiting rows `?queue=<n>` seats in whichever conversation is read.
+ *
+ * The panel's own ceiling is the Agent's (`DEFAULT_SESSION_QUEUE_CAPACITY`, 128),
+ * and a queue that long is what pushes the panel's first rows out of the frame:
+ * the state a capture has to reach without pressing Send 128 times. Seeded on
+ * the first read of a conversation and never re-seeded, so a row the reader
+ * takes back stays taken back.
+ */
+function queuedFixtureSize(): number {
+  return Number(new URLSearchParams(window.location.search).get("queue") ?? "") || 0;
+}
+const seededQueues = new Set<string>();
+
+function seedQueuedFixture(threadId: string): void {
+  const size = queuedFixtureSize();
+  if (!threadId || size <= 0 || seededQueues.has(threadId))
+    return;
+  seededQueues.add(threadId);
+  const now = Date.now();
+  shotQueue.set(threadId, Array.from({ length: size }, (_, index) => ({
+    runId: `shot_queued_${index + 1}`,
+    // Three lines of the shape these rows arrive in: the panel clamps a row to
+    // three lines, so this is the tallest a row can get.
+    text: "[future-goal] goal goal_4ce46c920eb8: 1 event(s). Reconcile current status before acting; events may be stale. Read the goal's own state before answering.",
+    acceptedAt: new Date(now - (size - index) * 20_000).toISOString(),
+    state: "queued",
+    // Nothing here starts one of these runs, so no session is ever announced on.
+    sessionId: "",
+  })));
+}
 /**
  * What this page has actually said, so a reload shows it.
  *
@@ -1040,14 +1080,17 @@ const handlers: Record<string, (args: any) => unknown> = {
   save_approval_rules: () => null,
 
   // ── Review ─────────────────────────────────────────────────────────────
+  // `isGitWorkspace` is what the review panel gates its history tab on, so the
+  // `norepo` flag has to answer here as well as in `get_git_history`: a demo
+  // workspace that is a plain directory is one in every read, not just one.
   get_workspace_review_capabilities: () => ({
-    isGitWorkspace: true,
-    views: ["git_changes", "last_run"],
-    defaultView: "git_changes",
+    isGitWorkspace: !noRepo,
+    views: noRepo ? ["last_run"] : ["git_changes", "last_run"],
+    defaultView: noRepo ? "last_run" : "git_changes",
     changePreview: "ready",
   }),
   get_git_review: () => ({
-    isGitWorkspace: true,
+    isGitWorkspace: !noRepo,
     workspacePath: `${HOME}/Research/dopamine-decision`,
     branch: "main",
     upstream: "origin/main",
@@ -1064,6 +1107,25 @@ const handlers: Record<string, (args: any) => unknown> = {
       binary: file.path.endsWith(".png"),
       diffTruncated: false,
     })),
+  }),
+  /**
+   * The demo checkout's history, in the shape the phone's sheet reads too.
+   *
+   * The gutters are the host's own layout output, not hand-drawn: the decoder
+   * reads glyphs, so an invented grid would decode into a picture nobody asked
+   * for.
+   */
+  get_git_history: () => ({
+    isRepo: !noRepo,
+    repoName: noRepo ? "" : "dopamine-decision",
+    path: noRepo ? `${HOME}/Research/notes` : `${HOME}/Research/dopamine-decision`,
+    commits: noRepo ? [] : gitHistoryCommits,
+    truncated: false,
+  }),
+  get_git_commit: () => ({
+    short: "9f2c1a7",
+    patch: gitHistoryPatch,
+    truncated: false,
   }),
   get_last_run_review: () => ({
     changeset: {
@@ -1180,6 +1242,7 @@ const handlers: Record<string, (args: any) => unknown> = {
    */
   session_queue: (args: any) => {
     const threadId = String(args?.threadId ?? "");
+    seedQueuedFixture(threadId);
     const queued = (shotQueue.get(threadId) ?? []).map((row, index) => ({
       runId: row.runId,
       position: index + 1,

@@ -237,18 +237,18 @@ pub(super) fn read_display_page(
         // what stops an already-recorded withdrawal from drawing a "you stopped
         // this response" divider with a 0s footer, so the fix reaches the
         // conversations that already hold one and not only new messages.
-        let outcome = "json_object('status',CASE \
+        let outcome = "json_patch(json_patch(json_object('status',CASE \
           WHEN r.status='cancelled_before_start' THEN 'withdrawn' \
           WHEN r.status='cancelled' AND COALESCE(r.duration_ms,0)=0 AND COALESCE(r.output_tokens,0)=0 \
             AND r.error='Queued run cancelled before execution.' THEN 'withdrawn' \
           WHEN r.status='error' THEN 'failed' \
           WHEN r.status='incomplete' THEN 'interrupted' \
           WHEN r.status='interrupted_by_restart' THEN 'interrupted' \
-          ELSE r.status END,'error',r.error,'durationMs',r.duration_ms)";
+          ELSE r.status END,'error',r.error,'durationMs',r.duration_ms),CASE WHEN r.error IS NULL OR r.error='' THEN '{\"error\":null}' ELSE '{}' END),CASE WHEN r.duration_ms IS NULL THEN '{\"durationMs\":null}' ELSE '{}' END)";
         format!("SELECT d.ordinal,
         CASE WHEN r.run_id IS NOT NULL THEN
           CASE WHEN header.entry_type='assistant' AND header.position=(SELECT max(a.position) FROM entries a WHERE a.session_id=header.session_id AND a.run_id=header.run_id AND a.entry_type='assistant')
-          THEN json_set(d.payload,'$.run',{outcome},'$.usage',json_object('inputTokens',r.input_tokens,'outputTokens',r.output_tokens,'cacheReadTokens',r.cache_read_tokens,'cacheWriteTokens',r.cache_write_tokens))
+          THEN json_set(d.payload,'$.run',{outcome},'$.usage',json((SELECT json_group_object(key,value) FROM json_each(json_object('inputTokens',r.input_tokens,'outputTokens',r.output_tokens,'cacheReadTokens',r.cache_read_tokens,'cacheWriteTokens',r.cache_write_tokens)) WHERE type<>'null')))
           ELSE json_set(d.payload,'$.run',{outcome}) END
         ELSE d.payload END,NULL,header.position,header.entry_id
         FROM history_display d
@@ -531,6 +531,7 @@ impl Manager {
         limit: Option<i64>,
         fragment_offset: Option<i64>,
     ) -> Result<serde_json::Value> {
+        self.prepare_session(id)?;
         let started = std::time::Instant::now();
         let mut cache_hit = false;
         let mut index_rebuilt = false;

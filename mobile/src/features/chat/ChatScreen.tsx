@@ -9,9 +9,12 @@ import { PausedTimeline } from "../../components/PausedTimeline";
 import { ErrorBanner } from "../../components/ErrorBanner";
 import { StandbyNotice } from "../../components/StandbyNotice";
 import { useRemote, useRemoteControls } from "../../remote/RemoteContext";
-import { modelReference, type TimelineItem } from "../../remote/types";
+import { readableDeviceName } from "../../remote/deviceName";
+import { modelReference, type MobileAttachment, type TimelineItem } from "../../remote/types";
 import { spacing } from "../../theme/tokens";
 import { useTransferProgress } from "./useTransferProgress";
+import { File } from "expo-file-system";
+import { mimeFor, pickAttachments, pickFromAlbum, takePhoto } from "../../remote/files";
 import { useConversationOperation } from "./useConversationOperation";
 import { useComposerSubmission } from "./composer/useComposerSubmission";
 import { useComposerDraft } from "./useComposerDraft";
@@ -30,7 +33,13 @@ import { useDesktopResource } from "../settings/useDesktopResource";
 import { ChatTimeline, type SyncNoticeState } from "./components/ChatTimeline";
 import { ChatTopBar } from "./components/ChatTopBar";
 import { SessionFilesPanel } from "./components/SessionFilesPanel";
+import { GitGraphPanel } from "./components/GitGraphPanel";
+import { ActionMenu, type MenuAction } from "../../components/ActionMenu";
+import { FolderOpen, GitBranch, ReceiptText } from "lucide-react-native";
+import { useTheme } from "../../theme/ThemeContext";
 import { ComposerDock } from "./components/ComposerDock";
+import { AttachmentSourceMenu, type AttachmentSource } from "./components/AttachmentSourceMenu";
+import type { SendQueueAttachmentItem } from "./components/SendQueuePanel";
 import { ModelSelectorSheet } from "./components/ModelSelectorSheet";
 import { DownloadProgressModal } from "./components/DownloadProgressModal";
 import { PreviewModal } from "./components/PreviewModal";
@@ -38,13 +47,14 @@ import { ImageViewer } from "./components/ImageViewer";
 import { SessionUsageSheet } from "./components/SessionUsageSheet";
 import { NativeFileActionSheet } from "./components/NativeFileActionSheet";
 import { newestFirst } from "./timelineListModel";
-import { isParkedSessionQueueRow, sessionQueueNoticeReason, useSessionQueue } from "../../remote/sessionQueue";
+import { isParkedSessionQueueRow, sessionQueueNoticeReason, useSessionQueue, type SessionQueueAttachment, type SessionQueueRow } from "../../remote/sessionQueue";
 import { showToast } from "./utils";
 
 const SYNC_NOTICE_MIN_MS = 750;
 
 export function ChatScreen() {
   const styles = useStyles();
+  const { colors } = useTheme();
   const { t, i18n } = useTranslation();
   const remote = useRemote();
   const controls = useRemoteControls();
@@ -58,15 +68,79 @@ export function ChatScreen() {
   const [filesSession, setFilesSession] = useState<string | null>(null);
   // The spend icon in the top bar opens the conversation's account book.
   const [usageOpen, setUsageOpen] = useState(false);
+  // The three-dot menu's own sheet, and the two in-screen surfaces it opens.
+  const [menuOpen, setMenuOpen] = useState(false);
+  // Whether the session's workspace is a Git repository, keyed by the
+  // conversation it was read for. `null` is "not asked yet": the menu is built
+  // once the desktop has answered, so a workspace that is a plain directory never
+  // shows the entry at all. Kept per conversation so switching away and back
+  // re-asks instead of inheriting the previous workspace's answer.
+  const [gitProbe, setGitProbe] = useState<{ key: string; isRepo: boolean } | null>(null);
+  const [gitSession, setGitSession] = useState<string | null>(null);
   const conversationKey = `${remote.credentials?.expectedDesktopId ?? ""}:${remote.selectedSessionId}`;
   const filesOpen = !remote.draft && filesSession === conversationKey;
+  const gitOpen = !remote.draft && gitSession === conversationKey;
+  const gitSupported = remote.capabilities.has("git_graph_v1");
+  const gitRepo = gitProbe?.key === conversationKey ? gitProbe.isRepo : null;
   const goBack = useCallback(() => {
-    if (filesOpen) setFilesSession(null);
+    if (gitOpen) setGitSession(null);
+    else if (filesOpen) setFilesSession(null);
     else {
       Keyboard.dismiss();
       closeConversation();
     }
-  }, [filesOpen, closeConversation]);
+  }, [filesOpen, gitOpen, closeConversation]);
+
+  // ── The conversation's menu ─────────────────────────────────────────────
+  // One button in the bar holds the three things that act on the whole
+  // conversation. The Git entry is the only one that depends on what the
+  // workspace *is*, so it is probed when the menu is asked for rather than on
+  // every render: a plain directory never shows the row at all, and a workspace
+  // that just became a repository shows it the next time the menu is opened.
+  const openMenu = useCallback(() => {
+    Keyboard.dismiss();
+    setMenuOpen(true);
+    if (!gitSupported) return;
+    // Asked on every open, not once per conversation: the reader may have run
+    // `git init` on the desktop since the last look, and a cached "no" would
+    // keep the row away for the rest of the session. The previous answer stays on
+    // screen until this one lands, so the row does not blink out and back.
+    const key = conversationKey;
+    void remote.listGitCommits().then(
+      (listing) => setGitProbe({ key, isRepo: listing.isRepo }),
+      () => setGitProbe({ key, isRepo: false }),
+    );
+  }, [conversationKey, gitSupported, remote]);
+  const menuActions = useMemo<MenuAction[]>(() => {
+    const actions: MenuAction[] = [
+      {
+        label: t("files.title"),
+        icon: <FolderOpen color={colors.inkSoft} size={18} />,
+        onPress: () => setFilesSession(conversationKey),
+      },
+      {
+        label: t("chat.usageOpen"),
+        icon: <ReceiptText color={colors.inkSoft} size={18} />,
+        onPress: () => {
+          // The sheet shows the session's spend, so read it as it opens: the
+          // figure is only as fresh as the last get_state, and this is the
+          // moment it is being looked at.
+          void remote.refreshSessionUsage();
+          setUsageOpen(true);
+        },
+      },
+    ];
+    // Only a repository has a history: the row appears once the desktop has
+    // said the workspace is one, and is absent (not disabled) otherwise.
+    if (gitRepo) {
+      actions.push({
+        label: t("git.open"),
+        icon: <GitBranch color={colors.inkSoft} size={18} />,
+        onPress: () => setGitSession(conversationKey),
+      });
+    }
+    return actions;
+  }, [colors.inkSoft, conversationKey, gitRepo, remote, t]);
   // Android edge-to-edge: the built-in KeyboardAvoidingView is a no-op here
   // (behavior is undefined on Android) and RN's KAV mis-measures the keyboard
   // under edge-to-edge, so we inset the chat flex column by the measured
@@ -195,11 +269,13 @@ export function ChatScreen() {
 
   // Derived from the rows, which are already keyed to the session they were read
   // for — the panel cannot draw one conversation's queue under another's box.
-  // No attachment count: `get_queue` answers with a message's text and its
-  // acceptance time, never the files it was sent with, and a made-up zero would
-  // tell the reader a message was text-only when it may carry three photos.
+  // The files travel with the row (`get_queue` reports their paths), so the panel
+  // can show them and offer to open or drop one before it leaves. A desktop too
+  // old to report them leaves `attachments` undefined, and the panel then offers
+  // no file controls rather than guessing at what it cannot see.
   const queuePanelItems = useMemo(
     () => queuedRows.map(row => ({
+      attachments: row.attachments,
       content: row.text,
       id: row.runId,
       parked: isParkedSessionQueueRow(row),
@@ -234,7 +310,7 @@ export function ChatScreen() {
   const changeQueue = useCallback((action: () => Promise<void>) => {
     void action()
       .catch((error: unknown) => {
-        const failure = sendFailureText(error, remote.presence?.holder?.name?.trim());
+        const failure = sendFailureText(error, readableDeviceName(remote.presence?.holder?.name));
         showToast(t(failure.key, failure.params));
       })
       .finally(refreshQueue);
@@ -253,34 +329,181 @@ export function ChatScreen() {
   }, [changeQueue, remote, sessionId]);
 
   /**
-   * Rewrite a waiting message: a queued prompt has no editable text on the
-   * session, so the row is taken back and the new words sent in its place — which
-   * also queues it behind whatever else is waiting, because that is where a new
-   * message goes.
+   * Replace a waiting message.
    *
-   * The row's files do not come with it: `get_queue` reports a message's text,
-   * never the uploads it was sent with, so the panel says that in the editor
-   * instead of claiming a count nobody has. And if the re-send is refused after
-   * the cancel, the words go back into the box — the row is gone on the desktop
-   * by then, and losing the correction as well would leave nothing to retry.
+   * The session has no rename and no attachment edit, so an edit is the row taken
+   * back and sent again: its files are copied down FIRST (a row cancelled before
+   * its files arrived would lose them), then the queued run is cancelled, then the
+   * new text and files are sent — which also queues it behind whatever else waits,
+   * because that is where a new message goes. A refused re-send puts the text and
+   * files back in the box: the row is gone on the desktop by then, and losing the
+   * correction as well would leave nothing to retry.
    */
-  const updateQueuedMessage = useCallback((id: string, content: string) => {
-    const text = content.trim();
-    // An empty edit is a deletion, and the panel already offers that.
-    if (!text)
-      return;
-    forgetQueuedRow(id);
+  const replaceQueuedMessage = useCallback((
+    row: SessionQueueRow,
+    text: string,
+    loadAttachments: () => Promise<MobileAttachment[]>,
+  ) => {
     changeQueue(async () => {
-      await remote.cancelQueuedRun(sessionId, id);
+      const attachments = await loadAttachments();
+      // A message needs words or files. Refusing before the cancel is what keeps
+      // the row: the sender answers an empty prompt by doing nothing, so a cancel
+      // first would take the message away and send nothing in its place.
+      if (!text.trim() && attachments.length === 0) {
+        showToast(t("chat.queue.emptyMessage"));
+        return;
+      }
+      await remote.cancelQueuedRun(sessionId, row.runId);
+      forgetQueuedRow(row.runId);
       try {
-        await remote.sendMessage(text, [], undefined, { busyPolicy: QUEUED_SEND_POLICY });
+        await remote.sendMessage(text, attachments, undefined, { busyPolicy: QUEUED_SEND_POLICY });
       }
       catch (error) {
-        setMessage(current => current.trim() ? current : text);
+        setMessage(current => (current.trim() ? current : text));
+        setAttachments(current => [...attachments, ...current]);
         throw error;
       }
     });
-  }, [changeQueue, forgetQueuedRow, remote, sessionId, setMessage]);
+  }, [changeQueue, forgetQueuedRow, remote, sessionId, setAttachments, setMessage, t]);
+
+  /** A queued file as this phone can send it: a local copy, downloaded on demand. */
+  const materializeQueuedAttachment = useCallback(async (
+    attachment: SessionQueueAttachment,
+  ): Promise<MobileAttachment> => {
+    const kind: MobileAttachment["kind"] = attachment.kind === "image" ? "image" : "file";
+    // A path that is already a URI (an optimistic row from this phone) needs no
+    // transfer: the bytes are here.
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(attachment.path)) {
+      const file = new File(attachment.path);
+      return {
+        kind,
+        localUri: file.uri,
+        mimeType: mimeFor(attachment.name),
+        name: attachment.name,
+        originalSize: file.size,
+        transferSize: file.size,
+      };
+    }
+    const reference = { kind, name: attachment.name, path: attachment.path };
+    const info = await remote.prepareAttachment(reference);
+    const cached = remote.cachedAttachment(reference);
+    const file = cached?.file ?? (await remote.downloadAttachment(info));
+    return {
+      kind,
+      localUri: file.uri,
+      mimeType: info.mimeType,
+      name: attachment.name,
+      originalSize: info.size,
+      transferName: info.name,
+      transferSize: info.size,
+    };
+  }, [remote]);
+
+  /**
+   * Rewrite a waiting message, keeping the files it carries.
+   *
+   * The files used to be dropped here, which is what the editor warned about. Now
+   * the row reports them, so the correction keeps them: text changes, photos stay.
+   */
+  const updateQueuedMessage = useCallback((id: string, content: string) => {
+    const text = content.trim();
+    const row = queuedRows.find(item => item.runId === id);
+    if (!row)
+      return;
+    // An empty edit is a deletion, and the panel's own bin says that plainly.
+    // Saved here it would only close the editor over an unchanged row.
+    if (!text) {
+      showToast(t("chat.queue.emptyEdit"));
+      return;
+    }
+    const reported = row.attachments;
+    replaceQueuedMessage(row, text, () => reported === undefined
+      ? Promise.resolve([])
+      : Promise.all(reported.map(materializeQueuedAttachment)));
+  }, [materializeQueuedAttachment, queuedRows, replaceQueuedMessage, t]);
+
+  /** Open one file a waiting message carries, exactly as the transcript would. */
+  const previewQueuedAttachment = useCallback((attachment: SendQueueAttachmentItem) => {
+    void chatFiles.openAttachment({
+      kind: attachment.kind === "image" ? "image" : "file",
+      name: attachment.name,
+      path: attachment.path,
+    });
+  }, [chatFiles]);
+
+  /** Drop one file from a waiting message; the rest are re-sent with it. */
+  const removeQueuedAttachment = useCallback((id: string, path: string) => {
+    const row = queuedRows.find(item => item.runId === id);
+    if (!row || row.attachments === undefined)
+      return;
+    const kept = row.attachments.filter(attachment => attachment.path !== path);
+    // The last file of a message with no words is the whole message. Dropping it
+    // used to re-send an empty prompt, which the sender refuses, so the row was
+    // already cancelled and the message vanished with nothing said. Refused here
+    // instead: the bin beside the row is what removes a message.
+    if (kept.length === 0 && !row.text.trim()) {
+      showToast(t("chat.queue.removeLastAttachment"));
+      return;
+    }
+    replaceQueuedMessage(row, row.text, () => Promise.all(kept.map(materializeQueuedAttachment)));
+  }, [materializeQueuedAttachment, queuedRows, replaceQueuedMessage, t]);
+
+  /** Which waiting row's "add files" menu is open (it belongs to that row). */
+  const [queueAttachRow, setQueueAttachRow] = useState<SessionQueueRow | null>(null);
+  const openQueueAttachments = useCallback((id: string) => {
+    const row = queuedRows.find(item => item.runId === id);
+    // A row that does not report its files cannot be added to: the new ones would
+    // be sent and the ones this phone cannot see would be lost.
+    if (!row || row.attachments === undefined)
+      return;
+    Keyboard.dismiss();
+    setQueueAttachRow(row);
+  }, [queuedRows]);
+
+  const chooseQueueAttachments = useCallback((source: AttachmentSource) => {
+    const row = queueAttachRow;
+    setQueueAttachRow(null);
+    if (!row || row.attachments === undefined)
+      return;
+    const kept = row.attachments;
+    // The picker's quotas are counted against what the row already carries, from
+    // kinds and sizes alone: the kept files are copied down only once the reader
+    // actually picked something, so opening the picker costs nothing on a slow
+    // link. `localUri` is the desktop path here — nothing reads it before the
+    // real copies are made.
+    const existing: MobileAttachment[] = kept.map(attachment => ({
+      kind: attachment.kind === "image" ? "image" : "file",
+      localUri: attachment.path,
+      mimeType: mimeFor(attachment.name),
+      name: attachment.name,
+      originalSize: attachment.size,
+      transferSize: attachment.size,
+    }));
+    const launch = source === "camera"
+      ? takePhoto
+      : source === "album" ? pickFromAlbum : pickAttachments;
+    void (async () => {
+      let picked: MobileAttachment[];
+      try {
+        picked = await launch(existing);
+      }
+      catch (error) {
+        const key = error instanceof Error ? error.message : "attachment_failed";
+        showToast(t(`attachment.errors.${key}`));
+        return;
+      }
+      const known = new Set(existing.map(item => item.localUri));
+      const added = picked.filter(item => !known.has(item.localUri));
+      // The picker answers with the whole list; nothing new means the reader
+      // backed out, and the row is left exactly as it was.
+      if (added.length === 0)
+        return;
+      replaceQueuedMessage(row, row.text, async () => [
+        ...(await Promise.all(kept.map(materializeQueuedAttachment))),
+        ...added,
+      ]);
+    })();
+  }, [materializeQueuedAttachment, queueAttachRow, replaceQueuedMessage, t]);
 
   /** Send, then read the queue: the row that send may have made is now real. */
   const sendAndReadQueue = useCallback(async (
@@ -584,9 +807,10 @@ export function ChatScreen() {
   );
 
   useEffect(() => {
-    // While browsing files, the panel owns system back so it can pop a folder
-    // first. Do not rely on child/parent effect subscription order.
-    if (filesOpen) return;
+    // While browsing files or the Git graph, the panel owns system back so it can
+    // pop a folder or a commit first. Do not rely on child/parent effect
+    // subscription order.
+    if (filesOpen || gitOpen) return;
     const subscription = BackHandler.addEventListener(
       "hardwareBackPress",
       () => {
@@ -595,7 +819,7 @@ export function ChatScreen() {
       },
     );
     return () => subscription.remove();
-  }, [filesOpen, goBack]);
+  }, [filesOpen, gitOpen, goBack]);
 
   // Measure both platforms to bound skill suggestions above the keyboard.
   // Only Android applies this as compensation below; iOS already uses KAV.
@@ -629,6 +853,16 @@ export function ChatScreen() {
         <SafeAreaView style={styles.safe}>
           {attachmentMenu}
           {albumPicker}
+          {/* Mounted only while open: a sheet that is not showing is not a
+              surface, and a permanently-mounted one would sit above the
+              transcript and answer for someone else's dismissal. */}
+          {queueAttachRow !== null && (
+            <AttachmentSourceMenu
+              visible
+              onClose={() => setQueueAttachRow(null)}
+              onPick={chooseQueueAttachments}
+            />
+          )}
           <KeyboardAvoidingView
             behavior={Platform.OS === "ios" ? "padding" : undefined}
             style={styles.keyboard}
@@ -639,22 +873,16 @@ export function ChatScreen() {
               draft={remote.draft}
               machine={machine}
               backLabel={t("common.back")}
-              usageLabel={t("chat.usageOpen")}
+              menuLabel={t("chat.moreOpen")}
+              menuOpen={menuOpen}
               onBack={goBack}
-              onUsage={() => {
-                Keyboard.dismiss();
-                // The sheet shows the session's spend, so read it as it opens: the
-                // figure is only as fresh as the last get_state, and this is the
-                // moment it is being looked at.
-                void remote.refreshSessionUsage();
-                setUsageOpen(true);
-              }}
-              filesLabel={t("files.title")}
-              filesOpen={filesOpen}
-              onFiles={() => {
-                Keyboard.dismiss();
-                setFilesSession(filesOpen ? null : conversationKey);
-              }}
+              onMenu={openMenu}
+            />
+            <ActionMenu
+              title={t("chat.moreOpen")}
+              visible={menuOpen}
+              onClose={() => setMenuOpen(false)}
+              actions={menuActions}
             />
 
             {remote.error && connection.level === "connected" && (
@@ -677,14 +905,14 @@ export function ChatScreen() {
             >
               <View
                 style={styles.chatContent}
-                accessibilityElementsHidden={filesOpen}
+                accessibilityElementsHidden={filesOpen || gitOpen}
                 importantForAccessibility={
-                  filesOpen ? "no-hide-descendants" : "auto"
+                  filesOpen || gitOpen ? "no-hide-descendants" : "auto"
                 }
               >
                 <PausedTimeline
                   key={conversationKey}
-                  paused={filesOpen || chatFiles.preview !== null || chatFiles.activeDownload !== null}
+                  paused={filesOpen || gitOpen || chatFiles.preview !== null || chatFiles.activeDownload !== null}
                 >
                   <ChatTimeline
                     remote={remote}
@@ -755,6 +983,9 @@ export function ChatScreen() {
                     onQueueUpdate={updateQueuedMessage}
                     onQueueRemove={removeQueuedMessage}
                     onQueueRelease={releaseQueuedMessage}
+                    onQueuePreviewAttachment={previewQueuedAttachment}
+                    onQueueRemoveAttachment={removeQueuedAttachment}
+                    onQueueAddAttachments={openQueueAttachments}
                   />
                 </PausedTimeline>
               </View>
@@ -772,6 +1003,17 @@ export function ChatScreen() {
                   listFiles={remote.listSessionFiles}
                   onOpenFile={(path) => chatFiles.openFileLink(path, true)}
                   onClose={() => setFilesSession(null)}
+                />
+              )}
+
+              {gitOpen && (
+                <GitGraphPanel
+                  key={conversationKey}
+                  online={remote.desktopOnline}
+                  supported={gitSupported}
+                  listCommits={remote.listGitCommits}
+                  getCommit={remote.getGitCommit}
+                  onClose={() => setGitSession(null)}
                 />
               )}
 

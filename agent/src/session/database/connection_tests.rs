@@ -192,6 +192,44 @@ fn a_locked_writer_is_retried_on_the_same_connection_until_it_is_free() {
     assert_eq!(ids, ["waiter"]);
 }
 
+/// Opening installs the schema inside a transaction that reads the projection
+/// identity and only then writes the DDL. In WAL mode that read-then-write
+/// upgrade cannot wait: while another connection holds the write lock, SQLite
+/// fails it immediately with SQLITE_BUSY_SNAPSHOT — "database is locked" —
+/// without ever invoking `busy_timeout`, so no timeout setting can rescue it.
+///
+/// A second connection of this same process is the ordinary case, not an
+/// exotic one: the writer lane reclaims space on its own connection in short
+/// slices while readers and checkpoints run, and a CLI command can open
+/// agent.db beside the running Agent. The window is short, which is exactly why
+/// it shows up as a rare, load-dependent failure (Windows CI hit it once in
+/// 3033 tests, on a head that changed no Agent code) instead of a reproducible
+/// error — and why the open has to wait for the lock rather than fail.
+#[test]
+fn opening_waits_for_a_connection_that_holds_the_write_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("agent.db");
+    // A current database, so the open under test has no upgrade to perform and
+    // only runs the schema reinstall every ordinary reopen performs.
+    drop(open_connection(&path).unwrap());
+
+    let blocker = Connection::open(&path).unwrap();
+    blocker.execute_batch("BEGIN IMMEDIATE;").unwrap();
+    // Release while the open is waiting: the holder cannot run on this thread.
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        blocker.execute_batch("COMMIT;").unwrap();
+    });
+    let opened = open_connection(&path).expect("opening waits for a concurrent writer");
+    release.join().unwrap();
+
+    // Waiting must not have been bought by skipping the schema install.
+    let version: i64 = opened
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, CURRENT_SCHEMA_VERSION);
+}
+
 /// Falsification attempt for the idle-reclamation error arm, kept as the record
 /// of *why* that arm is unreachable here. `reclaim_space_when_idle` runs on the
 /// worker's own connection, so reaching its `Err` arm needs a live connection

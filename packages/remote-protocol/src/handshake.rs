@@ -14,55 +14,92 @@ pub struct HandshakeRequest {
     pub pairing: bool,
 }
 
-/// Capabilities advertised by the existing v2 controlled endpoint, in wire order.
+/// Capabilities this endpoint advertises, in wire order.
+///
+/// One list, one place. The secure handshake (`secure_finish`) seals it into the
+/// confirmation, and the legacy `pair_handshake_confirm` answers with it too.
+/// Two literals used to do that job, and the secure one — the only path a
+/// current client takes — had fallen three flags behind: `segmented_content_v1`,
+/// `reasoning_fetch_v1` and `terminal_v1` were advertised by the legacy reply
+/// and by nothing a paired desktop actually reads. That is why a remote
+/// terminal never appeared in the window, on any host build.
 ///
 /// The `*_v1` flags are not a compatibility version: each names one negotiated
 /// increment, and a client enables an increment only after finding its flag
 /// here (see `remote-client`'s `DECLARED_FEATURES`). Adding one is additive for
 /// every client that does not look for it.
-pub const SERVER_FEATURES: &[&str] = &[
-    "e2ee_v2",
-    "file_transfer_v1",
-    "file_download_v2",
-    "approval_tier_v1",
-    "auto_approval_v1",
-    "continue_run_v1",
-    "prompt_receipt_v1",
-    "session_files_v1",
-    "skills_v1",
-    "selective_events_v1",
-    "workspace_pinning_v1",
-    "workspace_create_v1",
-    // Shelve/restore a conversation or a workspace from another machine. The
-    // catalogue has reported `archived` for both since before this flag; the
-    // flag is what says the *commands* that change it are answered.
-    "archive_v1",
-    "desktop_settings_v1",
-    "skill_management_v1",
-    "compaction_v1",
-    "fusion_v1",
-    "fusion_settings_v1",
-    "provider_management_v1",
-    "fork_v1",
-    "tasks_v1",
-    "task_deps_v1",
-    // A chunk's bytes may travel outside the JSON reply, behind a length-prefixed
-    // header, instead of base64 inside it. Advertised rather than merely honoured
-    // because the client gates its declaration on this list: the two ends have to
-    // agree before either changes its encoding.
-    crate::READ_BINARY_FEATURE,
-];
+///
+/// `terminal` is the one flag a *process* decides rather than a build: only a
+/// host that installed the terminal registry advertises it, because a panel
+/// offered by a machine that cannot spawn a shell is a button whose every press
+/// fails.
+pub fn advertised_features(terminal: bool) -> Vec<&'static str> {
+    let mut features = vec![
+        "e2ee_v2",
+        "file_transfer_v1",
+        "file_download_v2",
+        "approval_tier_v1",
+        "auto_approval_v1",
+        "continue_run_v1",
+        "prompt_receipt_v1",
+        "session_files_v1",
+        "skills_v1",
+        "selective_events_v1",
+        "workspace_pinning_v1",
+        "workspace_create_v1",
+        // Shelve/restore a conversation or a workspace from another machine. The
+        // catalogue has reported `archived` for both since before this flag; the
+        // flag is what says the *commands* that change it are answered.
+        "archive_v1",
+        "desktop_settings_v1",
+        "skill_management_v1",
+        "compaction_v1",
+        "fusion_v1",
+        "fusion_settings_v1",
+        "provider_management_v1",
+        "fork_v1",
+        "tasks_v1",
+        "task_deps_v1",
+        // A chunk's bytes may travel outside the JSON reply, behind a
+        // length-prefixed header, instead of base64 inside it. Advertised rather
+        // than merely honoured because the client gates its declaration on this
+        // list: the two ends have to agree before either changes its encoding.
+        crate::READ_BINARY_FEATURE,
+        // Conversation content split into addressable segments, so a reader can
+        // fetch one window of a long entry instead of the whole of it.
+        crate::SEGMENTED_CONTENT_FEATURE,
+        // A reasoning row's body on demand. The catalogue says a row exists; this
+        // flag is what says the text behind it can be fetched.
+        crate::REASONING_FETCH_FEATURE,
+        // The session workspace's Git history, drawn as a lane graph. The
+        // catalogue cannot say whether a workspace is a repository (it is a
+        // property of the directory, not of the conversation), so the flag is
+        // what tells the phone the entry can be offered at all; whether *this*
+        // workspace has history is answered by the read itself.
+        crate::GIT_GRAPH_FEATURE,
+    ];
+    if terminal {
+        features.push(crate::TERMINAL_FEATURE);
+    }
+    features
+}
 
 /// The authenticated body sealed under the existing `handshake-confirm` context.
-/// Catalog construction belongs to the owning endpoint and its host services.
+///
+/// `features` is the caller's list, not this crate's: which capabilities a
+/// process actually serves is a property of that process (the terminal being
+/// the one that varies by entry point), so the endpoint that owns the host
+/// services names them and this function only seals the envelope. Catalog
+/// construction belongs to the owning endpoint for the same reason.
 pub fn confirmation(
     pair_id: &str,
     bridge_instance_id: &str,
+    features: &[&str],
     presence: serde_json::Value,
 ) -> serde_json::Value {
     serde_json::json!({
         "confirmed": true, "pairId": pair_id, "bridgeInstanceId": bridge_instance_id,
-        "features": SERVER_FEATURES, "presence": presence,
+        "features": features, "presence": presence,
     })
 }
 
@@ -100,6 +137,33 @@ pub fn handshake_transcript(parts: &HandshakeTranscript<'_>) -> String {
 #[cfg(test)]
 mod legacy_tests {
     use super::*;
+
+    #[test]
+    fn the_advertised_list_is_one_list_and_terminal_is_the_only_conditional_flag() {
+        // Regression: two literals meant the secure handshake — the only path a
+        // current client takes — advertised neither `segmented_content_v1`,
+        // `reasoning_fetch_v1` nor `terminal_v1`, while the legacy reply had all
+        // three. A remote terminal therefore never appeared on any host.
+        let without = advertised_features(false);
+        let with = advertised_features(true);
+        assert!(!without.contains(&crate::TERMINAL_FEATURE));
+        assert!(with.contains(&crate::TERMINAL_FEATURE));
+        assert_eq!(with.len(), without.len() + 1);
+        assert_eq!(&with[..without.len()], &without[..]);
+
+        // The two flags the secure path used to miss are unconditional.
+        for flag in [
+            crate::SEGMENTED_CONTENT_FEATURE,
+            crate::REASONING_FETCH_FEATURE,
+        ] {
+            assert!(without.contains(&flag), "{flag} must always be advertised");
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        for feature in &with {
+            assert!(seen.insert(*feature), "{feature} advertised twice");
+        }
+    }
     #[test]
     fn handshake_transcript_binds_both_device_identities_and_nonces() {
         let transcript = handshake_transcript(&HandshakeTranscript {

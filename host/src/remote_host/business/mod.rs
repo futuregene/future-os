@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 
 mod catalog;
 mod compaction;
+mod git;
 mod history;
 mod prompt;
 mod providers;
@@ -38,6 +39,7 @@ pub(crate) enum Route {
     Tasks,
     Providers,
     Terminal,
+    Git,
 }
 
 /// `None` means no handler owns the command: the bridge answers it with the
@@ -115,6 +117,11 @@ pub(crate) fn route(cmd_type: &str) -> Option<Route> {
         | "terminal_delete"
         | "terminal_read"
         | "terminal_write" => Route::Terminal,
+        // Read-only Git history for the phone's tunnel-graph sheet. The sheet is
+        // offered only when the desktop says the workspace is a repository, which
+        // `list_git_commits` itself answers (`isRepo`) — one read instead of a
+        // probe command that exists only to gate another one.
+        "list_git_commits" | "get_git_commit" => Route::Git,
         _ => return None,
     })
 }
@@ -197,6 +204,7 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
         Route::Tasks => tasks::execute(&cmd, sink).await,
         Route::Providers => providers::execute(&cmd, sink).await,
         Route::Terminal => terminal::execute(&cmd, sink).await,
+        Route::Git => git::execute(&cmd, sink).await,
     }
 }
 
@@ -293,10 +301,12 @@ mod tests {
         "get_settings",
         "get_state",
         "get_task",
+        "get_git_commit",
         "get_tool_call_args",
         "get_reasoning",
         "install_skill",
         "list_available_skills",
+        "list_git_commits",
         "list_models",
         "list_providers",
         "list_session_files",

@@ -36,6 +36,7 @@ import { localFilePath } from "./localPath";
 import { htmlBlockToNodes } from "./htmlBlocks";
 import { remarkLatexMath } from "./remarkLatexMath";
 import { remarkMathFence } from "./remarkMathFence";
+import { remarkCurrencyMath } from "./remarkCurrencyMath";
 import { remarkCjkEmphasis } from "./remarkCjkEmphasis";
 import { remarkAutolinkBoundary } from "./remarkAutolinkBoundary";
 import { remarkUnclosedLink } from "./remarkUnclosedLink";
@@ -43,7 +44,7 @@ import { remarkUnclosedLink } from "./remarkUnclosedLink";
 // `remarkAutolinkBoundary` is registered before `remarkGfm` on purpose: its
 // text-node pass must see the source before GFM's own autolink pass turns a URL
 // into a link node (see the plugin).
-const markdownProcessor = unified().use(remarkParse).use(remarkMath).use(remarkMathFence).use(remarkAutolinkBoundary).use(remarkGfm).use(remarkLatexMath).use(remarkCjkEmphasis).use(remarkUnclosedLink);
+const markdownProcessor = unified().use(remarkParse).use(remarkMath).use(remarkCurrencyMath).use(remarkMathFence).use(remarkAutolinkBoundary).use(remarkGfm).use(remarkLatexMath).use(remarkCjkEmphasis).use(remarkUnclosedLink);
 
 // Cross-instance parse cache: `useMemo([content])` in MarkdownContent only
 // survives within one mounted component, so a thread switch re-parses every

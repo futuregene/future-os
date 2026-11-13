@@ -36,6 +36,7 @@ import { useAppDialog } from "../components/useAppDialog";
 import { RenameModal } from "../features/chat/components/RenameModal";
 import { showToast } from "../features/chat/utils";
 import { PeerIconGlyph } from "../remote/PeerIconGlyph";
+import { readableDeviceName } from "../remote/deviceName";
 import { useRemoteControls as useRemote } from "../remote/RemoteContext";
 import type { DesktopCommands } from "../remote/desktopCommands";
 import { effectiveRunStatus } from "../remote/sessionStatus";
@@ -936,7 +937,9 @@ export function SessionList({
 
   const hostName = (desktopId: string | null | undefined) => {
     if (!desktopId) return "";
-    return remote.desktops.find(desktop => desktop.desktopId === desktopId)?.name ?? desktopId;
+    return readableDeviceName(
+      remote.desktops.find(desktop => desktop.desktopId === desktopId)?.name,
+    ) ?? desktopId;
   };
   /** What the open workspace menu acts through — null when it cannot act. */
   const menuWorkspaceCommands = menuWorkspace ? rowCommands(menuWorkspace) : null;

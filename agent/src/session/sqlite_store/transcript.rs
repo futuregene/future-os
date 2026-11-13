@@ -5,16 +5,19 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
 impl SqliteStore {
-    /// Indexed ownership lookup for admission retries. A run-id collision must
-    /// not hydrate every message merely to discover an earlier run marker.
+    /// Indexed ownership lookup for admission retries. Retiring replay or
+    /// transcript rows must not release an id retained by the durable ledger.
     pub(crate) fn has_transcript_run(&self, session: &str, run: &str) -> Result<bool> {
         let (session, run) = (session.to_owned(), run.to_owned());
         self.db.fence(move |db| {
+            let public_run=run.clone();
             let run = crate::session::identity::BoundIdentity::run(db, &session, &run)?;
             let session = crate::session::identity::BoundIdentity::session(db, &session)?;
             Ok(db.query_row(
-                "SELECT EXISTS(SELECT 1 FROM entries WHERE session_id=?1 AND run_id=?2)",
-                params![session, run],
+                "SELECT EXISTS(SELECT 1 FROM runs WHERE session_id=?1 AND run_id=?2)
+                  OR EXISTS(SELECT 1 FROM entries WHERE session_id=?1 AND run_id=?2)
+                  OR EXISTS(SELECT 1 FROM entries WHERE session_id=?1 AND json_extract(content_json,'$.run_id')=?3)",
+                params![session, run, public_run],
                 |row| row.get(0),
             )?)
         })

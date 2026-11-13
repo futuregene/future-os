@@ -9,7 +9,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadRoster } from "./roster.mjs";
-import { Suggester, MIN_QUERY_CHARS, SHORTLIST, NONE_GATE_THRESHOLD } from "./suggest.mjs";
+import { Suggester, MIN_QUERY_CHARS, SHORTLIST } from "./suggest.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -58,7 +58,7 @@ const server = createServer(async (req, res) => {
   const started = Date.now();
 
   if (req.method === "GET" && url.pathname === "/api/status") {
-    return json(res, 200, { ...suggester.status(), minQueryChars: MIN_QUERY_CHARS, shortlist: SHORTLIST, gateThreshold: NONE_GATE_THRESHOLD });
+    return json(res, 200, { ...suggester.status(), minQueryChars: MIN_QUERY_CHARS, shortlist: SHORTLIST, gateThreshold: suggester.gate });
   }
 
   if (req.method === "GET" && url.pathname === "/api/roster") {
@@ -99,7 +99,7 @@ const server = createServer(async (req, res) => {
       // none_of_these — so a refused request is the model's own verdict, not a cutoff we applied
       // to a score it does not have a scale for.
       const rank = await suggester.rank(query);
-      const gatePasses = (rank.gate.noneProbability ?? 0) < NONE_GATE_THRESHOLD;
+      const gatePasses = (rank.gate.noneProbability ?? 0) < rank.gate.threshold;
       const verdict = gatePasses ? (rank.top[0]?.name ?? null) : null;
 
       console.log(
@@ -116,7 +116,7 @@ const server = createServer(async (req, res) => {
         status: suggester.status(),
         gate: rank.gate,
         gate_passes: gatePasses,
-        gate_threshold: NONE_GATE_THRESHOLD,
+        gate_threshold: rank.gate.threshold,
         mode: `${rank.backend === "gateway" ? "one call" : "local fallback"}`,
         verdict,
         top: rank.top,

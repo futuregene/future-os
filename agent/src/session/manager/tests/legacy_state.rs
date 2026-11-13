@@ -7,7 +7,7 @@ use super::*;
 /// the measuring machine has, and the one `get_state` used to load in full.
 fn legacy_session(manager: &Manager, id: &str, messages: usize) {
     let store = manager.storage().unwrap();
-    store.reserve_segmented(id).unwrap();
+    store.bind_legacy_events(id).unwrap();
     let mut entries = vec![serde_json::json!({
         "id": "info",
         "type": "session_info",
@@ -92,9 +92,15 @@ fn legacy_state_and_metadata_read_bounded_rows_not_the_transcript() {
     let before = store.db.metrics()["readerJob"]["count"].as_u64().unwrap();
     manager.load_metadata("legacy-state").unwrap();
     let jobs = store.db.metrics()["readerJob"]["count"].as_u64().unwrap() - before;
-    assert!(
-        jobs <= 4,
-        "a warm legacy metadata read is bounded ({jobs} jobs)"
+    assert_eq!(store.storage_format("legacy-state").unwrap(), 2);
+    legacy_session(&manager, "small-legacy-state", 1);
+    manager.load_metadata("small-legacy-state").unwrap();
+    let before = store.db.metrics()["readerJob"]["count"].as_u64().unwrap();
+    manager.load_metadata("small-legacy-state").unwrap();
+    let small_jobs = store.db.metrics()["readerJob"]["count"].as_u64().unwrap() - before;
+    assert_eq!(
+        jobs, small_jobs,
+        "after migration metadata IO must be independent of transcript length"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

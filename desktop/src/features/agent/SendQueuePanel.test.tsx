@@ -12,8 +12,15 @@ function renderPanel(overrides: Partial<Parameters<typeof SendQueuePanel>[0]> = 
   const root = createRoot(host);
   const props = {
     items: [
-      { attachmentCount: 0, content: "first message", id: "a" },
-      { attachmentCount: 2, content: "", id: "b" },
+      { attachments: [], content: "first message", id: "a" },
+      {
+        attachments: [
+          { kind: "image", name: "shot.png", path: "/tmp/shot.png", size: 4096 },
+          { kind: "file", name: "doc.pdf", path: "/tmp/doc.pdf", size: 2048 },
+        ],
+        content: "",
+        id: "b",
+      },
     ],
     onRemove: vi.fn(),
     onRetry: vi.fn(),
@@ -39,7 +46,11 @@ it("lists what is waiting, with an attachment-only row said in words", () => {
     expect(panel.host.textContent).toContain("first message");
     // An entry whose words are gone still travels while it has files.
     expect(panel.host.textContent).toContain("Attachments only");
-    expect(panel.host.textContent).toContain("Attachments: 2");
+    // …and the files are named, not counted: a chip is what can be looked at
+    // before the run takes it.
+    expect(panel.host.textContent).toContain("shot.png");
+    expect(panel.host.textContent).toContain("doc.pdf");
+    expect(panel.host.querySelectorAll("[data-queue-attachment]")).toHaveLength(2);
   }
   finally {
     panel.cleanup();
@@ -148,8 +159,8 @@ it("offers a parked row a start, and only a parked one", () => {
   const onRelease = vi.fn();
   const panel = renderPanel({
     items: [
-      { attachmentCount: 0, content: "will run by itself", id: "a" },
-      { attachmentCount: 0, content: "waited too long", id: "b", parked: true },
+      { attachments: [], content: "will run by itself", id: "a" },
+      { attachments: [], content: "waited too long", id: "b", parked: true },
     ],
     onRelease,
   });
@@ -168,7 +179,7 @@ it("hides the start control when the queue cannot be started by hand", () => {
   // A client-side queue (a paired computer's, or the phone's) has no Agent row
   // behind a parked flag, and must not show a button that does nothing.
   const panel = renderPanel({
-    items: [{ attachmentCount: 0, content: "waiting", id: "a", parked: true }],
+    items: [{ attachments: [], content: "waiting", id: "a", parked: true }],
   });
   try {
     expect(panel.host.querySelector("[data-queue-release]")).toBeNull();
@@ -192,8 +203,8 @@ it("says what an edit costs when the queue does not report a message's files", (
     items: [{ content: "look at this", id: "a" }],
   });
   try {
-    // No invented count on the row…
-    expect(panel.host.textContent).not.toContain("Attachments:");
+    // Nothing is claimed about files the panel cannot see…
+    expect(panel.host.querySelector("[data-queue-attachments]")).toBeNull();
     act(() => panel.host.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
     // …and the trade is named where it is made, before the save.
     expect(panel.host.textContent).toContain("Saving sends the new text only");
@@ -207,11 +218,72 @@ it("says what an edit costs when the queue does not report a message's files", (
 it("does not offer an edit for a message that is only files", () => {
   // There is no text to correct, and an empty save is a removal: the bin beside
   // it already says that plainly.
-  const panel = renderPanel({ items: [{ content: "", id: "files-only" }] });
+  const panel = renderPanel({ items: [{ attachments: [], content: "", id: "files-only" }] });
   try {
     expect(panel.host.querySelector("[data-queue-edit]")).toBeNull();
     expect(panel.host.querySelector("[data-queue-remove]")).not.toBeNull();
     expect(panel.host.textContent).toContain("Attachments only");
+  }
+  finally {
+    panel.cleanup();
+  }
+});
+
+/**
+ * The files are named, so they can be looked at before the run takes them.
+ *
+ * The panel used to depend on a count from a queue that never reported one, so a
+ * waiting message with photos drew as text and nothing else — the reader could
+ * not see what was about to be sent, let alone open it.
+ */
+it("names each file a waiting message carries and opens the one that is clicked", () => {
+  const onPreviewAttachment = vi.fn();
+  const panel = renderPanel({ onPreviewAttachment });
+  try {
+    const chips = panel.host.querySelectorAll<HTMLButtonElement>("[data-queue-attachment]");
+    expect(chips).toHaveLength(2);
+    expect(chips[0]!.textContent).toContain("shot.png");
+    expect(chips[0]!.disabled).toBe(false);
+    act(() => chips[0]!.click());
+    expect(onPreviewAttachment).toHaveBeenCalledWith(
+      { kind: "image", name: "shot.png", path: "/tmp/shot.png", size: 4096 },
+    );
+  }
+  finally {
+    panel.cleanup();
+  }
+});
+
+it("names the files even when nothing can open them", () => {
+  // The client that knows how to open one gives the handler; without it the chips
+  // are still named, because what a message carries is worth reading even when
+  // this window cannot show it.
+  const panel = renderPanel();
+  try {
+    const chips = panel.host.querySelectorAll<HTMLButtonElement>("[data-queue-attachment]");
+    expect(chips).toHaveLength(2);
+    expect(chips[0]!.disabled).toBe(true);
+  }
+  finally {
+    panel.cleanup();
+  }
+});
+
+/**
+ * A row that reports its files does not warn about losing them.
+ *
+ * The warning used to be a property of the whole panel, so a queue that had
+ * started reporting files kept telling the reader an edit would drop them — a
+ * cost that no longer existed, said at the moment of saving.
+ */
+it("does not warn about dropped files on a row whose files it can see", () => {
+  const panel = renderPanel({
+    attachmentsUnreported: true,
+    items: [{ attachments: [{ kind: "file", name: "notes.md", path: "/tmp/notes.md", size: 10 }], content: "read this", id: "a" }],
+  });
+  try {
+    act(() => panel.host.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
+    expect(panel.host.textContent).not.toContain("Saving sends the new text only");
   }
   finally {
     panel.cleanup();

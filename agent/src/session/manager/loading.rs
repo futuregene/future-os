@@ -46,6 +46,7 @@ impl Manager {
 
     /// Decode authoritative blocks without manufacturing lost-tool results.
     pub(crate) fn load_unrepaired_entries(&self, id: &str) -> Result<Vec<SessionEntry>> {
+        self.prepare_session(id)?;
         let mut entries: Vec<SessionEntry> = self.storage()?.typed_entries(id)?;
         for entry in &mut entries {
             hydrate_entry_projections(entry);
@@ -70,8 +71,9 @@ impl Manager {
 
     /// Runtime configuration and identities; no historical message bodies.
     pub(crate) fn load_metadata(&self, id: &str) -> Result<Session> {
+        let canonical = self.prepare_session(id)?;
         let store = self.storage()?;
-        if store.storage_format(id)? == crate::session::content::FORMAT_VERSION {
+        if canonical {
             let scope = crate::session::content::reader::Snapshot::capture(store, id)?;
             // Runtime restoration needs current configuration and the latest
             // model change, not a header round trip for every historical tool.
@@ -144,9 +146,8 @@ impl Manager {
     ///   calls, empty assistants, duplicate tools). Those shape what a provider
     ///   sees on an internally inconsistent transcript; a page a client reads
     ///   shows that transcript as stored.
-    /// - It does not read the rest of the conversation, for either storage
-    ///   format: a legacy page comes from `entry_records` over the header rows of
-    ///   the page, which is the same view a full legacy load reads.
+    /// - Historical storage is migrated before serving its canonical page.
+    ///   Once migrated, page selection never hydrates off-page messages.
     pub(crate) fn message_page(
         &self,
         id: &str,
@@ -156,17 +157,15 @@ impl Manager {
         const MESSAGE_ROLES: &str = "'user','system','assistant','tool'";
         enum Rows {
             Canonical(Vec<crate::session::content::reader::Entry>),
-            Legacy(Vec<SessionEntry>),
+            NeedsMigration,
         }
         let store = self.storage()?;
         let requested = id.to_owned();
         let offset_rows = i64::try_from(offset)?;
         let limit_rows = i64::try_from(limit.max(1))?;
-        // One read job answers everything a page needs except the canonical body
-        // hydration: the format, the message count, and the page itself. The
-        // format probe lives inside it because a *legacy* page is read from
-        // `entry_records` (the view a full legacy load reads) and only a
-        // canonical one needs the reader scope.
+        // Probe format/pending conversion with the indexed page selection, so
+        // a warm canonical read pays no separate migration-admission job.
+        // Pending legacy receipts resume before any partial header is decoded.
         let (rows, total): (Rows, i64) = store.db.read(move |db| {
             let key = crate::session::identity::BoundIdentity::session(db, &requested)?;
             let total: i64 = db.query_row(
@@ -194,32 +193,21 @@ impl Manager {
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             if crate::session::content::format(db, &requested)?
                 == crate::session::content::FORMAT_VERSION
+                && !db.query_row("SELECT EXISTS(SELECT 1 FROM legacy_conversions WHERE session_id=?1)",[&key],|row|row.get::<_,bool>(0))?
             {
                 return Ok((Rows::Canonical(locators), total));
             }
-            let first = locators.first().map(|entry| entry.position).unwrap_or(0);
-            let last = locators.last().map(|entry| entry.position).unwrap_or(0);
-            let wanted: std::collections::HashSet<i64> =
-                locators.iter().map(|entry| entry.position).collect();
-            let mut query = db.prepare_cached(
-                "SELECT position,payload FROM entry_records
-                  WHERE session_id=?1 AND position>=?2 AND position<=?3 ORDER BY position",
-            )?;
-            let payloads = query
-                .query_map(params![&key, first, last], |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            let entries = payloads
-                .into_iter()
-                .filter(|(position, _)| wanted.contains(position))
-                .map(|(_, payload)| serde_json::from_str(&payload))
-                .collect::<std::result::Result<Vec<SessionEntry>, _>>()?;
-            Ok((Rows::Legacy(entries), total))
+            Ok((Rows::NeedsMigration, total))
         })?;
         let total = usize::try_from(total)?;
         match rows {
-            Rows::Legacy(entries) => Ok((entries, total)),
+            Rows::NeedsMigration => {
+                if self.prepare_session(id)? {
+                    self.message_page(id, offset, limit)
+                } else {
+                    Ok((Vec::new(), total))
+                }
+            }
             Rows::Canonical(locators) if locators.is_empty() => Ok((Vec::new(), total)),
             Rows::Canonical(locators) => {
                 let snapshot = crate::session::content::reader::Snapshot::capture(store, id)?;

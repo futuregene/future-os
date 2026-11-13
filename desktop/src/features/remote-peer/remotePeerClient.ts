@@ -1,5 +1,6 @@
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ProvidersView } from "../../integrations/agent/providers";
+import type { GitCommitDetail, GitGraphListing } from "../git-history/types";
 import type { RemoteCatalog, RemoteSessionRow, RemoteWorkspaceRow } from "./mergeConversations";
 import { requestNativeRead } from "../../integrations/storage/historyTransfer";
 import { invokeCommand } from "../../integrations/tauri/invoke";
@@ -708,13 +709,47 @@ export async function listRemoteSessionFiles(
 }
 
 /**
+ * The Git history of the workspace a remote conversation runs in.
+ *
+ * The host computes the lane graph, so the desktop and the phone show one
+ * picture of one repository: the glyph grid arrives here exactly as it does on a
+ * phone, and `@future-os/git-graph` decodes it the same way. Nothing about the
+ * history is re-derived on this side.
+ *
+ * `isRepo` is the same read rather than a separate probe, which is what lets a
+ * view hide the whole feature for a plain directory without costing a round trip.
+ */
+export function listRemoteGitCommits(
+  desktopId: string,
+  sessionId: string,
+): Promise<GitGraphListing> {
+  return invokeCommand<GitGraphListing>("remote_peer_request", {
+    desktopId,
+    command: { type: "list_git_commits", sessionId },
+    lane: sessionId,
+  });
+}
+
+/** One commit's stat and patch, read by the host that holds the repository. */
+export function getRemoteGitCommit(
+  desktopId: string,
+  sessionId: string,
+  gitRef: string,
+): Promise<GitCommitDetail> {
+  return invokeCommand<GitCommitDetail>("remote_peer_request", {
+    desktopId,
+    command: { type: "get_git_commit", sessionId, gitRef },
+    lane: sessionId,
+  });
+}
+
+/**
  * Pull a file from a host and write it to a local path.
  *
  * Resolves to the name the *host* gave the file, which can differ from the one
  * asked for (a preview variant is renamed on the host side). Reporting the name
  * the user chose instead would leave them looking for a file that is not there.
- */
-export function downloadRemoteFile(input: {
+ */export function downloadRemoteFile(input: {
   desktopId: string;
   sessionId: string;
   path: string;

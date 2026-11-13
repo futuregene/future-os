@@ -845,3 +845,142 @@ export const demoTaskDetails = demoTasks.map(task => ({
   conversationMode: demoTaskDetail.conversationMode,
 }));
 
+/**
+ * The messages a session is holding behind its running turn, as `get_queue`
+ * reports them.
+ *
+ * The panel above the composer only exists while a queue has rows, so the states
+ * worth a capture — a short queue, and the burst of goal pokes long enough to
+ * cover the conversation under it — need a queue the fixture can hand over.
+ * `?queue=<n>` (see `shot/mock/RemoteContext.tsx`) is what asks for one; the text
+ * is the shape those rows really arrive in.
+ *
+ * `?queueFiles=1` gives the rows the files a message sent with photos really
+ * carries, which is the only way the panel's attachment chips can be drawn: an
+ * attachment-only row (the one that carried a picture with no words) first, then
+ * a message whose text and files travel together.
+ */
+export function demoQueueRows(count: number, withFiles = false) {
+  return Array.from({ length: count }, (_, index) => ({
+    runId: `run_queued_${index + 1}`,
+    position: index + 1,
+    acceptedAt: new Date(now - (count - index) * 20 * minute).toISOString(),
+    text: "[future-goal] goal goal_4ce46c920eb8: 1 event(s). Reconcile current status before acting; events may be stale. Read the goal's own state before answering.",
+    // `queued` runs at the next turn boundary; a `stale…` state parks the row.
+    state: "queued",
+    ...(withFiles && index === 0
+      ? {
+          // The reported shape of an attachment-only send: no words, one photo.
+          attachments: [
+            { kind: "image", name: "IMG_2851.png", path: "/Users/demo/Pictures/IMG_2851.png", size: 1_843_200 },
+          ],
+          text: "",
+        }
+      : withFiles && index === 1
+        ? {
+            attachments: [
+              { kind: "image", name: "dashboard.png", path: "/Users/demo/Desktop/dashboard.png", size: 486_400 },
+              { kind: "file", name: "queue-notes.pdf", path: "/Users/demo/Documents/queue-notes.pdf", size: 2_310_144 },
+            ],
+          }
+        : {}),
+  }));
+}
+
+
+/**
+ * A three-lane history for the chat top bar's Git sheet.
+ *
+ * The gutters are not drawn by hand: they are what
+ * `host/src/remote_host/git_graph.rs` prints for exactly this parent graph, so a
+ * capture shows the lane picture the phone really receives — merges opening a
+ * column, a branch closing back into the trunk, and the horizontals in between.
+ * Editing a row's parents means re-deriving the column beside it.
+ *
+ * `/Users/lixin/Research/dopamine-decision` on `main`, in the same voice as the
+ * rest of this fixture: a research repository whose history is the paper's
+ * figures and analysis scripts rather than a feature log.
+ */
+export const demoGitListing = {
+  isRepo: true,
+  repoName: "dopamine-decision",
+  path: "/Users/lixin/Research/dopamine-decision",
+  commits: [
+    { short: "4c1a7e2", when: "2026-11-11 18:42", who: "Lixin Zhou", decorations: "HEAD -> main, origin/main", subject: "Add reversal-learning model comparison to the supplement", graph: "M─┐   " },
+    { short: "9b30d18", when: "2026-11-11 16:05", who: "Lixin Zhou", decorations: "", subject: "Tighten the fit tolerance so the subject 12 restart converges", graph: "o │   " },
+    { short: "e27f5a0", when: "2026-11-11 14:20", who: "Mei Tan", decorations: "origin/analysis/latent-mixture", subject: "Fit the latent-mixture model over both cohorts", graph: "│ M─┐ " },
+    { short: "1d84b63", when: "2026-11-11 11:58", who: "Mei Tan", decorations: "", subject: "Cache the per-subject likelihood tables", graph: "│ o │ " },
+    { short: "c53e907", when: "2026-11-10 20:31", who: "Mei Tan", decorations: "", subject: "Report the coefficient of variation per condition", graph: "│ │ o " },
+    { short: "7a16bc4", when: "2026-11-10 17:12", who: "Lixin Zhou", decorations: "", subject: "Merge the tolerance fix into the analysis branch", graph: "o─┘ │ " },
+    { short: "0f92dda", when: "2026-11-10 15:47", who: "Lixin Zhou", decorations: "", subject: "Merge latent-mixture fits back onto main", graph: "o───┘ " },
+    { short: "b80113c", when: "2026-11-09 19:03", who: "Lixin Zhou", decorations: "tag: draft-v3", subject: "Freeze the analysis for the first draft", graph: "M─┐   " },
+    { short: "62ed4f9", when: "2026-11-09 16:22", who: "Lixin Zhou", decorations: "", subject: "Drop the reaction-time covariate from model 3", graph: "o │   " },
+    { short: "d4c77ab", when: "2026-11-09 11:40", who: "Mei Tan", decorations: "", subject: "Add the exploratory figure for the model-free learner", graph: "│ o   " },
+    { short: "8e5b201", when: "2026-11-08 18:15", who: "Mei Tan", decorations: "", subject: "Merge the covariate discussion", graph: "o─┘   " },
+    { short: "31af6c8", when: "2026-11-08 14:02", who: "Lixin Zhou", decorations: "", subject: "Regenerate figures from the cleaned trial table", graph: "o     " },
+    { short: "aa4e9d1", when: "2026-11-08 09:37", who: "Lixin Zhou", decorations: "", subject: "Keep the practice trials out of the fit", graph: "o     " },
+    { short: "d07b119", when: "2026-11-07 17:50", who: "Lixin Zhou", decorations: "", subject: "Initial repository layout", graph: "o     " },
+  ],
+  truncated: false,
+};
+
+/**
+ * One commit's `git show --stat --patch`, bounded the way the host bounds it.
+ * The stat block comes first — that is the shape `--stat --patch` prints, and
+ * what `patchLines` treats as metadata before the diff proper.
+ */
+export const demoGitCommitDetail = {
+  short: "4c1a7e2",
+  patch: `commit 4c1a7e2d8f0b91a5c3e6d2f7b40a8c1e95d3f620
+Author: Lixin Zhou <lixin@example.org>
+Date:   Tue Nov 11 18:42:07 2026 +0800
+
+    Add reversal-learning model comparison to the supplement
+
+ analysis/models/compare.R     | 24 ++++++++++++++++++++++++
+ analysis/models/fit_tolerance.R |  4 ++--
+ 2 files changed, 26 insertions(+), 2 deletions(-)
+
+diff --git a/analysis/models/compare.R b/analysis/models/compare.R
+new file mode 100644
+index 0000000..b4e1c07
+--- /dev/null
++++ b/analysis/models/compare.R
+@@ -0,0 +1,24 @@
++# Compare the three candidate accounts of the reversal effect on a
++# per-subject basis, holding the random effects constant.
++library(tidyverse)
++library(brms)
++
++subjects <- read_rds("data/derived/subjects.rds")
++
++fits <- map(models, function(model) {
++  brm(
++    formula = model,
++    data = subjects,
++    chains = 4, iter = 4000,
++    control = list(adapt_delta = 0.95)
++  )
++})
++
++# LOO comparison, then the stacking weights the supplement reports.
++comparison <- loo_compare(map(fits, loo))
++weights <- loo_model_weights(map(fits, loo))
++
++write_rds(comparison, "data/derived/model-comparison.rds")
++write_rds(weights, "data/derived/model-weights.rds")
+diff --git a/analysis/models/fit_tolerance.R b/analysis/models/fit_tolerance.R
+index 8d2a551..f30bc92 100644
+--- a/analysis/models/fit_tolerance.R
++++ b/analysis/models/fit_tolerance.R
+@@ -18,8 +18,8 @@
+ # Subject 12 needs a longer warmup; its posterior keeps crossing zero.
+ control <- list(
+-  adapt_delta = 0.80,
+-  max_treedepth = 10
++  adapt_delta = 0.95,
++  max_treedepth = 12
+ )
+`,
+  truncated: false,
+};
