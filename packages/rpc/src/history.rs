@@ -150,6 +150,21 @@ impl PageBudget {
         bytes: FIRST_PAGE_BYTE_BUDGET,
         rows: 300,
     };
+
+    /// No bound: the page is whatever completing its exchange produced.
+    ///
+    /// The bound above is a *first paint's* budget, and a caller that never
+    /// declared a first paint must not be served one: the terminal's history
+    /// read and the CLI's page read walk the same helper without a screen to
+    /// paint, and cutting their page at 300 rows would hand them a turn's tail
+    /// where they asked for the turn. Bounding is therefore something a caller
+    /// opts into ([`PageBudget::FIRST_PAINT`] at the host's history read and at
+    /// the terminal's first page), not something the shared helper applies to
+    /// everyone.
+    pub const UNBOUNDED: PageBudget = PageBudget {
+        bytes: usize::MAX,
+        rows: usize::MAX,
+    };
 }
 
 /// Assemble oversized entries before exposing them to message projection.
@@ -159,18 +174,26 @@ impl PageBudget {
 /// tool declarations to interpret it. A page that is allowed to begin anywhere
 /// (`ExchangeStart::Anywhere`) is returned as the agent cut it.
 ///
-/// Not an `async fn`, and that is the point: the only thing it adds to
-/// [`read_page_from`] is a constant, and an `async fn` would pay for that
-/// constant with a second state machine. That is not free in the one caller
-/// that matters — the desktop's history read is the deepest `await` chain in the
-/// host (`remote_host::business` → `history::execute` → the page read → the
-/// agent call), and it runs on a worker thread with the platform's default stack.
+/// Not an `async fn`, and that is the point: it only forwards to
+/// [`read_page_with`], and an `async fn` would pay for that forwarding with a
+/// second state machine. That is not free in the one caller that matters — the
+/// desktop's history read is the deepest `await` chain in the host
+/// (`remote_host::business` → `history::execute` → the page read → the agent
+/// call), and it runs on a worker thread with the platform's default stack.
 /// Measured on the `remote::commands::bridge_tests` group, which reaches it: the
 /// redundant nesting cost **78 KiB** of the 2 MiB a worker gets in a debug build
 /// (1970 KiB against 1892 KiB when the wrapper is transparent), which is what
 /// took `Rust Windows test / host-remote` over the edge (MSVC debug frames are
 /// wider than arm64 ones). Keep this a plain `fn`: there is nothing to await on
 /// this side of the call.
+///
+/// It carries **no first-paint bound** ([`PageBudget::UNBOUNDED`]): completing an
+/// exchange can make the page as large as the exchange is, and a reader that is
+/// not painting a first screen — the CLI's page read, the terminal's backward
+/// walk, and the agent's own paging contract test — asked for the exchange, not
+/// for a screenful of it. A caller that *is* painting a first screen bounds it
+/// explicitly: the host passes [`PageBudget::FIRST_PAINT`] through
+/// [`read_page_with`], the terminal goes through [`read_page_from`].
 pub fn read_page<Entry, F, Fut>(
     command: RpcCommand,
     execute: F,
@@ -180,10 +203,20 @@ where
     F: FnMut(RpcCommand) -> Fut,
     Fut: Future<Output = Result<SessionEntriesPage<Entry>, String>>,
 {
-    read_page_from(command, ExchangeStart::Complete, execute)
+    read_page_with(
+        command,
+        ExchangeStart::Complete,
+        PageBudget::UNBOUNDED,
+        |entry: &Entry| entry.page_bytes(),
+        execute,
+    )
 }
 
-/// [`read_page`], naming what a page may do to the exchange it starts in.
+/// [`read_page`] for a first screen: complete the exchange, bounded by
+/// [`PageBudget::FIRST_PAINT`].
+///
+/// This is the terminal's first page. [`read_page`] is the same walk without the
+/// bound, for readers that asked for the exchange itself.
 pub async fn read_page_from<Entry, F, Fut>(
     command: RpcCommand,
     start: ExchangeStart,
@@ -207,9 +240,10 @@ where
 /// [`read_page_from`], naming the budget and how a row is weighed against it.
 ///
 /// The weight is the caller's, because the caller is the one that knows what it
-/// will send: the host weighs a page the way its lean lane will ship it, the
-/// terminal weighs the row itself. A test drives a small budget to pin the
-/// truncation; production callers go through [`read_page_from`].
+/// will send: the host weighs a page the way its lean lane will ship it, and the
+/// entries below weigh the row itself. A budget is a first paint's; a caller with
+/// no screen to paint passes [`PageBudget::UNBOUNDED`] (which is what
+/// [`read_page`] does). A test drives a small budget to pin the truncation.
 pub async fn read_page_with<Entry, F, Fut, W>(
     mut command: RpcCommand,
     start: ExchangeStart,
@@ -585,6 +619,65 @@ mod tests {
             "the page begins at the question"
         );
         assert_eq!(served.next_offset, 3);
+    }
+
+    /// The shared walk is not a first paint: a caller that asked for the exchange
+    /// gets the exchange, however much it weighs.
+    ///
+    /// The budget above belongs to a caller painting a first screen. [`read_page`]
+    /// is the same walk for readers with no screen to paint — the CLI's page read
+    /// and the agent's own paging contract test
+    /// (`a_backward_exchange_larger_than_the_budget_is_complete_before_projection`,
+    /// which drives this function) go through it and assert the exchange is
+    /// complete. Bounding them would silently drop the head of what they just
+    /// asked for, and a `truncated` flag they do not read would be the only sign.
+    ///
+    /// The fixture is the reported turn's shape: rows above the whole first-paint
+    /// budget on their own, split by the Agent into pages that each still need
+    /// the older one. Removing the budget from [`read_page`] (back to
+    /// [`PageBudget::FIRST_PAINT`]) makes this fail on the second `seen` entry.
+    #[tokio::test]
+    async fn the_shared_walk_completes_an_exchange_larger_than_a_first_paint() {
+        let rows = turn_rows(30, 40_000);
+        let whole: usize = rows.iter().map(HistoryEntry::page_bytes).sum();
+        assert!(
+            whole > FIRST_PAGE_BYTE_BUDGET,
+            "the fixture has to be the case this bound is for: {whole} bytes"
+        );
+        let question = json!({"id": "u0", "kind": "user", "role": "user"});
+        let mut completed = vec![question.clone()];
+        completed.extend(rows.clone());
+        let mut pages = std::collections::VecDeque::from(vec![
+            page(None, rows, true, 1_000),
+            page(None, vec![question.clone()], false, 0),
+        ]);
+        let seen = std::cell::RefCell::new(Vec::new());
+        let result = {
+            let mut execute = |command: RpcCommand| {
+                seen.borrow_mut().push(command);
+                std::future::ready(Ok(pages.pop_front().expect("scripted page")))
+            };
+            read_page::<Value, _, _>(
+                RpcCommand {
+                    before: Some(i64::MAX),
+                    ..Default::default()
+                },
+                &mut execute,
+            )
+            .await
+        };
+        let served = result.expect("a completed exchange is a page");
+        assert_eq!(
+            seen.into_inner().len(),
+            2,
+            "the walk fetches the rest of the turn instead of stopping at a first-paint budget"
+        );
+        assert!(!served.truncated, "nothing was left behind");
+        assert_eq!(served.entries.len(), completed.len());
+        assert_eq!(
+            served.entries[0], question,
+            "the page begins at the question it answers"
+        );
     }
 
     /// A page that is allowed to begin anywhere is returned as the agent cut it.
