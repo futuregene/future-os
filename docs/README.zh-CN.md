@@ -58,6 +58,7 @@
 | 文档 | 内容 |
 |---|---|
 | [工作区与会话：分页加载与归档设计](design/workspace-thread-archive-and-paging.zh-CN.md)（[en](design/workspace-thread-archive-and-paging.md)） | 定稿设计：树级归档与统一的"无活跃会话"前置规则、工作区归档与容器唤醒、只读详情、首次归档引导，以及工作区列表/工作区对话/临时对话的 keyset 分页 |
+| [会话归档：运行日志清理与自动归档设计](design/archive-run-log-cleanup-and-auto-archive.zh-CN.md)（[en](design/archive-run-log-cleanup-and-auto-archive.md)） | 基本定稿的运行日志清理边界与首次告知交互，以及待评审的闲置自动归档策略：按 fork 树有效活动计算、每日扫描、例外条件、恢复宽限期与日志清理联动 |
 
 ## 内部文档（`internals/`）
 
