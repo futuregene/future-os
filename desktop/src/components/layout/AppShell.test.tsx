@@ -1102,13 +1102,15 @@ describe("app shell layout", () => {
     expect(bottomPanel.parentElement).toBe(bottomMain.parentElement?.parentElement);
     bottom.unmount();
 
-    // Right: a column of its own in the content row, after the conversation and
-    // before the files panel.
+    // Right: a column of its own at the window's edge — a sibling of the content
+    // column (conversation + files panel), which is what makes that column the
+    // anchor for the affordances drawn over the conversation.
     mocks.store.terminalDock = "right";
     const right = mount(<AppShell />);
     const rightMain = right.container.querySelector("main")!;
     const rightPanel = right.container.querySelector("[data-child=\"terminal-panel\"]")!;
-    expect(rightPanel.parentElement).toBe(rightMain.parentElement);
+    const contentColumn = rightMain.parentElement?.parentElement;
+    expect(rightPanel.parentElement).toBe(contentColumn?.parentElement);
     expect(rightMain.compareDocumentPosition(rightPanel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     right.unmount();
 
