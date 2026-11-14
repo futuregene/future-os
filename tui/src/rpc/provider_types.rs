@@ -372,6 +372,12 @@ impl ProviderInput {
             api_key: self.effective_api_key().unwrap_or_default().to_string(),
             replace_models: true,
             clear_api_key: self.clear_api_key,
+            // The terminal form has no TLS control, so it neither sets nor
+            // clears the flag: `None` tells the agent to keep whatever the
+            // stored provider already says. Sending `Some(false)` instead would
+            // silently re-enable verification for a self-signed endpoint every
+            // time someone edited that provider from the TUI.
+            skip_tls_verify: None,
         }
     }
 
@@ -825,6 +831,21 @@ mod tests {
         };
         assert!(clearing.to_proto().clear_api_key);
         assert!(ProviderInput::from_proto(&clearing.to_proto()).clear_api_key);
+    }
+
+    /// The TUI has no TLS control, so its write must not touch the flag.
+    ///
+    /// `None` is the agent's "preserve" signal. Sending `Some(false)` instead —
+    /// the tempting default for a bool — would silently re-enable certificate
+    /// verification every time someone edited that provider from the terminal,
+    /// breaking an endpoint that was only reachable with it off.
+    #[test]
+    fn proto_conversion_leaves_skip_tls_verify_unstated() {
+        let spec = provider().to_proto();
+        assert_eq!(
+            spec.skip_tls_verify, None,
+            "the TUI must neither set nor clear the stored flag"
+        );
     }
 
     #[test]

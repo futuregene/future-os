@@ -577,6 +577,7 @@ mod tests {
                 api_key: "secret".into(),
                 auth: crate::llm::schema::AuthScheme::AnthropicApiKey,
                 headers: Default::default(),
+                skip_tls_verify: false,
             },
             protocol: ProtocolConfig::AnthropicMessages(Default::default()),
             capabilities: crate::llm::schema::ModelCapabilities {
@@ -965,6 +966,7 @@ mod tests {
                 api_key: "k".into(),
                 auth: crate::llm::schema::AuthScheme::Bearer,
                 headers: Default::default(),
+                skip_tls_verify: false,
             },
             protocol: ProtocolConfig::OpenAiChat(crate::llm::schema::OpenAiChatConfig::default()),
             capabilities: Default::default(),

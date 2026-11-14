@@ -7,8 +7,9 @@
 
 use super::catalog::{future_models_cache_path, models_json_path, CatalogProviderSummary};
 use super::write::{
-    delete_custom_provider_with_catalog, set_builtin_provider_base_url_with_catalog,
-    update_builtin_provider_key_with_catalog, upsert_custom_provider_with_catalog,
+    delete_custom_provider_with_catalog, provider_upsert_message,
+    set_builtin_provider_base_url_with_catalog, update_builtin_provider_key_with_catalog,
+    upsert_custom_provider_with_catalog,
 };
 use super::*;
 use crate::auth_store::test_support::HomeGuard;
@@ -51,6 +52,7 @@ fn input(id: &str, name: &str, create: bool) -> UpsertCustomProviderInput {
         name: name.to_string(),
         api: "openai-completions".to_string(),
         base_url: "https://api.example.com/v1".to_string(),
+        skip_tls_verify: None,
         api_key: None,
         models: vec![],
         create,
@@ -122,6 +124,80 @@ fn edit_allows_same_id() {
             .unwrap();
     assert_eq!(view.custom.len(), 1);
     assert_eq!(view.custom[0].name, "DashScope 2");
+}
+
+/// `skipTlsVerify` survives the whole host path — validation, the models.json
+/// write, and the view an editor re-opens — in all three presence directions.
+///
+/// The `None` case is the one that protects a working provider: the TUI and the
+/// CLI wizard cannot express the flag, so an edit from either sends nothing, and
+/// that must not switch verification back on for a self-signed endpoint.
+#[test]
+fn skip_tls_verify_round_trips_and_is_preserved_when_absent() {
+    let _home = HomeGuard::new("skip-tls-verify");
+    let catalog = fixture_catalog();
+    let with_flag = |skip_tls_verify: Option<bool>, name: &str| UpsertCustomProviderInput {
+        skip_tls_verify,
+        ..input("gateway", name, false)
+    };
+
+    // Created on: the view reports it, so the editor shows the switch as it is.
+    let view =
+        upsert_custom_provider_with_catalog(with_flag(Some(true), "Gateway"), &catalog).unwrap();
+    assert!(view.custom[0].skip_tls_verify);
+    assert_eq!(
+        serde_json::to_value(&view.custom[0]).unwrap()["skipTlsVerify"],
+        json!(true)
+    );
+
+    // An edit from a client without the control leaves it on.
+    let view = upsert_custom_provider_with_catalog(with_flag(None, "Gateway 2"), &catalog).unwrap();
+    assert!(
+        view.custom[0].skip_tls_verify,
+        "an edit that cannot express the flag must preserve it"
+    );
+
+    // An explicit off clears it.
+    let view =
+        upsert_custom_provider_with_catalog(with_flag(Some(false), "Gateway 3"), &catalog).unwrap();
+    assert!(!view.custom[0].skip_tls_verify);
+
+    // Nothing is left behind in the file either: the entry no longer names it.
+    let stored: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(models_json_path().unwrap()).unwrap())
+            .unwrap();
+    assert!(
+        stored["providers"]["gateway"]
+            .get("skipTlsVerify")
+            .is_none(),
+        "clearing must remove the key, not store `false`: {stored}"
+    );
+}
+
+/// The write the host sends the agent states the flag explicitly.
+///
+/// `None` in the payload is the "an older client said nothing" case and the
+/// agent then preserves the stored value; the host always knows the answer, so
+/// it must always say it — otherwise a first save from a form showing the switch
+/// off would leave a previously-on provider on.
+#[test]
+fn provider_upsert_message_always_states_skip_tls_verify() {
+    let catalog = fixture_catalog();
+    let _home = HomeGuard::new("skip-tls-verify-message");
+    let _ = &catalog;
+    for (input_flag, expected) in [(Some(true), true), (Some(false), false), (None, false)] {
+        let validated = validate_custom_provider(UpsertCustomProviderInput {
+            skip_tls_verify: input_flag,
+            ..input("gateway", "Gateway", false)
+        })
+        .unwrap();
+        let message = provider_upsert_message(&validated);
+        assert_eq!(
+            message.skip_tls_verify,
+            Some(expected),
+            "input {input_flag:?} must reach the agent as a stated answer"
+        );
+    }
 }
 
 #[test]
@@ -1563,6 +1639,7 @@ async fn the_editor_probe_forwards_the_trimmed_form_and_returns_the_verdict() {
         provider_id: Some(" acme ".into()),
         model_id: " acme-large ".into(),
         level: Some(" high ".into()),
+        skip_tls_verify: Some(true),
     })
     .await
     .expect("the probe is forwarded");
@@ -1580,6 +1657,11 @@ async fn the_editor_probe_forwards_the_trimmed_form_and_returns_the_verdict() {
     assert_eq!(sent.provider_id, "acme");
     assert_eq!(sent.model_id, "acme-large");
     assert_eq!(sent.level, "high");
+    assert_eq!(
+        sent.skip_tls_verify,
+        Some(true),
+        "the editor's skipTlsVerify switch must reach the detection run"
+    );
 
     // A blank level is the calibration call: the Agent reads an empty level as
     // "send no thinking parameter", so the wrapper must not invent one.
@@ -1594,6 +1676,7 @@ async fn the_editor_probe_forwards_the_trimmed_form_and_returns_the_verdict() {
         provider_id: None,
         model_id: "acme-large".into(),
         level: Some("   ".into()),
+        skip_tls_verify: None,
     })
     .await
     .expect("the calibration call");

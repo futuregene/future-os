@@ -431,6 +431,20 @@ message ProviderUpsert {
   // Remove this provider's auth.json key in the same transaction as the
   // models.json/baseUrl mutation.
   bool clear_api_key = 10;
+
+  // Whether this provider's `https` endpoint may present any certificate.
+  //
+  // A self-hosted gateway often serves TLS with a self-signed certificate, or
+  // one issued by a private CA the platform store does not know; the user still
+  // wants the transport encrypted end to end. When true the agent stops
+  // verifying the chain and the host name for this provider's requests and
+  // treats TLS as encryption only.
+  //
+  // Presence is load-bearing: ``Some(false)`` clears the stored flag and
+  // ``None`` (an older client that cannot express it) leaves it alone, so an
+  // edit from a client without this control cannot silently re-enable
+  // verification on a self-signed endpoint.
+  optional bool skip_tls_verify = 11;
 }
 
 // A model entry under a custom provider, persisted to models.json.
@@ -492,6 +506,11 @@ message ThinkingLevelProbe {
   // all — the calibration call that proves the rest of the configuration
   // (endpoint, key, model id) works.
   string level = 6;
+
+  // Probe over a TLS connection whose certificate is not verified, matching a
+  // ``skipTlsVerify`` provider in the editor. Without it a detection run against
+  // a self-signed endpoint would fail in the handshake and read as "wrong key".
+  optional bool skip_tls_verify = 7;
 }
 
 // ── ImageContent ───────────────────────────────────────────────────────────

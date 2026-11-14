@@ -282,6 +282,54 @@ it("detects thinking levels on that host", async () => {
   await panel.unmount();
 });
 
+/**
+ * The TLS switch crosses the connection in both directions: the host's stored
+ * value fills the form, and the form's answer goes back on save.
+ *
+ * This is why the field is in the wire payload rather than only in this app's
+ * settings: the endpoint belongs to the *other* computer, so that computer is
+ * where the certificate is (not) verified, and a value that did not travel
+ * would leave the phone or the paired desktop able to show a switch that does
+ * nothing.
+ */
+it("carries the TLS decision to and from that host", async () => {
+  const withInsecure = hostView({
+    custom: [{
+      api: "openai-completions",
+      baseUrl: "https://gateway.internal/v1",
+      hasApiKey: true,
+      id: "gateway",
+      models: [],
+      name: "Gateway",
+      skipTlsVerify: true,
+    }],
+  });
+  invoke.mockImplementation(async (_command, args) => {
+    const type = (args as { command?: { type?: string } })?.command?.type;
+    if (type === "list_providers")
+      return withInsecure;
+    return withInsecure;
+  });
+
+  const panel = await mount();
+  await act(async () => panel.button("Edit")!.click());
+  await settle();
+
+  // The host said the switch is on, so the form opens on it.
+  const toggle = panel.container.querySelector<HTMLButtonElement>(
+    "button[role=\"switch\"][aria-label=\"Skip TLS certificate verification\"]",
+  )!;
+  expect(toggle.getAttribute("aria-checked")).toBe("true");
+
+  await act(async () => toggle.click());
+  await act(async () => panel.button("Save")!.click());
+  await settle();
+
+  const upsert = sent("upsert_custom_provider")[0]!.command as { provider: Record<string, unknown> };
+  expect(upsert.provider).toMatchObject({ id: "gateway", skipTlsVerify: false });
+  await panel.unmount();
+});
+
 /** Closing the key dialog without saving writes nothing. */
 it("writes nothing when the key dialog is dismissed", async () => {
   const panel = await mount();

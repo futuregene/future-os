@@ -56,6 +56,11 @@ pub struct ProviderRoute {
     pub api_key: String,
     pub auth: AuthScheme,
     pub headers: BTreeMap<String, String>,
+    /// Do not verify this endpoint's TLS certificate chain or host name. The
+    /// connection is still encrypted; it just no longer proves the peer's
+    /// identity. Carried here because the HTTP client that honours it is built
+    /// per request from the resolved target.
+    pub skip_tls_verify: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -926,6 +931,7 @@ impl ResolvedModelTarget {
                     .iter()
                     .map(|(key, value)| (key.clone(), value.clone()))
                     .collect(),
+                skip_tls_verify: model.skip_tls_verify,
             },
             protocol,
             capabilities: ModelCapabilities {
@@ -968,6 +974,7 @@ impl ResolvedModelTarget {
                 api_key: api_key.to_string(),
                 auth: AuthScheme::Bearer,
                 headers: BTreeMap::new(),
+                skip_tls_verify: false,
             },
             protocol: ProtocolConfig::OpenAiChat(OpenAiChatConfig::default()),
             capabilities: ModelCapabilities::default(),
