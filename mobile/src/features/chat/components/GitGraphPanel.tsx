@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowLeft } from "lucide-react-native";
 import {
   ActivityIndicator,
   BackHandler,
@@ -75,12 +74,22 @@ export function GitGraphPanel({
   listCommits,
   getCommit,
   onClose,
+  registerBack,
 }: {
   online: boolean;
   supported: boolean;
   listCommits: () => Promise<GitGraphListing>;
   getCommit: (gitRef: string) => Promise<GitCommitDetail>;
   onClose: () => void;
+  /**
+   * Hands the conversation's own back control a way to step back one level
+   * inside this surface. The bar above already carries the only back arrow on
+   * screen, so a second one here would be the same gesture twice in the same
+   * corner: `true` means the press was taken (a patch was popped back to the
+   * list), `false` means there is nothing left to pop and the caller should
+   * leave the history.
+   */
+  registerBack?: (handler: () => boolean) => void;
 }) {
   const styles = useStyles();
   const { colors, graphColors, font, leading } = useTheme();
@@ -116,6 +125,16 @@ export function GitGraphPanel({
     }
     return () => { current = false; };
   }, [request]);
+
+  useEffect(() => {
+    // The bar's back button steps back one level here before it leaves, so the
+    // list is reached the same way a system back reaches it.
+    registerBack?.(() => {
+      if (!selected) return false;
+      setSelected(null);
+      return true;
+    });
+  }, [registerBack, selected]);
 
   useEffect(() => {
     // A commit's detail owns system back while it is open, so Android's edge
@@ -159,25 +178,15 @@ export function GitGraphPanel({
 
   return (
     <View style={styles.panel}>
-      {/* No header on either page. Both are one continuous surface — the list of
-          commits, then one commit's patch — so a bar over them would only spend
-          a row of a phone screen repeating what the page already is. What is left
-          is the one control with nowhere else to live: the way back. From a
-          patch it returns to the list; from the list it leaves.
-          It is in the layout rather than floating over it, because the list's
-          first row carries the lane picture in the same top-left corner, and a
-          floating button would sit on top of it. */}
-      <View style={styles.escape}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={selected ? t("git.back") : t("common.close")}
-          hitSlop={8}
-          onPress={selected ? () => setSelected(null) : onClose}
-          style={({ pressed }) => [styles.backButton, pressed && styles.pressed]}
-        >
-          <ArrowLeft color={colors.inkSoft} size={22} />
-        </Pressable>
-      </View>
+      {/* No header and no back arrow on either page. The conversation's own bar
+          is still on screen above this surface, and its back button already
+          steps back through it: from a patch to the list, from the list out of
+          the history (`registerBack` is how it knows which). A second arrow
+          here would be the same control twice, one under the other, in the same
+          corner.
+          That is also why neither page draws a title bar: the commits, then the
+          patch, are one continuous surface, and a bar would spend a row of a
+          phone screen repeating what the page already is. */}
 
       {selected ? (
         <CommitDetailPane commit={selected} getCommit={getCommit} />
@@ -248,7 +257,8 @@ function CommitRow({
 }: {
   commit: GitGraphRow;
   row: GraphGeometry | null;
-  /** The lane the commit sits on: what the row's colour stripe is tinted with. */
+  /** The lane the commit sits on, for the row's spoken hint. The picture draws
+   * it; nothing on the row is tinted with it. */
   lane: number;
   height: number;
   /** The y the commit's dot is drawn at: the centre of the first text line. */
@@ -258,7 +268,6 @@ function CommitRow({
   onPress: () => void;
 }) {
   const styles = useStyles();
-  const { colors, graphColors } = useTheme();
   const { t } = useTranslation();
   const drawing = useMemo(
     () => (row ? laneDrawing(row, metrics, height, center) : null),
@@ -273,16 +282,6 @@ function CommitRow({
       onPress={onPress}
       style={({ pressed }) => [styles.row, { height }, pressed && styles.pressed]}
     >
-      {/* The stripe is what makes a page of commits scannable at a glance: the
-          eye follows one colour down the list without reading the picture. It is
-          decoration, so it carries no name of its own. */}
-      <View
-        pointerEvents="none"
-        style={[
-          styles.laneStripe,
-          { backgroundColor: graphColors[lane % graphColors.length] ?? colors.lineSoft },
-        ]}
-      />
       {/* Hidden from assistive tech: the row's own label already names the
           commit, and a picture of lanes has no useful reading order. The lane
           number is in the row's hint instead. */}
@@ -427,20 +426,6 @@ function roleStyle(styles: PanelStyles, role: PatchLine["role"]) {
 
 const useStyles = createThemedStyles(theme => StyleSheet.create({
   panel: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, zIndex: 4, backgroundColor: theme.colors.surface },
-  escape: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingLeft: spacing.xs,
-    paddingRight: layout.gutter,
-    paddingTop: spacing.xs,
-  },
-  backButton: {
-    width: layout.touchTarget,
-    height: layout.touchTarget,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: radius.pill,
-  },
   pressed: { backgroundColor: theme.colors.surfaceSubtle },
   list: { paddingBottom: spacing.lg },
   row: {
@@ -450,10 +435,6 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     paddingLeft: spacing.sm,
     paddingRight: layout.gutter,
   },
-  // The lane's colour as a hairline at the row's left edge. Two points: enough to
-  // follow a line of work while scrolling, small enough not to compete with the
-  // picture.
-  laneStripe: { position: "absolute", left: 0, top: 0, bottom: 0, width: 2, opacity: 0.9 },
   body: { flex: 1, minWidth: 0 },
   subject: { color: theme.colors.ink, fontSize: theme.font(14), lineHeight: theme.leading(19) },
   decorations: { color: theme.colors.accent, fontWeight: "600" },

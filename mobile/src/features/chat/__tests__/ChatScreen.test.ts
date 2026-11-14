@@ -562,6 +562,39 @@ test("the Git graph owns system back and freezes the transcript like the file pa
   }
 });
 
+test("the bar's back steps back through the Git pages before it leaves them", async () => {
+  const original = mockRemote.capabilities;
+  mockRemote.capabilities = new Set(["git_graph_v1"]);
+  mockRemote.listGitCommits = jest.fn(async () => ({
+    isRepo: true, repoName: "repo", path: "/repo", commits: [], truncated: false,
+  }));
+  try {
+    act(() => tree.update(createElement(ChatScreen)));
+    act(() => tree.root.findByType(ChatTopBar).props.onMenu());
+    await act(async () => { await Promise.resolve(); });
+    act(() => menuActions(tree.root).find(row => row.label === "git.open")!.onPress!());
+
+    // The panel is a surface with pages inside it, so it hands the bar a way to
+    // step back one level. While it reports that it took the press, the bar must
+    // not leave the history.
+    const registerBack = tree.root.findByType(GitGraphPanel).props.registerBack;
+    expect(typeof registerBack).toBe("function");
+    let pagesLeft = 1;
+    act(() => registerBack(() => pagesLeft-- > 0));
+
+    act(() => tree.root.findByType(ChatTopBar).props.onBack());
+    expect(tree.root.findAllByType(GitGraphPanel)).toHaveLength(1);
+    expect(mockRemote.closeConversation).not.toHaveBeenCalled();
+
+    // Once the panel has no page left to pop, the same press leaves it.
+    act(() => tree.root.findByType(ChatTopBar).props.onBack());
+    expect(tree.root.findAllByType(GitGraphPanel)).toHaveLength(0);
+    expect(mockRemote.closeConversation).not.toHaveBeenCalled();
+  } finally {
+    mockRemote.capabilities = original;
+  }
+});
+
 test("an ordinary conversation does not expose its internal storage workspace", () => {
   mockRemote.sessions = [{
     sessionId: "history",

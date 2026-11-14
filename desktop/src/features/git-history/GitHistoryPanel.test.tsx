@@ -149,19 +149,19 @@ it("names the author first, then the hash, then when", async () => {
   expect(rows()[0]!.textContent).toContain("Rin · aaa111 · 2 hours ago");
 });
 
-it("gives each lane its own colour, and says which lane a row is on", async () => {
+it("says which lane a row is on in words, not with a tinted edge", async () => {
   await mount({ kind: "local", path: "/Users/reader/repo" });
-  // The row's left stripe carries its lane colour, which is what makes a page
-  // scannable without reading the picture.
-  const stripes = [...container.querySelectorAll<HTMLElement>("[data-lane-stripe]")]
-    .map((stripe) => {
-      return stripe.style.backgroundColor;
+  // The picture is what says which column a commit is on. A hairline of the
+  // lane's colour used to sit at the row's left edge; pinned to the row rather
+  // than to the lane column, it read as a stray border beside the graph.
+  expect(container.querySelectorAll("[data-lane-stripe]")).toHaveLength(0);
+  // The lane is still there to be read — in the picture, where the dot's x is
+  // the lane column.
+  const lanes = [...container.querySelectorAll("[data-lane-graph] circle")]
+    .map((dot) => {
+      return dot.getAttribute("cx");
     });
-  expect(stripes).toHaveLength(COMMITS.length);
-  // Commit "ccc333" sits on lane 1 and "eee555" on lane 2 in the fixture, so a
-  // page of rows is not one colour repeated — which is what makes a page of
-  // lanes readable at a glance rather than only inside the picture.
-  expect(new Set(stripes).size).toBeGreaterThan(1);
+  expect(new Set(lanes).size).toBeGreaterThan(1);
 });
 
 it("opens a commit's patch, coloured by line role", async () => {
