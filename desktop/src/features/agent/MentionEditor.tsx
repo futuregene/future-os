@@ -88,6 +88,13 @@ function choiceIcon(paths: readonly string[]): SVGSVGElement {
 export interface MentionEditorHandle {
   /** Serialize to markdown: text verbatim, each file pill → `[name](./path)`. */
   getContent: () => string;
+  /**
+   * The same content, minus the choice answer's pill: what the conversation
+   * draft stores as its text. The answer travels in the draft's own `choice`
+   * field, so carrying its plain-text form in `text` as well would put it back
+   * twice on the next load (once as text, once as the rebuilt pill).
+   */
+  getDraftContent: () => string;
   /** Empty the editor. */
   clear: () => void;
   focus: () => void;
@@ -312,6 +319,7 @@ export function MentionEditor({
 
   useImperativeHandle(ref, () => ({
     getContent: () => serialize(editorRef.current),
+    getDraftContent: () => serialize(editorRef.current, { omitChoice: true }),
     clear: () => {
       if (editorRef.current)
         editorRef.current.innerHTML = "";

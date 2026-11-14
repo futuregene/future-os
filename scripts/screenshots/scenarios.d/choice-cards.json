@@ -447,7 +447,7 @@
       ]
     },
     "choice-card-implemented": {
-      "note": "真实组件 · 桌面。回复末尾的 futureos-choice 围栏由 packages/markdown 解析、由 ChoiceCard.tsx 画出真正的选项卡（不再是注入原型）：问题、单选标注、三行选项与各自的后果说明。卡长在正文列里、与正文同宽；还没有选任何东西，所以发送键仍是灰的（需求 a），而这张卡此刻是只读态——把答案接进草稿是 §11 第 4 步。",
+      "note": "真实组件 · 桌面。回复末尾的 futureos-choice 围栏由 packages/markdown 解析、由 ChoiceCard.tsx 画出真正的选项卡（不再是注入原型）：问题、单选标注、三行选项与各自的后果说明。卡长在正文列里、与正文同宽。这是线程里最后一张卡，所以它是可交互态（§2）——行在 tab 序里、点下去会写进草稿；还没有选任何东西，所以发送键仍是灰的（需求 a）。",
       "url": "http://localhost:5299/shot/?lang=zh&thread=th_choice",
       "width": 1440,
       "height": 900,
@@ -462,7 +462,7 @@
           "wait": 600
         },
         {
-          "eval": "(() => { const card = document.querySelector('[data-choice-card]'); if (!card) throw new Error('the reply did not render a choice card'); const body = card.closest('[data-message-id]'); if (!body) throw new Error('the card is not inside a reply'); const rows = [...card.querySelectorAll('[data-choice-option]')]; if (rows.length !== 3) throw new Error('the card draws ' + rows.length + ' options'); if (!rows.every(row => row.getAttribute('role') === 'radio')) throw new Error('the rows are not radio rows'); if (rows.some(row => row.getAttribute('aria-checked') !== 'false')) throw new Error('nothing is picked, so no row may read as checked'); const state = card.getAttribute('data-choice-state'); if (state !== 'readonly') throw new Error('with no answer surface wired, every card must be read-only: ' + state); if (rows.some(row => row.tabIndex !== -1)) throw new Error('a read-only card must stay out of the tab order'); if (card.querySelector('[data-choice-footer]')) throw new Error('the footer may only appear after a pick'); if (!card.querySelector('[role=\"radiogroup\"]')) throw new Error('the rows are not grouped'); const label = document.getElementById(card.getAttribute('aria-labelledby')); if (!label || label.textContent !== '接下来做哪一件？') throw new Error('the group is not labelled by the question'); if (!card.textContent.includes('单选')) throw new Error('the mode label is missing'); const column = body.querySelector('p'); const cr = card.getBoundingClientRect(), pr = column.getBoundingClientRect(); if (Math.abs(cr.width - pr.width) > 1) throw new Error('the card is ' + Math.round(cr.width) + 'px wide against a ' + Math.round(pr.width) + 'px column'); if (Math.abs(cr.left - pr.left) > 1) throw new Error('the card does not start at the column edge'); const form = document.querySelector('form').getBoundingClientRect(); if (cr.bottom > form.top - 8) throw new Error('the card runs under the composer'); if (document.body.innerText.includes('futureos-choice')) throw new Error('the fence rendered as a code block, not a card'); const submit = document.querySelector('form button[type=\"submit\"]'); if (!submit || !submit.disabled) throw new Error('nothing is picked, so send must stay disabled — requirement (a)'); return JSON.stringify({card:[Math.round(cr.top),Math.round(cr.bottom),Math.round(cr.width)],column:Math.round(pr.width),rows:rows.length}); })()"
+          "eval": "(() => { const card = document.querySelector('[data-choice-card]'); if (!card) throw new Error('the reply did not render a choice card'); const body = card.closest('[data-message-id]'); if (!body) throw new Error('the card is not inside a reply'); const rows = [...card.querySelectorAll('[data-choice-option]')]; if (rows.length !== 3) throw new Error('the card draws ' + rows.length + ' options'); if (!rows.every(row => row.getAttribute('role') === 'radio')) throw new Error('the rows are not radio rows'); if (rows.some(row => row.getAttribute('aria-checked') !== 'false')) throw new Error('nothing is picked, so no row may read as checked'); const state = card.getAttribute('data-choice-state'); if (state !== 'active') throw new Error('the last card in the thread must be answerable: ' + state); if (rows.filter(row => row.tabIndex === 0).length !== 1) throw new Error('a live card is a roving radio group: one row in the tab order, the rest out of it'); if (card.querySelector('[data-choice-footer]')) throw new Error('the footer may only appear after a pick'); if (!card.querySelector('[role=\"radiogroup\"]')) throw new Error('the rows are not grouped'); const label = document.getElementById(card.getAttribute('aria-labelledby')); if (!label || label.textContent !== '接下来做哪一件？') throw new Error('the group is not labelled by the question'); if (!card.textContent.includes('单选')) throw new Error('the mode label is missing'); const column = body.querySelector('p'); const cr = card.getBoundingClientRect(), pr = column.getBoundingClientRect(); if (Math.abs(cr.width - pr.width) > 1) throw new Error('the card is ' + Math.round(cr.width) + 'px wide against a ' + Math.round(pr.width) + 'px column'); if (Math.abs(cr.left - pr.left) > 1) throw new Error('the card does not start at the column edge'); const form = document.querySelector('form').getBoundingClientRect(); if (cr.bottom > form.top - 8) throw new Error('the card runs under the composer'); if (document.body.innerText.includes('futureos-choice')) throw new Error('the fence rendered as a code block, not a card'); const submit = document.querySelector('form button[type=\"submit\"]'); if (!submit || !submit.disabled) throw new Error('nothing is picked, so send must stay disabled — requirement (a)'); return JSON.stringify({card:[Math.round(cr.top),Math.round(cr.bottom),Math.round(cr.width)],column:Math.round(pr.width),rows:rows.length}); })()"
         },
         {
           "shot": "choice-card-implemented.png"
@@ -470,7 +470,7 @@
       ]
     },
     "choice-pill-implemented": {
-      "note": "真实编辑器 · 桌面。答案作为编辑器内的原子 pill（第 3 步）：什么都没打字、只选了答案时发送键是亮的（§5.2.1 的那条实测，需求 d），移除 pill 后立刻变灰（需求 a）。pill 的 DOM 由 injects/choice-pill-real.js 按 buildChoicePill 的形状插入——把卡片点击写成答案属于第 4 步；而发送键的亮/灰是应用自己通过 isEditorEmpty 得出的结果，不是画上去的。",
+      "note": "真实组件 · 桌面。点卡片上的「重画森林图」，答案作为编辑器内的原子 pill 落进输入框（§2 的那条：卡片与 pill 是同一个值的两个视图）。什么都没打字、只选了答案时发送键是亮的（§5.2.1，需求 d），点 pill 的叉后立刻变灰（需求 a）。pill 由产品的点击路径写入（tap 是真实的鼠标按下/抬起），不再靠注入；发送键的亮/灰同样是应用自己通过 isEditorEmpty 得出的。",
       "url": "http://localhost:5299/shot/?lang=zh&thread=th_choice",
       "width": 1440,
       "height": 900,
@@ -479,25 +479,75 @@
           "wait": 2600
         },
         {
-          "inject": "injects/choice-pill-real.js"
+          "eval": "(() => { const card=document.querySelector('[data-choice-card]'); if(!card) throw new Error('the choice card did not render'); card.scrollIntoView({block:'center'}); return 'ok'; })()"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "tapText": "重画森林图"
         },
         {
           "wait": 500
         },
         {
-          "eval": "(() => { const pill = window.__choicePill(); if (!pill) throw new Error('no answer pill in the composer'); const editor = document.querySelector('[role=\"textbox\"][contenteditable=\"true\"]'); if (!editor || !editor.contains(pill)) throw new Error('the pill is not inside the editor'); const pr = pill.getBoundingClientRect(), er = editor.getBoundingClientRect(); if (pr.left < er.left - 1 || pr.right > er.right + 1) throw new Error('the pill spills out of the editor'); if (pr.height < 16 || pr.height > 30) throw new Error('the pill is ' + Math.round(pr.height) + 'px tall'); const typed = [...editor.childNodes].filter(node => node.nodeType === 3)   .map(node => node.textContent.replace(/[\\s\\u200B]/g, '')).join(''); if (typed) throw new Error('nothing may be typed beside the pill: ' + JSON.stringify(typed)); if (!pill.querySelector('[data-choice-action=\"change\"]')) throw new Error('the pill has no change action'); if (!pill.querySelector('[data-choice-action=\"remove\"]')) throw new Error('the pill has no remove action'); const submit = document.querySelector('form button[type=\"submit\"]'); if (!submit) throw new Error('no send button'); if (submit.disabled) throw new Error('send is disabled with an answer and no text — requirement (d) is broken'); return JSON.stringify({pill:[Math.round(pr.left),Math.round(pr.width),Math.round(pr.height)],sendDisabled:submit.disabled}); })()"
+          "eval": "(() => { const pill = document.querySelector('[data-mention=\"choice\"]'); if (!pill) throw new Error('clicking a row wrote no answer pill'); const editor = document.querySelector('[role=\"textbox\"][contenteditable=\"true\"]'); if (!editor || !editor.contains(pill)) throw new Error('the pill is not inside the editor'); const pr = pill.getBoundingClientRect(), er = editor.getBoundingClientRect(); if (pr.left < er.left - 1 || pr.right > er.right + 1) throw new Error('the pill spills out of the editor'); if (pr.height < 16 || pr.height > 30) throw new Error('the pill is ' + Math.round(pr.height) + 'px tall'); if (!pr.width || pr.right > er.right) throw new Error('the pill has no room in the editor'); const typed = [...editor.childNodes].filter(node => node.nodeType === 3).map(node => node.textContent.replace(/[\\s\\u200B]/g, '')).join(''); if (typed) throw new Error('nothing may be typed beside the pill: ' + JSON.stringify(typed)); if (!pill.querySelector('[data-choice-action=\"change\"]')) throw new Error('the pill has no change action'); if (!pill.querySelector('[data-choice-action=\"remove\"]')) throw new Error('the pill has no remove action'); const card = document.querySelector('[data-choice-card]'); const marked = [...card.querySelectorAll('[data-choice-option]')].filter(row => row.getAttribute('data-choice-selected') === 'true'); if (marked.length !== 1 || marked[0].getAttribute('data-choice-option') !== 'forest') throw new Error('the card does not mark the picked row'); if (!card.querySelector('[data-choice-footer]')) throw new Error('the card never says the answer is waiting in the composer'); const body = card.closest('[data-message-id]'); const cr = card.getBoundingClientRect(), br = body.getBoundingClientRect(); if (cr.left < br.left - 1 || cr.right > br.right + 1) throw new Error('the card left the reply column'); const submit = document.querySelector('form button[type=\"submit\"]'); if (!submit) throw new Error('no send button'); if (submit.disabled) throw new Error('send is disabled with an answer and no text — requirement (d) is broken'); return JSON.stringify({pill:[Math.round(pr.left),Math.round(pr.width),Math.round(pr.height)],card:[Math.round(cr.left),Math.round(cr.right)],sendDisabled:submit.disabled}); })()"
         },
         {
           "shot": "choice-pill-implemented.png"
         },
         {
-          "eval": "(() => { const pill = window.__choicePill(); const editor = document.querySelector('[role=\"textbox\"][contenteditable=\"true\"]'); if (!pill) throw new Error('no pill to remove'); pill.remove(); for (const node of [...editor.childNodes]) if (node.nodeType === 3 && !node.textContent.trim()) node.remove(); editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' })); return 'removed'; })()"
+          "tap": "移除「接下来做哪一件？」的选择"
         },
         {
           "wait": 400
         },
         {
-          "eval": "(() => { const submit = document.querySelector('form button[type=\"submit\"]'); if (!submit) throw new Error('no send button'); if (!submit.disabled) throw new Error('removing the answer must turn send grey again — requirement (a)'); if (document.querySelector('[data-mention=\"choice\"]')) throw new Error('the pill is still in the editor'); return JSON.stringify({sendDisabled:submit.disabled}); })()"
+          "eval": "(() => { const submit = document.querySelector('form button[type=\"submit\"]'); if (!submit) throw new Error('no send button'); if (!submit.disabled) throw new Error('removing the answer must turn send grey again — requirement (a)'); if (document.querySelector('[data-mention=\"choice\"]')) throw new Error('the pill is still in the editor'); const card = document.querySelector('[data-choice-card]'); if (card.querySelector('[data-choice-selected=\"true\"]')) throw new Error('the card still marks a row the answer no longer holds'); if (card.querySelector('[data-choice-footer]')) throw new Error('the footer is still there after the answer was dropped'); if (sessionStorage.getItem('composer-draft:th_choice')) throw new Error('the draft kept a choice that was removed'); return JSON.stringify({sendDisabled:submit.disabled}); })()"
+        }
+      ]
+    },
+    "choice-answer-sent": {
+      "note": "真实组件 · 桌面。选了「补一张实验流程图」后按发送：答案作为 §7 的纯文本 `[接下来做哪一件？ → 补一张实验流程图]` 进入用户消息（任何客户端都能读），而编辑器和草稿里都不再留着它——下一条消息不应该带着上一条的答案。卡片回到未标记的只读态（后面不再有卡，它仍是线程里最后一张）。",
+      "url": "http://localhost:5299/shot/?lang=zh&thread=th_choice",
+      "width": 1440,
+      "height": 900,
+      "steps": [
+        {
+          "wait": 2600
+        },
+        {
+          "eval": "(() => { const card=document.querySelector('[data-choice-card]'); if(!card) throw new Error('the choice card did not render'); card.scrollIntoView({block:'center'}); return 'ok'; })()"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "tapText": "补一张实验流程图"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "eval": "(() => { const pill = document.querySelector('[data-mention=\"choice\"]'); if (!pill || !pill.textContent.includes('补一张实验流程图')) throw new Error('the pick is not in the editor'); const stored = JSON.parse(sessionStorage.getItem('composer-draft:th_choice') || 'null'); if (!stored || !stored.choice || stored.choice.selectedIds[0] !== 'flow') throw new Error('the answer is not in the draft: ' + JSON.stringify(stored && stored.choice)); return 'picked'; })()"
+        },
+        {
+          "tap": "发送"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "tapText": "不用，直接发送"
+        },
+        {
+          "wait": 2200
+        },
+        {
+          "eval": "(() => { const text = '接下来做哪一件？ → 补一张实验流程图'; const bubbles = [...document.querySelectorAll('[data-message-id]')].filter(node => node.textContent.includes(text)); if (bubbles.length !== 1) throw new Error('the answer did not become exactly one message: ' + bubbles.length); const editor = document.querySelector('[role=\"textbox\"]'); if (!editor) throw new Error('no editor'); if (editor.querySelector('[data-mention=\"choice\"]')) throw new Error('the sent answer is still in the editor'); if ((editor.textContent || '').trim()) throw new Error('the editor was not emptied'); if (sessionStorage.getItem('composer-draft:th_choice')) throw new Error('the draft still holds the sent answer: ' + sessionStorage.getItem('composer-draft:th_choice')); const card = document.querySelector('[data-choice-card]'); if (!card) throw new Error('the card left the transcript'); if (card.querySelector('[data-choice-selected=\"true\"]')) throw new Error('the card still marks a row after the answer left the draft'); return JSON.stringify({bubbles:bubbles.length}); })()"
+        },
+        {
+          "shot": "choice-answer-sent.png"
         }
       ]
     }

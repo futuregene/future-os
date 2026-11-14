@@ -1,7 +1,7 @@
 import type { FutureMarkdownDocument } from "@future-os/markdown";
 import type { ReactNode } from "react";
 import type { StoredFile } from "../../integrations/storage/types";
-import type { FutureReference, InlineNode, MarkdownNode } from "./futureMarkdownTypes";
+import type { ChoiceCardMode, ChoiceCardOption, FutureReference, InlineNode, MarkdownNode } from "./futureMarkdownTypes";
 import type { PreviewFileTarget } from "./PreviewMarkdownContext";
 import { parseSessionReferenceHref } from "@future-os/markdown";
 import { memo, useMemo } from "react";
@@ -59,8 +59,21 @@ interface MarkdownContentProps {
 
 /** The draft's answer to one card, plus the write path picking a row uses. */
 export interface ChoiceCardAnswer {
-  onSelect: (optionId: string) => void;
+  /**
+   * The card hands its own question and rows along with the clicked option: the
+   * answer the draft keeps must carry them (the pill's pencil re-offers the
+   * options from the editor alone — `choiceAnswer.ts`), and the first pick is
+   * the only moment they are known.
+   */
+  onSelect: (optionId: string, picked: ChoiceCardPick) => void;
   selectedIds: string[];
+}
+
+/** A card's question and rows, as a pick hands them to the answer's owner. */
+export interface ChoiceCardPick {
+  mode: ChoiceCardMode;
+  options: ChoiceCardOption[];
+  title: string;
 }
 
 function MarkdownContentImpl({ content, parsedDocument, workspaceId, basePath, onOpenPreview, live, choiceAnswer }: MarkdownContentProps) {
@@ -200,7 +213,13 @@ function renderBlock(
           hint={node.hint}
           key={key}
           mode={node.mode}
-          onSelect={live ? choice.answer.onSelect : undefined}
+          onSelect={live
+            ? (optionId: string) => choice.answer.onSelect(optionId, {
+                mode: node.mode,
+                options: node.options,
+                title: node.title,
+              })
+            : undefined}
           options={node.options}
           selectedIds={live ? choice.answer.selectedIds : undefined}
           title={node.title}
