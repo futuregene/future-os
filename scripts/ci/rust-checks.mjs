@@ -32,6 +32,10 @@ const flags = packages.flatMap(name => ['-p', name]);
 //
 // `testFilter` is passed through unchanged: nextest emulates the libtest
 // arguments after `--` (`remote` as a filter, `--skip remote` as the inverse).
+//
+// nextest adds no per-test deadline either: measured on 0.9.152, a test that
+// sleeps 150 s is reported as `SLOW` at 60 s and 120 s and then passes, so a
+// loaded runner cannot fail a slow-but-passing test where `cargo test` would not.
 const NEXTEST = ['nextest', 'run', '--locked', '--no-tests=pass'];
 // `--no-run` rejects `--no-fail-fast` (there is nothing to fail), so the flag that
 // preserves the old `cargo test --no-fail-fast` guarantee is added for runs only.
