@@ -438,7 +438,7 @@ pub fn mock_agent() -> MockAgentGuard {
 /// wrong too -- with four test threads one reader's wait for its reply held the
 /// lock until three neighbours blocked behind it, so drop the guard as soon as
 /// the fixture is installed.
-pub(crate) fn mock_agent_without_reset() -> MockAgentGuard {
+pub fn mock_agent_without_reset() -> MockAgentGuard {
     let mut timing = crate::test_support::timing::FixtureTiming::start("MockAgentGuard", "agent");
     let lock = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     timing.mark("lock_wait");
