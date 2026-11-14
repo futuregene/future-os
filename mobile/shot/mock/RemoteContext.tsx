@@ -41,6 +41,7 @@ import type { RemoteTaskDetail, RemoteTaskRow, RemoteTaskRun } from "../../src/r
 import { applyStreamEvents, timelineFromEntries } from "@future-os/remote-client/projection";
 import { leanRenderMode, leanRenderTimeline, leanTargetForToolCall } from "./leanRender";
 import {
+  choiceCardEntries,
   compactResumeEntries,
   demoCredentials,
   demoDesktops,
@@ -374,7 +375,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
           ? olderLoaded
             ? [...multiTurnOlderEntries, ...multiTurnEntries]
             : multiTurnEntries
-          : demoEntries;
+          : search.get("choiceCard") === "1"
+            ? choiceCardEntries
+            : demoEntries;
 
     const history = timelineFromEntries(historyEntries as unknown as HistoryEntry[]);
     // `?approval=1` docks a run blocked on the reader's approval (see

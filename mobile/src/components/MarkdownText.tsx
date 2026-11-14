@@ -374,6 +374,22 @@ function renderBlock(
         </Text>
       );
     }
+    case "choiceCard":
+      // The shared parser turns a `futureos-choice` fence into a `choiceCard`
+      // node on every client, so the phone must not fall through to the
+      // paragraph branch below (a card has no `children`). The real card is
+      // §11 step 6; until then the fence degrades to the readable list §8
+      // promises — the options stay on screen, nothing is lost.
+      return (
+        <View key={key} style={isLast ? undefined : styles.blockSpacing} testID="choice-card-degraded">
+          <Text selectable style={[styles.paragraph, styles.bold]}>{node.title}</Text>
+          {node.options.map(option => (
+            <Text key={option.id} selectable style={styles.paragraph}>
+              {option.description ? `${option.label} — ${option.description}` : option.label}
+            </Text>
+          ))}
+        </View>
+      );
     default:
       return (
         <View key={key} style={wrapperStyle}>

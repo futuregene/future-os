@@ -64,5 +64,26 @@
   },
   "missingReference": {
     "label": "缺失 {{targetType}}"
+  },
+  "choice": {
+    "mode": {
+      "single": "单选",
+      "multi": "多选"
+    },
+    "hint": {
+      "single": "选一个就放进输入框；也可以直接在输入框里写别的",
+      "multi": "可以多选，点几个都行"
+    },
+    "foot": {
+      "queued": "已放进输入框，可以继续补充，也可以直接发送"
+    },
+    "chip": {
+      "change": "修改「{{title}}」的选择",
+      "remove": "移除「{{title}}」的选择"
+    },
+    "stale": "这张卡已经过期",
+    "mobile": {
+      "change": "修改「{{title}}」"
+    }
   }
 }
