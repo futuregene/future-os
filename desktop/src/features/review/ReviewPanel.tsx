@@ -3,7 +3,7 @@ import type {
   LastRunReviewData,
 } from "../../integrations/storage/types";
 import type { GitHistorySource } from "../git-history/gitHistorySource";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   getLastRunReview,
@@ -16,7 +16,7 @@ import { GitHistoryPanel } from "../git-history/GitHistoryPanel";
 import { WorkingTreeReview } from "./GitChangesReview";
 import { LastRunReview } from "./LastRunReview";
 
-type ReviewView = "branch" | "uncommitted" | "last_run" | "history";
+type ReviewView = "history" | "branch" | "uncommitted" | "last_run";
 
 export function ReviewPanel({
   changePreview = "ready",
@@ -56,7 +56,22 @@ export function ReviewPanel({
         ? "git"
         : "non_git";
   const isGit = reviewKind === "git";
+  // The history is offered only where there is one, and only once the thread's
+  // own workspace path is known: the read is rooted at that path, and offering
+  // the tab before it resolves would open onto another workspace's log (see the
+  // `workspacePath` prop).
+  const historySource: GitHistorySource | null
+    = isGit && workspacePath ? { kind: "local", path: workspacePath } : null;
   const [activeView, setActiveView] = useState<ReviewView>("branch");
+  /**
+   * The thread whose view the reader has chosen by hand.
+   *
+   * A thread's workspace path arrives with its first context refresh, so the
+   * opening view has to be seeded *after* mount — and a seed that ignored a
+   * click would yank the view out from under a reader who reached for "Branch"
+   * during those first frames.
+   */
+  const chosenForRef = useRef<string | null>(null);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
 
@@ -73,14 +88,31 @@ export function ReviewPanel({
   const runReview = runResource.data;
   const { reload } = runResource;
 
-  // Git workspaces open on the committed branch delta; non-git workspaces only
+  // A Git workspace opens on its history — the lane graph is what this panel is
+  // for, and it leads the strip. Until the thread's own path resolves there is
+  // no log to read, so those first frames stay on the branch delta rather than
+  // highlighting a tab that is not in the strip yet. Non-git workspaces only
   // have the last-run view.
+  //
+  // Runs before the seeding effect below, so a new thread starts unchosen.
   useEffect(() => {
-    if (reviewKind === "git")
-      setActiveView("branch");
-    else if (reviewKind === "non_git")
+    chosenForRef.current = null;
+  }, [threadId]);
+  useEffect(() => {
+    if (reviewKind === "git") {
+      if (chosenForRef.current !== threadId)
+        setActiveView(workspacePath ? "history" : "branch");
+    }
+    else if (reviewKind === "non_git") {
       setActiveView("last_run");
-  }, [threadId, reviewKind]);
+    }
+  }, [threadId, reviewKind, workspacePath]);
+
+  /** Record a view the reader picked, so a late workspace path cannot override it. */
+  function choose(view: ReviewView) {
+    chosenForRef.current = threadId;
+    setActiveView(view);
+  }
 
   // Refresh when a Run on this thread finishes (its changeset just landed).
   useEffect(
@@ -134,12 +166,6 @@ export function ReviewPanel({
   }
 
   const reviewData = activeView === "branch" ? branchReview : uncommittedReview;
-  // The history is offered only where there is one, and only once the thread's
-  // own workspace path is known: the read is rooted at that path, and offering
-  // the tab before it resolves would open onto another workspace's log (see the
-  // `workspacePath` prop).
-  const historySource: GitHistorySource | null
-    = isGit && workspacePath ? { kind: "local", path: workspacePath } : null;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -148,30 +174,34 @@ export function ReviewPanel({
           historySource ? "grid-cols-4" : "grid-cols-3"
         }`}
       >
-        <ViewTab
-          active={activeView === "branch"}
-          label={t("tab.branch")}
-          onClick={() => setActiveView("branch")}
-        />
-        <ViewTab
-          active={activeView === "uncommitted"}
-          label={t("tab.uncommitted")}
-          onClick={() => setActiveView("uncommitted")}
-        />
-        <ViewTab
-          active={activeView === "last_run"}
-          label={t("tab.lastRun")}
-          onClick={() => setActiveView("last_run")}
-        />
+        {/* The history leads the strip: the lane graph is what a reader opens
+            this panel to see, and it was the last of four tabs. It still only
+            appears where there is a log to read (see `historySource`), so a
+            workspace without one keeps the same three-view strip. */}
         {historySource
           ? (
               <ViewTab
                 active={activeView === "history"}
                 label={t("tab.history")}
-                onClick={() => setActiveView("history")}
+                onClick={() => choose("history")}
               />
             )
           : null}
+        <ViewTab
+          active={activeView === "branch"}
+          label={t("tab.branch")}
+          onClick={() => choose("branch")}
+        />
+        <ViewTab
+          active={activeView === "uncommitted"}
+          label={t("tab.uncommitted")}
+          onClick={() => choose("uncommitted")}
+        />
+        <ViewTab
+          active={activeView === "last_run"}
+          label={t("tab.lastRun")}
+          onClick={() => choose("last_run")}
+        />
       </div>
       {activeView === "last_run"
         ? (

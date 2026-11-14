@@ -108,7 +108,7 @@ export function GitHistoryPanel({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div data-git-history={source.kind} className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 px-3 py-2">
         {onClose
           ? <IconButton label={t("close")} onClick={onClose} icon={<ChevronLeft size={16} />} />
