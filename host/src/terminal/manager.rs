@@ -597,6 +597,9 @@ mod tests {
 
     #[test]
     fn the_exited_retention_limit_is_enforced() {
+        // `EXITED_LIMIT + 3` shells at once, so this must not overlap another
+        // multi-session test (see `test_support::pty_heavy_guard`).
+        let _heavy = test_support::pty_heavy_guard();
         let manager = manager_with_shell();
         let mut infos = Vec::new();
         for index in 0..(EXITED_LIMIT + 3) {
@@ -631,6 +634,9 @@ mod tests {
     /// it is the oldest entry in the exit order.
     #[test]
     fn retention_never_evicts_a_running_session() {
+        // `EXITED_LIMIT + 2` exited shells plus the live one, all at once: see
+        // `test_support::pty_heavy_guard`.
+        let _heavy = test_support::pty_heavy_guard();
         let manager = manager_with_shell();
         let running = create(&manager, "thread-running");
         // The live tab is the *oldest* entry in the exit order: the queue is
@@ -657,6 +663,9 @@ mod tests {
 
     #[test]
     fn per_conversation_capacity_is_enforced() {
+        // `MAX_SESSIONS_PER_THREAD + 1` shells at once: see
+        // `test_support::pty_heavy_guard`.
+        let _heavy = test_support::pty_heavy_guard();
         let manager = manager_with_shell();
         let mut created = Vec::new();
         for _ in 0..MAX_SESSIONS_PER_THREAD {
@@ -688,6 +697,10 @@ mod tests {
     /// The global cap is a separate limit from the per-conversation one.
     #[test]
     fn global_capacity_is_enforced_across_conversations() {
+        // `MAX_SESSIONS` live shells at once — the largest single demand in the
+        // suite, and the reason this guard exists (`openpty` runs out of PTYs
+        // on a CI runner when its siblings overlap it).
+        let _heavy = test_support::pty_heavy_guard();
         let manager = manager_with_shell();
         for index in 0..MAX_SESSIONS {
             create(
