@@ -698,6 +698,7 @@ fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
         api: "openai-completions".to_string(),
         base_url: base_url.to_string(),
         api_key: String::new(), // Will be resolved from auth_store at runtime
+        skip_tls_verify: false,
         reasoning,
         input,
         output,

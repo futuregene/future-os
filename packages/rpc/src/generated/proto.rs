@@ -358,6 +358,20 @@ pub struct ProviderUpsert {
     /// models.json/baseUrl mutation.
     #[prost(bool, tag = "10")]
     pub clear_api_key: bool,
+    /// Whether this provider's `https` endpoint may present any certificate.
+    ///
+    /// A self-hosted gateway often serves TLS with a self-signed certificate, or
+    /// one issued by a private CA the platform store does not know; the user still
+    /// wants the transport encrypted end to end. When true the agent stops
+    /// verifying the chain and the host name for this provider's requests and
+    /// treats TLS as encryption only.
+    ///
+    /// Presence is load-bearing: ``Some(false)`` clears the stored flag and
+    /// ``None`` (an older client that cannot express it) leaves it alone, so an
+    /// edit from a client without this control cannot silently re-enable
+    /// verification on a self-signed endpoint.
+    #[prost(bool, optional, tag = "11")]
+    pub skip_tls_verify: ::core::option::Option<bool>,
 }
 /// A model entry under a custom provider, persisted to models.json.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -425,6 +439,11 @@ pub struct ThinkingLevelProbe {
     /// (endpoint, key, model id) works.
     #[prost(string, tag = "6")]
     pub level: ::prost::alloc::string::String,
+    /// Probe over a TLS connection whose certificate is not verified, matching a
+    /// ``skipTlsVerify`` provider in the editor. Without it a detection run against
+    /// a self-signed endpoint would fail in the handshake and read as "wrong key".
+    #[prost(bool, optional, tag = "7")]
+    pub skip_tls_verify: ::core::option::Option<bool>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ImageContent {

@@ -181,6 +181,9 @@ pub(super) struct ValidatedCustomProvider {
     pub(super) api_key: Option<String>,
     /// Validated model entries (see [`ValidatedModel`]).
     pub(super) models: Vec<ValidatedModel>,
+    /// Carried through unchanged: `Some` sets or clears the stored
+    /// `skipTlsVerify`, `None` leaves it alone.
+    pub(super) skip_tls_verify: Option<bool>,
     /// Carried through: true when creating a new provider (vs editing).
     pub(super) create: bool,
 }
@@ -375,6 +378,7 @@ pub(super) fn validate_custom_provider(
         base_url,
         api_key: api_key.map(str::to_string),
         models,
+        skip_tls_verify: input.skip_tls_verify,
         create: input.create,
     })
 }

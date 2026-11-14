@@ -1044,6 +1044,7 @@ fn probe_spec(base_url: &str, level: &str) -> crate::llm::probe::ThinkingLevelPr
         provider_id: "acme".to_string(),
         model_id: "qwen".to_string(),
         level: level.to_string(),
+        skip_tls_verify: None,
     }
 }
 

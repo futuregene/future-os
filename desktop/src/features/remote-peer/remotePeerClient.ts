@@ -1483,6 +1483,8 @@ export async function upsertRemoteCustomProvider(
     name: string;
     api: string;
     baseUrl: string;
+    /** Opt out of TLS certificate verification on that host's endpoint. */
+    skipTlsVerify?: boolean | null;
     apiKey?: string | null;
     models: unknown[];
     create: boolean;
