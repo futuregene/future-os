@@ -227,6 +227,26 @@ export async function releaseSessionQueuedRun(
 }
 
 /**
+ * Correct one waiting message's words, in the place it already holds.
+ *
+ * The desktop edits the accepted prompt in place: same row, same position, and
+ * the files it carries stay attached. A cancel and a re-send would have entered
+ * the queue at the back, so a typo fixed in the second of four waiting messages
+ * would have been sent after the fourth.
+ */
+export async function editSessionQueuedRun(
+  client: RemoteClient,
+  sessionId: string,
+  runId: string,
+  message: string,
+): Promise<void> {
+  await client.requestRetry<null>(
+    { type: "edit_queued_run", runId, message, sessionId },
+    sessionId,
+  );
+}
+
+/**
  * How often the panel re-reads a queue that has something in it.
  *
  * A queue has no event of its own — the desktop announces a run starting and

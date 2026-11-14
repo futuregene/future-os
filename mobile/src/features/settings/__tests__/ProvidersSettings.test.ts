@@ -44,6 +44,9 @@ const mockRemote = {
   updateBuiltinProvider: jest.fn(async () => providers),
   upsertCustomProvider: jest.fn(async () => providers),
   deleteCustomProvider: jest.fn(async () => providers),
+  probeThinkingLevel: jest.fn(async (
+    probe: { api: string; apiKey?: string | null; baseUrl: string; level?: string; modelId: string; providerId?: string },
+  ) => ({ level: probe.level || "default", ok: true, error: undefined as string | undefined })),
 };
 jest.mock("../../../remote/RemoteContext", () => ({ useRemoteControls: () => mockRemote }));
 jest.mock("../../../i18n/LanguageSettings", () => ({ LanguageSettings: () => null }));
@@ -433,6 +436,68 @@ test("a model's thinking levels are a multi-select and default stays implicit", 
   await act(async () => { button("desktopSettings.save").props.onPress(); await Promise.resolve(); });
   const payload = lastUpsert();
   expect(payload.models[0]!.thinkingLevels).toEqual([]);
+});
+
+/** Let an async detection run (one round trip per level) finish. */
+const flushProbes = async () => {
+  for (let i = 0; i < 12; i++)
+    await act(async () => { await Promise.resolve(); });
+};
+
+test("detecting thinking levels keeps only the levels the host accepts", async () => {
+  const accepted = new Set(["default", "low", "high"]);
+  mockRemote.probeThinkingLevel.mockImplementation(async probe => ({
+    level: probe.level || "default",
+    ok: accepted.has(probe.level || "default"),
+    error: undefined as string | undefined,
+  }));
+  await openProviders();
+  await act(async () => link("Acme Gateway").props.onPress());
+  await act(async () => pressable("Acme Large").props.onPress());
+  await act(async () => button("desktopSettings.probeThinkingLevels").props.onPress());
+  await flushProbes();
+
+  const probes = (mockRemote.probeThinkingLevel.mock.calls as unknown as [Record<string, unknown>][])
+    .map(([probe]) => probe);
+  // The calibration call comes first and sends no thinking parameter, against
+  // the form's own values: nothing is saved before a probe.
+  expect(probes[0]).toEqual({
+    api: "openai-completions",
+    apiKey: null,
+    baseUrl: "https://gateway.acme.example.com/v1",
+    level: "default",
+    modelId: "acme-large",
+    providerId: "acme",
+  });
+  // Then every offered wire value exactly once.
+  expect(probes).toHaveLength(8);
+  expect(probes.slice(1).map(probe => probe.level))
+    .toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+  // The accepted levels replaced the row's selection.
+  expect(levelToggle("low")!.props.accessibilityState.checked).toBe(true);
+  expect(levelToggle("off")!.props.accessibilityState.checked).toBe(false);
+  expect(levelToggle("minimal")!.props.accessibilityState.checked).toBe(false);
+  expect(rendered()).toContain("desktopSettings.probeAccepted");
+});
+
+test("a refused calibration stops the detection and keeps the selection", async () => {
+  mockRemote.probeThinkingLevel.mockResolvedValue({
+    level: "default",
+    ok: false,
+    error: "invalid api key",
+  });
+  await openProviders();
+  await act(async () => link("Acme Gateway").props.onPress());
+  await act(async () => pressable("Acme Large").props.onPress());
+  await act(async () => button("desktopSettings.probeThinkingLevels").props.onPress());
+  await flushProbes();
+
+  // One call only: without a working calibration no level verdict would mean
+  // anything, so the levels are left as they were and the reason is shown.
+  expect(mockRemote.probeThinkingLevel).toHaveBeenCalledTimes(1);
+  expect(levelToggle("off")!.props.accessibilityState.checked).toBe(true);
+  expect(rendered()).toContain("desktopSettings.probeCalibrationFailed");
 });
 
 test("a stored level this build has no label for round-trips", async () => {

@@ -648,16 +648,18 @@ thread_local! {
 }
 
 /// Arm one synthetic `SQLITE_BUSY` for the NEXT store initialization a
-/// [`TestHome`] performs.
+/// [`TestHome`] performs (or a fixture that goes through
+/// [`initialize_store_retrying_busy`]).
 ///
-/// The retry arm in `TestHome::new` exists for a real condition — a task outside
-/// the cancel registries still holding the freshly published `app.db`'s write
-/// lock — and that condition has no deterministic seam from a test: it needs a
-/// peer writer inside the ~µs window between `create_dir_all` and the first
-/// `initialize_app_store`. This hook therefore fails the *first* attempt with
-/// the exact error shape production produces (`SqliteFailure` with
-/// `ErrorCode::DatabaseBusy`), which is what makes the retry body testable —
-/// the retried call is the real one, against the real store.
+/// The retry arm in [`initialize_store_retrying_busy`] exists for a real
+/// condition — a task outside the cancel registries still holding the freshly
+/// published `app.db`'s write lock — and that condition has no deterministic
+/// seam from a test: it needs a peer writer inside the ~µs window between
+/// `create_dir_all` and the first `initialize_app_store`. This hook therefore
+/// fails the *first* attempt with the exact error shape production produces
+/// (`SqliteFailure` with `ErrorCode::DatabaseBusy`), which is what makes the
+/// retry body testable — the retried call is the real one, against the real
+/// store.
 ///
 /// `test_support` is compiled only under `#[cfg(test)]`, so this is not a
 /// production seam.
@@ -678,6 +680,49 @@ fn initialize_test_store() -> Result<(), crate::Error> {
         )));
     }
     crate::store::initialize_app_store()
+}
+
+/// Store initialization for a fixture that has just published its HOME: the
+/// first attempt, plus bounded retries while the answer is `SQLITE_BUSY`.
+///
+/// The condition is a real one and it is not the code under test's: cancelling
+/// the process-lifetime workers before publishing a HOME stops the tasks those
+/// registries own, but a task outside them can still be mid-write on the freshly
+/// created `app.db` and hold its lock for a moment (slow CI runners widen the
+/// window). Every step of `initialize_app_store` is idempotent, so the unlucky
+/// attempt is retried instead of failing the test — without this, one such
+/// moment fails a whole suite run rather than one attempt.
+///
+/// Shared by both HOME fixtures ([`TestHome`] and the remote bridge's
+/// `HomeGuard`) so the two cannot drift apart on it: the guarded one retried a
+/// busy store from the start, and the fixtures that only publish a HOME and call
+/// [`crate::remote::test_support::init_store`] did not, which is how a busy
+/// store failed `remote_host`'s tests on the Windows runner.
+pub fn initialize_store_retrying_busy() -> Result<(), crate::Error> {
+    /// Attempts in total (1 + 4 retries): five 500 ms pauses cover a writer that
+    /// has to finish a normal statement, and still fails a permanently locked
+    /// database instead of hanging the suite.
+    const ATTEMPTS: usize = 5;
+    const PAUSE: std::time::Duration = std::time::Duration::from_millis(500);
+    let mut result = initialize_test_store();
+    for _ in 1..ATTEMPTS {
+        if !is_database_busy(&result) {
+            break;
+        }
+        std::thread::sleep(PAUSE);
+        result = initialize_test_store();
+    }
+    result
+}
+
+/// Whether the store answered `SQLITE_BUSY` (`database is locked`).
+fn is_database_busy(result: &Result<(), crate::Error>) -> bool {
+    match result {
+        Err(crate::Error::Database(rusqlite::Error::SqliteFailure(ffi, _))) => {
+            ffi.code == rusqlite::ffi::ErrorCode::DatabaseBusy
+        }
+        _ => false,
+    }
 }
 
 /// HOME redirect + store initialization for tests that touch the SQLite
@@ -742,23 +787,7 @@ impl TestHome {
         // hold its lock for a moment (slow CI runners widen this window).
         // Every step of initialize_app_store is idempotent, so retry the
         // unlucky attempt instead of failing the test.
-        let mut result = initialize_test_store();
-        for _ in 0..4 {
-            match result {
-                Err(crate::Error::Database(rusqlite::Error::SqliteFailure(
-                    rusqlite::ffi::Error {
-                        code: rusqlite::ffi::ErrorCode::DatabaseBusy,
-                        ..
-                    },
-                    _,
-                ))) => {
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                    result = initialize_test_store();
-                }
-                _ => break,
-            }
-        }
-        result.expect("initialize app store in test home");
+        initialize_store_retrying_busy().expect("initialize app store in test home");
         home.timing.mark("store_setup");
         home
     }
@@ -906,6 +935,31 @@ mod tests {
         // Still hold the SAME lock while restoring the original value. Dropping
         // and reacquiring it here lets another fixture's HOME slip in between.
         home.prev_home = saved;
+    }
+
+    /// The remote fixtures' `init_store` is the same store initialization
+    /// [`TestHome`] performs, against a HOME it published the same way, so it has
+    /// to tolerate the same `SQLITE_BUSY` instead of failing the suite on one
+    /// unlucky attempt.
+    ///
+    /// That fixture (`remote::test_support::HomeGuard`) leaves the store to the
+    /// test body and is what the remote and measurement fixtures call, so this
+    /// is the same condition, one seam over: [`arm_busy_fault`] fails the first
+    /// attempt and the retry has to leave a usable store behind.
+    #[test]
+    fn the_remote_fixture_retries_a_busy_store_initialization() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("remote-init-busy");
+        arm_busy_fault();
+        crate::remote::test_support::init_store();
+        assert!(
+            !BUSY_FAULT.get(),
+            "the armed fault is consumed by the first attempt"
+        );
+        // The retry's own initialization is what left a usable store behind.
+        assert!(
+            crate::store::get_app_settings().is_ok(),
+            "the retried initialization created the store"
+        );
     }
 
     /// `TestHome::new` retries a `SQLITE_BUSY` from the store initialization and

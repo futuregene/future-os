@@ -195,6 +195,17 @@ pub struct SessionEntriesPage<Entry = SessionEntryPayload> {
     pub total: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fragment: Option<HistoryEntryFragment>,
+    /// This page is the newest rows of a turn too large to complete.
+    ///
+    /// A page normally begins at the question its reply answers, and a caller
+    /// that asked for one does not have to think about where it started. A turn
+    /// can be bigger than the whole page budget on its own (a run that read its
+    /// own transcript held 1,113 rows and 10.35 MB), and then completing it is
+    /// the transfer the budget exists to prevent. Such a page is the turn's tail,
+    /// and this flag is how it says so: what above it is missing from *this*
+    /// page, and the cursor it carries still reaches it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

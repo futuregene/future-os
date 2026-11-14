@@ -838,6 +838,75 @@ fn cancel_queued_run_requires_run_id() {
     assert_eq!(resp["error_code"], "run_not_queued");
 }
 
+/// The edit corrects the message where it waits. A removal and a re-send would
+/// have answered "success" too — and put the corrected message at the back of the
+/// queue, which is the order the reader did not ask for (reported 2026-11-14).
+#[test]
+fn edit_queued_run_rewrites_the_text_and_keeps_the_order() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    session
+        .read()
+        .runtime
+        .begin(Some("run-active"), Some("request-active"))
+        .unwrap();
+    for number in 1..=3 {
+        let mut prompt = make_cmd("prompt");
+        prompt.message = format!("queued {number}");
+        prompt.busy_policy = "enqueue_if_busy".to_string();
+        prompt.client_request_id = format!("request-{number}");
+        prompt.requested_run_id = format!("run-{number}");
+        assert_eq!(
+            parse_response(&handle_command_internal(&state, prompt))["success"],
+            true
+        );
+    }
+
+    let mut edit = make_cmd("edit_queued_run");
+    edit.run_id = "run-2".to_string();
+    edit.message = "queued 2, corrected".to_string();
+    let response = parse_response(&handle_command_internal(&state, edit));
+    assert_eq!(response["success"], true, "{response}");
+    assert_eq!(response["data"]["state"], "queued");
+
+    let queued = session.read().scheduler.queued();
+    assert_eq!(
+        queued
+            .iter()
+            .map(|run| run.run_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["run-1", "run-2", "run-3"],
+        "the corrected message keeps its place"
+    );
+    assert_eq!(queued[1].payload["message"], "queued 2, corrected");
+}
+
+#[test]
+fn edit_queued_run_requires_a_run_id_and_some_text() {
+    let state = make_app_state();
+    let resp = parse_response(&handle_command_internal(
+        &state,
+        make_cmd("edit_queued_run"),
+    ));
+    assert_eq!(resp["success"], false);
+    assert_eq!(resp["error_code"], "run_not_queued");
+
+    // An empty edit is a deletion, and the panel's bin is what does that.
+    let mut edit = make_cmd("edit_queued_run");
+    edit.run_id = "run-1".to_string();
+    edit.message = "   ".to_string();
+    let resp = parse_response(&handle_command_internal(&state, edit));
+    assert_eq!(resp["success"], false);
+    assert_eq!(resp["error_code"], "empty_message");
+
+    let mut edit = make_cmd("edit_queued_run");
+    edit.run_id = "run-ghost".to_string();
+    edit.message = "words".to_string();
+    let resp = parse_response(&handle_command_internal(&state, edit));
+    assert_eq!(resp["success"], false);
+    assert_eq!(resp["error_code"], "run_not_queued");
+}
+
 #[test]
 fn cancel_queued_run_unknown_run_errors() {
     let state = make_app_state();

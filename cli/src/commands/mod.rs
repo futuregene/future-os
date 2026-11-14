@@ -20,6 +20,7 @@ pub mod mcp;
 pub mod mcp_client;
 pub mod mcp_http;
 pub mod mcp_servers;
+pub mod model_settings;
 pub mod models;
 pub mod remote;
 pub mod remote_peers;

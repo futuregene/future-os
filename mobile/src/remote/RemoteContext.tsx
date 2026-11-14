@@ -106,6 +106,13 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
    * on, not work still in flight.
    */
   olderHistoryFailed: boolean;
+  /**
+   * The open stopped backfilling before the transcript held its exchange count
+   * (one long run is one exchange, so further pages cannot complete it). The
+   * rows above stay reachable through paging; this is what lets the screen say
+   * the window is short instead of drawing it silently.
+   */
+  historyBackfillTruncated: boolean;
   modelId: string;
   thinkingLevel: ThinkingLevel;
   /** Token usage + amount for the open conversation (null until reported). */
@@ -212,6 +219,14 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   cancelQueuedRun(sessionId: string, runId: string): Promise<void>;
   /** Start a parked waiting row now, because the reader asked for it. */
   releaseQueuedRun(sessionId: string, runId: string): Promise<void>;
+  /**
+   * Correct one waiting message's words where it already holds its place.
+   *
+   * Not a cancel and a re-send: the queue is ordered, and a re-send would put the
+   * corrected message at the back, after everything the reader wrote later. The
+   * files the row carries stay with it.
+   */
+  editQueuedRun(sessionId: string, runId: string, message: string): Promise<void>;
   /** Request manual context compaction; resolves with the operation to correlate. */
   compactContext(): Promise<{ sessionId: string; operationId: string }>;
   /** Await that operation's terminal outcome (never rejects; `timeout` on expiry). */
@@ -329,7 +344,7 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
 export type { DesktopCommands } from "./desktopCommands";
 
 type TimelineContextValue = Pick<RemoteContextValue,
-  "timeline" | "timelinePending" | "timelineSyncStatus" | "timelineError" | "canLoadOlderTimeline" | "loadingOlderTimeline" | "olderHistoryFailed"
+  "timeline" | "timelinePending" | "timelineSyncStatus" | "timelineError" | "canLoadOlderTimeline" | "loadingOlderTimeline" | "olderHistoryFailed" | "historyBackfillTruncated"
 >;
 export type RemoteControls = Omit<RemoteContextValue, keyof TimelineContextValue> & { streaming: boolean };
 const RemoteContext = createContext<RemoteControls | null>(null);
@@ -413,7 +428,8 @@ function sameTimelineData(previous: RuntimeEntry | undefined, next: RuntimeEntry
     && a.timelineError === b.timelineError
     && a.canLoadOlderTimeline === b.canLoadOlderTimeline
     && a.loadingOlderTimeline === b.loadingOlderTimeline
-    && a.olderHistoryFailed === b.olderHistoryFailed;
+    && a.olderHistoryFailed === b.olderHistoryFailed
+    && a.historyBackfillTruncated === b.historyBackfillTruncated;
 }
 
 /**
@@ -515,6 +531,7 @@ const NO_MANAGEMENT = {
   updateBuiltinProvider: noop as never,
   upsertCustomProvider: noop as never,
   deleteCustomProvider: noop as never,
+  probeThinkingLevel: noop as never,
   listTasks: noop as never,
   getTask: noop as never,
   createTask: noop as never,
@@ -608,6 +625,9 @@ function machineSurface(
       throw new Error("not_connected");
     }),
     releaseQueuedRun: runtime?.queue?.release ?? (async () => {
+      throw new Error("not_connected");
+    }),
+    editQueuedRun: runtime?.queue?.edit ?? (async () => {
       throw new Error("not_connected");
     }),
     compactContext: runtime?.conversation.compactContext ?? (async () => {
@@ -1315,6 +1335,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         canLoadOlderTimeline: activeRuntime.timeline.canLoadOlderTimeline,
         loadingOlderTimeline: activeRuntime.timeline.loadingOlderTimeline,
         olderHistoryFailed: activeRuntime.timeline.olderHistoryFailed,
+        historyBackfillTruncated: activeRuntime.timeline.historyBackfillTruncated,
       }
       : {
         timeline: EMPTY_TIMELINE,
@@ -1324,6 +1345,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         canLoadOlderTimeline: false,
         loadingOlderTimeline: false,
         olderHistoryFailed: false,
+        historyBackfillTruncated: false,
       }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the leaves, not the controller object
   ), [
@@ -1334,6 +1356,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     activeRuntime?.timeline.canLoadOlderTimeline,
     activeRuntime?.timeline.loadingOlderTimeline,
     activeRuntime?.timeline.olderHistoryFailed,
+    activeRuntime?.timeline.historyBackfillTruncated,
     timelineVersion,
   ]);
 

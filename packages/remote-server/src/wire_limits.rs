@@ -73,6 +73,14 @@ pub fn prepare_backward_entries_page_with_cap(
         .or_else(|| data.get("has_more"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    // The assembly that completed this page may have served a turn's tail
+    // instead of the turn: `history::read_page` bounds the walk by bytes, and
+    // this is how it says so. Nothing here changes it — the page still starts
+    // where the assembly left off, and the flag travels with the rows.
+    let truncated = data
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let mut removed = 0usize;
     while enforce_page_bytes
         && serde_json::to_vec(&entries).map_or(0, |bytes| bytes.len()) > BACKWARD_HISTORY_PAGE_BYTES
@@ -95,6 +103,9 @@ pub fn prepare_backward_entries_page_with_cap(
         "offset": next_offset,
         "nextOffset": next_offset,
         "hasMore": agent_has_more || removed > 0,
+        // Whether the assembly served a turn's tail instead of the turn, so the
+        // reader is told the page starts mid-run rather than left to infer it.
+        "truncated": truncated,
         // The page shed whole oldest exchanges to fit the byte budget. A
         // chunked reader (mobile) uses this to backfill the missing exchanges
         // instead of showing a window that silently starts mid-history —

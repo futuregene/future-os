@@ -304,6 +304,19 @@ pub fn cancel_queued_run_command(run_id: String, session_id: String) -> RpcComma
     }
 }
 
+/// Correct one waiting prompt's words, in the place it already holds.
+///
+/// Only the text travels: the prompt's files, images, model context and frozen
+/// run settings stay exactly as they were accepted, so a correction cannot
+/// change what the run reads.
+pub fn edit_queued_run_command(run_id: String, message: String, session_id: String) -> RpcCommand {
+    RpcCommand {
+        run_id,
+        message,
+        ..base_command("edit_queued_run", session_id)
+    }
+}
+
 /// Start a queued prompt the reader asked for (one parked as stale, or one they
 /// want now instead of at the turn boundary).
 pub fn release_queued_run_command(run_id: String, session_id: String) -> RpcCommand {

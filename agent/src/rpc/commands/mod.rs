@@ -382,6 +382,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "append_system_prompt",
         "cancel_queued_run",
         "release_queued_run",
+        "edit_queued_run",
         "clone",
         "cycle_model",
         "cycle_thinking_level",
@@ -462,6 +463,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
                 | "abort_session"
                 | "cancel_queued_run"
                 | "release_queued_run"
+                | "edit_queued_run"
                 | "approval_decision"
                 | "prune_run_events"
                 | "recover_session"
@@ -490,6 +492,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "prompt" => run_control::handle_prompt(state, &session, &cmd, id),
         "cancel_queued_run" => run_control::handle_cancel_queued_run(&session, &cmd, id),
         "release_queued_run" => run_control::handle_release_queued_run(&session, &cmd, id),
+        "edit_queued_run" => run_control::handle_edit_queued_run(&session, &cmd, id),
         "prune_run_events" => run_control::handle_prune_run_events(&session, &cmd, id),
         "abort_session" => run_control::handle_abort_session(&session, id),
         "retry_persistence" => run_control::handle_retry_persistence(&session, id),

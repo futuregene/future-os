@@ -3,7 +3,7 @@ import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { useOverlayLayer } from "../../components/ui/overlayStack";
 import { renderHook } from "../../test/renderHook";
-import { MIN_PANEL_HEIGHT, useTerminalPanel } from "./useTerminalPanel";
+import { MIN_PANEL_HEIGHT, MIN_PANEL_WIDTH, useTerminalPanel } from "./useTerminalPanel";
 
 const PREFS_KEY = "future.terminal.panel.v1";
 
@@ -14,15 +14,18 @@ const PREFS_KEY = "future.terminal.panel.v1";
 // up to MIN_PANEL_HEIGHT. Captured once, before any test, and restored around
 // every test.
 const BASE_VIEWPORT = window.innerHeight;
+const BASE_VIEWPORT_WIDTH = window.innerWidth;
 
 beforeEach(() => {
   localStorage.clear();
   window.innerHeight = BASE_VIEWPORT;
+  window.innerWidth = BASE_VIEWPORT_WIDTH;
 });
 
 afterEach(() => {
   localStorage.clear();
   window.innerHeight = BASE_VIEWPORT;
+  window.innerWidth = BASE_VIEWPORT_WIDTH;
 });
 
 describe("useTerminalPanel", () => {
@@ -90,6 +93,100 @@ describe("useTerminalPanel", () => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "j" }));
     });
     expect(harness.current.open).toBe(false);
+    harness.unmount();
+  });
+
+  it("docks to the bottom until the reader says otherwise, and remembers the choice", () => {
+    const harness = renderHook(() => useTerminalPanel("thread-1"));
+    expect(harness.current.dock).toBe("bottom");
+    act(() => harness.current.setDock("right"));
+    expect(harness.current.dock).toBe("right");
+
+    // Where the panel sits is a window preference, unlike whether it is open:
+    // another conversation comes back on the edge the reader chose.
+    const other = renderHook(() => useTerminalPanel("thread-2"));
+    expect(other.current.dock).toBe("right");
+    act(() => other.current.toggleDock());
+    expect(other.current.dock).toBe("bottom");
+    expect(JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}").dock).toBe("bottom");
+    other.unmount();
+    harness.unmount();
+  });
+
+  it("treats an unknown dock as the bottom, so a corrupt value cannot lose the panel", () => {
+    localStorage.setItem(PREFS_KEY, JSON.stringify({ dock: "sideways" }));
+    const harness = renderHook(() => useTerminalPanel("thread-1"));
+    expect(harness.current.dock).toBe("bottom");
+    harness.unmount();
+  });
+
+  it("keeps a right docked panel inside the room the shell leaves", () => {
+    window.innerWidth = 1600;
+    localStorage.setItem(PREFS_KEY, JSON.stringify({ width: 100 }));
+    const harness = renderHook(() => useTerminalPanel("thread-1", { reservedWidth: 600 }));
+    // Below the floor, and above the ceiling the shell's other columns leave.
+    expect(harness.current.width).toBe(MIN_PANEL_WIDTH);
+    expect(harness.current.maxWidth).toBe(1600 - 600);
+    act(() => harness.current.setWidth(10 ** 6));
+    expect(harness.current.width).toBe(harness.current.maxWidth);
+
+    act(() => harness.current.setWidth(500));
+    expect(harness.current.width).toBe(500);
+    expect(JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}").width).toBe(500);
+
+    // A shrunk window takes the room back instead of overflowing the layout.
+    act(() => {
+      window.innerWidth = 800;
+      window.dispatchEvent(new Event("resize"));
+    });
+    expect(harness.current.width).toBe(Math.max(MIN_PANEL_WIDTH, 800 - 600));
+    harness.unmount();
+  });
+
+  it("falls back to the bottom — and hides the choice — when the window cannot host a column", () => {
+    // 1024px window with 800px spoken for: 224px are left, below the column's
+    // floor, so docking right would squeeze the conversation instead.
+    window.innerWidth = 1024;
+    localStorage.setItem(PREFS_KEY, JSON.stringify({ dock: "right" }));
+    const harness = renderHook(() => useTerminalPanel("thread-1", { reservedWidth: 800 }));
+    expect(harness.current.canDockRight).toBe(false);
+    expect(harness.current.dock).toBe("bottom");
+
+    // The preference is kept, not overwritten: a wider window brings the column
+    // back where the reader put it.
+    act(() => {
+      window.innerWidth = 1600;
+      window.dispatchEvent(new Event("resize"));
+    });
+    expect(harness.current.canDockRight).toBe(true);
+    expect(harness.current.dock).toBe("right");
+    expect(JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}").dock).toBe("right");
+    harness.unmount();
+  });
+
+  it("maximizes until it is collapsed, and never comes back maximized", () => {
+    localStorage.setItem(PREFS_KEY, JSON.stringify({ open: { "thread-1": true } }));
+    const harness = renderHook(() => useTerminalPanel("thread-1"));
+    expect(harness.current.maximized).toBe(false);
+    act(() => harness.current.toggleMaximized());
+    expect(harness.current.maximized).toBe(true);
+
+    // Closing the panel hides the conversation, so it is also the way back to
+    // it: reopening gives the docked layout, not the whole window again.
+    act(() => harness.current.setOpen(false));
+    expect(harness.current.maximized).toBe(false);
+    act(() => harness.current.setOpen(true));
+    expect(harness.current.maximized).toBe(false);
+
+    // A way of looking at the terminal, not a preference to store.
+    expect(JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}").maximized).toBeUndefined();
+    harness.unmount();
+  });
+
+  it("cannot maximize without a conversation", () => {
+    const harness = renderHook(() => useTerminalPanel(null));
+    act(() => harness.current.toggleMaximized());
+    expect(harness.current.maximized).toBe(false);
     harness.unmount();
   });
 

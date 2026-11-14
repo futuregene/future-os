@@ -335,12 +335,27 @@ future data resume | rollback
 兼容导入的旧数据源，以及包含凭据的 agent 配置——请妥善保管。恢复以原来的 FutureOS home
 为目标；未完成的恢复会阻止启动，直到 `resume` 或 `rollback` 完成。
 
-### `models` —— 列出可用模型
+### `models` —— 列出、配置与探测模型
 
 ```bash
 future models            # 列出运行中 agent 的模型
 future models --json     # 机器可读输出
+future models refresh    # 拉取 Future 平台模型目录
+
+future models providers [--json]                    # 每个 provider 与模型的全部设置
+future models provider set <id> --key <key>         # 内置 provider：key / Base URL
+future models provider set acme --name "Acme" --api openai-completions --base-url https://api.acme.example/v1
+future models provider remove acme                  # 只能删自定义 provider
+future models model set acme/acme-large --context-window 128000 --max-tokens 16384 --thinking-levels low,high
+future models model remove acme/old-model
+future models probe acme/acme-large                 # 该端点实际接受哪些思考等级
+future models probe acme/acme-large --level high --json
 ```
+
+设置类命令写入的内容与桌面端 Providers 页、手机端 provider 编辑器完全一致，走同一批 Agent 命令，
+因此各端看到的是同一份配置；这些命令需要运行中的 Agent。`probe` 用 Agent 自己的适配器实测，
+不写入任何配置：被拒绝的等级是 provider 的回答；而校准请求（完全不带思考参数）失败意味着
+Base URL、key 或模型 ID 有误，命令会以非零退出码结束。
 
 ### `agent` —— 启动 agent 服务
 

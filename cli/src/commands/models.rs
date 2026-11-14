@@ -114,6 +114,22 @@ pub async fn models(args: &[String], out: &Output) -> Result<(), String> {
 
     // `future models refresh [<addr>]` — the only subcommand. Every other
     // positional is the explicit agent address the listing accepts.
+    // `future models providers|provider|model|probe` — the provider/model
+    // settings surface (see `commands/model_settings.rs`). Located by position
+    // so a flag may come before the subcommand (`future models --json probe …`).
+    if let Some(index) = args
+        .iter()
+        .position(|arg| matches!(arg.as_str(), "providers" | "provider" | "model" | "probe"))
+    {
+        let rest = &args[index + 1..];
+        match args[index].as_str() {
+            "providers" => return super::model_settings::providers(rest, out).await,
+            "provider" => return super::model_settings::provider(rest, out).await,
+            "model" => return super::model_settings::model(rest, out).await,
+            _ => return super::model_settings::probe(rest, out).await,
+        }
+    }
+
     if non_flags
         .first()
         .is_some_and(|arg| arg.as_str() == "refresh")

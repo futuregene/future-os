@@ -198,6 +198,22 @@ export function releaseAgentQueuedRun(threadId: string, runId: string): Promise<
 }
 
 /**
+ * Correct one waiting message's words, in the place it already holds.
+ *
+ * Not a removal and a re-send: the queue is an order the reader built, and a
+ * re-send enters at the back — a typo fixed in the second of four messages would
+ * have been sent after the fourth. The Agent replaces the accepted prompt's text
+ * where it waits; everything else about that prompt stays as it was accepted.
+ */
+export function editAgentQueuedRun(
+  threadId: string,
+  runId: string,
+  message: string,
+): Promise<void> {
+  return invokeCommand<void>("edit_queued_run", { threadId, runId, message });
+}
+
+/**
  * How often the panel re-reads the queue while there is something to read.
  *
  * The Agent announces a prompt's acceptance and its start, but not "this row

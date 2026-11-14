@@ -171,12 +171,16 @@ export function ChatTimeline({ remote, t, invertedTranscriptItems, scroll, quest
         />
       )}
 
-      {(showLoadOlderHint || (remote.olderHistoryFailed && remote.canLoadOlderTimeline)) && (
+      {(showLoadOlderHint ||
+        ((remote.olderHistoryFailed || remote.historyBackfillTruncated) &&
+          remote.canLoadOlderTimeline)) && (
         <FloatingTimelineButton
           label={t(
             remote.olderHistoryFailed && !showLoadOlderHint
               ? "chat.loadOlderFailed"
-              : "chat.loadingOlder",
+              : remote.historyBackfillTruncated && !showLoadOlderHint
+                ? "chat.loadOlderTruncated"
+                : "chat.loadingOlder",
           )}
           icon={<History color={colors.inkSoft} size={16} />}
           busy={pagingActive || remote.loadingOlderTimeline}
