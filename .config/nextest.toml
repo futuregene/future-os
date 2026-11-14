@@ -1,6 +1,0 @@
-# The Rust acceptance lane runs the tests `cargo test` ran, and `cargo test` puts
-# no deadline on a single test. A loaded runner must not turn a slow-but-passing
-# test into a red gate, so keep nextest's liveness warning and leave the only real
-# deadline to rust-ci.yml's timeout-minutes.
-[profile.default]
-slow-timeout = { period = "300s" }
