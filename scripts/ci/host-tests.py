@@ -21,7 +21,24 @@ def main():
     args = parser.parse_args()
     if os.environ.get("GITHUB_ACTIONS") != "true":
         parser.error("Host automated acceptance runs in CI; do not start local NATS tests")
-    command = ["cargo", "test", "--locked", "--no-fail-fast", "-p", "future-host"]
+    # Same runner as `rust-checks.mjs`: one process per test, which is what stops
+    # this suite waiting on its in-process fixture locks. `--no-fail-fast` and
+    # `--no-tests=pass` keep the libtest contract the previous `cargo test`
+    # invocation had, and nextest emulates the arguments after `--`, so `remote`
+    # and `--skip remote` keep their exact meaning rather than being rewritten.
+    #
+    # No target is excluded here: `future-host` has no `harness = false` test
+    # target (the desktop lane's `gui_main_thread_drive` is the workspace's only
+    # one), so there is nothing nextest cannot enumerate.
+    #
+    # cargo-nextest comes from `scripts/ci/setup-rust.mjs`, the "Setup pinned
+    # Rust" step every Rust job runs before this one. It is pinned by version and
+    # by the release tarball's digest there; if it is missing this fails instead
+    # of silently falling back to `cargo test`.
+    command = [
+        "cargo", "nextest", "run", "--locked", "--no-fail-fast", "--no-tests=pass",
+        "-p", "future-host",
+    ]
     if args.suite == "remote":
         command.extend(["--", "remote"])
     elif args.suite == "core":
