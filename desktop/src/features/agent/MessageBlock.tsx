@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@future-os/thread-projection";
+import type { ChoiceCardAnswer } from "../markdown/MarkdownContent";
 import type { ActivityTargetResolver } from "./AgentActivityList";
 import type { ReplyBlock, StepSegment } from "./replyBlocks";
 import type { ReasoningLoader } from "./ThinkingBlock";
@@ -31,6 +32,12 @@ interface MessageBlockProps {
   dataMessageId?: string;
   /** Whether this is the last message in the thread. */
   isLast?: boolean;
+  /**
+   * The draft's answer to this reply's closing choice card. Only the thread's
+   * last reply receives it (`MessageList`), which is what makes every earlier
+   * card read-only (design §2).
+   */
+  choiceAnswer?: ChoiceCardAnswer;
   recoverySource?: AgentMessage | null;
   onContinue?: (message: AgentMessage) => void;
   onFork?: (message: AgentMessage) => void;
@@ -71,6 +78,7 @@ function MessageBlockImpl({
   hovered,
   dataMessageId,
   isLast,
+  choiceAnswer,
   recoverySource,
   onContinue,
   onFork,
@@ -215,6 +223,7 @@ function MessageBlockImpl({
     const body = (
       <ReplyBlockBody
         block={block}
+        choiceAnswer={choiceAnswer}
         lastSegmentId={lastSegmentId}
         liveSegmentId={liveSegmentId}
         message={message}
@@ -268,6 +277,7 @@ function MessageBlockImpl({
             ? <MarkdownContent content={message.content} workspaceId={workspaceId} />
             : (
                 <StreamingMarkdownContent
+                  choiceAnswer={choiceAnswer}
                   content={message.content}
                   workspaceId={workspaceId}
                   live={streaming}
@@ -414,6 +424,7 @@ function replySteps(blocks: readonly ReplyBlock[]): StepSegment[] {
  */
 function ReplyBlockBody({
   block,
+  choiceAnswer,
   lastSegmentId,
   liveSegmentId,
   message,
@@ -424,6 +435,8 @@ function ReplyBlockBody({
   workspacePath,
 }: {
   block: ReplyBlock;
+  /** The thread's answer surface, on the last reply only (see `MessageBlockProps`). */
+  choiceAnswer?: ChoiceCardAnswer;
   /** The reply's final slice, whatever it is: what "still streaming" means. */
   lastSegmentId: string | null;
   /** The slice a live text block is being written into, or null when settled. */
@@ -453,6 +466,7 @@ function ReplyBlockBody({
   if (segment.kind === "text") {
     return (
       <StreamingMarkdownContent
+        choiceAnswer={choiceAnswer}
         content={segment.text}
         live={segment.id === liveSegmentId}
         workspaceId={workspaceId}

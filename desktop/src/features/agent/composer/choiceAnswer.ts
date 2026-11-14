@@ -26,6 +26,46 @@ export interface ChoiceAnswer {
   title: string;
 }
 
+/**
+ * A card as a pick hands it on: the question it asks and every row it offers,
+ * without a pick. This is what `MarkdownContent`'s `choiceAnswer.onSelect` adds
+ * to the clicked option id, and it is how an answer gets its question the first
+ * time a row is clicked (before that the draft holds no answer to read it from).
+ *
+ * Structural on purpose: the card's own `ChoiceCardOption` carries a
+ * `description` the answer does not keep (the pill prints labels, and the
+ * popover deliberately drops the explanations once they have been read — §5.3).
+ */
+export type ChoiceCardQuestion = Pick<ChoiceAnswer, "mode" | "options" | "title">;
+
+/**
+ * Turn a click on one of the card's rows into the answer the draft keeps.
+ *
+ * `previous` is whatever the draft already held; a pick from a *different*
+ * question starts over rather than merging, because an answer belongs to one
+ * card and a title left over from the previous one would be printed on send.
+ * Same question, same rows → the pick applies to it (single replaces, multi
+ * toggles, `pickChoiceOption`).
+ */
+export function answerFromPick(
+  previous: ChoiceAnswer | null,
+  card: ChoiceCardQuestion,
+  optionId: string,
+): ChoiceAnswer {
+  const sameQuestion = previous !== null
+    && previous.title === card.title
+    && previous.mode === card.mode;
+  const base: ChoiceAnswer = sameQuestion
+    ? previous
+    : {
+        mode: card.mode,
+        options: card.options.map(option => ({ id: option.id, label: option.label })),
+        selectedIds: [],
+        title: card.title,
+      };
+  return pickChoiceOption(base, optionId);
+}
+
 /** Labels of the picked options, in order. */
 function selectedLabels(answer: ChoiceAnswer): string[] {
   return answer.selectedIds
