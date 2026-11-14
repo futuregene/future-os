@@ -1,6 +1,6 @@
 # Choice cards in a reply
 
-> Status: design settled (v2), not implemented. Every screenshot below is a DOM prototype injected into the **real interface** (no product code) to fix the styling and geometry; implementation is §11.
+> Status: design settled (v2). **§11 steps 1–3 are implemented** (parsing of `futureos-choice`, the desktop card, the answer pill inside the editor); step 4 and later are not. Apart from the three "real component" scenario captures, every screenshot below is a DOM prototype injected into the **real interface** (no product code) to fix the styling and geometry; implementation is §11.
 > Scope: desktop, mobile, remote desktop. TUI / CLI are out of scope for this pass (§10 says how they degrade).
 >
 > **v2 fixes three real defects** reported by the reader, each located in the code before changing anything:

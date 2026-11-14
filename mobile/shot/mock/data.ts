@@ -291,6 +291,31 @@ const POST_COMPACTION_ANSWER = `## 结论
 
 要不要我把这四步写成一份设计文档？`;
 
+/**
+ * `?choiceCard=1`: the same conversation, with the reply's closing question
+ * written as a `futureos-choice` fence — what a model that followed the prompt's
+ * guidance emits. The phone has no card renderer yet (§11 step 6), so this is
+ * the capture that proves §8's promise: an unknown client still reads the
+ * options, they just become a list.
+ */
+const CHOICE_FENCE = [
+  "```futureos-choice",
+  "title: 接下来做哪一件？",
+  "mode: single",
+  "option: forest | 重画森林图 | 按 Dreher 2025 的样本量重算两篇的置信区间",
+  "option: flow | 补一张实验流程图 | 把两篇的被试流程画成一张对照图",
+  "option: table | 表里加一列样本量 | Frank 42 / Dreher 186，标出测量手段",
+  "```",
+].join("\n");
+
+export const choiceCardEntries = demoEntries.map(entry =>
+  entry.id === "e2"
+    // A second text block, not a rewrite of the answer: the reply keeps the words
+    // the fixture already has and ends with the fence, which is exactly the shape
+    // a real reply takes (the block is the question's own).
+    ? { ...entry, blocks: [...entry.blocks, { kind: "text" as const, text: CHOICE_FENCE }] }
+    : entry);
+
 export const compactResumeEntries = [
   {
     id: "c1",
