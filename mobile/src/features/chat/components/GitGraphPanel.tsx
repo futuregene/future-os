@@ -427,7 +427,7 @@ function roleStyle(styles: PanelStyles, role: PatchLine["role"]) {
 const useStyles = createThemedStyles(theme => StyleSheet.create({
   panel: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, zIndex: 4, backgroundColor: theme.colors.surface },
   pressed: { backgroundColor: theme.colors.surfaceSubtle },
-  list: { paddingBottom: spacing.lg },
+  list: { paddingTop: spacing.sm, paddingBottom: spacing.lg },
   row: {
     flexDirection: "row",
     alignItems: "center",
@@ -449,14 +449,56 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   retry: { minHeight: layout.touchTarget, justifyContent: "center", paddingHorizontal: spacing.md, borderRadius: radius.md },
   retryLabel: { color: theme.colors.accent, fontSize: theme.font(14) },
   detail: { padding: layout.gutter, paddingBottom: spacing.lg },
-  patch: { backgroundColor: theme.colors.surfaceSubtle, borderRadius: radius.md, padding: spacing.sm, marginTop: spacing.md },
-  patchLine: { fontFamily: monospace, fontSize: theme.font(11), lineHeight: theme.leading(16), color: theme.colors.ink },
-  patchAdded: { color: theme.colors.success },
-  patchRemoved: { color: theme.colors.danger },
-  patchHunk: { color: theme.colors.info },
-  patchHeader: { color: theme.colors.inkSoft, fontWeight: "600" },
-  patchMeta: { color: theme.colors.inkMuted },
-  patchPlain: { color: theme.colors.inkSoft },
+  // The card is the frame; the *lines* carry the tint, so the colour runs the
+  // full width of a row rather than stopping where the text does. The container
+  // therefore has no padding of its own — each line pads itself.
+  patch: {
+    backgroundColor: theme.colors.surfaceSubtle,
+    borderRadius: radius.md,
+    marginTop: spacing.md,
+    overflow: "hidden",
+  },
+  patchLine: {
+    fontFamily: monospace,
+    fontSize: theme.font(11),
+    lineHeight: theme.leading(16),
+    color: theme.colors.ink,
+    paddingHorizontal: spacing.sm,
+    // A blank patch line is a real line (context); it must keep its height.
+    minHeight: theme.leading(16),
+  },
+  // A line's role is carried by a tinted band plus a solid bar at the left, not
+  // by its text colour alone: on a phone the monospaced 11px text is small, and
+  // a hue difference alone is hard to scan down a page of it. The bar is what a
+  // reader follows with their thumb; the tint says which side of the diff they
+  // are on without reading a single character.
+  patchAdded: {
+    color: theme.colors.success,
+    backgroundColor: theme.colors.successSoft,
+    borderLeftWidth: 2,
+    borderLeftColor: theme.colors.success,
+  },
+  patchRemoved: {
+    color: theme.colors.danger,
+    backgroundColor: theme.colors.dangerSoft,
+    borderLeftWidth: 2,
+    borderLeftColor: theme.colors.danger,
+  },
+  patchHunk: {
+    color: theme.colors.info,
+    backgroundColor: theme.colors.infoSoft,
+    borderLeftWidth: 2,
+    borderLeftColor: theme.colors.info,
+    marginTop: spacing.xs,
+  },
+  patchHeader: {
+    color: theme.colors.inkSoft,
+    fontWeight: "600",
+    borderLeftWidth: 2,
+    borderLeftColor: theme.colors.line,
+  },
+  patchMeta: { color: theme.colors.inkMuted, borderLeftWidth: 2, borderLeftColor: "transparent" },
+  patchPlain: { color: theme.colors.inkSoft, borderLeftWidth: 2, borderLeftColor: "transparent" },
 }));
 
 type PanelStyles = ReturnType<typeof useStyles>;

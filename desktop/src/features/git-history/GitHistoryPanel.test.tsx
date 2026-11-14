@@ -181,6 +181,21 @@ it("opens a commit's patch, coloured by line role", async () => {
     .find(node => node.getAttribute("data-patch-role") === "removed");
   expect(added?.className).toContain("text-success");
   expect(removed?.className).toContain("text-danger");
+  // A tinted band and a bar at the left, not a text hue alone — the same
+  // reading the phone gives a patch, so one patch looks the same on both.
+  expect(added?.className).toContain("bg-success-soft");
+  expect(added?.className).toContain("border-success");
+  expect(removed?.className).toContain("bg-danger-soft");
+  expect(removed?.className).toContain("border-danger");
+
+  // Context is neither tinted nor barred, so the tinted rows are what stands
+  // out. The bar is kept (transparent) so every line indents by the same
+  // amount and the patch columns stay aligned.
+  const context = [...container.querySelectorAll("[data-patch-role]")]
+    .find(node => node.getAttribute("data-patch-role") === "plain");
+  expect(context?.className).toContain("border-transparent");
+  expect(context?.className).not.toContain("bg-success-soft");
+  expect(context?.className).not.toContain("bg-danger-soft");
 });
 
 it("reads a remote commit's patch from the peer, not from this machine", async () => {
