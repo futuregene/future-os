@@ -164,6 +164,7 @@ export function CustomProviderPage({ provider, onDone }: {
   const [name, setName] = useState(provider?.name ?? "");
   const [api, setApi] = useState(provider?.api || CUSTOM_PROVIDER_APIS[0]);
   const [baseUrl, setBaseUrl] = useState(provider?.baseUrl ?? "");
+  const [skipTlsVerify, setSkipTlsVerify] = useState(provider?.skipTlsVerify ?? false);
   // Unlike an edit, a new provider's key is written only when one is typed.
   const [apiKey, setApiKey] = useState("");
   const [models, setModels] = useState<ModelDraft[]>(
@@ -260,6 +261,10 @@ export function CustomProviderPage({ provider, onDone }: {
       level,
       modelId,
       providerId: id.trim() || undefined,
+      // Detection uses the same TLS decision the saved provider will have: on a
+      // self-signed endpoint a verified handshake fails, and that failure would
+      // be reported as a wrong key instead of the certificate.
+      skipTlsVerify,
     });
     const runId = ++probeRunRef.current;
     setError(null);
@@ -385,6 +390,9 @@ export function CustomProviderPage({ provider, onDone }: {
       name: name.trim(),
       api,
       baseUrl: trimmedUrl,
+      // Always stated: the form owns this answer, and omitting it would mean
+      // "keep whatever is stored" — not what the switch on screen showed.
+      skipTlsVerify,
       // Absent keeps the stored key; the desktop writes it only when non-empty.
       apiKey: apiKey.trim() ? apiKey.trim() : null,
       models: cleaned,
@@ -457,6 +465,8 @@ export function CustomProviderPage({ provider, onDone }: {
             keyboardType="url" onChangeText={setBaseUrl} placeholder="https://api.example.com/v1"
             placeholderTextColor={colors.inkMuted} style={settingsStyles.input} value={baseUrl} />
         </SettingsField>
+        <SettingsSwitch description={t("desktopSettings.skipTlsVerifyHint")} label={t("desktopSettings.skipTlsVerify")}
+          onChange={setSkipTlsVerify} value={skipTlsVerify} />
         <SettingsField
           hint={editing ? t("desktopSettings.apiKeyKeepHint") : t("desktopSettings.apiKeyHint")}
           label={t("desktopSettings.apiKey")}

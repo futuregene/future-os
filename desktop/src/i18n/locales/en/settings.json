@@ -305,6 +305,8 @@
     "apiTypeLabel": "API type",
     "baseUrlLabel": "Base URL",
     "baseUrlPlaceholder": "https://api.example.com/v1",
+    "skipTlsVerifyLabel": "Skip TLS certificate verification",
+    "skipTlsVerifyHint": "Turn this on when the endpoint uses a self-signed certificate or one no system CA issued (e.g. a self-hosted gateway). The connection stays encrypted; the app just stops checking who is on the other end. Only enable it for an endpoint you trust.",
     "apiKeyLabel": "API key",
     "apiKeyLabelEditing": "API key (leave blank to keep current)",
     "apiKeyPlaceholder": "sk-…",

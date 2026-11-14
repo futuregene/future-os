@@ -100,6 +100,7 @@ pub fn responses_target(
             api_key: "fixture-only".into(),
             auth: AuthScheme::Bearer,
             headers: BTreeMap::new(),
+            skip_tls_verify: false,
         },
         protocol: ProtocolConfig::OpenAiResponses(OpenAiResponsesConfig::default()),
         capabilities: ModelCapabilities {
@@ -128,6 +129,7 @@ pub fn anthropic_target(base_url: String, model: &str) -> ResolvedModelTarget {
             api_key: "fixture-only".into(),
             auth: AuthScheme::AnthropicApiKey,
             headers: BTreeMap::new(),
+            skip_tls_verify: false,
         },
         protocol: ProtocolConfig::AnthropicMessages(AnthropicMessagesConfig {
             version: "2023-06-01".into(),

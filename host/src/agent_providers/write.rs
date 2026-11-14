@@ -360,6 +360,10 @@ pub(super) fn provider_upsert_message(
         replace_models: true,
         create_only: validated.create,
         api_key: validated.api_key.clone().unwrap_or_default(),
+        // Presence, not value: `None` here would make the agent preserve the
+        // stored flag, which is what an older client that cannot express it
+        // wants — but this one always knows, so it always states the answer.
+        skip_tls_verify: Some(validated.skip_tls_verify.unwrap_or(false)),
         ..Default::default()
     }
 }
@@ -481,6 +485,18 @@ fn apply_upsert_local(validated: &ValidatedCustomProvider) -> Result<(), AppErro
             Value::String(validated.base_url.clone()),
         );
         provider.insert("models".to_string(), Value::Array(models));
+        // Written only when on, removed when explicitly off, untouched when the
+        // request could not express it — the same presence rule the agent's
+        // `apply_provider_upsert` applies, so both write paths agree.
+        match validated.skip_tls_verify {
+            Some(true) => {
+                provider.insert("skipTlsVerify".to_string(), Value::Bool(true));
+            }
+            Some(false) => {
+                provider.remove("skipTlsVerify");
+            }
+            None => {}
+        }
         providers.insert(validated.id.clone(), Value::Object(provider));
 
         // Persist models.json, then auth.json. A failed models write leaves
@@ -638,6 +654,12 @@ pub(super) fn delete_custom_provider_with_catalog(
 /// True when a models.json provider entry only carries overrides (Base URL) for
 /// a built-in provider, i.e. it defines no `name`, `api`, or explicit `models`.
 /// Such entries are surfaced through the built-in list rather than as customs.
+///
+/// `skipTlsVerify` deliberately does not count here: it is a property of a
+/// provider, not a definition of one, and the custom-provider editor always
+/// writes `name`/`api`/`models` alongside it. An entry carrying only the flag
+/// therefore stays an override of the built-in provider it names — which the
+/// agent still honours, because the flag is read from the provider entry itself.
 #[cfg(test)]
 pub(super) fn is_override_only(config: &Value) -> bool {
     let has_str = |key: &str| {

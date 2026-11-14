@@ -42,7 +42,7 @@ const MODEL_USAGE: &str = "usage: future models model set <provider>/<model> [--
 [--cache-read-cost <n>] [--cache-write-cost <n>] [--json]\n       \
 future models model remove <provider>/<model>";
 const PROBE_USAGE: &str = "usage: future models probe <provider>/<model> [--level <level>] \
-[--levels <a,b,c>] [--api <api>] [--base-url <url>] [--key <key>] [--json]";
+[--levels <a,b,c>] [--api <api>] [--base-url <url>] [--key <key>] [--insecure] [--json]";
 
 /// The Agent endpoint: the first positional, or the configured default.
 fn agent_address(positional: &[String]) -> String {
@@ -764,7 +764,7 @@ pub async fn probe(args: &[String], out: &Output) -> Result<(), String> {
         args,
         &["--level", "--levels", "--api", "--base-url", "--key"],
         &[],
-        &["--json"],
+        &["--json", "--insecure"],
     )?;
     let json_flag = flags.has("--json");
     let Some(reference) = flags.positional.first() else {
@@ -818,6 +818,9 @@ pub async fn probe(args: &[String], out: &Output) -> Result<(), String> {
                 provider_id: provider_id.clone(),
                 model_id: model_id.clone(),
                 level: level.clone(),
+                // A configured provider inherits its stored decision inside the
+                // agent; `--insecure` states it for one that is not saved yet.
+                skip_tls_verify: flags.has("--insecure").then_some(true),
             })
             .await
             .map_err(|message| {
