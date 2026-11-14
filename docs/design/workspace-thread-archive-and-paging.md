@@ -190,7 +190,12 @@ descendants are all visible", so the descendant query needs no status filtering.
   `RECENT_PAGE_SIZE = 30` stays as the page size. Every page reports the scope's
   own root count (`ThreadsPage.total_roots`), so the control under the list names
   the real remainder and one click loads all of it — a cursor alone cannot say
-  how much is left, and naming the loaded part was the defect.
+  how much is left, and naming the loaded part was the defect. With paired
+  desktops the same control also carries the hosts' catalogue remainders
+  (`remoteCatalogRemaining`): the view interleaves both machines' rows in one
+  order, so it draws **one** control whose count is the sum and whose click walks
+  both cursors. Two controls under one list named two remainders and said nothing
+  about which rows either continued.
 - **Archived view**: flat, `archived_at DESC`, 50 trees per page.
 - **Workspace list**: read whole at startup, still not paged, and the section
   folds. The list holds user workspaces only (a chat's temporary workspace never
