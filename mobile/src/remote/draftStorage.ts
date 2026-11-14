@@ -1,5 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { File } from "expo-file-system";
+import { parseChoiceAnswer, type ChoiceAnswer } from "../features/chat/choiceAnswer";
 import { createAsyncOperationQueue } from "./asyncOperationQueue";
 import type { MobileAttachment, SessionReferenceMap } from "./types";
 
@@ -21,6 +22,16 @@ export interface SessionDraft {
    * as plain text. Absent for drafts written before this field existed.
    */
   refs?: SessionReferenceMap;
+  /**
+   * The answer to a `futureos-choice` card, if the draft holds one.
+   *
+   * Part of the draft for the same reason `refs` is: the answer *is* the draft's
+   * content (design `docs/design/choice-cards.zh-CN.md` §2). Restoring the text
+   * without it would hand back half a draft — the chip gone while the words that
+   * were to follow the answer stayed. Absent for drafts written before this field
+   * existed.
+   */
+  choice?: ChoiceAnswer;
 }
 
 const DRAFT_VERSION = 1;
@@ -120,8 +131,9 @@ async function loadSessionDraftDirect(sessionId: string): Promise<SessionDraft |
             attachmentFileExists(attachment.localUri),
         )
       : [];
-    if (text.trim().length === 0 && attachments.length === 0) return null;
-    return { version: DRAFT_VERSION, text, attachments, refs: parseRefs(parsed.refs) };
+    const choice = parseChoiceAnswer(parsed.choice) ?? undefined;
+    if (text.trim().length === 0 && attachments.length === 0 && !choice) return null;
+    return { version: DRAFT_VERSION, text, attachments, refs: parseRefs(parsed.refs), choice };
   } catch {
     return null;
   }
@@ -145,8 +157,11 @@ export async function saveSessionDraft(
   cancelScheduledDraft(sessionId);
   await enqueueOperation(async () => {
     const hasAttachments = (draft.attachments?.length ?? 0) > 0;
+    // An answer on its own is a draft: it is what the field cannot hold, and it is
+    // exactly what "pick one and send without typing" sends.
+    const hasChoice = Boolean(draft.choice);
     try {
-      if (!hasAttachments && (draft.text ?? "").trim().length === 0) {
+      if (!hasAttachments && !hasChoice && (draft.text ?? "").trim().length === 0) {
         await AsyncStorage.removeItem(storageKey(sessionId));
         return;
       }

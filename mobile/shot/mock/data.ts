@@ -294,9 +294,10 @@ const POST_COMPACTION_ANSWER = `## 结论
 /**
  * `?choiceCard=1`: the same conversation, with the reply's closing question
  * written as a `futureos-choice` fence — what a model that followed the prompt's
- * guidance emits. The phone has no card renderer yet (§11 step 6), so this is
- * the capture that proves §8's promise: an unknown client still reads the
- * options, they just become a list.
+ * guidance emits. The phone draws it as a card (design
+ * `docs/design/choice-cards.zh-CN.md` §5.7) whose answer lands in the composer's
+ * chip row, so this is the fixture the card, the chip and the change sheet are all
+ * captured from.
  */
 const CHOICE_FENCE = [
   "```futureos-choice",

@@ -10,6 +10,11 @@ import { SvgXml } from "react-native-svg";
 import { MarkdownImage } from "../MarkdownImage";
 import * as parser from "../../../../packages/markdown/src/parseFutureMarkdown";
 
+// The icon set ships as an ES module, and this suite loads the real `MarkdownText`
+// (which a choice card pulls it into). Node 24+ can require it directly; older
+// runtimes cannot, so the one shape this path draws is stubbed here.
+jest.mock("lucide-react-native", () => ({ ListChecks: () => null }));
+
 jest.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string, options?: { count?: number }) =>
     options?.count === undefined ? key : `${key}:${options.count}` }),
@@ -862,7 +867,7 @@ describe("a futureos-choice fence on the phone", () => {
   let renderer: ReactTestRenderer;
   afterEach(() => { act(() => renderer?.unmount()); });
 
-  test("degrades to the readable option list instead of falling into the paragraph branch", () => {
+  test("draws the card itself rather than the readable-list fallback", () => {
     const text = [
       "先做这一步。",
       "",
@@ -874,13 +879,17 @@ describe("a futureos-choice fence on the phone", () => {
     ].join("\n");
     act(() => { renderer = create(createElement(MarkdownText, { text })); });
     const root = renderer.root;
-    // §11 step 6 draws the real card here; until then §8's guarantee is that the
-    // options survive as text rather than disappearing with the fence.
-    expect(root.findAll(node => node.type === View && node.props.testID === "choice-card-degraded")).toHaveLength(1);
+    // §11 step 6: the phone draws the card. §8's readable-list fallback was the
+    // step-1 stopgap and must not still be in the way of it.
+    expect(root.findAllByProps({ testID: "choice-card-degraded" })).toHaveLength(0);
+    expect(root.findAll(node => node.props.testID === "choice-card").length).toBeGreaterThan(0);
     const painted = root.findAllByType(Text).map(node => paintedText(node));
     expect(painted).toContain("接下来做哪一件？");
-    expect(painted).toContain("重画森林图 — 按 Dreher 2025 的样本量重算");
-    expect(painted).toContain("补一张实验流程图");
-    expect(JSON.stringify(renderer.toJSON())).not.toContain("futureos-choice");
+    expect(painted).toContain("重画森林图");
+    expect(painted).toContain("按 Dreher 2025 的样本量重算");
+    // Neither the fence syntax nor its `key: value` fields leak into the words.
+    const rendered = JSON.stringify(renderer.toJSON());
+    expect(rendered).not.toContain("futureos-choice");
+    expect(rendered).not.toContain("option:");
   });
 });

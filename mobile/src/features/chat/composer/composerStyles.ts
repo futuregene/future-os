@@ -134,6 +134,55 @@ export const useStyles = createThemedStyles(theme => StyleSheet.create({
     color: theme.colors.warning,
     fontSize: theme.font(11),
   },
+  /**
+   * The chosen answer to a `futureos-choice` card (design §5.7): a row above the
+   * field, the same slot an attachment uses. The chip wears `line`+
+   * `surfaceSubtle` rather than a focus-blue border — one state must not spend two
+   * blues (§5.7.1) — and its two actions are drawn 24pt inside a transparent
+   * hotspot (`slopToTouchTarget` lifts them to 44pt on a device).
+   */
+  choiceRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+  },
+  choiceChip: {
+    minHeight: 32,
+    maxWidth: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    paddingLeft: 9,
+    paddingRight: spacing.xs,
+    paddingVertical: spacing.xs,
+    borderWidth: 1,
+    borderColor: theme.colors.line,
+    borderRadius: radius.sm + 2,
+    backgroundColor: theme.colors.surfaceSubtle,
+  },
+  choiceChipTitle: {
+    maxWidth: "40%",
+    color: theme.colors.inkMuted,
+    fontSize: theme.font(12),
+    lineHeight: theme.leading(18),
+  },
+  choiceChipDot: { color: theme.colors.line, fontSize: theme.font(12) },
+  choiceChipAnswer: {
+    minWidth: 0,
+    flexShrink: 1,
+    color: theme.colors.ink,
+    fontSize: theme.font(12),
+    fontWeight: "600",
+    lineHeight: theme.leading(18),
+  },
+  choiceChipAction: {
+    width: 24,
+    height: 24,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   inputMeasure: { position: "absolute", top: 0, left: 0, right: 0, opacity: 0 },
   inputText: {
     color: theme.colors.ink,

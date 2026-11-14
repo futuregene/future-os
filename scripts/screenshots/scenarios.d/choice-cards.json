@@ -719,8 +719,8 @@
         }
       ]
     },
-    "choice-card-phone-degraded": {
-      "note": "真实组件 · 手机。同一个围栏在手机上按 §8 降级成可读的清单（手机端真正的卡片是 §11 第 6 步）：问题与三行选项都在，围栏本身的语法不出现。它证明的是共享解析器在手机端没有把回复吃掉——不是手机的选项卡做完了。",
+    "choice-card-phone-card": {
+      "note": "真实组件 · 手机。一条带选项的回复在 390pt 下画成卡片（§11 第 6 步）：问题、三行选项与各自的后果说明都在，围栏语法不出现；每行是 role=radio + aria-checked，行高 ≥ 44pt。它接管了第 1 步那张「降级清单」的位置——清单已经不在了。",
       "query": "?session=sess_dopamine_review&choiceCard=1",
       "lang": "zh-CN",
       "steps": [
@@ -728,7 +728,7 @@
           "wait": 900
         },
         {
-          "eval": "(() => { const label = ['稍后再说', 'Not now'] .map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+          "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
         },
         {
           "wait": 1200
@@ -746,10 +746,184 @@
           "wait": 2600
         },
         {
-          "eval": "(() => { const block = document.querySelector('[data-testid=\"choice-card-degraded\"]'); if (!block) throw new Error('the fence did not degrade into a readable list'); if (document.querySelector('[data-choice-card]')) throw new Error('the phone must not draw a card yet (§11 step 6)'); const text = block.innerText || block.textContent || ''; for (const needle of ['接下来做哪一件？', '重画森林图', '补一张实验流程图', '表里加一列样本量', 'Frank 42 / Dreher 186，标出测量手段'])   if (!text.includes(needle)) throw new Error('the list lost ' + needle); if (text.includes('futureos-choice')) throw new Error('the fence syntax leaked into the list'); if (text.includes('option:')) throw new Error('the raw directive lines leaked into the list'); const r = block.getBoundingClientRect(); if (r.width < 300) throw new Error('the list is only ' + Math.round(r.width) + 'pt wide'); if (r.bottom < 0 || r.top > window.innerHeight) throw new Error('the list is off screen'); return JSON.stringify({block:[Math.round(r.top),Math.round(r.bottom),Math.round(r.width)]}); })()"
+          "eval": "(() => { const card = document.querySelector('[data-testid=\"choice-card\"]'); if (!card) throw new Error('the phone drew no card'); if (document.querySelector('[data-testid=\"choice-card-degraded\"]')) throw new Error('the step-1 fallback list is still in the way'); const words = card.innerText || ''; for (const needle of ['接下来做哪一件？', '重画森林图', '补一张实验流程图', '表里加一列样本量', 'Frank 42 / Dreher 186', '单选']) if (!words.includes(needle)) throw new Error('the card lost ' + needle); if (words.includes('futureos-choice') || words.includes('option:')) throw new Error('fence syntax leaked into the card'); const rows = [...card.querySelectorAll('[data-testid^=\"choice-option-\"]')]; if (rows.length !== 3) throw new Error('the card draws ' + rows.length + ' rows'); const heights = rows.map(row => { const box = row.getBoundingClientRect(); if (box.height < 44) throw new Error('a row is ' + Math.round(box.height) + 'pt, under the 44pt target'); if (row.getAttribute('role') !== 'radio') throw new Error('a row role is ' + row.getAttribute('role')); if (row.getAttribute('aria-checked') !== 'false') throw new Error('an unpicked row says checked=' + row.getAttribute('aria-checked')); if (row.getAttribute('aria-disabled') === 'true') throw new Error('the last card in the thread must be answerable'); return Math.round(box.height); }); return JSON.stringify({ rows: heights, width: Math.round(card.getBoundingClientRect().width) }); })()"
         },
         {
-          "shot": "choice-card-phone-degraded.png"
+          "wait": 300
+        },
+        {
+          "shot": "choice-card-phone-card.png"
+        },
+        {
+          "eval": "(() => { try { localStorage.clear(); } catch (error) { return 'no storage to clear'; } return 'storage cleared for the next scenario'; })()"
+        }
+      ]
+    },
+    "choice-card-phone-picked": {
+      "note": "真实组件 · 手机 · 已选。点一行之后：卡片保住选中行，答案作为 chip 停在 dock 内、textarea 之上（几何断言：chip 底边在 field 顶边之上，且间隔小到属于同一个 composer），输入框仍然空着，发送键**可用**——不打字也能发（§5.4 需求 d）。",
+      "query": "?session=sess_dopamine_review&choiceCard=1",
+      "lang": "zh-CN",
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tap": "工作区"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tapText": "整理两篇文献的结论对比表"
+        },
+        {
+          "wait": 2600
+        },
+        {
+          "eval": "(() => { const row = document.querySelector('[data-testid=\"choice-option-forest\"]'); if (!row) throw new Error('no forest row'); row.click(); return 'picked forest'; })()"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => { const chip = document.querySelector('[data-testid=\"composer-choice-chip\"]'); if (!chip) throw new Error('picking a row drew no chip in the dock'); const field = document.querySelector('textarea'); if (!field) throw new Error('no field in the dock'); const c = chip.getBoundingClientRect(); const f = field.getBoundingClientRect(); if (c.bottom > f.top + 1) throw new Error('the chip is not above the field: ' + Math.round(c.bottom) + ' vs ' + Math.round(f.top)); if (f.top - c.bottom > 24) throw new Error('the chip sits ' + Math.round(f.top - c.bottom) + 'pt above the field, outside the dock'); if (c.top < 0 || c.bottom > window.innerHeight) throw new Error('the chip is off screen: ' + Math.round(c.top) + '..' + Math.round(c.bottom)); if (c.height < 30) throw new Error('the chip is ' + Math.round(c.height) + 'pt tall'); if ((field.value || '').trim()) throw new Error('the field must stay empty: ' + JSON.stringify(field.value)); const words = chip.innerText || ''; if (!words.includes('接下来做哪一件？')) throw new Error('the chip does not name the question: ' + words); const send = [...document.querySelectorAll('[aria-label]')].find(node => ['发送', 'Send'].includes(node.getAttribute('aria-label'))); if (!send) throw new Error('no send button'); if (send.getAttribute('aria-disabled') === 'true') throw new Error('an answer alone must leave the send button enabled'); const checked = [...document.querySelectorAll('[data-testid^=\"choice-option-\"]')].map(row => row.getAttribute('aria-checked')); if (!checked.includes('true')) throw new Error('the card did not mark the pick: ' + checked.join(',')); return JSON.stringify({ answer: words, chipHeight: Math.round(c.height), gap: Math.round(f.top - c.bottom), enabled: true }); })()"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "shot": "choice-card-phone-picked.png"
+        },
+        {
+          "eval": "(() => { try { localStorage.clear(); } catch (error) { return 'no storage to clear'; } return 'storage cleared for the next scenario'; })()"
+        }
+      ]
+    },
+    "choice-card-phone-change-answer": {
+      "note": "真实组件 · 手机 · 改回来。窄屏没有原地浮层的位置：chip 的铅笔开底部 sheet，选项仍是 44pt 行、仍带 role=radio，换一个即写回 chip 并关掉 sheet；chip 仍在 dock 内、field 之上，底稿不动。（原型稿那张 `choice-card-phone-change` 用的是注入 DOM，条目名不改。）",
+      "query": "?session=sess_dopamine_review&choiceCard=1",
+      "lang": "zh-CN",
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tap": "工作区"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tapText": "整理两篇文献的结论对比表"
+        },
+        {
+          "wait": 2600
+        },
+        {
+          "eval": "(() => { const row = document.querySelector('[data-testid=\"choice-option-forest\"]'); if (!row) throw new Error('no forest row'); row.click(); return 'picked forest'; })()"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => { const edit = document.querySelector('[data-testid=\"composer-choice-edit\"]'); if (!edit) throw new Error('no pencil on the chip'); edit.click(); return 'opened the sheet'; })()"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => { const sheet = document.querySelector('[data-testid=\"choice-sheet\"]'); if (!sheet) throw new Error('the pencil opened no sheet'); const box = sheet.getBoundingClientRect(); if (box.bottom < window.innerHeight - 48) throw new Error('the sheet is not docked to the bottom edge: ' + Math.round(box.bottom) + ' of ' + window.innerHeight); if (box.top < window.innerHeight * 0.3) throw new Error('the sheet takes the top of the screen: ' + Math.round(box.top)); const rows = [...sheet.querySelectorAll('[data-testid^=\"choice-sheet-option-\"]')]; if (rows.length !== 3) throw new Error('the sheet draws ' + rows.length + ' rows'); const heights = rows.map(row => { const r = row.getBoundingClientRect(); if (r.height < 44) throw new Error('a sheet row is ' + Math.round(r.height) + 'pt, under the 44pt target'); if (row.getAttribute('role') !== 'radio') throw new Error('a sheet row role is ' + row.getAttribute('role')); return Math.round(r.height); }); const marked = sheet.querySelectorAll('[aria-checked=\"true\"]').length; if (marked !== 1) throw new Error('the sheet marks ' + marked + ' rows, not the one answer'); return JSON.stringify({ rows: heights, marked }); })()"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "shot": "choice-card-phone-change-sheet.png"
+        },
+        {
+          "eval": "(() => { const row = document.querySelector('[data-testid=\"choice-sheet-option-flow\"]'); if (!row) throw new Error('no flow row in the sheet'); row.click(); return 'picked flow'; })()"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => { if (document.querySelector('[data-testid=\"choice-sheet\"]')) throw new Error('the sheet stayed open after a single choice'); const chip = document.querySelector('[data-testid=\"composer-choice-chip\"]'); if (!chip) throw new Error('the chip is gone after changing the pick'); const words = chip.innerText || ''; if (!words.includes('补一张实验流程图')) throw new Error('the chip still says ' + words); if (words.includes('重画森林图')) throw new Error('the chip kept the old answer: ' + words); const c = chip.getBoundingClientRect(); const f = document.querySelector('textarea').getBoundingClientRect(); if (c.bottom > f.top + 1) throw new Error('the chip left the dock: ' + Math.round(c.bottom) + ' vs ' + Math.round(f.top)); return JSON.stringify({ answer: words, gap: Math.round(f.top - c.bottom) }); })()"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "shot": "choice-card-phone-change.png"
+        },
+        {
+          "eval": "(() => { try { localStorage.clear(); } catch (error) { return 'no storage to clear'; } return 'storage cleared for the next scenario'; })()"
+        }
+      ]
+    },
+    "choice-card-phone-sent": {
+      "note": "真实组件 · 手机 · 发送之后。答案算进草稿，所以不打字也能发；发出去之后 chip 与卡片上的选中行一起清空，发送键回到灰色——这就是「答案属于草稿」的闭环（§2、§6）。",
+      "query": "?session=sess_dopamine_review&choiceCard=1",
+      "lang": "zh-CN",
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tap": "工作区"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tapText": "整理两篇文献的结论对比表"
+        },
+        {
+          "wait": 2600
+        },
+        {
+          "eval": "(() => { const row = document.querySelector('[data-testid=\"choice-option-forest\"]'); if (!row) throw new Error('no forest row'); row.click(); return 'picked forest'; })()"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => { const chip = document.querySelector('[data-testid=\"composer-choice-chip\"]'); if (!chip) throw new Error('no chip to send'); const send = [...document.querySelectorAll('[aria-label]')].find(node => ['发送', 'Send'].includes(node.getAttribute('aria-label'))); if (!send) throw new Error('no send button'); if (send.getAttribute('aria-disabled') === 'true') throw new Error('the send button is disabled, so nothing would leave'); return 'ready to send'; })()"
+        },
+        {
+          "tap": "发送"
+        },
+        {
+          "wait": 1400
+        },
+        {
+          "eval": "(() => { if (document.querySelector('[data-testid=\"composer-choice-chip\"]')) throw new Error('the chip survived the send'); const rows = [...document.querySelectorAll('[data-testid^=\"choice-option-\"]')]; if (!rows.length) throw new Error('the card vanished with the draft'); const checked = rows.map(row => row.getAttribute('aria-checked')); if (checked.includes('true')) throw new Error('the card kept a pick the draft no longer holds: ' + checked.join(',')); const send = [...document.querySelectorAll('[aria-label]')].find(node => ['发送', 'Send'].includes(node.getAttribute('aria-label'))); if (!send) throw new Error('no send button'); if (send.getAttribute('aria-disabled') !== 'true') throw new Error('an emptied draft must leave the send button disabled'); return JSON.stringify({ checked, disabled: true }); })()"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "shot": "choice-card-phone-sent.png"
+        },
+        {
+          "eval": "(() => { try { localStorage.clear(); } catch (error) { return 'no storage to clear'; } return 'storage cleared for the next scenario'; })()"
         }
       ]
     }

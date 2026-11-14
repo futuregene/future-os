@@ -21,6 +21,7 @@ import { MarkdownToneContext, type MarkdownTone } from "./markdownTone";
 import type { StyleProp, TextStyle } from "react-native";
 import { Animated, FlatList, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { AppAlert as Alert } from "./appAlerts";
+import { ChoiceCard, ChoiceCardAnswerContext } from "./ChoiceCard";
 import { useStreamingText } from "./useStreamingText";
 import { radius, spacing } from "../theme/tokens";
 import type { Theme } from "../theme/theme";
@@ -308,6 +309,12 @@ function renderBlock(
   key: string,
   isLast: boolean,
   styles: MarkdownStyles,
+  /**
+   * This node is the reply's answerable card (§2): the last card of the thread's
+   * last reply, and only when that reply offered an answer surface at all. Every
+   * other card is read-only.
+   */
+  liveChoice = false,
 ): ReactNode {
   // Heading sizes scale with the reader's text size like the sheet's own styles,
   // so they are indexed out of it rather than held in a module constant.
@@ -375,19 +382,9 @@ function renderBlock(
       );
     }
     case "choiceCard":
-      // The shared parser turns a `futureos-choice` fence into a `choiceCard`
-      // node on every client, so the phone must not fall through to the
-      // paragraph branch below (a card has no `children`). The real card is
-      // §11 step 6; until then the fence degrades to the readable list §8
-      // promises — the options stay on screen, nothing is lost.
       return (
-        <View key={key} style={isLast ? undefined : styles.blockSpacing} testID="choice-card-degraded">
-          <Text selectable style={[styles.paragraph, styles.bold]}>{node.title}</Text>
-          {node.options.map(option => (
-            <Text key={option.id} selectable style={styles.paragraph}>
-              {option.description ? `${option.label} — ${option.description}` : option.label}
-            </Text>
-          ))}
+        <View key={key} style={isLast ? undefined : styles.blockSpacing}>
+          <ChoiceCard live={liveChoice} node={node} />
         </View>
       );
     default:
@@ -476,11 +473,12 @@ const MarkdownTableRow = memo(function MarkdownTableRow({ cells, alignments, cel
   );
 });
 
-const MarkdownBlock = memo(function MarkdownBlock({ node, openTarget, isLast, animate }: {
+const MarkdownBlock = memo(function MarkdownBlock({ node, openTarget, isLast, animate, liveChoice }: {
   node: MarkdownNode;
   openTarget: OpenTarget;
   isLast: boolean;
   animate: boolean;
+  liveChoice?: boolean;
 }) {
   const [opacity] = useState(() => new Animated.Value(animate ? 0 : 1));
   const styles = useStyles();
@@ -499,7 +497,7 @@ const MarkdownBlock = memo(function MarkdownBlock({ node, openTarget, isLast, an
     return () => animation.stop();
   }, [animate, opacity]);
   // Only new blocks fade once. Updating a token never fades the whole message.
-  return <Animated.View style={{ opacity }}>{renderBlock(node, openTarget, "block", isLast, styles)}</Animated.View>;
+  return <Animated.View style={{ opacity }}>{renderBlock(node, openTarget, "block", isLast, styles, liveChoice)}</Animated.View>;
 });
 
 export function MarkdownText({ text, onOpenFile, onOpenSession, imageBasePath, mode = "message", streaming = false, tone = "default" }: MarkdownTextProps) {
@@ -519,6 +517,27 @@ export function MarkdownText({ text, onOpenFile, onOpenSession, imageBasePath, m
     return joinSoftBreaks(parseFutureMarkdown(displayedText, undefined, displayedText.length <= 128 * 1024));
   }, [mode, project, displayedText, projectingStream]);
   const [initialBlockCount] = useState(document.nodes.length);
+  /**
+   * The reply's one answerable card (§2): a card is live only when this body was
+   * given an answer surface *and* it is the document's **last** card. An earlier
+   * card — or one nested in a quote or a list, which never reaches this map —
+   * keeps its rows read-only: its question has already been answered, and letting
+   * it change would make "which pick am I editing" unanswerable.
+   *
+   * The reply decides whether a surface is offered at all (`TimelineCard` gives
+   * one only to the thread's last settled reply); `-1` means no card here owns
+   * it.
+   */
+  const answerSurface = useContext(ChoiceCardAnswerContext);
+  const liveChoiceIndex = useMemo(() => {
+    if (!answerSurface)
+      return -1;
+    for (let index = document.nodes.length - 1; index >= 0; index -= 1) {
+      if (document.nodes[index]?.type === "choiceCard")
+        return index;
+    }
+    return -1;
+  }, [answerSurface, document]);
   const openTarget = useCallback<OpenTarget>(rawTarget => {
     const target = classifyMarkdownTarget(rawTarget);
     if (target.kind === "local-file") {
@@ -560,6 +579,7 @@ export function MarkdownText({ text, onOpenFile, onOpenSession, imageBasePath, m
       <MarkdownSessionContext value={onOpenSession}>
         <View style={styles.constrained}>{document.nodes.map((node, index) => (
           <MarkdownBlock key={index} node={node} openTarget={openTarget} isLast={index === document.nodes.length - 1}
+            liveChoice={index === liveChoiceIndex}
             animate={mode === "message" && projectingStream && !reveal.reduceMotion && index >= initialBlockCount} />
         ))}</View>
       </MarkdownSessionContext>
