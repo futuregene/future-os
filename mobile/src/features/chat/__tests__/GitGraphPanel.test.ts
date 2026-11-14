@@ -74,11 +74,15 @@ const listCommits = jest.fn<Promise<GitGraphListing>, []>(async () => listing);
 const getCommit = jest.fn<Promise<GitCommitDetail>, [string]>(async () => detail);
 const onClose = jest.fn();
 const removeBack = jest.fn();
+/** The stepper the panel hands the conversation bar, if it registered one. */
+let panelBack: (() => boolean) | null = null;
+const registerBack = jest.fn((handler: () => boolean) => { panelBack = handler; });
 
 const mount = async (overrides: Partial<Parameters<typeof GitGraphPanel>[0]> = {}) => {
   await act(async () => {
     tree = create(createElement(GitGraphPanel, {
-      online: true, supported: true, listCommits, getCommit, onClose, ...overrides,
+      online: true, supported: true, listCommits, getCommit, onClose, registerBack,
+      ...overrides,
     }));
   });
   await act(async () => { await Promise.resolve(); });
@@ -109,16 +113,16 @@ const rowPress = (sha: string) =>
     typeof node.props.accessibilityLabel === "string"
     && node.props.accessibilityLabel.startsWith(`git.openCommit:{"sha":"${sha}"`)
     && node.props.onPress)[0]!;
-/** The way out of whichever page is showing — `Back to commits` on a patch,
- * `Close` on the list. Found by label so the test does not depend on the icon. */
-const escapeButton = (label: string) =>
+/** Whether any control carries this label right now. */
+const hasButton = (label: string) =>
   tree.root.findAll(node =>
     node.props.accessibilityRole === "button"
     && node.props.accessibilityLabel === label
-    && node.props.onPress)[0]!;
+    && node.props.onPress).length > 0;
 
 beforeEach(() => {
   jest.clearAllMocks();
+  panelBack = null;
   jest.spyOn(BackHandler, "addEventListener").mockReturnValue({ remove: removeBack });
 });
 afterEach(async () => {
@@ -175,19 +179,25 @@ test("a merge is drawn as a ring and a plain commit as a disc", async () => {
   expect(rings[0]!.props.fill).toBe("none");
 });
 
-/** Neither page has a header bar: one control, top-left, and the content. */
-test("the list has no header: just the way out", async () => {
+/** Neither page has a header bar, and the list has no control of its own. */
+test("the list has no header and no second way out", async () => {
   await mount();
   // Nothing names the repository at the top of the list; the commits are the
   // page.
   expect(texts()).not.toContain("dopamine-decision");
   expect(texts()).not.toContain("/Users/lixin/Research/dopamine-decision");
-  // The one control is the back button, labelled for leaving.
-  expect(escapeButton("common.close")).toBeDefined();
-  act(() => escapeButton("common.close").props.onPress());
-  expect(onClose).toHaveBeenCalledTimes(1);
+  // And no arrow of its own: the conversation bar's back button is the only back
+  // control on screen, and it already leaves the history from here.
+  const labels = tree.root
+    .findAll(node => node.props.accessibilityRole === "button")
+    .map(node => node.props.accessibilityLabel)
+    .filter((label): label is string => typeof label === "string");
+  expect(labels).not.toContain("common.close");
+  expect(labels).not.toContain("git.back");
+  // Nothing is left to pop, so the bar's back should be free to leave.
+  expect(panelBack?.()).toBe(false);
+  expect(onClose).not.toHaveBeenCalled();
 });
-
 test("a tapped commit opens its patch, coloured by line role", async () => {
   await mount();
   act(() => rowPress("4c1a7e2").props.onPress());
@@ -248,8 +258,10 @@ test("the patch page has no header either: the commit says who and when itself",
     .find(text => text.split("9b30d18").length === 2 && text.includes("2026-11-11"));
   expect(meta).toBe("Lixin Zhou · 9b30d18 · 2026-11-11 16:05");
   expect(painted).toContain("merge side");
-  // The only control is the way back to the list.
-  expect(escapeButton("git.back")).toBeDefined();
+  // No second arrow on the patch either: the bar's back is the one control, and
+  // it steps back to the list before it leaves.
+  expect(hasButton("git.back")).toBe(false);
+  expect(hasButton("common.close")).toBe(false);
 });
 
 test("the detail pane is the one place a commit's bytes can be read, and back pops it", async () => {
@@ -258,11 +270,16 @@ test("the detail pane is the one place a commit's bytes can be read, and back po
   await act(async () => { await Promise.resolve(); });
   expect(getCommit).toHaveBeenCalledWith("e27f5a0");
 
-  // The back button returns to the list, and the list's back button leaves.
-  act(() => escapeButton("git.back").props.onPress());
+  // The bar's back steps back to the list, and only then leaves the history.
+  act(() => { expect(panelBack?.()).toBe(true); });
   expect(onClose).not.toHaveBeenCalled();
-  act(() => escapeButton("common.close").props.onPress());
-  expect(onClose).toHaveBeenCalledTimes(1);
+  await act(async () => { await Promise.resolve(); });
+  // Back on the list: the commit rows are what is painted again, not the patch.
+  expect(commits().props.data).toHaveLength(5);
+  expect(texts()).not.toContain("merge side");
+  // …and the same press now has nothing to step out of, so it leaves.
+  expect(panelBack?.()).toBe(false);
+  expect(onClose).not.toHaveBeenCalled();
 });
 
 test("system back pops the patch before it closes the sheet", async () => {

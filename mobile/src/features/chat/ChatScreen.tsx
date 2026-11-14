@@ -96,7 +96,17 @@ export function ChatScreen() {
   const gitOpen = !remote.draft && gitSession === conversationKey;
   const gitSupported = remote.capabilities.has("git_graph_v1");
   const gitRepo = gitProbe?.key === conversationKey ? gitProbe.isRepo : null;
+  // A surface that stacks pages inside itself (the Git history: a list, then one
+  // commit's patch) registers a stepper here, so the bar's single back button
+  // walks out the way it walked in. Set through a ref rather than state: it is
+  // read inside `goBack`, and storing it in state would re-render the whole
+  // conversation on every navigation inside the panel.
+  const panelBack = useRef<(() => boolean) | null>(null);
+  const registerPanelBack = useCallback((handler: () => boolean) => {
+    panelBack.current = handler;
+  }, []);
   const goBack = useCallback(() => {
+    if (gitOpen && panelBack.current?.()) return;
     if (gitOpen) setGitSession(null);
     else if (filesOpen) setFilesSession(null);
     else {
@@ -1052,6 +1062,7 @@ export function ChatScreen() {
                   listCommits={remote.listGitCommits}
                   getCommit={remote.getGitCommit}
                   onClose={() => setGitSession(null)}
+                  registerBack={registerPanelBack}
                 />
               )}
 

@@ -108,7 +108,7 @@ export function GitHistoryPanel({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div data-git-history={source.kind} className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 px-3 py-2">
         {onClose
           ? <IconButton label={t("close")} onClick={onClose} icon={<ChevronLeft size={16} />} />
@@ -155,7 +155,6 @@ export function GitHistoryPanel({
                         key={commit.short}
                         commit={commit}
                         geometry={geometry[index] ?? null}
-                        palette={palette}
                         width={pictureWidth}
                         onOpen={() => setSelected(commit)}
                       />
@@ -177,19 +176,15 @@ export function GitHistoryPanel({
 function CommitRow({
   commit,
   geometry,
-  palette,
   width,
   onOpen,
 }: {
   commit: GitGraphRow;
   geometry: GraphGeometry | null;
-  palette: readonly string[];
   width: number;
   onOpen: () => void;
 }) {
   const { t } = useTranslation("gitHistory");
-  const lane = geometry?.marker?.lane ?? 0;
-  const stripe = palette[lane % palette.length] ?? palette[0]!;
   return (
     <button
       data-git-commit={commit.short}
@@ -200,15 +195,12 @@ function CommitRow({
       style={{ height: ROW_HEIGHT }}
     >
       {/*
-        A hairline of the lane's colour at the row's left edge: what makes a page
-        of commits scannable without reading the picture.
+        No lane hairline at the row's left edge. It was pinned to the row's edge
+        rather than to the lane column, changed colour from row to row, and
+        stopped short of the threads it echoed — so it read as a stray border
+        beside the picture instead of as part of it. The lanes themselves say
+        which column a commit is on.
       */}
-      <span
-        aria-hidden="true"
-        className="absolute inset-y-0 left-0 w-[2px] opacity-90"
-        data-lane-stripe=""
-        style={{ backgroundColor: stripe }}
-      />
       <LaneGraph geometry={geometry} height={ROW_HEIGHT} width={width} center={DOT_CENTER} />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[13px] leading-[17px] text-ink">
