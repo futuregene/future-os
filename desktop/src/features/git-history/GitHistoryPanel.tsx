@@ -316,24 +316,28 @@ function CommitPatchPane({
 }
 
 function roleClass(role: "added" | "removed" | "hunk" | "header" | "meta" | "plain"): string {
+  // A line's role is carried by a tinted band and a bar at the left, not by its
+  // text colour alone — the same reading the phone gives a patch, so one patch
+  // looks the same on both screens. The bar is what the eye follows down the
+  // page; the tint says which side of the diff a line is on.
   switch (role) {
     case "added": {
-      return "text-success";
+      return "border-l-2 border-success bg-success-soft text-success";
     }
     case "removed": {
-      return "text-danger";
+      return "border-l-2 border-danger bg-danger-soft text-danger";
     }
     case "hunk": {
-      return "text-info";
+      return "border-l-2 border-info bg-info-soft text-info";
     }
     case "header": {
-      return "font-semibold text-ink-soft";
+      return "border-l-2 border-line font-semibold text-ink-soft";
     }
     case "meta": {
-      return "text-ink-muted";
+      return "border-l-2 border-transparent text-ink-muted";
     }
     default: {
-      return "text-ink-soft";
+      return "border-l-2 border-transparent text-ink-soft";
     }
   }
 }

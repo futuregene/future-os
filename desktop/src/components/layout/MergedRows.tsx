@@ -103,7 +103,9 @@ export function MergedRows({
    *
    * The count is the stream's own remainder, and one click reveals exactly that
    * many: the number under the list is a promise about what is below it, not the
-   * size of the page a click happens to fetch.
+   * size of the page a click happens to fetch. In the recent view this is one
+   * half of that promise — the list interleaves a host's rows with this
+   * machine's, so the control under it sums both remainders (see `remoteMore`).
    */
   recentMore?: number;
   recentMoreBusy?: boolean;
@@ -112,9 +114,11 @@ export function MergedRows({
    * Conversations the paired machines hold beyond the window this list drew.
    *
    * A host that speaks `catalog_window_v1` sends its newest conversations and
-   * keeps the rest a page away, so this is the remainder behind the same
-   * "show the rest" control the local list draws. `0` (or absent) means every
-   * host sent everything it holds.
+   * keeps the rest a page away. `0` (or absent) means every host sent everything
+   * it holds. In the recent view this is added to `recentMore`, because the list
+   * under this control is both machines' rows in one order and one sentence has
+   * to name all of it; the tree view draws it as its own row, where the two
+   * halves are two visibly separate sections.
    */
   remoteMore?: number;
   onShowMoreRemote?: () => void;
@@ -386,6 +390,28 @@ export function MergedRows({
       active: t("activityRail.recentActive"),
       earlier: t("activityRail.recentEarlier"),
     };
+    // One list, one remainder.
+    //
+    // This view draws two stores' rows in one order — this machine's stream and
+    // each paired host's catalogue window — and each holds its own tail behind
+    // its own cursor. Two controls under one list said "show N more" twice, and
+    // nothing in either said which stretch it continued: reported as "why two,
+    // one 213 and one 702?". They are one list here, so they are one control,
+    // and its count is the sum because that is what its click loads — a control
+    // that names N must load N (see `RailLoadMoreRow`).
+    //
+    // Each half counts only where its rows are listed: under a filter naming one
+    // machine the other half's tail is not behind this list, and a sum that
+    // included it would name rows the click fetches and the list never draws.
+    const localRemaining = showLocalActions ? (recentMore ?? 0) : 0;
+    const remoteRemaining = filter.kind === "all" || filter.desktopId !== null ? (remoteMore ?? 0) : 0;
+    const recentRemaining = localRemaining + remoteRemaining;
+    const revealRemainder = () => {
+      if (localRemaining > 0)
+        onShowMoreRecent?.();
+      if (remoteRemaining > 0)
+        onShowMoreRemote?.();
+    };
     return (
       <div className="space-y-0.5" data-testid="recent-rows">
         {recentSections.map(section => (
@@ -408,29 +434,24 @@ export function MergedRows({
             ))}
           </div>
         ))}
-        {recentMore !== undefined && recentMore > 0
+        {recentRemaining > 0
           ? (
               <button
-                aria-label={t("activityRail.showMore", { count: recentMore })}
+                aria-label={t("activityRail.showMore", { count: recentRemaining })}
                 disabled={recentMoreBusy}
                 // Accent ink on its own soft fill: the palette contract holds
                 // that pair to AA, whereas `surface-subtle` left it short in six
                 // palettes. The hover darkens the tint instead of swapping the
                 // surface, which keeps the label on a background that is checked.
                 className="mt-1 flex h-7 w-full items-center justify-center rounded-md border border-line-soft bg-accent-soft text-xs font-medium text-accent transition-colors hover:brightness-95"
+                data-load-more={recentRemaining}
                 data-testid="recent-show-more"
-                onClick={onShowMoreRecent}
+                onClick={revealRemainder}
                 type="button"
               >
-                {t("activityRail.showMore", { count: recentMore })}
+                {t("activityRail.showMore", { count: recentRemaining })}
               </button>
             )
-          : null}
-        {/* A remote host's conversations beyond the window it sent are a second
-            remainder, and they belong under the same list for the same reason:
-            the view above already draws everything this machine holds. */}
-        {remoteMore !== undefined && remoteMore > 0
-          ? <RailLoadMoreRow count={remoteMore} onClick={() => onShowMoreRemote?.()} />
           : null}
       </div>
     );
