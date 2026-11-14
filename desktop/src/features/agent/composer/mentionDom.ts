@@ -1,4 +1,5 @@
 import { buildSessionReference } from "@future-os/markdown";
+import { choiceAnswerText, parseChoiceAnswer } from "./choiceAnswer";
 
 export const PILL_ATTR = "data-mention";
 
@@ -109,7 +110,11 @@ export function hashContext(editor: HTMLDivElement | null): {
   };
 }
 
-/** Serialize the editor: text verbatim, pills → markdown links. */
+/**
+ * Serialize the editor: text verbatim, file/skill/session pills → the markdown
+ * the agent reads, a choice pill → `[title → label]` (§7 of the choice-card
+ * design).
+ */
 export function serialize(editor: HTMLDivElement | null): string {
   if (!editor)
     return "";
@@ -134,6 +139,15 @@ export function serialize(editor: HTMLDivElement | null): string {
         sessionId: element.getAttribute("data-session") ?? "",
         title: element.getAttribute("data-title") ?? "",
       });
+      return;
+    }
+    if (pillKind === "choice") {
+      // The answer is plain text (§7): every client, and a message pasted
+      // anywhere else, can read `[title → label]`. Data comes from
+      // `data-choice`, not from the pill's painted text — the pill also draws a
+      // pencil and a cross, which are affordances, not content.
+      const answer = parseChoiceAnswer(element.getAttribute("data-choice"));
+      out += answer ? choiceAnswerText(answer) : (element.textContent ?? "");
       return;
     }
     if (pillKind) {
