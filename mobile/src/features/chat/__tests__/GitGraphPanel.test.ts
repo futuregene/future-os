@@ -13,9 +13,21 @@ jest.mock("../../../theme/ThemeContext", () => {
   const graphColors = ["#2563eb", "#0e7490", "#a16207"];
   const theme = {
     colors: {
-      accent: "#accent", ink: "#ink", inkMuted: "#muted", inkSoft: "#soft",
-      inkStrong: "#strong", danger: "#danger", success: "#success",
-      info: "#info", lineSoft: "#line", surface: "#surface", surfaceSubtle: "#subtle",
+      accent: "#accent",
+      ink: "#ink",
+      inkMuted: "#muted",
+      inkSoft: "#soft",
+      inkStrong: "#strong",
+      danger: "#danger",
+      dangerSoft: "#dangerSoft",
+      success: "#success",
+      successSoft: "#successSoft",
+      info: "#info",
+      infoSoft: "#infoSoft",
+      line: "#line",
+      lineSoft: "#line",
+      surface: "#surface",
+      surfaceSubtle: "#subtle",
     },
     graphColors,
     font: (size: number) => size,
@@ -88,6 +100,17 @@ const mount = async (overrides: Partial<Parameters<typeof GitGraphPanel>[0]> = {
   await act(async () => { await Promise.resolve(); });
 };
 const commits = () => tree.root.findByType(FlatList);
+
+test("the first commit is not flush against the surface above it", async () => {
+  await mount();
+  // The history starts immediately under the conversation's bar, so the list
+  // gives it a little air rather than butting the first row against the edge.
+  const content = commits().props.contentContainerStyle;
+  const style = Object.assign({}, ...[content].flat().filter(
+    (entry): entry is Record<string, unknown> => !!entry && typeof entry === "object",
+  ));
+  expect(style.paddingTop).toBeGreaterThan(0);
+});
 /** Every string the panel currently paints, for the status messages. */
 const texts = () => tree.root
   .findAll(node => String(node.type) === "Text")
@@ -206,14 +229,69 @@ test("a tapped commit opens its patch, coloured by line role", async () => {
   expect(getCommit).toHaveBeenCalledWith("4c1a7e2");
   // The role, not the raw text: an addition and a removal are told apart by
   // colour rather than by their leading character alone.
-  const styles = tree.root.findAll(node =>
-    String(node.type) === "Text" && node.props.style && Array.isArray(node.props.style));
-  const colours = styles
-    .flatMap(node => (node.props.style as unknown[]).flat())
-    .filter((entry): entry is { color?: string } => !!entry && typeof entry === "object")
-    .map(entry => entry.color);
+  const entryStyles = patchEntries();
+  const colours = entryStyles.map(entry => entry.color);
   expect(colours).toContain("#success");
   expect(colours).toContain("#danger");
+});
+
+/**
+ * The style objects the patch page paints each line with.
+ *
+ * A line's role is spread over several style entries (the base line, then the
+ * role), so the merged view is what a reader actually sees.
+ */
+function patchEntries() {
+  return tree.root
+    .findAll(node => String(node.type) === "Text" && Array.isArray(node.props.style))
+    .map(node => Object.assign({}, ...(node.props.style as unknown[]).flat().filter(
+      (entry): entry is Record<string, unknown> => !!entry && typeof entry === "object",
+    )));
+}
+
+test("the patch tints each line across its width, with a bar at the left", async () => {
+  await mount();
+  act(() => rowPress("4c1a7e2").props.onPress());
+  await act(async () => { await Promise.resolve(); });
+
+  const entries = patchEntries();
+  // A tint plus a bar, not a text hue alone: 11px monospace on a phone screen is
+  // too small to sort by hue, and the bar is what a thumb follows down the page.
+  const added = entries.find(entry => entry.color === "#success");
+  expect(added?.backgroundColor).toBe("#successSoft");
+  expect(added?.borderLeftColor).toBe("#success");
+  expect(added?.borderLeftWidth).toBe(2);
+
+  const removed = entries.find(entry => entry.color === "#danger");
+  expect(removed?.backgroundColor).toBe("#dangerSoft");
+  expect(removed?.borderLeftColor).toBe("#danger");
+
+  const hunk = entries.find(entry => entry.color === "#info");
+  expect(hunk?.backgroundColor).toBe("#infoSoft");
+  expect(hunk?.borderLeftColor).toBe("#info");
+
+  // Context stays untinted and unbarred, so the tinted rows are what stands out.
+  const plain = entries.find(entry => entry.color === "#soft" && entry.borderLeftWidth === 2);
+  expect(plain?.backgroundColor).toBeUndefined();
+  expect(plain?.borderLeftColor).toBe("transparent");
+});
+
+test("the tint runs the full width of the row, not just behind the text", async () => {
+  await mount();
+  act(() => rowPress("4c1a7e2").props.onPress());
+  await act(async () => { await Promise.resolve(); });
+
+  // The coloured band belongs to the line, and the line owns its own padding:
+  // a padded container would leave an untinted gutter down both edges.
+  const card = tree.root.findAll(node =>
+    String(node.type) === "View" && (node.props.style as { overflow?: string } | undefined)?.overflow === "hidden");
+  expect(card.length).toBeGreaterThan(0);
+  const entries = patchEntries();
+  const tinted = entries.filter(entry => entry.backgroundColor === "#successSoft" || entry.backgroundColor === "#dangerSoft");
+  expect(tinted.length).toBeGreaterThan(0);
+  for (const entry of tinted) {
+    expect(entry.paddingHorizontal).toBeGreaterThan(0);
+  }
 });
 
 test("a row says who made the commit, then its hash, then when", async () => {
