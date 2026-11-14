@@ -151,7 +151,7 @@ describe("laneDrawing", () => {
 
   it("a commit is a disc at the tip of its lane, with no thread over its dot", () => {
     const tip = draw(...MERGED)[0]!;
-    expect(tip.dots).toEqual([{ x: 7, color: "L0", merged: false }]);
+    expect(tip.dots).toEqual([{ x: 7, y: CENTER, color: "L0", merged: false }]);
     // Nothing above the newest commit, so its thread starts at the dot and runs
     // down to meet the next row.
     expect(tip.threads).toEqual([{ x: 7, y1: CENTER, y2: HEIGHT, color: "L0" }]);
@@ -170,7 +170,27 @@ describe("laneDrawing", () => {
       HEIGHT,
     );
     expect(lone.threads).toEqual([]);
-    expect(lone.dots).toEqual([{ x: 7, color: "L0", merged: false }]);
+    expect(lone.dots).toEqual([{ x: 7, y: CENTER, color: "L0", merged: false }]);
+  });
+
+  it("an explicit centre moves the dot and the horizontals, never the threads", () => {
+    // A row that stacks a subject and a metadata line puts its dot on the
+    // first line: the panel passes that line's centre rather than the row's
+    // middle. Everything that runs across the row follows it, and the verticals
+    // do not — they still reach both edges, which is what keeps consecutive rows
+    // joined whatever axis their dots are on.
+    const decoded = geometry(...MERGED);
+    const offset = laneDrawing(decoded[0]!, metrics, HEIGHT, 10);
+    expect(offset.dots).toEqual([{ x: 7, y: 10, color: "L0", merged: false }]);
+    expect(offset.threads).toEqual([{ x: 7, y1: 10, y2: HEIGHT, color: "L0" }]);
+
+    const merge = laneDrawing(decoded[1]!, metrics, HEIGHT, 10);
+    // The corner keeps its radius around the new axis: 4 + 6 = 10 is where the
+    // curve lands on the lane's own axis.
+    expect(merge.runs).toEqual([{ path: "M 21 10 L 29 10 Q 35 10 35 16", color: "L1" }]);
+    expect(merge.threads.find(entry => entry.x === 35)).toEqual(
+      { x: 35, y1: 16, y2: HEIGHT, color: "L2" },
+    );
   });
 
   it("a run with no length between two turns paints no stroke", () => {

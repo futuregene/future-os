@@ -88,6 +88,18 @@ const commits = () => tree.root.findByType(FlatList);
 const texts = () => tree.root
   .findAll(node => String(node.type) === "Text")
   .map(node => node.children.map(String).join(""));
+/** One node's text with its nested `Text` children in place — the order a reader
+ * sees, which a per-node join cannot show because the pieces are separate
+ * nodes. */
+const textOf = (node: { children: unknown[] }): string => node.children
+  .map((child) => {
+    if (typeof child === "string") return child;
+    if (child && typeof child === "object" && "children" in child) {
+      return textOf(child as { children: unknown[] });
+    }
+    return "";
+  })
+  .join("");
 /** The system-back handler the panel has installed right now. A pop re-renders
  * and re-subscribes, so the newest subscription is the one Android would call. */
 const backHandler = () => (BackHandler.addEventListener as jest.Mock).mock.calls.at(-1)![1];
@@ -194,6 +206,28 @@ test("a tapped commit opens its patch, coloured by line role", async () => {
   expect(colours).toContain("#danger");
 });
 
+test("a row says who made the commit, then its hash, then when", async () => {
+  await mount();
+  const painted = rowPress("4c1a7e2").findAll(node => String(node.type) === "Text")
+    .map(node => node.children.map(String).join(""));
+  // Three fields on the second line, in the order a reader looks for them: the
+  // author is what identifies a line of work, the hash is what you copy out, the
+  // date is when it landed.
+  expect(painted).toContain("Lixin Zhou · 4c1a7e2 · 2026-11-11 18:42");
+});
+
+test("the commit's dot sits on the subject's line, not in the gap between the two", async () => {
+  await mount();
+  const circles = rowPress("9b30d18").findAllByType(Circle);
+  expect(circles).toHaveLength(1);
+  // The row stacks two lines of text, so its own middle is the gap between them.
+  // The dot is drawn at the first line's centre instead. With the mock theme's
+  // identity `leading`, the row is `max(34, 19 + 11 + 8)` = 38 high and holds
+  // 19 + 14 = 33 of text, so that centre is (38 - 33)/2 + 19/2 = 12 — seven
+  // points above the row's own middle.
+  expect(circles[0]!.props.cy).toBe(12);
+});
+
 /** The patch page's header is gone too, so what it used to say moved into the
  * body — and the header's absent state is what this asserts. */
 test("the patch page has no header either: the commit says who and when itself", async () => {
@@ -204,6 +238,15 @@ test("the patch page has no header either: the commit says who and when itself",
   const painted = texts();
   expect(painted.some(text => text.includes("Lixin Zhou") && text.includes("2026-11-11 16:05")))
     .toBe(true);
+  // The same three fields in the same order as the row it was opened from: the
+  // patch page is the same commit, so it does not reorder them. The sha is its
+  // own selectable `Text` inside the line, so the line is read with its nested
+  // children in place rather than node by node.
+  const meta = tree.root
+    .findAll(node => String(node.type) === "Text" && textOf(node).includes("9b30d18"))
+    .map(textOf)
+    .find(text => text.split("9b30d18").length === 2 && text.includes("2026-11-11"));
+  expect(meta).toBe("Lixin Zhou · 9b30d18 · 2026-11-11 16:05");
   expect(painted).toContain("merge side");
   // The only control is the way back to the list.
   expect(escapeButton("git.back")).toBeDefined();

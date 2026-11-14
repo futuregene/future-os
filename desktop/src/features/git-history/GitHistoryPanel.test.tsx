@@ -128,6 +128,27 @@ it("draws lanes as strokes rather than glyphs", async () => {
   }
 });
 
+it("puts the commit's dot on the subject's line, not in the gap between the lines", async () => {
+  await mount({ kind: "local", path: "/Users/reader/repo" });
+  const dot = rows()[0]!.querySelector("circle")!;
+  // The row stacks a subject and a metadata line, so the row's middle is the gap
+  // between them: a dot there sits beside neither. It belongs on the first line,
+  // which with a 17px subject line and a 15px metadata line in a 34px row puts
+  // its centre at (34 - 32)/2 + 8.5 = 9.5.
+  expect(dot.getAttribute("cy")).toBe("9.5");
+  // A connection runs on the dot's own axis, so a merge's elbow leaves the dot's
+  // height rather than the row's middle.
+  const elbow = rows()[1]!.querySelector("path")!.getAttribute("d")!;
+  expect(elbow).toContain(" 9.5 ");
+});
+
+it("names the author first, then the hash, then when", async () => {
+  await mount({ kind: "local", path: "/Users/reader/repo" });
+  // One line, three fields in the order a reader looks for them: who made the
+  // commit, what it is called, when it landed.
+  expect(rows()[0]!.textContent).toContain("Rin · aaa111 · 2 hours ago");
+});
+
 it("gives each lane its own colour, and says which lane a row is on", async () => {
   await mount({ kind: "local", path: "/Users/reader/repo" });
   // The row's left stripe carries its lane colour, which is what makes a page
