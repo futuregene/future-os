@@ -79,6 +79,12 @@ const detail: GitCommitDetail = {
     "",
   ].join("\n"),
   truncated: false,
+  refs: {
+    branches: ["feature/analysis"],
+    remotes: ["origin/main"],
+    tags: ["v3.2"],
+    head: false,
+  },
 };
 
 let tree: ReactTestRenderer;
@@ -294,14 +300,59 @@ test("the tint runs the full width of the row, not just behind the text", async 
   }
 });
 
-test("a row says who made the commit, then its hash, then when", async () => {
+test("a row says when, then its hash, then who made it", async () => {
   await mount();
   const painted = rowPress("4c1a7e2").findAll(node => String(node.type) === "Text")
     .map(node => node.children.map(String).join(""));
-  // Three fields on the second line, in the order a reader looks for them: the
-  // author is what identifies a line of work, the hash is what you copy out, the
-  // date is when it landed.
-  expect(painted).toContain("Lixin Zhou · 4c1a7e2 · 2026-11-11 18:42");
+  // Three fields on the second line: the date first ("is this the change I am
+  // after?"), then the hash you copy out, then the author.
+  expect(painted).toContain("2026-11-11 18:42 · 4c1a7e2 · Lixin Zhou");
+});
+
+test("the patch page lists every ref on the commit, one kind per row", async () => {
+  await mount();
+  act(() => rowPress("4c1a7e2").props.onPress());
+  await act(async () => { await Promise.resolve(); });
+
+  const painted = texts();
+  // Branches, remotes and tags are separate rows: "is it released?" and "is it
+  // pushed?" are different questions, and the list row's one-line decoration
+  // cannot answer either once a commit carries several refs.
+  for (const name of ["feature/analysis", "origin/main", "v3.2"]) {
+    expect(painted).toContain(name);
+  }
+  expect(painted).toContain("git.ref.branches");
+  expect(painted).toContain("git.ref.remotes");
+  expect(painted).toContain("git.ref.tags");
+});
+
+test("a commit that is the checkout says so, even with no branch on it", async () => {
+  getCommit.mockResolvedValueOnce({
+    ...detail,
+    // A detached checkout of an old commit: no branch and no tag point at it.
+    refs: { branches: [], head: true, remotes: [], tags: [] },
+  });
+  await mount();
+  act(() => rowPress("4c1a7e2").props.onPress());
+  await act(async () => { await Promise.resolve(); });
+
+  const painted = texts();
+  expect(painted).toContain("git.ref.checkedOut");
+  expect(painted).toContain("git.ref.yes");
+});
+
+test("a commit with no refs shows no refs block at all", async () => {
+  getCommit.mockResolvedValueOnce({
+    ...detail,
+    refs: { branches: [], head: false, remotes: [], tags: [] },
+  });
+  await mount();
+  act(() => rowPress("4c1a7e2").props.onPress());
+  await act(async () => { await Promise.resolve(); });
+
+  const painted = texts();
+  expect(painted).not.toContain("git.ref.branches");
+  expect(painted).not.toContain("git.ref.checkedOut");
 });
 
 test("the commit's dot sits on the subject's line, not in the gap between the two", async () => {
@@ -334,7 +385,7 @@ test("the patch page has no header either: the commit says who and when itself",
     .findAll(node => String(node.type) === "Text" && textOf(node).includes("9b30d18"))
     .map(textOf)
     .find(text => text.split("9b30d18").length === 2 && text.includes("2026-11-11"));
-  expect(meta).toBe("Lixin Zhou · 9b30d18 · 2026-11-11 16:05");
+  expect(meta).toBe("2026-11-11 16:05 · 9b30d18 · Lixin Zhou");
   expect(painted).toContain("merge side");
   // No second arrow on the patch either: the bar's back is the one control, and
   // it steps back to the list before it leaves.

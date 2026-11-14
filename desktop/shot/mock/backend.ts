@@ -1126,6 +1126,14 @@ const handlers: Record<string, (args: any) => unknown> = {
     short: "9f2c1a7",
     patch: gitHistoryPatch,
     truncated: false,
+    refs: {
+      // What a real commit in this fixture's shape carries: it is on main and its
+      // remote, cut as a tag, and it is what the demo checkout is on.
+      branches: ["main"],
+      head: true,
+      remotes: ["origin/main"],
+      tags: ["v1.4.0"],
+    },
   }),
   get_last_run_review: () => ({
     changeset: {

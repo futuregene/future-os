@@ -571,7 +571,11 @@ export interface GitGraphRow {
   short: string;
   /** `YYYY-MM-DD HH:MM`, minute precision and no zone. */
   when: string;
-  /** The committer's name, as git prints it. */
+  /**
+   * The *author's* name, as git prints it. Not the committer: a squash merge on
+   * GitHub, a rebase or a cherry-pick all rewrite the committer, so reading that
+   * field made a page of real work look like it was done by "GitHub".
+   */
   who: string;
   /** `HEAD -> main, origin/main, tag: v1`, empty when the commit has no refs. */
   decorations: string;
@@ -603,6 +607,26 @@ export interface GitCommitDetail {
   patch: string;
   /** The host cut the patch at its row/byte ceiling and said so in `patch`. */
   truncated: boolean;
+  /** Every ref pointing at this commit, split the way a reader asks for them. */
+  refs: GitCommitRefs;
+}
+
+/**
+ * The refs on one commit.
+ *
+ * The list row carries git's short decoration, which drops local branches once
+ * a commit has several. The detail page asks `for-each-ref --points-at` instead,
+ * so a commit on five branches lists five.
+ */
+export interface GitCommitRefs {
+  /** Local branches, without `refs/heads/`. */
+  branches: string[];
+  /** Remote-tracking branches, without `refs/remotes/` (`origin/main`). */
+  remotes: string[];
+  /** Tags, without `refs/tags/`. */
+  tags: string[];
+  /** `HEAD` is this commit — a detached checkout names no branch. */
+  head: boolean;
 }
 
 export interface DownloadInfo {

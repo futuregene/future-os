@@ -983,4 +983,12 @@ index 8d2a551..f30bc92 100644
  )
 `,
   truncated: false,
+  // What this demo commit carries: it is on `main`, its remote, cut as a release
+  // tag, and it is the commit the demo checkout is sitting on.
+  refs: {
+    branches: ["main"],
+    head: true,
+    remotes: ["origin/main"],
+    tags: ["v3.2.0", "supplement-v1"],
+  },
 };

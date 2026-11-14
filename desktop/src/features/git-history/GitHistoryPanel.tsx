@@ -1,6 +1,6 @@
 import type { GraphGeometry } from "@future-os/git-graph";
 import type { GitHistorySource } from "./gitHistorySource";
-import type { GitCommitDetail, GitGraphListing, GitGraphRow } from "./types";
+import type { GitCommitDetail, GitCommitRefs, GitGraphListing, GitGraphRow } from "./types";
 import {
   DARK_GRAPH_COLORS,
   graphGeometry,
@@ -210,8 +210,7 @@ function CommitRow({
           {commit.subject}
         </span>
         <span className="block truncate text-[11px] leading-[15px] text-ink-muted">
-          {commit.who}
-          {` · ${commit.short} · ${commit.when}`}
+          {`${commit.when} · ${commit.short} · ${commit.who}`}
         </span>
       </span>
     </button>
@@ -278,13 +277,16 @@ function CommitPatchPane({
         <div className="min-w-0 flex-1">
           <div className="truncate text-xs font-semibold text-ink-strong">{commit.subject}</div>
           <div className="truncate text-[11px] text-ink-muted">
-            {`${commit.who} · `}
+            {`${commit.when} · `}
             <span className="font-mono">{commit.short}</span>
-            {` · ${commit.when}`}
+            {` · ${commit.who}`}
           </div>
         </div>
       </div>
       <div className="min-h-0 flex-1 overflow-auto border-t border-line-soft/70 font-mono text-[11px] leading-4">
+        {settled && state?.detail
+          ? <CommitRefs refs={state.detail.refs} />
+          : null}
         {!settled
           ? (
               <div className="flex items-center justify-center gap-2 px-4 py-8 text-ink-muted">
@@ -315,11 +317,50 @@ function CommitPatchPane({
   );
 }
 
+/**
+ * Every ref pointing at the open commit.
+ *
+ * The row shows git's short decoration, which drops local branches once a commit
+ * carries several. Here the whole set is listed, one kind per line: "is this
+ * released?" (tags), "is it pushed?" (remotes) and "is it on a branch?" are
+ * different questions, and a single run-together string answers none of them.
+ */
+function CommitRefs({ refs }: { refs: GitCommitRefs }) {
+  const { t } = useTranslation("gitHistory");
+  const rows: { key: string; label: string; names: string[] }[] = [];
+  // `HEAD` first: it answers "what am I looking at", and it can be true with no
+  // branch at all (a detached checkout of an old commit).
+  if (refs.head)
+    rows.push({ key: "head", label: t("ref.checkedOut"), names: [] });
+  if (refs.branches.length)
+    rows.push({ key: "branches", label: t("ref.branches"), names: refs.branches });
+  if (refs.remotes.length)
+    rows.push({ key: "remotes", label: t("ref.remotes"), names: refs.remotes });
+  if (refs.tags.length)
+    rows.push({ key: "tags", label: t("ref.tags"), names: refs.tags });
+  if (rows.length === 0)
+    return null;
+  return (
+    <div className="border-b border-line-soft/70 px-3 py-2 font-sans" data-git-refs="">
+      {rows.map(row => (
+        <div key={row.key} className="flex items-start gap-2 py-0.5 text-[11px]">
+          <span className="shrink-0 text-ink-muted">{row.label}</span>
+          <span className="flex min-w-0 flex-wrap gap-1">
+            {row.names.length === 0
+              ? <span className="rounded bg-accent-soft px-1 text-accent">{t("ref.yes")}</span>
+              : row.names.map(name => (
+                  <span key={name} className="select-text rounded bg-accent-soft px-1 text-accent">
+                    {name}
+                  </span>
+                ))}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function roleClass(role: "added" | "removed" | "hunk" | "header" | "meta" | "plain"): string {
-  // A line's role is carried by a tinted band and a bar at the left, not by its
-  // text colour alone — the same reading the phone gives a patch, so one patch
-  // looks the same on both screens. The bar is what the eye follows down the
-  // page; the tint says which side of the diff a line is on.
   switch (role) {
     case "added": {
       return "border-l-2 border-success bg-success-soft text-success";

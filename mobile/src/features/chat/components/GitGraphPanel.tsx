@@ -13,7 +13,7 @@ import {
   View,
 } from "react-native";
 import Svg, { Circle, Path, Line as SvgLine } from "react-native-svg";
-import type { GitCommitDetail, GitGraphListing, GitGraphRow } from "../../../remote/types";
+import type { GitCommitDetail, GitCommitRefs, GitGraphListing, GitGraphRow } from "../../../remote/types";
 import { layout, radius, spacing } from "../../../theme/tokens";
 import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
 import {
@@ -336,7 +336,7 @@ function CommitRow({
           {commit.subject}
         </Text>
         <Text numberOfLines={1} style={styles.meta}>
-          {commit.who} · {commit.short} · {commit.when}
+          {commit.when} · {commit.short} · {commit.who}
         </Text>
       </View>
     </Pressable>
@@ -394,14 +394,16 @@ function CommitDetailPane({
   return (
     <ScrollView contentContainerStyle={styles.detail}>
       {/* The patch page carries no header, so what the header used to say lives
-          here: the commit and its line, then who wrote it and when. The short
-          sha is selectable because it is the thing a reader copies out. */}
+          here: the commit and its line, then who wrote it and when, in the same
+          order the list row uses. The short sha is selectable because it is the
+          thing a reader copies out. */}
       <Text selectable style={styles.detailSubject}>{commit.subject}</Text>
       <Text style={styles.detailMeta}>
-        {`${commit.who} · `}
+        {`${commit.when} · `}
         <Text selectable style={styles.detailSha}>{commit.short}</Text>
-        {` · ${commit.when}`}
+        {` · ${commit.who}`}
       </Text>
+      <CommitRefs refs={state.detail.refs} />
       <View style={styles.patch}>
         {lines.map((line, index) => (
           <Text key={index} selectable style={[styles.patchLine, roleStyle(styles, line.role)]}>
@@ -410,6 +412,54 @@ function CommitDetailPane({
         ))}
       </View>
     </ScrollView>
+  );
+}
+
+/**
+ * Every ref that points at this commit.
+ *
+ * The list row has one line and shows git's short decoration, which drops local
+ * branches once a commit carries several. Here there is room: the branches it is
+ * on, the remote-tracking branches that carry it, and the tags cut on it — each
+ * on its own row, because "is this released?" and "is this pushed?" are
+ * different questions and a single run-together line answers neither well.
+ */
+function CommitRefs({ refs }: { refs: GitCommitRefs }) {
+  const styles = useStyles();
+  const { t } = useTranslation();
+  // `HEAD` is listed first when the checkout is this commit: it is the answer to
+  // "what am I looking at", and it can be true with no branch at all.
+  const rows: { key: string; label: string; names: string[] }[] = [];
+  if (refs.head) {
+    rows.push({ key: "head", label: t("git.ref.checkedOut"), names: [] });
+  }
+  if (refs.branches.length) {
+    rows.push({ key: "branches", label: t("git.ref.branches"), names: refs.branches });
+  }
+  if (refs.remotes.length) {
+    rows.push({ key: "remotes", label: t("git.ref.remotes"), names: refs.remotes });
+  }
+  if (refs.tags.length) {
+    rows.push({ key: "tags", label: t("git.ref.tags"), names: refs.tags });
+  }
+  if (rows.length === 0) {
+    return null;
+  }
+  return (
+    <View style={styles.refs}>
+      {rows.map(row => (
+        <View key={row.key} style={styles.refRow}>
+          <Text style={styles.refLabel}>{row.label}</Text>
+          <View style={styles.refChips}>
+            {row.names.length === 0
+              ? <Text style={styles.refChip}>{t("git.ref.yes")}</Text>
+              : row.names.map(name => (
+                  <Text key={name} selectable style={styles.refChip}>{name}</Text>
+                ))}
+          </View>
+        </View>
+      ))}
+    </View>
   );
 }
 
@@ -442,6 +492,21 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   detailSubject: { color: theme.colors.inkStrong, fontSize: theme.font(15), fontWeight: "700", lineHeight: theme.leading(22) },
   detailMeta: { color: theme.colors.inkMuted, fontSize: theme.font(11), marginTop: spacing.xs },
   detailSha: { color: theme.colors.inkSoft, fontFamily: monospace },
+  // The refs block: a label per kind and its names as chips, so "released" and
+  // "pushed" stay separate answers instead of one run-together string.
+  refs: { marginTop: spacing.sm, gap: spacing.xs },
+  refRow: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
+  refLabel: { color: theme.colors.inkMuted, fontSize: theme.font(11), lineHeight: theme.leading(18), minWidth: 48 },
+  refChips: { flex: 1, flexDirection: "row", flexWrap: "wrap", gap: spacing.xs },
+  refChip: {
+    color: theme.colors.accent,
+    fontSize: theme.font(11),
+    lineHeight: theme.leading(18),
+    backgroundColor: theme.colors.accentSoft,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.xs,
+    overflow: "hidden",
+  },
   empty: { flexGrow: 1, alignItems: "center", justifyContent: "center", gap: spacing.md, padding: spacing.lg },
   emptyContent: { alignItems: "center", gap: spacing.md },
   status: { color: theme.colors.inkMuted, textAlign: "center", fontSize: theme.font(14) },

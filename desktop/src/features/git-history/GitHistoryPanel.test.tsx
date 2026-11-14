@@ -1,4 +1,4 @@
-import type { GitGraphListing } from "./types";
+import type { GitCommitDetail, GitGraphListing } from "./types";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -16,9 +16,9 @@ import { GitHistoryPanel } from "./GitHistoryPanel";
  */
 
 const listLocal = vi.fn<(path: string) => Promise<GitGraphListing>>();
-const getLocal = vi.fn<(path: string, sha: string) => Promise<{ patch: string; short: string; truncated: boolean }>>();
+const getLocal = vi.fn<(path: string, sha: string) => Promise<GitCommitDetail>>();
 const listRemote = vi.fn<(desktopId: string, sessionId: string) => Promise<GitGraphListing>>();
-const getRemote = vi.fn<(desktopId: string, sessionId: string, sha: string) => Promise<{ patch: string; short: string; truncated: boolean }>>();
+const getRemote = vi.fn<(desktopId: string, sessionId: string, sha: string) => Promise<GitCommitDetail>>();
 
 vi.mock("../../integrations/tauri/invoke", () => ({
   invokeCommand: (command: string, args: Record<string, unknown>) => {
@@ -85,11 +85,22 @@ beforeEach(() => {
   listLocal.mockReset().mockResolvedValue(listing());
   getLocal.mockReset().mockResolvedValue({
     patch: "commit aaa111\nAuthor: Rin\n\n    third\n\ndiff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,2 +1,3 @@\n context\n+added line\n-removed line\n",
+    refs: {
+      branches: ["main"],
+      head: true,
+      remotes: ["origin/main"],
+      tags: ["v1.0", "v1.1"],
+    },
     short: "aaa111",
     truncated: false,
   });
   listRemote.mockReset().mockResolvedValue(listing());
-  getRemote.mockReset().mockResolvedValue({ patch: "", short: "aaa111", truncated: false });
+  getRemote.mockReset().mockResolvedValue({
+    patch: "",
+    refs: { branches: [], head: false, remotes: [], tags: [] },
+    short: "aaa111",
+    truncated: false,
+  });
 });
 
 /** The commit rows, in order. */
@@ -142,11 +153,49 @@ it("puts the commit's dot on the subject's line, not in the gap between the line
   expect(elbow).toContain(" 9.5 ");
 });
 
-it("names the author first, then the hash, then when", async () => {
+it("says when, then the hash, then who made it", async () => {
   await mount({ kind: "local", path: "/Users/reader/repo" });
-  // One line, three fields in the order a reader looks for them: who made the
-  // commit, what it is called, when it landed.
-  expect(rows()[0]!.textContent).toContain("Rin · aaa111 · 2 hours ago");
+  // One line, three fields: the date first ("is this the change I am after?"),
+  // then the hash you copy out, then the author.
+  expect(rows()[0]!.textContent).toContain("2 hours ago · aaa111 · Rin");
+});
+
+it("lists every ref on the open commit, one kind per row", async () => {
+  await mount({ kind: "local", path: "/Users/reader/repo" });
+  await act(async () => {
+    rows()[0]!.click();
+  });
+  await flush();
+
+  // The row's decoration is one line and drops local branches once a commit
+  // carries several; the detail asks for the whole set instead.
+  const refs = container.querySelector("[data-git-refs]");
+  expect(refs).not.toBeNull();
+  const text = refs!.textContent ?? "";
+  for (const name of ["main", "origin/main", "v1.0", "v1.1"]) {
+    expect(text).toContain(name);
+  }
+  expect(text).toContain("Branches");
+  expect(text).toContain("Remote");
+  expect(text).toContain("Tags");
+  // HEAD points at this commit, so the checkout is named too.
+  expect(text).toContain("Here");
+});
+
+it("draws no refs block for a commit no ref points at", async () => {
+  getLocal.mockResolvedValueOnce({
+    patch: "commit aaa111\n",
+    refs: { branches: [], head: false, remotes: [], tags: [] },
+    short: "aaa111",
+    truncated: false,
+  });
+  await mount({ kind: "local", path: "/Users/reader/repo" });
+  await act(async () => {
+    rows()[0]!.click();
+  });
+  await flush();
+
+  expect(container.querySelector("[data-git-refs]")).toBeNull();
 });
 
 it("says which lane a row is on in words, not with a tinted edge", async () => {
