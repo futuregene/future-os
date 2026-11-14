@@ -24,6 +24,21 @@ import { GUTTER_PAD, LANE_PITCH } from "./laneMetrics";
  * commit, so one line of subject is the right amount.
  */
 const ROW_HEIGHT = 34;
+/**
+ * The two text lines' heights, in pixels.
+ *
+ * Written out rather than left to the font's own leading because the picture's
+ * axis is computed from them: the commit's dot belongs on the *first* line, and
+ * where that line's centre falls depends on how the pair of lines sits inside
+ * the row.
+ */
+const SUBJECT_LINE = 17;
+const META_LINE = 15;
+/**
+ * The y the row's horizontals run on and its dot is drawn at: the centre of the
+ * first line, with the two lines centred in the row.
+ */
+const DOT_CENTER = (ROW_HEIGHT - (SUBJECT_LINE + META_LINE)) / 2 + SUBJECT_LINE / 2;
 
 /**
  * The conversation's Git history, as lanes.
@@ -194,17 +209,17 @@ function CommitRow({
         data-lane-stripe=""
         style={{ backgroundColor: stripe }}
       />
-      <LaneGraph geometry={geometry} height={ROW_HEIGHT} width={width} />
+      <LaneGraph geometry={geometry} height={ROW_HEIGHT} width={width} center={DOT_CENTER} />
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[13px] text-ink">
+        <span className="block truncate text-[13px] leading-[17px] text-ink">
           {commit.decorations
             ? <span className="font-semibold text-accent">{`${commit.decorations} `}</span>
             : null}
           {commit.subject}
         </span>
-        <span className="block truncate text-[11px] text-ink-muted">
-          {commit.short}
-          {` · ${commit.who} · ${commit.when}`}
+        <span className="block truncate text-[11px] leading-[15px] text-ink-muted">
+          {commit.who}
+          {` · ${commit.short} · ${commit.when}`}
         </span>
       </span>
     </button>
@@ -271,8 +286,9 @@ function CommitPatchPane({
         <div className="min-w-0 flex-1">
           <div className="truncate text-xs font-semibold text-ink-strong">{commit.subject}</div>
           <div className="truncate text-[11px] text-ink-muted">
+            {`${commit.who} · `}
             <span className="font-mono">{commit.short}</span>
-            {` · ${commit.who} · ${commit.when}`}
+            {` · ${commit.when}`}
           </div>
         </div>
       </div>

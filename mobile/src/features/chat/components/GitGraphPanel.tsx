@@ -46,6 +46,13 @@ const ROW_HEIGHT = 34;
 
 const monospace = Platform.select({ ios: "Menlo", default: "monospace" });
 
+/** The subject's line height, at the reader's text size. The row's picture puts
+ * the commit's dot on this line, so the two are read together. */
+const SUBJECT_LINE = 19;
+/** The metadata line's height. It and the subject's are what the picture's axis
+ * is computed from — see `CommitRow`. */
+const META_LINE = 14;
+
 /**
  * The conversation workspace's Git history: one row per commit, a lane per
  * column of work, and a tap opening that commit's patch.
@@ -136,7 +143,14 @@ export function GitGraphPanel({
   // a row cannot be decoded alone anyway — whether a thread exists above a dot
   // depends on the row before it.
   const geometry = useMemo(() => graphGeometry(commits, graphColors), [commits, graphColors]);
-  const rowHeight = Math.max(ROW_HEIGHT, leading(19) + font(11) + 8);
+  const rowHeight = Math.max(ROW_HEIGHT, leading(SUBJECT_LINE) + font(11) + 8);
+  // Where the commit dot goes: the centre of the row's *first* line, not the
+  // row's middle. The row stacks a subject and a metadata line, so its middle is
+  // the gap between them — a dot there sits beside neither. Derived from the two
+  // line heights rather than written as a number, because both scale with the
+  // reader's text size and the row's own padding is what centres the pair.
+  const dotCenter = (rowHeight - (leading(SUBJECT_LINE) + leading(META_LINE))) / 2
+    + leading(SUBJECT_LINE) / 2;
   const metrics = useMemo<LaneMetrics>(
     () => ({ pitch: LANE_PITCH, radius: TURN_RADIUS, gap: CROSSING_GAP }),
     [],
@@ -202,6 +216,7 @@ export function GitGraphPanel({
               lane={geometry[index]?.marker?.lane ?? 0}
               row={geometry[index] ?? null}
               height={rowHeight}
+              center={dotCenter}
               width={pictureWidth}
               metrics={metrics}
               onPress={() => setSelected(item)}
@@ -226,6 +241,7 @@ function CommitRow({
   row,
   lane,
   height,
+  center,
   width,
   metrics,
   onPress,
@@ -235,6 +251,8 @@ function CommitRow({
   /** The lane the commit sits on: what the row's colour stripe is tinted with. */
   lane: number;
   height: number;
+  /** The y the commit's dot is drawn at: the centre of the first text line. */
+  center: number;
   width: number;
   metrics: LaneMetrics;
   onPress: () => void;
@@ -243,8 +261,8 @@ function CommitRow({
   const { colors, graphColors } = useTheme();
   const { t } = useTranslation();
   const drawing = useMemo(
-    () => (row ? laneDrawing(row, metrics, height) : null),
-    [row, metrics, height],
+    () => (row ? laneDrawing(row, metrics, height, center) : null),
+    [row, metrics, height, center],
   );
 
   return (
@@ -299,7 +317,7 @@ function CommitRow({
             <Circle
               key={`d${index}`}
               cx={dot.x}
-              cy={height / 2}
+              cy={dot.y}
               r={dot.merged ? DOT_RADIUS + DOT_STROKE / 2 : DOT_RADIUS}
               fill={dot.merged ? "none" : dot.color}
               stroke={dot.color}
@@ -319,7 +337,7 @@ function CommitRow({
           {commit.subject}
         </Text>
         <Text numberOfLines={1} style={styles.meta}>
-          {commit.short} · {commit.who} · {commit.when}
+          {commit.who} · {commit.short} · {commit.when}
         </Text>
       </View>
     </Pressable>
@@ -381,8 +399,9 @@ function CommitDetailPane({
           sha is selectable because it is the thing a reader copies out. */}
       <Text selectable style={styles.detailSubject}>{commit.subject}</Text>
       <Text style={styles.detailMeta}>
+        {`${commit.who} · `}
         <Text selectable style={styles.detailSha}>{commit.short}</Text>
-        {` · ${commit.who} · ${commit.when}`}
+        {` · ${commit.when}`}
       </Text>
       <View style={styles.patch}>
         {lines.map((line, index) => (
@@ -438,7 +457,7 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   body: { flex: 1, minWidth: 0 },
   subject: { color: theme.colors.ink, fontSize: theme.font(14), lineHeight: theme.leading(19) },
   decorations: { color: theme.colors.accent, fontWeight: "600" },
-  meta: { color: theme.colors.inkMuted, fontSize: theme.font(11) },
+  meta: { color: theme.colors.inkMuted, fontSize: theme.font(11), lineHeight: theme.leading(META_LINE) },
   detailSubject: { color: theme.colors.inkStrong, fontSize: theme.font(15), fontWeight: "700", lineHeight: theme.leading(22) },
   detailMeta: { color: theme.colors.inkMuted, fontSize: theme.font(11), marginTop: spacing.xs },
   detailSha: { color: theme.colors.inkSoft, fontFamily: monospace },

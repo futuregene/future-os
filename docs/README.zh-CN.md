@@ -58,6 +58,7 @@
 | 文档 | 内容 |
 |---|---|
 | [工作区与会话：分页加载与归档设计](design/workspace-thread-archive-and-paging.zh-CN.md)（[en](design/workspace-thread-archive-and-paging.md)） | 定稿设计：树级归档与统一的"无活跃会话"前置规则、工作区归档与容器唤醒、只读详情、首次归档引导，以及工作区列表/工作区对话/临时对话的 keyset 分页 |
+| [回复里的选项卡](design/choice-cards.zh-CN.md)（[en](design/choice-cards.md)） | 定稿设计：模型用 `futureos-choice` 围栏挂一张选项卡，答案进输入框草稿（可不选、可改、可与文字共存、可直接发），桌面/移动/远程三端同一实现；含真实界面样张与样式三方向对比 |
 
 ## 内部文档（`internals/`）
 
