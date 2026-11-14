@@ -24,6 +24,9 @@ export { remarkAutolinkBoundary } from "./remarkAutolinkBoundary";
 export { remarkUnclosedLink } from "./remarkUnclosedLink";
 export { referenceKey } from "./types";
 export type {
+  ChoiceCardMode,
+  ChoiceCardNode,
+  ChoiceCardOption,
   FutureMarkdownDocument,
   FutureReference,
   FutureReferenceType,

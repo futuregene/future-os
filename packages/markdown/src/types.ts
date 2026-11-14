@@ -11,6 +11,38 @@ export interface FutureReference {
   view: FutureReferenceView;
 }
 
+/** How many of a `futureos-choice` card's options can be picked. */
+export type ChoiceCardMode = "single" | "multi";
+
+/** One row of a `futureos-choice` card. */
+export interface ChoiceCardOption {
+  /** One line on what picking it changes; the fence may omit it. */
+  description?: string;
+  /** Stable identifier echoed back on send: ASCII `[a-z0-9-]`, ≤ 24 chars. */
+  id: string;
+  /**
+   * The instruction as the user would say it. This is the text that reaches the
+   * agent when the option is picked, so it is a sentence, not a menu label.
+   */
+  label: string;
+}
+
+/**
+ * A `futureos-choice` block: the reply's closing question, drawn as a card.
+ *
+ * The card is the question's view; the answer lives in the composer draft
+ * (design `docs/design/choice-cards.zh-CN.md` §2), which is why the node carries
+ * no selection state.
+ */
+export interface ChoiceCardNode {
+  /** Overrides the default subtitle ("pick one and it lands in the input"). */
+  hint?: string;
+  mode: ChoiceCardMode;
+  options: ChoiceCardOption[];
+  title: string;
+  type: "choiceCard";
+}
+
 export type InlineNode =
   | { text: string; type: "text" }
   | { children: InlineNode[]; type: "strong" }
@@ -42,6 +74,7 @@ export type MarkdownNode =
   | { code: string; language?: string; type: "code" }
   | { items: ListItemNode[]; ordered: boolean; start?: number; type: "list" }
   | { reference: FutureReference; type: "futureEmbed" }
+  | ChoiceCardNode
   | { type: "thematicBreak" }
   | ({ type: "table" } & TableNode)
   | { code: string; type: "mathBlock" };

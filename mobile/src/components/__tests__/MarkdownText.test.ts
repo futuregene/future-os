@@ -857,3 +857,30 @@ describe("an image inside a sentence", () => {
     act(() => renderer!.unmount());
   });
 });
+
+describe("a futureos-choice fence on the phone", () => {
+  let renderer: ReactTestRenderer;
+  afterEach(() => { act(() => renderer?.unmount()); });
+
+  test("degrades to the readable option list instead of falling into the paragraph branch", () => {
+    const text = [
+      "先做这一步。",
+      "",
+      "```futureos-choice",
+      "title: 接下来做哪一件？",
+      "option: forest | 重画森林图 | 按 Dreher 2025 的样本量重算",
+      "option: flow | 补一张实验流程图",
+      "```",
+    ].join("\n");
+    act(() => { renderer = create(createElement(MarkdownText, { text })); });
+    const root = renderer.root;
+    // §11 step 6 draws the real card here; until then §8's guarantee is that the
+    // options survive as text rather than disappearing with the fence.
+    expect(root.findAll(node => node.type === View && node.props.testID === "choice-card-degraded")).toHaveLength(1);
+    const painted = root.findAllByType(Text).map(node => paintedText(node));
+    expect(painted).toContain("接下来做哪一件？");
+    expect(painted).toContain("重画森林图 — 按 Dreher 2025 的样本量重算");
+    expect(painted).toContain("补一张实验流程图");
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("futureos-choice");
+  });
+});
