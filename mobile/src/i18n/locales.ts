@@ -462,6 +462,28 @@ export const resources = {
         openOnDesktopFailed:
           "Could not switch to {{name}} to open that conversation. Reconnect and retry.",
       },
+      // A `futureos-choice` card's own wording (design
+      // `docs/design/choice-cards.zh-CN.md` §9): the model supplies the question and
+      // the options, never these.
+      choice: {
+        mode: { single: "Single choice", multi: "Multiple choice" },
+        hint: {
+          single: "Pick one and it lands in the input; you can type something else instead",
+          multi: "Pick as many as apply",
+        },
+        foot: {
+          queued: "Chosen — the answer is above the input. Send it as is, or add a note first.",
+        },
+        chip: {
+          change: "Change the answer to \"{{title}}\"",
+          remove: "Remove the answer to \"{{title}}\"",
+        },
+        sheet: {
+          title: "Change \"{{title}}\"",
+          hint: "Pick another one and the answer above the input follows.",
+        },
+        stale: "This card is no longer active",
+      },
       chat: {
         "fusionTitle": "Fusion · Discussion",
         "fusionModeratorRole": "Moderator",
@@ -1685,6 +1707,25 @@ export const resources = {
         deleteWorkspaceFailed: "工作区删除失败，请恢复连接后重试。",
         openOnDesktopFailed:
           "切换到「{{name}}」打开该会话失败，请恢复连接后重试。",
+      },
+      choice: {
+        mode: { single: "单选", multi: "多选" },
+        hint: {
+          single: "选一个就放进输入框；也可以直接在输入框里写别的",
+          multi: "可以多选，点几个都行",
+        },
+        foot: {
+          queued: "已选，答案在下面的输入框上方；可以直接发送，也可以补充文字",
+        },
+        chip: {
+          change: "修改「{{title}}」的选择",
+          remove: "移除「{{title}}」的选择",
+        },
+        sheet: {
+          title: "修改「{{title}}」",
+          hint: "换个选项，输入框里的答案跟着变",
+        },
+        stale: "这张卡已经过期",
       },
       chat: {
         "fusionTitle": "Fusion · 讨论",

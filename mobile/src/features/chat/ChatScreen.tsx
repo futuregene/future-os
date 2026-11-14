@@ -18,6 +18,9 @@ import { mimeFor, pickAttachments, pickFromAlbum, takePhoto } from "../../remote
 import { useConversationOperation } from "./useConversationOperation";
 import { useComposerSubmission } from "./composer/useComposerSubmission";
 import { useComposerDraft } from "./useComposerDraft";
+import { choiceAnswerFromCard, pickChoiceOption } from "./choiceAnswer";
+import type { ChoiceCardAnswer } from "../../components/ChoiceCard";
+import type { ChoiceCardNode } from "@future-os/markdown";
 import { useAttachmentPicker } from "./useAttachmentPicker";
 import { useChatFiles } from "./files/useChatFiles";
 import { useMarkdownImageLoader } from "./useMarkdownImageLoader";
@@ -245,9 +248,48 @@ export function ChatScreen() {
   // plain label there rather than offering an expansion it cannot deliver.
   const reasoningFetchSupported = remote.capabilities.has("reasoning_fetch_v1");
 
-  const { message, setMessage, attachments, setAttachments, sessionRefs, rememberSessionRef, restoring } = useComposerDraft(
+  const { message, setMessage, attachments, setAttachments, choice, setChoice, sessionRefs, rememberSessionRef, restoring } = useComposerDraft(
     remote,
     t,
+  );
+  /**
+   * A `futureos-choice` row was picked (§6 b): the answer belongs to the draft, so
+   * this writes the draft and nothing else — the card's marked row and the chip
+   * above the field both re-read it from there (§2).
+   *
+   * Picking on a *different* question starts that question's answer over: an old
+   * answer must not lend its option ids to a card that asked something else.
+   */
+  const pickChoice = useCallback((card: ChoiceCardNode, optionId: string) => {
+    setChoice((current) => {
+      const base = current?.title === card.title ? current : choiceAnswerFromCard(card);
+      const next = pickChoiceOption(base, optionId);
+      // Unticking the last option of a multi-choice answer leaves no answer at
+      // all, and the chip must go with it.
+      return next.selectedIds.length > 0 ? next : null;
+    });
+  }, [setChoice]);
+  const clearChoice = useCallback(() => setChoice(null), [setChoice]);
+  /**
+   * What the transcript may do with the draft's answer.
+   *
+   * Handed to every reply (`TimelineCard` gives it to the thread's last settled
+   * reply, and only to that reply's last card): an older card's question is
+   * already answered, and letting it change would make "which pick am I editing"
+   * unanswerable (§2).
+   *
+   * It is present **before** anything is picked — an empty answer is what the first
+   * pick is written into — so a card's rows are live even though the draft holds
+   * nothing yet. `title` is empty until an answer exists, which is what keeps every
+   * row unmarked; `MarkdownText` matches rows against it.
+   */
+  const choiceCardAnswer = useMemo<ChoiceCardAnswer>(
+    () => ({
+      onPick: pickChoice,
+      selectedIds: choice?.selectedIds ?? [],
+      title: choice?.title ?? "",
+    }),
+    [choice, pickChoice],
   );
   const { openAttachmentMenu, attachmentMenu, albumPicker } = useAttachmentPicker(
     attachments,
@@ -724,7 +766,7 @@ export function ChatScreen() {
   );
   const { sendFromComposer, dismissSuggestedSkill, installSuggestedSkill, installingSkill }
     = useComposerSubmission({
-      remote, t, message, attachments, restoring, setMessage, send: sendAndReadQueue,
+      remote, t, message, attachments, choice, clearChoice, restoring, setMessage, send: sendAndReadQueue,
       recommendation: skillRecommendation, scrollToLatest
     });
 
@@ -825,6 +867,7 @@ export function ChatScreen() {
     ({ item }: { item: TimelineItem; }) => (
       <View onLayout={onRowLayout}>
         <TimelineCard
+          choiceAnswer={choiceCardAnswer}
           item={item}
           isLatestAssistant={item.id === latestAssistantId}
           onOpenAttachment={handleTimelineAttachment}
@@ -839,6 +882,7 @@ export function ChatScreen() {
       </View>
     ),
     [
+      choiceCardAnswer,
       forkSupported,
       handleResolveReasoning,
       reasoningFetchSupported,
@@ -994,6 +1038,8 @@ export function ChatScreen() {
                     keyboardHeight={keyboardHeight}
                     message={message}
                     setMessage={setMessage}
+                    choice={choice}
+                    onChangeChoice={setChoice}
                     sessionRefs={sessionRefs}
                     rememberSessionRef={rememberSessionRef}
                     attachments={attachments}

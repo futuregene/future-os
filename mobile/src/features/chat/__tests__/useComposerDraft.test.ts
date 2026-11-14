@@ -321,3 +321,50 @@ test("a reference remembered for a draft the reader has left is dropped", async 
   // would resolve `@a` in B's text against A's session.
   expect(current.sessionRefs).toEqual({});
 });
+
+/**
+ * The answer to a `futureos-choice` card lives in the draft, so it is restored and
+ * persisted with it, and it belongs to the conversation rather than to the screen
+ * (design `docs/design/choice-cards.zh-CN.md` §2).
+ */
+const cardAnswer = {
+  mode: "single" as const,
+  options: [{ id: "forest", label: "重画森林图" }, { id: "flow", label: "补一张实验流程图" }],
+  selectedIds: ["forest"],
+  title: "接下来做哪一件？",
+};
+
+test("a stored answer comes back with the draft it belongs to", async () => {
+  load.mockResolvedValue({ attachments: [], text: "", choice: cardAnswer });
+  render();
+  await settle();
+  expect(current.choice).toEqual(cardAnswer);
+});
+
+test("a pick is persisted as draft content, and dropping it is persisted too", async () => {
+  render();
+  await settle();
+  act(() => current.setChoice(cardAnswer));
+  expect(schedule).toHaveBeenCalledWith("desk-1:s1", {
+    attachments: [], choice: cardAnswer, refs: {}, text: "",
+  });
+  act(() => current.setChoice(null));
+  expect(schedule).toHaveBeenLastCalledWith("desk-1:s1", {
+    attachments: [], choice: undefined, refs: {}, text: "",
+  });
+});
+
+test("an answer is the conversation's own: it does not follow the reader", async () => {
+  render();
+  await settle();
+  act(() => current.setChoice(cardAnswer));
+  // A pick delivered through the previous conversation's callback — a tap that
+  // lands just after the reader moved on — must not write into the new draft.
+  const staleSetChoice = current.setChoice;
+  schedule.mockClear();
+  render({ sessionId: "s2" });
+  await settle();
+  expect(current.choice).toBeNull();
+  act(() => staleSetChoice(cardAnswer));
+  expect(schedule).not.toHaveBeenCalledWith("desk-1:s2", expect.objectContaining({ choice: cardAnswer }));
+});

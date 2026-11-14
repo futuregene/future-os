@@ -1,7 +1,7 @@
 import { useFusionAvailability } from "../../../remote/useFusionAvailability";
 import { IS_RELEASE } from "../../../version.generated";
 import { INPUT_MIN_HEIGHT, INPUT_MAX_HEIGHT } from "../composer/composerMetrics";
-import { ArrowDown, ArchiveRestore, CircleAlert, FileText, Paperclip, X } from "lucide-react-native";
+import { ArrowDown, ArchiveRestore, CircleAlert, FileText, Paperclip, Pencil, X } from "lucide-react-native";
 import { Pressable, ScrollView, Text, TextInput, useWindowDimensions, View, type TextInputInstance } from "react-native";
 import { memo, useCallback, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type { TFunction } from "i18next";
@@ -21,6 +21,8 @@ import { QUEUED_SEND_POLICY, type SendMessageIntent } from "../useSendMessage";
 import { SkillDetailsDialog } from "./SkillDetailsDialog";
 import { SkillSuggestionCard } from "./SkillSuggestionCard";
 import { ComposerToolbar } from "../composer/ComposerToolbar";
+import { choiceAnswerLabel, pickChoiceOption, type ChoiceAnswer } from "../choiceAnswer";
+import { ChoiceSheet } from "./ChoiceSheet";
 import { useStyles } from "../composer/composerStyles";
 import { SendChoiceSheet } from "./SendChoiceSheet";
 import { SendQueuePanel, sendQueueListHeight, type SendQueueAttachmentItem, type SendQueuePanelItem } from "./SendQueuePanel";
@@ -35,6 +37,8 @@ type PendingApproval = Extract<TimelineItem, { kind: "approval"; }>;
 function ComposerDockView({
   message,
   setMessage,
+  choice = null,
+  onChangeChoice,
   sessionRefs,
   rememberSessionRef,
   attachments,
@@ -76,6 +80,18 @@ function ComposerDockView({
 }: {
   message: string;
   setMessage: Dispatch<SetStateAction<string>>;
+  /**
+   * The draft's answer to a `futureos-choice` card, or null.
+   *
+   * Not a decoration: the phone's field is a native `textarea` and cannot hold
+   * the desktop's in-editor pill, so the answer rides in the chip row above it
+   * **and** counts as the draft's content (§5.7.1). That is what makes "pick one
+   * and send without typing" reachable — the gate below reads this value, not the
+   * chip's pixels.
+   */
+  choice?: ChoiceAnswer | null;
+  /** Replace or drop the draft's answer (a row, a pick in the sheet, the chip's ×). */
+  onChangeChoice?: (next: ChoiceAnswer | null) => void;
   /**
    * The draft's conversation references: the `#title` tokens it shows and the
    * conversations they stand for (see `useComposerDraft`).
@@ -177,8 +193,10 @@ function ComposerDockView({
   // message that goes out must be the one the recommender was asked about.
   const editable = !remote.busy && !skillEvaluating && !skillInstalling && !draftRestoring && !archived;
   const compacting = compactionPending || remote.compacting;
+  // The sheet the chip's pencil opens: the bottom-sheet answer to "which one".
+  const [choiceSheetOpen, setChoiceSheetOpen] = useState(false);
   const canSend = !archived && !skillInstalling && !draftRestoring && !skillEvaluating && !compacting && !remote.busy && remote.desktopOnline &&
-    (!!message.trim() || attachments.length > 0);
+    (!!message.trim() || attachments.length > 0 || choice !== null);
   // A run in flight rejects compaction, so the tool stays hidden rather than
   // offering an action the Agent will refuse (desktop parity).
   const compactionActionEnabled = !!onCompactContext
@@ -230,7 +248,10 @@ function ComposerDockView({
     remote.selectedSessionId,
     remote.abort,
   );
-  const hasDraft = !!message.trim() || attachments.length > 0;
+  // A picked answer is content of its own: with nothing typed and nothing
+  // attached, a card's answer is still something to send (§5.4, requirement d), so
+  // it is counted exactly where an attachment is.
+  const hasDraft = !!message.trim() || attachments.length > 0 || choice !== null;
   /**
    * Hand the draft to the session, and end the run it waited behind.
    *
@@ -469,6 +490,49 @@ function ComposerDockView({
               {t("attachment.imagesUnsupported")}
             </Text>
           )}
+          {/*
+            The answer to a `futureos-choice` card, above the field (design
+            `docs/design/choice-cards.zh-CN.md` §5.7). The field is a native
+            `textarea`, so unlike the desktop's editor it cannot hold an atomic
+            pill; this row is where the answer lives, and the dock *counts* it as
+            content (`canSend`/`hasDraft`) rather than only drawing it.
+
+            The question stays, muted and truncating first, because one thread can
+            hold several cards and "重画森林图" alone would not say what it
+            answers. Both actions wear one ink: editing and removing are the same
+            weight of act (§5.7.1).
+          */}
+          {choice && (
+            <View style={styles.choiceRow} testID="composer-choice-row">
+              <View style={styles.choiceChip} testID="composer-choice-chip">
+                <Text numberOfLines={1} style={styles.choiceChipTitle}>{choice.title}</Text>
+                <Text style={styles.choiceChipDot}>·</Text>
+                <Text numberOfLines={1} style={styles.choiceChipAnswer}>
+                  {choiceAnswerLabel(choice)}
+                </Text>
+                <Pressable
+                  accessibilityLabel={t("choice.chip.change", { title: choice.title })}
+                  accessibilityRole="button"
+                  disabled={!editable}
+                  onPress={() => setChoiceSheetOpen(true)}
+                  style={styles.choiceChipAction}
+                  testID="composer-choice-edit"
+                >
+                  <Pencil color={colors.inkSoft} size={12} />
+                </Pressable>
+                <Pressable
+                  accessibilityLabel={t("choice.chip.remove", { title: choice.title })}
+                  accessibilityRole="button"
+                  disabled={!editable}
+                  onPress={() => onChangeChoice?.(null)}
+                  style={styles.choiceChipAction}
+                  testID="composer-choice-remove"
+                >
+                  <X color={colors.inkSoft} size={13} />
+                </Pressable>
+              </View>
+            </View>
+          )}
           <View>
             {/* Measure unconstrained text at the input's actual width. A fixed
                 native TextInput can report a clamped content size, especially
@@ -545,6 +609,21 @@ function ComposerDockView({
         </View>
       </View>
       <SkillDetailsDialog onClose={() => setSkillDetails(null)} skill={skillDetails} />
+      <ChoiceSheet
+        answer={choice}
+        onClose={() => setChoiceSheetOpen(false)}
+        onPick={(optionId) => {
+          if (!choice)
+            return;
+          // A single-choice pick is the whole act, so the sheet closes on it; a
+          // multi-choice one keeps the sheet up so several can be ticked.
+          onChangeChoice?.(pickChoiceOption(choice, optionId));
+          if (choice.mode === "single")
+            setChoiceSheetOpen(false);
+        }}
+        open={choiceSheetOpen}
+        t={t}
+      />
       <SendChoiceSheet
         open={queueChoiceOpen}
         t={t}

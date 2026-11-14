@@ -1,4 +1,5 @@
 import type { HistoryAttachment, TimelineItem } from "../../../remote/types";
+import type { ChoiceCardAnswer } from "../../../components/ChoiceCard";
 
 /**
  * Fetch one tool call's display target after the fact. A lean history page
@@ -28,6 +29,13 @@ export type ReasoningLoader = (segmentId: string) => Promise<string | null>;
 export interface TimelineCardProps {
   item: TimelineItem;
   isLatestAssistant?: boolean;
+  /**
+   * The composer draft's answer to a `futureos-choice` card, when this phone can
+   * offer one (design `docs/design/choice-cards.zh-CN.md` §2). The screen passes
+   * it to every reply; only the thread's **last settled** reply hands it to its own
+   * last card, which is what makes "only the last card is interactive" true.
+   */
+  choiceAnswer?: ChoiceCardAnswer;
   onOpenAttachment?(attachment: HistoryAttachment): void;
   onOpenFile?(path: string): void;
   /** Opens the conversation a `#` reference in a sent message points at. */
