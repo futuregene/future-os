@@ -20,6 +20,33 @@ if (hostSuite && (!['remote', 'core'].includes(hostSuite) || packages.length !==
 }
 const testFilter = hostSuite === 'remote' ? ['--', 'remote'] : hostSuite === 'core' ? ['--', '--skip', 'remote'] : [];
 const flags = packages.flatMap(name => ['-p', name]);
+// Test execution goes through cargo nextest, which runs each test in its own
+// process: `--no-fail-fast` stays explicit because that is the guarantee the
+// previous `cargo test --no-fail-fast` made, and `--no-tests=pass` keeps the
+// libtest behaviour where a filter that matches nothing is not a failure.
+//
+// No executable doctest is lost by leaving `cargo test` behind: every doc code
+// fence in this workspace is tagged `text`, `ignore` or `json`, and rustdoc
+// compiles none of those (`cargo test --doc` reports zero tests), so nextest not
+// running doctests drops nothing.
+//
+// `testFilter` is passed through unchanged: nextest emulates the libtest
+// arguments after `--` (`remote` as a filter, `--skip remote` as the inverse).
+//
+// nextest adds no per-test deadline either: measured on 0.9.152, a test that
+// sleeps 150 s is reported as `SLOW` at 60 s and 120 s and then passes, so a
+// loaded runner cannot fail a slow-but-passing test where `cargo test` would not.
+const NEXTEST = ['nextest', 'run', '--locked', '--no-tests=pass'];
+// `--no-run` rejects `--no-fail-fast` (there is nothing to fail), so the flag that
+// preserves the old `cargo test --no-fail-fast` guarantee is added for runs only.
+const NEXTEST_TEST = [...NEXTEST, '--no-fail-fast'];
+// nextest lists a test binary before running it, and `desktop/src-tauri`'s
+// `gui_main_thread_drive` target is a `harness = false` driver that gives its
+// tests the process's main thread (AppKit). It speaks no listing protocol, so
+// nextest exits while enumerating it. Exclude only that binary here and run its
+// target through `cargo test` below, unchanged.
+const MAIN_THREAD_HARNESS = 'gui_main_thread_drive';
+const nextestSelection = ['-E', `not binary(=${MAIN_THREAD_HARNESS})`];
 async function run(command, args) {
   console.log(`::group::${command} ${args.join(' ')}`);
   const result = await timedCommand(command, args, { cwd: root });
@@ -29,7 +56,9 @@ async function run(command, args) {
 switch (phase) {
   case 'fmt': await run('cargo', ['fmt', ...flags, '--check']); break;
   case 'build':
-    await run('cargo', ['test', '--locked', '--no-run', '--timings', ...flags]);
+    // `--timings` is forwarded to the cargo build nextest drives, so the lane
+    // still uploads target/cargo-timings/cargo-timing.html.
+    await run('cargo', [...NEXTEST, '--no-run', '--timings', ...nextestSelection, ...flags]);
     break;
   case 'clippy':
     await run('cargo', ['clippy', '--locked', ...flags, '--all-targets', '--', '-D', 'warnings']);
@@ -44,8 +73,10 @@ switch (phase) {
     if (packages.includes('future-host') && process.platform === 'linux') {
       await run('python3', ['scripts/ci/host-tests.py', '--with-broker', '--suite', hostSuite || 'all']);
       const others = packages.filter(name => name !== 'future-host');
-      if (others.length) await run('cargo', ['test', '--locked', '--no-fail-fast', ...others.flatMap(name => ['-p', name])]);
-    } else await run('cargo', ['test', '--locked', '--no-fail-fast', ...flags, ...testFilter]);
+      if (others.length) await run('cargo', [...NEXTEST_TEST, ...nextestSelection, ...others.flatMap(name => ['-p', name]), ...testFilter]);
+    } else await run('cargo', [...NEXTEST_TEST, ...nextestSelection, ...flags, ...testFilter]);
+    if (packages.includes('futureos'))
+      await run('cargo', ['test', '--locked', '--no-fail-fast', '-p', 'futureos', '--test', MAIN_THREAD_HARNESS]);
     break;
   default: throw new Error(`Unknown Rust phase: ${phase}`);
 }

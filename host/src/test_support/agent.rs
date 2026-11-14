@@ -423,6 +423,34 @@ pub fn mock_agent() -> MockAgentGuard {
     mock_agent_with_cleanup(crate::agent_bridge::cancel_all_observers)
 }
 
+/// The subset of the fixture a test needs when it only wants the shared Agent
+/// channel to exist and to answer with the default reply.
+///
+/// [`mock_agent`] does more than install: it stops the process-global observers,
+/// cancels every live observer and resets the shared connection, because a test
+/// that *scripts* replies must start from a clean slate. A test that only reads
+/// needs the installation and nothing else.
+///
+/// Two things were measured while giving `agent_bridge::import`'s heal fixtures
+/// that installation instead of borrowing it from whichever test ran first:
+/// [`mock_agent`] there is wrong (wiping the slate truncated the neighbours'
+/// streams), and *holding* [`MockAgentGuard`]'s lock across a reader's body is
+/// wrong too -- with four test threads one reader's wait for its reply held the
+/// lock until three neighbours blocked behind it, so drop the guard as soon as
+/// the fixture is installed.
+pub fn mock_agent_without_reset() -> MockAgentGuard {
+    let mut timing = crate::test_support::timing::FixtureTiming::start("MockAgentGuard", "agent");
+    let lock = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    timing.mark("lock_wait");
+    install_channel_runtime();
+    ensure_mock_server();
+    timing.mark("setup");
+    MockAgentGuard {
+        _lock: lock,
+        timing,
+    }
+}
+
 pub fn mock_agent_with_cleanup(cleanup: fn()) -> MockAgentGuard {
     let mut timing = crate::test_support::timing::FixtureTiming::start("MockAgentGuard", "agent");
     let lock = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
