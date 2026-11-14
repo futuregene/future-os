@@ -9,6 +9,7 @@ import { useFutureReference, useFutureReferences } from "./futureReferenceStore"
 import { LiveMarkdownProvider } from "./LiveMarkdownContext";
 import { joinSoftBreaks, parseFutureMarkdown } from "./parseFutureMarkdown";
 import { PreviewMarkdownContext, usePreviewMarkdown } from "./PreviewMarkdownContext";
+import { ChoiceCard } from "./renderers/ChoiceCard";
 import { CodeBlock } from "./renderers/CodeBlock";
 import { FileLink } from "./renderers/FileLink";
 import { renderFileReference } from "./renderers/fileReference";
@@ -45,9 +46,24 @@ interface MarkdownContentProps {
    * `LiveMarkdownContext`): code blocks render plain until the segment closes.
    */
   live?: boolean;
+  /**
+   * Answer surface for `futureos-choice` cards (design
+   * `docs/design/choice-cards.zh-CN.md` §2): the answer the composer draft holds
+   * and where picking a row writes it. Only the document's **last** card is
+   * interactive — an earlier card's question is already answered, and letting it
+   * change would make "which pick am I editing" unanswerable. Omitted (preview,
+   * artifact, an old reply) → every card is read-only.
+   */
+  choiceAnswer?: ChoiceCardAnswer;
 }
 
-function MarkdownContentImpl({ content, parsedDocument, workspaceId, basePath, onOpenPreview, live }: MarkdownContentProps) {
+/** The draft's answer to one card, plus the write path picking a row uses. */
+export interface ChoiceCardAnswer {
+  onSelect: (optionId: string) => void;
+  selectedIds: string[];
+}
+
+function MarkdownContentImpl({ content, parsedDocument, workspaceId, basePath, onOpenPreview, live, choiceAnswer }: MarkdownContentProps) {
   const document = useMemo(() => {
     const parsed = parsedDocument ?? parseFutureMarkdown(content);
     // A previewed document reflows to the reader's width: its source soft breaks
@@ -56,6 +72,21 @@ function MarkdownContentImpl({ content, parsedDocument, workspaceId, basePath, o
     return basePath ? joinSoftBreaks(parsed) : parsed;
   }, [content, parsedDocument, basePath]);
   useFutureReferences(workspaceId, document.references);
+
+  // §2's "only the thread's last card is live": within one reply the last card
+  // wins, and the caller decides whether this reply is the thread's latest by
+  // passing `choiceAnswer` at all. A card nested in a quote or a list stays
+  // read-only — the answer belongs to the reply's closing question.
+  const lastChoiceKey = useMemo(() => {
+    if (!choiceAnswer)
+      return null;
+    for (let index = document.nodes.length - 1; index >= 0; index -= 1) {
+      if (document.nodes[index]?.type === "choiceCard")
+        return `b${index}`;
+    }
+    return null;
+  }, [choiceAnswer, document]);
+  const choice = choiceAnswer && lastChoiceKey ? { answer: choiceAnswer, lastKey: lastChoiceKey } : undefined;
 
   const body = (
     <LiveMarkdownProvider value={Boolean(live)}>
@@ -71,7 +102,7 @@ function MarkdownContentImpl({ content, parsedDocument, workspaceId, basePath, o
         {...(live ? { "data-streamed-block": "" } : {})}
         className="space-y-3"
       >
-        {document.nodes.map((node, index) => renderBlock(node, workspaceId, `b${index}`))}
+        {document.nodes.map((node, index) => renderBlock(node, workspaceId, `b${index}`, choice))}
       </div>
     </LiveMarkdownProvider>
   );
@@ -96,6 +127,7 @@ export const StreamingMarkdownContent = memo(({
   content,
   workspaceId,
   live,
+  choiceAnswer,
 }: Omit<MarkdownContentProps, "basePath">) => {
   const blocks = useStreamingMarkdownBlocks(content, Boolean(live));
 
@@ -103,6 +135,7 @@ export const StreamingMarkdownContent = memo(({
     <div className="space-y-3">
       {blocks.map(block => (
         <MarkdownContent
+          choiceAnswer={choiceAnswer}
           content={block.content}
           parsedDocument={block.document}
           key={block.start}
@@ -114,7 +147,17 @@ export const StreamingMarkdownContent = memo(({
   );
 });
 
-function renderBlock(node: MarkdownNode, workspaceId: string | null | undefined, key: string) {
+interface ChoiceContext {
+  answer: ChoiceCardAnswer;
+  lastKey: string;
+}
+
+function renderBlock(
+  node: MarkdownNode,
+  workspaceId: string | null | undefined,
+  key: string,
+  choice?: ChoiceContext,
+) {
   switch (node.type) {
     case "heading": {
       const className = node.level === 1
@@ -150,6 +193,20 @@ function renderBlock(node: MarkdownNode, workspaceId: string | null | undefined,
       return <MathBlock code={node.code} key={key} />;
     case "futureEmbed":
       return <FutureEmbedView key={key} reference={node.reference} workspaceId={workspaceId} />;
+    case "choiceCard": {
+      const live = choice !== undefined && choice.lastKey === key;
+      return (
+        <ChoiceCard
+          hint={node.hint}
+          key={key}
+          mode={node.mode}
+          onSelect={live ? choice.answer.onSelect : undefined}
+          options={node.options}
+          selectedIds={live ? choice.answer.selectedIds : undefined}
+          title={node.title}
+        />
+      );
+    }
     case "blockquote":
       return (
         <blockquote className="border-l-2 border-line pl-3 text-ink-soft" key={key}>

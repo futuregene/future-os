@@ -89,6 +89,7 @@ function appendSuffixToNode(node: MarkdownNode, suffix: string): MarkdownNode | 
       headers[headers.length - 1] = appendInlineSuffix(headers[headers.length - 1]!, suffix);
       return { ...node, headers };
     }
+    case "choiceCard":
     case "futureEmbed":
     case "thematicBreak":
       return null;
