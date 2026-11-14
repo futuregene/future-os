@@ -59,28 +59,48 @@
     return { scroller, list };
   };
 
+  /**
+   * One option row (v2).
+   *
+   * v1 marked a chosen row three ways at once — accent fill, accent border and a
+   * white check on a solid blue disc — which reads as a completed task, not as a
+   * choice, and shouts on a 390pt screen. v2 keeps exactly one row-level cue (the
+   * `accentSoft` tint the palette documents as the selected background, with no
+   * border on top of it) and puts the selection where a single-select control
+   * belongs: a ring with a dot inside it.
+   */
   const row = (option, picked) => {
     const chosen = picked.includes(option.id);
     const box = el({
       display: "flex", flexDirection: "row", alignItems: "flex-start", gap: "10px",
       padding: "10px 12px", borderRadius: "10px",
-      border: `1px solid ${chosen ? C.accent : "transparent"}`,
+      border: "1px solid transparent",
       background: chosen ? C.accentSoft : "transparent",
       minHeight: "44px", boxSizing: "border-box",
     });
     box.setAttribute("data-choice-option", option.id);
+    if (chosen) box.setAttribute("data-choice-picked", "");
+    // The ring: always drawn, so the row does not jump when it becomes chosen.
     const mark = el({
       width: "18px", height: "18px", marginTop: "1px", flexShrink: "0",
       borderRadius: "999px", display: "flex", alignItems: "center",
       justifyContent: "center", boxSizing: "border-box",
-      border: `1.5px solid ${chosen ? C.accent : C.line}`,
-      background: chosen ? C.accent : "transparent",
+      border: `${chosen ? "2px" : "1.5px"} solid ${chosen ? C.accent : C.line}`,
+      background: "transparent",
     });
-    if (chosen) mark.appendChild(svg(P.check, 11, "#fff"));
+    if (chosen) mark.appendChild(el({
+      width: "8px", height: "8px", borderRadius: "999px", background: C.accent,
+    }));
     box.appendChild(mark);
     const body = el({ display: "flex", flexDirection: "column", gap: "1px", minWidth: "0" });
-    body.appendChild(el({ fontSize: "14px", lineHeight: "20px", color: C.ink, fontWeight: chosen ? "600" : "400", fontFamily: font }, option.label));
-    body.appendChild(el({ fontSize: "12px", lineHeight: "17px", color: chosen ? C.inkSoft : C.inkMuted, fontFamily: font }, option.desc));
+    body.appendChild(el({
+      fontSize: "14px", lineHeight: "20px", color: C.ink,
+      fontWeight: chosen ? "500" : "400", fontFamily: font,
+    }, option.label));
+    body.appendChild(el({
+      fontSize: "12px", lineHeight: "17px",
+      color: chosen ? C.inkSoft : C.inkMuted, fontFamily: font,
+    }, option.desc));
     box.appendChild(body);
     return box;
   };
@@ -118,10 +138,15 @@
       for (const option of QUESTION.options) body.appendChild(row(option, picked));
       card.appendChild(body);
       if (picked.length) {
+        // v1 said "已填进输入框" here, but the chip it pointed at sat outside the
+        // field — the sentence promised a place the answer was not. The field on a
+        // phone is a plain textarea and cannot hold a pill, so the answer rides in
+        // the dock's chip row; the footer names *that*, and "并" is the true
+        // relationship rather than a guess about the field's contents.
         card.appendChild(el({
           padding: "8px 12px", borderTop: `1px solid ${C.lineSoft}`, background: C.surfaceSubtle,
           fontSize: "11px", lineHeight: "16px", color: C.inkSoft, fontFamily: font,
-        }, "已填进输入框，可以补充，也可以直接发送"));
+        }, "已选，答案在下面的输入框上方；可以直接发送，也可以补充文字"));
       }
       cell.appendChild(card);
       list.insertBefore(cell, list.firstChild);
@@ -129,7 +154,21 @@
       return cell;
     },
 
-    /** The chosen answer, in the dock above the field: same slot as an attachment. */
+    /**
+     * The chosen answer, in the dock's chip row above the field.
+     *
+     * A phone field is a `textarea`, so unlike the desktop editor it cannot hold
+     * an atomic pill; the row is therefore genuinely a second place the answer
+     * lives, and the design says so instead of pretending otherwise. What the row
+     * must do is count as content: `canSend`/`hasDraft` are
+     * `!!message.trim() || attachments.length > 0`, so requirement (d) is met by
+     * the answer being a draft item the dock counts — the same way an attachment
+     * makes an empty field sendable.
+     *
+     * v1 differences this fixes: the chip wore a `focus`-blue border next to the
+     * card's accent row (two different blues for one state), and its pencil was
+     * accent while its × was grey — same weight of action, two weights of ink.
+     */
     chip(label, value) {
       const ta = document.querySelector("textarea");
       if (!ta) throw new Error("no field in the dock");
@@ -140,20 +179,27 @@
       const wrap = el({ display: "flex", flexDirection: "row", flexWrap: "wrap", gap: "6px", padding: "6px 4px 0" });
       wrap.setAttribute("data-choice-row", "");
       const chip = el({
-        display: "inline-flex", flexDirection: "row", alignItems: "center", gap: "6px",
-        borderRadius: "8px", border: `1px solid ${C.focus}`, background: C.accentSoft,
-        padding: "4px 6px 4px 9px", fontSize: "12px", lineHeight: "18px", fontFamily: font,
-        maxWidth: "100%",
+        display: "inline-flex", flexDirection: "row", alignItems: "center", gap: "4px",
+        borderRadius: "8px", border: `1px solid ${C.line}`, background: C.surfaceSubtle,
+        padding: "4px 4px 4px 9px", fontSize: "12px", lineHeight: "18px", fontFamily: font,
+        maxWidth: "100%", minHeight: "32px", boxSizing: "border-box",
       });
       chip.setAttribute("data-choice-chip", label);
-      chip.appendChild(el({ color: C.inkMuted }, label));
-      chip.appendChild(el({ color: C.inkMuted }, "·"));
-      chip.appendChild(el({ color: C.ink, fontWeight: "600", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, value));
-      const edit = el({ display: "inline-flex", width: "18px", height: "18px", alignItems: "center", justifyContent: "center" });
-      edit.appendChild(svg(P.pencil, 11, C.accent));
+      // The question stays, muted and allowed to truncate: a thread can hold
+      // several cards, and without it the answer would not say what it answers.
+      // The answer itself is the emphatic half, so it truncates last.
+      chip.appendChild(el({ color: C.inkMuted, flexShrink: "0", maxWidth: "40%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, label));
+      chip.appendChild(el({ color: C.line, flexShrink: "0" }, "·"));
+      chip.appendChild(el({ color: C.ink, fontWeight: "600", minWidth: "0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, value));
+      // Both actions carry the same ink. The × is a plain glyph rather than a
+      // button-looking chip, so the pair reads as "edit / remove this answer".
+      const edit = el({ display: "inline-flex", width: "24px", height: "24px", alignItems: "center", justifyContent: "center", flexShrink: "0" });
+      edit.setAttribute("aria-label", `修改「${label}」的选择`);
+      edit.appendChild(svg(P.pencil, 12, C.inkSoft));
       chip.appendChild(edit);
-      const remove = el({ display: "inline-flex", width: "18px", height: "18px", alignItems: "center", justifyContent: "center" });
-      remove.appendChild(svg(P.x, 12, C.inkMuted));
+      const remove = el({ display: "inline-flex", width: "24px", height: "24px", alignItems: "center", justifyContent: "center", flexShrink: "0" });
+      remove.setAttribute("aria-label", `移除「${label}」的选择`);
+      remove.appendChild(svg(P.x, 13, C.inkSoft));
       chip.appendChild(remove);
       wrap.appendChild(chip);
       fieldRow.parentElement.insertBefore(wrap, fieldRow);

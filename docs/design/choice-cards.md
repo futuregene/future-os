@@ -1,7 +1,12 @@
 # Choice cards in a reply
 
-> Status: design settled, not implemented. Every screenshot below is a DOM prototype injected into the **real interface** (no product code) to fix the styling and geometry; implementation is §11.
+> Status: design settled (v2), not implemented. Every screenshot below is a DOM prototype injected into the **real interface** (no product code) to fix the styling and geometry; implementation is §11.
 > Scope: desktop, mobile, remote desktop. TUI / CLI are out of scope for this pass (§10 says how they degrade).
+>
+> **v2 fixes three real defects** reported by the reader, each located in the code before changing anything:
+> 1. Send stayed disabled after picking, so "pick and send" did not work — v1 put the answer in the attachments row while the send test only reads the editor (§5.2.1, measured);
+> 2. the phone's chosen row marked selection three times over (fill + border + white check) and read as "done" rather than "selected" (§5.7.1);
+> 3. once the answer joined the send queue it was flattened to plain text and the choice could no longer be changed (§5.8).
 
 ## 1. What this solves
 
@@ -16,7 +21,9 @@ The real design problem on that path is **where the answer goes**, not what the 
 
 ## 2. State model: the answer lives in the draft
 
-In one line: **the card is a view of the question; the answer belongs to the draft.** The same answer shows up in three places — the highlighted row in the card, the chip in the composer, the user message after sending — and all three derive from one value. There is no second source of truth.
+In one line: **the card is a view of the question; the answer belongs to the draft.** The same answer shows up in three places — the highlighted row in the card, the pill/chip in the composer, the user message after sending — and all three derive from one value. There is no second source of truth.
+
+> v1 said "the answer belongs to the draft" but drew the chip in the attachments row, which is neither editor content nor the `attachments` array, so neither existing test recognised it. v2 turns the principle into a concrete slot: on desktop the answer is an **atomic pill inside the editor** (§5.2.1); on phone and remote it is **a draft item the composer counts**.
 
 ```
 model output fence ──parse──> card (last block of the last reply)
@@ -24,7 +31,7 @@ model output fence ──parse──> card (last block of the last reply)
                                  ▼
                           answer in the draft ──send──> user message (text with the answer)
                                  │
-                                 ├─> composer chip (visible, changeable, removable)
+                                 ├─> composer pill/chip (visible, changeable, removable)
                                  └─> highlighted row in the card (echo)
 ```
 
@@ -34,7 +41,7 @@ Three hard rules follow:
 |---|---|
 | Only the **last card in the thread** is interactive; earlier cards are read-only (the chosen row stays highlighted, the rest dim) | An old card answers a question that is over; letting it change makes "which pick did I just change" unanswerable |
 | The card never stores "chosen" itself | It derives from the draft. After sending, the draft empties and the card stays highlighted because the answer is now in the user message right below it |
-| Changing the answer means changing the draft | Clicking a row, the chip's pencil, and the phone's bottom sheet all write the same value |
+| Changing the answer means changing the draft | Clicking a row, the pill/chip's pencil, the phone's bottom sheet, and the choice chip on a queue row all write the same value |
 
 **Several threads / several questions** cannot interfere: the draft is per conversation, and both the card and the chip read that conversation's draft.
 
@@ -127,28 +134,58 @@ The point: **an option's label must be the sentence the user would say**, becaus
 
 ### 5.2 Desktop · one chosen
 
-![Desktop: one option chosen, the answer as a chip in the composer](assets/choice-cards/desktop-2-chosen.png)
+![Desktop: one option chosen, the answer as a pill inside the field](assets/choice-cards/desktop-2-chosen.png)
 
-- Chosen row: `accent` border + `accent-soft` fill + a filled check circle, label at weight 500;
-- The card gains an 8px footer (`line-soft` top border, `surface-subtle` fill): "in the input — add a note if you want, or send as is". It **appears only after the click**, because before it there is nothing to say;
-- A chip appears in the composer, in the attachments' row and slot (inside `form`, above the field), 26px tall:
+- Chosen row: `accent-soft` fill and label at weight 500 (no border on top of the fill — two cues for one state was v1's mistake, and §5.7.1 has the same fix);
+- The card gains an 8px footer (`line-soft` top border, `surface-subtle` fill). **v2 shortened this sentence**: v1 said "in the input" next to a chip that sat outside the field, so it was patching the layout with words. Now the answer really is in the editor and the sentence no longer has to lie;
+- The answer appears as a **pill inside the editor**: an atomic element (`data-mention="choice"`, `contenteditable=false`) of the same kind as a file, skill or session reference:
 
 ```
-┌ 接下来 · 重画森林图  ✎ ✕ ┐
+┌ 重画森林图  ✎ ✕ ┐        ← inside the contenteditable
 ```
 
-- **The field itself stays empty.** The chip is not text; to add words the user types into the field. When both are present, the chip goes first and the text after it.
+### 5.2.1 Why it has to be a pill in the editor (v1's hard error)
 
-Measured geometry (1440×900, CSS px): card `y 326..622`, chip `y 749..775`, form `y 740..880`, field below.
+v1 put the chip in the attachments row (inside `form`, above the field). It looked right and satisfied neither existing test:
+
+| Test | Where | v1's chip in the attachments row | With a pill in the editor |
+|---|---|---|---|
+| `inputEmpty` | `disabled={(inputEmpty && attachmentCount === 0) …}` at `ComposerControls.tsx:426` | the chip is neither in `attachments` nor in the contenteditable ⇒ **still true** | a pill makes `isEditorEmpty` false (`mentionDom.ts:6-12`: any `[data-mention]` counts) |
+| `attachmentCount` | same expression, from real `attachments` state | 0 | not needed |
+
+The consequence: in the v1 mockups "choose and send without typing" (requirement d) **could not work at all** — the send button stayed grey. That is not a taste problem; the design put the answer in the wrong slot.
+
+Moved into the editor, all four requirements follow from machinery that already exists, with no change to any send test:
+
+- (a) nothing chosen ⇒ editor empty ⇒ button grey;
+- (c) words and pill flow together, and `serialize()` (`mentionDom.ts:113-165`) emits the pill's text then the words in document order;
+- (d) only a pill ⇒ `isEditorEmpty` false ⇒ button live;
+- (b) the pencil and × ride on the pill itself and write the same value.
+
+**Measured** (1440×900, pill injected into the real contenteditable and the DOM read back; no product code changed):
+
+| State | `disabled` |
+|---|---|
+| empty editor | `true` |
+| only a pill | **`false`** |
+| pill removed | `true` |
+
+The pill measured `bg rgb(232,240,255)` (`accent-soft`), `color rgb(37,99,235)` (`accent`), `12.88px` (`0.92em`), 114×21; the send button `bg rgb(37,99,235)` (`accent-fill`), 28×28, at `x 1211`.
+
+### 5.2.2 One chosen, plus a sentence
+
+![Desktop: typing after the pill](assets/choice-cards/desktop-6-chosen-text.png)
+
+Requirement (c) on screen. The pill and the words share one editor flow, so the order on screen is the order that ships: `serialize()` writes the pill's `[question → answer]` first, then the text. What the user's bubble shows is what was actually sent — no second rendering that could drift.
 
 ### 5.3 Desktop · changing it
 
-![Desktop: the pencil re-opens the same card above the chip](assets/choice-cards/desktop-3-change.png)
+![Desktop: the pencil re-opens the same card above the pill](assets/choice-cards/desktop-3-change.png)
 
-- The chip's pencil re-opens the question **in place** (a 360px popover 10px above the chip) — no scrolling back, no jumping to the reply;
+- The pill's pencil re-opens the question **in place** (a 360px popover 10px above the pill) — no scrolling back, no jumping to the reply;
 - The popover holds the same options (compact rows, notes dropped), still with the chosen one marked;
-- Picking another ⌁ the chip text follows and the draft's old answer is replaced; `Esc` or an outside click closes it unchanged;
-- The chip's ✕ revokes the choice, leaving the composer with no answer (the field was already empty, so that is an empty composer).
+- Picking another ⌁ the pill's text follows and the draft's old answer is replaced; `Esc` or an outside click closes it unchanged;
+- The pill's ✕ revokes the choice: the pill disappears and the send button **goes grey again** — the same `isEditorEmpty`, no extra wiring.
 
 ### 5.4 Remote desktop
 
@@ -156,9 +193,9 @@ Measured geometry (1440×900, CSS px): card `y 326..622`, chip `y 749..775`, for
 
 A remote conversation's transcript is markdown from the host, rendered **locally**, so the card is automatically the same component with the same tokens — remote needs no separate implementation. Measured: the card is 768 wide, matching the remote composer.
 
-The one difference is the field: `RemoteComposer` is a plain `textarea` (no `contenteditable`, no pill machinery), so a chosen answer goes in the **chip row above the field** — the attachments' slot. The local chip reuses that same row (§11: both share `ComposerChoiceRow`).
+The one difference is the field: `RemoteComposer` is a plain `textarea` (no `contenteditable`, no pill machinery), so a chosen answer goes in the **chip row above the field** — the attachments' slot.
 
-The remote chip is equally changeable and removable, with the popover anchored above it; switching conversations mid-draft carries the answer with the draft (remote drafts are per conversation already).
+Remote's send test measures as `disabled={(!text.trim() && uploads.length === 0) || busy || …}` (`RemoteComposer.tsx:1525`; `send()` at `:865` is the same expression), so remote has to count the answer on the `uploads`/draft side — **a chip drawn without being counted will leave the button disabled**. That is the one thing remote must change in implementation.
 
 ### 5.5 Dark
 
@@ -192,18 +229,51 @@ Two explored and **rejected** approaches, recorded so they are not redone:
 | ![Phone: nothing chosen](assets/choice-cards/phone-1-empty.png) | ![Phone: one chosen](assets/choice-cards/phone-2-chosen.png) | ![Phone: changing it](assets/choice-cards/phone-3-change.png) |
 
 - The card is full width (358pt, 16pt margins), `radius 12px`, rows **≥ 44pt** (measured: 60pt each), notes wrap rather than truncate;
-- The chosen chip sits inside the dock above the textarea, in the attachments' slot (measured: chip `y 708..736`, field `y 737..783`, i.e. the field is 46pt tall);
-- **Changing it uses a bottom sheet**: at 390pt there is no room for an in-place popover. The sheet's top lands at 559pt, rows stay 44pt, a pick writes straight back to the chip and the draft is untouched;
-- Every touch target is ≥ 44pt; the chip's pencil and ✕ are 44pt on mobile (18pt visually, transparent hit area around them).
+- The chosen chip sits inside the dock above the textarea (measured: chip `y 702..736`, field `y 737..783`);
+- **Changing it uses a bottom sheet**: at 390pt there is no room for an in-place popover. The sheet's top lands at 559pt, rows stay 44pt, a pick writes straight back to the chip and the draft is untouched.
+
+### 5.7.1 Why v1's chosen state looked wrong, and what v2 changes
+
+v1's chosen row announced itself in three places at once: `accent-soft` fill, `accent` border and a white check on a solid blue disc. On a 390pt card that does not read as decided, it reads as shouty — and the blue disc with a white tick reads as a *completed task* badge rather than a *single-select*. v2 fixes it point by point:
+
+| v1 | v2 | Why |
+|---|---|---|
+| fill + border + white check | `accent-soft` fill only, plus **a ring with a dot** | The empty ring is always drawn (it thickens and turns accent when chosen), so the row does not jump; a ring-and-dot is the universal single-select shape and cannot be mistaken for "done" |
+| the chip used a `focus`-blue border while the card used `accent` | the chip uses a `line` border and `surface-subtle` fill | One state should not wear two blues. The chip is a decided thing, and it should look like the attachments beside it |
+| pencil accent, × grey (two inks for two equal actions) | both `ink-soft` | The two actions are interchangeable; the ink should not rank them. Measured: both `rgb(93,104,122)` |
+| footer said "in the input" while the chip sat outside it | says "the answer is above the field below" | A sentence must not patch a layout. A phone field really is a textarea and cannot hold a pill, so say where it is |
+| 18pt touch targets | 24pt (transparent hit area around it) | 24pt is enough without inflating the chip; the desktop pill keeps 16pt inside it (mouse precision differs) |
+
+**Why the phone does not copy desktop's in-field pill:** RN's field is a `TextInput` (a native textarea) with no atomic contenteditable element and no `isEditorEmpty` equivalent. The phone's honest equivalent is to make the answer count as one of the draft items `canSend`/`hasDraft` already read — `ComposerDock.tsx:180-181` and `:233` are both `!!message.trim() || attachments.length > 0` — so the answer must be counted like an attachment, not drawn as a chip that takes no part in the decision.
+
+### 5.8 A chosen answer in the send queue (new in v2)
+
+![A chosen message after it joined the send queue](assets/choice-cards/desktop-7-queue.png)
+
+The third point the reader raised. First, what **happens today** (read from the code, not guessed):
+
+- `Composer.tsx:581-600 queueDraft()` hands `editor.getContent()` — already-serialized text — to `onEnqueue`, so the answer is flattened into the string `[接下来做哪一件？ → 重画森林图]`;
+- `AgentQueueRow.text` and `SendQueuePanelItem.content` are both `string`, and the panel's inline editor only edits that text (`SendQueuePanel.tsx:99-116`: `editingText` → `onUpdate(id, content)`);
+- Deleting and editing text **already work**: every row has its own × and an inline editor.
+
+So the gap is not "can it be deleted" but "can the *choice* be changed": today the reader has to hand-edit the serialized form, which means knowing the `[question → answer]` format.
+
+The design: give `SendQueuePanelItem` and `AgentQueueRow` an **optional** `choice?: { title, optionId, label }`, following the `attachments?` precedent (`undefined` = this queue does not report the field, so an older Agent is never described as carrying no choice). The row renders a chip:
+
+- the chip's pencil re-opens the same options (desktop popover / phone sheet) and writes the row back (**`onUpdate` needs an optional parameter, or preferably a new `onUpdateChoice(id, choice)`** — keeping the plain-text path free of structured arguments);
+- the row's × removes the whole row (already there);
+- the chip's own × drops just the choice, degrading the row to a text-only message.
+
+Measured on the real queue panel through the real 加入发送队列 flow: chip `139×22`, action `更换这条消息里的选择`, row width `746`, no overflow.
 
 ## 6. Composer behaviour (requirements a–d)
 
 | Requirement | Behaviour | Implementation constraint |
 |---|---|---|
 | (a) may pick nothing and stay empty | Nothing picked, nothing typed ⇒ send stays disabled (the existing `inputEmpty` logic) | The card's presence does **not** count as draft content. A card appearing must never enable Send |
-| (b) a pick can be changed | Three entries: any row in the card, the chip's pencil, the phone's bottom sheet. They write the same value | Afterwards focus stays in the composer (desktop) / the sheet closes (phone); existing text is never disturbed |
-| (c) extra text can be typed and sent | Chip and text coexist; on send the chip comes first | The empty check must treat "has a chip" as non-empty (the way `isEditorEmpty` already treats a pill) |
-| (d) send with no text at all | Chip only ⇒ Send is enabled | Same empty check as (a), with the chip counting as content |
+| (b) a pick can be changed | Four entries: any row in the card, the pill/chip's pencil, the phone's bottom sheet, **the choice chip on a queue row** (§5.8). They write the same value | Afterwards focus stays in the composer (desktop) / the sheet closes (phone); existing text is never disturbed |
+| (c) extra text can be typed and sent | Pill/text coexist; on send the answer comes first | Desktop relies on `isEditorEmpty` accepting a pill (measured); phone/remote must count the answer among the draft items `canSend` already reads |
+| (d) send with no text at all | A pill alone ⇒ Send is enabled | Measured `disabled:false` on desktop; phone/remote follow (c) |
 
 After sending: the draft clears, the chip goes, the card stays highlighted (the answer is now in the user message). **Nothing auto-sends** — the requirement is that sending is *possible*, and auto-send would make (c) meaningless.
 
@@ -274,35 +344,48 @@ In dependency order; each step merges on its own:
 
 1. **Syntax and parsing** (`packages/markdown`): a `ChoiceCardNode` type; a branch for the `futureos-choice` fence next to `parseFutureEmbed` in `parseFutureMarkdown.ts`, with `parseDirectiveFields` gathering repeated keys into an array; unit tests for the whole tolerance table in §3.
 2. **Desktop rendering**: `desktop/src/features/markdown/renderers/ChoiceCard.tsx` (both read-only and interactive states), wired into the node switch in `MarkdownContent.tsx` (from :119, beside the `futureEmbed` branch); copy keys go into `desktop/src/i18n/locales/{zh,en}/markdown.json` (they belong to the rendering layer, not to the `packages/markdown` types).
-3. **Desktop composer**: `ComposerChoiceRow.tsx` (the chip row, in the attachments' slot) plus the change popover; the empty check goes through the same `isEditorEmpty` path (a chip counts as content); `Composer` assembles the §7 text on send.
-4. **Answer state**: an optional `choice` field on the existing per-conversation draft — desktop's `ComposerDraft` (`desktop/src/features/agent/composerDraft.ts`; the shape deliberately allows growth, so an optional field needs no `DRAFT_VERSION` bump) and remote's `RemoteComposerDraft` (`desktop/src/features/remote-peer/remoteComposerDraft.ts`). Card and chip both read it.
-5. **Remote**: `RemoteComposer` reuses step 3's chip row (it was designed for a plain textarea); it assembles the same text and clears with the draft.
-6. **Mobile**: `mobile/src/components/MarkdownText.tsx` mounts `ChoiceCard`; `ComposerDock.tsx` gains the chip row plus `ChoiceSheet` (reusing the sheet shell of `mobile/src/features/chat/components/SendChoiceSheet.tsx`); copy goes into `resources.{zh,en}.translation` in `mobile/src/i18n/locales.ts`.
-7. **Prompt**: `agent/src/prompt/choice.md` plus the `include_str!` in `mod.rs`; update the prompt-assembly tests in `agent/src/prompt/mod.rs` that assert section order.
-8. **Regression**: `scripts/screenshots/scenarios.d/choice-cards.json` already turns every frame in this document into a re-runnable scenario (seven on desktop, three on the phone) — use it for visual regression once implemented (swap the injections for the real component).
+3. **Desktop answer pill (the key v2 step)**: a fourth pill kind in `MentionEditor` — `buildChoicePill()` modelled on `buildSessionPill`, with `data-mention="choice"` and `data-choice` — plus a `serialize()` branch emitting `[title → label]`. Once this lands, (a)(c)(d) hold **by themselves**; the `disabled` expression in `ComposerControls` needs no edit (§5.2.1, measured). The change popover is its own `ChoicePopover.tsx`.
+4. **Answer state**: an optional `choice` field on the existing per-conversation draft — desktop's `ComposerDraft` (`desktop/src/features/agent/composerDraft.ts`; the shape deliberately allows growth, so an optional field needs no `DRAFT_VERSION` bump) and remote's `RemoteComposerDraft` (`desktop/src/features/remote-peer/remoteComposerDraft.ts`). The card's chosen row and the pill both read it.
+5. **Remote**: `RemoteComposer` uses the chip row (a plain textarea cannot hold a pill) **and must count the choice on the `uploads`/draft side**, or `disabled={(!text.trim() && uploads.length === 0) || …}` (`:1525`) still blocks it (§5.4).
+6. **Mobile**: `mobile/src/components/MarkdownText.tsx` mounts `ChoiceCard` (redrawn per §5.7.1); `ComposerDock.tsx` gains the chip row plus `ChoiceSheet`; the choice must be counted among the draft items `canSend` (`:180-181`) / `hasDraft` (`:233`) already read, not drawn as a decorative chip.
+7. **Choices in the queue (new in v2)**: an optional `choice` on `AgentQueueRow` and `SendQueuePanelItem`, carried through `onEnqueue`; the panel row renders a changeable/removable chip and a new `onUpdateChoice(id, choice)` (keeping structured arguments out of the plain-text edit path). An older Agent that does not report the field degrades to today's text-only row.
+8. **Prompt**: `agent/src/prompt/choice.md` plus the `include_str!` in `mod.rs`; update the prompt-assembly tests in `agent/src/prompt/mod.rs` that assert section order.
+9. **Regression**: `scripts/screenshots/scenarios.d/choice-cards.json` already turns every frame in this document into a re-runnable scenario (nine on desktop, three on the phone, including the new `chosen-text` and `queue`) — use it for visual regression once implemented (swap the injections for the real component).
 
 ## 12. Test points
 
 - **Parsing**: legal single/multi; the 2 and 4 boundaries; degradation below 3 and above 5; duplicate id, malformed id, missing title; a mid-reply fence; unknown fields ignored.
-- **Desktop**: card renders; read-only ↔ interactive switching; clicking a row puts a chip in and leaves the field empty; the pencil changes the chip; ✕ clears it; sent content for all four cases in §7, asserted one by one; after sending the chip is gone and the card stays highlighted.
-- **Remote**: as above, plus asserting the chip is above the textarea rather than inside it, and that switching conversations does not leak an answer.
-- **Mobile**: 44pt rows; a sheet pick updates the chip; the keyboard does not cover the chip row.
+- **Desktop, three states (must-test)**: empty editor ⇒ `disabled:true`; only a pill ⇒ **`disabled:false`**; pill removed ⇒ `disabled:true`. This is exactly what v1 got wrong, so it gets pinned.
+- **Desktop**: card renders; read-only ↔ interactive switching; clicking a row puts a pill in; the pencil changes it; ✕ removes it and the send button goes grey; sent content for all four cases in §7, asserted one by one; after sending the pill is gone and the card stays highlighted.
+- **Remote**: as above, plus asserting the chip is above the textarea rather than inside it, **that the send button is live with only a chip** (also missed by v1), and that switching conversations does not leak an answer.
+- **Mobile**: 44pt rows; the chosen row carries **exactly one cue** (no border); the pencil and × use the same ink; a sheet pick updates the chip; **`canSend` is true with only a chip**; the keyboard does not cover the chip row.
+- **Queue (new in v2)**: after enqueueing, the answer is a `choice` rather than flattened text; changing it updates both the row's chip and the text that eventually sends; removing the whole row and removing only the choice are distinct paths; an older Agent that omits `choice` degrades without error.
 - **Degradation**: the TUI prints the block's content; unknown clients likewise.
 - **Accessibility**: `role` / `aria-checked` / `aria-label` assertions; arrow keys and Enter.
-- **Visual regression**: the ten scenarios in `choice-cards.json` (including both comparison sheets and the two rejected approaches).
+- **Visual regression**: the twelve scenarios in `choice-cards.json` (including both comparison sheets and the two rejected approaches).
 
 ## 13. Re-running the screenshots
 
 ```bash
-python3 scripts/screenshots/capture.py serve-desktop        # desktop harness
-python3 scripts/screenshots/capture.py serve-mobile         # phone harness
+python3 scripts/screenshots/capture.py serve-desktop        # desktop harness (5299)
+python3 scripts/screenshots/capture.py serve-mobile         # phone harness (8099)
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   capture-desktop choice-card-empty choice-card-chosen choice-card-change \
+                  choice-card-chosen-text choice-card-queue \
                   choice-card-remote choice-card-dark
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   variants-desktop choice-card-styles --columns 3
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
+  variants-desktop choice-card-rejected --columns 2
+python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   capture-mobile choice-card-phone choice-card-phone-chosen choice-card-phone-change
 ```
 
-The scenarios and injection scripts live in `scripts/screenshots/scenarios.d/choice-cards.json` and `scripts/screenshots/injects/choice-card-*.js`. They are **not product code**: they inject a DOM prototype so the samples sit on the real interface (real tokens, real type scale, real column width). Once implemented, delete the injections and capture the real component.
+Every scenario asserts, it does not merely capture: `choice-card-chosen` checks the pill is **inside** the editor and that `window.__choiceSendButton().disabled === false`; the phone scenarios check the chosen row has **no border** and that the pencil and × share one ink. A failed assertion makes `capture.py` report `n/m captured` rather than quietly handing back a picture that "looks fine".
+
+**Two prerequisites when running from a worktree** (both gitignored, so the repo stays clean):
+
+- if the root `node_modules` (or `mobile/node_modules`) is missing, the sub-directories must still resolve dependencies;
+- `mobile/src/version.generated.ts` is generated and absent in a worktree; without it Metro fails and the page stays blank (the log says `Unable to resolve ../version.generated`). Generate it with `npm --prefix mobile run gen-version`, or copy it from the main checkout.
+
+The scenarios and injection scripts live in `scripts/screenshots/scenarios.d/choice-cards.json` and `scripts/screenshots/injects/choice-card-*.js`. They are **not product code**: they inject a DOM prototype so the samples sit on the real interface (real tokens, real type scale, real column width). The desktop pill injection inserts a **real** `[data-mention]` atomic element and dispatches an `input` event, so the send button lighting up in the screenshot is the interface's own reaction, not a painted-on state. Once implemented, delete the injections and capture the real component.

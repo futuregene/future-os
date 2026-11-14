@@ -54,6 +54,12 @@
     plus: "M12 5v14M5 12h14",
   };
 
+  // Exposed for state files that draw product UI (the queue row) rather than the
+  // card: same tokens, same icons, no second copy of the palette.
+  window.__choiceTokens = () => T;
+  window.__choiceSvg = svg;
+  window.__choiceFont = () => font;
+
   // The fixture conversation: two papers and their conclusions, so the options
   // read as the reply's own next steps rather than as a generic menu.
   const QUESTION = {
@@ -305,12 +311,95 @@
     return row;
   };
 
+  /**
+   * The chosen answer as a pill **inside** the editor.
+   *
+   * This is the v2 correction: the answer is content, so it lives in the
+   * contenteditable as an atomic pill (`data-mention`, `contenteditable=false`)
+   * exactly as a file mention does. That is what makes the send button enable
+   * with nothing typed — `isEditorEmpty` treats any pill as content — and what
+   * makes (c) work: typed words sit beside the pill in the same flow, and
+   * `serialize()` emits pill text then words, in document order.
+   *
+   * Visually it is a pill rather than accent-coloured prose so the reader can
+   * tell "the answer I picked" from "words I typed", and so it can carry its own
+   * pencil and × without those controls becoming part of the message.
+   */
+  window.__choiceEditorPill = (label, value, { editing = false } = {}) => {
+    const editor = document.querySelector('[contenteditable="true"]');
+    if (!editor) throw new Error("the composer has no editable field");
+    const pill = el("span", {
+      display: "inline-flex", alignItems: "center", gap: "4px",
+      verticalAlign: "baseline", whiteSpace: "nowrap",
+      padding: "0 2px 0 6px", margin: "0 1px", borderRadius: "6px",
+      background: T.accentSoft, color: T.accent,
+      border: `1px solid ${editing ? T.accent : `${T.accent}33`}`,
+      fontSize: "0.92em", lineHeight: "1.5",
+    });
+    pill.setAttribute("data-mention", "choice");
+    pill.setAttribute("data-choice", label);
+    pill.setAttribute("contenteditable", "false");
+    // `serialize()` reads `data-choice-label` into `[title → label]`; the visible
+    // text is only the answer, because the title is what the card already asked.
+    pill.setAttribute("data-choice-label", value);
+    pill.appendChild(el("span", { fontWeight: "500" }, { textContent: value }));
+
+    const grip = el("button", {
+      display: "inline-flex", alignItems: "center", justifyContent: "center",
+      width: "16px", height: "16px", borderRadius: "4px", border: "none",
+      background: editing ? T.surface : "transparent", padding: "0",
+      color: editing ? T.accent : T.accent, cursor: "pointer",
+    }, { type: "button" });
+    grip.setAttribute("aria-label", `修改「${label}」的选择`);
+    grip.appendChild(svg(P.pencil, { size: 10 }));
+    pill.appendChild(grip);
+
+    const drop = el("button", {
+      display: "inline-flex", alignItems: "center", justifyContent: "center",
+      width: "16px", height: "16px", borderRadius: "4px", border: "none",
+      background: "transparent", padding: "0", color: T.inkMuted, cursor: "pointer",
+    }, { type: "button" });
+    drop.setAttribute("aria-label", `移除「${label}」的选择`);
+    drop.appendChild(svg(P.x, { size: 11 }));
+    pill.appendChild(drop);
+
+    editor.appendChild(pill);
+    editor.appendChild(document.createTextNode("\u200B"));
+    // Tell the editor, exactly as a real insertion would, so `syncEmpty` runs
+    // and the composer's `inputEmpty` flips.
+    editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+    return pill;
+  };
+
+  /** Append typed words after the pill, in the same editor flow. */
+  window.__choiceEditorText = (text) => {
+    const editor = document.querySelector('[contenteditable="true"]');
+    if (!editor) throw new Error("the composer has no editable field");
+    editor.appendChild(document.createTextNode(` ${text}`));
+    editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+    return text;
+  };
+
+  /** The send button, so a scenario can assert it is enabled. */
+  window.__choiceSendButton = () => {
+    const form = document.querySelector("form");
+    if (!form) throw new Error("no composer on screen");
+    const button = [...form.querySelectorAll("button")].find((b) => {
+      const label = (b.getAttribute("aria-label") || "").toLowerCase();
+      return label.includes("send") || label.includes("发送");
+    });
+    if (!button) throw new Error("no send button in the composer");
+    return button;
+  };
+
   /** The re-open popover: the same question, anchored above the chip row. */
-  window.__choicePopover = (state) => {
+  window.__choicePopover = (state, { anchor } = {}) => {
     const question = window.__choice.QUESTION;
     const form = document.querySelector("form");
-    const row = document.querySelector("[data-choice-row]");
-    if (!form || !row) throw new Error("no chip row to anchor the popover");
+    // v2 anchors to the answer's own pill inside the editor; v1's chip row is
+    // still accepted so the older state file keeps working.
+    const anchorNode = document.querySelector(anchor || "[data-choice-row]");
+    if (!form || !anchorNode) throw new Error("no chip or pill to anchor the popover");
 
     const pop = el("div", {
       position: "absolute", zIndex: "30", width: "360px",
@@ -342,7 +431,7 @@
     pop.appendChild(foot);
 
     document.body.appendChild(pop);
-    const chipBox = row.getBoundingClientRect();
+    const chipBox = anchorNode.getBoundingClientRect();
     pop.style.left = `${Math.round(chipBox.left + 4)}px`;
     pop.style.top = `${Math.round(chipBox.top - pop.getBoundingClientRect().height - 10)}px`;
     return pop;
