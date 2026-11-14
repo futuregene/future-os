@@ -97,6 +97,7 @@ const mockRemote = {
   getQueue: jest.fn<Promise<SessionQueueSnapshot>, [string]>(async () => ({ acks: [], rows: [] })),
   cancelQueuedRun: jest.fn<Promise<void>, [string, string]>(async () => {}),
   releaseQueuedRun: jest.fn<Promise<void>, [string, string]>(async () => {}),
+  editQueuedRun: jest.fn<Promise<void>, [string, string, string]>(async () => {}),
   // A waiting message's files are copied down before the row is cancelled, so an
   // edit can send them again. These are the same transfer calls `retryMessage`
   // makes for a sent message's attachments.
@@ -301,6 +302,7 @@ beforeEach(async () => {
   mockRemote.getQueue.mockReset().mockResolvedValue({ acks: [], rows: [] });
   mockRemote.cancelQueuedRun.mockReset().mockResolvedValue(undefined);
   mockRemote.releaseQueuedRun.mockReset().mockResolvedValue(undefined);
+  mockRemote.editQueuedRun.mockReset().mockResolvedValue(undefined);
   mockRemote.loadOlderTimeline.mockReset().mockResolvedValue([]);
   mockDraft.message = "";
   mockDraft.attachments = [];
@@ -1445,19 +1447,17 @@ test("delete cancels that row's own run id on the session", async () => {
   expect(mockRemote.getQueue.mock.calls.length).toBeGreaterThan(readsBefore);
 });
 
-test("editing a waiting message takes the row back and queues the new words", async () => {
+test("editing a waiting message corrects it where it waits", async () => {
   await mountWithQueue([queueRow({ runId: "run_a", text: "typo" })]);
 
   await act(async () => {
     tree.root.findByType(ComposerDock).props.onQueueUpdate("run_a", "  fixed  ");
   });
-  // A queued prompt has no editable text on the session: cancel, then send.
-  expect(mockRemote.cancelQueuedRun).toHaveBeenCalledWith("history", "run_a");
-  expect(mockRemote.sendMessage).toHaveBeenCalledWith(
-    "fixed", [], undefined, { busyPolicy: QUEUED_SEND_POLICY },
-  );
-  expect(mockRemote.cancelQueuedRun.mock.invocationCallOrder[0]!)
-    .toBeLessThan(mockRemote.sendMessage.mock.invocationCallOrder[0]!);
+  // Addressed to the session's own row: the corrected words go where the run
+  // already waits, so it does not leave the queue it was ordered in.
+  expect(mockRemote.editQueuedRun).toHaveBeenCalledWith("history", "run_a", "fixed");
+  expect(mockRemote.cancelQueuedRun).not.toHaveBeenCalled();
+  expect(mockRemote.sendMessage).not.toHaveBeenCalled();
 });
 
 test("an edit that empties the row is not a message, so nothing is sent", async () => {
@@ -1481,7 +1481,7 @@ const queuedDoc = {
   kind: "file", name: "notes.pdf", path: "/Users/x/notes.pdf", size: 4096,
 };
 
-test("editing a waiting message keeps the files it carries", async () => {
+test("editing a waiting message keeps the files it carries without moving them", async () => {
   await mountWithQueue([
     queueRow({ attachments: [queuedPhoto], runId: "run_a", text: "look" }),
   ]);
@@ -1491,12 +1491,40 @@ test("editing a waiting message keeps the files it carries", async () => {
   });
   await settleQueue();
 
-  // The file is copied down first: a row cancelled before its files arrived
-  // would lose the very files the edit is supposed to keep.
+  // The files stay where they are: the session edits the accepted prompt in
+  // place, so nothing is copied down and nothing is sent again.
+  expect(mockRemote.editQueuedRun).toHaveBeenCalledWith("history", "run_a", "look again");
+  expect(mockRemote.prepareAttachment).not.toHaveBeenCalled();
+  expect(mockRemote.cancelQueuedRun).not.toHaveBeenCalled();
+  expect(mockRemote.sendMessage).not.toHaveBeenCalled();
+});
+
+/**
+ * A desktop too old for the in-place edit still gets the correction.
+ *
+ * It answers "Unsupported command", and the only edit that version knows is a
+ * cancel and a re-send — which does put the corrected message at the back, so it
+ * is the fallback for an older machine, never the rule. The row's files travel
+ * with that re-send, copied down first: a row cancelled before its files arrived
+ * would lose the very files the edit is supposed to keep.
+ */
+test("an older desktop is edited by cancelling the row and sending it again", async () => {
+  mockRemote.editQueuedRun.mockRejectedValueOnce(new Error("Unsupported command: edit_queued_run"));
+  await mountWithQueue([
+    queueRow({ attachments: [queuedPhoto], runId: "run_a", text: "look" }),
+  ]);
+
+  await act(async () => {
+    tree.root.findByType(ComposerDock).props.onQueueUpdate("run_a", "look again");
+  });
+  await settleQueue();
+
   expect(mockRemote.prepareAttachment).toHaveBeenCalledWith(
     expect.objectContaining({ path: queuedPhoto.path }),
   );
   expect(mockRemote.cancelQueuedRun).toHaveBeenCalledWith("history", "run_a");
+  expect(mockRemote.cancelQueuedRun.mock.invocationCallOrder[0]!)
+    .toBeLessThan(mockRemote.sendMessage.mock.invocationCallOrder[0]!);
   expect(mockRemote.sendMessage).toHaveBeenCalledWith(
     "look again",
     [expect.objectContaining({ kind: "image", name: "shot.png" })],
@@ -1649,12 +1677,13 @@ test("does not announce the removal the reader just made", async () => {
 });
 
 /**
- * An edit is a cancel and a re-send, so the row is gone on the desktop before the
- * new words leave. A refusal must put them back in the box rather than cost the
- * reader both the row and the correction.
+ * On a desktop too old to edit in place, an edit is a cancel and a re-send, so the
+ * row is gone there before the new words leave. A refusal must put them back in
+ * the box rather than cost the reader both the row and the correction.
  */
 test("keeps the corrected words when the desktop refuses the re-send", async () => {
   await mountWithQueue([queueRow({ runId: "run_a", text: "typo" })], { streaming: true });
+  mockRemote.editQueuedRun.mockRejectedValueOnce(new Error("Unsupported command: edit_queued_run"));
   mockRemote.sendMessage.mockRejectedValueOnce(new Error("session_busy"));
 
   await act(async () => {

@@ -2467,6 +2467,88 @@ describe("run failure parity with the desktop", () => {
     expect(reply.streaming).toBe(false);
   });
 
+  // Reported from a phone (2026-11-13): a "Completed" line sat between the
+  // prompt and the reply being written below it, as if that reply had already
+  // finished. It was a run bubble with nothing in it — the live lane
+  // materializes one from any envelope that named a run, including a run that
+  // wrote nothing before it settled. Such a card draws no content, no clock and
+  // no token count, so its footer falls back to its own "Completed" label.
+  test("a run that settles without writing anything leaves no reply card", () => {
+    // A standalone compaction's terminal is session-scoped (`runId: ""`), and a
+    // client can fold it into a run bucket of its own. Nothing about it is a
+    // reply: it must not turn into a card that only says "Completed".
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "compaction_unchanged",
+      runId: "",
+      idx: -1,
+      data: JSON.stringify({ operation_id: "cmp-1", trigger: "manual", reused: true }),
+    });
+    expect(state.items).toEqual([]);
+
+    // The same for a run whose only frame is its terminal: a run that ended
+    // before the model wrote a word has nothing to report and no verdict.
+    state = applyStreamEvent(emptyTimeline(), {
+      type: "agent_end",
+      runId: "run-quiet",
+      idx: 1,
+      data: "{}",
+    });
+    expect(state.items).toEqual([]);
+  });
+
+  test("an unfinished reply keeps its card while it has nothing to show yet", () => {
+    // The streaming bubble is the footer's generating indicator — the only
+    // sign a reply is on its way — so emptiness is not empty *while it runs*.
+    const state = applyStreamEvent(emptyTimeline(), {
+      type: "agent_start",
+      runId: "run-live",
+      idx: 0,
+      data: JSON.stringify({ started_at_ms: Date.now() }),
+    });
+    expect(state.items).toHaveLength(1);
+    expect(state.items[0]).toMatchObject({
+      id: "assistant:run-live",
+      kind: "message",
+      role: "assistant",
+      streaming: true,
+      text: "",
+    });
+  });
+
+  test("a blank settled run leaves the prompt followed by the live reply", () => {
+    // The reported transcript: prompt, a stray "Completed" card, then the reply
+    // streaming below it. The blank run's card belongs nowhere in that list.
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "user_message",
+      runId: "run-next",
+      idx: 0,
+      data: JSON.stringify({ text: "反思一下这个项目" }),
+    });
+    state = applyStreamEvent(state, {
+      type: "agent_end",
+      runId: "",
+      idx: -1,
+      data: "{}",
+    });
+    state = applyStreamEvent(state, {
+      type: "agent_start",
+      runId: "run-next",
+      idx: 1,
+      data: JSON.stringify({ started_at_ms: Date.now() }),
+    });
+    state = applyStreamEvent(state, {
+      type: "text_chunk",
+      runId: "run-next",
+      idx: 2,
+      data: JSON.stringify({ text: "我会把性能、内存、文件格式" }),
+    });
+    expect(state.items.map(item => item.id)).toEqual(["user:run-next", "assistant:run-next"]);
+    expect(state.items[1]).toMatchObject({
+      text: "我会把性能、内存、文件格式",
+      streaming: true,
+    });
+  });
+
   test("history reload keeps a partial assistant reply instead of a synthesized bubble", () => {
     const timeline = timelineFromEntries([
       {

@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import {
   cancelSessionQueuedRun,
+  editSessionQueuedRun,
   fetchSessionQueue,
   isParkedSessionQueueRow,
   QUEUE_NOTICE_MS,
@@ -136,7 +137,7 @@ describe("reading the session's queue", () => {
 });
 
 describe("changing the session's queue", () => {
-  test("a cancel and a release address the session and the run", async () => {
+  test("a cancel, a release and an edit address the session and the run", async () => {
     const client = clientFor(null);
     await cancelSessionQueuedRun(client, "session-1", "run_a");
     expect(client.requestRetry).toHaveBeenCalledWith(
@@ -146,6 +147,13 @@ describe("changing the session's queue", () => {
     await releaseSessionQueuedRun(client, "session-1", "run_b");
     expect(client.requestRetry).toHaveBeenLastCalledWith(
       { runId: "run_b", sessionId: "session-1", type: "release_queued_run" },
+      "session-1",
+    );
+    // The edit names the row and the new words: the desktop corrects it where it
+    // waits instead of queueing a new message behind the reader's later ones.
+    await editSessionQueuedRun(client, "session-1", "run_c", "fixed");
+    expect(client.requestRetry).toHaveBeenLastCalledWith(
+      { message: "fixed", runId: "run_c", sessionId: "session-1", type: "edit_queued_run" },
       "session-1",
     );
   });

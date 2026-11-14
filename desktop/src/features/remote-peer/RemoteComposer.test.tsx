@@ -60,6 +60,7 @@ const refreshQueue = vi.fn<() => void>();
 const forgetQueued = vi.fn<(runId: string) => void>();
 const cancelQueued = vi.fn<(desktopId: string, sessionId: string, runId: string) => Promise<void>>();
 const releaseQueued = vi.fn<(desktopId: string, sessionId: string, runId: string) => Promise<void>>();
+const editQueued = vi.fn<(desktopId: string, sessionId: string, runId: string, message: string) => Promise<void>>();
 vi.mock("./remoteQueue", () => ({
   // The value the real module defines (`remoteQueue.test.ts` holds it to this).
   QUEUED_SEND_POLICY: "enqueue_coalescing",
@@ -70,6 +71,7 @@ vi.mock("./remoteQueue", () => ({
     ["merged", "cancelled", "superseded", "session_deleted"].includes(reason) ? reason : "other",
   useRemoteQueue: () => ({ forget: forgetQueued, notice: queueNotice, refresh: refreshQueue, rows: queueRows }),
   cancelRemoteQueuedRun: (...args: Parameters<typeof cancelQueued>) => cancelQueued(...args),
+  editRemoteQueuedRun: (...args: Parameters<typeof editQueued>) => editQueued(...args),
   releaseRemoteQueuedRun: (...args: Parameters<typeof releaseQueued>) => releaseQueued(...args),
 }));
 
@@ -245,6 +247,7 @@ beforeEach(() => {
   forgetQueued.mockReset();
   cancelQueued.mockReset().mockResolvedValue(undefined);
   releaseQueued.mockReset().mockResolvedValue(undefined);
+  editQueued.mockReset().mockResolvedValue(undefined);
 });
 
 it("prompts the conversation it belongs to and clears only on success", async () => {
@@ -1709,7 +1712,7 @@ describe("a send made behind a running reply", () => {
     await view.unmount();
   });
 
-  it("edits a waiting message by cancelling it and sending the new text", async () => {
+  it("edits a waiting message where it waits, without re-sending it", async () => {
     queueRows = [hostRow()];
     const view = await mount({ streaming: true });
     await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
@@ -1722,12 +1725,12 @@ describe("a send made behind a running reply", () => {
     await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-save]")!.click());
     await settle();
 
-    // The host has no "change this row" command: an edit is a removal and a
-    // re-send, and the re-send names the same queueing policy as any other.
-    expect(cancelQueued).toHaveBeenCalledWith("desktop_a", "sess_1", "run_9");
-    expect(prompt).toHaveBeenCalledTimes(1);
-    expect(prompt.mock.calls[0]![2]).toBe("fixed text");
-    expect(prompt.mock.calls[0]![7]).toBe("enqueue_coalescing");
+    // Trimmed, addressed by the row, and NOT a re-send: a re-send would have
+    // entered the queue at the back, after messages the reader wrote later.
+    expect(editQueued).toHaveBeenCalledWith("desktop_a", "sess_1", "run_9", "fixed text");
+    expect(cancelQueued).not.toHaveBeenCalled();
+    expect(prompt).not.toHaveBeenCalled();
+    expect(refreshQueue).toHaveBeenCalled();
     await view.unmount();
   });
 
@@ -1750,18 +1753,21 @@ describe("a send made behind a running reply", () => {
   });
 
   /**
-   * A message with photos, whose typo is being fixed.
+   * A host too old for the in-place edit still gets the correction.
    *
-   * The files were invisible to this client and were dropped by the re-send, so
-   * "fix a typo" quietly removed the pictures. The host's path is only readable
-   * there, so the bytes come down before the row is cancelled and go back up as
-   * the upload the new prompt names.
+   * It answers "Unsupported command", and the only edit that version knows is a
+   * removal and a re-send — which does put the corrected message at the back, so
+   * it is the fallback for an older machine, never the rule. The row's files
+   * travel with that re-send: the host's path is only readable there, so the bytes
+   * come down before the row is cancelled and go back up as the upload the new
+   * prompt names.
    */
-  it("keeps a waiting message's files when its text is edited", async () => {
+  it("falls back to a re-send on a host that cannot edit in place, keeping its files", async () => {
     queueRows = [hostRow({
       attachments: [{ kind: "image", name: "shot.png", path: "/Users/x/shot.png", size: 4096 }],
       text: "look at this",
     })];
+    editQueued.mockRejectedValueOnce(new Error("Unsupported command: edit_queued_run"));
     upload.mockResolvedValue({ uploadId: "upload_kept", name: "shot.png", contentHash: "hash" });
     const view = await mount({ streaming: true });
     await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
@@ -1786,6 +1792,8 @@ describe("a send made behind a running reply", () => {
     // The cancel happens after the files are here, not before.
     expect(previewRemote.mock.invocationCallOrder[0]!)
       .toBeLessThan(cancelQueued.mock.invocationCallOrder[0]!);
+    expect(cancelQueued).toHaveBeenCalledWith("desktop_a", "sess_1", "run_9");
+    expect(prompt.mock.calls[0]![2]).toBe("look at this instead");
     expect(prompt.mock.calls[0]![3]).toEqual(["upload_kept"]);
     await view.unmount();
   });
@@ -1795,6 +1803,7 @@ describe("a send made behind a running reply", () => {
       attachments: [{ kind: "image", name: "shot.png", path: "/Users/x/shot.png", size: 4096 }],
       text: "look at this",
     })];
+    editQueued.mockRejectedValueOnce(new Error("Unsupported command: edit_queued_run"));
     previewRemote.mockRejectedValue(new Error("peer_not_connected"));
     const view = await mount({ streaming: true });
     await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
@@ -1930,10 +1939,13 @@ describe("a send made behind a running reply", () => {
 
   /**
    * The row is gone on the host once the cancel lands. A refusal of the re-send
-   * must not take the reader's corrected words with it.
+   * must not take the reader's corrected words with it. (The re-send is the
+   * fallback for a host too old to edit in place, so that host answers
+   * "Unsupported command" first.)
    */
   it("keeps the corrected text when the host refuses the re-send", async () => {
     queueRows = [hostRow()];
+    editQueued.mockRejectedValueOnce(new Error("Unsupported command: edit_queued_run"));
     prompt.mockRejectedValue(new Error("prompt_too_large"));
     const view = await mount({ streaming: true });
     try {

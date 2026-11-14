@@ -59,6 +59,7 @@ const h = vi.hoisted(() => ({
       rows: [] as AgentQueueRow[],
     },
     cancel: vi.fn(async (_threadId: string, _runId: string) => {}),
+    edit: vi.fn(async (_threadId: string, _runId: string, _message: string) => {}),
     release: vi.fn(async (_threadId: string, _runId: string) => {}),
   },
   store: { forkThread: vi.fn() },
@@ -150,11 +151,13 @@ vi.mock("../../components/ui/FloatingScrollbar", () => ({
 vi.mock("./useAgentThreadState", () => ({ useAgentThreadState: () => h.threadState.value }));
 vi.mock("./agentQueue", () => ({
   // The panel is a view of the Agent's queue (`agentQueue.test.ts` covers the
-  // reading); here it only has to be wired to the rows and the two commands.
+  // reading); here it only has to be wired to the rows and the commands.
   useAgentQueue: () => h.queue.value,
   agentQueueNoticeReason: (reason: string) =>
     ["merged", "cancelled", "superseded", "session_deleted"].includes(reason) ? reason : "other",
   cancelAgentQueuedRun: (threadId: string, runId: string) => h.queue.cancel(threadId, runId),
+  editAgentQueuedRun: (threadId: string, runId: string, message: string) =>
+    h.queue.edit(threadId, runId, message),
   releaseAgentQueuedRun: (threadId: string, runId: string) => h.queue.release(threadId, runId),
   isParkedRow: (row: { state: string }) => row.state.startsWith("stale"),
 }));
@@ -1180,13 +1183,15 @@ describe("agentThread send while the reply streams", () => {
   });
 
   /**
-   * Fixing a typo in a waiting message keeps the photos it carries.
+   * Fixing a typo in a waiting message corrects it where it waits.
    *
-   * The Agent's queue reports them, and on this machine they are ordinary local
-   * paths — so the re-send names them again instead of sending the words alone and
-   * leaving the pictures behind with nobody told.
+   * The queue is an order the reader built: editing used to be a removal and a
+   * re-send, and a re-send enters at the back — so the corrected message left
+   * after everything written behind it (reported 2026-11-14). The edit now names
+   * the row and the new words, and the Agent keeps the run id, the place and the
+   * files the message carries.
    */
-  it("carries a waiting message's files into the edit that rewrites it", async () => {
+  it("corrects a waiting message in place instead of re-sending it", async () => {
     h.queue.value = {
       forget: vi.fn(),
       notice: null,
@@ -1205,7 +1210,8 @@ describe("agentThread send while the reply streams", () => {
     };
     render();
 
-    // The files are named before the run takes them.
+    // The files the message carries are still shown; the edit keeps them without
+    // naming them again.
     expect(container.querySelectorAll("[data-queue-attachment]")).toHaveLength(2);
 
     await act(async () => container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
@@ -1221,14 +1227,12 @@ describe("agentThread send while the reply streams", () => {
       await Promise.resolve();
     });
 
-    expect(h.queue.cancel).toHaveBeenCalledWith("T1", "run-9");
-    expect(h.state.handleQueuedSend).toHaveBeenCalledWith({
-      attachments: [
-        { kind: "image", name: "shot.png", path: "/Users/x/shot.png" },
-        { kind: "file", name: "doc.pdf", path: "/Users/x/doc.pdf" },
-      ],
-      content: "look at this instead",
-    });
+    expect(h.queue.edit).toHaveBeenCalledWith("T1", "run-9", "look at this instead");
+    // Not a re-send: the row was not taken back, and nothing was queued again
+    // behind it.
+    expect(h.queue.cancel).not.toHaveBeenCalled();
+    expect(h.state.handleQueuedSend).not.toHaveBeenCalled();
+    expect(h.queue.value.refresh).toHaveBeenCalled();
   });
 
   /**

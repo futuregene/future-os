@@ -68,6 +68,15 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             )
             .await
         }
+        "edit_queued_run" => {
+            reply_unit(
+                sink,
+                crate::agent_bridge::edit_queued_run(&cmd.session_id, &cmd.run_id, &cmd.message)
+                    .await
+                    .map(|_| ()),
+            )
+            .await
+        }
         "get_prompt_receipt" => match remote_prompt_receipt(&cmd.prompt_id) {
             Ok(receipt) => reply(sink, true, receipt.unwrap_or(Value::Null), None).await,
             Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,

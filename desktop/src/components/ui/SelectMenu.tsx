@@ -110,18 +110,30 @@ interface SelectMenuItemProps {
   disabled?: boolean;
   /** Optional native tooltip shown on hover (e.g. a model's description). */
   title?: string;
+  /**
+   * The row a keyboard `Enter` would run, for a menu that walks its rows from
+   * the keyboard while the caret stays elsewhere (`SendChoiceMenu`). Drawn as the
+   * hovered row is, because it means the same thing: this is the row that acts
+   * next.
+   */
+  active?: boolean;
+  /** Pointer entered the row — a keyboard-walking menu follows it. */
+  onHover?: () => void;
 }
 
 /** A menu row with a trailing check mark when `selected`. */
-export function SelectMenuItem({ selected, onSelect, children, className, disabled = false, title }: SelectMenuItemProps) {
+export function SelectMenuItem({ selected, onSelect, children, className, disabled = false, title, active = false, onHover }: SelectMenuItemProps) {
   return (
     <button
+      aria-current={active ? "true" : undefined}
       className={cn(
         "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-surface-subtle",
+        active && "bg-surface-subtle",
         disabled && "cursor-not-allowed opacity-50 hover:bg-transparent",
         className,
       )}
       disabled={disabled}
+      onMouseEnter={onHover}
       onClick={onSelect}
       title={title}
       type="button"

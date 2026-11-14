@@ -1208,11 +1208,19 @@ pub const MODELS_HELP: &str = r#"future models — list or refresh models from t
 Usage:
   future models [--json]           List what the agent can use right now
   future models refresh [--json]   Pull the Future platform catalogue
+  future models providers [--json]           Provider + model configuration
+  future models provider set <id> ...        Add or edit a provider
+  future models provider remove <id>         Remove a custom provider
+  future models model set <provider>/<model> ...    Add or edit one model
+  future models model remove <provider>/<model>     Remove one model
+  future models probe <provider>/<model> ... Detect the accepted thinking levels
 
-  --json    Output as JSON array with id, label, provider, contextWindow,
-            supportsImages, thinkingLevels, and isDefault fields. `thinkingLevels`
-            is the model's declared list (always starting with "default", the
-            provider default); it is empty for a model that declares none.
+  --json    Machine-readable output. For the listing it is an array with id,
+            label, provider, contextWindow, supportsImages, thinkingLevels and
+            isDefault; `thinkingLevels` is the model's declared list (always
+            starting with "default", the provider default) and is empty for a
+            model that declares none. For the settings commands below it is the
+            provider view; for `probe`, the verdict report.
   --help    Show this help.
 
 `refresh` is the same fetch the desktop's Settings -> Providers -> "Update model
@@ -1220,6 +1228,59 @@ list" button performs: it reads the platform catalogue, rebuilds the agent's
 model registry, and announces the change, so a running Desktop reloads its model
 list in place — no restart. With no agent answering (the desktop is closed) it
 refreshes the on-disk catalogue instead, which the next Agent start reads.
+
+Settings (needs a running agent; the Agent is the only writer):
+  These read and write exactly what the desktop's Providers page and the
+  phone's provider editor write, through the same Agent commands, so every
+  client sees one configuration. Field rules (id charset, name collisions,
+  token limits, thinking-level caps) are the Agent's, and its refusal is
+  reported verbatim.
+
+  `providers` lists every built-in provider (id, base URL, whether a key is
+  set, model count) and every custom provider with all of its models'
+  settings (name, context window, max output, image input, thinking levels,
+  prices).
+
+  `provider set <id>` writes one provider. A built-in provider accepts only a
+  credential and an address: --key/--clear-key, --base-url/--clear-base-url.
+  A custom provider also takes --name and --api; creating one needs --name,
+  --api and --base-url. The account provider `future` is signed in with
+  `future auth login` and is refused here.
+
+  `model set <provider>/<model>` edits one model of a custom provider, and
+  adds it when it is not there yet (defaults: 128000 context, 16384 max
+  output, text input, no prices). Unnamed settings keep their value.
+    --name <name>              Display name
+    --context-window <tokens>  Total context window
+    --max-tokens <tokens>      Maximum output tokens (not above the window)
+    --images | --text-only     Image input on or off
+    --thinking-levels <a,b,c>  Replace the declared wire levels; the implicit
+                               default level is never stored
+    --clear-thinking-levels    Declare none beyond the implicit default
+    --input-cost/--output-cost/--cache-read-cost/--cache-write-cost <n>
+                               Per-1M-token prices; 0 = unpriced (a matching
+                               built-in catalog price is inherited)
+
+  `model remove` and `provider remove` delete the entry; built-in providers
+  cannot be removed (clear their key instead). `--json` on `providers` and on
+  any write prints the provider view as it stands after the command, the same
+  document `providers --json` returns.
+
+`probe`:
+  Asks the agent which thinking levels the provider actually accepts, using
+  the same adapters a real call uses. With no flags it probes the calibration
+  level (`default`, no thinking parameter at all) and then every level the
+  editors offer (off, minimal, low, medium, high, xhigh, max).
+    --level <level>      Probe one level only; a refusal is an answer, not a
+                         failure (exit 0).
+    --levels <a,b,c>     Probe the named levels.
+    Nothing is saved.
+  A refused level is the provider's answer. A failed calibration call means
+  the base URL, key or model id is wrong: the run stops there and the command
+  exits non-zero rather than reporting "no level is offered". `--api`/
+  `--base-url`/`--key` are only needed for a model that is not configured yet;
+  a configured model's address and stored key are used. `--json` prints
+  `{model, accepted, probes:[{level, ok, error?}]}`.
 
 `models` and `refresh` take a running agent (connects over per-user local IPC by
 default); only `refresh` can fall back to the on-disk catalogue without one.

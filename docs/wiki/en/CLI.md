@@ -372,12 +372,29 @@ agent configuration including credentials — keep it private. Restore targets t
 original FutureOS home; an incomplete restore fences startup until `resume` or
 `rollback` finishes it.
 
-### `models` — list available models
+### `models` — list, configure and probe models
 
 ```bash
 future models            # list models from the running agent
 future models --json     # machine-readable output
+future models refresh    # pull the Future platform catalogue
+
+future models providers [--json]                    # every provider + model setting
+future models provider set <id> --key <key>         # built-in: key / base URL
+future models provider set acme --name "Acme" --api openai-completions --base-url https://api.acme.example/v1
+future models provider remove acme                  # custom providers only
+future models model set acme/acme-large --context-window 128000 --max-tokens 16384 --thinking-levels low,high
+future models model remove acme/old-model
+future models probe acme/acme-large                 # which thinking levels the endpoint accepts
+future models probe acme/acme-large --level high --json
 ```
+
+The settings commands write exactly what the desktop's Providers page and the
+phone's provider editor write, through the same Agent commands, so every client
+sees one configuration; they need a running Agent. `probe` measures with the
+Agent's own adapters and saves nothing: a refused level is the provider's
+answer, while a failed calibration call (no thinking parameter at all) means the
+base URL, key or model id is wrong and exits non-zero.
 
 ### `agent` — run the agent server
 

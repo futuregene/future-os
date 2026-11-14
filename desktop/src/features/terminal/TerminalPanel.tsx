@@ -11,7 +11,7 @@ import type { TerminalApi } from "./api";
 import type { TerminalTransport } from "./transport";
 import type { TerminalPanelController } from "./useTerminalPanel";
 import type { TerminalTabsController } from "./useTerminalTabs";
-import { Loader2, Plus, RotateCcw, X } from "lucide-react";
+import { Loader2, Maximize2, Minimize2, PanelBottom, PanelRight, Plus, RotateCcw, X } from "lucide-react";
 import { Component, lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { IconButton } from "../../components/ui/IconButton";
@@ -156,12 +156,20 @@ function TerminalPanelShell({ panel, tabs, transport, hostLabel }: TerminalPanel
     void tabs.create();
   }, [panel, tabs]);
 
+  // One drag handler for both docks: the panel is a row at the bottom and a
+  // column on the right, and the pointer moves along the axis its edge faces.
+  const dockedRight = panel.dock === "right";
   const startResize = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
+    const startX = event.clientX;
     const startY = event.clientY;
+    const startWidth = panel.width;
     const startHeight = panel.height;
     const onMove = (move: PointerEvent) => {
-      panel.setHeight(startHeight + (startY - move.clientY));
+      if (dockedRight)
+        panel.setWidth(startWidth + (startX - move.clientX));
+      else
+        panel.setHeight(startHeight + (startY - move.clientY));
     };
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
@@ -175,20 +183,45 @@ function TerminalPanelShell({ panel, tabs, transport, hostLabel }: TerminalPanel
   // composer (see `useTerminalPanel`).
   const collapse = () => panel.setOpen(false);
 
+  // The edge decides the border and which axis sizes the panel; maximized it is
+  // neither, because the shell's flex layout gives it the whole content area.
+  const frameClass = panel.maximized
+    ? "min-h-0 min-w-0 flex-1"
+    : cn("min-h-0 min-w-0 shrink-0", dockedRight
+        ? "h-full border-l border-line-soft"
+        : "border-t border-line-soft");
+
   return (
     <section
       aria-label={t("title")}
-      className="relative flex shrink-0 flex-col border-t border-line-soft bg-surface-panel"
+      className={cn("relative flex flex-col bg-surface-panel", frameClass)}
       data-component="terminal-panel"
-      style={{ height: panel.height }}
+      data-dock={panel.maximized ? "maximized" : panel.dock}
+      style={panel.maximized
+        ? undefined
+        : dockedRight ? { width: panel.width } : { height: panel.height }}
     >
-      <div
-        aria-label={t("resize")}
-        aria-orientation="horizontal"
-        className="absolute -top-1 left-0 z-20 h-2 w-full cursor-row-resize"
-        onPointerDown={startResize}
-        role="separator"
-      />
+      {panel.maximized
+        ? null
+        : dockedRight
+          ? (
+              <div
+                aria-label={t("resize")}
+                aria-orientation="vertical"
+                className="absolute inset-y-0 -left-1 z-20 w-2 cursor-col-resize"
+                onPointerDown={startResize}
+                role="separator"
+              />
+            )
+          : (
+              <div
+                aria-label={t("resize")}
+                aria-orientation="horizontal"
+                className="absolute -top-1 left-0 z-20 h-2 w-full cursor-row-resize"
+                onPointerDown={startResize}
+                role="separator"
+              />
+            )}
       <header className="flex h-9 shrink-0 items-center gap-1 border-b border-line-soft px-2">
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" role="tablist">
           {tabs.tabs.map(tab => (
@@ -257,6 +290,25 @@ function TerminalPanelShell({ panel, tabs, transport, hostLabel }: TerminalPanel
               </span>
             )
           : null}
+        {/* A right dock is offered only while the window can host the column
+            and the panel is drawn at its docked size: a button that silently
+            does nothing is worse than no button. */}
+        {panel.canDockRight && !panel.maximized
+          ? (
+              <IconButton
+                className="size-7 shrink-0"
+                icon={dockedRight ? <PanelBottom className="size-3.5" /> : <PanelRight className="size-3.5" />}
+                label={dockedRight ? t("dockBottom") : t("dockRight")}
+                onClick={panel.toggleDock}
+              />
+            )
+          : null}
+        <IconButton
+          className="size-7 shrink-0"
+          icon={panel.maximized ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
+          label={panel.maximized ? t("restore") : t("maximize")}
+          onClick={panel.toggleMaximized}
+        />
         <IconButton
           className="size-7 shrink-0"
           icon={<X className="size-3.5" />}

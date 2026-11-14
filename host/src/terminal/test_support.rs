@@ -144,6 +144,45 @@ pub fn working_dir() -> PathBuf {
     std::env::temp_dir()
 }
 
+/// Make the tests that hold a couple of dozen shells at once take turns.
+///
+/// Each capacity/retention test in [`super::manager`] opens as many real PTYs
+/// as the limit it proves (`MAX_SESSIONS` = 32, `EXITED_LIMIT` = 25, …) and
+/// keeps them open until its own assertions are done — a retained session is
+/// addressable and holds its PTY. That demand is the product behaviour under
+/// test and must not shrink, but a PTY table is a **machine** resource rather
+/// than a per-process one: macOS serves at most `kern.tty.ptmx_max` PTYs (511
+/// on a developer machine, measured: `openpty` starts failing at the 505th) and
+/// `openpty` fails with `ENXIO` ("Device not configured") once the table is
+/// dry — an fd limit gives `EMFILE` instead, so code 6 is the table, not the
+/// descriptor budget. `cargo test` runs test *functions* in parallel, so four
+/// of these overlapping ask the OS for ~95 PTYs on top of what the machine
+/// already holds — three or four application instances' worth, which no single
+/// FutureOS process can ever hold — and on a CI runner that is enough to run
+/// the table dry: `global_capacity_is_enforced_across_conversations` failed
+/// with `SPAWN_FAILED: openpty: … code: 6` (Rust macOS test / host-core, run
+/// 43534325710) while its three siblings were mid-test, in a job that had
+/// passed with the same tests seven times before.
+///
+/// So the multi-session tests hold this guard for their whole body. It changes
+/// no assertion: every test still creates its full quota and still proves the
+/// refusal past it; it only stops several of them from holding the table at
+/// the same time. Single-session tests stay parallel — measured by sampling the
+/// live PTY nodes, the terminal module's peak falls from 115 to 58 live PTYs
+/// (four test threads, an idle machine holding 22) and the whole `future-host`
+/// core suite from 116 to 63.
+///
+/// Take it as a named binding (`let _heavy = …`); an unnamed `let _ = …` drops
+/// it again immediately and buys nothing.
+pub fn pty_heavy_guard() -> std::sync::MutexGuard<'static, ()> {
+    static HEAVY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // Nothing under this guard is observable state: a test that panicked while
+    // holding it must not fail every later test with a poison error.
+    HEAVY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Device Status Report query (`ESC [ 6 n`, "where is the cursor?").
 ///
 /// A child spawned on a ConPTY on this host emits this query as it starts and

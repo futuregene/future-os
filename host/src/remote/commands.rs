@@ -2675,6 +2675,62 @@ mod bridge_tests {
         bridge.stop().await;
     }
 
+    /// A thinking-level probe is a shared provider command: the peer's payload
+    /// travels to the host's Agent unchanged, and a refused level comes back as
+    /// an answer (`ok: false`) rather than as a failed call.
+    #[tokio::test]
+    async fn a_thinking_level_probe_is_a_shared_provider_command() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-provider-probe").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        agent.script(
+            "probe_thinking_level",
+            true,
+            json!({"level":"high","ok":false,"error":"unsupported value"}),
+            "",
+        );
+
+        let probes = |command: &str| {
+            agent
+                .requests()
+                .iter()
+                .filter(|(served, _)| served == command)
+                .count()
+        };
+        let before = probes("probe_thinking_level");
+
+        let reply = bridge
+            .call(json!({
+                "type": "probe_thinking_level",
+                "probe": {
+                    "api": "openai-completions",
+                    "baseUrl": "https://gw.example.com/v1",
+                    "modelId": "acme-large",
+                    "providerId": "acme",
+                    "level": "high"
+                }
+            }))
+            .await;
+        assert_eq!(reply["success"], true, "{reply}");
+        assert_eq!(reply["data"]["level"], "high");
+        assert_eq!(reply["data"]["ok"], false);
+        assert_eq!(reply["data"]["error"], "unsupported value");
+        assert_eq!(probes("probe_thinking_level"), before + 1);
+
+        // An incomplete form is refused before the agent is asked: a peer that
+        // forgets the Base URL must not spend a model call finding that out.
+        let reply = bridge
+            .call(json!({
+                "type": "probe_thinking_level",
+                "probe": { "api": "", "baseUrl": "", "modelId": "acme-large" }
+            }))
+            .await;
+        assert_eq!(reply["success"], false, "{reply}");
+        assert_eq!(probes("probe_thinking_level"), before + 1);
+        bridge.stop().await;
+    }
+
     #[tokio::test]
     async fn model_catalog_respects_desktop_visibility() {
         let _agent_lock = mock_agent_lock();
@@ -5524,6 +5580,239 @@ mod bridge_tests {
             SUPERVISOR.active_pair(),
             None,
             "the device that left does not keep the machine"
+        );
+        bridge.stop().await;
+    }
+    /// Run the rest of the module with the old "from the run's beginning" start
+    /// forced, then put the shipping behaviour back.
+    struct ForceFullReplayStart;
+
+    impl ForceFullReplayStart {
+        fn new() -> Self {
+            crate::remote_host::business::FORCE_FULL_REPLAY_START
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            Self
+        }
+    }
+
+    impl Drop for ForceFullReplayStart {
+        fn drop(&mut self) {
+            crate::remote_host::business::FORCE_FULL_REPLAY_START
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// A first paint of a run is its newest screen, not the whole run.
+    ///
+    /// Opening a conversation while a run is in flight asks for the run from its
+    /// beginning (`sinceIdx: -1`), and a run's log leaves the host a client page
+    /// at a time (1,000 events), so a long run costs one round trip per page:
+    /// measured 2026-11-13 on a 10,345-event run, ten round trips and ~7 s from
+    /// the first page to the last. The read now begins inside the run and says
+    /// where (`startIdx`).
+    #[tokio::test]
+    async fn a_whole_run_replay_starts_at_the_runs_tail() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("replay-first-paint").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        let session = unique("replay-tail");
+        // The run is 5,001 events long and in flight; the boundary comes from
+        // `get_state`, so the bridge may ask for state more than once.
+        for _ in 0..8 {
+            agent.script_for(
+                "get_state",
+                &session,
+                true,
+                json!({"activeRun": {"runId": "r", "lastEventIdx": 5000, "state": "running"}}),
+                "",
+            );
+        }
+        agent.script_typed_for(
+            "get_events_since",
+            &session,
+            json!({
+                "runId": "r",
+                "watermark": 5000,
+                "hasMore": true,
+                "events": [
+                    {"runId": "r", "type": "text_chunk", "idx": 4001, "data": "{}"},
+                    {"runId": "r", "type": "text_chunk", "idx": 5000, "data": "{}"},
+                ],
+            }),
+        );
+        agent.clear_requests();
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"),
+                "type": "get_events_since",
+                "sessionId": session,
+                "runId": "r",
+                "sinceIdx": -1,
+                "limit": 1000,
+                "chunkedRead": true,
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "{reply}");
+        assert_eq!(
+            reply["data"]["startIdx"],
+            json!(4001),
+            "a first paint says where its feed begins"
+        );
+        assert_eq!(reply["data"]["events"][0]["idx"], json!(4001));
+        assert_eq!(
+            reply["data"]["hasMore"],
+            json!(false),
+            "the page reaches the watermark, so this is one round trip"
+        );
+        // The assertion the reverse proof below is the other side of: the Agent
+        // was asked for the tail, not for the run from its beginning.
+        let asked = agent
+            .last_full_request("get_events_since")
+            .expect("the page was asked for");
+        assert_eq!(asked.since_idx, 4001, "asked for the tail of the run");
+        bridge.stop().await;
+    }
+
+    /// The reverse proof: with the old start forced, the same read is unbounded.
+    ///
+    /// This is the state the assertion above is written against — a first paint
+    /// that carries the run from index 0, needs the client to page through all of
+    /// it, and says nothing about where it started.
+    #[tokio::test]
+    async fn forcing_the_old_start_serves_the_run_from_its_beginning() {
+        let _lock = mock_agent_lock();
+        let _forced = ForceFullReplayStart::new();
+        let (_home, bridge) = active_bridge("replay-full-start").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        let session = unique("replay-full");
+        for _ in 0..8 {
+            agent.script_for(
+                "get_state",
+                &session,
+                true,
+                json!({"activeRun": {"runId": "r", "lastEventIdx": 5000, "state": "running"}}),
+                "",
+            );
+        }
+        agent.script_typed_for(
+            "get_events_since",
+            &session,
+            json!({
+                "runId": "r",
+                "watermark": 5000,
+                "hasMore": true,
+                "events": [
+                    {"runId": "r", "type": "text_chunk", "idx": 0, "data": "{}"},
+                    {"runId": "r", "type": "text_chunk", "idx": 999, "data": "{}"},
+                ],
+            }),
+        );
+        agent.clear_requests();
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"),
+                "type": "get_events_since",
+                "sessionId": session,
+                "runId": "r",
+                "sinceIdx": -1,
+                "limit": 1000,
+                "chunkedRead": true,
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "{reply}");
+        assert!(
+            reply["data"]["startIdx"].is_null(),
+            "an unbounded read cannot say where it starts"
+        );
+        assert_eq!(
+            reply["data"]["hasMore"],
+            json!(true),
+            "the run carries on behind this page"
+        );
+        let asked = agent
+            .last_full_request("get_events_since")
+            .expect("the page was asked for");
+        assert_eq!(asked.since_idx, -1, "the run from its beginning");
+        bridge.stop().await;
+    }
+
+    /// What a first paint skips is not lost: the same run's history rows still
+    /// carry its head, which is what a scroll-up reads.
+    #[tokio::test]
+    async fn the_head_a_first_paint_skips_is_still_reachable_through_history() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("replay-skipped-head").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        let session = unique("replay-head");
+        for _ in 0..8 {
+            agent.script_for(
+                "get_state",
+                &session,
+                true,
+                json!({"activeRun": {"runId": "r", "lastEventIdx": 5000, "state": "running"}}),
+                "",
+            );
+        }
+        agent.script_typed_for(
+            "get_events_since",
+            &session,
+            json!({
+                "runId": "r",
+                "watermark": 5000,
+                "hasMore": false,
+                "events": [
+                    {"runId": "r", "type": "text_chunk", "idx": 4001, "data": "{}"},
+                    {"runId": "r", "type": "text_chunk", "idx": 5000, "data": "{}"},
+                ],
+            }),
+        );
+        let replay = bridge
+            .call(json!({
+                "id": unique("cmd"),
+                "type": "get_events_since",
+                "sessionId": session,
+                "runId": "r",
+                "sinceIdx": -1,
+                "limit": 1000,
+                "chunkedRead": true,
+            }))
+            .await;
+        assert_eq!(replay["data"]["startIdx"], json!(4001));
+
+        // The scroll-up: a history page above the start the first paint chose.
+        agent.script_typed_for(
+            "get_session_entries",
+            &session,
+            json!({
+                "entries": [{
+                    "id": "prompt",
+                    "role": "user",
+                    "kind": "user",
+                    "createdAtMs": 1,
+                    "blocks": [{"kind": "text", "text": "the question the run answers"}],
+                }],
+                "hasMore": false,
+                "nextOffset": 0,
+            }),
+        );
+        let page = bridge
+            .call(json!({
+                "id": unique("cmd"),
+                "type": "get_session_entries",
+                "sessionId": session,
+                "before": 4001,
+                "limit": 3,
+                "chunkedRead": true,
+            }))
+            .await;
+        assert_eq!(page["success"], json!(true), "{page}");
+        assert_eq!(
+            page["data"]["entries"][0]["blocks"][0]["text"],
+            json!("the question the run answers"),
+            "the head a first paint skipped is still reachable by scrolling up"
         );
         bridge.stop().await;
     }

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { ChevronDown, ChevronRight, Trash2 } from "lucide-react-native";
@@ -174,9 +174,37 @@ export function CustomProviderPage({ provider, onDone }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  /**
+   * The row whose thinking levels are being detected, and the level currently
+   * on the wire (`""` = the calibration call). One detection at a time keeps
+   * the progress text unambiguous and the host from taking parallel requests.
+   */
+  const [probing, setProbing] = useState<{ key: string; level: string } | null>(null);
+  /** Per-row result of the last detection: how many were accepted, or why it stopped. */
+  const [probeNotice, setProbeNotice] = useState<{
+    key: string;
+    kind: "ok" | "error";
+    text: string;
+  } | null>(null);
+  /**
+   * Bumped whenever a detection run is superseded (another row's run starts, or
+   * the page goes away). A run checks it after every round trip and stops, so a
+   * closed page cannot keep spending model calls behind it.
+   */
+  const probeRunRef = useRef(0);
 
-  const patchModel = (key: string, patch: Partial<ModelDraft>) =>
+  useEffect(() => () => {
+    probeRunRef.current += 1;
+  }, []);
+
+  /** A result describes one probe's inputs; editing them makes it stale. */
+  const clearProbeNotice = (key?: string) =>
+    setProbeNotice(current => (current && (key === undefined || current.key === key) ? null : current));
+
+  const patchModel = (key: string, patch: Partial<ModelDraft>) => {
+    clearProbeNotice(key);
     setModels(current => current.map(model => (model.key === key ? { ...model, ...patch } : model)));
+  };
 
   const addModel = () => {
     const draft = newDraft(`n${Date.now()}${models.length}`);
@@ -190,13 +218,110 @@ export function CustomProviderPage({ provider, onDone }: {
   const setPrice = (key: string, field: PriceField, value: string) =>
     setModels(current => current.map(model => (model.key === key ? { ...model, [field]: value } : model)));
 
-  const toggleThinkingLevel = (key: string, level: string) =>
+  const toggleThinkingLevel = (key: string, level: string) => {
+    clearProbeNotice(key);
     setModels(current => current.map(model => (model.key !== key ? model : {
       ...model,
       thinkingLevels: model.thinkingLevels.includes(level)
         ? model.thinkingLevels.filter(entry => entry !== level)
         : [...model.thinkingLevels, level],
     })));
+  };
+
+  /**
+   * Detect which thinking levels this endpoint accepts.
+   *
+   * The implicit `default` level goes first and sends no thinking parameter at
+   * all: if even that fails, the Base URL / API type / key / model ID is wrong
+   * and no level verdict would mean anything, so the selection is left alone
+   * and the failure is reported instead. Only then is every offered level tried,
+   * and the accepted ones replace the row's selection — the point of the
+   * feature is to offer exactly the levels that work, not to keep a guess.
+   *
+   * A level the host reports as refused (`ok: false`) is an ordinary answer and
+   * simply is not selected. A rejected *call* (host unreachable, timeout) stops
+   * the run and keeps what was already proven.
+   */
+  const detectThinkingLevels = async (draft: ModelDraft) => {
+    const modelId = draft.id.trim();
+    const trimmedUrl = baseUrl.trim();
+    if (!modelId) {
+      setProbeNotice({ key: draft.key, kind: "error", text: t("desktopSettings.probeNeedModelId") });
+      return;
+    }
+    if (!isHttpUrl(trimmedUrl)) {
+      setProbeNotice({ key: draft.key, kind: "error", text: t("desktopSettings.probeNeedBaseUrl") });
+      return;
+    }
+    const run = (level: string) => remote.probeThinkingLevel({
+      api,
+      apiKey: apiKey.trim() || null,
+      baseUrl: trimmedUrl,
+      level,
+      modelId,
+      providerId: id.trim() || undefined,
+    });
+    const runId = ++probeRunRef.current;
+    setError(null);
+    setProbeNotice(null);
+    setProbing({ key: draft.key, level: "" });
+    let calibration;
+    try {
+      calibration = await run("default");
+    }
+    catch (failure) {
+      if (probeRunRef.current !== runId) return;
+      setProbing(null);
+      setProbeNotice({
+        key: draft.key,
+        kind: "error",
+        text: t("desktopSettings.probeFailed", { error: detail(failure) }),
+      });
+      return;
+    }
+    if (probeRunRef.current !== runId) return;
+    if (!calibration.ok) {
+      setProbing(null);
+      setProbeNotice({
+        key: draft.key,
+        kind: "error",
+        text: t("desktopSettings.probeCalibrationFailed", { error: calibration.error ?? "" }),
+      });
+      return;
+    }
+    const accepted: string[] = [];
+    for (const level of THINKING_LEVEL_OPTIONS) {
+      setProbing({ key: draft.key, level });
+      try {
+        const outcome = await run(level);
+        if (probeRunRef.current !== runId) return;
+        if (outcome.ok) accepted.push(level);
+      }
+      catch (failure) {
+        if (probeRunRef.current !== runId) return;
+        setProbing(null);
+        setModels(current => current.map(model =>
+          (model.key === draft.key ? { ...model, thinkingLevels: accepted } : model)));
+        setProbeNotice({
+          key: draft.key,
+          kind: "error",
+          text: t("desktopSettings.probeFailed", { error: detail(failure) }),
+        });
+        return;
+      }
+    }
+    if (probeRunRef.current !== runId) return;
+    setProbing(null);
+    setModels(current => current.map(model =>
+      (model.key === draft.key ? { ...model, thinkingLevels: accepted } : model)));
+    setProbeNotice({
+      key: draft.key,
+      kind: "ok",
+      text: accepted.length === 0
+        ? t("desktopSettings.probeNone")
+        : t("desktopSettings.probeAccepted", { count: accepted.length }),
+    });
+  };
 
   /** Local rules mirroring `agent_providers::validate`; the desktop re-checks. */
   function validate(): CustomProviderUpsert | string {
@@ -421,6 +546,32 @@ export function CustomProviderPage({ provider, onDone }: {
                       })}
                     </View>
                   </SettingsField>
+                  {/* Detection asks the host which levels this endpoint really
+                      accepts; the accepted ones replace the selection above. */}
+                  <View style={settingsStyles.actions}>
+                    <Button
+                      compact
+                      disabled={probing !== null}
+                      label={t("desktopSettings.probeThinkingLevels")}
+                      loading={probing?.key === model.key}
+                      onPress={() => void detectThinkingLevels(model)}
+                      variant="secondary"
+                    />
+                  </View>
+                  {probing?.key === model.key
+                    ? (
+                        <Text style={settingsStyles.description}>
+                          {t("desktopSettings.probeRunning", { level: probing.level || DEFAULT_THINKING_LEVEL })}
+                        </Text>
+                      )
+                    : null}
+                  {probeNotice?.key === model.key
+                    ? (
+                        <Text style={probeNotice.kind === "ok" ? settingsStyles.description : settingsStyles.error}>
+                          {probeNotice.text}
+                        </Text>
+                      )
+                    : null}
                   <Text style={settingsStyles.fieldLabel}>{t("desktopSettings.modelPrices")}</Text>
                   <View style={styles.priceGrid}>
                     {PRICE_FIELDS.map(([field, labelKey]) => <View key={field} style={styles.priceCell}>
