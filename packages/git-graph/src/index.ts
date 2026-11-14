@@ -210,7 +210,12 @@ export interface LaneDrawing {
    * stretch of a connection.
    */
   runs: { path: string; color: string }[];
-  dots: { x: number; color: string; merged: boolean }[];
+  /**
+   * The commit's dot. `y` is the axis the row's horizontals were drawn on, not
+   * necessarily the row's middle — a row of two text lines puts it on the first
+   * one (see `laneDrawing`'s `center`).
+   */
+  dots: { x: number; y: number; color: string; merged: boolean }[];
 }
 
 /**
@@ -233,13 +238,20 @@ export interface LaneDrawing {
  * * the lane **ends** there, or is the commit itself. The horizontal meets it
  *   square on the centre line. This is the merge's own lane (`┤`): the line
  *   arriving stops, the vertical carries on.
+ *
+ * `center` is the y the horizontals run on and the dot is drawn at. It defaults
+ * to the row's middle, which is right for a one-line row; a row that stacks two
+ * lines of text passes the centre of its *first* line instead, so the dot sits
+ * beside the subject rather than in the gap between the two. Threads are
+ * unaffected: they still run the row's full height, which is what keeps the
+ * picture continuous across rows whatever the axis is.
  */
 export function laneDrawing(
   geometry: GraphGeometry,
   metrics: LaneMetrics,
   height: number,
+  center: number = height / 2,
 ): LaneDrawing {
-  const center = height / 2;
   const { pitch, radius, gap } = metrics;
   const x = (lane: number) => pitch / 2 + lane * pitch;
   const threadOf = (lane: number) => geometry.threads.find(thread => thread.lane === lane);
@@ -320,6 +332,7 @@ export function laneDrawing(
     dots: geometry.marker
       ? [{
           x: x(geometry.marker.lane),
+          y: center,
           color: geometry.marker.color,
           merged: geometry.marker.merged,
         }]
