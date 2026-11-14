@@ -1341,26 +1341,43 @@ mod runtime_tests {
         assert_eq!(reply["success"], true);
         // The presence heartbeat and both catalog snapshots now flow encrypted.
         //
-        // Read the snapshots first. Each is published exactly once, on the tick
-        // that detects it (there is no periodic re-send any more), while the
-        // heartbeat repeats — and the await helpers *discard* what they drain
-        // past. Waiting on the repeating subject first can therefore swallow the
-        // one-shot snapshot and then wait for a second that never comes.
-        await_publish(
-            &mut tap,
+        // Take the change-driven packets — the two catalog snapshots and the
+        // mirrored event — from the endpoint's own record, not from the tap.
+        // Each is published exactly once, on the tick that detects it (there is
+        // no periodic re-send any more), and the tap is a 256-slot ring over a
+        // 10 ms heartbeat: an observer this binary's scheduler did not run for a
+        // couple of seconds loses the packet outright, and a plain
+        // `await_publish` on the tap also *discards* what it drains past — so
+        // whichever snapshot the tick published first is swallowed by the wait
+        // for the other one (the sessions snapshot is skipped for a tick whose
+        // store read failed, so `state.workspaces` can genuinely arrive first).
+        // The record is not lossy: it is scanned from the start, either arrival
+        // order, however late this thread gets there, and the wait ends on the
+        // record or on the bridge going away instead of on the clock.
+        let bridge_gone = || SUPERVISOR.state.lock().unwrap().is_none();
+        nats.await_publish(
             &format!("p.{}.state.sessions", started.pair_id),
+            |_| true,
+            bridge_gone,
             Duration::from_secs(5),
         )
         .await;
-        await_publish(
-            &mut tap,
+        nats.await_publish(
             &format!("p.{}.state.workspaces", started.pair_id),
+            |_| true,
+            bridge_gone,
             Duration::from_secs(5),
         )
         .await;
+        // The heartbeat repeats, so a tap is the right view of it — but a
+        // *fresh* one: what this asserts is that a heartbeat now carries the
+        // catalog revision, and a subscription made at this point starts at the
+        // current tail instead of at pre-catalog heartbeats a kept tap still
+        // holds.
+        let mut presence_tap = nats.tap();
         let mut presence_data = serde_json::Value::Null;
         await_publish_matching(
-            &mut tap,
+            &mut presence_tap,
             &format!("p.{}.presence", started.pair_id),
             Duration::from_secs(5),
             |published| {
@@ -1396,9 +1413,10 @@ mod runtime_tests {
             -1,
             0,
         );
-        await_publish(
-            &mut tap,
+        nats.await_publish(
             &format!("p.{}.evt.sess-live", started.pair_id),
+            |_| true,
+            bridge_gone,
             Duration::from_secs(5),
         )
         .await;
@@ -1422,29 +1440,36 @@ mod runtime_tests {
         let polled = status();
         assert!(polled.pairing_code.is_none());
 
-        // stop() publishes offline presence and clears the state. Match on the
-        // payload: the heartbeat publishes `online: true` to this same subject,
-        // so a subject-only wait can return that heartbeat instead.
+        // stop() publishes offline presence and then clears the state, so this
+        // wait cannot end on "the bridge is gone" — the notice is spawned after
+        // the runtime that owns it has been dropped. Take it from the record
+        // instead, and identify it by what it decrypts to: the heartbeat
+        // publishes `online: true` on this same subject, and by now the tap's
+        // ring also holds heartbeats far enough behind that the replay window
+        // refuses them, so a tap backlog is the one view this assertion must
+        // not use. A packet that does not open is not the notice.
+        let mut offline_data = serde_json::Value::Null;
         stop();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let offline = await_publish(
-                    &mut tap,
-                    &format!("p.{}.presence", started.pair_id),
-                    Duration::from_secs(5),
-                )
-                .await;
-                let data: serde_json::Value = serde_json::from_slice(
-                    &channel.open(&offline.subject, &offline.payload).unwrap(),
-                )
-                .unwrap();
-                if data["online"] == false {
-                    break;
+        nats.await_publish(
+            &format!("p.{}.presence", started.pair_id),
+            |published| {
+                let Ok(bytes) = channel.open(&published.subject, &published.payload) else {
+                    return false;
+                };
+                let Ok(data) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                    return false;
+                };
+                if data["online"] != json!(false) {
+                    return false;
                 }
-            }
-        })
-        .await
-        .expect("authenticated offline notice");
+                offline_data = data;
+                true
+            },
+            || false,
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(offline_data["online"], json!(false));
         assert!(SUPERVISOR.state.lock().unwrap().is_none());
     }
 

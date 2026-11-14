@@ -1342,7 +1342,7 @@ async fn measure_catalog_writes(
     label: &str,
 ) -> Value {
     use super::spawn_presence_heartbeat;
-    use super::test_support::{await_publish, nats_connect_once};
+    use super::test_support::nats_connect_once;
 
     let _home = HomeGuard::new(label);
     init_store();
@@ -1385,8 +1385,18 @@ async fn measure_catalog_writes(
     let activity_subject = format!("p.{pair}.state.activity");
 
     // The baseline is what a client pays once, when it connects — not per
-    // second — so it is reported separately from the streaming cost.
-    let baseline = await_publish(&mut tap, &sessions_subject, Duration::from_secs(5)).await;
+    // second — so it is reported separately from the streaming cost. It is
+    // change-driven (published on the tick that detects the list, never
+    // re-sent), so it comes from the endpoint's record: a tap is a 256-slot ring
+    // and losing this packet would report a flake as a missing baseline.
+    let baseline = nats
+        .await_publish(
+            &sessions_subject,
+            |_| true,
+            || handle.is_finished(),
+            Duration::from_secs(5),
+        )
+        .await;
 
     // Activity timestamps advance from above every row's current activity, which
     // is what a real run does: in this fixture that lifts the moving row to the
