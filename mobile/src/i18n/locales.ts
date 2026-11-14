@@ -90,6 +90,13 @@ export const resources = {
         openCommit: "Open commit {{sha}}: {{subject}}",
         /** Named for the screen reader: the graph is a picture of the lanes. */
         graphLabel: "Commit {{sha}} on lane {{lane}}",
+        ref: {
+          checkedOut: "Here",
+          yes: "checked out",
+          branches: "Branches",
+          remotes: "Remote",
+          tags: "Tags",
+        },
       },
       remote: "Phone Control",
       desktops: {
@@ -1364,6 +1371,13 @@ export const resources = {
         commitFailed: "无法读取该提交，请重试。",
         openCommit: "打开提交 {{sha}}：{{subject}}",
         graphLabel: "提交 {{sha}}，第 {{lane}} 条甬道",
+        ref: {
+          checkedOut: "当前",
+          yes: "已检出",
+          branches: "分支",
+          remotes: "远端",
+          tags: "标签",
+        },
       },
       remote: "手机遥控",
       desktops: {

@@ -1,12 +1,14 @@
 # Choice cards in a reply
 
-> Status: design settled (v2), not implemented. Every screenshot below is a DOM prototype injected into the **real interface** (no product code) to fix the styling and geometry; implementation is §11.
+> Status: design settled (v3). **§11 steps 1–3 are implemented** (parsing of `futureos-choice`, the desktop card, the answer pill inside the editor); step 4 and later are not — including the queue sections v3 adds (§5.8), whose samples are still injected prototypes. Apart from the three "real component" scenario captures, every screenshot below is a DOM prototype injected into the **real interface** (no product code) to fix the styling and geometry; implementation is §11.
 > Scope: desktop, mobile, remote desktop. TUI / CLI are out of scope for this pass (§10 says how they degrade).
 >
 > **v2 fixes three real defects** reported by the reader, each located in the code before changing anything:
 > 1. Send stayed disabled after picking, so "pick and send" did not work — v1 put the answer in the attachments row while the send test only reads the editor (§5.2.1, measured);
 > 2. the phone's chosen row marked selection three times over (fill + border + white check) and read as "done" rather than "selected" (§5.7.1);
 > 3. once the answer joined the send queue it was flattened to plain text and the choice could no longer be changed (§5.8).
+>
+> **v3 adds what the queue looks like on all three surfaces**, and fixes one ambiguity v2 introduced: v2 gave the queue row's chip a pencil, while that row already carries a pencil meaning "edit the words" — two pencils a few pixels apart meaning different things. v3 makes **the chip itself the button** (with a chevron) and leaves the row's own pencil and bin untouched (§5.8.2). It also states the three panels' relationship: remote reuses the desktop `SendQueuePanel`, the phone is a second implementation (§5.8.1).
 
 ## 1. What this solves
 
@@ -246,32 +248,70 @@ v1's chosen row announced itself in three places at once: `accent-soft` fill, `a
 
 **Why the phone does not copy desktop's in-field pill:** RN's field is a `TextInput` (a native textarea) with no atomic contenteditable element and no `isEditorEmpty` equivalent. The phone's honest equivalent is to make the answer count as one of the draft items `canSend`/`hasDraft` already read — `ComposerDock.tsx:180-181` and `:233` are both `!!message.trim() || attachments.length > 0` — so the answer must be counted like an attachment, not drawn as a chip that takes no part in the decision.
 
-### 5.8 A chosen answer in the send queue (new in v2)
+### 5.8 A chosen answer in the send queue
 
-![A chosen message after it joined the send queue](assets/choice-cards/desktop-7-queue.png)
+Three captures, because the queue panel is **not one component**:
 
-The third point the reader raised. First, what **happens today** (read from the code, not guessed):
+| Desktop (local session) | Remote desktop | Phone |
+|---|---|---|
+| ![Desktop: a choice on a queued row](assets/choice-cards/desktop-7-queue.png) | ![Remote desktop: a choice on a queued row](assets/choice-cards/desktop-8-queue-remote.png) | ![Phone: a choice on a queued row](assets/choice-cards/phone-4-queue.png) |
+
+First, what **happens today** (read from the code, not guessed):
 
 - `Composer.tsx:581-600 queueDraft()` hands `editor.getContent()` — already-serialized text — to `onEnqueue`, so the answer is flattened into the string `[接下来做哪一件？ → 重画森林图]`;
 - `AgentQueueRow.text` and `SendQueuePanelItem.content` are both `string`, and the panel's inline editor only edits that text (`SendQueuePanel.tsx:99-116`: `editingText` → `onUpdate(id, content)`);
-- Deleting and editing text **already work**: every row has its own × and an inline editor.
+- Deleting and editing text **already work** on all three surfaces: every row has its own bin and an inline editor.
 
 So the gap is not "can it be deleted" but "can the *choice* be changed": today the reader has to hand-edit the serialized form, which means knowing the `[question → answer]` format.
 
-The design: give `SendQueuePanelItem` and `AgentQueueRow` an **optional** `choice?: { title, optionId, label }`, following the `attachments?` precedent (`undefined` = this queue does not report the field, so an older Agent is never described as carrying no choice). The row renders a chip:
+#### 5.8.1 The three panels: remote draws nothing new, the phone is a second implementation
 
-- the chip's pencil re-opens the same options (desktop popover / phone sheet) and writes the row back (**`onUpdate` needs an optional parameter, or preferably a new `onUpdateChoice(id, choice)`** — keeping the plain-text path free of structured arguments);
-- the row's × removes the whole row (already there);
-- the chip's own × drops just the choice, degrading the row to a text-only message.
+This decides the size of the work, so it goes first:
 
-Measured on the real queue panel through the real 加入发送队列 flow: chip `139×22`, action `更换这条消息里的选择`, row width `746`, no overflow.
+- **Remote desktop reuses the desktop `SendQueuePanel`**: `RemoteComposer.tsx:23` imports `{ SendQueuePanel } from "../agent/SendQueuePanel"` and renders it at `:1244`. Remote has its own *composer* (a plain textarea, no pills), but the queue *panel* is the same component. So remote queue styling **is** desktop queue styling — nothing needs designing twice, only confirming the remote stylesheet does not drag it out of shape. Measured on both: chip `136×22`, pencil at `x=1181`, row width `746`.
+- **The phone has its own** `mobile/src/features/chat/components/SendQueuePanel.tsx`: a one-line `Pressable` header (`accessibilityState.expanded`, copy `展开队列中的消息` / `收起队列中的消息`), and when open the list is bounded by `sendQueueListHeight(vh, kb) = max(96, min(240, round((vh-kb)*0.3)))`, drawing `QUEUE_ROWS_SHOWN_BY_DEFAULT = 2` rows before scrolling inside. So the phone needs its own pass on chip size and placement.
+
+#### 5.8.2 The row draws a chip that **is itself the button**
+
+v2 gave the chip a pencil. That was wrong and v3 removes it:
+
+**The row already has a pencil**, and its meaning is "edit this message's words" (`composer.queue.edit` = `修改队列中的消息`). A second pencil a few pixels away meaning something else is exactly the ambiguity this design exists to remove (the same judgement as §5.7.1).
+
+The corrected rule, identical on all three surfaces:
+
+| The reader wants to | Where they go |
+|---|---|
+| change the option | **press the chip itself** (`role=button`, one chevron, aria-label `更换这条消息里的选择：<title> · <option>`), which opens the desktop popover / the phone sheet |
+| edit this message's words | the row's own pencil (there is exactly one) |
+| delete the whole message | the row's own bin |
+| drop just the choice, keep the words | the "no choice" entry in the option list — the same entry the card itself offers, not a new button on the chip |
+
+A chevron rather than a pencil is deliberate: it says "this opens something" and cannot be read as "edit the words".
+
+#### 5.8.3 Data shape
+
+Give `SendQueuePanelItem` and `AgentQueueRow` an **optional** `choice?: { title, optionId, label }`, following the `attachments?` precedent (`undefined` = this surface's queue does not report the field, so an older Agent is never described as carrying no choice and no empty chip is drawn).
+
+The write path **stays out of the plain-text edit**: add `onUpdateChoice(id, choice)` rather than adding an optional parameter to `onUpdate(id, content)`. Editing words and changing a structured choice are two different operations, and one signature for both would force a branch inside one function.
+
+#### 5.8.4 Measured (real panel, real 加入发送队列 flow — not drawn)
+
+| | Desktop | Remote | Phone |
+|---|---|---|---|
+| chip | `136×22` | `136×22` | `129×23` |
+| chip right edge / pencil left | `659` / `1181` | `659` / `1181` | `180` / `297` |
+| row | `746×60` | `746×52` | `348×52` |
+| icons on the chip | 1 (chevron) | 1 (chevron) | 1 (chevron) |
+| row text | `1 接下来 · 重画森林图 顺便把图注也改成中文` | same | same |
+
+All three rows keep their own pencil and bin: the assertions check that the chip's right edge is left of the pencil's left edge, and that `[data-queue-edit]` / `[data-testid=send-queue-edit]` still exist. The chip is **inserted into** the row, not a replacement for the row's controls.
 
 ## 6. Composer behaviour (requirements a–d)
 
 | Requirement | Behaviour | Implementation constraint |
 |---|---|---|
 | (a) may pick nothing and stay empty | Nothing picked, nothing typed ⇒ send stays disabled (the existing `inputEmpty` logic) | The card's presence does **not** count as draft content. A card appearing must never enable Send |
-| (b) a pick can be changed | Four entries: any row in the card, the pill/chip's pencil, the phone's bottom sheet, **the choice chip on a queue row** (§5.8). They write the same value | Afterwards focus stays in the composer (desktop) / the sheet closes (phone); existing text is never disturbed |
+| (b) a pick can be changed | Five entries: any row in the card, the pill/chip's pencil, the phone's bottom sheet, **the choice chip on a queue row — pressed directly, it is its own button** (§5.8.2), and that queue row's own pencil for the words. They write the same value | Afterwards focus stays in the composer (desktop) / the sheet closes (phone); existing text is never disturbed |
 | (c) extra text can be typed and sent | Pill/text coexist; on send the answer comes first | Desktop relies on `isEditorEmpty` accepting a pill (measured); phone/remote must count the answer among the draft items `canSend` already reads |
 | (d) send with no text at all | A pill alone ⇒ Send is enabled | Measured `disabled:false` on desktop; phone/remote follow (c) |
 
@@ -319,9 +359,10 @@ Fixed copy (the model neither provides nor should provide it) — keys needed on
 | `choice.chip.remove` | 移除「{{title}}」的选择 | Remove the answer to "{{title}}" |
 | `choice.stale` | 这张卡已经过期 | This card is no longer active |
 | `choice.mobile.change` | 修改「{{title}}」 | Change "{{title}}" |
+| `choice.queue.change` | 更换这条消息里的选择：{{title}} · {{label}} | Change the choice in this message: {{title}} · {{label}} |
 
-- Icons: `list-checks` in the card header (pick one of several items), the existing `lucide` pencil and ✕ elsewhere;
-- Semantics: the card is `role="group"` with `aria-labelledby` pointing at its title; option rows are `role="radio"` (single) / `role="checkbox"` (multi) with `aria-checked`; the chip is a `role="group"` whose two buttons carry the `aria-label`s above;
+- Icons: `list-checks` in the card header (pick one of several items), the existing `lucide` pencil and ✕ elsewhere, a chevron on the queue chip;
+- Semantics: the card is `role="group"` with `aria-labelledby` pointing at its title; option rows are `role="radio"` (single) / `role="checkbox"` (multi) with `aria-checked`; the composer chip is a `role="group"` whose two buttons carry the `aria-label`s above; **the queue chip is the opposite — the whole chip is one `role="button"`** labelled with `choice.queue.change`, because it means one thing only (change the choice) while the row's pencil and bin stand on their own;
 - Keyboard: Tab into the card → arrows move between options → Enter/Space picks → focus moves to the composer. `Esc` closes a popover;
 - The chosen state never relies on colour alone: filled check + border + fill (still legible in greyscale or with colour-vision deficiency).
 
@@ -348,9 +389,12 @@ In dependency order; each step merges on its own:
 4. **Answer state**: an optional `choice` field on the existing per-conversation draft — desktop's `ComposerDraft` (`desktop/src/features/agent/composerDraft.ts`; the shape deliberately allows growth, so an optional field needs no `DRAFT_VERSION` bump) and remote's `RemoteComposerDraft` (`desktop/src/features/remote-peer/remoteComposerDraft.ts`). The card's chosen row and the pill both read it.
 5. **Remote**: `RemoteComposer` uses the chip row (a plain textarea cannot hold a pill) **and must count the choice on the `uploads`/draft side**, or `disabled={(!text.trim() && uploads.length === 0) || …}` (`:1525`) still blocks it (§5.4).
 6. **Mobile**: `mobile/src/components/MarkdownText.tsx` mounts `ChoiceCard` (redrawn per §5.7.1); `ComposerDock.tsx` gains the chip row plus `ChoiceSheet`; the choice must be counted among the draft items `canSend` (`:180-181`) / `hasDraft` (`:233`) already read, not drawn as a decorative chip.
-7. **Choices in the queue (new in v2)**: an optional `choice` on `AgentQueueRow` and `SendQueuePanelItem`, carried through `onEnqueue`; the panel row renders a changeable/removable chip and a new `onUpdateChoice(id, choice)` (keeping structured arguments out of the plain-text edit path). An older Agent that does not report the field degrades to today's text-only row.
+7. **Choices in the queue**: an optional `choice` on `AgentQueueRow` and `SendQueuePanelItem`, carried through `onEnqueue`; the panel row renders a chip and a new `onUpdateChoice(id, choice)` (keeping structured arguments out of the plain-text edit path). An older Agent that does not report the field degrades to today's text-only row. **The chip is itself the button and gets no pencil of its own** (§5.8.2); the row's existing pencil and bin are untouched.
+   - 7a. **Desktop, local session**: insert the chip into `SendQueuePanel.tsx`'s row; pressing it opens `ChoicePopover`.
+   - 7b. **Remote desktop**: `RemoteComposer.tsx:1244` reuses the same `SendQueuePanel`, so this surface needs **no new code** — only one verification run inside a remote session (the remote stylesheet could drag the row width or type scale out of shape).
+   - 7c. **Phone**: `mobile/src/features/chat/components/SendQueuePanel.tsx` is a separate implementation (folding header + `sendQueueListHeight` bound); the chip is 11px type, sits above the row's words, and opens `ChoiceSheet`.
 8. **Prompt**: `agent/src/prompt/choice.md` plus the `include_str!` in `mod.rs`; update the prompt-assembly tests in `agent/src/prompt/mod.rs` that assert section order.
-9. **Regression**: `scripts/screenshots/scenarios.d/choice-cards.json` already turns every frame in this document into a re-runnable scenario (nine on desktop, three on the phone, including the new `chosen-text` and `queue`) — use it for visual regression once implemented (swap the injections for the real component).
+9. **Regression**: `scripts/screenshots/scenarios.d/choice-cards.json` already turns every frame in this document into a re-runnable scenario (ten on desktop, four on the phone, including `chosen-text`, `queue`, `queue-remote` and `phone-queue`) — use it for visual regression once implemented (swap the injections for the real component).
 
 ## 12. Test points
 
@@ -359,10 +403,13 @@ In dependency order; each step merges on its own:
 - **Desktop**: card renders; read-only ↔ interactive switching; clicking a row puts a pill in; the pencil changes it; ✕ removes it and the send button goes grey; sent content for all four cases in §7, asserted one by one; after sending the pill is gone and the card stays highlighted.
 - **Remote**: as above, plus asserting the chip is above the textarea rather than inside it, **that the send button is live with only a chip** (also missed by v1), and that switching conversations does not leak an answer.
 - **Mobile**: 44pt rows; the chosen row carries **exactly one cue** (no border); the pencil and × use the same ink; a sheet pick updates the chip; **`canSend` is true with only a chip**; the keyboard does not cover the chip row.
-- **Queue (new in v2)**: after enqueueing, the answer is a `choice` rather than flattened text; changing it updates both the row's chip and the text that eventually sends; removing the whole row and removing only the choice are distinct paths; an older Agent that omits `choice` degrades without error.
+- **Queue (all three surfaces)**: after enqueueing, the answer is a `choice` rather than flattened text; changing it updates both the row's chip and the text that eventually sends; removing the whole row and removing only the choice are distinct paths; an older Agent that omits `choice` degrades without error.
+  - **The chip never takes over the row's pencil** (v3's hard constraint): the chip is `role=button` with **exactly one** icon (a chevron); the chip's right edge is left of the pencil's left edge; the row's own pencil and bin still exist and are hittable. Three assertions, and losing one brings back the two-pencil ambiguity.
+  - **Remote**: since remote reuses the desktop panel, assert that `[data-send-queue]` draws the chip inside the remote frame at the same size as desktop (`136×22`).
+  - **Phone**: the folding header opens and closes; the chip does not overflow its row (`129×23` in a `348`-wide row); the row keeps `send-queue-edit` and `send-queue-remove`.
 - **Degradation**: the TUI prints the block's content; unknown clients likewise.
 - **Accessibility**: `role` / `aria-checked` / `aria-label` assertions; arrow keys and Enter.
-- **Visual regression**: the twelve scenarios in `choice-cards.json` (including both comparison sheets and the two rejected approaches).
+- **Visual regression**: the fourteen scenarios in `choice-cards.json` (including both comparison sheets and the two rejected approaches).
 
 ## 13. Re-running the screenshots
 
@@ -372,13 +419,15 @@ python3 scripts/screenshots/capture.py serve-mobile         # phone harness (809
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   capture-desktop choice-card-empty choice-card-chosen choice-card-change \
                   choice-card-chosen-text choice-card-queue \
+                  choice-card-queue-remote \
                   choice-card-remote choice-card-dark
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   variants-desktop choice-card-styles --columns 3
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   variants-desktop choice-card-rejected --columns 2
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
-  capture-mobile choice-card-phone choice-card-phone-chosen choice-card-phone-change
+  capture-mobile choice-card-phone choice-card-phone-chosen \
+                 choice-card-phone-change choice-card-phone-queue
 ```
 
 Every scenario asserts, it does not merely capture: `choice-card-chosen` checks the pill is **inside** the editor and that `window.__choiceSendButton().disabled === false`; the phone scenarios check the chosen row has **no border** and that the pencil and × share one ink. A failed assertion makes `capture.py` report `n/m captured` rather than quietly handing back a picture that "looks fine".

@@ -1,5 +1,6 @@
 import type { ClipboardEvent as ReactClipboardEvent, KeyboardEvent as ReactKeyboardEvent, Ref } from "react";
 import type { WorkspaceFileResult } from "../../integrations/storage/threadStore";
+import type { ChoiceAnswer } from "./composer/choiceAnswer";
 import type { SessionMentionOption } from "./sessionMention";
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -9,6 +10,8 @@ import { EMPTY_EDITOR_ATTR } from "../../lib/editableTarget";
 import { useCommittedRef } from "../../lib/useCommittedRef";
 import { useImeEnterGuard } from "../../lib/useImeEnterGuard";
 import { localPathsFromUriList } from "./clipboardAttachments";
+import { choiceAnswerLabel, parseChoiceAnswer, pickChoiceOption } from "./composer/choiceAnswer";
+import { ChoicePopover } from "./composer/ChoicePopover";
 import { hashContext, isEditorEmpty, mentionContext, PILL_ATTR, serialize, slashContext } from "./composer/mentionDom";
 import { FileMenu, SessionMenu, SlashMenu } from "./composer/MentionMenus";
 import { parseMentionSegments } from "./mentionMarkdown";
@@ -39,9 +42,59 @@ export type SlashMenuItem
   = | { kind: "context-tool"; tool: ContextToolOption }
     | { kind: "skill"; skill: SkillMentionOption };
 
+/** The pill's pencil, expanded: the question being re-answered and where it sits. */
+interface ChoiceEditorState {
+  /** Pill top-left, in the wrapper's coordinates (see `ChoicePopover`). */
+  anchor: { left: number; top: number };
+  answer: ChoiceAnswer;
+  width: number;
+}
+
+/**
+ * lucide's `Pencil` and `X` path data. The pill is built with the DOM API (see
+ * `MentionEditor`), so an icon component cannot be mounted inside it; these two
+ * paths are the whole of what the design asks for (§5.2).
+ */
+const CHOICE_ICON_PATHS = {
+  change: ["M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z", "m15 5 4 4"],
+  remove: ["M18 6 6 18", "m6 6 12 12"],
+} as const;
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** A 12px lucide-shaped glyph, built as SVG nodes (no markup strings). */
+function choiceIcon(paths: readonly string[]): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  const attributes = {
+    "fill": "none",
+    "height": "12",
+    "stroke": "currentColor",
+    "stroke-linecap": "round",
+    "stroke-linejoin": "round",
+    "stroke-width": "2",
+    "viewBox": "0 0 24 24",
+    "width": "12",
+  };
+  for (const [name, value] of Object.entries(attributes))
+    svg.setAttribute(name, value);
+  for (const d of paths) {
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", d);
+    svg.appendChild(path);
+  }
+  return svg;
+}
+
 export interface MentionEditorHandle {
   /** Serialize to markdown: text verbatim, each file pill → `[name](./path)`. */
   getContent: () => string;
+  /**
+   * The same content, minus the choice answer's pill: what the conversation
+   * draft stores as its text. The answer travels in the draft's own `choice`
+   * field, so carrying its plain-text form in `text` as well would put it back
+   * twice on the next load (once as text, once as the rebuilt pill).
+   */
+  getDraftContent: () => string;
   /** Empty the editor. */
   clear: () => void;
   focus: () => void;
@@ -52,9 +105,18 @@ export interface MentionEditorHandle {
    */
   insertMention: (file: { path: string; name: string }) => void;
   /**
+   * Set (or with `null` clear) the choice card's answer, which lives in the
+   * editor as an atomic pill. That placement is the whole of §5.2.1: a pill is
+   * content, so `isEditorEmpty` sees it and the send button lights up without
+   * the `disabled` expression being touched. Idempotent — the box holds at most
+   * one answer. Like `restore()`, it does not fire `onChange`: the caller is the
+   * one that just changed the draft.
+   */
+  setChoice: (answer: ChoiceAnswer | null) => void;
+  /**
    * Rebuild the editor from a `getContent()` markdown string (text + mention
-   * pills); empty string clears it. Inverse of `getContent()`; does not fire
-   * `onChange`. Used to restore a persisted draft.
+   * pills); empty string clears it. Inverse of `getContent()` for those pill
+   * kinds; does not fire `onChange`. Used to restore a persisted draft.
    */
   restore: (content: string) => void;
 }
@@ -89,6 +151,12 @@ interface MentionEditorProps {
    * paste) so the parent can persist a draft. NOT fired by `restore()`.
    */
   onChange?: () => void;
+  /**
+   * The choice card's answer was changed from inside the editor — the pill's
+   * pencil picked something else, or its cross removed the answer (`null`). The
+   * draft owns the value (§2); this is the write path back to it.
+   */
+  onChoiceChange?: (answer: ChoiceAnswer | null) => void;
   /** Local filesystem paths advertised by the clipboard's `text/uri-list`. */
   onPasteAttachmentPaths?: (paths: string[]) => void;
   /** Clipboard files without a local URI, handed to the parent for copying. */
@@ -138,9 +206,14 @@ export function MentionEditor({
   onPasteFiles,
   onPasteEmpty,
   history,
+  onChoiceChange,
   ref,
 }: MentionEditorProps) {
   const { t } = useTranslation("agent");
+  // The choice-card copy lives beside the card's renderer (markdown.json); the
+  // pill is the same answer wearing the composer's clothes, so it reads the same
+  // labels rather than a second copy of them.
+  const { t: tChoice } = useTranslation("markdown");
   const editorRef = useRef<HTMLDivElement | null>(null);
   const ime = useImeEnterGuard();
   const { isComposingRef } = ime;
@@ -157,6 +230,10 @@ export function MentionEditor({
   const [selectedSession, setSelectedSession] = useState(0);
   const [empty, setEmpty] = useState(true);
   const emptyRef = useRef(true);
+  // The pill's pencil, expanded in place: the question it re-opens and where to
+  // draw it. `null` while closed.
+  const [choiceEditor, setChoiceEditor] = useState<ChoiceEditorState | null>(null);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
   // Whether the text in the box came from `↑` (and may be walked further) rather
   // than from the reader. Cleared by the next real edit.
   const recallingRef = useRef(false);
@@ -242,6 +319,7 @@ export function MentionEditor({
 
   useImperativeHandle(ref, () => ({
     getContent: () => serialize(editorRef.current),
+    getDraftContent: () => serialize(editorRef.current, { omitChoice: true }),
     clear: () => {
       if (editorRef.current)
         editorRef.current.innerHTML = "";
@@ -250,6 +328,11 @@ export function MentionEditor({
     },
     focus: () => editorRef.current?.focus(),
     insertMention,
+    setChoice: (answer: ChoiceAnswer | null) => {
+      writeChoicePill(answer);
+      if (answer)
+        caretAfterChoice();
+    },
     restore: restoreContent,
   }));
 
@@ -366,6 +449,131 @@ export function MentionEditor({
     pill.className = "text-accent";
     pill.textContent = `#${session.title}`;
     return pill;
+  }
+
+  /** The choice card's answer pill, if the box holds one. */
+  function choicePill(): HTMLSpanElement | null {
+    return editorRef.current?.querySelector<HTMLSpanElement>(`[${PILL_ATTR}="choice"]`) ?? null;
+  }
+
+  // Choice pill: the answer, as an atomic element *inside* the editor.
+  //
+  // Where it sits is the whole of §5.2.1: `isEditorEmpty` returns false for any
+  // `[data-mention]`, so a picked answer lights the send button without the
+  // `disabled` expression in ComposerControls ever being touched — requirement
+  // (d) ("send without typing") falls out of the editor's own emptiness rule,
+  // and removing the pill turns the button grey again.
+  function buildChoicePill(answer: ChoiceAnswer): HTMLSpanElement {
+    const pill = document.createElement("span");
+    pill.setAttribute(PILL_ATTR, "choice");
+    pill.setAttribute("data-choice", JSON.stringify(answer));
+    pill.setAttribute("contenteditable", "false");
+    // Measured look (§5.2): `accent-soft` fill, `accent` text, 0.92em, ~21px tall.
+    pill.className = "mx-0.5 inline-flex h-[21px] max-w-full items-center gap-0.5 rounded bg-accent-soft py-0 pr-1 pl-1.5 align-middle text-[0.92em] leading-[21px] text-accent";
+    const label = document.createElement("span");
+    label.className = "max-w-[18rem] truncate";
+    label.textContent = choiceAnswerLabel(answer) || answer.title;
+    pill.appendChild(label);
+    for (const action of ["change", "remove"] as const) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "flex size-4 shrink-0 cursor-pointer items-center justify-center rounded-sm opacity-70 hover:bg-surface hover:opacity-100";
+      button.setAttribute("data-choice-action", action);
+      button.setAttribute("aria-label", tChoice(action === "change" ? "choice.chip.change" : "choice.chip.remove", { title: answer.title }));
+      // Keep the editor's focus and caret: the pill is what is being edited, not
+      // a reason to leave the box.
+      button.appendChild(choiceIcon(action === "change" ? CHOICE_ICON_PATHS.change : CHOICE_ICON_PATHS.remove));
+      button.addEventListener("mousedown", event => event.preventDefault());
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (action === "remove")
+          removeChoice();
+        else
+          openChoiceEditor(pill);
+      });
+      pill.appendChild(button);
+    }
+    return pill;
+  }
+
+  /** Read the pill's payload and expand the question above it (§5.3). */
+  function openChoiceEditor(pill: HTMLSpanElement) {
+    const answer = parseChoiceAnswer(pill.getAttribute("data-choice"));
+    const wrapper = wrapperRef.current;
+    if (!answer || !wrapper)
+      return;
+    const pillRect = pill.getBoundingClientRect();
+    const wrapperRect = wrapper.getBoundingClientRect();
+    setChoiceEditor({
+      anchor: { left: pillRect.left - wrapperRect.left, top: pillRect.top - wrapperRect.top },
+      answer,
+      width: wrapperRect.width,
+    });
+    closeMenu();
+  }
+
+  /** Write the answer into the editor (append) or drop it; at most one pill. */
+  function writeChoicePill(answer: ChoiceAnswer | null) {
+    const editor = editorRef.current;
+    if (!editor)
+      return;
+    const existing = choicePill();
+    // The pill owns the single space after it, so dropping the answer must not
+    // leave a blank line behind.
+    const trailing = existing?.nextSibling ?? null;
+    existing?.remove();
+    if (trailing && trailing.nodeType === Node.TEXT_NODE && (trailing.textContent ?? "") === " ")
+      trailing.remove();
+    if (answer) {
+      editor.appendChild(buildChoicePill(answer));
+      editor.appendChild(document.createTextNode(" "));
+    }
+    syncEmpty();
+  }
+
+  /** Swap the pill's answer in place: the box's order is the reader's own. */
+  function replaceChoicePill(answer: ChoiceAnswer) {
+    const existing = choicePill();
+    if (!existing) {
+      writeChoicePill(answer);
+      return;
+    }
+    existing.replaceWith(buildChoicePill(answer));
+    syncEmpty();
+  }
+
+  /** Put the caret after the answer, so typing continues where the reader was. */
+  function caretAfterChoice() {
+    const editor = editorRef.current;
+    const pill = choicePill();
+    if (!editor || !pill)
+      return;
+    editor.focus();
+    const after = document.createRange();
+    after.setStartAfter(pill.nextSibling ?? pill);
+    after.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(after);
+  }
+
+  function removeChoice() {
+    writeChoicePill(null);
+    setChoiceEditor(null);
+    onChange?.();
+    onChoiceChange?.(null);
+  }
+
+  function pickChoice(optionId: string) {
+    if (!choiceEditor)
+      return;
+    const next = pickChoiceOption(choiceEditor.answer, optionId);
+    replaceChoicePill(next);
+    setChoiceEditor(null);
+    caretAfterChoice();
+    onChange?.();
+    onChoiceChange?.(next);
   }
 
   // Append plain text to the editor, upgrading every `/name` token that names
@@ -745,7 +953,21 @@ export function MentionEditor({
   }
 
   return (
-    <div className="relative">
+    <div className="relative" ref={wrapperRef}>
+      {choiceEditor
+        ? (
+            <ChoicePopover
+              anchor={choiceEditor.anchor}
+              mode={choiceEditor.answer.mode}
+              onClose={() => setChoiceEditor(null)}
+              onPick={pickChoice}
+              options={choiceEditor.answer.options}
+              selectedIds={choiceEditor.answer.selectedIds}
+              title={choiceEditor.answer.title}
+              width={choiceEditor.width}
+            />
+          )
+        : null}
       {open && query !== null
         ? (
             <FileMenu

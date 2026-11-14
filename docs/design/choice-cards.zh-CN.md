@@ -1,12 +1,14 @@
 # 回复里的选项卡（choice card）设计
 
-> 状态：设计定稿（v2），尚未实现。所有截图都是在**真实界面**上注入 DOM 原型拍的（不含产品代码），用来定样式与几何；实现见 §11。
+> 状态：设计定稿（v3）。**§11 第 1–3 步已实现**（`futureos-choice` 的解析、桌面渲染、编辑器内的答案 pill），第 4 步及其之后未实现——包括本文 v3 新增的 §5.8 队列部分，那里的截图仍是注入原型。除「真实组件」三张场景截图外，下面的截图都是在**真实界面**上注入 DOM 原型拍的（不含产品代码），用来定样式与几何；实现见 §11。
 > 主要范围：桌面端、移动端、远程桌面。TUI / CLI 不在本期范围（§10 说明它们如何降级）。
 >
 > **v2 相对 v1 改了三个真问题**（由读者反馈，已核代码定位）：
 > 1. 选中后发送键恒灰，"选完直接发"根本做不到——v1 把答案放在附件行，而发送判定只看编辑器内容（§5.2.1，已实测）；
 > 2. 手机已选态同时用填充 + 描边 + 白勾三重强调，读起来像"已完成"而不是"选中"（§5.7.1）；
 > 3. 答案进了发送队列就被拍平成纯文本，无法再改选择（§5.8）。
+>
+> **v3 补上了队列在三端的样子**，并改掉 v2 的一处新歧义：v2 给队列行里的 chip 配了铅笔，而那一行本身已经有一支"改文字"的铅笔，两支相距几像素表示不同的事。v3 让 **chip 自己就是按钮**（带 chevron），行原有的铅笔与垃圾桶一个不动（§5.8.2）。三种面板关系也讲清了：远程复用桌面的 `SendQueuePanel`，手机是另一份实现（§5.8.1）。
 
 ## 1. 要解决的问题
 
@@ -248,32 +250,70 @@ v1 的已选行同时在三个地方宣告"选中"：`accent-soft` 填充 + `acc
 
 **为什么手机不学桌面把答案放进 field：** RN 的输入框是 `TextInput`（原生 textarea），没有 contenteditable 的原子元素，也不存在 `isEditorEmpty` 那种“有 pill 即非空”的机制。手机的等价做法是让答案算进 `canSend`/`hasDraft` 已经计数的东西——`ComposerDock.tsx:180-181`、`:233` 都是 `!!message.trim() || attachments.length > 0`，所以答案必须作为一个 draft 项被计入（像附件那样），而不是画一个不参与判定的装饰 chip。
 
-## 5.8 队列里的选择（v2 新增）
+## 5.8 队列里的选择
 
-![已选的消息进了发送队列之后](assets/choice-cards/desktop-7-queue.png)
+三端各一张，因为队列面板**不是同一个组件**：
 
-用户提的第三点。先说 **今天实际发生什么**（已核代码，不靠猜）：
+| 桌面（本地会话） | 远程桌面 | 手机 |
+|---|---|---|
+| ![桌面：队列里的选择](assets/choice-cards/desktop-7-queue.png) | ![远程桌面：队列里的选择](assets/choice-cards/desktop-8-queue-remote.png) | ![手机：队列里的选择](assets/choice-cards/phone-4-queue.png) |
+
+先说 **今天实际发生什么**（已核代码，不靠猜）：
 
 - `Composer.tsx:581-600 queueDraft()` 把 `editor.getContent()`（已经序列化的文本）交给 `onEnqueue`，答案就拍平成 `[接下来做哪一件？ → 重画森林图]` 这一串字；
 - `AgentQueueRow.text` / `SendQueuePanelItem.content` 都是 `string`，面板行内只能改这段文字（`SendQueuePanel.tsx:99-116` 的 `editingText` → `onUpdate(id, content)`）；
-- 删除与改文字**今天就有**：每行的叉与行内编辑框。
+- 删除与改文字**今天就有**：每行的垃圾桶与行内编辑框，三端都有。
 
 所以缺的不是“能不能删”，而是“能不能改**选择**”：现在只能对着序列化文本手改，用户得知道 `[问题 → 答案]` 这个格式才改得对。
 
-设计：给 `SendQueuePanelItem` 与 `AgentQueueRow` 加一个**可选**的 `choice?: { title, optionId, label }`，照 `attachments?` 的先例（undefined = 这个队列不报该字段，旧 Agent 不会因此被说成“没有选择”）。行内渲染 chip：
+### 5.8.1 三端的面板关系：远程不另画，手机是另一份
 
-- chip 的铅笔 → 弹出同一份选项（桌面浮层 / 手机 sheet），选中即写回该行（**需要 `onUpdate` 多一个可选参数**或新增 `onUpdateChoice(id, choice)`；倾向于后者，不把纯文本编辑路径拖进结构化参数）；
-- 行的叉 → 删整条（已有）；
-- 只删选择、保留该行文字 → chip 自己的叉，把该行退化成纯文字消息。
+这一节决定了实现量，所以先讲清楚：
 
-实测（真实队列面板 + 真实“加入发送队列”流程）：chip `139×22`，动作 `更换这条消息里的选择`，行宽 `746`，不溢出。
+- **远程桌面复用桌面端的 `SendQueuePanel`**：`RemoteComposer.tsx:23` 直接 `import { SendQueuePanel } from "../agent/SendQueuePanel"`，在 `:1244` 渲染。远程的输入框是另一套（纯 textarea，没有 pill），但队列**面板**是同一个组件。所以远程的队列样式就是桌面的队列样式——不需要为远程设计第二遍，只需要确认它没被远程样式表带歪。实测两边的 chip 都是 `136×22`、铅笔都在 `x=1181`、行宽都是 `746`。
+- **手机有它自己的一份** `mobile/src/features/chat/components/SendQueuePanel.tsx`：表头是一行 `Pressable` 折叠条（`accessibilityState.expanded`，文案 `展开队列中的消息` / `收起队列中的消息`），展开后列表高度 `sendQueueListHeight(vh, kb) = max(96, min(240, round((vh-kb)*0.3)))`，默认只画 2 行（`QUEUE_ROWS_SHOWN_BY_DEFAULT`），再长就在列表内滚动。手机端因此需要单独设计一遍 chip 的尺寸与位置。
+
+### 5.8.2 行里画什么：chip **自己就是按钮**
+
+v2 曾经给 chip 配一支铅笔，这是错的，v3 改掉了：
+
+**队列行里已经有一支铅笔**，它的语义是“改这条消息的文字”（`composer.queue.edit` = `修改队列中的消息`）。再给 chip 配第二支铅笔，两支相距几像素、表示两件不同的事——这正是本设计从第一版起就要消灭的歧义（见 §5.7.1 的同一类判断）。
+
+修正后的规则：
+
+| 用户想做的事 | 三端一致的出口 |
+|---|---|
+| 换一个选项 | **点 chip 本身**（chip 是 `role=button`，带一个 chevron，aria-label `更换这条消息里的选择：<标题> · <选项>`），弹出桌面浮层 / 手机 sheet |
+| 改这条消息的文字 | 行自己的铅笔（有且只有一支） |
+| 删掉整条消息 | 行自己的垃圾桶 |
+| 只去掉选择、保留文字 | 选项列表里那一条“不作选择”（和卡片上的 `不做选择` 是同一个条目），不是 chip 上的新按钮 |
+
+chevron 而不是铅笔，是刻意的：它说的是“这里能打开点什么”，不可能被读成“编辑文字”。
+
+### 5.8.3 数据形状
+
+给 `SendQueuePanelItem` 与 `AgentQueueRow` 加一个**可选**的 `choice?: { title, optionId, label }`，照 `attachments?` 的先例（`undefined` = 这一端的队列不报该字段，旧 Agent 不会因此被说成“没有选择”，也就不会画出空 chip）。
+
+写回路径**不**拖进纯文本编辑：新增 `onUpdateChoice(id, choice)`（而不是给 `onUpdate(id, content)` 加可选参数）。纯文本编辑与结构化选择是两件事，混在一个签名里，实现时必然要在一个函数里分支。
+
+### 5.8.4 实测（真实面板 + 真实“加入发送队列”流程，不是画的）
+
+| | 桌面 | 远程 | 手机 |
+|---|---|---|---|
+| chip 尺寸 | `136×22` | `136×22` | `129×23` |
+| chip 右边缘 / 铅笔左边 | `659` / `1181` | `659` / `1181` | `180` / `297` |
+| 行尺寸 | `746×60` | `746×52` | `348×52` |
+| chip 上的图标数 | 1（chevron） | 1（chevron） | 1（chevron） |
+| 行文字 | `1 接下来 · 重画森林图 顺便把图注也改成中文` | 同左 | 同左 |
+
+三行都保留了自己的铅笔与垃圾桶：断言里直接检查了 chip 的右边缘小于铅笔的左边缘，以及 `[data-queue-edit]` / `[data-testid=send-queue-edit]` 仍然存在。也就是说 chip 是**插在**行里，不是替换掉行的操作。
 
 ## 6. 输入框行为（需求的 a–d）
 
 | 需求 | 行为 | 实现约束 |
 |---|---|---|
 | (a) 可以不选，保持为空 | 什么都没选、什么都没写 ⇒ 发送禁用（现有 `inputEmpty` 逻辑不变） | 卡片的存在**不**算草稿有内容。禁止"卡片一出现就能发送" |
-| (b) 已选可以回去改 | 四个入口：卡片任意一行、pill/chip 的铅笔、手机端底部 sheet、**队列行里的选择 chip**（§5.8）。改的是同一个值 | 改完 focus 留在输入框（桌面）/ 关掉 sheet（手机），不打断已有的文字 |
+| (b) 已选可以回去改 | 五个入口：卡片任意一行、pill/chip 的铅笔、手机端底部 sheet、**队列行里的选择 chip（整个 chip 就是按钮，直接点它）**（§5.8.2）、以及该队列行自己的铅笔（改文字）。改的是同一个值 | 改完 focus 留在输入框（桌面）/ 关掉 sheet（手机），不打断已有的文字 |
 | (c) 可以继续输入文字发送 | pill 与文字共存，发送时先 pill 后文字 | 桌面靠 `isEditorEmpty` 认 pill（已实测）；手机/远程要让答案计进 `canSend` 已读的 draft 项 |
 | (d) 不输入文字直接发送 | 只有 pill ⇒ 发送按钮可用 | 桌面已实测 `disabled:false`；手机/远程同 (c) |
 
@@ -319,11 +359,12 @@ v1 的已选行同时在三个地方宣告"选中"：`accent-soft` 填充 + `acc
 | `choice.foot.queued` | 已放进输入框，可以继续补充，也可以直接发送 | In the input — add a note if you want, or send as is |
 | `choice.chip.change` | 修改「{{title}}」的选择 | Change the answer to "{{title}}" |
 | `choice.chip.remove` | 移除「{{title}}」的选择 | Remove the answer to "{{title}}" |
+| `choice.queue.change` | 更换这条消息里的选择：{{title}} · {{label}} | Change the choice in this message: {{title}} · {{label}} |
 | `choice.stale` | 这张卡已经过期 | This card is no longer active |
 | `choice.mobile.change` | 修改「{{title}}」 | Change "{{title}}" |
 
 - 图标：卡头 `list-checks`（一批待办里挑一件），铅笔、叉沿用现有 `lucide` 图标集；
-- 语义：卡片是 `role="group"` + `aria-labelledby` 指向标题；选项行是 `role="radio"`（单选）/ `role="checkbox"`（多选），带 `aria-checked`；chip 是 `role="group"`，两个按钮各有 `aria-label`（上表）；
+- 语义：卡片是 `role="group"` + `aria-labelledby` 指向标题；选项行是 `role="radio"`（单选）/ `role="checkbox"`（多选），带 `aria-checked`；输入框里的 chip 是 `role="group"`，两个按钮各有 `aria-label`（上表）；**队列行里的 chip 反过来——整个 chip 是一个 `role="button"`**，`aria-label` 用 `choice.queue.change`，因为它只表示一件事（换选择），而行的铅笔、垃圾桶各自独立。
 - 键盘：Tab 进卡 → 方向键在选项间移动 → Enter/Space 选中 → 焦点进输入框。`Esc` 关浮层；
 - 选中状态不只靠颜色：实心圆对勾 + 描边 + 底色三重区分（灰度或色弱下仍可辨）。
 
@@ -350,9 +391,12 @@ v1 的已选行同时在三个地方宣告"选中"：`accent-soft` 填充 + `acc
 4. **答案状态**：放进现有的按会话草稿——桌面的 `ComposerDraft`（`desktop/src/features/agent/composerDraft.ts`）加一个可选的 `choice` 字段（该结构刻意留了增长位，新增可选字段不用升 `DRAFT_VERSION`）；远程的 `RemoteComposerDraft`（`desktop/src/features/remote-peer/remoteComposerDraft.ts`）同理。卡片选中行与 pill 都从它读。
 5. **远程**：`RemoteComposer` 用 chip 行（它是纯 textarea，装不下 pill）；**同时必须把选择计入 `uploads`/draft 那一侧**，否则 `disabled={(!text.trim() && uploads.length === 0) || …}`（`:1525`）仍会拦着（§5.4）。
 6. **移动端**：`mobile/src/components/MarkdownText.tsx` 接 `ChoiceCard`（按 §5.7.1 重绘）；`ComposerDock.tsx` 加 chip 行 + `ChoiceSheet`；选择必须计入 `canSend`（`:180-181`）/ `hasDraft`（`:233`）已读的 draft 项，而不是只画一个装饰 chip。
-7. **发进队列的选择（v2 新增）**：`AgentQueueRow` 与 `SendQueuePanelItem` 加可选 `choice`；`onEnqueue` 携带它；面板行渲染可改/可删的 chip，新增 `onUpdateChoice(id, choice)`（不把纯文本编辑路径拖进结构化参数）。旧 Agent 不报该字段时退化成今天的纯文本行。
+7. **发进队列的选择**：`AgentQueueRow` 与 `SendQueuePanelItem` 加可选 `choice`；`onEnqueue` 携带它；面板行渲染 chip，新增 `onUpdateChoice(id, choice)`（不把纯文本编辑路径拖进结构化参数）。旧 Agent 不报该字段时退化成今天的纯文本行。**chip 自己就是按钮，不另配铅笔**（§5.8.2），行原有的铅笔、垃圾桶一个都不动。
+   - 7a. **桌面本地会话**：`SendQueuePanel.tsx` 行内插 chip，点它开 `ChoicePopover`。
+   - 7b. **远程桌面**：`RemoteComposer.tsx:1244` 复用同一个 `SendQueuePanel`，所以这一端**不需要新代码**，只需要在远程会话里验证一次（远程样式表可能把行宽/字号带歪）。
+   - 7c. **手机**：`mobile/src/features/chat/components/SendQueuePanel.tsx` 单独改——它是另一份实现（折叠表头 + `sendQueueListHeight` 上限），chip 11px 字、行内插在文字上方，点它开 `ChoiceSheet`。
 8. **prompt**：`agent/src/prompt/choice.md` + `mod.rs` 推入；改 `agent/src/prompt/mod.rs` 的既有测试（断言 prompt 段落顺序的那几条）。
-9. **回归**：`scripts/screenshots/scenarios.d/choice-cards.json` 已经把本文的每一屏变成可重跑的场景（桌面 9 个、手机 3 个，含新增的 `chosen-text` 与 `queue`），实现完成后用它做视觉回归（把注入换成真实组件即可）。
+9. **回归**：`scripts/screenshots/scenarios.d/choice-cards.json` 已经把本文的每一屏变成可重跑的场景（桌面 10 个、手机 4 个，含 `chosen-text`、`queue`、`queue-remote`、`phone-queue`），实现完成后用它做视觉回归（把注入换成真实组件即可）。
 
 ## 12. 测试点
 
@@ -361,10 +405,13 @@ v1 的已选行同时在三个地方宣告"选中"：`accent-soft` 填充 + `acc
 - **桌面**：卡片渲染与只读/可交互切换；点行 → pill 出现；铅笔改 pill；叉移除 pill 且发送键变灰；pill + 文字一起发送的内容（§7 四种情况逐条断言）；发送后 pill 消失、卡片高亮保留。
 - **远程**：同上，且断言 chip 在 textarea 之上而不是里面；**只有 chip 时发送键可用**（v1 同样漏掉的那一条）；远程草稿切换不串答案。
 - **移动端**：44pt 行高；选中行**只有一处强调**（无描边）；铅笔与叉同墨色；sheet 改选后 chip 更新；**只有 chip 时 `canSend` 为真**；键盘弹起时 chip 行不遮 field。
-- **队列（v2 新增）**：入队后答案作为 `choice` 而非纯文本；改选择后行内 chip 与最终发出的文本都变；删整行与“只删选择保留文字”两条路径；旧 Agent 不报 `choice` 时退化不报错。
+- **队列（三端都要测）**：入队后答案作为 `choice` 而非纯文本；改选择后行内 chip 与最终发出的文本都变；删整行与“只删选择保留文字”两条路径；旧 Agent 不报 `choice` 时退化不报错。
+  - **chip 不抢行铅笔的活**（v3 的硬约束）：chip 是 `role=button` 且**只有一个**图标（chevron）；chip 的右边缘小于铅笔的左边缘；行自己的铅笔与垃圾桶仍然存在且可点。断言三条，缺一条就退回到"两支铅笔"的歧义。
+  - **远程**：远程复用桌面的面板，所以断言里要确认 `[data-send-queue]` 在远程帧里也画出了 chip，且尺寸与桌面一致（`136×22`）。
+  - **手机**：折叠表头能展开/收起；chip 在行内不溢出（`129×23`，行宽 `348`）；行仍保留 `send-queue-edit` 与 `send-queue-remove`。
 - **降级**：TUI 打印代码块内容；未知客户端同。
 - **无障碍**：`role`/`aria-checked`/`aria-label` 三条断言；方向键与 Enter 的键路径。
-- **视觉回归**：`choice-cards.json` 的 12 个场景（含两种样式对比表与两个被否方案）。
+- **视觉回归**：`choice-cards.json` 的 14 个场景（含两种样式对比表与两个被否方案）。
 
 ## 13. 截图怎么重跑
 
@@ -374,13 +421,15 @@ python3 scripts/screenshots/capture.py serve-mobile         # 手机 harness（8
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   capture-desktop choice-card-empty choice-card-chosen choice-card-change \
                   choice-card-chosen-text choice-card-queue \
+                  choice-card-queue-remote \
                   choice-card-remote choice-card-dark
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   variants-desktop choice-card-styles --columns 3
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   variants-desktop choice-card-rejected --columns 2
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
-  capture-mobile choice-card-phone choice-card-phone-chosen choice-card-phone-change
+  capture-mobile choice-card-phone choice-card-phone-chosen \
+                 choice-card-phone-change choice-card-phone-queue
 ```
 
 每个场景都带断言（不只截图）：例如 `choice-card-chosen` 会检查 pill 在编辑器**内**、且 `window.__choiceSendButton().disabled === false`；手机场景检查选中行**没有描边**且铅笔与叉墨色相同。断言失败时 `capture.py` 报 `n/m captured`，不会静静给你一张"看着过了"的图。

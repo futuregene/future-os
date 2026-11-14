@@ -20,6 +20,9 @@ import type {
   Text,
 } from "mdast";
 import type {
+  ChoiceCardMode,
+  ChoiceCardNode,
+  ChoiceCardOption,
   FutureMarkdownDocument,
   FutureReference,
   FutureReferenceType,
@@ -165,6 +168,10 @@ function blockToFutureNode(
     case "break":
       return [{ children: [{ type: "break" }], type: "paragraph" }];
     case "code": {
+      const choiceCard = parseChoiceCard(node);
+      if (choiceCard) {
+        return [choiceCard];
+      }
       const futureEmbed = parseFutureEmbed(node);
       if (futureEmbed) {
         return [{ reference: futureEmbed, type: "futureEmbed" }];
@@ -521,18 +528,104 @@ function parseFutureEmbed(node: Code): FutureReference | null {
   };
 }
 
-function parseDirectiveFields(lines: string[]) {
-  const fields: Record<string, string> = {};
+/**
+ * `key: value` directive lines, in source order and duplicating keys.
+ *
+ * Order and repetition matter to `futureos-choice` (each `option:` is one row),
+ * so this is the primitive; `parseDirectiveFields` is the last-wins view the
+ * single-valued fences (`futureos-file`) read.
+ */
+function parseDirectiveEntries(lines: string[]): Array<[string, string]> {
+  const entries: Array<[string, string]> = [];
   for (const line of lines) {
     const separator = line.indexOf(":");
     if (separator <= 0) continue;
     const key = line.slice(0, separator).trim();
     const value = line.slice(separator + 1).trim();
     if (key) {
-      fields[key] = value;
+      entries.push([key, value]);
     }
   }
+  return entries;
+}
+
+function parseDirectiveFields(lines: string[]) {
+  const fields: Record<string, string> = {};
+  for (const [key, value] of parseDirectiveEntries(lines)) {
+    fields[key] = value;
+  }
   return fields;
+}
+
+/** Fence language of a choice card; every other fence keeps its old meaning. */
+const CHOICE_FENCE = "futureos-choice";
+/** §3: an option id is ASCII `[a-z0-9-]`, at most 24 characters. */
+const CHOICE_OPTION_ID = /^[a-z0-9-]{1,24}$/;
+const CHOICE_MIN_OPTIONS = 2;
+const CHOICE_MAX_OPTIONS = 4;
+
+/**
+ * `futureos-choice` → a card, or `null` for "draw it as the code block it is".
+ *
+ * The design's rule (docs/design/choice-cards.zh-CN.md §3) is that a malformed
+ * block loses only its card, never the reply: every failure returns `null`,
+ * which the caller renders as the original fenced code block — still readable,
+ * and what clients that do not know the card show anyway.
+ */
+function parseChoiceCard(node: Code): ChoiceCardNode | null {
+  if (node.lang?.trim().toLowerCase() !== CHOICE_FENCE) return null;
+
+  const entries = parseDirectiveEntries(node.value.split("\n"));
+  const rawOptions = entries
+    .filter(([key]) => key === "option")
+    .map(([, value]) => value);
+  // The count is checked before the ids on purpose: a five-row card degrades as
+  // a whole instead of silently showing four, and that is what §3 promises.
+  if (rawOptions.length < CHOICE_MIN_OPTIONS || rawOptions.length > CHOICE_MAX_OPTIONS)
+    return null;
+
+  const options: ChoiceCardOption[] = [];
+  const seen = new Set<string>();
+  for (const raw of rawOptions) {
+    const option = parseChoiceOption(raw);
+    // A row with no valid id, no label, or an id an earlier row already used is
+    // dropped; the card survives while two rows remain.
+    if (!option || seen.has(option.id)) continue;
+    seen.add(option.id);
+    options.push(option);
+  }
+  if (options.length < CHOICE_MIN_OPTIONS) return null;
+
+  const first = (key: string) => entries.find(([k]) => k === key)?.[1] ?? "";
+  // A missing title falls back to the first option's label — the question is
+  // then whatever the first answer would be, still attributable on send. It can
+  // never come out empty: a row without a label is dropped above, so the card
+  // degrades through the option count (§3) rather than through an empty title.
+  const title = first("title").trim() || options[0]!.label.trim();
+
+  const hint = first("hint").trim();
+  const mode: ChoiceCardMode = first("mode").trim().toLowerCase() === "multi" ? "multi" : "single";
+  return {
+    ...(hint ? { hint } : {}),
+    mode,
+    options,
+    title,
+    type: "choiceCard",
+  };
+}
+
+/**
+ * `id | label | description` → one option. The description may itself contain
+ * `|`; only the first two separators split, so a label like `a|b` is not a way
+ * to lose a row (it just cannot appear unescaped in an id or label).
+ */
+function parseChoiceOption(raw: string): ChoiceCardOption | null {
+  const [rawId = "", rawLabel = "", ...rest] = raw.split("|");
+  const id = rawId.trim();
+  const label = rawLabel.trim();
+  if (!CHOICE_OPTION_ID.test(id) || !label) return null;
+  const description = rest.join("|").trim();
+  return description ? { description, id, label } : { id, label };
 }
 
 function parseFutureLink(label: string, href: string): FutureReference | null {

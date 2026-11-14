@@ -12,6 +12,7 @@ export interface GitGraphRow {
   /** The abbreviated id: the row's key, and what opening the patch asks for. */
   short: string;
   when: string;
+  /** The author's name — not the committer, which a squash merge rewrites. */
   who: string;
   /** Ref names on this commit (`HEAD -> main, origin/main, tag: v1`), or "". */
   decorations: string;
@@ -48,4 +49,24 @@ export interface GitCommitDetail {
   /** The patch *with* the stat, as `git show --stat --patch` prints it. */
   patch: string;
   truncated: boolean;
+  /** Every ref pointing at this commit, split by the question a reader asks. */
+  refs: GitCommitRefs;
+}
+
+/**
+ * The refs on one commit.
+ *
+ * The row carries git's short decoration, which leaves local branches out once a
+ * commit holds several; the detail page asks `for-each-ref --points-at` for the
+ * whole set instead.
+ */
+export interface GitCommitRefs {
+  /** Local branches, without `refs/heads/`. */
+  branches: string[];
+  /** Remote-tracking branches, without `refs/remotes/` (`origin/main`). */
+  remotes: string[];
+  /** Tags, without `refs/tags/`. */
+  tags: string[];
+  /** `HEAD` is this commit — a detached checkout names no branch. */
+  head: boolean;
 }

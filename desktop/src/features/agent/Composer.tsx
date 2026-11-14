@@ -1,13 +1,14 @@
 import type { MessageAttachment } from "@future-os/thread-projection";
-import type { FormEvent } from "react";
+import type { FormEvent, Ref } from "react";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
+import type { ChoiceAnswer, ChoiceCardQuestion } from "./composer/choiceAnswer";
 import type { ApprovalChipTier } from "./composer/ComposerControls";
 import type { ContextToolOption, MentionEditorHandle, SkillMentionOption } from "./MentionEditor";
 import type { SessionMentionOption } from "./sessionMention";
 import { fusionTask } from "@future-os/thread-projection";
 import { Paperclip, TriangleAlert, X } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { modelKey, modelOption } from "../../integrations/agent/agentClient";
 import { useFusionAvailability } from "../../integrations/fusion/settings";
@@ -19,6 +20,7 @@ import { useCommittedRef } from "../../lib/useCommittedRef";
 import { useOperationLifetime } from "../../lib/useOperationLifetime";
 import { useCommand } from "../keyboard/commands";
 import { splitFileName } from "./attachments";
+import { answerFromPick } from "./composer/choiceAnswer";
 import { ComposerControls } from "./composer/ComposerControls";
 import { useComposerAttachments } from "./composer/useComposerAttachments";
 import { clearComposerDraft, loadComposerDraft, saveComposerDraft } from "./composerDraft";
@@ -29,6 +31,20 @@ import { SkillRecommendCard } from "./SkillRecommendCard";
 export interface ComposerSendPayload {
   attachments: MessageAttachment[];
   content: string;
+}
+
+/**
+ * What the transcript needs from the composer, and why it cannot do it itself.
+ *
+ * A `futureos-choice` card sits in a reply while its answer lives in this box
+ * (the editor's pill) and in the conversation draft — both owned here. So the
+ * card's click comes back through this handle: one writer, one value, and no
+ * second copy of the answer to keep in step (design
+ * `docs/design/choice-cards.zh-CN.md` §2).
+ */
+export interface ComposerHandle {
+  /** Pick one row of a choice card: the same write the pill's own pencil makes. */
+  selectChoice: (optionId: string, card: ChoiceCardQuestion) => void;
 }
 
 /** Drag-over verdict for the drop zone. */
@@ -194,6 +210,14 @@ interface ComposerProps {
   onEnqueue?: (payload: ComposerSendPayload) => boolean | void;
   /** How many messages this conversation is already holding for the run. */
   queueCount?: number;
+  /**
+   * The choice card's answer changed — a row clicked on the card, the pill's
+   * pencil picking something else, its cross dropping the answer, or a cleared
+   * draft. The transcript paints the card's marked rows from it; the draft and
+   * the pill are written here, so this is only the echo the card needs.
+   */
+  onChoiceChange?: (answer: ChoiceAnswer | null) => void;
+  ref?: Ref<ComposerHandle>;
 }
 
 function ComposerImpl({
@@ -227,6 +251,8 @@ function ComposerImpl({
   onQueue,
   onEnqueue,
   queueCount = 0,
+  onChoiceChange,
+  ref,
 }: ComposerProps) {
   const { t, i18n } = useTranslation("agent");
   // The editor is non-controlled (see MentionEditor); we only mirror its empty
@@ -256,6 +282,14 @@ function ComposerImpl({
   // True while the recommended skill is installing (disables the card buttons).
   const [installingSkill, setInstallingSkill] = useState(false);
   const editorRef = useRef<MentionEditorHandle | null>(null);
+  // The draft's answer to this conversation's closing choice card (design §2):
+  // the editor's pill and the card's marked row are views of this one value, and
+  // the per-conversation draft is where it survives a reload.
+  const [choice, setChoice] = useState<ChoiceAnswer | null>(null);
+  const choiceRef = useCommittedRef(choice);
+  // The transcript's mirror of the answer, read from callbacks and the draft
+  // load effect — a committed ref keeps those dependency lists stable.
+  const onChoiceChangeRef = useCommittedRef(onChoiceChange);
   const captureOperation = useOperationLifetime(draftKey);
   const { attachments, attachmentsRef, setAttachments, attachError, setAttachError, dragState, addAttachmentPaths, attachPastedFiles, attachNativeClipboardImage, handleAttachFiles, removeAttachment }
     = useComposerAttachments({ disabled, onDragStateChange, captureOperation });
@@ -317,14 +351,64 @@ function ComposerImpl({
   // re-persist the just-loaded draft with values that haven't settled yet.
   const restoringRef = useRef(false);
 
-  const saveDraft = useCallback(() => {
+  /**
+   * Persist the draft: its text, its pending attachments and the answer the
+   * closing choice card holds.
+   *
+   * The text is read with `getDraftContent()` — the answer's own pill left out,
+   * because `choice` already carries it (a draft whose text repeated the answer
+   * would rebuild it twice: once as text, once as the pill).
+   *
+   * `choiceOverride` exists because a pick writes the pill and the draft in the
+   * same handler: the committed `choice` still holds the previous answer until
+   * the next render, and a draft that lagged would come back stale on reload.
+   */
+  const saveDraft = useCallback((choiceOverride?: ChoiceAnswer | null) => {
     const key = draftKeyRef.current;
     if (!key)
       return;
-    const text = editorRef.current ? editorRef.current.getContent() : lastTextRef.current;
+    const text = editorRef.current ? editorRef.current.getDraftContent() : lastTextRef.current;
     lastTextRef.current = text;
-    saveComposerDraft(key, { attachments: attachmentsRef.current, text });
-  }, [attachmentsRef, draftKeyRef]);
+    const answer = choiceOverride === undefined ? choiceRef.current : choiceOverride;
+    saveComposerDraft(key, { attachments: attachmentsRef.current, choice: answer ?? undefined, text });
+  }, [attachmentsRef, choiceRef, draftKeyRef]);
+
+  /**
+   * Put the answer in the editor and tell the transcript's card. The draft is the
+   * caller's business: the draft load must not rewrite storage, and a clear that
+   * leaves attachments behind persists through `saveDraft`.
+   */
+  const writeChoice = useCallback((next: ChoiceAnswer | null) => {
+    setChoice(next);
+    editorRef.current?.setChoice(next);
+    onChoiceChangeRef.current?.(next);
+  }, [onChoiceChangeRef]);
+
+  /**
+   * A row clicked on the thread's closing choice card. The same write the pill's
+   * own pencil makes (`MentionEditor.pickChoice`); only the entrance differs.
+   */
+  const selectChoice = useCallback((optionId: string, card: ChoiceCardQuestion) => {
+    // A locked editor (`disabled`) takes no content and its message could not be
+    // sent anyway; `AgentThread` stops passing the answer surface there, so this
+    // is the belt to those braces.
+    if (disabled)
+      return;
+    const next = answerFromPick(choiceRef.current, card, optionId);
+    writeChoice(next);
+    saveDraft(next);
+  }, [choiceRef, disabled, saveDraft, writeChoice]);
+
+  /**
+   * The pill's own pencil or cross (`MentionEditor`). The pill is already
+   * rewritten there; this keeps the draft and the card's marked rows in step.
+   */
+  const handlePillChoiceChange = useCallback((next: ChoiceAnswer | null) => {
+    writeChoice(next);
+    saveDraft(next);
+  }, [saveDraft, writeChoice]);
+
+  useImperativeHandle(ref, () => ({ selectChoice }), [selectChoice]);
 
   const handleContextToolSelect = useCallback((toolId: string) => {
     if (toolId === "fusion") {
@@ -358,7 +442,11 @@ function ComposerImpl({
     restoredTextRef.current = text;
     setAttachments(draft?.attachments ?? []);
     setAttachError(null);
-  }, [draftKey, setAttachError, setAttachments]);
+    // The answer rides beside the text in its own field, so the pill is rebuilt
+    // from it rather than read out of the text. Not persisted: this *is* the
+    // stored draft.
+    writeChoice(draft?.choice ?? null);
+  }, [draftKey, setAttachError, setAttachments, writeChoice]);
 
   // The `/`-menu skills load after mount, so a freshly restored draft with a
   // `/name` token (e.g. the Skills page 「试试」 prefill) first renders as plain
@@ -470,6 +558,7 @@ function ComposerImpl({
         // up the same way a delivered message does.
         editorRef.current?.clear();
         lastTextRef.current = "";
+        writeChoice(null);
         const remaining = attachmentsRef.current.filter(item => !submittedAttachments.includes(item));
         attachmentsRef.current = remaining;
         setAttachments(remaining);
@@ -559,6 +648,9 @@ function ComposerImpl({
   function clearSubmittedDraft(submittedDraftKey: string | null | undefined, submittedAttachments: readonly MessageAttachment[]) {
     editorRef.current?.clear();
     lastTextRef.current = "";
+    // The answer left with the message: it must not still mark the card, nor sit
+    // in the box (or the draft) when the next message is written.
+    writeChoice(null);
     const remaining = attachmentsRef.current.filter(item => !submittedAttachments.includes(item));
     attachmentsRef.current = remaining;
     setAttachments(remaining);
@@ -641,6 +733,12 @@ function ComposerImpl({
      * `ComposerProps.onSend`). A draft typed in the meantime wins, and so does
      * the conversation the user is now in; in both cases the rejected message
      * stays recoverable from its bubble in the thread.
+     *
+     * The answer comes back as the text `serialize` writes for it (§7). It is not
+     * rebuilt as a pill on purpose: the text already holds it, so a pill on top
+     * would send the answer twice. The card therefore stops marking the row until
+     * it is picked again — the answer is visible in the box, which is where an
+     * unsent message belongs.
      */
     const restoreComposer = () => {
       if (!isCurrent() || !editorRef.current || draftKeyRef.current !== submittedDraftKey)
@@ -828,6 +926,7 @@ function ComposerImpl({
         onSubmit={submitValue}
         onEmptyChange={setInputEmpty}
         onChange={saveDraft}
+        onChoiceChange={handlePillChoiceChange}
         onContextToolSelect={handleContextToolSelect}
         onPasteAttachmentPaths={paths => void addAttachmentPaths(paths)}
         onPasteFiles={files => void attachPastedFiles(files)}

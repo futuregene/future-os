@@ -163,7 +163,7 @@
       ]
     },
     "choice-card-queue": {
-      "note": "设计稿 · 已选的消息**进了发送队列之后**（用户提的第三点）。队列行今天只有纯文本：`queueDraft()` 把 `editor.getContent()` 交给面板，答案此时已经拍平成 `[接下来做哪一件？ → 重画森林图]` 这一串字，行内编辑框也只能改这串字。设计要加的是把答案作为结构化 chip 留在行里：铅笔换答案、行的叉删整条——两者都不需要用户重打序列化形式。",
+      "note": "设计稿 · 已选的消息**进了发送队列之后**（桌面端，本地会话）。队列行今天只有纯文本：`queueDraft()` 把 `editor.getContent()` 交给面板，答案此时已经拍平成 `[接下来做哪一件？ → 重画森林图]` 这一串字，行内编辑框也只能改这串字。设计要加的是把答案作为结构化 chip 留在行里。注意 chip 本身**就是按钮**（带 chevron），不另配铅笔：这一行已经有一支\"改文字\"的铅笔，两支铅笔隔着几像素表示不同的事，正是本设计要消除的歧义。",
       "url": "http://localhost:5299/shot/?lang=zh&thread=th_fig&settings=skillRecommend:false",
       "width": 1440,
       "height": 900,
@@ -217,16 +217,48 @@
           "inject": "injects/choice-card-lib.js"
         },
         {
-          "inject": "injects/choice-card-v2-queue-row.js"
+          "inject": "injects/choice-card-v3-queue-desktop.js"
         },
         {
           "wait": 400
         },
         {
-          "eval": "(() => { const panel=document.querySelector('[data-send-queue]'); if(!panel) throw new Error('no queue panel'); const chip=panel.querySelector('[data-queue-choice]'); if(!chip) throw new Error('the row has no choice chip'); if(panel.querySelectorAll('[data-queue-item]').length!==1) throw new Error('the panel must hold exactly one row'); const r=chip.getBoundingClientRect(); const row=panel.querySelector('[data-queue-item]').getBoundingClientRect(); if(r.width<60) throw new Error('the chip is collapsed: '+Math.round(r.width)); if(r.right>row.right+1) throw new Error('the chip overflows the row'); const label=chip.querySelector('button').getAttribute('aria-label'); if(!label) throw new Error('the chip has no change action'); return JSON.stringify({chip:[Math.round(r.width),Math.round(r.height)],change:label}); })()"
+          "eval": "(() => { const panel=document.querySelector('[data-send-queue]'); if(!panel) throw new Error('no queue panel'); const chip=panel.querySelector('[data-queue-choice]'); if(!chip) throw new Error('the row has no choice chip'); if(panel.querySelectorAll('[data-queue-item]').length!==1) throw new Error('the panel must hold exactly one row'); const rowEl=panel.querySelector('[data-queue-item]'); const r=chip.getBoundingClientRect(); const row=rowEl.getBoundingClientRect(); if(r.width<60) throw new Error('the chip is collapsed: '+Math.round(r.width)); if(r.right>row.right+1) throw new Error('the chip overflows the row'); if(chip.tagName!=='BUTTON') throw new Error('the chip itself must be the button, not a wrapper around one: '+chip.tagName); if(chip.querySelector('button')) throw new Error('a button inside the button'); if(chip.querySelectorAll('svg').length!==1) throw new Error('the chip must carry exactly one affordance icon, got '+chip.querySelectorAll('svg').length); const label=chip.getAttribute('aria-label'); if(!label||!label.includes('更换')) throw new Error('the chip does not say it changes the choice: '+label); const edit=rowEl.querySelector('[data-queue-edit]'); if(!edit) throw new Error('the row lost its own edit-the-words pencil'); if(!(r.right < edit.getBoundingClientRect().left)) throw new Error('the chip overlaps the row pencil: '+Math.round(r.right)+' vs '+Math.round(edit.getBoundingClientRect().left)); const text=rowEl.innerText||''; if(text.includes(' → ')) throw new Error('the row still shows the flattened answer instead of a chip: '+JSON.stringify(text.slice(0,80))); if(!text.includes('顺便把图注也改成中文')) throw new Error('the typed words are missing from the row: '+JSON.stringify(text.slice(0,80))); return JSON.stringify({chip:[Math.round(r.width),Math.round(r.height),Math.round(r.right)],pencil:Math.round(edit.getBoundingClientRect().left),change:label}); })()"
         },
         {
           "shot": "choice-card-queue.png"
+        }
+      ]
+    },
+    "choice-card-queue-remote": {
+      "note": "设计稿 · 已选的消息进了发送队列（**远程桌面**）。远程 composer 是宿主的 composer 的镜像，但它复用桌面的同一个 `SendQueuePanel`，所以队列行的样式、行高、铅笔与垃圾桶的位置全都是桌面端那一套——远程不需要另画一遍，只需要确认它没有因为远程样式表而走样。",
+      "url": "http://localhost:5299/shot/?lang=zh&queue=2&remoteStream=1",
+      "width": 1440,
+      "height": 900,
+      "steps": [
+        {
+          "wait": 2600
+        },
+        {
+          "wait": 1500
+        },
+        {
+          "eval": "(() => { const panel=document.querySelector('[data-send-queue]'); if(!panel) throw new Error('the remote frame has no queue panel'); if(panel.querySelectorAll('[data-queue-item]').length<1) throw new Error('the panel holds no rows'); return JSON.stringify({rows:panel.querySelectorAll('[data-queue-item]').length}); })()"
+        },
+        {
+          "inject": "injects/choice-card-lib.js"
+        },
+        {
+          "inject": "injects/choice-card-v3-queue-desktop.js"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "eval": "(() => { const panel=document.querySelector('[data-send-queue]'); const chip=panel.querySelector('[data-queue-choice]'); if(!chip) throw new Error('the remote queue row has no choice chip'); const rowEl=chip.closest('[data-queue-item]'); const r=chip.getBoundingClientRect(); const row=rowEl.getBoundingClientRect(); if(r.right>row.right+1) throw new Error('the chip overflows the remote row'); if(chip.tagName!=='BUTTON') throw new Error('the chip must be the button here too'); if(chip.querySelectorAll('svg').length!==1) throw new Error('exactly one affordance icon expected, got '+chip.querySelectorAll('svg').length); const edit=rowEl.querySelector('[data-queue-edit]'); if(!edit) throw new Error('the remote row lost its edit pencil'); if(!(r.right < edit.getBoundingClientRect().left)) throw new Error('the chip overlaps the remote row pencil'); const ta=document.querySelector('form textarea'); if(ta && (ta.value||'').trim()) throw new Error('the remote field must stay empty'); return JSON.stringify({chip:[Math.round(r.width),Math.round(r.height)],pencil:Math.round(edit.getBoundingClientRect().left),row:[Math.round(row.width)]}); })()"
+        },
+        {
+          "shot": "choice-card-queue-remote.png"
         }
       ]
     },
@@ -413,6 +445,111 @@
           "shot": "choice-card-rejected.png"
         }
       ]
+    },
+    "choice-card-implemented": {
+      "note": "真实组件 · 桌面。回复末尾的 futureos-choice 围栏由 packages/markdown 解析、由 ChoiceCard.tsx 画出真正的选项卡（不再是注入原型）：问题、单选标注、三行选项与各自的后果说明。卡长在正文列里、与正文同宽。这是线程里最后一张卡，所以它是可交互态（§2）——行在 tab 序里、点下去会写进草稿；还没有选任何东西，所以发送键仍是灰的（需求 a）。",
+      "url": "http://localhost:5299/shot/?lang=zh&thread=th_choice",
+      "width": 1440,
+      "height": 900,
+      "steps": [
+        {
+          "wait": 2600
+        },
+        {
+          "eval": "(() => { const card=document.querySelector('[data-choice-card]'); if(!card) throw new Error('the choice card did not render'); card.scrollIntoView({block:'center'}); return 'ok'; })()"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "eval": "(() => { const card = document.querySelector('[data-choice-card]'); if (!card) throw new Error('the reply did not render a choice card'); const body = card.closest('[data-message-id]'); if (!body) throw new Error('the card is not inside a reply'); const rows = [...card.querySelectorAll('[data-choice-option]')]; if (rows.length !== 3) throw new Error('the card draws ' + rows.length + ' options'); if (!rows.every(row => row.getAttribute('role') === 'radio')) throw new Error('the rows are not radio rows'); if (rows.some(row => row.getAttribute('aria-checked') !== 'false')) throw new Error('nothing is picked, so no row may read as checked'); const state = card.getAttribute('data-choice-state'); if (state !== 'active') throw new Error('the last card in the thread must be answerable: ' + state); if (rows.filter(row => row.tabIndex === 0).length !== 1) throw new Error('a live card is a roving radio group: one row in the tab order, the rest out of it'); if (card.querySelector('[data-choice-footer]')) throw new Error('the footer may only appear after a pick'); if (!card.querySelector('[role=\"radiogroup\"]')) throw new Error('the rows are not grouped'); const label = document.getElementById(card.getAttribute('aria-labelledby')); if (!label || label.textContent !== '接下来做哪一件？') throw new Error('the group is not labelled by the question'); if (!card.textContent.includes('单选')) throw new Error('the mode label is missing'); const column = body.querySelector('p'); const cr = card.getBoundingClientRect(), pr = column.getBoundingClientRect(); if (Math.abs(cr.width - pr.width) > 1) throw new Error('the card is ' + Math.round(cr.width) + 'px wide against a ' + Math.round(pr.width) + 'px column'); if (Math.abs(cr.left - pr.left) > 1) throw new Error('the card does not start at the column edge'); const form = document.querySelector('form').getBoundingClientRect(); if (cr.bottom > form.top - 8) throw new Error('the card runs under the composer'); if (document.body.innerText.includes('futureos-choice')) throw new Error('the fence rendered as a code block, not a card'); const submit = document.querySelector('form button[type=\"submit\"]'); if (!submit || !submit.disabled) throw new Error('nothing is picked, so send must stay disabled — requirement (a)'); return JSON.stringify({card:[Math.round(cr.top),Math.round(cr.bottom),Math.round(cr.width)],column:Math.round(pr.width),rows:rows.length}); })()"
+        },
+        {
+          "shot": "choice-card-implemented.png"
+        }
+      ]
+    },
+    "choice-pill-implemented": {
+      "note": "真实组件 · 桌面。点卡片上的「重画森林图」，答案作为编辑器内的原子 pill 落进输入框（§2 的那条：卡片与 pill 是同一个值的两个视图）。什么都没打字、只选了答案时发送键是亮的（§5.2.1，需求 d），点 pill 的叉后立刻变灰（需求 a）。pill 由产品的点击路径写入（tap 是真实的鼠标按下/抬起），不再靠注入；发送键的亮/灰同样是应用自己通过 isEditorEmpty 得出的。",
+      "url": "http://localhost:5299/shot/?lang=zh&thread=th_choice",
+      "width": 1440,
+      "height": 900,
+      "steps": [
+        {
+          "wait": 2600
+        },
+        {
+          "eval": "(() => { const card=document.querySelector('[data-choice-card]'); if(!card) throw new Error('the choice card did not render'); card.scrollIntoView({block:'center'}); return 'ok'; })()"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "tapText": "重画森林图"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => { const pill = document.querySelector('[data-mention=\"choice\"]'); if (!pill) throw new Error('clicking a row wrote no answer pill'); const editor = document.querySelector('[role=\"textbox\"][contenteditable=\"true\"]'); if (!editor || !editor.contains(pill)) throw new Error('the pill is not inside the editor'); const pr = pill.getBoundingClientRect(), er = editor.getBoundingClientRect(); if (pr.left < er.left - 1 || pr.right > er.right + 1) throw new Error('the pill spills out of the editor'); if (pr.height < 16 || pr.height > 30) throw new Error('the pill is ' + Math.round(pr.height) + 'px tall'); if (!pr.width || pr.right > er.right) throw new Error('the pill has no room in the editor'); const typed = [...editor.childNodes].filter(node => node.nodeType === 3).map(node => node.textContent.replace(/[\\s\\u200B]/g, '')).join(''); if (typed) throw new Error('nothing may be typed beside the pill: ' + JSON.stringify(typed)); if (!pill.querySelector('[data-choice-action=\"change\"]')) throw new Error('the pill has no change action'); if (!pill.querySelector('[data-choice-action=\"remove\"]')) throw new Error('the pill has no remove action'); const card = document.querySelector('[data-choice-card]'); const marked = [...card.querySelectorAll('[data-choice-option]')].filter(row => row.getAttribute('data-choice-selected') === 'true'); if (marked.length !== 1 || marked[0].getAttribute('data-choice-option') !== 'forest') throw new Error('the card does not mark the picked row'); if (!card.querySelector('[data-choice-footer]')) throw new Error('the card never says the answer is waiting in the composer'); const body = card.closest('[data-message-id]'); const cr = card.getBoundingClientRect(), br = body.getBoundingClientRect(); if (cr.left < br.left - 1 || cr.right > br.right + 1) throw new Error('the card left the reply column'); const submit = document.querySelector('form button[type=\"submit\"]'); if (!submit) throw new Error('no send button'); if (submit.disabled) throw new Error('send is disabled with an answer and no text — requirement (d) is broken'); return JSON.stringify({pill:[Math.round(pr.left),Math.round(pr.width),Math.round(pr.height)],card:[Math.round(cr.left),Math.round(cr.right)],sendDisabled:submit.disabled}); })()"
+        },
+        {
+          "shot": "choice-pill-implemented.png"
+        },
+        {
+          "tap": "移除「接下来做哪一件？」的选择"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "eval": "(() => { const submit = document.querySelector('form button[type=\"submit\"]'); if (!submit) throw new Error('no send button'); if (!submit.disabled) throw new Error('removing the answer must turn send grey again — requirement (a)'); if (document.querySelector('[data-mention=\"choice\"]')) throw new Error('the pill is still in the editor'); const card = document.querySelector('[data-choice-card]'); if (card.querySelector('[data-choice-selected=\"true\"]')) throw new Error('the card still marks a row the answer no longer holds'); if (card.querySelector('[data-choice-footer]')) throw new Error('the footer is still there after the answer was dropped'); if (sessionStorage.getItem('composer-draft:th_choice')) throw new Error('the draft kept a choice that was removed'); return JSON.stringify({sendDisabled:submit.disabled}); })()"
+        }
+      ]
+    },
+    "choice-answer-sent": {
+      "note": "真实组件 · 桌面。选了「补一张实验流程图」后按发送：答案作为 §7 的纯文本 `[接下来做哪一件？ → 补一张实验流程图]` 进入用户消息（任何客户端都能读），而编辑器和草稿里都不再留着它——下一条消息不应该带着上一条的答案。卡片回到未标记的只读态（后面不再有卡，它仍是线程里最后一张）。",
+      "url": "http://localhost:5299/shot/?lang=zh&thread=th_choice",
+      "width": 1440,
+      "height": 900,
+      "steps": [
+        {
+          "wait": 2600
+        },
+        {
+          "eval": "(() => { const card=document.querySelector('[data-choice-card]'); if(!card) throw new Error('the choice card did not render'); card.scrollIntoView({block:'center'}); return 'ok'; })()"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "tapText": "补一张实验流程图"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "eval": "(() => { const pill = document.querySelector('[data-mention=\"choice\"]'); if (!pill || !pill.textContent.includes('补一张实验流程图')) throw new Error('the pick is not in the editor'); const stored = JSON.parse(sessionStorage.getItem('composer-draft:th_choice') || 'null'); if (!stored || !stored.choice || stored.choice.selectedIds[0] !== 'flow') throw new Error('the answer is not in the draft: ' + JSON.stringify(stored && stored.choice)); return 'picked'; })()"
+        },
+        {
+          "tap": "发送"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "tapText": "不用，直接发送"
+        },
+        {
+          "wait": 2200
+        },
+        {
+          "eval": "(() => { const text = '接下来做哪一件？ → 补一张实验流程图'; const bubbles = [...document.querySelectorAll('[data-message-id]')].filter(node => node.textContent.includes(text)); if (bubbles.length !== 1) throw new Error('the answer did not become exactly one message: ' + bubbles.length); const editor = document.querySelector('[role=\"textbox\"]'); if (!editor) throw new Error('no editor'); if (editor.querySelector('[data-mention=\"choice\"]')) throw new Error('the sent answer is still in the editor'); if ((editor.textContent || '').trim()) throw new Error('the editor was not emptied'); if (sessionStorage.getItem('composer-draft:th_choice')) throw new Error('the draft still holds the sent answer: ' + sessionStorage.getItem('composer-draft:th_choice')); const card = document.querySelector('[data-choice-card]'); if (!card) throw new Error('the card left the transcript'); if (card.querySelector('[data-choice-selected=\"true\"]')) throw new Error('the card still marks a row after the answer left the draft'); return JSON.stringify({bubbles:bubbles.length}); })()"
+        },
+        {
+          "shot": "choice-answer-sent.png"
+        }
+      ]
     }
   },
   "mobile": {
@@ -502,6 +639,43 @@
         }
       ]
     },
+    "choice-card-phone-queue": {
+      "note": "手机 · 已选的消息**进了发送队列之后**。手机端有它自己的队列面板（桌面端那个是另一份实现，远程端复用桌面的那一份）：表头是一行可点的折叠条，展开后最多占屏幕 30% 且不超过 240pt，再长就在面板内滚动。行里的选择同样画成 chip，且 chip 本身就是按钮——行里已经有一支改文字的铅笔，不再给 chip 配第二支。",
+      "query": "?session=sess_dopamine_review&streaming=1&queue=8",
+      "lang": "zh-CN",
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "tap": "展开队列中的消息"
+        },
+        {
+          "wait": 700
+        },
+        {
+          "inject": "injects/choice-card-mobile-lib.js"
+        },
+        {
+          "inject": "injects/choice-card-v3-queue-mobile.js"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "eval": "(() => { const panel=document.querySelector('[data-testid=send-queue]'); if(!panel) throw new Error('no phone queue panel'); const chip=panel.querySelector('[data-queue-choice]'); if(!chip) throw new Error('the phone queue row has no choice chip'); const rowEl=chip.closest('[data-testid=send-queue-item]'); if(!rowEl) throw new Error('the chip is not inside a queue row'); const r=chip.getBoundingClientRect(); const row=rowEl.getBoundingClientRect(); if(r.width<60) throw new Error('the chip is collapsed: '+Math.round(r.width)); if(r.right>row.right+1) throw new Error('the chip overflows the phone row: '+Math.round(r.right)+' vs '+Math.round(row.right)); const edit=rowEl.querySelector('[data-testid=send-queue-edit]'); if(!edit) throw new Error('the phone row lost its edit-the-words pencil'); if(!(r.right < edit.getBoundingClientRect().left)) throw new Error('the chip overlaps the row pencil: '+Math.round(r.right)+' vs '+Math.round(edit.getBoundingClientRect().left)); if(chip.querySelectorAll('svg').length!==1) throw new Error('exactly one affordance icon expected, got '+chip.querySelectorAll('svg').length); const label=chip.getAttribute('aria-label'); if(!label||!label.includes('更换')) throw new Error('the chip does not say it changes the choice: '+label); const rm=rowEl.querySelector('[data-testid=send-queue-remove]'); if(!rm) throw new Error('the phone row lost its bin'); if(rowEl.innerText.includes(' → ')) throw new Error('the row still shows the flattened answer'); if(!rowEl.innerText.includes('顺便把图注也改成中文')) throw new Error('the typed words are missing from the row'); return JSON.stringify({chip:[Math.round(r.width),Math.round(r.height)],row:[Math.round(row.width),Math.round(row.height)],pencil:Math.round(edit.getBoundingClientRect().left),rows:panel.querySelectorAll('[data-testid=send-queue-item]').length}); })()"
+        },
+        {
+          "shot": "choice-card-phone-queue.png"
+        }
+      ]
+    },
     "choice-card-phone-change": {
       "note": "手机 · 改回来。窄屏没有空间在原地展开菜单，铅笔改开底部 sheet：选项仍是 44pt 行，换完即时写回输入框上方的 chip，底稿不丢。",
       "query": "?session=sess_dopamine_review",
@@ -542,6 +716,40 @@
         },
         {
           "shot": "choice-card-phone-change.png"
+        }
+      ]
+    },
+    "choice-card-phone-degraded": {
+      "note": "真实组件 · 手机。同一个围栏在手机上按 §8 降级成可读的清单（手机端真正的卡片是 §11 第 6 步）：问题与三行选项都在，围栏本身的语法不出现。它证明的是共享解析器在手机端没有把回复吃掉——不是手机的选项卡做完了。",
+      "query": "?session=sess_dopamine_review&choiceCard=1",
+      "lang": "zh-CN",
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "eval": "(() => { const label = ['稍后再说', 'Not now'] .map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tap": "工作区"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tapText": "整理两篇文献的结论对比表"
+        },
+        {
+          "wait": 2600
+        },
+        {
+          "eval": "(() => { const block = document.querySelector('[data-testid=\"choice-card-degraded\"]'); if (!block) throw new Error('the fence did not degrade into a readable list'); if (document.querySelector('[data-choice-card]')) throw new Error('the phone must not draw a card yet (§11 step 6)'); const text = block.innerText || block.textContent || ''; for (const needle of ['接下来做哪一件？', '重画森林图', '补一张实验流程图', '表里加一列样本量', 'Frank 42 / Dreher 186，标出测量手段'])   if (!text.includes(needle)) throw new Error('the list lost ' + needle); if (text.includes('futureos-choice')) throw new Error('the fence syntax leaked into the list'); if (text.includes('option:')) throw new Error('the raw directive lines leaked into the list'); const r = block.getBoundingClientRect(); if (r.width < 300) throw new Error('the list is only ' + Math.round(r.width) + 'pt wide'); if (r.bottom < 0 || r.top > window.innerHeight) throw new Error('the list is off screen'); return JSON.stringify({block:[Math.round(r.top),Math.round(r.bottom),Math.round(r.width)]}); })()"
+        },
+        {
+          "shot": "choice-card-phone-degraded.png"
         }
       ]
     }

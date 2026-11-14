@@ -40,6 +40,7 @@ export {
   GitGraphRow,
   GitGraphListing,
   GitCommitDetail,
+  GitCommitRefs,
   DownloadInfo,
   HistoryEntry,
   StreamEvent,
