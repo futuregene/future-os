@@ -167,6 +167,11 @@ function tabs(): HTMLButtonElement[] {
     .filter(button => ["Branch", "Uncommitted", "Last run", "History"].includes(button.textContent ?? ""));
 }
 
+/** Which of the panel's view tabs reads as the selected one. */
+function activeTab(): string | undefined {
+  return tabs().find(tab => tab.className.includes("bg-accent-soft"))?.textContent ?? undefined;
+}
+
 function fileHeaders(): HTMLButtonElement[] {
   return [...container.querySelectorAll<HTMLButtonElement>("section > button")];
 }
@@ -279,9 +284,52 @@ describe("reviewPanel view selection", () => {
     expect(container.textContent).toContain("src/working-tree.ts");
   });
 
-  it("offers the history tab for a Git workspace, with the thread's own path", async () => {
+  it("offers the history tab first for a Git workspace, with the thread's own path", async () => {
     await mount({ workspacePath: "/Users/reader/repo" });
-    expect(tabs().map(tab => tab.textContent)).toEqual(["Branch", "Uncommitted", "Last run", "History"]);
+    // First, not last: the lane graph is what a reader opens this panel to see.
+    expect(tabs().map(tab => tab.textContent)).toEqual(["History", "Branch", "Uncommitted", "Last run"]);
+  });
+
+  it("opens a Git workspace on its history once the thread's path is known", async () => {
+    await mount({ workspacePath: "/Users/reader/repo" });
+    expect(activeTab()).toBe("History");
+    expect(container.querySelector("[data-git-history]")).not.toBeNull();
+  });
+
+  it("opens on the branch delta while the thread's path is still unknown", async () => {
+    // The history read is rooted at that path, so there is nothing to open yet;
+    // highlighting a tab that is not in the strip would be worse than waiting.
+    await mount({ workspacePath: null });
+    expect(tabs().map(tab => tab.textContent)).toEqual(["Branch", "Uncommitted", "Last run"]);
+    expect(activeTab()).toBe("Branch");
+  });
+
+  it("keeps the view the reader picked when the workspace path arrives late", async () => {
+    // The path lands with the first context refresh. Seeding the opening view
+    // from it must not yank the view out from under a reader who reached for a
+    // tab in those first frames.
+    const props = await mount({ workspacePath: null });
+    await act(async () => {
+      tabs()[1]?.click();
+    });
+    expect(activeTab()).toBe("Uncommitted");
+
+    await rerender({ ...props, workspacePath: "/Users/reader/repo" });
+    expect(tabs().map(tab => tab.textContent)).toEqual(["History", "Branch", "Uncommitted", "Last run"]);
+    expect(activeTab()).toBe("Uncommitted");
+    expect(container.textContent).toContain("src/uncommitted.ts");
+  });
+
+  it("seeds each thread's opening view independently", async () => {
+    // A choice made in one conversation says nothing about the next one.
+    const props = await mount({ workspacePath: "/Users/reader/repo" });
+    await act(async () => {
+      tabs()[1]?.click();
+    });
+    expect(activeTab()).toBe("Branch");
+
+    await rerender({ ...props, threadId: "thread-2" });
+    expect(activeTab()).toBe("History");
   });
 
   it("offers no history tab outside a Git workspace", async () => {
