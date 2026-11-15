@@ -383,7 +383,7 @@ export function foldLiveCompactionPlaceholdersIntoHistory(
 }
 
 /** A row that renders nothing but a compaction divider (no reply text yet). */
-function isCompactionDividerRow(item: TimelineItem): boolean {
+export function isCompactionDividerRow(item: TimelineItem): item is Extract<TimelineItem, { kind: "message" }> {
   return item.kind === "message"
     && item.role === "assistant"
     && !item.text
