@@ -7,7 +7,7 @@ import type { MobileAttachment } from "../../../remote/types";
 import { useCommittedRef } from "../../../lib/useCommittedRef";
 import { useConversationOperation } from "../useConversationOperation";
 import type { SendMessageApi, SendMessageIntent } from "../useSendMessage";
-import { choiceAnswerText, type ChoiceAnswer } from "../choiceAnswer";
+import { answerOrNull, choiceAnswerText, type ChoiceAnswer } from "../choiceAnswer";
 import type { SkillRecommendationApi } from "../useSkillRecommendation";
 import { showToast } from "../utils";
 
@@ -57,7 +57,7 @@ export function useComposerSubmission(options: Options) {
     // tap from submitting twice.
     if (attemptRef.current || initial.restoring || initial.remote.busy
       || initial.remote.compacting) return false;
-    if (!initial.message.trim() && !initial.attachments.length && !initial.choice) return false;
+    if (!initial.message.trim() && !initial.attachments.length && !answerOrNull(initial.choice)) return false;
     if (fusionTask(initial.message) !== null && !initial.remote.capabilities.has("fusion_v1")) {showToast(initial.t("chat.fusionUnavailable"));return false;}
     if (fusionTask(initial.message) !== null && !fusionAllowed.current) { showToast(initial.t("chat.fusionDisabled")); return false; }
     if (fusionTask(initial.message) === "") { initial.setMessage("/fusion "); return false; }
@@ -129,8 +129,16 @@ export function useComposerSubmission(options: Options) {
  *
  * Plain text, so the answer still reads on a TUI, an IM bot or a message pasted
  * elsewhere — which is why the answer is not a `futureos://` link.
+ *
+ * An answer with nothing ticked contributes no tag at all: §7's sentence is
+ * `[question → answer]`, so printing one for a question with no pick would hand
+ * the agent a question it reads as an answer. `answerOrNull` drops such an answer
+ * at the draft already; this is the same rule at the last gate, where every send
+ * passes.
  */
 function withChoiceAnswer(answer: ChoiceAnswer, text: string): string {
   const body = text.trim();
+  if (!answerOrNull(answer))
+    return body;
   return body ? `${choiceAnswerText(answer)} ${body}` : choiceAnswerText(answer);
 }

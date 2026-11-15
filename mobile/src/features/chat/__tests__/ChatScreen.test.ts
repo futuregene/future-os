@@ -1878,9 +1878,12 @@ test("unticking a multi-choice card's last row leaves no answer, and the send ca
   };
   mockDraft.choice = multi;
   // Mirror `useState`'s contract: the pick writes through an updater, and the
-  // value it returns is what the next render reads.
+  // value it returns is what the next render reads. The real hook also drops an
+  // answer with nothing ticked (`answerOrNull`), so the mirror does too — a mock
+  // that kept it would test a draft the app cannot produce.
   mockDraft.setChoice.mockImplementation((update: ChoiceAnswer | null | ((current: ChoiceAnswer | null) => ChoiceAnswer | null)) => {
-    mockDraft.choice = typeof update === "function" ? update(mockDraft.choice) : update;
+    const next = typeof update === "function" ? update(mockDraft.choice) : update;
+    mockDraft.choice = next && next.selectedIds.length > 0 ? next : null;
     act(() => tree.update(createElement(ChatScreen)));
   });
   act(() => tree.update(createElement(ChatScreen)));

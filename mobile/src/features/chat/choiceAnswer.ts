@@ -76,6 +76,19 @@ export function pickChoiceOption(answer: ChoiceAnswer, optionId: string): Choice
 }
 
 /**
+ * The answer a draft should hold, given what a pick produced.
+ *
+ * A chip exists to answer *what did the reader pick*. Zero ticks answers nothing,
+ * so the answer is dropped instead of kept as a question with no pick: a chip built
+ * from it would print the question alone and claim the reader had answered it. §7
+ * already says zero ticks send no tag; this is the same rule one layer up, so every
+ * write to the draft goes through it.
+ */
+export function answerOrNull(answer: ChoiceAnswer | null): ChoiceAnswer | null {
+  return answer && answer.selectedIds.length > 0 ? answer : null;
+}
+
+/**
  * Read a stored answer back, or `null`.
  *
  * A draft is restored from disk, so the value can be anything a previous version

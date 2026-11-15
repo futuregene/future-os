@@ -7,7 +7,7 @@ import { flushSessionDraft, loadSessionDraft, scheduleSessionDraft } from "../..
 import { desktopDraftKey } from "../../remote/desktopDraftKey";
 import { deleteTemporaryAttachment, recoverPendingImagePickerAttachments } from "../../remote/files";
 import type { MobileAttachment, SessionReferenceMap, SessionReferenceTarget } from "../../remote/types";
-import { parseChoiceAnswer, type ChoiceAnswer } from "./choiceAnswer";
+import { answerOrNull, parseChoiceAnswer, type ChoiceAnswer } from "./choiceAnswer";
 import { pruneSessionReferences } from "./sessionCompletion";
 import { showToast } from "./utils";
 
@@ -105,7 +105,11 @@ export function useComposerDraft(remote: Remote, t: TFunction): ComposerDraftApi
     if (activeKeyRef.current !== draftKey) return;
     editRevisionRef.current += 1;
     setState(current => current.key !== draftKey ? current : {
-      ...current, choice: typeof value === "function" ? value(current.choice) : value, restoring: false,
+      // Zero ticks is no answer (§7), and every entrance lands here — the card's
+      // row, the sheet's row, a restored draft — so the rule lives at this one
+      // write instead of at each of them. A chip drawn from an answer with no
+      // pick would name the question and answer nothing.
+      ...current, choice: answerOrNull(typeof value === "function" ? value(current.choice) : value), restoring: false,
     });
   }, [draftKey]);
   const rememberSessionRef = useCallback((token: string, target: SessionReferenceTarget) => {

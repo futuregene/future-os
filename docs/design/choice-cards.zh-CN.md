@@ -180,6 +180,8 @@ v1 把 chip 放在附件行（`form` 内、field 之上），看起来对，但�
 - (d) 只有 pill ⇒ `isEditorEmpty` 为 false ⇒ 键亮；
 - (b) 铅笔与叉挂在 pill 自己身上，改的是同一个值。
 
+**零个勾选不是答案，所以那时连 pill 都没有。** pill 存在的意义是回答"选了什么"（§5.2），一个只有问题、没有勾选的东西回答不了这个问题——它会把卡片的问题印成答案，读起来像是读者答了。所以判据落在**写入答案的那一处**（`answerOrNull`，`composer/choiceAnswer.ts`），而不是"画一个空 pill 但不产出文本"：零选中 ⇒ 答案被丢弃 ⇒ pill 不存在、(a) 的键灰重新成立、(d) 也不再谎称有内容。§7 的"零个勾选不产出 `[…] → ]`"是同一条规则的另一端，两层都在：写入时丢，发信时（`withChoiceAnswer`）再拦一次。多选卡把最后一个勾去掉，走的正是撤销（§5.3 的 ✕）那条路径，pill 连同尾随空格一起消失。
+
 **实测（1440×900，注入真实 contenteditable 后读 DOM，不改产品代码）**：
 
 | 状态 | `disabled` |
@@ -260,6 +262,7 @@ pill 实测 `bg rgb(232,240,255)`（`accent-soft`）、`color rgb(37,99,235)`（
 
 - 卡满宽（358pt，左右各 16pt 边距），`radius 12px`，行高 **≥ 44pt**（实测三行各 60pt），说明文字换行而不截断；
 - 已选项的 chip 在 dock 内、textarea 之上（实测 chip `y 702..736`，field `y 737..783`）；
+- **零个勾选时 chip 不画，也不计入内容。** 手机没有编辑器内的 pill，答案的"是否存在"全靠这三处判断（`ComposerDock` 的 `canSend`、`hasDraft`、是否画 chip），所以它们共用同一个 `hasAnswer`，与桌面 `answerOrNull` 同一条判据：勾选全撤销 ⇒ 没有 chip、发送键变灰、也没有 §7 的句子。判据写在上游的 draft 写入处（`useComposerDraft.setChoice`），`ComposerDock` 再自理一次，避免"靠上游保证"的隐患；
 - **改答案用底部 sheet**：390pt 宽没有空间在原地放浮层。sheet 顶到 559pt，三行仍 44pt，选中即写回 chip，底稿不动；
 
 #### 5.7.1 v1 的已选态哪里难看，v2 怎么改

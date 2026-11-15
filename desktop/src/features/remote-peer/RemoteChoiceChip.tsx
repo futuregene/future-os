@@ -28,7 +28,11 @@ interface Props {
  */
 export function RemoteChoiceChip({ answer, onChange, onRemove }: Props) {
   const { t } = useTranslation("markdown");
-  const label = choiceAnswerLabel(answer) || answer.title;
+  // The picked labels with the question in front, so two cards' answers are
+  // distinguishable. There is no fallback to the question alone: a chip for an
+  // answer with nothing ticked would name a question without answering it, and
+  // `answerOrNull` drops that answer before it reaches here (§5.7).
+  const label = choiceAnswerLabel(answer);
   return (
     <span
       className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-accent/20 bg-accent-soft py-1 pr-1 pl-2 text-xs text-accent"
