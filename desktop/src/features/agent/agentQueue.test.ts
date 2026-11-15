@@ -105,6 +105,67 @@ describe("fetchAgentQueue", () => {
     expect(rows[2]!.attachments).toBeUndefined();
   });
 
+  it("reads the pick a waiting message carries, and degrades without it", async () => {
+    // The compatibility half of the queue's `choice` field (§5.8.3). A row that
+    // answered a card carries the card's whole option list, because offering the
+    // other options is the point and the sentence alone cannot recover them. A
+    // row from an Agent that predates the field reports nothing at all, and one
+    // whose answer cannot be opened is dropped rather than drawn as a chip that
+    // would do nothing when pressed.
+    mocks.invokeCommand.mockResolvedValue({
+      queued: [
+        row({
+          choice: {
+            mode: "single",
+            title: "接下来做哪一件？",
+            options: [{ id: "forest", label: "重画森林图" }, { id: "flow", label: "补一张流程图" }],
+            selectedIds: ["forest"],
+          },
+        }),
+        // Answered, but with no option left to switch to: a chip that opens an
+        // empty list is worse than no chip.
+        row({ runId: "run-none", choice: { mode: "single", title: "q", options: [], selectedIds: ["x"] } }),
+        row({ runId: "run-bad", choice: { selectedIds: "not-a-list" } }),
+        row({ runId: "run-old" }),
+      ],
+    });
+
+    const { rows } = await fetchAgentQueue("thread-1");
+
+    expect(rows[0]!.choice).toEqual({
+      mode: "single",
+      title: "接下来做哪一件？",
+      options: [{ id: "forest", label: "重画森林图" }, { id: "flow", label: "补一张流程图" }],
+      selectedIds: ["forest"],
+    });
+    expect(rows[1]!.choice).toBeUndefined();
+    expect(rows[2]!.choice).toBeUndefined();
+    // Absent is not empty: an Agent older than the field must not be described
+    // as carrying an answer, or the panel would draw a chip for a card nobody
+    // answered.
+    expect(rows[3]!.choice).toBeUndefined();
+  });
+
+  it("serializes to the same shape the older rows had", async () => {
+    // What actually protects an older reader. The parsed row carries `choice:
+    // undefined` — exactly as it carries `attachments: undefined` when the Agent
+    // reports none — and `undefined` does not survive JSON, so anything that
+    // persists or forwards a row writes the same bytes it always wrote. Asserting
+    // on the parsed key list would instead pin an in-memory detail that the
+    // `attachments` precedent already settles the other way.
+    mocks.invokeCommand.mockResolvedValue({ queued: [row({ runId: "run-1" })] });
+
+    const { rows } = await fetchAgentQueue("thread-1");
+    const wire = JSON.parse(JSON.stringify(rows[0]!)) as Record<string, unknown>;
+
+    expect(rows[0]!.choice).toBeUndefined();
+    expect("choice" in wire).toBe(false);
+    // Same treatment the field beside it has always had.
+    expect("attachments" in wire).toBe(
+      rows[0]!.attachments !== undefined,
+    );
+  });
+
   /**
    * The other half of the answer: rows that left the queue without running.
    * Reading only `queued` is what let a cancelled or merged message disappear

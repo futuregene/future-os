@@ -258,6 +258,28 @@ describe("a queued message that answered a card", () => {
     expect(onRequestChoiceChange).toHaveBeenCalledWith("run_1");
   });
 
+  it("leaves the row's own edit and bin in place beside the chip", () => {
+    // The same constraint the desktop panel is held to (§5.8.2): the chip is the
+    // button for the answer, and the row keeps exactly one pencil (for its words)
+    // and one bin. Two pencils a few points apart meaning different things is the
+    // ambiguity the design exists to remove.
+    render({
+      items: [{ id: "run_1", content: "[接下来做哪一件？ → 重画森林图]", choice: ANSWER }],
+      onRequestChoiceChange: jest.fn(),
+    });
+    const row = tree!.root.findAll(node => node.props.testID === "send-queue-item")[0]!;
+    const ids = row.findAll(node => typeof node.props.testID === "string")
+      .map(node => node.props.testID as string);
+    expect(ids).toContain("send-queue-edit");
+    expect(ids).toContain("send-queue-remove");
+    // One chip, and it is the answer's button rather than a second row control.
+    const chips = tree!.root.findAll(node => node.props.testID === "send-queue-choice");
+    expect(chips.length).toBeGreaterThan(0);
+    const chipText = chips[0]!.findAll(node => typeof node.props.accessibilityLabel === "string")
+      .map(node => node.props.accessibilityLabel as string);
+    expect(chipText.some(label => label.includes("重画森林图"))).toBe(true);
+  });
+
   it("draws no chip when the row answered no card, or nobody can act on it", () => {
     // A host older than the field reports nothing, and a panel with no handler
     // must not offer a control that does nothing.

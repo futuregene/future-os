@@ -83,4 +83,55 @@ describe("remoteComposerDraft", () => {
 
     expect(loadRemoteComposerDraft("desktop_a", "sess_1")).toBeNull();
   });
+
+  it("reads a draft written before the answer field existed", () => {
+    // Exactly what this build wrote for a draft with words and one upload, back
+    // when `choice` did not exist: `version` plus the two fields that were there.
+    // It has to load, because the version is the only thing that makes a stored
+    // draft unreadable and adding an optional field must not bump it — the pick a
+    // reader had open across the upgrade is not worth discarding over a field
+    // that is simply absent.
+    const upload = {
+      contentHash: "abc",
+      id: "u1",
+      kind: "image",
+      name: "fig.png",
+      path: "/tmp/fig.png",
+      size: 12,
+      uploadId: "upload-1",
+    };
+    saveRemoteComposerDraft("desktop_a", "sess_1", {
+      text: "顺便把图注也改成中文",
+      uploads: [upload],
+    });
+    // Strip the answer field to get the exact bytes this build wrote before it
+    // existed — same version, one fewer key.
+    const stored = JSON.parse(localStorage.getItem(KEY)!) as Record<string, unknown>;
+    delete stored.choice;
+    localStorage.setItem(KEY, JSON.stringify(stored));
+
+    const draft = loadRemoteComposerDraft("desktop_a", "sess_1");
+
+    expect(draft?.text).toBe("顺便把图注也改成中文");
+    expect(draft?.uploads).toHaveLength(1);
+    // Absent, not invented: an empty answer would draw a chip for a card this
+    // draft never answered.
+    expect(draft?.choice).toBeUndefined();
+  });
+
+  it("keeps reading an old draft after this build saves it again", () => {
+    // The upgrade path in one go: a pre-`choice` draft, edited and saved by this
+    // build without picking an answer, must stay loadable and stay answerless.
+    saveRemoteComposerDraft("desktop_a", "sess_1", { text: "old words" });
+    const stored = JSON.parse(localStorage.getItem(KEY)!) as Record<string, unknown>;
+    delete stored.choice;
+    localStorage.setItem(KEY, JSON.stringify(stored));
+    const loaded = loadRemoteComposerDraft("desktop_a", "sess_1")!;
+
+    saveRemoteComposerDraft("desktop_a", "sess_1", { ...loaded, text: "old words, edited" });
+
+    const again = loadRemoteComposerDraft("desktop_a", "sess_1");
+    expect(again?.text).toBe("old words, edited");
+    expect(again?.choice).toBeUndefined();
+  });
 });

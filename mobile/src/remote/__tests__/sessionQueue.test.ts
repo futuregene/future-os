@@ -87,6 +87,57 @@ describe("reading the session's queue", () => {
     expect(rows[2]!.attachments).toBeUndefined();
   });
 
+  /**
+   * The pick a waiting message carries, and the three states it can be in.
+   *
+   * The phone reads the same row the desktop does, so the compatibility rule is
+   * the same one (§5.8.3): an older host reports no field and must not be
+   * described as carrying an empty answer, and an answer with no option left to
+   * switch to is not one a chip could open.
+   */
+  test("reads the pick a waiting message carries, and tells absence from an empty one", async () => {
+    const client = clientFor({
+      queued: [
+        {
+          choice: {
+            mode: "multi",
+            options: [{ id: "forest", label: "重画森林图" }, { id: "flow", label: "补一张流程图" }],
+            selectedIds: ["forest", "flow"],
+            title: "接下来做哪一件？",
+          },
+          runId: "run_picked",
+          text: "[接下来做哪一件？ → 重画森林图、补一张流程图]",
+        },
+        { choice: { mode: "single", title: "q", options: [], selectedIds: ["x"] }, runId: "run_open", text: "x" },
+        { choice: { selectedIds: 4 }, runId: "run_bad", text: "x" },
+        { runId: "run_old", text: "older host" },
+      ],
+    });
+    const { rows } = await fetchSessionQueue(client, "session-1");
+
+    expect(rows[0]!.choice).toEqual({
+      mode: "multi",
+      options: [{ id: "forest", label: "重画森林图" }, { id: "flow", label: "补一张流程图" }],
+      selectedIds: ["forest", "flow"],
+      title: "接下来做哪一件？",
+    });
+    expect(rows[1]!.choice).toBeUndefined();
+    expect(rows[2]!.choice).toBeUndefined();
+    expect(rows[3]!.choice).toBeUndefined();
+  });
+
+  test("a row with no pick serializes to the shape the older rows had", async () => {
+    // `undefined` does not survive JSON, so a relay or store that forwards a row
+    // writes the same bytes it always wrote — the field cannot reach a reader
+    // that does not know it.
+    const client = clientFor({ queued: [{ runId: "run_old", text: "older host" }] });
+    const { rows } = await fetchSessionQueue(client, "session-1");
+    const wire = JSON.parse(JSON.stringify(rows[0]!)) as Record<string, unknown>;
+
+    expect(rows[0]!.choice).toBeUndefined();
+    expect("choice" in wire).toBe(false);
+  });
+
   test("a draft with no session asks nothing at all", async () => {
     const client = clientFor({ queued: [] });
     expect(await fetchSessionQueue(client, "  ")).toEqual({ acks: [], rows: [] });
