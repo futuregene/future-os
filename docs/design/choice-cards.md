@@ -41,9 +41,17 @@ Three hard rules follow:
 
 | Rule | Why |
 |---|---|
-| Only the **last card in the thread** is interactive; earlier cards are read-only (the chosen row stays highlighted, the rest dim) | An old card answers a question that is over; letting it change makes "which pick did I just change" unanswerable |
-| The card never stores "chosen" itself | It derives from the draft. After sending, the draft empties and the card stays highlighted because the answer is now in the user message right below it |
+| Only the **last card in the thread** is interactive; earlier cards are read-only (`aria-disabled`, out of the tab order, subtitle says it cannot be picked) | An old card answers a question that is over; letting it change makes "which pick did I just change" unanswerable |
+| The card never stores "chosen" itself | It derives from the draft. After sending, the draft empties and **the card does not stay highlighted** — the answer is shown by the tag on the user's message, not by the card |
 | Changing the answer means changing the draft | Clicking a row, the pill/chip's pencil, the phone's bottom sheet, and the choice chip on a queue row all write the same value |
+
+**Why the card does not re-highlight after sending** (corrected 2026-11-16 — this
+section used to claim it did): a sent answer is already visible as the tag on the
+user's message, so re-marking the card adds no information, and doing it means the
+card reading the message that follows it — a new cross-entry timing dependency in
+return for a purely decorative effect. `ChoiceCardAnswer.test.tsx` pins the actual
+behaviour (`markedRow` is empty after sending), which is the shape of the decision:
+the type says a card holds no answer of its own.
 
 **Several threads / several questions** cannot interfere: the draft is per conversation, and both the card and the chip read that conversation's draft.
 
@@ -94,6 +102,8 @@ In the AST the card is its own node type (not a `futureEmbed` reference), becaus
 | Missing `title` | Fall back to the first option's label; still empty ⇒ degrade |
 | Fence mid-reply (not the last block) | Renders normally but read-only (the "last card" rule in §2) |
 | Unknown field | Ignored |
+
+**A read-only card must say so** (2026-11-16): when one reply holds two or more cards, only the last is interactive. That criterion depends solely on the **number of parsed cards**, not on anything the model was asked to write, so it lives in the parse/render layer rather than in the prompt. A card judged read-only is not just `aria-readonly` and out of the tab order — its **subtitle must also switch to "this card can no longer be picked"** (`choice.hint.readonly`). The subtitle is the one place a card can promise an action, and printing "pick one and it lands in the input" over inert rows is a button that looks pressable and is not. The model's own `hint` describes picking too, so it is replaced as well. Pinned in `ChoiceCard.test.tsx` and `MarkdownContent.test.tsx` on text, `aria-disabled` and focus — **never on colour**.
 
 ## 4. What goes into the system prompt
 
@@ -383,10 +393,10 @@ Fixed copy (the model neither provides nor should provide it) — keys needed on
 | `choice.mode.multi` | 多选 | Multiple choice |
 | `choice.hint.single` | 选一个就放进输入框；也可以直接在输入框里写别的 | Pick one and it lands in the input; you can type something else instead |
 | `choice.hint.multi` | 可以多选，点几个都行 | Pick as many as apply |
+| `choice.hint.readonly` | 只作展示：这张卡不能选 | An earlier question — this card can no longer be picked |
 | `choice.foot.queued` | 已放进输入框，可以继续补充，也可以直接发送 | In the input — add a note if you want, or send as is |
 | `choice.chip.change` | 修改「{{title}}」的选择 | Change the answer to "{{title}}" |
 | `choice.chip.remove` | 移除「{{title}}」的选择 | Remove the answer to "{{title}}" |
-| `choice.stale` | 这张卡已经过期 | This card is no longer active |
 | `choice.mobile.change` | 修改「{{title}}」 | Change "{{title}}" |
 | `choice.queue.change` | 更换这条消息里的选择：{{title}} · {{label}} | Change the choice in this message: {{title}} · {{label}} |
 
@@ -403,7 +413,7 @@ Fixed copy (the model neither provides nor should provide it) — keys needed on
 | A free-text field inside the card | The composer is the free-text field (§5.6) |
 | Digit shortcuts on rows | They would hijack the composer's digits (§5.6) |
 | Nested cards / a card mid-reply | "Which pick did I change" becomes unanswerable |
-| Editing historical cards | Same; read-only plus a highlighted chosen row |
+| Editing historical cards | Same; read-only, and the subtitle says it cannot be picked (§3) |
 | An interactive TUI / IM version | This pass only guarantees readable degradation; the TUI already has its own local choice UI (`SendChoiceSheet`), which is app UI, not transcript content |
 | Pill-ifying the answer in the user's bubble | Needs a new reference type plus server understanding, and the gain is purely visual; version two |
 | Structured choice records on the model side | Reading the text is enough for v1; add it when something actually needs the counts |
@@ -429,7 +439,7 @@ In dependency order; each step merges on its own:
 
 - **Parsing**: legal single/multi; the 2 and 4 boundaries; degradation below 3 and above 5; duplicate id, malformed id, missing title; a mid-reply fence; unknown fields ignored.
 - **Desktop, three states (must-test)**: empty editor ⇒ `disabled:true`; only a pill ⇒ **`disabled:false`**; pill removed ⇒ `disabled:true`. This is exactly what v1 got wrong, so it gets pinned.
-- **Desktop**: card renders; read-only ↔ interactive switching; clicking a row puts a pill in; the pencil changes it; ✕ removes it and the send button goes grey; sent content for all four cases in §7, asserted one by one; after sending the pill is gone and the card stays highlighted.
+- **Desktop**: card renders; read-only ↔ interactive switching; clicking a row puts a pill in; the pencil changes it; ✕ removes it and the send button goes grey; sent content for all four cases in §7, asserted one by one; after sending the pill is gone and the card does **not** keep a highlighted row (the answer is the tag on the user message; see §2 for why backfilling it is not done).
 - **Remote**: as above, plus asserting the chip is above the textarea rather than inside it, **that the send button is live with only a chip** (also missed by v1), and that switching conversations does not leak an answer.
 - **Mobile**: 44pt rows; the chosen row carries **exactly one cue** (no border); the pencil and × use the same ink; a sheet pick updates the chip; **`canSend` is true with only a chip**; the keyboard does not cover the chip row.
 - **Queue (all three surfaces)**: after enqueueing, the answer is a `choice` rather than flattened text; changing it updates both the row's chip and the text that eventually sends; removing the whole row and removing only the choice are distinct paths; an older Agent that omits `choice` degrades without error.
