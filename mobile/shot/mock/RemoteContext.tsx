@@ -41,6 +41,7 @@ import type { RemoteTaskDetail, RemoteTaskRow, RemoteTaskRun } from "../../src/r
 import { applyStreamEvents, timelineFromEntries } from "@future-os/remote-client/projection";
 import { leanRenderMode, leanRenderTimeline, leanTargetForToolCall } from "./leanRender";
 import {
+  choiceAnsweredEntries,
   choiceCardEntries,
   compactResumeEntries,
   demoCredentials,
@@ -376,7 +377,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
             ? [...multiTurnOlderEntries, ...multiTurnEntries]
             : multiTurnEntries
           : search.get("choiceCard") === "1"
-            ? choiceCardEntries
+            ? (search.get("choiceAnswer") === "1" ? choiceAnsweredEntries : choiceCardEntries)
             : demoEntries;
 
     const history = timelineFromEntries(historyEntries as unknown as HistoryEntry[]);

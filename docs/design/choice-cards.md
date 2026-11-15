@@ -199,6 +199,8 @@ One treatment on all three clients: the run of `[question → answer]` at the **
 - **The test is conservative** (`packages/markdown/src/choiceAnswerEcho.ts`): only the head of the message, only with an `→`, never when the closing bracket is followed by `(` or `[` (that is a link, or another bracket run), at most four answers (a card's own bound). A false negative costs the styling, never a character;
 - **The material follows the bubble.** The desktop bubble is `accent-soft`, so the tag is `accent/10` on `accent/25`; the phone's bubble is solid `accent`, so the tag mixes the bubble's own ink at 12% with a 20% border — the same colours `MarkdownText`'s `onAccent` tone uses, readable in both appearances.
 
+All four states (desktop light/dark, phone light/dark) are reproducible in the screenshot harness: the scenarios live in `scripts/screenshots/scenarios.d/choice-answer-echo.json` (`capture-desktop choice-answer-echo{,-dark}`, `capture-mobile choice-answer-echo-phone{,-dark}`), and the demo data comes from the fixture's `?choiceAnswer=1` — the card that produced the answer is still `choiceCard=1`'s.
+
 ### 5.3 Desktop · changing it
 
 ![Desktop: the pencil re-opens the same card above the pill](assets/choice-cards/desktop-3-change.png)
