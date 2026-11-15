@@ -1,5 +1,6 @@
 import type { MergedConversation } from "../../features/remote-peer/mergeConversations";
 import type { RemotePeer } from "../../features/remote-peer/remotePeerClient";
+import { ListChecks } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { PeerIconGlyph } from "../../features/remote-peer/PeerIconGlyph";
@@ -93,6 +94,11 @@ export function RemoteConversationRow({
   // row's own words rather than a second set written for this list.
   const { t: tLayout } = useTranslation("layout");
   const [menuOpen, setMenuOpen] = useState(false);
+  // The peer's copy of the local row's choice mark: its last finished reply
+  // closed with a card and nothing has been sent since. `runStatus` is what says
+  // "at rest" — a host reports `completed` for the run the card belongs to.
+  const choiceWaiting = conversation.offersChoice === true
+    && conversation.runStatus === "completed";
   const itemRef = useDismissableLayer<HTMLDivElement>({
     enabled: menuOpen,
     onDismiss: () => setMenuOpen(false),
@@ -161,6 +167,18 @@ export function RemoteConversationRow({
           )
         : (
             <>
+              {!active && choiceWaiting
+                ? (
+                    <span
+                      aria-label={t("pendingChoice")}
+                      className="pointer-events-none inline-flex size-5 shrink-0 items-center justify-center text-accent"
+                      data-thread-choice="true"
+                      title={t("pendingChoice")}
+                    >
+                      <ListChecks className="size-3.5" />
+                    </span>
+                  )
+                : null}
               <RailRowIndicator status={conversation.streaming ? "running" : unread ? "completed" : undefined} unread={unread} />
               {/* The actions trigger is part of what the checkbox replaces, as
                   it is on the local row: while a batch is being assembled the

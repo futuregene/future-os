@@ -414,6 +414,7 @@ export const resources = {
         archivedBack: "All conversations",
         archive: "Archive",
         restore: "Unarchive",
+        pendingChoice: "This reply is waiting on your choice",
         archiveFailed: "Couldn't archive or unarchive it. Reconnect and try again.",
         archiveRunningTitle: "This conversation is running",
         archiveRunningConfirm:
@@ -1666,6 +1667,7 @@ export const resources = {
         archivedBack: "全部会话",
         archive: "归档",
         restore: "取消归档",
+        pendingChoice: "这条回复在等你选一项",
         archiveFailed: "归档或取消归档失败，请恢复连接后重试。",
         archiveRunningTitle: "会话正在进行中",
         archiveRunningConfirm: "「{{name}}」正在运行，结束或停止后才能归档。",

@@ -3246,6 +3246,39 @@ mod pipeline_tests {
         );
     }
 
+    /// A run this host did not start (a TUI or an IM channel prompting the Agent
+    /// directly) settles here, and the same `agent_end` carries whether the reply
+    /// closed with a choice card. Recorded before the status CAS, so a list that
+    /// reads the row afterwards gets both facts from one read.
+    #[test]
+    fn the_observer_records_a_reply_that_offered_a_choice() {
+        let home = TestHome::new("bridge-settle-offers-choice");
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-choice"));
+
+        let offered = seed_run(&thread.id);
+        settle_agent_end(&offered.id, r#"{"state":"completed","offers_choice":true}"#);
+        let record = crate::store::get_run(&offered.id)
+            .expect("run")
+            .expect("some");
+        assert_eq!(record.status, "completed");
+        let infos =
+            crate::store::latest_run_infos(std::slice::from_ref(&thread.id)).expect("infos");
+        assert!(
+            infos[0].offers_choice,
+            "the mark travels with the settled run"
+        );
+
+        // An ordinary reply offers nothing, and neither does an event that never
+        // carried the field (every producer before it).
+        let plain = seed_run(&thread.id);
+        settle_agent_end(&plain.id, r#"{"state":"completed"}"#);
+        let infos =
+            crate::store::latest_run_infos(std::slice::from_ref(&thread.id)).expect("infos");
+        assert_eq!(infos[0].run_id, plain.id);
+        assert!(!infos[0].offers_choice);
+    }
+
     #[test]
     fn settle_from_agent_terminal_maps_all_states() {
         let home = TestHome::new("pipe-settle");

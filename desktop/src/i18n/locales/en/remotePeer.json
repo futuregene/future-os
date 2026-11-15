@@ -130,6 +130,7 @@
   "tasks": "Scheduled tasks",
   "tasksHint": "Scheduled tasks there — on a schedule, on demand, or after another finishes.",
   "conversationActions": "More actions",
+  "pendingChoice": "This reply is waiting on your choice",
   "renameTitle": "Rename conversation",
   "renameHint": "The new name is saved on the remote desktop.",
   "saving": "Saving…",

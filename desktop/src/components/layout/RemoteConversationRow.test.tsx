@@ -329,3 +329,35 @@ it("shows the source icon after the title, not in front of it", async () => {
   expect(iconFollowsTitle).toBeTruthy();
   await view.unmount();
 });
+
+/**
+ * The same "waiting on your choice" mark the local row draws, from the host's
+ * own report: a peer's conversation whose last finished reply closed with a
+ * `futureos-choice` card. Without it the merged list would badge only the
+ * conversations on this machine, which is the list the reader is *not* reading
+ * the peer's rows from.
+ */
+it("marks a peer's conversation whose last reply offered a choice", async () => {
+  const view = await mount({
+    conversation: conversation({ offersChoice: true, runStatus: "completed" }),
+  });
+  const mark = view.container.querySelector("[data-thread-choice]")!;
+  expect(mark).not.toBeNull();
+  expect(mark.getAttribute("aria-label")).toBe("This reply is waiting on your choice");
+  expect(mark.querySelector("svg")!.classList.contains("lucide-list-checks")).toBe(true);
+  await view.unmount();
+});
+
+it("does not mark a peer's row whose run is still going, or one that never offered a choice", async () => {
+  const running = await mount({
+    conversation: conversation({ offersChoice: true, runStatus: "running" }),
+  });
+  expect(running.container.querySelector("[data-thread-choice]")).toBeNull();
+  await running.unmount();
+
+  const prose = await mount({
+    conversation: conversation({ offersChoice: false, runStatus: "completed" }),
+  });
+  expect(prose.container.querySelector("[data-thread-choice]")).toBeNull();
+  await prose.unmount();
+});

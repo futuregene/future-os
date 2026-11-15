@@ -345,6 +345,64 @@ The write path **stays out of the plain-text edit**. On the desktop the queue pa
 
 All three rows keep their own pencil and bin: the assertions check that the chip's right edge is left of the pencil's left edge, and that `[data-queue-edit]` / `[data-testid=send-queue-edit]` still exist. The chip is **inserted into** the row, not a replacement for the row's controls.
 
+## 5.9 The list mark: this one is waiting on your choice
+
+A card is only visible inside the conversation that holds it — the reader has to
+open it, read the reply, and then see the card. But a conversation *list* (the
+desktop rail, the phone's session list, the merged list that includes another
+desktop's conversations) is exactly the place that answers "which one is waiting
+on me", so it gets its own mark beside the approval badge.
+
+### 5.9.1 When it appears
+
+| Condition | Why |
+|---|---|
+| The conversation's **latest run finished** (`completed`) | A run still streaming is "wait a moment", not "waiting on your answer" |
+| And that reply **closed with a valid card** | A card earlier in the history does not count: that question is long past (the same judgement as §2's "only the last card is interactive") |
+| And the row is **not the one on screen** (desktop / remote) | The card is right there; a second mark is noise (the rule the approval badge already follows) |
+
+Nothing is drawn otherwise. Choosing an option without sending does **not**
+clear the mark: the conversation still sits on that card, one send short of
+done.
+
+### 5.9.2 Where the fact comes from: one write, every list reads it
+
+A list cannot read another conversation's reply (the desktop rail reads the
+local store, the phone reads the peer's catalogue), so "this reply ended with a
+card" has to be recorded where the reply is produced instead of guessed from
+text by each client:
+
+```
+Agent commits the run ──┬─> terminal entry `content.offers_choice`
+                        └─> agent_end `offers_choice: true`
+                                 │
+        desktop host writes runs.offers_choice ──┬─> latest_run_infos → rail
+                                                 └─> sessions catalog → phone / remote rows
+```
+
+- **The Agent decides once** (`agent/src/prompt/choice_card.rs`), with the
+  renderer's own rules (`parseChoiceCard`): the `futureos-choice` fence, 2–4
+  `option:` rows, ids in `[a-z0-9-]` (≤ 24), a non-empty label; a card quoted
+  inside a document fence is not one, and neither is a card followed by more
+  prose (the card closes the reply, alone).
+- **Only a clean finish carries it**: a cancelled, failed or truncated reply is
+  not something to answer.
+- **The mark travels with the run row**: the next send is a new row, so the mark
+  clears by itself — no second pass to keep in step.
+- Lists read one boolean: `ThreadRunInfo.offersChoice` on the desktop (re-read
+  when a terminal push lands) and `offersChoice` on a catalogue row (shared by
+  the phone and the desktop's remote rows).
+
+### 5.9.3 Icon and copy
+
+- `list-checks` (the card head's own icon) in the accent ink. The approval badge
+  is `circle-alert` in warning, so shape and colour separate the two at a glance.
+- One key on every surface: `pendingChoice` = "This reply is waiting on your
+  choice" / 这条回复在等你选一项.
+- On the phone it **takes the unread dot's slot** for a completed conversation:
+  both say "this finished while you were away", and only the card says something
+  is owed; unread is still carried by the bolder title.
+
 ## 6. Composer behaviour (requirements a–d)
 
 | Requirement | Behaviour | Implementation constraint |

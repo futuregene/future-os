@@ -3091,3 +3091,50 @@ test("the shelf holds ten conversations until the footer is asked for more", () 
   act(() => button("sessions.showMore").props.onPress());
   expect(mergedTitles()).toHaveLength(12);
 });
+
+/**
+ * "This one is waiting on your answer."
+ *
+ * A finished reply that closed with a `futureos-choice` card leaves the
+ * conversation at rest with a question in it, which the row marks with the card
+ * glyph. It takes the indicator's slot from the unread dot: both say "this
+ * finished while you were away", and only the card says something is owed. The
+ * mark reads the run's own field (`offersChoice`), so it is absent the moment a
+ * follow-up turn replaces that run.
+ */
+test("a finished reply that offered a choice marks its row", () => {
+  mockRemote.sessions = [
+    {
+      sessionId: "asks",
+      threadId: "t1",
+      title: "Asks",
+      streaming: false,
+      status: "completed",
+      offersChoice: true,
+    },
+    { sessionId: "prose", threadId: "t2", title: "Prose", streaming: false, status: "completed" },
+  ];
+  act(() => tree.update(createElement(SessionList, {
+    tab: "recent",
+    empty: null,
+    onMenu,
+    onTabChange,
+    onExitArchived: onExitArchived,
+    commandsFor: testCommandsFor,
+    ref: listRef,
+  })));
+
+  // Host nodes only: the mocked `View` and the host view it draws both carry
+  // the prop (the same trap the section captions' assertion documents).
+  const choiceMarks = (title: string) => sessionBody(title).findAll(
+    node => typeof node.type === "string"
+      && node.props.accessibilityLabel === "sessions.pendingChoice",
+  );
+  const mark = choiceMarks("Asks");
+  expect(mark).toHaveLength(1);
+  // The glyph itself, so the assertion is about the card's own icon rather than
+  // any named view.
+  expect(mark[0]!.findAllByType("ListChecks")).toHaveLength(1);
+  // Nothing was offered, so the row carries no such mark.
+  expect(choiceMarks("Prose")).toHaveLength(0);
+});
