@@ -30,6 +30,23 @@ export function userStoppedNotice(): string {
 }
 
 /**
+ * Whether a reply has any stats for its footer to draw — the `time · N tokens`
+ * line, whether settled or still counting up.
+ *
+ * `MessageMeta` is the only thing that draws them, and this answers the same
+ * question one level up: the assistant's footer row is a container for controls
+ * and stats, so a settled reply holding none of either must not paint the row
+ * and leave it empty. One predicate, so the row and the stats inside it cannot
+ * disagree about what "has stats" means.
+ */
+export function hasReplyMeta(message: AgentMessage): boolean {
+  const streaming = message.status === "streaming";
+  return (streaming && typeof message.runStartedAt === "number")
+    || message.durationMs != null
+    || (message.outputTokens ?? 0) > 0;
+}
+
+/**
  * The backend's termination kind for a run the Agent QUEUED behind one already
  * executing: the prompt was accepted and the reply is still coming, so this is
  * liveness, not a failure. Callers must branch on it BEFORE turning `complete:

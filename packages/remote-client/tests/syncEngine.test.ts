@@ -331,6 +331,131 @@ describe("SyncEngine", () => {
     } finally { h.engine.clear(); }
   });
 
+  test("a settled divider older than the history window is not appended after its tail", async () => {
+    // Measured on a phone (2026-11-15): a manual compaction's divider sat
+    // directly under the newest reply's footer, three and a half hours after the
+    // checkpoint it marks. The window is a contiguous tail, so a checkpoint it
+    // does not reach is older than everything in it — paging up serves it again,
+    // exactly like the run-off-the-window case above. A divider-only row has no
+    // `runId`, though, so the outside-the-window rule never applied to it and the
+    // merge appended it after the tail as if it had just happened.
+    const h = new Harness("");
+    h.history = timelineFromEntries([
+      { id: "u0", kind: "user", role: "user", createdAtMs: 1, runId: "r0", blocks: [{ kind: "text", text: "first" }] },
+      { id: "a0", kind: "assistant", role: "assistant", createdAtMs: 2, runId: "r0", blocks: [{ kind: "text", text: "first reply" }] },
+    ]);
+    try {
+      await h.engine.open("s");
+      await h.settle();
+
+      // The reader compacts the context by hand; its checkpoint commits live.
+      h.engine.event("s", {
+        type: "compaction_started", runId: "", idx: -1,
+        data: JSON.stringify({ operation_id: "cmp", phase: "standalone", trigger: "manual" }),
+      });
+      h.engine.event("s", {
+        type: "compaction_committed", runId: "", idx: -1,
+        data: JSON.stringify({
+          operation_id: "cmp", checkpoint_id: "cp1", phase: "standalone", trigger: "manual",
+        }),
+      });
+      await h.settle();
+      expect(h.timelineOf("s").items.map(item => item.id)).toEqual(["m_u0", "m_a0", "m_cp1"]);
+
+      // Two more exchanges happened. The window read on return is the newest
+      // three user exchanges and does not reach the checkpoint any more.
+      h.history = timelineFromEntries([
+        { id: "u2", kind: "user", role: "user", createdAtMs: 10, runId: "r2", blocks: [{ kind: "text", text: "later" }] },
+        { id: "a2", kind: "assistant", role: "assistant", createdAtMs: 11, runId: "r2", blocks: [{ kind: "text", text: "later reply" }] },
+        { id: "u3", kind: "user", role: "user", createdAtMs: 12, runId: "r3", blocks: [{ kind: "text", text: "newest" }] },
+        { id: "a3", kind: "assistant", role: "assistant", createdAtMs: 13, runId: "r3", blocks: [{ kind: "text", text: "newest reply" }] },
+      ]);
+      h.engine.reconcile("s", "resend");
+      await h.settle();
+
+      expect(h.timelineOf("s").items.map(item => item.id))
+        .toEqual(["m_u2", "m_a2", "m_u3", "m_a3"]);
+    } finally { h.engine.clear(); }
+  });
+
+  test("a compaction still in flight keeps following the window", async () => {
+    // The complement, and the reason the rule is about a *settled* divider: an
+    // operation with no durable row yet is the newest thing on screen, and
+    // dropping it would take the "compacting context" line away mid-operation.
+    // Only a divider whose checkpoint exists in the journal can be older than
+    // the window.
+    const h = new Harness("");
+    h.history = timelineFromEntries([
+      { id: "u0", kind: "user", role: "user", createdAtMs: 1, runId: "r0", blocks: [{ kind: "text", text: "first" }] },
+      { id: "a0", kind: "assistant", role: "assistant", createdAtMs: 2, runId: "r0", blocks: [{ kind: "text", text: "first reply" }] },
+    ]);
+    try {
+      await h.engine.open("s");
+      await h.settle();
+
+      h.isCompacting = true;
+      h.engine.event("s", {
+        type: "compaction_started", runId: "", idx: -1,
+        data: JSON.stringify({ operation_id: "cmp", phase: "standalone", trigger: "manual" }),
+      });
+      await h.settle();
+
+      // The window moves on while the summary is still being written.
+      h.history = timelineFromEntries([
+        { id: "u2", kind: "user", role: "user", createdAtMs: 10, runId: "r2", blocks: [{ kind: "text", text: "later" }] },
+        { id: "a2", kind: "assistant", role: "assistant", createdAtMs: 11, runId: "r2", blocks: [{ kind: "text", text: "later reply" }] },
+      ]);
+      h.engine.reconcile("s", "resend");
+      await h.settle();
+
+      expect(h.timelineOf("s").items.map(item => item.id))
+        .toEqual(["m_u2", "m_a2", "compaction:cmp"]);
+    } finally { h.engine.clear(); }
+  });
+
+  test("a checkpoint the window does carry keeps its durable place between the exchanges", async () => {
+    // The complement: the divider must still be drawn where the journal put it.
+    // Durable history is the authority for a checkpoint (its row is the same
+    // marker under the same identity), so the window's position wins and the
+    // live copy is a duplicate of it, never a second divider at the tail.
+    const h = new Harness("");
+    h.history = timelineFromEntries([
+      { id: "u0", kind: "user", role: "user", createdAtMs: 1, runId: "r0", blocks: [{ kind: "text", text: "first" }] },
+      { id: "a0", kind: "assistant", role: "assistant", createdAtMs: 2, runId: "r0", blocks: [{ kind: "text", text: "first reply" }] },
+    ]);
+    try {
+      await h.engine.open("s");
+      await h.settle();
+      h.engine.event("s", {
+        type: "compaction_started", runId: "", idx: -1,
+        data: JSON.stringify({ operation_id: "cmp", phase: "standalone", trigger: "manual" }),
+      });
+      h.engine.event("s", {
+        type: "compaction_committed", runId: "", idx: -1,
+        data: JSON.stringify({
+          operation_id: "cmp", checkpoint_id: "cp1", phase: "standalone", trigger: "manual",
+        }),
+      });
+      await h.settle();
+
+      // The window now carries that same checkpoint, in the place the journal
+      // recorded: after the reply it followed, before the exchange that came next.
+      h.history = timelineFromEntries([
+        { id: "u0", kind: "user", role: "user", createdAtMs: 1, runId: "r0", blocks: [{ kind: "text", text: "first" }] },
+        { id: "a0", kind: "assistant", role: "assistant", createdAtMs: 2, runId: "r0", blocks: [{ kind: "text", text: "first reply" }] },
+        { id: "cp1-entry", kind: "compaction", role: "system", createdAtMs: 3, blocks: [],
+          checkpoint: { checkpointId: "cp1", trigger: "manual", phase: "standalone" } },
+        { id: "u2", kind: "user", role: "user", createdAtMs: 10, runId: "r2", blocks: [{ kind: "text", text: "later" }] },
+        { id: "a2", kind: "assistant", role: "assistant", createdAtMs: 11, runId: "r2", blocks: [{ kind: "text", text: "later reply" }] },
+      ]);
+      h.engine.reconcile("s", "resend");
+      await h.settle();
+
+      expect(h.timelineOf("s").items.map(item => item.id))
+        .toEqual(["m_u0", "m_a0", "m_cp1", "m_u2", "m_a2"]);
+    } finally { h.engine.clear(); }
+  });
+
   test("a session that stopped compacting closes its stranded standalone divider", async () => {
     // The agent restarted (or was killed) while a manual compaction's summary
     // was in flight: the divider's start arrived, its terminal never will, and

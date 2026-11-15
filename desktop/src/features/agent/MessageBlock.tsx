@@ -13,7 +13,7 @@ import { foldsSettledReply, useReplyDetail } from "../../lib/replyDisplay";
 import { STREAMED_BLOCK_CONTAINMENT } from "../markdown/LiveMarkdownContext";
 import { MarkdownContent, StreamingMarkdownContent } from "../markdown/MarkdownContent";
 import { AgentActivityLine, AgentActivityList } from "./AgentActivityList";
-import { isCompletedWithoutReply } from "./agentMessageFormatters";
+import { hasReplyMeta, isCompletedWithoutReply } from "./agentMessageFormatters";
 import { MessageMeta } from "./MessageMeta";
 import { AttachmentChip } from "./messages/AttachmentChip";
 import { MessageFrame } from "./messages/MessageFrame";
@@ -198,6 +198,17 @@ function MessageBlockImpl({
       )
     : null;
 
+  // The assistant's footer row is drawn for what it holds — the live indicator,
+  // the copy button, the fork button, the `time · N tokens` stats, the stalled
+  // and thinking badges. A settled reply holding none of them used to paint the
+  // row anyway, leaving an empty line under the reply: the desktop half of the
+  // blank card the phone drew as a lone "completed" label. The row is a
+  // container, not a spacer, so with nothing to put in it it is not drawn.
+  const footerHasContent = streaming
+    || copyControl !== null
+    || (onFork !== undefined && message.status !== "streaming")
+    || hasReplyMeta(message);
+
   // A reloaded compaction marker is a message carrying only a compaction
   // segment: render just the divider (no author header / bubble), matching the
   // inline divider the live path shows mid-reply.
@@ -358,7 +369,7 @@ function MessageBlockImpl({
             </div>
           )
         : null}
-      {!isUser
+      {!isUser && footerHasContent
         ? (
             <div className="flex flex-wrap items-center gap-2 mt-3 justify-start">
               {streaming

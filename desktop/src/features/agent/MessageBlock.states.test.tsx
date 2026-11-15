@@ -96,6 +96,27 @@ it("says the model ended without a final reply, and warns rather than excuses it
   expect(container.textContent).toContain("Generated content has been kept");
 });
 
+it("leaves no empty footer row under a reply that has nothing to put in it", () => {
+  // The footer row exists for what it holds: the copy button, the fork button,
+  // the `time · N tokens` stats, or the live clock. A settled reply with none of
+  // them used to render the row anyway, empty — the desktop half of the blank
+  // card the phone drew as a lone "completed" label. The warning divider above
+  // still says the model ended without a reply; what disappears is the empty
+  // row underneath it. Asserted as the reply's own node sequence, not by style.
+  render(message({ content: "", status: "complete" }));
+
+  // The frame draws `article > div[data-message-id] > [header, body]` and the
+  // footer row lives *inside* the body div, so the sequence to assert is the
+  // body's: the warning divider, then its detail line, and — once the empty row
+  // is gone — nothing after them.
+  const body = container.querySelector<HTMLElement>("[data-message-id]")!.children[1] as HTMLElement;
+  const rows = [...body.children];
+  expect(rows.map(row => ({
+    divider: row.querySelector("[role=status]") !== null,
+    detail: (row.textContent ?? "").includes("Generated content has been kept"),
+  }))).toEqual([{ divider: true, detail: true }]);
+});
+
 it("explains a stopped response differently, and without the detail line", () => {
   // The other arm: the user stopped it, so the label names that and the
   // `!message.stopped` gate withholds the "you can send another request" detail.
