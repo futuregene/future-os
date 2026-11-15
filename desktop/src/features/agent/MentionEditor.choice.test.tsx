@@ -163,6 +163,51 @@ describe("the choice answer in the composer editor", () => {
     expect(serialize(editor).trim()).toBe("[接下来做哪一件？ → 补一张实验流程图]");
   });
 
+  it("sends nothing for an answer with no rows ticked, and keeps what was typed", async () => {
+    // Unticking the last row of a multi-choice card leaves an answer that has a
+    // question and no pick. §7 prints `[question → answer]`, so an unchecked
+    // answer would print `[接下来做哪一件？ → ]` — a question with an empty
+    // answer, which the agent reads as an answer. Zero ticks is no answer.
+    const unpicked: ChoiceAnswer = { ...ANSWER, mode: "multi", selectedIds: [] };
+    const { editor, click } = await mount(undefined, unpicked);
+    await click("set-answer");
+
+    // The pill is there (the reader is editing the card, §5.3) …
+    expect(pill()).not.toBeNull();
+    // … but it contributes no text: no arrow, no question, no brackets. The one
+    // character left is the pill's own trailing space — the place typing
+    // continues — not a fragment of an answer.
+    const serialized = serialize(editor);
+    expect(serialized.trim()).toBe("");
+    expect(serialized).not.toContain("→");
+    expect(serialized).not.toContain("接下来做哪一件？");
+    expect(serialized).not.toContain("[");
+    expect(serialized).not.toContain("]");
+
+    // Typed text is the reader's own and survives verbatim — dropping the answer
+    // must not take the note beside it.
+    let note: Text | null = null;
+    act(() => {
+      note = document.createTextNode("顺便把图例挪到右下");
+      editor.appendChild(note);
+    });
+    expect(serialize(editor).trim()).toBe("顺便把图例挪到右下");
+    expect(serialize(editor)).not.toContain("→");
+    act(() => note!.remove());
+
+    // Ticking one row brings the sentence back, unchanged from §7.
+    const picked: ChoiceAnswer = { ...unpicked, selectedIds: ["flow"] };
+    await act(async () => root.render(<Harness choice={picked} />));
+    await click("set-answer");
+    expect(serialize(editor)).toBe("[接下来做哪一件？ → 补一张实验流程图] ");
+
+    // Two ticks stay `、`-joined: multi's format is untouched by the guard.
+    const both: ChoiceAnswer = { ...unpicked, selectedIds: ["forest", "flow"] };
+    await act(async () => root.render(<Harness choice={both} />));
+    await click("set-answer");
+    expect(serialize(editor).trim()).toBe("[接下来做哪一件？ → 重画森林图、补一张实验流程图]");
+  });
+
   it("is idempotent: setting the same answer twice leaves one pill and one serialized answer", async () => {
     const { editor, click } = await mount();
     await click("set-answer");
