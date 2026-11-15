@@ -225,9 +225,196 @@ PR/check/Misc 不写入大型私有缓存。共享缓存需要刷新时，在 ma
 workflow 改动的机器上也能用。清理后同一命令会报告新的总量：3.79 GB，6 条 Rust 条目
 完好。
 
-根治办法是彻底停止按 ref 写 npm 缓存。`npm ci` 实测在每个 TypeScript job 上
-27–88 s，所以缓存本身值得留——但要留在*能共享*的位置。这个改动属于 workflow
-（去掉 `setup-node` 的 `cache: npm`，或只允许在 `refs/heads/main` 保存），不属于仓库脚本。
+清理只是把配额买回来，不是修好。清理之后新开的 PR 会立刻再写一份：上面那次重置后几小时，
+`refs/pull/1616/merge` 就新增了自己的 318 MB `node-cache-*` 条目。根治必须停掉按 ref 的写入。
+
+### 可执行清单：让 npm 缓存只在 PR 还原、不写入
+
+阻塞在需要 `workflow` scope 的机器上。下列文件与行号已对 `128d0e6d4` 逐条核实；一起改完后
+跑一个 PR 验证。
+
+设了 `cache: npm` 的共 7 处，且这就是全集——`grep -rn "cache: npm" .github/` 恰好返回这 7 条；
+`build-windows-signed.yml` 与 `build-android-apk.yml` 本来就直接 `npm ci`、完全没有 `cache:`，
+所以目标形态是这个仓库已有的写法：
+
+| 文件 | 行号 | Job |
+| --- | --- | --- |
+| `.github/workflows/typescript-ci.yml` | 34 | TypeScript check/test（各 10 个 project job） |
+| `.github/workflows/ci.yml` | 155 | Android test |
+| `.github/workflows/ci.yml` | 214 | iOS test |
+| `.github/workflows/misc.yml` | 256 | Misc npm job |
+| `.github/workflows/build-linux.yaml` | 65 | Linux release building |
+| `.github/workflows/build-ios-testflight.yml` | 59 | iOS TestFlight building |
+| `.github/workflows/build-macos-signed.yml` | 113 | macOS signed building |
+
+**不要**直接删掉 `cache: npm`。`npm ci` 不免费：run `43637520669` 上 22 次调用合计
+**883 s = 14.7 runner-min**，均值 40.1 s、中位 32 s、最小 19 s、最大 88 s。去掉缓存就要在
+全部 22 个 job 上付这笔钱。要改的是*谁能写*，不是缓存在不在。
+
+有两种写法，推荐 (A)，它保留 `setup-node` 自己的下载逻辑：
+
+**(A) 让 `setup-node` 不再管缓存，另加一个只还原的步骤。**
+把 7 处 `cache: npm` 那一行替换成下面这样（`node-version` 保留）：
+
+```yaml
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          # npm 缓存只还原不写入：按 ref 写入会吃掉 10 GB 仓库配额中的
+          # 318-305 MB，而别的 PR 一条都用不上。
+      - name: Restore npm cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-
+```
+
+两个性质都是关键、都不能少：
+
+- `key` 里**不含** `${{ github.ref }}`，所以每个 PR 算出的 key 与 `main` 相同，会去还原那一条
+  共享条目，而不是写私有一份。
+- `actions/cache/restore` 从不保存。这一步在任何 ref 上都不可能新增条目或挤掉 Rust 缓存。
+
+`hashFiles('package-lock.json')` 指根目录是对的：根 `package.json` 声明 npm workspaces，
+根 lockfile 是唯一来源，现有 `cache-dependency-path: package-lock.json` 也是这么指的。
+
+**(B) 保留 `setup-node`，用 env 条件控制。**
+若倾向更少步骤，`actions/setup-node` 接受 `cache: ''`，同样效果：
+
+```yaml
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: ${{ github.ref == 'refs/heads/main' && 'npm' || '' }}
+```
+
+但它保留了保存路径，将来有人改条件就会把泄漏带回来；(A) 结构上不可能泄漏。
+
+改完任一种后，确认这四条：
+
+1. `grep -rn "cache: npm" .github/` 无输出，或只剩 (B) 那种 main 守卫写法。
+2. PR 日志出现 `Cache restored from key: npm-Linux-x64-<hash>`（是*还原*，不是
+   `Cache saved with key`）。
+3. PR 跑完后 `gh api 'repos/:owner/:repo/actions/caches?per_page=100'` 里没有
+   `refs/pull/*` 条目。
+4. `refs/heads/main` 上那 6 条 `v0-rust-*` 仍在。
+
+### 成本是墙钟，不是分钟
+
+仓库是公开的，runner 分钟不计费。所以 22 个 job 展开真正花掉的是**墙钟和排队**，而在本矩阵上
+这两者都不在「job 太多」这个直觉指向的位置。
+
+run `43637520669`（51 job，nextest 落地后的第一次）实测：
+
+| | 值 |
+| --- | --- |
+| 墙钟：首个 job 开始到最后一个结束 | **22.4 min** |
+| 各 job 时长之和 | 214.3 runner-min |
+| 峰值并发 | 20（org free 上限） |
+| 处于关键路径的 job | **1 个** |
+
+按 runner 分：`ubuntu-latest` 36 job / 95.5 min，`windows-latest` 7 / 65.7，
+`macos-latest` 8 / 53.1。按组：`Rust Windows test` 7 job / 65.7 min 最大，其次
+`Rust Linux test` 7 / 41.5、`Rust macOS test` 7 / 40.6。
+
+这次在 22.4 min 结束，是因为**`Rust Windows test / agent` 一个 job 就跑了 21.9 min**——
+其余 50 个 job 早就跑完了。峰值并发只在一部分时间里达到 20，排队等待很短（纯 Rust 的
+run `43642118345` 上最长 ≤2 s）。所以在当前矩阵上，减少 job 数**根本不会**缩短这次运行，
+反而会拉长。
+
+那个 job 的构成是 `Build 245 s + Tests 981 s`。981 s 是**既有的、不是 nextest 引入的**：
+在 nextest 改动之前的 run `43635381613` 上，同一步是 **1024 s**。Windows 跑这些测试比
+Linux 慢约 4 倍（同一 crate 同一套件 `Tests` 981 s vs 234 s），这才是真正要打的目标。
+
+### 可执行清单：给关键路径 job 分片
+
+和上面的 npm 缓存清单一样，阻塞在 `workflow` scope。`cargo nextest` 支持 `--partition`，
+所以不需要新工具就能拆。已在 `future-config` 上验证：`--partition hash:1/2` 与 `hash:2/2`
+分别返回 7 个测试中的 3 个和 4 个，相加等于总数，**无重叠**。
+
+有一个约束决定了改法：三个 OS 的 caller 传的是**同一份** `rust_tests` JSON
+（`ci.yml:91/101/111`），只在 `affected.mjs` 里分片会把三个平台一起分了。只有 Windows 需要。
+因此 planner 另发一份分片矩阵，只让 Windows caller 用。
+
+**(1) `scripts/ci/affected.mjs`** —— 在原有输出旁多发一份分片版：
+
+```js
+// Windows 跑 `agent` 比 Linux 慢约 4 倍；只拆这一条腿，且只在那一个平台上。
+export function rustTestGroups(groups) {
+  return groups.flatMap(group => group.name === 'host'
+    ? ['remote', 'core'].map(suite => ({ ...group, name: `host-${suite}`, hostSuite: suite }))
+    : [group]);
+}
+
+export function shardedTestGroups(groups) {
+  return rustTestGroups(groups).flatMap(group => group.name === 'agent'
+    ? [1, 2].map(n => ({ ...group, name: `agent (${n}/2)`, shard: `${n}/2` }))
+    : [group]);
+}
+```
+
+并在 `main` 里、现有 `rust_tests` 输出旁：
+
+```js
+plan.rust_tests_sharded = shardedTestGroups(plan.rust);
+```
+
+`GITHUB_OUTPUT` 增加 `rust_tests_sharded=$(JSON.stringify(plan.rust_tests_sharded))`。
+
+**(2) `.github/workflows/ci.yml`** —— 暴露该输出，且只给 Windows 用：
+
+```yaml
+      rust_tests_sharded: ${{ steps.plan.outputs.rust_tests_sharded }}
+```
+
+```yaml
+  rust-windows-test:
+    with:
+      os: windows-latest
+      mode: test
+      projects: ${{ needs.affected.outputs.rust_tests_sharded }}   # 原来是 rust_tests
+```
+
+Linux 与 macOS 继续用 `rust_tests`。代价是 **+1 job**（52 而非 51）——这很重要，因为峰值
+并发已经贴到 org free 的 20 job 上限；三个 OS 都分片会加 3 个，这正是只限一个平台的原因。
+
+**(3) `.github/workflows/rust-ci.yml`** —— 把分片号带进 job env：
+
+```yaml
+    env:
+      CI_TEST_SHARD: ${{ matrix.shard }}
+```
+
+**(4) `scripts/ci/rust-checks.mjs`** —— 追加 partition。本分支（`docs/ci-plan`）已实现，
+所以后续只需改 workflow，这里不用再动：
+
+```js
+const testShard = process.env.CI_TEST_SHARD || '';
+if (testShard && !/^[1-9]\d*\/[1-9]\d*$/.test(testShard)) throw new Error(`Invalid CI_TEST_SHARD: ${testShard}`);
+const partition = testShard ? ['--partition', `hash:${testShard}`] : [];
+const NEXTEST_TEST = [...NEXTEST, '--no-fail-fast', ...partition];
+```
+
+`build` 复用 `NEXTEST` 加 `--no-run`，所以两个分片都会编译完整 test target；这就是下面
+`Build` 不减半的原因。
+
+对关键路径的预估效果：
+
+| 形态 | build | tests | job 时长 | run 墙钟 |
+| --- | --- | --- | --- | --- |
+| 现在 | 245 s | 981 s | 20.4 min | 22.4 min |
+| 2 片 | 245 s | 490 s | 12.3 min | **~14 min** |
+| 3 片 | 245 s | 327 s | 9.5 min | **~11 min** |
+
+已计入每多一个分片 job 的 `+66 s` setup/cache（Windows 实测 10 s setup + 56 s cache）。
+3 片需把 `[1,2].map` 改成 `[1,2,3].map`、`(n/2)` 改成 `(n/3)`，并再加一个 job。
+
+**不要为了减 job 而合并 crate。** 实测：每 OS 一个 job 串行跑 7 个 crate 会是
+`Linux 35.5 min`、`Windows 55.5 min`、`macOS 35.6 min`——每一个都比今天这次 22.4 min 的
+运行*更差*，因为并行度一没，各 crate 的构建与测试时间就是直接相加。21 个 Rust test job
+不是问题；它们里面的那一个才是。
 
 ## 专项验证
 
