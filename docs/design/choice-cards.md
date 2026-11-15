@@ -71,6 +71,12 @@ Fields:
 | `id` | — | Stable identifier to send back: ASCII, `[a-z0-9-]`, ≤ 24 chars, unique within the card |
 | `hint` | no | Overrides the default subtitle ("pick one and it lands in the input…") |
 
+**How `mode` is decided** (anyone rewriting the prompt has to follow this; it is a rule, not a style preference):
+
+> If the reader ticked two rows, would you do **both** in the one stretch of work that follows this reply? Yes → `multi`. No, because picking one rules the others out → `single` (the default, which an omitted line means). There is no third mode.
+
+`single` asks a **choice** between mutually exclusive steps: "which of these next". `multi` is one job in several **parts**, or several jobs that can run together: "接新浪和 Nasdaq 两个源". A card that fails the test must not say `multi`: a multi card still lets the reader tick one, so it never adds work — but writing a mutually exclusive question as `multi` makes the reader work out that they should only tick one, which is the ambiguity the card exists to remove.
+
 **Why a fence rather than an inline link or JSON:**
 
 1. **It degrades by itself.** A fence means "code block". Any client that does not know this card — TUI, an older desktop build, an IM bot, a copy-paste elsewhere — draws it as a code block, and the reader sees the option list; nothing is lost. An inline link or raw JSON degrades into noise.
@@ -112,9 +118,10 @@ Do not use it for: confirming a risky action (the approval card already owns tha
 restating what you just did, "let me know if you need anything", or a question whose
 answer needs a sentence rather than a pick.
 
-`mode:` — omit it for one pick (`single` is the default). Write `mode: multi` when the
-rows are parts of one job rather than alternatives, and you would do two or more of them
-together. The reader then ticks several and the answer joins their labels with 、.
+`mode:` — one test decides it: if the reader ticked two rows, would you do both in
+the one stretch of work that follows this reply? Yes → `mode: multi`; no, because each
+rules the others out → omit the line, and `single` is what an omitted line means. There
+is no third mode.
 
 Write each option as the instruction you would follow if chosen — the user's words,
 not a menu label ("重画森林图", not "选项 A"). The third field says what changes or
@@ -130,8 +137,9 @@ last resort ("omit `mode: multi` unless several can be done in one go") and put 
 a list of conditions for using the card at all. Every card the model then wrote came
 out single, including a row of tasks where picking two was obviously one job — the
 answer had to be typed by hand, which is the waste the card exists to remove. The
-rule now says when to write `mode: multi` on its own terms, next to the other
-per-field lines, instead of as a caveat on the default.
+rule now states a **yes/no test** (would you do both rows in the same stretch of work?)
+in the §3 field table and in §4's field list — the criterion cannot live only in the
+prompt, or whoever rewrites the prompt next will not know why it is worded that way.
 
 ## 5. The interface
 
