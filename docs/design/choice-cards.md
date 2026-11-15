@@ -424,6 +424,7 @@ The answer must be readable by the agent **and** on the degraded paths (TUI, IM 
 | Picked and added a note | `[接下来做哪一件？ → 重画森林图] 顺便把图例挪到右下` |
 | Multiple picks | `[这三项都要 → 重画森林图、补一张实验流程图]` |
 | Only typed (nothing picked / chip removed) | Just what the user wrote |
+| Picked then all unticked (multi card) | Just what the user wrote — zero ticks is not an answer, and neither end emits `[…] → ]` |
 
 `→` is the only fixed token; the question and the label come from the model's own output. The `title` is included so that "重画森林图" has an owner when several cards have appeared in one thread.
 
