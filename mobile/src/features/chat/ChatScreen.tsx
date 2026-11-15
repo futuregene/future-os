@@ -521,11 +521,10 @@ export function ChatScreen() {
    * the old pick. Both travel in one `edit_queued_run`, and the choice rides
    * along so the row keeps offering the other options.
    */
-  const updateQueuedChoice = useCallback((id: string, selectedIds: readonly string[]) => {
+  const updateQueuedChoice = useCallback((id: string, next: ChoiceAnswer) => {
     const row = queuedRows.find(item => item.runId === id);
     if (!row?.choice)
       return;
-    const next: ChoiceAnswer = { ...row.choice, selectedIds: [...selectedIds] };
     // The row's text is `[question → answer]` possibly followed by whatever the
     // reader typed after it. Only the bracketed head is rewritten: the note the
     // message was queued with is theirs, not the card's.

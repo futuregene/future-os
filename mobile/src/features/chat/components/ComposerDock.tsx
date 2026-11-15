@@ -168,7 +168,15 @@ function ComposerDockView({
   /** Replace one waiting message: the session has no rename, so cancel + send. */
   onQueueUpdate?: (id: string, content: string) => void;
   /** Offer a different pick for a queued answer (design §5.8.2). */
-  onQueueUpdateChoice?: (id: string, selectedIds: readonly string[]) => void;
+  /**
+   * Change the pick a queued message carries.
+   *
+   * Takes the whole answer, not the ids: the card's question and its other
+   * options have to survive a change or the chip could offer them once and never
+   * again. The desktop panel's `onUpdateChoice` is the same signature, so the two
+   * surfaces cannot drift into meaning different things by the same name.
+   */
+  onQueueUpdateChoice?: (id: string, choice: ChoiceAnswer) => void;
   /** Start a parked row now. */
   onQueueRelease?: (id: string) => void;
   /** Open a file a waiting message carries, as the transcript would. */
@@ -643,10 +651,7 @@ function ComposerDockView({
           // A single-choice pick is the whole act, so the sheet closes on it; a
           // multi-choice one keeps the sheet up so several can be ticked.
           if (queueAnswer && queueAnswerRow !== null) {
-            onQueueUpdateChoice?.(
-              queueAnswerRow,
-              pickChoiceOption(queueAnswer, optionId).selectedIds,
-            );
+            onQueueUpdateChoice?.(queueAnswerRow, pickChoiceOption(queueAnswer, optionId));
             if (queueAnswer.mode === "single")
               setQueueAnswerRow(null);
             return;
