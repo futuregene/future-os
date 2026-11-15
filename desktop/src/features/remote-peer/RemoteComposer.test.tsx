@@ -1,7 +1,7 @@
+import type { ChoiceAnswer } from "../agent/composer/choiceAnswer";
+import type { RemoteComposerHandle } from "./RemoteComposer";
 // @vitest-environment jsdom
 import type { RemotePeer } from "./remotePeerClient";
-import type { RemoteComposerHandle } from "./RemoteComposer";
-import type { ChoiceAnswer } from "../agent/composer/choiceAnswer";
 import type { RemoteQueueRow } from "./remoteQueue";
 import { act } from "react";
 import { createRoot } from "react-dom/client";

@@ -1,5 +1,5 @@
-import { Channel } from "@tauri-apps/api/core";
 import type { ChoiceAnswer } from "../../features/agent/composer/choiceAnswer";
+import { Channel } from "@tauri-apps/api/core";
 import { invokeCommand } from "../tauri/invoke";
 
 /**

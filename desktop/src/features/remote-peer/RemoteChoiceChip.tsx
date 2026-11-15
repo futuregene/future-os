@@ -1,7 +1,7 @@
 import type { ChoiceAnswer } from "../agent/composer/choiceAnswer";
-import { choiceAnswerLabel } from "../agent/composer/choiceAnswer";
 import { ListChecks, Pencil, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { choiceAnswerLabel } from "../agent/composer/choiceAnswer";
 
 interface Props {
   answer: ChoiceAnswer;
