@@ -6,6 +6,8 @@ export {
 } from "./localPath";
 export type { MarkdownTarget } from "./localPath";
 export { parseFutureMarkdown } from "./parseFutureMarkdown";
+export { splitChoiceAnswerEcho } from "./choiceAnswerEcho";
+export type { ChoiceAnswerEcho, ChoiceAnswerEchoSplit } from "./choiceAnswerEcho";
 export {
   buildSessionReference,
   findSessionReferences,
