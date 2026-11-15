@@ -71,6 +71,12 @@ option: table | 表里加一列样本量 | Frank 42 / Dreher 186，标出测量�
 | `id` | — | 选项 id：ASCII、`[a-z0-9-]`、≤ 24 字符、卡内唯一。它是要回传的稳定标识 |
 | `hint` | 否 | 覆盖默认副标题（"选一个就放进输入框…"） |
 
+**`mode` 的判据**（写 prompt 的人必须照这条，不能只把它当风格偏好）：
+
+> 读者同时勾两行，这两行你会**在同一段后续工作里都做**吗？会 → `multi`；不会，因为选了这行另外几行就不做了 → `single`（默认，省略即此）。没有第三种。
+
+`single` 是互斥**选择**："接下来做哪一件"。`multi` 是一件事的几**部分**或几件可并行的事："接新浪和 Nasdaq 两个源"。判据不成立就别写 `multi`：多选卡允许用户只勾一个，所以它不会强加工作量；反过来把互斥问题写成 `multi`，用户就得自己判断"我是不是该只勾一个"，卡片反而多了一层歧义。
+
 **为什么是围栏而不是内联链接或 JSON：**
 
 1. **自降级**。围栏的语义是"代码块"。任何不认识这张卡的客户端——TUI、旧的桌面版本、IM 机器人、复制粘到别处——都会把它当代码块画出来，用户看到的就是选项清单，信息不丢。换成内联链接或裸 JSON，降级后就是一堆噪音。
@@ -112,9 +118,10 @@ Do not use it for: confirming a risky action (the approval card already owns tha
 restating what you just did, "let me know if you need anything", or a question whose
 answer needs a sentence rather than a pick.
 
-`mode:` — omit it for one pick (`single` is the default). Write `mode: multi` when the
-rows are parts of one job rather than alternatives, and you would do two or more of them
-together. The reader then ticks several and the answer joins their labels with 、.
+`mode:` — one test decides it: if the reader ticked two rows, would you do both in
+the one stretch of work that follows this reply? Yes → `mode: multi`; no, because each
+rules the others out → omit the line, and `single` is what an omitted line means. There
+is no third mode.
 
 Write each option as the instruction you would follow if chosen — the user's words,
 not a menu label ("重画森林图", not "选项 A"). The third field says what changes or
@@ -125,7 +132,7 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 
 要点：**选项文案必须是用户会说的那句话**（因为发送时它就是消息的一部分），不是"选项 A/B/C"。
 
-**2026-11-15 修订了 §4 的措辞**：原稿把 `multi` 写成兜底选项（"omit `mode: multi` unless several can be done in one go"）并塞进"什么时候才配用这张卡"的条件列表里。结果是模型写出来的卡一律单选，连"接新浪和 Nasdaq 两个源"这种明显是一件事的两半，也得用户自己打字回答——正是卡片要消灭的那种浪费。现在 `mode: multi` 的判据单独写在字段说明里，和默认值平级，而不是作为默认值的例外条款。
+**2026-11-15 修订了 §4 的措辞**：原稿把 `multi` 写成兜底选项（"omit `mode: multi` unless several can be done in one go"）并塞进"什么时候才配用这张卡"的条件列表里。结果是模型写出来的卡一律单选，连"接新浪和 Nasdaq 两个源"这种明显是一件事的两半，也得用户自己打字回答——正是卡片要消灭的那种浪费。现在判据是一条**能回答是/否**的检验（勾两行会不会在同一段工作里都做），写在 §3 字段表下面与 §4 的字段说明里：判据不能只活在 prompt 里，否则下次改 prompt 的人不知道它为什么长这样。
 
 ## 5. 界面
 

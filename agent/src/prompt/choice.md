@@ -14,10 +14,10 @@ option: flow | 补一张实验流程图 | 把两篇的被试流程画成一张�
 - `title:` — the question itself, one line.
 - `option: <id> | <label> | <note>` — one per line, the note optional; the id is
   short ASCII, `[a-z0-9-]` only (no spaces), unique within the card.
-- `mode:` — omit it for one pick (`single` is the default). Write `mode: multi` when
-  the rows are parts of one job rather than alternatives, and you would do two or more
-  of them together — "接新浪和 Nasdaq 两个源", both in the same stretch of work. The
-  reader then ticks several and the answer joins their labels with 、.
+- `mode:` — one test decides it: if the reader ticked two rows, would you do both in
+  the one stretch of work that follows this reply? Yes → `mode: multi` ("接新浪和
+  Nasdaq 两个源", both at once). No, because each rules the others out → omit the
+  line, and `single` is what an omitted line means. No third mode exists.
 - Write the label as the sentence the user would say if they picked it
   ("重画森林图", not "选项 A") — on send it becomes part of their message.
 

@@ -1235,10 +1235,14 @@ mod tests {
         // `mode` is optional and defaults to a single pick, and the one thing the
         // model has to get right is when several can be done at once: phrasing it
         // as "unless several can be done in one go" was read as "usually single",
-        // so every card came out single even when both halves were one job.
-        assert!(prompt.contains("omit it for one pick (`single` is the default)"));
-        assert!(prompt.contains("Write `mode: multi` when"));
-        assert!(prompt.contains("the answer joins their labels with 、"));
+        // so every card came out single even when both halves were one job. The
+        // criterion is now a question with a yes/no answer, and the two modes are
+        // named as the only two — a third one silently parses as `single`.
+        assert!(prompt.contains("if the reader ticked two rows, would you do both"));
+        assert!(prompt.contains("Yes → `mode: multi`"));
+        assert!(prompt.contains("omit the"));
+        assert!(prompt.contains("`single` is what an omitted line means"));
+        assert!(prompt.contains("No third mode exists"));
 
         // Where it goes: the fence is the reply's closing question, not a block
         // mid-answer, and a second card would be an unanswerable choice.
