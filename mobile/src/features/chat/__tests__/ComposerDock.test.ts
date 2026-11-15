@@ -1410,6 +1410,12 @@ test("hands a changed queued answer up as a whole object, not as ids", () => {
     onQueueUpdateChoice,
   });
   try {
+    // The panel starts as its header line, so the row's chip is behind one tap.
+    const toggle = tree.root.findAll(
+      node => node.props.testID === "send-queue-toggle" && typeof node.props.onPress === "function",
+    )[0]!;
+    act(() => toggle.props.onPress());
+
     // The chip is the button that opens the row's options (§5.8.2).
     const chip = tree.root.findAll(
       node => node.props.testID === "send-queue-choice" && typeof node.props.onPress === "function",
