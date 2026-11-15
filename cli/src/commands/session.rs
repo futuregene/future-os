@@ -34,6 +34,9 @@ Usage:
   future session export <id> [--out <path>]          Write the session to an HTML file
   future session archive <id> [--json]               Shelve a conversation in the desktop app
   future session restore <id> [--json]               Bring a shelved conversation back
+  future session pin <id> [--json]                   Keep a conversation in the pinned section
+  future session unpin <id> [--json]                 Take it off the pinned section
+  future session pinned [--json]                     List the pinned conversations
   future session abort <id>                          Stop the active run and clear the queue
   future session cancel <id> --run <run-id>            Cancel one queued run
   future session wait <id> [--run <run-id>]            Wait for a run to finish and print its answer
@@ -1651,6 +1654,17 @@ pub async fn session(
     // is what moves to (or off) the app's Archived shelf.
     if matches!(subcommand, "archive" | "restore" | "unarchive") {
         return super::archive::session_command(subcommand != "archive", args, out).await;
+    }
+
+    // Pinning is the same record, the same id and the same store: the pin is the
+    // app's shortcut section rather than another shelf, which is why it lives in
+    // its own module (`pin`) beside `archive`.
+    if matches!(subcommand, "pin" | "unpin") {
+        return super::pin::session_command(subcommand == "pin", args, out).await;
+    }
+
+    if subcommand == "pinned" {
+        return super::pin::session_pinned(args, out);
     }
 
     if subcommand == "list" {

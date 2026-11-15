@@ -465,8 +465,8 @@ fn help_page(group: &str, command: Option<&str>) -> Option<&'static str> {
     };
     match (group, sub) {
         // Pairs that own a dedicated page (their handler prints it).
-        ("session", Some("list" | "set" | "archive")) => None,
-        ("workspace", Some("archive")) => None,
+        ("session", Some("list" | "set" | "archive" | "pin" | "unpin" | "pinned")) => None,
+        ("workspace", Some("archive" | "pin" | "unpin")) => None,
         ("desktop", Some("settings")) => None,
         ("desktop", None) | ("workspace", None) => None,
         ("config", None) | ("config", Some("get" | "set")) => None,
@@ -948,6 +948,14 @@ mod tests {
             (&["task", "run", "--help"][..], help::TASK_HELP),
             (&["mcp", "status", "--help"][..], help::MCP_GROUP_HELP),
             (&["workspace", "list", "--help"][..], help::WORKSPACE_HELP),
+            (
+                &["session", "pin", "--help"][..],
+                commands::pin::SESSION_HELP,
+            ),
+            (
+                &["session", "pinned", "--help"][..],
+                commands::pin::LIST_HELP,
+            ),
         ] {
             let (code, stdout, stderr) = run(args).await;
             assert_eq!(code, 0, "{args:?} stderr={stderr}");
@@ -1038,10 +1046,18 @@ mod tests {
                 &["session", "archive", "--help"],
                 commands::archive::SESSION_HELP,
             ),
+            (&["session", "pin", "--help"], commands::pin::SESSION_HELP),
+            (&["session", "unpin", "-h"], commands::pin::SESSION_HELP),
+            (&["session", "pinned", "--help"], commands::pin::LIST_HELP),
             (
                 &["workspace", "archive", "--help"],
                 commands::archive::WORKSPACE_HELP,
             ),
+            (
+                &["workspace", "pin", "--help"],
+                commands::pin::WORKSPACE_HELP,
+            ),
+            (&["workspace", "unpin", "-h"], commands::pin::WORKSPACE_HELP),
             (
                 &["session", "set", "--help"],
                 commands::session::SESSION_SET_HELP,

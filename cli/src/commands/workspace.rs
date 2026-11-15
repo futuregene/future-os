@@ -46,8 +46,11 @@ pub async fn workspace(command: Option<&str>, rest: &[String], out: &Output) -> 
         Some("restore" | "unarchive") => {
             super::archive::workspace_command(true, rest, out).await
         }
+        // Pinning is the same store's shortcut section — an ordering flag rather
+        // than a shelf, so it lives in `pin` beside `archive`.
+        Some("pin" | "unpin") => super::pin::workspace_command(command == Some("pin"), rest, out).await,
         Some(other) => Err(format!(
-            "Unknown argument: {other}\nUsage: future workspace [list | add <path> | archive <path|id|name> | restore <path|id|name>]\nRun `future workspace --help` for details."
+            "Unknown argument: {other}\nUsage: future workspace [list | add <path> | archive <path|id|name> | restore <path|id|name> | pin <path|id|name> | unpin <path|id|name>]\nRun `future workspace --help` for details."
         )),
     }
 }
@@ -59,13 +62,22 @@ enum Shelf {
     Active,
     /// The archived view.
     Archived,
-    /// Both, for finding an id to restore.
+    /// The app's pinned section: the shortcut row that leads the sidebar.
+    Pinned,
+    /// The archived and pinned shelves together, for finding an id.
     All,
 }
 
 /// `future workspace list [--archived | --all] [--json]`
 fn list(args: &[String], out: &Output) -> Result<()> {
     let (json_flag, shelf) = parse_list_arguments(args)?;
+
+    // The pinned section is the app's own query over the store — the rail and a
+    // paired phone read the same rows in the same order — so it does not go
+    // through the list below, which orders by activity instead.
+    if shelf == Shelf::Pinned {
+        return list_pinned(json_flag, out);
+    }
 
     // A database the desktop app has never created means the user has no
     // workspaces, not that the read failed — and listing must not create one.
@@ -81,7 +93,9 @@ fn list(args: &[String], out: &Output) -> Result<()> {
         .filter(|workspace| match shelf {
             Shelf::Active => workspace.archived_at.is_none(),
             Shelf::Archived => workspace.archived_at.is_some(),
-            Shelf::All => true,
+            // `Pinned` returned above; the two shelves left here are the whole
+            // store's rows.
+            Shelf::Pinned | Shelf::All => true,
         })
         .collect();
     if workspaces.is_empty() {
@@ -93,9 +107,9 @@ fn list(args: &[String], out: &Output) -> Result<()> {
         return Ok(());
     }
     for workspace in &workspaces {
-        // Only the `--all` view mixes the two shelves, so it is the only one
-        // that has to say which shelf a row is on; the archived view is all
-        // archived rows and the default view is none of them.
+        // Only the `--all` view mixes the shelves, so it is the only one that
+        // has to say which shelf a row is on; the archived view is all archived
+        // rows and the default view is none of them.
         let marker = if shelf == Shelf::All && workspace.archived_at.is_some() {
             "  (archived)"
         } else {
@@ -114,10 +128,34 @@ fn report_empty(shelf: Shelf, json_flag: bool, out: &Output) -> Result<()> {
         out.log("[]");
         return Ok(());
     }
-    out.log(match shelf {
-        Shelf::Archived => "No archived workspaces.",
-        Shelf::Active | Shelf::All => "No workspaces. Add one with `future workspace add <path>`.",
-    });
+    match shelf {
+        Shelf::Archived => out.log("No archived workspaces."),
+        Shelf::Pinned => crate::axi::empty_state(out, super::pin::EMPTY_WORKSPACES),
+        Shelf::Active | Shelf::All => {
+            out.log("No workspaces. Add one with `future workspace add <path>`.")
+        }
+    }
+    Ok(())
+}
+
+/// `future workspace list --pinned`: the app's shortcut section, in the order it
+/// draws it (most recently opened first, not most recent conversation).
+fn list_pinned(json_flag: bool, out: &Output) -> Result<()> {
+    let pinned = super::pin::pinned_workspaces()?;
+    if json_flag {
+        out.log(&serde_json::to_string_pretty(&pinned).map_err(|error| error.to_string())?);
+        return Ok(());
+    }
+    if pinned.is_empty() {
+        return report_empty(Shelf::Pinned, false, out);
+    }
+    crate::axi::count_line(out, "", pinned.len());
+    for workspace in &pinned {
+        out.log(&format!(
+            "{:<24} {:<48} {}",
+            workspace.name, workspace.path, workspace.id
+        ));
+    }
     Ok(())
 }
 
@@ -223,6 +261,7 @@ fn parse_list_arguments(args: &[String]) -> Result<(bool, Shelf)> {
         match argument.as_str() {
             "--json" => json_flag = true,
             "--archived" => shelf = Shelf::Archived,
+            "--pinned" => shelf = Shelf::Pinned,
             "--all" => shelf = Shelf::All,
             other => return Err(format!("unknown option: {other}")),
         }
