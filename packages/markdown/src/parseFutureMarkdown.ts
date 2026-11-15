@@ -37,6 +37,7 @@ import remarkParse from "remark-parse";
 import { unified } from "unified";
 import { localFilePath } from "./localPath";
 import { htmlBlockToNodes } from "./htmlBlocks";
+import { repairNestedDocumentFence } from "./fenceNesting";
 import { remarkLatexMath } from "./remarkLatexMath";
 import { remarkMathFence } from "./remarkMathFence";
 import { remarkCurrencyMath } from "./remarkCurrencyMath";
@@ -129,9 +130,16 @@ export function exceedsNestingLimit(tree: TreeNode): boolean {
   return false;
 }
 
-/** Internal parser entry point shared with the incremental projector. */
+/** Internal parser entry point shared with the incremental projector.
+ *
+ * A document fence that quotes another fenced document is read as nested
+ * (`fenceNesting.ts`). The repair happens here, at the single point both the
+ * canonical parser and every streaming path go through, and it is
+ * length-preserving, so the mdast `position` offsets callers slice the source
+ * by stay exactly where they were.
+ */
 export function parseMdast(raw: string): Root {
-  return markdownProcessor.parse(raw) as Root;
+  return markdownProcessor.parse(repairNestedDocumentFence(raw)) as Root;
 }
 
 function createParseContext(tree: Root): ParseContext {

@@ -97,7 +97,7 @@ const mockRemote = {
   getQueue: jest.fn<Promise<SessionQueueSnapshot>, [string]>(async () => ({ acks: [], rows: [] })),
   cancelQueuedRun: jest.fn<Promise<void>, [string, string]>(async () => {}),
   releaseQueuedRun: jest.fn<Promise<void>, [string, string]>(async () => {}),
-  editQueuedRun: jest.fn<Promise<void>, [string, string, string]>(async () => {}),
+  editQueuedRun: jest.fn<Promise<void>, [string, string, string, unknown?]>(async () => {}),
   // A waiting message's files are copied down before the row is cancelled, so an
   // edit can send them again. These are the same transfer calls `retryMessage`
   // makes for a sent message's attachments.
@@ -1513,6 +1513,79 @@ const queuedPhoto = {
 const queuedDoc = {
   kind: "file", name: "notes.pdf", path: "/Users/x/notes.pdf", size: 4096,
 };
+
+/**
+ * Changing the *answer* a waiting message carries, which is a different act from
+ * editing its words (§5.8.2).
+ *
+ * The handler takes the whole answer, not the picked ids — the same signature the
+ * desktop panel's `onUpdateChoice` has. An id list could not be extended without
+ * changing the signature again, and it would drop the card's question and its
+ * other options on every change, leaving the chip unable to offer them twice.
+ */
+const queuedAnswer = {
+  mode: "single" as const,
+  options: [{ id: "forest", label: "重画森林图" }, { id: "flow", label: "补一张流程图" }],
+  selectedIds: ["forest"],
+  title: "接下来做哪一件？",
+};
+
+test("changing a waiting message's answer rewrites its sentence and carries the pick", async () => {
+  await mountWithQueue([
+    queueRow({ choice: queuedAnswer, runId: "run_a", text: "[接下来做哪一件？ → 重画森林图]" }),
+  ]);
+
+  await act(async () => {
+    tree.root.findByType(ComposerDock).props.onQueueUpdateChoice("run_a", {
+      ...queuedAnswer,
+      selectedIds: ["flow"],
+    });
+  });
+  await settleQueue();
+
+  // The sentence the row sends follows the pick, or the message would still run
+  // with the old answer.
+  expect(mockRemote.editQueuedRun).toHaveBeenCalledWith(
+    "history",
+    "run_a",
+    "[接下来做哪一件？ → 补一张流程图]",
+    // The answer travels whole: question, every option, and the new pick.
+    {
+      mode: "single",
+      options: queuedAnswer.options,
+      selectedIds: ["flow"],
+      title: "接下来做哪一件？",
+    },
+  );
+  expect(mockRemote.cancelQueuedRun).not.toHaveBeenCalled();
+  expect(mockRemote.sendMessage).not.toHaveBeenCalled();
+});
+
+test("a note typed after the answer survives a change to the answer", async () => {
+  // The bracketed head belongs to the card; the rest belongs to the reader.
+  await mountWithQueue([
+    queueRow({
+      choice: queuedAnswer,
+      runId: "run_a",
+      text: "[接下来做哪一件？ → 重画森林图] 顺便把图注也改成中文",
+    }),
+  ]);
+
+  await act(async () => {
+    tree.root.findByType(ComposerDock).props.onQueueUpdateChoice("run_a", {
+      ...queuedAnswer,
+      selectedIds: ["flow"],
+    });
+  });
+  await settleQueue();
+
+  expect(mockRemote.editQueuedRun).toHaveBeenCalledWith(
+    "history",
+    "run_a",
+    "[接下来做哪一件？ → 补一张流程图] 顺便把图注也改成中文",
+    expect.objectContaining({ selectedIds: ["flow"] }),
+  );
+});
 
 test("editing a waiting message keeps the files it carries without moving them", async () => {
   await mountWithQueue([

@@ -14,7 +14,7 @@ import type { ChoiceCardAnswer } from "../markdown/MarkdownContent";
 import type { ComposerHandle, ComposerSendPayload } from "./Composer";
 import type { ChoiceAnswer, ChoiceCardQuestion } from "./composer/choiceAnswer";
 import type { ApprovalChipTier } from "./composer/ComposerControls";
-import type { SendQueueAttachmentItem } from "./SendQueuePanel";
+import type { SendQueueAttachmentItem, SendQueueChoiceItem } from "./SendQueuePanel";
 import type { SessionMentionOption } from "./sessionMention";
 import { ArrowDown, History } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -31,7 +31,7 @@ import { useCommittedRef } from "../../lib/useCommittedRef";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { useCommand } from "../keyboard/commands";
 import { installRecommendedSkill } from "../skills/installRecommendedSkill";
-import { agentQueueNoticeReason, cancelAgentQueuedRun, editAgentQueuedRun, isParkedRow, releaseAgentQueuedRun, useAgentQueue } from "./agentQueue";
+import { agentQueueNoticeReason, cancelAgentQueuedRun, editAgentQueuedRun, editAgentQueuedRunChoice, isParkedRow, releaseAgentQueuedRun, rewriteQueuedChoiceText, useAgentQueue } from "./agentQueue";
 import { ApprovalPrompt } from "./ApprovalPrompt";
 import {
   buildContinuePrompt,
@@ -414,6 +414,23 @@ export function AgentThread({
       });
     });
   }, [t]);
+  // Changing a waiting message's answer is the same in-place edit as fixing its
+  // words, and it sends both: the row's text is what the run actually sends, so
+  // a new pick with the old sentence would send the old one. Everything else
+  // about the accepted prompt (its files, its place in the queue) is untouched.
+  const handleQueueChoiceUpdate = useCallback((runId: string, choice: SendQueueChoiceItem) => {
+    if (!thread?.id)
+      return;
+    const row = agentQueue.rows.find(candidate => candidate.runId === runId);
+    // Without the row's current text there is nothing to rewrite around, and an
+    // edit that dropped the reader's words to change a pick would be worse than
+    // not offering the change at all.
+    const content = row ? rewriteQueuedChoiceText(row.text, choice) : "";
+    void editAgentQueuedRunChoice(thread.id, runId, content, choice)
+      .catch(reportQueueFailure)
+      .finally(() => agentQueue.refresh());
+  }, [agentQueue, reportQueueFailure, thread?.id]);
+
   // Editing a waiting message corrects its words where it already waits. It is
   // deliberately NOT a removal and a re-send: a re-send enters the queue at the
   // back, so fixing a typo in the second of four messages put it after the fourth
@@ -791,6 +808,7 @@ export function AgentThread({
                   attachmentsUnreported
                   items={agentQueue.rows.map(row => ({
                     attachments: row.attachments,
+                    choice: row.choice,
                     content: row.text,
                     id: row.runId,
                     parked: isParkedRow(row),
@@ -799,6 +817,7 @@ export function AgentThread({
                   onRelease={handleQueueRelease}
                   onRemove={handleQueueRemove}
                   onUpdate={handleQueueUpdate}
+                  onUpdateChoice={handleQueueChoiceUpdate}
                 />
               </div>
             )

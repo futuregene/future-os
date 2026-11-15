@@ -377,6 +377,21 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             model_context: cmd.model_context,
             images: internal_images,
             attachments: internal_attachments,
+            choice: cmd
+                .choice
+                .map(|choice| future_rpc::payloads::QueuedRunChoice {
+                    mode: choice.mode,
+                    title: choice.title,
+                    options: choice
+                        .options
+                        .into_iter()
+                        .map(|option| future_rpc::payloads::QueuedRunChoiceOption {
+                            id: option.id,
+                            label: option.label,
+                        })
+                        .collect(),
+                    selected_ids: choice.selected_ids,
+                }),
             parent_session: cmd.parent_session,
             model_id: cmd.model_id,
             level: cmd.level,

@@ -43,6 +43,7 @@ async fn gui_prompt_notifies_acceptance_before_stream_completion() {
                 model_id: None,
                 thinking_level: None,
                 busy_policy: String::new(),
+                choice: None,
             },
             Some(channel),
         ),

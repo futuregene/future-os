@@ -37,9 +37,17 @@ const flags = packages.flatMap(name => ['-p', name]);
 // sleeps 150 s is reported as `SLOW` at 60 s and 120 s and then passes, so a
 // loaded runner cannot fail a slow-but-passing test where `cargo test` would not.
 const NEXTEST = ['nextest', 'run', '--locked', '--no-tests=pass'];
+// The Windows agent lane is the run's critical path, so the planner can hand a
+// job a `hash:n/N` partition. nextest partitions by test, not by binary, so the
+// shards stay exhaustive and disjoint. Only `run` takes it: `--no-run` builds
+// every test target regardless, which is why a sharded lane does not halve its
+// Build step.
+const testShard = process.env.CI_TEST_SHARD || '';
+if (testShard && !/^[1-9]\d*\/[1-9]\d*$/.test(testShard)) throw new Error(`Invalid CI_TEST_SHARD: ${testShard}`);
+const partition = testShard ? ['--partition', `hash:${testShard}`] : [];
 // `--no-run` rejects `--no-fail-fast` (there is nothing to fail), so the flag that
 // preserves the old `cargo test --no-fail-fast` guarantee is added for runs only.
-const NEXTEST_TEST = [...NEXTEST, '--no-fail-fast'];
+const NEXTEST_TEST = [...NEXTEST, '--no-fail-fast', ...partition];
 // nextest lists a test binary before running it, and `desktop/src-tauri`'s
 // `gui_main_thread_drive` target is a `harness = false` driver that gives its
 // tests the process's main thread (AppKit). It speaks no listing protocol, so

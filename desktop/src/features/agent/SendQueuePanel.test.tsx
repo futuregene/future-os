@@ -289,3 +289,102 @@ it("does not warn about dropped files on a row whose files it can see", () => {
     panel.cleanup();
   }
 });
+
+/**
+ * The pick a queued message carries (§5.8.2).
+ *
+ * The row already has a pencil for its words. A chip carrying a second one a
+ * few pixels away — meaning "change the answer" while the first means "change
+ * the sentence" — is the ambiguity this whole design exists to remove, so the
+ * chip *is* the button and wears a chevron instead.
+ */
+const ANSWER = {
+  mode: "single" as const,
+  options: [{ id: "forest", label: "重画森林图" }, { id: "flow", label: "补一张流程图" }],
+  selectedIds: ["forest"],
+  title: "接下来做哪一件？",
+};
+
+it("offers a queued answer as a button that opens the other options", () => {
+  const onUpdateChoice = vi.fn();
+  const panel = renderPanel({
+    items: [{ choice: ANSWER, content: "[接下来做哪一件？ → 重画森林图]", id: "a" }],
+    onUpdateChoice,
+  });
+  try {
+    const chip = panel.host.querySelector<HTMLButtonElement>("[data-queue-choice-action=change]")!;
+    expect(chip).not.toBeNull();
+    expect(chip.tagName).toBe("BUTTON");
+    expect(chip.getAttribute("aria-label")).toContain("接下来做哪一件？");
+    expect(chip.getAttribute("aria-label")).toContain("重画森林图");
+    expect(chip.disabled).toBe(false);
+
+    act(() => chip.click());
+
+    // The card's own rows, offered again without asking the transcript for it.
+    // The menu is portalled out of the row, so it is found from the document.
+    const rows = [...document.querySelectorAll("[role=menuitem], button, li")]
+      .filter(node => node.textContent === "补一张流程图" || node.textContent === "重画森林图");
+    expect(rows.map(node => node.textContent)).toEqual(["重画森林图", "补一张流程图"]);
+
+    act(() => (rows[1] as HTMLElement).click());
+    // The whole answer comes back, not just the id: the card's question and its
+    // other options have to survive a change, or the chip could offer them once
+    // and never again. This is the signature the phone's handler matches, and it
+    // is the one that can grow a field without changing shape.
+    const [rowId, answer] = onUpdateChoice.mock.calls[0]!;
+    expect(rowId).toBe("a");
+    expect(Array.isArray(answer)).toBe(false);
+    expect(answer).toEqual({ ...ANSWER, selectedIds: ["flow"] });
+  }
+  finally {
+    panel.cleanup();
+  }
+});
+
+it("leaves the row's own pencil and bin doing what they always did", () => {
+  // The constraint that keeps the two controls from meaning the same thing:
+  // adding the chip must not remove, move or duplicate them.
+  const onRemove = vi.fn();
+  const onUpdate = vi.fn();
+  const panel = renderPanel({
+    items: [{ choice: ANSWER, content: "[接下来做哪一件？ → 重画森林图]", id: "a" }],
+    onRemove,
+    onUpdate,
+    onUpdateChoice: vi.fn(),
+  });
+  try {
+    const row = panel.host.querySelector("[data-queue-item]")!;
+    expect(row.querySelectorAll("[data-queue-edit]")).toHaveLength(1);
+    expect(row.querySelectorAll("[data-queue-remove]")).toHaveLength(1);
+    // One icon, and it is not a pencil: the chip opens something, it does not edit.
+    const chip = row.querySelector("[data-queue-choice-action=change]")!;
+    expect(chip.querySelectorAll("svg")).toHaveLength(1);
+    expect(chip.querySelector("svg")?.getAttribute("class") ?? "").not.toContain("lucide-pencil");
+  }
+  finally {
+    panel.cleanup();
+  }
+});
+
+it("draws no chip for a row that answered no card, or when nobody can act on it", () => {
+  const plain = renderPanel();
+  try {
+    expect(plain.host.querySelectorAll("[data-queue-choice]")).toHaveLength(0);
+  }
+  finally {
+    plain.cleanup();
+  }
+  // A handler-less panel (an older surface, or a test) draws the row it always
+  // drew rather than a control that would do nothing.
+  const readOnly = renderPanel({
+    items: [{ choice: ANSWER, content: "x", id: "a" }],
+  });
+  try {
+    const chip = readOnly.host.querySelector<HTMLButtonElement>("[data-queue-choice-action=change]");
+    expect(chip?.disabled).toBe(true);
+  }
+  finally {
+    readOnly.cleanup();
+  }
+});

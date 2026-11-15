@@ -23,7 +23,7 @@ import { useAppLifecycle } from "./useAppLifecycle";
 import { useDesktopManagement } from "./useDesktopManagement";
 import { useDesktopRuntime, type DesktopRuntime } from "./useDesktopRuntime";
 import { usePairedDesktops } from "./usePairedDesktops";
-import type { SessionQueueSnapshot } from "./sessionQueue";
+import type { SessionQueueChoice, SessionQueueSnapshot } from "./sessionQueue";
 import type { TimelineState } from "@future-os/remote-client/timeline";
 import type { CatalogEntry } from "./mergeSessions";
 import { DEFAULT_THINKING_LEVEL } from "./types";
@@ -226,7 +226,12 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
    * corrected message at the back, after everything the reader wrote later. The
    * files the row carries stay with it.
    */
-  editQueuedRun(sessionId: string, runId: string, message: string): Promise<void>;
+  editQueuedRun(
+    sessionId: string,
+    runId: string,
+    message: string,
+    choice?: SessionQueueChoice,
+  ): Promise<void>;
   /** Request manual context compaction; resolves with the operation to correlate. */
   compactContext(): Promise<{ sessionId: string; operationId: string }>;
   /** Await that operation's terminal outcome (never rejects; `timeout` on expiry). */
