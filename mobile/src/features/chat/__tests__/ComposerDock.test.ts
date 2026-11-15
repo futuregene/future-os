@@ -1386,3 +1386,57 @@ test("a multi-choice sheet stays open so several can be ticked", () => {
     unmount();
   }
 });
+
+/**
+ * The signature that hands a changed answer upward.
+ *
+ * It takes the whole answer, not a list of ids: an id list cannot grow without
+ * changing the signature again, and rebuilding the object from the row on every
+ * change would drop whatever the caller knew and the row did not. The desktop
+ * panel's `onUpdateChoice` takes the same object, so the two surfaces cannot
+ * drift apart behind a shared name.
+ */
+test("hands a changed queued answer up as a whole object, not as ids", () => {
+  const picked = {
+    mode: "single" as const,
+    options: [{ id: "forest", label: "重画森林图" }, { id: "flow", label: "补一张流程图" }],
+    selectedIds: ["forest"],
+    title: "接下来做哪一件？",
+  };
+  const onQueueUpdateChoice = jest.fn();
+  const { tree, unmount } = mountDock({
+    message: "",
+    queueItems: [{ choice: picked, content: "[接下来做哪一件？ → 重画森林图]", id: "run_a" }],
+    onQueueUpdateChoice,
+  });
+  try {
+    // The chip is the button that opens the row's options (§5.8.2).
+    const chip = tree.root.findAll(
+      node => node.props.testID === "send-queue-choice" && typeof node.props.onPress === "function",
+    )[0]!;
+    act(() => chip.props.onPress());
+
+    // The sheet opens on the render that follows the tap, and the row inside it
+    // is the card's own option — reached by its id, which is stable.
+    const option = tree.root.findAll(
+      node => node.props.testID === "choice-sheet-option-flow"
+        && typeof node.props.onPress === "function",
+    )[0]!;
+    act(() => option.props.onPress());
+
+    expect(onQueueUpdateChoice).toHaveBeenCalledTimes(1);
+    const [id, answer] = onQueueUpdateChoice.mock.calls[0]!;
+    expect(id).toBe("run_a");
+    // An object with the card's question and every option — not `["flow"]`.
+    expect(Array.isArray(answer)).toBe(false);
+    expect(answer).toEqual({
+      mode: "single",
+      options: picked.options,
+      selectedIds: ["flow"],
+      title: "接下来做哪一件？",
+    });
+  }
+  finally {
+    unmount();
+  }
+});

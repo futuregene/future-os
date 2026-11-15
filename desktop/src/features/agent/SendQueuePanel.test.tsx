@@ -330,8 +330,12 @@ it("offers a queued answer as a button that opens the other options", () => {
     act(() => (rows[1] as HTMLElement).click());
     // The whole answer comes back, not just the id: the card's question and its
     // other options have to survive a change, or the chip could offer them once
-    // and never again.
-    expect(onUpdateChoice).toHaveBeenCalledWith("a", { ...ANSWER, selectedIds: ["flow"] });
+    // and never again. This is the signature the phone's handler matches, and it
+    // is the one that can grow a field without changing shape.
+    const [rowId, answer] = onUpdateChoice.mock.calls[0]!;
+    expect(rowId).toBe("a");
+    expect(Array.isArray(answer)).toBe(false);
+    expect(answer).toEqual({ ...ANSWER, selectedIds: ["flow"] });
   }
   finally {
     panel.cleanup();
