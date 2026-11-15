@@ -277,3 +277,59 @@ describe("session draft storage", () => {
     await expect(loadSessionDraft("s1")).resolves.toEqual({ version: 1, ...newer });
   });
 });
+
+/**
+ * A `futureos-choice` answer is draft content (design
+ * `docs/design/choice-cards.zh-CN.md` §2), not a view of the transcript: the phone's
+ * field cannot hold it, so it has to survive with the words or the reader gets
+ * half a draft back — the text they meant to follow the answer with, and no
+ * answer.
+ */
+describe("a card's answer in the draft", () => {
+  beforeEach(() => {
+    mockData.clear();
+    jest.clearAllMocks();
+  });
+
+  const answer = {
+    mode: "single" as const,
+    options: [{ id: "forest", label: "重画森林图" }, { id: "flow", label: "补一张实验流程图" }],
+    selectedIds: ["forest"],
+    title: "接下来做哪一件？",
+  };
+
+  test("an answer on its own is saved rather than treated as an empty draft", async () => {
+    await saveSessionDraft("s1", { text: "", attachments: [], choice: answer });
+    expect(mockedAsync.setItem).toHaveBeenCalledWith(
+      "futureos.remote.draft.v1:s1",
+      JSON.stringify({ version: 1, text: "", attachments: [], choice: answer }),
+    );
+    expect(await loadSessionDraft("s1")).toMatchObject({ text: "", choice: answer });
+  });
+
+  test("an unreadable answer is dropped and the words are kept", async () => {
+    // A slot written by a version that stored something else under this key must
+    // not resurrect as an answer that cannot print its own question.
+    mockedAsync.getItem.mockResolvedValueOnce(
+      JSON.stringify({ version: 1, text: "still mine", attachments: [], choice: { title: "" } }),
+    );
+    const draft = await loadSessionDraft("s1");
+    expect(draft).toMatchObject({ text: "still mine" });
+    expect(draft?.choice).toBeUndefined();
+  });
+
+  test("an answer naming an option the card does not have is dropped", async () => {
+    mockedAsync.getItem.mockResolvedValueOnce(
+      JSON.stringify({ version: 1, text: "", attachments: [], choice: { ...answer, selectedIds: ["gone"] } }),
+    );
+    // Nothing else is in the draft, and the answer is unreadable, so the slot
+    // reads as empty rather than handing back an answer to nothing.
+    expect(await loadSessionDraft("s1")).toBeNull();
+  });
+
+  test("a draft with no text, no files and no answer still clears the slot", async () => {
+    await saveSessionDraft("s1", { text: "  ", attachments: [] });
+    expect(mockedAsync.removeItem).toHaveBeenCalledWith("futureos.remote.draft.v1:s1");
+    expect(mockedAsync.setItem).not.toHaveBeenCalled();
+  });
+});

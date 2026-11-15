@@ -1,4 +1,5 @@
 import type { MessageAttachment } from "@future-os/thread-projection";
+import type { ChoiceAnswer } from "./composer/choiceAnswer";
 
 /**
  * Per-conversation composer draft: the *unsent* input a conversation carries
@@ -22,6 +23,14 @@ export interface ComposerDraft {
   text?: string;
   /** Pending attachments for the next message. */
   attachments?: MessageAttachment[];
+  /**
+   * The `futureos-choice` card's answer (design
+   * `docs/design/choice-cards.zh-CN.md` §2): the next message's reply to the
+   * conversation's closing question. The card's marked row and the editor's
+   * answer pill both derive from it, and sending writes it into the message as
+   * plain text (§7); the answer itself leaves the draft with that message.
+   */
+  choice?: ChoiceAnswer;
   // Add further per-message draft fields here (e.g. a future per-message override).
 }
 
@@ -50,13 +59,16 @@ export function loadComposerDraft(draftKey: string): ComposerDraft | null {
 }
 
 /**
- * Persist a conversation's draft. An empty draft (no text/pills and no
- * attachments) clears the slot instead of writing a blank entry, so a
- * composer that was emptied leaves nothing behind.
+ * Persist a conversation's draft. An empty draft (no text/pills, no
+ * attachments and no answer) clears the slot instead of writing a blank entry,
+ * so a composer that was emptied leaves nothing behind.
  */
 export function saveComposerDraft(draftKey: string, draft: Omit<ComposerDraft, "version">): void {
   const hasAttachments = (draft.attachments?.length ?? 0) > 0;
-  if (!hasAttachments && (draft.text ?? "").trim().length === 0) {
+  // A picked answer is content too: a draft holding nothing but the answer is a
+  // draft the reader is halfway through, not an empty slot.
+  const hasChoice = Boolean(draft.choice);
+  if (!hasAttachments && !hasChoice && (draft.text ?? "").trim().length === 0) {
     clearComposerDraft(draftKey);
     return;
   }

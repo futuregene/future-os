@@ -88,6 +88,8 @@ export interface RemoteCommand {
   transferId?: string;
   filePath?: string;
   attachments?: UploadReference[];
+  /** prompt / edit_queued_run: the answer a futureos-choice card gave this message. The message already reads `[question → answer]`; this rides alongside because it also carries the options the card offered, which the sentence drops — that is what lets a waiting row offer a different pick. Absent means "answered no card", and on edit_queued_run it also means "leave the accepted answer alone". An older host ignores it. */
+  choice?: { mode: "single" | "multi"; title: string; options: { id: string; label: string }[]; selectedIds: string[] };
   /** signed application-level pairing handshake */
   protocolVersion?: number;
   pairId?: string;

@@ -119,3 +119,51 @@ describe("streamingMarkdownContent", () => {
     expect(settled).not.toContain("data-streamed-block");
   });
 });
+
+describe("choice cards in a reply", () => {
+  const fence = [
+    "先做这一步。",
+    "",
+    "```futureos-choice",
+    "title: 接下来做哪一件？",
+    "option: forest | 重画森林图 | 按 Dreher 2025 的样本量重算",
+    "option: flow | 补一张实验流程图",
+    "```",
+  ].join("\n");
+
+  it("renders the fence as a card, not as a code block", () => {
+    const html = renderToStaticMarkup(<MarkdownContent content={fence} />);
+    expect(html).toContain("data-choice-card");
+    expect(html).toContain("重画森林图");
+    expect(html).not.toContain("futureos-choice");
+  });
+
+  it("leaves every card read-only when no answer surface is passed", () => {
+    const html = renderToStaticMarkup(<MarkdownContent content={fence} />);
+    expect(html).toContain("data-choice-state=\"readonly\"");
+    expect(html).not.toContain("data-choice-state=\"active\"");
+  });
+
+  it("makes only the last card of the document interactive", () => {
+    const twoCards = [
+      "```futureos-choice",
+      "title: 第一问",
+      "option: a | A",
+      "option: b | B",
+      "```",
+      "",
+      "```futureos-choice",
+      "title: 第二问",
+      "option: c | C",
+      "option: d | D",
+      "```",
+    ].join("\n");
+    const html = renderToStaticMarkup(
+      <MarkdownContent choiceAnswer={{ onSelect: () => {}, selectedIds: ["c"] }} content={twoCards} />,
+    );
+    // Two cards, exactly one of them live, and the answer marks only that one.
+    expect(html.match(/data-choice-card/g)).toHaveLength(2);
+    expect(html.match(/data-choice-state="active"/g)).toHaveLength(1);
+    expect(html.match(/data-choice-selected="true"/g)).toHaveLength(1);
+  });
+});

@@ -58,6 +58,13 @@ export interface CustomProvider {
   name: string;
   api: string;
   baseUrl: string;
+  /**
+   * True when the agent skips TLS certificate verification for this endpoint:
+   * a self-hosted gateway on a self-signed certificate, or one issued by a CA
+   * the platform store does not know. TLS still encrypts the connection. Absent
+   * when the answering host predates the field — read it with `?? false`.
+   */
+  skipTlsVerify?: boolean;
   hasApiKey: boolean;
   models: CustomProviderModel[];
 }
@@ -106,6 +113,12 @@ export async function upsertCustomProvider(input: {
   name: string;
   api: string;
   baseUrl: string;
+  /**
+   * Opt out of TLS certificate verification for this endpoint. The editor always
+   * sends it (the form owns the answer); omitted means "leave the stored
+   * setting alone", which is what an older client sends.
+   */
+  skipTlsVerify?: boolean | null;
   apiKey?: string | null;
   models: CustomProviderModel[];
   /** True when adding a new provider; the backend then rejects a colliding id. */
@@ -182,6 +195,11 @@ export interface ThinkingLevelProbeInput {
   modelId: string;
   /** The level to test; `default` (or empty) sends no thinking parameter. */
   level?: string;
+  /**
+   * Detect over an unverified TLS connection, matching the form's switch.
+   * Omitted lets the agent fall back to the saved provider's own setting.
+   */
+  skipTlsVerify?: boolean | null;
 }
 
 export interface ThinkingLevelProbeOutcome {

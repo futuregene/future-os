@@ -5,6 +5,7 @@ import * as Clipboard from "expo-clipboard";
 import { Pressable, Text, useWindowDimensions, View } from "react-native";
 import { friendlyRunError, friendlyRunErrorTitle } from "../../../components/errorMessage";
 import { MarkdownText } from "../../../components/MarkdownText";
+import { ChoiceCardAnswerProvider } from "../../../components/ChoiceCard";
 import { canRecoverMessage } from "@future-os/remote-client/recovery";
 import { useAppearance, useTheme } from "../../../theme/ThemeContext";
 import { Button } from "../../../components/Button";
@@ -18,11 +19,28 @@ import { collapsedPromptHeight, isLongPrompt, promptPreview } from "./promptColl
 import { formatSentAt } from "./sentAt";
 import { PromptReader } from "../components/PromptReader";
 import { StatusDivider } from "./MessageStatus";
-import { buildReplyBlocks, ProcessFold, ReplyBlockRow, splitFinalAnswer } from "./ReplyBlocks";
+import { buildReplyBlocks, ProcessFold, ReplyBlockRow, splitFinalAnswer, type ReplyBlock } from "./ReplyBlocks";
+
+/**
+ * The key of a reply's last prose block — where its closing choice card lives.
+ *
+ * A `futureos-choice` fence is part of a text segment (the parser turns it into a
+ * node inside that body), so the last text segment is the only block that can
+ * hold the thread's final question. Nothing here means no block can answer.
+ */
+function lastProseKey(blocks: readonly ReplyBlock[]): string | null {
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index]!;
+    if (block.kind === "segment" && block.segment.kind === "text")
+      return block.segment.id;
+  }
+  return null;
+}
 
 function TimelineCardView({
   item,
   isLatestAssistant,
+  choiceAnswer,
   onOpenAttachment,
   onOpenFile,
   onOpenSession,
@@ -115,6 +133,16 @@ function TimelineCardView({
         : null;
       const visibleBlocks = folded ? folded.answer : blocks;
       const hiddenWork = folded && folded.process.length > 0 ? folded.process : null;
+      /**
+       * Which block may answer a `futureos-choice` card (§2): the reply's **last**
+       * prose block, and only on the thread's **last** reply once it has settled.
+       * A card that the reply keeps writing after is history by the time the reader
+       * reaches it, and a fence still arriving can gain rows under a finger — its
+       * own closing question only exists once the reply stopped writing.
+       */
+      const liveChoiceKey = choiceAnswer && isLatestAssistant && !item.streaming
+        ? lastProseKey(visibleBlocks)
+        : null;
       // The copy button follows what the row shows: with the work folded away it
       // belongs to the answer, not to notes the reader cannot see.
       const copyPayload = folded
@@ -136,27 +164,33 @@ function TimelineCardView({
                 : null}
               {visibleBlocks.map((block) => {
                 const key = block.kind === "steps" ? block.segments[0]!.id : block.segment.id;
-                return (
-                  <Fragment key={key}>
-                    <ReplyBlockRow
-                      block={block}
-                      onOpenFile={onOpenFile}
-                      replyStreaming={item.streaming}
-                      onResolveToolTarget={onResolveToolTarget}
-                      onResolveReasoning={resolveReasoning}
-                      streaming={item.streaming && block.kind === "segment" && block.segment === item.segments?.at(-1)}
-                    />
-                  </Fragment>
+                const row = (
+                  <ReplyBlockRow
+                    block={block}
+                    onOpenFile={onOpenFile}
+                    replyStreaming={item.streaming}
+                    onResolveToolTarget={onResolveToolTarget}
+                    onResolveReasoning={resolveReasoning}
+                    streaming={item.streaming && block.kind === "segment" && block.segment === item.segments?.at(-1)}
+                  />
                 );
+                // Only this block's last card is answerable (`MarkdownText` picks
+                // it out of the parsed nodes); every other card in the transcript
+                // stays read-only.
+                return key === liveChoiceKey && choiceAnswer
+                  ? <ChoiceCardAnswerProvider key={key} value={choiceAnswer}>{row}</ChoiceCardAnswerProvider>
+                  : <Fragment key={key}>{row}</Fragment>;
               })}
             </View>
           ) : item.text.trim().length > 0 ? (
-            <MarkdownText
-              onOpenFile={onOpenFile}
-              onOpenSession={onOpenSession}
-              text={item.text}
-              streaming={item.streaming}
-            />
+            <ChoiceCardAnswerProvider value={liveChoiceKey ? choiceAnswer : undefined}>
+              <MarkdownText
+                onOpenFile={onOpenFile}
+                onOpenSession={onOpenSession}
+                text={item.text}
+                streaming={item.streaming}
+              />
+            </ChoiceCardAnswerProvider>
           ) : null}
           {terminationNotice ? (
             <View style={styles.terminationNotice}>

@@ -30,6 +30,14 @@ pub struct Model {
     pub base_url: String,
     #[serde(rename = "APIKey", default)]
     pub api_key: String,
+    /// Do not verify the TLS certificate chain or host name for this model's
+    /// endpoint. Set per provider in `models.json` (`skipTlsVerify`) for a
+    /// self-hosted gateway whose certificate is self-signed or issued by a
+    /// private CA: TLS still encrypts the connection, it just no longer proves
+    /// who is on the other end. Never reaches the wire — see
+    /// [`crate::llm::Client`], which builds the HTTP client from it.
+    #[serde(rename = "SkipTLSVerify", default)]
+    pub skip_tls_verify: bool,
     pub reasoning: bool,
     #[serde(default)]
     pub input: Vec<String>,
@@ -356,6 +364,7 @@ fn model_from_builtin(m: builtin::Model) -> Model {
         api: m.api,
         base_url: m.base_url,
         api_key: String::new(),
+        skip_tls_verify: false,
         reasoning: m.reasoning,
         input: m.input,
         output: m.output,
@@ -597,12 +606,16 @@ fn load_user_models_with_overrides(
 
     for (provider_name, provider) in providers {
         // Store provider-level override (even if no models listed)
-        if provider.base_url.is_some() || provider.api_key.is_some() {
+        if provider.base_url.is_some()
+            || provider.api_key.is_some()
+            || provider.skip_tls_verify.is_some()
+        {
             overrides.insert(
                 provider_name.clone(),
                 ProviderOverride {
                     base_url: provider.base_url.clone(),
                     api_key: provider.api_key.clone(),
+                    skip_tls_verify: provider.skip_tls_verify,
                 },
             );
         }
@@ -621,6 +634,7 @@ fn load_user_models_with_overrides(
                 api: provider_api.clone(),
                 base_url: provider_base_url.clone(),
                 api_key: api_key.clone(),
+                skip_tls_verify: provider.skip_tls_verify.unwrap_or(false),
                 reasoning: model.reasoning.unwrap_or(true),
                 input: model.modalities.unwrap_or_default(),
                 output: vec!["text".to_string()],
@@ -706,6 +720,10 @@ struct ProviderConfig {
     api_key: Option<String>,
     #[serde(rename = "baseUrl", default)]
     base_url: Option<String>,
+    /// Provider-level opt-out of TLS certificate verification; every model
+    /// under this provider inherits it. See [`Model::skip_tls_verify`].
+    #[serde(rename = "skipTlsVerify", default)]
+    skip_tls_verify: Option<bool>,
     #[serde(rename = "compat", default)]
     compat: Option<HashMap<String, serde_json::Value>>,
     /// Provider-level default for every model under it (`thinkingLevels`): an
@@ -777,6 +795,12 @@ struct ModelCost {
 struct ProviderOverride {
     base_url: Option<String>,
     api_key: Option<String>,
+    /// The provider entry's `skipTlsVerify`, when it states one. Applying it
+    /// here (rather than only onto the models this file declares) is what makes
+    /// the flag reach a custom provider whose models are listed, a bare
+    /// `baseUrl` override of a built-in provider, and a provider discovered
+    /// through the user's own `models[]` alike.
+    skip_tls_verify: Option<bool>,
 }
 
 /// Calculate a simple similarity score between two provider names.
@@ -1029,6 +1053,7 @@ impl Registry {
                 ProviderOverride {
                     base_url: Some(format!("{}/v1", base_url)),
                     api_key: Some(future_key),
+                    ..Default::default()
                 },
             ))
         } else {
@@ -1272,6 +1297,12 @@ impl Registry {
                 if !key.is_empty() {
                     model.api_key = key.clone();
                 }
+            }
+            // Not `if true`: an explicit `false` is the user turning the flag
+            // back off for this provider, and must override a model entry that
+            // still carries it.
+            if let Some(skip_tls_verify) = ov.skip_tls_verify {
+                model.skip_tls_verify = skip_tls_verify;
             }
         }
     }
@@ -2490,6 +2521,119 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// `skipTlsVerify` is provider-level state: it has to come out of models.json
+    /// on the models it declares *and* as an override, because a custom provider
+    /// whose entry a client only partly rewrote still resolves through the
+    /// override path.
+    #[test]
+    fn load_user_models_reads_skip_tls_verify() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("models.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "providers": {
+                    "gateway": {
+                        "baseUrl": "https://gateway.internal/v1",
+                        "skipTlsVerify": true,
+                        "models": [{ "id": "m1", "name": "M1" }]
+                    },
+                    "plain": {
+                        "baseUrl": "https://plain.example/v1",
+                        "models": [{ "id": "m2", "name": "M2" }]
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let (models, overrides) =
+            super::load_user_models_with_overrides(path.to_str().unwrap()).unwrap();
+
+        let gateway = models.iter().find(|m| m.id == "m1").unwrap();
+        assert!(gateway.skip_tls_verify, "the declared model inherits it");
+        let plain = models.iter().find(|m| m.id == "m2").unwrap();
+        assert!(!plain.skip_tls_verify, "absent means verification stays on");
+
+        assert_eq!(overrides["gateway"].skip_tls_verify, Some(true));
+        assert_eq!(
+            overrides["plain"].skip_tls_verify, None,
+            "an absent key must stay absent, so a model carrying it is not reset"
+        );
+    }
+
+    /// A `skipTlsVerify`-only entry still produces a provider override.
+    ///
+    /// This is the shape the provider view can leave behind: the flag is a
+    /// property of a provider the user edits, and the override is what carries
+    /// it to the built-in models resolved under that provider id.
+    #[test]
+    fn a_skip_tls_verify_only_entry_still_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("models.json");
+        std::fs::write(&path, r#"{"providers":{"gateway":{"skipTlsVerify":true}}}"#).unwrap();
+
+        let (models, overrides) =
+            super::load_user_models_with_overrides(path.to_str().unwrap()).unwrap();
+        assert!(models.is_empty());
+        assert_eq!(overrides["gateway"].skip_tls_verify, Some(true));
+    }
+
+    /// The override is applied both ways: `true` reaches a model that did not
+    /// carry it, and an explicit `false` clears one that did.
+    #[test]
+    fn apply_override_sets_and_clears_skip_tls_verify() {
+        let reg_with = |skip_tls_verify: bool| Registry {
+            builtin: std::sync::Arc::new(vec![]),
+            user: vec![],
+            provider_overrides: HashMap::from([(
+                "gateway".to_string(),
+                ProviderOverride {
+                    skip_tls_verify: Some(skip_tls_verify),
+                    ..Default::default()
+                },
+            )]),
+            auth_store: crate::AuthStore::default(),
+        };
+
+        let mut model = Model {
+            provider: "gateway".to_string(),
+            ..Default::default()
+        };
+        reg_with(true).apply_override(&mut model);
+        assert!(model.skip_tls_verify);
+
+        // The user turned the switch back off: the stored model entry may still
+        // say `true`, and the explicit provider-level `false` must win.
+        model.skip_tls_verify = true;
+        reg_with(false).apply_override(&mut model);
+        assert!(!model.skip_tls_verify);
+    }
+
+    /// A provider entry that never mentions the flag must not clear it.
+    #[test]
+    fn apply_override_without_skip_tls_verify_leaves_the_model_alone() {
+        let reg = Registry {
+            builtin: std::sync::Arc::new(vec![]),
+            user: vec![],
+            provider_overrides: HashMap::from([(
+                "gateway".to_string(),
+                ProviderOverride {
+                    base_url: Some("https://gateway.internal/v1".to_string()),
+                    ..Default::default()
+                },
+            )]),
+            auth_store: crate::AuthStore::default(),
+        };
+        let mut model = Model {
+            provider: "gateway".to_string(),
+            skip_tls_verify: true,
+            ..Default::default()
+        };
+        reg.apply_override(&mut model);
+        assert!(model.skip_tls_verify);
+    }
+
     #[test]
     fn load_user_models_no_providers_returns_empty() {
         let dir = tempfile::tempdir().unwrap();
@@ -2692,6 +2836,7 @@ mod tests {
             ProviderOverride {
                 base_url: None,
                 api_key: Some("override-key".to_string()),
+                ..Default::default()
             },
         );
         let reg = Registry {

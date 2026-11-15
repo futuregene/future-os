@@ -215,6 +215,8 @@
       "remove": "Remove from the queue",
       "retry": "Try again",
       "release": "Send this one now",
+    "choiceChange": "Change this message's answer: {{title}} · {{label}}",
+    "choiceClear": "No answer (keep the message text)",
       "actionFailed": "That waiting message could not be changed: {{message}}",
       "full": "The send queue is full. Send or remove something first.",
       "notice": {

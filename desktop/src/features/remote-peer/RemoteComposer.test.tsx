@@ -1,3 +1,5 @@
+import type { ChoiceAnswer } from "../agent/composer/choiceAnswer";
+import type { RemoteComposerHandle } from "./RemoteComposer";
 // @vitest-environment jsdom
 import type { RemotePeer } from "./remotePeerClient";
 import type { RemoteQueueRow } from "./remoteQueue";
@@ -138,9 +140,11 @@ async function mount(props: {
   conversations?: typeof conversations;
   desktopId?: string;
   onCompact?: () => void;
+  onChoiceChange?: (answer: ChoiceAnswer | null) => void;
   onCreated?: (sessionId: string) => void;
   onSent?: () => void;
   peer?: RemotePeer;
+  ref?: React.Ref<RemoteComposerHandle>;
   sessionId?: string;
   streaming?: boolean;
   workspaceId?: string | null;
@@ -157,10 +161,12 @@ async function mount(props: {
     canCompact: props.canCompact ?? false,
     conversations: props.conversations ?? [],
     desktopId: props.desktopId ?? "desktop_a",
+    onChoiceChange: props.onChoiceChange,
     onCompact: props.onCompact,
     onCreated,
     onSent,
     peer: props.peer ?? peer,
+    ref: props.ref,
     sessionId: props.sessionId ?? "sess_1",
     streaming: props.streaming,
     workspaceId: props.workspaceId ?? null,
@@ -2005,6 +2011,133 @@ describe("an archived conversation", () => {
     await view.press("Enter");
     await settle();
     expect(prompt).not.toHaveBeenCalled();
+    await view.unmount();
+  });
+});
+
+/**
+ * The answer to a reply's `futureos-choice` card, on the surface that has no room
+ * for it inside the field.
+ *
+ * A remote composer is a plain `textarea`: it cannot hold an atomic pill the way
+ * the local editor does, and nothing in the field proves an answer exists. So the
+ * answer lives beside the field, and **every test that decides whether there is
+ * anything to send has to count it** — otherwise the chip is drawn while Send
+ * stays grey, which is exactly the defect v1 shipped (design §5.2.1, §5.4).
+ */
+describe("a choice card's answer", () => {
+  const question = {
+    mode: "single" as const,
+    options: [
+      { id: "forest", label: "重画森林图" },
+      { id: "flow", label: "补一张流程图" },
+    ],
+    title: "接下来做哪一件事？",
+  };
+
+  it("is sendable with nothing typed, and goes out ahead of the words", async () => {
+    const onChoiceChange = vi.fn<(answer: ChoiceAnswer | null) => void>();
+    const handle: { current: RemoteComposerHandle | null } = { current: null };
+    const view = await mount({ onChoiceChange, ref: handle });
+
+    // Nothing picked yet: requirement (a), the button must stay grey.
+    expect(view.button("Send")?.disabled).toBe(true);
+
+    await act(async () => handle.current!.selectChoice("forest", question));
+    await settle();
+
+    // Requirement (d): an answer alone is a message.
+    expect(view.button("Send")?.disabled).toBe(false);
+    expect(onChoiceChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ selectedIds: ["forest"], title: question.title }),
+    );
+
+    await act(async () => view.button("Send")!.click());
+    await settle();
+
+    expect(prompt).toHaveBeenCalledWith(
+      "desktop_a",
+      "sess_1",
+      "[接下来做哪一件事？ → 重画森林图]",
+      [],
+      null,
+      { modelId: null, thinkingLevel: null },
+      expect.any(String),
+    );
+    // Sent with the words above, so it leaves the draft: a chip that outlived its
+    // message would make the next send repeat the answer.
+    expect(view.container.querySelector("[data-choice-chip]")).toBeNull();
+    expect(onChoiceChange).toHaveBeenLastCalledWith(null);
+    await view.unmount();
+  });
+
+  it("keeps the typed words, with the answer leading them", async () => {
+    const handle: { current: RemoteComposerHandle | null } = { current: null };
+    const view = await mount({ ref: handle });
+
+    await act(async () => handle.current!.selectChoice("flow", question));
+    await settle();
+    await view.type("顺便把图注也改成中文");
+    await act(async () => view.button("Send")!.click());
+    await settle();
+
+    // Requirement (c): the answer and the words travel together, answer first,
+    // matching the local editor's document order so both surfaces send the same
+    // bytes.
+    expect(prompt).toHaveBeenCalledWith(
+      "desktop_a",
+      "sess_1",
+      "[接下来做哪一件事？ → 补一张流程图] 顺便把图注也改成中文",
+      [],
+      null,
+      { modelId: null, thinkingLevel: null },
+      expect.any(String),
+    );
+    await view.unmount();
+  });
+
+  it("can be changed or dropped from the chip, without touching the words", async () => {
+    const onChoiceChange = vi.fn<(answer: ChoiceAnswer | null) => void>();
+    const handle: { current: RemoteComposerHandle | null } = { current: null };
+    const view = await mount({ onChoiceChange, ref: handle });
+
+    await act(async () => handle.current!.selectChoice("forest", question));
+    await settle();
+    await view.type("keep me");
+    await settle();
+
+    const change = view.container.querySelector("[data-choice-action=change]")!;
+    expect(change.getAttribute("aria-label")).toContain("接下来做哪一件事？");
+    await act(async () => (change as HTMLElement).click());
+    await settle();
+
+    // The chip's pencil re-offers the card's other rows, and the card is not
+    // asked again: the answer already carries its question and every option.
+    // `SelectMenu` portals its panel, so the rows are found in the document.
+    const rowFor = (label: string) => [...document.querySelectorAll("button")]
+      .find(node => node.textContent?.trim() === label);
+    expect(rowFor("补一张流程图")).toBeTruthy();
+    await act(async () => rowFor("补一张流程图")!.click());
+    await settle();
+
+    expect(onChoiceChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ selectedIds: ["flow"] }),
+    );
+    // Requirement (b): changing the answer never disturbs the typed words.
+    expect(view.input.value).toBe("keep me");
+
+    const remove = view.container.querySelector("[data-choice-action=remove]")!;
+    await act(async () => (remove as HTMLElement).click());
+    await settle();
+
+    // Dropping the answer keeps the words: they were the reader's, and the chip
+    // was never part of them.
+    expect(view.input.value).toBe("keep me");
+    expect(view.container.querySelector("[data-choice-chip]")).toBeNull();
+    // With nothing typed *and* no answer, Send goes grey again — requirement (a).
+    await view.type("");
+    await settle();
+    expect(view.button("Send")?.disabled).toBe(true);
     await view.unmount();
   });
 });

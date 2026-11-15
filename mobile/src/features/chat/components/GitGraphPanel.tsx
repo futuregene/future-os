@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowLeft } from "lucide-react-native";
 import {
   ActivityIndicator,
   BackHandler,
@@ -14,7 +13,7 @@ import {
   View,
 } from "react-native";
 import Svg, { Circle, Path, Line as SvgLine } from "react-native-svg";
-import type { GitCommitDetail, GitGraphListing, GitGraphRow } from "../../../remote/types";
+import type { GitCommitDetail, GitCommitRefs, GitGraphListing, GitGraphRow } from "../../../remote/types";
 import { layout, radius, spacing } from "../../../theme/tokens";
 import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
 import {
@@ -46,6 +45,13 @@ const ROW_HEIGHT = 34;
 
 const monospace = Platform.select({ ios: "Menlo", default: "monospace" });
 
+/** The subject's line height, at the reader's text size. The row's picture puts
+ * the commit's dot on this line, so the two are read together. */
+const SUBJECT_LINE = 19;
+/** The metadata line's height. It and the subject's are what the picture's axis
+ * is computed from — see `CommitRow`. */
+const META_LINE = 14;
+
 /**
  * The conversation workspace's Git history: one row per commit, a lane per
  * column of work, and a tap opening that commit's patch.
@@ -68,12 +74,22 @@ export function GitGraphPanel({
   listCommits,
   getCommit,
   onClose,
+  registerBack,
 }: {
   online: boolean;
   supported: boolean;
   listCommits: () => Promise<GitGraphListing>;
   getCommit: (gitRef: string) => Promise<GitCommitDetail>;
   onClose: () => void;
+  /**
+   * Hands the conversation's own back control a way to step back one level
+   * inside this surface. The bar above already carries the only back arrow on
+   * screen, so a second one here would be the same gesture twice in the same
+   * corner: `true` means the press was taken (a patch was popped back to the
+   * list), `false` means there is nothing left to pop and the caller should
+   * leave the history.
+   */
+  registerBack?: (handler: () => boolean) => void;
 }) {
   const styles = useStyles();
   const { colors, graphColors, font, leading } = useTheme();
@@ -111,6 +127,16 @@ export function GitGraphPanel({
   }, [request]);
 
   useEffect(() => {
+    // The bar's back button steps back one level here before it leaves, so the
+    // list is reached the same way a system back reaches it.
+    registerBack?.(() => {
+      if (!selected) return false;
+      setSelected(null);
+      return true;
+    });
+  }, [registerBack, selected]);
+
+  useEffect(() => {
     // A commit's detail owns system back while it is open, so Android's edge
     // gesture leaves the patch rather than the whole sheet.
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
@@ -136,7 +162,14 @@ export function GitGraphPanel({
   // a row cannot be decoded alone anyway — whether a thread exists above a dot
   // depends on the row before it.
   const geometry = useMemo(() => graphGeometry(commits, graphColors), [commits, graphColors]);
-  const rowHeight = Math.max(ROW_HEIGHT, leading(19) + font(11) + 8);
+  const rowHeight = Math.max(ROW_HEIGHT, leading(SUBJECT_LINE) + font(11) + 8);
+  // Where the commit dot goes: the centre of the row's *first* line, not the
+  // row's middle. The row stacks a subject and a metadata line, so its middle is
+  // the gap between them — a dot there sits beside neither. Derived from the two
+  // line heights rather than written as a number, because both scale with the
+  // reader's text size and the row's own padding is what centres the pair.
+  const dotCenter = (rowHeight - (leading(SUBJECT_LINE) + leading(META_LINE))) / 2
+    + leading(SUBJECT_LINE) / 2;
   const metrics = useMemo<LaneMetrics>(
     () => ({ pitch: LANE_PITCH, radius: TURN_RADIUS, gap: CROSSING_GAP }),
     [],
@@ -145,25 +178,15 @@ export function GitGraphPanel({
 
   return (
     <View style={styles.panel}>
-      {/* No header on either page. Both are one continuous surface — the list of
-          commits, then one commit's patch — so a bar over them would only spend
-          a row of a phone screen repeating what the page already is. What is left
-          is the one control with nowhere else to live: the way back. From a
-          patch it returns to the list; from the list it leaves.
-          It is in the layout rather than floating over it, because the list's
-          first row carries the lane picture in the same top-left corner, and a
-          floating button would sit on top of it. */}
-      <View style={styles.escape}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={selected ? t("git.back") : t("common.close")}
-          hitSlop={8}
-          onPress={selected ? () => setSelected(null) : onClose}
-          style={({ pressed }) => [styles.backButton, pressed && styles.pressed]}
-        >
-          <ArrowLeft color={colors.inkSoft} size={22} />
-        </Pressable>
-      </View>
+      {/* No header and no back arrow on either page. The conversation's own bar
+          is still on screen above this surface, and its back button already
+          steps back through it: from a patch to the list, from the list out of
+          the history (`registerBack` is how it knows which). A second arrow
+          here would be the same control twice, one under the other, in the same
+          corner.
+          That is also why neither page draws a title bar: the commits, then the
+          patch, are one continuous surface, and a bar would spend a row of a
+          phone screen repeating what the page already is. */}
 
       {selected ? (
         <CommitDetailPane commit={selected} getCommit={getCommit} />
@@ -202,6 +225,7 @@ export function GitGraphPanel({
               lane={geometry[index]?.marker?.lane ?? 0}
               row={geometry[index] ?? null}
               height={rowHeight}
+              center={dotCenter}
               width={pictureWidth}
               metrics={metrics}
               onPress={() => setSelected(item)}
@@ -226,25 +250,28 @@ function CommitRow({
   row,
   lane,
   height,
+  center,
   width,
   metrics,
   onPress,
 }: {
   commit: GitGraphRow;
   row: GraphGeometry | null;
-  /** The lane the commit sits on: what the row's colour stripe is tinted with. */
+  /** The lane the commit sits on, for the row's spoken hint. The picture draws
+   * it; nothing on the row is tinted with it. */
   lane: number;
   height: number;
+  /** The y the commit's dot is drawn at: the centre of the first text line. */
+  center: number;
   width: number;
   metrics: LaneMetrics;
   onPress: () => void;
 }) {
   const styles = useStyles();
-  const { colors, graphColors } = useTheme();
   const { t } = useTranslation();
   const drawing = useMemo(
-    () => (row ? laneDrawing(row, metrics, height) : null),
-    [row, metrics, height],
+    () => (row ? laneDrawing(row, metrics, height, center) : null),
+    [row, metrics, height, center],
   );
 
   return (
@@ -255,16 +282,6 @@ function CommitRow({
       onPress={onPress}
       style={({ pressed }) => [styles.row, { height }, pressed && styles.pressed]}
     >
-      {/* The stripe is what makes a page of commits scannable at a glance: the
-          eye follows one colour down the list without reading the picture. It is
-          decoration, so it carries no name of its own. */}
-      <View
-        pointerEvents="none"
-        style={[
-          styles.laneStripe,
-          { backgroundColor: graphColors[lane % graphColors.length] ?? colors.lineSoft },
-        ]}
-      />
       {/* Hidden from assistive tech: the row's own label already names the
           commit, and a picture of lanes has no useful reading order. The lane
           number is in the row's hint instead. */}
@@ -299,7 +316,7 @@ function CommitRow({
             <Circle
               key={`d${index}`}
               cx={dot.x}
-              cy={height / 2}
+              cy={dot.y}
               r={dot.merged ? DOT_RADIUS + DOT_STROKE / 2 : DOT_RADIUS}
               fill={dot.merged ? "none" : dot.color}
               stroke={dot.color}
@@ -319,7 +336,7 @@ function CommitRow({
           {commit.subject}
         </Text>
         <Text numberOfLines={1} style={styles.meta}>
-          {commit.short} · {commit.who} · {commit.when}
+          {commit.when} · {commit.short} · {commit.who}
         </Text>
       </View>
     </Pressable>
@@ -377,13 +394,16 @@ function CommitDetailPane({
   return (
     <ScrollView contentContainerStyle={styles.detail}>
       {/* The patch page carries no header, so what the header used to say lives
-          here: the commit and its line, then who wrote it and when. The short
-          sha is selectable because it is the thing a reader copies out. */}
+          here: the commit and its line, then who wrote it and when, in the same
+          order the list row uses. The short sha is selectable because it is the
+          thing a reader copies out. */}
       <Text selectable style={styles.detailSubject}>{commit.subject}</Text>
       <Text style={styles.detailMeta}>
+        {`${commit.when} · `}
         <Text selectable style={styles.detailSha}>{commit.short}</Text>
-        {` · ${commit.who} · ${commit.when}`}
+        {` · ${commit.who}`}
       </Text>
+      <CommitRefs refs={state.detail.refs} />
       <View style={styles.patch}>
         {lines.map((line, index) => (
           <Text key={index} selectable style={[styles.patchLine, roleStyle(styles, line.role)]}>
@@ -392,6 +412,54 @@ function CommitDetailPane({
         ))}
       </View>
     </ScrollView>
+  );
+}
+
+/**
+ * Every ref that points at this commit.
+ *
+ * The list row has one line and shows git's short decoration, which drops local
+ * branches once a commit carries several. Here there is room: the branches it is
+ * on, the remote-tracking branches that carry it, and the tags cut on it — each
+ * on its own row, because "is this released?" and "is this pushed?" are
+ * different questions and a single run-together line answers neither well.
+ */
+function CommitRefs({ refs }: { refs: GitCommitRefs }) {
+  const styles = useStyles();
+  const { t } = useTranslation();
+  // `HEAD` is listed first when the checkout is this commit: it is the answer to
+  // "what am I looking at", and it can be true with no branch at all.
+  const rows: { key: string; label: string; names: string[] }[] = [];
+  if (refs.head) {
+    rows.push({ key: "head", label: t("git.ref.checkedOut"), names: [] });
+  }
+  if (refs.branches.length) {
+    rows.push({ key: "branches", label: t("git.ref.branches"), names: refs.branches });
+  }
+  if (refs.remotes.length) {
+    rows.push({ key: "remotes", label: t("git.ref.remotes"), names: refs.remotes });
+  }
+  if (refs.tags.length) {
+    rows.push({ key: "tags", label: t("git.ref.tags"), names: refs.tags });
+  }
+  if (rows.length === 0) {
+    return null;
+  }
+  return (
+    <View style={styles.refs}>
+      {rows.map(row => (
+        <View key={row.key} style={styles.refRow}>
+          <Text style={styles.refLabel}>{row.label}</Text>
+          <View style={styles.refChips}>
+            {row.names.length === 0
+              ? <Text style={styles.refChip}>{t("git.ref.yes")}</Text>
+              : row.names.map(name => (
+                  <Text key={name} selectable style={styles.refChip}>{name}</Text>
+                ))}
+          </View>
+        </View>
+      ))}
+    </View>
   );
 }
 
@@ -408,22 +476,8 @@ function roleStyle(styles: PanelStyles, role: PatchLine["role"]) {
 
 const useStyles = createThemedStyles(theme => StyleSheet.create({
   panel: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, zIndex: 4, backgroundColor: theme.colors.surface },
-  escape: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingLeft: spacing.xs,
-    paddingRight: layout.gutter,
-    paddingTop: spacing.xs,
-  },
-  backButton: {
-    width: layout.touchTarget,
-    height: layout.touchTarget,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: radius.pill,
-  },
   pressed: { backgroundColor: theme.colors.surfaceSubtle },
-  list: { paddingBottom: spacing.lg },
+  list: { paddingTop: spacing.sm, paddingBottom: spacing.lg },
   row: {
     flexDirection: "row",
     alignItems: "center",
@@ -431,17 +485,28 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     paddingLeft: spacing.sm,
     paddingRight: layout.gutter,
   },
-  // The lane's colour as a hairline at the row's left edge. Two points: enough to
-  // follow a line of work while scrolling, small enough not to compete with the
-  // picture.
-  laneStripe: { position: "absolute", left: 0, top: 0, bottom: 0, width: 2, opacity: 0.9 },
   body: { flex: 1, minWidth: 0 },
   subject: { color: theme.colors.ink, fontSize: theme.font(14), lineHeight: theme.leading(19) },
   decorations: { color: theme.colors.accent, fontWeight: "600" },
-  meta: { color: theme.colors.inkMuted, fontSize: theme.font(11) },
+  meta: { color: theme.colors.inkMuted, fontSize: theme.font(11), lineHeight: theme.leading(META_LINE) },
   detailSubject: { color: theme.colors.inkStrong, fontSize: theme.font(15), fontWeight: "700", lineHeight: theme.leading(22) },
   detailMeta: { color: theme.colors.inkMuted, fontSize: theme.font(11), marginTop: spacing.xs },
   detailSha: { color: theme.colors.inkSoft, fontFamily: monospace },
+  // The refs block: a label per kind and its names as chips, so "released" and
+  // "pushed" stay separate answers instead of one run-together string.
+  refs: { marginTop: spacing.sm, gap: spacing.xs },
+  refRow: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
+  refLabel: { color: theme.colors.inkMuted, fontSize: theme.font(11), lineHeight: theme.leading(18), minWidth: 48 },
+  refChips: { flex: 1, flexDirection: "row", flexWrap: "wrap", gap: spacing.xs },
+  refChip: {
+    color: theme.colors.accent,
+    fontSize: theme.font(11),
+    lineHeight: theme.leading(18),
+    backgroundColor: theme.colors.accentSoft,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.xs,
+    overflow: "hidden",
+  },
   empty: { flexGrow: 1, alignItems: "center", justifyContent: "center", gap: spacing.md, padding: spacing.lg },
   emptyContent: { alignItems: "center", gap: spacing.md },
   status: { color: theme.colors.inkMuted, textAlign: "center", fontSize: theme.font(14) },
@@ -449,14 +514,56 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   retry: { minHeight: layout.touchTarget, justifyContent: "center", paddingHorizontal: spacing.md, borderRadius: radius.md },
   retryLabel: { color: theme.colors.accent, fontSize: theme.font(14) },
   detail: { padding: layout.gutter, paddingBottom: spacing.lg },
-  patch: { backgroundColor: theme.colors.surfaceSubtle, borderRadius: radius.md, padding: spacing.sm, marginTop: spacing.md },
-  patchLine: { fontFamily: monospace, fontSize: theme.font(11), lineHeight: theme.leading(16), color: theme.colors.ink },
-  patchAdded: { color: theme.colors.success },
-  patchRemoved: { color: theme.colors.danger },
-  patchHunk: { color: theme.colors.info },
-  patchHeader: { color: theme.colors.inkSoft, fontWeight: "600" },
-  patchMeta: { color: theme.colors.inkMuted },
-  patchPlain: { color: theme.colors.inkSoft },
+  // The card is the frame; the *lines* carry the tint, so the colour runs the
+  // full width of a row rather than stopping where the text does. The container
+  // therefore has no padding of its own — each line pads itself.
+  patch: {
+    backgroundColor: theme.colors.surfaceSubtle,
+    borderRadius: radius.md,
+    marginTop: spacing.md,
+    overflow: "hidden",
+  },
+  patchLine: {
+    fontFamily: monospace,
+    fontSize: theme.font(11),
+    lineHeight: theme.leading(16),
+    color: theme.colors.ink,
+    paddingHorizontal: spacing.sm,
+    // A blank patch line is a real line (context); it must keep its height.
+    minHeight: theme.leading(16),
+  },
+  // A line's role is carried by a tinted band plus a solid bar at the left, not
+  // by its text colour alone: on a phone the monospaced 11px text is small, and
+  // a hue difference alone is hard to scan down a page of it. The bar is what a
+  // reader follows with their thumb; the tint says which side of the diff they
+  // are on without reading a single character.
+  patchAdded: {
+    color: theme.colors.success,
+    backgroundColor: theme.colors.successSoft,
+    borderLeftWidth: 2,
+    borderLeftColor: theme.colors.success,
+  },
+  patchRemoved: {
+    color: theme.colors.danger,
+    backgroundColor: theme.colors.dangerSoft,
+    borderLeftWidth: 2,
+    borderLeftColor: theme.colors.danger,
+  },
+  patchHunk: {
+    color: theme.colors.info,
+    backgroundColor: theme.colors.infoSoft,
+    borderLeftWidth: 2,
+    borderLeftColor: theme.colors.info,
+    marginTop: spacing.xs,
+  },
+  patchHeader: {
+    color: theme.colors.inkSoft,
+    fontWeight: "600",
+    borderLeftWidth: 2,
+    borderLeftColor: theme.colors.line,
+  },
+  patchMeta: { color: theme.colors.inkMuted, borderLeftWidth: 2, borderLeftColor: "transparent" },
+  patchPlain: { color: theme.colors.inkSoft, borderLeftWidth: 2, borderLeftColor: "transparent" },
 }));
 
 type PanelStyles = ReturnType<typeof useStyles>;

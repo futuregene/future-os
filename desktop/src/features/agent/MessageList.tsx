@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@future-os/thread-projection";
+import type { ChoiceCardAnswer } from "../markdown/MarkdownContent";
 import { previousUserMessageBefore } from "@future-os/thread-projection";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MessageBlock } from "./MessageBlock";
@@ -25,6 +26,13 @@ interface MessageListProps {
    * panel asks for it so a long conversation does not read as a solid column.
    */
   spacing?: "default" | "roomy";
+  /**
+   * The draft's answer to the conversation's closing choice card (design §2),
+   * handed to the **last** reply only — an earlier card's question is already
+   * past, so letting it be picked again would make "which one am I answering"
+   * unanswerable. Omitted by callers with no composer to write an answer into.
+   */
+  choiceAnswer?: ChoiceCardAnswer;
 }
 
 /**
@@ -35,7 +43,7 @@ interface MessageListProps {
  * shows its controls: a lost `pointerleave` is corrected by the next row's
  * `pointerover`, and leaving the list clears it outright.
  */
-export function MessageList({ messages, onContinue, onFork, onRetry, workspaceId, workspacePath, spacing = "default" }: MessageListProps) {
+export function MessageList({ messages, onContinue, onFork, onRetry, workspaceId, workspacePath, spacing = "default", choiceAnswer }: MessageListProps) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const hideTimerRef = useRef<number | null>(null);
 
@@ -83,6 +91,13 @@ export function MessageList({ messages, onContinue, onFork, onRetry, workspaceId
       {messages.map((message, index) => {
         const isLast = index === messages.length - 1;
         const recoverySource = isLast ? lastUserMessage : null;
+        // Only the trailing reply's closing card answers the draft, and only once
+        // the reply has settled: a card still being written can be rewritten
+        // under the click, which would leave a pill describing a question that is
+        // no longer on screen.
+        const answer = isLast && message.role === "assistant" && message.status !== "streaming"
+          ? choiceAnswer
+          : undefined;
         return (
           <MessageBlock
             key={message.id}
@@ -90,6 +105,7 @@ export function MessageList({ messages, onContinue, onFork, onRetry, workspaceId
             hovered={hoveredId === message.id}
             dataMessageId={message.id}
             isLast={isLast}
+            choiceAnswer={answer}
             recoverySource={recoverySource}
             workspaceId={workspaceId}
             workspacePath={workspacePath}

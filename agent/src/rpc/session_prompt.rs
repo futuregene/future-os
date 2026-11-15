@@ -16,6 +16,13 @@ struct ScheduledPromptPayload {
     model_context: String,
     images: Vec<crate::types::ImageContent>,
     attachments: Vec<crate::types::Attachment>,
+    /// The answer a `futureos-choice` card gave this prompt, if any.
+    ///
+    /// Kept with the acceptance rather than only in `message`, because the
+    /// sentence that is sent names the picked options and not the ones the
+    /// reader could still switch to — and a waiting row offers that switch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    choice: Option<future_rpc::payloads::QueuedRunChoice>,
     settings: ScheduledSettingsSnapshot,
 }
 
@@ -83,10 +90,16 @@ impl RunInputBoundary {
 
 /// Textual parts of one user turn. `message` is the exact user-authored text;
 /// `model_context` is a non-display sidecar that remains at user-role trust.
+///
+/// `choice` is the answer a `futureos-choice` card gave this turn. It is
+/// borrowed from the submission rather than owned here: the payload that
+/// outlives this call copies it (see `ScheduledPromptPayload::choice`), and a
+/// turn without a card carries none.
 #[derive(Clone, Copy)]
 pub(super) struct PromptText<'a> {
     message: &'a str,
     model_context: &'a str,
+    choice: Option<&'a future_rpc::payloads::QueuedRunChoice>,
 }
 
 impl<'a> PromptText<'a> {
@@ -94,7 +107,17 @@ impl<'a> PromptText<'a> {
         Self {
             message,
             model_context,
+            choice: None,
         }
+    }
+
+    /// The same turn, carrying the answer a choice card gave it.
+    pub(super) fn with_choice(
+        mut self,
+        choice: Option<&'a future_rpc::payloads::QueuedRunChoice>,
+    ) -> Self {
+        self.choice = choice;
+        self
     }
 
     fn user_only(message: &'a str) -> Self {
@@ -386,6 +409,11 @@ impl ServerSession {
             // only when the run starts (images) or when a tool reads them
             // (ordinary files), so queued work observes the latest contents.
             attachments: attachments.to_vec(),
+            // The card's answer travels with the acceptance. Whatever the
+            // message says is still what a run sends (the sentence is built on
+            // the client, §7 of the design); this copy is what lets a waiting
+            // row re-offer the card's other options before it runs.
+            choice: prompt.choice.cloned(),
             settings: settings.clone(),
         })?;
         let durable_payload = payload.clone();
@@ -519,7 +547,25 @@ impl ServerSession {
     /// not thrown back at the reader: their row says what they just typed, and
     /// only a restart would reveal the older words.
     pub fn edit_queued_run(&mut self, run_id: &str, message: &str) -> Result<()> {
-        let edited = self.scheduler.edit_queued(run_id, message)?;
+        self.edit_queued_run_with_choice(run_id, message, None)
+    }
+
+    /// Correct one waiting prompt, optionally restating the answer it sends.
+    ///
+    /// `choice` is `None` for a words-only correction: the accepted answer stays
+    /// exactly as it was, so fixing a typo cannot silently drop which option the
+    /// reader picked. When it is `Some`, it is the answer the new words state —
+    /// the caller derives both together, because a row whose chip and text
+    /// disagreed about what will be sent would be worse than either alone.
+    pub fn edit_queued_run_with_choice(
+        &mut self,
+        run_id: &str,
+        message: &str,
+        choice: Option<future_rpc::payloads::QueuedRunChoice>,
+    ) -> Result<()> {
+        let edited = self
+            .scheduler
+            .edit_queued_with_choice(run_id, message, choice)?;
         if self.ephemeral {
             return Ok(());
         }

@@ -491,6 +491,7 @@ mod tests {
             provider_id: "acme".into(),
             model_id: "acme-large".into(),
             level: "high".into(),
+            skip_tls_verify: None,
         }
     }
 

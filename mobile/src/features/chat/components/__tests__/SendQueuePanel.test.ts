@@ -26,6 +26,7 @@ jest.mock("react-i18next", () => ({
         "chat.queue.hintParked": "Waited too long",
         "chat.queue.expand": "Show the queued messages",
         "chat.queue.collapse": "Hide the queued messages",
+        "chat.queue.choiceChange": "Change the answer to {{title}}: {{label}}",
       };
       return (words[key] ?? key).replace(/\{\{(\w+)\}\}/g, (_, name: string) => String(values?.[name] ?? ""));
     },
@@ -198,5 +199,95 @@ describe("how much room an open queue may take", () => {
     // visible rather than a sliver.
     expect(sendQueueListHeight(600, 500)).toBe(96);
     expect(sendQueueListHeight(2000, 0)).toBe(240);
+  });
+});
+
+describe("a queued message that answered a card", () => {
+  const ANSWER = {
+    mode: "single" as const,
+    options: [{ id: "forest", label: "重画森林图" }, { id: "flow", label: "补一张实验流程图" }],
+    selectedIds: ["forest"],
+    title: "接下来做哪一件？",
+  };
+
+  function chip() {
+    // The testID lands on the pressable and on the views it hosts, so the
+    // control is the node that also carries the role.
+    const found = tree!.root.findAll(
+      node => node.props.testID === "send-queue-choice" && node.props.accessibilityRole === "button",
+    );
+    // RN's Pressable renders a host view that inherits the props, so the same
+    // control answers more than once. The outermost one is the pressable.
+    expect(found.length).toBeGreaterThan(0);
+    return found[0]!;
+  }
+
+  function withAnswer() {
+    render({
+      items: [{ id: "run_1", content: "[接下来做哪一件？ → 重画森林图]", choice: ANSWER }],
+      onRequestChoiceChange: jest.fn(),
+    });
+  }
+
+  it("offers the pick as a button, not as a second pencil", () => {
+    // The row already has one pencil, for its words. A chip carrying another
+    // would ask the reader which one edits what (§5.8.2), so the chip itself is
+    // the control and the row keeps exactly one pencil.
+    withAnswer();
+    expect(chip()).toBeDefined();
+    expect(chip().props.accessibilityRole).toBe("button");
+    expect(chip().props.accessibilityLabel).toContain("接下来做哪一件？");
+    expect(chip().props.accessibilityLabel).toContain("重画森林图");
+    const pencils = tree!.root.findAll(
+      node => typeof node.props.testID === "string" && node.props.testID.includes("edit"),
+    );
+    // Four rows of controls in this fixture would be a regression; the point is
+    // that the chip adds none of them.
+    expect(pencils.filter(node => node.props.testID === "send-queue-choice")).toHaveLength(0);
+  });
+
+  it("asks the dock to open the sheet, and leaves the row's own edit alone", () => {
+    // Picking a different option is not editing the sentence: it is a choice
+    // among the card's options, which is a sheet. The panel names the row.
+    const onRequestChoiceChange = jest.fn();
+    render({
+      items: [{ id: "run_1", content: "[接下来做哪一件？ → 重画森林图]", choice: ANSWER }],
+      onRequestChoiceChange,
+    });
+    act(() => chip().props.onPress());
+    expect(onRequestChoiceChange).toHaveBeenCalledWith("run_1");
+  });
+
+  it("leaves the row's own edit and bin in place beside the chip", () => {
+    // The same constraint the desktop panel is held to (§5.8.2): the chip is the
+    // button for the answer, and the row keeps exactly one pencil (for its words)
+    // and one bin. Two pencils a few points apart meaning different things is the
+    // ambiguity the design exists to remove.
+    render({
+      items: [{ id: "run_1", content: "[接下来做哪一件？ → 重画森林图]", choice: ANSWER }],
+      onRequestChoiceChange: jest.fn(),
+    });
+    const row = tree!.root.findAll(node => node.props.testID === "send-queue-item")[0]!;
+    const ids = row.findAll(node => typeof node.props.testID === "string")
+      .map(node => node.props.testID as string);
+    expect(ids).toContain("send-queue-edit");
+    expect(ids).toContain("send-queue-remove");
+    // One chip, and it is the answer's button rather than a second row control.
+    const chips = tree!.root.findAll(node => node.props.testID === "send-queue-choice");
+    expect(chips.length).toBeGreaterThan(0);
+    const chipText = chips[0]!.findAll(node => typeof node.props.accessibilityLabel === "string")
+      .map(node => node.props.accessibilityLabel as string);
+    expect(chipText.some(label => label.includes("重画森林图"))).toBe(true);
+  });
+
+  it("draws no chip when the row answered no card, or nobody can act on it", () => {
+    // A host older than the field reports nothing, and a panel with no handler
+    // must not offer a control that does nothing.
+    render({ items: items(1) });
+    expect(tree!.root.findAll(node => node.props.testID === "send-queue-choice")).toHaveLength(0);
+    render({
+      items: [{ id: "run_1", content: "x", choice: ANSWER }],
+    });
+    expect(tree!.root.findAll(node => node.props.testID === "send-queue-choice")).toHaveLength(0);
   });
 });

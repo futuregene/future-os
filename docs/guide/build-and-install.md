@@ -365,6 +365,46 @@ make test           # all 8 suites: agent, channels, CLI, app-settings, TUI, GUI
 make clean          # remove build artifacts (use make uninstall for installed binaries)
 ```
 
+### Build speed
+
+Most of a local iteration is Cargo, so three settings decide it:
+
+- **`cargo check -p <crate>` while iterating.** It stops before codegen and
+  linking. Measured on this workspace: `cargo check -p future-agent` 3.9–5.0 s
+  after an edit, against 10.9 s for `cargo build` and 43 s cold.
+- **`--profile local` for a runnable binary.** `[profile.local]` (root
+  `Cargo.toml`) keeps release optimisation but sets `lto = false` and
+  `incremental = true`, because `release` uses `lto = "thin"` and therefore
+  re-runs whole-graph ThinLTO for any edit: 65 s against 35.6 s for one line of
+  `future-agent` rebuilt into `future-cli`. `make build-cli-local`,
+  `make build-desktop-local` and `make build-local` already use it. Nothing
+  selects it implicitly, so shipping keeps using `release`.
+- **Do not set `CARGO_INCREMENTAL=0` locally.** It cost 9.1 s instead of 4 s on
+  the same one-line change. CI disables incrementality for cache
+  reproducibility; that trade is not worth making on a dev machine.
+
+`[profile.dev]` and `[profile.test]` set `debug = 1` (line tables only) rather
+than Cargo's default of full debuginfo: 37 s / 1,911 MB instead of 50 s /
+2,608 MB for a cold `future-agent` build, and 64 s instead of 79 s for its test
+targets. Backtraces keep `file.rs:LINE`, and line coverage is unaffected
+(measured identical at 84.4% on `future-config`).
+
+Two scripts keep the disk from filling up, which matters because this workspace
+generates a lot of intermediate state:
+
+```bash
+bash scripts/dev/prune-target-incremental.sh            # report what it would free
+bash scripts/dev/prune-target-incremental.sh --apply    # delete target/debug/incremental
+bash scripts/ci/prune-node-caches.sh                    # list per-ref npm caches
+bash scripts/ci/prune-node-caches.sh --apply            # delete them (needs only repo scope)
+```
+
+`target/debug/incremental` is regenerable accelerator state — measured at 67 GB
+of a 148 GB `target/` — and the script refuses to run while a `cargo`/`rustc`
+process is alive. The npm caches matter on GitHub's side: `actions/setup-node`
+with `cache: npm` keys by ref, so every PR writes its own ~318 MB copy that no
+other PR can restore. See [ci.md](ci.md) for the quota arithmetic.
+
 ### Start the desktop app from source
 
 After the prerequisites and clone above, run:

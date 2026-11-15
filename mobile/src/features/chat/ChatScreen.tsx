@@ -18,6 +18,9 @@ import { mimeFor, pickAttachments, pickFromAlbum, takePhoto } from "../../remote
 import { useConversationOperation } from "./useConversationOperation";
 import { useComposerSubmission } from "./composer/useComposerSubmission";
 import { useComposerDraft } from "./useComposerDraft";
+import { choiceAnswerFromCard, choiceAnswerText, pickChoiceOption, type ChoiceAnswer } from "./choiceAnswer";
+import type { ChoiceCardAnswer } from "../../components/ChoiceCard";
+import type { ChoiceCardNode } from "@future-os/markdown";
 import { useAttachmentPicker } from "./useAttachmentPicker";
 import { useChatFiles } from "./files/useChatFiles";
 import { useMarkdownImageLoader } from "./useMarkdownImageLoader";
@@ -96,7 +99,17 @@ export function ChatScreen() {
   const gitOpen = !remote.draft && gitSession === conversationKey;
   const gitSupported = remote.capabilities.has("git_graph_v1");
   const gitRepo = gitProbe?.key === conversationKey ? gitProbe.isRepo : null;
+  // A surface that stacks pages inside itself (the Git history: a list, then one
+  // commit's patch) registers a stepper here, so the bar's single back button
+  // walks out the way it walked in. Set through a ref rather than state: it is
+  // read inside `goBack`, and storing it in state would re-render the whole
+  // conversation on every navigation inside the panel.
+  const panelBack = useRef<(() => boolean) | null>(null);
+  const registerPanelBack = useCallback((handler: () => boolean) => {
+    panelBack.current = handler;
+  }, []);
   const goBack = useCallback(() => {
+    if (gitOpen && panelBack.current?.()) return;
     if (gitOpen) setGitSession(null);
     else if (filesOpen) setFilesSession(null);
     else {
@@ -235,9 +248,48 @@ export function ChatScreen() {
   // plain label there rather than offering an expansion it cannot deliver.
   const reasoningFetchSupported = remote.capabilities.has("reasoning_fetch_v1");
 
-  const { message, setMessage, attachments, setAttachments, sessionRefs, rememberSessionRef, restoring } = useComposerDraft(
+  const { message, setMessage, attachments, setAttachments, choice, setChoice, sessionRefs, rememberSessionRef, restoring } = useComposerDraft(
     remote,
     t,
+  );
+  /**
+   * A `futureos-choice` row was picked (§6 b): the answer belongs to the draft, so
+   * this writes the draft and nothing else — the card's marked row and the chip
+   * above the field both re-read it from there (§2).
+   *
+   * Picking on a *different* question starts that question's answer over: an old
+   * answer must not lend its option ids to a card that asked something else.
+   */
+  const pickChoice = useCallback((card: ChoiceCardNode, optionId: string) => {
+    setChoice((current) => {
+      const base = current?.title === card.title ? current : choiceAnswerFromCard(card);
+      const next = pickChoiceOption(base, optionId);
+      // Unticking the last option of a multi-choice answer leaves no answer at
+      // all, and the chip must go with it.
+      return next.selectedIds.length > 0 ? next : null;
+    });
+  }, [setChoice]);
+  const clearChoice = useCallback(() => setChoice(null), [setChoice]);
+  /**
+   * What the transcript may do with the draft's answer.
+   *
+   * Handed to every reply (`TimelineCard` gives it to the thread's last settled
+   * reply, and only to that reply's last card): an older card's question is
+   * already answered, and letting it change would make "which pick am I editing"
+   * unanswerable (§2).
+   *
+   * It is present **before** anything is picked — an empty answer is what the first
+   * pick is written into — so a card's rows are live even though the draft holds
+   * nothing yet. `title` is empty until an answer exists, which is what keeps every
+   * row unmarked; `MarkdownText` matches rows against it.
+   */
+  const choiceCardAnswer = useMemo<ChoiceCardAnswer>(
+    () => ({
+      onPick: pickChoice,
+      selectedIds: choice?.selectedIds ?? [],
+      title: choice?.title ?? "",
+    }),
+    [choice, pickChoice],
   );
   const { openAttachmentMenu, attachmentMenu, albumPicker } = useAttachmentPicker(
     attachments,
@@ -290,6 +342,7 @@ export function ChatScreen() {
   const queuePanelItems = useMemo(
     () => queuedRows.map(row => ({
       attachments: row.attachments,
+      choice: row.choice,
       content: row.text,
       id: row.runId,
       parked: isParkedSessionQueueRow(row),
@@ -459,6 +512,45 @@ export function ChatScreen() {
       await resendQueuedMessage(row, text, carry);
     });
   }, [changeQueue, materializeQueuedAttachment, queuedRows, remote, resendQueuedMessage, sessionId, t]);
+
+  /**
+   * Change the pick a waiting message carries (§5.8.2).
+   *
+   * The row's own words say `[question → answer]`, so changing the answer means
+   * the sentence has to change with it — otherwise the message still runs with
+   * the old pick. Both travel in one `edit_queued_run`, and the choice rides
+   * along so the row keeps offering the other options.
+   */
+  const updateQueuedChoice = useCallback((id: string, next: ChoiceAnswer) => {
+    const row = queuedRows.find(item => item.runId === id);
+    if (!row?.choice)
+      return;
+    // The row's text is `[question → answer]` possibly followed by whatever the
+    // reader typed after it. Only the bracketed head is rewritten: the note the
+    // message was queued with is theirs, not the card's.
+    const answer = choiceAnswerText(next);
+    const note = row.text.replace(/^\[[^\]]+\]\s*/u, "");
+    const text = note.trim() ? `${answer} ${note.trim()}` : answer;
+    const reported = row.attachments;
+    const carry = () => reported === undefined
+      ? Promise.resolve([] as MobileAttachment[])
+      : Promise.all(reported.map(materializeQueuedAttachment));
+    changeQueue(async () => {
+      try {
+        await remote.editQueuedRun(sessionId, row.runId, text, {
+          mode: next.mode,
+          options: next.options,
+          selectedIds: next.selectedIds,
+          title: next.title,
+        });
+      }
+      catch (error) {
+        if (!isUnsupportedCommandError(error))
+          throw error;
+        await resendQueuedMessage(row, text, carry);
+      }
+    });
+  }, [changeQueue, materializeQueuedAttachment, queuedRows, remote, resendQueuedMessage, sessionId]);
 
   /** Open one file a waiting message carries, exactly as the transcript would. */
   const previewQueuedAttachment = useCallback((attachment: SendQueueAttachmentItem) => {
@@ -714,7 +806,7 @@ export function ChatScreen() {
   );
   const { sendFromComposer, dismissSuggestedSkill, installSuggestedSkill, installingSkill }
     = useComposerSubmission({
-      remote, t, message, attachments, restoring, setMessage, send: sendAndReadQueue,
+      remote, t, message, attachments, choice, clearChoice, restoring, setMessage, send: sendAndReadQueue,
       recommendation: skillRecommendation, scrollToLatest
     });
 
@@ -815,6 +907,7 @@ export function ChatScreen() {
     ({ item }: { item: TimelineItem; }) => (
       <View onLayout={onRowLayout}>
         <TimelineCard
+          choiceAnswer={choiceCardAnswer}
           item={item}
           isLatestAssistant={item.id === latestAssistantId}
           onOpenAttachment={handleTimelineAttachment}
@@ -829,6 +922,7 @@ export function ChatScreen() {
       </View>
     ),
     [
+      choiceCardAnswer,
       forkSupported,
       handleResolveReasoning,
       reasoningFetchSupported,
@@ -984,6 +1078,8 @@ export function ChatScreen() {
                     keyboardHeight={keyboardHeight}
                     message={message}
                     setMessage={setMessage}
+                    choice={choice}
+                    onChangeChoice={setChoice}
                     sessionRefs={sessionRefs}
                     rememberSessionRef={rememberSessionRef}
                     attachments={attachments}
@@ -1019,6 +1115,7 @@ export function ChatScreen() {
                     queueItems={queuePanelItems}
                     queueNotice={queueNoticeText}
                     onQueueUpdate={updateQueuedMessage}
+                    onQueueUpdateChoice={updateQueuedChoice}
                     onQueueRemove={removeQueuedMessage}
                     onQueueRelease={releaseQueuedMessage}
                     onQueuePreviewAttachment={previewQueuedAttachment}
@@ -1052,6 +1149,7 @@ export function ChatScreen() {
                   listCommits={remote.listGitCommits}
                   getCommit={remote.getGitCommit}
                   onClose={() => setGitSession(null)}
+                  registerBack={registerPanelBack}
                 />
               )}
 

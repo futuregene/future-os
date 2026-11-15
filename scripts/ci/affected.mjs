@@ -152,6 +152,24 @@ export function rustTestGroups(groups) {
     : [group]);
 }
 
+// Windows runs the agent suite ~4x slower than Linux (981 s against 234 s in run
+// 43637520669) and that single job was the whole critical path: it ran 21.9 min
+// of a 22.4 min run. The three OS callers pass the same `rust_tests` JSON, so
+// sharding there would shard every platform; this publishes a second matrix the
+// Windows caller alone consumes. `cargo nextest --partition` keeps the split
+// exhaustive and disjoint (verified: hash:1/2 and hash:2/2 return 3 and 4 of 7
+// tests with no overlap).
+export const AGENT_TEST_SHARDS = 2;
+
+export function shardedTestGroups(groups) {
+  return rustTestGroups(groups).flatMap(group => group.name === 'agent'
+    ? Array.from({ length: AGENT_TEST_SHARDS }, (_, index) => {
+      const shard = `${index + 1}/${AGENT_TEST_SHARDS}`;
+      return { ...group, name: `agent (${shard})`, shard };
+    })
+    : [group]);
+}
+
 // Explicit manual selections do not expand to consumers. PR/push planning
 // continues to use changed files and the reverse dependency graph above.
 export function manualPlan(selection, projects) {
@@ -188,9 +206,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     ? manualPlan(process.env.MANUAL_PROJECTS, projects)
     : affected(json(process.argv[2]), projects, process.env.FORCE_ALL === 'true');
   plan.rust_tests = rustTestGroups(plan.rust);
+  plan.rust_tests_sharded = shardedTestGroups(plan.rust);
   console.log(JSON.stringify(plan, null, 2));
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT,
-    ['rust', 'rust_tests', 'typescript', 'android', 'ios'].map(key => `${key}=${JSON.stringify(plan[key])}\n`).join(''));
+    ['rust', 'rust_tests', 'rust_tests_sharded', 'typescript', 'android', 'ios']
+      .map(key => `${key}=${JSON.stringify(plan[key])}\n`).join(''));
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY,
     `## Affected CI plan\n\n\`\`\`json\n${JSON.stringify(plan, null, 2)}\n\`\`\`\n`);
 }

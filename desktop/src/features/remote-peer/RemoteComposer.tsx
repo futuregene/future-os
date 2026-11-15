@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { SkillCandidate } from "../../integrations/skills/skillsClient";
+import type { ChoiceAnswer, ChoiceCardQuestion } from "../agent/composer/choiceAnswer";
 import type { RemoteSessionRow } from "./mergeConversations";
 import type { RemoteCommand, RemoteSkillChoice, RemoteSlashItem } from "./remoteCommands";
 import type { RemotePeer, RemoteSkillInfo, RemoteUpload } from "./remotePeerClient";
@@ -9,7 +10,7 @@ import type { RemoteReferenceMap, RemoteReferenceOption } from "./remoteSessionR
 import { fusionTask } from "@future-os/thread-projection";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ArrowUp, Loader2, Paperclip, Square, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
 import { openPath, readNativeClipboardFilePaths, readNativeClipboardImage, savePastedFile, savePastedImage } from "../../integrations/storage/threadStore";
@@ -20,11 +21,13 @@ import { errorMessage } from "../../lib/errors";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { useImeEnterGuard } from "../../lib/useImeEnterGuard";
 import { imageExtensionFromMime, splitFileName } from "../agent/attachments";
+import { answerFromPick, choiceAnswerText } from "../agent/composer/choiceAnswer";
 import { SendQueuePanel } from "../agent/SendQueuePanel";
 import { SkillRecommendCard } from "../agent/SkillRecommendCard";
 import { FilePreviewOverlay } from "../filepreview/FilePreviewOverlay";
 import { previewKindForPath } from "../filepreview/previewKind";
 import { RemoteApprovalMenu } from "./RemoteApprovalMenu";
+import { RemoteChoiceChip } from "./RemoteChoiceChip";
 import { buildRemoteSlashMenu, insertRemoteSkill, remoteSlashItems, slashQuery, withoutSlashWord } from "./remoteCommands";
 import { clearRemoteComposerDraft, loadRemoteComposerDraft, saveRemoteComposerDraft } from "./remoteComposerDraft";
 import { abortRemoteRun, listRemoteInstalledSkills, previewRemoteFile, uploadRemoteFile } from "./remotePeerClient";
@@ -219,6 +222,11 @@ export interface RemoteSkillRecommendation {
  * sending (with an empty `sessionId` for a conversation that does not exist yet)
  * and stopping a run that is in flight.
  */
+export interface RemoteComposerHandle {
+  /** Pick one row of a choice card in the transcript: the chip's own pencil write. */
+  selectChoice: (optionId: string, card: ChoiceCardQuestion) => void;
+}
+
 export function RemoteComposer({
   archived = false,
   canCompact = false,
@@ -230,13 +238,26 @@ export function RemoteComposer({
   freshThinkingLevel = null,
   onCompact,
   onCreated,
+  onChoiceChange,
   onSent,
   peer,
+  ref,
   sessionId,
   skillRecommendation,
   streaming = false,
   workspaceId = null,
 }: {
+  /**
+   * The draft's answer changed — a row clicked on the transcript's card, or the
+   * chip's own pencil, cross or removal.
+   *
+   * The caller keeps it because the *card* lives in the transcript, not in this
+   * box: the reply's rows need the picked ids to mark themselves, and a card in
+   * the transcript cannot read this component's state (design §5.4).
+   */
+  onChoiceChange?: (answer: ChoiceAnswer | null) => void;
+  /** React 19: `ref` is an ordinary prop; the handle is `RemoteComposerHandle`. */
+  ref?: React.Ref<RemoteComposerHandle>;
   /**
    * This conversation is shelved on its host.
    *
@@ -371,6 +392,51 @@ export function RemoteComposer({
   const queue = useRemoteQueue(desktopId, sessionId, streaming);
   const [queueChoiceOpen, setQueueChoiceOpen] = useState(false);
   /**
+   * The answer to this conversation's closing `futureos-choice` card.
+   *
+   * Held beside the text rather than in it, because a `textarea` cannot carry an
+   * atomic element and the answer must not be spliced into the words the reader
+   * typed. Everything that asks "is there anything to send" reads this too — see
+   * `hasDraft` below, which is why picking an option and pressing Send works
+   * (design §5.4).
+   */
+  const [choice, setChoice] = useState<ChoiceAnswer | null>(null);
+  /** Whether the chip's pencil is showing the card's other rows. */
+  const [choiceMenuOpen, setChoiceMenuOpen] = useState(false);
+
+  /**
+   * Write the answer and tell the caller, which is what keeps the transcript's
+   * card and this box's chip showing the same thing.
+   *
+   * `onChoiceChange` rides in a ref so the callbacks below stay stable: a
+   * changing prop must not re-create the handle on every render of a transcript
+   * that re-renders on every streaming delta.
+   */
+  const onChoiceChangeRef = useRef(onChoiceChange);
+  onChoiceChangeRef.current = onChoiceChange;
+  const writeChoice = useCallback((next: ChoiceAnswer | null) => {
+    setChoice(next);
+    onChoiceChangeRef.current?.(next);
+  }, []);
+
+  /**
+   * A row clicked on the transcript's closing card. The same write the chip's
+   * pencil makes; only the entrance differs (design §5.4, requirement b).
+   */
+  const selectChoice = useCallback((optionId: string, card: ChoiceCardQuestion) => {
+    // A shelved conversation refuses every prompt, and a locked one could not
+    // send the message the answer belongs to; the card stays read-only there.
+    if (archived || locked)
+      return;
+    setChoice((current) => {
+      const next = answerFromPick(current, card, optionId);
+      onChoiceChangeRef.current?.(next);
+      return next;
+    });
+  }, [archived, locked]);
+
+  useImperativeHandle(ref, () => ({ selectChoice }), [selectChoice]);
+  /**
    * The conversations this draft points at, keyed by the token standing in for
    * each one (`remoteSessionReference`). The draft shows `#title`; this is the
    * id that makes it a reference, and it is kept with the draft for that reason.
@@ -405,13 +471,22 @@ export function RemoteComposer({
     setText(draft?.text ?? "");
     setUploads(draft?.uploads ?? []);
     setReferences(draft?.references ?? {});
+    setChoice(draft?.choice ?? null);
+    // The restored answer is the card's too: a draft reopened must mark the same
+    // row it marked before the reader left.
+    onChoiceChangeRef.current?.(draft?.choice ?? null);
     const outbox = getRemoteOutbox(desktopId, sessionId);
     setPendingPrompt(outbox.prompt);
   }, [desktopId, sessionId]);
 
   useEffect(() => {
-    saveRemoteComposerDraft(desktopId, sessionId, { text, uploads, references });
-  }, [desktopId, sessionId, text, uploads, references]);
+    saveRemoteComposerDraft(desktopId, sessionId, {
+      text,
+      uploads,
+      references,
+      ...(choice ? { choice } : {}),
+    });
+  }, [desktopId, sessionId, text, uploads, references, choice]);
 
   /**
    * Autofocus so the user can type immediately, which is the rule this app's own
@@ -617,11 +692,14 @@ export function RemoteComposer({
       // The outbox generates a stable command id, persists the prompt, and
       // clears it once the host accepts. If the prompt is queued because the
       // link is down, the outbox leaves it for recovery.
-      // The references are expanded here, on the one path that puts text on the
-      // wire, and not in the draft: what the reader typed is a token, and what
-      // the agent resolves is the link it stands for.
+      // The answer to the closing choice card joins the message here, on the one
+      // path that puts text on the wire, so every caller (a plain send, the queue
+      // hand-off, a skill install, the recommendation card's dismiss) sends it
+      // once and in the same place. The references are expanded after it: what
+      // the reader typed is a token, and what the agent resolves is the link it
+      // stands for.
       const ack = await sendRemotePrompt(desktopId, sessionId, {
-        text: expandRemoteReferences(message, references),
+        text: expandRemoteReferences(messageWithChoice(message), references),
         attachments: uploadsForSend,
         workspaceId,
         freshModelId,
@@ -634,6 +712,10 @@ export function RemoteComposer({
       setText("");
       setUploads([]);
       setReferences({});
+      // The answer was sent with the words above, so it leaves the draft in the
+      // same breath: a chip that outlived its message would make the next send
+      // repeat it.
+      writeChoice(null);
       clearRemoteComposerDraft(desktopId, sessionId);
       setPendingPrompt(null);
       if (!sessionId)
@@ -847,10 +929,38 @@ export function RemoteComposer({
     }
   }
 
+  /**
+   * Whether this draft holds anything worth sending: words, files, or an answer
+   * to a choice card.
+   *
+   * One predicate instead of three copies of `text.trim()`, because the three
+   * call sites that ask it (the send button's `disabled`, `send()`'s own guard,
+   * and the menu trigger) disagreeing is exactly how the answer stops being
+   * sendable — the chip is drawn but the button stays grey (design §5.4).
+   */
+  const hasDraft = text.trim().length > 0 || uploads.length > 0 || choice !== null;
+
+  /**
+   * What the answer adds to the message on its way out (design §7).
+   *
+   * The answer leads and the typed words follow, matching the local editor's
+   * document order, so the same draft sends the same bytes from either surface.
+   * A lone answer sends the serialized form alone — plain text, because it has
+   * to be readable by the TUI, an IM bot and the host's own transcript.
+   */
+  function messageWithChoice(words: string): string {
+    if (!choice)
+      return words;
+    const answer = choiceAnswerText(choice);
+    return words ? `${answer} ${words}` : answer;
+  }
+
   async function send() {
     const message = text.trim();
     // An attachment with no words is still a message, which is how a file is
-    // handed over without writing a prompt around it.
+    // handed over without writing a prompt around it. An answer with no words is
+    // a message too — that is requirement (d), and the reason this reads
+    // `hasDraft` rather than the two older halves separately.
     //
     // A run in flight is the other thing that holds the send here: the host
     // answers one prompt at a time and refuses a second with "This session is
@@ -860,7 +970,7 @@ export function RemoteComposer({
     // the reply and let the queue start — and the send button's menu asks it.
     // Enter reaches this function too, so the choice is asked here, where both
     // paths meet.
-    if ((!message && uploads.length === 0) || busy || evaluating || locked)
+    if (!hasDraft || busy || evaluating || locked)
       return;
     if (streaming) {
       setQueueChoiceOpen(true);
@@ -1281,6 +1391,51 @@ export function RemoteComposer({
           chip — same height, same radius, same transparent border (the chip is
           not a control), the same 16px remove button, and the same
           middle-truncation so the suffix stays visible while the stem shrinks. */}
+      {choice
+        ? (
+            <div className="mb-2 flex flex-wrap items-center gap-1.5 px-1" data-choice-row>
+              <SelectMenu
+                align="left"
+                open={choiceMenuOpen}
+                onDismiss={() => setChoiceMenuOpen(false)}
+                panelClassName="w-72 overflow-hidden"
+                portal
+                trigger={(
+                  <RemoteChoiceChip
+                    answer={choice}
+                    onChange={() => setChoiceMenuOpen(true)}
+                    onRemove={() => writeChoice(null)}
+                  />
+                )}
+              >
+                {choice.options.map(option => (
+                  <SelectMenuItem
+                    className="py-1.5"
+                    key={option.id}
+                    onSelect={() => {
+                      setChoice((current) => {
+                        if (!current)
+                          return current;
+                        // The answer already carries its question and every row, so
+                        // the card is not asked again: `answerFromPick` needs the
+                        // question without a pick, which is exactly the other three
+                        // fields.
+                        const { mode, options, title } = current;
+                        const next = answerFromPick(current, { mode, options, title }, option.id);
+                        onChoiceChangeRef.current?.(next);
+                        return next;
+                      });
+                      setChoiceMenuOpen(false);
+                    }}
+                    selected={choice.selectedIds.includes(option.id)}
+                  >
+                    <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                  </SelectMenuItem>
+                ))}
+              </SelectMenu>
+            </div>
+          )
+        : null}
       {uploads.length > 0
         ? (
             <div className="mb-2 flex flex-wrap items-center gap-1.5 px-1">
@@ -1457,7 +1612,7 @@ export function RemoteComposer({
               local composer's size and colour: the same two controls in the same
               place on both screens. */}
           {streaming
-            ? ((text.trim() || uploads.length > 0) && !locked
+            ? (hasDraft && !locked
                 ? (
                     <SelectMenu
                       align="right"
@@ -1522,7 +1677,7 @@ export function RemoteComposer({
                   // `held` is not a state the button is briefly in (busy): it is the
                   // machine being someone else's, and the reason travels with the
                   // closed control rather than only in the banner above it.
-                  disabled={(!text.trim() && uploads.length === 0) || busy || uploading || evaluating || locked}
+                  disabled={!hasDraft || busy || uploading || evaluating || locked}
                   title={held ? t("heldSendBlocked") : archived ? t("archivedReadOnly") : busy ? t("sending") : t("send")}
                   type="submit"
                 >

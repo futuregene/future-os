@@ -88,6 +88,14 @@ pub struct AgentPromptRequest {
     /// Agent `BusyPolicy` value, or empty for the Agent's own default.
     #[serde(default)]
     pub busy_policy: String,
+    /// The answer a `futureos-choice` card gave this prompt.
+    ///
+    /// The message already says which option was picked (the sentence a card
+    /// sends reads `[question → answer]`), so this is not needed to send one:
+    /// it is what lets a waiting row offer to change the pick before the run
+    /// reads it, which needs the options the card offered and the sentence drops.
+    #[serde(default)]
+    pub choice: Option<future_rpc::payloads::QueuedRunChoice>,
 }
 #[cfg(any(test, feature = "test-support"))]
 pub async fn agent_prompt(
@@ -109,6 +117,7 @@ pub async fn agent_prompt(
         model_id,
         thinking_level,
         busy_policy: String::new(),
+        choice: None,
     })
     .await
 }
@@ -252,6 +261,7 @@ pub(super) async fn agent_prompt_inner(
         model_id,
         thinking_level,
         busy_policy,
+        choice,
     } = request;
     // The persisted thread binding is the identity authority. The webview's
     // session id is only an optimistic assertion and may be stale for one
@@ -392,13 +402,14 @@ pub(super) async fn agent_prompt_inner(
     observer::ensure_observer_for_thread(&session_id, &thread_id).map_err(crate::Error::from)?;
 
     let prompt_response = command_client
-        .execute_command(prompt_command(
+        .execute_command(crate::agent_commands::prompt_command_with_choice(
             message,
             model_context,
             session_id.clone(),
             attachments.unwrap_or_default(),
             Some(run_id.clone()),
             &busy_policy,
+            choice,
         ))
         .await
         .map_err(|error| format!("Unable to send prompt to Future Agent: {error}"))?

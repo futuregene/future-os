@@ -30,7 +30,7 @@ builds both Android and iOS bundles on Linux; Jest runs once. Native jobs test
 existing JVM/Swift code without signing or publishing. The iOS Foundation tests
 do not claim Simulator UI/E2E coverage.
 
-For Rust groups, Build uses `cargo test --locked --no-run` to compile
+For Rust groups, Build uses `cargo nextest run --locked --no-run` to compile
 the test targets; Tests uses the same package selection and profile to execute
 them. There is no preceding standalone dev-profile build. Documentation tests
 can still compile examples during Tests. Desktop precompiles only its default GUI
@@ -40,9 +40,19 @@ compatibility test and Clippy run only in Misc (`desktop-entry-compat`). Regular
 CI has no standalone product or combined CLI/GUI build. Packaging and signing
 belong to the release workflows.
 
+Tests execute through `cargo nextest`, which gives every test its own process and
+schedules all of them in one pool. `cargo test` runs one test binary at a time and
+parallelises only inside it, so a lane's wall time was set by its slowest single
+binary. nextest also runs no executable doctests; every doc code fence in this
+workspace is tagged `text`, `ignore` or `json`, and rustdoc compiles none of those,
+so nothing is dropped. `desktop/src-tauri`'s `gui_main_thread_drive` target is
+`harness = false` (it hands its tests the AppKit main thread) and speaks no
+listing protocol, so nextest excludes that one binary and `cargo test` runs it.
+
 Rust test invocations use `--no-fail-fast`: a failed target still fails its job,
-but Cargo continues through the other selected test targets so one run exposes
-all their failures instead of revealing them one target at a time.
+but the other selected targets still run so one run exposes all their failures
+instead of revealing them one target at a time. `--no-tests=pass` keeps libtest's
+behaviour where a filter that matches nothing is not a failure.
 
 All regular Rust, TypeScript and Android/iOS jobs collect GitHub's existing step
 timestamps for toolchain/cache setup, dependencies, Build, Tests and checks.
@@ -53,8 +63,9 @@ step timestamps have second precision. Early cancellation or runner loss may
 prevent the final upload.
 
 Rust/TS `commands.jsonl` also records monotonic command duration, exit status and
-selection. Rust Build uses `cargo test --no-run --timings` for Cargo's compilation
-HTML. JSONL preserves native Rust target headings and test-result summaries,
+selection. Rust Build uses `cargo nextest run --no-run --timings` for Cargo's
+compilation HTML. JSONL preserves native Rust target headings and test-result
+summaries,
 including reported elapsed time and pass/fail/ignore counts. stdout/stderr are
 separate streams and children may print summaries too: adjacent rows alone do
 not establish attribution. Output arrival intervals are not individual-test or
@@ -237,6 +248,239 @@ Core groups share one cache per OS; the CLI test job can write it when CI is
 manually dispatched on main. Desktop has a separate GUI cache written by Desktop
 test jobs in that dispatch. PR/check/Misc jobs do not write large private Rust
 cache copies. Dispatch CI on main when shared caches need refreshing.
+
+### Cache quota
+
+The repository-wide Actions cache quota is 10 GB, and it is shared by every
+workflow. Only `refs/heads/main` entries are restorable across runs; an entry
+written on a PR merge ref is visible to that PR alone. So a per-ref cache is a
+pure liability: it consumes quota nobody else can use, and the eviction it
+causes costs the restorable entries their hits.
+
+Measured 2026-11-15: 27 entries / 10.19 GB, of which 21 entries / 6.40 GB were
+`node-cache-*` written by `actions/setup-node` with `cache: npm`. That setting
+keys the tarball by ref, so each PR wrote its own ~318 MB (Linux) + ~305 MB
+(macOS) copy, and the same entry existed once per closed PR plus once on
+`dev-huichen`. The six `v0-rust-*` entries the Rust lanes actually restore were
+0.48–0.94 GB each and were being evicted to make room.
+
+[`scripts/ci/prune-node-caches.sh`](../../scripts/ci/prune-node-caches.sh)
+lists those entries and deletes them with `--apply`. Deleting a cache needs only
+`repo` scope, not `workflow` scope, so it works on a machine whose token cannot
+push workflow edits. After pruning, the same command reports the new total:
+3.79 GB, with all six Rust entries intact.
+
+Pruning is not a fix, only a reset — it buys back the quota and nothing more. A
+PR that opens after the prune writes a new per-ref copy straight away: within
+hours of the reset above, `refs/pull/1616/merge` had already added its own
+318 MB `node-cache-*` entry. The durable fix has to stop the per-ref write.
+
+### Executable plan: make the npm cache restore-only on PRs
+
+Blocked on a machine whose token has `workflow` scope. Every file and line below
+was verified against `128d0e6d4`; apply them together and re-run a PR to confirm.
+
+Seven sites set `cache: npm`. That is the complete set — `grep -rn "cache: npm"
+.github/` returns exactly these seven, and `build-windows-signed.yml` /
+`build-android-apk.yml` already run `npm ci` with no `cache:` at all, so the
+target shape is a form this repository already uses:
+
+| File | Line | Job |
+| --- | --- | --- |
+| `.github/workflows/typescript-ci.yml` | 34 | TypeScript check/test (10 project jobs each) |
+| `.github/workflows/ci.yml` | 155 | Android test |
+| `.github/workflows/ci.yml` | 214 | iOS test |
+| `.github/workflows/misc.yml` | 256 | Misc npm job |
+| `.github/workflows/build-linux.yaml` | 65 | Linux release build |
+| `.github/workflows/build-ios-testflight.yml` | 59 | iOS TestFlight build |
+| `.github/workflows/build-macos-signed.yml` | 113 | macOS signed build |
+
+Do **not** simply delete `cache: npm`. `npm ci` is not free: measured across the
+22 invocations in run `43637520669`, it cost **883 s total = 14.7 runner-min**,
+mean 40.1 s, median 32 s, min 19 s, max 88 s. Removing the cache outright pays
+that in full on all 22 jobs. What has to change is *who may write*, not whether
+a cache exists.
+
+Two shapes work. Prefer (A) because it keeps `setup-node`'s own download logic:
+
+**(A) Stop `setup-node` from managing the cache; add an explicit restore-only step.**
+Replace each of the seven `cache: npm` lines, leaving `node-version` in place:
+
+```yaml
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          # npm cache is restore-only: a per-ref write costs 318-305 MB of the
+          # 10 GB repository quota and no other PR can reuse it.
+      - name: Restore npm cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-
+```
+
+Two properties matter here and both are load-bearing:
+
+- The `key` contains no `${{ github.ref }}`, so every PR computes the same key
+  as `main` and restores the one shared entry instead of writing a private copy.
+- `actions/cache/restore` never saves. Nothing this step does can add an entry
+  or evict a Rust one, on any ref.
+
+`hashFiles('package-lock.json')` at the repository root is correct for this
+workspace: the root `package.json` declares the npm workspaces and the root
+lockfile is the single source of truth, which is why the existing
+`cache-dependency-path: package-lock.json` already points there.
+
+**(B) Keep `setup-node`, drive it from an env flag.**
+If a reviewer prefers fewer steps, `actions/setup-node` accepts `cache: ''`,
+so the same effect comes from passing the cache name conditionally:
+
+```yaml
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: ${{ github.ref == 'refs/heads/main' && 'npm' || '' }}
+```
+
+This still writes on `main` only. It is simpler but leaves the save path alive,
+so a future edit to the condition re-introduces the leak; (A) cannot leak by
+construction.
+
+After applying either shape, confirm all four of these:
+
+1. `grep -rn "cache: npm" .github/` returns nothing, or only the `main`-guarded
+   form from (B).
+2. A PR run logs `Cache restored from key: npm-Linux-x64-<hash>` (a *restore*,
+   not `Cache saved with key`).
+3. `gh api 'repos/:owner/:repo/actions/caches?per_page=100'` shows no
+   `refs/pull/*` entry after the PR finishes.
+4. The six `v0-rust-*` entries on `refs/heads/main` are still present.
+
+### Runner cost: wall clock, not minutes
+
+The repository is public, so runner minutes are not billed. What a 22-job
+expansion actually costs is **wall clock and queueing**, and on this matrix the
+two are not where "too many jobs" intuition puts them.
+
+Measured on run `43637520669` (51 jobs, the first run after nextest landed):
+
+| | value |
+| --- | --- |
+| wall clock, first job start to last job end | **22.4 min** |
+| sum of job durations | 214.3 runner-min |
+| peak concurrent jobs | 20 (the org-free limit) |
+| jobs on the critical path | **one** |
+
+Per runner: `ubuntu-latest` 36 jobs / 95.5 min, `windows-latest` 7 / 65.7,
+`macos-latest` 8 / 53.1. Per group: `Rust Windows test` 7 jobs / 65.7 min is the
+largest, then `Rust Linux test` 7 / 41.5 and `Rust macOS test` 7 / 40.6.
+
+The run finished 22.4 min in because **`Rust Windows test / agent` alone took
+21.9 min** — the other 50 jobs were done well inside it. Peak concurrency hit 20
+for only part of the run, and the queue wait was short (≤2 s on the pure-Rust
+run `43642118345`). So on the current matrix, cutting job count would not
+shorten the run at all; it would lengthen it.
+
+That job's split is `Build 245 s + Tests 981 s`. The 981 s is **pre-existing,
+not a nextest regression**: in run `43635381613`, taken before the nextest
+change, the same step took **1024 s**. Windows runs these tests ~4× slower than
+Linux (`Tests` 981 s vs 234 s for the same crate, same suite), which is the real
+target.
+
+### Executable plan: shard the critical-path job
+
+Blocked on `workflow` scope, like the npm-cache plan above. `cargo nextest`
+supports `--partition`, so the job splits with no new tooling. Verified on
+`future-config`: `--partition hash:1/2` and `hash:2/2` return 3 and 4 of 7 tests,
+summing to the total with **zero overlap**.
+
+One constraint shapes the change: all three OS callers pass the **same**
+`rust_tests` JSON (`ci.yml:91/101/111`), so sharding in `affected.mjs` alone
+would shard all three platforms. Only Windows needs it. The planner therefore
+publishes a second, sharded matrix and only the Windows caller consumes it.
+
+**(1) `scripts/ci/affected.mjs`** — emit a sharded variant next to the plain one:
+
+```js
+// Windows runs `agent` ~4x slower than Linux; split only that lane, only there.
+export function rustTestGroups(groups) {
+  return groups.flatMap(group => group.name === 'host'
+    ? ['remote', 'core'].map(suite => ({ ...group, name: `host-${suite}`, hostSuite: suite }))
+    : [group]);
+}
+
+export function shardedTestGroups(groups) {
+  return rustTestGroups(groups).flatMap(group => group.name === 'agent'
+    ? [1, 2].map(n => ({ ...group, name: `agent (${n}/2)`, shard: `${n}/2` }))
+    : [group]);
+}
+```
+
+and in `main`, alongside the existing `rust_tests` output:
+
+```js
+plan.rust_tests_sharded = shardedTestGroups(plan.rust);
+```
+
+`GITHUB_OUTPUT` gains `rust_tests_sharded=$(JSON.stringify(plan.rust_tests_sharded))`.
+
+**(2) `.github/workflows/ci.yml`** — expose it, and use it only for Windows:
+
+```yaml
+      rust_tests_sharded: ${{ steps.plan.outputs.rust_tests_sharded }}
+```
+
+```yaml
+  rust-windows-test:
+    with:
+      os: windows-latest
+      mode: test
+      projects: ${{ needs.affected.outputs.rust_tests_sharded }}   # was rust_tests
+```
+
+Linux and macOS keep `rust_tests`. Cost: **+1 job** (52 total instead of 51),
+which matters because peak concurrency already touches the 20-job org-free
+limit — sharding all three OSes would add 3 and is why this is scoped to one.
+
+**(3) `.github/workflows/rust-ci.yml`** — carry the shard into the job env:
+
+```yaml
+    env:
+      CI_TEST_SHARD: ${{ matrix.shard }}
+```
+
+**(4) `scripts/ci/rust-checks.mjs`** — append the partition. Already implemented on
+this branch (`docs/ci-plan`), so a workflow-only follow-up needs nothing here:
+
+```js
+const testShard = process.env.CI_TEST_SHARD || '';
+if (testShard && !/^[1-9]\d*\/[1-9]\d*$/.test(testShard)) throw new Error(`Invalid CI_TEST_SHARD: ${testShard}`);
+const partition = testShard ? ['--partition', `hash:${testShard}`] : [];
+const NEXTEST_TEST = [...NEXTEST, '--no-fail-fast', ...partition];
+```
+
+`build` reuses `NEXTEST` with `--no-run`, so both shards compile the full test
+targets; that is why `Build` does not halve below.
+
+Projected effect on the critical path:
+
+| shape | build | tests | job duration | run wall clock |
+| --- | --- | --- | --- | --- |
+| today | 245 s | 981 s | 20.4 min | 22.4 min |
+| 2-way | 245 s | 490 s | 12.3 min | **~14 min** |
+| 3-way | 245 s | 327 s | 9.5 min | **~11 min** |
+
+The `+66 s` setup/cache per extra shard job is included (Windows measured 10 s
+setup + 56 s cache). 3-way needs `[1,2,3].map(...)` and `(n/3)` in
+`shardedTestGroups`, and adds one more job.
+
+**Do not collapse crates to fewer jobs.** Measured, one job per OS running its 7
+crates sequentially would be `Linux 35.5 min`, `Windows 55.5 min`, `macOS
+35.6 min` — each *worse* than today's 22.4 min run, because per-crate build and
+test time simply adds up once the parallelism is gone. The 21 Rust test jobs are
+not the problem; one job inside them is.
 
 ## Specialty validation
 

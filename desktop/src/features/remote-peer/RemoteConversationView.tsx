@@ -1,5 +1,7 @@
 import type { AgentMessage } from "@future-os/thread-projection";
 import type { ActivityTargetResolver } from "../agent/AgentActivityList";
+import type { ChoiceCardQuestion } from "../agent/composer/choiceAnswer";
+import type { ChoiceCardAnswer } from "../markdown/MarkdownContent";
 import type { RemotePeer } from "./remotePeerClient";
 import type { RemoteLiveReply } from "./remoteRunStreams";
 import type { RemoteApproval } from "./useRemoteApprovals";
@@ -90,6 +92,8 @@ export function RemoteConversationView({
   loadingOlder,
   messages,
   onContinueRun,
+  onChoiceSelect,
+  choiceSelectedIds,
   onDecideApproval,
   onFork,
   onLoadOlder,
@@ -214,6 +218,16 @@ export function RemoteConversationView({
    * and takes the wide lane, which is what a host with a grid open should send.
    */
   selectiveEvents?: boolean;
+  /**
+   * Row clicked on the trailing reply's `futureos-choice` card.
+   *
+   * Absent in the panel's reading cells and anywhere the composer cannot send:
+   * the cards then stay read-only rather than inviting a click that writes
+   * nothing, exactly as this app's own transcript does (`AgentThread`).
+   */
+  onChoiceSelect?: (optionId: string, card: ChoiceCardQuestion) => void;
+  /** The draft's picked ids, so the card marks the row the answer names. */
+  choiceSelectedIds?: readonly string[];
 }) {
   const { t } = useTranslation("remotePeer");
   const [hoveredId, setHoveredId] = useState<string | null>(null);
@@ -537,9 +551,29 @@ The same two layers this app's own conversation uses (`AgentThread`):
                  * composer is where that state is explained.
                  */
                 const writable = (index !== rendered.length - 1 || !streaming) && !held;
+                /**
+                 * The answer surface for *this* row, on the rule this app's own
+                 * transcript uses: only the trailing reply's card answers the
+                 * draft, and only once it has settled — a card still being
+                 * written can be rewritten under the click, which would leave a
+                 * chip describing a question no longer on screen (`MessageList`).
+                 *
+                 * `writable` is the other half: a host another device drives
+                 * refuses this client's prompt, so the card must not offer a
+                 * click whose message could not be sent.
+                 */
+                const choiceAnswer: ChoiceCardAnswer | undefined
+                  = onChoiceSelect
+                    && writable
+                    && index === rendered.length - 1
+                    && message.role === "assistant"
+                    && message.status !== "streaming"
+                    ? { onSelect: onChoiceSelect, selectedIds: [...(choiceSelectedIds ?? [])] }
+                    : undefined;
                 return (
                   <RemoteAttachmentProvider key={message.id} value={{ desktopId, sessionId }}>
                     <MessageBlock
+                      choiceAnswer={choiceAnswer}
                       dataMessageId={message.id}
                       hovered={hoveredId === message.id}
                       isLast={index === rendered.length - 1}

@@ -399,6 +399,12 @@ fn provider_view(state: &AppState) -> Result<serde_json::Value, String> {
                 "name": name,
                 "api": config.get("api").and_then(serde_json::Value::as_str).unwrap_or_default(),
                 "baseUrl": config.get("baseUrl").and_then(serde_json::Value::as_str).unwrap_or_default(),
+                // The stored opt-out, so an editor opening this provider shows
+                // the switch in the state the agent will actually use.
+                "skipTlsVerify": config
+                    .get("skipTlsVerify")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
                 "hasApiKey": has_key(provider_id),
                 "models": provider_models,
             })

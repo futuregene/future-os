@@ -450,6 +450,17 @@
         "$ref": "#/$defs/UploadReference"
       }
     },
+    "choice": {
+      "x-rust-name": "choice",
+      "x-rust-type": "Option<serde_json::Value>",
+      "default": null,
+      "x-ts-type": "{ mode: \"single\" | \"multi\"; title: string; options: { id: string; label: string }[]; selectedIds: string[] }",
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "prompt / edit_queued_run: the answer a futureos-choice card gave this message. The message already reads `[question → answer]`; this rides alongside because it also carries the options the card offered, which the sentence drops — that is what lets a waiting row offer a different pick. Absent means \"answered no card\", and on edit_queued_run it also means \"leave the accepted answer alone\". An older host ignores it."
+    },
     "protocolVersion": {
       "x-rust-name": "protocol_version",
       "x-rust-type": "u32",
