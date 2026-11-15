@@ -120,6 +120,7 @@ function TimelineCardView({
           : item.truncated
             ? t("failure.modelResponseError")
             : null;
+      const canRecover = canRecoverMessage(item, isLatestAssistant ? item.id : null);
       const copyableText = item.text;
       // The reply's rendered slices.
       const blocks = buildReplyBlocks(item.segments ?? [], item.streaming);
@@ -148,6 +149,26 @@ function TimelineCardView({
       const copyPayload = folded
         ? folded.answer.flatMap(block => (block.kind === "segment" && block.segment.kind === "text" ? [block.segment.text] : [])).join("\n\n")
         : copyableText;
+      // A row with nothing to draw draws nothing at all.
+      //
+      // The live lane materializes an accumulator for every run any frame names,
+      // so a run that never wrote a word still becomes an item — and once it
+      // settles with no prose, no slices, no clock, no token count and no
+      // verdict, the only thing left is the footer's fallback label. That is the
+      // card a reader saw sitting under a finished reply (2026-11-15): it said
+      // "completed" and held nothing. Durable history never draws such a row
+      // (`messageToItems` drops it for exactly this reason), so this renderer
+      // must not invent one either. The condition is the projection's, restated
+      // over an item: nothing visible, no stats, no outcome to report.
+      const drawsNothing =
+        item.streaming !== true
+        && !dividerOnly
+        && !terminationNotice
+        && !canRecover
+        && footerStats.length === 0
+        && item.text.trim().length === 0
+        && (item.segments?.length ?? 0) === 0;
+      if (drawsNothing) return null;
       return (
         <View style={styles.assistantMessage}>
           {item.segments && item.segments.length > 0 ? (
@@ -212,7 +233,7 @@ function TimelineCardView({
           {/* Desktop parity: the retry/continue row sits right below the bubble
               content, above the copy/stats footer. It asks nothing about *why*
               the reply stopped — see `canRecoverMessage`. */}
-          {canRecoverMessage(item, isLatestAssistant ? item.id : null) && (
+          {canRecover && (
             <View style={styles.recoveryRow}>
               <Button
                 compact
