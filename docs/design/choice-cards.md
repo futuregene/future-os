@@ -106,12 +106,15 @@ Use it only when all of these hold:
 - The reply genuinely ends with a question about the next step, and you can carry
   out every option yourself right after they pick.
 - There are 2–4 real alternatives. One option, or five, is a paragraph — not a card.
-- The options are mutually exclusive (omit `mode: multi` unless several can be done
-  in one go).
+- The options are mutual alternatives — you would do one of them next.
 
 Do not use it for: confirming a risky action (the approval card already owns that),
 restating what you just did, "let me know if you need anything", or a question whose
 answer needs a sentence rather than a pick.
+
+`mode:` — omit it for one pick (`single` is the default). Write `mode: multi` when the
+rows are parts of one job rather than alternatives, and you would do two or more of them
+together. The reader then ticks several and the answer joins their labels with 、.
 
 Write each option as the instruction you would follow if chosen — the user's words,
 not a menu label ("重画森林图", not "选项 A"). The third field says what changes or
@@ -121,6 +124,14 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 ```
 
 The point: **an option's label must be the sentence the user would say**, because on send it becomes part of the message. Not "option A/B/C".
+
+**Why §4 was revised on 2026-11-15.** The first wording described `multi` as a
+last resort ("omit `mode: multi` unless several can be done in one go") and put it in
+a list of conditions for using the card at all. Every card the model then wrote came
+out single, including a row of tasks where picking two was obviously one job — the
+answer had to be typed by hand, which is the waste the card exists to remove. The
+rule now says when to write `mode: multi` on its own terms, next to the other
+per-field lines, instead of as a caveat on the default.
 
 ## 5. The interface
 
