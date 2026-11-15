@@ -837,12 +837,20 @@ pub async fn rename_session(session_id: String, name: String) -> Result<(), crat
         .map_err(|status| format!("set_session_name failed: {status}"))?
         .into_inner()
         .ok_or_rpc_error("set_session_name returned an error")?;
-    // Mirror to GUI store so the sidebar title stays in sync.
-    if let Ok(Some(thread)) = crate::store::find_thread_by_agent_session(&session_id) {
-        let _ = crate::store::rename_thread(crate::store::RenameThreadInput {
+    // Mirror to GUI store so the sidebar title stays in sync. A failed write
+    // here is reported, never swallowed: the Agent already holds the new name
+    // and the discovery pass converges this store *to* the Agent, so an
+    // unreported failure would leave the two disagreeing and the old title
+    // coming back on the next pass — the same "it reverted later" symptom the
+    // Agent side had.
+    if let Some(thread) = crate::store::find_thread_by_agent_session(&session_id)? {
+        crate::store::rename_thread(crate::store::RenameThreadInput {
             thread_id: thread.id,
             title: name,
-        });
+        })
+        .map_err(|error| {
+            format!("the Agent renamed the session but its local title could not be saved: {error}")
+        })?;
     }
     Ok(())
 }
