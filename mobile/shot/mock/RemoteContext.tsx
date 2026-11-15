@@ -69,6 +69,7 @@ import {
   multiTurnOlderEntries,
   recentOnlySessions,
   sessions,
+  withListMarks,
 } from "./data";
 import {
   parserDesktopName,
@@ -303,11 +304,14 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // `?recentMany=1` adds forty older conversations, which is what the recency
   // page's window is for: it draws the newest and offers the rest.
   const withRecentMany = new URLSearchParams(window.location.search).get("recentMany") === "1";
+  // `?listMarks=1` gives two rows the run states a list badges: one parked on an
+  // approval, one whose reply closed with a choice card (see `withListMarks`).
+  const listMarks = new URLSearchParams(window.location.search).get("listMarks") === "1";
   const catalogue = [
     ...(withRecent ? recentOnlySessions : []),
     ...sessions,
     ...(withRecentMany ? manyRecentSessions : []),
-  ];
+  ].map(row => (listMarks ? withListMarks(row) : row));
   // The catalogue and the conversation a capture opens come from one branch, so
   // `?parser=1` cannot pair the TUI's transcript with the dopamine rail.
   const activeSessions = fleetDemo
