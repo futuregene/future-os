@@ -106,12 +106,15 @@ Use it only when all of these hold:
 - The reply genuinely ends with a question about the next step, and you can carry
   out every option yourself right after they pick.
 - There are 2–4 real alternatives. One option, or five, is a paragraph — not a card.
-- The options are mutually exclusive (omit `mode: multi` unless several can be done
-  in one go).
+- The options are mutual alternatives — you would do one of them next.
 
 Do not use it for: confirming a risky action (the approval card already owns that),
 restating what you just did, "let me know if you need anything", or a question whose
 answer needs a sentence rather than a pick.
+
+`mode:` — omit it for one pick (`single` is the default). Write `mode: multi` when the
+rows are parts of one job rather than alternatives, and you would do two or more of them
+together. The reader then ticks several and the answer joins their labels with 、.
 
 Write each option as the instruction you would follow if chosen — the user's words,
 not a menu label ("重画森林图", not "选项 A"). The third field says what changes or
@@ -121,6 +124,8 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 ```
 
 要点：**选项文案必须是用户会说的那句话**（因为发送时它就是消息的一部分），不是"选项 A/B/C"。
+
+**2026-11-15 修订了 §4 的措辞**：原稿把 `multi` 写成兜底选项（"omit `mode: multi` unless several can be done in one go"）并塞进"什么时候才配用这张卡"的条件列表里。结果是模型写出来的卡一律单选，连"接新浪和 Nasdaq 两个源"这种明显是一件事的两半，也得用户自己打字回答——正是卡片要消灭的那种浪费。现在 `mode: multi` 的判据单独写在字段说明里，和默认值平级，而不是作为默认值的例外条款。
 
 ## 5. 界面
 
