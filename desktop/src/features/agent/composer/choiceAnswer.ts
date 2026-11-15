@@ -100,6 +100,24 @@ export function pickChoiceOption(answer: ChoiceAnswer, optionId: string): Choice
   return { ...answer, selectedIds: [optionId] };
 }
 
+/**
+ * The answer a draft should hold, given what a pick produced.
+ *
+ * A pill (and the phone's chip) exists to answer *what did the reader pick*. Zero
+ * ticks answers nothing, so the answer is dropped instead of kept as a question
+ * with no pick: a pill built from it would print the question alone and claim the
+ * reader had answered it. §7 already says zero ticks send no tag; this is the same
+ * rule one layer up, so no surface has to repeat it.
+ *
+ * Every place an answer is *written* goes through here (`MentionEditor`'s pill,
+ * `Composer`/`RemoteComposer`'s state, the phone's draft). `pickChoiceOption` and
+ * the other pure helpers keep their signatures: they describe a pick, this decides
+ * whether the draft has an answer at all.
+ */
+export function answerOrNull(answer: ChoiceAnswer | null): ChoiceAnswer | null {
+  return answer && answer.selectedIds.length > 0 ? answer : null;
+}
+
 /** Read back a pill's `data-choice`; malformed data yields `null`, never a throw. */
 export function parseChoiceAnswer(raw: string | null): ChoiceAnswer | null {
   if (!raw)

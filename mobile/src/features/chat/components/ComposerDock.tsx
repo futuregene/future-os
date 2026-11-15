@@ -218,8 +218,19 @@ function ComposerDockView({
   const queueAnswer: ChoiceAnswer | null = queueAnswerSource
     ? { ...queueAnswerSource }
     : null;
+  /**
+   * Whether the draft holds a card's answer at all.
+   *
+   * Zero ticks is no answer (§7): `answerOrNull` already drops one before it
+   * reaches this component, and this asks the same question so the three places
+   * that decide — the send gate, `hasDraft`, and whether to draw the chip — cannot
+   * drift apart. A chip drawn from an unpicked answer would name the question and
+   * answer nothing; counted but undrawn, it would grey out with the answer still
+   * held.
+   */
+  const hasAnswer = choice !== null && choice.selectedIds.length > 0;
   const canSend = !archived && !skillInstalling && !draftRestoring && !skillEvaluating && !compacting && !remote.busy && remote.desktopOnline &&
-    (!!message.trim() || attachments.length > 0 || choice !== null);
+    (!!message.trim() || attachments.length > 0 || hasAnswer);
   // A run in flight rejects compaction, so the tool stays hidden rather than
   // offering an action the Agent will refuse (desktop parity).
   const compactionActionEnabled = !!onCompactContext
@@ -274,7 +285,7 @@ function ComposerDockView({
   // A picked answer is content of its own: with nothing typed and nothing
   // attached, a card's answer is still something to send (§5.4, requirement d), so
   // it is counted exactly where an attachment is.
-  const hasDraft = !!message.trim() || attachments.length > 0 || choice !== null;
+  const hasDraft = !!message.trim() || attachments.length > 0 || hasAnswer;
   /**
    * Hand the draft to the session, and end the run it waited behind.
    *
@@ -526,7 +537,7 @@ function ComposerDockView({
             answers. Both actions wear one ink: editing and removing are the same
             weight of act (§5.7.1).
           */}
-          {choice && (
+          {hasAnswer && (
             <View style={styles.choiceRow} testID="composer-choice-row">
               <View style={styles.choiceChip} testID="composer-choice-chip">
                 <Text numberOfLines={1} style={styles.choiceChipTitle}>{choice.title}</Text>

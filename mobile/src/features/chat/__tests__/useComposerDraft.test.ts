@@ -9,6 +9,7 @@ import {
 } from "../../../remote/draftStorage";
 import { deleteTemporaryAttachment, recoverPendingImagePickerAttachments } from "../../../remote/files";
 import type { MobileAttachment } from "../../../remote/types";
+import { choiceAnswerLabel } from "../choiceAnswer";
 import { showToast } from "../utils";
 import { useComposerDraft, type ComposerDraftApi } from "../useComposerDraft";
 
@@ -367,4 +368,29 @@ test("an answer is the conversation's own: it does not follow the reader", async
   expect(current.choice).toBeNull();
   act(() => staleSetChoice(cardAnswer));
   expect(schedule).not.toHaveBeenCalledWith("desk-1:s2", expect.objectContaining({ choice: cardAnswer }));
+});
+
+test("unticking the last row leaves no answer, so no chip and no tag", async () => {
+  // A chip answers *what was picked* (§5.7). Zero ticks answers nothing, so the
+  // draft holds no answer at all: the chip disappears, `hasDraft` stops counting
+  // it, and §7 has nothing to print. Every entrance writes through `setChoice`,
+  // so this one rule covers the card's row, the sheet's row and a restored draft.
+  render();
+  await settle();
+  const multi = { ...cardAnswer, mode: "multi" as const, selectedIds: ["forest"] };
+  act(() => current.setChoice(multi));
+  expect(current.choice).toEqual(expect.objectContaining({ selectedIds: ["forest"] }));
+
+  act(() => current.setChoice({ ...multi, selectedIds: [] }));
+  expect(current.choice).toBeNull();
+  // Not persisted as an answer either — reloading the draft must not resurrect
+  // a question with nothing ticked.
+  expect(schedule).toHaveBeenLastCalledWith("desk-1:s1", {
+    attachments: [], choice: undefined, refs: {}, text: "",
+  });
+
+  // Two ticks stay `、`-joined: multi's own format is untouched.
+  const both = { ...multi, selectedIds: ["forest", "flow"] };
+  act(() => current.setChoice(both));
+  expect(choiceAnswerLabel(current.choice!)).toBe("重画森林图、补一张实验流程图");
 });

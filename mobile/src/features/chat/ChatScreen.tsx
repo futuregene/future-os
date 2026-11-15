@@ -263,10 +263,9 @@ export function ChatScreen() {
   const pickChoice = useCallback((card: ChoiceCardNode, optionId: string) => {
     setChoice((current) => {
       const base = current?.title === card.title ? current : choiceAnswerFromCard(card);
-      const next = pickChoiceOption(base, optionId);
       // Unticking the last option of a multi-choice answer leaves no answer at
-      // all, and the chip must go with it.
-      return next.selectedIds.length > 0 ? next : null;
+      // all — `setChoice` drops it and the chip goes with it (`answerOrNull`).
+      return pickChoiceOption(base, optionId);
     });
   }, [setChoice]);
   const clearChoice = useCallback(() => setChoice(null), [setChoice]);

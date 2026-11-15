@@ -193,6 +193,8 @@ Moved into the editor, all four requirements follow from machinery that already 
 - (d) only a pill ⇒ `isEditorEmpty` false ⇒ button live;
 - (b) the pencil and × ride on the pill itself and write the same value.
 
+**Zero ticks is not an answer, so there is no pill at all.** A pill exists to answer *what was picked* (§5.2); a question with nothing ticked cannot answer that, and a pill built from it would print the card's question as if the reader had answered it. So the rule sits at the one place the answer is **written** (`answerOrNull`, `composer/choiceAnswer.ts`), not at "draw an empty pill but emit no text": zero ticks ⇒ the answer is dropped ⇒ no pill, (a)'s grey button holds again, and (d) stops claiming content. §7's "zero ticks emits no `[…] → ]`" is the other end of the same rule, and both layers exist: dropped on write, and caught again on send (`withChoiceAnswer`). Unticking a multi-choice card's last row is the ✕ path of §5.3, and the pill goes along with its own trailing space.
+
 **Measured** (1440×900, pill injected into the real contenteditable and the DOM read back; no product code changed):
 
 | State | `disabled` |
@@ -271,6 +273,7 @@ Two explored and **rejected** approaches, recorded so they are not redone:
 
 - The card is full width (358pt, 16pt margins), `radius 12px`, rows **≥ 44pt** (measured: 60pt each), notes wrap rather than truncate;
 - The chosen chip sits inside the dock above the textarea (measured: chip `y 702..736`, field `y 737..783`);
+- **With zero ticks the chip is not drawn and does not count as content.** The phone has no in-editor pill, so "does an answer exist" rests entirely on three decisions in `ComposerDock` (`canSend`, `hasDraft`, whether to draw the chip), and they share one `hasAnswer` — the same rule as desktop's `answerOrNull`: untick everything ⇒ no chip, send button grey, and no §7 sentence. The rule lives upstream where the draft is written (`useComposerDraft.setChoice`), and `ComposerDock` asks it again for itself rather than relying on that;
 - **Changing it uses a bottom sheet**: at 390pt there is no room for an in-place popover. The sheet's top lands at 559pt, rows stay 44pt, a pick writes straight back to the chip and the draft is untouched.
 
 ### 5.7.1 Why v1's chosen state looked wrong, and what v2 changes

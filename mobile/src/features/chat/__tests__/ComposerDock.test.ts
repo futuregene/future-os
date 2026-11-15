@@ -1317,6 +1317,32 @@ test("the answer also counts as a draft, so a running reply offers what sending 
   }
 });
 
+test("a multi-choice answer's pick reads `、`-joined, and zero ticks draws no chip", () => {
+  // Multi's format is the card's own: two ticks are one label, not two chips.
+  const both = { ...ANSWER, mode: "multi" as const, options: ANSWER.options, selectedIds: ["forest", "flow"] };
+  const withBoth = mountDock({ choice: both, onChangeChoice: jest.fn() });
+  try {
+    const chip = withBoth.tree.root.findAllByProps({ testID: "composer-choice-chip" })[0]!;
+    const words = chip.findAllByType(Text)
+      .map(node => [node.props.children].flat().filter(child => typeof child === "string").join(""));
+    expect(words).toContain("重画森林图、补一张实验流程图");
+  } finally {
+    withBoth.unmount();
+  }
+
+  // Zero ticks is no answer (§7, §5.7): nothing to name, so no chip and no row —
+  // a chip would print the question and claim the reader had answered it.
+  const unpicked = { ...both, selectedIds: [] as string[] };
+  const without = mountDock({ choice: unpicked, onChangeChoice: jest.fn() });
+  try {
+    expect(without.tree.root.findAllByProps({ testID: "composer-choice-chip" })).toHaveLength(0);
+    expect(without.tree.root.findAllByProps({ testID: "composer-choice-row" })).toHaveLength(0);
+    expect(sendButton(without.tree)!.props.disabled).toBe(true);
+  } finally {
+    without.unmount();
+  }
+});
+
 test("the chip names the question and the pick, and its × drops the answer", () => {
   const onChangeChoice = jest.fn();
   const { tree, pressable, unmount } = mountDock({ choice: ANSWER, onChangeChoice });
