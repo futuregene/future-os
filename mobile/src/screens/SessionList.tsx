@@ -1100,11 +1100,21 @@ export function SessionList({
     const status = effectiveRunStatus(session.status, session.streaming);
     const running = status === "running" || status === "queued";
     const unread = remote.unreadSessions.has(session.sessionId);
+    // A finished reply that closed with a choice card leaves the conversation
+    // waiting on the reader. The mark takes the indicator's slot from the unread
+    // dot: both say "this finished while you were away", and only the card says
+    // something is owed — a question to answer (the row's bold title still
+    // carries "unread").
+    const choiceWaiting = status === "completed" && session.offersChoice === true;
     /** The row's run indicator: spinning, waiting on the reader, or unread. */
     const statusIndicator = running ? (
       <ActivityIndicator size={14} color={colors.accent} />
     ) : status === "waiting_approval" ? (
       <CircleAlert size={16} color={colors.warning} />
+    ) : choiceWaiting ? (
+      <View accessibilityLabel={t("sessions.pendingChoice")} testID="session-choice-mark">
+        <ListChecks size={16} color={colors.accent} />
+      </View>
     ) : unread && (status === "completed" || status === "failed") ? (
       <View
         style={[

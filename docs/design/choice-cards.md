@@ -193,6 +193,8 @@ Moved into the editor, all four requirements follow from machinery that already 
 - (d) only a pill ⇒ `isEditorEmpty` false ⇒ button live;
 - (b) the pencil and × ride on the pill itself and write the same value.
 
+**Zero ticks is not an answer, so there is no pill at all.** A pill exists to answer *what was picked* (§5.2); a question with nothing ticked cannot answer that, and a pill built from it would print the card's question as if the reader had answered it. So the rule sits at the one place the answer is **written** (`answerOrNull`, `composer/choiceAnswer.ts`), not at "draw an empty pill but emit no text": zero ticks ⇒ the answer is dropped ⇒ no pill, (a)'s grey button holds again, and (d) stops claiming content. §7's "zero ticks emits no `[…] → ]`" is the other end of the same rule, and both layers exist: dropped on write, and caught again on send (`withChoiceAnswer`). Unticking a multi-choice card's last row is the ✕ path of §5.3, and the pill goes along with its own trailing space.
+
 **Measured** (1440×900, pill injected into the real contenteditable and the DOM read back; no product code changed):
 
 | State | `disabled` |
@@ -271,6 +273,7 @@ Two explored and **rejected** approaches, recorded so they are not redone:
 
 - The card is full width (358pt, 16pt margins), `radius 12px`, rows **≥ 44pt** (measured: 60pt each), notes wrap rather than truncate;
 - The chosen chip sits inside the dock above the textarea (measured: chip `y 702..736`, field `y 737..783`);
+- **With zero ticks the chip is not drawn and does not count as content.** The phone has no in-editor pill, so "does an answer exist" rests entirely on three decisions in `ComposerDock` (`canSend`, `hasDraft`, whether to draw the chip), and they share one `hasAnswer` — the same rule as desktop's `answerOrNull`: untick everything ⇒ no chip, send button grey, and no §7 sentence. The rule lives upstream where the draft is written (`useComposerDraft.setChoice`), and `ComposerDock` asks it again for itself rather than relying on that;
 - **Changing it uses a bottom sheet**: at 390pt there is no room for an in-place popover. The sheet's top lands at 559pt, rows stay 44pt, a pick writes straight back to the chip and the draft is untouched.
 
 ### 5.7.1 Why v1's chosen state looked wrong, and what v2 changes
@@ -323,9 +326,13 @@ The corrected rule, identical on all three surfaces:
 | change the option | **press the chip itself** (`role=button`, one chevron, aria-label `更换这条消息里的选择：<title> · <option>`), which opens the desktop popover / the phone sheet |
 | edit this message's words | the row's own pencil (there is exactly one) |
 | delete the whole message | the row's own bin |
-| drop just the choice, keep the words | the "no choice" entry in the option list — the same entry the card itself offers, not a new button on the chip |
+| drop the choice to nothing | **refused at the last tick**: the row's text and answer stay exactly as they were, and the reader is told once (below) |
 
 A chevron rather than a pencil is deliberate: it says "this opens something" and cannot be read as "edit the words".
+
+**Zero ticks is not an answer, so a waiting message cannot be rewritten into one.** The row's sentence is `[question → answer]` (§7), and rewriting it from an empty pick yields `[question → ]` — a question the model reads as an answer — or the bracketed question alone. The row is **already waiting to send**, so changing its text under the reader is more surprising than saying it once: this path refuses, says why, and touches nothing — no text, no answer, no `edit_queued_run` call. Removing the message is the row's own bin (the same shape `removeQueuedAttachment` uses for the last file of a message with no words). The phone's sheet stays open there, so the reader can pick again instead of watching it close on a change that never happened.
+
+This is the same rule as §5.2.1 (the editor's pill), §7 (the sent text) and §5.7 (the phone's chip), at its fourth and last landing: `answerOrNull` catches it on write, `ComposerDock`'s `hasAnswer` on render, `withChoiceAnswer` on send, and this one on a queue rewrite. One criterion, not four rules that happen to agree.
 
 #### 5.8.3 Data shape
 
@@ -345,12 +352,70 @@ The write path **stays out of the plain-text edit**. On the desktop the queue pa
 
 All three rows keep their own pencil and bin: the assertions check that the chip's right edge is left of the pencil's left edge, and that `[data-queue-edit]` / `[data-testid=send-queue-edit]` still exist. The chip is **inserted into** the row, not a replacement for the row's controls.
 
+## 5.9 The list mark: this one is waiting on your choice
+
+A card is only visible inside the conversation that holds it — the reader has to
+open it, read the reply, and then see the card. But a conversation *list* (the
+desktop rail, the phone's session list, the merged list that includes another
+desktop's conversations) is exactly the place that answers "which one is waiting
+on me", so it gets its own mark beside the approval badge.
+
+### 5.9.1 When it appears
+
+| Condition | Why |
+|---|---|
+| The conversation's **latest run finished** (`completed`) | A run still streaming is "wait a moment", not "waiting on your answer" |
+| And that reply **closed with a valid card** | A card earlier in the history does not count: that question is long past (the same judgement as §2's "only the last card is interactive") |
+| And the row is **not the one on screen** (desktop / remote) | The card is right there; a second mark is noise (the rule the approval badge already follows) |
+
+Nothing is drawn otherwise. Choosing an option without sending does **not**
+clear the mark: the conversation still sits on that card, one send short of
+done.
+
+### 5.9.2 Where the fact comes from: one write, every list reads it
+
+A list cannot read another conversation's reply (the desktop rail reads the
+local store, the phone reads the peer's catalogue), so "this reply ended with a
+card" has to be recorded where the reply is produced instead of guessed from
+text by each client:
+
+```
+Agent commits the run ──┬─> terminal entry `content.offers_choice`
+                        └─> agent_end `offers_choice: true`
+                                 │
+        desktop host writes runs.offers_choice ──┬─> latest_run_infos → rail
+                                                 └─> sessions catalog → phone / remote rows
+```
+
+- **The Agent decides once** (`agent/src/prompt/choice_card.rs`), with the
+  renderer's own rules (`parseChoiceCard`): the `futureos-choice` fence, 2–4
+  `option:` rows, ids in `[a-z0-9-]` (≤ 24), a non-empty label; a card quoted
+  inside a document fence is not one, and neither is a card followed by more
+  prose (the card closes the reply, alone).
+- **Only a clean finish carries it**: a cancelled, failed or truncated reply is
+  not something to answer.
+- **The mark travels with the run row**: the next send is a new row, so the mark
+  clears by itself — no second pass to keep in step.
+- Lists read one boolean: `ThreadRunInfo.offersChoice` on the desktop (re-read
+  when a terminal push lands) and `offersChoice` on a catalogue row (shared by
+  the phone and the desktop's remote rows).
+
+### 5.9.3 Icon and copy
+
+- `list-checks` (the card head's own icon) in the accent ink. The approval badge
+  is `circle-alert` in warning, so shape and colour separate the two at a glance.
+- One key on every surface: `pendingChoice` = "This reply is waiting on your
+  choice" / 这条回复在等你选一项.
+- On the phone it **takes the unread dot's slot** for a completed conversation:
+  both say "this finished while you were away", and only the card says something
+  is owed; unread is still carried by the bolder title.
+
 ## 6. Composer behaviour (requirements a–d)
 
 | Requirement | Behaviour | Implementation constraint |
 |---|---|---|
 | (a) may pick nothing and stay empty | Nothing picked, nothing typed ⇒ send stays disabled (the existing `inputEmpty` logic) | The card's presence does **not** count as draft content. A card appearing must never enable Send |
-| (b) a pick can be changed | Five entries: any row in the card, the pill/chip's pencil, the phone's bottom sheet, **the choice chip on a queue row — pressed directly, it is its own button** (§5.8.2), and that queue row's own pencil for the words. They write the same value | Afterwards focus stays in the composer (desktop) / the sheet closes (phone); existing text is never disturbed |
+| (b) a pick can be changed | Five entries: any row in the card, the pill/chip's pencil, the phone's bottom sheet, **the choice chip on a queue row — pressed directly, it is its own button** (§5.8.2), and that queue row's own pencil for the words. They write the same value | Afterwards focus stays in the composer (desktop) / the sheet closes (phone); existing text is never disturbed. One exception: unticking to zero is "no answer", so that change is refused (dropped in the draft, reported on a queue row) and the sheet stays open for another pick |
 | (c) extra text can be typed and sent | Pill/text coexist; on send the answer comes first | Desktop relies on `isEditorEmpty` accepting a pill (measured); phone/remote must count the answer among the draft items `canSend` already reads |
 | (d) send with no text at all | A pill alone ⇒ Send is enabled | Measured `disabled:false` on desktop; phone/remote follow (c) |
 
@@ -366,6 +431,7 @@ The answer must be readable by the agent **and** on the degraded paths (TUI, IM 
 | Picked and added a note | `[接下来做哪一件？ → 重画森林图] 顺便把图例挪到右下` |
 | Multiple picks | `[这三项都要 → 重画森林图、补一张实验流程图]` |
 | Only typed (nothing picked / chip removed) | Just what the user wrote |
+| Picked then all unticked (multi card) | Just what the user wrote — zero ticks is not an answer, and neither end emits `[…] → ]` |
 
 `→` is the only fixed token; the question and the label come from the model's own output. The `title` is included so that "重画森林图" has an owner when several cards have appeared in one thread.
 

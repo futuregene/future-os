@@ -1,6 +1,6 @@
 import type { StoredThread } from "../../integrations/storage/threadStore";
 import type { ThreadRunInfo } from "./hooks/useThreadStore";
-import { CircleAlert } from "lucide-react";
+import { CircleAlert, ListChecks } from "lucide-react";
 import { memo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
@@ -111,6 +111,12 @@ function ThreadListItemImpl({
       : isStreaming
         ? "running"
         : runStatus?.status;
+  // A choice card is only worth flagging while the conversation is at rest: the
+  // run that offered it finished, and nothing has been sent since. Read from the
+  // run's own row (`offersChoice`), so a follow-up turn — which is a new row —
+  // clears the mark without any second write to keep in step.
+  const choiceWaiting = runStatus?.offersChoice === true
+    && effectiveRunStatus === "completed";
 
   return (
     <RailRow
@@ -164,6 +170,18 @@ function ThreadListItemImpl({
                       title={t("activityRail.pendingApproval", { count: pendingApprovalCount })}
                     >
                       <CircleAlert className="size-3.5" />
+                    </span>
+                  )
+                : null}
+              {!active && choiceWaiting
+                ? (
+                    <span
+                      aria-label={t("activityRail.pendingChoice")}
+                      className="pointer-events-none inline-flex size-5 shrink-0 items-center justify-center text-accent"
+                      data-thread-choice="true"
+                      title={t("activityRail.pendingChoice")}
+                    >
+                      <ListChecks className="size-3.5" />
                     </span>
                   )
                 : null}

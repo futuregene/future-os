@@ -84,6 +84,18 @@ let settings: typeof appSettings = { ...appSettings };
  * the fixture's default state.
  */
 let harnessStreamingThreadIds: string[] = [];
+/**
+ * Thread ids `?offersChoice=` marks as "this reply closed with a choice card".
+ *
+ * The rail's choice mark (the list-checks glyph) is gated on the *run row's own*
+ * `offersChoice`, which the fixture's runs never carry — a capture of that state
+ * is otherwise unreachable, exactly like the running ring before `?streaming=`.
+ */
+let harnessOffersChoiceThreadIds: string[] = [];
+/** Peer session ids `?remoteWaiting=` reports as parked on an approval. */
+let harnessRemoteWaitingSessionIds: string[] = [];
+/** Peer session ids `?remoteChoice=` reports as having closed with a choice card. */
+let harnessRemoteChoiceSessionIds: string[] = [];
 /** Thread ids `?pinned=` added to the fixture's own pin (see `HarnessState`). */
 let harnessPinnedThreadIds: string[] = [];
 let harnessUpdate = "";
@@ -93,6 +105,18 @@ export interface HarnessState {
   update?: string | null;
   /** Thread ids the agent reports as streaming (drives the row's running ring). */
   streaming?: string[];
+  /** Thread ids whose latest run's reply offered a choice (rail's choice mark). */
+  offersChoice?: string[];
+  /**
+   * Peer session ids whose latest run is parked on an approval, and peer session
+   * ids whose reply closed with a card.
+   *
+   * The merged list draws both marks from the host's own catalogue row — its
+   * `status` and its `offersChoice` — so a capture of either needs the fixture's
+   * rows to say so for this page load.
+   */
+  remoteWaiting?: string[];
+  remoteChoice?: string[];
   /**
    * Thread ids whose finished run is unread (drives the completed/failed dot).
    *
@@ -119,6 +143,9 @@ export function seedHarnessState(state: HarnessState) {
   // is stamped on when the list is read (see `list_threads`). Stamping is
   // idempotent, which is what makes that safe to do per read.
   harnessStreamingThreadIds = state.streaming ?? [];
+  harnessOffersChoiceThreadIds = state.offersChoice ?? [];
+  harnessRemoteWaitingSessionIds = state.remoteWaiting ?? [];
+  harnessRemoteChoiceSessionIds = state.remoteChoice ?? [];
   harnessPinnedThreadIds = state.pinned ?? [];
   if (state.unread) {
     try {
@@ -959,7 +986,15 @@ const handlers: Record<string, (args: any) => unknown> = {
     (args?.threadIds ?? [])
       .map((threadId: string) => {
         const run = runs.find(candidate => candidate.threadId === threadId);
-        return run ? { threadId, runId: run.id, status: run.status, endedAt: run.endedAt ?? null } : null;
+        return run
+          ? {
+              threadId,
+              runId: run.id,
+              status: run.status,
+              endedAt: run.endedAt ?? null,
+              offersChoice: harnessOffersChoiceThreadIds.includes(threadId),
+            }
+          : null;
       })
       .filter(Boolean),
   create_run: (args) => {
@@ -1397,7 +1432,17 @@ const handlers: Record<string, (args: any) => unknown> = {
   },
   remote_peer_sessions: (args: { desktopId: string }) => ({
     desktopId: args.desktopId,
-    sessions: remoteSessions[args.desktopId] ?? [],
+    sessions: (remoteSessions[args.desktopId] ?? []).map((session) => {
+      const row = session as { sessionId?: string; status?: string; offersChoice?: boolean };
+      const sessionId = String(row.sessionId ?? "");
+      // The two states a host reports and a fixture cannot default to: a run
+      // parked on an approval, and a reply that closed with a choice card.
+      if (harnessRemoteWaitingSessionIds.includes(sessionId))
+        return { ...row, status: "waiting_approval" };
+      if (harnessRemoteChoiceSessionIds.includes(sessionId))
+        return { ...row, status: "completed", offersChoice: true };
+      return row;
+    }),
   }),
   remote_peer_workspaces: (args: { desktopId: string }) => ({
     ...remoteWorkspaces,

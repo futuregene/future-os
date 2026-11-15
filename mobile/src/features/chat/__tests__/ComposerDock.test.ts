@@ -1317,6 +1317,32 @@ test("the answer also counts as a draft, so a running reply offers what sending 
   }
 });
 
+test("a multi-choice answer's pick reads `、`-joined, and zero ticks draws no chip", () => {
+  // Multi's format is the card's own: two ticks are one label, not two chips.
+  const both = { ...ANSWER, mode: "multi" as const, options: ANSWER.options, selectedIds: ["forest", "flow"] };
+  const withBoth = mountDock({ choice: both, onChangeChoice: jest.fn() });
+  try {
+    const chip = withBoth.tree.root.findAllByProps({ testID: "composer-choice-chip" })[0]!;
+    const words = chip.findAllByType(Text)
+      .map(node => [node.props.children].flat().filter(child => typeof child === "string").join(""));
+    expect(words).toContain("重画森林图、补一张实验流程图");
+  } finally {
+    withBoth.unmount();
+  }
+
+  // Zero ticks is no answer (§7, §5.7): nothing to name, so no chip and no row —
+  // a chip would print the question and claim the reader had answered it.
+  const unpicked = { ...both, selectedIds: [] as string[] };
+  const without = mountDock({ choice: unpicked, onChangeChoice: jest.fn() });
+  try {
+    expect(without.tree.root.findAllByProps({ testID: "composer-choice-chip" })).toHaveLength(0);
+    expect(without.tree.root.findAllByProps({ testID: "composer-choice-row" })).toHaveLength(0);
+    expect(sendButton(without.tree)!.props.disabled).toBe(true);
+  } finally {
+    without.unmount();
+  }
+});
+
 test("the chip names the question and the pick, and its × drops the answer", () => {
   const onChangeChoice = jest.fn();
   const { tree, pressable, unmount } = mountDock({ choice: ANSWER, onChangeChoice });
@@ -1441,6 +1467,54 @@ test("hands a changed queued answer up as a whole object, not as ids", () => {
       selectedIds: ["flow"],
       title: "接下来做哪一件？",
     });
+  }
+  finally {
+    unmount();
+  }
+});
+
+test("a queued answer whose last pick is unticked is never handed up", () => {
+  // Zero ticks is no answer (§7), and the sheet is where a multi-choice answer is
+  // edited. Handing `selectedIds: []` up would have the waiting message rewritten
+  // to `[question → ]`; the sheet stays up instead of closing on a change that
+  // cannot be made, and nothing goes to the host.
+  const picked = {
+    mode: "multi" as const,
+    options: [{ id: "forest", label: "重画森林图" }, { id: "flow", label: "补一张流程图" }],
+    selectedIds: ["flow"],
+    title: "接下来做哪一件？",
+  };
+  const onQueueUpdateChoice = jest.fn();
+  const { tree, unmount } = mountDock({
+    message: "",
+    queueItems: [{ choice: picked, content: "[接下来做哪一件？ → 补一张流程图]", id: "run_a" }],
+    onQueueUpdateChoice,
+  });
+  try {
+    const toggle = tree.root.findAll(
+      node => node.props.testID === "send-queue-toggle" && typeof node.props.onPress === "function",
+    )[0]!;
+    act(() => toggle.props.onPress());
+    const chip = tree.root.findAll(
+      node => node.props.testID === "send-queue-choice" && typeof node.props.onPress === "function",
+    )[0]!;
+    act(() => chip.props.onPress());
+
+    // Untick the only ticked row: the answer becomes empty.
+    const option = tree.root.findAll(
+      node => node.props.testID === "choice-sheet-option-flow"
+        && typeof node.props.onPress === "function",
+    )[0]!;
+    act(() => option.props.onPress());
+
+    expect(onQueueUpdateChoice).not.toHaveBeenCalled();
+    // The sheet is still open on that row, so the reader can pick again.
+    const sheetOptions = tree.root.findAll(
+      node => typeof node.props.testID === "string"
+        && node.props.testID.startsWith("choice-sheet-option-")
+        && typeof node.props.onPress === "function",
+    );
+    expect(sheetOptions.length).toBeGreaterThan(0);
   }
   finally {
     unmount();

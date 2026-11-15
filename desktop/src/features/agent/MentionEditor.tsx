@@ -10,7 +10,7 @@ import { EMPTY_EDITOR_ATTR } from "../../lib/editableTarget";
 import { useCommittedRef } from "../../lib/useCommittedRef";
 import { useImeEnterGuard } from "../../lib/useImeEnterGuard";
 import { localPathsFromUriList } from "./clipboardAttachments";
-import { choiceAnswerLabel, parseChoiceAnswer, pickChoiceOption } from "./composer/choiceAnswer";
+import { answerOrNull, choiceAnswerLabel, parseChoiceAnswer, pickChoiceOption } from "./composer/choiceAnswer";
 import { ChoicePopover } from "./composer/ChoicePopover";
 import { hashContext, isEditorEmpty, mentionContext, PILL_ATTR, serialize, slashContext } from "./composer/mentionDom";
 import { FileMenu, SessionMenu, SlashMenu } from "./composer/MentionMenus";
@@ -472,7 +472,10 @@ export function MentionEditor({
     pill.className = "mx-0.5 inline-flex h-[21px] max-w-full items-center gap-0.5 rounded bg-accent-soft py-0 pr-1 pl-1.5 align-middle text-[0.92em] leading-[21px] text-accent";
     const label = document.createElement("span");
     label.className = "max-w-[18rem] truncate";
-    label.textContent = choiceAnswerLabel(answer) || answer.title;
+    // The picked labels, and nothing else: `answerOrNull` keeps a pill from being
+    // built for an answer with no pick, so this never has to fall back to the
+    // card's question — which would print a question as if it were the answer.
+    label.textContent = choiceAnswerLabel(answer);
     pill.appendChild(label);
     for (const action of ["change", "remove"] as const) {
       const button = document.createElement("button");
@@ -514,10 +517,15 @@ export function MentionEditor({
   }
 
   /** Write the answer into the editor (append) or drop it; at most one pill. */
-  function writeChoicePill(answer: ChoiceAnswer | null) {
+  function writeChoicePill(rawAnswer: ChoiceAnswer | null) {
     const editor = editorRef.current;
     if (!editor)
       return;
+    // Zero ticks is no answer, not an answer with a question and nothing in it:
+    // the pill exists to say what was picked (§5.2.1), so there is nothing to
+    // draw. §7 sends no tag for it either — one rule, both ends of the same
+    // answer.
+    const answer = answerOrNull(rawAnswer);
     const existing = choicePill();
     // The pill owns the single space after it, so dropping the answer must not
     // leave a blank line behind.
@@ -533,7 +541,14 @@ export function MentionEditor({
   }
 
   /** Swap the pill's answer in place: the box's order is the reader's own. */
-  function replaceChoicePill(answer: ChoiceAnswer) {
+  function replaceChoicePill(rawAnswer: ChoiceAnswer) {
+    // Unticking a multi-choice card's last row is a removal, so it goes through
+    // the path that also drops the pill's own trailing space.
+    const answer = answerOrNull(rawAnswer);
+    if (!answer) {
+      writeChoicePill(null);
+      return;
+    }
     const existing = choicePill();
     if (!existing) {
       writeChoicePill(answer);
@@ -568,12 +583,14 @@ export function MentionEditor({
   function pickChoice(optionId: string) {
     if (!choiceEditor)
       return;
-    const next = pickChoiceOption(choiceEditor.answer, optionId);
-    replaceChoicePill(next);
+    const picked = pickChoiceOption(choiceEditor.answer, optionId);
+    replaceChoicePill(picked);
     setChoiceEditor(null);
     caretAfterChoice();
     onChange?.();
-    onChoiceChange?.(next);
+    // The parent's copy is the draft: it must agree with the pill, which is gone
+    // once nothing is ticked.
+    onChoiceChange?.(answerOrNull(picked));
   }
 
   // Append plain text to the editor, upgrading every `/name` token that names

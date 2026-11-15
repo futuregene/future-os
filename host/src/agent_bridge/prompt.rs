@@ -64,6 +64,12 @@ pub struct AgentPromptResponse {
     pub complete: bool,
     /// Stable user-facing failure category when `complete` is false.
     pub termination_kind: Option<String>,
+    /// The reply closed by offering the reader a choice (see
+    /// `crate::prompt::choice_card`). Recorded on the run before it settles, so
+    /// a conversation list can badge "waiting on your answer" without holding
+    /// the reply.
+    #[serde(default)]
+    pub offers_choice: bool,
     /// The stable Agent session id for this conversation.
     pub session_id: String,
 }
@@ -147,6 +153,17 @@ pub async fn agent_prompt_with_acceptance(
     // always wins and is preserved; the frontend's later write becomes a no-op
     // echo. Settling before `capture_after` also means a slow/hung git snapshot
     // can no longer wedge the run's visible state.
+    // A reply that closes with a choice card leaves the conversation waiting on
+    // an answer, and every list badges that (`offers_choice` on the run). Record
+    // it before settling, so the row a list reads already carries it — and never
+    // for a reply that did not finish cleanly, which is not something to answer.
+    if let Ok(response) = &result {
+        if response.complete && response.offers_choice {
+            if let Some(run_id) = request.run_id.as_deref() {
+                crate::store::mark_run_offers_choice(run_id);
+            }
+        }
+    }
     match &result {
         Ok(response) if response.complete => {
             mark_run_completed_if_active(request.run_id.as_deref());
@@ -444,6 +461,7 @@ pub(super) async fn agent_prompt_inner(
                 content: response.content,
                 complete: response.complete,
                 termination_kind: response.termination_kind,
+                offers_choice: response.offers_choice,
                 session_id,
             })
         }
@@ -502,6 +520,7 @@ pub(super) async fn agent_prompt_inner(
                     content: String::new(),
                     complete: false,
                     termination_kind: Some("run_queued".to_string()),
+                    offers_choice: false,
                     session_id,
                 });
             }

@@ -1041,6 +1041,13 @@ fn settle_queued_runs_off_thread(session_id: &str, thread_id: &str) {
 /// look like a crash when the user had simply stopped them. A run whose state
 /// this build does not recognise still falls back to the generic failure.
 pub(super) fn settle_agent_end(local_run_id: &str, data: &str) {
+    // Runs this host did not start (a TUI or an IM channel prompting the Agent
+    // directly) settle here, and the same `agent_end` carries whether the reply
+    // closed with a choice card — recorded before the status CAS so a list reads
+    // both facts from one row.
+    if stream::agent_end_offers_choice(data) {
+        crate::store::mark_run_offers_choice(local_run_id);
+    }
     match stream::agent_end_outcome(data) {
         stream::AgentEndOutcome::Completed => {
             mark_run_completed_if_active(Some(local_run_id));

@@ -2096,6 +2096,39 @@ describe("a choice card's answer", () => {
     await view.unmount();
   });
 
+  it("draws no chip, and offers nothing to send, when the last ticked row is unticked", async () => {
+    // The chip answers *what was picked* (§5.7). A multi-choice answer whose rows
+    // are all unticked answers nothing, so the chip goes rather than shrinking to
+    // the card's question — and Send must go grey with it, or the row would send
+    // `[question → ]`.
+    const multi = {
+      mode: "multi" as const,
+      options: question.options,
+      title: question.title,
+    };
+    const onChoiceChange = vi.fn<(answer: ChoiceAnswer | null) => void>();
+    const handle: { current: RemoteComposerHandle | null } = { current: null };
+    const view = await mount({ onChoiceChange, ref: handle });
+
+    await act(async () => handle.current!.selectChoice("forest", multi));
+    await settle();
+    await act(async () => handle.current!.selectChoice("flow", multi));
+    await settle();
+    // Two ticks, in pick order: the format multi already had.
+    expect(view.container.querySelector("[data-choice-chip]")!.textContent).toContain("重画森林图、补一张流程图");
+
+    await act(async () => handle.current!.selectChoice("forest", multi));
+    await settle();
+    await act(async () => handle.current!.selectChoice("flow", multi));
+    await settle();
+
+    expect(view.container.querySelector("[data-choice-chip]")).toBeNull();
+    expect(view.container.querySelector("[data-choice-row]")).toBeNull();
+    expect(onChoiceChange).toHaveBeenLastCalledWith(null);
+    expect(view.button("Send")?.disabled).toBe(true);
+    await view.unmount();
+  });
+
   it("can be changed or dropped from the chip, without touching the words", async () => {
     const onChoiceChange = vi.fn<(answer: ChoiceAnswer | null) => void>();
     const handle: { current: RemoteComposerHandle | null } = { current: null };

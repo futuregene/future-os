@@ -33,7 +33,7 @@ export async function getRun(runId: string) {
 }
 
 export async function listLatestRunInfos(threadIds: string[]) {
-  return invokeCommand<Array<{ threadId: string; runId: string; status: string; endedAt: number | null }>>(
+  return invokeCommand<Array<{ threadId: string; runId: string; status: string; endedAt: number | null; offersChoice?: boolean }>>(
     "list_latest_run_infos",
     { threadIds },
   );

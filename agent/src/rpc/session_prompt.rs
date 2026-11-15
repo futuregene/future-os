@@ -1708,6 +1708,23 @@ impl ServerSession {
             } else {
                 crate::session::RUN_STATE_COMPLETED
             };
+            // Whether this run's reply closes by offering the reader a choice.
+            //
+            // Every list that shows a conversation badges the ones waiting on an
+            // answer — the desktop rail, a phone's session list, a peer's
+            // catalogue — and none of them holds the other conversations' text,
+            // so the fact travels with the run (`agent_end` → the desktop's run
+            // row) instead of being re-derived per client. Only a clean finish
+            // can carry one: a cancelled or failed reply is not something to
+            // answer, and the fence rules themselves live in
+            // `crate::prompt::choice_card`.
+            let reply_offers_choice = terminal_state == crate::session::RUN_STATE_COMPLETED
+                && messages_arc
+                    .read()
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == "assistant")
+                    .is_some_and(|message| crate::prompt::reply_offers_choice(&message.text()));
             // Clones for the blocking commit task: run_error and task_lease are
             // still needed after the task completes (terminal event dispatch).
             let commit_run_id = task_lease.run_id.clone();
@@ -1821,6 +1838,9 @@ impl ServerSession {
                 {
                     if system_interrupted {
                         content.insert("interruption_cause".into(), "system_shutdown".into());
+                    }
+                    if reply_offers_choice {
+                        content.insert("offers_choice".into(), serde_json::Value::Bool(true));
                     }
                     content.insert(
                         "input_tokens".into(),

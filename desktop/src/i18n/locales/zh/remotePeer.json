@@ -130,6 +130,8 @@
   "tasks": "定时任务",
   "tasksHint": "那台电脑上的定时任务：按计划、随时手动，或在上游完成后运行。",
   "conversationActions": "更多操作",
+  "pendingApproval": "这条会话在等审批",
+  "pendingChoice": "这条回复在等你选一项",
   "renameTitle": "重命名会话",
   "renameHint": "新名称会保存在那台远程桌面上。",
   "saving": "保存中…",

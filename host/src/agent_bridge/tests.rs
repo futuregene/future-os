@@ -603,6 +603,56 @@ mod bridge_tests {
     }
 
     #[tokio::test]
+    async fn rename_session_reports_a_mirror_write_the_store_refused() {
+        use crate::remote::test_support::{init_store, raw_store_connection, HomeGuard};
+        let _home = HomeGuard::new("bridge-rename-mirror-refused");
+        init_store();
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("Before".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some("sess-mirror-refused".to_string()),
+        })
+        .expect("create the thread to rename");
+        {
+            let conn = raw_store_connection();
+            conn.execute_batch(
+                "CREATE TRIGGER refuse_thread_rename BEFORE UPDATE ON threads
+                 BEGIN SELECT RAISE(ABORT, 'thread rename refused'); END;",
+            )
+            .expect("install the failing-write fixture");
+        }
+
+        let mock = mock_agent();
+        mock.push("set_session_name", Reply::Data("{}".to_string()));
+        let error = crate::agent_bridge::rename_session(
+            "sess-mirror-refused".to_string(),
+            "After".to_string(),
+        )
+        .await
+        .expect_err("a mirror write the store refused must not be reported as a rename");
+
+        // The Agent did take the name; the caller has to learn that the local
+        // title did not follow, instead of the two stores silently disagreeing
+        // until the discovery pass reverts one of them.
+        assert_eq!(mock.requests_of("set_session_name").len(), 1);
+        assert!(
+            error.to_string().contains("could not be saved"),
+            "the mirror failure is surfaced: {error}"
+        );
+        assert_eq!(
+            crate::store::get_thread(&thread.id)
+                .expect("thread")
+                .expect("exists")
+                .title,
+            "Before",
+            "a refused write leaves the stored title untouched"
+        );
+    }
+
+    #[tokio::test]
     async fn rename_session_mirrors_into_the_store() {
         let home = TestHome::new("bridge-rename");
         let mock = mock_agent();
@@ -3244,6 +3294,39 @@ mod pipeline_tests {
             record.status, "cancelled",
             "compare-and-set: the first terminal write wins"
         );
+    }
+
+    /// A run this host did not start (a TUI or an IM channel prompting the Agent
+    /// directly) settles here, and the same `agent_end` carries whether the reply
+    /// closed with a choice card. Recorded before the status CAS, so a list that
+    /// reads the row afterwards gets both facts from one read.
+    #[test]
+    fn the_observer_records_a_reply_that_offered_a_choice() {
+        let home = TestHome::new("bridge-settle-offers-choice");
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-choice"));
+
+        let offered = seed_run(&thread.id);
+        settle_agent_end(&offered.id, r#"{"state":"completed","offers_choice":true}"#);
+        let record = crate::store::get_run(&offered.id)
+            .expect("run")
+            .expect("some");
+        assert_eq!(record.status, "completed");
+        let infos =
+            crate::store::latest_run_infos(std::slice::from_ref(&thread.id)).expect("infos");
+        assert!(
+            infos[0].offers_choice,
+            "the mark travels with the settled run"
+        );
+
+        // An ordinary reply offers nothing, and neither does an event that never
+        // carried the field (every producer before it).
+        let plain = seed_run(&thread.id);
+        settle_agent_end(&plain.id, r#"{"state":"completed"}"#);
+        let infos =
+            crate::store::latest_run_infos(std::slice::from_ref(&thread.id)).expect("infos");
+        assert_eq!(infos[0].run_id, plain.id);
+        assert!(!infos[0].offers_choice);
     }
 
     #[test]

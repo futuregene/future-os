@@ -1024,7 +1024,7 @@ fn shell_fails_with_missing_cwd() {
 }
 
 #[test]
-fn set_session_name_survives_persist_error() {
+fn set_session_name_reports_a_failed_persist() {
     let state = make_app_state();
     save_via(
         &state,
@@ -1036,13 +1036,58 @@ fn set_session_name_survives_persist_error() {
             "low".to_string(),
         )],
     );
-    // Break the on-disk file so update_info fails (logged, still ok).
+    // Break the on-disk file so update_info fails.
     state.session_manager.test_execute("CREATE TRIGGER fail_entries BEFORE INSERT ON entries BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;");
 
     let mut cmd = make_cmd("set_session_name");
     cmd.name = "still works".to_string();
     let resp = parse_response(&handle_command_internal(&state, cmd));
-    assert_eq!(resp["success"], true);
+    // The disk is the name every other reader sees (a cold load, `get_state`,
+    // the host's discovery pass). A success response here is a rename that
+    // silently reverts once one of them re-reads the session, so the failure has
+    // to reach the caller instead.
+    assert_eq!(resp["success"], false);
+    assert!(
+        resp["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("could not be persisted")),
+        "unexpected error: {}",
+        resp["error"]
+    );
+    // ...and the in-memory name is left at what the disk holds, so a reader in
+    // this process does not see a name that never landed either.
+    let session = state.get_session("default").unwrap();
+    assert_eq!(session.read().session_name, "");
+    let loaded = state.session_manager.load("default").unwrap();
+    assert_eq!(loaded.name, "");
+}
+
+#[test]
+fn set_session_name_keeps_the_previous_name_when_the_write_fails() {
+    let state = make_app_state();
+    save_via(
+        &state,
+        "default",
+        "mock",
+        vec![crate::session::SessionEntry::session_info(
+            serde_json::json!({"cwd": state.welcome_cwd, "model": "mock", "session_name": "kept"}),
+            "mock".to_string(),
+            "low".to_string(),
+        )],
+    );
+    let mut cmd = make_cmd("set_session_name");
+    cmd.name = "kept".to_string();
+    handle_command_internal(&state, cmd);
+    state.session_manager.test_execute("CREATE TRIGGER fail_entries BEFORE INSERT ON entries BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;");
+
+    let mut cmd = make_cmd("set_session_name");
+    cmd.name = "lost".to_string();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], false);
+    // Memory is restored to the name the disk still has, so nothing in this
+    // process advertises a title that will revert on the next cold read.
+    let session = state.get_session("default").unwrap();
+    assert_eq!(session.read().session_name, "kept");
 }
 
 #[test]

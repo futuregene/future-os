@@ -3,6 +3,9 @@
 mod project_context;
 pub(crate) use project_context::load_project_context;
 
+mod choice_card;
+pub use choice_card::reply_offers_choice;
+
 use crate::skills::Skill;
 use crate::types::AgentTool;
 
