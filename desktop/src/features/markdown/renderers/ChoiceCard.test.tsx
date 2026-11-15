@@ -43,7 +43,7 @@ describe("choice card rendering", () => {
   }
 
   it("draws the title, the mode label, the hint and one row per option", () => {
-    const html = render();
+    const html = render({ onSelect: vi.fn() });
     expect(html).toContain("接下来做哪一件？");
     expect(html).toContain("Single choice");
     expect(html).toContain("Pick one and it lands in the input; you can type something else instead");
@@ -67,16 +67,16 @@ describe("choice card rendering", () => {
   });
 
   it("uses checkbox rows for a multi-choice card and its own hint", () => {
-    const html = render({ mode: "multi" });
+    const html = render({ mode: "multi", onSelect: vi.fn() });
     expect(html).toContain("Multiple choice");
     expect(html).toContain("Pick as many as apply");
     expect(html).not.toContain("Pick one and it lands in the input");
-    const card = mount({ mode: "multi" });
+    const card = mount({ mode: "multi", onSelect: vi.fn() });
     expect([...card.querySelectorAll("[data-choice-option]")].every(row => row.getAttribute("role") === "checkbox")).toBe(true);
   });
 
   it("prefers the model's own hint over the default subtitle", () => {
-    const html = render({ hint: "点几个都行" });
+    const html = render({ hint: "点几个都行", onSelect: vi.fn() });
     expect(html).toContain("点几个都行");
     expect(html).not.toContain("Pick one and it lands in the input");
   });
@@ -144,9 +144,43 @@ describe("choice card rendering", () => {
     expect(onSelect).toHaveBeenCalledWith("forest");
   });
 
-  it("says a past card is out of date without printing it on the card", () => {
+  /**
+   * The subtitle is the only place a card can promise an action. A card that
+   * cannot answer must not print the answering one: "pick one and it lands in
+   * the input" over rows that do nothing is a button that looks pressable and
+   * isn't — the whole point of the read-only state (§3's tolerance table).
+   */
+  it("does not promise a pick on a read-only card, in visible text or to a screen reader", () => {
+    const card = mount({ hint: "点几个都行" }).querySelector<HTMLElement>("[data-choice-card]")!;
+    expect(card.textContent).toContain("An earlier question — this card can no longer be picked");
+    expect(card.textContent).not.toContain("Pick one and it lands in the input");
+    // The model's own hint describes picking too, so it goes the same way.
+    expect(card.textContent).not.toContain("点几个都行");
+    // And the same sentence is what a screen reader reads for the group.
+    expect(card.getAttribute("aria-disabled")).toBe("true");
+    const describedBy = card.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy!)?.textContent)
+      .toBe("An earlier question — this card can no longer be picked");
+  });
+
+  it("keeps a read-only card out of the tab order and refuses focus", () => {
     const card = mount();
-    expect(card.querySelector(".sr-only")?.textContent).toBe("This card is no longer active");
-    expect(render({ onSelect: vi.fn() })).not.toContain("This card is no longer active");
+    const rows = [...card.querySelectorAll<HTMLElement>("[data-choice-option]")];
+    for (const row of rows) {
+      // `tabIndex` -1 is not enough on its own: a script or a click can still
+      // focus such a row, so the element itself must refuse too.
+      expect(row.tabIndex).toBe(-1);
+      expect(row.getAttribute("aria-disabled")).toBe("true");
+    }
+    rows[0]!.focus();
+    expect(document.activeElement).not.toBe(rows[0]);
+  });
+
+  it("prints the answering hint again as soon as it has an answer surface", () => {
+    const card = mount({ onSelect: vi.fn() }).querySelector<HTMLElement>("[data-choice-card]")!;
+    expect(card.textContent).toContain("Pick one and it lands in the input");
+    expect(card.textContent).not.toContain("An earlier question");
+    expect(card.getAttribute("aria-disabled")).toBeNull();
   });
 });
