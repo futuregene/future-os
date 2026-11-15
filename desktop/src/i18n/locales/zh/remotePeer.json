@@ -240,6 +240,7 @@
   "filesOpen": "显示此对话的文件",
   "filesPreview": "预览 {{name}}",
   "filesRefresh": "重新读取此目录",
+  "filesResize": "拖动调整文件面板宽度",
   "slashCommands": "命令",
   "slashSkills": "技能",
   "sessionMenuTitle": "对话",

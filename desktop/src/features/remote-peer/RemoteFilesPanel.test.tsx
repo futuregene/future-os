@@ -174,6 +174,8 @@ async function mount(props: { expanded?: boolean; floating?: boolean } = {}) {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
+  const onResizeNudge = vi.fn();
+  const onResizeStart = vi.fn();
   const onToggleExpanded = vi.fn();
   await act(async () => {
     root.render(
@@ -181,14 +183,19 @@ async function mount(props: { expanded?: boolean; floating?: boolean } = {}) {
         desktopId="desktop_a"
         expanded={props.expanded ?? true}
         floating={props.floating}
+        onResizeNudge={onResizeNudge}
+        onResizeStart={onResizeStart}
         onToggleExpanded={onToggleExpanded}
         peer={peer}
         sessionId="sess_1"
+        width={360}
       />,
     );
   });
   return {
     container,
+    onResizeNudge,
+    onResizeStart,
     onToggleExpanded,
     unmount: async () => {
       await act(async () => root.unmount());
@@ -196,6 +203,40 @@ async function mount(props: { expanded?: boolean; floating?: boolean } = {}) {
     },
   };
 }
+
+/**
+ * The column is drag-resized from the same divider the local context panel
+ * has. The width itself belongs to the shell (one shared value for both
+ * panels), so the panel's own contract is the handle plus the two callbacks.
+ */
+it("resizes from the same divider the local panel has", async () => {
+  const view = await mount();
+  const divider = view.container.querySelector<HTMLElement>("[role='separator']")!;
+  expect(divider.getAttribute("aria-orientation")).toBe("vertical");
+  expect(divider.getAttribute("aria-label")).toBe("Drag to resize the files panel");
+  expect((view.container.querySelector("aside") as HTMLElement).style.width).toBe("360px");
+
+  act(() => {
+    divider.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+  });
+  expect(view.onResizeStart).toHaveBeenCalledTimes(1);
+
+  act(() => {
+    divider.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowLeft" }));
+  });
+  expect(view.onResizeNudge).toHaveBeenLastCalledWith(16);
+  act(() => {
+    divider.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowRight" }));
+  });
+  expect(view.onResizeNudge).toHaveBeenLastCalledWith(-16);
+  await view.unmount();
+});
+
+it("carries the shared width into the floating drawer", async () => {
+  const view = await mount({ floating: true });
+  expect((view.container.querySelector("aside") as HTMLElement).style.width).toBe("360px");
+  await view.unmount();
+});
 
 it("reads the conversation's files from the host on open", async () => {
   list.mockResolvedValue(listing([
