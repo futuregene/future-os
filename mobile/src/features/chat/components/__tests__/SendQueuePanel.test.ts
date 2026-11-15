@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { QUEUE_ROWS_SHOWN_BY_DEFAULT, SendQueuePanel, sendQueueListHeight } from "../SendQueuePanel";
+import { SendQueuePanel, sendQueueListHeight } from "../SendQueuePanel";
 
 jest.mock("lucide-react-native", () => ({
   Check: () => null,
@@ -118,27 +118,13 @@ function painted() {
 }
 
 describe("the send queue above the composer", () => {
-  it("opens a short queue without being asked, and can still be closed", () => {
-    render({ items: items(QUEUE_ROWS_SHOWN_BY_DEFAULT) });
-    expect(rows()).toHaveLength(QUEUE_ROWS_SHOWN_BY_DEFAULT);
-    expect(toggle().props.accessibilityLabel).toBe("Hide the queued messages");
-    expect(toggle().props.accessibilityState).toEqual({ expanded: true });
-
-    act(() => toggle().props.onPress());
-    // Closed means the rows are gone, not dimmed: the height they took is the
-    // height the conversation gets back.
-    expect(rows()).toHaveLength(0);
-    expect(hasList()).toBe(false);
-    expect(painted()).toContain("Send queue");
-    expect(painted()).toContain(`${QUEUE_ROWS_SHOWN_BY_DEFAULT} waiting`);
-  });
-
-  it("starts a long queue closed, so it cannot cover the reply it waits behind", () => {
-    render({ items: items(8) });
+  it("starts closed even for a single row, so it never covers the reply it waits behind", () => {
+    render({ items: items(1) });
     expect(rows()).toHaveLength(0);
     expect(hasList()).toBe(false);
     // What is waiting is still readable at a glance, in the one header line.
-    expect(painted()).toContain("8 waiting");
+    expect(painted()).toContain("Send queue");
+    expect(painted()).toContain("1 waiting");
     expect(painted()).toContain("Sent as one message when this reply ends");
     expect(toggle().props.accessibilityLabel).toBe("Show the queued messages");
     expect(toggle().props.accessibilityState).toEqual({ expanded: false });
@@ -146,13 +132,17 @@ describe("the send queue above the composer", () => {
 
   it("expands to the whole queue on a tap, and closes again on the next one", () => {
     render({ items: items(8) });
+    expect(painted()).toContain("8 waiting");
     act(() => toggle().props.onPress());
     expect(rows()).toHaveLength(8);
     expect(hasList()).toBe(true);
     expect(toggle().props.accessibilityLabel).toBe("Hide the queued messages");
 
     act(() => toggle().props.onPress());
+    // Closed means the rows are gone, not dimmed: the height they took is the
+    // height the conversation gets back.
     expect(rows()).toHaveLength(0);
+    expect(hasList()).toBe(false);
     expect(toggle().props.accessibilityLabel).toBe("Show the queued messages");
   });
 
@@ -173,12 +163,21 @@ describe("the send queue above the composer", () => {
     expect(list().props.style).toContainEqual({ maxHeight: 150 });
   });
 
-  it("follows the queue until someone chooses, then keeps their choice", () => {
-    const element = render({ items: items(5) });
+  it("keeps the reader's choice while the queue changes under it", () => {
+    // Closed stays closed as the queue grows — the header's count already says
+    // so, and a panel that opened itself under a running reply would take back
+    // the room the reader just reclaimed.
+    const closed = render({ items: items(1) });
+    update(createElement(SendQueuePanel, {
+      ...(closed.props as Parameters<typeof SendQueuePanel>[0]),
+      items: items(6),
+    }));
     expect(rows()).toHaveLength(0);
+
+    // Opened by hand, it stays open as the queue drains to one row.
+    const element = render({ items: items(5) });
     act(() => toggle().props.onPress());
     expect(rows()).toHaveLength(5);
-    // The queue drains to one row: the reader opened it, so it stays open.
     update(createElement(SendQueuePanel, {
       ...(element.props as Parameters<typeof SendQueuePanel>[0]),
       items: items(1),
@@ -234,6 +233,8 @@ describe("a queued message that answered a card", () => {
     // would ask the reader which one edits what (§5.8.2), so the chip itself is
     // the control and the row keeps exactly one pencil.
     withAnswer();
+    // Closed by default: the rows are behind one tap on the header.
+    act(() => toggle().props.onPress());
     expect(chip()).toBeDefined();
     expect(chip().props.accessibilityRole).toBe("button");
     expect(chip().props.accessibilityLabel).toContain("接下来做哪一件？");
@@ -254,6 +255,7 @@ describe("a queued message that answered a card", () => {
       items: [{ id: "run_1", content: "[接下来做哪一件？ → 重画森林图]", choice: ANSWER }],
       onRequestChoiceChange,
     });
+    act(() => toggle().props.onPress());
     act(() => chip().props.onPress());
     expect(onRequestChoiceChange).toHaveBeenCalledWith("run_1");
   });
@@ -267,6 +269,7 @@ describe("a queued message that answered a card", () => {
       items: [{ id: "run_1", content: "[接下来做哪一件？ → 重画森林图]", choice: ANSWER }],
       onRequestChoiceChange: jest.fn(),
     });
+    act(() => toggle().props.onPress());
     const row = tree!.root.findAll(node => node.props.testID === "send-queue-item")[0]!;
     const ids = row.findAll(node => typeof node.props.testID === "string")
       .map(node => node.props.testID as string);

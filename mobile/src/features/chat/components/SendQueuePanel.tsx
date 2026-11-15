@@ -63,17 +63,6 @@ export interface SendQueuePanelItem {
   choice?: SessionQueueChoice;
 }
 
-/**
- * How many waiting messages the panel shows without being asked.
- *
- * The panel is docked above the composer, so every row it draws is a row of the
- * conversation that is no longer on screen: a burst of queued messages used to
- * cover the reply they were queued behind. Two rows are enough to see what is
- * waiting and that the queue is moving; past that the panel opens as a header the
- * reader expands when they want the list.
- */
-export const QUEUE_ROWS_SHOWN_BY_DEFAULT = 2;
-
 /** The tallest the open list may be, and the shortest that still shows a row. */
 const OPEN_LIST_MAX_HEIGHT = 240;
 const OPEN_LIST_MIN_HEIGHT = 96;
@@ -98,8 +87,9 @@ export function sendQueueListHeight(viewportHeight: number, keyboardHeight: numb
  * A queued message is not yet gone, so this is the one place to read it, fix a
  * typo, open a photo it carries or take one off before the run it waits for ends.
  * It disappears the moment the queue empties, because an empty panel would only
- * take space. A long queue starts collapsed to its header — the conversation it
- * sits over is what the reader was looking at — and the header expands it.
+ * take space. It always starts collapsed to its header — the conversation it sits
+ * over is what the reader was looking at, and the header already says how many
+ * messages are waiting — and the header expands it.
  *
  * The rows are the conversation's, not this phone's: the same list the desktop's
  * own window shows, because both read it from the session that holds it. That is
@@ -149,13 +139,14 @@ export function SendQueuePanel({
   // not a second composer.
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
-  // Whether the rows are showing. `null` means the reader has not decided, and
-  // the panel keeps following the queue: open while it is short enough to sit
-  // above the composer without covering the reply, collapsed once it is not. A
-  // choice made by hand outlives the count it was made at — the panel unmounts
-  // with an empty queue anyway, so the next one starts from the rule again.
-  const [open, setOpen] = useState<boolean | null>(null);
-  const expanded = open ?? items.length <= QUEUE_ROWS_SHOWN_BY_DEFAULT;
+  // Whether the rows are showing. The panel is docked above the composer, so
+  // every row it draws is a row of the conversation no longer on screen: it
+  // therefore starts as its header line and only draws rows when asked. The
+  // choice then belongs to the reader and outlives the queue changing under it —
+  // the panel unmounts with an empty queue anyway, so the next one starts closed
+  // again.
+  const [open, setOpen] = useState(false);
+  const expanded = open;
 
   if (items.length === 0)
     return null;
