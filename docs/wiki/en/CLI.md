@@ -308,10 +308,16 @@ future desktop settings get approvalTier      # one value, for scripts
 future desktop settings set approvalTier auto # off | manual | sandbox | auto
 future workspace list                         # workspaces, with their conversations
 future workspace list --archived              # the archived view
+future workspace list --pinned                # the app's pinned section
 future workspace add ~/projects/demo --name Demo
 future workspace archive ~/projects/demo      # shelve it and its conversations
 future workspace restore ws-1a2b3c            # bring it, and what it hid, back
+future workspace pin ~/projects/demo          # keep it above the unpinned groups
+future workspace unpin ws-1a2b3c              # let it follow recency again
 future session archive <session-id>           # shelve one conversation (and its forks)
+future session pin <session-id>               # keep a conversation in the pinned section
+future session unpin <session-id>             # take it off
+future session pinned                         # what is pinned right now
 ```
 
 These read and write the desktop app's database (`~/.future/app/app.db`), not the
@@ -326,6 +332,14 @@ here appears in the app's sidebar (and on a paired phone) once the app publishes
 its catalogue; the directory must already exist. `archive`/`restore` are the app's
 Archived view at both scopes — a workspace takes the conversations under it, a
 session takes its fork tree — and refuse while anything inside is still running.
+`pin`/`unpin` move a workspace or a conversation into the app's pinned section
+instead, which is an ordering flag rather than a state: no activity stamp is
+rewritten, so `unpin` returns the row to the position its own activity earns.
+`future session pinned` and `future workspace list --pinned` read that section
+back. Note that archiving *clears* the pin — a shelved row would hide behind the
+shelf — so `unpin` is not the inverse of `archive`; `restore` is. Pinning an
+archived row stores the flag and says the section will not show it until the row
+is restored.
 
 ### `remote` — paired devices and remote desktops
 
