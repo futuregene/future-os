@@ -603,6 +603,56 @@ mod bridge_tests {
     }
 
     #[tokio::test]
+    async fn rename_session_reports_a_mirror_write_the_store_refused() {
+        use crate::remote::test_support::{init_store, raw_store_connection, HomeGuard};
+        let _home = HomeGuard::new("bridge-rename-mirror-refused");
+        init_store();
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("Before".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some("sess-mirror-refused".to_string()),
+        })
+        .expect("create the thread to rename");
+        {
+            let conn = raw_store_connection();
+            conn.execute_batch(
+                "CREATE TRIGGER refuse_thread_rename BEFORE UPDATE ON threads
+                 BEGIN SELECT RAISE(ABORT, 'thread rename refused'); END;",
+            )
+            .expect("install the failing-write fixture");
+        }
+
+        let mock = mock_agent();
+        mock.push("set_session_name", Reply::Data("{}".to_string()));
+        let error = crate::agent_bridge::rename_session(
+            "sess-mirror-refused".to_string(),
+            "After".to_string(),
+        )
+        .await
+        .expect_err("a mirror write the store refused must not be reported as a rename");
+
+        // The Agent did take the name; the caller has to learn that the local
+        // title did not follow, instead of the two stores silently disagreeing
+        // until the discovery pass reverts one of them.
+        assert_eq!(mock.requests_of("set_session_name").len(), 1);
+        assert!(
+            error.to_string().contains("could not be saved"),
+            "the mirror failure is surfaced: {error}"
+        );
+        assert_eq!(
+            crate::store::get_thread(&thread.id)
+                .expect("thread")
+                .expect("exists")
+                .title,
+            "Before",
+            "a refused write leaves the stored title untouched"
+        );
+    }
+
+    #[tokio::test]
     async fn rename_session_mirrors_into_the_store() {
         let home = TestHome::new("bridge-rename");
         let mock = mock_agent();
