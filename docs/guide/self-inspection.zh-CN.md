@@ -390,10 +390,16 @@ future desktop settings set hiddenModels "future/glm-5.3, future/kimi-k3"
 future workspace list                 # 用户自己的工作区
 future workspace list --json
 future workspace list --archived      # 已归档视图
+future workspace list --pinned        # 桌面端的「已固定」区域
 future workspace add ~/projects/demo  # 把一个已存在的目录登记为工作区
 future workspace add /srv/app --name "Service"
 future workspace archive ~/projects/demo   # 归档它和它下面的会话
 future workspace restore ws-1a2b3c         # 取消归档，连同它藏起来的东西
+future workspace pin demo                  # 固定到未固定分组之上
+future workspace unpin ws-1a2b3c           # 让它重新按活跃度排序
+future session pin <session-id>            # 固定一条会话
+future session unpin <session-id>
+future session pinned                      # 当前固定了哪些会话
 ```
 
 目录必须已存在——工作区指向一个目录，不会创建它。路径已经对应某个工作区时直接复用，
@@ -409,6 +415,25 @@ future workspace restore ws-1a2b3c         # 取消归档，连同它藏起来�
 正在运行时都会拒绝——归档一个仍在跑的 run 会把它的审批请求藏起来——并且会清掉置顶。所以
 `future workspace list` 默认只列未归档的那一层，`--archived` 是已归档视图，`--all` 两层都
 列并标出来；桌面端从未导入过的会话没有可归档的会话记录，命令会直说，而不是假装归档成功。
+
+`pin` 和 `unpin` 是同一个 store 上的另一个标记，两层都支持，含义正好和「归档」相反：
+「已固定」区域是从活跃列表里领出来的**快捷方式**，所以固定是让记录排到前面，而不是藏起来。
+它是排序标记而不是活跃度——`updated_at` 和 `last_opened_at` 都不会被改写，所以 `unpin` 会让
+记录回到它自身活跃度应得的位置，而不是跳到最前。桌面端自己的规则带来两个后果，命令都会
+直接说出来，而不是留给阅读者自己发现：
+
+- **归档会清掉固定标记。** 固定在「已固定」区的记录被归档后会藏在归档里，所以 `archive`
+  会把标记去掉。因此 `unpin` 并不是 `archive` 的逆操作，`restore` 才是。
+- **固定标记可能写进去了但看不见。** 固定一条已归档的会话，或固定一条所在工作区已归档而
+  自己还活着的会话，标记确实写入了，但「已固定」区在 `future session restore` 或
+  `future workspace restore` 把它放回来之前不会显示它。命令会说明这一点，而这个原因是从
+  记录本身和它所属的工作区**读出来**的，不是猜的。
+
+`future session pinned` 和 `future workspace list --pinned` 用的是 store 自己的查询
+（`list_pinned_threads` 配桌面端的 `Recent` scope，以及 `list_pinned_workspaces`）来回读
+这个区域，所以终端、侧栏和已配对手机对于「固定了什么」以及顺序不会有分歧。会话列表打印的
+是 Agent 的 session id，也正是 `pin`/`unpin` 接受的参数；Agent 本身没有「固定」这个概念——
+`future session list` 是一次发往 Agent 的 gRPC 调用，不带这个字段。
 
 工作区也会自己出现：`future session set <id> --cwd <dir>` 会把该会话归档到该目录对应的
 工作区，和桌面端观察到 cwd 变化时做的事完全一样——因此这条桌面侧记录不再依赖「改 cwd 的

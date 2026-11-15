@@ -278,10 +278,16 @@ future desktop settings get approvalTier      # 单个值，便于脚本
 future desktop settings set approvalTier auto # off | manual | sandbox | auto
 future workspace list                         # workspace 列表及其会话
 future workspace list --archived              # 已归档视图
+future workspace list --pinned                # 桌面端的「已固定」区域
 future workspace add ~/projects/demo --name Demo
 future workspace archive ~/projects/demo      # 归档它和它下面的会话
 future workspace restore ws-1a2b3c            # 取消归档，连同它藏起来的东西
+future workspace pin ~/projects/demo          # 固定到未固定分组之上
+future workspace unpin ws-1a2b3c              # 让它重新按活跃度排序
 future session archive <session-id>           # 归档一条会话（连同它的 fork）
+future session pin <session-id>               # 把一条会话固定在「已固定」区域
+future session unpin <session-id>             # 取消固定
+future session pinned                         # 当前固定了哪些会话
 ```
 
 读写的是桌面应用自己的数据库（`~/.future/app/app.db`），不是 agent 的设置文档——
@@ -292,7 +298,13 @@ future session archive <session-id>           # 归档一条会话（连同它�
 下一轮由某个地方发出的 prompt 开始）。这里添加的 workspace 会在应用发布目录后
 出现在左栏（以及已配对手机上）；目录必须已存在。`archive`/`restore` 是桌面端「已归档」
 视图的命令行版本，两层都支持——工作区连同它下面的会话，会话连同它的 fork 树——内部还有
-东西在运行时会拒绝归档。
+东西在运行时会拒绝归档。`pin`/`unpin` 则是把工作区或会话放进桌面端的「已固定」区域：
+它是一个排序标记而不是一种状态，不会改写任何活跃度时间戳，所以 `unpin` 会让这条记录
+回到它自身活跃度应得的位置，而不是跳到最前。`future session pinned` 与
+`future workspace list --pinned` 用来回读这个区域。注意归档会**清掉**固定标记——被归档的
+记录会藏在归档里，而不是继续固定在左栏——所以 `unpin` 并不是 `archive` 的逆操作，
+`restore` 才是。固定一条已归档的记录会写入标记，并明确告诉你「已固定」区域在它被
+恢复之前不会显示它。
 
 ### `remote` —— 已配对设备与远程桌面
 
