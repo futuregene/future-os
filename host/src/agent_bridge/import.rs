@@ -1199,6 +1199,10 @@ mod tests {
 
     #[tokio::test]
     async fn import_one_syncs_an_agent_name_into_a_stale_title() {
+        // The heal asks the Agent for the session's first message, so the fixture
+        // Channel runtime and mock server must exist before it runs -- see
+        // `mock_agent_without_reset`.
+        drop(super::super::test_support::mock_agent_without_reset());
         let home = super::super::test_support::TestHome::new("import-name");
         let workspace = super::super::test_support::seed_workspace(home.path(), "ws");
         let thread = super::super::test_support::seed_thread(&workspace.id, Some("sess-name"));
@@ -1221,6 +1225,10 @@ mod tests {
 
     #[tokio::test]
     async fn import_one_heals_a_chinese_default_title() {
+        // The heal asks the Agent for the session's first message, so the fixture
+        // Channel runtime and mock server must exist before it runs -- see
+        // `mock_agent_without_reset`.
+        drop(super::super::test_support::mock_agent_without_reset());
         let home = super::super::test_support::TestHome::new("import-cn");
         let workspace = super::super::test_support::seed_workspace(home.path(), "ws");
         let thread = super::super::test_support::seed_thread(&workspace.id, Some("sess-cn"));
@@ -1498,6 +1506,10 @@ mod tests {
 
     #[tokio::test]
     async fn import_one_heals_an_existing_default_title() {
+        // The heal asks the Agent for the session's first message, so the fixture
+        // Channel runtime and mock server must exist before it runs -- see
+        // `mock_agent_without_reset`.
+        drop(super::super::test_support::mock_agent_without_reset());
         let home = super::super::test_support::TestHome::new("import-heal");
         let workspace = super::super::test_support::seed_workspace(home.path(), "ws");
         let thread = super::super::test_support::seed_thread(&workspace.id, Some("sess-heal"));

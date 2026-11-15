@@ -1,6 +1,8 @@
+import type { ChoiceAnswer, ChoiceCardQuestion } from "../../features/agent/composer/choiceAnswer";
 import type { ApprovalChipTier } from "../../features/agent/composer/ComposerControls";
 import type { PaletteCommand, PaletteTarget } from "../../features/palette/paletteItems";
 import type { DeviceFilter, MergedConversation, RemoteWorkspaceTarget } from "../../features/remote-peer/mergeConversations";
+import type { RemoteComposerHandle } from "../../features/remote-peer/RemoteComposer";
 import type { RemoteIdentityMemory } from "../../features/remote-peer/remoteConversationIdentity";
 import type { RemotePeer, RemoteWorkspaceRow } from "../../features/remote-peer/remotePeerClient";
 import type { SettingsTab } from "../../features/settings/SettingsDialog";
@@ -233,6 +235,27 @@ function ReadyAppShell({
    * none) until its first prompt creates it.
    */
   const remoteDraft = activeRemote?.sessionId === "" ? activeRemote : null;
+  /**
+   * The answer to the closing `futureos-choice` card of the open remote
+   * conversation, and the composer that owns it.
+   *
+   * Lifted here because the card lives in the transcript (`RemoteConversationView`)
+   * while the answer lives in the composer (`RemoteComposer`) — the same split
+   * this app's own `AgentThread` bridges with its `choiceSurface`. The ref is how
+   * the transcript's rows reach the composer's write without either one owning
+   * the other.
+   */
+  const remoteComposerRef = useRef<RemoteComposerHandle | null>(null);
+  const [remoteChoice, setRemoteChoice] = useState<ChoiceAnswer | null>(null);
+  const handleRemoteChoiceSelect = useCallback((optionId: string, card: ChoiceCardQuestion) => {
+    remoteComposerRef.current?.selectChoice(optionId, card);
+  }, []);
+  // The answer belongs to one conversation: opening another must not leave the
+  // previous one's card marked. The composer reports its own restore, which is
+  // what refills this when a draft is reopened.
+  useEffect(() => {
+    setRemoteChoice(null);
+  }, [activeRemote?.desktopId, activeRemote?.sessionId]);
   /**
    * That host's workspaces, read while a draft is open.
    *
@@ -2148,7 +2171,9 @@ function ReadyAppShell({
                                     approvals={remoteApprovals.approvals}
                                     approvalErrors={remoteApprovals.errors}
                                     approvalPending={remoteApprovals.pending}
+                                    choiceSelectedIds={remoteChoice?.selectedIds}
                                     desktopId={activeRemote.desktopId}
+                                    onChoiceSelect={handleRemoteChoiceSelect}
                                     composer={(
                                       // The composer and, for a draft, the row that
                                       // decides where the conversation will live. One
@@ -2159,6 +2184,8 @@ function ReadyAppShell({
                                       <div className="pointer-events-auto mx-auto w-full max-w-3xl">
                                         <RemoteComposer
                                           key={`remote-composer:${activeRemote.desktopId}:${activeRemote.sessionId}`}
+                                          ref={remoteComposerRef}
+                                          onChoiceChange={setRemoteChoice}
                                           archived={activeRemoteArchived}
                                           canCompact={remoteTimeline.canCompact}
                                           // The conversation frame places the composer: the

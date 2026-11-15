@@ -82,6 +82,10 @@ pub struct CustomProvider {
     pub name: String,
     pub api: String,
     pub base_url: String,
+    /// Whether the agent will skip TLS certificate verification for this
+    /// provider's endpoint. `false` for every provider that never set it.
+    #[serde(default)]
+    pub skip_tls_verify: bool,
     pub has_api_key: bool,
     pub models: Vec<CustomProviderModel>,
 }
@@ -151,6 +155,13 @@ pub struct UpsertCustomProviderInput {
     pub api: String,
     #[serde(default)]
     pub base_url: String,
+    /// Opt out of TLS certificate verification for this provider's endpoint,
+    /// for a gateway whose certificate is self-signed or issued by a private CA.
+    /// `None` (the field omitted) leaves the stored setting alone, so a client
+    /// without this control cannot re-enable verification behind the user's
+    /// back; `Some(false)` clears it.
+    #[serde(default)]
+    pub skip_tls_verify: Option<bool>,
     /// Written to `auth.json` only when present and non-empty; otherwise any
     /// existing key is left untouched.
     #[serde(default)]
@@ -367,6 +378,10 @@ fn build_providers_view(
                 has_api_key: auth_has_key(auth, id),
                 api,
                 base_url,
+                skip_tls_verify: config
+                    .get("skipTlsVerify")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
                 name,
                 models,
                 id: id.clone(),

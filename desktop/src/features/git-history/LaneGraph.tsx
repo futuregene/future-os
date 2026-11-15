@@ -24,18 +24,24 @@ export function LaneGraph({
   geometry,
   height,
   width,
+  center,
   opacity,
 }: {
   geometry: GraphGeometry | null;
   height: number;
   width: number;
+  /**
+   * The y the horizontals run on and the dot is drawn at; the row's middle when
+   * it is a single line of text.
+   */
+  center?: number;
   /** Fade the picture on a hovering row, so the row's own text leads. */
   opacity?: number;
 }) {
   if (!geometry) {
     return null;
   }
-  const drawing = laneDrawing(geometry, LANE_METRICS, height);
+  const drawing = laneDrawing(geometry, LANE_METRICS, height, center);
   return (
     <svg
       aria-hidden="true"
@@ -78,7 +84,7 @@ export function LaneGraph({
           // A row has at most one commit, so there is nothing to tell apart.
           key="dot"
           cx={dot.x}
-          cy={height / 2}
+          cy={dot.y}
           r={dot.merged ? DOT_RADIUS + DOT_STROKE / 2 : DOT_RADIUS}
           fill={dot.merged ? "none" : dot.color}
           stroke={dot.color}

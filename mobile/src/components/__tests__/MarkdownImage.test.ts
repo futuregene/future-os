@@ -6,6 +6,9 @@ import { MarkdownImageLoaderContext, resolveMarkdownPath, type MarkdownImageLoad
 import { ImageViewerContext } from "../imageViewer";
 
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+// `MarkdownText` reaches the icon set through a choice card, and the set is an ES
+// module that older runtimes cannot require (see `MarkdownText.test.ts`).
+jest.mock("lucide-react-native", () => ({ ListChecks: () => null }));
 
 let tree: ReactTestRenderer;
 afterEach(() => { act(() => tree?.unmount()); });

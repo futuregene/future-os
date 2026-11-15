@@ -18,6 +18,9 @@ module.exports = {
   // AsyncStorage is a native module, so importing it in Node throws until it is
   // replaced; the setup file installs the package's mock. See jest.setup.js.
   setupFiles: ["<rootDir>/jest.setup.js"],
+  // jest-expo's native environment, plus the timer restore its fake-timer rounds
+  // need on Node 26. See the file for what breaks without it.
+  testEnvironment: "<rootDir>/jest.environment.js",
   // Cap the pool below the machine's core count. The default (`cpus - 1`)
   // assumes the whole box belongs to this suite; on a shared machine (a
   // developer's laptop also running a Rust build, or CI running several jobs)

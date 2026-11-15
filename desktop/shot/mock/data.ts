@@ -225,6 +225,71 @@ if (requestedThread() === PARSER_THREAD_ID) {
 export const MAIN_THREAD_ID = "th_review";
 
 /**
+ * `?thread=th_choice`: a reply that ends with a `futureos-choice` fence.
+ *
+ * Only when a capture names it, for the same reason as the parser session: the
+ * default fixture is what every other scenario starts from. `ws_dopamine`
+ * already exists, so this adds a thread and nothing else.
+ */
+export const CHOICE_THREAD_ID = "th_choice";
+
+if (requestedThread() === CHOICE_THREAD_ID) {
+  threads.unshift(thread(CHOICE_THREAD_ID, "ws_dopamine", pick("两篇文献读完之后的下一步", "What to Do Next With the Two Papers"), 0));
+}
+
+export const choiceEntries: MockEntry[] = [
+  {
+    id: "cc1",
+    kind: "message",
+    role: "user",
+    createdAtMs: now - 4 * minute,
+    runId: "run_choice",
+    blocks: [{ kind: "text", text: "读一下 Frank 2024 和 Dreher 2025，再告诉我下一步能做什么。" }],
+  },
+  {
+    id: "cc2",
+    kind: "message",
+    role: "assistant",
+    createdAtMs: now - 3 * minute,
+    runId: "run_choice",
+    usage: { inputTokens: 21_480, outputTokens: 520 },
+    run: { status: "completed", durationMs: 38_000 },
+    blocks: [
+      { kind: "tool_call", toolCallId: "cr_1", name: "read", arguments: { path: "papers/frank-2024.pdf" } },
+      { kind: "tool_call", toolCallId: "cr_2", name: "read", arguments: { path: "papers/dreher-2025.pdf" } },
+      {
+        kind: "text",
+        text: [
+          "两篇都读完了：Frank 42 人、Dreher 186 人，都是被试间设计，但 Dreher 报的置信区间明显更窄，所以两篇的结论在数值上不能直接放在一起。",
+          "",
+          "```futureos-choice",
+          "title: 接下来做哪一件？",
+          "mode: single",
+          "option: forest | 重画森林图 | 按 Dreher 2025 的样本量重算两篇的置信区间",
+          "option: flow | 补一张实验流程图 | 把两篇的被试流程画成一张对照图",
+          "option: table | 表里加一列样本量 | Frank 42 / Dreher 186，标出测量手段",
+          "```",
+        ].join("\n"),
+      },
+    ],
+  },
+];
+
+const choiceRuns = [
+  {
+    id: "run_choice",
+    threadId: CHOICE_THREAD_ID,
+    status: "completed",
+    modelProvider: "future",
+    modelId: "deepseek-v4-pro",
+    startedAt: now - 4 * minute,
+    endedAt: now - 3 * minute,
+    createdAt: now - 4 * minute,
+    updatedAt: now - 3 * minute,
+  },
+];
+
+/**
  * Session-level token usage + amount for the conversation the screenshots open
  * on. The per-category figures are the agent's estimate from the model's
  * per-1M-token rates (input 4 / output 16 / cache read 0.4 / cache write 5 CNY),
@@ -810,6 +875,7 @@ export const entriesByThread: Record<string, MockEntry[]> = {
   th_review: mainEntries,
   th_fig: figureEntries,
   ...(requestedThread() === PARSER_THREAD_ID ? { [PARSER_THREAD_ID]: parserEntries() } : {}),
+  ...(requestedThread() === CHOICE_THREAD_ID ? { [CHOICE_THREAD_ID]: choiceEntries } : {}),
 };
 
 /**
@@ -912,6 +978,7 @@ export const compactResumeEntries: MockEntry[] = [
 
 export const runs = [
   ...(requestedThread() === PARSER_THREAD_ID ? parserRuns : []),
+  ...(requestedThread() === CHOICE_THREAD_ID ? choiceRuns : []),
   {
     id: "run_1",
     threadId: "th_review",

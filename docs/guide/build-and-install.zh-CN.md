@@ -321,6 +321,40 @@ make test           # 全部 8 个套件：agent、channels、CLI、app-settings
 make clean          # 清理构建产物（已安装二进制请用 make uninstall 删除）
 ```
 
+### 编译速度
+
+本地迭代的耗时几乎都在 Cargo 上，三个设置决定它的快慢：
+
+- **迭代时用 `cargo check -p <crate>`。** 它在 codegen 和链接之前停下。本仓实测：
+  改一行后 `cargo check -p future-agent` 3.9–5.0 s，`cargo build` 10.9 s，冷启 43 s。
+- **需要能跑的二进制时用 `--profile local`。** 根 `Cargo.toml` 的 `[profile.local]`
+  保留 release 优化，但设 `lto = false`、`incremental = true`——因为 `release`
+  用 `lto = "thin"`，任何改动都会重跑整图 ThinLTO：改 `future-agent` 一行再重建进
+  `future-cli`，release 65 s、local 35.6 s。`make build-cli-local`、
+  `make build-desktop-local`、`make build-local` 已经用它。没有任何东西隐式选中它，
+  所以发布仍走 `release`。
+- **本地不要设 `CARGO_INCREMENTAL=0`。** 同一处一行改动它会从 4 s 变成 9.1 s。
+  CI 关掉增量是为了缓存可复现，这个取舍在开发机上不划算。
+
+`[profile.dev]` 与 `[profile.test]` 把 `debug` 设为 `1`（仅行号表），而不是 Cargo 默认的
+完整调试信息：冷启 `future-agent` 从 50 s / 2,608 MB 降到 37 s / 1,911 MB，测试目标从
+79 s 降到 64 s。backtrace 仍保留 `file.rs:LINE`，行覆盖率不受影响（`future-config`
+实测两边都是 84.4%）。
+
+有两个脚本负责防止磁盘被填满——本仓产生的中间态很多：
+
+```bash
+bash scripts/dev/prune-target-incremental.sh            # 只报告能腾出多少
+bash scripts/dev/prune-target-incremental.sh --apply    # 删除 target/debug/incremental
+bash scripts/ci/prune-node-caches.sh                    # 列出按 ref 的 npm 缓存
+bash scripts/ci/prune-node-caches.sh --apply            # 删除它们（只需 repo scope）
+```
+
+`target/debug/incremental` 是可再生的加速状态——实测占 148 GB 的 `target/` 里的 67 GB——
+脚本在检测到 `cargo`/`rustc` 进程存活时会拒绝执行。npm 缓存则是 GitHub 侧的账：
+`actions/setup-node` 配 `cache: npm` 时按 ref 生成 key，于是每个 PR 各写一份 ~318 MB、
+别的 PR 读不到的副本。配额算法见 [ci.zh-CN.md](ci.zh-CN.md)。
+
 ### 从源码启动桌面应用
 
 完成上面的环境要求与克隆后，运行：

@@ -50,6 +50,13 @@ def terminal_run_error(result):
 def network_failure(result):
     # A CLI read failure or an ambiguous submission might still be running.
     if (
+        result.get("runtime_persistence_failure") is True
+        and not result.get("failure_evidence_error")
+        and run_ledger_entry(result).get("status")
+        in {"interrupted", "cancelled", "failed", "error"}
+    ):
+        return True
+    if (
         result.get("host_runtime_interrupted") is True
         and not result.get("failure_evidence_error")
         and run_ledger_entry(result).get("status") == "interrupted"
@@ -106,6 +113,8 @@ def case_status(result):
 def technical_failure_kind(result):
     if not network_failure(result):
         return None
+    if result.get("runtime_persistence_failure") is True:
+        return "persistence_failure"
     if result.get("host_runtime_interrupted") is True:
         return "host_interruption"
     if result.get("benchmark_deadline_exceeded"):
@@ -223,7 +232,11 @@ class TechnicalBackoff:
                 )
 
     def observe(self, result):
-        if network_failure(result) and not result.get("host_runtime_interrupted"):
+        if (
+            network_failure(result)
+            and not result.get("host_runtime_interrupted")
+            and not result.get("runtime_persistence_failure")
+        ):
             self.state["last_failure_kind"] = technical_failure_kind(result)
             self.state["consecutive_failures"] += 1
             if (

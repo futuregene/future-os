@@ -1,3 +1,4 @@
+import type { SendQueueChoiceItem } from "./SendQueuePanel";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 
@@ -51,6 +52,17 @@ export interface AgentQueueRow {
    * a message the conversation has moved past.
    */
   state: string;
+  /**
+   * The answer a `futureos-choice` card gave this message, when it came from one.
+   *
+   * `text` already reads `[question → answer]`, so the row says what it will send
+   * without this. Only this can offer the reader a different pick before it runs,
+   * because the sentence names the chosen option and drops the others.
+   *
+   * `undefined` means the message answered no card — also what an Agent older
+   * than the field reports, which must not be drawn as an empty chip.
+   */
+  choice?: SendQueueChoiceItem;
 }
 
 interface QueueSnapshot {
@@ -148,7 +160,39 @@ function asRow(raw: unknown): AgentQueueRow | null {
           (attachment): attachment is AgentQueueAttachment => attachment !== null,
         )
       : undefined,
+    choice: asChoice(row.choice),
   };
+}
+
+/**
+ * One queued answer, or `undefined` when the row carries none.
+ *
+ * Malformed data reads as "no answer" rather than as an empty one: the chip is
+ * the only thing that would show it, and a chip opening onto nothing is worse
+ * than the row the reader already knows (§5.8.2).
+ */
+function asChoice(raw: unknown): SendQueueChoiceItem | undefined {
+  if (!raw || typeof raw !== "object")
+    return undefined;
+  const choice = raw as Record<string, unknown>;
+  if (typeof choice.title !== "string" || !choice.title.trim())
+    return undefined;
+  const mode = choice.mode === "multi" ? "multi" : "single";
+  const options = Array.isArray(choice.options)
+    ? choice.options.flatMap((option) => {
+        if (!option || typeof option !== "object")
+          return [];
+        const { id, label } = option as Record<string, unknown>;
+        return typeof id === "string" && typeof label === "string" ? [{ id, label }] : [];
+      })
+    : [];
+  // No option left to switch to means nothing a chip could open.
+  if (options.length === 0)
+    return undefined;
+  const selectedIds = Array.isArray(choice.selectedIds)
+    ? choice.selectedIds.filter((id): id is string => typeof id === "string")
+    : [];
+  return { mode, title: choice.title, options, selectedIds };
 }
 
 /** One ack as `session_queue` reports it, or null when it cannot be explained. */
@@ -211,6 +255,69 @@ export function editAgentQueuedRun(
   message: string,
 ): Promise<void> {
   return invokeCommand<void>("edit_queued_run", { threadId, runId, message });
+}
+
+/**
+ * Change which option a waiting message's answer picked.
+ *
+ * Sends both the answer and the words it states (`[question → answer]`), because
+ * they are one statement: the words are what the run actually sends, and leaving
+ * them stale would send the old pick from a row whose chip showed the new one.
+ * The Agent stores them in one in-place edit, so the message keeps its place in
+ * a queue the reader ordered.
+ */
+export function editAgentQueuedRunChoice(
+  threadId: string,
+  runId: string,
+  message: string,
+  choice: SendQueueChoiceItem,
+): Promise<void> {
+  return invokeCommand<void>("edit_queued_run", {
+    threadId,
+    runId,
+    message,
+    // Deliberately not `null` for an empty pick: on the wire an absent answer
+    // means "leave the accepted answer alone" (which is how a words-only edit
+    // keeps its pick), so clearing has to be said as an answer with nothing
+    // selected. The row then reports a card it no longer answers, and the chip
+    // is simply not drawn.
+    choice,
+  });
+}
+
+/**
+ * The sentence a queued row sends once this answer is picked, rewritten in place.
+ *
+ * The row's text is what the run actually sends, so changing the pick has to
+ * change it: a chip showing a new option above text still naming the old one
+ * would send the old one. Only the answer's own `[question → answer]` prefix is
+ * replaced — whatever the reader typed after it stays exactly as they wrote it.
+ */
+export function rewriteQueuedChoiceText(content: string, choice: SendQueueChoiceItem): string {
+  const labels = choice.selectedIds
+    .map(id => choice.options.find(option => option.id === id)?.label)
+    .filter((label): label is string => Boolean(label));
+  const rest = stripQueuedChoicePrefix(content, choice.title);
+  // An empty pick leaves the message as it was, with no prefix claiming an
+  // answer nobody gave.
+  if (labels.length === 0)
+    return rest;
+  const sentence = `[${choice.title} → ${labels.join("、")}]`;
+  return rest ? `${sentence} ${rest}` : sentence;
+}
+
+/**
+ * The message without a leading `[title → …]` contribution, and without the
+ * space that followed it.
+ */
+function stripQueuedChoicePrefix(content: string, title: string): string {
+  const prefix = `[${title} → `;
+  if (!content.startsWith(prefix))
+    return content.trim();
+  const end = content.indexOf("]");
+  if (end === -1)
+    return content.trim();
+  return content.slice(end + 1).trim();
 }
 
 /**

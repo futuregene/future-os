@@ -90,6 +90,13 @@ export const resources = {
         openCommit: "Open commit {{sha}}: {{subject}}",
         /** Named for the screen reader: the graph is a picture of the lanes. */
         graphLabel: "Commit {{sha}} on lane {{lane}}",
+        ref: {
+          checkedOut: "Here",
+          yes: "checked out",
+          branches: "Branches",
+          remotes: "Remote",
+          tags: "Tags",
+        },
       },
       remote: "Phone Control",
       desktops: {
@@ -455,6 +462,28 @@ export const resources = {
         openOnDesktopFailed:
           "Could not switch to {{name}} to open that conversation. Reconnect and retry.",
       },
+      // A `futureos-choice` card's own wording (design
+      // `docs/design/choice-cards.zh-CN.md` §9): the model supplies the question and
+      // the options, never these.
+      choice: {
+        mode: { single: "Single choice", multi: "Multiple choice" },
+        hint: {
+          single: "Pick one and it lands in the input; you can type something else instead",
+          multi: "Pick as many as apply",
+        },
+        foot: {
+          queued: "Chosen — the answer is above the input. Send it as is, or add a note first.",
+        },
+        chip: {
+          change: "Change the answer to \"{{title}}\"",
+          remove: "Remove the answer to \"{{title}}\"",
+        },
+        sheet: {
+          title: "Change \"{{title}}\"",
+          hint: "Pick another one and the answer above the input follows.",
+        },
+        stale: "This card is no longer active",
+      },
       chat: {
         "fusionTitle": "Fusion · Discussion",
         "fusionModeratorRole": "Moderator",
@@ -555,6 +584,7 @@ export const resources = {
           emptyEdit: "A message needs some text. Use the bin to remove it.",
           edit: "Edit queued message",
           editLabel: "Queued message text",
+          choiceChange: "Change the answer to \"{{title}}\": {{label}}",
           editDropsFiles: "This desktop does not report the files this message carries, so saving sends the new text only.",
           previewAttachment: "Open {{name}}",
           removeAttachment: "Remove {{name}}",
@@ -1039,6 +1069,8 @@ export const resources = {
         baseUrlHint: "The address the desktop calls for this provider.",
         baseUrlRequired: "Enter the Base URL.",
         baseUrlInvalid: "Enter a valid http(s) Base URL.",
+        skipTlsVerify: "Skip TLS certificate verification",
+        skipTlsVerifyHint: "For an endpoint with a self-signed certificate or one no system CA issued (e.g. a self-hosted gateway). The connection stays encrypted; the desktop just stops checking who is on the other end. Only enable it for an endpoint you trust.",
         save: "Save",
         providerId: "Provider ID",
         providerIdHint: "Lowercase letters, digits, '-' and '_'. It cannot be changed later.",
@@ -1362,6 +1394,13 @@ export const resources = {
         commitFailed: "无法读取该提交，请重试。",
         openCommit: "打开提交 {{sha}}：{{subject}}",
         graphLabel: "提交 {{sha}}，第 {{lane}} 条甬道",
+        ref: {
+          checkedOut: "当前",
+          yes: "已检出",
+          branches: "分支",
+          remotes: "远端",
+          tags: "标签",
+        },
       },
       remote: "手机遥控",
       desktops: {
@@ -1670,6 +1709,25 @@ export const resources = {
         openOnDesktopFailed:
           "切换到「{{name}}」打开该会话失败，请恢复连接后重试。",
       },
+      choice: {
+        mode: { single: "单选", multi: "多选" },
+        hint: {
+          single: "选一个就放进输入框；也可以直接在输入框里写别的",
+          multi: "可以多选，点几个都行",
+        },
+        foot: {
+          queued: "已选，答案在下面的输入框上方；可以直接发送，也可以补充文字",
+        },
+        chip: {
+          change: "修改「{{title}}」的选择",
+          remove: "移除「{{title}}」的选择",
+        },
+        sheet: {
+          title: "修改「{{title}}」",
+          hint: "换个选项，输入框里的答案跟着变",
+        },
+        stale: "这张卡已经过期",
+      },
       chat: {
         "fusionTitle": "Fusion · 讨论",
         "fusionModeratorRole": "主持人",
@@ -1770,6 +1828,7 @@ export const resources = {
           emptyEdit: "消息需要一点文字，要删它请点旁边的垃圾桶。",
           edit: "修改队列中的消息",
           editLabel: "队列消息内容",
+          choiceChange: "更换这条消息里的选择：{{title}} · {{label}}",
           editDropsFiles: "这个桌面没有上报这条消息带的文件，保存只会重发文字。",
           previewAttachment: "打开 {{name}}",
           removeAttachment: "移除 {{name}}",
@@ -2199,6 +2258,8 @@ export const resources = {
         baseUrlHint: "桌面端访问该提供商使用的地址。",
         baseUrlRequired: "请填写 Base URL。",
         baseUrlInvalid: "请填写合法的 http(s) 地址。",
+        skipTlsVerify: "忽略 TLS 证书校验",
+        skipTlsVerifyHint: "适用于使用自签名证书、或不是系统 CA 签发证书的地址（例如自建网关）。连接仍会加密，只是桌面端不再校验对端身份。请只对你信任的地址开启。",
         save: "保存",
         providerId: "提供商 ID",
         providerIdHint: "小写字母、数字、'-' 和 '_'，创建后不可修改。",

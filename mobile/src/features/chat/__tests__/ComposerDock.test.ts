@@ -9,6 +9,8 @@ import { SessionPicker } from "../components/SessionPicker";
 import { SkillSuggestionCard } from "../components/SkillSuggestionCard";
 import { SkillDetailsDialog } from "../components/SkillDetailsDialog";
 import { SendChoiceSheet } from "../components/SendChoiceSheet";
+import { ChoiceSheet } from "../components/ChoiceSheet";
+import { choiceAnswerFromCard, pickChoiceOption } from "../choiceAnswer";
 import { SendQueuePanel, sendQueueListHeight } from "../components/SendQueuePanel";
 import { PendingApprovalCard } from "../messages/PendingApprovalCard";
 import { deleteTemporaryAttachment } from "../../../remote/files";
@@ -1253,3 +1255,194 @@ test("says why a row left the queue even when nothing is waiting", () => {
   }
 });
 
+
+/**
+ * The phone has no in-editor pill: an RN field is a native `textarea`, so a
+ * `futureos-choice` answer rides in a chip row above it (design
+ * `docs/design/choice-cards.zh-CN.md` §5.7). The point of these cases is that the
+ * answer is *draft content* — the gates the composer already reads must count it,
+ * or "pick one and send without typing" is unreachable (§5.4, requirement d).
+ */
+const ANSWER = pickChoiceOption(choiceAnswerFromCard({
+  mode: "single",
+  options: [
+    { description: "按 Dreher 2025 的样本量重算置信区间", id: "forest", label: "重画森林图" },
+    { id: "flow", label: "补一张实验流程图" },
+  ],
+  title: "接下来做哪一件？",
+  type: "choiceCard",
+}), "forest");
+
+/** The send button in the idle toolbar. */
+function sendButton(tree: ReactTestRenderer) {
+  return tree.root.findAll(node =>
+    node.props.accessibilityLabel === "chat.send" && typeof node.props.onPress === "function")[0];
+}
+
+test("an answer alone makes the send button live, and dropping it makes it dead again", () => {
+  // Requirement (d): nothing typed, nothing attached, one option picked.
+  const withAnswer = mountDock({ choice: ANSWER, onChangeChoice: jest.fn() });
+  try {
+    expect(sendButton(withAnswer.tree)!.props.disabled).toBe(false);
+    expect(sendButton(withAnswer.tree)!.props.accessibilityState).toMatchObject({ disabled: false });
+  } finally {
+    withAnswer.unmount();
+  }
+
+  const without = mountDock({ choice: null, onChangeChoice: jest.fn() });
+  try {
+    expect(sendButton(without.tree)!.props.disabled).toBe(true);
+  } finally {
+    without.unmount();
+  }
+});
+
+test("the answer also counts as a draft, so a running reply offers what sending means", () => {
+  // `hasDraft` is the other reading of "there is something to send": while a run
+  // streams it is what turns the send slot into the queue/interrupt question.
+  const { tree, unmount } = mountDock({
+    choice: ANSWER,
+    onChangeChoice: jest.fn(),
+    remote: {
+      draft: false, selectedSessionId: "s1", desktopOnline: true,
+      connectionPresentation: { level: "connected" }, models: [], modelId: "model",
+      streaming: true, busy: false, abort: jest.fn(), capabilities: new Set(),
+    },
+  });
+  try {
+    expect(tree.root.findAll(node =>
+      node.props.accessibilityLabel === "chat.chooseSend" && typeof node.props.onPress === "function")).toHaveLength(1);
+  } finally {
+    unmount();
+  }
+});
+
+test("the chip names the question and the pick, and its × drops the answer", () => {
+  const onChangeChoice = jest.fn();
+  const { tree, pressable, unmount } = mountDock({ choice: ANSWER, onChangeChoice });
+  try {
+    const chip = tree.root.findAllByProps({ testID: "composer-choice-chip" })[0]!;
+    const words = chip.findAllByType(Text)
+      .map(node => [node.props.children].flat().filter(child => typeof child === "string").join(""));
+    expect(words).toContain("接下来做哪一件？");
+    expect(words).toContain("重画森林图");
+    // The chip sits above the field, inside the dock: its row is drawn before the
+    // field's own row in the composer's child order.
+    const row = tree.root.findAllByProps({ testID: "composer-choice-row" })[0]!;
+    const field = tree.root.findByType(TextInput);
+    expect(row.parent!.children.indexOf(row)).toBeLessThan(field.parent!.children.indexOf(field));
+    // One ink for both acts (§5.7.1): the pencil's label and the × 's differ only in
+    // the verb they name.
+    expect(pressable("choice.chip.change")!.props.accessibilityRole).toBe("button");
+    act(() => pressable("choice.chip.remove")!.props.onPress());
+    expect(onChangeChoice).toHaveBeenCalledWith(null);
+  } finally {
+    unmount();
+  }
+});
+
+test("the pencil opens the sheet, and a pick replaces the pick without touching the text", () => {
+  const onChangeChoice = jest.fn();
+  const setMessage = jest.fn();
+  const { tree, pressable, unmount } = mountDock({
+    choice: ANSWER,
+    onChangeChoice,
+    message: "顺便把图例挪到右下",
+    setMessage,
+  });
+  try {
+    expect(tree.root.findByType(ChoiceSheet).props.open).toBe(false);
+    act(() => pressable("choice.chip.change")!.props.onPress());
+    expect(tree.root.findByType(ChoiceSheet).props.open).toBe(true);
+    expect(tree.root.findByType(ChoiceSheet).props.answer).toEqual(ANSWER);
+
+    // Picking writes the draft's answer and nothing else: the reader's own words
+    // are the composer's, not the sheet's.
+    act(() => tree.root.findByType(ChoiceSheet).props.onPick("flow"));
+    expect(onChangeChoice).toHaveBeenCalledTimes(1);
+    expect((onChangeChoice.mock.calls[0]![0] as typeof ANSWER).selectedIds).toEqual(["flow"]);
+    expect(setMessage).not.toHaveBeenCalled();
+    // A single-choice pick is the whole act, so the sheet closes on it.
+    expect(tree.root.findByType(ChoiceSheet).props.open).toBe(false);
+  } finally {
+    unmount();
+  }
+});
+
+test("a multi-choice sheet stays open so several can be ticked", () => {
+  const multi = pickChoiceOption(choiceAnswerFromCard({
+    mode: "multi",
+    options: [{ id: "a", label: "甲" }, { id: "b", label: "乙" }],
+    title: "要做哪些？",
+    type: "choiceCard",
+  }), "a");
+  const onChangeChoice = jest.fn();
+  const { tree, pressable, unmount } = mountDock({ choice: multi, onChangeChoice });
+  try {
+    act(() => pressable("choice.chip.change")!.props.onPress());
+    act(() => tree.root.findByType(ChoiceSheet).props.onPick("b"));
+    expect(tree.root.findByType(ChoiceSheet).props.open).toBe(true);
+  } finally {
+    unmount();
+  }
+});
+
+/**
+ * The signature that hands a changed answer upward.
+ *
+ * It takes the whole answer, not a list of ids: an id list cannot grow without
+ * changing the signature again, and rebuilding the object from the row on every
+ * change would drop whatever the caller knew and the row did not. The desktop
+ * panel's `onUpdateChoice` takes the same object, so the two surfaces cannot
+ * drift apart behind a shared name.
+ */
+test("hands a changed queued answer up as a whole object, not as ids", () => {
+  const picked = {
+    mode: "single" as const,
+    options: [{ id: "forest", label: "重画森林图" }, { id: "flow", label: "补一张流程图" }],
+    selectedIds: ["forest"],
+    title: "接下来做哪一件？",
+  };
+  const onQueueUpdateChoice = jest.fn();
+  const { tree, unmount } = mountDock({
+    message: "",
+    queueItems: [{ choice: picked, content: "[接下来做哪一件？ → 重画森林图]", id: "run_a" }],
+    onQueueUpdateChoice,
+  });
+  try {
+    // The panel starts as its header line, so the row's chip is behind one tap.
+    const toggle = tree.root.findAll(
+      node => node.props.testID === "send-queue-toggle" && typeof node.props.onPress === "function",
+    )[0]!;
+    act(() => toggle.props.onPress());
+
+    // The chip is the button that opens the row's options (§5.8.2).
+    const chip = tree.root.findAll(
+      node => node.props.testID === "send-queue-choice" && typeof node.props.onPress === "function",
+    )[0]!;
+    act(() => chip.props.onPress());
+
+    // The sheet opens on the render that follows the tap, and the row inside it
+    // is the card's own option — reached by its id, which is stable.
+    const option = tree.root.findAll(
+      node => node.props.testID === "choice-sheet-option-flow"
+        && typeof node.props.onPress === "function",
+    )[0]!;
+    act(() => option.props.onPress());
+
+    expect(onQueueUpdateChoice).toHaveBeenCalledTimes(1);
+    const [id, answer] = onQueueUpdateChoice.mock.calls[0]!;
+    expect(id).toBe("run_a");
+    // An object with the card's question and every option — not `["flow"]`.
+    expect(Array.isArray(answer)).toBe(false);
+    expect(answer).toEqual({
+      mode: "single",
+      options: picked.options,
+      selectedIds: ["flow"],
+      title: "接下来做哪一件？",
+    });
+  }
+  finally {
+    unmount();
+  }
+});

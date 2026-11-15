@@ -220,6 +220,7 @@ mod tests {
                 model_id: None,
                 thinking_level: None,
                 busy_policy: String::new(),
+                choice: None,
             },
             Some(channel),
         )
@@ -389,6 +390,7 @@ mod tests {
                 model_id: None,
                 thinking_level: None,
                 busy_policy: String::new(),
+                choice: None,
             },
             None,
         )
@@ -474,6 +476,7 @@ mod tests {
                     model_id: None,
                     thinking_level: None,
                     busy_policy: String::new(),
+                    choice: None,
                 },
                 Some(channel),
             ),
@@ -520,6 +523,7 @@ mod tests {
                 model_id: None,
                 thinking_level: None,
                 busy_policy: String::new(),
+                choice: None,
             },
             None,
         )

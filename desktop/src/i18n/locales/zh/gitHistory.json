@@ -7,5 +7,12 @@
   "notRepo": "当前工作区不是 Git 仓库。",
   "truncated": "更早的提交未显示。",
   "back": "返回提交列表",
-  "openCommit": "打开提交 {{sha}}：{{subject}}"
+  "openCommit": "打开提交 {{sha}}：{{subject}}",
+  "ref": {
+    "checkedOut": "当前",
+    "yes": "已检出",
+    "branches": "分支",
+    "remotes": "远端",
+    "tags": "标签"
+  }
 }

@@ -45,7 +45,7 @@ const mockRemote = {
   upsertCustomProvider: jest.fn(async () => providers),
   deleteCustomProvider: jest.fn(async () => providers),
   probeThinkingLevel: jest.fn(async (
-    probe: { api: string; apiKey?: string | null; baseUrl: string; level?: string; modelId: string; providerId?: string },
+    probe: { api: string; apiKey?: string | null; baseUrl: string; level?: string; modelId: string; providerId?: string; skipTlsVerify?: boolean | null },
   ) => ({ level: probe.level || "default", ok: true, error: undefined as string | undefined })),
 };
 jest.mock("../../../remote/RemoteContext", () => ({ useRemoteControls: () => mockRemote }));
@@ -398,8 +398,87 @@ test("the model editor writes every field and can drop a model again", async () 
   }));
 });
 
-test("adding a model then removing it leaves the provider as it was", async () => {
+test("the TLS switch reads the desktop's stored value and writes it back", async () => {
+  // A self-hosted gateway on a self-signed certificate: the decision lives on
+  // the paired desktop, which is where the request is made.
+  providers = {
+    ...providers,
+    custom: [{ ...providers.custom[0]!, skipTlsVerify: true }],
+  };
   await openProviders();
+  await act(async () => link("Acme Gateway").props.onPress());
+
+  const toggle = () => tree.root.findAll(
+    node => node.props.label === "desktopSettings.skipTlsVerify" && typeof node.props.onChange === "function",
+  )[0]!;
+  // The host's answer fills the form, so the phone cannot show one thing and
+  // save another.
+  expect(toggle().props.value).toBe(true);
+  // The consequence is on screen next to it, not only in the docs.
+  expect(rendered()).toContain("desktopSettings.skipTlsVerifyHint");
+
+  await act(async () => toggle().props.onChange(false));
+  await act(async () => { button("desktopSettings.save").props.onPress(); await Promise.resolve(); });
+
+  expect(mockRemote.upsertCustomProvider).toHaveBeenCalledWith(expect.objectContaining({
+    id: "acme",
+    skipTlsVerify: false,
+  }));
+});
+
+test("a desktop that predates the field is shown as verifying", async () => {
+  // `undefined`, not `false`: an older desktop simply never sends it, and the
+  // safe reading of "nothing said" is that verification is on.
+  providers = {
+    ...providers,
+    custom: [{ ...providers.custom[0]!, skipTlsVerify: undefined }],
+  };
+  await openProviders();
+  await act(async () => link("Acme Gateway").props.onPress());
+
+  const toggle = tree.root.findAll(
+    node => node.props.label === "desktopSettings.skipTlsVerify" && typeof node.props.onChange === "function",
+  )[0]!;
+  expect(toggle.props.value).toBe(false);
+});
+
+test("a new provider sends the switch state even when it is off", async () => {
+  await openProviders();
+  await act(async () => button("desktopSettings.addProvider").props.onPress());
+  await type("desktopSettings.providerId", "newco");
+  await type("desktopSettings.baseUrl", "https://api.newco.example.com/v1");
+  await act(async () => { button("desktopSettings.save").props.onPress(); await Promise.resolve(); });
+
+  // Stated, never omitted: an absent value means "keep whatever is stored",
+  // which for a provider being created is not what the switch showed.
+  expect(mockRemote.upsertCustomProvider).toHaveBeenCalledWith(expect.objectContaining({
+    id: "newco",
+    skipTlsVerify: false,
+  }));
+});
+
+test("detection runs with the TLS decision the save will use", async () => {
+  providers = {
+    ...providers,
+    custom: [{ ...providers.custom[0]!, skipTlsVerify: true }],
+  };
+  await openProviders();
+  await act(async () => link("Acme Gateway").props.onPress());
+  await act(async () => pressable("Acme Large").props.onPress());
+  await act(async () => {
+    pressable("desktopSettings.probeThinkingLevels").props.onPress();
+    await Promise.resolve();
+  });
+
+  const probes = mockRemote.probeThinkingLevel.mock.calls as unknown as [{ skipTlsVerify?: boolean }][];
+  expect(probes.length).toBeGreaterThan(0);
+  // Without this the probe would verify a certificate the save will skip, and a
+  // self-signed endpoint would be reported as a bad key.
+  for (const [probe] of probes)
+    expect(probe.skipTlsVerify).toBe(true);
+});
+
+test("adding a model then removing it leaves the provider as it was", async () => {  await openProviders();
   await act(async () => link("Acme Gateway").props.onPress());
   await act(async () => pressable("desktopSettings.addModel").props.onPress());
   await type("desktopSettings.modelId", "scratch");
@@ -468,6 +547,7 @@ test("detecting thinking levels keeps only the levels the host accepts", async (
     level: "default",
     modelId: "acme-large",
     providerId: "acme",
+    skipTlsVerify: false,
   });
   // Then every offered wire value exactly once.
   expect(probes).toHaveLength(8);

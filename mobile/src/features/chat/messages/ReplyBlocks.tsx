@@ -51,7 +51,7 @@ function stepRunKind(segment: StepSegment): StepRunKind {
 }
 
 /** One rendered slice of a reply: a pass-through segment, or a folded step run. */
-type ReplyBlock =
+export type ReplyBlock =
   | { kind: "segment"; segment: TimelineSegment; }
   | { kind: "steps"; segments: StepSegment[]; };
 

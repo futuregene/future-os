@@ -55,6 +55,25 @@ export interface SessionQueueRow {
    * controls rather than guessing at a count it cannot see.
    */
   attachments?: SessionQueueAttachment[];
+  /**
+   * The answer a `futureos-choice` card gave this message, when it came from one.
+   *
+   * `text` already reads `[question → answer]`, so the row says what it will send
+   * without this. Only this can offer a different pick before it runs, because
+   * the sentence names the chosen option and drops the others the card offered.
+   *
+   * `undefined` means the message answered no card — also what a desktop older
+   * than the field reports, which must not be drawn as an empty chip.
+   */
+  choice?: SessionQueueChoice;
+}
+
+/** One queued answer, as the card offered it. */
+export interface SessionQueueChoice {
+  mode: "single" | "multi";
+  title: string;
+  options: { id: string; label: string }[];
+  selectedIds: string[];
 }
 
 /** Whether a row is parked rather than about to run by itself. */
@@ -151,6 +170,41 @@ function asRow(raw: unknown): SessionQueueRow | null {
         (attachment): attachment is SessionQueueAttachment => attachment !== null,
       )
       : undefined,
+    choice: asChoice(row.choice),
+  };
+}
+
+/**
+ * One queued answer, or `undefined` when the row carries none.
+ *
+ * Malformed data reads as "no answer" rather than as an empty one: the chip is
+ * the only thing that would show it, and a chip opening onto nothing is worse
+ * than the row the reader already knows.
+ */
+function asChoice(raw: unknown): SessionQueueChoice | undefined {
+  if (!raw || typeof raw !== "object")
+    return undefined;
+  const choice = raw as Record<string, unknown>;
+  if (typeof choice.title !== "string" || !choice.title.trim())
+    return undefined;
+  const options = Array.isArray(choice.options)
+    ? choice.options.flatMap((option) => {
+      if (!option || typeof option !== "object")
+        return [];
+      const { id, label } = option as Record<string, unknown>;
+      return typeof id === "string" && typeof label === "string" ? [{ id, label }] : [];
+    })
+    : [];
+  // No option left to switch to means nothing a chip could open.
+  if (options.length === 0)
+    return undefined;
+  return {
+    mode: choice.mode === "multi" ? "multi" : "single",
+    title: choice.title,
+    options,
+    selectedIds: Array.isArray(choice.selectedIds)
+      ? choice.selectedIds.filter((id): id is string => typeof id === "string")
+      : [],
   };
 }
 
@@ -239,9 +293,14 @@ export async function editSessionQueuedRun(
   sessionId: string,
   runId: string,
   message: string,
+  choice?: SessionQueueChoice,
 ): Promise<void> {
   await client.requestRetry<null>(
-    { type: "edit_queued_run", runId, message, sessionId },
+    // `choice` rides with the words because they are one statement: the words
+    // are what the run sends, and an absent answer means "leave the accepted one
+    // alone" — so a text-only edit keeps its pick, and a pick change restates
+    // both (see the desktop's `editAgentQueuedRunChoice`).
+    { type: "edit_queued_run", runId, message, sessionId, ...(choice ? { choice } : {}) },
     sessionId,
   );
 }

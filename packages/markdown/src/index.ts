@@ -14,6 +14,7 @@ export {
 } from "./sessionReference";
 export type { SessionReference, SessionReferenceMatch } from "./sessionReference";
 export { joinSoftBreaks } from "./softBreaks";
+export { repairNestedDocumentFence } from "./fenceNesting";
 export { createStreamingMarkdownParser } from "./streamingMarkdown";
 export { plainTitleText } from "./title";
 export { remarkLatexMath } from "./remarkLatexMath";
@@ -24,6 +25,9 @@ export { remarkAutolinkBoundary } from "./remarkAutolinkBoundary";
 export { remarkUnclosedLink } from "./remarkUnclosedLink";
 export { referenceKey } from "./types";
 export type {
+  ChoiceCardMode,
+  ChoiceCardNode,
+  ChoiceCardOption,
   FutureMarkdownDocument,
   FutureReference,
   FutureReferenceType,

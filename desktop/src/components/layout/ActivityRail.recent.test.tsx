@@ -666,6 +666,85 @@ describe("the recent view's stream", () => {
   });
 
   /**
+   * One list, one control, whatever the remainders are made of.
+   *
+   * Reported as "why are there two, one 213 and one 702?": this view interleaves
+   * this machine's stream with every paired host's catalogue window, and each
+   * kept its own tail behind its own cursor — so two buttons with the same
+   * sentence sat under one list and neither said which rows it continued. The
+   * count is the sum because the click loads both, in one go.
+   */
+  it("says one number for both machines' remainders, and one click loads both", () => {
+    const page = streamed(RECENT_PAGE_SIZE);
+    const loadRemainingThreadScope = vi.fn(async () => {});
+    const onLoadMoreRemoteSessions = vi.fn(async () => {});
+    const view = mount(
+      <ActivityRail {...props(page, {
+        loadRemainingThreadScope,
+        onLoadMoreRemoteSessions,
+        recentThreadIds: new Set(page.map(row => row.id)),
+        remoteCatalogs: [{
+          desktopId: "desk-b",
+          sessions: [{
+            sessionId: "remote",
+            title: "Remote",
+            mode: "chat",
+            createdAt: now - minute,
+            lastMessageAt: now - minute,
+          }],
+          totalRoots: 3,
+          nextCursor: "1:remote",
+        }],
+        remoteSessionsRemaining: 2,
+        threadScopeRemaining: scope => (scope === "recent" ? 476 : 0),
+      })}
+      />,
+    );
+    showRecent(view.container);
+
+    // One control, naming what the list holds back on both machines.
+    const more = [...view.container.querySelectorAll<HTMLButtonElement>("[data-testid=\"recent-show-more\"]")];
+    const remote = view.container.querySelector("[data-testid=\"rail-load-more\"]");
+    expect(more).toHaveLength(1);
+    expect(remote).toBeNull();
+    expect(more[0]!.textContent).toContain("478");
+    expect(more[0]!.getAttribute("aria-label")).toContain("478");
+
+    act(() => more[0]!.click());
+    expect(loadRemainingThreadScope).toHaveBeenCalledWith("recent");
+    expect(onLoadMoreRemoteSessions).toHaveBeenCalledTimes(1);
+    view.unmount();
+  });
+
+  it("still draws the control when only a host holds a remainder", () => {
+    // This machine's stream is at its end and a host is not: the sum is the
+    // host's remainder alone, and the click must not ask this machine for a page
+    // it does not have.
+    const page = streamed(RECENT_PAGE_SIZE);
+    const loadRemainingThreadScope = vi.fn(async () => {});
+    const onLoadMoreRemoteSessions = vi.fn(async () => {});
+    const view = mount(
+      <ActivityRail {...props(page, {
+        loadRemainingThreadScope,
+        onLoadMoreRemoteSessions,
+        recentThreadIds: new Set(page.map(row => row.id)),
+        remoteSessionsRemaining: 702,
+        threadScopeRemaining: () => 0,
+      })}
+      />,
+    );
+    showRecent(view.container);
+
+    const more = view.container.querySelector<HTMLButtonElement>("[data-testid=\"recent-show-more\"]")!;
+    expect(more.textContent).toContain("702");
+
+    act(() => more.click());
+    expect(onLoadMoreRemoteSessions).toHaveBeenCalledTimes(1);
+    expect(loadRemainingThreadScope).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  /**
    * A conversation the stream has not reached stays out of the list.
    *
    * Reported as "how does it jump from a day ago straight to twelve days ago":

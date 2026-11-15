@@ -588,6 +588,7 @@ describe("customProviderDialog submit and lifecycle", () => {
       id: "my-provider",
       models: [],
       name: "My Provider",
+      skipTlsVerify: false,
     });
   });
 
@@ -732,6 +733,7 @@ describe("customProviderDialog editing", () => {
       id: "dashscope-coding",
       models: [expect.objectContaining({ id: "qwen", name: "Qwen", contextWindow: 200000, maxTokens: 8192, inputCost: 0.5, cacheWriteCost: 0.2 })],
       name: "DashScope",
+      skipTlsVerify: false,
     });
   });
 

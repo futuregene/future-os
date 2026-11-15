@@ -8,6 +8,8 @@ pub mod schema;
 mod sse;
 #[cfg(test)]
 mod stream_wait_tests;
+#[cfg(test)]
+mod tls_verify_tests;
 use adapters::{AdapterRegistry, ProtocolAdapter};
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
@@ -101,7 +103,7 @@ fn llm_timeout_secs() -> u64 {
 // ─── LLM Client ────────────────────────────────────────────────────────────
 
 pub struct Client {
-    http: HttpClient,
+    http: HttpClientPair,
     /// Static targets are used by standalone/test clients. Session clients set
     /// this to `None`: they retain only a provider/model identity plus
     /// session-local generation choices, never a copied provider/model config.
@@ -109,6 +111,44 @@ pub struct Client {
     generation: RwLock<schema::GenerationConfig>,
     live_model: Option<LiveModelSource>,
     adapters: AdapterRegistry,
+}
+
+/// The HTTP clients one route may need.
+///
+/// Whether to verify the peer's certificate is per-provider state: a custom
+/// provider may be a self-hosted gateway on a self-signed certificate, while
+/// everything else must stay verified. The same session client also sees that
+/// decision change between requests (another client edits `models.json`) and,
+/// for a `future`/built-in override, can be re-pointed at a different provider
+/// each turn — so the choice cannot be frozen into one client at construction.
+/// Building a client per request instead would drop connection pooling on every
+/// streaming call, so both variants are built once with identical settings and
+/// selected by the resolved route.
+#[derive(Clone)]
+struct HttpClientPair {
+    verified: HttpClient,
+    /// Identical to `verified` except that certificate-chain and host-name
+    /// checks are off: TLS then encrypts the connection without authenticating
+    /// the peer. Only ever used for a provider that asked for it.
+    unverified: HttpClient,
+}
+
+impl HttpClientPair {
+    fn new(builder: impl Fn() -> reqwest::ClientBuilder) -> reqwest::Result<Self> {
+        Ok(Self {
+            verified: builder().build()?,
+            unverified: builder().tls_danger_accept_invalid_certs(true).build()?,
+        })
+    }
+
+    /// The client for a route, by its `skip_tls_verify` decision.
+    fn select(&self, skip_tls_verify: bool) -> &HttpClient {
+        if skip_tls_verify {
+            &self.unverified
+        } else {
+            &self.verified
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -129,10 +169,21 @@ impl Client {
         target: schema::ResolvedModelTarget,
         adapters: AdapterRegistry,
     ) -> Self {
-        let http = crate::http::client_builder()
-            .timeout(std::time::Duration::from_secs(llm_timeout_secs()))
-            .build()
-            .unwrap_or_else(|_| crate::http::client());
+        let http = HttpClientPair::new(|| {
+            crate::http::client_builder()
+                .timeout(std::time::Duration::from_secs(llm_timeout_secs()))
+        })
+        .unwrap_or_else(|_| {
+            HttpClientPair {
+                verified: crate::http::client(),
+                // `client()` cannot fail; if the pair did, still honour the
+                // route's decision rather than silently verifying.
+                unverified: crate::http::client_builder()
+                    .tls_danger_accept_invalid_certs(true)
+                    .build()
+                    .unwrap_or_else(|_| crate::http::client()),
+            }
+        });
         Self {
             http,
             generation: RwLock::new(target.generation.clone()),
@@ -151,10 +202,17 @@ impl Client {
         canonical_model: String,
         registry: std::sync::Arc<parking_lot::RwLock<crate::models::Registry>>,
     ) -> Self {
-        let http = crate::http::client_builder()
-            .timeout(std::time::Duration::from_secs(llm_timeout_secs()))
-            .build()
-            .unwrap_or_else(|_| crate::http::client());
+        let http = HttpClientPair::new(|| {
+            crate::http::client_builder()
+                .timeout(std::time::Duration::from_secs(llm_timeout_secs()))
+        })
+        .unwrap_or_else(|_| HttpClientPair {
+            verified: crate::http::client(),
+            unverified: crate::http::client_builder()
+                .tls_danger_accept_invalid_certs(true)
+                .build()
+                .unwrap_or_else(|_| crate::http::client()),
+        });
         Self {
             http,
             target: RwLock::new(None),
@@ -326,6 +384,7 @@ impl Client {
         );
         let mut builder = self
             .http
+            .select(target.route.skip_tls_verify)
             .post(&url)
             .header("Content-Type", "application/json")
             .header(
@@ -357,13 +416,17 @@ impl Client {
             }
         };
         let req = builder.body(body_bytes).build()?;
-        self.http.execute(req).await.map_err(|error| {
-            if error.is_timeout() {
-                anyhow!("[RESPONSE_TIMEOUT] {error}")
-            } else {
-                anyhow!(error)
-            }
-        })
+        self.http
+            .select(target.route.skip_tls_verify)
+            .execute(req)
+            .await
+            .map_err(|error| {
+                if error.is_timeout() {
+                    anyhow!("[RESPONSE_TIMEOUT] {error}")
+                } else {
+                    anyhow!(error)
+                }
+            })
     }
 }
 
@@ -709,7 +772,7 @@ impl crate::types::LLMProvider for Client {
         &self,
     ) -> Result<Option<std::sync::Arc<dyn crate::types::LLMProvider>>> {
         Ok(Some(std::sync::Arc::new(Self {
-            http: crate::http::client_builder().build()?,
+            http: HttpClientPair::new(crate::http::client_builder)?,
             target: RwLock::new(self.target.read().clone()),
             generation: RwLock::new(self.generation.read().clone()),
             live_model: self.live_model.clone(),
@@ -1534,10 +1597,10 @@ mod tests {
         });
         let target = chat_target(&format!("http://{addr}"), "k", None, None);
         let mut client = Client::from_target(target);
-        client.http = crate::http::client_builder()
-            .timeout(std::time::Duration::from_millis(120))
-            .build()
-            .unwrap();
+        client.http = HttpClientPair::new(|| {
+            crate::http::client_builder().timeout(std::time::Duration::from_millis(120))
+        })
+        .unwrap();
 
         let error = client.stream_model(canonical_request()).await.unwrap_err();
         let message = error.to_string();
@@ -1647,10 +1710,10 @@ mod tests {
 
         let mut client =
             Client::from_target(chat_target(&format!("http://{addr}"), "k", None, None));
-        client.http = crate::http::client_builder()
-            .timeout(std::time::Duration::from_millis(150))
-            .build()
-            .unwrap();
+        client.http = HttpClientPair::new(|| {
+            crate::http::client_builder().timeout(std::time::Duration::from_millis(150))
+        })
+        .unwrap();
         let events: Vec<_> = client
             .stream_model(canonical_request())
             .await
@@ -1985,6 +2048,7 @@ mod tests {
                     schema::AuthScheme::Bearer
                 },
                 headers: Default::default(),
+                skip_tls_verify: false,
             },
             protocol,
             capabilities: schema::ModelCapabilities::default(),

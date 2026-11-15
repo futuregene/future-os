@@ -12,6 +12,7 @@ import { Dialog } from "../../components/ui/Dialog";
 import { Field } from "../../components/ui/Field";
 import { IconButton } from "../../components/ui/IconButton";
 import { Select } from "../../components/ui/Select";
+import { Switch } from "../../components/ui/Switch";
 import { TextInput } from "../../components/ui/TextInput";
 import { knownThinkingLevels, thinkingLevelName } from "../../integrations/agent/agentClient";
 import { errorMessage } from "../../lib/errors";
@@ -62,6 +63,12 @@ export interface CustomProviderSubmit {
   name: string;
   api: string;
   baseUrl: string;
+  /**
+   * Always stated (never `undefined`): the form owns this answer, and leaving it
+   * out would mean "keep whatever is stored", which on a freshly created
+   * provider is not what the switch showed.
+   */
+  skipTlsVerify: boolean;
   apiKey: string | null;
   models: CustomProviderModel[];
   create: boolean;
@@ -117,6 +124,7 @@ export function CustomProviderDialog({
   const [id, setId] = useState("");
   const [api, setApi] = useState("openai-completions");
   const [baseUrl, setBaseUrl] = useState("");
+  const [skipTlsVerify, setSkipTlsVerify] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [models, setModels] = useState<ModelRow[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -155,6 +163,7 @@ export function CustomProviderDialog({
     setId(initial?.id ?? "");
     setApi(initial?.api || "openai-completions");
     setBaseUrl(initial?.baseUrl ?? "");
+    setSkipTlsVerify(initial?.skipTlsVerify ?? false);
     setApiKey("");
     setModels(initial?.models.map(model => ({
       ...model,
@@ -244,6 +253,10 @@ export function CustomProviderDialog({
       level,
       modelId,
       providerId: id.trim() || undefined,
+      // Detection goes through the same TLS decision the saved provider will
+      // have: against a self-signed endpoint a verified handshake fails, and the
+      // failure would read as a wrong key instead of the certificate.
+      skipTlsVerify,
     });
     const runId = ++probeRunRef.current;
     setError(null);
@@ -448,6 +461,7 @@ export function CustomProviderDialog({
         id: trimmedId,
         models: cleanedModels,
         name: trimmedName,
+        skipTlsVerify,
       });
       onClose();
     }
@@ -511,6 +525,26 @@ export function CustomProviderDialog({
             value={baseUrl}
           />
         </Field>
+        {/*
+          Sits right under the Base URL because that is the value it applies to.
+          A switch rather than a checkbox: it is a safety-relevant setting, and
+          the hint below says what is actually given up.
+        */}
+        <div className="flex items-start justify-between gap-3 rounded-md border border-line-soft p-3">
+          <div className="min-w-0 space-y-1">
+            <p className="text-sm font-medium text-ink">{t("customProvider.skipTlsVerifyLabel")}</p>
+            <p className="text-xs text-ink-muted">{t("customProvider.skipTlsVerifyHint")}</p>
+          </div>
+          <Switch
+            checked={skipTlsVerify}
+            label={t("customProvider.skipTlsVerifyLabel")}
+            onChange={(checked) => {
+              // A detection result was produced under the old TLS decision.
+              setProbeNotice(null);
+              setSkipTlsVerify(checked);
+            }}
+          />
+        </div>
         <Field label={editing ? t("customProvider.apiKeyLabelEditing") : t("customProvider.apiKeyLabel")}>
           <TextInput
             onChange={(event) => {

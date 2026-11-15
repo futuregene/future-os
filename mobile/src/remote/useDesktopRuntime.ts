@@ -12,6 +12,7 @@ import {
   editSessionQueuedRun,
   fetchSessionQueue,
   releaseSessionQueuedRun,
+  type SessionQueueChoice,
   type SessionQueueSnapshot,
 } from "./sessionQueue";
 import { useSessionCatalog } from "./useSessionCatalog";
@@ -391,10 +392,15 @@ export function useDesktopRuntime({
       if (!client) throw new Error("not_connected");
       await releaseSessionQueuedRun(client, sessionId, runId);
     },
-    edit: async (sessionId: string, runId: string, message: string) => {
+    edit: async (
+      sessionId: string,
+      runId: string,
+      message: string,
+      choice?: SessionQueueChoice,
+    ) => {
       const client = clientRef.current;
       if (!client) throw new Error("not_connected");
-      await editSessionQueuedRun(client, sessionId, runId, message);
+      await editSessionQueuedRun(client, sessionId, runId, message, choice);
     },
   }), []);
 

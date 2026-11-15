@@ -83,6 +83,13 @@ pub fn queue_state_json(state: &Value) -> Value {
                         })
                     })
                     .collect::<Vec<_>>(),
+                // The answer a choice card gave this prompt, so a waiting row can
+                // offer a different pick before the run reads it. Absent for a
+                // prompt that answered no card (and for an Agent too old to send
+                // it), which draws the row exactly as it was drawn before.
+                "choice": field(row, "choice", "choice")
+                    .filter(|value| !value.is_null())
+                    .unwrap_or(Value::Null),
             })
         })
         .collect::<Vec<_>>();

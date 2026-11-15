@@ -96,6 +96,9 @@ pub struct GraphRow {
     /// The abbreviated id: the row's key, and what a tap asks the detail for.
     pub short: String,
     pub when: String,
+    /// The commit's *author* (`%an`), not its committer (`%cn`): a squash merge
+    /// on GitHub rewrites the committer to "GitHub", and the row would then name
+    /// the tool instead of the person who wrote the change.
     pub who: String,
     /// Ref names on this commit (`HEAD -> main, origin/main, tag: v1`), empty
     /// when none.
@@ -135,6 +138,80 @@ pub struct CommitDetail {
     pub patch: String,
     /// Whether [`PATCH_MAX_ROWS`] / [`PATCH_MAX_BYTES`] cut the patch.
     pub truncated: bool,
+    /// Every branch, remote-tracking branch and tag that points at this commit,
+    /// in the shape [`Refs::of`] describes.
+    pub refs: Refs,
+}
+
+/// The refs that point at one commit, split by the question a reader asks.
+///
+/// A list row can only say "`HEAD -> main, origin/main, tag: v1`" on one line,
+/// and git's short decoration leaves local branches out once a commit has
+/// enough refs. The detail page has room for all of them, so it asks
+/// `for-each-ref` instead of reusing the log's own string.
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Refs {
+    /// Local branches, without `refs/heads/`.
+    pub branches: Vec<String>,
+    /// Remote-tracking branches, without `refs/remotes/` (`origin/main`).
+    pub remotes: Vec<String>,
+    /// Tags, without `refs/tags/`.
+    pub tags: Vec<String>,
+    /// `HEAD` when it is this commit. A detached checkout of an old commit is
+    /// otherwise invisible: no branch points there, yet it is what is checked out.
+    pub head: bool,
+}
+
+impl Refs {
+    /// Read every ref pointing at `sha`.
+    ///
+    /// `for-each-ref --points-at` is the whole answer rather than a decoration:
+    /// it walks every ref, so a commit with five branches still lists five,
+    /// where the log's `%D` would shorten the line.
+    fn of(cwd: &Path, sha: &str) -> Self {
+        let mut refs = Refs::default();
+        // A ref read that fails is not worth failing the patch over: the patch
+        // is what the page is for, and an empty ref list says "none known".
+        let Ok(output) = git(
+            cwd,
+            &["for-each-ref", "--points-at", sha, "--format=%(refname)"],
+            QUERY_TIMEOUT,
+        ) else {
+            return refs;
+        };
+        if !output.success {
+            return refs;
+        }
+        for line in output
+            .stdout
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+        {
+            if let Some(name) = line.strip_prefix("refs/heads/") {
+                refs.branches.push(name.to_string());
+            } else if let Some(name) = line.strip_prefix("refs/remotes/") {
+                refs.remotes.push(name.to_string());
+            } else if let Some(name) = line.strip_prefix("refs/tags/") {
+                refs.tags.push(name.to_string());
+            }
+        }
+        refs.branches.sort();
+        refs.remotes.sort();
+        refs.tags.sort();
+        // `HEAD` is a symref, so `--points-at` does not list it. Ask the
+        // checkout directly: it is the one ref a reader is most likely to care
+        // about, and the only one that can point at a commit no branch names.
+        refs.head = git(
+            cwd,
+            &["rev-parse", "--verify", "--quiet", "HEAD"],
+            QUERY_TIMEOUT,
+        )
+        .map(|head| head.success && head.stdout.trim() == sha)
+        .unwrap_or(false);
+        refs
+    }
 }
 
 /// `git` run under a deadline, in `cwd`, writing nothing to the repository.
@@ -337,7 +414,12 @@ pub fn list(workspace: &str) -> Result<GraphListing, crate::Error> {
     // (a stash is a commit tree) as if it were a line of work, and naming `HEAD`
     // would be fatal on an unborn branch — taking every other branch's commits
     // down with it.
-    let pretty = "--pretty=format:%x1e%h%x1f%H%x1f%P%x1f%cd%x1f%cn%x1f%D%x1f%s";
+    // `%an` (author), not `%cn` (committer). They differ whenever someone else
+    // lands a change — a squash merge on GitHub rewrites the committer to
+    // "GitHub", a rebase or a cherry-pick to whoever ran it — and the author is
+    // the person the row is about. Reading the committer there made a page of
+    // real work look like it was all done by GitHub.
+    let pretty = "--pretty=format:%x1e%h%x1f%H%x1f%P%x1f%cd%x1f%an%x1f%D%x1f%s";
     let limit = format!("--max-count={COMMIT_LIMIT}");
     let output = git(
         &toplevel,
@@ -425,10 +507,18 @@ pub fn detail(workspace: &str, key: &str) -> Result<CommitDetail, crate::Error> 
         return Err(failure(&output).into());
     }
     let (patch, truncated) = bounded_patch(&output.stdout);
+    // The full sha, not the abbreviation the caller sent: `--points-at` matches
+    // on the ref's own 40-character id.
+    let full = git(&toplevel, &["rev-parse", "--verify", key], QUERY_TIMEOUT)
+        .ok()
+        .filter(|out| out.success)
+        .map(|out| out.stdout.trim().to_string())
+        .unwrap_or_else(|| key.to_string());
     Ok(CommitDetail {
         short: key.to_string(),
         patch,
         truncated,
+        refs: Refs::of(&toplevel, &full),
     })
 }
 

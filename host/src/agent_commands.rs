@@ -259,6 +259,31 @@ pub fn prompt_command(
     requested_run_id: Option<String>,
     busy_policy: &str,
 ) -> RpcCommand {
+    prompt_command_with_choice(
+        message,
+        model_context,
+        session_id,
+        attachments,
+        requested_run_id,
+        busy_policy,
+        None,
+    )
+}
+
+/// The same prompt, carrying the answer a `futureos-choice` card gave it.
+///
+/// Structured rather than folded into the message: the sentence a card sends
+/// names the picked option but not the ones the reader could still switch to,
+/// and a waiting row offers exactly that switch (see `QueuedRunChoice`).
+pub fn prompt_command_with_choice(
+    message: String,
+    model_context: String,
+    session_id: String,
+    attachments: Vec<AttachmentInput>,
+    requested_run_id: Option<String>,
+    busy_policy: &str,
+    choice: Option<future_rpc::payloads::QueuedRunChoice>,
+) -> RpcCommand {
     // Only paths cross the wire; the agent reads + encodes image bytes itself.
     let attachments = attachments
         .into_iter()
@@ -278,6 +303,7 @@ pub fn prompt_command(
         // a policy only when the reader asked for that meaning of "send".
         busy_policy: busy_policy.to_string(),
         client_request_id: command_id(),
+        choice: choice.map(queued_choice_to_proto),
         ..base_command("prompt", session_id)
     }
 }
@@ -309,11 +335,56 @@ pub fn cancel_queued_run_command(run_id: String, session_id: String) -> RpcComma
 /// Only the text travels: the prompt's files, images, model context and frozen
 /// run settings stay exactly as they were accepted, so a correction cannot
 /// change what the run reads.
+/// Correct one waiting prompt's words, and its choice card's answer.
+///
+/// The two travel together because they are one statement: the words carry the
+/// sentence `[question → answer]` that actually gets sent, and the answer is what
+/// lets the row offer a different pick. Rewriting only one of them would leave a
+/// row whose chip and whose text disagreed about what will be sent.
+///
 pub fn edit_queued_run_command(run_id: String, message: String, session_id: String) -> RpcCommand {
     RpcCommand {
         run_id,
         message,
         ..base_command("edit_queued_run", session_id)
+    }
+}
+
+/// The same in-place edit, with the answer the new words state.
+///
+/// `None` means "this edit does not touch the answer": a text-only correction
+/// leaves the accepted answer exactly as it was, so fixing a typo cannot silently
+/// drop the pick a reader made.
+pub fn edit_queued_run_command_with_choice(
+    run_id: String,
+    message: String,
+    session_id: String,
+    choice: Option<future_rpc::payloads::QueuedRunChoice>,
+) -> RpcCommand {
+    RpcCommand {
+        run_id,
+        message,
+        choice: choice.map(queued_choice_to_proto),
+        ..base_command("edit_queued_run", session_id)
+    }
+}
+
+/// The payload shape a client sends for one answer, as the wire carries it.
+fn queued_choice_to_proto(
+    choice: future_rpc::payloads::QueuedRunChoice,
+) -> future_rpc::proto::QueuedRunChoice {
+    future_rpc::proto::QueuedRunChoice {
+        mode: choice.mode,
+        title: choice.title,
+        options: choice
+            .options
+            .into_iter()
+            .map(|option| future_rpc::proto::QueuedRunChoiceOption {
+                id: option.id,
+                label: option.label,
+            })
+            .collect(),
+        selected_ids: choice.selected_ids,
     }
 }
 
@@ -384,6 +455,10 @@ pub fn base_command(command_type: &str, session_id: String) -> RpcCommand {
         // them, so a desktop-issued command leaves them absent (the Agent then
         // rejects the command for having no selector at all).
         reset_history: None,
+        // A choice card's answer. Only a `prompt` that came from a card sets it
+        // (see `prompt_command`); every other command leaves it absent, which is
+        // also the "this prompt answered no card" case.
+        choice: None,
     }
 }
 
