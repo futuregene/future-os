@@ -662,7 +662,13 @@ function ComposerDockView({
           // A single-choice pick is the whole act, so the sheet closes on it; a
           // multi-choice one keeps the sheet up so several can be ticked.
           if (queueAnswer && queueAnswerRow !== null) {
-            onQueueUpdateChoice?.(queueAnswerRow, pickChoiceOption(queueAnswer, optionId));
+            const picked = pickChoiceOption(queueAnswer, optionId);
+            // Zero ticks is no answer (§7): a multi-choice row whose last pick was
+            // just removed has nothing to rewrite the waiting message with, so the
+            // sheet stays up rather than closing on a refused change.
+            if (picked.selectedIds.length === 0)
+              return;
+            onQueueUpdateChoice?.(queueAnswerRow, picked);
             if (queueAnswer.mode === "single")
               setQueueAnswerRow(null);
             return;
