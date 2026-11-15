@@ -269,7 +269,7 @@ So the gap is not "can it be deleted" but "can the *choice* be changed": today t
 This decides the size of the work, so it goes first:
 
 - **Remote desktop reuses the desktop `SendQueuePanel`**: `RemoteComposer.tsx:23` imports `{ SendQueuePanel } from "../agent/SendQueuePanel"` and renders it at `:1244`. Remote has its own *composer* (a plain textarea, no pills), but the queue *panel* is the same component. So remote queue styling **is** desktop queue styling — nothing needs designing twice, only confirming the remote stylesheet does not drag it out of shape. Measured on both: chip `136×22`, pencil at `x=1181`, row width `746`.
-- **The phone has its own** `mobile/src/features/chat/components/SendQueuePanel.tsx`: a one-line `Pressable` header (`accessibilityState.expanded`, copy `展开队列中的消息` / `收起队列中的消息`), and when open the list is bounded by `sendQueueListHeight(vh, kb) = max(96, min(240, round((vh-kb)*0.3)))`, drawing `QUEUE_ROWS_SHOWN_BY_DEFAULT = 2` rows before scrolling inside. So the phone needs its own pass on chip size and placement.
+- **The phone has its own** `mobile/src/features/chat/components/SendQueuePanel.tsx`: a one-line `Pressable` header (`accessibilityState.expanded`, copy `展开队列中的消息` / `收起队列中的消息`) that always starts collapsed — the header already carries the count, the hint and a parked row's warning, and every row it would draw is a row of the conversation it is covering. When open the list is bounded by `sendQueueListHeight(vh, kb) = max(96, min(240, round((vh-kb)*0.3)))` and scrolls inside that. So the phone needs its own pass on chip size and placement.
 
 #### 5.8.2 The row draws a chip that **is itself the button**
 
