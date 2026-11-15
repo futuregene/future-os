@@ -71,6 +71,12 @@ option: table | 表里加一列样本量 | Frank 42 / Dreher 186，标出测量�
 | `id` | — | 选项 id：ASCII、`[a-z0-9-]`、≤ 24 字符、卡内唯一。它是要回传的稳定标识 |
 | `hint` | 否 | 覆盖默认副标题（"选一个就放进输入框…"） |
 
+**`mode` 的判据**（写 prompt 的人必须照这条，不能只把它当风格偏好）：
+
+> 读者同时勾两行，这两行你会**在同一段后续工作里都做**吗？会 → `multi`；不会，因为选了这行另外几行就不做了 → `single`（默认，省略即此）。没有第三种。
+
+`single` 是互斥**选择**："接下来做哪一件"。`multi` 是一件事的几**部分**或几件可并行的事："接新浪和 Nasdaq 两个源"。判据不成立就别写 `multi`：多选卡允许用户只勾一个，所以它不会强加工作量；反过来把互斥问题写成 `multi`，用户就得自己判断"我是不是该只勾一个"，卡片反而多了一层歧义。
+
 **为什么是围栏而不是内联链接或 JSON：**
 
 1. **自降级**。围栏的语义是"代码块"。任何不认识这张卡的客户端——TUI、旧的桌面版本、IM 机器人、复制粘到别处——都会把它当代码块画出来，用户看到的就是选项清单，信息不丢。换成内联链接或裸 JSON，降级后就是一堆噪音。
@@ -106,12 +112,16 @@ Use it only when all of these hold:
 - The reply genuinely ends with a question about the next step, and you can carry
   out every option yourself right after they pick.
 - There are 2–4 real alternatives. One option, or five, is a paragraph — not a card.
-- The options are mutually exclusive (omit `mode: multi` unless several can be done
-  in one go).
+- The options are mutual alternatives — you would do one of them next.
 
 Do not use it for: confirming a risky action (the approval card already owns that),
 restating what you just did, "let me know if you need anything", or a question whose
 answer needs a sentence rather than a pick.
+
+`mode:` — one test decides it: if the reader ticked two rows, would you do both in
+the one stretch of work that follows this reply? Yes → `mode: multi`; no, because each
+rules the others out → omit the line, and `single` is what an omitted line means. There
+is no third mode.
 
 Write each option as the instruction you would follow if chosen — the user's words,
 not a menu label ("重画森林图", not "选项 A"). The third field says what changes or
@@ -121,6 +131,8 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 ```
 
 要点：**选项文案必须是用户会说的那句话**（因为发送时它就是消息的一部分），不是"选项 A/B/C"。
+
+**2026-11-15 修订了 §4 的措辞**：原稿把 `multi` 写成兜底选项（"omit `mode: multi` unless several can be done in one go"）并塞进"什么时候才配用这张卡"的条件列表里。结果是模型写出来的卡一律单选，连"接新浪和 Nasdaq 两个源"这种明显是一件事的两半，也得用户自己打字回答——正是卡片要消灭的那种浪费。现在判据是一条**能回答是/否**的检验（勾两行会不会在同一段工作里都做），写在 §3 字段表下面与 §4 的字段说明里：判据不能只活在 prompt 里，否则下次改 prompt 的人不知道它为什么长这样。
 
 ## 5. 界面
 
@@ -178,7 +190,17 @@ pill 实测 `bg rgb(232,240,255)`（`accent-soft`）、`color rgb(37,99,235)`（
 
 ![桌面端：pill 后面接着打字](assets/choice-cards/desktop-6-chosen-text.png)
 
-需求 (c) 的样张。pill 与文字在同一个编辑器流里，顺序就是读者看到的顺序；发送时 `serialize()` 先输出 pill 的 `[问题 → 答案]`，再输出文字。所以用户气泡里显示的就是真正发出去的内容——不靠额外渲染去"补"一个不同步的显示。
+需求 (c) 的样张。pill 与文字在同一个编辑器流里，顺序就是读者看到的顺序；发送时 `serialize()` 先输出 pill 的 `[问题 → 答案]`，再输出文字。所以用户气泡里显示的就是真正发出去的内容——不靠额外渲染去"补"一个不同步的显示。发送之后，这句话在气泡里被画成标签而不是方括号字样（§5.2.3）：还是同一句话，只是不再混在用户自己写的文字里。
+
+### 5.2.3 发送后的用户气泡
+
+三端同一个处理：正文**抬头**那一段 `[问题 → 答案]` 画成一个标签（`ListChecks` 图标 + 淡色的问题 + `→` + 强调的答案），其后的文字仍走 markdown。什么都不写、只选了一行，气泡就只剩那个标签。
+
+- **文本不变。** 标签是 `choiceAnswerText` 写出的那一句的**画法**，不是第二份内容：复制按钮复制的、agent 收到的、粘贴到别处看到的，都还是 `[问题 → 答案]`。这也正是 §7 选纯文本的理由——显示层怎么画，都不影响那句话的可读性；
+- **判据保守**（`packages/markdown/src/choiceAnswerEcho.ts`）：只在正文首部认、必须带 `→`、方括号后面紧跟 `(` 或 `[` 的不认（那是链接或另一组方括号）、最多认四条（一张卡的上限）。判成"不是答案"只损失样式，不会丢字；
+- **材质跟着气泡走。** 桌面气泡是 `accent-soft`，标签用 `accent/10` 底 + `accent/25` 描边；手机气泡是 `accent` 实底，标签用气泡自身墨色的 12% 铺一层、20% 描边（和 `MarkdownText` 的 `onAccent` 同一套取色），深色浅色都读得清。
+
+四个状态（桌面浅色 / 深色、手机浅色 / 深色）在截图 harness 里是可复现的：场景在 `scripts/screenshots/scenarios.d/choice-answer-echo.json`（`capture-desktop choice-answer-echo{,-dark}`、`capture-mobile choice-answer-echo-phone{,-dark}`），演示数据由 fixture 的 `?choiceAnswer=1` 提供——答案本身仍由 `choiceCard=1` 的那张卡产出。
 
 ### 5.3 桌面端 · 改回来
 
@@ -332,7 +354,7 @@ chevron 而不是铅笔，是刻意的：它说的是“这里能打开点什么
 
 `→` 是唯一的固定记号，问号与文案都来自模型自己的输出。带上 `title` 是为了在同一线程里出现过几张卡时，"重画森林图"这句话有归属。
 
-**为什么不回传 `futureos://choice/...` 链接：** 那需要新增引用类型、让 `isFutureReferenceType` 放开、并保证服务端也理解它；而收益只是用户气泡里显示成 chip。第一版用文本，用户气泡显示的就是真正发出去的内容——诚实、可复制、任何客户端都能读。胶囊化留给后续（§10）。
+**为什么不回传 `futureos://choice/...` 链接：** 那需要新增引用类型、让 `isFutureReferenceType` 放开、并保证服务端也理解它；而收益只是用户气泡里显示成 chip。第一版用文本，用户气泡显示的就是真正发出去的内容——诚实、可复制、任何客户端都能读。气泡里的标签化只发生在显示层（§5.2.3）：不重写这句话，也不是第二个协议。
 
 ## 8. 兼容与降级
 

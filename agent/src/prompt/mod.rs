@@ -1232,8 +1232,17 @@ mod tests {
         assert!(prompt.contains("fewer than 2 or more than 4 is not drawn as a card"));
         // An id the parser rejects (`CHOICE_OPTION_ID`) takes its row with it.
         assert!(prompt.contains("[a-z0-9-]` only (no spaces)"));
-        // `mode` is optional and defaults to a single pick.
-        assert!(prompt.contains("`single` (the default, so usually omit it)"));
+        // `mode` is optional and defaults to a single pick, and the one thing the
+        // model has to get right is when several can be done at once: phrasing it
+        // as "unless several can be done in one go" was read as "usually single",
+        // so every card came out single even when both halves were one job. The
+        // criterion is now a question with a yes/no answer, and the two modes are
+        // named as the only two — a third one silently parses as `single`.
+        assert!(prompt.contains("if the reader ticked two rows, would you do both"));
+        assert!(prompt.contains("Yes → `mode: multi`"));
+        assert!(prompt.contains("omit the"));
+        assert!(prompt.contains("`single` is what an omitted line means"));
+        assert!(prompt.contains("No third mode exists"));
 
         // Where it goes: the fence is the reply's closing question, not a block
         // mid-answer, and a second card would be an unanswerable choice.

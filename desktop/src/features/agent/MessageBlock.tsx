@@ -3,6 +3,7 @@ import type { ChoiceCardAnswer } from "../markdown/MarkdownContent";
 import type { ActivityTargetResolver } from "./AgentActivityList";
 import type { ReplyBlock, StepSegment } from "./replyBlocks";
 import type { ReasoningLoader } from "./ThinkingBlock";
+import { splitChoiceAnswerEcho } from "@future-os/markdown";
 import { GitBranch, RotateCcw, StepForward } from "lucide-react";
 import { Fragment, memo, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -16,6 +17,7 @@ import { AgentActivityLine, AgentActivityList } from "./AgentActivityList";
 import { hasReplyMeta, isCompletedWithoutReply } from "./agentMessageFormatters";
 import { MessageMeta } from "./MessageMeta";
 import { AttachmentChip } from "./messages/AttachmentChip";
+import { ChoiceAnswerTags } from "./messages/ChoiceAnswerTags";
 import { MessageFrame } from "./messages/MessageFrame";
 import { CompactionDivider, StatusDivider } from "./messages/MessageStatus";
 import { PreviewSyncBadge } from "./PreviewSyncBadge";
@@ -228,6 +230,21 @@ function MessageBlockImpl({
     );
   }
 
+  // A prompt that answers a choice card carries the card's printed sentence at
+  // its head (`choiceAnswerText`), and the bubble draws that sentence as a tag
+  // rather than as prose the reader typed. The text is only classified, never
+  // rewritten — the copy button still yields the sentence that was sent.
+  const promptEcho = isUser && message.content ? splitChoiceAnswerEcho(message.content) : null;
+  const promptProse = promptEcho && promptEcho.echoes.length > 0 ? promptEcho.rest : null;
+  const userPrompt = promptEcho && promptEcho.echoes.length > 0
+    ? (
+        <>
+          <ChoiceAnswerTags className={promptProse ? "mb-2" : undefined} echoes={promptEcho.echoes} />
+          {promptProse ? <MarkdownContent content={promptProse} workspaceId={workspaceId} /> : null}
+        </>
+      )
+    : null;
+
   // One rendered slice of the reply.
   const renderBlocks = (list: readonly ReplyBlock[]) => list.map((block) => {
     const key = blockKey(block);
@@ -284,8 +301,9 @@ function MessageBlockImpl({
             // conversation references and `[label](http…)` links — and a
             // heading, list or code block they typed arrives formatted instead
             // of as its own source. A prompt never streams, so it takes the
-            // static parse rather than the streaming one.
-            ? <MarkdownContent content={message.content} workspaceId={workspaceId} />
+            // static parse rather than the streaming one. A prompt that picked
+            // a choice card's row goes through `userPrompt` instead (above).
+            ? (userPrompt ?? <MarkdownContent content={message.content} workspaceId={workspaceId} />)
             : (
                 <StreamingMarkdownContent
                   choiceAnswer={choiceAnswer}

@@ -71,6 +71,12 @@ Fields:
 | `id` | — | Stable identifier to send back: ASCII, `[a-z0-9-]`, ≤ 24 chars, unique within the card |
 | `hint` | no | Overrides the default subtitle ("pick one and it lands in the input…") |
 
+**How `mode` is decided** (anyone rewriting the prompt has to follow this; it is a rule, not a style preference):
+
+> If the reader ticked two rows, would you do **both** in the one stretch of work that follows this reply? Yes → `multi`. No, because picking one rules the others out → `single` (the default, which an omitted line means). There is no third mode.
+
+`single` asks a **choice** between mutually exclusive steps: "which of these next". `multi` is one job in several **parts**, or several jobs that can run together: "接新浪和 Nasdaq 两个源". A card that fails the test must not say `multi`: a multi card still lets the reader tick one, so it never adds work — but writing a mutually exclusive question as `multi` makes the reader work out that they should only tick one, which is the ambiguity the card exists to remove.
+
 **Why a fence rather than an inline link or JSON:**
 
 1. **It degrades by itself.** A fence means "code block". Any client that does not know this card — TUI, an older desktop build, an IM bot, a copy-paste elsewhere — draws it as a code block, and the reader sees the option list; nothing is lost. An inline link or raw JSON degrades into noise.
@@ -106,12 +112,16 @@ Use it only when all of these hold:
 - The reply genuinely ends with a question about the next step, and you can carry
   out every option yourself right after they pick.
 - There are 2–4 real alternatives. One option, or five, is a paragraph — not a card.
-- The options are mutually exclusive (omit `mode: multi` unless several can be done
-  in one go).
+- The options are mutual alternatives — you would do one of them next.
 
 Do not use it for: confirming a risky action (the approval card already owns that),
 restating what you just did, "let me know if you need anything", or a question whose
 answer needs a sentence rather than a pick.
+
+`mode:` — one test decides it: if the reader ticked two rows, would you do both in
+the one stretch of work that follows this reply? Yes → `mode: multi`; no, because each
+rules the others out → omit the line, and `single` is what an omitted line means. There
+is no third mode.
 
 Write each option as the instruction you would follow if chosen — the user's words,
 not a menu label ("重画森林图", not "选项 A"). The third field says what changes or
@@ -121,6 +131,15 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 ```
 
 The point: **an option's label must be the sentence the user would say**, because on send it becomes part of the message. Not "option A/B/C".
+
+**Why §4 was revised on 2026-11-15.** The first wording described `multi` as a
+last resort ("omit `mode: multi` unless several can be done in one go") and put it in
+a list of conditions for using the card at all. Every card the model then wrote came
+out single, including a row of tasks where picking two was obviously one job — the
+answer had to be typed by hand, which is the waste the card exists to remove. The
+rule now states a **yes/no test** (would you do both rows in the same stretch of work?)
+in the §3 field table and in §4's field list — the criterion cannot live only in the
+prompt, or whoever rewrites the prompt next will not know why it is worded that way.
 
 ## 5. The interface
 
@@ -178,7 +197,17 @@ The pill measured `bg rgb(232,240,255)` (`accent-soft`), `color rgb(37,99,235)` 
 
 ![Desktop: typing after the pill](assets/choice-cards/desktop-6-chosen-text.png)
 
-Requirement (c) on screen. The pill and the words share one editor flow, so the order on screen is the order that ships: `serialize()` writes the pill's `[question → answer]` first, then the text. What the user's bubble shows is what was actually sent — no second rendering that could drift.
+Requirement (c) on screen. The pill and the words share one editor flow, so the order on screen is the order that ships: `serialize()` writes the pill's `[question → answer]` first, then the text. What the user's bubble shows is what was actually sent — no second rendering that could drift. After sending, that sentence is drawn in the bubble as a tag rather than as brackets (§5.2.3): the same sentence, no longer mixed into the words the reader typed themselves.
+
+### 5.2.3 The user's bubble after sending
+
+One treatment on all three clients: the run of `[question → answer]` at the **head** of a prompt is drawn as a tag — a `ListChecks` glyph, the question in a lighter ink, `→`, the answer in a heavier one — and the text after it goes through markdown as before. Picked a row and typed nothing else, and the bubble is just the tag.
+
+- **The text is unchanged.** The tag is a *drawing* of the sentence `choiceAnswerText` writes, not a second copy of it: the copy button, the agent and a paste elsewhere all still see `[question → answer]`. That is exactly why §7 sends plain text — how the display layer draws it cannot change how readable the sentence is;
+- **The test is conservative** (`packages/markdown/src/choiceAnswerEcho.ts`): only the head of the message, only with an `→`, never when the closing bracket is followed by `(` or `[` (that is a link, or another bracket run), at most four answers (a card's own bound). A false negative costs the styling, never a character;
+- **The material follows the bubble.** The desktop bubble is `accent-soft`, so the tag is `accent/10` on `accent/25`; the phone's bubble is solid `accent`, so the tag mixes the bubble's own ink at 12% with a 20% border — the same colours `MarkdownText`'s `onAccent` tone uses, readable in both appearances.
+
+All four states (desktop light/dark, phone light/dark) are reproducible in the screenshot harness: the scenarios live in `scripts/screenshots/scenarios.d/choice-answer-echo.json` (`capture-desktop choice-answer-echo{,-dark}`, `capture-mobile choice-answer-echo-phone{,-dark}`), and the demo data comes from the fixture's `?choiceAnswer=1` — the card that produced the answer is still `choiceCard=1`'s.
 
 ### 5.3 Desktop · changing it
 
@@ -330,7 +359,7 @@ The answer must be readable by the agent **and** on the degraded paths (TUI, IM 
 
 `→` is the only fixed token; the question and the label come from the model's own output. The `title` is included so that "重画森林图" has an owner when several cards have appeared in one thread.
 
-**Why not send a `futureos://choice/...` link:** that needs a new reference type, `isFutureReferenceType` widened, and server-side understanding — and the only gain is a chip in the user's bubble. Version one sends text, so the user's bubble shows what actually went out: honest, copyable, readable by any client. Pill-ifying it is deferred (§10).
+**Why not send a `futureos://choice/...` link:** that needs a new reference type, `isFutureReferenceType` widened, and server-side understanding — and the only gain is a chip in the user's bubble. Version one sends text, so the user's bubble shows what actually went out: honest, copyable, readable by any client. The tag in that bubble is display only (§5.2.3): the sentence is not rewritten and no second protocol exists.
 
 ## 8. Compatibility and degradation
 

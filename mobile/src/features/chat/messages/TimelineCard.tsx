@@ -6,8 +6,10 @@ import { Pressable, Text, useWindowDimensions, View } from "react-native";
 import { friendlyRunError, friendlyRunErrorTitle } from "../../../components/errorMessage";
 import { MarkdownText } from "../../../components/MarkdownText";
 import { ChoiceCardAnswerProvider } from "../../../components/ChoiceCard";
+import { splitChoiceAnswerEcho } from "@future-os/markdown";
 import { canRecoverMessage } from "@future-os/remote-client/recovery";
 import { useAppearance, useTheme } from "../../../theme/ThemeContext";
+import { spacing } from "../../../theme/tokens";
 import { Button } from "../../../components/Button";
 import { useStyles } from "./messageStyles";
 import type { ReasoningLoader, TimelineCardProps } from "./types";
@@ -20,6 +22,7 @@ import { formatSentAt } from "./sentAt";
 import { PromptReader } from "../components/PromptReader";
 import { StatusDivider } from "./MessageStatus";
 import { buildReplyBlocks, ProcessFold, ReplyBlockRow, splitFinalAnswer, type ReplyBlock } from "./ReplyBlocks";
+import { ChoiceAnswerTags } from "./ChoiceAnswerTags";
 
 /**
  * The key of a reply's last prose block — where its closing choice card lives.
@@ -318,6 +321,15 @@ function TimelineCardView({
     // durable row carries the journal's, so a re-open still says when it was
     // asked rather than when this phone read it.
     const sentAt = item.createdAt ? formatSentAt(item.createdAt, i18n.language) : "";
+    // A prompt that answered a choice card carries the card's printed sentence
+    // at its head (§7), where a bracket sandwich among the reader's own words
+    // reads as prose they typed rather than as a pick they made. The bubble
+    // draws that sentence as a tag and the words after it as the prompt; only
+    // the drawing changes, and the long-prompt preview above still measures the
+    // whole prompt, so a collapsed one keeps its cap.
+    const echo = item.text.trim().length > 0 ? splitChoiceAnswerEcho(preview.head) : null;
+    const answers = echo && echo.echoes.length > 0 ? echo.echoes : null;
+    const promptText = answers && echo ? echo.rest : preview.head;
     return (
       <View style={styles.userBlock}>
         {item.text.trim().length > 0 && (
@@ -331,12 +343,19 @@ function TimelineCardView({
               ? [styles.promptCollapsed, { maxHeight: collapsedPromptHeight(chat.lineHeight, windowHeight) }]
               : null,
           ]}>
-            <MarkdownText
-              onOpenFile={onOpenFile}
-              onOpenSession={onOpenSession}
-              text={preview.head}
-              tone="onAccent"
-            />
+            {answers
+              ? <ChoiceAnswerTags echoes={answers} style={promptText.trim().length > 0 ? { marginBottom: spacing.sm } : undefined} />
+              : null}
+            {promptText.trim().length > 0
+              ? (
+                  <MarkdownText
+                    onOpenFile={onOpenFile}
+                    onOpenSession={onOpenSession}
+                    text={promptText}
+                    tone="onAccent"
+                  />
+                )
+              : null}
           </View>
         )}
         {longPrompt && item.text.trim().length > 0 && (

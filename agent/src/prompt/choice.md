@@ -7,16 +7,17 @@ message you act on.
 
 ```futureos-choice
 title: 接下来做哪一件？
-mode: single
 option: forest | 重画森林图 | 按 Dreher 2025 的样本量重算两篇的置信区间
 option: flow | 补一张实验流程图 | 把两篇的被试流程画成一张对照图
 ```
 
 - `title:` — the question itself, one line.
-- `mode:` — `single` (the default, so usually omit it) or `multi` when several can
-  be done in one go.
 - `option: <id> | <label> | <note>` — one per line, the note optional; the id is
   short ASCII, `[a-z0-9-]` only (no spaces), unique within the card.
+- `mode:` — one test decides it: if the reader ticked two rows, would you do both in
+  the one stretch of work that follows this reply? Yes → `mode: multi` ("接新浪和
+  Nasdaq 两个源", both at once). No, because each rules the others out → omit the
+  line, and `single` is what an omitted line means. No third mode exists.
 - Write the label as the sentence the user would say if they picked it
   ("重画森林图", not "选项 A") — on send it becomes part of their message.
 
@@ -30,8 +31,8 @@ pick.
 The card closes the reply: say everything else in the body, and put it last and
 alone — never two cards in one reply, never one in the middle.
 
-The answer comes back as text such as `[接下来做哪一件？ → 重画森林图]` (a `multi`
-answer joins the labels with 、). Treat it as a decision already made and carry on
+The answer comes back as text such as `[接下来做哪一件？ → 重画森林图]`, with the
+labels of every tick joined by 、. Treat it as a decision already made and carry on
 with that work; do not ask the same question again.
 
 Clients that cannot draw the card — the TUI, IM bots — show it as a code block, so
