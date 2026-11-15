@@ -3133,8 +3133,9 @@ test("a finished reply that offered a choice marks its row", () => {
   const mark = choiceMarks("Asks");
   expect(mark).toHaveLength(1);
   // The glyph itself, so the assertion is about the card's own icon rather than
-  // any named view.
-  expect(mark[0]!.findAllByType("ListChecks")).toHaveLength(1);
+  // any named view. Matched by the mock's type name (`String(...)`, because a
+  // mocked component's type is a string while a real one's is a component).
+  expect(mark[0]!.findAll(node => String(node.type) === "ListChecks")).toHaveLength(1);
   // Nothing was offered, so the row carries no such mark.
   expect(choiceMarks("Prose")).toHaveLength(0);
 });

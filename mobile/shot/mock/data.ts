@@ -103,6 +103,27 @@ export const sessions = [
 ];
 
 /**
+ * `?listMarks=1`: the two "this one is waiting on you" states a row can be in.
+ *
+ * A row's marks are gated on its *run* — `status` for the approval badge, and
+ * the run's own `offersChoice` for the choice mark — and every fixture row is
+ * idle and read, so neither state is reachable from the default catalogue. Named
+ * sessions rather than a parameter per state: one capture should show the two
+ * marks side by side, which is what makes them tellable apart.
+ */
+const LIST_MARKS: Record<string, Record<string, unknown>> = {
+  // A finished reply that closed with a `futureos-choice` card.
+  sess_dopamine_clean: { status: "completed", offersChoice: true },
+  // A run parked on an approval request.
+  sess_sc_marker: { status: "waiting_approval" },
+};
+
+export function withListMarks<T extends { sessionId: string }>(row: T): T {
+  const mark = LIST_MARKS[row.sessionId];
+  return mark ? { ...row, ...mark } : row;
+}
+
+/**
  * `?recentMany=1`: a phone that has been in use for a while.
  *
  * Forty finished conversations spread over a fortnight, so the recency page's

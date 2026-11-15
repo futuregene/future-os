@@ -1,0 +1,39 @@
+{
+  "_comment": "设计稿 docs/design/choice-cards.zh-CN.md §5.9：会话列表里的标记。两条是真实组件（ThreadListItem / RemoteConversationRow），数据由 harness 参数提供：`?offersChoice=` 让本机某个会话的 run 带 offersChoice（列表里的清单图标），`?remoteWaiting=` / `?remoteChoice=` 让对端 catalog 的某一行报 waiting_approval / offersChoice（审批圆点 + 清单图标）。旧的对端行只读 streaming，所以审批那个标记在桌面上一直没画过。",
+  "desktop": {
+    "list-marks": {
+      "note": "真实组件 · 桌面 · 本机 + 对端同一张列表。三种「在等读者」的行并排可见：对端一条卡在审批上（warning 圆），对端一条回复以选项卡收尾（accent 清单），本机一条同样以选项卡收尾。三者形状和颜色都不同，扫一眼就能分开。",
+      "url": "http://localhost:5299/shot/?lang=zh&offersChoice=th_data&remoteWaiting=rs_prisma&remoteChoice=rs_reviewer",
+      "width": 1440,
+      "height": 900,
+      "steps": [
+        { "wait": 2400 },
+        { "wait": 1500 },
+        { "wait": 1500 },
+        {
+          "eval": "(() => { const t=document.body.innerText; if (t.includes('允许一次')) { const b=[...document.querySelectorAll('button')].find(x => /拒绝/.test(x.textContent||'')); b && b.click(); return 'dismissed the approval card'; } return 'no approval card'; })()"
+        },
+        { "wait": 800 },
+        {
+          "eval": "(() => { const choices=[...document.querySelectorAll('[data-thread-choice]')]; const approvals=[...document.querySelectorAll('[data-thread-approval]')]; if (choices.length < 2) throw new Error('choice marks: ' + choices.length + ' (want the local row and the peer row)'); if (approvals.length !== 1) throw new Error('approval marks: ' + approvals.length + ' (want exactly the peer row parked on one)'); for (const node of approvals) { const label=node.getAttribute('aria-label')||''; if (!label.includes('等审批')) throw new Error('the approval mark is unnamed: ' + label); if (!node.querySelector('svg.lucide-circle-alert')) throw new Error('the approval mark is not the alert glyph'); } for (const node of choices) { const label=node.getAttribute('aria-label')||''; if (!label.includes('等你选')) throw new Error('the choice mark is unnamed: ' + label); if (!node.querySelector('svg.lucide-list-checks')) throw new Error('the choice mark is not the list-checks glyph'); } const rail=document.querySelector('[data-testid=\"recent-rows\"]') || document.body; const marks=[...rail.querySelectorAll('[data-thread-choice],[data-thread-approval]')]; if (marks.length < 3) throw new Error('marks in the rail: ' + marks.length); return JSON.stringify({ choices: choices.length, approvals: approvals.length, marks: marks.length }); })()"
+        },
+        { "shot": "d-list-marks.png" }
+      ]
+    }
+  },
+  "mobile": {
+    "list-marks-phone": {
+      "note": "真实组件 · 手机 · 会话列表。`?listMarks=1` 给两行各自的状态：「把这份问卷数据清洗一下」的回复以选项卡收尾（清单图标，占未读圆点的位置），「找一下这批细胞的 marker 基因」卡在审批上（warning 圆）。这条场景尚未在本机跑过（手机的 web harness 需要额外装 react-native-web 等三个包，而那次安装会把共享 mobile 树里的 @react-native/jest-preset 挤掉），第一次跑时先确认 ready 与两张图都在。",
+      "query": "?listMarks=1",
+      "lang": "zh-CN",
+      "steps": [
+        { "wait": 4000 },
+        {
+          "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+        },
+        { "wait": 1600 },
+        { "shot": "m-list-marks.png" }
+      ]
+    }
+  }
+}

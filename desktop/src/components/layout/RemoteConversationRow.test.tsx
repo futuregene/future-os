@@ -361,3 +361,36 @@ it("does not mark a peer's row whose run is still going, or one that never offer
   expect(prose.container.querySelector("[data-thread-choice]")).toBeNull();
   await prose.unmount();
 });
+
+/**
+ * The approval badge the local row draws, for a conversation on another machine.
+ *
+ * A phone reads the same row and has always badged a `waiting_approval` run; the
+ * desktop's merged list did not, so a peer parked on a request was a row with
+ * nothing to say — the one state where the agent cannot move at all. The two
+ * marks stand beside each other: an approval warns (the agent is blocked), a
+ * card only waits for the next send.
+ */
+it("marks a peer's conversation that is waiting on an approval", async () => {
+  const view = await mount({ conversation: conversation({ runStatus: "waiting_approval" }) });
+  const badge = view.container.querySelector("[data-thread-approval]")!;
+  expect(badge).not.toBeNull();
+  expect(badge.getAttribute("aria-label")).toBe("This conversation is waiting for approval");
+  expect(badge.querySelector("svg")!.classList.contains("lucide-circle-alert")).toBe(true);
+  expect(badge.classList.contains("text-warning")).toBe(true);
+  // Nothing was offered there, so the choice mark stays absent.
+  expect(view.container.querySelector("[data-thread-choice]")).toBeNull();
+  await view.unmount();
+});
+
+it("draws an approval badge and a choice mark as two different marks", async () => {
+  // Not a state the agent can be in (a run parked on an approval is not a
+  // finished reply) — the assertion is about the two glyphs never being confused
+  // for one another if a host reports both.
+  const view = await mount({
+    conversation: conversation({ offersChoice: true, runStatus: "completed" }),
+  });
+  expect(view.container.querySelector("[data-thread-choice]")).not.toBeNull();
+  expect(view.container.querySelector("[data-thread-approval]")).toBeNull();
+  await view.unmount();
+});
