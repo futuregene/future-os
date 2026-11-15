@@ -193,6 +193,8 @@ pill 实测 `bg rgb(232,240,255)`（`accent-soft`）、`color rgb(37,99,235)`（
 - **判据保守**（`packages/markdown/src/choiceAnswerEcho.ts`）：只在正文首部认、必须带 `→`、方括号后面紧跟 `(` 或 `[` 的不认（那是链接或另一组方括号）、最多认四条（一张卡的上限）。判成"不是答案"只损失样式，不会丢字；
 - **材质跟着气泡走。** 桌面气泡是 `accent-soft`，标签用 `accent/10` 底 + `accent/25` 描边；手机气泡是 `accent` 实底，标签用气泡自身墨色的 12% 铺一层、20% 描边（和 `MarkdownText` 的 `onAccent` 同一套取色），深色浅色都读得清。
 
+四个状态（桌面浅色 / 深色、手机浅色 / 深色）在截图 harness 里是可复现的：场景在 `scripts/screenshots/scenarios.d/choice-answer-echo.json`（`capture-desktop choice-answer-echo{,-dark}`、`capture-mobile choice-answer-echo-phone{,-dark}`），演示数据由 fixture 的 `?choiceAnswer=1` 提供——答案本身仍由 `choiceCard=1` 的那张卡产出。
+
 ### 5.3 桌面端 · 改回来
 
 ![桌面端：铅笔在 pill 上方展开同一张卡](assets/choice-cards/desktop-3-change.png)

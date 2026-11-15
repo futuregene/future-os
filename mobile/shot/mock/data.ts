@@ -317,6 +317,28 @@ export const choiceCardEntries = demoEntries.map(entry =>
     ? { ...entry, blocks: [...entry.blocks, { kind: "text" as const, text: CHOICE_FENCE }] }
     : entry);
 
+/**
+ * `?choiceCard=1&choiceAnswer=1`: the same conversation *after* the reader
+ * answered that card — the prompt whose head prints the answer
+ * (`choiceAnswerText`, design §7), which the phone draws as a tag inside its
+ * accent bubble rather than as bracket prose (§5.2.3).
+ *
+ * Its own flag rather than an addition to `choiceCardEntries`: the card captures
+ * (`choice-card-phone-*`) were measured against that transcript, and one more
+ * bubble at its end would move them.
+ */
+export const choiceAnsweredEntries = [
+  ...choiceCardEntries,
+  {
+    id: "e9",
+    kind: "message" as const,
+    role: "user" as const,
+    createdAtMs: now - 6 * minute,
+    runId: "run_1",
+    blocks: [{ kind: "text" as const, text: "[接下来做哪一件？ → 重画森林图] 顺便把图例挪到右下，图注也改成中文。" }],
+  },
+];
+
 export const compactResumeEntries = [
   {
     id: "c1",
