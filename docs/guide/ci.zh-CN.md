@@ -27,15 +27,24 @@ build 和 tests 共享 runner 与 Cargo target 目录。直接导出源码的 TS
 bundle，Jest 只跑一次；原生 job 执行现有 JVM/Swift 测试，不签名或发布。
 iOS 的 Foundation 测试不代表 Simulator UI/E2E 覆盖。
 
-Rust 组的 Build 使用 `cargo test --locked --no-run` 编译测试目标，
+Rust 组的 Build 使用 `cargo nextest run --locked --no-run` 编译测试目标，
 Tests 使用相同的包选择和 profile 执行测试，不再先跑一次独立的 dev-profile 构建。
 文档测试仍可能在 Tests 中编译示例。Desktop 只预编译默认 GUI 测试目标，
 其中 `desktop_entry` 验证参数与启动副作用；真正的 `future host` 进程测试归 CLI。
 关闭 GUI 的 Desktop 入口兼容性测试与 Clippy 只在 Misc 的 `desktop-entry-compat` 中运行。
 常规 CI 不执行独立产品或 CLI/GUI 联合构建；打包和签名归发布工作流负责。
 
-Rust 测试命令使用 `--no-fail-fast`：任一测试目标失败仍使 job 失败，但 Cargo 会继续执行
-其他选中的测试目标，让一轮 CI 收集它们的失败，避免每次只暴露第一个失败目标。
+测试通过 `cargo nextest` 执行：每个测试独占进程，全部测试共用一个调度池。
+`cargo test` 一次只跑一个测试二进制，并行只发生在二进制内部，因此一条腿的墙钟
+由它最慢的那个二进制决定。nextest 不执行可执行 doctest；本仓所有文档代码围栏都标了
+`text`、`ignore` 或 `json`，rustdoc 均不编译，因此没有丢失任何测试。
+`desktop/src-tauri` 的 `gui_main_thread_drive` 目标是 `harness = false`
+（它把 AppKit 主线程交给测试），不实现列举协议，因此 nextest 排除该二进制、
+由 `cargo test` 单独运行它。
+
+Rust 测试命令使用 `--no-fail-fast`：任一测试目标失败仍使 job 失败，但其他选中的测试目标
+照常执行，让一轮 CI 收集它们的失败，避免每次只暴露第一个失败目标。
+`--no-tests=pass` 保持 libtest 的语义：过滤后没有匹配测试不算失败。
 
 所有常规 Rust、TypeScript、Android/iOS job 使用相同的计时采集方式，在 summary
 展示 GitHub 已有的 step 时间戳，覆盖工具链、缓存、依赖安装、Build、Tests 和检查。
@@ -44,7 +53,7 @@ step 状态和耗时。快照不包含后续 artifact 上传、post-job 缓存�
 GitHub 时间戳精度为秒。取消过早或 runner 故障时，最后的上传可能无法执行。
 
 Rust/TS 的 `commands.jsonl` 另外记录每条命令的单调时钟耗时、退出状态和选择范围。
-Rust Build 的 `cargo test --no-run --timings` 生成 Cargo 编译明细 HTML；
+Rust Build 的 `cargo nextest run --no-run --timings` 生成 Cargo 编译明细 HTML；
 JSONL 保留 Rust 测试框架原生的目标标题、通过/失败/忽略数量和执行耗时汇总。
 原生输出按各自 stdout/stderr 流记录，子进程也可能输出汇总；不能仅凭相邻行推断对应关系，
 也不能把日志到达间隔当成单个测试或内部模块的耗时。TS/原生测试的进一步明细继续看各自
@@ -198,6 +207,27 @@ Desktop 的 Clippy 额外检查 CLI/GUI 组合特性解析；Remote client/serve
 Core 分组共享每个操作系统的一份缓存，在 main 手动 dispatch CI 时由 CLI test job
 单独写入；Desktop 使用独立 GUI 缓存，由该次运行的 Desktop test job 写入。
 PR/check/Misc 不写入大型私有缓存。共享缓存需要刷新时，在 main 手动 dispatch CI。
+
+### 缓存配额
+
+仓库级 Actions 缓存配额是 10 GB，所有 workflow 共用。只有 `refs/heads/main`
+上的条目能被其他运行还原；写在 PR merge ref 上的条目只对那个 PR 可见。因此按 ref
+生成的缓存是纯负担：它占掉谁都读不到的配额，而它引发的驱逐又让可还原条目丢命中。
+
+2026-11-15 实测：27 条 / 10.19 GB，其中 21 条 / 6.40 GB 是 `actions/setup-node`
+配 `cache: npm` 写出的 `node-cache-*`。该配置按 ref 生成 key，于是每个 PR 各写
+~318 MB（Linux）+ ~305 MB（macOS），同一个条目在已关闭的 PR 上各存一份，外加
+`dev-huichen` 上一份。Rust 各腿真正还原的 6 条 `v0-rust-*` 每条 0.48–0.94 GB，
+正是被挤掉的那些。
+
+[`scripts/ci/prune-node-caches.sh`](../../scripts/ci/prune-node-caches.sh) 列出这些条目，
+加 `--apply` 删除。删缓存只需 `repo` scope、不需要 `workflow` scope，所以在无法推送
+workflow 改动的机器上也能用。清理后同一命令会报告新的总量：3.79 GB，6 条 Rust 条目
+完好。
+
+根治办法是彻底停止按 ref 写 npm 缓存。`npm ci` 实测在每个 TypeScript job 上
+27–88 s，所以缓存本身值得留——但要留在*能共享*的位置。这个改动属于 workflow
+（去掉 `setup-node` 的 `cache: npm`，或只允许在 `refs/heads/main` 保存），不属于仓库脚本。
 
 ## 专项验证
 

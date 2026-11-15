@@ -30,7 +30,7 @@ builds both Android and iOS bundles on Linux; Jest runs once. Native jobs test
 existing JVM/Swift code without signing or publishing. The iOS Foundation tests
 do not claim Simulator UI/E2E coverage.
 
-For Rust groups, Build uses `cargo test --locked --no-run` to compile
+For Rust groups, Build uses `cargo nextest run --locked --no-run` to compile
 the test targets; Tests uses the same package selection and profile to execute
 them. There is no preceding standalone dev-profile build. Documentation tests
 can still compile examples during Tests. Desktop precompiles only its default GUI
@@ -40,9 +40,19 @@ compatibility test and Clippy run only in Misc (`desktop-entry-compat`). Regular
 CI has no standalone product or combined CLI/GUI build. Packaging and signing
 belong to the release workflows.
 
+Tests execute through `cargo nextest`, which gives every test its own process and
+schedules all of them in one pool. `cargo test` runs one test binary at a time and
+parallelises only inside it, so a lane's wall time was set by its slowest single
+binary. nextest also runs no executable doctests; every doc code fence in this
+workspace is tagged `text`, `ignore` or `json`, and rustdoc compiles none of those,
+so nothing is dropped. `desktop/src-tauri`'s `gui_main_thread_drive` target is
+`harness = false` (it hands its tests the AppKit main thread) and speaks no
+listing protocol, so nextest excludes that one binary and `cargo test` runs it.
+
 Rust test invocations use `--no-fail-fast`: a failed target still fails its job,
-but Cargo continues through the other selected test targets so one run exposes
-all their failures instead of revealing them one target at a time.
+but the other selected targets still run so one run exposes all their failures
+instead of revealing them one target at a time. `--no-tests=pass` keeps libtest's
+behaviour where a filter that matches nothing is not a failure.
 
 All regular Rust, TypeScript and Android/iOS jobs collect GitHub's existing step
 timestamps for toolchain/cache setup, dependencies, Build, Tests and checks.
@@ -53,8 +63,9 @@ step timestamps have second precision. Early cancellation or runner loss may
 prevent the final upload.
 
 Rust/TS `commands.jsonl` also records monotonic command duration, exit status and
-selection. Rust Build uses `cargo test --no-run --timings` for Cargo's compilation
-HTML. JSONL preserves native Rust target headings and test-result summaries,
+selection. Rust Build uses `cargo nextest run --no-run --timings` for Cargo's
+compilation HTML. JSONL preserves native Rust target headings and test-result
+summaries,
 including reported elapsed time and pass/fail/ignore counts. stdout/stderr are
 separate streams and children may print summaries too: adjacent rows alone do
 not establish attribution. Output arrival intervals are not individual-test or
@@ -237,6 +248,32 @@ Core groups share one cache per OS; the CLI test job can write it when CI is
 manually dispatched on main. Desktop has a separate GUI cache written by Desktop
 test jobs in that dispatch. PR/check/Misc jobs do not write large private Rust
 cache copies. Dispatch CI on main when shared caches need refreshing.
+
+### Cache quota
+
+The repository-wide Actions cache quota is 10 GB, and it is shared by every
+workflow. Only `refs/heads/main` entries are restorable across runs; an entry
+written on a PR merge ref is visible to that PR alone. So a per-ref cache is a
+pure liability: it consumes quota nobody else can use, and the eviction it
+causes costs the restorable entries their hits.
+
+Measured 2026-11-15: 27 entries / 10.19 GB, of which 21 entries / 6.40 GB were
+`node-cache-*` written by `actions/setup-node` with `cache: npm`. That setting
+keys the tarball by ref, so each PR wrote its own ~318 MB (Linux) + ~305 MB
+(macOS) copy, and the same entry existed once per closed PR plus once on
+`dev-huichen`. The six `v0-rust-*` entries the Rust lanes actually restore were
+0.48–0.94 GB each and were being evicted to make room.
+
+[`scripts/ci/prune-node-caches.sh`](../../scripts/ci/prune-node-caches.sh)
+lists those entries and deletes them with `--apply`. Deleting a cache needs only
+`repo` scope, not `workflow` scope, so it works on a machine whose token cannot
+push workflow edits. After pruning, the same command reports the new total:
+3.79 GB, with all six Rust entries intact.
+
+The durable fix is to stop writing per-ref npm caches at all. `npm ci` measured
+27–88 s per TypeScript job, so the cache is worth keeping *where it can be
+shared* — the change belongs in the workflow (`setup-node` without `cache: npm`,
+or saving only on `refs/heads/main`), not in the repository scripts.
 
 ## Specialty validation
 
