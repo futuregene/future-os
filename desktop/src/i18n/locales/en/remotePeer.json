@@ -240,6 +240,7 @@
   "filesOpen": "Show this conversation's files",
   "filesPreview": "Preview {{name}}",
   "filesRefresh": "Re-read this folder",
+  "filesResize": "Drag to resize the files panel",
   "slashCommands": "Commands",
   "slashSkills": "Skills",
   "sessionMenuTitle": "Conversations",
