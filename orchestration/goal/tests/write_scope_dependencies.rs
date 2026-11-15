@@ -582,3 +582,287 @@ fn nonexistent_files_below_symlinked_parents_have_the_same_scope() {
         normalize_workspace_path_at("project/papers/new.md", f.dir.path())
     );
 }
+
+// ── Authoring-time write-scope gate (`todo add`) ───────────────────────────
+//
+// The claim-time guard above only fires on a live lease. Two todos that
+// *declare* the same directory is a dispatch bug, and it reaches a worker as
+// two indistinguishable todos (2026-11-15: a worker authored a follow-up
+// numbered and scoped like an existing one, then claimed the wrong one three
+// times). `todo add` refuses the collision instead.
+
+impl Fixture {
+    /// `todo add` that returns the new todo id.
+    fn add_scoped(&self, text: &str, scope: &str, extra: &[&str]) -> String {
+        let mut args = vec![
+            "todo",
+            "add",
+            "--goal",
+            "g",
+            "--text",
+            text,
+            "--required-write-scope",
+            scope,
+        ];
+        args.extend_from_slice(extra);
+        let out = self.ok(&args);
+        out.split_whitespace()
+            .nth(1)
+            .expect("todo add prints the id")
+            .to_string()
+    }
+
+    fn todo(&self, id: &str) -> future_goal::state::Todo {
+        self.store
+            .replay("g")
+            .unwrap()
+            .unwrap()
+            .todo(id)
+            .cloned()
+            .expect("todo exists")
+    }
+}
+
+#[test]
+fn todo_add_refuses_a_write_scope_an_unfinished_todo_already_holds() {
+    let f = Fixture::new();
+    let first = f.add_scoped("write results", "results/", &[]);
+    // Same directory, spelled the same way.
+    f.rejected(
+        &[
+            "todo",
+            "add",
+            "--goal",
+            "g",
+            "--text",
+            "worker-authored follow-up",
+            "--required-write-scope",
+            "results/",
+        ],
+        "collides with an unfinished todo",
+    );
+    // The refusal must name the occupant: the id is what lets the dispatcher
+    // rename/re-issue instead of guessing which duplicate it hit.
+    f.rejected(
+        &[
+            "todo",
+            "add",
+            "--goal",
+            "g",
+            "--text",
+            "worker-authored follow-up",
+            "--required-write-scope",
+            "results/",
+        ],
+        &first,
+    );
+    // An ancestor/descendant spelling is the same collision.
+    f.rejected(
+        &[
+            "todo",
+            "add",
+            "--goal",
+            "g",
+            "--text",
+            "nested",
+            "--required-write-scope",
+            "results/sub/out.md",
+        ],
+        "collides with an unfinished todo",
+    );
+    // A disjoint scope is still allowed, and the ledger holds exactly the two
+    // todos (the refused adds appended nothing).
+    let second = f.add_scoped("write logs", "logs/", &[]);
+    let goal = f.store.replay("g").unwrap().unwrap();
+    let ids: Vec<String> = goal.todos.iter().map(|t| t.id.clone()).collect();
+    assert_eq!(ids, vec![first, second]);
+}
+
+#[test]
+fn a_worker_authored_todo_cannot_release_its_own_scope_with_a_note() {
+    let f = Fixture::new();
+    f.add_scoped("dispatched work", "results/", &[]);
+    // A worker may explain itself all it likes; only the dispatching side can
+    // share a scope. This is the whole point of the gate.
+    f.rejected(
+        &[
+            "todo",
+            "add",
+            "--goal",
+            "g",
+            "--text",
+            "self-authored follow-up",
+            "--required-write-scope",
+            "results/",
+            "--note",
+            "same file, I am just continuing",
+        ],
+        "collides with an unfinished todo",
+    );
+    // `supervisor` without a reason is refused too — the note is the point.
+    f.rejected(
+        &[
+            "todo",
+            "add",
+            "--goal",
+            "g",
+            "--text",
+            "dispatched successor",
+            "--required-write-scope",
+            "results/",
+            "--role",
+            "supervisor",
+        ],
+        "collides with an unfinished todo",
+    );
+    // `--role supervisor --note ...` is the one release valve.
+    let shared = f.add_scoped(
+        "dispatched successor",
+        "results/",
+        &[
+            "--role",
+            "supervisor",
+            "--note",
+            "same output file, second half of the same report",
+        ],
+    );
+    let todo = f.todo(&shared);
+    assert_eq!(
+        todo.required_write_scope,
+        vec!["results/".to_string()],
+        "the override must not rewrite the scope"
+    );
+    assert_eq!(
+        todo.created_by.as_deref(),
+        Some("supervisor"),
+        "the author has to be recorded, or the ledger cannot tell this shared scope from a worker's self-serve"
+    );
+    assert!(
+        todo.note
+            .as_deref()
+            .is_some_and(|n| n.contains("second half")),
+        "the reason stays on the todo"
+    );
+}
+
+#[test]
+fn todo_add_records_the_authoring_role() {
+    let f = Fixture::new();
+    let by_agent = f.add_scoped("worker task", "results/a/", &[]);
+    assert_eq!(f.todo(&by_agent).created_by.as_deref(), Some("agent"));
+    let by_supervisor = f.add_scoped("dispatch", "results/b/", &["--role", "supervisor"]);
+    assert_eq!(
+        f.todo(&by_supervisor).created_by.as_deref(),
+        Some("supervisor")
+    );
+    let named = f.add_scoped(
+        "dispatch to worker-b",
+        "results/c/",
+        &["--created-by", "worker-b"],
+    );
+    assert_eq!(f.todo(&named).created_by.as_deref(), Some("worker-b"));
+    // A bare `--created-by` reads as `true` (parse_pairs' value-less
+    // convention) and must not reach the ledger as a creator id.
+    f.rejected(
+        &[
+            "todo",
+            "add",
+            "--goal",
+            "g",
+            "--text",
+            "anonymous",
+            "--created-by",
+        ],
+        "--created-by requires an author id",
+    );
+}
+
+#[test]
+fn a_terminal_todo_releases_its_write_scope() {
+    let f = Fixture::new();
+    let first = f.add_scoped("write results", "results/", &[]);
+    f.ok(&[
+        "todo",
+        "complete",
+        "--goal",
+        "g",
+        "--todo-id",
+        &first,
+        "--no-follow-up",
+        "--evidence",
+        "wrote results/report.md",
+    ]);
+    // Superseded and done todos reserve nothing: their work is behind us.
+    let next = f.add_scoped("rewrite results", "results/", &[]);
+    assert_eq!(
+        f.store
+            .replay("g")
+            .unwrap()
+            .unwrap()
+            .todos
+            .iter()
+            .filter(|t| t.status == future_goal::state::TodoStatus::Open)
+            .map(|t| t.id.clone())
+            .collect::<Vec<_>>(),
+        vec![next]
+    );
+}
+
+/// A ledger written before `created_by` existed must still replay: the field
+/// is additive (`#[serde(default)]`), so an old `events.jsonl` cannot turn
+/// into a parse error — it reads as "creator unknown".
+#[test]
+fn a_pre_created_by_ledger_line_still_replays_and_gates() {
+    let mut f = Fixture::new();
+    f.seed("old", &["results/"]);
+    let path = f.store.goal_dir("g").join("events.jsonl");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let mut removed = 0;
+    let legacy: Vec<String> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+            removed += strip_key(&mut value, "created_by");
+            value.to_string()
+        })
+        .collect();
+    assert!(removed > 0, "fixture must actually contain created_by");
+    std::fs::write(&path, legacy.join("\n") + "\n").unwrap();
+
+    let goal = f.store.replay("g").unwrap().unwrap();
+    let old = goal.todo("old").expect("the pre-change todo still replays");
+    assert!(
+        old.created_by.is_none(),
+        "an absent field reads as an unknown creator, never as a creator"
+    );
+    // And the ledger keeps working: the old todo still occupies its scope.
+    f.rejected(
+        &[
+            "todo",
+            "add",
+            "--goal",
+            "g",
+            "--text",
+            "collides with the legacy todo",
+            "--required-write-scope",
+            "results/",
+        ],
+        "collides with an unfinished todo",
+    );
+}
+
+/// Remove every `key` in a JSON tree; returns how many were removed.
+fn strip_key(value: &mut serde_json::Value, key: &str) -> usize {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut removed = usize::from(map.remove(key).is_some());
+            for (_, v) in map.iter_mut() {
+                removed += strip_key(v, key);
+            }
+            removed
+        }
+        serde_json::Value::Array(items) => items.iter_mut().map(|v| strip_key(v, key)).sum(),
+        _ => 0,
+    }
+}

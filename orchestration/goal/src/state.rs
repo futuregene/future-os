@@ -176,6 +176,17 @@ pub struct Todo {
     /// the execution of proposal P"). Absent on old ledgers → `None`.
     #[serde(default)]
     pub origin_proposal: Option<String>,
+    /// Provenance: who authored this todo — the role token `todo add` ran
+    /// under (`agent` / `supervisor` / `user`), unless `--created-by` named a
+    /// concrete id. Absent on old ledgers → `None` (creator unknown).
+    ///
+    /// `role` cannot answer this: [`TodoRole`] only says agent-vs-user, so a
+    /// dispatched todo and a worker's self-authored follow-up look identical.
+    /// Recording the author is what makes a harder rule expressible later —
+    /// e.g. "a todo authored by `agent` must be `accept`ed by the supervisor
+    /// before it is claimable".
+    #[serde(default)]
+    pub created_by: Option<String>,
     /// Repair bookkeeping: failed attempts so far.
     pub failed_attempts: u32,
     /// Completion contract (LoopX): a completed advancement todo must declare
@@ -363,6 +374,7 @@ impl Todo {
             blocked_by_gate: None,
             kill_when: None,
             origin_proposal: None,
+            created_by: None,
             failed_attempts: 0,
             successor_ids: vec![],
             no_follow_up: false,
@@ -406,6 +418,13 @@ impl Todo {
     /// Continuation policy (LoopX: independent_handoff | same_agent_non_delivery).
     pub fn with_continuation_policy(mut self, policy: &str) -> Self {
         self.continuation_policy = Some(policy.to_string());
+        self
+    }
+
+    /// Record the author of this todo (`todo add --created-by`, else the role
+    /// token it ran under). See [`Todo::created_by`].
+    pub fn with_created_by(mut self, author: &str) -> Self {
+        self.created_by = Some(author.to_string());
         self
     }
 
@@ -1659,12 +1678,27 @@ mod tests {
         let object = json.as_object_mut().unwrap();
         assert!(object.remove("kill_when").is_some());
         assert!(object.remove("origin_proposal").is_some());
+        assert!(object.remove("created_by").is_some());
 
         let back: Todo = serde_json::from_value(json).unwrap();
         assert_eq!(back.id, "t1");
         assert_eq!(back.class, TaskClass::Advancement);
         assert!(back.kill_when.is_none());
         assert!(back.origin_proposal.is_none());
+        assert!(
+            back.created_by.is_none(),
+            "a ledger written before `created_by` existed must deserialize as unknown, not as a creator"
+        );
+    }
+
+    /// `created_by` survives the ledger round trip (nothing else records who
+    /// authored a todo, so losing it on serialize would leave the field inert).
+    #[test]
+    fn todo_created_by_roundtrips() {
+        let authored =
+            Todo::advancement("t1", "worker-authored follow-up").with_created_by("agent");
+        let back: Todo = serde_json::from_str(&serde_json::to_string(&authored).unwrap()).unwrap();
+        assert_eq!(back.created_by.as_deref(), Some("agent"));
     }
 
     /// A scout carries both new fields through a round trip unchanged.
