@@ -528,7 +528,7 @@ pub enum Key {
     ChatFoldThoughts,
     ChatThinkingLabel,
     ChatProcessLabel,
-    /// The two controls under a message: `[复制]` and `[分支]`.
+    /// The copy control under the transcript's answer: `[复制]`.
     ChatCopyChip,
     /// What the copy control answers with, and why the fork control can refuse.
     CopiedMessage,
