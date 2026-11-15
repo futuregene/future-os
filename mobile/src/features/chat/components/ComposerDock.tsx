@@ -69,6 +69,7 @@ function ComposerDockView({
   queueItems = [],
   queueNotice,
   onQueueUpdate,
+  onQueueUpdateChoice,
   onQueueRemove,
   onQueueRelease,
   onQueuePreviewAttachment,
@@ -166,6 +167,8 @@ function ComposerDockView({
   onQueueRemove?: (id: string) => void;
   /** Replace one waiting message: the session has no rename, so cancel + send. */
   onQueueUpdate?: (id: string, content: string) => void;
+  /** Offer a different pick for a queued answer (design §5.8.2). */
+  onQueueUpdateChoice?: (id: string, selectedIds: readonly string[]) => void;
   /** Start a parked row now. */
   onQueueRelease?: (id: string) => void;
   /** Open a file a waiting message carries, as the transcript would. */
@@ -195,6 +198,18 @@ function ComposerDockView({
   const compacting = compactionPending || remote.compacting;
   // The sheet the chip's pencil opens: the bottom-sheet answer to "which one".
   const [choiceSheetOpen, setChoiceSheetOpen] = useState(false);
+  // Which queued message's answer the sheet is open for. The queue panel is a
+  // list of rows, so it asks the dock to open the sheet rather than owning one
+  // (§5.8.2 — the chip is the button, the sheet is the dock's).
+  const [queueAnswerRow, setQueueAnswerRow] = useState<string | null>(null);
+  // A queued answer reshaped as the sheet's own type. Same fields, so the sheet
+  // draws a waiting message's card exactly as it draws the draft's.
+  const queueAnswerSource = queueAnswerRow === null
+    ? undefined
+    : queueItems.find(item => item.id === queueAnswerRow)?.choice;
+  const queueAnswer: ChoiceAnswer | null = queueAnswerSource
+    ? { ...queueAnswerSource }
+    : null;
   const canSend = !archived && !skillInstalling && !draftRestoring && !skillEvaluating && !compacting && !remote.busy && remote.desktopOnline &&
     (!!message.trim() || attachments.length > 0 || choice !== null);
   // A run in flight rejects compaction, so the tool stays hidden rather than
@@ -409,6 +424,7 @@ function ComposerDockView({
           onRemove={id => onQueueRemove?.(id)}
           onRemoveAttachment={(id, path) => onQueueRemoveAttachment?.(id, path)}
           onUpdate={(id, content) => onQueueUpdate?.(id, content)}
+          onRequestChoiceChange={setQueueAnswerRow}
         />
       )}
       <View style={styles.composerArea}>
@@ -609,19 +625,37 @@ function ComposerDockView({
         </View>
       </View>
       <SkillDetailsDialog onClose={() => setSkillDetails(null)} skill={skillDetails} />
+      {/* One sheet, two sources. The draft's chip and a queued row's chip both
+          answer the same question, so they share the sheet: whichever row is
+          named wins, and the sheet is open while either source has an answer
+          to offer. Two instances would mean two `Modal`s and two chances to
+          pick the wrong `open`. */}
       <ChoiceSheet
-        answer={choice}
-        onClose={() => setChoiceSheetOpen(false)}
+        answer={queueAnswer ?? choice}
+        onClose={() => {
+          setChoiceSheetOpen(false);
+          setQueueAnswerRow(null);
+        }}
         onPick={(optionId) => {
-          if (!choice)
+          const source = queueAnswer ?? choice;
+          if (!source)
             return;
           // A single-choice pick is the whole act, so the sheet closes on it; a
           // multi-choice one keeps the sheet up so several can be ticked.
-          onChangeChoice?.(pickChoiceOption(choice, optionId));
-          if (choice.mode === "single")
+          if (queueAnswer && queueAnswerRow !== null) {
+            onQueueUpdateChoice?.(
+              queueAnswerRow,
+              pickChoiceOption(queueAnswer, optionId).selectedIds,
+            );
+            if (queueAnswer.mode === "single")
+              setQueueAnswerRow(null);
+            return;
+          }
+          onChangeChoice?.(pickChoiceOption(source, optionId));
+          if (source.mode === "single")
             setChoiceSheetOpen(false);
         }}
-        open={choiceSheetOpen}
+        open={choiceSheetOpen || queueAnswer !== null}
         t={t}
       />
       <SendChoiceSheet

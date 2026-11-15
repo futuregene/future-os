@@ -640,6 +640,10 @@ mod tests {
                     name: "queued.png".into(),
                     size: 2048,
                 }],
+                // The TUI draws a queued row from its text alone; an answer
+                // card is a desktop/mobile affordance, so this fixture carries
+                // none (which is also what an older Agent reports).
+                choice: None,
             }],
             recent_terminal_acks: vec![TerminalAck {
                 run_id: "run_0".into(),

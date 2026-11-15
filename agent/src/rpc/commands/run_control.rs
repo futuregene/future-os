@@ -60,7 +60,8 @@ pub(crate) fn handle_prompt(
         cmd.client_request_id.clone()
     };
     match sess.enqueue_prompt_with_model_context(
-        crate::rpc::session_prompt::PromptText::new(&cmd.message, &cmd.model_context),
+        crate::rpc::session_prompt::PromptText::new(&cmd.message, &cmd.model_context)
+            .with_choice(cmd.choice.as_ref()),
         &cmd.images,
         &cmd.attachments,
         (!cmd.requested_run_id.is_empty()).then_some(cmd.requested_run_id.as_str()),
@@ -170,7 +171,10 @@ pub(crate) fn handle_edit_queued_run(
             serde_json::json!({"run_id": cmd.run_id}),
         );
     }
-    match session.write().edit_queued_run(&cmd.run_id, &cmd.message) {
+    match session
+        .write()
+        .edit_queued_run_with_choice(&cmd.run_id, &cmd.message, cmd.choice.clone())
+    {
         Ok(()) => RpcResponse::ok(
             id,
             "edit_queued_run",

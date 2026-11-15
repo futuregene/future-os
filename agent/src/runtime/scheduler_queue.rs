@@ -762,6 +762,22 @@ impl InMemoryRunQueue {
         run_id: &str,
         message: &str,
     ) -> Result<ScheduledRunRequest, RunQueueError> {
+        self.edit_queued_with_choice(run_id, message, None)
+    }
+
+    /// The same in-place edit, restating the answer the corrected words send.
+    ///
+    /// `None` leaves the payload's answer untouched — a words-only correction
+    /// keeps the pick — and `Some` replaces it, which is what changing the answer
+    /// on a waiting row does. The two cases travel through one function because
+    /// they are one write: the queue must never hold a text and an answer that
+    /// disagree about what will be sent.
+    pub fn edit_queued_with_choice(
+        &self,
+        run_id: &str,
+        message: &str,
+        choice: Option<future_rpc::payloads::QueuedRunChoice>,
+    ) -> Result<ScheduledRunRequest, RunQueueError> {
         let mut state = self.state.lock();
         let at = if let Some(index) = state.queued.iter().position(|run| run.run_id == run_id) {
             At::Queued(index)
@@ -785,6 +801,18 @@ impl InMemoryRunQueue {
             (request.payload_bytes, fields)
         };
         fields.insert("message".to_string(), Value::String(message.to_string()));
+        // Restate the answer only when the caller sent one: a words-only edit
+        // must not clear the pick, and an answer-only edit must not leave the
+        // old sentence in the text (the caller derives both from one state).
+        if let Some(choice) = choice.as_ref() {
+            // Restated as sent, including an answer with nothing selected: that
+            // is "this message still comes from the card, with no option picked",
+            // which is different from "its answer did not change" (`None`).
+            fields.insert(
+                "choice".to_string(),
+                serde_json::to_value(choice).unwrap_or(Value::Null),
+            );
+        }
         let payload = Value::Object(fields);
         let new_bytes = serde_json::to_vec(&payload)
             .expect("JSON value serialization cannot fail")

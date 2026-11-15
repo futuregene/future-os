@@ -219,6 +219,15 @@ pub struct RpcCommand {
     /// Inclusive replay boundary captured on the first page.
     #[prost(int64, optional, tag = "192")]
     pub replay_until_idx: ::core::option::Option<i64>,
+    /// ── prompt: a choice card's answer ─────────────────────────────────────
+    /// The answer a `futureos-choice` card gave this prompt, when it came from one.
+    ///
+    /// Carried structured rather than parsed back out of `message`: the sentence
+    /// that is sent names the picked options but not the ones the reader could
+    /// still switch to, and a waiting row offers exactly that switch. Absent for a
+    /// prompt that answered no card.
+    #[prost(message, optional, tag = "193")]
+    pub choice: ::core::option::Option<QueuedRunChoice>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ContentRangeRequest {
@@ -1328,6 +1337,47 @@ pub struct QueuedRunState {
     /// reader cannot take a photo off a queue it cannot see.
     #[prost(message, repeated, tag = "8")]
     pub attachments: ::prost::alloc::vec::Vec<QueuedRunAttachment>,
+    /// The answer a `futureos-choice` card gave this prompt, when it came from one.
+    ///
+    /// `display_text` already carries the sentence the answer sends
+    /// (`\[question → answer\]`), so a client that only re-sends the row needs
+    /// nothing more. This is for the other thing a waiting row offers: changing
+    /// *which* option was picked before the message leaves. That needs the card's
+    /// whole option list, which the sent sentence deliberately does not keep.
+    ///
+    /// Absent means the prompt did not answer a card — never "an answer we forgot
+    /// to send" — so an older client draws the row exactly as it did before.
+    #[prost(message, optional, tag = "9")]
+    pub choice: ::core::option::Option<QueuedRunChoice>,
+}
+/// One answer a queued prompt carries, as the card offered it.
+///
+/// Deliberately not the card's rendering: no descriptions, no per-option notes.
+/// A waiting row prints one line and re-offers the same options, so this is the
+/// minimum that can do both.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct QueuedRunChoice {
+    /// "single" | "multi", as the card asked.
+    #[prost(string, tag = "1")]
+    pub mode: ::prost::alloc::string::String,
+    /// The card's question, so the row can name what is being answered.
+    #[prost(string, tag = "2")]
+    pub title: ::prost::alloc::string::String,
+    /// Every option the card offered, in card order — the ones a reader can still
+    /// switch to, not only the picked one.
+    #[prost(message, repeated, tag = "3")]
+    pub options: ::prost::alloc::vec::Vec<QueuedRunChoiceOption>,
+    /// The picked option ids, in the order they were picked.
+    #[prost(string, repeated, tag = "4")]
+    pub selected_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+/// One option of a queued prompt's answer.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct QueuedRunChoiceOption {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub label: ::prost::alloc::string::String,
 }
 /// One file a queued prompt carries.
 #[derive(Clone, PartialEq, ::prost::Message)]

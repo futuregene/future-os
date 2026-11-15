@@ -611,6 +611,7 @@ fn get_state_internal(
                 accepted_at: run.accepted_at,
                 display_text,
                 attachments: queued_attachments(&run.payload),
+                choice: queued_choice(&run.payload),
             }
         })
         .collect::<Vec<_>>();
@@ -784,6 +785,60 @@ fn queued_attachments(payload: &serde_json::Value) -> Vec<payloads::QueuedRunAtt
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// The answer a `futureos-choice` card gave one queued prompt.
+///
+/// Read back from the acceptance's own payload, the same way the files are
+/// (`queued_attachments`): the client wrote it there when it submitted, so this
+/// is a read of what it said rather than a guess at what its text meant.
+///
+/// A prompt that answered no card — and every prompt from a client that predates
+/// the field — carries none, which draws the row exactly as it was drawn before.
+fn queued_choice(payload: &serde_json::Value) -> Option<payloads::QueuedRunChoice> {
+    let choice = payload.get("choice")?.as_object()?;
+    let title = choice.get("title")?.as_str()?.to_string();
+    let mode = choice
+        .get("mode")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("single")
+        .to_string();
+    let options = choice
+        .get("options")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let id = item.get("id")?.as_str()?.to_string();
+                    let label = item.get("label")?.as_str()?.to_string();
+                    Some(payloads::QueuedRunChoiceOption { id, label })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let selected_ids = choice
+        .get("selectedIds")
+        .or_else(|| choice.get("selected_ids"))
+        .and_then(serde_json::Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(|id| id.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    // A row with no option left to switch to is not an answer any row can offer
+    // to change, so it is reported as no answer rather than as a card with an
+    // empty list — the chip would otherwise open onto nothing.
+    if options.is_empty() {
+        return None;
+    }
+    Some(payloads::QueuedRunChoice {
+        mode,
+        title,
+        options,
+        selected_ids,
+    })
 }
 
 /// The file path a tool call operates on: the first of `path` / `file_path` /

@@ -90,6 +90,8 @@ pub struct IncomingCmd {
     pub transfer_id: String,
     pub file_path: String,
     pub attachments: Vec<UploadReference>,
+    /// prompt / edit_queued_run: the answer a futureos-choice card gave this message. The message already reads `[question → answer]`; this rides alongside because it also carries the options the card offered, which the sentence drops — that is what lets a waiting row offer a different pick. Absent means "answered no card", and on edit_queued_run it also means "leave the accepted answer alone". An older host ignores it.
+    pub choice: Option<serde_json::Value>,
     /// signed application-level pairing handshake
     pub protocol_version: u32,
     pub pair_id: String,
@@ -184,6 +186,7 @@ impl Default for IncomingCmd {
             transfer_id: String::new(),
             file_path: String::new(),
             attachments: Vec::new(),
+            choice: None,
             protocol_version: 0,
             pair_id: String::new(),
             device_id: String::new(),

@@ -4,7 +4,16 @@ import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-
 import { useTranslation } from "react-i18next";
 import { radius, spacing } from "../../../theme/tokens";
 import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
+import type { SessionQueueChoice } from "../../../remote/sessionQueue";
 import { formatBytes } from "../utils";
+
+/** The chosen options' labels, joined the way the chip reads them. */
+function choiceLabel(choice: SessionQueueChoice): string {
+  return choice.options
+    .filter(option => choice.selectedIds.includes(option.id))
+    .map(option => option.label)
+    .join("、");
+}
 
 /** One file a waiting message carries, as the panel draws it. */
 export interface SendQueueAttachmentItem {
@@ -40,6 +49,18 @@ export interface SendQueuePanelItem {
    * only when the reader says so. Absent means "runs at the next turn boundary".
    */
   parked?: boolean;
+  /**
+   * The answer a `futureos-choice` card gave this message, when it came from one.
+   *
+   * `content` already reads `[question → answer]`, so the row says what it will
+   * send without this. Only this can offer a different pick before it runs,
+   * because the sentence names the chosen option and drops the ones it could
+   * still switch to (design §5.8).
+   *
+   * `undefined` means the message answered no card — also what a desktop older
+   * than the field reports, which must not be drawn as an empty chip.
+   */
+  choice?: SessionQueueChoice;
 }
 
 /**
@@ -94,6 +115,7 @@ export function SendQueuePanel({
   onRemove,
   onRemoveAttachment,
   onUpdate,
+  onRequestChoiceChange,
 }: {
   items: readonly SendQueuePanelItem[];
   /**
@@ -105,6 +127,14 @@ export function SendQueuePanel({
   onRelease?: (id: string) => void;
   onRemove: (id: string) => void;
   onUpdate: (id: string, content: string) => void;
+  /**
+   * Offer a different pick for a row that answered a card (§5.8.2).
+   *
+   * The panel only says which row: the option list is a sheet, and a sheet is a
+   * `Modal` — its own window with its own safe-area maths. Owning one here would
+   * put that machinery inside a list of rows, so the dock above renders it.
+   */
+  onRequestChoiceChange?: (id: string) => void;
   /** Open one file of a waiting message, exactly as the transcript would. */
   onPreviewAttachment?: (attachment: SendQueueAttachmentItem) => void;
   /** Take one file off a waiting message (the rest are re-sent with it). */
@@ -220,6 +250,34 @@ export function SendQueuePanel({
                                 </Text>
                               )
                             : <Text style={styles.attachmentsOnly}>{t("chat.queue.attachmentsOnly")}</Text>}
+                          {/* The answer this message carries (§5.8.2). The chip is
+                              the button — the row already has a pencil for its
+                              words, and a second one a few points away meaning
+                              something else is the ambiguity this design exists
+                              to remove. A chevron says "this opens something". */}
+                          {item.choice && item.choice.selectedIds.length > 0 && onRequestChoiceChange
+                            ? (
+                                <Pressable
+                                  accessibilityLabel={t("chat.queue.choiceChange", {
+                                    title: item.choice.title,
+                                    label: choiceLabel(item.choice),
+                                  })}
+                                  accessibilityRole="button"
+                                  onPress={() => onRequestChoiceChange(item.id)}
+                                  style={({ pressed }) => [styles.choiceChip, pressed && styles.rowPressed]}
+                                  testID="send-queue-choice"
+                                >
+                                  <Text numberOfLines={1} style={styles.choiceTitle}>
+                                    {item.choice.title}
+                                  </Text>
+                                  <Text style={styles.choiceSeparator}>·</Text>
+                                  <Text numberOfLines={1} style={styles.choiceLabel}>
+                                    {choiceLabel(item.choice)}
+                                  </Text>
+                                  <ChevronDown color={colors.inkSoft} size={12} />
+                                </Pressable>
+                              )
+                            : null}
                           {(item.attachments && item.attachments.length > 0
                             || (onAddAttachments && item.attachments !== undefined)) && (
                             <View style={styles.chips} testID="send-queue-attachments">
@@ -507,5 +565,37 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     color: theme.colors.surface,
     fontSize: theme.font(12),
     fontWeight: "600",
+  },
+  choiceChip: {
+    alignSelf: "flex-start",
+    maxWidth: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    paddingLeft: 9,
+    paddingRight: spacing.xs,
+    paddingVertical: 2,
+    borderWidth: 1,
+    borderColor: theme.colors.line,
+    borderRadius: radius.sm + 2,
+    backgroundColor: theme.colors.surfaceSubtle,
+  },
+  choiceTitle: {
+    maxWidth: "40%",
+    color: theme.colors.inkMuted,
+    fontSize: theme.font(11),
+    lineHeight: theme.font(15),
+  },
+  choiceSeparator: {
+    color: theme.colors.line,
+    fontSize: theme.font(11),
+  },
+  choiceLabel: {
+    minWidth: 0,
+    flexShrink: 1,
+    color: theme.colors.ink,
+    fontSize: theme.font(11),
+    fontWeight: "600",
+    lineHeight: theme.font(15),
   },
 }));

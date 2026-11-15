@@ -65,4 +65,22 @@ describe("remoteComposerDraft", () => {
 
     expect(loadRemoteComposerDraft("desktop_a", "sess_1")).toBeNull();
   });
+  it("keeps an answer on its own, and clears the slot only when it is gone too", () => {
+    // A draft that is only an answer is exactly what a reader has after picking
+    // an option and typing nothing. Treating it as empty would drop the pick on
+    // the next visit while the chip was still what made Send live (design §5.4).
+    const answer = {
+      mode: "single" as const,
+      options: [{ id: "forest", label: "重画森林图" }],
+      selectedIds: ["forest"],
+      title: "接下来做哪一件事？",
+    };
+    saveRemoteComposerDraft("desktop_a", "sess_1", { choice: answer });
+
+    expect(loadRemoteComposerDraft("desktop_a", "sess_1")?.choice).toEqual(answer);
+
+    saveRemoteComposerDraft("desktop_a", "sess_1", { text: "", uploads: [], choice: undefined });
+
+    expect(loadRemoteComposerDraft("desktop_a", "sess_1")).toBeNull();
+  });
 });

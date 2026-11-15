@@ -20,6 +20,12 @@ pub struct RpcCommand {
     pub images: Vec<crate::types::ImageContent>,
     #[serde(default)]
     pub attachments: Vec<crate::types::Attachment>,
+    /// The answer a `futureos-choice` card gave this prompt, when it came from
+    /// one. Carried on the submission rather than parsed back out of `message`:
+    /// the sent sentence names the picked options but not the ones the reader
+    /// could still switch to, and a waiting row offers exactly that switch.
+    #[serde(default)]
+    pub choice: Option<future_rpc::payloads::QueuedRunChoice>,
     #[serde(default)]
     pub parent_session: String,
 

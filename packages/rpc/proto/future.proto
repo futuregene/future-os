@@ -287,6 +287,15 @@ message RpcCommand {
   ContentRangeRequest content_request = 191;
   // Inclusive replay boundary captured on the first page.
   optional int64 replay_until_idx = 192;
+
+  // ── prompt: a choice card's answer ─────────────────────────────────────
+  // The answer a `futureos-choice` card gave this prompt, when it came from one.
+  //
+  // Carried structured rather than parsed back out of `message`: the sentence
+  // that is sent names the picked options but not the ones the reader could
+  // still switch to, and a waiting row offers exactly that switch. Absent for a
+  // prompt that answered no card.
+  QueuedRunChoice choice = 193;
 }
 
 message ContentRangeRequest {
@@ -1209,6 +1218,40 @@ message QueuedRunState {
   // The files the prompt carries. A waiting message is still editable, and a
   // reader cannot take a photo off a queue it cannot see.
   repeated QueuedRunAttachment attachments = 8;
+  // The answer a `futureos-choice` card gave this prompt, when it came from one.
+  //
+  // `display_text` already carries the sentence the answer sends
+  // (`[question → answer]`), so a client that only re-sends the row needs
+  // nothing more. This is for the other thing a waiting row offers: changing
+  // *which* option was picked before the message leaves. That needs the card's
+  // whole option list, which the sent sentence deliberately does not keep.
+  //
+  // Absent means the prompt did not answer a card — never "an answer we forgot
+  // to send" — so an older client draws the row exactly as it did before.
+  QueuedRunChoice choice = 9;
+}
+
+// One answer a queued prompt carries, as the card offered it.
+//
+// Deliberately not the card's rendering: no descriptions, no per-option notes.
+// A waiting row prints one line and re-offers the same options, so this is the
+// minimum that can do both.
+message QueuedRunChoice {
+  // "single" | "multi", as the card asked.
+  string mode = 1;
+  // The card's question, so the row can name what is being answered.
+  string title = 2;
+  // Every option the card offered, in card order — the ones a reader can still
+  // switch to, not only the picked one.
+  repeated QueuedRunChoiceOption options = 3;
+  // The picked option ids, in the order they were picked.
+  repeated string selected_ids = 4;
+}
+
+// One option of a queued prompt's answer.
+message QueuedRunChoiceOption {
+  string id = 1;
+  string label = 2;
 }
 
 // One file a queued prompt carries.
