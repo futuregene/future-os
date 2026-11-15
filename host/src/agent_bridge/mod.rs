@@ -43,8 +43,8 @@ pub use self::queue::{empty_queue, queue_state_json, session_queue_snapshot};
 pub use self::config_observer::spawn_provider_config_observer;
 pub use self::delete_outbox::{reconcile_delete_outbox, spawn_delete_outbox_worker};
 pub use self::headless::{
-    prepare_prompt_persisted_busy, prepare_prompt_persisted_with_trigger,
-    run_prepared_prompt_with_acceptance, PreparedPrompt,
+    prepare_prompt_persisted_busy, prepare_prompt_persisted_busy_with_choice,
+    prepare_prompt_persisted_with_trigger, run_prepared_prompt_with_acceptance, PreparedPrompt,
 };
 pub(crate) use self::import::{list_agent_session_ids, session_has_messages};
 pub use self::models::{list_agent_models, list_builtin_providers, AgentModelOption};
@@ -89,8 +89,8 @@ pub use self::run_control::{
     abort_run, compact_agent_session, compact_thread_context, stop_thread,
 };
 pub use self::run_control::{
-    abort_session, cancel_queued_run, edit_queued_run, release_queued_run, wait_for_agent_idle,
-    AbortSessionOutcome,
+    abort_session, cancel_queued_run, edit_queued_run, edit_queued_run_with_choice,
+    release_queued_run, wait_for_agent_idle, AbortSessionOutcome,
 };
 pub use self::session::fork_agent_session;
 pub use self::session::set_agent_sandbox_policy_tier;
@@ -120,8 +120,8 @@ pub use review::retry as retry_run_review;
 
 use serde::Serialize;
 
+use self::client::base_command;
 pub use self::client::AttachmentInput;
-use self::client::{base_command, prompt_command};
 #[cfg(test)]
 use self::delete_outbox::{delete_outbox_interval, TEST_OUTBOX_STOP};
 #[cfg(test)]

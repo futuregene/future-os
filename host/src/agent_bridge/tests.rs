@@ -1993,6 +1993,7 @@ mod pipeline_tests {
             model_id: None,
             thinking_level: None,
             busy_policy: "enqueue_coalescing".to_string(),
+            choice: None,
         })
         .await
         .expect_err("an empty prompt is not a turn");
@@ -2041,6 +2042,7 @@ mod pipeline_tests {
             model_id: Some("future/k3".to_string()),
             thinking_level: Some("high".to_string()),
             busy_policy: String::new(),
+            choice: None,
         })
         .await
         .expect("prompt");

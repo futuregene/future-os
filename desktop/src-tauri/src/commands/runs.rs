@@ -103,8 +103,12 @@ pub async fn edit_queued_run(
     thread_id: String,
     run_id: String,
     message: String,
+    choice: Option<future_rpc::payloads::QueuedRunChoice>,
 ) -> Result<(), crate::AppError> {
-    future_host::application::queue::edit_queued_run(&thread_id, &run_id, &message).await
+    future_host::application::queue::edit_queued_run_with_choice(
+        &thread_id, &run_id, &message, choice,
+    )
+    .await
 }
 
 #[tauri::command]

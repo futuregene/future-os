@@ -46,8 +46,22 @@ pub async fn edit_queued_run(
     run_id: &str,
     message: &str,
 ) -> Result<(), crate::Error> {
+    edit_queued_run_with_choice(thread_id, run_id, message, None).await
+}
+
+/// The same in-place edit, restating the answer the corrected message sends.
+///
+/// `None` leaves the accepted answer alone (a words-only correction keeps the
+/// pick); `Some` is the answer the new words state, which is what changing the
+/// option on a waiting row sends.
+pub async fn edit_queued_run_with_choice(
+    thread_id: &str,
+    run_id: &str,
+    message: &str,
+    choice: Option<future_rpc::payloads::QueuedRunChoice>,
+) -> Result<(), crate::Error> {
     let (session_id, run_id) = queued_run_session(thread_id, run_id)?;
-    agent_bridge::edit_queued_run(&session_id, &run_id, message).await
+    agent_bridge::edit_queued_run_with_choice(&session_id, &run_id, message, choice).await
 }
 
 /// The conversation a queued run belongs to, and the run id to address.

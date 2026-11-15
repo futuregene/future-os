@@ -18,7 +18,7 @@ import { mimeFor, pickAttachments, pickFromAlbum, takePhoto } from "../../remote
 import { useConversationOperation } from "./useConversationOperation";
 import { useComposerSubmission } from "./composer/useComposerSubmission";
 import { useComposerDraft } from "./useComposerDraft";
-import { choiceAnswerFromCard, pickChoiceOption } from "./choiceAnswer";
+import { choiceAnswerFromCard, choiceAnswerText, pickChoiceOption, type ChoiceAnswer } from "./choiceAnswer";
 import type { ChoiceCardAnswer } from "../../components/ChoiceCard";
 import type { ChoiceCardNode } from "@future-os/markdown";
 import { useAttachmentPicker } from "./useAttachmentPicker";
@@ -342,6 +342,7 @@ export function ChatScreen() {
   const queuePanelItems = useMemo(
     () => queuedRows.map(row => ({
       attachments: row.attachments,
+      choice: row.choice,
       content: row.text,
       id: row.runId,
       parked: isParkedSessionQueueRow(row),
@@ -511,6 +512,46 @@ export function ChatScreen() {
       await resendQueuedMessage(row, text, carry);
     });
   }, [changeQueue, materializeQueuedAttachment, queuedRows, remote, resendQueuedMessage, sessionId, t]);
+
+  /**
+   * Change the pick a waiting message carries (§5.8.2).
+   *
+   * The row's own words say `[question → answer]`, so changing the answer means
+   * the sentence has to change with it — otherwise the message still runs with
+   * the old pick. Both travel in one `edit_queued_run`, and the choice rides
+   * along so the row keeps offering the other options.
+   */
+  const updateQueuedChoice = useCallback((id: string, selectedIds: readonly string[]) => {
+    const row = queuedRows.find(item => item.runId === id);
+    if (!row?.choice)
+      return;
+    const next: ChoiceAnswer = { ...row.choice, selectedIds: [...selectedIds] };
+    // The row's text is `[question → answer]` possibly followed by whatever the
+    // reader typed after it. Only the bracketed head is rewritten: the note the
+    // message was queued with is theirs, not the card's.
+    const answer = choiceAnswerText(next);
+    const note = row.text.replace(/^\[[^\]]+\]\s*/u, "");
+    const text = note.trim() ? `${answer} ${note.trim()}` : answer;
+    const reported = row.attachments;
+    const carry = () => reported === undefined
+      ? Promise.resolve([] as MobileAttachment[])
+      : Promise.all(reported.map(materializeQueuedAttachment));
+    changeQueue(async () => {
+      try {
+        await remote.editQueuedRun(sessionId, row.runId, text, {
+          mode: next.mode,
+          options: next.options,
+          selectedIds: next.selectedIds,
+          title: next.title,
+        });
+      }
+      catch (error) {
+        if (!isUnsupportedCommandError(error))
+          throw error;
+        await resendQueuedMessage(row, text, carry);
+      }
+    });
+  }, [changeQueue, materializeQueuedAttachment, queuedRows, remote, resendQueuedMessage, sessionId]);
 
   /** Open one file a waiting message carries, exactly as the transcript would. */
   const previewQueuedAttachment = useCallback((attachment: SendQueueAttachmentItem) => {
@@ -1075,6 +1116,7 @@ export function ChatScreen() {
                     queueItems={queuePanelItems}
                     queueNotice={queueNoticeText}
                     onQueueUpdate={updateQueuedMessage}
+                    onQueueUpdateChoice={updateQueuedChoice}
                     onQueueRemove={removeQueuedMessage}
                     onQueueRelease={releaseQueuedMessage}
                     onQueuePreviewAttachment={previewQueuedAttachment}

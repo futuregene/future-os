@@ -204,8 +204,21 @@ describe("the choice card's answer, from the card to the draft", () => {
     await view.click(view.row("forest"));
     await view.submit();
 
+    // The answer rides in both forms: the plain text that is sent, and the
+    // structured pick — the queue needs the latter to offer the other options
+    // later (§5.8.3), and it must not have to re-parse the sentence.
     expect(onSend).toHaveBeenCalledWith({
       attachments: [],
+      choice: {
+        mode: "single",
+        options: [
+          { id: "forest", label: "重画森林图" },
+          { id: "flow", label: "补一张实验流程图" },
+          { id: "table", label: "表里加一列样本量" },
+        ],
+        selectedIds: ["forest"],
+        title: "接下来做哪一件？",
+      },
       content: "[接下来做哪一件？ → 重画森林图]",
     });
     // Requirement: the next message must not inherit this conversation's pick.

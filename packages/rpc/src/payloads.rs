@@ -126,6 +126,41 @@ pub struct QueuedRunState {
     /// such field simply sends none.
     #[serde(default)]
     pub attachments: Vec<QueuedRunAttachment>,
+    /// The answer a `futureos-choice` card gave this prompt.
+    ///
+    /// Absent means the prompt did not answer a card, which is also what an
+    /// Agent that predates the field reports — neither is a mistake to repair,
+    /// so absence is spelled as absence and never as an empty answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choice: Option<QueuedRunChoice>,
+}
+
+/// One answer a queued prompt carries, as the card offered it.
+///
+/// The sent sentence (`display_text`) already names the picked options, so this
+/// exists for the other thing a waiting row offers: changing *which* option was
+/// picked before the message leaves. That needs the card's whole option list,
+/// which the sentence deliberately does not keep.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedRunChoice {
+    /// "single" | "multi", as the card asked.
+    pub mode: String,
+    /// The card's question, so a row can name what it answers.
+    pub title: String,
+    /// Every option the card offered, in card order.
+    #[serde(default)]
+    pub options: Vec<QueuedRunChoiceOption>,
+    /// The picked option ids, in the order they were picked.
+    #[serde(default)]
+    pub selected_ids: Vec<String>,
+}
+
+/// One option of a queued prompt's answer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct QueuedRunChoiceOption {
+    pub id: String,
+    pub label: String,
 }
 
 /// One file a queued prompt carries (proto `QueuedRunAttachment`).

@@ -1,6 +1,7 @@
-import { Check, Image as ImageIcon, Paperclip, Pencil, Play, RotateCcw, Trash2 } from "lucide-react";
+import { Check, ChevronDown, Image as ImageIcon, Paperclip, Pencil, Play, RotateCcw, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
 import { cn } from "../../lib/cn";
 
 /**
@@ -40,6 +41,49 @@ export interface SendQueuePanelItem {
    * boundary", which is what every row is on a host without that rule.
    */
   parked?: boolean;
+  /**
+   * The answer a `futureos-choice` card gave this message, when it came from one.
+   *
+   * `content` already reads `[question → answer]`, so the row says what it will
+   * send without this. What only this can do is let the reader change *which*
+   * option was picked before the run reads it, because the sentence names the
+   * chosen option and drops the ones it could still switch to (design §5.8).
+   *
+   * `undefined` means the prompt answered no card — also what a queue that
+   * predates the field reports, which must not be drawn as an empty chip.
+   */
+  choice?: SendQueueChoiceItem;
+}
+
+/** One queued answer, as the panel re-offers it. */
+export interface SendQueueChoiceItem {
+  mode: "single" | "multi";
+  title: string;
+  options: readonly { id: string; label: string }[];
+  selectedIds: readonly string[];
+}
+
+/** The picked options' labels, in pick order — what the chip prints. */
+function choiceLabels(choice: SendQueueChoiceItem): string[] {
+  return choice.selectedIds
+    .map(id => choice.options.find(option => option.id === id)?.label)
+    .filter((label): label is string => Boolean(label));
+}
+
+/**
+ * A pick on one of the answer's rows: multi toggles, single replaces.
+ *
+ * The same rule the card and the composer's pill use (`pickChoiceOption`), so
+ * changing the answer on a waiting row behaves like changing it anywhere else.
+ */
+function toggleChoice(choice: SendQueueChoiceItem, optionId: string): SendQueueChoiceItem {
+  if (choice.mode === "multi") {
+    const picked = choice.selectedIds.includes(optionId)
+      ? choice.selectedIds.filter(id => id !== optionId)
+      : [...choice.selectedIds, optionId];
+    return { ...choice, selectedIds: picked };
+  }
+  return { ...choice, selectedIds: [optionId] };
 }
 
 /**
@@ -64,6 +108,7 @@ export function SendQueuePanel({
   onRetry,
   onRelease,
   onUpdate,
+  onUpdateChoice,
 }: {
   /**
    * No row's queue reports which files a message carries, so an edit — a removal
@@ -92,12 +137,26 @@ export function SendQueuePanel({
   onRemove: (id: string) => void;
   onRetry?: () => void;
   onUpdate: (id: string, content: string) => void;
+  /**
+   * Change which option a waiting message's answer picked.
+   *
+   * Its own callback rather than an extra argument to `onUpdate`: the two are
+   * different edits (structured answer vs. prose), they go to different Agent
+   * commands, and one signature carrying both would have to branch inside.
+   *
+   * Absent means this queue's rows are not editable in that way — the chip is
+   * then still named, just not clickable.
+   */
+  onUpdateChoice?: (id: string, choice: SendQueueChoiceItem) => void;
 }) {
   const { t } = useTranslation("agent");
   // Only one row is edited at a time — the panel is a list of what is about to
   // leave, not a second editor.
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
+  // Which row's answer menu is open. One at a time, like the editor above: the
+  // panel is a list of what is about to leave, not a second form.
+  const [choiceOpenId, setChoiceOpenId] = useState<string | null>(null);
 
   if (items.length === 0)
     return null;
@@ -237,6 +296,78 @@ export function SendQueuePanel({
                                 {t("composer.queue.attachmentsOnly")}
                               </p>
                             )}
+                        {/* The answer this message carries (§5.8.2).
+                            The chip is the button — the row already has a
+                            pencil for its words, and a second one a few pixels
+                            away meaning something else is the ambiguity this
+                            design exists to remove. A chevron says "this opens
+                            something", which a pencil cannot. */}
+                        {item.choice && item.choice.selectedIds.length > 0
+                          ? (
+                              <SelectMenu
+                                align="left"
+                                open={choiceOpenId === item.id}
+                                onDismiss={() => setChoiceOpenId(null)}
+                                panelClassName="w-72 max-h-72 overflow-y-auto"
+                                portal
+                                trigger={(
+                                  <button
+                                    aria-label={t("composer.queue.choiceChange", {
+                                      title: item.choice.title,
+                                      label: choiceLabels(item.choice).join("、"),
+                                    })}
+                                    className={cn(
+                                      "mt-1 inline-flex max-w-full items-center gap-1 rounded border border-line-soft bg-accent-soft/60 px-1.5 py-0.5 text-[11px] leading-4 text-accent-ink",
+                                      onUpdateChoice ? "hover:bg-accent-soft" : "cursor-default",
+                                    )}
+                                    data-queue-choice=""
+                                    data-queue-choice-action="change"
+                                    disabled={!onUpdateChoice}
+                                    onClick={() => setChoiceOpenId(current => current === item.id ? null : item.id)}
+                                    title={t("composer.queue.choiceChange", {
+                                      title: item.choice.title,
+                                      label: choiceLabels(item.choice).join("、"),
+                                    })}
+                                    type="button"
+                                  >
+                                    <span className="truncate">{item.choice.title}</span>
+                                    <span aria-hidden className="shrink-0 opacity-60">·</span>
+                                    <span className="truncate font-medium">
+                                      {choiceLabels(item.choice).join("、")}
+                                    </span>
+                                    <ChevronDown className="size-2.5 shrink-0 opacity-70" />
+                                  </button>
+                                )}
+                              >
+                                {item.choice.options.map(option => (
+                                  <SelectMenuItem
+                                    className="py-1.5"
+                                    key={option.id}
+                                    onSelect={() => {
+                                      setChoiceOpenId(null);
+                                      onUpdateChoice?.(item.id, toggleChoice(item.choice!, option.id));
+                                    }}
+                                    selected={item.choice!.selectedIds.includes(option.id)}
+                                  >
+                                    {option.label}
+                                  </SelectMenuItem>
+                                ))}
+                                {/* Taking the answer off while keeping the words:
+                                    the same exit the card offers, and not a
+                                    third button on the chip. */}
+                                <SelectMenuItem
+                                  className="border-t border-line-soft py-1.5"
+                                  onSelect={() => {
+                                    setChoiceOpenId(null);
+                                    onUpdateChoice?.(item.id, { ...item.choice!, selectedIds: [] });
+                                  }}
+                                  selected={false}
+                                >
+                                  {t("composer.queue.choiceClear")}
+                                </SelectMenuItem>
+                              </SelectMenu>
+                            )
+                          : null}
                         {item.attachments && item.attachments.length > 0
                           ? (
                               <ul className="mt-1 flex flex-wrap items-center gap-1" data-queue-attachments="">

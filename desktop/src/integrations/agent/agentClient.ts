@@ -1,4 +1,5 @@
 import { Channel } from "@tauri-apps/api/core";
+import type { ChoiceAnswer } from "../../features/agent/composer/choiceAnswer";
 import { invokeCommand } from "../tauri/invoke";
 
 /**
@@ -134,6 +135,14 @@ export interface AgentPromptInput {
    * ack comes back as `terminationKind: "run_queued"`.
    */
   busyPolicy?: string;
+  /**
+   * The answer a `futureos-choice` card gave this prompt, when it came from one.
+   *
+   * The message already reads `[question → answer]`; this rides alongside so the
+   * Agent can keep it with the accepted run and let a *waiting* row offer a
+   * different pick before the run reads it (design §5.8). Absent otherwise.
+   */
+  choice?: ChoiceAnswer;
   onAccepted?: () => void;
 }
 
@@ -147,6 +156,7 @@ export async function sendPromptToFutureAgent({
   attachments,
   thinkingLevel,
   busyPolicy,
+  choice,
   onAccepted,
 }: AgentPromptInput) {
   const acceptance = onAccepted ? new Channel<null>(() => onAccepted()) : undefined;
@@ -162,6 +172,7 @@ export async function sendPromptToFutureAgent({
       modelId: modelId ?? null,
       thinkingLevel: thinkingLevel ?? null,
       busyPolicy: busyPolicy ?? "",
+      ...(choice ? { choice } : {}),
     },
   });
   return {

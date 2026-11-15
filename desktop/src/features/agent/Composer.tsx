@@ -31,6 +31,16 @@ import { SkillRecommendCard } from "./SkillRecommendCard";
 export interface ComposerSendPayload {
   attachments: MessageAttachment[];
   content: string;
+  /**
+   * The answer a `futureos-choice` card gave this message, when it came from one.
+   *
+   * `content` already reads `[question → answer]`, so a send works without this.
+   * It travels anyway because the Agent keeps it with the accepted run, and that
+   * copy is what lets a *waiting* row offer to change the pick before the run
+   * reads it — the sentence names the chosen option but not the ones a reader
+   * could still switch to (design `docs/design/choice-cards.zh-CN.md` §5.8).
+   */
+  choice?: ChoiceAnswer;
 }
 
 /**
@@ -679,9 +689,17 @@ function ComposerImpl({
     const trimmed = submittedText.trim();
     const submittedDraftKey = draftKeyRef.current;
     const submittedAttachments = attachmentsRef.current;
-    if (!trimmed && submittedAttachments.length === 0)
+    const submittedChoice = choiceRef.current;
+    // A picked card counts as content on its own (design §6 d): the pill is in
+    // `submittedText` already, and without the choice beside it the row could
+    // not offer to change the pick once it waits.
+    if (!trimmed && submittedAttachments.length === 0 && !submittedChoice)
       return;
-    const taken = onEnqueue({ attachments: submittedAttachments, content: trimmed });
+    const taken = onEnqueue({
+      attachments: submittedAttachments,
+      content: trimmed,
+      ...(submittedChoice ? { choice: submittedChoice } : {}),
+    });
     // Refused (the queue is full): the text stays in the box, for the reason the
     // panel's own queue refuses a message it cannot hold.
     if (taken === false)
@@ -710,6 +728,10 @@ function ComposerImpl({
       return;
     const submittedDraftKey = draftKeyRef.current;
     const submittedAttachments = attachmentsRef.current;
+    // The pill is already in `submittedText` (serialize writes `[question →
+    // answer]`), so this does not change what is sent — it rides alongside so the
+    // Agent's accepted run can still offer a different pick while it waits (§5.8).
+    const submittedChoice = choiceRef.current;
     if (!trimmed && submittedAttachments.length === 0)
       return;
     const isCurrent = captureOperation();
@@ -755,7 +777,11 @@ function ComposerImpl({
     };
     dropSubmittedDraft();
     historyCursor.push(trimmed);
-    const result = state.onSend({ attachments: submittedAttachments, content: trimmed });
+    const result = state.onSend({
+      attachments: submittedAttachments,
+      content: trimmed,
+      ...(submittedChoice ? { choice: submittedChoice } : {}),
+    });
     if (result) {
       // Async send: the caller reports the failure, and only then does the
       // draft come back.
