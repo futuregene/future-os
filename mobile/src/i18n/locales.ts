@@ -470,6 +470,7 @@ export const resources = {
         hint: {
           single: "Pick one and it lands in the input; you can type something else instead",
           multi: "Pick as many as apply",
+          readonly: "An earlier question — this card can no longer be picked",
         },
         foot: {
           queued: "Chosen — the answer is above the input. Send it as is, or add a note first.",
@@ -482,7 +483,6 @@ export const resources = {
           title: "Change \"{{title}}\"",
           hint: "Pick another one and the answer above the input follows.",
         },
-        stale: "This card is no longer active",
       },
       chat: {
         "fusionTitle": "Fusion · Discussion",
@@ -1714,6 +1714,7 @@ export const resources = {
         hint: {
           single: "选一个就放进输入框；也可以直接在输入框里写别的",
           multi: "可以多选，点几个都行",
+          readonly: "只作展示：这张卡不能选",
         },
         foot: {
           queued: "已选，答案在下面的输入框上方；可以直接发送，也可以补充文字",
@@ -1726,7 +1727,6 @@ export const resources = {
           title: "修改「{{title}}」",
           hint: "换个选项，输入框里的答案跟着变",
         },
-        stale: "这张卡已经过期",
       },
       chat: {
         "fusionTitle": "Fusion · 讨论",
