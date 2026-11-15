@@ -1,6 +1,6 @@
 # Choice cards in a reply
 
-> Status: design settled (v3). **§11 steps 1–3 are implemented** (parsing of `futureos-choice`, the desktop card, the answer pill inside the editor); step 4 and later are not — including the queue sections v3 adds (§5.8), whose samples are still injected prototypes. Apart from the three "real component" scenario captures, every screenshot below is a DOM prototype injected into the **real interface** (no product code) to fix the styling and geometry; implementation is §11.
+> Status: design settled (v3). **§11 steps 1–8 are implemented**: parsing of `futureos-choice`, the desktop card, the answer pill inside the editor, the draft carrying it, remote desktop, the phone, the pick inside the queue, and the system prompt. Step 9 — the visual regression that swaps the injected prototypes for the real components — is not done, so apart from the three "real component" scenario captures, every screenshot below is a DOM prototype injected into the **real interface** (no product code) to fix the styling and geometry; implementation is §11.
 > Scope: desktop, mobile, remote desktop. TUI / CLI are out of scope for this pass (§10 says how they degrade).
 >
 > **v2 fixes three real defects** reported by the reader, each located in the code before changing anything:
@@ -290,9 +290,9 @@ A chevron rather than a pencil is deliberate: it says "this opens something" and
 
 #### 5.8.3 Data shape
 
-Give `SendQueuePanelItem` and `AgentQueueRow` an **optional** `choice?: { title, optionId, label }`, following the `attachments?` precedent (`undefined` = this surface's queue does not report the field, so an older Agent is never described as carrying no choice and no empty chip is drawn).
+Give `SendQueuePanelItem` and `AgentQueueRow` an **optional** `choice?: { mode, title, options, selectedIds }` — the card's whole option list, not just the pick, because offering the other options is the point (§5.8.2) and re-parsing the sentence could not recover them. Follows the `attachments?` precedent (`undefined` = this surface's queue does not report the field, so an older Agent is never described as carrying no choice and no empty chip is drawn).
 
-The write path **stays out of the plain-text edit**: add `onUpdateChoice(id, choice)` rather than adding an optional parameter to `onUpdate(id, content)`. Editing words and changing a structured choice are two different operations, and one signature for both would force a branch inside one function.
+The write path **stays out of the plain-text edit**. On the desktop the queue panel reports *which row* and a portal-positioned list opens (`SelectMenu`, not `ChoicePopover` — that one is positioned inside the editor's wrapper, which a queue row does not have); the dock owns the phone's `ChoiceSheet` for the same reason a `Modal` does not belong inside a list of rows. Changing a pick rewrites the text's bracketed head and leaves whatever the reader typed after it alone.
 
 #### 5.8.4 Measured (real panel, real 加入发送队列 flow — not drawn)
 
@@ -389,10 +389,10 @@ In dependency order; each step merges on its own:
 4. **Answer state**: an optional `choice` field on the existing per-conversation draft — desktop's `ComposerDraft` (`desktop/src/features/agent/composerDraft.ts`; the shape deliberately allows growth, so an optional field needs no `DRAFT_VERSION` bump) and remote's `RemoteComposerDraft` (`desktop/src/features/remote-peer/remoteComposerDraft.ts`). The card's chosen row and the pill both read it.
 5. **Remote**: `RemoteComposer` uses the chip row (a plain textarea cannot hold a pill) **and must count the choice on the `uploads`/draft side**, or `disabled={(!text.trim() && uploads.length === 0) || …}` (`:1525`) still blocks it (§5.4).
 6. **Mobile**: `mobile/src/components/MarkdownText.tsx` mounts `ChoiceCard` (redrawn per §5.7.1); `ComposerDock.tsx` gains the chip row plus `ChoiceSheet`; the choice must be counted among the draft items `canSend` (`:180-181`) / `hasDraft` (`:233`) already read, not drawn as a decorative chip.
-7. **Choices in the queue**: an optional `choice` on `AgentQueueRow` and `SendQueuePanelItem`, carried through `onEnqueue`; the panel row renders a chip and a new `onUpdateChoice(id, choice)` (keeping structured arguments out of the plain-text edit path). An older Agent that does not report the field degrades to today's text-only row. **The chip is itself the button and gets no pencil of its own** (§5.8.2); the row's existing pencil and bin are untouched.
-   - 7a. **Desktop, local session**: insert the chip into `SendQueuePanel.tsx`'s row; pressing it opens `ChoicePopover`.
+7. **Choices in the queue**: an optional `choice` on `AgentQueueRow` and `SendQueuePanelItem`, carried through `onEnqueue`; the panel row renders a chip and reports which row it is, leaving the option list to the layer above (keeping structured arguments out of the plain-text edit path). An older Agent that does not report the field degrades to today's text-only row. **The chip is itself the button and gets no pencil of its own** (§5.8.2); the row's existing pencil and bin are untouched.
+   - 7a. **Desktop, local session**: insert the chip into `SendQueuePanel.tsx`'s row; pressing it opens the options through `SelectMenu` (`portal` mode) — not `ChoicePopover`, which is positioned inside the editor's wrapper and a queue row has none.
    - 7b. **Remote desktop**: `RemoteComposer.tsx:1244` reuses the same `SendQueuePanel`, so this surface needs **no new code** — only one verification run inside a remote session (the remote stylesheet could drag the row width or type scale out of shape).
-   - 7c. **Phone**: `mobile/src/features/chat/components/SendQueuePanel.tsx` is a separate implementation (folding header + `sendQueueListHeight` bound); the chip is 11px type, sits above the row's words, and opens `ChoiceSheet`.
+   - 7c. **Phone**: `mobile/src/features/chat/components/SendQueuePanel.tsx` is a separate implementation (folding header + `sendQueueListHeight` bound); the chip is 11px type, sits above the row's words, and reports which row to change (`onRequestChoiceChange`) — `ComposerDock` owns the `ChoiceSheet`, because a sheet is a `Modal` and does not belong inside a list of rows.
 8. **Prompt**: `agent/src/prompt/choice.md` plus the `include_str!` in `mod.rs`; update the prompt-assembly tests in `agent/src/prompt/mod.rs` that assert section order.
 9. **Regression**: `scripts/screenshots/scenarios.d/choice-cards.json` already turns every frame in this document into a re-runnable scenario (ten on desktop, four on the phone, including `chosen-text`, `queue`, `queue-remote` and `phone-queue`) — use it for visual regression once implemented (swap the injections for the real component).
 
