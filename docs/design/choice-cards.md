@@ -326,9 +326,13 @@ The corrected rule, identical on all three surfaces:
 | change the option | **press the chip itself** (`role=button`, one chevron, aria-label `更换这条消息里的选择：<title> · <option>`), which opens the desktop popover / the phone sheet |
 | edit this message's words | the row's own pencil (there is exactly one) |
 | delete the whole message | the row's own bin |
-| drop just the choice, keep the words | the "no choice" entry in the option list — the same entry the card itself offers, not a new button on the chip |
+| drop the choice to nothing | **refused at the last tick**: the row's text and answer stay exactly as they were, and the reader is told once (below) |
 
 A chevron rather than a pencil is deliberate: it says "this opens something" and cannot be read as "edit the words".
+
+**Zero ticks is not an answer, so a waiting message cannot be rewritten into one.** The row's sentence is `[question → answer]` (§7), and rewriting it from an empty pick yields `[question → ]` — a question the model reads as an answer — or the bracketed question alone. The row is **already waiting to send**, so changing its text under the reader is more surprising than saying it once: this path refuses, says why, and touches nothing — no text, no answer, no `edit_queued_run` call. Removing the message is the row's own bin (the same shape `removeQueuedAttachment` uses for the last file of a message with no words). The phone's sheet stays open there, so the reader can pick again instead of watching it close on a change that never happened.
+
+This is the same rule as §5.2.1 (the editor's pill), §7 (the sent text) and §5.7 (the phone's chip), at its fourth and last landing: `answerOrNull` catches it on write, `ComposerDock`'s `hasAnswer` on render, `withChoiceAnswer` on send, and this one on a queue rewrite. One criterion, not four rules that happen to agree.
 
 #### 5.8.3 Data shape
 
@@ -411,7 +415,7 @@ Agent commits the run ──┬─> terminal entry `content.offers_choice`
 | Requirement | Behaviour | Implementation constraint |
 |---|---|---|
 | (a) may pick nothing and stay empty | Nothing picked, nothing typed ⇒ send stays disabled (the existing `inputEmpty` logic) | The card's presence does **not** count as draft content. A card appearing must never enable Send |
-| (b) a pick can be changed | Five entries: any row in the card, the pill/chip's pencil, the phone's bottom sheet, **the choice chip on a queue row — pressed directly, it is its own button** (§5.8.2), and that queue row's own pencil for the words. They write the same value | Afterwards focus stays in the composer (desktop) / the sheet closes (phone); existing text is never disturbed |
+| (b) a pick can be changed | Five entries: any row in the card, the pill/chip's pencil, the phone's bottom sheet, **the choice chip on a queue row — pressed directly, it is its own button** (§5.8.2), and that queue row's own pencil for the words. They write the same value | Afterwards focus stays in the composer (desktop) / the sheet closes (phone); existing text is never disturbed. One exception: unticking to zero is "no answer", so that change is refused (dropped in the draft, reported on a queue row) and the sheet stays open for another pick |
 | (c) extra text can be typed and sent | Pill/text coexist; on send the answer comes first | Desktop relies on `isEditorEmpty` accepting a pill (measured); phone/remote must count the answer among the draft items `canSend` already reads |
 | (d) send with no text at all | A pill alone ⇒ Send is enabled | Measured `disabled:false` on desktop; phone/remote follow (c) |
 
