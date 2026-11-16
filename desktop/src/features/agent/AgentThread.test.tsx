@@ -85,6 +85,7 @@ vi.mock("./Composer", () => ({
       data-compacting={String(props.compactionInProgress)}
       data-disabled={String(props.disabled)}
       data-empty-reason={String(props.modelsEmptyReason)}
+      data-queue-count={String(props.queueCount)}
       data-sending={String(props.sending)}
     >
       <button data-abort="" onClick={() => (props.onAbort as () => void)()} type="button" />
@@ -1196,6 +1197,52 @@ describe("agentThread send while the reply streams", () => {
     // and a row the Agent accepted from somewhere else has no local run to look
     // the conversation up from.
     expect(h.queue.cancel).toHaveBeenCalledWith("T1", "run-7");
+  });
+
+  /**
+   * The stop control is told what it carries, because it does carry it.
+   *
+   * Rows are the session's and start at the turn boundary, so ending the run is
+   * also what lets them go. The count driving that wording is the Agent's own
+   * queue (`agentQueue`), not a copy held here — this is the prop
+   * `ComposerControls` already reads to decide between "Stop" and "Stop and send
+   * the queued messages", and before it was supplied the control said plain
+   * "Stop" however many rows were waiting.
+   */
+  it("tells the composer how many waiting rows a stop would carry", async () => {
+    h.queue.value = {
+      forget: vi.fn(),
+      notice: null,
+      refresh: vi.fn(),
+      rows: [
+        { acceptedAt: "2026-11-03T10:00:00Z", position: 1, runId: "run-3", state: "queued", text: "waiting" },
+        { acceptedAt: "2026-11-03T10:00:01Z", position: 2, runId: "run-4", state: "queued", text: "also waiting" },
+      ],
+    };
+    setMessages([user("u1"), assistant("a1", { status: "streaming" })]);
+    render();
+
+    expect(composer().dataset.queueCount).toBe("2");
+  });
+
+  /**
+   * A parked row is not carried by a stop: it waits for a person to release it
+   * (`hintParked`), so counting it would promise a send that never happens.
+   */
+  it("leaves a row that waits for a release out of what a stop carries", async () => {
+    h.queue.value = {
+      forget: vi.fn(),
+      notice: null,
+      refresh: vi.fn(),
+      rows: [
+        { acceptedAt: "2026-11-03T10:00:00Z", position: 1, runId: "run-4", state: "stale-waiting", text: "parked" },
+        { acceptedAt: "2026-11-03T10:00:01Z", position: 2, runId: "run-5", state: "queued", text: "waiting" },
+      ],
+    };
+    setMessages([user("u1"), assistant("a1", { status: "streaming" })]);
+    render();
+
+    expect(composer().dataset.queueCount).toBe("1");
   });
 
   /**
