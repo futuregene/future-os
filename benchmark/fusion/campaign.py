@@ -23,7 +23,13 @@ NETWORK_INTERRUPTION = (
     "[model_response_error] model_response_error",
     "[model_response_error] finish_error",
 )
-CASE_OUTCOMES = {"completed", "deferred", "output_limit", "empty_answer"}
+CASE_OUTCOMES = {
+    "completed",
+    "deferred",
+    "output_limit",
+    "empty_answer",
+    "needs_review",
+}
 
 
 def run_ledger_entry(result):
@@ -107,7 +113,9 @@ def case_status(result):
         and f"run {result['run_id']} ended as empty_answer:" in result.get("error", "")
     ):
         return "empty_answer"
-    return result["status"]
+    # Unknown acceptance, local validation and diagnostic failures are retained
+    # for inspection. Never replay them, grade them as wrong, or stop healthy peers.
+    return "needs_review" if result["status"] == "error" else result["status"]
 
 
 def technical_failure_kind(result):
@@ -517,6 +525,10 @@ def execute(args):
                     bool(row.get("benchmark_deadline_exceeded")) for row in latest
                 ),
                 "other_errors": states["error"],
+                "needs_review": states["needs_review"],
+                "diagnostics_pending": sum(
+                    bool(row.get("diagnostics_pending")) for row in latest
+                ),
                 "first_pass_network_errors": sum(network_failure(h[0]) for h in rows),
             }
             if args.arm == "fusion":
@@ -725,7 +737,19 @@ def execute(args):
             case_outcome(rows, max_attempts)["retry_allowed"]
             for rows in histories.values()
         )
-        progress("completed_with_network_errors" if unresolved else "completed")
+        review_needed = any(
+            case_status(rows[-1]) == "needs_review"
+            or rows[-1].get("diagnostics_pending")
+            for rows in histories.values()
+            if rows
+        )
+        progress(
+            "completed_with_review_needed"
+            if review_needed
+            else "completed_with_network_errors"
+            if unresolved
+            else "completed"
+        )
     except Exception as error:
         progress("stopped", str(error))
         raise

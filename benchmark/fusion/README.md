@@ -455,3 +455,5 @@ benchmark/fusion/.venv/bin/ruff format --check benchmark/fusion
 通过本机命令手动执行。`tests/` 中的离线回归文件保留。
 常规 `ci.yml` 的规则保持不变：纯 `benchmark/` 改动不会安排 Rust、TypeScript、Android
 或 iOS 编译和测试，仍保留轻量的影响范围检测与主干必需的 `CI result` 汇总检查。
+
+Technical diagnostics are independent of completed parent answers: a failed consultation read is retained as `diagnostics_pending`, without re-generating or erasing the answer. Unknown acceptance/validation failures remain ungraded as `needs_review`, never automatically replayed, while healthy cases continue. Campaigns finish with `completed_with_review_needed` when evidence still requires inspection. The isolated runtime records running/exited lifecycle and launcher/Host process identities; an external kill can still require checking the actual process and accepted run ledger.

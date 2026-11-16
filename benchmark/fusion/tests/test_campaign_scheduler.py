@@ -7,10 +7,23 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from campaign import run_window  # noqa: E402
+from campaign import case_outcome, case_status, run_window  # noqa: E402
 
 
 class CampaignSchedulerTests(unittest.TestCase):
+    def test_ambiguous_failure_is_retained_ungraded_without_replay(self):
+        result = {
+            "status": "error",
+            "submission_uncertain": True,
+            "error": "connection lost after submission",
+            "grade": {"correct": False, "parsed": False},
+        }
+        self.assertEqual(case_status(result), "needs_review")
+        outcome = case_outcome([result], 4)
+        self.assertFalse(outcome["graded"])
+        self.assertFalse(outcome["retry_allowed"])
+        self.assertIsNone(outcome["passed"])
+
     def test_ready_makeup_uses_a_slot_before_a_slow_peer_finishes(self):
         slow_started = threading.Event()
         retry_started = threading.Event()

@@ -1,7 +1,7 @@
 //! Versioned, host-independent failure and degradation policy.
 use serde::{Deserialize, Serialize};
 
-pub const RESILIENCE_POLICY_VERSION: u32 = 1;
+pub const RESILIENCE_POLICY_VERSION: u32 = 2;
 pub const MAX_MATERIAL_BYTES: usize = 1400;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,13 +21,29 @@ pub enum FailureKind {
     BudgetReserved,
     CircuitOpen,
     Cancelled,
+    Persistence,
     Unknown,
 }
 impl FailureKind {
     /// Normalize the legacy Agent error boundary once; scheduling uses this enum.
     pub fn classify(message: &str) -> Self {
         let lower = message.to_lowercase();
-        if message.contains("[IDLE_TIMEOUT]") {
+        if lower.contains("persistencedegraded")
+            || lower.contains("persistence worker")
+            || lower.contains("persistence unavailable")
+            || lower.contains("persistence failure")
+            || lower.contains("event storage unavailable")
+            || lower.contains("failed to spawn session")
+        {
+            Self::Persistence
+        } else if lower.contains("agent service is stopping")
+            || lower.contains("host background task admission is closed")
+            || lower.contains("agent is shutting down")
+        {
+            Self::Cancelled
+        } else if message.contains("[IDLE_TIMEOUT]")
+            || (message.contains("[RESPONSE_TIMEOUT]") && lower.contains("idle_timeout"))
+        {
             Self::IdleTimeout
         } else if message.contains("[PROVIDER_QUOTA]")
             || lower.contains("insufficient_quota")
@@ -47,6 +63,9 @@ impl FailureKind {
         } else if [
             "[UPSTREAM_DISCONNECTED]",
             "[RESPONSE_TIMEOUT]",
+            "[RESPONSE_UNCONFIRMED]",
+            "[MODEL_RESPONSE_ERROR] model_response_error",
+            "[MODEL_RESPONSE_ERROR] finish_error",
             "HTTP 500",
             "HTTP 502",
             "HTTP 503",
@@ -54,6 +73,16 @@ impl FailureKind {
         ]
         .iter()
         .any(|v| message.contains(v))
+            || [
+                "tls handshake eof",
+                "connection reset",
+                "connection refused",
+                "error sending request",
+                "unexpected eof",
+                "grpc unavailable",
+            ]
+            .iter()
+            .any(|v| lower.contains(v))
         {
             Self::Transient
         } else if lower.contains("timed out") || lower.contains("timeout") {
@@ -176,7 +205,7 @@ impl ExecutionReport {
         if self.available_results.len() >= 10 {
             return;
         }
-        let preview = bounded_text(text, MAX_MATERIAL_BYTES);
+        let preview = public_preview(text, MAX_MATERIAL_BYTES);
         self.available_results.push(AvailableResult {
             step_id: step.id.clone(),
             phase: step.phase.clone(),
@@ -187,6 +216,22 @@ impl ExecutionReport {
         });
     }
 }
+/// Keep both public reasoning and the answer often placed at the end. Never
+/// forward private reasoning or pretend a shortened report is complete.
+fn public_preview(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_owned();
+    }
+    let marker = "\n[... public report shortened ...]\n";
+    let room = max_bytes.saturating_sub(marker.len());
+    let head = bounded_text(text, room * 2 / 3);
+    let mut start = text.len().saturating_sub(room / 3);
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("{head}{marker}{}", &text[start..])
+}
+
 pub fn bounded_text(text: &str, max_bytes: usize) -> String {
     let mut end = text.len().min(max_bytes);
     while !text.is_char_boundary(end) {
@@ -260,7 +305,10 @@ impl crate::Consultation {
         }
         value["has_conclusion"] = serde_json::json!(self.result.is_some());
         if self.result.is_none() {
-            value["message"] = serde_json::json!("No valid Fusion conclusion. Records are retained in discussion details. Do not automatically repeat this consultation.");
+            if let Some(report) = &self.report {
+                value["available_results"] = serde_json::to_value(&report.available_results)?;
+            }
+            value["message"] = serde_json::json!("No valid Fusion conclusion. Available public participant reports, if any, are retained below as unverified attributed material, not consensus. Reuse applicable work and address only consequential unresolved gaps; do not automatically repeat this consultation. Full records remain in discussion details.");
         }
         Ok(serde_json::to_string(&value)?)
     }
@@ -269,6 +317,68 @@ impl crate::Consultation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recorded_transport_storage_and_shutdown_errors_keep_their_origin() {
+        for text in [
+            "client error (Connect): tls handshake eof",
+            "[MODEL_RESPONSE_ERROR] model_response_error: EngineCore encountered an issue",
+            "[RESPONSE_UNCONFIRMED] finish_unknown",
+        ] {
+            assert_eq!(
+                FailureKind::classify(text),
+                FailureKind::Transient,
+                "{text}"
+            );
+        }
+        assert_eq!(
+            FailureKind::classify("[RESPONSE_TIMEOUT] idle_timeout"),
+            FailureKind::IdleTimeout
+        );
+        assert_eq!(
+            FailureKind::classify(
+                "failed to spawn session persistence worker: Resource temporarily unavailable"
+            ),
+            FailureKind::Persistence
+        );
+        assert_eq!(
+            FailureKind::classify(
+                "Agent readiness could not be verified: Agent service is stopping"
+            ),
+            FailureKind::Cancelled
+        );
+        assert_eq!(
+            FailureKind::classify("[CONTENT_FILTER]"),
+            FailureKind::Unknown
+        );
+    }
+
+    #[test]
+    fn a_failed_synthesis_delivers_attributed_public_material_without_a_conclusion() {
+        let text = format!("{}\nFINAL_ANSWER: 6", "public derivation. ".repeat(200));
+        let preview = public_preview(&text, MAX_MATERIAL_BYTES);
+        assert!(preview.len() <= MAX_MATERIAL_BYTES);
+        assert!(preview.starts_with("public derivation"));
+        assert!(preview.ends_with("FINAL_ANSWER: 6"));
+        let run: crate::Consultation = serde_json::from_value(serde_json::json!({
+            "id":"discussion", "parent":{"database_id":"db", "session_id":"s", "run_id":"r", "tool_call_id":"t"},
+            "input":{"question":"Q", "goal":"G", "background":"B"},
+            "workspace":"", "snapshot_root":"", "status":"failed", "phase":"synthesizing", "completeness":"none",
+            "result":null, "error":"moderator failed", "created_at":0, "updated_at":1,
+            "report": {"version":RESILIENCE_POLICY_VERSION,"strategy":"single_advisor", "completed_phases":["analyzing"], "skipped_phases":[],
+                "analysis_participants":["P3"],"review_participants":[],"degradations":[],
+                "available_results":[{"step_id":"step", "phase":"analyzing", "participant":"P3", "model":"model", "text":preview, "truncated":true}]}
+        })).unwrap();
+        let output: serde_json::Value = serde_json::from_str(&run.tool_output().unwrap()).unwrap();
+        assert_eq!(output["status"], "failed");
+        assert_eq!(output["has_conclusion"], false);
+        assert!(output["conclusion"].is_null());
+        assert_eq!(output["available_results"][0]["participant"], "P3");
+        assert!(output["available_results"][0]["text"]
+            .as_str()
+            .unwrap()
+            .ends_with("FINAL_ANSWER: 6"));
+    }
     #[test]
     fn quota_is_not_retried_as_a_rate_limit_and_forbidden_is_model_scoped() {
         assert_eq!(

@@ -387,7 +387,22 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
             }
             Err(error) => {
                 ctx.stop_error("issue_mapping", "moderator", &error)?;
-                return Err(error);
+                if matches!(
+                    failure_kind(&error),
+                    FailureKind::Cancelled | FailureKind::Persistence
+                ) {
+                    return Err(error);
+                }
+                ctx.update(|report| {
+                    report.strategy = "analysis_only".into();
+                    report.skip("issue_mapping");
+                    report.note(
+                        "mapping_failed",
+                        "issue_mapping",
+                        Some("moderator"),
+                        Some(failure_kind(&error)),
+                    );
+                })?;
             }
         }
         let direct_synthesis = active.len() == config.panel.len()
@@ -480,6 +495,10 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         If an assumption is necessary to choose, state it and how it affects the answer; if the decision can proceed under it, give the useful conditional conclusion. \
         Do not invent facts, proposals or user requirements. Treat verification labels and reports with validation errors as participant claims; unmatched quotations do not establish evidence. \
         Report any unresolved issue that changes the result. Respect the actual coverage. Missing reviews mean no cross-review. \
+        Start with the best supported answer, or state that no answer is established. \
+        Verify only a specific claim whose correction could change that answer; do not re-solve the whole task, \
+        repeat exhausted investigations, or turn an unverified estimate into an exact result. \
+        Preserve useful conditional answers and identify the smallest remaining verification gap. \
         You have no tools. Return only a plain text or Markdown answer without a fixed template or meeting recap.\n\
         Original task:\n{}\nCurrent participant material:\n{material}\n\
         Earlier disagreement excerpts, possibly shortened:\n{earlier_issues}\nCoverage:\n{coverage}",
@@ -610,7 +629,6 @@ fn configuration(run: &Consultation) -> Result<&Configuration> {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RetryReason {
-    OutputLimit,
     InvalidOutput,
     Transient,
 }
@@ -618,7 +636,6 @@ enum RetryReason {
 impl RetryReason {
     fn code(self) -> &'static str {
         match self {
-            Self::OutputLimit => "output_limit",
             Self::InvalidOutput => "invalid_output",
             Self::Transient => "transient",
         }
@@ -627,7 +644,10 @@ impl RetryReason {
 
 fn retry_for_kind(kind: FailureKind) -> Option<RetryReason> {
     match kind {
-        FailureKind::OutputLimit => Some(RetryReason::OutputLimit),
+        // Repeating the same prompt in a fresh session with the same budget
+        // discards the work and reproduces the cap. Preserve reports/failures
+        // for the parent instead; output continuation belongs to the Agent.
+        FailureKind::OutputLimit => None,
         FailureKind::InvalidOutput => Some(RetryReason::InvalidOutput),
         FailureKind::RateLimited | FailureKind::Transient => Some(RetryReason::Transient),
         _ => None,
@@ -738,7 +758,6 @@ async fn with_retry(
             .context("Missing Fusion context budget")?
             .apply(&model.model, phase, prompt, &mut settings)?;
         let input = match retry_reason {
-            Some(RetryReason::OutputLimit) => format!("{prompt}\nPrevious attempt reached the provider output limit. Return a complete answer in the requested format."),
             Some(RetryReason::InvalidOutput) => format!("{prompt}\nPrevious attempt had invalid output. Return a complete public answer in exactly the requested format, using only supplied participant references."),
             _ => prompt.to_owned(),
         };
@@ -841,6 +860,18 @@ async fn with_retry(
                     return Err(error);
                 }
                 observed?;
+                if matches!(phase, "analyzing" | "reviewing") && !step.session_id.is_empty() {
+                    if let Ok(answer) =
+                        rpc(command("get_last_assistant_text", &step.session_id)).await
+                    {
+                        if let Some(text) = answer["text"]
+                            .as_str()
+                            .filter(|text| !text.trim().is_empty())
+                        {
+                            ctx.retain(&step, text)?;
+                        }
+                    }
+                }
                 let reason = retry_for_kind(kind);
                 last = error;
                 if attempt == 1
@@ -1206,6 +1237,20 @@ pub async fn query_for_run(
 mod tests {
     use super::*;
     #[test]
+    fn output_caps_and_lifecycle_failures_do_not_restart_the_same_investigation() {
+        for kind in [
+            FailureKind::OutputLimit,
+            FailureKind::Persistence,
+            FailureKind::Cancelled,
+        ] {
+            assert!(retry_for_kind(kind).is_none());
+        }
+        assert!(matches!(
+            retry_for_kind(FailureKind::Transient),
+            Some(RetryReason::Transient)
+        ));
+    }
+    #[test]
     fn attempt_templates_preserve_thinking_and_defer_capacity_allocation() {
         let mut config = Configuration::default();
         // Persisted pre-change budgets must not be reapplied.
@@ -1214,11 +1259,11 @@ mod tests {
         for model in config.panel.iter().chain([&config.moderator]) {
             let first = attempt_settings(&config, model, None, 0).unwrap();
             let retry =
-                attempt_settings(&config, model, Some(RetryReason::OutputLimit), 10_000).unwrap();
+                attempt_settings(&config, model, Some(RetryReason::InvalidOutput), 10_000).unwrap();
             assert_eq!(first.max_output_tokens, 0);
             assert_eq!(retry.max_output_tokens, 0);
             assert_eq!(retry.thinking_level, first.thinking_level);
-            assert_eq!(retry.retry_reason.as_deref(), Some("output_limit"));
+            assert_eq!(retry.retry_reason.as_deref(), Some("invalid_output"));
             let transient =
                 attempt_settings(&config, model, Some(RetryReason::Transient), 10_000).unwrap();
             assert_eq!(transient.max_output_tokens, first.max_output_tokens);
@@ -1243,12 +1288,10 @@ mod tests {
         ] {
             assert!(retry_for_kind(FailureKind::classify(failure)).is_none());
         }
-        assert!(matches!(
-            retry_for_kind(FailureKind::classify(
-                "Inner model interrupted: [OUTPUT_LIMIT] finish_length"
-            )),
-            Some(RetryReason::OutputLimit)
-        ));
+        assert!(retry_for_kind(FailureKind::classify(
+            "Inner model interrupted: [OUTPUT_LIMIT] finish_length"
+        ))
+        .is_none());
         assert!(matches!(
             retry_for_kind(FailureKind::classify("[UPSTREAM_DISCONNECTED]")),
             Some(RetryReason::Transient)

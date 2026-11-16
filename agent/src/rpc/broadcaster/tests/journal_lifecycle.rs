@@ -1,5 +1,43 @@
 use super::*;
 
+#[test]
+fn history_binding_does_not_allocate_a_native_event_worker() {
+    let directory = tempfile::tempdir().unwrap();
+    let manager = crate::session::Manager::new(directory.path().to_path_buf());
+    let broadcasters: Vec<_> = (0..32)
+        .map(|n| {
+            let b = SseBroadcaster::new();
+            b.configure_legacy_journal(format!("history-{n}"), &manager)
+                .unwrap();
+            assert!(b.journal.lock().writer.is_none());
+            assert!(b.read_journal("absent").unwrap().is_empty());
+            assert!(b.journal.lock().writer.is_none());
+            b
+        })
+        .collect();
+    assert_eq!(broadcasters.len(), 32);
+}
+
+#[test]
+fn settled_workers_retire_and_later_runs_reopen_the_same_durable_journal() {
+    let directory = tempfile::tempdir().unwrap();
+    let manager = crate::session::Manager::new(directory.path().to_path_buf());
+    let b = SseBroadcaster::new();
+    b.configure_legacy_journal("reused", &manager).unwrap();
+    for epoch in 1..=8 {
+        let run = format!("run-{epoch}");
+        b.start_run(run.clone(), epoch);
+        b.broadcast(SseEvent::new("text_chunk", serde_json::json!({"text":run})));
+        assert!(b.journal.lock().writer.is_some());
+        b.retire_journal_writer().unwrap();
+        assert!(b.journal.lock().writer.is_none());
+        let events = b.read_journal(&run).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(events[0].data.contains(&run));
+        assert!(b.journal.lock().writer.is_none());
+    }
+}
+
 /// A store that cannot accept the batch must fail the durable caller, mark
 /// the journal unhealthy, and make the read path report it rather than
 /// return a silently short history.

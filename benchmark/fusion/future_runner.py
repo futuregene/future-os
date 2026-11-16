@@ -30,6 +30,10 @@ class Future:
         self.env = os.environ.copy()
         if runtime:
             settings = read_json(runtime)
+            if settings.get("phase") in {"starting", "startup_failed", "exited"}:
+                raise RuntimeError(
+                    f"Isolated runtime is {settings['phase']}; wait for readiness or start a new runtime before submitting"
+                )
             self.env.pop("FUTURE_AGENT_SOCKET", None)
             self.env.update(
                 FUTURE_HOME=settings["home"],
@@ -48,7 +52,8 @@ class Future:
         )
         if proc.returncode:
             raise RuntimeError(
-                f"future {args[0]} failed ({proc.returncode}): {proc.stderr.strip()}"
+                f"future {args[0]} failed ({proc.returncode}): "
+                f"{(proc.stderr.strip() or proc.stdout.strip())[:4096]}"
             )
         return json.loads(proc.stdout) if json_output else proc.stdout
 
@@ -367,24 +372,44 @@ class Future:
                 if any(call.get("name") != "fusion" for call in calls):
                     raise ValueError("Fusion-enabled parent used an external tool")
                 result["fusion_invocations"] = len(calls)
-                consultations = [
-                    self.collect_consultation(
-                        case,
-                        session,
-                        ack["runId"],
-                        call["toolCallId"],
-                        directory,
-                        index,
-                    )
-                    for index, call in enumerate(calls)
-                ]
+                consultations = []
+                for index, call in enumerate(calls):
+                    try:
+                        consultations.append(
+                            self.collect_consultation(
+                                case,
+                                session,
+                                ack["runId"],
+                                call["toolCallId"],
+                                directory,
+                                index,
+                            )
+                        )
+                    except (
+                        RuntimeError,
+                        ValueError,
+                        KeyError,
+                        subprocess.TimeoutExpired,
+                    ) as error:
+                        # The accepted parent already finished and its binding,
+                        # transcript and answer were validated above. A failed
+                        # diagnostic read must not erase it or stop other cases.
+                        result.setdefault("diagnostic_errors", []).append(
+                            {
+                                "tool_call_id": call["toolCallId"],
+                                "error": str(error),
+                            }
+                        )
+                        result["diagnostics_pending"] = True
                 result["consultations"] = consultations
                 result["completed_consultations"] = sum(
                     item["status"] == "completed" and bool(item["kernel_text"])
                     for item in consultations
                 )
                 result["routing_outcome"] = (
-                    "not_invoked"
+                    "evidence_pending"
+                    if result.get("diagnostics_pending")
+                    else "not_invoked"
                     if not calls
                     else "completed"
                     if result["completed_consultations"]
