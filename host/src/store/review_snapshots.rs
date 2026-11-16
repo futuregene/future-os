@@ -330,7 +330,7 @@ pub fn get_last_run_changeset(
             "SELECT {cols} FROM review_changesets c
              JOIN runs r ON r.id = c.run_id
              WHERE c.thread_id = ?1 AND c.source_kind = 'run_snapshot'
-             ORDER BY COALESCE(r.ended_at, r.updated_at) DESC, c.created_at DESC
+             ORDER BY COALESCE(r.ended_at, r.updated_at) DESC, c.created_at DESC, c.rowid DESC
              LIMIT 1"
         ),
         params![thread_id],
@@ -349,7 +349,7 @@ pub fn latest_review_run(thread_id: &str) -> Result<Option<String>, crate::Error
             "SELECT r.id FROM runs r
          WHERE r.thread_id = ?1
            AND r.status IN ({})
-         ORDER BY COALESCE(r.ended_at, r.updated_at) DESC, r.created_at DESC, r.id DESC
+         ORDER BY COALESCE(r.ended_at, r.updated_at) DESC, r.created_at DESC, r.rowid DESC
          LIMIT 1",
             super::status::TERMINAL_RUN_STATUSES_SQL
         ),
@@ -472,7 +472,7 @@ pub fn prune_thread_changesets(
              FROM review_changesets c
              JOIN runs r ON r.id = c.run_id
              WHERE c.thread_id = ?1 AND c.source_kind = 'run_snapshot'
-             ORDER BY COALESCE(r.ended_at, r.updated_at) DESC, c.created_at DESC",
+             ORDER BY COALESCE(r.ended_at, r.updated_at) DESC, c.created_at DESC, c.rowid DESC",
         )?;
         let rows = stmt.query_map(params![thread_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
