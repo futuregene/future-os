@@ -456,8 +456,10 @@ describe("independent file operations", () => {
     jest.mocked(namedExternalFile).mockRejectedValueOnce(new Error("attachment_export_cache_full"));
     const h = await mount({});
     await act(async () => { await h.api.openOrShare(pdfInfo, localFile, "share"); });
+    // A refusal this app produced carries a code, so it is shown in its own
+    // words instead of the raw `attachment_export_cache_full` token.
     expect(Alert.alert).toHaveBeenCalledWith(
-      "attachment.title", "attachment.shareFailed\n\nattachment_export_cache_full",
+      "attachment.title", "attachment.shareFailed\n\nattachment.exportCacheFull",
     );
     expect(Sharing.shareAsync).not.toHaveBeenCalled();
     act(() => h.tree.unmount());
