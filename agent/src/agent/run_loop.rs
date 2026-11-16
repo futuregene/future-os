@@ -1253,7 +1253,9 @@ impl Loop {
                         // without matching reqwest/provider wording.
                         stream_truncated = true;
                         truncation_detected_by.get_or_insert(
-                            if message.starts_with("[RESPONSE_TIMEOUT]") {
+                            if message.starts_with("[RESPONSE_TIMEOUT] idle_timeout") {
+                                "idle_timeout"
+                            } else if message.starts_with("[RESPONSE_TIMEOUT]") {
                                 "request_timeout"
                             } else if message.starts_with(crate::llm::UPSTREAM_DISCONNECTED) {
                                 "upstream_disconnected"

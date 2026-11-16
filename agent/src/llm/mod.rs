@@ -20,7 +20,7 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-const DEFAULT_TIMEOUT_SECS: u64 = 1800;
+const DEFAULT_CONTENT_IDLE_SECS: u64 = 300;
 pub(crate) const UPSTREAM_DISCONNECTED: &str = "[UPSTREAM_DISCONNECTED]";
 const MODEL_RESPONSE_ERROR: &str = "[MODEL_RESPONSE_ERROR]";
 
@@ -90,14 +90,14 @@ fn stream_progress(
     )
 }
 
-/// HTTP request timeout for a single LLM call. Defaults to 30 min (1800 s);
-/// override with the FUTURE_LLM_TIMEOUT_SECS env var without rebuilding.
-fn llm_timeout_secs() -> u64 {
-    std::env::var("FUTURE_LLM_TIMEOUT_SECS")
+/// No new reasoning or text for this interval ends an unfinished response.
+/// Transport heartbeats, usage and empty deltas do not count as content.
+fn llm_idle_timeout_secs() -> u64 {
+    std::env::var("FUTURE_LLM_IDLE_TIMEOUT_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|v| *v >= 60)
-        .unwrap_or(DEFAULT_TIMEOUT_SECS)
+        .unwrap_or(DEFAULT_CONTENT_IDLE_SECS)
 }
 
 // ─── LLM Client ────────────────────────────────────────────────────────────
@@ -170,8 +170,7 @@ impl Client {
         adapters: AdapterRegistry,
     ) -> Self {
         let http = HttpClientPair::new(|| {
-            crate::http::client_builder()
-                .timeout(std::time::Duration::from_secs(llm_timeout_secs()))
+            crate::http::client_builder().connect_timeout(std::time::Duration::from_secs(30))
         })
         .unwrap_or_else(|_| {
             HttpClientPair {
@@ -203,8 +202,7 @@ impl Client {
         registry: std::sync::Arc<parking_lot::RwLock<crate::models::Registry>>,
     ) -> Self {
         let http = HttpClientPair::new(|| {
-            crate::http::client_builder()
-                .timeout(std::time::Duration::from_secs(llm_timeout_secs()))
+            crate::http::client_builder().connect_timeout(std::time::Duration::from_secs(30))
         })
         .unwrap_or_else(|_| HttpClientPair {
             verified: crate::http::client(),
@@ -492,9 +490,16 @@ impl crate::types::LLMProvider for Client {
         }
         let adapter = self.adapters.get(target.protocol.protocol())?;
         let body = adapter.build_body(&target, &request)?;
-        let resp = self
-            .send_model_request(&target, adapter.as_ref(), &request, &body)
-            .await?;
+        // Start before awaiting headers: a server that never starts its body
+        // must obey the same content deadline as a silent streaming response.
+        let content_idle = std::time::Duration::from_secs(llm_idle_timeout_secs());
+        let mut content_deadline = tokio::time::Instant::now() + content_idle;
+        let resp = tokio::time::timeout_at(
+            content_deadline,
+            self.send_model_request(&target, adapter.as_ref(), &request, &body),
+        )
+        .await
+        .map_err(|_| anyhow!("[RESPONSE_TIMEOUT] idle_timeout: no reasoning or text for {} seconds before response headers", content_idle.as_secs()))??;
         let status = resp.status();
 
         let (tx, rx) = mpsc::channel(32);
@@ -520,9 +525,22 @@ impl crate::types::LLMProvider for Client {
             loop {
                 let next = tokio::select! {
                     _ = tx.closed() => return,
-                    // Silence is not evidence of failure: reasoning can pause
-                    // without emitting summaries or even transport heartbeats.
-                    // reqwest still enforces the whole-request deadline.
+                    _ = tokio::time::sleep_until(content_deadline) => {
+                        // A completed response must never be replayed merely
+                        // because its optional accounting tail did not arrive.
+                        if protocol_terminal {
+                            tracing::warn!(protocol = %protocol, model = %model,
+                                "LLM accounting tail exceeded content idle deadline");
+                            return;
+                        }
+                        transport_error = Some(format!(
+                            "[RESPONSE_TIMEOUT] idle_timeout: no reasoning or text for {} seconds; {}",
+                            content_idle.as_secs(),
+                            stream_progress("content_idle", chunks_received,
+                                bytes_received, frames_decoded, started_at),
+                        ));
+                        break;
+                    }
                     next = stream.next() => next,
                 };
                 let bytes = match next {
@@ -607,6 +625,13 @@ impl crate::types::LLMProvider for Client {
                         }
                     };
                     for event in events {
+                        if matches!(&event,
+                            schema::ModelStreamEvent::TextDelta { text, .. }
+                            | schema::ModelStreamEvent::ReasoningDelta { text, .. }
+                            if !text.is_empty())
+                        {
+                            content_deadline = tokio::time::Instant::now() + content_idle;
+                        }
                         protocol_terminal |= matches!(
                             event,
                             schema::ModelStreamEvent::Finish { .. }
