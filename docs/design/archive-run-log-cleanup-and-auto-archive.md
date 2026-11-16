@@ -211,11 +211,7 @@ Automatic archiving follows the archive-cleanup setting in force when it runs:
 - Cleanup on: archive in the background, then clear run logs by the same rules.
 - Cleanup off: archive without deleting logs.
 
-The automatic-archive settings page must expose that interaction directly:
-
-> Automatic archiving follows the current run-log cleanup setting. Current: **Clear run logs when archiving (on)**. [View Archive Settings]
-
-Enabling automatic archiving authorizes subsequent background execution under that policy; there is no confirmation dialog for every tree. Users who do not want background deletion must disable cleanup or leave automatic archiving off.
+The interaction gets no dedicated explanation row: both switches sit in the same settings block, so their shared purpose is visible. Enabling automatic archiving authorizes subsequent background execution under that policy; there is no confirmation dialog for every tree. Users who do not want background deletion must disable cleanup or leave automatic archiving off.
 
 The first completed automatic archive produces one summary notification, not a dialog per item:
 
@@ -233,13 +229,12 @@ No notification is emitted when nothing was archived. Cleanup failure does not u
 
 ## 5. Suggested settings information architecture
 
-A “Conversations and Archive” settings section can present, in order:
+Archive settings live on **Settings → General**, alongside language and appearance, instead of occupying a settings module of their own. In order:
 
 1. **Automatically clear run logs when archiving** — on by default.
-2. **Automatically archive idle conversations** — off by default.
-3. **Idle period** — editable only when automatic archiving is on; 30 days by default.
-4. The cleanup interaction and a “View Archive Settings” link.
-5. A plain-language policy summary, such as “Unpinned conversations idle for more than 30 days are checked once per day.”
+2. **Automatic conversation archiving** (block heading) — “Uses the latest conversation activity and checks once per day while the app is running.”
+3. **Archive idle conversations automatically** — off by default.
+4. **Idle days** — editable only when automatic archiving is on; 30 days by default. A small question mark beside the label explains what “idle” means.
 
 Changing the idle period affects later candidate calculations. It need not force an immediate scan and never restores an already archived conversation.
 

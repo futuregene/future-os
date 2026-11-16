@@ -191,18 +191,15 @@
     "repairCancel": "Go back"
   },
   "archive": {
-    "cleanupSection": "Run logs",
     "cleanupEnabled": "Clear run logs when archiving",
     "cleanupDescription": "Preserve conversation prose, command titles, and generated files while clearing command output and replay. Restored conversations can continue, but cleared logs cannot be recovered.",
-    "autoSection": "Automatically archive idle conversations",
-    "autoSectionDescription": "Based on the latest meaningful activity in each fork tree, checked once per day while the app is running.",
+    "autoSection": "Automatic conversation archiving",
+    "autoSectionDescription": "Uses the latest conversation activity and checks once per day while the app is running.",
     "autoEnabled": "Archive idle conversations automatically",
-    "autoDescription": "Only unpinned trees past the idle threshold are archived. Active, approval-waiting, and foreground conversations are skipped. Workspaces themselves are not archived.",
+    "autoDescription": "Only unpinned conversations past the idle threshold are archived. Active, approval-waiting, and foreground conversations are skipped. Workspaces themselves are not archived.",
     "idleDays": "Idle days",
     "idleDaysDescription": "Between 1 and 365 days, defaulting to 30. Restore starts a fresh idle period.",
-    "cleanupInteraction": "Interaction with run-log cleanup",
-    "autoCleanupOn": "Automatic archiving also clears run logs under the current setting. Enabling it authorizes background cleanup without per-item confirmation.",
-    "autoCleanupOff": "Run-log cleanup is off. Automatic archiving only shelves conversations and does not delete logs."
+    "idleDaysHelp": "Idle means no new message or run activity since the conversation's last exchange. Opening or renaming it does not reset the timer; restoring an archived conversation starts a fresh idle period."
   },
   "dialog": {
     "ariaLabel": "Settings",
@@ -214,7 +211,6 @@
     },
     "tabs": {
       "general": "General",
-      "archive": "Conversations & archive",
       "shortcuts": "Keyboard shortcuts",
       "account": "Account",
       "update": "Check for updates",

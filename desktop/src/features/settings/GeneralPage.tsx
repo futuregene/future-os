@@ -3,8 +3,10 @@ import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { FontSizePreference } from "../../lib/fontSize";
 import type { ReplyDetail } from "../../lib/replyDisplay";
 import type { ThemeMode } from "../../lib/theme";
+import { CircleHelp } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Select } from "../../components/ui/Select";
+import { TextInput } from "../../components/ui/TextInput";
 import { getLanguagePreference, LANGUAGE_LABELS, LANGUAGE_PREFERENCES, setLanguage } from "../../i18n";
 import { automaticApprovalAvailable, effectiveApprovalTier } from "../../integrations/agent/automaticApproval";
 import { isWriteOnlySandbox, useSandboxAvailability } from "../../integrations/agent/useSandboxAvailability";
@@ -28,6 +30,12 @@ export function GeneralPage({
   onToggleBellOnComplete,
   autoTitleFirstTurn,
   onToggleAutoTitleFirstTurn,
+  archiveRunLogCleanup,
+  onToggleArchiveRunLogCleanup,
+  autoArchiveEnabled,
+  onToggleAutoArchive,
+  autoArchiveIdleDays,
+  onChangeAutoArchiveIdleDays,
 }: {
   approvalTier: ApprovalTier;
   futureSessionStatus?: string;
@@ -40,6 +48,12 @@ export function GeneralPage({
   onToggleBellOnComplete: (value: boolean) => void;
   autoTitleFirstTurn: boolean;
   onToggleAutoTitleFirstTurn: (value: boolean) => void;
+  archiveRunLogCleanup: boolean;
+  onToggleArchiveRunLogCleanup: (value: boolean) => void;
+  autoArchiveEnabled: boolean;
+  onToggleAutoArchive: (value: boolean) => void;
+  autoArchiveIdleDays: number;
+  onChangeAutoArchiveIdleDays: (value: number) => void;
 }) {
   const { t } = useTranslation("settings");
   const themeMode = useThemeMode();
@@ -51,153 +65,214 @@ export function GeneralPage({
   const visibleApprovalTier = effectiveApprovalTier(approvalTier, futureSessionStatus);
 
   return (
-    <SettingsSection>
-      <SettingsList>
-        <SettingsRow
-          title={t("language.title")}
-          description={t("language.description")}
-        >
-          <Select
-            size="sm"
-            value={getLanguagePreference()}
-            wrapperClassName="w-32"
-            onChange={e => setLanguage(e.target.value as LanguagePreference)}
+    <div className="space-y-6">
+      <SettingsSection>
+        <SettingsList>
+          <SettingsRow
+            title={t("language.title")}
+            description={t("language.description")}
           >
-            {LANGUAGE_PREFERENCES.map(preference => (
-              <option key={preference} value={preference}>
-                {preference === "system" ? t("language.system") : LANGUAGE_LABELS[preference]}
-              </option>
-            ))}
-          </Select>
-        </SettingsRow>
-        <SettingsRow
-          title={t("appearance.title")}
-          description={t("appearance.description")}
-        >
-          <Select
-            size="sm"
-            value={themeMode}
-            wrapperClassName="w-32"
-            onChange={e => setThemeMode(e.target.value as ThemeMode)}
+            <Select
+              size="sm"
+              value={getLanguagePreference()}
+              wrapperClassName="w-32"
+              onChange={e => setLanguage(e.target.value as LanguagePreference)}
+            >
+              {LANGUAGE_PREFERENCES.map(preference => (
+                <option key={preference} value={preference}>
+                  {preference === "system" ? t("language.system") : LANGUAGE_LABELS[preference]}
+                </option>
+              ))}
+            </Select>
+          </SettingsRow>
+          <SettingsRow
+            title={t("appearance.title")}
+            description={t("appearance.description")}
           >
-            {THEME_MODES.map(mode => (
-              <option key={mode} value={mode}>
-                {t(`appearance.${mode}`)}
-              </option>
-            ))}
-          </Select>
-        </SettingsRow>
-        {/* The palette is a second, independent axis: it works in both
+            <Select
+              size="sm"
+              value={themeMode}
+              wrapperClassName="w-32"
+              onChange={e => setThemeMode(e.target.value as ThemeMode)}
+            >
+              {THEME_MODES.map(mode => (
+                <option key={mode} value={mode}>
+                  {t(`appearance.${mode}`)}
+                </option>
+              ))}
+            </Select>
+          </SettingsRow>
+          {/* The palette is a second, independent axis: it works in both
             renditions, so it gets its own row instead of a combined list. The
             picker owns that row itself — it is the one setting whose shape
             changes with its own state (compact value beside the label until the
             catalogue opens, then a grid under it). */}
-        <ThemePalettePicker />
-        <SettingsRow
-          title={t("fontSize.title")}
-          description={t("fontSize.description")}
-        >
-          <Select
-            size="sm"
-            value={fontSize}
-            wrapperClassName="w-32"
-            onChange={e => setFontSize(e.target.value as FontSizePreference)}
+          <ThemePalettePicker />
+          <SettingsRow
+            title={t("fontSize.title")}
+            description={t("fontSize.description")}
           >
-            {FONT_SIZES.map(size => (
-              <option key={size} value={size}>
-                {t(`fontSize.${size}`)}
+            <Select
+              size="sm"
+              value={fontSize}
+              wrapperClassName="w-32"
+              onChange={e => setFontSize(e.target.value as FontSizePreference)}
+            >
+              {FONT_SIZES.map(size => (
+                <option key={size} value={size}>
+                  {t(`fontSize.${size}`)}
+                </option>
+              ))}
+            </Select>
+          </SettingsRow>
+          <SettingsRow
+            title={t("replyDetail.title")}
+            description={t(`replyDetail.description.${replyDetail}`)}
+          >
+            <Select
+              size="sm"
+              value={replyDetail}
+              wrapperClassName="w-32"
+              onChange={e => setReplyDetail(e.target.value as ReplyDetail)}
+            >
+              {REPLY_DETAIL_LEVELS.map(level => (
+                <option key={level} value={level}>
+                  {t(`replyDetail.${level}`)}
+                </option>
+              ))}
+            </Select>
+          </SettingsRow>
+          <SettingsRow
+            title={t("approvalTier.title")}
+            description={t(
+              visibleApprovalTier === "sandbox" && isWindows
+                ? "approvalTier.description.sandboxWindows"
+                : visibleApprovalTier === "sandbox" && isLinux
+                  ? "approvalTier.description.sandboxLinux"
+                  : `approvalTier.description.${visibleApprovalTier}`,
+            )}
+          >
+            <Select
+              size="sm"
+              value={visibleApprovalTier}
+              wrapperClassName="w-40"
+              onChange={e => onChangeApprovalTier(e.target.value as ApprovalTier)}
+            >
+              <option value="manual">{t("approvalTier.manual")}</option>
+              <option disabled={!sandboxAvailability.available} value="sandbox">
+                {t(sandboxAvailability.available
+                  ? "approvalTier.sandbox"
+                  : sandboxAvailability.resolved
+                    ? "approvalTier.sandboxUnavailable"
+                    : "approvalTier.sandboxChecking")}
               </option>
-            ))}
-          </Select>
-        </SettingsRow>
-        <SettingsRow
-          title={t("replyDetail.title")}
-          description={t(`replyDetail.description.${replyDetail}`)}
-        >
-          <Select
-            size="sm"
-            value={replyDetail}
-            wrapperClassName="w-32"
-            onChange={e => setReplyDetail(e.target.value as ReplyDetail)}
-          >
-            {REPLY_DETAIL_LEVELS.map(level => (
-              <option key={level} value={level}>
-                {t(`replyDetail.${level}`)}
+              <option disabled={!sandboxAvailability.available || !autoAvailable} value="auto">
+                {t(autoAvailable ? "approvalTier.auto" : futureSessionStatus === "checking" ? "approvalTier.autoChecking" : "approvalTier.autoSignInRequired")}
               </option>
-            ))}
-          </Select>
-        </SettingsRow>
-        <SettingsRow
-          title={t("approvalTier.title")}
-          description={t(
-            visibleApprovalTier === "sandbox" && isWindows
-              ? "approvalTier.description.sandboxWindows"
-              : visibleApprovalTier === "sandbox" && isLinux
-                ? "approvalTier.description.sandboxLinux"
-                : `approvalTier.description.${visibleApprovalTier}`,
-          )}
-        >
-          <Select
-            size="sm"
-            value={visibleApprovalTier}
-            wrapperClassName="w-40"
-            onChange={e => onChangeApprovalTier(e.target.value as ApprovalTier)}
+              <option value="off">{t("approvalTier.off")}</option>
+            </Select>
+          </SettingsRow>
+          {visibleApprovalTier === "auto" && sandboxAvailability.resolved && !sandboxAvailability.available
+            ? <SettingsRow title={t("approvalTier.auto")} description={t("approvalTier.autoUnavailable")} />
+            : null}
+          {writeOnlySandbox
+            ? <SettingsRow title={t("approvalTier.sandbox")} description={t("approvalTier.linuxWriteOnly")} />
+            : null}
+          {isLinux && sandboxAvailability.resolved && !sandboxAvailability.available
+            ? (
+                <SettingsRow
+                  title={t("approvalTier.linuxUnavailable.title")}
+                  description={t(`approvalTier.linuxUnavailable.reasons.${linuxUnavailableReasonKey(sandboxAvailability.code)}`, {
+                    code: sandboxAvailability.code ?? "probe_failed",
+                  })}
+                />
+              )
+            : null}
+          <SettingsRow
+            title={t("autoUpgradeSkills.title")}
+            description={t("autoUpgradeSkills.description")}
           >
-            <option value="manual">{t("approvalTier.manual")}</option>
-            <option disabled={!sandboxAvailability.available} value="sandbox">
-              {t(sandboxAvailability.available
-                ? "approvalTier.sandbox"
-                : sandboxAvailability.resolved
-                  ? "approvalTier.sandboxUnavailable"
-                  : "approvalTier.sandboxChecking")}
-            </option>
-            <option disabled={!sandboxAvailability.available || !autoAvailable} value="auto">
-              {t(autoAvailable ? "approvalTier.auto" : futureSessionStatus === "checking" ? "approvalTier.autoChecking" : "approvalTier.autoSignInRequired")}
-            </option>
-            <option value="off">{t("approvalTier.off")}</option>
-          </Select>
-        </SettingsRow>
-        {visibleApprovalTier === "auto" && sandboxAvailability.resolved && !sandboxAvailability.available
-          ? <SettingsRow title={t("approvalTier.auto")} description={t("approvalTier.autoUnavailable")} />
-          : null}
-        {writeOnlySandbox
-          ? <SettingsRow title={t("approvalTier.sandbox")} description={t("approvalTier.linuxWriteOnly")} />
-          : null}
-        {isLinux && sandboxAvailability.resolved && !sandboxAvailability.available
-          ? (
-              <SettingsRow
-                title={t("approvalTier.linuxUnavailable.title")}
-                description={t(`approvalTier.linuxUnavailable.reasons.${linuxUnavailableReasonKey(sandboxAvailability.code)}`, {
-                  code: sandboxAvailability.code ?? "probe_failed",
-                })}
-              />
-            )
-          : null}
-        <SettingsRow
-          title={t("autoUpgradeSkills.title")}
-          description={t("autoUpgradeSkills.description")}
-        >
-          <Switch checked={autoUpgradeSkills} label={t("autoUpgradeSkills.title")} onChange={onToggleAutoUpgradeSkills} />
-        </SettingsRow>
-        <SettingsRow
-          title={t("skillRecommend.title")}
-          description={t("skillRecommend.description")}
-        >
-          <Switch checked={skillRecommend} label={t("skillRecommend.title")} onChange={onToggleSkillRecommend} />
-        </SettingsRow>
-        <SettingsRow
-          title={t("autoTitleFirstTurn.title")}
-          description={t("autoTitleFirstTurn.description")}
-        >
-          <Switch checked={autoTitleFirstTurn} label={t("autoTitleFirstTurn.title")} onChange={onToggleAutoTitleFirstTurn} />
-        </SettingsRow>
-        <SettingsRow
-          title={t("bellOnComplete.title")}
-          description={t("bellOnComplete.description")}
-        >
-          <Switch checked={bellOnComplete} label={t("bellOnComplete.title")} onChange={onToggleBellOnComplete} />
-        </SettingsRow>
-      </SettingsList>
-    </SettingsSection>
+            <Switch checked={autoUpgradeSkills} label={t("autoUpgradeSkills.title")} onChange={onToggleAutoUpgradeSkills} />
+          </SettingsRow>
+          <SettingsRow
+            title={t("skillRecommend.title")}
+            description={t("skillRecommend.description")}
+          >
+            <Switch checked={skillRecommend} label={t("skillRecommend.title")} onChange={onToggleSkillRecommend} />
+          </SettingsRow>
+          <SettingsRow
+            title={t("autoTitleFirstTurn.title")}
+            description={t("autoTitleFirstTurn.description")}
+          >
+            <Switch checked={autoTitleFirstTurn} label={t("autoTitleFirstTurn.title")} onChange={onToggleAutoTitleFirstTurn} />
+          </SettingsRow>
+          <SettingsRow
+            title={t("bellOnComplete.title")}
+            description={t("bellOnComplete.description")}
+          >
+            <Switch checked={bellOnComplete} label={t("bellOnComplete.title")} onChange={onToggleBellOnComplete} />
+          </SettingsRow>
+        </SettingsList>
+      </SettingsSection>
+
+      <SettingsSection
+        description={t("archive.autoSectionDescription")}
+        title={t("archive.autoSection")}
+      >
+        <SettingsList>
+          <SettingsRow
+            title={t("archive.cleanupEnabled")}
+            description={t("archive.cleanupDescription")}
+          >
+            <Switch
+              checked={archiveRunLogCleanup}
+              label={t("archive.cleanupEnabled")}
+              onChange={onToggleArchiveRunLogCleanup}
+            />
+          </SettingsRow>
+          <SettingsRow
+            title={t("archive.autoEnabled")}
+            description={t("archive.autoDescription")}
+          >
+            <Switch
+              checked={autoArchiveEnabled}
+              label={t("archive.autoEnabled")}
+              onChange={onToggleAutoArchive}
+            />
+          </SettingsRow>
+          <SettingsRow
+            title={(
+              <span className="inline-flex items-center gap-1.5">
+                {t("archive.idleDays")}
+                <span
+                  aria-label={t("archive.idleDaysHelp")}
+                  className="inline-flex text-ink-muted"
+                  tabIndex={0}
+                  title={t("archive.idleDaysHelp")}
+                >
+                  <CircleHelp className="size-3.5" />
+                </span>
+              </span>
+            )}
+            description={t("archive.idleDaysDescription")}
+          >
+            <TextInput
+              aria-label={t("archive.idleDays")}
+              className="w-28"
+              disabled={!autoArchiveEnabled}
+              max={365}
+              min={1}
+              onChange={(event) => {
+                const days = Number(event.target.value);
+                if (Number.isInteger(days) && days >= 1 && days <= 365)
+                  onChangeAutoArchiveIdleDays(days);
+              }}
+              type="number"
+              value={autoArchiveIdleDays}
+            />
+          </SettingsRow>
+        </SettingsList>
+      </SettingsSection>
+    </div>
   );
 }

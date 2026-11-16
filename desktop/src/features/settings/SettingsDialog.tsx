@@ -2,7 +2,7 @@ import type { FutureBalanceStatus, FutureSessionStatus } from "../../components/
 import type { UpdateStatus } from "../../components/layout/hooks/useUpdateChecker";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { AppSettings } from "../../integrations/storage/appSettings";
-import { Archive, Boxes, FlaskConical, Info, Keyboard, RefreshCw, RotateCcw, Settings2, Sparkles, UserRound, UserRoundGroup } from "lucide-react";
+import { Boxes, FlaskConical, Info, Keyboard, RefreshCw, RotateCcw, Settings2, Sparkles, UserRound, UserRoundGroup } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Overlay } from "../../components/ui/Overlay";
@@ -10,7 +10,6 @@ import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { cn } from "../../lib/cn";
 import { AboutPage } from "./AboutPage";
 import { AccountPage } from "./AccountPage";
-import { ArchiveSettingsPage } from "./ArchiveSettingsPage";
 import { CommunityEditionSection } from "./CommunityEditionSection";
 import { EnvironmentPage } from "./EnvironmentPage";
 import { FusionSettingsPage } from "./FusionSettingsPage";
@@ -21,14 +20,13 @@ import { ResetPage } from "./ResetPage";
 import { ShortcutsPage } from "./ShortcutsPage";
 import { UpdatePage } from "./UpdatePage";
 
-export type SettingsTab = "general" | "archive" | "shortcuts" | "account" | "update" | "about" | "providers" | "models" | "fusion" | "environment" | "reset";
+export type SettingsTab = "general" | "shortcuts" | "account" | "update" | "about" | "providers" | "models" | "fusion" | "environment" | "reset";
 
 // `devOnly` items are only shown on non-release builds.
 const NAV_GROUPS = [
   {
     items: [
       { icon: Settings2, labelKey: "dialog.tabs.general", value: "general" as const },
-      { icon: Archive, labelKey: "dialog.tabs.archive", value: "archive" as const },
       { icon: Keyboard, labelKey: "dialog.tabs.shortcuts", value: "shortcuts" as const },
       { icon: UserRound, labelKey: "dialog.tabs.account", value: "account" as const },
       { icon: RefreshCw, labelKey: "dialog.tabs.update", value: "update" as const },
@@ -55,7 +53,6 @@ const NAV_GROUPS = [
 
 const TAB_TITLE_KEYS: Record<SettingsTab, string> = {
   general: "dialog.tabs.general",
-  archive: "dialog.tabs.archive",
   shortcuts: "dialog.tabs.shortcuts",
   account: "dialog.tabs.account",
   update: "dialog.tabs.update",
@@ -214,11 +211,14 @@ export function SettingsDialog({
                     onToggleAutoTitleFirstTurn={value => onChangeSettings({ autoTitleFirstTurn: value })}
                     bellOnComplete={appSettings.bellOnComplete}
                     onToggleBellOnComplete={value => onChangeSettings({ bellOnComplete: value })}
+                    archiveRunLogCleanup={appSettings.archiveRunLogCleanup}
+                    onToggleArchiveRunLogCleanup={value => onChangeSettings({ archiveRunLogCleanup: value })}
+                    autoArchiveEnabled={appSettings.autoArchiveEnabled}
+                    onToggleAutoArchive={value => onChangeSettings({ autoArchiveEnabled: value })}
+                    autoArchiveIdleDays={appSettings.autoArchiveIdleDays}
+                    onChangeAutoArchiveIdleDays={value => onChangeSettings({ autoArchiveIdleDays: value })}
                   />
                 )
-              : null}
-            {tab === "archive"
-              ? <ArchiveSettingsPage appSettings={appSettings} onChangeSettings={onChangeSettings} />
               : null}
             {tab === "fusion" && isTestBuild ? <FusionSettingsPage /> : null}
             {tab === "shortcuts" ? <ShortcutsPage /> : null}
