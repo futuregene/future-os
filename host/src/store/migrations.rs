@@ -19,6 +19,7 @@ const STEPS: &[(i64, &str)] = &[
     (6, include_str!("review_snapshot_ignored_paths.sql")),
     (7, include_str!("run_log_cleanup.sql")),
     (8, include_str!("thread_restore_activity.sql")),
+    (9, include_str!("run_offers_choice.sql")),
 ];
 
 /// Contract steps that add exactly one column. A fresh database already has
@@ -31,6 +32,7 @@ const ADDITIVE_COLUMN_STEPS: &[(i64, &str, &str)] = &[
     (6, "review_snapshots", "ignored_paths"),
     (7, "runs", "logs_purged_at"),
     (8, "threads", "restored_at"),
+    (9, "runs", "offers_choice"),
 ];
 
 fn checksum(version: i64) -> String {
@@ -876,6 +878,49 @@ mod tests {
             admit(&conn).unwrap(),
             future_app_settings::APP_DB_SCHEMA_VERSION
         );
+    }
+
+    #[test]
+    fn version_eight_without_offers_choice_upgrades_without_losing_archive_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        legacy(&conn);
+        initialize(&conn).unwrap();
+        conn.execute_batch(
+            "DELETE FROM app_schema_migrations WHERE version>=7;
+             PRAGMA user_version=6;
+             ALTER TABLE runs DROP COLUMN offers_choice;",
+        )
+        .unwrap();
+        assert_eq!(admit(&conn).unwrap(), 6);
+        assert!(validate_core(&conn)
+            .unwrap_err()
+            .to_string()
+            .contains("runs.offers_choice"));
+
+        initialize(&conn).unwrap();
+        initialize(&conn).unwrap();
+        validate_core(&conn).unwrap();
+        for column in ["logs_purged_at", "offers_choice"] {
+            assert!(
+                column_names(&conn, "runs").unwrap().contains(column),
+                "{column}"
+            );
+        }
+        assert!(column_names(&conn, "threads")
+            .unwrap()
+            .contains("restored_at"));
+        assert_eq!(
+            admit(&conn).unwrap(),
+            future_app_settings::APP_DB_SCHEMA_VERSION
+        );
+        let default: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(offers_choice),0) FROM runs",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(default, 0, "existing runs keep their original outcome");
     }
 
     #[test]
