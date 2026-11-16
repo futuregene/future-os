@@ -263,6 +263,13 @@ interface ShotQueuedRun {
   sessionId: string;
 }
 
+/** One row that left the queue without running, as `recentTerminalAcks` says. */
+interface ShotQueueAck {
+  runId: string;
+  state: string;
+  reason: string;
+}
+
 /**
  * The conversation's Agent-side send queue, and the run it is waiting for.
  *
@@ -275,6 +282,17 @@ interface ShotQueuedRun {
  */
 const shotQueue = new Map<string, ShotQueuedRun[]>();
 const shotActiveRun = new Map<string, string>();
+
+/**
+ * Rows that left a conversation's queue without running, newest last.
+ *
+ * The Agent reports these alongside the queue (`recentTerminalAcks`), because a
+ * row that is folded into the turn ahead never runs and would otherwise vanish
+ * from the panel with nobody told. Every send here opts into `enqueue_coalescing`
+ * (`QUEUED_SEND_POLICY`), so a burst waiting together is folded the same way —
+ * see `drainShotQueue`.
+ */
+const shotQueueAcks = new Map<string, ShotQueueAck[]>();
 
 /**
  * How many waiting rows `?queue=<n>` seats in whichever conversation is read.
@@ -491,12 +509,41 @@ function recordSentTurn(threadId: string, runId: string, prompt: string, reply: 
  * the reader's own words in the transcript (the send that queued it deliberately
  * draws nothing), then the run streams its frames. Nothing in the app has to be
  * told about the queue — it reads `session_queue` and this run like any other.
+ *
+ * The turn boundary is also where the Agent *folds* the burst: every send here
+ * opts into `enqueue_coalescing` (`QUEUED_SEND_POLICY`), so the requests queued
+ * directly behind the front one do not each get a turn — they are joined into
+ * it, their texts in queue order, one paragraph each
+ * (`drain_coalescing_after_first`). Handing them out one at a time instead made
+ * a capture of that promise impossible to take: pressing «打断并全部发送» with one
+ * row held and one in the field left *two* messages in the transcript, when what
+ * the product does — and what the panel's own copy says it does («当前回复结束后
+ * 合并成一条发送») — is one. The folded rows never run, so they are recorded
+ * terminal with reason `merged`, which is how their client learns the submission
+ * was answered as part of another run.
  */
 async function drainShotQueue(threadId: string): Promise<void> {
   const held = shotQueue.get(threadId) ?? [];
   const next = held.shift();
   if (!next)
     return;
+  // Everything still waiting folds into this turn, the same way the Agent folds
+  // a burst: their words become paragraphs of one message, in queue order, and
+  // the join carries the settings of the last one. The run keeps its own id.
+  const folded = held.splice(0, held.length);
+  if (folded.length > 0) {
+    const acked = shotQueueAcks.get(threadId) ?? [];
+    for (const trailing of folded)
+      acked.push({ runId: trailing.runId, state: "terminal", reason: "merged" });
+    shotQueueAcks.set(threadId, acked);
+    next.text = [next.text, ...folded.map(row => row.text)].filter(Boolean).join("\n\n");
+    const last = folded[folded.length - 1]!;
+    const run = runs.find(candidate => candidate.id === last.runId) as Record<string, unknown> | undefined;
+    // A folded run does not stay a pending row on screen: it is answered, not
+    // queued, so its row is settled the way the Agent settles it.
+    if (run)
+      Object.assign(run, { status: "completed", endedAt: Date.now(), updatedAt: Date.now() });
+  }
   if (held.length === 0)
     shotQueue.delete(threadId);
   const run = runs.find(candidate => candidate.id === next.runId) as Record<string, unknown> | undefined;
@@ -1280,8 +1327,9 @@ const handlers: Record<string, (args: any) => unknown> = {
    *
    * `queued` is what a second send while a reply streams fills (see
    * `streamShotRun`), and it empties on its own when the run ahead of it ends.
-   * `recentTerminalAcks` stays empty: nothing here drops a row without running
-   * it, so there is never a sentence to explain.
+   * `recentTerminalAcks` carries the rows that ended without running: a burst
+   * that waited together is folded into the turn ahead, so all but the front one
+   * leave the queue as `merged` (`drainShotQueue`).
    */
   session_queue: (args: any) => {
     const threadId = String(args?.threadId ?? "");
@@ -1293,7 +1341,11 @@ const handlers: Record<string, (args: any) => unknown> = {
       text: row.text,
       state: row.state,
     }));
-    return { activeRunId: shotActiveRun.get(threadId) ?? null, queued, recentTerminalAcks: [] };
+    return {
+      activeRunId: shotActiveRun.get(threadId) ?? null,
+      queued,
+      recentTerminalAcks: shotQueueAcks.get(threadId) ?? [],
+    };
   },
   /** Taking a waiting message back out before it runs (`取消队列`) . */
   cancel_queued_run: (args: any) => {
