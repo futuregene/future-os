@@ -433,6 +433,30 @@ describe("fetchRemoteSessions", () => {
     await expect(fetchRemoteSessions("desktop_a")).resolves.toEqual({ desktopId: "desktop_a", sessions: [] });
   });
 
+  /**
+   * "This one is waiting on your answer", as the host reported it.
+   *
+   * The parser is field-by-field, so a host field it does not name never reaches
+   * the merged list — the choice mark stayed absent from every peer row until
+   * this field was named here, and only a capture of the real list showed it.
+   */
+  it("carries a host's choice mark and leaves it absent otherwise", async () => {
+    invokeMock.mockResolvedValue({
+      sessions: [
+        { sessionId: "sess_asks", status: "completed", offersChoice: true },
+        { sessionId: "sess_prose", status: "completed" },
+        { sessionId: "sess_odd", offersChoice: "yes" },
+      ],
+    });
+
+    const [asks, prose, odd] = (await fetchRemoteSessions("desktop_a")).sessions;
+    expect(asks!.offersChoice).toBe(true);
+    // Absent, not `false`: a host that predates the field has not said anything,
+    // and every reader treats the two the same.
+    expect(prose).not.toHaveProperty("offersChoice");
+    expect(odd).not.toHaveProperty("offersChoice");
+  });
+
   /** Missing/odd fields become the total shape the merge and UI assume. */
   it("normalises the optional fields of a row", async () => {
     invokeMock.mockResolvedValue({

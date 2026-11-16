@@ -261,7 +261,7 @@ A list value is a JSON array or a comma-separated list; an empty value clears it
 pub const WORKSPACE_HELP: &str = r#"future workspace — manage the desktop app's workspaces
 
 Usage:
-  future workspace list [--archived | --all] [--json]
+  future workspace list [--archived | --pinned | --all] [--json]
                                                    List the user's workspaces
   future workspace add <path> [--name <name>] [--json]
                                                    Add a directory as a workspace
@@ -269,6 +269,10 @@ Usage:
                                                    Shelve a workspace and its conversations
   future workspace restore <path|id|name> [--json]
                                                    Bring a shelved workspace back
+  future workspace pin <path|id|name> [--json]
+                                                   Keep a workspace in the pinned section
+  future workspace unpin <path|id|name> [--json]
+                                                   Take it off the pinned section
 
 A workspace is a directory on this machine that workspace conversations are
 filed under. The records live in the desktop app's own database
@@ -289,11 +293,18 @@ brings back exactly what archiving hid. `future workspace archive --help` has
 the rules in full; in short, a conversation that is still running refuses to be
 shelved, and archiving clears the pin.
 
+Pinning is the other direction: it lifts a workspace above the unpinned groups
+in the sidebar, where it stays instead of following the recency order. It is an
+ordering flag rather than a state, so `future workspace unpin` returns the
+workspace to the position its own activity earns. `future workspace pin --help`
+has the rules in full.
+
 Workspaces also appear on their own: `future session set <id> --cwd <dir>` files
 that conversation under the directory's workspace, and the desktop app does the
 same whenever a cwd changes. `future workspace list` is then the place to see
 where conversations are filed — active ones by default, `--archived` for the
-archived view and `--all` for both, marked.
+archived view, `--pinned` for the app's pinned section and `--all` for every
+row, marked.
 
 Examples:
   future workspace list
@@ -301,11 +312,13 @@ Examples:
   future workspace add /srv/app --name "Service"
   future workspace archive ~/projects/demo
   future workspace restore ws-1a2b3c
+  future workspace pin demo
 
 With --json, list prints an array of workspace records; add prints the record it
 created or reopened, with "created" saying which; archive and restore print the
 record with "archived" saying which shelf it is on now, plus the database the
-write landed in."#;
+write landed in; pin and unpin print it with "pinned" and "inPinnedSection"
+saying whether the flag is set and whether the pinned section shows it."#;
 
 /// `future desktop settings get --help` output.
 pub const DESKTOP_GET_HELP: &str = r#"future desktop settings get — show the desktop app's effective settings

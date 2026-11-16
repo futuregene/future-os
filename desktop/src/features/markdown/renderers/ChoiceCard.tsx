@@ -39,6 +39,7 @@ export function ChoiceCard({
 }: ChoiceCardProps) {
   const { t } = useTranslation("markdown");
   const titleId = useId();
+  const hintId = useId();
   const interactive = Boolean(onSelect);
   const multi = mode === "multi";
   const chosen = options.filter(option => selectedIds.includes(option.id));
@@ -47,6 +48,8 @@ export function ChoiceCard({
 
   return (
     <div
+      aria-describedby={hintId}
+      aria-disabled={interactive ? undefined : true}
       aria-labelledby={titleId}
       className="w-full max-w-3xl overflow-hidden rounded-[10px] border border-line bg-surface shadow-panel"
       data-choice-card
@@ -62,8 +65,17 @@ export function ChoiceCard({
             {multi ? t("choice.mode.multi") : t("choice.mode.single")}
           </span>
         </div>
-        <p className="mt-1 text-[11px] leading-4 text-ink-muted">
-          {hint || (multi ? t("choice.hint.multi") : t("choice.hint.single"))}
+        {/*
+          The subtitle is the one place a card can promise an action, so a card
+          that cannot answer must not print the answering one: "pick one and it
+          lands in the input" over inert rows is the whole defect — a button that
+          looks pressable and does nothing. The model's own `hint` goes the same
+          way, since it describes picking too.
+        */}
+        <p className="mt-1 text-[11px] leading-4 text-ink-muted" id={hintId}>
+          {interactive
+            ? hint || (multi ? t("choice.hint.multi") : t("choice.hint.single"))
+            : t("choice.hint.readonly")}
         </p>
       </div>
       <div
@@ -95,9 +107,6 @@ export function ChoiceCard({
             </p>
           )
         : null}
-      {interactive
-        ? null
-        : <span className="sr-only">{t("choice.stale")}</span>}
     </div>
   );
 }
@@ -138,7 +147,15 @@ function ChoiceOptionRow({
       onClick={interactive ? () => onSelect?.(option.id) : undefined}
       onKeyDown={interactive ? handleRowKey : undefined}
       role={mode === "multi" ? "checkbox" : "radio"}
-      tabIndex={focusable ? 0 : -1}
+      /*
+        No `tabindex` at all on a read-only row, rather than `-1`: a div carrying
+        `tabindex="-1"` is out of the tab order but still takes focus from script,
+        so it can end up looking focused while answering nothing. Omitting the
+        attribute is what a disabled radio does — unbrowsable by Tab, still in the
+        accessibility tree, unable to take focus — and the row is `aria-disabled`
+        anyway.
+      */
+      tabIndex={interactive ? (focusable ? 0 : -1) : undefined}
     >
       <span
         aria-hidden="true"

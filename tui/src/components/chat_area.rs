@@ -115,9 +115,10 @@ pub enum RowAction {
     Tool { msg: usize },
     /// A `▸ thinking` marker: opening it shows the reasoning text.
     Thinking { msg: usize },
-    /// The **copy** control under a message: this message's own text goes to the
-    /// clipboard. A control, not a fold — pressing it changes nothing on screen,
-    /// so it has no [`RowKind`] and never opens or closes a row.
+    /// The **copy** control under the transcript's last answer: that message's
+    /// own text goes to the clipboard. A control, not a fold — pressing it
+    /// changes nothing on screen, so it has no [`RowKind`] and never opens or
+    /// closes a row.
     Copy { msg: usize },
 }
 
@@ -257,7 +258,7 @@ pub struct FoldWords {
     /// The label a summary row falls back on when it counts nothing (a fold
     /// that only hid prose).
     pub process: &'static str,
-    /// The copy control under a message (`[复制]` / `[copy]`).
+    /// The copy control under the transcript's answer (`[复制]` / `[copy]`).
     pub copy: &'static str,
 }
 
@@ -1166,6 +1167,15 @@ pub struct ChatArea {
     /// away again. Kept beside [`Self::reply_folds`] — the two are halves of one
     /// layout, so a row that moves or a level that flips keeps its state.
     opened_trees: HashMap<usize, OpenedTree>,
+    /// The message the transcript's **one** copy control sits under, or `None`
+    /// when there is nothing to copy yet (see [`Self::copy_head_of`]).
+    ///
+    /// Kept as state rather than looked up per message because the incremental
+    /// paths render one message at a time: a chip that moved from an older
+    /// reply to the one just written would otherwise leave the old one drawn,
+    /// and the render has to *notice* that it moved (in
+    /// `sync_compact_layout`) before it splices.
+    copy_head: Option<usize>,
     /// Is the render in flight drawing a row that hangs inside an opened fold?
     /// Set around one message's own rows, and what makes a detail (a call's
     /// body, a thought's text) hang one level deeper than its parent row.
@@ -1217,6 +1227,7 @@ impl ChatArea {
             reply_detail: ReplyDetail::Default,
             fold_words: FoldWords::default(),
             run_in_flight: false,
+            copy_head: None,
             compact_layout: Vec::new(),
             reply_folds: HashMap::new(),
             opened_trees: HashMap::new(),
@@ -1412,7 +1423,33 @@ impl ChatArea {
         (!text.trim().is_empty()).then(|| text.to_string())
     }
 
-    /// Which rendered rows are the per-message control (`[复制]`).
+    /// The message the transcript's one copy control sits under: its **newest
+    /// answer**, or `None` while no run has left prose the reader could copy.
+    ///
+    /// `/copy` copies the last assistant answer, so this is the same answer and
+    /// the same verb — the chip is that verb made pressable over the block it
+    /// would copy. A reply is only copyable once it has settled, so the head is
+    /// nothing at all while a run is writing: a chip under a half-written answer
+    /// is a button that copies half a sentence.
+    ///
+    /// The search skips a `pending` message for the same reason — and because a
+    /// delta must not move the chip: a reply still arriving is not where the
+    /// chip goes, so the transcript keeps splicing instead of rebuilding on
+    /// every slice.
+    fn copy_head_of(messages: &[ChatMessage], run_in_flight: bool) -> Option<usize> {
+        if run_in_flight {
+            return None;
+        }
+        messages.iter().rposition(|msg| {
+            msg.role == ChatRole::Assistant
+                && !msg.welcome
+                && !msg.pending
+                && msg.run_state != Some(RunState::Queued)
+                && !msg.content.trim().is_empty()
+        })
+    }
+
+    /// Which rendered rows are the copy control (`[复制]`).
     ///
     /// The rows are derived from the same stops the walk uses, so a frame that
     /// keeps its controls keeps them in one place — the frame tests read a
@@ -2654,7 +2691,13 @@ impl ChatArea {
         // the common case (a delta arriving in the reply being streamed) costs
         // one linear scan of cheap comparisons instead of a layout rebuild.
         let bits = Self::fold_flags(&self.messages);
+        // The copy chip is drawn under one message, and that message moves as
+        // the conversation grows — a change no fold flag reports on its own
+        // (the chip leaves the reply above and lands under the new answer), so
+        // it is compared here and the transcript rebuilt when it moved.
+        let copy_head = Self::copy_head_of(&self.messages, self.run_in_flight);
         if bits == self.fold_bits
+            && copy_head == self.copy_head
             && self.compact_layout.len() == self.messages.len()
             && self
                 .reply_folds
@@ -2675,7 +2718,13 @@ impl ChatArea {
         // "nothing moved" and leave the old numbers, and a marker the counts
         // just took over would stay on screen. Those are earlier messages' rows
         // too, so the transcript is rebuilt rather than spliced.
-        if fold_layout_extends(&self.compact_layout, &plan.heads)
+        //
+        // The chip's message is the third thing that can move without the fold
+        // structure moving, and it is an earlier message's row as well: a run
+        // ending puts the chip under the answer it just settled, which is a
+        // rebuild however still the layout is.
+        if copy_head == self.copy_head
+            && fold_layout_extends(&self.compact_layout, &plan.heads)
             && plan.folds == self.reply_folds
             && plan.trees == self.opened_trees
         {
@@ -2705,6 +2754,7 @@ impl ChatArea {
         self.reply_folds = plan.folds;
         self.opened_trees = plan.trees;
         self.fold_bits = Self::fold_flags(&self.messages);
+        self.copy_head = Self::copy_head_of(&self.messages, self.run_in_flight);
         self.rendered_lines = Vec::new();
         self.message_line_ranges = Vec::new();
         // A folded message renders nothing and takes no separator with it, so
@@ -2737,10 +2787,17 @@ impl ChatArea {
 
     /// Re-render only the message at msg_idx, splicing its lines in-place.
     fn rerender_message(&mut self, msg_idx: usize) {
-        // A fold may have appeared (a tool completed into the run above it):
-        // that changes an earlier message's rows, so the transcript is rebuilt
-        // instead of spliced.
+        // A fold may have appeared (a tool completed into the run above it), or
+        // the copy chip may have moved to the reply this one settled: either
+        // changes another message's rows, so the transcript is rebuilt instead
+        // of spliced. The rebuild replaces every row, so the reader's frame has
+        // to be told just as an in-place splice would have told it.
         if self.sync_compact_layout() {
+            if !self.flushing {
+                if let Some(cb) = &mut self.on_change {
+                    cb();
+                }
+            }
             return;
         }
         // The message's rows live in the run's summary row, and the summary
@@ -3020,12 +3077,16 @@ impl ChatArea {
             .push((offset, action, start, end));
     }
 
-    /// The row of controls under a **reply**: `[复制]`.
+    /// The row of controls under the **answer**: `[复制]`.
     ///
-    /// A reply ends in this row, one blank line below its own text, because the
-    /// desktop draws its copy button in the message's footer — revealed on
-    /// hover, which a terminal cannot do, so the row is permanent and `tab`
-    /// walks onto it. The blank line is what keeps the chip from reading as the
+    /// The transcript draws it exactly once — under its newest answer, one blank
+    /// line below that answer's text — and never while a run is writing: `/copy`
+    /// is the same verb for the conversation, so a chip under every reply was
+    /// one button repeated all the way down the screen, and a chip under a reply
+    /// still arriving is a button that copies half a sentence. Which message
+    /// that is lives in [`Self::copy_head`], because the answer that carries the
+    /// chip moves as the conversation grows and the incremental paths have to
+    /// notice. The blank line is what keeps the chip from reading as the
     /// answer's last paragraph. Branching is not a chip at all: the surface has
     /// one road for it, `/fork`, and a control that also forked would be a
     /// second spelling of the same verb on a per-message basis (see
@@ -3044,8 +3105,14 @@ impl ChatArea {
         if msg.role != ChatRole::Assistant
             || msg.welcome
             || msg.pending
+            || self.run_in_flight
             || msg.run_state == Some(RunState::Queued)
             || self.nested
+            // One chip for the conversation, under its newest answer. An older
+            // reply is history: the terminal's own selection still copies it,
+            // and a chip under each of them turned the transcript into a column
+            // of identical buttons.
+            || self.copy_head != Some(msg_idx)
         {
             return;
         }
@@ -5287,8 +5354,8 @@ mod tests {
         assert_matches_fresh_render(&mut chat);
     }
 
-    /// A reply ends in its control, one line below its own text; a prompt ends
-    /// in nothing, and neither does a call.
+    /// The transcript's one control sits under its newest answer, one line below
+    /// that answer's text; a prompt ends in nothing, and neither does a call.
     ///
     /// The chip is the desktop's message footer — its copy button — made
     /// permanent: a terminal has no hover to reveal it under, so the row is
@@ -5313,7 +5380,7 @@ mod tests {
             .map(|line| strip(line))
             .collect();
         let controls = chat.control_rows();
-        assert_eq!(controls.len(), 1, "the reply's, and nothing else: {rows:?}");
+        assert_eq!(controls.len(), 1, "one chip, and nothing else: {rows:?}");
         let at = controls[0];
         assert_eq!(rows[at].trim(), "[copy]", "{rows:?}");
         assert!(
@@ -5356,6 +5423,100 @@ mod tests {
         chat.mark_message_dirty(1);
         chat.render(W);
         assert_eq!(chat.control_rows().len(), 1);
+    }
+
+    /// The transcript draws **one** copy control, and it is under the last
+    /// answer — not one under every reply.
+    ///
+    /// `/copy` copies the last assistant answer, so the chip is that same verb
+    /// made pressable over the block it would copy. A chip under each reply was
+    /// that one button repeated all the way down the screen: the older replies
+    /// are history, and the terminal's own selection still copies them.
+    #[test]
+    fn one_copy_control_under_the_last_answer() {
+        let mut chat = new_chat();
+        chat.render(W);
+        set_messages(
+            &mut chat,
+            vec![
+                ChatMessage::new("u1".into(), ChatRole::User, "first question"),
+                ChatMessage::new("a1".into(), ChatRole::Assistant, "first answer"),
+                ChatMessage::new("u2".into(), ChatRole::User, "second question"),
+                ChatMessage::new("a2".into(), ChatRole::Assistant, "second answer"),
+            ],
+        );
+        let rows: Vec<String> = render_trimmed(&mut chat)
+            .iter()
+            .map(|line| strip(line))
+            .collect();
+        let controls = chat.control_rows();
+        assert_eq!(
+            controls.len(),
+            1,
+            "one chip for the conversation, not one per reply: {rows:?}"
+        );
+        // It sits under the *last* answer: the row below it is nothing, and the
+        // answer above it is the newest one.
+        let at = controls[0];
+        assert_eq!(rows[at].trim(), "[copy]", "{rows:?}");
+        let above = rows[..at].join("\n");
+        assert!(
+            above.contains("second answer"),
+            "the chip follows the newest answer: {rows:?}"
+        );
+        assert_eq!(
+            above.matches("first answer").count(),
+            1,
+            "the older reply is still on screen: {rows:?}"
+        );
+    }
+
+    /// The chip is nobody's while a run is writing, and it comes back under the
+    /// answer that run settles — never under the half-written one, and never
+    /// left behind under the reply above it.
+    #[test]
+    fn the_copy_control_follows_the_run_to_its_own_answer() {
+        let mut chat = new_chat();
+        chat.render(W);
+        set_messages(
+            &mut chat,
+            vec![
+                ChatMessage::new("u1".into(), ChatRole::User, "first question"),
+                ChatMessage::new("a1".into(), ChatRole::Assistant, "first answer"),
+            ],
+        );
+        assert_eq!(chat.control_rows().len(), 1);
+
+        // A run starts writing: no chip anywhere, not even under the settled
+        // answer above.
+        chat.begin_reply_run();
+        chat.add_message(ChatMessage::new("u2".into(), ChatRole::User, "again"));
+        chat.add_message(ChatMessage::new("a2".into(), ChatRole::Assistant, ""));
+        chat.append_to_last_message("writing");
+        chat.render(W);
+        assert!(
+            chat.control_rows().is_empty(),
+            "a run in flight draws no chip: {:?}",
+            chat.control_rows()
+        );
+
+        // The run ends: the chip is under the answer it just wrote, and the one
+        // above it has none.
+        chat.messages[3].pending = false;
+        chat.mark_last_message_complete();
+        chat.end_reply_run();
+        chat.render(W);
+        let controls = chat.control_rows();
+        assert_eq!(controls.len(), 1, "exactly one chip again: {controls:?}");
+        let rows: Vec<String> = render_trimmed(&mut chat)
+            .iter()
+            .map(|line| strip(line))
+            .collect();
+        let above = rows[..controls[0]].join("\n");
+        assert!(
+            above.contains("writing"),
+            "the chip is under the reply the run wrote: {rows:?}"
+        );
     }
 
     /// A running reply keeps every thought, call and piece of prose on screen.

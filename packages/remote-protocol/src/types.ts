@@ -37,6 +37,15 @@ export interface RemoteSession {
   streaming: boolean;
   status?: string;
   /**
+   * This conversation's last finished reply closed with a choice card, so the
+   * conversation is waiting on the reader's answer.
+   *
+   * Optional by contract: a desktop older than the field omits it, and a client
+   * that does not read it draws no mark — which is what it did before. The mark
+   * belongs to the run, so a follow-up turn clears it without any second write.
+   */
+  offersChoice?: boolean;
+  /**
    * The name of the workspace this conversation sits in, as its own machine
    * calls it. Sent per session row (a client grouping a merged list needs the
    * name for its heading), omitted by a desktop older than the field.
@@ -100,6 +109,8 @@ export interface PresenceSession {
   archived?: boolean;
   streaming: boolean;
   status?: string;
+  /** Same wire field as `RemoteSession.offersChoice`: waiting on a card's answer. */
+  offersChoice?: boolean;
   /** The workspace's own name, pin and place, as the host reports them per row. */
   workspaceName?: string | null;
   workspacePinned?: boolean | null;

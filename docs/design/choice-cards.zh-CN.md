@@ -41,9 +41,11 @@
 
 | 规则 | 原因 |
 |---|---|
-| 只有**线程里最后一张**卡可交互，更早的卡只读（选中行仍高亮，其余行置灰） | 历史卡片对应的问题早已过去，允许改它只会让"我改的是哪一次"变得不可回答 |
-| 卡片不自己保存"已选" | 它从前面的草稿派生。发送后草稿清空，卡片仍高亮——因为答案此时在紧随其后的用户消息里 |
+| 只有**线程里最后一张**卡可交互，更早的卡只读（`aria-disabled`、不进 Tab 序、副标题明说不能选） | 历史卡片对应的问题早已过去，允许改它只会让"我改的是哪一次"变得不可回答 |
+| 卡片不自己保存"已选" | 它从前面的草稿派生。发送后草稿清空，**卡面不再保留选中态**——答案由用户消息上的标签呈现，不由卡面呈现 |
 | 改答案 = 改草稿 | 点卡片任意一行、点 pill/chip 的铅笔、点底部 sheet、点队列行里的选择 chip，四个入口写同一个值 |
+
+**为什么发送后不回填卡面**（2026-11-16 更正，本节原先写的是"卡片仍高亮"）：已答的答案已经以标签形式出现在用户气泡抬头，回填卡面不增加任何信息；而要做这件事，卡片就得去读**它之后的那条消息**，为一个纯装饰效果引入新的跨条目时序依赖。`ChoiceCardAnswer.test.tsx` 钉住的正是实际行为（发送后 `markedRow` 为空）——那是代码把当时的决定写下来了，文档没跟上而己。
 
 **多个线程 / 多次提问**不会互相干扰：草稿按会话（thread）隔离，卡片与 chip 都读本会话的草稿。
 
@@ -66,10 +68,22 @@ option: table | 表里加一列样本量 | Frank 42 / Dreher 186，标出测量�
 | 字段 | 必填 | 说明 |
 |---|---|---|
 | `title` | 是 | 问题本身，一句话，≤ 60 字。它就是卡片标题 |
-| `mode` | 否 | `single`（默认）/ `multi` |
+| `mode` | 否 | `multi`（**首选**）/ `single`（行互斥时的退化，省略即此）。也接受 `multiple`、`multi-select`、`多选`，见下 |
 | `option` | 是（2–4 个） | 每行一个，`id \| 显示文案 \| 一行说明`；说明可以省略 |
 | `id` | — | 选项 id：ASCII、`[a-z0-9-]`、≤ 24 字符、卡内唯一。它是要回传的稳定标识 |
 | `hint` | 否 | 覆盖默认副标题（"选一个就放进输入框…"） |
+
+**`mode` 的判据**（写 prompt 的人必须照这条，不能只把它当风格偏好）：
+
+> **从 `multi` 出发**：两行是彼此独立的活（图、图注、图例、表里的一列）就都做得了 → `multi`，读者勾几个就欠几个。只有行在**抢同一个坑**时——选了这个别的就不做——才退化到 `single`（省略即此）。没有第三种。
+>
+> 并行成立的前提是**行与行独立**：一行不能包含另一行（「调卡片」和「卡片和气泡一起调」是一件事写两遍），也不能两行是同一件活；读者勾出的任意子集都必须是一个自洽的请求，而不是同一件活做两遍。
+
+判据落成判词之前经历过两次错：最初写的是「`multi` when several can be done in one go」，模型读成「通常 single」，于是全部卡片都是单选；改成「读者勾两行你会不会都做」这种对读者行为的假设后，模型把它当假设答题，仍然默认省 `mode:`。现在的写法把判据放在**行**上（一件交付物的两半 vs 下一步只有一步），并且在 prompt 里放了一张**多选示例卡**——此前 few-shot 里只有单选卡，格式类决策上示例比规则管用。
+
+解析端也不再把写法当成语法错误：`multi | multiple | multi-select | multi_select | 多选` 都读成多选，其余（缺省、`single`、`单选`、拼错）一律按单选取。这条容错是必要的——旧的精确比较会把 `multiple` 静默降成单选，卡片照常画出来，只有「只能勾一个」这一处不对，界面上看不出来。
+
+`single` 是互斥**选择**："接下来做哪一件"。`multi` 是一件事的几**部分**或几件可并行的事："接新浪和 Nasdaq 两个源"。判据不成立就别写 `multi`：多选卡允许用户只勾一个，所以它不会强加工作量；反过来把互斥问题写成 `multi`，用户就得自己判断"我是不是该只勾一个"，卡片反而多了一层歧义。
 
 **为什么是围栏而不是内联链接或 JSON：**
 
@@ -89,6 +103,8 @@ option: table | 表里加一列样本量 | Frank 42 / Dreher 186，标出测量�
 | 围栏出现在回复中间（不在最后一块） | 照常渲染，但只读（§2 的"最后一张"规则） |
 | 未知字段 | 忽略 |
 
+**只读卡必须自己说出来**（2026-11-16）：一条回复里有 2 张及以上卡时，只有最后一张可交互——这个判据只依赖**已解析出的卡片数量**，与模型写了什么措辞无关，所以放在解析/渲染层，不放进 prompt。被判为只读的卡不只是 `aria-readonly` + 不进 Tab 序，它的**副标题也必须换成"这张卡不能选"**（`choice.hint.readonly`）：副标题是卡片唯一能"承诺动作"的地方，在一个点不动的卡上印"选一个就放进输入框"，等于画一个看起来能按、按了没反应的按钮。模型自带的 `hint` 描述的是"怎么挑"，所以同样一并换掉。判据在 `ChoiceCard.test.tsx` 与 `MarkdownContent.test.tsx` 里断言（文字 + `aria-disabled` + 不可聚焦），**不断言颜色**。
+
 ## 4. system prompt 里加什么
 
 新增 `agent/src/prompt/choice.md`，在 `agent/src/prompt/mod.rs` 里与 `communication.md` 一起 `include_str!` 推入（`parts` 末尾，紧邻 communication），保证"怎么问用户"和"怎么说话"相邻。
@@ -106,12 +122,19 @@ Use it only when all of these hold:
 - The reply genuinely ends with a question about the next step, and you can carry
   out every option yourself right after they pick.
 - There are 2–4 real alternatives. One option, or five, is a paragraph — not a card.
-- The options are mutually exclusive (omit `mode: multi` unless several can be done
-  in one go).
+- The options are 2–4 genuine alternatives you would act on next — one of them, or
+  several that do not compete for the same step.
 
 Do not use it for: confirming a risky action (the approval card already owns that),
 restating what you just did, "let me know if you need anything", or a question whose
 answer needs a sentence rather than a pick.
+
+`mode:` — settle it from the *rows*: rows that are one deliverable in parts, or jobs that
+do not compete for the same step, go in the same batch → `mode: multi`, and the reader
+ticks as many as they want. If picking one rules the others out — the next step is *one*
+of them — omit the line: `single` is what an omitted line means. Do not default to
+`single` to be safe: one-job cards are exactly the ones people answer with two ticks.
+There is no third mode.
 
 Write each option as the instruction you would follow if chosen — the user's words,
 not a menu label ("重画森林图", not "选项 A"). The third field says what changes or
@@ -121,6 +144,12 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 ```
 
 要点：**选项文案必须是用户会说的那句话**（因为发送时它就是消息的一部分），不是"选项 A/B/C"。
+
+**2026-11-15 / 11-16 三次修订了 §4 的措辞**：原稿把 `multi` 写成兜底选项（"omit `mode: multi` unless several can be done in one go"）并塞进"什么时候才配用这张卡"的条件列表里。结果是模型写出来的卡一律单选，连"接新浪和 Nasdaq 两个源"这种明显是一件事的两半，也得用户自己打字回答——正是卡片要消灭的那种浪费。第一次改成一道**能回答是/否**的检验，但问的是**读者**会怎么做（"if the reader ticked two rows…"），模型把它当假设题答，仍然是每次省 `mode:`。现在的版本：判据落在**行**上（一件交付物的两半 vs 下一步只有一步），prompt 里多了一张**多选示例卡**（此前 few-shot 只有单选），并直接点名它一直在犯的那个错——"Do not default to `single` to be safe"。
+
+**11-16 第二次改：把默认翻过来。** 上一版的默认仍是「行互斥才 single」，实际用起来还是几乎全是单选。既然两种标记说的都是「这条不点就不动」，而列表式的下一步通常真的可以一起做（图、图注、图例、表里的一列），现在 prompt 从 `multi` 出发，`single` 只在行抢同一个坑时退化。代价是行**必须独立**：「调卡片」和「卡片和气泡一起调」这种包含关系在单选卡上只是啰嗦，在多选卡上会变成「勾两个、同一件活做两遍」，所以独立性要求与默认值写在同一段里，测试同时钉住这两句。
+
+另有一个**部署坑**：这条 prompt 是 `include_str!` 编进二进制的，所以本机装的是旧构建时，改完仓库也不会立即生效（实测 `futureos.exe` 里还是 "the default, so usually omit it" 那一句，而仓库已经改了两轮）。改 prompt 的改动必须跟一次重装 + 重启才算上线。
 
 ## 5. 界面
 
@@ -164,6 +193,8 @@ v1 把 chip 放在附件行（`form` 内、field 之上），看起来对，但�
 - (d) 只有 pill ⇒ `isEditorEmpty` 为 false ⇒ 键亮；
 - (b) 铅笔与叉挂在 pill 自己身上，改的是同一个值。
 
+**零个勾选不是答案，所以那时连 pill 都没有。** pill 存在的意义是回答"选了什么"（§5.2），一个只有问题、没有勾选的东西回答不了这个问题——它会把卡片的问题印成答案，读起来像是读者答了。所以判据落在**写入答案的那一处**（`answerOrNull`，`composer/choiceAnswer.ts`），而不是"画一个空 pill 但不产出文本"：零选中 ⇒ 答案被丢弃 ⇒ pill 不存在、(a) 的键灰重新成立、(d) 也不再谎称有内容。§7 的"零个勾选不产出 `[…] → ]`"是同一条规则的另一端，两层都在：写入时丢，发信时（`withChoiceAnswer`）再拦一次。多选卡把最后一个勾去掉，走的正是撤销（§5.3 的 ✕）那条路径，pill 连同尾随空格一起消失。
+
 **实测（1440×900，注入真实 contenteditable 后读 DOM，不改产品代码）**：
 
 | 状态 | `disabled` |
@@ -178,7 +209,17 @@ pill 实测 `bg rgb(232,240,255)`（`accent-soft`）、`color rgb(37,99,235)`（
 
 ![桌面端：pill 后面接着打字](assets/choice-cards/desktop-6-chosen-text.png)
 
-需求 (c) 的样张。pill 与文字在同一个编辑器流里，顺序就是读者看到的顺序；发送时 `serialize()` 先输出 pill 的 `[问题 → 答案]`，再输出文字。所以用户气泡里显示的就是真正发出去的内容——不靠额外渲染去"补"一个不同步的显示。
+需求 (c) 的样张。pill 与文字在同一个编辑器流里，顺序就是读者看到的顺序；发送时 `serialize()` 先输出 pill 的 `[问题 → 答案]`，再输出文字。所以用户气泡里显示的就是真正发出去的内容——不靠额外渲染去"补"一个不同步的显示。发送之后，这句话在气泡里被画成标签而不是方括号字样（§5.2.3）：还是同一句话，只是不再混在用户自己写的文字里。
+
+### 5.2.3 发送后的用户气泡
+
+三端同一个处理：正文**抬头**那一段 `[问题 → 答案]` 画成一个标签（`ListChecks` 图标 + 淡色的问题 + `→` + 强调的答案），其后的文字仍走 markdown。什么都不写、只选了一行，气泡就只剩那个标签。
+
+- **文本不变。** 标签是 `choiceAnswerText` 写出的那一句的**画法**，不是第二份内容：复制按钮复制的、agent 收到的、粘贴到别处看到的，都还是 `[问题 → 答案]`。这也正是 §7 选纯文本的理由——显示层怎么画，都不影响那句话的可读性；
+- **判据保守**（`packages/markdown/src/choiceAnswerEcho.ts`）：只在正文首部认、必须带 `→`、方括号后面紧跟 `(` 或 `[` 的不认（那是链接或另一组方括号）、最多认四条（一张卡的上限）。判成"不是答案"只损失样式，不会丢字；
+- **材质跟着气泡走。** 桌面气泡是 `accent-soft`，标签用 `accent/10` 底 + `accent/25` 描边；手机气泡是 `accent` 实底，标签用气泡自身墨色的 12% 铺一层、20% 描边（和 `MarkdownText` 的 `onAccent` 同一套取色），深色浅色都读得清。
+
+四个状态（桌面浅色 / 深色、手机浅色 / 深色）在截图 harness 里是可复现的：场景在 `scripts/screenshots/scenarios.d/choice-answer-echo.json`（`capture-desktop choice-answer-echo{,-dark}`、`capture-mobile choice-answer-echo-phone{,-dark}`），演示数据由 fixture 的 `?choiceAnswer=1` 提供——答案本身仍由 `choiceCard=1` 的那张卡产出。
 
 ### 5.3 桌面端 · 改回来
 
@@ -234,6 +275,7 @@ pill 实测 `bg rgb(232,240,255)`（`accent-soft`）、`color rgb(37,99,235)`（
 
 - 卡满宽（358pt，左右各 16pt 边距），`radius 12px`，行高 **≥ 44pt**（实测三行各 60pt），说明文字换行而不截断；
 - 已选项的 chip 在 dock 内、textarea 之上（实测 chip `y 702..736`，field `y 737..783`）；
+- **零个勾选时 chip 不画，也不计入内容。** 手机没有编辑器内的 pill，答案的"是否存在"全靠这三处判断（`ComposerDock` 的 `canSend`、`hasDraft`、是否画 chip），所以它们共用同一个 `hasAnswer`，与桌面 `answerOrNull` 同一条判据：勾选全撤销 ⇒ 没有 chip、发送键变灰、也没有 §7 的句子。判据写在上游的 draft 写入处（`useComposerDraft.setChoice`），`ComposerDock` 再自理一次，避免"靠上游保证"的隐患；
 - **改答案用底部 sheet**：390pt 宽没有空间在原地放浮层。sheet 顶到 559pt，三行仍 44pt，选中即写回 chip，底稿不动；
 
 #### 5.7.1 v1 的已选态哪里难看，v2 怎么改
@@ -286,9 +328,13 @@ v2 曾经给 chip 配一支铅笔，这是错的，v3 改掉了：
 | 换一个选项 | **点 chip 本身**（chip 是 `role=button`，带一个 chevron，aria-label `更换这条消息里的选择：<标题> · <选项>`），弹出桌面浮层 / 手机 sheet |
 | 改这条消息的文字 | 行自己的铅笔（有且只有一支） |
 | 删掉整条消息 | 行自己的垃圾桶 |
-| 只去掉选择、保留文字 | 选项列表里那一条“不作选择”（和卡片上的 `不做选择` 是同一个条目），不是 chip 上的新按钮 |
+| 只去掉选择、保留文字 | 取消到最后一个勾时**这次改写被拒绝**：队列行文本与答案原样保留，并提示一次（见下） |
 
 chevron 而不是铅笔，是刻意的：它说的是“这里能打开点什么”，不可能被读成“编辑文字”。
+
+**零个勾选不是答案，所以排队消息不能被改成那个样子。** 队列行的句子是 `[问题 → 答案]`（§7），从零选中改写它只会得到 `[问题 → ]`——一个被模型当成答案的问题——或者只剩方括号里的问题。而这一行**已经在等待发送**，在读者眼皮底下悄悄改掉它的文本，比提示一次更容易造成意外，所以这条路径取“拒绝 + 一句提示”：文本、答案与 `edit_queued_run` 调用都不发生，要删这条消息就用它自己的垃圾桶（同一形态见 `removeQueuedAttachment` 对“只剩文件的最后一条”的处理）。手机端 sheet 此时保持打开，让读者重新点一个，而不是关掉它假装改完了。
+
+这与 §5.2.1（编辑器里的 pill）、§7（回传文本）、§5.7（手机的 chip）是同一条规则的不同落点：`answerOrNull` 在写入时拦，`ComposerDock` 的 `hasAnswer` 在渲染时拦，`withChoiceAnswer` 在发信时拦，这里是最后一条——队列改写。判据只有一个来源，不是四条各自实现的规则。
 
 ### 5.8.3 数据形状
 
@@ -308,12 +354,49 @@ chevron 而不是铅笔，是刻意的：它说的是“这里能打开点什么
 
 三行都保留了自己的铅笔与垃圾桶：断言里直接检查了 chip 的右边缘小于铅笔的左边缘，以及 `[data-queue-edit]` / `[data-testid=send-queue-edit]` 仍然存在。也就是说 chip 是**插在**行里，不是替换掉行的操作。
 
+## 5.9 会话列表里的标记：这一条在等你选
+
+卡片只能被"打开了的会话"看见——用户要先点进去，读完才看到那张卡。但会话列表（桌面左栏、手机的会话列表、合并了别的桌面之后的那一份）恰恰是用来回答"哪一条在等我"的地方，所以列表行上要有自己的标记，和审批那个圆点并列。
+
+### 5.9.1 什么时候出现
+
+| 条件 | 原因 |
+|---|---|
+| 这个会话**最新一次 run 已完成**（`completed`） | 还在 streaming 的是"等等就好"，不是"等你回答" |
+| 且那次回复**以一张合法的卡收尾** | 历史里有卡不算：那个问题早就过去了（§2 的"只有最后一张卡可交互"是同一判断） |
+| 且这一行**不是当前打开的那条**（桌面 / 远程） | 卡就在眼前，再标一次是噪音（与审批圆点同一条规矩） |
+
+三条都不满足时什么都不画。已经选了但还没发送时标记**不消失**：会话仍然停在那张卡上，差一次发送。
+
+### 5.9.2 数据从哪来：一次写入，三端共读
+
+列表是拿不到别的会话的正文的（桌面左栏只读本地 store，手机只读对端的 catalog），所以"这条回复以卡收尾"必须在**产生回复的那一端**写成事实，而不是让每个客户端各自去猜文本：
+
+```
+Agent 提交 run ──┬─> terminal entry `content.offers_choice`
+                 └─> agent_end `offers_choice: true`
+                          │
+       桌面 host 落库 runs.offers_choice ──┬─> latest_run_infos → 左栏
+                                          └─> sessions catalog → 手机 / 远程行
+```
+
+- **判定在 Agent 里做一次**（`agent/src/prompt/choice_card.rs`），规则与渲染器 `parseChoiceCard` 对齐：围栏语言 `futureos-choice`、2–4 行 `option:`、id 为 `[a-z0-9-]`（≤24）、必须有非空 label；被引号包在文档围栏里的卡不算，卡后面还有正文的也不算（"卡收尾，且只有卡"）。
+- **只有干净收尾的 run 才带这个字段**：取消/失败/截断的回复不是"等你回答"。
+- **标记跟着 run 行**：用户下一次发送是新的一行，标记自然清零，不需要第二步清理。
+- 列表侧只读一个布尔：桌面 `ThreadRunInfo.offersChoice`（推送落在 terminal 状态时补读一次行），对端 catalog 行 `offersChoice`（手机与桌面远程行共用）。
+
+### 5.9.3 图标与文案
+
+- 图标 `list-checks`（与卡头同一枚），**颜色和审批那枚一样用 warning**：两者都在说「这条不点就不动」，而蓝色读起来像一条信息，不像一次请求。区别留在形状上——审批是 `circle-alert`（agent 卡在命令上，动不了），选择是清单（回复已经答完，等你选一项）。
+- 三端同一个 key：`pendingChoice` = "这条回复在等你选一项" / "This reply is waiting on your choice"。
+- 手机端它**占用**未读圆点的位置（已完成的会话）：两者说的都是"你不在时它结束了"，而只有卡说的那件事有欠账；未读仍由标题加粗表达。
+
 ## 6. 输入框行为（需求的 a–d）
 
 | 需求 | 行为 | 实现约束 |
 |---|---|---|
 | (a) 可以不选，保持为空 | 什么都没选、什么都没写 ⇒ 发送禁用（现有 `inputEmpty` 逻辑不变） | 卡片的存在**不**算草稿有内容。禁止"卡片一出现就能发送" |
-| (b) 已选可以回去改 | 五个入口：卡片任意一行、pill/chip 的铅笔、手机端底部 sheet、**队列行里的选择 chip（整个 chip 就是按钮，直接点它）**（§5.8.2）、以及该队列行自己的铅笔（改文字）。改的是同一个值 | 改完 focus 留在输入框（桌面）/ 关掉 sheet（手机），不打断已有的文字 |
+| (b) 已选可以回去改 | 五个入口：卡片任意一行、pill/chip 的铅笔、手机端底部 sheet、**队列行里的选择 chip（整个 chip 就是按钮，直接点它）**（§5.8.2）、以及该队列行自己的铅笔（改文字）。改的是同一个值 | 改完 focus 留在输入框（桌面）/ 关掉 sheet（手机），不打断已有的文字。例外：勾选取消到零是"没有答案"，这次改写被拒绝（draft 层丢弃、队列层提示），sheet 保持打开让读者重选 |
 | (c) 可以继续输入文字发送 | pill 与文字共存，发送时先 pill 后文字 | 桌面靠 `isEditorEmpty` 认 pill（已实测）；手机/远程要让答案计进 `canSend` 已读的 draft 项 |
 | (d) 不输入文字直接发送 | 只有 pill ⇒ 发送按钮可用 | 桌面已实测 `disabled:false`；手机/远程同 (c) |
 
@@ -329,10 +412,11 @@ chevron 而不是铅笔，是刻意的：它说的是“这里能打开点什么
 | 选了又补一句 | `[接下来做哪一件？ → 重画森林图] 顺便把图例挪到右下` |
 | 多选 | `[这三项都要 → 重画森林图、补一张实验流程图]` |
 | 只写字（没选 / 删掉了 chip） | 就是用户写的文字 |
+| 勾选后又全部取消（多选卡） | 就是用户写的文字（零个勾选不是答案，两端都不产出 `[…] → ]`） |
 
 `→` 是唯一的固定记号，问号与文案都来自模型自己的输出。带上 `title` 是为了在同一线程里出现过几张卡时，"重画森林图"这句话有归属。
 
-**为什么不回传 `futureos://choice/...` 链接：** 那需要新增引用类型、让 `isFutureReferenceType` 放开、并保证服务端也理解它；而收益只是用户气泡里显示成 chip。第一版用文本，用户气泡显示的就是真正发出去的内容——诚实、可复制、任何客户端都能读。胶囊化留给后续（§10）。
+**为什么不回传 `futureos://choice/...` 链接：** 那需要新增引用类型、让 `isFutureReferenceType` 放开、并保证服务端也理解它；而收益只是用户气泡里显示成 chip。第一版用文本，用户气泡显示的就是真正发出去的内容——诚实、可复制、任何客户端都能读。气泡里的标签化只发生在显示层（§5.2.3）：不重写这句话，也不是第二个协议。
 
 ## 8. 兼容与降级
 
@@ -356,11 +440,11 @@ chevron 而不是铅笔，是刻意的：它说的是“这里能打开点什么
 | `choice.mode.multi` | 多选 | Multiple choice |
 | `choice.hint.single` | 选一个就放进输入框；也可以直接在输入框里写别的 | Pick one and it lands in the input; you can type something else instead |
 | `choice.hint.multi` | 可以多选，点几个都行 | Pick as many as apply |
+| `choice.hint.readonly` | 只作展示：这张卡不能选 | An earlier question — this card can no longer be picked |
 | `choice.foot.queued` | 已放进输入框，可以继续补充，也可以直接发送 | In the input — add a note if you want, or send as is |
 | `choice.chip.change` | 修改「{{title}}」的选择 | Change the answer to "{{title}}" |
 | `choice.chip.remove` | 移除「{{title}}」的选择 | Remove the answer to "{{title}}" |
 | `choice.queue.change` | 更换这条消息里的选择：{{title}} · {{label}} | Change the choice in this message: {{title}} · {{label}} |
-| `choice.stale` | 这张卡已经过期 | This card is no longer active |
 | `choice.mobile.change` | 修改「{{title}}」 | Change "{{title}}" |
 
 - 图标：卡头 `list-checks`（一批待办里挑一件），铅笔、叉沿用现有 `lucide` 图标集；
@@ -376,7 +460,7 @@ chevron 而不是铅笔，是刻意的：它说的是“这里能打开点什么
 | 卡内自由输入框 | 输入框就是自由输入框（§5.6） |
 | 行尾数字快捷键 | 会劫持输入框的数字（§5.6） |
 | 卡片嵌套 / 回复中途的卡 | 交互上无法回答"我改的是哪一次" |
-| 历史卡片可改 | 同上；只读 + 高亮已选 |
+| 历史卡片可改 | 同上；只读，且副标题明说不能选（§3） |
 | TUI / IM 的交互版 | 本期只保证降级可读；TUI 已经有自己的选择机制（`SendChoiceSheet` 那套是本机 UI，不是 transcript 内容） |
 | 答案胶囊化（用户气泡里的 chip） | 需要新引用类型 + 服务端理解，收益是纯视觉的；留到第二版 |
 | 模型端记账（"用户选了哪个"作为结构化字段） | 第一版让模型读文本就够了；真需要统计时再加 |
@@ -402,7 +486,7 @@ chevron 而不是铅笔，是刻意的：它说的是“这里能打开点什么
 
 - **解析**：合法单/多选；2 与 4 的边界；3 个以下/5 个以上降级；重复 id、非法 id、缺 title 的降级；围栏在中途；未知字段忽略。
 - **桌面（三态回归，必测）**：空编辑器 ⇒ `disabled:true`；只有 pill ⇒ **`disabled:false`**；移除 pill ⇒ `disabled:true`。这是 v1 错误的那一条，必须钉死。
-- **桌面**：卡片渲染与只读/可交互切换；点行 → pill 出现；铅笔改 pill；叉移除 pill 且发送键变灰；pill + 文字一起发送的内容（§7 四种情况逐条断言）；发送后 pill 消失、卡片高亮保留。
+- **桌面**：卡片渲染与只读/可交互切换；点行 → pill 出现；铅笔改 pill；叉移除 pill 且发送键变灰；pill + 文字一起发送的内容（§7 四种情况逐条断言）；发送后 pill 消失，**卡面不保留高亮**（答案在用户消息的标签上，为什么不做回填见 §2）。
 - **远程**：同上，且断言 chip 在 textarea 之上而不是里面；**只有 chip 时发送键可用**（v1 同样漏掉的那一条）；远程草稿切换不串答案。
 - **移动端**：44pt 行高；选中行**只有一处强调**（无描边）；铅笔与叉同墨色；sheet 改选后 chip 更新；**只有 chip 时 `canSend` 为真**；键盘弹起时 chip 行不遮 field。
 - **队列（三端都要测）**：入队后答案作为 `choice` 而非纯文本；改选择后行内 chip 与最终发出的文本都变；删整行与“只删选择保留文字”两条路径；旧 Agent 不报 `choice` 时退化不报错。

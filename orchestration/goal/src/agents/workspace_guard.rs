@@ -278,6 +278,120 @@ pub fn render_conflicts(conflicts: &[WorkspaceConflict], now: u64) -> String {
     out
 }
 
+/// One **authoring-time** write-scope conflict: a todo about to be added
+/// declares a scope that an unfinished todo already declares.
+///
+/// Distinct from [`WorkspaceConflict`], which is evaluated at claim time
+/// against *live leases*. This one is evaluated at `todo add` time against
+/// *declarations*, which is where the collision is actually created: two
+/// tasks naming the same directory is a dispatch bug, and discovering it at
+/// claim time means the worker bounces between todos it cannot tell apart
+/// (measured 2026-11-15: a worker authored a duplicate todo with the same
+/// number and the same scope as the dispatcher's; it claimed the wrong one
+/// three times before a human superseded both).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WriteScopeConflict {
+    pub schema_version: String,
+    /// The unfinished todo that already holds (part of) the requested scope.
+    pub todo_id: String,
+    /// Its text, trimmed by the caller for display — kept whole here.
+    pub todo_text: String,
+    /// Lifecycle status token (`open` / `deferred` / `blocked`).
+    pub todo_status: String,
+    /// Best available identity of who holds it (claimant, owner, author).
+    pub holder: Option<String>,
+    /// The scope the existing todo declares, normalized.
+    pub held_scope: String,
+    /// The scope the new todo wants, normalized.
+    pub new_scope: String,
+}
+
+/// A todo stops reserving its write scopes once it can no longer run: done and
+/// superseded todos are terminal, so their scopes are free again. Deferred and
+/// blocked todos still will run, so they keep their reservation.
+fn holds_write_scope(todo: &crate::state::Todo) -> bool {
+    !matches!(
+        todo.status,
+        crate::state::TodoStatus::Done | crate::state::TodoStatus::Superseded
+    )
+}
+
+fn scope_status_token(todo: &crate::state::Todo) -> &'static str {
+    match todo.status {
+        crate::state::TodoStatus::Open => "open",
+        crate::state::TodoStatus::Done => "done",
+        crate::state::TodoStatus::Superseded => "superseded",
+        crate::state::TodoStatus::Deferred => "deferred",
+        crate::state::TodoStatus::Blocked => "blocked",
+    }
+}
+
+/// Who currently holds a todo's write scope, rendered for a refusal message:
+/// the live claimant first, then the durable assignment (`owner`), then the
+/// author (`created_by`).
+pub fn scope_holder(todo: &crate::state::Todo) -> Option<String> {
+    if let Some(id) = &todo.claimed_by {
+        return Some(format!("claimed by {id}"));
+    }
+    if let Some(id) = &todo.owner {
+        return Some(format!("owner {id}"));
+    }
+    todo.created_by.as_ref().map(|id| format!("author {id}"))
+}
+
+/// Authoring-time write-scope check for `todo add`.
+///
+/// Returns one entry per (existing todo, overlapping scope) pair, where
+/// overlap means same path or one is an ancestor of the other — the same
+/// component-aware rule the claim-time guard uses ([`paths_overlap`]), so a
+/// scope that passes here cannot be refused at claim time for the same
+/// reason. Scopes are normalized against the goal cwd, never the caller's
+/// cwd, exactly like [`todo_workspaces`].
+///
+/// Empty/blank scopes are ignored: a todo that declares no write set reserves
+/// nothing (the agent fallback is a claim-time concept, not a declaration).
+pub fn write_scope_conflicts(goal: &Goal, scopes: &[String]) -> Vec<WriteScopeConflict> {
+    let anchor = std::path::Path::new(&goal.cwd);
+    let requested: Vec<String> = scopes
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| normalize_workspace_path_at(s, anchor))
+        .collect();
+    if requested.is_empty() {
+        return vec![];
+    }
+    let mut conflicts = vec![];
+    for todo in goal.todos.iter().filter(|t| holds_write_scope(t)) {
+        let held: Vec<String> = todo
+            .required_write_scope
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| normalize_workspace_path_at(s, anchor))
+            .collect();
+        for path in &held {
+            if let Some(wanted) = requested.iter().find(|want| paths_overlap(want, path)) {
+                conflicts.push(WriteScopeConflict {
+                    schema_version: WORKSPACE_GUARD_SCHEMA_VERSION.to_string(),
+                    todo_id: todo.id.clone(),
+                    todo_text: todo.text.clone(),
+                    todo_status: scope_status_token(todo).to_string(),
+                    holder: scope_holder(todo),
+                    held_scope: path.clone(),
+                    new_scope: wanted.clone(),
+                });
+            }
+        }
+    }
+    conflicts.sort_by(|a, b| {
+        a.todo_id
+            .cmp(&b.todo_id)
+            .then(a.held_scope.cmp(&b.held_scope))
+    });
+    conflicts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

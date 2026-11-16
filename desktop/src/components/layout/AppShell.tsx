@@ -34,7 +34,7 @@ import { rememberRemoteIdentities, remoteConversationIdentity } from "../../feat
 import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
 import { RemoteDraftTargetChooser } from "../../features/remote-peer/RemoteDraftTargetChooser";
-import { REMOTE_FILES_PANEL_WIDTH, RemoteFilesPanel } from "../../features/remote-peer/RemoteFilesPanel";
+import { RemoteFilesPanel } from "../../features/remote-peer/RemoteFilesPanel";
 import { compactRemoteConversation, deleteRemoteConversation, forkRemoteConversation, installRemoteSkill, pinRemoteConversation, takeoverRemotePeer } from "../../features/remote-peer/remotePeerClient";
 import { sendRemoteContinuation } from "../../features/remote-peer/remotePromptOutbox";
 import { RemoteRenameDialog } from "../../features/remote-peer/RemoteRenameDialog";
@@ -743,12 +743,11 @@ function ReadyAppShell({
   // conversation's floor has to leave room for it: the rail when it is a column,
   // the center's own floor, and the files column when that one is a column too
   // (a floating drawer takes no layout space).
-  const rightColumnWidth = hideRightPanel
+  const rightColumnWidth = hideRightPanel || !(rightPanelOpen && rightPanelAvailable)
     ? 0
-    : activeRemote
-      // That panel is a fixed `w-80`; it is not drag-resized.
-      ? (rightPanelOpen && rightPanelAvailable ? REMOTE_FILES_PANEL_WIDTH : 0)
-      : (rightPanelOpen && rightPanelAvailable ? rightPanelWidth : 0);
+    // Both panels are the same column at the same drag-resized width; only what
+    // they show differs (the local context tabs, or the remote machine's files).
+    : rightPanelWidth;
   // Preferences are per conversation, and a remote conversation's key is
   // namespaced by host, so the two machines never share one panel state.
   const terminalPanel = useTerminalPanel(terminalTarget?.key ?? null, {
@@ -2370,9 +2369,12 @@ function ReadyAppShell({
                           desktopId={activeRemote.desktopId}
                           expanded={rightPanelOpen}
                           floating={rightPanelFloating}
+                          onResizeNudge={nudgeRightPanel}
+                          onResizeStart={startRightPanelResize}
                           onToggleExpanded={handleToggleRightPanel}
                           peer={activeRemotePeer}
                           sessionId={activeRemote.sessionId}
+                          width={rightPanelWidth}
                         />
                       )
                     : null}

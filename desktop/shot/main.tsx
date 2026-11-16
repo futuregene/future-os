@@ -63,6 +63,9 @@ seedHarnessState({
   pinned: list(params.get("pinned")),
   streaming: list(params.get("streaming")),
   unread: list(params.get("unread")),
+  offersChoice: list(params.get("offersChoice")),
+  remoteWaiting: list(params.get("remoteWaiting")),
+  remoteChoice: list(params.get("remoteChoice")),
 });
 
 /**

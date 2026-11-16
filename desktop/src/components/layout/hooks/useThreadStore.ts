@@ -25,6 +25,15 @@ export interface ThreadRunInfo {
   endedAt: number | null;
   /** Latest StoredRun represented by this thread-level projection. */
   runId?: string;
+  /**
+   * This run's reply closed by offering the reader a choice.
+   *
+   * The rail badges such a row while nothing newer is streaming: the run it
+   * describes has finished, and the conversation is waiting on an answer. A
+   * follow-up turn brings its own row, so the mark clears by itself as soon as
+   * the reader acts — no second write to keep in step.
+   */
+  offersChoice?: boolean;
   /** Process-global Tauri runtime revision; absent on reconciliation snapshots. */
   revision?: number;
 }
@@ -419,6 +428,17 @@ export function useThreadStore(): ThreadStore {
     [threads],
   );
 
+  /**
+   * The loaded conversations, readable from a push listener.
+   *
+   * The status listeners subscribe once (a push arrives at streaming frequency
+   * and re-subscribing per list change would drop the events in the gap), but a
+   * settled run makes them re-read the row set — and that set is whatever is on
+   * screen now, not the one that existed when the listener was installed.
+   */
+  const loadedThreadsRef = useRef<StoredThread[]>(activeThreads);
+  loadedThreadsRef.current = activeThreads;
+
   // Read the open conversation's workspace by id when the rail's list does not
   // hold it (a chat's temporary scratch workspace). Keyed on the id, so a
   // conversation switch reads its own; `workspaces` is a dependency because a
@@ -784,7 +804,7 @@ export function useThreadStore(): ThreadStore {
     // indicator and surface an unhandled rejection. A failed thread keeps
     // its previous status and self-heals on the next reconciliation pass.
     const ids = nextThreads.map(t => t.id);
-    let infos: Array<{ threadId: string; runId: string; status: string; endedAt: number | null }> = [];
+    let infos: Array<{ threadId: string; runId: string; status: string; endedAt: number | null; offersChoice?: boolean }> = [];
     try {
       infos = await listLatestRunInfos(ids);
     }
@@ -805,6 +825,7 @@ export function useThreadStore(): ThreadStore {
           ? {
               endedAt: info.endedAt ?? null,
               runId: info.runId,
+              offersChoice: info.offersChoice === true,
               // `revision` is a process-global monotonic watermark, independent
               // of which run it was last stamped by — never lower it on a runId
               // change. Otherwise a run rollover (A done, B created) drops the
@@ -819,7 +840,8 @@ export function useThreadStore(): ThreadStore {
           const prev = previous[thread.id];
           changed = prev?.status !== value?.status
             || prev?.endedAt !== value?.endedAt
-            || prev?.runId !== value?.runId;
+            || prev?.runId !== value?.runId
+            || prev?.offersChoice !== value?.offersChoice;
         }
         next[thread.id] = value;
       }
@@ -930,11 +952,18 @@ export function useThreadStore(): ThreadStore {
         (statuses, update) => reduceThreadRunStatus(statuses, update),
         previous,
       ));
+      // A settled run carries one more fact a list draws and the push does not
+      // spell out: whether its reply closed with a choice card. It is written to
+      // the row *before* the status this push announces, so reading it here is
+      // one indexed query and the badge lands with the status — rather than
+      // waiting up to the reconciliation pass for a conversation nobody opened.
+      if (event.payload.updates.some(update => update.status === "completed" || update.status === "failed"))
+        void refreshThreadRunStatuses(loadedThreadsRef.current);
     });
     return () => {
       void unlisten.then(stop => stop());
     };
-  }, []);
+  }, [refreshThreadRunStatuses]);
   // A conversation's activity stamp moved. Externally-driven runs (the CLI, a
   // scheduler, another machine) arrive this way and nowhere else: their row's
   // age label and its place in the list are read from `lastMessageAt`, which

@@ -161,7 +161,17 @@ export function serialize(editor: HTMLDivElement | null, options: SerializeOptio
       if (options.omitChoice)
         return;
       const answer = parseChoiceAnswer(element.getAttribute("data-choice"));
-      out += answer ? choiceAnswerText(answer) : (element.textContent ?? "");
+      if (!answer) {
+        out += element.textContent ?? "";
+        return;
+      }
+      // Nothing ticked is not an answer (§7): unticking the last row of a
+      // multi-choice card leaves the pill showing only its question, and printing
+      // that would send `[接下来做哪一件？ → ]` — a question with an empty answer,
+      // which reads as an answer. Emit nothing at all; anything the reader typed
+      // beside the pill is theirs and stays verbatim.
+      if (answer.selectedIds.length > 0)
+        out += choiceAnswerText(answer);
       return;
     }
     if (pillKind) {

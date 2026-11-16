@@ -263,10 +263,9 @@ export function ChatScreen() {
   const pickChoice = useCallback((card: ChoiceCardNode, optionId: string) => {
     setChoice((current) => {
       const base = current?.title === card.title ? current : choiceAnswerFromCard(card);
-      const next = pickChoiceOption(base, optionId);
       // Unticking the last option of a multi-choice answer leaves no answer at
-      // all, and the chip must go with it.
-      return next.selectedIds.length > 0 ? next : null;
+      // all — `setChoice` drops it and the chip goes with it (`answerOrNull`).
+      return pickChoiceOption(base, optionId);
     });
   }, [setChoice]);
   const clearChoice = useCallback(() => setChoice(null), [setChoice]);
@@ -525,6 +524,17 @@ export function ChatScreen() {
     const row = queuedRows.find(item => item.runId === id);
     if (!row?.choice)
       return;
+    // Zero ticks is not an answer (design §7, §5.8.2): the row's sentence is
+    // `[question → answer]`, so rewriting it from an empty pick would queue
+    // `[接下来做哪一件？ → ]` — a question the agent reads as an answer — or leave
+    // only the bracketed question. Refused here rather than silently kept: the
+    // reader is editing a message that is already waiting, so its text must not
+    // change under them, and the row's bin is what removes it (the same shape as
+    // `removeQueuedAttachment`'s last-file refusal below).
+    if (next.selectedIds.length === 0) {
+      showToast(t("chat.queue.emptyChoice"));
+      return;
+    }
     // The row's text is `[question → answer]` possibly followed by whatever the
     // reader typed after it. Only the bracketed head is rewritten: the note the
     // message was queued with is theirs, not the card's.
@@ -550,7 +560,7 @@ export function ChatScreen() {
         await resendQueuedMessage(row, text, carry);
       }
     });
-  }, [changeQueue, materializeQueuedAttachment, queuedRows, remote, resendQueuedMessage, sessionId]);
+  }, [changeQueue, materializeQueuedAttachment, queuedRows, remote, resendQueuedMessage, sessionId, t]);
 
   /** Open one file a waiting message carries, exactly as the transcript would. */
   const previewQueuedAttachment = useCallback((attachment: SendQueueAttachmentItem) => {

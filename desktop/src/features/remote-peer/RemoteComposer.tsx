@@ -21,7 +21,7 @@ import { errorMessage } from "../../lib/errors";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { useImeEnterGuard } from "../../lib/useImeEnterGuard";
 import { imageExtensionFromMime, splitFileName } from "../agent/attachments";
-import { answerFromPick, choiceAnswerText } from "../agent/composer/choiceAnswer";
+import { answerFromPick, answerOrNull, choiceAnswerText } from "../agent/composer/choiceAnswer";
 import { SendQueuePanel } from "../agent/SendQueuePanel";
 import { SkillRecommendCard } from "../agent/SkillRecommendCard";
 import { FilePreviewOverlay } from "../filepreview/FilePreviewOverlay";
@@ -414,7 +414,11 @@ export function RemoteComposer({
    */
   const onChoiceChangeRef = useRef(onChoiceChange);
   onChoiceChangeRef.current = onChoiceChange;
-  const writeChoice = useCallback((next: ChoiceAnswer | null) => {
+  const writeChoice = useCallback((rawNext: ChoiceAnswer | null) => {
+    // Zero ticks is no answer (design §7): the chip exists to say what was picked,
+    // so unticking a multi-choice answer's last row drops it rather than leaving a
+    // chip that only names the question.
+    const next = answerOrNull(rawNext);
     setChoice(next);
     onChoiceChangeRef.current?.(next);
   }, []);
@@ -429,7 +433,7 @@ export function RemoteComposer({
     if (archived || locked)
       return;
     setChoice((current) => {
-      const next = answerFromPick(current, card, optionId);
+      const next = answerOrNull(answerFromPick(current, card, optionId));
       onChoiceChangeRef.current?.(next);
       return next;
     });
@@ -471,10 +475,13 @@ export function RemoteComposer({
     setText(draft?.text ?? "");
     setUploads(draft?.uploads ?? []);
     setReferences(draft?.references ?? {});
-    setChoice(draft?.choice ?? null);
+    // A draft saved before this rule can hold an answer with nothing ticked; it
+    // is not an answer, so it neither draws a chip nor marks the card.
+    const restored = answerOrNull(draft?.choice ?? null);
+    setChoice(restored);
     // The restored answer is the card's too: a draft reopened must mark the same
     // row it marked before the reader left.
-    onChoiceChangeRef.current?.(draft?.choice ?? null);
+    onChoiceChangeRef.current?.(restored);
     const outbox = getRemoteOutbox(desktopId, sessionId);
     setPendingPrompt(outbox.prompt);
   }, [desktopId, sessionId]);
@@ -1421,7 +1428,7 @@ export function RemoteComposer({
                         // question without a pick, which is exactly the other three
                         // fields.
                         const { mode, options, title } = current;
-                        const next = answerFromPick(current, { mode, options, title }, option.id);
+                        const next = answerOrNull(answerFromPick(current, { mode, options, title }, option.id));
                         onChoiceChangeRef.current?.(next);
                         return next;
                       });

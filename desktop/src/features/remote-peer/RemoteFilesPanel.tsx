@@ -1,3 +1,4 @@
+import type { MouseEvent as ReactMouseEvent } from "react";
 import type { FutureEventMap } from "../../lib/futureEvents";
 import type { GitHistorySource } from "../git-history/gitHistorySource";
 import type { RemotePeer } from "./remotePeerClient";
@@ -17,14 +18,6 @@ import { formatSize } from "./remotePeerFiles";
 import { useRemoteFiles } from "./useRemoteFiles";
 
 /**
- * Width of the files column as a number.
- *
- * The panel draws itself with `w-80`; the shell needs the same number to reserve
- * the column beside a right-docked terminal (see `AppShell`). Keep them equal.
- */
-export const REMOTE_FILES_PANEL_WIDTH = 320;
-
-/**
  * Remote files, or a selected Fusion discussion read from that same host.
  *
  * The local panel's other tabs describe *this* machine
@@ -34,14 +27,20 @@ export const REMOTE_FILES_PANEL_WIDTH = 320;
  *
  * Collapsed it is the same floating affordance the local conversation has, in
  * the same corner, so the control is where a reader already reaches for it.
+ * As a column it is drag-resized from the same divider and at the same shared
+ * width as the local context panel: the two are one column with two contents,
+ * so a reader learns the gesture once and a width set on either keeps.
  */
 export function RemoteFilesPanel({
   desktopId,
   expanded,
   floating,
+  onResizeNudge,
+  onResizeStart,
   onToggleExpanded,
   peer,
   sessionId,
+  width,
 }: {
   desktopId: string;
   expanded: boolean;
@@ -52,9 +51,14 @@ export function RemoteFilesPanel({
    * `ContextPanel.floating`.
    */
   floating?: boolean;
+  /** Keyboard-driven resize (arrow keys on the divider), in px. */
+  onResizeNudge: (deltaPx: number) => void;
+  onResizeStart: (event: ReactMouseEvent) => void;
   onToggleExpanded: () => void;
   peer: RemotePeer | undefined;
   sessionId: string;
+  /** Current panel width in px (drag-resized, shared with the local panel). */
+  width: number;
 }) {
   const { t } = useTranslation("remotePeer");
   const scope = `${desktopId}:${sessionId}`;
@@ -136,7 +140,11 @@ export function RemoteFilesPanel({
 
   if (fusion) {
     return (
-      <aside className={cn("flex w-80 flex-col border-l border-line-soft bg-surface-panel", floating ? "absolute inset-y-0 right-0 z-40 shadow-panel" : "relative shrink-0")}>
+      <aside
+        className={cn("flex flex-col border-l border-line-soft bg-surface-panel", floating ? "absolute inset-y-0 right-0 z-40 shadow-panel" : "relative shrink-0")}
+        style={{ width }}
+      >
+        <PeerPanelDivider label={t("filesResize")} onResizeNudge={onResizeNudge} onResizeStart={onResizeStart} />
         <header className="flex h-12 shrink-0 items-center gap-1 px-4">
           <span className="min-w-0 flex-1 truncate text-sm text-ink-muted">{peer ? peerBadgeText(peer, peer.desktopId) : desktopId}</span>
           <IconButton icon={<PanelRightClose className="size-3.5" />} label={t("filesClose")} onClick={onToggleExpanded} />
@@ -152,10 +160,12 @@ export function RemoteFilesPanel({
     <aside
       className={
         floating
-          ? "absolute inset-y-0 right-0 z-40 flex w-80 flex-col border-l border-line-soft bg-surface-panel shadow-panel"
-          : "relative flex w-80 shrink-0 flex-col border-l border-line-soft bg-surface-panel"
+          ? "absolute inset-y-0 right-0 z-40 flex flex-col border-l border-line-soft bg-surface-panel shadow-panel"
+          : "relative flex shrink-0 flex-col border-l border-line-soft bg-surface-panel"
       }
+      style={{ width }}
     >
+      <PeerPanelDivider label={t("filesResize")} onResizeNudge={onResizeNudge} onResizeStart={onResizeStart} />
       <header className="flex h-12 shrink-0 items-center gap-1 px-4">
         {historySource
           ? (
@@ -313,6 +323,42 @@ export function RemoteFilesPanel({
           )
         : null}
     </aside>
+  );
+}
+
+/**
+ * Drag handle astride the panel's left border: the local context panel's own
+ * divider, so the remote column is resized by the same gesture in the same
+ * place. No visual line: the resize cursor is the whole affordance.
+ */
+function PeerPanelDivider({
+  label,
+  onResizeNudge,
+  onResizeStart,
+}: {
+  label: string;
+  onResizeNudge: (deltaPx: number) => void;
+  onResizeStart: (event: ReactMouseEvent) => void;
+}) {
+  return (
+    <div
+      aria-label={label}
+      aria-orientation="vertical"
+      className="absolute -left-1 top-0 z-20 h-full w-2 cursor-col-resize"
+      onKeyDown={(event) => {
+        if (event.key === "ArrowLeft") {
+          event.preventDefault();
+          onResizeNudge(16);
+        }
+        else if (event.key === "ArrowRight") {
+          event.preventDefault();
+          onResizeNudge(-16);
+        }
+      }}
+      onMouseDown={onResizeStart}
+      role="separator"
+      tabIndex={0}
+    />
   );
 }
 

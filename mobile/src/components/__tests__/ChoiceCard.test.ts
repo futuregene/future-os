@@ -61,6 +61,20 @@ describe("a futureos-choice card on the phone", () => {
       return true;
     });
   }
+  /**
+   * The card's subtitle text(s). `t()` is stubbed to echo its key, so a card that
+   * prints an answering hint reads `choice.hint.single` / `choice.hint.multi` and
+   * a card that cannot answer reads `choice.hint.readonly`.
+   *
+   * Filtered to host nodes: a rendered `<Text>` also shows up as its composite
+   * element with the same children, which would double every entry.
+   */
+  function hintKeys(root: ReactTestRenderer["root"]) {
+    return root.findAll(node => typeof node.type === "string"
+      && typeof node.props.children === "string"
+      && /^choice\.hint\./.test(node.props.children))
+      .map(node => node.props.children as string);
+  }
   /** The style a row is actually drawn with (Pressable takes a function). */
   function drawnStyle(row: { props: { style?: unknown; }; }) {
     const style = row.props.style;
@@ -107,6 +121,23 @@ describe("a futureos-choice card on the phone", () => {
     // The card travels with the pick, so the draft can carry the whole question.
     expect(onPick.mock.calls[0]![0]).toMatchObject({ type: "choiceCard", title: "要不要先喘口气？" });
     expect(onPick.mock.calls[0]![1]).toBe("now");
+  });
+
+  /**
+   * The subtitle is the one place a card promises an action, so the earlier card
+   * must not print the answering one: a card whose rows cannot be tapped must not
+   * say "pick one and it lands in the input". Two cards in one body, one
+   * answering hint, one that says it cannot be picked.
+   */
+  test("the earlier card says it cannot be picked instead of promising a pick", () => {
+    const answer: ChoiceCardAnswer = { onPick: jest.fn(), selectedIds: [], title: "接下来做哪一件？" };
+    const root = render(`${CARD}\n\n还有一件事：\n\n${SECOND_CARD}`, answer);
+    expect(hintKeys(root)).toEqual(["choice.hint.readonly", "choice.hint.single"]);
+  });
+
+  test("a card read-only for lack of an answer surface says so too", () => {
+    const root = render(CARD);
+    expect(hintKeys(root)).toEqual(["choice.hint.readonly"]);
   });
 
   test("without an answer surface every card is read-only", () => {

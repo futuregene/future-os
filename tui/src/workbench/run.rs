@@ -1390,9 +1390,8 @@ async fn quit(
             copy_to_clipboard(live, text, super::i18n::Key::CopyDone).await;
             continue;
         }
-        // The `[复制]` control under one message: the same clipboard road as
-        // `/copy`, with the message the reader pointed at instead of the last
-        // answer.
+        // The `[复制]` control under the transcript's answer: the same clipboard
+        // road as `/copy`, pressed on the block `/copy` would take.
         if let WbAction::CopyMessage(row) = &action {
             let text = live.copy_message(*row);
             copy_to_clipboard(live, text, super::i18n::Key::CopiedMessage).await;
@@ -1805,7 +1804,7 @@ async fn open_git_detail(live: &mut Live, frame: &Frame, workbench: &mut Workben
 /// Put `text` on the clipboard and say so on the notice row.
 ///
 /// One road for every copy the conversation offers — `/copy`'s last answer, the
-/// `[复制]` control under one message — so the two cannot drift in how they
+/// `[复制]` control under that same answer — so the two cannot drift in how they
 /// report a clipboard that refused them. `done` is the sentence a successful
 /// copy leaves behind.
 async fn copy_to_clipboard(live: &mut Live, text: Result<String, String>, done: super::i18n::Key) {
@@ -6793,9 +6792,9 @@ mod driver_tests {
             );
         }
 
-        /// The `[复制]` control under one message is the same clipboard road
-        /// `/copy` takes — one message instead of the last answer — and the
-        /// loop, not the surface, owns the clipboard.
+        /// The `[复制]` control under the transcript's answer is the same
+        /// clipboard road `/copy` takes, and the loop, not the surface, owns the
+        /// clipboard.
         ///
         /// Reached the way a reader reaches it: `tab` walks the transcript's
         /// stops and `enter` presses the chip, so the case cannot pass by
@@ -6805,7 +6804,7 @@ mod driver_tests {
         #[cfg(unix)]
         #[allow(clippy::await_holding_lock)]
         #[tokio::test]
-        async fn a_copy_of_one_message_takes_that_message_and_says_so() {
+        async fn the_answers_copy_chip_takes_that_answer_and_says_so() {
             use std::os::unix::fs::PermissionsExt as _;
 
             use crate::components::chat_area::RowAction;
@@ -6865,11 +6864,7 @@ mod driver_tests {
             driver.live.notice = None;
             assert!(!driver.quit_key("enter").await, "enter left the app");
             let language = driver.live.language();
-            let notice = driver
-                .live
-                .notice
-                .clone()
-                .expect("a copy of one message said nothing");
+            let notice = driver.live.notice.clone().expect("the copy said nothing");
             assert_eq!(
                 notice,
                 t(language, Key::CopiedMessage),
@@ -6879,7 +6874,7 @@ mod driver_tests {
                 .expect("the clipboard tool kept nothing: the copy never reached it");
             assert_eq!(
                 copied, "the build is green",
-                "the clipboard holds something other than the message under the cursor"
+                "the clipboard holds something other than the answer the chip sits under"
             );
         }
     }

@@ -33,7 +33,16 @@ it("surfaces a refresh failure", async () => {
   const root = createRoot(container);
   await act(async () => {
     root.render(
-      <RemoteFilesPanel desktopId="desktop_a" expanded onToggleExpanded={vi.fn()} peer={undefined} sessionId="sess_1" />,
+      <RemoteFilesPanel
+        desktopId="desktop_a"
+        expanded
+        onResizeNudge={vi.fn()}
+        onResizeStart={vi.fn()}
+        onToggleExpanded={vi.fn()}
+        peer={undefined}
+        sessionId="sess_1"
+        width={384}
+      />,
     );
   });
 
