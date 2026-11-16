@@ -1238,14 +1238,22 @@ mod tests {
         // `mode` is optional and defaults to a single pick, and the one thing the
         // model has to get right is when several can be done at once: phrasing it
         // as "unless several can be done in one go" was read as "usually single",
-        // so every card came out single even when both halves were one job. The
-        // criterion is now a question with a yes/no answer, and the two modes are
-        // named as the only two — a third one silently parses as `single`.
-        assert!(prompt.contains("if the reader ticked two rows, would you do both"));
-        assert!(prompt.contains("Yes → `mode: multi`"));
-        assert!(prompt.contains("omit the"));
+        // so every card came out single even when both halves were one job; a
+        // later rewrite made it a yes/no question about the *reader*, which read
+        // as a hypothetical and still defaulted to `single`.
+        //
+        // So the test now sits on the rows themselves (one deliverable in two
+        // rows, vs one of them being the next step), both outcomes are shown as
+        // worked examples, and the prompt names the failure it kept producing:
+        // defaulting to `single` "to be safe".
+        assert!(prompt.contains("settle it from the *rows*"));
+        assert!(prompt.contains("→ `mode: multi`"));
         assert!(prompt.contains("`single` is what an omitted line means"));
-        assert!(prompt.contains("No third mode exists"));
+        assert!(prompt.contains("Do not default to `single` to be safe"));
+        assert!(prompt.contains("There is no third mode"));
+        // A worked multi card, not just the word: the only example used to be a
+        // single one, and few-shot beat the rule.
+        assert!(prompt.contains("```futureos-choice\ntitle: 这几件一起做？\nmode: multi"));
 
         // Where it goes: the fence is the reply's closing question, not a block
         // mid-answer, and a second card would be an unanswerable choice.

@@ -68,14 +68,18 @@ option: table | 表里加一列样本量 | Frank 42 / Dreher 186，标出测量�
 | 字段 | 必填 | 说明 |
 |---|---|---|
 | `title` | 是 | 问题本身，一句话，≤ 60 字。它就是卡片标题 |
-| `mode` | 否 | `single`（默认）/ `multi` |
+| `mode` | 否 | `single`（默认）/ `multi`（也接受 `multiple`、`multi-select`、`多选`——见下） |
 | `option` | 是（2–4 个） | 每行一个，`id \| 显示文案 \| 一行说明`；说明可以省略 |
 | `id` | — | 选项 id：ASCII、`[a-z0-9-]`、≤ 24 字符、卡内唯一。它是要回传的稳定标识 |
 | `hint` | 否 | 覆盖默认副标题（"选一个就放进输入框…"） |
 
 **`mode` 的判据**（写 prompt 的人必须照这条，不能只把它当风格偏好）：
 
-> 读者同时勾两行，这两行你会**在同一段后续工作里都做**吗？会 → `multi`；不会，因为选了这行另外几行就不做了 → `single`（默认，省略即此）。没有第三种。
+> 看**行本身**，不看读者：两行是同一件交付物的两半（图 + 图注），或两件不抢同一步的活，就放进同一批 → `multi`；选了这行、别的就不用做了 → `single`（省略即此）。没有第三种。
+
+判据落成判词之前经历过两次错：最初写的是「`multi` when several can be done in one go」，模型读成「通常 single」，于是全部卡片都是单选；改成「读者勾两行你会不会都做」这种对读者行为的假设后，模型把它当假设答题，仍然默认省 `mode:`。现在的写法把判据放在**行**上（一件交付物的两半 vs 下一步只有一步），并且在 prompt 里放了一张**多选示例卡**——此前 few-shot 里只有单选卡，格式类决策上示例比规则管用。
+
+解析端也不再把写法当成语法错误：`multi | multiple | multi-select | multi_select | 多选` 都读成多选，其余（缺省、`single`、`单选`、拼错）一律按单选取。这条容错是必要的——旧的精确比较会把 `multiple` 静默降成单选，卡片照常画出来，只有「只能勾一个」这一处不对，界面上看不出来。
 
 `single` 是互斥**选择**："接下来做哪一件"。`multi` 是一件事的几**部分**或几件可并行的事："接新浪和 Nasdaq 两个源"。判据不成立就别写 `multi`：多选卡允许用户只勾一个，所以它不会强加工作量；反过来把互斥问题写成 `multi`，用户就得自己判断"我是不是该只勾一个"，卡片反而多了一层歧义。
 
@@ -116,16 +120,19 @@ Use it only when all of these hold:
 - The reply genuinely ends with a question about the next step, and you can carry
   out every option yourself right after they pick.
 - There are 2–4 real alternatives. One option, or five, is a paragraph — not a card.
-- The options are mutual alternatives — you would do one of them next.
+- The options are 2–4 genuine alternatives you would act on next — one of them, or
+  several that do not compete for the same step.
 
 Do not use it for: confirming a risky action (the approval card already owns that),
 restating what you just did, "let me know if you need anything", or a question whose
 answer needs a sentence rather than a pick.
 
-`mode:` — one test decides it: if the reader ticked two rows, would you do both in
-the one stretch of work that follows this reply? Yes → `mode: multi`; no, because each
-rules the others out → omit the line, and `single` is what an omitted line means. There
-is no third mode.
+`mode:` — settle it from the *rows*: rows that are one deliverable in parts, or jobs that
+do not compete for the same step, go in the same batch → `mode: multi`, and the reader
+ticks as many as they want. If picking one rules the others out — the next step is *one*
+of them — omit the line: `single` is what an omitted line means. Do not default to
+`single` to be safe: one-job cards are exactly the ones people answer with two ticks.
+There is no third mode.
 
 Write each option as the instruction you would follow if chosen — the user's words,
 not a menu label ("重画森林图", not "选项 A"). The third field says what changes or
@@ -136,7 +143,9 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 
 要点：**选项文案必须是用户会说的那句话**（因为发送时它就是消息的一部分），不是"选项 A/B/C"。
 
-**2026-11-15 修订了 §4 的措辞**：原稿把 `multi` 写成兜底选项（"omit `mode: multi` unless several can be done in one go"）并塞进"什么时候才配用这张卡"的条件列表里。结果是模型写出来的卡一律单选，连"接新浪和 Nasdaq 两个源"这种明显是一件事的两半，也得用户自己打字回答——正是卡片要消灭的那种浪费。现在判据是一条**能回答是/否**的检验（勾两行会不会在同一段工作里都做），写在 §3 字段表下面与 §4 的字段说明里：判据不能只活在 prompt 里，否则下次改 prompt 的人不知道它为什么长这样。
+**2026-11-15 / 11-16 两次修订了 §4 的措辞**：原稿把 `multi` 写成兜底选项（"omit `mode: multi` unless several can be done in one go"）并塞进"什么时候才配用这张卡"的条件列表里。结果是模型写出来的卡一律单选，连"接新浪和 Nasdaq 两个源"这种明显是一件事的两半，也得用户自己打字回答——正是卡片要消灭的那种浪费。第一次改成一道**能回答是/否**的检验，但问的是**读者**会怎么做（"if the reader ticked two rows…"），模型把它当假设题答，仍然是每次省 `mode:`。现在的版本：判据落在**行**上（一件交付物的两半 vs 下一步只有一步），prompt 里多了一张**多选示例卡**（此前 few-shot 只有单选），并直接点名它一直在犯的那个错——"Do not default to `single` to be safe"。
+
+另有一个**部署坑**：这条 prompt 是 `include_str!` 编进二进制的，所以本机装的是旧构建时，改完仓库也不会立即生效（实测 `futureos.exe` 里还是 "the default, so usually omit it" 那一句，而仓库已经改了两轮）。改 prompt 的改动必须跟一次重装 + 重启才算上线。
 
 ## 5. 界面
 
