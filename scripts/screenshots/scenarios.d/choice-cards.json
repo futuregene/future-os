@@ -214,6 +214,12 @@
           "wait": 400
         },
         {
+          "eval": "(() => { const toggle=document.querySelector('[data-queue-toggle]'); if(!toggle) throw new Error('the queue header is not a control'); if(toggle.getAttribute('aria-expanded')!=='false') throw new Error('the queue opened itself: it draws no rows until asked'); toggle.click(); return 'opened'; })()"
+        },
+        {
+          "wait": 300
+        },
+        {
           "inject": "injects/choice-card-lib.js"
         },
         {
@@ -243,7 +249,13 @@
           "wait": 1500
         },
         {
-          "eval": "(() => { const panel=document.querySelector('[data-send-queue]'); if(!panel) throw new Error('the remote frame has no queue panel'); if(panel.querySelectorAll('[data-queue-item]').length<1) throw new Error('the panel holds no rows'); return JSON.stringify({rows:panel.querySelectorAll('[data-queue-item]').length}); })()"
+          "eval": "(() => { const panel=document.querySelector('[data-send-queue]'); if(!panel) throw new Error('the remote frame has no queue panel'); const toggle=panel.querySelector('[data-queue-toggle]'); if(!toggle) throw new Error('the remote queue header is not a control'); if(panel.querySelectorAll('[data-queue-item]').length!==0) throw new Error('the remote queue draws rows before it is asked'); toggle.click(); return 'opened'; })()"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "eval": "(() => { const panel=document.querySelector('[data-send-queue]'); if(panel.querySelectorAll('[data-queue-item]').length<1) throw new Error('the panel holds no rows'); return JSON.stringify({rows:panel.querySelectorAll('[data-queue-item]').length}); })()"
         },
         {
           "inject": "injects/choice-card-lib.js"
