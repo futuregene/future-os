@@ -177,7 +177,13 @@ function ThreadListItemImpl({
                 ? (
                     <span
                       aria-label={t("activityRail.pendingChoice")}
-                      className="pointer-events-none inline-flex size-5 shrink-0 items-center justify-center text-accent"
+                      // The approval badge's ink, not the accent: both marks say
+                      // the same thing to a reader scanning the list — this
+                      // conversation cannot move without you — and a blue one read
+                      // as a quieter, informational state next to it. The *shape*
+                      // still tells the two apart (a card waits for the next send;
+                      // an approval blocks the agent).
+                      className="pointer-events-none inline-flex size-5 shrink-0 items-center justify-center text-warning"
                       data-thread-choice="true"
                       title={t("activityRail.pendingChoice")}
                     >
