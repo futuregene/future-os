@@ -15,6 +15,8 @@ use crate::Error as AppError;
 const APP_UPDATE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const FUTURE_BALANCE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const FUTURE_MODELS_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+const AUTO_ARCHIVE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+const AUTO_ARCHIVE_STARTUP_DELAY: Duration = Duration::from_secs(60);
 
 pub const APP_UPDATE_EVENT: &str = "scheduler-app-update";
 pub const FUTURE_BALANCE_EVENT: &str = "scheduler-future-balance";
@@ -32,6 +34,8 @@ pub static FUTURE_BALANCE_JOB: LazyLock<FixedIntervalJob> =
     LazyLock::new(|| FixedIntervalJob::new(FUTURE_BALANCE_INTERVAL));
 pub static FUTURE_MODELS_JOB: LazyLock<FixedIntervalJob> =
     LazyLock::new(|| FixedIntervalJob::new(FUTURE_MODELS_INTERVAL));
+pub static AUTO_ARCHIVE_JOB: LazyLock<FixedIntervalJob> =
+    LazyLock::new(|| FixedIntervalJob::new(AUTO_ARCHIVE_INTERVAL));
 
 pub struct FixedIntervalJob {
     schedule: Mutex<FixedIntervalSchedule>,
@@ -199,6 +203,30 @@ where
 /// phone's model list current instead of freezing it at first launch.
 pub fn start_headless() {
     spawn_fixed_interval(&FUTURE_MODELS_JOB, refresh_future_catalogue_if_signed_in);
+    start_auto_archive();
+}
+
+/// Startup catch-up plus the process-lifetime daily pass. The short delay
+/// keeps startup run reconciliation ahead of the first archive decision.
+pub fn start_auto_archive() {
+    crate::runtime::spawn(async {
+        tokio::time::sleep(AUTO_ARCHIVE_STARTUP_DELAY).await;
+        // Share the daily job's clock and execution lock so startup catch-up
+        // cannot overlap or immediately duplicate the first interval pass.
+        let _ = run_explicit(
+            &AUTO_ARCHIVE_JOB,
+            crate::application::auto_archive::auto_archive_now,
+        )
+        .await;
+    });
+    spawn_fixed_interval(&AUTO_ARCHIVE_JOB, auto_archive_pass);
+}
+
+async fn auto_archive_pass() {
+    if let Err(error) = crate::application::auto_archive::auto_archive_now().await {
+        tracing::warn!(event = "auto_archive_pass_failed", %error,
+            "scheduled idle-conversation archive failed");
+    }
 }
 
 /// The server's catalogue job body. Split out so the signed-in gate is testable
@@ -263,6 +291,7 @@ mod tests {
         assert_eq!(APP_UPDATE_INTERVAL, Duration::from_secs(86_400));
         assert_eq!(FUTURE_BALANCE_INTERVAL, Duration::from_secs(3_600));
         assert_eq!(FUTURE_MODELS_INTERVAL, Duration::from_secs(86_400));
+        assert_eq!(AUTO_ARCHIVE_INTERVAL, Duration::from_secs(86_400));
     }
 
     /// The three intervals above are only policy if the global jobs are built
@@ -277,6 +306,7 @@ mod tests {
             (&*APP_UPDATE_JOB, APP_UPDATE_INTERVAL),
             (&*FUTURE_BALANCE_JOB, FUTURE_BALANCE_INTERVAL),
             (&*FUTURE_MODELS_JOB, FUTURE_MODELS_INTERVAL),
+            (&*AUTO_ARCHIVE_JOB, AUTO_ARCHIVE_INTERVAL),
         ];
         let now = Instant::now();
         for (job, interval) in jobs {

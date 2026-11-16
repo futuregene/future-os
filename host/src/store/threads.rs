@@ -32,6 +32,7 @@ pub struct ThreadRecord {
     pub created_at: i64,
     pub updated_at: i64,
     pub archived_at: Option<i64>,
+    pub restored_at: Option<i64>,
     pub deleted_at: Option<i64>,
 }
 
@@ -40,13 +41,24 @@ pub struct ThreadRecord {
 sql_record!(pub(super) THREAD_COLUMNS, thread_from_row -> ThreadRecord {
     id, workspace_id, mode, title, title_seed, status, pinned, readonly,
     agent_session_id, parent_session_id, asset_root_id, last_message_at, last_opened_at,
-    created_at, updated_at, archived_at, deleted_at,
+    created_at, updated_at, archived_at, restored_at, deleted_at,
 });
+
+const THREAD_COLUMNS_WITHOUT_RESTORE: &str = "id, workspace_id, mode, title, title_seed, status, pinned, readonly, agent_session_id, parent_session_id, asset_root_id, last_message_at, last_opened_at, created_at, updated_at, archived_at, NULL AS restored_at, deleted_at";
+
+pub(super) fn thread_columns(conn: &Connection) -> Result<&'static str, crate::Error> {
+    Ok(if column_exists(conn, "threads", "restored_at")? {
+        THREAD_COLUMNS
+    } else {
+        THREAD_COLUMNS_WITHOUT_RESTORE
+    })
+}
 
 pub fn list_threads() -> Result<Vec<ThreadRecord>, crate::Error> {
     let conn = connect()?;
+    let columns = thread_columns(&conn)?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT {THREAD_COLUMNS}
+        "SELECT {columns}
              FROM threads
              WHERE status != 'deleted'
              ORDER BY pinned DESC, COALESCE(last_message_at, updated_at, created_at) DESC"
@@ -58,9 +70,10 @@ pub fn list_threads() -> Result<Vec<ThreadRecord>, crate::Error> {
 
 pub fn get_recent_thread() -> Result<Option<ThreadRecord>, crate::Error> {
     let conn = connect()?;
+    let columns = thread_columns(&conn)?;
     conn.query_row(
         &format!(
-            "SELECT {THREAD_COLUMNS}
+            "SELECT {columns}
          FROM threads
          WHERE status = 'active'
          ORDER BY COALESCE(last_opened_at, last_message_at, updated_at) DESC
@@ -81,8 +94,9 @@ pub fn find_thread_by_agent_session(
     let conn = connect()?;
     conn.query_row(
         &format!(
-            "SELECT {THREAD_COLUMNS} FROM threads \
-             WHERE agent_session_id = ?1 AND status != 'deleted' LIMIT 1"
+            "SELECT {} FROM threads \
+             WHERE agent_session_id = ?1 AND status != 'deleted' LIMIT 1",
+            thread_columns(&conn)?
         ),
         params![session_id],
         thread_from_row,
@@ -291,7 +305,10 @@ pub(super) fn get_thread_in(
     thread_id: &str,
 ) -> Result<Option<ThreadRecord>, crate::Error> {
     conn.query_row(
-        &format!("SELECT {THREAD_COLUMNS} FROM threads WHERE id = ?1"),
+        &format!(
+            "SELECT {} FROM threads WHERE id = ?1",
+            thread_columns(conn)?
+        ),
         params![thread_id],
         thread_from_row,
     )
@@ -516,7 +533,9 @@ pub(super) fn update_thread_status(
         None
     };
     const SQL: &str = "UPDATE threads
-         SET status = ?1, archived_at = ?2, updated_at = ?3
+         SET status = ?1, archived_at = ?2,
+             restored_at = CASE WHEN ?1 = 'active' THEN ?3 ELSE restored_at END,
+             updated_at = ?3
          WHERE id = ?4 AND status != 'deleted'";
     let conn = connect()?;
     conn.execute(SQL, params![status, archived_at, now, thread_id])?;
@@ -605,7 +624,7 @@ pub fn restore_thread_tree(thread_id: &str) -> Result<ThreadRecord, crate::Error
     for thread in &closure {
         if thread.status == "archived" {
             tx.execute(
-                "UPDATE threads SET status = 'active', archived_at = NULL, updated_at = ?1
+                "UPDATE threads SET status = 'active', archived_at = NULL, restored_at = ?1, updated_at = ?1
                  WHERE id = ?2 AND status = 'archived'",
                 params![now, thread.id],
             )?;
@@ -782,8 +801,9 @@ pub fn list_active_threads(
     streaming_thread_ids: &[String],
 ) -> Result<Vec<ThreadRecord>, crate::Error> {
     let conn = connect()?;
+    let columns = thread_columns(&conn)?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT {THREAD_COLUMNS} FROM threads
+        "SELECT {columns} FROM threads
          WHERE status != 'deleted' AND (
              id IN (SELECT thread_id FROM runs WHERE status NOT IN ({TERMINAL_RUN_STATUSES_SQL}))
          )
@@ -2557,6 +2577,9 @@ mod archive_tests {
         assert_eq!(get_thread("root").unwrap().unwrap().status, "active");
         assert_eq!(get_thread("child").unwrap().unwrap().status, "active");
         assert_eq!(get_thread("keep").unwrap().unwrap().status, "active");
+        assert!(get_thread("root").unwrap().unwrap().restored_at.is_some());
+        assert!(get_thread("child").unwrap().unwrap().restored_at.is_some());
+        assert!(get_thread("keep").unwrap().unwrap().restored_at.is_none());
     }
 
     /// Restoring one conversation out of a shelved workspace reopens the

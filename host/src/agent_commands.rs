@@ -58,6 +58,21 @@ pub fn compact_command(session_id: String, instructions: String) -> RpcCommand {
     }
 }
 
+/// Archive-only history rewrite: retain Shell calls and result metadata while
+/// discarding their output bodies and retiring the affected replay streams.
+pub fn archive_shell_outputs_command(session_id: String) -> RpcCommand {
+    RpcCommand {
+        reset_history: Some(future_rpc::proto::HistoryReset {
+            apply: true,
+            all: None,
+            keep_first: None,
+            keep_last: None,
+            drop: vec!["archive-shell-outputs".to_string()],
+        }),
+        ..base_command("reset_session_history", session_id)
+    }
+}
+
 pub fn get_run_state_command(session_id: String, run_id: String) -> RpcCommand {
     RpcCommand {
         run_id,

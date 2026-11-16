@@ -239,7 +239,7 @@ pub fn restore_workspace(workspace_id: &str) -> Result<WorkspaceRecord, crate::E
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let now = now_millis();
     tx.execute(
-        "UPDATE threads SET status = 'active', archived_at = NULL, updated_at = ?1
+        "UPDATE threads SET status = 'active', archived_at = NULL, restored_at = ?1, updated_at = ?1
          WHERE workspace_id = ?2 AND status = 'archived' AND deleted_at IS NULL",
         params![now, workspace_id],
     )?;

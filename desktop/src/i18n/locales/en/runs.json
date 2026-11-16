@@ -10,6 +10,9 @@
     "toolCalls": "Tool Calls",
     "noToolCalls": "No tool calls recorded.",
     "noMatchingToolCalls": "No matching tool calls.",
+    "logsPurgedBadge": "Cleared",
+    "logsPurgedTitle": "Run logs cleared",
+    "logsPurgedDetail": "This command's output and replay were deleted when the conversation was archived. The command record, conversation prose, and generated files remain. Deleted logs cannot be recovered.",
     "toolFallback": "Tool",
     "field": {
       "kind": "Kind",

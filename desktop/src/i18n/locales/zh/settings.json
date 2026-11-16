@@ -190,6 +190,20 @@
     "repairConfirm": "已完成安装",
     "repairCancel": "返回"
   },
+  "archive": {
+    "cleanupSection": "运行日志",
+    "cleanupEnabled": "归档时自动清理运行日志",
+    "cleanupDescription": "保留聊天正文、命令标题和生成的文件，清理命令输出和运行回放。取消归档后仍可继续对话，已清理的运行日志无法恢复。",
+    "autoSection": "闲置会话自动归档",
+    "autoSectionDescription": "按整棵会话树最近一次有效对话活动判断，应用运行时每天检查一次。",
+    "autoEnabled": "自动归档闲置会话",
+    "autoDescription": "仅归档超过闲置天数的未置顶会话，运行中、等待审批和当前查看的会话会跳过。工作区本身不会自动归档。",
+    "idleDays": "闲置天数",
+    "idleDaysDescription": "可设置 1–365 天，默认 30 天；恢复会话后重新计算。",
+    "cleanupInteraction": "与运行日志清理的联动",
+    "autoCleanupOn": "自动归档也会按当前设置清理运行日志。开启自动归档即授权后台执行，不再逐条确认。",
+    "autoCleanupOff": "当前运行日志清理已关闭，自动归档只会收起会话，不会删除日志。"
+  },
   "dialog": {
     "ariaLabel": "设置",
     "testBuild": "测试版",
@@ -200,6 +214,7 @@
     },
     "tabs": {
       "general": "通用",
+      "archive": "会话与归档",
       "shortcuts": "快捷键",
       "account": "账号",
       "update": "检查更新",

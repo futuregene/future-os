@@ -1365,7 +1365,7 @@ mod tests {
         }
         conn.prepare(&format!(
             "SELECT {} FROM threads",
-            super::super::threads::THREAD_COLUMNS
+            super::super::threads::thread_columns(&conn).unwrap()
         ))
         .unwrap();
         apply_schema(&conn).unwrap();

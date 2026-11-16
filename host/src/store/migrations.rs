@@ -17,6 +17,8 @@ const STEPS: &[(i64, &str)] = &[
     (4, include_str!("retire_reference_caches.sql")),
     (5, include_str!("workspace_archive.sql")),
     (6, include_str!("review_snapshot_ignored_paths.sql")),
+    (7, include_str!("run_log_cleanup.sql")),
+    (8, include_str!("thread_restore_activity.sql")),
 ];
 
 /// Contract steps that add exactly one column. A fresh database already has
@@ -27,6 +29,8 @@ const STEPS: &[(i64, &str)] = &[
 const ADDITIVE_COLUMN_STEPS: &[(i64, &str, &str)] = &[
     (5, "workspaces", "archived_at"),
     (6, "review_snapshots", "ignored_paths"),
+    (7, "runs", "logs_purged_at"),
+    (8, "threads", "restored_at"),
 ];
 
 fn checksum(version: i64) -> String {

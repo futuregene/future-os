@@ -73,6 +73,7 @@ import {
   pinWorkspace,
   restoreThreadTree,
   restoreWorkspace,
+  setForegroundThread,
   stopThreads,
 } from "../../integrations/storage/threadStore";
 import { invokeCommand } from "../../integrations/tauri/invoke";
@@ -460,6 +461,7 @@ function ReadyAppShell({
   // for next-launch restoration. This timestamp is intentionally excluded
   // from the sidebar's recency sort.
   useEffect(() => {
+    void setForegroundThread(activeThreadId);
     if (activeThreadId)
       void markThreadOpened(activeThreadId);
   }, [activeThreadId]);
@@ -655,7 +657,14 @@ function ReadyAppShell({
     confirmArchive,
     archiveThreads,
     confirmBatchArchive,
-  } = useThreadDialogs({ activeThreadId, onArchived: handleFirstArchive, refreshStore, threads });
+  } = useThreadDialogs({
+    activeThreadId,
+    archiveCleanupNoticePending: appSettings.archiveRunLogCleanup && !appSettings.archiveRunLogNoticeSeen,
+    onArchived: handleFirstArchive,
+    onCleanupNoticeConfirmed: handleCleanupNoticeConfirmed,
+    refreshStore,
+    threads,
+  });
   const {
     renameDialog: workspaceRenameDialog,
     deleteDialog: workspaceDeleteDialog,
@@ -809,6 +818,19 @@ function ReadyAppShell({
   useTauriEvent("threads-updated", () => {
     void refreshStore();
   });
+
+  useTauriEvent<{ count: number; idleDays: number; cleanupEnabled: boolean }>(
+    "auto-archive-completed",
+    ({ count, idleDays, cleanupEnabled }) => {
+      emitFutureEvent("archive-changed", undefined);
+      emitFutureEvent("toast", {
+        message: t(cleanupEnabled
+          ? "autoArchive.completedWithCleanup"
+          : "autoArchive.completed", { count, idleDays }),
+        tone: "info",
+      });
+    },
+  );
 
   function handleSectionChange(nextSection: ActivitySection) {
     if (nextSection === "settings") {
@@ -1177,6 +1199,15 @@ function ReadyAppShell({
     showArchiveGuide();
   }
 
+  function handleCleanupNoticeConfirmed() {
+    void changeSettings({ archiveRunLogNoticeSeen: true });
+  }
+
+  function handleOpenArchiveSettings() {
+    setSettingsTab("archive");
+    setSettingsOpen(true);
+  }
+
   /**
    * Archive a workspace, after asking about anything still running.
    *
@@ -1196,8 +1227,9 @@ function ReadyAppShell({
       // The archive still refuses a running member by name; the dialog is the
       // nicer path, not the only guard.
     }
-    if (running.length > 0) {
-      setArchiveWorkspaceDialog({ error: null, running, submitting: false, workspace });
+    const cleanupNotice = appSettings.archiveRunLogCleanup && !appSettings.archiveRunLogNoticeSeen;
+    if (running.length > 0 || cleanupNotice) {
+      setArchiveWorkspaceDialog({ cleanupNotice, error: null, running, submitting: false, workspace });
       return;
     }
     try {
@@ -1211,6 +1243,8 @@ function ReadyAppShell({
   /** The workspace write itself, shared by the plain and the stop-first path. */
   async function archiveWorkspaceNow(workspace: StoredWorkspace) {
     await archiveWorkspace(workspace.id);
+    if (appSettings.archiveRunLogCleanup && !appSettings.archiveRunLogNoticeSeen)
+      handleCleanupNoticeConfirmed();
     handleFirstArchive();
     emitFutureEvent("archive-changed", undefined);
     // The workspace takes its conversations with it, and none of them was
@@ -2309,6 +2343,7 @@ function ReadyAppShell({
         setBatchDeleteDialog={setBatchDeleteDialog}
         setDeleteDialog={setDeleteDialog}
         setRenameDialog={setRenameDialog}
+        onOpenArchiveSettings={handleOpenArchiveSettings}
         onConfirmArchiveThread={() => void confirmArchive()}
         onConfirmArchiveWorkspace={() => void confirmArchiveWorkspace()}
         onConfirmBatchArchive={() => void confirmBatchArchive()}

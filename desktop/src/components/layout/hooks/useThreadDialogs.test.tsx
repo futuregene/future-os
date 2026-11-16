@@ -53,10 +53,16 @@ function thread(id: string, overrides: Partial<StoredThread> = {}): StoredThread
   };
 }
 
-function mount(activeThreadId: string | null = "t1", rows: StoredThread[] = []) {
+function mount(
+  activeThreadId: string | null = "t1",
+  rows: StoredThread[] = [],
+  options: { cleanupPending?: boolean; onCleanupNoticeConfirmed?: () => void } = {},
+) {
   const ref = { current: activeThreadId };
   const harness = renderHook(() => useThreadDialogs({
     activeThreadId: ref.current,
+    archiveCleanupNoticePending: options.cleanupPending,
+    onCleanupNoticeConfirmed: options.onCleanupNoticeConfirmed,
     refreshStore: mocks.refreshStore,
     threads: rows,
   }));
@@ -87,6 +93,39 @@ describe("useThreadDialogs", () => {
     mocks.renameThread.mockReset().mockResolvedValue(undefined);
     mocks.refreshStore.mockReset().mockResolvedValue(undefined);
     mocks.stopThreads.mockReset().mockResolvedValue(undefined);
+  });
+
+  it("asks once before the first cleanup and acknowledges only after archiving", async () => {
+    const onCleanupNoticeConfirmed = vi.fn();
+    const { harness } = mount("t1", [], { cleanupPending: true, onCleanupNoticeConfirmed });
+    await act(async () => {
+      await harness.current.requestArchive(thread("t1"));
+    });
+    expect(mocks.archiveThreadTree).not.toHaveBeenCalled();
+    expect(harness.current.archiveDialog?.cleanupNotice).toBe(true);
+
+    await act(async () => {
+      await harness.current.confirmArchive();
+    });
+    expect(mocks.archiveThreadTree).toHaveBeenCalledWith("t1");
+    expect(onCleanupNoticeConfirmed).toHaveBeenCalledOnce();
+    expect(harness.current.archiveDialog).toBeNull();
+    harness.unmount();
+  });
+
+  it("does not acknowledge the cleanup notice when batch archiving fails", async () => {
+    const onCleanupNoticeConfirmed = vi.fn();
+    mocks.batchArchiveThreads.mockRejectedValue(new Error("archive failed"));
+    const { harness } = mount("t1", [], { cleanupPending: true, onCleanupNoticeConfirmed });
+    await act(async () => {
+      await harness.current.archiveThreads([thread("t1")]);
+    });
+    await act(async () => {
+      await harness.current.confirmBatchArchive();
+    });
+    expect(onCleanupNoticeConfirmed).not.toHaveBeenCalled();
+    expect(harness.current.batchArchiveDialog).not.toBeNull();
+    harness.unmount();
   });
 
   it("seeds the rename dialog from the thread's current title", () => {
@@ -938,7 +977,7 @@ describe("useThreadDialogs", () => {
     const parent = thread("parent");
     const child = thread("child", { parentSessionId: "parent" });
     const { harness } = mount("child", [parent, child]);
-    act(() => harness.current.setArchiveDialog({ error: null, members: 2, running: [], submitting: false, thread: parent }));
+    act(() => harness.current.setArchiveDialog({ cleanupNotice: false, error: null, members: 2, running: [], submitting: false, thread: parent }));
     await act(async () => {
       await harness.current.confirmArchive();
     });

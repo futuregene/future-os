@@ -163,10 +163,8 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             if cmd.thread_id.is_empty() {
                 reply(sink, false, Value::Null, Some("missing thread_id")).await;
             } else {
-                let streaming = crate::agent_bridge::reconcile_streaming_observers()
-                    .await
-                    .unwrap_or_default();
-                match crate::store::archive_thread_tree(&cmd.thread_id, &streaming) {
+                match crate::application::threads::archive_thread_tree(cmd.thread_id.clone()).await
+                {
                     Ok(_) => {
                         // The host's own list and every client's catalogue draw
                         // the row from the store; the first re-lists, the second

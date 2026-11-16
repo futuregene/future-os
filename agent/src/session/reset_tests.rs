@@ -287,6 +287,55 @@ fn dropping_tool_results_keeps_the_calls_and_says_what_that_loads_as() {
 }
 
 #[test]
+fn archive_shell_outputs_keeps_calls_status_and_protocol_pairing() {
+    let mut shell = tool_result("t1", "call-1");
+    shell.name = "shell".into();
+    shell.meta = Some(json!({
+        "run_id": "r1",
+        "shell_result": {"exit_code": 0, "stdout": "secret output"},
+    }));
+    shell.content = Some(json!([{
+        "type": "tool_result",
+        "tool_call_id": "call-1",
+        "content": "secret output",
+        "is_error": false,
+    }]));
+    let entries = vec![
+        user("u1", "r1", "question"),
+        tool_call_assistant("a1", "r1", "call-1"),
+        shell,
+        assistant("a2", "r1", "final answer"),
+    ];
+    let result = plan_reset(
+        &entries,
+        &ResetSelectors {
+            drop: vec![DropKind::ArchiveShellOutputs],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(ids(&result.retained), vec!["u1", "a1", "t1", "a2"]);
+    let purged = &result.retained[2];
+    assert_eq!(purged.tool_call_id, "call-1");
+    assert_eq!(
+        purged.content,
+        Some(json!([{
+            "type": "tool_result",
+            "tool_call_id": "call-1",
+            "content": ARCHIVED_SHELL_OUTPUT_PLACEHOLDER,
+            "is_error": false,
+        }]))
+    );
+    assert_eq!(
+        purged.meta,
+        Some(json!({"run_id": "r1", "archive_output_purged": true}))
+    );
+    assert!(result.affected_runs.contains("r1"));
+    assert_eq!(result.plan.drop_effects[0].kind, "archive-shell-outputs");
+}
+
+#[test]
 fn dropping_attachments_removes_the_files_the_images_and_the_manifest() {
     let mut with_attachment = user("u1", "r1", "look at this");
     with_attachment.content = Some(json!([
@@ -551,6 +600,76 @@ fn a_drop_only_reset_leaves_the_turn_structure_alone() {
     assert_eq!(
         ids(&result.retained),
         vec!["u1", "info-1", "a1", "u2", "a2", "u3", "a3", "u4", "a4"]
+    );
+}
+
+#[test]
+fn archive_cleanup_replaces_durable_output_without_a_full_history_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = crate::session::Manager::new(dir.path().join("sessions"));
+    let mut result = tool_result("tool-1", "call-1");
+    result.name = "shell".into();
+    result.meta = Some(json!({"run_id": "r1", "shell_result": {"exit_code": 0}}));
+    let entries = [
+        session_info("archive cleanup"),
+        user("u1", "r1", "question"),
+        tool_call_assistant("a1", "r1", "call-1"),
+        result,
+        assistant("a2", "r1", "answer"),
+    ];
+    manager
+        .storage()
+        .unwrap()
+        .replace(
+            "archive-s",
+            entries
+                .iter()
+                .map(|entry| serde_json::to_value(entry).unwrap())
+                .collect(),
+        )
+        .unwrap();
+
+    manager.test_execute(
+        "INSERT INTO run_snapshot_cache(session_id,run_id,version,epoch,cursor,payload)
+         VALUES('archive-s','r1',1,0,0,'{\"run_id\":\"r1\",\"epoch\":0,\"run_sequence\":0,\"cursor\":0,\"events\":[]}')",
+    );
+    let outcome = manager
+        .reset_history(
+            "archive-s",
+            &ResetSelectors {
+                drop: vec![DropKind::ArchiveShellOutputs],
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap();
+    assert!(outcome.applied);
+    assert!(outcome.backup.is_none());
+    assert!(!dir.path().join("session-backups").exists());
+
+    let output = manager.tool_output("archive-s", "r1", "call-1").unwrap();
+    assert_eq!(
+        output["output"]["text"],
+        json!(ARCHIVED_SHELL_OUTPUT_PLACEHOLDER)
+    );
+    assert_eq!(output["output"]["isError"], json!(false));
+    let args = manager.tool_call_args("archive-s", "r1", "call-1").unwrap();
+    assert_eq!(args["arguments"]["command"], json!("ls"));
+    let cached = manager
+        .storage()
+        .unwrap()
+        .db
+        .call(|db| {
+            Ok(db.query_row(
+                "SELECT count(*) FROM run_snapshot_cache WHERE session_id='archive-s' AND run_id='r1'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(
+        cached, 0,
+        "the replay cache cannot retain the purged output"
     );
 }
 

@@ -326,7 +326,7 @@ describe("settingsDialog dev-only environment tab", () => {
     const { container } = mount();
 
     expect(navLabels(container)).not.toContain("Environment");
-    expect(navLabels(container)).toEqual(["General", "Keyboard shortcuts", "Account", "Check for updates", "About", "Providers", "Models", "Reset"]);
+    expect(navLabels(container)).toEqual(["General", "Conversations & archive", "Keyboard shortcuts", "Account", "Check for updates", "About", "Providers", "Models", "Reset"]);
   });
 
   it("shows the environment tab (and its community-edition section) on a dev build", () => {

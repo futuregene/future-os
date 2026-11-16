@@ -462,6 +462,7 @@ vi.mock("../../integrations/storage/threadStore", () => ({
   archiveWorkspace: (workspaceId: string) => mocks.hooks.archiveWorkspace?.(workspaceId),
   createWorkspace: (input: { createDirectory: boolean; path: string }) => mocks.hooks.createWorkspace?.(input),
   markThreadOpened: (threadId: string) => mocks.hooks.markThreadOpened?.(threadId),
+  setForegroundThread: () => {},
   pinThread: (input: unknown) => mocks.hooks.pinThread?.(input),
   pinWorkspace: (input: unknown) => mocks.hooks.pinWorkspace?.(input),
   restoreThreadTree: (threadId: string) => mocks.hooks.restoreThread?.(threadId),

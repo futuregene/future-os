@@ -31,6 +31,8 @@ pub struct RunRecord {
     /// fail or the error type is unknown.
     pub error_type: Option<String>,
     pub archived_at: Option<i64>,
+    /// Set only after the Agent confirmed this run's Shell output was purged.
+    pub logs_purged_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -78,12 +80,12 @@ pub struct ToolOutputRecord {
 
 sql_record!(pub(super) RUN_COLUMNS, run_from_row -> RunRecord {
     id, thread_id, trigger_message_id, status, model_provider, model_id,
-    started_at, ended_at, error_message, error_type, archived_at, created_at, updated_at,
+    started_at, ended_at, error_message, error_type, archived_at, logs_purged_at, created_at, updated_at,
 });
 
 /// Legacy projection used only when the optional archive migration could not
 /// be applied. Keep the result shape stable so normal run reads still work.
-pub(super) const RUN_COLUMNS_WITHOUT_ARCHIVE: &str = "id, thread_id, trigger_message_id, status, model_provider, model_id, started_at, ended_at, error_message, error_type, NULL AS archived_at, created_at, updated_at";
+pub(super) const RUN_COLUMNS_WITHOUT_ARCHIVE: &str = "id, thread_id, trigger_message_id, status, model_provider, model_id, started_at, ended_at, error_message, error_type, NULL AS archived_at, NULL AS logs_purged_at, created_at, updated_at";
 
 pub(super) fn run_archive_supported(conn: &rusqlite::Connection) -> Result<bool, crate::Error> {
     column_exists(conn, "runs", "archived_at")
@@ -105,7 +107,7 @@ pub(super) fn qualified_run_columns(
         return Ok(super::util::qualify_columns(alias, RUN_COLUMNS));
     }
     Ok(format!(
-        "{}, NULL AS archived_at, {}",
+        "{}, NULL AS archived_at, NULL AS logs_purged_at, {}",
         super::util::qualify_columns(alias, "id, thread_id, trigger_message_id, status, model_provider, model_id, started_at, ended_at, error_message, error_type"),
         super::util::qualify_columns(alias, "created_at, updated_at"),
     ))
@@ -146,6 +148,21 @@ pub fn create_run(input: CreateRunInput) -> Result<RunRecord, crate::Error> {
     let run = loaded(get_run(&id)?, "Created run")?;
     mark_catalog_dirty();
     Ok(run)
+}
+
+/// Mark terminal runs only after the Agent confirmed the archive history
+/// rewrite. A failed or unreachable cleanup leaves NULL, so the UI never
+/// reports retained output as purged.
+pub fn mark_run_logs_purged(thread_id: &str, purged_at: i64) -> Result<usize, crate::Error> {
+    let conn = connect()?;
+    let updated = conn.execute(
+        &format!(
+            "UPDATE runs SET logs_purged_at=?2, updated_at=?2
+             WHERE thread_id=?1 AND status IN ({TERMINAL_RUN_STATUSES_SQL})"
+        ),
+        params![thread_id, purged_at],
+    )?;
+    Ok(updated)
 }
 
 /// Resolved agent session ids of every run that is not yet terminal — i.e. the

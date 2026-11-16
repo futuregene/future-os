@@ -1108,6 +1108,7 @@ mod gui {
                 get_thread,
                 get_recent_thread,
                 mark_thread_opened,
+                set_foreground_thread,
                 create_thread,
                 rename_thread,
                 update_thread_model,
