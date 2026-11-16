@@ -203,6 +203,8 @@
       "hint": "Sent as one message when this reply ends",
       "hintOne": "Sent as its own message when this reply ends",
       "hintParked": "Waited too long — press “Send this one now”",
+      "expand": "Show the queued messages",
+      "collapse": "Hide the queued messages",
       "attachments": "Attachments: {{count}}",
       "attachmentsOnly": "Attachments only",
       "previewAttachment": "Open {{name}}",
@@ -215,6 +217,8 @@
       "remove": "Remove from the queue",
       "retry": "Try again",
       "release": "Send this one now",
+    "choiceChange": "Change this message's answer: {{title}} · {{label}}",
+    "choiceClear": "No answer (keep the message text)",
       "actionFailed": "That waiting message could not be changed: {{message}}",
       "full": "The send queue is full. Send or remove something first.",
       "notice": {

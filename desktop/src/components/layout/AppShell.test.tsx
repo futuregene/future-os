@@ -80,6 +80,8 @@ const mocks = vi.hoisted(() => ({
   geometry: { left: true, right: true },
   hooks: {} as HookSpies,
   nudgeLeftPanel: undefined as undefined | ReturnType<typeof vi.fn>,
+  nudgeRightPanel: undefined as undefined | ReturnType<typeof vi.fn>,
+  startRightPanelResize: undefined as undefined | ReturnType<typeof vi.fn>,
   remotePeers: undefined as undefined | { catalogs?: unknown[]; peers?: unknown[] },
   invoke: vi.fn<(command: string, args?: unknown) => Promise<unknown>>(async () => {}),
   isFullscreen: false,
@@ -312,6 +314,7 @@ vi.mock("./ActivityRail", async () => {
 
 // ── shell-local hooks ────────────────────────────────────────────────────────
 vi.mock("./hooks/panelGeometry", () => ({
+  MIN_CENTER_PANEL_WIDTH: 384,
   MIN_LEFT_PANEL_WIDTH: 224,
   canShowLeftPanel: () => mocks.geometry.left,
   canShowRightPanel: () => mocks.geometry.right,
@@ -342,7 +345,13 @@ vi.mock("./hooks/useLeftPanelWidth", () => ({
   useLeftPanelWidth: () => ({ maxWidth: 400, nudge: (mocks.nudgeLeftPanel ??= vi.fn()), resizing: Boolean(mocks.store.leftResizing), startResize: vi.fn(), width: (mocks.store.leftWidth as number) ?? 288 }),
 }));
 vi.mock("./hooks/useRightPanelWidth", () => ({
-  useRightPanelWidth: () => ({ nudge: vi.fn(), reclamp: mocks.hooks.reclamp, resizing: Boolean(mocks.store.rightResizing), startResize: vi.fn(), width: 360 }),
+  useRightPanelWidth: () => ({
+    nudge: (mocks.nudgeRightPanel ??= vi.fn()),
+    reclamp: mocks.hooks.reclamp,
+    resizing: Boolean(mocks.store.rightResizing),
+    startResize: (mocks.startRightPanelResize ??= vi.fn()),
+    width: 360,
+  }),
 }));
 vi.mock("./hooks/useAgentConnection", () => ({
   useAgentConnection: () => ({
@@ -408,7 +417,14 @@ vi.mock("./hooks/useUnreadThreads", () => ({ useUnreadThreads: () => (mocks.stor
 vi.mock("./hooks/useThreadDialogs", () => ({ useThreadDialogs: () => mocks.store.threadDialogs }));
 vi.mock("./hooks/useWorkspaceDialogs", () => ({ useWorkspaceDialogs: () => mocks.store.workspaceDialogs }));
 vi.mock("../../features/terminal/useTerminalPanel", () => ({
-  useTerminalPanel: () => ({ open: Boolean(mocks.store.terminalOpen), shortcut: "mod+j", toggle: mocks.hooks.toggleTerminal }),
+  useTerminalPanel: () => ({
+    dock: mocks.store.terminalDock ?? "bottom",
+    maximized: Boolean(mocks.store.terminalMaximized),
+    open: Boolean(mocks.store.terminalOpen),
+    shortcut: "mod+j",
+    toggle: mocks.hooks.toggleTerminal,
+    width: 420,
+  }),
 }));
 vi.mock("../../features/terminal/panelTarget", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../features/terminal/panelTarget")>();
@@ -1078,6 +1094,42 @@ describe("app shell layout", () => {
     expect(hidden.container.querySelector("[data-child=\"terminal-panel\"]")).toBeNull();
     expect((children.agentThread as { headerAction: unknown }).headerAction).toBeNull();
     hidden.unmount();
+  });
+
+  it("docks the terminal where the panel says, and gives it the whole content area when maximized", () => {
+    mocks.terminalTarget = "t1";
+    mocks.store.terminalOpen = true;
+
+    // Bottom (the default): a row under the conversation and the files panel,
+    // so it spans both of them.
+    const bottom = mount(<AppShell />);
+    const bottomMain = bottom.container.querySelector("main")!;
+    const bottomPanel = bottom.container.querySelector("[data-child=\"terminal-panel\"]")!;
+    expect(bottomPanel.parentElement).toBe(bottomMain.parentElement?.parentElement);
+    bottom.unmount();
+
+    // Right: a column of its own at the window's edge — a sibling of the content
+    // column (conversation + files panel), which is what makes that column the
+    // anchor for the affordances drawn over the conversation.
+    mocks.store.terminalDock = "right";
+    const right = mount(<AppShell />);
+    const rightMain = right.container.querySelector("main")!;
+    const rightPanel = right.container.querySelector("[data-child=\"terminal-panel\"]")!;
+    const contentColumn = rightMain.parentElement?.parentElement;
+    expect(rightPanel.parentElement).toBe(contentColumn?.parentElement);
+    expect(rightMain.compareDocumentPosition(rightPanel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    right.unmount();
+
+    // Maximized: the panel takes the content column and the conversation and the
+    // files panel leave the layout — but stay mounted, so returning to them
+    // keeps the transcript, the scroll position and the draft.
+    mocks.store.terminalMaximized = true;
+    const maximized = mount(<AppShell />);
+    const maximizedMain = maximized.container.querySelector("main")!;
+    const maximizedPanel = maximized.container.querySelector("[data-child=\"terminal-panel\"]")!;
+    expect(maximizedMain.parentElement?.className.split(" ")).toContain("hidden");
+    expect(maximizedPanel.parentElement).toBe(maximizedMain.parentElement?.parentElement);
+    maximized.unmount();
   });
 
   it("opens the new-conversation view from the rail and returns to the thread", () => {
@@ -3416,6 +3468,12 @@ describe("app shell collapsed-panel affordances", () => {
       act(() => (children.filesPanel as { onToggleExpanded: () => void }).onToggleExpanded());
       expect(view.container.querySelector("[data-child='remote-files']")).not.toBeNull();
       expect(children.filesPanel).toMatchObject({ expanded: true });
+      // The remote column is the local one's column: the same drag-resized
+      // width and the same divider callbacks, so a drag on either keeps one
+      // width for both (a fixed 320px column is what this guards against).
+      expect(children.filesPanel).toMatchObject({ width: 360 });
+      act(() => (children.filesPanel as { onResizeNudge: (deltaPx: number) => void }).onResizeNudge(16));
+      expect(mocks.nudgeRightPanel).toHaveBeenCalledWith(16);
       view.unmount();
     });
 

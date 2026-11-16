@@ -644,6 +644,19 @@ test("legacy history without timing metadata shows completed instead of a blank 
   expect(hasText("chat.responseCompleted")).toBe(true);
 });
 
+test("a reply with nothing to draw draws no card at all, not a lone footer", () => {
+  // The live lane materializes an accumulator for every run an envelope names,
+  // so a run that never wrote a word still becomes an item — and once it
+  // settles with no prose, no slices, no clock, no token count and no verdict,
+  // the only thing left to render is the footer's fallback label. Measured on a
+  // phone (2026-11-15): a bare "completed" card sat under a finished reply,
+  // below a compaction divider that had itself been drawn in the wrong place.
+  // Durable history never draws such a row (`messageToItems` drops it), so the
+  // renderer must not invent one either.
+  render(reply({ id: "ghost", text: "" }));
+  expect(tree.toJSON()).toBeNull();
+});
+
 // The whole report, end to end: a run whose terminal never arrived, then the
 // next prompt's run on the same session. The phone used to draw two generating
 // dots here — one of them still counting hours after the run that owned it had

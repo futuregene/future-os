@@ -9,8 +9,10 @@ import { useDesktopManagement } from "./useDesktopManagement";
 import { usePromptOutbox } from "./usePromptOutbox";
 import {
   cancelSessionQueuedRun,
+  editSessionQueuedRun,
   fetchSessionQueue,
   releaseSessionQueuedRun,
+  type SessionQueueChoice,
   type SessionQueueSnapshot,
 } from "./sessionQueue";
 import { useSessionCatalog } from "./useSessionCatalog";
@@ -87,6 +89,7 @@ export interface DesktopRuntime {
     get(sessionId: string): Promise<SessionQueueSnapshot>;
     cancel(sessionId: string, runId: string): Promise<void>;
     release(sessionId: string, runId: string): Promise<void>;
+    edit(sessionId: string, runId: string, message: string): Promise<void>;
   };
   selectedSessionId: string;
   selectedTitle: string;
@@ -388,6 +391,16 @@ export function useDesktopRuntime({
       const client = clientRef.current;
       if (!client) throw new Error("not_connected");
       await releaseSessionQueuedRun(client, sessionId, runId);
+    },
+    edit: async (
+      sessionId: string,
+      runId: string,
+      message: string,
+      choice?: SessionQueueChoice,
+    ) => {
+      const client = clientRef.current;
+      if (!client) throw new Error("not_connected");
+      await editSessionQueuedRun(client, sessionId, runId, message, choice);
     },
   }), []);
 

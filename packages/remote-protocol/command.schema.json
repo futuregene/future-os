@@ -295,6 +295,13 @@
       "x-ts-type": "CustomProviderUpsert | BuiltinProviderUpdate",
       "description": "Provider configuration: one whole provider write (see `list_providers` in `remote_host::business`)."
     },
+    "probe": {
+      "x-rust-name": "probe",
+      "x-rust-type": "serde_json::Value",
+      "default": null,
+      "x-ts-type": "ThinkingLevelProbeInput",
+      "description": "probe_thinking_level: one thinking-level probe of the provider the client is editing (`ThinkingLevelProbeInput`). The host asks its Agent, which builds the same request a real call would; nothing is saved."
+    },
     "tier": {
       "x-rust-name": "tier",
       "x-rust-type": "String",
@@ -442,6 +449,17 @@
       "items": {
         "$ref": "#/$defs/UploadReference"
       }
+    },
+    "choice": {
+      "x-rust-name": "choice",
+      "x-rust-type": "Option<serde_json::Value>",
+      "default": null,
+      "x-ts-type": "{ mode: \"single\" | \"multi\"; title: string; options: { id: string; label: string }[]; selectedIds: string[] }",
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "prompt / edit_queued_run: the answer a futureos-choice card gave this message. The message already reads `[question → answer]`; this rides alongside because it also carries the options the card offered, which the sentence drops — that is what lets a waiting row offer a different pick. Absent means \"answered no card\", and on edit_queued_run it also means \"leave the accepted answer alone\". An older host ignores it."
     },
     "protocolVersion": {
       "x-rust-name": "protocol_version",

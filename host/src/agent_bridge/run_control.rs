@@ -346,6 +346,67 @@ pub async fn release_queued_run(session_id: &str, run_id: &str) -> Result<(), cr
     Ok(())
 }
 
+/// Correct one waiting prompt's words, in the place it already holds.
+///
+/// The reader ordered this queue by hand, so a corrected message stays in its
+/// slot: the Agent replaces the text of the accepted prompt in place instead of
+/// dropping the row and sending a new one, which would have put the correction at
+/// the back. Everything else about the accepted prompt — its files, images, model
+/// context and frozen run settings — is untouched, which is also why nothing has
+/// to be re-read here.
+pub async fn edit_queued_run(
+    session_id: &str,
+    run_id: &str,
+    message: &str,
+) -> Result<(), crate::Error> {
+    edit_queued_run_with_choice(session_id, run_id, message, None).await
+}
+
+/// The same in-place edit, restating the answer the corrected words send.
+///
+/// `None` corrects the words alone and leaves the accepted answer untouched, so
+/// fixing a typo cannot silently drop the option the reader picked. The caller
+/// that changes an answer derives both from one state and passes `Some` — a row
+/// whose chip and text disagreed about what will be sent would be worse than
+/// either alone.
+pub async fn edit_queued_run_with_choice(
+    session_id: &str,
+    run_id: &str,
+    message: &str,
+    choice: Option<future_rpc::payloads::QueuedRunChoice>,
+) -> Result<(), crate::Error> {
+    if run_id.trim().is_empty() {
+        return Err("Run id is required to change a queued message.".into());
+    }
+    // An answer-only change still has to name the message it belongs to, but it
+    // is a legitimate edit even when the message is nothing but the answer: the
+    // row's text already carries `[question → answer]`, so an empty `message`
+    // here means the caller had nothing new to say about it.
+    if message.trim().is_empty() && choice.is_none() {
+        return Err("A queued message needs some text; remove it instead.".into());
+    }
+    let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, session_id).await?;
+    let response = client
+        .execute_command(crate::agent_commands::edit_queued_run_command_with_choice(
+            run_id.to_string(),
+            message.to_string(),
+            session_id.to_string(),
+            choice,
+        ))
+        .await
+        .map_err(|error| format!("Unable to change the queued message: {error}"))?
+        .into_inner();
+    if !response.success {
+        return Err(format!(
+            "Future Agent did not change the queued message: {}",
+            response.error
+        )
+        .into());
+    }
+    Ok(())
+}
+
 pub(super) fn mark_run_failed_if_active(run_id: Option<&str>, error: &str) {
     let Some(run_id) = run_id else {
         return;

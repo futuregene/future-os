@@ -148,6 +148,19 @@ fn queued_run_to_proto(run: &crate::payloads::QueuedRunState) -> proto::QueuedRu
                 size: attachment.size as i64,
             })
             .collect(),
+        choice: run.choice.as_ref().map(|choice| proto::QueuedRunChoice {
+            mode: choice.mode.clone(),
+            title: choice.title.clone(),
+            options: choice
+                .options
+                .iter()
+                .map(|option| proto::QueuedRunChoiceOption {
+                    id: option.id.clone(),
+                    label: option.label.clone(),
+                })
+                .collect(),
+            selected_ids: choice.selected_ids.clone(),
+        }),
     }
 }
 

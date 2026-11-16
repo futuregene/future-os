@@ -93,14 +93,15 @@ Examples:
 With --json, the conversation record is printed with "archived" saying whether
 it is shelved now, plus the database it was written to."#;
 
-/// A parsed `<target> [--json]` argument list, shared by both scopes.
-struct Target {
-    value: String,
-    json: bool,
-    help: bool,
+/// A parsed `<target> [--json]` argument list, shared by both scopes here and by
+/// the pin commands (one target, one data flag, the same refusals).
+pub(super) struct Target {
+    pub(super) value: String,
+    pub(super) json: bool,
+    pub(super) help: bool,
 }
 
-fn parse_target(args: &[String], what: &str) -> Result<Target> {
+pub(super) fn parse_target(args: &[String], what: &str) -> Result<Target> {
     let mut target = Target {
         value: String::new(),
         json: false,
@@ -138,7 +139,7 @@ pub async fn workspace_command(restore: bool, args: &[String], out: &Output) -> 
     if target.value.is_empty() {
         return Err("a workspace path, id or name is required".into());
     }
-    let (conn, database) = desktop_store()?;
+    let (conn, database) = desktop_store("archive or restore")?;
     let workspace = resolve_workspace(&conn, target.value.trim())?;
 
     if restore {
@@ -182,7 +183,7 @@ pub async fn session_command(restore: bool, args: &[String], out: &Output) -> Re
     if target.value.is_empty() {
         return Err("a session id is required".into());
     }
-    let (conn, database) = desktop_store()?;
+    let (conn, database) = desktop_store("archive or restore")?;
     let thread = workspaces::find_thread_by_agent_session(&conn, &target.value)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| {
@@ -222,12 +223,19 @@ pub async fn session_command(restore: bool, args: &[String], out: &Output) -> Re
     Ok(())
 }
 
-/// The desktop app's store, or the reason there is nothing to shelve.
-fn desktop_store() -> Result<(Connection, std::path::PathBuf)> {
+/// The desktop app's store, or the reason there is nothing to shelve or pin.
+///
+/// `action` names what the caller would have done (`archive or restore`, `pin or
+/// unpin`), so the refusal says the thing the reader asked for. The pre-check is
+/// `open_existing` rather than the store's own `connect`: a read must never
+/// create the app's database, and a machine that never ran the app has nothing
+/// to shelve either way.
+pub(super) fn desktop_store(action: &str) -> Result<(Connection, std::path::PathBuf)> {
     let conn = open_existing()?.ok_or_else(|| {
-        "No desktop app store on this machine (~/.future/app/app.db), so there is nothing to \
-         archive or restore. The app creates it on its first start."
-            .to_string()
+        format!(
+            "No desktop app store on this machine (~/.future/app/app.db), so there is nothing to \
+             {action}. The app creates it on its first start."
+        )
     })?;
     let database = future_app_settings::app_db_path().map_err(|error| error.to_string())?;
     Ok((conn, database))
@@ -240,7 +248,7 @@ fn desktop_store() -> Result<(Connection, std::path::PathBuf)> {
 /// A name resolves only when exactly one workspace carries it: guessing between
 /// two identically named workspaces would shelve whichever row happened to sort
 /// first.
-fn resolve_workspace(conn: &Connection, target: &str) -> Result<workspaces::Workspace> {
+pub(super) fn resolve_workspace(conn: &Connection, target: &str) -> Result<workspaces::Workspace> {
     if let Ok(Some(workspace)) = workspaces::get(conn, target) {
         if workspace.kind == "user" && workspace.deleted_at.is_none() {
             return Ok(workspace);
@@ -315,8 +323,15 @@ async fn streaming_thread_ids() -> Vec<String> {
 /// The record plus where it was written — the two facts a script needs after a
 /// write that the running app will only show on its next read.
 fn with_store(record: Value, archived: bool, database: &Path) -> Value {
+    with_flag(record, "archived", json!(archived), database)
+}
+
+/// The same, for a command whose one derived fact is not the shelf: a pin is an
+/// ordering flag and an archive is a shelf, and a reader of either must be able
+/// to tell which one it is looking at.
+pub(super) fn with_flag(record: Value, key: &str, value: Value, database: &Path) -> Value {
     let mut object = record.as_object().cloned().unwrap_or_default();
-    object.insert("archived".to_string(), json!(archived));
+    object.insert(key.to_string(), value);
     object.insert(
         "database".to_string(),
         json!(database.display().to_string()),
@@ -324,101 +339,17 @@ fn with_store(record: Value, archived: bool, database: &Path) -> Value {
     Value::Object(object)
 }
 
-fn pretty(record: Value) -> Result<String> {
+pub(super) fn pretty(record: Value) -> Result<String> {
     serde_json::to_string_pretty(&record).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_store::{
+        add_thread, add_workspace, archived_at, args, text, thread_status, Store,
+    };
     use super::*;
     use crate::test_env::EnvGuard;
-    use std::path::PathBuf;
-
-    /// A throwaway home with the desktop app's real schema in it (`HOME`, not
-    /// `FUTURE_HOME`: the app's database lives under the real home).
-    struct Store {
-        dir: tempfile::TempDir,
-        _env: EnvGuard,
-    }
-
-    impl Store {
-        fn new() -> Self {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let env = EnvGuard::set(&[("HOME", dir.path().as_os_str().to_owned())]);
-            store::initialize_app_store().expect("the desktop app's schema");
-            Store { dir, _env: env }
-        }
-
-        fn database(&self) -> PathBuf {
-            self.dir.path().join(".future").join("app").join("app.db")
-        }
-
-        fn conn(&self) -> Connection {
-            Connection::open(self.database()).expect("open store")
-        }
-
-        fn directory(&self, name: &str) -> PathBuf {
-            let path = self.dir.path().join(name);
-            std::fs::create_dir_all(&path).expect("create directory");
-            path
-        }
-    }
-
-    fn args(values: &[&str]) -> Vec<String> {
-        values.iter().map(|value| value.to_string()).collect()
-    }
-
-    fn text(captured: std::sync::Arc<std::sync::Mutex<Vec<u8>>>) -> String {
-        String::from_utf8(captured.lock().unwrap().clone()).expect("utf8")
-    }
-
-    /// A workspace row created the way `future workspace add` creates one.
-    fn add_workspace(store: &Store, path: &Path) -> workspaces::Workspace {
-        let mut conn = store.conn();
-        workspaces::create(
-            &mut conn,
-            path.to_str().unwrap(),
-            None,
-            None,
-            false,
-            workspaces::now_millis(),
-        )
-        .expect("workspace")
-    }
-
-    /// A conversation imported into that workspace, as the app records one.
-    fn add_thread(store: &Store, workspace_id: &str, session_id: &str, title: &str) -> String {
-        let thread_id = format!("thr-{session_id}");
-        let conn = store.conn();
-        conn.execute(
-            "INSERT INTO threads (id, workspace_id, mode, title, status, agent_session_id,
-                                  created_at, updated_at)
-             VALUES (?1, ?2, 'workspace', ?3, 'active', ?4, 1, 1)",
-            rusqlite::params![thread_id, workspace_id, title, session_id],
-        )
-        .expect("thread row");
-        thread_id
-    }
-
-    fn archived_at(store: &Store, workspace_id: &str) -> Option<i64> {
-        let conn = store.conn();
-        conn.query_row(
-            "SELECT archived_at FROM workspaces WHERE id = ?1",
-            [workspace_id],
-            |row| row.get(0),
-        )
-        .expect("read archived_at")
-    }
-
-    fn thread_status(store: &Store, thread_id: &str) -> String {
-        let conn = store.conn();
-        conn.query_row(
-            "SELECT status FROM threads WHERE id = ?1",
-            [thread_id],
-            |row| row.get(0),
-        )
-        .expect("read status")
-    }
 
     /// The workspace archive writes the app's own marker and reports the store
     /// it wrote, and restore takes the marker away again.

@@ -9,6 +9,7 @@ import {
 } from "../../../remote/draftStorage";
 import { deleteTemporaryAttachment, recoverPendingImagePickerAttachments } from "../../../remote/files";
 import type { MobileAttachment } from "../../../remote/types";
+import { choiceAnswerLabel } from "../choiceAnswer";
 import { showToast } from "../utils";
 import { useComposerDraft, type ComposerDraftApi } from "../useComposerDraft";
 
@@ -320,4 +321,76 @@ test("a reference remembered for a draft the reader has left is dropped", async 
   // The token names a conversation the composer is no longer writing: keeping it
   // would resolve `@a` in B's text against A's session.
   expect(current.sessionRefs).toEqual({});
+});
+
+/**
+ * The answer to a `futureos-choice` card lives in the draft, so it is restored and
+ * persisted with it, and it belongs to the conversation rather than to the screen
+ * (design `docs/design/choice-cards.zh-CN.md` §2).
+ */
+const cardAnswer = {
+  mode: "single" as const,
+  options: [{ id: "forest", label: "重画森林图" }, { id: "flow", label: "补一张实验流程图" }],
+  selectedIds: ["forest"],
+  title: "接下来做哪一件？",
+};
+
+test("a stored answer comes back with the draft it belongs to", async () => {
+  load.mockResolvedValue({ attachments: [], text: "", choice: cardAnswer });
+  render();
+  await settle();
+  expect(current.choice).toEqual(cardAnswer);
+});
+
+test("a pick is persisted as draft content, and dropping it is persisted too", async () => {
+  render();
+  await settle();
+  act(() => current.setChoice(cardAnswer));
+  expect(schedule).toHaveBeenCalledWith("desk-1:s1", {
+    attachments: [], choice: cardAnswer, refs: {}, text: "",
+  });
+  act(() => current.setChoice(null));
+  expect(schedule).toHaveBeenLastCalledWith("desk-1:s1", {
+    attachments: [], choice: undefined, refs: {}, text: "",
+  });
+});
+
+test("an answer is the conversation's own: it does not follow the reader", async () => {
+  render();
+  await settle();
+  act(() => current.setChoice(cardAnswer));
+  // A pick delivered through the previous conversation's callback — a tap that
+  // lands just after the reader moved on — must not write into the new draft.
+  const staleSetChoice = current.setChoice;
+  schedule.mockClear();
+  render({ sessionId: "s2" });
+  await settle();
+  expect(current.choice).toBeNull();
+  act(() => staleSetChoice(cardAnswer));
+  expect(schedule).not.toHaveBeenCalledWith("desk-1:s2", expect.objectContaining({ choice: cardAnswer }));
+});
+
+test("unticking the last row leaves no answer, so no chip and no tag", async () => {
+  // A chip answers *what was picked* (§5.7). Zero ticks answers nothing, so the
+  // draft holds no answer at all: the chip disappears, `hasDraft` stops counting
+  // it, and §7 has nothing to print. Every entrance writes through `setChoice`,
+  // so this one rule covers the card's row, the sheet's row and a restored draft.
+  render();
+  await settle();
+  const multi = { ...cardAnswer, mode: "multi" as const, selectedIds: ["forest"] };
+  act(() => current.setChoice(multi));
+  expect(current.choice).toEqual(expect.objectContaining({ selectedIds: ["forest"] }));
+
+  act(() => current.setChoice({ ...multi, selectedIds: [] }));
+  expect(current.choice).toBeNull();
+  // Not persisted as an answer either — reloading the draft must not resurrect
+  // a question with nothing ticked.
+  expect(schedule).toHaveBeenLastCalledWith("desk-1:s1", {
+    attachments: [], choice: undefined, refs: {}, text: "",
+  });
+
+  // Two ticks stay `、`-joined: multi's own format is untouched.
+  const both = { ...multi, selectedIds: ["forest", "flow"] };
+  act(() => current.setChoice(both));
+  expect(choiceAnswerLabel(current.choice!)).toBe("重画森林图、补一张实验流程图");
 });

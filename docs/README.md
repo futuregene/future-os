@@ -69,6 +69,7 @@ entry point; the [wiki](wiki/en/Home.md) is the user-facing app guide.
 | Doc | What it covers |
 |---|---|
 | [Workspace & conversation pagination and archive](design/workspace-thread-archive-and-paging.md) ([中文](design/workspace-thread-archive-and-paging.zh-CN.md)) | Finalized design: tree-level archiving with a uniform no-active-runs rule, workspace archive with container wake, read-only archived details, first-archive guide, and keyset pagination for the workspace list, workspace conversations and chats |
+| [Choice cards in a reply](design/choice-cards.md) ([中文](design/choice-cards.zh-CN.md)) | Finalized design: the model appends a `futureos-choice` fence, the answer lands in the composer draft (pick nothing / change it / add text / send as is), one implementation across desktop, mobile and remote; with real-interface samples and a three-way style comparison |
 
 ## Internals (`internals/`)
 

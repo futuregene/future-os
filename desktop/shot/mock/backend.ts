@@ -84,6 +84,18 @@ let settings: typeof appSettings = { ...appSettings };
  * the fixture's default state.
  */
 let harnessStreamingThreadIds: string[] = [];
+/**
+ * Thread ids `?offersChoice=` marks as "this reply closed with a choice card".
+ *
+ * The rail's choice mark (the list-checks glyph) is gated on the *run row's own*
+ * `offersChoice`, which the fixture's runs never carry — a capture of that state
+ * is otherwise unreachable, exactly like the running ring before `?streaming=`.
+ */
+let harnessOffersChoiceThreadIds: string[] = [];
+/** Peer session ids `?remoteWaiting=` reports as parked on an approval. */
+let harnessRemoteWaitingSessionIds: string[] = [];
+/** Peer session ids `?remoteChoice=` reports as having closed with a choice card. */
+let harnessRemoteChoiceSessionIds: string[] = [];
 /** Thread ids `?pinned=` added to the fixture's own pin (see `HarnessState`). */
 let harnessPinnedThreadIds: string[] = [];
 let harnessUpdate = "";
@@ -93,6 +105,18 @@ export interface HarnessState {
   update?: string | null;
   /** Thread ids the agent reports as streaming (drives the row's running ring). */
   streaming?: string[];
+  /** Thread ids whose latest run's reply offered a choice (rail's choice mark). */
+  offersChoice?: string[];
+  /**
+   * Peer session ids whose latest run is parked on an approval, and peer session
+   * ids whose reply closed with a card.
+   *
+   * The merged list draws both marks from the host's own catalogue row — its
+   * `status` and its `offersChoice` — so a capture of either needs the fixture's
+   * rows to say so for this page load.
+   */
+  remoteWaiting?: string[];
+  remoteChoice?: string[];
   /**
    * Thread ids whose finished run is unread (drives the completed/failed dot).
    *
@@ -119,6 +143,9 @@ export function seedHarnessState(state: HarnessState) {
   // is stamped on when the list is read (see `list_threads`). Stamping is
   // idempotent, which is what makes that safe to do per read.
   harnessStreamingThreadIds = state.streaming ?? [];
+  harnessOffersChoiceThreadIds = state.offersChoice ?? [];
+  harnessRemoteWaitingSessionIds = state.remoteWaiting ?? [];
+  harnessRemoteChoiceSessionIds = state.remoteChoice ?? [];
   harnessPinnedThreadIds = state.pinned ?? [];
   if (state.unread) {
     try {
@@ -236,6 +263,13 @@ interface ShotQueuedRun {
   sessionId: string;
 }
 
+/** One row that left the queue without running, as `recentTerminalAcks` says. */
+interface ShotQueueAck {
+  runId: string;
+  state: string;
+  reason: string;
+}
+
 /**
  * The conversation's Agent-side send queue, and the run it is waiting for.
  *
@@ -248,6 +282,17 @@ interface ShotQueuedRun {
  */
 const shotQueue = new Map<string, ShotQueuedRun[]>();
 const shotActiveRun = new Map<string, string>();
+
+/**
+ * Rows that left a conversation's queue without running, newest last.
+ *
+ * The Agent reports these alongside the queue (`recentTerminalAcks`), because a
+ * row that is folded into the turn ahead never runs and would otherwise vanish
+ * from the panel with nobody told. Every send here opts into `enqueue_coalescing`
+ * (`QUEUED_SEND_POLICY`), so a burst waiting together is folded the same way —
+ * see `drainShotQueue`.
+ */
+const shotQueueAcks = new Map<string, ShotQueueAck[]>();
 
 /**
  * How many waiting rows `?queue=<n>` seats in whichever conversation is read.
@@ -464,12 +509,41 @@ function recordSentTurn(threadId: string, runId: string, prompt: string, reply: 
  * the reader's own words in the transcript (the send that queued it deliberately
  * draws nothing), then the run streams its frames. Nothing in the app has to be
  * told about the queue — it reads `session_queue` and this run like any other.
+ *
+ * The turn boundary is also where the Agent *folds* the burst: every send here
+ * opts into `enqueue_coalescing` (`QUEUED_SEND_POLICY`), so the requests queued
+ * directly behind the front one do not each get a turn — they are joined into
+ * it, their texts in queue order, one paragraph each
+ * (`drain_coalescing_after_first`). Handing them out one at a time instead made
+ * a capture of that promise impossible to take: pressing «打断并全部发送» with one
+ * row held and one in the field left *two* messages in the transcript, when what
+ * the product does — and what the panel's own copy says it does («当前回复结束后
+ * 合并成一条发送») — is one. The folded rows never run, so they are recorded
+ * terminal with reason `merged`, which is how their client learns the submission
+ * was answered as part of another run.
  */
 async function drainShotQueue(threadId: string): Promise<void> {
   const held = shotQueue.get(threadId) ?? [];
   const next = held.shift();
   if (!next)
     return;
+  // Everything still waiting folds into this turn, the same way the Agent folds
+  // a burst: their words become paragraphs of one message, in queue order, and
+  // the join carries the settings of the last one. The run keeps its own id.
+  const folded = held.splice(0, held.length);
+  if (folded.length > 0) {
+    const acked = shotQueueAcks.get(threadId) ?? [];
+    for (const trailing of folded)
+      acked.push({ runId: trailing.runId, state: "terminal", reason: "merged" });
+    shotQueueAcks.set(threadId, acked);
+    next.text = [next.text, ...folded.map(row => row.text)].filter(Boolean).join("\n\n");
+    const last = folded[folded.length - 1]!;
+    const run = runs.find(candidate => candidate.id === last.runId) as Record<string, unknown> | undefined;
+    // A folded run does not stay a pending row on screen: it is answered, not
+    // queued, so its row is settled the way the Agent settles it.
+    if (run)
+      Object.assign(run, { status: "completed", endedAt: Date.now(), updatedAt: Date.now() });
+  }
   if (held.length === 0)
     shotQueue.delete(threadId);
   const run = runs.find(candidate => candidate.id === next.runId) as Record<string, unknown> | undefined;
@@ -959,7 +1033,15 @@ const handlers: Record<string, (args: any) => unknown> = {
     (args?.threadIds ?? [])
       .map((threadId: string) => {
         const run = runs.find(candidate => candidate.threadId === threadId);
-        return run ? { threadId, runId: run.id, status: run.status, endedAt: run.endedAt ?? null } : null;
+        return run
+          ? {
+              threadId,
+              runId: run.id,
+              status: run.status,
+              endedAt: run.endedAt ?? null,
+              offersChoice: harnessOffersChoiceThreadIds.includes(threadId),
+            }
+          : null;
       })
       .filter(Boolean),
   create_run: (args) => {
@@ -1126,6 +1208,14 @@ const handlers: Record<string, (args: any) => unknown> = {
     short: "9f2c1a7",
     patch: gitHistoryPatch,
     truncated: false,
+    refs: {
+      // What a real commit in this fixture's shape carries: it is on main and its
+      // remote, cut as a tag, and it is what the demo checkout is on.
+      branches: ["main"],
+      head: true,
+      remotes: ["origin/main"],
+      tags: ["v1.4.0"],
+    },
   }),
   get_last_run_review: () => ({
     changeset: {
@@ -1237,8 +1327,9 @@ const handlers: Record<string, (args: any) => unknown> = {
    *
    * `queued` is what a second send while a reply streams fills (see
    * `streamShotRun`), and it empties on its own when the run ahead of it ends.
-   * `recentTerminalAcks` stays empty: nothing here drops a row without running
-   * it, so there is never a sentence to explain.
+   * `recentTerminalAcks` carries the rows that ended without running: a burst
+   * that waited together is folded into the turn ahead, so all but the front one
+   * leave the queue as `merged` (`drainShotQueue`).
    */
   session_queue: (args: any) => {
     const threadId = String(args?.threadId ?? "");
@@ -1250,7 +1341,11 @@ const handlers: Record<string, (args: any) => unknown> = {
       text: row.text,
       state: row.state,
     }));
-    return { activeRunId: shotActiveRun.get(threadId) ?? null, queued, recentTerminalAcks: [] };
+    return {
+      activeRunId: shotActiveRun.get(threadId) ?? null,
+      queued,
+      recentTerminalAcks: shotQueueAcks.get(threadId) ?? [],
+    };
   },
   /** Taking a waiting message back out before it runs (`取消队列`) . */
   cancel_queued_run: (args: any) => {
@@ -1389,7 +1484,17 @@ const handlers: Record<string, (args: any) => unknown> = {
   },
   remote_peer_sessions: (args: { desktopId: string }) => ({
     desktopId: args.desktopId,
-    sessions: remoteSessions[args.desktopId] ?? [],
+    sessions: (remoteSessions[args.desktopId] ?? []).map((session) => {
+      const row = session as { sessionId?: string; status?: string; offersChoice?: boolean };
+      const sessionId = String(row.sessionId ?? "");
+      // The two states a host reports and a fixture cannot default to: a run
+      // parked on an approval, and a reply that closed with a choice card.
+      if (harnessRemoteWaitingSessionIds.includes(sessionId))
+        return { ...row, status: "waiting_approval" };
+      if (harnessRemoteChoiceSessionIds.includes(sessionId))
+        return { ...row, status: "completed", offersChoice: true };
+      return row;
+    }),
   }),
   remote_peer_workspaces: (args: { desktopId: string }) => ({
     ...remoteWorkspaces,

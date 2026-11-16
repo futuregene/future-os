@@ -106,6 +106,11 @@ pub struct ProviderUpsertSpec {
     pub api_key: Option<String>,
     /// Remove the provider key in the same two-file transaction.
     pub clear_api_key: bool,
+    /// Set this provider's `skipTlsVerify`: the endpoint may present a
+    /// self-signed certificate or one no platform CA knows, and the user still
+    /// wants the transport encrypted. `Some(false)` clears the stored flag;
+    /// `None` (a client without the control) leaves it as it is.
+    pub skip_tls_verify: Option<bool>,
 }
 
 /// The model-entry keys [`apply_provider_upsert`] owns. Any other key already
@@ -135,6 +140,7 @@ impl ProviderUpsertSpec {
             || self.clear_base_url
             || self.replace_models
             || !self.models.is_empty()
+            || self.skip_tls_verify.is_some()
     }
 }
 
@@ -508,6 +514,19 @@ pub fn apply_provider_upsert(
     }
     if spec.clear_base_url {
         provider.remove("baseUrl");
+    }
+    // Stored only when on: an entry without the key is the verified default, so
+    // turning the flag off leaves no residue a later reader could misread. The
+    // entry-drop check below counts it, so a provider that is nothing but this
+    // one setting survives instead of vanishing.
+    match spec.skip_tls_verify {
+        Some(true) => {
+            provider.insert("skipTlsVerify".to_string(), Value::Bool(true));
+        }
+        Some(false) => {
+            provider.remove("skipTlsVerify");
+        }
+        None => {}
     }
     if spec.replace_models || !spec.models.is_empty() {
         // Replacing the array must not strip per-model fields this RPC does not
@@ -1966,6 +1985,77 @@ mod tests {
             ..Default::default()
         };
         apply_provider_upsert(&mut root, &spec).unwrap();
+    }
+
+    /// `skipTlsVerify` is presence-based in all three directions.
+    ///
+    /// The middle case is the one that matters operationally: a client that
+    /// cannot express the flag (an older desktop, the TUI, the CLI wizard) sends
+    /// `None`, and it must not switch verification back on for a provider whose
+    /// endpoint only answers when it is off — the user would then see the
+    /// provider break after an unrelated edit from another client.
+    #[test]
+    fn skip_tls_verify_is_set_cleared_and_preserved() {
+        let upsert = |skip_tls_verify: Option<bool>| ProviderUpsertSpec {
+            id: "gateway".to_string(),
+            name: Some("Gateway".to_string()),
+            api: Some("openai-completions".to_string()),
+            base_url: Some("https://gateway.internal/v1".to_string()),
+            skip_tls_verify,
+            ..Default::default()
+        };
+        let stored = |root: &Map<String, Value>| {
+            root["providers"]["gateway"]
+                .get("skipTlsVerify")
+                .cloned()
+                .unwrap_or(Value::Null)
+        };
+
+        // Absent on creation: no key is written, so the entry means "verified".
+        let mut root: Map<String, Value> = serde_json::from_str(r#"{"providers":{}}"#).unwrap();
+        apply_provider_upsert(&mut root, &upsert(None)).unwrap();
+        assert_eq!(stored(&root), Value::Null);
+
+        // A stated `true` persists.
+        apply_provider_upsert(&mut root, &upsert(Some(true))).unwrap();
+        assert_eq!(stored(&root), Value::Bool(true));
+
+        // An older client's edit leaves it alone.
+        apply_provider_upsert(&mut root, &upsert(None)).unwrap();
+        assert_eq!(
+            stored(&root),
+            Value::Bool(true),
+            "an edit that cannot express the flag must preserve it"
+        );
+
+        // A stated `false` clears it, leaving no `false` behind to re-read.
+        apply_provider_upsert(&mut root, &upsert(Some(false))).unwrap();
+        assert_eq!(stored(&root), Value::Null);
+    }
+
+    /// A provider defined only by its TLS decision must survive the
+    /// "cleared base URL drops the entry" rule, or turning the flag off on a
+    /// bare override would silently delete a setting the user did not remove.
+    #[test]
+    fn skip_tls_verify_alone_keeps_the_provider_entry() {
+        let mut root: Map<String, Value> =
+            serde_json::from_str(r#"{"providers":{"gateway":{"skipTlsVerify":true}}}"#).unwrap();
+        apply_provider_upsert(
+            &mut root,
+            &ProviderUpsertSpec {
+                id: "gateway".to_string(),
+                skip_tls_verify: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // Nothing was cleared and nothing remained, so the entry stands as an
+        // empty provider rather than vanishing mid-edit.
+        assert!(
+            root["providers"]["gateway"].is_object(),
+            "the entry survives a flag-only update: {root:?}"
+        );
+        assert!(root["providers"]["gateway"].get("skipTlsVerify").is_none());
     }
 
     #[cfg(unix)]

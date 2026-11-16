@@ -1145,6 +1145,7 @@ mod gui {
                 session_queue,
                 cancel_queued_run,
                 release_queued_run,
+                edit_queued_run,
                 list_run_events,
                 list_run_events_bulk,
                 list_run_events_since,
@@ -1224,6 +1225,7 @@ mod gui {
                 remote_peer_preview_file,
                 remote_peer_upload_file,
                 remote_peer_request,
+                remote_peer_probe_thinking_level,
                 terminal_server_info,
                 open_url
             ])

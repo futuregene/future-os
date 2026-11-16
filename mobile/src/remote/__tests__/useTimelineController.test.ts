@@ -788,6 +788,198 @@ describe("useTimelineController", () => {
       }
     });
 
+    // A streaming conversation's tail page belongs to one turn, and one turn is
+    // one exchange: the pages above it hold that same turn's rows, so the window
+    // can never reach `HISTORY_PAGE_USER_EXCHANGES` by paging. The open used to
+    // walk the run looking for the exchanges that are not there — one round trip
+    // per page, all before the transcript could be drawn. Measured 2026-11-13 on
+    // session 8ac7afd8 (one run owning 1,176 of 1,712 display rows): 10 pages,
+    // seven of them carrying no user row at all.
+    test("a tail that is one long run stops backfilling after the page that adds no exchange", async () => {
+      jest.useFakeTimers();
+      try {
+        options.selectedSessionId = "s1";
+        options.selectedRef.current = "s1";
+        // The reported shape: the newest page holds the turn's prompt and its
+        // rows, and everything above it is still that same turn.
+        const journal: ReturnType<typeof userEntry>[] = [];
+        for (let index = 0; index < 1000; index += 1) {
+          journal.push(assistantEntry(`a-old-${index}`, `old ${index}`, "run-old"));
+        }
+        journal.push(userEntry("u-run", "one long turn"));
+        for (let index = 0; index < 149; index += 1) {
+          journal.push(assistantEntry(`a-${index}`, `step ${index}`, "run-long"));
+        }
+        const PAGE_ROWS = 150;
+        let entryCalls = 0;
+        request.mockImplementation(async (command: { type: string; before?: number }) => {
+          if (command.type !== "get_session_entries") return { data: {} };
+          entryCalls += 1;
+          const before = Math.min(command.before ?? journal.length, journal.length);
+          const start = Math.max(0, before - PAGE_ROWS);
+          return {
+            data: {
+              entries: journal.slice(start, before),
+              hasMore: start > 0,
+              nextOffset: start,
+              // Every page is over the reply budget, which is what makes the
+              // loop run at all.
+              trimmed: true,
+            },
+          };
+        });
+        render();
+        await establish();
+        // Deep enough that the whole backfill walk is finished, not one page in.
+        await flush(120);
+        // The open tail, then exactly ONE backfill page: that page adds no
+        // exchange, and the guard is what says so instead of reading seven more.
+        expect(entryCalls).toBe(2);
+        expect(result.current.canLoadOlderTimeline).toBe(true);
+        expect(result.current.historyBackfillTruncated).toBe(true);
+        // What did arrive is drawn: the turn's prompt and its rows.
+        expect(
+          result.current.timeline.items.filter(item => item.kind === "message" && item.role === "user"),
+        ).toHaveLength(1);
+      } finally {
+        act(() => renderer?.unmount());
+        renderer = null;
+        jest.useRealTimers();
+      }
+    });
+
+    test("the backfill cap bounds an open whose pages each add an exchange but never reach the count", async () => {
+      jest.useFakeTimers();
+      try {
+        options.selectedSessionId = "s1";
+        options.selectedRef.current = "s1";
+        // A page that carries a user row keeps the guard off, so this is the
+        // only shape that reaches the cap: the tail has no user row, every page
+        // above it adds one, the count stays below the window's three, and
+        // `hasMore` never ends.
+        const journal: ReturnType<typeof userEntry>[] = [assistantEntry("a-tail", "tail", "run-x")];
+        for (let index = 0; index < 8; index += 1) {
+          journal.push(userEntry(`u-${index}`, `question ${index}`));
+          journal.push(assistantEntry(`a-${index}`, `answer ${index}`, `run-${index}`));
+        }
+        let entryCalls = 0;
+        request.mockImplementation(async (command: { type: string; before?: number }) => {
+          if (command.type !== "get_session_entries") return { data: {} };
+          entryCalls += 1;
+          const before = Math.min(command.before ?? journal.length, journal.length);
+          const start = Math.max(0, before - (entryCalls === 1 ? 1 : 2));
+          return {
+            data: {
+              entries: journal.slice(start, before),
+              hasMore: true,
+              nextOffset: start,
+              trimmed: true,
+            },
+          };
+        });
+        render();
+        await establish();
+        // Deep enough that the whole backfill walk is finished, not one page in.
+        await flush(120);
+        // One open tail + exactly two backfill pages (HISTORY_TAIL_BACKFILL_MAX_PAGES).
+        // A larger cap spends a further round trip here; a zero cap drops the
+        // backfill this test exists to bound.
+        expect(entryCalls).toBe(3);
+        expect(result.current.historyBackfillTruncated).toBe(true);
+      } finally {
+        act(() => renderer?.unmount());
+        renderer = null;
+        jest.useRealTimers();
+      }
+    });
+
+    test("a window with no exchange yet is never abandoned by the guard", async () => {
+      jest.useFakeTimers();
+      try {
+        options.selectedSessionId = "s1";
+        options.selectedRef.current = "s1";
+        // The guard stops only once the window already holds a turn: a window
+        // with no user row projects to nothing, so stopping there would replace
+        // "a short window" with "a blank transcript". This page sequence has no
+        // user row for its first two pages.
+        const journal: ReturnType<typeof userEntry>[] = [];
+        for (let index = 0; index < 3; index += 1) {
+          journal.push(assistantEntry(`a-old-${index}`, `old ${index}`, "run-old"));
+        }
+        journal.push(userEntry("u-run", "the prompt"));
+        for (let index = 0; index < 6; index += 1) {
+          journal.push(assistantEntry(`a-${index}`, `step ${index}`, "run-long"));
+        }
+        let entryCalls = 0;
+        request.mockImplementation(async (command: { type: string; before?: number }) => {
+          if (command.type !== "get_session_entries") return { data: {} };
+          entryCalls += 1;
+          const before = Math.min(command.before ?? journal.length, journal.length);
+          const start = Math.max(0, before - 3);
+          return {
+            data: {
+              entries: journal.slice(start, before),
+              hasMore: start > 0,
+              nextOffset: start,
+              trimmed: true,
+            },
+          };
+        });
+        render();
+        await establish();
+        // Deep enough that the whole backfill walk is finished, not one page in.
+        await flush(120);
+        // Three reads: the tail (steps only), the page of steps above it that
+        // still holds no exchange, and the page that brings the prompt. A guard
+        // that stopped on the first exchange-less page would stop at two, and a
+        // window with no user row draws nothing at all.
+        expect(entryCalls).toBe(3);
+        expect(
+          result.current.timeline.items.filter(item => item.kind === "message" && item.role === "user"),
+        ).toHaveLength(1);
+      } finally {
+        act(() => renderer?.unmount());
+        renderer = null;
+        jest.useRealTimers();
+      }
+    });
+
+    test("a trimmed tail that reaches its exchange count reports no shortfall", async () => {
+      jest.useFakeTimers();
+      try {
+        options.selectedSessionId = "s1";
+        options.selectedRef.current = "s1";
+        // The ordinary shape: the tail is trimmed, but the pages above it are
+        // other turns, so the window completes and nothing is owed a notice.
+        const journal: ReturnType<typeof userEntry>[] = [];
+        for (const [question, answer, run] of [
+          ["q1", "a1", "run-1"],
+          ["q2", "a2", "run-2"],
+          ["q3", "a3", "run-3"],
+        ] as const) {
+          journal.push(userEntry(`u-${run}`, question));
+          journal.push(assistantEntry(`a-${run}`, answer, run));
+        }
+        request.mockImplementation(async (command: { type: string; before?: number }) => {
+          if (command.type !== "get_session_entries") return { data: {} };
+          const before = Math.min(command.before ?? journal.length, journal.length);
+          const start = Math.max(0, before - 2);
+          return {
+            data: { entries: journal.slice(start, before), hasMore: start > 0, nextOffset: start, trimmed: true },
+          };
+        });
+        render();
+        await establish();
+        // Deep enough that the whole backfill walk is finished, not one page in.
+        await flush(120);
+        expect(result.current.historyBackfillTruncated).toBe(false);
+      } finally {
+        act(() => renderer?.unmount());
+        renderer = null;
+        jest.useRealTimers();
+      }
+    });
+
     test("a refresh gap wider than one page still recovers when every page is byte-trimmed", async () => {
       jest.useFakeTimers();
       try {

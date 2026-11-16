@@ -1390,9 +1390,8 @@ async fn quit(
             copy_to_clipboard(live, text, super::i18n::Key::CopyDone).await;
             continue;
         }
-        // The `[复制]` control under one message: the same clipboard road as
-        // `/copy`, with the message the reader pointed at instead of the last
-        // answer.
+        // The `[复制]` control under the transcript's answer: the same clipboard
+        // road as `/copy`, pressed on the block `/copy` would take.
         if let WbAction::CopyMessage(row) = &action {
             let text = live.copy_message(*row);
             copy_to_clipboard(live, text, super::i18n::Key::CopiedMessage).await;
@@ -1805,7 +1804,7 @@ async fn open_git_detail(live: &mut Live, frame: &Frame, workbench: &mut Workben
 /// Put `text` on the clipboard and say so on the notice row.
 ///
 /// One road for every copy the conversation offers — `/copy`'s last answer, the
-/// `[复制]` control under one message — so the two cannot drift in how they
+/// `[复制]` control under that same answer — so the two cannot drift in how they
 /// report a clipboard that refused them. `done` is the sentence a successful
 /// copy leaves behind.
 async fn copy_to_clipboard(live: &mut Live, text: Result<String, String>, done: super::i18n::Key) {
@@ -4968,6 +4967,40 @@ mod driver_tests {
             }
         }
 
+        /// Run `future` on a thread with a big stack.
+        ///
+        /// A driver test is *one* async fn, and a debug build lays every local and
+        /// every awaited future of it into a single frame. This test's frame was
+        /// measured at ~1 MiB before its first statement, and its steps need as
+        /// much again, which is over the 2 MiB a `cargo test` thread gets on Linux
+        /// and Windows — where it aborted on both legs of run 43673617419 while
+        /// macOS, whose frame is smaller, passed. Nothing recurses here: the
+        /// measurement was a fixed frame, the same at 1, 2 and 4 MiB of stack, and
+        /// a release build's frame is a fraction of it. `live::tests` has the same
+        /// helper for `Live::apply`'s frame, which is bigger still.
+        fn with_big_stack<T: Send + 'static>(
+            body: impl FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = T>>>
+                + Send
+                + 'static,
+        ) -> T {
+            std::thread::Builder::new()
+                .stack_size(32 * 1024 * 1024)
+                .spawn(move || {
+                    // The future is *built* on the big stack, so nothing has to be
+                    // `Send`: the driver holds a terminal and an agent client that
+                    // the runtime owns.
+                    let future = body();
+                    tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("a test runtime")
+                        .block_on(future)
+                })
+                .expect("a test thread")
+                .join()
+                .expect("the test body did not panic")
+        }
+
         /// The detail pane is a box that always says something: a selected row
         /// whose read produced no body paints "select an entry" rather than
         /// leaving the pane blank beside a row the reader can see.
@@ -4985,131 +5018,134 @@ mod driver_tests {
         /// only through a section whose rows carry no object at all; this test
         /// then fails on `detail.is_empty()`, which is the intent.
         #[allow(clippy::await_holding_lock)]
-        #[tokio::test]
-        async fn a_row_with_no_body_keeps_the_detail_pane_a_box() {
-            let _env = a_peer_may_not_swap_the_environment();
-            let repo = tempfile::tempdir().expect("a temp directory");
-            let git_program = crate::test_env::absolute_tool("git");
-            let git = |args: &[&str]| {
-                let output = std::process::Command::new(&git_program)
-                    .arg("-C")
-                    .arg(repo.path())
-                    .args(args)
-                    .output()
-                    .expect("run git");
-                assert!(output.status.success(), "git {args:?}: {output:?}");
-            };
-            git(&["init", "-q", "-b", "main"]);
-            git(&["config", "user.email", "tui@example.invalid"]);
-            git(&["config", "user.name", "TUI test"]);
-            std::fs::write(repo.path().join("a.txt"), "one\n").expect("write a file");
-            std::fs::create_dir(repo.path().join("sub")).expect("a subdirectory");
-            std::fs::write(repo.path().join("sub").join("b.txt"), "inner\n")
-                .expect("write a file under the workspace");
-            git(&["add", "."]);
-            git(&["commit", "-qm", "first commit"]);
-            std::fs::write(repo.path().join("a.txt"), "two\n").expect("edit the file");
+        #[test]
+        fn a_row_with_no_body_keeps_the_detail_pane_a_box() {
+            with_big_stack(|| {
+                Box::pin(async {
+                    let _env = a_peer_may_not_swap_the_environment();
+                    let repo = tempfile::tempdir().expect("a temp directory");
+                    let git_program = crate::test_env::absolute_tool("git");
+                    let git = |args: &[&str]| {
+                        let output = std::process::Command::new(&git_program)
+                            .arg("-C")
+                            .arg(repo.path())
+                            .args(args)
+                            .output()
+                            .expect("run git");
+                        assert!(output.status.success(), "git {args:?}: {output:?}");
+                    };
+                    git(&["init", "-q", "-b", "main"]);
+                    git(&["config", "user.email", "tui@example.invalid"]);
+                    git(&["config", "user.name", "TUI test"]);
+                    std::fs::write(repo.path().join("a.txt"), "one\n").expect("write a file");
+                    std::fs::create_dir(repo.path().join("sub")).expect("a subdirectory");
+                    std::fs::write(repo.path().join("sub").join("b.txt"), "inner\n")
+                        .expect("write a file under the workspace");
+                    git(&["add", "."]);
+                    git(&["commit", "-qm", "first commit"]);
+                    std::fs::write(repo.path().join("a.txt"), "two\n").expect("edit the file");
 
-            let mut driver = Driver::attach_conversation_in(&repo.path().join("sub")).await;
-            assert!(!driver.quit_key("ctrl+g").await, "ctrl+g left the app");
-            assert!(
-                driver
-                    .wait_for(Duration::from_secs(20), |driver| driver
-                        .live
-                        .git()
-                        .is_some())
-                    .await,
-                "the log never installed"
-            );
-            assert!(!driver.quit_key("3").await, "3 left the app");
-            assert!(
-                driver
-                    .wait_for(Duration::from_secs(20), |driver| driver
-                        .live
-                        .git()
-                        .is_some_and(
-                            |view| view.section == crate::workbench::state::GitSection::Status
-                        ))
-                    .await,
-                "the working-tree tab never landed"
-            );
-            let view = driver.live.git().cloned().expect("a view");
-            assert!(
-                !view.rows.is_empty(),
-                "the tab does not list the change: {:?}",
-                view.rows
-            );
-            assert!(
-                view.detail.is_empty(),
-                "a patch was read from outside the workspace: {:?}",
-                view.detail
-            );
-            // The list is what the reader has: the tab names the change.
-            let listed = text_of(&driver.pump(Duration::from_millis(300)).await);
-            assert!(
-                listed.contains("a.txt"),
-                "the row the pane describes is not on screen: {listed}"
-            );
-            // A narrow frame paints one pane at a time; `tab` shows the patch.
-            assert!(!driver.quit_key("tab").await, "tab left the app");
-            let painted = driver.pump(Duration::from_millis(300)).await;
-            let text = text_of(&painted);
-            let placeholder = crate::workbench::i18n::t(
-                driver.workbench.lang,
-                crate::workbench::i18n::Key::GitNoSelection,
-            );
-            assert!(
-                text.contains(placeholder),
-                "the detail pane painted nothing at all: {text}"
-            );
+                    let mut driver = Driver::attach_conversation_in(&repo.path().join("sub")).await;
+                    assert!(!driver.quit_key("ctrl+g").await, "ctrl+g left the app");
+                    assert!(
+                        driver
+                            .wait_for(Duration::from_secs(20), |driver| driver
+                                .live
+                                .git()
+                                .is_some())
+                            .await,
+                        "the log never installed"
+                    );
+                    assert!(!driver.quit_key("3").await, "3 left the app");
+                    assert!(
+                        driver
+                            .wait_for(Duration::from_secs(20), |driver| driver
+                                .live
+                                .git()
+                                .is_some_and(|view| view.section
+                                    == crate::workbench::state::GitSection::Status))
+                            .await,
+                        "the working-tree tab never landed"
+                    );
+                    let view = driver.live.git().cloned().expect("a view");
+                    assert!(
+                        !view.rows.is_empty(),
+                        "the tab does not list the change: {:?}",
+                        view.rows
+                    );
+                    assert!(
+                        view.detail.is_empty(),
+                        "a patch was read from outside the workspace: {:?}",
+                        view.detail
+                    );
+                    // The list is what the reader has: the tab names the change.
+                    let listed = text_of(&driver.pump(Duration::from_millis(300)).await);
+                    assert!(
+                        listed.contains("a.txt"),
+                        "the row the pane describes is not on screen: {listed}"
+                    );
+                    // A narrow frame paints one pane at a time; `tab` shows the patch.
+                    assert!(!driver.quit_key("tab").await, "tab left the app");
+                    let painted = driver.pump(Duration::from_millis(300)).await;
+                    let text = text_of(&painted);
+                    let placeholder = crate::workbench::i18n::t(
+                        driver.workbench.lang,
+                        crate::workbench::i18n::Key::GitNoSelection,
+                    );
+                    assert!(
+                        text.contains(placeholder),
+                        "the detail pane painted nothing at all: {text}"
+                    );
 
-            // The control: the same repository read from its root. There the
-            // session's directory *is* the one the paths are relative to, so the
-            // same tab paints the patch — which is what makes the empty body
-            // above a mismatch of roots rather than a read that never happens.
-            let mut root = Driver::attach_conversation_in(repo.path()).await;
-            assert!(!root.quit_key("ctrl+g").await, "ctrl+g left the app");
-            assert!(
-                root.wait_for(Duration::from_secs(20), |driver| driver
-                    .live
-                    .git()
-                    .is_some())
-                    .await,
-                "the log never installed"
-            );
-            assert!(!root.quit_key("3").await, "3 left the app");
-            // The wait names the section, not just "a patch": a tab switch starts
-            // its read beside the surface and the panel keeps painting the view it
-            // already holds until that read lands (`open_git_panel` →
-            // `Live::begin_git_read`). The log's selected commit is *already* a
-            // `diff --git` body, so a wait on the patch alone returns on the log
-            // the frame still shows — fine while the switch lands inside the next
-            // paint, and wrong when it does not: on the Windows `tui-cli` leg (run
-            // 42689608460, attempt 2) the pane held `commit 42b37bf … diff --git
-            // a/a.txt` and no `+two`. Naming the section makes the wait end on the
-            // read `3` started, and `+two` on the working-tree patch itself.
-            let patched = |driver: &Driver| {
-                driver.live.git().is_some_and(|view| {
-                    view.section == crate::workbench::state::GitSection::Status
-                        && view
-                            .detail
-                            .iter()
-                            .any(|line| line.starts_with("diff --git"))
-                        && view.detail.iter().any(|line| line.contains("+two"))
+                    // The control: the same repository read from its root. There the
+                    // session's directory *is* the one the paths are relative to, so the
+                    // same tab paints the patch — which is what makes the empty body
+                    // above a mismatch of roots rather than a read that never happens.
+                    let mut root = Driver::attach_conversation_in(repo.path()).await;
+                    assert!(!root.quit_key("ctrl+g").await, "ctrl+g left the app");
+                    assert!(
+                        root.wait_for(Duration::from_secs(20), |driver| driver
+                            .live
+                            .git()
+                            .is_some())
+                            .await,
+                        "the log never installed"
+                    );
+                    assert!(!root.quit_key("3").await, "3 left the app");
+                    // The wait names the section, not just "a patch": a tab switch starts
+                    // its read beside the surface and the panel keeps painting the view it
+                    // already holds until that read lands (`open_git_panel` →
+                    // `Live::begin_git_read`). The log's selected commit is *already* a
+                    // `diff --git` body, so a wait on the patch alone returns on the log
+                    // the frame still shows — fine while the switch lands inside the next
+                    // paint, and wrong when it does not: on the Windows `tui-cli` leg (run
+                    // 42689608460, attempt 2) the pane held `commit 42b37bf … diff --git
+                    // a/a.txt` and no `+two`. Naming the section makes the wait end on the
+                    // read `3` started, and `+two` on the working-tree patch itself.
+                    let patched = |driver: &Driver| {
+                        driver.live.git().is_some_and(|view| {
+                            view.section == crate::workbench::state::GitSection::Status
+                                && view
+                                    .detail
+                                    .iter()
+                                    .any(|line| line.starts_with("diff --git"))
+                                && view.detail.iter().any(|line| line.contains("+two"))
+                        })
+                    };
+                    let landed = root.wait_for(Duration::from_secs(20), patched).await;
+                    assert!(landed, "the same tab from the root read no patch");
+                    assert!(!root.quit_key("tab").await, "tab left the app");
+                    let painted = text_of(&root.pump(Duration::from_millis(300)).await);
+                    assert!(
+                        painted.contains("diff --git") && painted.contains("+two"),
+                        "the pane dropped the patch it read: {painted}"
+                    );
+                    assert!(
+                        !painted.contains(placeholder),
+                        "the pane asks for a selection with one selected: {painted}"
+                    );
                 })
-            };
-            let landed = root.wait_for(Duration::from_secs(20), patched).await;
-            assert!(landed, "the same tab from the root read no patch");
-            assert!(!root.quit_key("tab").await, "tab left the app");
-            let painted = text_of(&root.pump(Duration::from_millis(300)).await);
-            assert!(
-                painted.contains("diff --git") && painted.contains("+two"),
-                "the pane dropped the patch it read: {painted}"
-            );
-            assert!(
-                !painted.contains(placeholder),
-                "the pane asks for a selection with one selected: {painted}"
-            );
+            });
         }
     }
 
@@ -6756,9 +6792,9 @@ mod driver_tests {
             );
         }
 
-        /// The `[复制]` control under one message is the same clipboard road
-        /// `/copy` takes — one message instead of the last answer — and the
-        /// loop, not the surface, owns the clipboard.
+        /// The `[复制]` control under the transcript's answer is the same
+        /// clipboard road `/copy` takes, and the loop, not the surface, owns the
+        /// clipboard.
         ///
         /// Reached the way a reader reaches it: `tab` walks the transcript's
         /// stops and `enter` presses the chip, so the case cannot pass by
@@ -6768,7 +6804,7 @@ mod driver_tests {
         #[cfg(unix)]
         #[allow(clippy::await_holding_lock)]
         #[tokio::test]
-        async fn a_copy_of_one_message_takes_that_message_and_says_so() {
+        async fn the_answers_copy_chip_takes_that_answer_and_says_so() {
             use std::os::unix::fs::PermissionsExt as _;
 
             use crate::components::chat_area::RowAction;
@@ -6828,11 +6864,7 @@ mod driver_tests {
             driver.live.notice = None;
             assert!(!driver.quit_key("enter").await, "enter left the app");
             let language = driver.live.language();
-            let notice = driver
-                .live
-                .notice
-                .clone()
-                .expect("a copy of one message said nothing");
+            let notice = driver.live.notice.clone().expect("the copy said nothing");
             assert_eq!(
                 notice,
                 t(language, Key::CopiedMessage),
@@ -6842,7 +6874,7 @@ mod driver_tests {
                 .expect("the clipboard tool kept nothing: the copy never reached it");
             assert_eq!(
                 copied, "the build is green",
-                "the clipboard holds something other than the message under the cursor"
+                "the clipboard holds something other than the answer the chip sits under"
             );
         }
     }

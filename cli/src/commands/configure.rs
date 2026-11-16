@@ -852,6 +852,10 @@ fn provider_spec(input: &CustomProviderInput) -> ProviderUpsertSpec {
             .collect(),
         replace_models: true,
         api_key: input.api_key.clone(),
+        // No TLS control in the wizard: `None` preserves the stored
+        // `skipTlsVerify` rather than silently re-enabling verification for a
+        // provider the user turned it on for elsewhere.
+        skip_tls_verify: None,
         ..Default::default()
     }
 }
@@ -890,6 +894,8 @@ fn provider_rpc(input: &CustomProviderInput) -> ProviderUpsert {
             .collect(),
         api_key: input.api_key.clone().unwrap_or_default(),
         replace_models: true,
+        // Preserve the stored flag: the wizard never asks about TLS.
+        skip_tls_verify: None,
         ..Default::default()
     }
 }

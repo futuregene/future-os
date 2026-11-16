@@ -265,6 +265,26 @@ export async function releaseRemoteQueuedRun(
 }
 
 /**
+ * Correct one waiting message's words, in the place it already holds.
+ *
+ * The host replaces the text of the accepted prompt in place: same row, same
+ * position, and the files it was sent with stay attached. A cancel and a re-send
+ * would have put the corrected message at the back of the queue.
+ */
+export async function editRemoteQueuedRun(
+  desktopId: string,
+  sessionId: string,
+  runId: string,
+  message: string,
+): Promise<void> {
+  await requestRemotePeer(
+    desktopId,
+    { type: "edit_queued_run", sessionId, runId, message },
+    sessionId,
+  );
+}
+
+/**
  * How often the panel re-reads the queue while there is something to read.
  *
  * The host announces a prompt's acceptance and its start, but not "this row

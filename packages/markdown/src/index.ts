@@ -6,6 +6,8 @@ export {
 } from "./localPath";
 export type { MarkdownTarget } from "./localPath";
 export { parseFutureMarkdown } from "./parseFutureMarkdown";
+export { splitChoiceAnswerEcho } from "./choiceAnswerEcho";
+export type { ChoiceAnswerEcho, ChoiceAnswerEchoSplit } from "./choiceAnswerEcho";
 export {
   buildSessionReference,
   findSessionReferences,
@@ -14,6 +16,7 @@ export {
 } from "./sessionReference";
 export type { SessionReference, SessionReferenceMatch } from "./sessionReference";
 export { joinSoftBreaks } from "./softBreaks";
+export { repairNestedDocumentFence } from "./fenceNesting";
 export { createStreamingMarkdownParser } from "./streamingMarkdown";
 export { plainTitleText } from "./title";
 export { remarkLatexMath } from "./remarkLatexMath";
@@ -24,6 +27,9 @@ export { remarkAutolinkBoundary } from "./remarkAutolinkBoundary";
 export { remarkUnclosedLink } from "./remarkUnclosedLink";
 export { referenceKey } from "./types";
 export type {
+  ChoiceCardMode,
+  ChoiceCardNode,
+  ChoiceCardOption,
   FutureMarkdownDocument,
   FutureReference,
   FutureReferenceType,

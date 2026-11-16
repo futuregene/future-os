@@ -3950,12 +3950,13 @@ impl Live {
         }
     }
 
-    /// The `[复制]` control under one message: that message's own text, as the
-    /// transcript holds it (markdown source, not the painted ANSI rows).
+    /// The `[复制]` control under the transcript's last answer: that message's
+    /// own text, as the transcript holds it (markdown source, not the painted
+    /// ANSI rows).
     ///
-    /// The same clipboard road `/copy` takes, one message instead of the last
-    /// answer — a prompt can be copied back into the draft, a reply quoted into
-    /// another conversation.
+    /// The same clipboard road `/copy` takes — the chip sits under the answer
+    /// `/copy` would take, so the two cannot disagree about which block they
+    /// copy.
     pub fn copy_message(&self, row: usize) -> Result<String, String> {
         self.chat
             .copyable_text_at(row)
@@ -8825,7 +8826,7 @@ mod tests {
         let (tx, mut answers) = tokio::sync::mpsc::unbounded_channel();
         live.set_load_sender(tx);
 
-        let before = rows_on_screen(&mut live).len();
+        let before = rows_on_screen(&mut live);
         let started = std::time::Instant::now();
         assert!(
             live.begin_load_older(),
@@ -8842,7 +8843,7 @@ mod tests {
         );
         assert_eq!(
             rows_on_screen(&mut live).len(),
-            before,
+            before.len(),
             "nothing was prepended before the answer"
         );
 
@@ -8852,10 +8853,17 @@ mod tests {
         };
         assert_eq!(page.before, 0, "the window that was asked for");
         assert!(live.install_older(page), "the page owes a frame");
-        assert_eq!(
-            rows_on_screen(&mut live).len(),
-            before * 2,
-            "the page was prepended above the tail"
+        // The page went *above* what the reader was reading: the tail's own
+        // rows are untouched, and the older answer arrives without a copy chip
+        // (the chip belongs to the newest answer, which is still the tail's).
+        let installed = rows_on_screen(&mut live);
+        assert!(
+            installed.len() > before.len(),
+            "the page was prepended above the tail: {installed:?}"
+        );
+        assert!(
+            installed.ends_with(&before),
+            "the rows the reader was on are unchanged: {installed:?}"
         );
         live.client.disconnect();
     }

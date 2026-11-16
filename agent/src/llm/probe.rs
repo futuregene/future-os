@@ -66,6 +66,10 @@ pub struct ThinkingLevelProbeSpec {
     pub model_id: String,
     /// The level to test; empty means the calibration call.
     pub level: String,
+    /// Probe over TLS without verifying the certificate, matching a provider the
+    /// editor has set to `skipTlsVerify`. Without it a detection run against a
+    /// self-signed endpoint fails in the handshake and reads as a bad key.
+    pub skip_tls_verify: Option<bool>,
 }
 
 /// The wire carrier is the proto message; field-for-field, nothing derived, so
@@ -79,6 +83,7 @@ impl From<future_rpc::proto::ThinkingLevelProbe> for ThinkingLevelProbeSpec {
             provider_id: probe.provider_id,
             model_id: probe.model_id,
             level: probe.level,
+            skip_tls_verify: probe.skip_tls_verify,
         }
     }
 }
@@ -124,6 +129,7 @@ pub fn probe_model(
         },
         api,
         base_url: spec.base_url.trim().to_string(),
+        skip_tls_verify: spec.skip_tls_verify.unwrap_or(false),
         input: vec!["text".to_string()],
         output: vec!["text".to_string()],
         context_window: PROBE_CONTEXT_WINDOW,
@@ -132,6 +138,14 @@ pub fn probe_model(
     if let Some(inherited) = inherited {
         model.compat = inherited.compat.clone();
         model.headers = inherited.headers.clone();
+        // A probe of an already-saved provider inherits its TLS decision: the
+        // caller that names `provider/model` (the CLI) does not restate it, and
+        // a detection run that verified the certificate would fail the
+        // handshake on precisely the self-signed endpoint the flag exists for.
+        // An explicit value from the editor always wins.
+        if spec.skip_tls_verify.is_none() {
+            model.skip_tls_verify = inherited.skip_tls_verify;
+        }
     }
     // Every level is declared so capabilities say "this model reasons": the
     // Anthropic adapter only requests thinking for a model whose declared
@@ -313,6 +327,7 @@ mod tests {
             provider_id: "acme".to_string(),
             model_id: "qwen".to_string(),
             level: level.to_string(),
+            skip_tls_verify: None,
         }
     }
 
@@ -502,6 +517,7 @@ mod tests {
             provider_id: "acme".to_string(),
             model_id: "claude-ish".to_string(),
             level: "max".to_string(),
+            skip_tls_verify: Some(true),
         }
         .into();
         assert_eq!(
@@ -513,6 +529,7 @@ mod tests {
                 provider_id: "acme".to_string(),
                 model_id: "claude-ish".to_string(),
                 level: "max".to_string(),
+                skip_tls_verify: Some(true),
             }
         );
     }

@@ -425,18 +425,57 @@ describe("named export lifecycle", () => {
     } finally { now.mockRestore(); }
   });
 
-  test("refuses capacity overflow rather than removing a recent OS handoff", async () => {
-    const source = fsFile("file:///large.txt", { size: 60 * 1024 * 1024 });
+  test("reclaims the oldest handoff instead of refusing once it may no longer be in use", async () => {
+    const now = jest.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      const source = fsFile("file:///large.txt", { size: 60 * 1024 * 1024 });
+      const first = await namedExternalFile(source, "a.wav");
+      // Two 60 MB copies do not fit the 100 MB budget; the first is old enough
+      // that the app holding it has had its chance to read it.
+      now.mockReturnValue(1_000_000 + 11 * 60 * 1000);
+      const second = await namedExternalFile(source, "b.wav");
+      expect(first.exists).toBe(false);
+      expect(second.exists).toBe(true);
+      expect(source.exists).toBe(true);
+    } finally { now.mockRestore(); }
+  });
+
+  test("keeps a just-handed-off copy and reclaims an older one instead", async () => {
+    const now = jest.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      const source = fsFile("file:///doc.pdf", { size: 60 * 1024 * 1024 });
+      const old = await namedExternalFile(source, "old.pdf");
+      now.mockReturnValue(1_000_000 + 11 * 60 * 1000);
+      const freshSource = fsFile("file:///fresh.pdf", { size: 30 * 1024 * 1024 });
+      const fresh = await namedExternalFile(freshSource, "fresh.pdf");
+      const next = await namedExternalFile(fsFile("file:///next.pdf", { size: 20 * 1024 * 1024 }), "next.pdf");
+      expect(old.exists).toBe(false);
+      expect(fresh.exists).toBe(true);
+      expect(next.exists).toBe(true);
+    } finally { now.mockRestore(); }
+  });
+
+  test("still refuses a handoff larger than the whole budget, deleting nothing", async () => {
+    const source = fsFile("file:///huge.txt", { size: 60 * 1024 * 1024 });
     const exported = await namedExternalFile(source, "notes.txt");
-    await expect(namedExternalFile(source, "notes.txt")).rejects.toThrow("attachment_export_cache_full");
+    const huge = fsFile("file:///huge.bin", { size: 200 * 1024 * 1024 });
+    await expect(namedExternalFile(huge, "huge.bin")).rejects.toThrow("attachment_export_cache_full");
     expect(exported.exists).toBe(true);
     expect(source.exists).toBe(true);
   });
 
-  test("also bounds tiny or empty exports by entry count", async () => {
+  test("bounds tiny or empty exports by entry count, reclaiming the oldest", async () => {
     const source = fsFile("file:///empty.txt", { size: 0 });
-    for (let index = 0; index < 128; index++) await namedExternalFile(source, "empty.txt");
-    await expect(namedExternalFile(source, "empty.txt")).rejects.toThrow("attachment_export_cache_full");
+    let oldest: FS.File | null = null;
+    for (let index = 0; index < 128; index++) {
+      const exported = await namedExternalFile(source, "empty.txt");
+      oldest ??= exported;
+    }
+    // The 129th share inside one protection window would previously fail
+    // forever; it now reclaims the oldest copy and the cache stays bounded.
+    const next = await namedExternalFile(source, "empty.txt");
+    expect(next.exists).toBe(true);
+    expect(oldest!.exists).toBe(false);
     expect(new FS.Directory("/mock/cache/futureos-exports").list()).toHaveLength(128);
   });
 

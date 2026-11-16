@@ -96,6 +96,27 @@ it("says the model ended without a final reply, and warns rather than excuses it
   expect(container.textContent).toContain("Generated content has been kept");
 });
 
+it("leaves no empty footer row under a reply that has nothing to put in it", () => {
+  // The footer row exists for what it holds: the copy button, the fork button,
+  // the `time · N tokens` stats, or the live clock. A settled reply with none of
+  // them used to render the row anyway, empty — the desktop half of the blank
+  // card the phone drew as a lone "completed" label. The warning divider above
+  // still says the model ended without a reply; what disappears is the empty
+  // row underneath it. Asserted as the reply's own node sequence, not by style.
+  render(message({ content: "", status: "complete" }));
+
+  // The frame draws `article > div[data-message-id] > [header, body]` and the
+  // footer row lives *inside* the body div, so the sequence to assert is the
+  // body's: the warning divider, then its detail line, and — once the empty row
+  // is gone — nothing after them.
+  const body = container.querySelector<HTMLElement>("[data-message-id]")!.children[1] as HTMLElement;
+  const rows = [...body.children];
+  expect(rows.map(row => ({
+    divider: row.querySelector("[role=status]") !== null,
+    detail: (row.textContent ?? "").includes("Generated content has been kept"),
+  }))).toEqual([{ divider: true, detail: true }]);
+});
+
 it("explains a stopped response differently, and without the detail line", () => {
   // The other arm: the user stopped it, so the label names that and the
   // `!message.stopped` gate withholds the "you can send another request" detail.
@@ -203,8 +224,36 @@ it("renders a user message with no markdown at all as plain text", () => {
   expect(container.querySelector("a")).toBeNull();
 });
 
-it("labels a compaction divider for every status, trigger and token shape", async () => {
-  // A table over the label matrix: status × manual × a lone `tokensBefore` × a
+it("draws the answer to a choice card as a tag rather than as prose in the prompt", () => {
+  // Sending writes `[question → answer]` as plain text (§7), so a prompt that
+  // picked one of a card's rows starts with a bracket sandwich. The bubble lifts
+  // that sentence out as a tag — the same words, once — and the message typed
+  // under it stays the reader's own prompt.
+  render(message({
+    content: "[接下来先做哪一块？ → 把归因搬进页面] 那个英伟达的归因做好了吗？",
+    id: "u1",
+    role: "user",
+  }));
+
+  const tags = container.querySelectorAll("[data-choice-answer-tags]");
+  expect(tags).toHaveLength(1);
+  const tag = container.querySelector<HTMLElement>("[data-choice-answer='接下来先做哪一块？']")!;
+  expect(tag.textContent).toBe("接下来先做哪一块？→把归因搬进页面");
+  expect(container.textContent).toContain("那个英伟达的归因做好了吗？");
+  // Not both: the sentence is drawn as the tag, not printed beside it.
+  expect(container.textContent).not.toContain("[接下来先做哪一块？");
+});
+
+it("leaves a prompt whose leading bracket is not a card answer alone", () => {
+  // The parse is the styling's only input, so its false-negative side is
+  // asserted too: prose that merely opens with a bracket renders as it was sent.
+  render(message({ content: "[更新日志] 修了那个归因", id: "u1", role: "user" }));
+
+  expect(container.querySelector("[data-choice-answer-tags]")).toBeNull();
+  expect(container.textContent).toContain("[更新日志] 修了那个归因");
+});
+
+it("labels a compaction divider for every status, trigger and token shape", async () => { // A table over the label matrix: status × manual × a lone `tokensBefore` × a
   // full before/after pair × nothing. Each row is a distinct arm of the nested
   // conditionals in the divider.
   const cases: [string, Partial<Extract<MessageSegment, { kind: "compaction" }>>, string][] = [

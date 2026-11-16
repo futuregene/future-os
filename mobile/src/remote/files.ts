@@ -894,7 +894,84 @@ export function rememberPreviewAspect(
 const MAX_EXPORT_CACHE_BYTES = 100 * 1024 * 1024;
 const MAX_EXPORT_CACHE_ENTRIES = 128;
 const EXPORT_RETAIN_MS = 24 * 60 * 60 * 1000;
+/**
+ * A handoff is a live grant, not just a file: another app may still be reading
+ * the `content://` URI it was handed, so a copy younger than this is not
+ * reclaimed while an older one can go instead.
+ */
+const EXPORT_PROTECT_MS = 10 * 60 * 1000;
 const enqueueExport = createAsyncOperationQueue();
+
+interface RetainedExport {
+  entry: File | Directory;
+  /** Epoch milliseconds of the handoff, oldest first once sorted. */
+  created: number;
+  bytes: number;
+}
+
+/**
+ * The export copies still on the phone, oldest first, with expired ones gone.
+ *
+ * `now` is a parameter rather than a clock read so the retention decision for a
+ * whole directory is made against one instant.
+ */
+function retainedExports(root: Directory, now: number): RetainedExport[] {
+  const retained: RetainedExport[] = [];
+  for (const entry of root.list()) {
+    const isDirectory = entry instanceof Directory;
+    const files = isDirectory ? entry.list().filter((item): item is File => item instanceof File) : [entry];
+    // Copying may preserve the source's mtime. Our directory timestamp records
+    // the handoff time instead, so a just-exported old document stays readable.
+    const created = isDirectory ? Number(/^(\d+)-/.exec(entry.name)?.[1]) : entry.modificationTime;
+    if (created != null && Number.isFinite(created) && now - created >= EXPORT_RETAIN_MS) {
+      entry.delete();
+      continue;
+    }
+    retained.push({
+      entry,
+      // An unknown timestamp is treated as just-made: it is kept until it is
+      // the only thing left to reclaim.
+      created: created != null && Number.isFinite(created) ? created : now,
+      bytes: files.reduce((sum, item) => sum + item.size, 0),
+    });
+  }
+  return retained.sort((a, b) => a.created - b.created);
+}
+
+/**
+ * Reclaim handoff copies, oldest first, until one more handoff of `size` fits.
+ *
+ * Two passes, because the first one can legitimately run out: copies younger
+ * than `EXPORT_PROTECT_MS` are skipped while any older one is still around. If
+ * that leaves no room — a burst of shares inside one window — the second pass
+ * reclaims the oldest anyway, which keeps the newest copy (the one a retried
+ * handoff is most likely still using) unless it is the only thing left. A cap
+ * that refuses instead is the worse failure: one busy afternoon of sharing made
+ * every later share fail until the 24h retention expired.
+ *
+ * Returns false only when a single file is larger than the whole budget, which
+ * the transfer layer already rules out — and then deletes nothing, since
+ * reclaiming copies that cannot make room would only lose them.
+ */
+function makeExportRoom(retained: RetainedExport[], size: number, now: number): boolean {
+  if (size > MAX_EXPORT_CACHE_BYTES) return false;
+  const fits = (bytes: number, entries: number) =>
+    bytes + size <= MAX_EXPORT_CACHE_BYTES && entries < MAX_EXPORT_CACHE_ENTRIES;
+  let bytes = retained.reduce((sum, item) => sum + item.bytes, 0);
+  let entries = retained.length;
+  const reclaim = (keepRecent: boolean) => {
+    for (const item of retained) {
+      if (fits(bytes, entries)) return;
+      if (keepRecent && now - item.created < EXPORT_PROTECT_MS) continue;
+      item.entry.delete();
+      bytes -= item.bytes;
+      entries -= 1;
+    }
+  };
+  reclaim(true);
+  if (!fits(bytes, entries)) reclaim(false);
+  return fits(bytes, entries);
+}
 
 /**
  * The content-addressed cache deliberately uses its SHA-256 as the filename.
@@ -904,28 +981,13 @@ const enqueueExport = createAsyncOperationQueue();
  */
 export async function namedExternalFile(file: File, name: string): Promise<File> {
   return enqueueExport(async () => {
+    const now = Date.now();
     const root = new Directory(Paths.cache, "futureos-exports");
     if (!root.exists) root.create({ intermediates: true, idempotent: true });
-    let retainedBytes = 0;
-    let retainedEntries = 0;
-    for (const entry of root.list()) {
-      const isDirectory = entry instanceof Directory;
-      const files = isDirectory ? entry.list().filter((item): item is File => item instanceof File) : [entry];
-      // Copying may preserve the source's mtime. Our directory timestamp records
-      // the handoff time instead, so a just-exported old document stays readable.
-      const created = isDirectory ? Number(/^(\d+)-/.exec(entry.name)?.[1]) : entry.modificationTime;
-      if (created != null && Number.isFinite(created) && Date.now() - created >= EXPORT_RETAIN_MS) {
-        entry.delete();
-      } else {
-        retainedBytes += files.reduce((sum, item) => sum + item.size, 0);
-        retainedEntries += 1;
-      }
-    }
-    // Never evict a recent OS handoff just to make space. Fail safely instead.
-    if (retainedBytes + file.size > MAX_EXPORT_CACHE_BYTES || retainedEntries >= MAX_EXPORT_CACHE_ENTRIES) {
+    if (!makeExportRoom(retainedExports(root, now), file.size, now)) {
       throw new Error("attachment_export_cache_full");
     }
-    const directory = new Directory(root.uri, `${Date.now()}-${Crypto.randomUUID()}`);
+    const directory = new Directory(root.uri, `${now}-${Crypto.randomUUID()}`);
     directory.create({ intermediates: true, idempotent: true });
     try {
       const target = new File(directory, basename(name));

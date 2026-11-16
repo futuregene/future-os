@@ -93,6 +93,32 @@ describe("useRightPanelWidth", () => {
     expect(hook.current.width).toBe(MIN_RIGHT_PANEL_WIDTH);
   });
 
+  it("keeps a right-docked terminal's column out of the clamp", () => {
+    // 1600 - 224 = 1376 available. Without a terminal the panel may take 992;
+    // with a 320px terminal column beside it, only 672 — the center keeps its
+    // floor on the conversation side of both columns.
+    let terminalWidth = 0;
+    const hook = renderHook(() => useRightPanelWidth(center(224), () => terminalWidth));
+    act(() => {
+      hook.current.nudge(10_000);
+    });
+    expect(hook.current.width).toBe(1600 - 224 - MIN_CENTER_PANEL_WIDTH);
+
+    act(() => {
+      terminalWidth = 320;
+      hook.current.nudge(10_000);
+    });
+    expect(hook.current.width).toBe(1600 - 224 - MIN_CENTER_PANEL_WIDTH - 320);
+
+    // Read at clamp time, not captured: a terminal docked after this hook was
+    // set up still takes its room.
+    act(() => {
+      terminalWidth = 0;
+      hook.current.nudge(-10_000);
+    });
+    expect(hook.current.width).toBe(MIN_RIGHT_PANEL_WIDTH);
+  });
+
   it("ignores a non-primary mouse button on the resize handle", () => {
     const hook = renderHook(() => useRightPanelWidth(center(224)));
     const event = handleMouseDown(2);

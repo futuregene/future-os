@@ -20,7 +20,9 @@ pub mod mcp;
 pub mod mcp_client;
 pub mod mcp_http;
 pub mod mcp_servers;
+pub mod model_settings;
 pub mod models;
+pub mod pin;
 pub mod remote;
 pub mod remote_peers;
 pub mod run;
@@ -41,3 +43,6 @@ pub mod tools;
 pub mod workspace;
 
 pub mod logs;
+
+#[cfg(test)]
+mod test_store;

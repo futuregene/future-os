@@ -65,6 +65,38 @@ incremental = true
 debug = 0
 strip = false
 
+# `debug = 1` is line tables only, which is what `cargo` already means by
+# "1", so these are the levels that actually cost something in `dev` and `test`
+# and are not needed to get a usable backtrace.
+#
+# Default `dev`/`test` is `debug = 2` (full type and variable debuginfo). That
+# extra detail never changes what a test does, but it does double the artefacts
+# and slows every non-incremental build of the workspace:
+#
+#   cargo build -p future-agent, cold, 32-core Mac (2026-11-15)
+#     default  50 s  2,608 MB in target/debug
+#     debug=1  37 s  1,911 MB
+#     debug=0  44 s  1,459 MB   <- slower than 1: rustc re-does work it would
+#                                  otherwise reuse
+#   cargo nextest run -p future-agent --no-run, cold
+#     default  79 s  4,179 MB   (future-agent's test targets are large)
+#     debug=1  64 s  3,261 MB
+#   incremental rebuild after a one-line edit: 601 ms vs 612 ms (no change —
+#   debuginfo is emitted once per crate body, not per edit)
+#
+# Line tables are what a panic backtrace needs for `file.rs:LINE`, so a failing
+# test still reports its location. Line coverage is unaffected: `cargo llvm-cov`
+# on `future-config` reports the same 135 lines found / 114 hit (84.4%) under
+# both levels, because llvm-cov maps hits through exactly these line tables.
+#
+# `debug = 0` is not used: it saves more disk but was measurably *slower* cold
+# than `1`, and it drops backtraces to `??`.
+[profile.dev]
+debug = 1
+
+[profile.test]
+debug = 1
+
 # The bundled SQLite is C, so the dev/test profiles compile it at `-O0`. Query
 # *compilation* is this schema's dominant cost — `SELECT … FROM entry_records`
 # measured 26 ms to prepare against 0.2 ms to execute (see

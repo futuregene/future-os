@@ -59,6 +59,7 @@ const h = vi.hoisted(() => ({
       rows: [] as AgentQueueRow[],
     },
     cancel: vi.fn(async (_threadId: string, _runId: string) => {}),
+    edit: vi.fn(async (_threadId: string, _runId: string, _message: string) => {}),
     release: vi.fn(async (_threadId: string, _runId: string) => {}),
   },
   store: { forkThread: vi.fn() },
@@ -84,6 +85,7 @@ vi.mock("./Composer", () => ({
       data-compacting={String(props.compactionInProgress)}
       data-disabled={String(props.disabled)}
       data-empty-reason={String(props.modelsEmptyReason)}
+      data-queue-count={String(props.queueCount)}
       data-sending={String(props.sending)}
     >
       <button data-abort="" onClick={() => (props.onAbort as () => void)()} type="button" />
@@ -150,11 +152,13 @@ vi.mock("../../components/ui/FloatingScrollbar", () => ({
 vi.mock("./useAgentThreadState", () => ({ useAgentThreadState: () => h.threadState.value }));
 vi.mock("./agentQueue", () => ({
   // The panel is a view of the Agent's queue (`agentQueue.test.ts` covers the
-  // reading); here it only has to be wired to the rows and the two commands.
+  // reading); here it only has to be wired to the rows and the commands.
   useAgentQueue: () => h.queue.value,
   agentQueueNoticeReason: (reason: string) =>
     ["merged", "cancelled", "superseded", "session_deleted"].includes(reason) ? reason : "other",
   cancelAgentQueuedRun: (threadId: string, runId: string) => h.queue.cancel(threadId, runId),
+  editAgentQueuedRun: (threadId: string, runId: string, message: string) =>
+    h.queue.edit(threadId, runId, message),
   releaseAgentQueuedRun: (threadId: string, runId: string) => h.queue.release(threadId, runId),
   isParkedRow: (row: { state: string }) => row.state.startsWith("stale"),
 }));
@@ -299,6 +303,17 @@ async function click(selector: string) {
     element.click();
     await Promise.resolve();
   });
+}
+
+/**
+ * Open the send queue's rows.
+ *
+ * The panel opens as its header line — title, count, what will become of the
+ * waiting messages — and draws no rows until it is pressed, so a test about a row
+ * has to cross that first press, exactly as a reader does.
+ */
+async function openQueue() {
+  await click("[data-queue-toggle]");
 }
 
 function composer() {
@@ -1166,6 +1181,11 @@ describe("agentThread send while the reply streams", () => {
 
     const panel = container.querySelector("[data-send-queue]");
     expect(panel).not.toBeNull();
+    // The panel opens as its header line: what waits is readable there, and the
+    // rows are one press away.
+    expect(panel!.textContent).toContain("1 waiting");
+    expect(container.querySelectorAll("[data-queue-item]")).toHaveLength(0);
+    await openQueue();
     expect(panel!.textContent).toContain("waiting");
 
     await act(async () => {
@@ -1180,13 +1200,61 @@ describe("agentThread send while the reply streams", () => {
   });
 
   /**
-   * Fixing a typo in a waiting message keeps the photos it carries.
+   * The stop control is told what it carries, because it does carry it.
    *
-   * The Agent's queue reports them, and on this machine they are ordinary local
-   * paths — so the re-send names them again instead of sending the words alone and
-   * leaving the pictures behind with nobody told.
+   * Rows are the session's and start at the turn boundary, so ending the run is
+   * also what lets them go. The count driving that wording is the Agent's own
+   * queue (`agentQueue`), not a copy held here — this is the prop
+   * `ComposerControls` already reads to decide between "Stop" and "Stop and send
+   * the queued messages", and before it was supplied the control said plain
+   * "Stop" however many rows were waiting.
    */
-  it("carries a waiting message's files into the edit that rewrites it", async () => {
+  it("tells the composer how many waiting rows a stop would carry", async () => {
+    h.queue.value = {
+      forget: vi.fn(),
+      notice: null,
+      refresh: vi.fn(),
+      rows: [
+        { acceptedAt: "2026-11-03T10:00:00Z", position: 1, runId: "run-3", state: "queued", text: "waiting" },
+        { acceptedAt: "2026-11-03T10:00:01Z", position: 2, runId: "run-4", state: "queued", text: "also waiting" },
+      ],
+    };
+    setMessages([user("u1"), assistant("a1", { status: "streaming" })]);
+    render();
+
+    expect(composer().dataset.queueCount).toBe("2");
+  });
+
+  /**
+   * A parked row is not carried by a stop: it waits for a person to release it
+   * (`hintParked`), so counting it would promise a send that never happens.
+   */
+  it("leaves a row that waits for a release out of what a stop carries", async () => {
+    h.queue.value = {
+      forget: vi.fn(),
+      notice: null,
+      refresh: vi.fn(),
+      rows: [
+        { acceptedAt: "2026-11-03T10:00:00Z", position: 1, runId: "run-4", state: "stale-waiting", text: "parked" },
+        { acceptedAt: "2026-11-03T10:00:01Z", position: 2, runId: "run-5", state: "queued", text: "waiting" },
+      ],
+    };
+    setMessages([user("u1"), assistant("a1", { status: "streaming" })]);
+    render();
+
+    expect(composer().dataset.queueCount).toBe("1");
+  });
+
+  /**
+   * Fixing a typo in a waiting message corrects it where it waits.
+   *
+   * The queue is an order the reader built: editing used to be a removal and a
+   * re-send, and a re-send enters at the back — so the corrected message left
+   * after everything written behind it (reported 2026-11-14). The edit now names
+   * the row and the new words, and the Agent keeps the run id, the place and the
+   * files the message carries.
+   */
+  it("corrects a waiting message in place instead of re-sending it", async () => {
     h.queue.value = {
       forget: vi.fn(),
       notice: null,
@@ -1205,7 +1273,9 @@ describe("agentThread send while the reply streams", () => {
     };
     render();
 
-    // The files are named before the run takes them.
+    await openQueue();
+    // The files the message carries are still shown; the edit keeps them without
+    // naming them again.
     expect(container.querySelectorAll("[data-queue-attachment]")).toHaveLength(2);
 
     await act(async () => container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
@@ -1221,14 +1291,12 @@ describe("agentThread send while the reply streams", () => {
       await Promise.resolve();
     });
 
-    expect(h.queue.cancel).toHaveBeenCalledWith("T1", "run-9");
-    expect(h.state.handleQueuedSend).toHaveBeenCalledWith({
-      attachments: [
-        { kind: "image", name: "shot.png", path: "/Users/x/shot.png" },
-        { kind: "file", name: "doc.pdf", path: "/Users/x/doc.pdf" },
-      ],
-      content: "look at this instead",
-    });
+    expect(h.queue.edit).toHaveBeenCalledWith("T1", "run-9", "look at this instead");
+    // Not a re-send: the row was not taken back, and nothing was queued again
+    // behind it.
+    expect(h.queue.cancel).not.toHaveBeenCalled();
+    expect(h.state.handleQueuedSend).not.toHaveBeenCalled();
+    expect(h.queue.value.refresh).toHaveBeenCalled();
   });
 
   /**
@@ -1248,6 +1316,7 @@ describe("agentThread send while the reply streams", () => {
     const toasts: { message: string; tone?: string }[] = [];
     const off = onFutureEvent("toast", toast => void toasts.push(toast));
 
+    await openQueue();
     await act(async () => container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
     const box = container.querySelector<HTMLTextAreaElement>("[data-queue-item] textarea")!;
     await act(async () => {
@@ -1277,6 +1346,7 @@ describe("agentThread send while the reply streams", () => {
     };
     render();
 
+    await openQueue();
     await act(async () => {
       container.querySelector<HTMLButtonElement>("[data-queue-release]")!.click();
       await Promise.resolve();
@@ -1320,6 +1390,7 @@ describe("agentThread send while the reply streams", () => {
     // with, so the panel must not claim the message carried none.
     expect(container.querySelector("[data-send-queue]")!.textContent).not.toContain("Attachments:");
 
+    await openQueue();
     await act(async () => {
       container.querySelector<HTMLButtonElement>("[data-queue-remove]")!.click();
       await Promise.resolve();
@@ -1352,6 +1423,7 @@ describe("agentThread send while the reply streams", () => {
     const off = onFutureEvent("toast", toast => void toasts.push(toast));
     render();
 
+    await openQueue();
     await act(async () => {
       container.querySelector<HTMLButtonElement>("[data-queue-remove]")!.click();
       await Promise.resolve();

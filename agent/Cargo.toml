@@ -120,3 +120,8 @@ windows-sys = { version = "0.61", features = [
 tokio = { workspace = true, features = ["test-util"] }
 tokio-test = "0.4"
 tempfile.workspace = true
+# The skipTlsVerify acceptance test serves a real self-signed HTTPS endpoint and
+# proves the request fails under verification and succeeds when it is off.
+# Same versions/features the host already builds, so nothing new is resolved.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

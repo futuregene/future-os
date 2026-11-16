@@ -34,6 +34,12 @@ pub struct ThinkingLevelProbeInput {
     /// parameter at all).
     #[serde(default)]
     pub level: Option<String>,
+    /// Probe over TLS without verifying the certificate, matching the
+    /// `skipTlsVerify` switch in the same form. A probe against a self-signed
+    /// endpoint would otherwise fail in the handshake and be reported as a bad
+    /// key, so the switch has to reach the detection run too.
+    #[serde(default)]
+    pub skip_tls_verify: Option<bool>,
 }
 
 /// One probe's verdict, as the editor renders it.
@@ -70,6 +76,7 @@ pub async fn probe_thinking_level(
         provider_id: input.provider_id.unwrap_or_default().trim().to_string(),
         model_id,
         level: input.level.unwrap_or_default().trim().to_string(),
+        skip_tls_verify: input.skip_tls_verify,
     })
     .await
 }
@@ -86,6 +93,7 @@ mod tests {
             provider_id: None,
             model_id: model_id.to_string(),
             level: Some("low".to_string()),
+            skip_tls_verify: None,
         }
     }
 

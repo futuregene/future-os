@@ -10,12 +10,14 @@ import type {
   StoredApprovalRequest,
   StoredThread,
 } from "../../integrations/storage/threadStore";
-import type { ComposerSendPayload } from "./Composer";
+import type { ChoiceCardAnswer } from "../markdown/MarkdownContent";
+import type { ComposerHandle, ComposerSendPayload } from "./Composer";
+import type { ChoiceAnswer, ChoiceCardQuestion } from "./composer/choiceAnswer";
 import type { ApprovalChipTier } from "./composer/ComposerControls";
-import type { SendQueueAttachmentItem } from "./SendQueuePanel";
+import type { SendQueueAttachmentItem, SendQueueChoiceItem } from "./SendQueuePanel";
 import type { SessionMentionOption } from "./sessionMention";
 import { ArrowDown, History } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
@@ -29,7 +31,7 @@ import { useCommittedRef } from "../../lib/useCommittedRef";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { useCommand } from "../keyboard/commands";
 import { installRecommendedSkill } from "../skills/installRecommendedSkill";
-import { agentQueueNoticeReason, cancelAgentQueuedRun, isParkedRow, releaseAgentQueuedRun, useAgentQueue } from "./agentQueue";
+import { agentQueueNoticeReason, cancelAgentQueuedRun, editAgentQueuedRun, editAgentQueuedRunChoice, isParkedRow, releaseAgentQueuedRun, rewriteQueuedChoiceText, useAgentQueue } from "./agentQueue";
 import { ApprovalPrompt } from "./ApprovalPrompt";
 import {
   buildContinuePrompt,
@@ -53,6 +55,9 @@ import { useSkillRecommendation } from "./useSkillRecommendation";
 
 /** How many user exchanges one loaded page renders. */
 const PAGE_USER_EXCHANGES = 10;
+
+/** No answer picked: one shared empty array, so the card's props stay stable. */
+const NO_ANSWER_PICKS: string[] = [];
 
 /**
  * How much of the conversation's own chrome this view draws.
@@ -261,6 +266,15 @@ export function AgentThread({
   const searchRootRef = useRef<HTMLDivElement>(null);
   const { composerRef, composerHeight } = useComposerInset();
   const handleCompactContext = useThreadCompaction(thread);
+  // The choice card's answer (design §2) lives in the composer — its editor pill
+  // and the conversation draft — so the transcript reads it back from there and
+  // writes a pick through the same handle. One value, two views: the card's
+  // marked row here, the pill down in the box.
+  const composerApiRef = useRef<ComposerHandle | null>(null);
+  const [choiceAnswer, setChoiceAnswer] = useState<ChoiceAnswer | null>(null);
+  const handleChoiceSelect = useCallback((optionId: string, card: ChoiceCardQuestion) => {
+    composerApiRef.current?.selectChoice(optionId, card);
+  }, []);
 
   const {
     scrollRef,
@@ -400,48 +414,42 @@ export function AgentThread({
       });
     });
   }, [t]);
-  // Editing a waiting message: the Agent has no "update this row" command, so
-  // the corrected text is a new prompt behind the same run boundary — take the
-  // old row back first, or both would run. The files travel with the correction:
-  // the queue reports them (local paths, since the Agent runs here), so a typo
-  // fixed in a message with photos keeps the photos instead of sending the words
-  // alone. A row whose queue reports no files is the one case that sends text
-  // only, and the panel's editor says so before the reader saves. A re-send that
-  // the Agent refuses is not a lost message: the send pipeline puts the words in
-  // the thread as a failed bubble, which is where the retry lives. A *removal*
-  // the Agent refuses stops the edit: sending the corrected text while the old
-  // row stays queued would run both.
+  // Changing a waiting message's answer is the same in-place edit as fixing its
+  // words, and it sends both: the row's text is what the run actually sends, so
+  // a new pick with the old sentence would send the old one. Everything else
+  // about the accepted prompt (its files, its place in the queue) is untouched.
+  const handleQueueChoiceUpdate = useCallback((runId: string, choice: SendQueueChoiceItem) => {
+    if (!thread?.id)
+      return;
+    const row = agentQueue.rows.find(candidate => candidate.runId === runId);
+    // Without the row's current text there is nothing to rewrite around, and an
+    // edit that dropped the reader's words to change a pick would be worse than
+    // not offering the change at all.
+    const content = row ? rewriteQueuedChoiceText(row.text, choice) : "";
+    void editAgentQueuedRunChoice(thread.id, runId, content, choice)
+      .catch(reportQueueFailure)
+      .finally(() => agentQueue.refresh());
+  }, [agentQueue, reportQueueFailure, thread?.id]);
+
+  // Editing a waiting message corrects its words where it already waits. It is
+  // deliberately NOT a removal and a re-send: a re-send enters the queue at the
+  // back, so fixing a typo in the second of four messages put it after the fourth
+  // — the order the reader built, arriving as an order they never chose. The Agent
+  // has an in-place edit (`edit_queued_run`), so the row keeps its run id, its
+  // position, and the files, images and frozen settings it was accepted with;
+  // saving only changes the text. An empty edit is a deletion, and the panel's own
+  // bin says that plainly, so it is refused where the reader is looking.
   const handleQueueUpdate = useCallback((runId: string, content: string) => {
     if (!thread?.id)
       return;
-    const row = agentQueue.rows.find(item => item.runId === runId);
-    // An empty edit is a deletion, and the panel's own bin says that plainly.
-    // Saved here it would remove the row while the reader expected an edit, so it
-    // is refused where the reader is looking instead of reported as a failure.
     if (!content.trim()) {
       emitFutureEvent("toast", { message: t("composer.queue.emptyEdit"), tone: "error" });
       return;
     }
-    void (async () => {
-      try {
-        await cancelAgentQueuedRun(thread.id, runId);
-      }
-      catch (error) {
-        reportQueueFailure(error);
-        return;
-      }
-      agentQueue.forget(runId);
-      await handleQueuedSend({
-        attachments: (row?.attachments ?? []).map(attachment => ({
-          kind: attachment.kind === "image" ? "image" : "file",
-          name: attachment.name,
-          path: attachment.path,
-        })),
-        content,
-      });
-      agentQueue.refresh();
-    })();
-  }, [agentQueue, handleQueuedSend, reportQueueFailure, t, thread?.id]);
+    void editAgentQueuedRun(thread.id, runId, content)
+      .catch(reportQueueFailure)
+      .finally(() => agentQueue.refresh());
+  }, [agentQueue, reportQueueFailure, t, thread?.id]);
 
   // Settings → Keyboard: the same interrupt the send button turns into while a
   // reply streams. Registered only then, so the key is unclaimed whenever there
@@ -661,6 +669,17 @@ export function AgentThread({
   // is unmistakably the live thing on screen.
   const shownMessages = isInput ? visibleMessages.slice(-2) : visibleMessages;
 
+  // The card's answer surface, passed to the transcript only where a pick has
+  // somewhere to land: a reading cell has no composer, and a locked one could not
+  // send the message the answer belongs to — there the card stays read-only
+  // rather than inviting a click that writes nothing.
+  const choiceSurface = useMemo<ChoiceCardAnswer | undefined>(
+    () => (isRead || composerDisabled
+      ? undefined
+      : { onSelect: handleChoiceSelect, selectedIds: choiceAnswer?.selectedIds ?? NO_ANSWER_PICKS }),
+    [choiceAnswer, composerDisabled, handleChoiceSelect, isRead],
+  );
+
   const approvalCard = activeApproval
     ? (
         <div className="pointer-events-auto mx-auto w-full max-w-3xl">
@@ -789,6 +808,7 @@ export function AgentThread({
                   attachmentsUnreported
                   items={agentQueue.rows.map(row => ({
                     attachments: row.attachments,
+                    choice: row.choice,
                     content: row.text,
                     id: row.runId,
                     parked: isParkedRow(row),
@@ -797,11 +817,13 @@ export function AgentThread({
                   onRelease={handleQueueRelease}
                   onRemove={handleQueueRemove}
                   onUpdate={handleQueueUpdate}
+                  onUpdateChoice={handleQueueChoiceUpdate}
                 />
               </div>
             )
           : null}
         <Composer
+          ref={composerApiRef}
           className="pointer-events-auto mx-auto w-full max-w-3xl"
           disabled={composerDisabled}
           modelId={modelId}
@@ -833,10 +855,17 @@ export function AgentThread({
           controls={composerControls}
           onQueue={onQueue}
           onEnqueue={queueEnabled ? handleEnqueueDraft : undefined}
+          // What the stop control carries when it ends the run: the session
+          // starts waiting rows itself at the turn boundary, so stopping here
+          // is also what lets them go. A parked row is not one of them — it
+          // waits for a person to release it (`hintParked`), which is why it is
+          // counted out rather than merely counted.
+          queueCount={queueEnabled ? agentQueue.rows.filter(row => !isParkedRow(row)).length : 0}
           onSend={handleComposerSend}
           workspaceId={thread?.workspaceId}
           sessionMentions={sessionMentions}
           draftKey={thread?.id}
+          onChoiceChange={setChoiceAnswer}
           skillRecommendation={isInput ? undefined : skillRecommendation}
         />
       </div>
@@ -931,6 +960,7 @@ export function AgentThread({
                   )
                 : (
                     <MessageList
+                      choiceAnswer={choiceSurface}
                       messages={shownMessages}
                       // More air between turns where the panel reads: same list, different
                       // rhythm, because the reading layer has no composer competing for

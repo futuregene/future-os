@@ -302,6 +302,8 @@
     "apiTypeLabel": "API 类型",
     "baseUrlLabel": "Base URL",
     "baseUrlPlaceholder": "https://api.example.com/v1",
+    "skipTlsVerifyLabel": "忽略 TLS 证书校验",
+    "skipTlsVerifyHint": "当该地址使用自签名证书、或不是系统 CA 签发的证书时（例如自建网关），请打开此开关。连接仍会加密，只是不再校验对端身份。请只对你信任的地址开启。",
     "apiKeyLabel": "API Key",
     "apiKeyLabelEditing": "API Key（留空保持不变）",
     "apiKeyPlaceholder": "sk-…",

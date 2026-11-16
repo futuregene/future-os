@@ -76,6 +76,11 @@ CREATE TABLE IF NOT EXISTS runs (
     error_type TEXT,
     archived_at INTEGER,
     remote_accepted_at INTEGER,
+    -- The run's reply closed by offering the reader a choice (a
+    -- `futureos-choice` card). Lists badge such a conversation as waiting on an
+    -- answer; the fact is recorded once, at settlement, so no client has to read
+    -- another conversation's reply to know it.
+    offers_choice INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );

@@ -64,5 +64,26 @@
   },
   "missingReference": {
     "label": "Missing {{targetType}}"
+  },
+  "choice": {
+    "mode": {
+      "single": "Single choice",
+      "multi": "Multiple choice"
+    },
+    "hint": {
+      "single": "Pick one and it lands in the input; you can type something else instead",
+      "multi": "Pick as many as apply",
+      "readonly": "An earlier question — this card can no longer be picked"
+    },
+    "foot": {
+      "queued": "In the input — add a note if you want, or send as is"
+    },
+    "chip": {
+      "change": "Change the answer to \"{{title}}\"",
+      "remove": "Remove the answer to \"{{title}}\""
+    },
+    "mobile": {
+      "change": "Change \"{{title}}\""
+    }
   }
 }

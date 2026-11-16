@@ -45,14 +45,23 @@ function installFetch(handler: (call: FetchCall) => { status: number; body: unkn
 
 function controller(overrides: Partial<TerminalPanelController> = {}): TerminalPanelController {
   return {
-    open: true,
+    canDockRight: true,
+    dock: "bottom",
+    enabled: true,
     height: 300,
     maxHeight: 600,
-    enabled: true,
-    toggle: vi.fn(),
-    setOpen: vi.fn(),
+    maximized: false,
+    maxWidth: 900,
+    open: true,
+    setDock: vi.fn(),
     setHeight: vi.fn(),
+    setOpen: vi.fn(),
+    setWidth: vi.fn(),
     shortcut: "Ctrl+J",
+    toggle: vi.fn(),
+    toggleDock: vi.fn(),
+    toggleMaximized: vi.fn(),
+    width: 420,
     ...overrides,
   };
 }
@@ -215,6 +224,109 @@ describe("terminalPanel", () => {
       collapse?.click();
     });
     expect(panel.setOpen).toHaveBeenCalledWith(false);
+  });
+
+  it("docks to the right as a column of the panel's own width", async () => {
+    installFetch((call) => {
+      if (call.method === "GET")
+        return { status: 200, body: [] };
+      return { status: 200, body: running("term_1", "Terminal 1") };
+    });
+    await render(controller({ dock: "right", width: 512 }));
+    const section = container.querySelector<HTMLElement>("[data-component=\"terminal-panel\"]")!;
+    expect(section.getAttribute("data-dock")).toBe("right");
+    // The size follows the edge it is attached to: a column is as wide as the
+    // reader dragged it and as tall as the row, not the other way round.
+    expect(section.style.width).toBe("512px");
+    expect(section.style.height).toBe("");
+    // And so does the grip: a vertical edge is dragged sideways.
+    const separator = container.querySelector("[role=\"separator\"]")!;
+    expect(separator.getAttribute("aria-orientation")).toBe("vertical");
+  });
+
+  it("resizes a right docked panel by dragging its left edge", async () => {
+    installFetch((call) => {
+      if (call.method === "GET")
+        return { status: 200, body: [] };
+      return { status: 200, body: running("term_1", "Terminal 1") };
+    });
+    const panel = controller({ dock: "right", width: 400 });
+    await render(panel);
+    const separator = container.querySelector("[role=\"separator\"]")!;
+    // Dragging the left edge to the left makes the column wider.
+    await act(async () => {
+      separator.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, clientX: 900 }));
+      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 820 }));
+      window.dispatchEvent(new MouseEvent("pointerup"));
+    });
+    expect(panel.setWidth).toHaveBeenCalledWith(480);
+    expect(panel.setHeight).not.toHaveBeenCalled();
+  });
+
+  it("moves between the bottom edge and the right edge from the header", async () => {
+    installFetch((call) => {
+      if (call.method === "GET")
+        return { status: 200, body: [] };
+      return { status: 200, body: running("term_1", "Terminal 1") };
+    });
+    const panel = controller();
+    await render(panel);
+    // Docked at the bottom, the header offers the right edge.
+    const toRight = container.querySelector<HTMLButtonElement>("button[aria-label=\"Dock terminal to the right\"]");
+    expect(toRight).not.toBeNull();
+    await act(async () => {
+      toRight?.click();
+    });
+    expect(panel.toggleDock).toHaveBeenCalledTimes(1);
+
+    // Docked right, it offers the bottom again — one button, two directions.
+    await render(controller({ dock: "right", toggleDock: panel.toggleDock }));
+    const toBottom = container.querySelector<HTMLButtonElement>("button[aria-label=\"Dock terminal to the bottom\"]");
+    expect(toBottom).not.toBeNull();
+    await act(async () => {
+      toBottom?.click();
+    });
+    expect(panel.toggleDock).toHaveBeenCalledTimes(2);
+    expect(container.querySelector("button[aria-label=\"Dock terminal to the right\"]")).toBeNull();
+  });
+
+  it("offers no dock choice while the window cannot host a column", async () => {
+    installFetch((call) => {
+      if (call.method === "GET")
+        return { status: 200, body: [] };
+      return { status: 200, body: running("term_1", "Terminal 1") };
+    });
+    await render(controller({ canDockRight: false }));
+    // The action is gone rather than inert: "dock right" here would ask for a
+    // layout the window cannot host.
+    expect(container.querySelector("button[aria-label=\"Dock terminal to the right\"]")).toBeNull();
+    expect(container.querySelector("button[aria-label=\"Maximize terminal\"]")).not.toBeNull();
+  });
+
+  it("maximizes into the whole content area, with no docked size and no grip", async () => {
+    installFetch((call) => {
+      if (call.method === "GET")
+        return { status: 200, body: [] };
+      return { status: 200, body: running("term_1", "Terminal 1") };
+    });
+    const panel = controller({ maximized: true });
+    await render(panel);
+    const section = container.querySelector<HTMLElement>("[data-component=\"terminal-panel\"]")!;
+    expect(section.getAttribute("data-dock")).toBe("maximized");
+    // Neither axis is set: the shell's flex layout gives it the content area.
+    expect(section.style.height).toBe("");
+    expect(section.style.width).toBe("");
+    expect(container.querySelector("[role=\"separator\"]")).toBeNull();
+    // The dock choice belongs to the docked layout; there is nothing to dock
+    // into while the panel owns the content area.
+    expect(container.querySelector("button[aria-label^=\"Dock terminal\"]")).toBeNull();
+
+    const restore = container.querySelector<HTMLButtonElement>("button[aria-label=\"Restore terminal size\"]");
+    expect(restore).not.toBeNull();
+    await act(async () => {
+      restore?.click();
+    });
+    expect(panel.toggleMaximized).toHaveBeenCalledTimes(1);
   });
 
   it("hides rather than closes: the shell survives the collapse and the next open re-attaches", async () => {

@@ -54,6 +54,47 @@ describe("folding a settled reply onto its final answer", () => {
   });
 });
 
+describe("folding stops once the notes are the reply", () => {
+  // The reported defect (2026-11-16): a long run narrates its work between tool
+  // calls, and folding it onto the last paragraph hid a median of 10 prose
+  // blocks and ~15 KB per reply. The desktop applies the same rule.
+  const note = (id: string, body = "…"): TimelineSegment => ({ id, kind: "text", text: body });
+  const prose = (result: ReturnType<typeof splitFinalAnswer>) =>
+    result.answer
+      .filter((block): block is { kind: "segment"; segment: TimelineSegment; } => block.kind === "segment")
+      .filter(block => block.segment.kind === "text")
+      .map(block => (block.segment as Extract<TimelineSegment, { kind: "text"; }>).text);
+
+  test("keeps a reply whole once three notes would be hidden", () => {
+    const result = splitFinalAnswer(buildReplyBlocks([
+      note("n1"), tool("w1"), note("n2"), thinking("h1"), note("n3"), tool("w2"), note("answer"),
+    ]));
+    expect(result.process).toEqual([]);
+    expect(prose(result)).toEqual(["…", "…", "…", "…"]);
+  });
+
+  test("still folds one or two short notes", () => {
+    expect(splitFinalAnswer(buildReplyBlocks([note("n1"), tool("w1"), note("answer")])).process.length)
+      .toBeGreaterThan(0);
+    const two = splitFinalAnswer(buildReplyBlocks([note("n1"), tool("w1"), note("n2"), thinking("h1"), note("answer")]));
+    expect(two.process.length).toBeGreaterThan(0);
+    expect(prose(two)).toEqual(["…"]);
+  });
+
+  test("keeps a reply whole when the hidden note alone exceeds the character ceiling", () => {
+    const long = note("long", "x".repeat(801));
+    const result = splitFinalAnswer(buildReplyBlocks([long, tool("w1"), note("answer")]));
+    expect(result.process).toEqual([]);
+    expect(prose(result)[0]).toHaveLength(801);
+  });
+
+  test("measures only prose, so a wall of tool rows is still a fold", () => {
+    const steps = Array.from({ length: 40 }, (_, index) => tool(`w${index}`));
+    const result = splitFinalAnswer(buildReplyBlocks([note("n1"), ...steps, note("answer")]));
+    expect(prose(result)).toEqual(["…"]);
+  });
+});
+
 describe("folding work that did not report back", () => {
   const completed = (id: string): TimelineSegment => ({
     id,
