@@ -671,21 +671,41 @@ pub(crate) fn handle_set_session_name(
     cmd: &RpcCommand,
     id: &str,
 ) -> String {
-    let (session_manager, session_id, persistence) = {
+    let (session_manager, session_id, persistence, previous_name) = {
         let mut sess = session.write();
+        let previous_name = sess.session_name.clone();
         sess.set_session_name(&cmd.name);
         (
             sess.session_manager.clone(),
             sess.session_id.clone(),
             sess.persistence.clone(),
+            previous_name,
         )
     };
-    // Update session_info in the same order as run persistence.
+    // Update session_info in the same order as run persistence. A session with
+    // no persisted row carries its name in memory alone (the Agent titles it
+    // from its first message), so there is nothing to write and nothing that
+    // can fail.
     if !matches!(session_manager.contains(&session_id), Ok(false)) {
         if let Err(error) =
             persistence.update_info("session_name", serde_json::Value::String(cmd.name.clone()))
         {
             tracing::error!("Failed to persist session name: {error:#}");
+            // The name lives in two places: this process's memory and the
+            // on-disk session_info. Reporting success when only the memory took
+            // the write is what let a rename revert minutes later — every other
+            // reader (a cold load after the session is evicted, `get_state`,
+            // the host's discovery pass) reads the disk, so the new name
+            // survived only until something re-read it, and then the old one
+            // came back. Put memory back to what the disk holds and report the
+            // failure, so the caller keeps the name it already had instead of
+            // publishing one that cannot last.
+            session.write().set_session_name(&previous_name);
+            return RpcResponse::build_fail(
+                id,
+                "set_session_name",
+                &format!("session name could not be persisted: {error:#}"),
+            );
         }
     }
     let broadcaster = {

@@ -44,6 +44,7 @@ import {
   foldLiveCompactionPlaceholdersIntoHistory,
   settleInterruptedStandaloneCompactions,
   emptyTimeline,
+  isCompactionDividerRow,
   keepLocalAttachmentPaths,
   stripRunItems,
   upsertTruncationNotice,
@@ -1319,6 +1320,25 @@ function mergeLiveInto(
       item.streaming !== true &&
       !(item.role === "user" && !item.id.startsWith("m_"));
     if (staleMessageOutsideWindow) return false;
+    // The rule is about *the run* an item belongs to, so a divider-only row —
+    // which belongs to no run — never reached it. A manual compaction's marker
+    // has no `runId` at all: it is `m_<checkpoint>` (or `compaction:<op>` for
+    // one still in flight), and it stayed in `folded` no matter how far the
+    // window moved. Measured on a phone (2026-11-15): the divider for a
+    // checkpoint three and a half hours old was drawn directly under the newest
+    // reply's footer, as if the compaction had just happened.
+    //
+    // Same reasoning, same answer: the window is a contiguous tail of entries,
+    // and a checkpoint it does not carry is older than everything in it, so
+    // paging up serves the durable copy in its real place. What may follow the
+    // window is a compaction that has not produced a durable row yet — still
+    // running, or settled with no checkpoint id to page to.
+    const staleDividerOutsideWindow =
+      historyItems.length > 0 &&
+      isCompactionDividerRow(item) &&
+      !(item.segments ?? []).some(segment =>
+        segment.kind === "compaction" && segment.status === "running");
+    if (staleDividerOutsideWindow) return false;
     return true;
   });
   const settledReplies = new Map(liveItems.flatMap(item =>

@@ -22,6 +22,18 @@ function type(editor: HTMLElement, value: string) {
   });
 }
 
+/** A press aimed at the editor, which is where the caret sits when the menu opens. */
+function press(editor: HTMLElement, key: string, init: KeyboardEventInit = {}) {
+  act(() => {
+    editor.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key, ...init }));
+  });
+}
+
+/** The row the menu would run on `Enter` (`SelectMenuItem`'s `active`). */
+function highlighted(host: HTMLElement) {
+  return host.querySelector<HTMLElement>("button[aria-current='true']");
+}
+
 it("keeps the send button as Stop while a reply streams and the box is empty", async () => {
   const host = document.createElement("div");
   document.body.append(host);
@@ -127,6 +139,75 @@ it("refuses to take a draft the queue cannot hold", async () => {
     expect(onEnqueue).toHaveBeenCalledTimes(1);
     // Refused: the text stays where the reader can see it.
     expect(editor.textContent).toBe("keep me");
+  }
+  finally {
+    act(() => root.unmount());
+    host.remove();
+  }
+});
+
+it("answers the send choice from the keyboard, first row first", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const onSend = vi.fn();
+  const onAbort = vi.fn();
+  const onEnqueue = vi.fn(() => true);
+  try {
+    await act(async () => root.render(
+      <Composer modelOptions={[]} onAbort={onAbort} onEnqueue={onEnqueue} onSend={onSend} sending />,
+    ));
+    const editor = host.querySelector<HTMLElement>("[role=textbox]")!;
+    type(editor, "the next question");
+    // The Enter that asks is the Enter that answers: the queue row is already
+    // the highlighted one, so a second press spends nothing and loses nothing.
+    press(editor, "Enter");
+    expect(host.textContent).toContain("Add to the send queue");
+    expect(highlighted(host)?.textContent).toContain("Add to the send queue");
+
+    // A chord is a text-editing gesture, not a menu key.
+    press(editor, "ArrowDown", { shiftKey: true });
+    expect(highlighted(host)?.textContent).toContain("Add to the send queue");
+
+    // `↓` walks the rows — in the box it would recall a sent message instead.
+    press(editor, "ArrowDown");
+    expect(highlighted(host)?.textContent).toContain("Interrupt and send");
+    press(editor, "ArrowUp");
+    press(editor, "ArrowUp");
+    expect(highlighted(host)?.textContent).toContain("Interrupt and send");
+
+    press(editor, "Enter");
+    expect(onEnqueue).toHaveBeenCalledWith({ attachments: [], content: "the next question" });
+    expect(onAbort).toHaveBeenCalledTimes(1);
+    // The press belonged to the menu: the box neither sent nor kept the draft.
+    expect(onSend).not.toHaveBeenCalled();
+    expect(editor.textContent).toBe("");
+  }
+  finally {
+    act(() => root.unmount());
+    host.remove();
+  }
+});
+
+it("queues the draft on a plain Enter of the choice the menu opened with", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const onSend = vi.fn();
+  const onAbort = vi.fn();
+  const onEnqueue = vi.fn(() => true);
+  try {
+    await act(async () => root.render(
+      <Composer modelOptions={[]} onAbort={onAbort} onEnqueue={onEnqueue} onSend={onSend} sending />,
+    ));
+    const editor = host.querySelector<HTMLElement>("[role=textbox]")!;
+    type(editor, "one more thing");
+    press(editor, "Enter");
+    press(editor, "Enter");
+    expect(onEnqueue).toHaveBeenCalledWith({ attachments: [], content: "one more thing" });
+    expect(onAbort).not.toHaveBeenCalled();
+    expect(onSend).not.toHaveBeenCalled();
+    expect(editor.textContent).toBe("");
   }
   finally {
     act(() => root.unmount());

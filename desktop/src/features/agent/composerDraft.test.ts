@@ -1,5 +1,17 @@
+import type { ChoiceAnswer } from "./composer/choiceAnswer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearComposerDraft, clearComposerDraftIfMatches, loadComposerDraft, saveComposerDraft } from "./composerDraft";
+
+/** One answer, in the shape the editor's pill and the card both read. */
+const ANSWER: ChoiceAnswer = {
+  mode: "single",
+  options: [
+    { id: "forest", label: "重画森林图" },
+    { id: "flow", label: "补一张实验流程图" },
+  ],
+  selectedIds: ["forest"],
+  title: "接下来做哪一件？",
+};
 
 // Minimal in-memory sessionStorage: the default vitest env is "node", which has
 // no Web Storage, so the module under test needs one supplied.
@@ -83,6 +95,41 @@ describe("composerDraft", () => {
     clearComposerDraft("absent");
     saveComposerDraft("absent", {} as never);
     expect(loadComposerDraft("absent")).toBeNull();
+  });
+
+  describe("the choice card's answer", () => {
+    it("rides in the draft beside the text and survives a round trip", () => {
+      saveComposerDraft("t", { attachments: [], choice: ANSWER, text: "顺便把图例挪到右下" });
+
+      const draft = loadComposerDraft("t");
+      expect(draft?.choice).toEqual(ANSWER);
+      expect(draft?.text).toBe("顺便把图例挪到右下");
+    });
+
+    it("keeps the slot when the answer is the only thing in the draft", () => {
+      // An answer is content: a draft the reader is halfway through must not be
+      // thrown away because the box behind the pill happens to be empty.
+      saveComposerDraft("t", { attachments: [], choice: ANSWER, text: "" });
+      expect(loadComposerDraft("t")?.choice?.selectedIds).toEqual(["forest"]);
+    });
+
+    it("clears the slot once the answer is gone too", () => {
+      saveComposerDraft("t", { attachments: [], choice: ANSWER, text: "" });
+      saveComposerDraft("t", { attachments: [], choice: undefined, text: "" });
+      expect(loadComposerDraft("t")).toBeNull();
+    });
+
+    it("still reads the version-1 drafts written before answers existed", () => {
+      // The shape deliberately grows without a version bump: a stored draft from
+      // before this field existed carries no `choice` and must load unchanged —
+      // bumping DRAFT_VERSION here would have discarded every open draft.
+      store.set("composer-draft:legacy", JSON.stringify({ version: 1, text: "旧草稿", attachments: [] }));
+      expect(loadComposerDraft("legacy")?.text).toBe("旧草稿");
+      expect(loadComposerDraft("legacy")?.choice).toBeUndefined();
+
+      store.set("composer-draft:legacy-answer", JSON.stringify({ version: 1, text: "", choice: ANSWER }));
+      expect(loadComposerDraft("legacy-answer")?.choice).toEqual(ANSWER);
+    });
   });
 
   describe("clearComposerDraftIfMatches", () => {

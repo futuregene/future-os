@@ -169,3 +169,106 @@ describe("a fork's marker in the row title", () => {
     }
   });
 });
+
+describe("the choice mark", () => {
+  // A finished reply that closed with a `futureos-choice` card leaves the
+  // conversation waiting on the reader. The mark says so from the list, which is
+  // the only place a conversation nobody has opened can say anything at all —
+  // and it is deliberately not the approval badge: an approval blocks the agent,
+  // a card only waits for the next send.
+  function mount(overrides: Partial<ComponentProps<typeof ThreadListItem>> = {}) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const p = { ...props(), ...overrides };
+    act(() => root.render(<ThreadListItem {...p} />));
+    return {
+      dispose: () => {
+        act(() => root.unmount());
+        container.remove();
+      },
+      mark: () => container.querySelector<HTMLElement>("[data-thread-choice]"),
+    };
+  }
+
+  const finished = (offersChoice: boolean) => ({
+    endedAt: 1,
+    offersChoice,
+    runId: "run",
+    status: "completed" as const,
+  });
+
+  it("marks a conversation whose last finished reply offered a choice", () => {
+    const view = mount({ runStatus: finished(true) });
+    try {
+      const mark = view.mark()!;
+      // Named, so it is not a mystery glyph to a screen reader or a tooltip.
+      expect(mark.getAttribute("aria-label")).toBe("This reply is waiting on your choice");
+      expect(mark.getAttribute("title")).toBe("This reply is waiting on your choice");
+      // The list-checks glyph in the warning ink: the same loudness as the
+      // approval badge beside it (both mean "this cannot move without you"),
+      // and a different shape (a card waits for the next send; an approval
+      // blocks the agent).
+      expect(mark.querySelector("svg")!.classList.contains("lucide-list-checks")).toBe(true);
+      expect(mark.classList.contains("text-warning")).toBe(true);
+    }
+    finally {
+      view.dispose();
+    }
+  });
+
+  it("leaves a conversation whose last reply ended in prose alone", () => {
+    const view = mount({ runStatus: finished(false) });
+    try {
+      expect(view.mark()).toBeNull();
+    }
+    finally {
+      view.dispose();
+    }
+  });
+
+  it("does not mark the conversation that is already open", () => {
+    // Its card is on screen; the mark is for the ones the reader is not in.
+    const view = mount({ active: true, runStatus: finished(true) });
+    try {
+      expect(view.mark()).toBeNull();
+    }
+    finally {
+      view.dispose();
+    }
+  });
+
+  it("hides the mark while a run is streaming", () => {
+    // A follow-up turn answers the card's question, so the mark is a fact about
+    // a conversation at rest: either the row's own run says `running`, or
+    // another client is streaming this session (the TUI).
+    const own = mount({ runStatus: { ...finished(true), status: "running" } });
+    try {
+      expect(own.mark()).toBeNull();
+    }
+    finally {
+      own.dispose();
+    }
+    const other = mount({ isStreaming: true, runStatus: finished(true) });
+    try {
+      expect(other.mark()).toBeNull();
+    }
+    finally {
+      other.dispose();
+    }
+  });
+
+  it("does not mark a run that did not finish cleanly", () => {
+    // A failed run is not "waiting on your answer": the rail already says it
+    // failed, and a reply that was cut off never delivered a card to answer.
+    for (const status of ["failed", "cancelled", "waiting_approval", "queued"] as const) {
+      const view = mount({ runStatus: { ...finished(true), status } });
+      try {
+        expect(view.mark()).toBeNull();
+      }
+      finally {
+        view.dispose();
+      }
+    }
+  });
+});

@@ -56,6 +56,43 @@ impl Repo {
     fn listing(&self) -> GraphListing {
         list(&self.path().display().to_string()).unwrap()
     }
+
+    /// Commit one file with the author and committer named separately, the way a
+    /// squash merge or a rebase leaves them.
+    fn commit_as(
+        &self,
+        author: &str,
+        author_email: &str,
+        committer: &str,
+        committer_email: &str,
+        subject: &str,
+    ) {
+        let name: String = subject
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { '-' })
+            .collect();
+        std::fs::write(
+            self.path().join(format!("{name}.txt")),
+            format!("{subject}\n"),
+        )
+        .unwrap();
+        self.git(&["add", "."]);
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(self.path())
+            .args(["commit", "-m", subject])
+            .env("GIT_AUTHOR_NAME", author)
+            .env("GIT_AUTHOR_EMAIL", author_email)
+            .env("GIT_COMMITTER_NAME", committer)
+            .env("GIT_COMMITTER_EMAIL", committer_email)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git commit as {author}/{committer}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 /// A directory that is not a repository, with a `.git`-less parent chain: the
@@ -282,6 +319,79 @@ fn a_large_patch_is_bounded_and_says_so() {
     assert!(detail.patch.contains("truncated"));
     assert!(detail.patch.len() <= PATCH_MAX_BYTES + 200);
     assert!(detail.patch.lines().count() <= PATCH_MAX_ROWS + 1);
+}
+
+/// A row names the commit's *author*, not its committer.
+///
+/// They differ whenever someone else lands a change: a squash merge on GitHub
+/// rewrites the committer to "GitHub", a rebase to whoever ran it. Reading the
+/// committer made a whole page of real work read as "GitHub" (measured on this
+/// repository: every PR-merged commit there has author `Hui Chen` and committer
+/// `GitHub`).
+#[test]
+fn a_row_names_the_author_not_the_committer() {
+    let repo = Repo::new();
+    repo.commit("written by the author, landed by someone else");
+    // Commit once more under a different committer, the way a squash merge does.
+    repo.commit_as(
+        "Author Person",
+        "author@example.com",
+        "GitHub",
+        "noreply@github.com",
+        "squashed",
+    );
+
+    let listing = repo.listing();
+    let squashed = listing
+        .commits
+        .iter()
+        .find(|row| row.subject == "squashed")
+        .expect("the squashed commit is in the log");
+    assert_eq!(squashed.who, "Author Person");
+    assert_ne!(squashed.who, "GitHub", "the committer is not the author");
+}
+
+/// The detail lists every ref on the commit, not git's shortened decoration.
+#[test]
+fn the_detail_lists_every_ref_on_the_commit() {
+    let repo = Repo::new();
+    repo.commit("base");
+    repo.commit("tagged and branched");
+    let head = repo.listing().commits[0].short.clone();
+    // More refs than `%D` keeps on one line: two branches, a remote-tracking
+    // branch and two tags all point at the same commit.
+    repo.git(&["branch", "feature/a"]);
+    repo.git(&["branch", "feature/b"]);
+    repo.git(&["tag", "v1.0"]);
+    repo.git(&["tag", "v1.1"]);
+    repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+
+    let detail = detail(&repo.path().display().to_string(), &head).unwrap();
+    assert_eq!(detail.refs.branches, vec!["feature/a", "feature/b", "main"]);
+    assert_eq!(detail.refs.remotes, vec!["origin/main"]);
+    assert_eq!(detail.refs.tags, vec!["v1.0", "v1.1"]);
+    // HEAD is on this commit, so the checkout is named too.
+    assert!(detail.refs.head);
+}
+
+/// A commit no ref points at answers with empty lists rather than an error.
+#[test]
+fn the_detail_of_a_commit_no_ref_points_at_lists_nothing() {
+    let repo = Repo::new();
+    repo.commit("old");
+    let older = repo.listing().commits[0].short.clone();
+    repo.commit("newer");
+
+    let detail = detail(&repo.path().display().to_string(), &older).unwrap();
+    assert!(
+        detail.refs.branches.is_empty(),
+        "{:?}",
+        detail.refs.branches
+    );
+    assert!(detail.refs.remotes.is_empty());
+    assert!(detail.refs.tags.is_empty());
+    // The older commit is not what is checked out.
+    assert!(!detail.refs.head);
 }
 
 /// A directory that is not a repository answers the detail read with a message

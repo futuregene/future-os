@@ -216,6 +216,8 @@
       "remove": "从队列中删除",
       "retry": "重试",
       "release": "现在发送这一条",
+    "choiceChange": "更改这条消息里的选择：{{title}} · {{label}}",
+    "choiceClear": "不作选择（保留消息文字）",
       "actionFailed": "这条等待中的消息没能处理：{{message}}",
       "full": "发送队列已满，请先发送或删除一些消息。",
       "notice": {

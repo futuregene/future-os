@@ -1,6 +1,16 @@
 import { buildSessionReference } from "@future-os/markdown";
+import { choiceAnswerText, parseChoiceAnswer } from "./choiceAnswer";
 
 export const PILL_ATTR = "data-mention";
+
+export interface SerializeOptions {
+  /**
+   * Leave the choice answer out. The conversation draft keeps that answer in its
+   * own `choice` field, so letting its text in too would restore it twice — once
+   * as the text it was serialized to, once as the pill rebuilt from `choice`.
+   */
+  omitChoice?: boolean;
+}
 
 /** True when the editor has no text and no pills. */
 export function isEditorEmpty(editor: HTMLDivElement | null): boolean {
@@ -109,8 +119,15 @@ export function hashContext(editor: HTMLDivElement | null): {
   };
 }
 
-/** Serialize the editor: text verbatim, pills → markdown links. */
-export function serialize(editor: HTMLDivElement | null): string {
+/**
+ * Serialize the editor: text verbatim, file/skill/session pills → the markdown
+ * the agent reads, a choice pill → `[title → label]` (§7 of the choice-card
+ * design).
+ *
+ * `options.omitChoice` leaves the choice pill out; the per-conversation draft
+ * takes its text that way (see `MentionEditor.getDraftContent`).
+ */
+export function serialize(editor: HTMLDivElement | null, options: SerializeOptions = {}): string {
   if (!editor)
     return "";
   let out = "";
@@ -134,6 +151,27 @@ export function serialize(editor: HTMLDivElement | null): string {
         sessionId: element.getAttribute("data-session") ?? "",
         title: element.getAttribute("data-title") ?? "",
       });
+      return;
+    }
+    if (pillKind === "choice") {
+      // The answer is plain text (§7): every client, and a message pasted
+      // anywhere else, can read `[title → label]`. Data comes from
+      // `data-choice`, not from the pill's painted text — the pill also draws a
+      // pencil and a cross, which are affordances, not content.
+      if (options.omitChoice)
+        return;
+      const answer = parseChoiceAnswer(element.getAttribute("data-choice"));
+      if (!answer) {
+        out += element.textContent ?? "";
+        return;
+      }
+      // Nothing ticked is not an answer (§7): unticking the last row of a
+      // multi-choice card leaves the pill showing only its question, and printing
+      // that would send `[接下来做哪一件？ → ]` — a question with an empty answer,
+      // which reads as an answer. Emit nothing at all; anything the reader typed
+      // beside the pill is theirs and stays verbatim.
+      if (answer.selectedIds.length > 0)
+        out += choiceAnswerText(answer);
       return;
     }
     if (pillKind) {

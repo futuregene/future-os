@@ -16,6 +16,13 @@ struct ScheduledPromptPayload {
     model_context: String,
     images: Vec<crate::types::ImageContent>,
     attachments: Vec<crate::types::Attachment>,
+    /// The answer a `futureos-choice` card gave this prompt, if any.
+    ///
+    /// Kept with the acceptance rather than only in `message`, because the
+    /// sentence that is sent names the picked options and not the ones the
+    /// reader could still switch to — and a waiting row offers that switch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    choice: Option<future_rpc::payloads::QueuedRunChoice>,
     settings: ScheduledSettingsSnapshot,
 }
 
@@ -83,10 +90,16 @@ impl RunInputBoundary {
 
 /// Textual parts of one user turn. `message` is the exact user-authored text;
 /// `model_context` is a non-display sidecar that remains at user-role trust.
+///
+/// `choice` is the answer a `futureos-choice` card gave this turn. It is
+/// borrowed from the submission rather than owned here: the payload that
+/// outlives this call copies it (see `ScheduledPromptPayload::choice`), and a
+/// turn without a card carries none.
 #[derive(Clone, Copy)]
 pub(super) struct PromptText<'a> {
     message: &'a str,
     model_context: &'a str,
+    choice: Option<&'a future_rpc::payloads::QueuedRunChoice>,
 }
 
 impl<'a> PromptText<'a> {
@@ -94,7 +107,17 @@ impl<'a> PromptText<'a> {
         Self {
             message,
             model_context,
+            choice: None,
         }
+    }
+
+    /// The same turn, carrying the answer a choice card gave it.
+    pub(super) fn with_choice(
+        mut self,
+        choice: Option<&'a future_rpc::payloads::QueuedRunChoice>,
+    ) -> Self {
+        self.choice = choice;
+        self
     }
 
     fn user_only(message: &'a str) -> Self {
@@ -386,6 +409,11 @@ impl ServerSession {
             // only when the run starts (images) or when a tool reads them
             // (ordinary files), so queued work observes the latest contents.
             attachments: attachments.to_vec(),
+            // The card's answer travels with the acceptance. Whatever the
+            // message says is still what a run sends (the sentence is built on
+            // the client, §7 of the design); this copy is what lets a waiting
+            // row re-offer the card's other options before it runs.
+            choice: prompt.choice.cloned(),
             settings: settings.clone(),
         })?;
         let durable_payload = payload.clone();
@@ -499,6 +527,76 @@ impl ServerSession {
             };
         }
         Ok(ack)
+    }
+
+    /// Correct the words of one waiting prompt, keeping where it waits.
+    ///
+    /// The queue moves the row in place (see `InMemoryRunQueue::edit_queued`), and
+    /// this is the half that has to follow it: a queued prompt also owns a durable
+    /// acceptance, and that copy is what a restart restores. Left alone, it would
+    /// replay the message as it was written rather than as it was corrected —
+    /// losing the reader's fix at the one moment it is all that survives.
+    ///
+    /// The acceptance's identity is deliberately *not* rewritten: the run id, its
+    /// sequence and the fingerprint stay the ones the submission was accepted as,
+    /// so a client retrying that request id is still answered as a duplicate of
+    /// the same acceptance and not as a conflict with a different one.
+    ///
+    /// The in-memory queue is the visible truth and is already changed when the
+    /// durable copy is written, so a storage failure here is reported loudly and
+    /// not thrown back at the reader: their row says what they just typed, and
+    /// only a restart would reveal the older words.
+    pub fn edit_queued_run(&mut self, run_id: &str, message: &str) -> Result<()> {
+        self.edit_queued_run_with_choice(run_id, message, None)
+    }
+
+    /// Correct one waiting prompt, optionally restating the answer it sends.
+    ///
+    /// `choice` is `None` for a words-only correction: the accepted answer stays
+    /// exactly as it was, so fixing a typo cannot silently drop which option the
+    /// reader picked. When it is `Some`, it is the answer the new words state —
+    /// the caller derives both together, because a row whose chip and text
+    /// disagreed about what will be sent would be worse than either alone.
+    pub fn edit_queued_run_with_choice(
+        &mut self,
+        run_id: &str,
+        message: &str,
+        choice: Option<future_rpc::payloads::QueuedRunChoice>,
+    ) -> Result<()> {
+        let edited = self
+            .scheduler
+            .edit_queued_with_choice(run_id, message, choice)?;
+        if self.ephemeral {
+            return Ok(());
+        }
+        let payload: ScheduledPromptPayload = serde_json::from_value(edited.payload)?;
+        let mut user = build_user_message_with_model_context(
+            &payload.message,
+            &payload.model_context,
+            &payload.images,
+            &payload.attachments,
+            false,
+            &|_| None,
+        );
+        let metadata = user.metadata.get_or_insert_with(serde_json::Map::new);
+        metadata.insert("run_id".into(), edited.run_id.clone().into());
+        metadata.insert(
+            "client_request_id".into(),
+            edited.client_request_id.clone().into(),
+        );
+        let user = crate::session::agent_message_to_entry(&user);
+        if let Err(error) =
+            self.session_manager
+                .replace_queued_receipt_input(&self.session_id, run_id, &user)
+        {
+            tracing::error!(
+                session_id = %self.session_id,
+                run_id = %run_id,
+                %error,
+                "edited queued prompt: the durable acceptance keeps its older words"
+            );
+        }
+        Ok(())
     }
 
     pub(super) fn start_next_scheduled(&mut self) -> Result<crate::runtime::RunAck> {
@@ -1610,6 +1708,23 @@ impl ServerSession {
             } else {
                 crate::session::RUN_STATE_COMPLETED
             };
+            // Whether this run's reply closes by offering the reader a choice.
+            //
+            // Every list that shows a conversation badges the ones waiting on an
+            // answer — the desktop rail, a phone's session list, a peer's
+            // catalogue — and none of them holds the other conversations' text,
+            // so the fact travels with the run (`agent_end` → the desktop's run
+            // row) instead of being re-derived per client. Only a clean finish
+            // can carry one: a cancelled or failed reply is not something to
+            // answer, and the fence rules themselves live in
+            // `crate::prompt::choice_card`.
+            let reply_offers_choice = terminal_state == crate::session::RUN_STATE_COMPLETED
+                && messages_arc
+                    .read()
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == "assistant")
+                    .is_some_and(|message| crate::prompt::reply_offers_choice(&message.text()));
             // Clones for the blocking commit task: run_error and task_lease are
             // still needed after the task completes (terminal event dispatch).
             let commit_run_id = task_lease.run_id.clone();
@@ -1723,6 +1838,9 @@ impl ServerSession {
                 {
                     if system_interrupted {
                         content.insert("interruption_cause".into(), "system_shutdown".into());
+                    }
+                    if reply_offers_choice {
+                        content.insert("offers_choice".into(), serde_json::Value::Bool(true));
                     }
                     content.insert(
                         "input_tokens".into(),

@@ -520,6 +520,7 @@ pub fn lean_replay_page(page: &mut Value, lean: bool) {
 /// | tool-result body | 22.0-26.5% |
 /// | tool-call arguments | 12.3-17.8% (of which shell commands are most) |
 /// | shell facts in `metadata` (`attempts[].output`, `command`, `cwd`) | 37-42% of what the three above leave behind |
+/// | block `provider_metadata` | 1.77 MB of one 5.22 MB first page (measured 2026-11-13) |
 ///
 /// Each is unread rather than merely unrendered, which is what makes this a
 /// removal:
@@ -540,6 +541,15 @@ pub fn lean_replay_page(page: &mut Value, lean: bool) {
 ///   index in the run. The block itself stays, so the row appears and opens.
 /// - A shell entry repeats its output and its command in `metadata`: see
 ///   [`narrow_shell_result`].
+/// - A block's `provider_metadata` is provider bookkeeping, not display: it is
+///   what the provider needs to *re-send* a turn (a thinking signature, a cache
+///   hint), and the agent keeps its own copy in the session store. The one
+///   occurrence of the name anywhere in the front ends is the type declaration
+///   `providerMetadata?: unknown` in
+///   `packages/thread-projection/src/events.ts` — nothing reads it — and the
+///   Rust renderers never mention it at all (`git grep provider_metadata --
+///   host/src desktop/src-tauri/src tui/src` is empty). Removing it changes no
+///   row, no block and no label.
 ///
 /// Nothing here adds, removes or reorders an entry or a block: entries keep their
 /// identity and count, so the page's `nextOffset`/`hasMore`/flush-cursor logic
@@ -551,6 +561,12 @@ pub fn lean_entries(entries: &mut Value) {
     for entry in entries {
         if let Some(blocks) = entry.get_mut("blocks").and_then(Value::as_array_mut) {
             for block in blocks {
+                // First, because every arm below may `continue`: the field is
+                // bookkeeping on every block kind, not on the ones this match
+                // happens to reshape.
+                if let Some(fields) = block.as_object_mut() {
+                    fields.remove("provider_metadata");
+                }
                 match block["kind"].as_str().unwrap_or_default() {
                     // The body goes; the block stays, so the row still appears.
                     "reasoning" => {
@@ -2147,6 +2163,106 @@ mod guard_arms_tests {
         assert!(
             entries[1]["blocks"][1].get("arguments").is_none(),
             "there was never an argument list to drop"
+        );
+    }
+
+    /// One turn of the reported conversation, as a page: 1,113 rows, which is
+    /// what a run that kept reading its own transcript produced (2026-11-13).
+    /// Each block carries the provider bookkeeping a real one does, because that
+    /// is the payload this trim is about.
+    fn the_long_turn(rows: usize) -> Value {
+        let metadata = json!({
+            "vendor": {"signature": "x".repeat(900), "cache": "ephemeral"},
+        });
+        let mut entries = vec![json!({
+            "id": "u0", "kind": "user", "role": "user", "createdAtMs": 1,
+            "blocks": [{"kind": "text", "text": "q", "provider_metadata": metadata}],
+        })];
+        for index in 0..rows {
+            entries.push(json!({
+                "id": format!("a{index}"), "kind": "assistant", "role": "assistant",
+                "runId": "r0", "createdAtMs": 2 + index,
+                "blocks": [
+                    {"kind": "reasoning", "text": "why", "provider_metadata": metadata},
+                    {"kind": "tool_call", "name": "shell", "toolCallId": format!("c{index}"),
+                     "arguments": {"command": "future session transcript"}, "provider_metadata": metadata},
+                ],
+            }));
+            entries.push(json!({
+                "id": format!("t{index}"), "kind": "tool", "role": "tool",
+                "runId": "r0", "createdAtMs": 3 + index,
+                "blocks": [
+                    {"kind": "tool_result", "toolCallId": format!("c{index}"), "text": "out",
+                     "provider_metadata": metadata},
+                ],
+            }));
+        }
+        Value::Array(entries)
+    }
+
+    /// What a reader sees is the rows, in order, and the blocks inside them.
+    ///
+    /// The trim removes payload only, so the check is a sequence comparison
+    /// against the untrimmed page — the same identities, roles, kinds, labels
+    /// and block order, row for row — rather than a picture of the result. The
+    /// fixture is the reported conversation's shape: one turn long enough that a
+    /// payload trim is the difference between a first screen and a transfer.
+    #[test]
+    fn the_trim_keeps_every_row_and_every_block_of_a_long_turn() {
+        let full = the_long_turn(1_113);
+        let before = full.as_array().unwrap().clone();
+        let mut lean = full.clone();
+        lean_entries(&mut lean);
+        let after = lean.as_array().unwrap();
+
+        assert_eq!(
+            after.len(),
+            before.len(),
+            "no row is added, removed or merged"
+        );
+        // The first screen's sequence: what the transcript draws, in the order
+        // it draws it.
+        let sequence = |entries: &[Value]| {
+            entries
+                .iter()
+                .map(|entry| {
+                    let blocks = entry["blocks"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|block| {
+                            (
+                                block["kind"].as_str().unwrap_or_default().to_owned(),
+                                block["toolCallId"].as_str().unwrap_or_default().to_owned(),
+                                block["name"].as_str().unwrap_or_default().to_owned(),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    (
+                        entry["id"].as_str().unwrap_or_default().to_owned(),
+                        entry["role"].as_str().unwrap_or_default().to_owned(),
+                        blocks,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            sequence(&before),
+            sequence(after),
+            "the first screen's rows and blocks are the same, in the same order"
+        );
+
+        // And the payload it removes is the point of the trim: this page has to
+        // fit in a reply the untrimmed one cannot.
+        let bytes = |entries: &[Value]| serde_json::to_vec(entries).unwrap().len();
+        let (full_bytes, lean_bytes) = (bytes(&before), bytes(after));
+        assert!(
+            lean_bytes * 2 < full_bytes,
+            "provider bookkeeping is most of this page: {lean_bytes} of {full_bytes}"
+        );
+        assert!(
+            !lean.to_string().contains("provider_metadata"),
+            "the field this trim is named for is gone"
         );
     }
 }

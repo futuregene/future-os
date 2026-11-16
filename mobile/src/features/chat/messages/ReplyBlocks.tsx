@@ -51,9 +51,31 @@ function stepRunKind(segment: StepSegment): StepRunKind {
 }
 
 /** One rendered slice of a reply: a pass-through segment, or a folded step run. */
-type ReplyBlock =
+export type ReplyBlock =
   | { kind: "segment"; segment: TimelineSegment; }
   | { kind: "steps"; segments: StepSegment[]; };
+
+/**
+ * How much prose a reply may hide before folding it stops being a convenience.
+ *
+ * The fold is for the commonplace reply: one answer with a couple of notes on
+ * the way there, so the answer reads without three lines of "now let me check…"
+ * above it. It stops being that the moment the notes *are* the reply. Measured
+ * on the desktop's Agent store (4,713 replies with prose, 2026-11-16), folding
+ * unconditionally hid a median of **10** prose blocks and ~15 KB per reply, and
+ * in **78%** of replies more than half of all the prose — the reading material,
+ * not an aside.
+ *
+ * Past these ceilings the reply is kept whole: an agent that narrated forty
+ * steps of work had its reasoning in those steps, and the reader asked for it.
+ * With them, 5.5% of replies fold, hiding a median 26% of their prose.
+ *
+ * The desktop keeps its own copy of this rule (`desktop/src/features/agent/
+ * replyBlocks.ts`) and the two must agree — the same reply saying two different
+ * things on two screens is the defect this constant exists to prevent.
+ */
+export const FOLD_PROSE_BLOCKS = 2;
+export const FOLD_PROSE_CHARS = 800;
 
 /**
  * Split a settled reply into the work that led to its answer and the answer
@@ -74,8 +96,17 @@ type ReplyBlock =
 export function splitFinalAnswer(blocks: readonly ReplyBlock[]): { process: ReplyBlock[]; answer: ReplyBlock[]; } {
   for (let index = blocks.length - 1; index >= 0; index -= 1) {
     const block = blocks[index]!;
-    if (block.kind === "segment" && block.segment.kind === "text" && block.segment.text.trim().length > 0)
-      return { process: blocks.slice(0, index), answer: blocks.slice(index) };
+    if (block.kind === "segment" && block.segment.kind === "text" && block.segment.text.trim().length > 0) {
+      const process = blocks.slice(0, index);
+      const hidden = process
+        .filter((block): block is { kind: "segment"; segment: Extract<TimelineSegment, { kind: "text"; }>; } =>
+          block.kind === "segment" && block.segment.kind === "text")
+        .map(block => block.segment.text)
+        .filter(text => text.trim().length > 0);
+      if (hidden.length > FOLD_PROSE_BLOCKS || hidden.reduce((total, text) => total + text.length, 0) > FOLD_PROSE_CHARS)
+        return { process: [], answer: [...blocks] };
+      return { process, answer: blocks.slice(index) };
+    }
   }
   return { process: [], answer: [...blocks] };
 }

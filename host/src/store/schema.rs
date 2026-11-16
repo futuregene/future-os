@@ -78,6 +78,11 @@ CREATE TABLE IF NOT EXISTS runs (
     archived_at INTEGER,
     logs_purged_at INTEGER,
     remote_accepted_at INTEGER,
+    -- The run's reply closed by offering the reader a choice (a
+    -- `futureos-choice` card). Lists badge such a conversation as waiting on an
+    -- answer; the fact is recorded once, at settlement, so no client has to read
+    -- another conversation's reply to know it.
+    offers_choice INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
@@ -327,6 +332,7 @@ pub(super) const ADDED_COLUMNS: &[(&str, &str)] = &[
     ("review_file_changes", "omission_reason TEXT"),
     // Phase 2 sandbox: suggested rule (JSON) for session/always-allow buttons.
     ("approval_requests", "save_suggestion TEXT"),
+    ("runs", "offers_choice INTEGER NOT NULL DEFAULT 0"),
 ];
 
 /// Optional run-archive migrations, whose failures do not block startup.

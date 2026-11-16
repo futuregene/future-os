@@ -126,6 +126,41 @@ pub struct QueuedRunState {
     /// such field simply sends none.
     #[serde(default)]
     pub attachments: Vec<QueuedRunAttachment>,
+    /// The answer a `futureos-choice` card gave this prompt.
+    ///
+    /// Absent means the prompt did not answer a card, which is also what an
+    /// Agent that predates the field reports — neither is a mistake to repair,
+    /// so absence is spelled as absence and never as an empty answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choice: Option<QueuedRunChoice>,
+}
+
+/// One answer a queued prompt carries, as the card offered it.
+///
+/// The sent sentence (`display_text`) already names the picked options, so this
+/// exists for the other thing a waiting row offers: changing *which* option was
+/// picked before the message leaves. That needs the card's whole option list,
+/// which the sentence deliberately does not keep.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedRunChoice {
+    /// "single" | "multi", as the card asked.
+    pub mode: String,
+    /// The card's question, so a row can name what it answers.
+    pub title: String,
+    /// Every option the card offered, in card order.
+    #[serde(default)]
+    pub options: Vec<QueuedRunChoiceOption>,
+    /// The picked option ids, in the order they were picked.
+    #[serde(default)]
+    pub selected_ids: Vec<String>,
+}
+
+/// One option of a queued prompt's answer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct QueuedRunChoiceOption {
+    pub id: String,
+    pub label: String,
 }
 
 /// One file a queued prompt carries (proto `QueuedRunAttachment`).
@@ -195,6 +230,17 @@ pub struct SessionEntriesPage<Entry = SessionEntryPayload> {
     pub total: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fragment: Option<HistoryEntryFragment>,
+    /// This page is the newest rows of a turn too large to complete.
+    ///
+    /// A page normally begins at the question its reply answers, and a caller
+    /// that asked for one does not have to think about where it started. A turn
+    /// can be bigger than the whole page budget on its own (a run that read its
+    /// own transcript held 1,113 rows and 10.35 MB), and then completing it is
+    /// the transfer the budget exists to prevent. Such a page is the turn's tail,
+    /// and this flag is how it says so: what above it is missing from *this*
+    /// page, and the cursor it carries still reaches it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

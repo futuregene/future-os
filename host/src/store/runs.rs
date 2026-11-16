@@ -337,6 +337,13 @@ pub struct LatestRunInfo {
     pub run_id: String,
     pub status: String,
     pub ended_at: Option<i64>,
+    /// This run's reply closed by offering the reader a choice.
+    ///
+    /// A list badges the conversation while nothing newer is streaming, which is
+    /// why it rides with the *run*: a follow-up turn creates its own row, so the
+    /// mark clears the moment the reader answers — no second bookkeeping pass,
+    /// and no client deriving it from text it does not hold.
+    pub offers_choice: bool,
 }
 
 /// The run this conversation is on, identity and status only, for each of
@@ -354,8 +361,8 @@ pub fn latest_run_infos(thread_ids: &[String]) -> Result<Vec<LatestRunInfo>, cra
         .map(|i| format!("?{}", i + 1))
         .collect();
     let sql = format!(
-        "SELECT thread_id, id, status, ended_at FROM (
-             SELECT thread_id, id, status, ended_at,
+        "SELECT thread_id, id, status, ended_at, offers_choice FROM (
+             SELECT thread_id, id, status, ended_at, offers_choice,
                     ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY {}) AS rn
              FROM runs
              WHERE thread_id IN ({})
@@ -374,10 +381,31 @@ pub fn latest_run_infos(thread_ids: &[String]) -> Result<Vec<LatestRunInfo>, cra
             run_id: row.get(1)?,
             status: row.get(2)?,
             ended_at: row.get(3)?,
+            offers_choice: row.get(4)?,
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(crate::Error::from)
+}
+
+/// Whether a settled run's reply closed by offering the reader a choice.
+///
+/// Written before the run is marked `completed`, so the row a list reads carries
+/// the mark the moment the run is finished — one write serves every list (the
+/// rail's `latest_run_infos`, a peer's catalogue, a phone's session list).
+/// Best-effort: a storage hiccup costs a badge, never the run's settlement.
+pub fn mark_run_offers_choice(run_id: &str) {
+    let Ok(conn) = connect() else {
+        return;
+    };
+    if let Err(error) = conn.execute(
+        "UPDATE runs SET offers_choice = 1 WHERE id = ?1",
+        params![run_id],
+    ) {
+        tracing::warn!(event = "mark_run_offers_choice", run_id = %run_id, error = %error,
+            "FutureOS could not record that the reply offers a choice: {error}"
+        );
+    }
 }
 
 /// Cancel the still-open approvals of a single run, stamping them with `note`.
@@ -2340,6 +2368,49 @@ mod tests {
         assert_eq!(infos[0].run_id, "r1_new");
         assert_eq!(infos[1].run_id, "r2");
         assert_eq!(infos[1].status, "failed");
+    }
+
+    /// "This conversation is waiting on your answer."
+    ///
+    /// The mark belongs to the *run*, so it travels with the row a list already
+    /// reads (`latest_run_infos`, and through it a peer's catalogue). A follow-up
+    /// turn creates its own row without the mark, which is what clears it — no
+    /// second write, and nothing to keep in step.
+    #[test]
+    fn a_settled_run_carries_whether_its_reply_offered_a_choice() {
+        let (_home, conn) = guarded_conn("runs_offers_choice");
+        conn.execute_batch(
+            "INSERT INTO workspaces (
+                 id, name, kind, path, cleanup_status, created_at, updated_at
+             ) VALUES ('ws1', 'WS', 'temporary', '/tmp/ws1', 'active', 1, 1);
+             INSERT INTO threads (
+                 id, workspace_id, mode, title, created_at, updated_at
+             ) VALUES ('t1', 'ws1', 'chat', 'T1', 1, 1);
+             INSERT INTO runs (id, thread_id, status, created_at, updated_at)
+             VALUES ('card', 't1', 'completed', 100, 100);",
+        )
+        .expect("seed");
+        drop(conn);
+
+        let before = latest_run_infos(&["t1".to_string()]).expect("infos");
+        assert!(!before[0].offers_choice, "a fresh run offers nothing");
+
+        mark_run_offers_choice("card");
+        let after = latest_run_infos(&["t1".to_string()]).expect("infos");
+        assert!(after[0].offers_choice);
+
+        // A later run of the same conversation carries its own answer, which is
+        // what takes the mark off the list.
+        let conn = connect().expect("connect");
+        conn.execute_batch(
+            "INSERT INTO runs (id, thread_id, status, created_at, updated_at)
+             VALUES ('prose', 't1', 'completed', 200, 200);",
+        )
+        .expect("seed next run");
+        drop(conn);
+        let next = latest_run_infos(&["t1".to_string()]).expect("infos");
+        assert_eq!(next[0].run_id, "prose");
+        assert!(!next[0].offers_choice);
     }
 
     /// The reply a reader is watching stream must win over a newer row that is

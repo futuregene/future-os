@@ -84,7 +84,7 @@ pub use runs::{
     clear_run_event_buffer, create_run, delete_run_events_file, fail_run_if_active,
     find_run_by_trigger_message_id, get_tool_call_input, has_active_run, latest_run,
     latest_run_infos, list_run_events, list_runs, list_runs_in_window, mark_remote_prompt_accepted,
-    mark_run_logs_purged, mark_run_queued, update_run_status_if_active, LatestRunInfo,
+    mark_run_logs_purged, mark_run_offers_choice, mark_run_queued, update_run_status_if_active, LatestRunInfo,
     RunEventRecord, RunRecord, ToolCallRecord, ToolOutputRecord,
 };
 #[cfg(any(test, feature = "test-support"))]

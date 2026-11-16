@@ -69,6 +69,29 @@ data, Agent bridging or remote belongs here, not there.
 | `remote_peer/` | Client role: this desktop pairing *out* to another desktop | `host/src/remote_peer/mod.rs` |
 | `remote_platform.rs` | The shared HTTP client for Remote roles and relay control | `host/src/remote_platform.rs` |
 
+**A rename reaches the paired client through the catalogue lane, not the
+activity signal.** Two things look like the answer and are not, which is why
+this is written down: `emit_remote_activity(&thread.id)`
+(`host/src/remote_host/business/catalog.rs:53`) only wakes *this* machine's GUI
+(`Event::RemoteActivity` → `desktop/src-tauri/src/lib.rs:123` →
+`remote-activity` → `AppShell.tsx:893`), and it carries no payload a remote
+reader could apply; the client's `session_name_changed` handler is not it either
+(the brain clears `runId` on that event, so `useRemotePeers` treats it as a
+settings change and never touches a row's title). What actually delivers the new
+title is the publisher's ordinary change-driven catalogue tick: `title` is part
+of every row (`host/src/remote_host/catalog.rs:371`) and of the delta row
+signature, so a `rename_thread` in this store marks the catalogue dirty and the
+per-second tick (`PublisherTiming::catalog` = 1s) sends the row on
+`p.{pair}.state.sessions` as a `sessions_delta` packet, which the peer merges by
+`sessionId` and whose `title` the row parser reads
+(`desktop/src/features/remote-peer/remotePeerClient.ts:306`). Measured in
+`host/src/remote_peer/runtime_tests.rs`: ~22 ms from `rename_thread` to the row
+arriving at the peer. The client's `CATALOG_POLL_MS` (60 s) is only the
+fallback for a host that does not push, so "a rename takes up to a minute to be
+visible elsewhere" is not the behaviour — if a rename does not show up, look for
+a failed store write (reported by `rename_session`) rather than a missing
+signal.
+
 ## Process lifecycle and shared services
 
 | Module | Responsibility | Start reading |

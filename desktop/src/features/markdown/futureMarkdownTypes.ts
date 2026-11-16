@@ -2,6 +2,9 @@ import type { ResolvedMarkdownReference } from "../../integrations/storage/markd
 
 export { referenceKey } from "@future-os/markdown";
 export type {
+  ChoiceCardMode,
+  ChoiceCardNode,
+  ChoiceCardOption,
   FutureMarkdownDocument,
   FutureReference,
   FutureReferenceType,

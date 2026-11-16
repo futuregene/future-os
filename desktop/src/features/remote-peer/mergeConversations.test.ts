@@ -390,6 +390,29 @@ describe("mergeConversations", () => {
   });
 
   /**
+   * "This one is waiting on your answer": the host's report of a reply that
+   * closed with a choice card rides the row, so the merged list badges a peer's
+   * conversation exactly as the peer's own list does. A local row's mark is the
+   * rail's run status instead — carrying a second copy here would be a second
+   * answer to the same question.
+   */
+  it("carries a host's choice mark, and never invents one for a local row", () => {
+    const merged = mergeConversations(
+      [thread({ id: "local_1" })],
+      [catalog("desktop_a", [
+        { sessionId: "sess_waiting", title: "waiting", lastMessageAt: 2, offersChoice: true },
+        { sessionId: "sess_prose", title: "prose", lastMessageAt: 1 },
+      ])],
+      ALL,
+    );
+    const byId = new Map(merged.map(row => [row.id, row]));
+    expect(byId.get("sess_waiting")!.offersChoice).toBe(true);
+    // A host that predates the field reports nothing, which reads as no mark.
+    expect(byId.get("sess_prose")!.offersChoice).toBe(false);
+    expect(byId.get("local_1")!.offersChoice).toBe(false);
+  });
+
+  /**
    * The host's pin and delete routes take a *thread* id, which is not the
    * session id. A row that dropped it would leave those two actions
    * unaddressable; a row that conflated the two would pin or delete something

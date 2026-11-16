@@ -171,6 +171,11 @@ pub(super) struct AgentResponse {
     pub content: String,
     pub complete: bool,
     pub termination_kind: Option<String>,
+    /// The reply closed by offering the reader a choice (see
+    /// [`crate::prompt::choice_card`]). Carried on `agent_end` by the Agent; a
+    /// stream that ended before one carries it is `false`, which reads as "no
+    /// card" — the same answer every producer before the field gave.
+    pub offers_choice: bool,
 }
 
 pub(super) async fn collect_agent_response(
@@ -190,7 +195,7 @@ pub(super) async fn collect_agent_response(
     let mut content_cursors = future_rpc::content_range::ContentCursors::default();
     let mut reconnect_attempt = 0_u32;
 
-    let (clean_end, termination_kind) = 'attach: loop {
+    let (clean_end, termination_kind, offers_choice) = 'attach: loop {
         let attach_result = async {
             let mut client = connect_agent()
                 .await
@@ -330,8 +335,9 @@ pub(super) async fn collect_agent_response(
                         FoldOutcome::Terminal {
                             clean,
                             termination_kind,
+                            offers_choice,
                         } => {
-                            snapshot_terminal = Some((clean, termination_kind));
+                            snapshot_terminal = Some((clean, termination_kind, offers_choice));
                         }
                     }
                 }
@@ -411,9 +417,10 @@ pub(super) async fn collect_agent_response(
                 FoldOutcome::Terminal {
                     clean,
                     termination_kind,
+                    offers_choice,
                 } => {
                     crate::request_scope::release_run(session_id, canonical_run_id);
-                    break 'attach (clean, termination_kind);
+                    break 'attach (clean, termination_kind, offers_choice);
                 }
             }
         };
@@ -435,6 +442,7 @@ pub(super) async fn collect_agent_response(
         content,
         complete: clean_end,
         termination_kind,
+        offers_choice,
     })
 }
 
@@ -447,6 +455,7 @@ enum FoldOutcome {
     Terminal {
         clean: bool,
         termination_kind: Option<String>,
+        offers_choice: bool,
     },
 }
 
@@ -469,21 +478,25 @@ fn fold_response_event(
             }
         }
         "agent_end" => {
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
-                if matches!(
-                    value.get("state").and_then(|state| state.as_str()),
-                    Some("error" | "failed")
-                ) {
-                    return Err(value
-                        .get("error")
-                        .and_then(|error| error.as_str())
-                        .unwrap_or("[SOFTWARE_ERROR] Agent failed to finalize the response")
-                        .into());
-                }
+            let value: serde_json::Value =
+                serde_json::from_str(data).unwrap_or(serde_json::Value::Null);
+            if matches!(
+                value.get("state").and_then(|state| state.as_str()),
+                Some("error" | "failed")
+            ) {
+                return Err(value
+                    .get("error")
+                    .and_then(|error| error.as_str())
+                    .unwrap_or("[SOFTWARE_ERROR] Agent failed to finalize the response")
+                    .into());
             }
             return Ok(FoldOutcome::Terminal {
                 clean: !agent_end_incomplete(data),
                 termination_kind: agent_end_termination_kind(data),
+                offers_choice: value
+                    .get("offers_choice")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
             });
         }
         "error" => {
@@ -529,6 +542,23 @@ pub(super) enum AgentEndOutcome {
 /// whatever `state` it names.
 pub(super) fn agent_end_incomplete(data: &str) -> bool {
     matches!(agent_end_outcome(data), AgentEndOutcome::Unfinished { .. })
+}
+
+/// Whether a settled run's reply closed by offering the reader a choice.
+///
+/// The Agent commits this with the run (`agent_end.offers_choice`), for the
+/// clients that list conversations without holding their text. Absent means no
+/// card — every producer that predates the field, and every reply that ends in
+/// prose.
+pub(super) fn agent_end_offers_choice(data: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(data)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("offers_choice")
+                .and_then(serde_json::Value::as_bool)
+        })
+        .unwrap_or(false)
 }
 
 /// The same decision as [`agent_end_incomplete`], keeping the state and error
@@ -656,7 +686,10 @@ fn event_error(data: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{agent_end_incomplete, fold_response_event, reconnect_delay, FoldOutcome};
+    use super::{
+        agent_end_incomplete, agent_end_offers_choice, fold_response_event, reconnect_delay,
+        FoldOutcome,
+    };
 
     #[test]
     fn terminal_reason_categories_survive_live_and_snapshot_paths() {
@@ -751,7 +784,8 @@ mod tests {
             outcome,
             FoldOutcome::Terminal {
                 clean: false,
-                termination_kind: Some(kind)
+                termination_kind: Some(kind),
+                ..
             } if kind == "upstream_disconnected"
         ));
     }
@@ -1353,8 +1387,42 @@ mod tests {
         assert_eq!(input.as_deref(), Some("{}"));
     }
 
-    /// The two `agent_end` classifiers are total over the strings the Agent can
-    /// emit, and every kind `agent_end_termination_kind` produces has its own
+    /// A settled run's terminal event is where the choice mark comes from.
+    ///
+    /// The tool-free fold must read it off the same string the run row is settled
+    /// from, or the collector's own runs would lose the mark the observer's runs
+    /// keep.
+    #[test]
+    fn an_agent_end_carries_whether_the_reply_offered_a_choice() {
+        let mut content = String::new();
+        let mut waiting = false;
+        let outcome = fold_response_event(
+            "agent_end",
+            r#"{"state":"completed","offers_choice":true}"#,
+            &mut content,
+            &mut waiting,
+        )
+        .unwrap();
+        assert!(matches!(
+            outcome,
+            FoldOutcome::Terminal {
+                offers_choice: true,
+                ..
+            }
+        ));
+        assert!(agent_end_offers_choice(
+            r#"{"state":"completed","offers_choice":true}"#
+        ));
+        // Absent, `false`, and unparseable all read as "no card": every producer
+        // before the field, and every reply that ended in prose.
+        assert!(!agent_end_offers_choice(r#"{"state":"completed"}"#));
+        assert!(!agent_end_offers_choice(
+            r#"{"state":"completed","offers_choice":false}"#
+        ));
+        assert!(!agent_end_offers_choice("not json"));
+    }
+
+    /// The two `agent_end` classifiers are total over the strings the Agent can    /// emit, and every kind `agent_end_termination_kind` produces has its own
     /// operator-facing message. A kind that fell through to the default would
     /// silently downgrade a specific truncation reason to "unconfirmed", which
     /// is exactly the regression this pins.
@@ -1579,6 +1647,7 @@ mod terminal_state_tests {
             FoldOutcome::Terminal {
                 clean,
                 termination_kind,
+                ..
             } => {
                 assert!(!clean, "a cancelled run did not finish its answer");
                 assert_eq!(termination_kind.as_deref(), Some("run_cancelled"));

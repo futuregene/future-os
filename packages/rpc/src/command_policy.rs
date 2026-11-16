@@ -75,6 +75,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "delete_sessions",
     "disable_builtin_tools",
     "disable_tools",
+    "edit_queued_run",
     "export_html",
     "fork",
     "generate_session_title",
@@ -162,7 +163,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
 pub fn command_policy(command: &str) -> Option<CommandPolicy> {
     let value = match command {
         "abort" | "abort_retry" | "abort_session" | "approval_decision" | "cancel_queued_run"
-        | "release_queued_run" | "shutdown" => policy(
+        | "edit_queued_run" | "release_queued_run" | "shutdown" => policy(
             CONTROL_TIMEOUT,
             RetryPolicy::Never,
             ExecutionKind::Immediate,

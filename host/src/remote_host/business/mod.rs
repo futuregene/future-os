@@ -17,6 +17,17 @@ mod wire_limits;
 pub(crate) use prompt::*;
 pub(crate) use wire_limits::*;
 
+/// Test-only: make a whole-run replay start at the run's beginning again.
+///
+/// The assertions that a first paint is bounded are written against the
+/// shipping boundary; this is the switch that has to make them fail, so the
+/// reverse direction of the proof is a test rather than a paragraph. It lives
+/// here rather than in `history` because the bridge harness that drives the
+/// handler for real is `crate::remote`, not the module itself.
+#[cfg(test)]
+pub(crate) static FORCE_FULL_REPLAY_START: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// The module that owns an incoming command.
 ///
 /// Routing is a pure step, separate from executing the handler, so the phone's
@@ -53,7 +64,7 @@ pub(crate) fn route(cmd_type: &str) -> Option<Route> {
         "upload_init" | "upload_complete" | "upload_cancel" | "list_session_files"
         | "download_prepare" | "download_cancel" => Route::Transfers,
         "prompt" | "get_prompt_receipt" | "get_queue" | "cancel_queued_run" | "release_queued_run"
-        | "abort" | "continue_run" | "approval_decision" => Route::Prompt,
+        | "edit_queued_run" | "abort" | "continue_run" | "approval_decision" => Route::Prompt,
         "compact_context" => Route::Compaction,
         "get_fusion_settings"
         | "update_fusion_settings"
@@ -107,7 +118,8 @@ pub(crate) fn route(cmd_type: &str) -> Option<Route> {
         "list_providers"
         | "update_builtin_provider"
         | "upsert_custom_provider"
-        | "delete_custom_provider" => Route::Providers,
+        | "delete_custom_provider"
+        | "probe_thinking_level" => Route::Providers,
         // The embedded terminal, driven by a paired desktop. Deliberately not in
         // `needs_content_capability`: a shell is not conversation content, and
         // the preflight would make every keystroke wait on the Agent twice.
@@ -280,6 +292,7 @@ mod tests {
         "abort",
         "apply_task_revision",
         "approval_decision",
+        "cancel_queued_run",
         "compact_context",
         "continue_run",
         "create_task",
@@ -290,6 +303,7 @@ mod tests {
         "delete_workspace",
         "download_cancel",
         "download_prepare",
+        "edit_queued_run",
         "fork_session",
         "generate_session_title",
         "get_fusion_settings",
@@ -309,6 +323,7 @@ mod tests {
         "list_git_commits",
         "list_models",
         "list_providers",
+        "probe_thinking_level",
         "list_session_files",
         "list_sessions",
         "list_settings_models",
@@ -320,6 +335,7 @@ mod tests {
         "list_workspaces",
         "prompt",
         "record_skill_reco",
+        "release_queued_run",
         "remove_task_dep",
         "run_task",
         "set_approval_tier",

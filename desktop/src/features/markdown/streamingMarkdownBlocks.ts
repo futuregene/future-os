@@ -1,6 +1,6 @@
 import type { FutureMarkdownDocument, MarkdownNode } from "@future-os/markdown";
 import type { Root } from "mdast";
-import { parseFutureMarkdown, remarkAutolinkBoundary, remarkCjkEmphasis, remarkLatexMath, remarkMathFence, remarkUnclosedLink } from "@future-os/markdown";
+import { parseFutureMarkdown, remarkAutolinkBoundary, remarkCjkEmphasis, remarkLatexMath, remarkMathFence, remarkUnclosedLink, repairNestedDocumentFence } from "@future-os/markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import remarkParse from "remark-parse";
@@ -14,6 +14,15 @@ import { unified } from "unified";
 // and independent-subtree paths hand this tree straight to `parseFutureMarkdown`,
 // so a repair missing here is a repair missing in the rendered document.
 const streamingMarkdownProcessor = unified().use(remarkParse).use(remarkMath).use(remarkMathFence).use(remarkGfm).use(remarkLatexMath).use(remarkCjkEmphasis).use(remarkAutolinkBoundary).use(remarkUnclosedLink);
+
+/**
+ * Source repair that must precede *every* parse of this processor, exactly as
+ * `parseMdast` applies it. It is length-preserving, so the offsets this tree is
+ * sliced by still index `text` itself.
+ */
+function parseStreamingSource(source: string): Root {
+  return streamingMarkdownProcessor.parse(repairNestedDocumentFence(source)) as Root;
+}
 
 export interface StreamingMarkdownBlock {
   /** Stable source offset used as the renderer key while later text grows. */
@@ -31,7 +40,7 @@ export interface StreamingMarkdownBlock {
 export function projectStreamingMarkdown(text: string, live: boolean): StreamingMarkdownBlock[] {
   if (!text)
     return [];
-  const tree = streamingMarkdownProcessor.parse(text) as Root;
+  const tree = parseStreamingSource(text);
   return projectTree(text, live, tree);
 }
 
@@ -125,7 +134,7 @@ export function createStreamingMarkdownProjector() {
   function project(text: string, live: boolean): StreamingMarkdownBlock[] {
     if (previous && text.startsWith(previous.text)) {
       const fragment = previous.header + text.slice(previous.tailStart);
-      const tree = streamingMarkdownProcessor.parse(fragment) as Root;
+      const tree = parseStreamingSource(fragment);
       const sourceTable = tree.children.length === 1 ? tree.children[0] : undefined;
       if (sourceTable?.type === "table" && sourceTable.children.length > 1) {
         const document = parseFutureMarkdown(fragment, tree, !live);
@@ -156,7 +165,7 @@ export function createStreamingMarkdownProjector() {
       previous = null;
       return [];
     }
-    const tree = streamingMarkdownProcessor.parse(text) as Root;
+    const tree = parseStreamingSource(text);
     const blocks = projectTree(text, live, tree);
     previous = tableCheckpoint(text, blocks, tree);
     return blocks;
@@ -195,7 +204,7 @@ export function splitStreamingMarkdown(raw: string, live: boolean): StreamingMar
   if (!raw)
     return [];
 
-  const tree = streamingMarkdownProcessor.parse(raw) as unknown as StreamingMarkdownRoot;
+  const tree = parseStreamingSource(raw) as unknown as StreamingMarkdownRoot;
   return splitTree(raw, live, tree);
 }
 

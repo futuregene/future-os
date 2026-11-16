@@ -1341,26 +1341,43 @@ mod runtime_tests {
         assert_eq!(reply["success"], true);
         // The presence heartbeat and both catalog snapshots now flow encrypted.
         //
-        // Read the snapshots first. Each is published exactly once, on the tick
-        // that detects it (there is no periodic re-send any more), while the
-        // heartbeat repeats — and the await helpers *discard* what they drain
-        // past. Waiting on the repeating subject first can therefore swallow the
-        // one-shot snapshot and then wait for a second that never comes.
-        await_publish(
-            &mut tap,
+        // Take the change-driven packets — the two catalog snapshots and the
+        // mirrored event — from the endpoint's own record, not from the tap.
+        // Each is published exactly once, on the tick that detects it (there is
+        // no periodic re-send any more), and the tap is a 256-slot ring over a
+        // 10 ms heartbeat: an observer this binary's scheduler did not run for a
+        // couple of seconds loses the packet outright, and a plain
+        // `await_publish` on the tap also *discards* what it drains past — so
+        // whichever snapshot the tick published first is swallowed by the wait
+        // for the other one (the sessions snapshot is skipped for a tick whose
+        // store read failed, so `state.workspaces` can genuinely arrive first).
+        // The record is not lossy: it is scanned from the start, either arrival
+        // order, however late this thread gets there, and the wait ends on the
+        // record or on the bridge going away instead of on the clock.
+        let bridge_gone = || SUPERVISOR.state.lock().unwrap().is_none();
+        nats.await_publish(
             &format!("p.{}.state.sessions", started.pair_id),
+            |_| true,
+            bridge_gone,
             Duration::from_secs(5),
         )
         .await;
-        await_publish(
-            &mut tap,
+        nats.await_publish(
             &format!("p.{}.state.workspaces", started.pair_id),
+            |_| true,
+            bridge_gone,
             Duration::from_secs(5),
         )
         .await;
+        // The heartbeat repeats, so a tap is the right view of it — but a
+        // *fresh* one: what this asserts is that a heartbeat now carries the
+        // catalog revision, and a subscription made at this point starts at the
+        // current tail instead of at pre-catalog heartbeats a kept tap still
+        // holds.
+        let mut presence_tap = nats.tap();
         let mut presence_data = serde_json::Value::Null;
         await_publish_matching(
-            &mut tap,
+            &mut presence_tap,
             &format!("p.{}.presence", started.pair_id),
             Duration::from_secs(5),
             |published| {
@@ -1396,9 +1413,10 @@ mod runtime_tests {
             -1,
             0,
         );
-        await_publish(
-            &mut tap,
+        nats.await_publish(
             &format!("p.{}.evt.sess-live", started.pair_id),
+            |_| true,
+            bridge_gone,
             Duration::from_secs(5),
         )
         .await;
@@ -1422,29 +1440,36 @@ mod runtime_tests {
         let polled = status();
         assert!(polled.pairing_code.is_none());
 
-        // stop() publishes offline presence and clears the state. Match on the
-        // payload: the heartbeat publishes `online: true` to this same subject,
-        // so a subject-only wait can return that heartbeat instead.
+        // stop() publishes offline presence and then clears the state, so this
+        // wait cannot end on "the bridge is gone" — the notice is spawned after
+        // the runtime that owns it has been dropped. Take it from the record
+        // instead, and identify it by what it decrypts to: the heartbeat
+        // publishes `online: true` on this same subject, and by now the tap's
+        // ring also holds heartbeats far enough behind that the replay window
+        // refuses them, so a tap backlog is the one view this assertion must
+        // not use. A packet that does not open is not the notice.
+        let mut offline_data = serde_json::Value::Null;
         stop();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let offline = await_publish(
-                    &mut tap,
-                    &format!("p.{}.presence", started.pair_id),
-                    Duration::from_secs(5),
-                )
-                .await;
-                let data: serde_json::Value = serde_json::from_slice(
-                    &channel.open(&offline.subject, &offline.payload).unwrap(),
-                )
-                .unwrap();
-                if data["online"] == false {
-                    break;
+        nats.await_publish(
+            &format!("p.{}.presence", started.pair_id),
+            |published| {
+                let Ok(bytes) = channel.open(&published.subject, &published.payload) else {
+                    return false;
+                };
+                let Ok(data) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                    return false;
+                };
+                if data["online"] != json!(false) {
+                    return false;
                 }
-            }
-        })
-        .await
-        .expect("authenticated offline notice");
+                offline_data = data;
+                true
+            },
+            || false,
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(offline_data["online"], json!(false));
         assert!(SUPERVISOR.state.lock().unwrap().is_none());
     }
 
@@ -3627,11 +3652,22 @@ mod runtime_tests {
         );
 
         let handle = spawn_presence_heartbeat(client.clone(), pair.clone(), "bridge_delta".into());
-        let mut tap = nats.tap();
         let subject = format!("p.{pair}.state.sessions");
+        // Same rule the window lane states in full: each wait names the packet it
+        // needs, so a repeated packet on the subject cannot answer for a different
+        // change, and the record rather than the tap is what is read.
+        let producer = || handle.is_finished();
+        let waits = Duration::from_secs(5);
 
         // 1. The first packet is the whole catalogue, and it is a delta packet.
-        let baseline = await_publish(&mut tap, &subject, Duration::from_secs(5)).await;
+        let baseline = nats
+            .await_publish(
+                &subject,
+                |published| published.json()["full"] == json!(true),
+                producer,
+                waits,
+            )
+            .await;
         let body = baseline.json();
         let (lane, packets, bytes) = SUPERVISOR.catalogue_traffic(&pair);
         assert_eq!(lane, 1);
@@ -3663,7 +3699,20 @@ mod runtime_tests {
             agent_session_id: Some(born.clone()),
         })
         .unwrap();
-        let added = await_publish(&mut tap, &subject, Duration::from_secs(5)).await;
+        let added = nats
+            .await_publish(
+                &subject,
+                |published| {
+                    let packet = published.json();
+                    packet["full"] == json!(false)
+                        && packet["rows"].as_array().is_some_and(|rows| {
+                            rows.iter().any(|row| row["sessionId"] == json!(born))
+                        })
+                },
+                producer,
+                waits,
+            )
+            .await;
         let body = added.json();
         assert_eq!(body["full"], json!(false));
         let rows = body["rows"].as_array().expect("a delta packet names rows");
@@ -3699,7 +3748,18 @@ mod runtime_tests {
             .find(|thread| thread.agent_session_id.as_deref() == Some(doomed.as_str()))
             .expect("the doomed thread exists");
         crate::store::delete_thread(&thread.id).unwrap();
-        let removed = await_publish(&mut tap, &subject, Duration::from_secs(5)).await;
+        let removed = nats
+            .await_publish(
+                &subject,
+                |published| {
+                    published.json()["removed"]
+                        .as_array()
+                        .is_some_and(|removed| removed.iter().any(|id| *id == json!(doomed)))
+                },
+                producer,
+                waits,
+            )
+            .await;
         let body = removed.json();
         assert_eq!(body["full"], json!(false));
         assert_eq!(body["removed"], json!([doomed]));
@@ -3755,10 +3815,26 @@ mod runtime_tests {
             ],
         );
         let handle = spawn_presence_heartbeat(client.clone(), pair.clone(), "bridge_window".into());
-        let mut tap = nats.tap();
         let subject = format!("p.{pair}.state.sessions");
+        // Every wait here is keyed by what a packet *says*, not by the next
+        // arrival on the subject. This lane publishes one packet per change, so
+        // "the next packet" is not the same question as "the packet that names
+        // this change" — a repeated packet on the same subject answered the
+        // deletion wait with `removed: []` and failed this test on Windows
+        // (run 43502377622). These waits also read the fixture's record instead
+        // of the tap: the record is not lost to a stalled reader and it still
+        // holds a packet published before the wait began.
+        let producer = || handle.is_finished();
+        let waits = Duration::from_secs(5);
 
-        let baseline = await_publish(&mut tap, &subject, Duration::from_secs(5)).await;
+        let baseline = nats
+            .await_publish(
+                &subject,
+                |published| published.json()["full"] == json!(true),
+                producer,
+                waits,
+            )
+            .await;
         let body = baseline.json();
         assert_eq!(body["full"], json!(true));
         let rows = body["rows"].as_array().expect("a delta packet names rows");
@@ -3799,16 +3875,30 @@ mod runtime_tests {
         // a reader that had loaded it (or the pages after it) would otherwise
         // watch it disappear from a list it can no longer re-reach.
         let pushed_out = rows.first().map(|row| row["sessionId"].clone());
+        let born = unique("sesswindowborn");
         crate::store::create_thread(crate::store::CreateThreadInput {
             mode: "chat".to_string(),
             title: Some("Born after the window".to_string()),
             workspace_id: None,
             workspace_path: None,
             workspace_name: None,
-            agent_session_id: Some(unique("sesswindowborn")),
+            agent_session_id: Some(born.clone()),
         })
         .unwrap();
-        let shifted = await_publish(&mut tap, &subject, Duration::from_secs(5)).await;
+        let shifted = nats
+            .await_publish(
+                &subject,
+                |published| {
+                    let packet = published.json();
+                    packet["full"] == json!(false)
+                        && packet["rows"].as_array().is_some_and(|rows| {
+                            rows.iter().any(|row| row["sessionId"] == json!(born))
+                        })
+                },
+                producer,
+                waits,
+            )
+            .await;
         let body = shifted.json();
         assert_eq!(body["full"], json!(false));
         assert_eq!(
@@ -3830,8 +3920,25 @@ mod runtime_tests {
             .into_iter()
             .find(|thread| thread.agent_session_id.as_deref() == Some(doomed.as_str()))
             .expect("the doomed thread exists");
+        // The packet just consumed, published once more — what a repeated tick, a
+        // second publisher generation or a resynchronising loop produces. It is
+        // on the right subject and describes the state *before* the deletion, so
+        // a wait for "the next packet" takes it and reads `removed: []`; the wait
+        // below is for the packet that names the removal and skips it.
+        nats.inject(&subject, None, shifted.payload.clone());
         crate::store::delete_thread(&thread.id).unwrap();
-        let removed = await_publish(&mut tap, &subject, Duration::from_secs(5)).await;
+        let removed = nats
+            .await_publish(
+                &subject,
+                |published| {
+                    published.json()["removed"]
+                        .as_array()
+                        .is_some_and(|removed| removed.iter().any(|id| *id == json!(doomed)))
+                },
+                producer,
+                waits,
+            )
+            .await;
         assert_eq!(
             removed.json()["removed"],
             json!([doomed]),

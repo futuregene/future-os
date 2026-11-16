@@ -2058,6 +2058,32 @@ fn owner_assignment_warning(goal: &Goal, owner: &str) -> Option<String> {
     })
 }
 
+/// The dispatching role token — the only caller allowed to add a todo whose
+/// write scope an unfinished todo already holds, and only with a `--note`
+/// saying why the two tasks share it.
+const SUPERVISOR_ROLE: &str = "supervisor";
+
+/// Human-readable report of authoring-time write-scope conflicts. The refusal
+/// must name the occupying todo (id, status, holder, scope) so the dispatching
+/// side can rename and re-issue; a bare "scope taken" leaves a worker to guess
+/// which of several similar todos it collided with.
+fn render_write_scope_conflicts(
+    conflicts: &[crate::agents::workspace_guard::WriteScopeConflict],
+) -> String {
+    conflicts
+        .iter()
+        .map(|c| {
+            let holder = c.holder.as_deref().unwrap_or("no recorded holder");
+            let text: String = c.todo_text.chars().take(120).collect();
+            format!(
+                "  ⚠ {} [{}] — {} already writes `{}`; requested scope `{}` overlaps it\n    todo text: {}",
+                c.todo_id, c.todo_status, holder, c.held_scope, c.new_scope, text
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut role = "agent".to_string();
@@ -2085,6 +2111,7 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     let mut kill_when: Option<String> = None;
     let mut owner: Option<String> = None;
     let mut parent_id: Option<String> = None;
+    let mut created_by: Option<String> = None;
     reject_unknown_flags(
         args,
         &[
@@ -2094,6 +2121,7 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
             "--cadence",
             "--class",
             "--continuation-policy",
+            "--created-by",
             "--defer-secs",
             "--gate-question",
             "--global-gate",
@@ -2143,6 +2171,8 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
             owner = Some(v);
         } else if k == "--parent" {
             parent_id = Some(v);
+        } else if k == "--created-by" {
+            created_by = Some(v);
         } else if k == "--goal" {
             goal_id = Some(v);
         } else if k == "--role" {
@@ -2184,8 +2214,24 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     if text.trim().is_empty() {
         bail!("--text must be non-empty");
     }
+    if let Some(author) = &created_by {
+        if author.trim().is_empty() || author.trim() == "true" {
+            bail!("--created-by requires an author id (bare `--created-by` reads as `true`)");
+        }
+    }
+    // `supervisor` is the dispatching role. It builds exactly the classes
+    // `agent` builds — dispatch is what it does — and differs in one place
+    // only: it may share a write scope with an unfinished todo when it says
+    // why (`--note`), the single release valve on the write-scope gate below.
+    // Folding it to `agent` here keeps every existing (role, class) row's
+    // semantics untouched.
+    let matrix_role = if role == SUPERVISOR_ROLE {
+        "agent"
+    } else {
+        role.as_str()
+    };
     let valid_combo = matches!(
-        (role.as_str(), class.as_str()),
+        (matrix_role, class.as_str()),
         ("agent", "advancement")
             | ("agent", "scout")
             | ("agent", "monitor")
@@ -2196,7 +2242,7 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     );
     if !valid_combo {
         bail!(
-            "unknown --role/--class combo `{role}`/`{class}` (agent: advancement|scout|monitor|blocker|coordination; user_gate: any role; user: user_action)"
+            "unknown --role/--class combo `{role}`/`{class}` (agent|supervisor: advancement|scout|monitor|blocker|coordination; user_gate: any role; user: user_action)"
         );
     }
     // Exploration node contract: a scout's whole point is a bounded
@@ -2231,6 +2277,30 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     let goal = store
         .replay(&goal_id)?
         .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found"))?;
+    // Write-scope conflict gate, evaluated at AUTHORING time. The claim-time
+    // guard only sees live leases; two todos naming the same directory is a
+    // dispatch bug, and it surfaces to a worker as two todos it cannot tell
+    // apart (2026-11-15: a worker authored a follow-up with the same scope as
+    // an existing todo and claimed the wrong one three times). Refusing here
+    // keeps the collision out of the ledger — the dispatching side renames
+    // and re-issues, which is the only place it can be fixed cleanly.
+    if !write_scopes.is_empty() {
+        let conflicts = crate::agents::workspace_guard::write_scope_conflicts(&goal, &write_scopes);
+        if !conflicts.is_empty() {
+            let supervisor_override =
+                role == SUPERVISOR_ROLE && note.as_deref().is_some_and(|n| !n.trim().is_empty());
+            if !supervisor_override {
+                bail!(
+                    "todo add refused: --required-write-scope collides with an unfinished todo\n{}\n\
+                     Two todos writing one directory race each other, and a worker that authors its own \
+                     follow-up in an occupied scope cannot tell the duplicates apart when it claims. \
+                     Pick a disjoint --required-write-scope, or have the dispatching side re-issue this \
+                     todo as `--role supervisor --note \"<why the scopes must be shared>\"`.",
+                    render_write_scope_conflicts(&conflicts)
+                );
+            }
+        }
+    }
     // Parent links are immutable after creation, so adding a new id cannot
     // form a cycle. Reject broken legacy chains and a fourth level as well.
     let mut ancestor = parent_id.as_deref();
@@ -2248,7 +2318,7 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
         ancestor = parent.parent_id.as_deref();
     }
     let id = gen_id("todo");
-    let mut todo = match (role.as_str(), class.as_str()) {
+    let mut todo = match (matrix_role, class.as_str()) {
         ("agent", "advancement") => Todo::advancement(&id, &text),
         ("agent", "monitor") => Todo::monitor(&id, &text, std::time::Duration::from_secs(60)),
         ("user", "user_gate") | (_, "user_gate") => {
@@ -2385,6 +2455,10 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     if !write_scopes.is_empty() {
         todo.required_write_scope = write_scopes;
     }
+    // Provenance: `--created-by <id>` when given, else the role token this add
+    // ran under. `role` alone cannot carry it (a supervisor-dispatched todo
+    // and a worker's self-authored follow-up are both `TodoRole::Agent`).
+    todo.created_by = Some(created_by.unwrap_or_else(|| role.clone()));
     store.append_todo_change(Event::TodoAdded {
         goal_id: goal_id.clone(),
         todo,

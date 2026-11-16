@@ -1280,3 +1280,54 @@ fn retiring_a_settled_stream_drops_the_journal_and_keeps_the_transcript() {
         .unwrap();
     assert_eq!(text, "retired", "the body is still the text it was");
 }
+
+/// The choice mark the run commit writes onto the terminal entry has to reach
+/// the `agent_end` every client settles from.
+///
+/// Clients that list conversations (the desktop rail, a phone's session list, a
+/// peer's catalogue) badge a conversation whose last finished reply closed with a
+/// `futureos-choice` card. They never read the reply, so this field on the
+/// terminal event is the whole source — one write, one wire shape, and nothing
+/// for a client to derive on its own.
+#[test]
+fn a_terminal_entry_that_offered_a_choice_carries_it_on_agent_end() {
+    let (_root, choosing) = store();
+    choosing
+        .append(
+            "s",
+            vec![json!({"id":"start","type":"run_started","timestamp":"2026-10-26T00:00:00Z","content":{"run_id":"r","epoch":1,"run_sequence":0}})],
+        )
+        .unwrap();
+    choosing
+        .commit_terminal_entries(
+            "s",
+            vec![json!({"id":"end","type":"run_terminal","timestamp":"2026-10-26T00:00:01Z","content":{"run_id":"r","state":"completed","run_tokens":3,"offers_choice":true}})],
+        )
+        .unwrap();
+    let replay = choosing
+        .segmented_replay("s", "r", -1, false, None)
+        .unwrap();
+    let end = replay.events.last().expect("a terminal event");
+    assert_eq!(end.event_type, "agent_end");
+    let data: Value = serde_json::from_str(&end.data).unwrap();
+    assert_eq!(data["offers_choice"], json!(true));
+
+    // A reply that offered nothing says nothing: the field stays absent, which
+    // is how every producer before it read.
+    let (_plain_root, plain) = store();
+    plain
+        .append(
+            "s",
+            vec![json!({"id":"start","type":"run_started","timestamp":"2026-10-26T00:00:02Z","content":{"run_id":"r2","epoch":1,"run_sequence":0}})],
+        )
+        .unwrap();
+    plain
+        .commit_terminal_entries(
+            "s",
+            vec![json!({"id":"end","type":"run_terminal","timestamp":"2026-10-26T00:00:03Z","content":{"run_id":"r2","state":"completed","run_tokens":0}})],
+        )
+        .unwrap();
+    let replay = plain.segmented_replay("s", "r2", -1, false, None).unwrap();
+    let data: Value = serde_json::from_str(&replay.events.last().unwrap().data).unwrap();
+    assert!(data.get("offers_choice").is_none());
+}

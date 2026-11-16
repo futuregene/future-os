@@ -21,6 +21,8 @@
  *   ?theme=light|dark|system     appearance (default light)
  *   ?palette=<palette id>        color theme (default futureos; see
  *                                `lib/theme.ts` THEME_PALETTES)
+ *   ?terminal=reset              forget the terminal panel's layout (dock,
+ *                                size, which conversations had it open)
  */
 const params = new URLSearchParams(location.search);
 
@@ -38,5 +40,13 @@ for (const [key, value] of Object.entries(pins)) {
     continue;
   localStorage.setItem(key, value);
 }
+
+// The terminal panel remembers its dock, its size and which conversations had it
+// open, and the harness keeps one browser profile for a whole run — so a
+// scenario that docks the panel leaves the next one docked, and the same
+// scenario captured twice would start from its own previous result. Clearing the
+// record at boot gives every terminal frame the same starting layout.
+if (params.get("terminal") === "reset")
+  localStorage.removeItem("future.terminal.panel.v1");
 
 export {};

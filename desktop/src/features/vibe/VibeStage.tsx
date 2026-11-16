@@ -1304,9 +1304,12 @@ export function VibeStage({
                                   <RemoteFilesPanel
                                     desktopId={focused.desktopId!}
                                     expanded
+                                    onResizeNudge={() => {}}
+                                    onResizeStart={() => {}}
                                     onToggleExpanded={() => setPanelPreference("hidden")}
                                     peer={peers.find(peer => peer.desktopId === focused.desktopId)}
                                     sessionId={focused.session!.sessionId}
+                                    width={PANEL_WIDTH}
                                   />
                                 )}
                           </div>

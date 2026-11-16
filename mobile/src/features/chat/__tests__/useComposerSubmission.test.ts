@@ -2,6 +2,7 @@ import { createElement, useLayoutEffect } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { useComposerSubmission } from "../composer/useComposerSubmission";
 import { showToast } from "../utils";
+import { choiceAnswerFromCard, pickChoiceOption } from "../choiceAnswer";
 
 const mockRemoteControls = {
   capabilities: new Set<string>(), desktopReadable: false, desktopSettingsRevision: 0,
@@ -30,6 +31,8 @@ function optionsFor(): Options {
     t: ((key: string) => key) as Options["t"],
     message: "please search the web for this thing",
     attachments: [],
+    choice: null,
+    clearChoice: jest.fn(),
     restoring: false,
     setMessage: jest.fn(),
     send: jest.fn(async () => true),
@@ -181,4 +184,91 @@ test("connection cancellation releases the install spinner and keeps the draft",
   expect(api.installingSkill).toBe(false);
   expect(options.send).not.toHaveBeenCalled();
   expect(options.setMessage).not.toHaveBeenCalled();
+});
+
+/**
+ * The answer a `futureos-choice` card produced is sent as text the model can read
+ * (§7), and it counts as something to send on its own — the phone's field cannot
+ * hold it, so neither the gate here nor the composer's `canSend` may ignore it.
+ */
+const CARD_ANSWER = pickChoiceOption(choiceAnswerFromCard({
+  mode: "single",
+  options: [{ id: "forest", label: "重画森林图" }, { id: "flow", label: "补一张实验流程图" }],
+  title: "接下来做哪一件？",
+  type: "choiceCard",
+}), "forest");
+
+test("an answer with nothing typed is a send, and the send takes the answer with it", async () => {
+  const options = { ...optionsFor(), message: "", attachments: [], choice: CARD_ANSWER, clearChoice: jest.fn() };
+  render(options);
+  let delivered!: Promise<boolean>;
+  act(() => { delivered = api.sendFromComposer(); });
+  await act(async () => { expect(await delivered).toBe(true); });
+  expect(options.send).toHaveBeenCalledWith("[接下来做哪一件？ → 重画森林图]");
+  expect(options.clearChoice).toHaveBeenCalledTimes(1);
+  // The draft's text is untouched: the reader typed nothing.
+  expect(options.setMessage).not.toHaveBeenCalled();
+});
+
+test("an answer plus a note sends both, answer first", async () => {
+  const options = {
+    ...optionsFor(),
+    message: "  顺便把图例挪到右下  ",
+    choice: CARD_ANSWER,
+    clearChoice: jest.fn(),
+  };
+  render(options);
+  await act(async () => { await api.sendFromComposer(); });
+  expect(options.send).toHaveBeenCalledWith("[接下来做哪一件？ → 重画森林图] 顺便把图例挪到右下");
+  expect(options.clearChoice).toHaveBeenCalledTimes(1);
+});
+
+test("a refused send keeps the answer, so it can be sent again", async () => {
+  const options = {
+    ...optionsFor(),
+    message: "",
+    choice: CARD_ANSWER,
+    clearChoice: jest.fn(),
+    send: jest.fn(async () => false),
+  };
+  render(options);
+  let delivered!: Promise<boolean>;
+  act(() => { delivered = api.sendFromComposer(); });
+  await act(async () => { expect(await delivered).toBe(false); });
+  expect(options.send).toHaveBeenCalledTimes(1);
+  expect(options.clearChoice).not.toHaveBeenCalled();
+});
+
+test("an empty draft with no answer sends nothing", async () => {
+  const options = { ...optionsFor(), message: "", attachments: [], choice: null };
+  render(options);
+  let delivered!: Promise<boolean>;
+  act(() => { delivered = api.sendFromComposer(); });
+  await act(async () => { expect(await delivered).toBe(false); });
+  expect(options.send).not.toHaveBeenCalled();
+});
+
+test("an answer with nothing ticked is no answer: no tag, and nothing to send alone", async () => {
+  // Unticking a multi-choice answer's last row leaves a question with no pick.
+  // §7's sentence is `[question → answer]`, so it would send `[接下来做哪一件？ → ]`
+  // — a question the model reads as an answer. The draft already drops it
+  // (`answerOrNull`); this is the same rule at the last gate every send passes.
+  const unpicked = { ...CARD_ANSWER, mode: "multi" as const, selectedIds: [] as string[] };
+
+  const alone = { ...optionsFor(), message: "", attachments: [], choice: unpicked };
+  render(alone);
+  let delivered!: Promise<boolean>;
+  act(() => { delivered = api.sendFromComposer(); });
+  await act(async () => { expect(await delivered).toBe(false); });
+  // Nothing to send on its own, and above all no sentence carrying `→ ]`.
+  expect(alone.send).not.toHaveBeenCalled();
+
+  // With a note beside it the note goes out alone — the reader's own words are
+  // theirs, and dropping the answer must not take them.
+  const withNote = { ...optionsFor(), message: "顺便把图例挪到右下", choice: unpicked };
+  render(withNote);
+  await act(async () => { await api.sendFromComposer(); });
+  expect(withNote.send).toHaveBeenLastCalledWith("顺便把图例挪到右下");
+  for (const call of (withNote.send as jest.Mock).mock.calls)
+    expect(String(call[0])).not.toContain("→");
 });

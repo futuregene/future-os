@@ -74,6 +74,50 @@ impl Manager {
         })
     }
 
+    /// Replace the words the durable acceptance kept for one queued run.
+    ///
+    /// An edit keeps the acceptance itself: the same run id, sequence, client
+    /// request id and fingerprint, because the request id still names the
+    /// submission whose input was accepted here. Only the words restart recovery
+    /// would replay change, so a corrected message is not restored to the version
+    /// the reader already fixed.
+    ///
+    /// Answers how many acceptances it rewrote. Zero is not an error: a run that
+    /// had already started (or whose receipt a restart has already closed) has no
+    /// `queued` row left to describe, and the caller then has nothing to keep.
+    pub(crate) fn replace_queued_receipt_input(
+        &self,
+        session: &str,
+        run: &str,
+        user: &SessionEntry,
+    ) -> Result<usize> {
+        self.prepare_session(session)?;
+        let store = self.storage()?;
+        let mut prepared = super::content::entries::prepare(
+            store,
+            session,
+            vec![serde_json::from_str(&Self::serialize_entry(user)?)?],
+        )?;
+        let user = prepared
+            .take()
+            .pop()
+            .expect("one prepared user")
+            .to_string();
+        let (session, run) = (session.to_owned(), run.to_owned());
+        self.storage()?.db.call_as("receipt", move |db| {
+            let tx = super::database::begin_write_transaction(db)?;
+            let run = super::identity::BoundIdentity::run(&tx, &session, &run)?;
+            let session = super::identity::BoundIdentity::session(&tx, &session)?;
+            let rewritten = tx.execute(
+                "UPDATE queued_run_receipts SET user_entry_json=?3
+                 WHERE session_id=?1 AND run_id=?2 AND status='queued'",
+                params![session, run, user],
+            )?;
+            tx.commit()?;
+            Ok(rewritten)
+        })
+    }
+
     /// Record the cancellation of ONE queued run.
     ///
     /// This is a wrapper over [`Self::cancel_queued_receipts`]; a caller that
@@ -290,6 +334,80 @@ mod tests {
         assert_eq!(
             again.load(&session.id).unwrap().entries.len(),
             entries.len()
+        );
+    }
+
+    #[test]
+    fn an_edited_queued_input_is_restored_with_its_corrected_words() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("sessions");
+        let manager = Manager::new(directory.clone());
+        let mut session = super::super::Session::new(".", "mock");
+        session
+            .entries
+            .push(SessionEntry::new_user("user", json!("original")));
+        manager.save(&session).unwrap();
+        let mut user = SessionEntry::new_user("user", json!("the first draft 中文"));
+        user.meta = Some(json!({"run_id":"run-queued"}));
+        manager
+            .record_queued_receipt(
+                &session.id,
+                "run-queued",
+                &crate::runtime::RunAck::queued("run-queued".into(), 2, 1),
+                "fingerprint",
+                &json!({"message":"the first draft"}),
+                &user,
+            )
+            .unwrap();
+
+        let mut corrected = SessionEntry::new_user("user", json!("the corrected draft"));
+        corrected.meta = Some(json!({"run_id":"run-queued"}));
+        assert_eq!(
+            manager
+                .replace_queued_receipt_input(&session.id, "run-queued", &corrected)
+                .unwrap(),
+            1
+        );
+        // The acceptance is the one that was accepted: same identity, so a client
+        // retrying its request id is still answered as that acceptance.
+        let receipt = manager
+            .queued_receipt(&session.id, "run-queued")
+            .unwrap()
+            .expect("the acceptance survives an edit");
+        assert_eq!(receipt.0, "run-queued");
+        assert_eq!(receipt.1, 2);
+        assert_eq!(receipt.2, "fingerprint");
+        // A row the queue no longer holds has nothing to correct.
+        assert_eq!(
+            manager
+                .replace_queued_receipt_input(&session.id, "run-ghost", &corrected)
+                .unwrap(),
+            0
+        );
+
+        // Restart recovery replays the corrected words, not the ones the reader
+        // already fixed away. (Opening the store *is* the recovery: a restart
+        // closes the queue, so the receipt is already in the transcript.)
+        drop(manager);
+        let reopened = Manager::new(directory);
+        let entries = reopened.load(&session.id).unwrap().entries;
+        let recovered = entries
+            .iter()
+            .filter(|entry| entry.entry_type == "user")
+            .filter_map(|entry| entry.content.as_ref().map(|content| content.to_string()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(recovered.contains("the corrected draft"), "{recovered}");
+        assert!(!recovered.contains("the first draft"), "{recovered}");
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.entry_type == "run_terminal"
+                    && entry
+                        .content
+                        .as_ref()
+                        .is_some_and(|content| content["run_id"] == "run-queued")),
+            "the corrected prompt is still preserved as an interrupted input"
         );
     }
 

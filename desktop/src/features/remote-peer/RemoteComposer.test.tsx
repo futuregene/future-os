@@ -1,3 +1,5 @@
+import type { ChoiceAnswer } from "../agent/composer/choiceAnswer";
+import type { RemoteComposerHandle } from "./RemoteComposer";
 // @vitest-environment jsdom
 import type { RemotePeer } from "./remotePeerClient";
 import type { RemoteQueueRow } from "./remoteQueue";
@@ -60,6 +62,7 @@ const refreshQueue = vi.fn<() => void>();
 const forgetQueued = vi.fn<(runId: string) => void>();
 const cancelQueued = vi.fn<(desktopId: string, sessionId: string, runId: string) => Promise<void>>();
 const releaseQueued = vi.fn<(desktopId: string, sessionId: string, runId: string) => Promise<void>>();
+const editQueued = vi.fn<(desktopId: string, sessionId: string, runId: string, message: string) => Promise<void>>();
 vi.mock("./remoteQueue", () => ({
   // The value the real module defines (`remoteQueue.test.ts` holds it to this).
   QUEUED_SEND_POLICY: "enqueue_coalescing",
@@ -70,6 +73,7 @@ vi.mock("./remoteQueue", () => ({
     ["merged", "cancelled", "superseded", "session_deleted"].includes(reason) ? reason : "other",
   useRemoteQueue: () => ({ forget: forgetQueued, notice: queueNotice, refresh: refreshQueue, rows: queueRows }),
   cancelRemoteQueuedRun: (...args: Parameters<typeof cancelQueued>) => cancelQueued(...args),
+  editRemoteQueuedRun: (...args: Parameters<typeof editQueued>) => editQueued(...args),
   releaseRemoteQueuedRun: (...args: Parameters<typeof releaseQueued>) => releaseQueued(...args),
 }));
 
@@ -136,9 +140,11 @@ async function mount(props: {
   conversations?: typeof conversations;
   desktopId?: string;
   onCompact?: () => void;
+  onChoiceChange?: (answer: ChoiceAnswer | null) => void;
   onCreated?: (sessionId: string) => void;
   onSent?: () => void;
   peer?: RemotePeer;
+  ref?: React.Ref<RemoteComposerHandle>;
   sessionId?: string;
   streaming?: boolean;
   workspaceId?: string | null;
@@ -155,10 +161,12 @@ async function mount(props: {
     canCompact: props.canCompact ?? false,
     conversations: props.conversations ?? [],
     desktopId: props.desktopId ?? "desktop_a",
+    onChoiceChange: props.onChoiceChange,
     onCompact: props.onCompact,
     onCreated,
     onSent,
     peer: props.peer ?? peer,
+    ref: props.ref,
     sessionId: props.sessionId ?? "sess_1",
     streaming: props.streaming,
     workspaceId: props.workspaceId ?? null,
@@ -245,6 +253,7 @@ beforeEach(() => {
   forgetQueued.mockReset();
   cancelQueued.mockReset().mockResolvedValue(undefined);
   releaseQueued.mockReset().mockResolvedValue(undefined);
+  editQueued.mockReset().mockResolvedValue(undefined);
 });
 
 it("prompts the conversation it belongs to and clears only on success", async () => {
@@ -1709,7 +1718,7 @@ describe("a send made behind a running reply", () => {
     await view.unmount();
   });
 
-  it("edits a waiting message by cancelling it and sending the new text", async () => {
+  it("edits a waiting message where it waits, without re-sending it", async () => {
     queueRows = [hostRow()];
     const view = await mount({ streaming: true });
     await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
@@ -1722,12 +1731,12 @@ describe("a send made behind a running reply", () => {
     await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-save]")!.click());
     await settle();
 
-    // The host has no "change this row" command: an edit is a removal and a
-    // re-send, and the re-send names the same queueing policy as any other.
-    expect(cancelQueued).toHaveBeenCalledWith("desktop_a", "sess_1", "run_9");
-    expect(prompt).toHaveBeenCalledTimes(1);
-    expect(prompt.mock.calls[0]![2]).toBe("fixed text");
-    expect(prompt.mock.calls[0]![7]).toBe("enqueue_coalescing");
+    // Trimmed, addressed by the row, and NOT a re-send: a re-send would have
+    // entered the queue at the back, after messages the reader wrote later.
+    expect(editQueued).toHaveBeenCalledWith("desktop_a", "sess_1", "run_9", "fixed text");
+    expect(cancelQueued).not.toHaveBeenCalled();
+    expect(prompt).not.toHaveBeenCalled();
+    expect(refreshQueue).toHaveBeenCalled();
     await view.unmount();
   });
 
@@ -1750,18 +1759,21 @@ describe("a send made behind a running reply", () => {
   });
 
   /**
-   * A message with photos, whose typo is being fixed.
+   * A host too old for the in-place edit still gets the correction.
    *
-   * The files were invisible to this client and were dropped by the re-send, so
-   * "fix a typo" quietly removed the pictures. The host's path is only readable
-   * there, so the bytes come down before the row is cancelled and go back up as
-   * the upload the new prompt names.
+   * It answers "Unsupported command", and the only edit that version knows is a
+   * removal and a re-send — which does put the corrected message at the back, so
+   * it is the fallback for an older machine, never the rule. The row's files
+   * travel with that re-send: the host's path is only readable there, so the bytes
+   * come down before the row is cancelled and go back up as the upload the new
+   * prompt names.
    */
-  it("keeps a waiting message's files when its text is edited", async () => {
+  it("falls back to a re-send on a host that cannot edit in place, keeping its files", async () => {
     queueRows = [hostRow({
       attachments: [{ kind: "image", name: "shot.png", path: "/Users/x/shot.png", size: 4096 }],
       text: "look at this",
     })];
+    editQueued.mockRejectedValueOnce(new Error("Unsupported command: edit_queued_run"));
     upload.mockResolvedValue({ uploadId: "upload_kept", name: "shot.png", contentHash: "hash" });
     const view = await mount({ streaming: true });
     await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
@@ -1786,6 +1798,8 @@ describe("a send made behind a running reply", () => {
     // The cancel happens after the files are here, not before.
     expect(previewRemote.mock.invocationCallOrder[0]!)
       .toBeLessThan(cancelQueued.mock.invocationCallOrder[0]!);
+    expect(cancelQueued).toHaveBeenCalledWith("desktop_a", "sess_1", "run_9");
+    expect(prompt.mock.calls[0]![2]).toBe("look at this instead");
     expect(prompt.mock.calls[0]![3]).toEqual(["upload_kept"]);
     await view.unmount();
   });
@@ -1795,6 +1809,7 @@ describe("a send made behind a running reply", () => {
       attachments: [{ kind: "image", name: "shot.png", path: "/Users/x/shot.png", size: 4096 }],
       text: "look at this",
     })];
+    editQueued.mockRejectedValueOnce(new Error("Unsupported command: edit_queued_run"));
     previewRemote.mockRejectedValue(new Error("peer_not_connected"));
     const view = await mount({ streaming: true });
     await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
@@ -1930,10 +1945,13 @@ describe("a send made behind a running reply", () => {
 
   /**
    * The row is gone on the host once the cancel lands. A refusal of the re-send
-   * must not take the reader's corrected words with it.
+   * must not take the reader's corrected words with it. (The re-send is the
+   * fallback for a host too old to edit in place, so that host answers
+   * "Unsupported command" first.)
    */
   it("keeps the corrected text when the host refuses the re-send", async () => {
     queueRows = [hostRow()];
+    editQueued.mockRejectedValueOnce(new Error("Unsupported command: edit_queued_run"));
     prompt.mockRejectedValue(new Error("prompt_too_large"));
     const view = await mount({ streaming: true });
     try {
@@ -1993,6 +2011,166 @@ describe("an archived conversation", () => {
     await view.press("Enter");
     await settle();
     expect(prompt).not.toHaveBeenCalled();
+    await view.unmount();
+  });
+});
+
+/**
+ * The answer to a reply's `futureos-choice` card, on the surface that has no room
+ * for it inside the field.
+ *
+ * A remote composer is a plain `textarea`: it cannot hold an atomic pill the way
+ * the local editor does, and nothing in the field proves an answer exists. So the
+ * answer lives beside the field, and **every test that decides whether there is
+ * anything to send has to count it** — otherwise the chip is drawn while Send
+ * stays grey, which is exactly the defect v1 shipped (design §5.2.1, §5.4).
+ */
+describe("a choice card's answer", () => {
+  const question = {
+    mode: "single" as const,
+    options: [
+      { id: "forest", label: "重画森林图" },
+      { id: "flow", label: "补一张流程图" },
+    ],
+    title: "接下来做哪一件事？",
+  };
+
+  it("is sendable with nothing typed, and goes out ahead of the words", async () => {
+    const onChoiceChange = vi.fn<(answer: ChoiceAnswer | null) => void>();
+    const handle: { current: RemoteComposerHandle | null } = { current: null };
+    const view = await mount({ onChoiceChange, ref: handle });
+
+    // Nothing picked yet: requirement (a), the button must stay grey.
+    expect(view.button("Send")?.disabled).toBe(true);
+
+    await act(async () => handle.current!.selectChoice("forest", question));
+    await settle();
+
+    // Requirement (d): an answer alone is a message.
+    expect(view.button("Send")?.disabled).toBe(false);
+    expect(onChoiceChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ selectedIds: ["forest"], title: question.title }),
+    );
+
+    await act(async () => view.button("Send")!.click());
+    await settle();
+
+    expect(prompt).toHaveBeenCalledWith(
+      "desktop_a",
+      "sess_1",
+      "[接下来做哪一件事？ → 重画森林图]",
+      [],
+      null,
+      { modelId: null, thinkingLevel: null },
+      expect.any(String),
+    );
+    // Sent with the words above, so it leaves the draft: a chip that outlived its
+    // message would make the next send repeat the answer.
+    expect(view.container.querySelector("[data-choice-chip]")).toBeNull();
+    expect(onChoiceChange).toHaveBeenLastCalledWith(null);
+    await view.unmount();
+  });
+
+  it("keeps the typed words, with the answer leading them", async () => {
+    const handle: { current: RemoteComposerHandle | null } = { current: null };
+    const view = await mount({ ref: handle });
+
+    await act(async () => handle.current!.selectChoice("flow", question));
+    await settle();
+    await view.type("顺便把图注也改成中文");
+    await act(async () => view.button("Send")!.click());
+    await settle();
+
+    // Requirement (c): the answer and the words travel together, answer first,
+    // matching the local editor's document order so both surfaces send the same
+    // bytes.
+    expect(prompt).toHaveBeenCalledWith(
+      "desktop_a",
+      "sess_1",
+      "[接下来做哪一件事？ → 补一张流程图] 顺便把图注也改成中文",
+      [],
+      null,
+      { modelId: null, thinkingLevel: null },
+      expect.any(String),
+    );
+    await view.unmount();
+  });
+
+  it("draws no chip, and offers nothing to send, when the last ticked row is unticked", async () => {
+    // The chip answers *what was picked* (§5.7). A multi-choice answer whose rows
+    // are all unticked answers nothing, so the chip goes rather than shrinking to
+    // the card's question — and Send must go grey with it, or the row would send
+    // `[question → ]`.
+    const multi = {
+      mode: "multi" as const,
+      options: question.options,
+      title: question.title,
+    };
+    const onChoiceChange = vi.fn<(answer: ChoiceAnswer | null) => void>();
+    const handle: { current: RemoteComposerHandle | null } = { current: null };
+    const view = await mount({ onChoiceChange, ref: handle });
+
+    await act(async () => handle.current!.selectChoice("forest", multi));
+    await settle();
+    await act(async () => handle.current!.selectChoice("flow", multi));
+    await settle();
+    // Two ticks, in pick order: the format multi already had.
+    expect(view.container.querySelector("[data-choice-chip]")!.textContent).toContain("重画森林图、补一张流程图");
+
+    await act(async () => handle.current!.selectChoice("forest", multi));
+    await settle();
+    await act(async () => handle.current!.selectChoice("flow", multi));
+    await settle();
+
+    expect(view.container.querySelector("[data-choice-chip]")).toBeNull();
+    expect(view.container.querySelector("[data-choice-row]")).toBeNull();
+    expect(onChoiceChange).toHaveBeenLastCalledWith(null);
+    expect(view.button("Send")?.disabled).toBe(true);
+    await view.unmount();
+  });
+
+  it("can be changed or dropped from the chip, without touching the words", async () => {
+    const onChoiceChange = vi.fn<(answer: ChoiceAnswer | null) => void>();
+    const handle: { current: RemoteComposerHandle | null } = { current: null };
+    const view = await mount({ onChoiceChange, ref: handle });
+
+    await act(async () => handle.current!.selectChoice("forest", question));
+    await settle();
+    await view.type("keep me");
+    await settle();
+
+    const change = view.container.querySelector("[data-choice-action=change]")!;
+    expect(change.getAttribute("aria-label")).toContain("接下来做哪一件事？");
+    await act(async () => (change as HTMLElement).click());
+    await settle();
+
+    // The chip's pencil re-offers the card's other rows, and the card is not
+    // asked again: the answer already carries its question and every option.
+    // `SelectMenu` portals its panel, so the rows are found in the document.
+    const rowFor = (label: string) => [...document.querySelectorAll("button")]
+      .find(node => node.textContent?.trim() === label);
+    expect(rowFor("补一张流程图")).toBeTruthy();
+    await act(async () => rowFor("补一张流程图")!.click());
+    await settle();
+
+    expect(onChoiceChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ selectedIds: ["flow"] }),
+    );
+    // Requirement (b): changing the answer never disturbs the typed words.
+    expect(view.input.value).toBe("keep me");
+
+    const remove = view.container.querySelector("[data-choice-action=remove]")!;
+    await act(async () => (remove as HTMLElement).click());
+    await settle();
+
+    // Dropping the answer keeps the words: they were the reader's, and the chip
+    // was never part of them.
+    expect(view.input.value).toBe("keep me");
+    expect(view.container.querySelector("[data-choice-chip]")).toBeNull();
+    // With nothing typed *and* no answer, Send goes grey again — requirement (a).
+    await view.type("");
+    await settle();
+    expect(view.button("Send")?.disabled).toBe(true);
     await view.unmount();
   });
 });

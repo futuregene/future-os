@@ -39,8 +39,16 @@ pub fn unique(tag: &str) -> String {
 
 /// Initialize the GUI store (SQLite schema + dirs) under the current
 /// (HomeGuard-redirected) HOME.
+///
+/// Through the shared retrying initializer rather than
+/// `store::initialize_app_store` directly: this fixture publishes a HOME and
+/// leaves the store to the test body, so the same writer that makes
+/// `TestHome`'s initialization flaky (`SQLITE_BUSY`, "database is locked") can
+/// answer this one, and a bounded retry there must not turn into a suite-wide
+/// failure here.
 pub fn init_store() {
-    crate::store::initialize_app_store().expect("store init under test HOME");
+    crate::test_support::agent::initialize_store_retrying_busy()
+        .expect("store init under test HOME");
 }
 
 /// A string compression cannot shrink.
@@ -1363,6 +1371,34 @@ impl PublishLog {
             .find(|published| matches(published))
             .cloned()
     }
+
+    /// The newest packet recorded on `subject`, for the failure message: a wait
+    /// that timed out reads very differently when the subject was publishing
+    /// something the caller did not ask for.
+    fn last_on(&self, subject: &str) -> Option<Published> {
+        self.entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .rev()
+            .find(|published| published.subject == subject)
+            .cloned()
+    }
+}
+
+/// A recorded payload as a one-line description, bounded so a timeout message
+/// stays readable even for a packet that is the whole catalogue.
+fn describe(published: &Published) -> String {
+    const LIMIT: usize = 240;
+    let plain = future_remote_protocol::json::plain_json_bytes(&published.payload)
+        .unwrap_or(std::borrow::Cow::Borrowed(published.payload.as_slice()));
+    let text = String::from_utf8_lossy(&plain);
+    let mut chars = text.chars();
+    let mut described: String = chars.by_ref().take(LIMIT).collect();
+    if chars.next().is_some() {
+        described.push('…');
+    }
+    described
 }
 
 impl FakeNats {
@@ -1446,6 +1482,13 @@ impl FakeNats {
     /// out a budget. `hang_guard` is not a budget for the work — it only stops a
     /// wedged fixture from hanging the whole suite, and it fires only when
     /// neither the record nor the producer has moved.
+    ///
+    /// `accepts` is what makes this a *condition* wait rather than "the next
+    /// packet": the lane publishes one packet per change, so the packet that
+    /// arrives next is not necessarily one describing the change the caller asks
+    /// about — a repeated packet (a second publisher generation, a restarted
+    /// loop's resync, the same change detected twice) sits on the same subject
+    /// and says something else. Match on the body, not on the subject.
     pub async fn await_publish<F, G>(
         &self,
         subject: &str,
@@ -1476,7 +1519,14 @@ impl FakeNats {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             assert!(
                 !remaining.is_zero(),
-                "no publish on {subject} within the {hang_guard:?} hang guard, and the producer is still running"
+                "no publish on {subject} matched within the {hang_guard:?} hang guard, and the producer is still running; {}",
+                match self.publishes.last_on(subject) {
+                    Some(published) => format!(
+                        "the newest packet on that subject was {}",
+                        describe(&published)
+                    ),
+                    None => "no packet on that subject was recorded at all".to_string(),
+                }
             );
             // Woken by the record; the short cap is only how often the
             // producer's own completion is re-read, never how long the work has.
@@ -2844,6 +2894,83 @@ mod tests {
             )
             .await;
         assert_eq!(first.payload, b"0".to_vec());
+    }
+
+    /// A wait is answered by the packet that *says* what was asked for, never by
+    /// "the next packet on this subject".
+    ///
+    /// This is the shape that failed the window lane on Windows (run
+    /// 43502377622): the catalog lane publishes one packet per change, so a
+    /// repeated packet — the same change detected twice, a restarted loop's
+    /// resync, a second publisher generation — sits on the subject and describes
+    /// the state *before* the change the test is waiting for. The tap-based wait
+    /// takes it and reads `removed: []` where a removal was awaited; the wait
+    /// below is keyed by the removal and skips it.
+    #[tokio::test]
+    async fn await_publish_answers_the_waited_state_not_the_next_packet() {
+        let nats = FakeNats::start().await;
+        let mut tap = nats.tap();
+        nats.inject(
+            "p.x.state.sessions",
+            None,
+            br#"{"full":false,"rows":[{"sessionId":"born"}],"removed":[]}"#.to_vec(),
+        );
+        nats.inject(
+            "p.x.state.sessions",
+            None,
+            br#"{"full":false,"rows":[],"removed":["born"]}"#.to_vec(),
+        );
+
+        // The tap-based wait answers with the next packet on the subject,
+        // whatever it says: here, the state before the removal.
+        let next = await_publish(
+            &mut tap,
+            "p.x.state.sessions",
+            std::time::Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(
+            next.json()["removed"],
+            serde_json::json!([]),
+            "the tap hands back the next packet, not the answer to the question"
+        );
+
+        // Keyed by the answer instead: the removal, with the stale packet
+        // skipped rather than taken.
+        let removed = nats
+            .await_publish(
+                "p.x.state.sessions",
+                |published| {
+                    published.json()["removed"]
+                        .as_array()
+                        .is_some_and(|removed| removed.iter().any(|id| id == "born"))
+                },
+                || false,
+                std::time::Duration::from_secs(1),
+            )
+            .await;
+        assert_eq!(removed.json()["removed"], serde_json::json!(["born"]));
+    }
+
+    /// A wait that never sees its packet names what the subject *did* publish,
+    /// so the failure reads as "the lane said something else" instead of a bare
+    /// timeout.
+    #[tokio::test]
+    #[should_panic(expected = "the newest packet on that subject was")]
+    async fn await_publish_names_the_packet_that_did_arrive() {
+        let nats = FakeNats::start().await;
+        nats.inject(
+            "p.x.state.sessions",
+            None,
+            br#"{"full":false,"removed":[]}"#.to_vec(),
+        );
+        nats.await_publish(
+            "p.x.state.sessions",
+            |published| published.json()["removed"] == serde_json::json!(["gone"]),
+            || false,
+            std::time::Duration::from_millis(30),
+        )
+        .await;
     }
 
     /// A producer that dies before publishing is named as such, rather than

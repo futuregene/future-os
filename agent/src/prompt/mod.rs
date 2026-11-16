@@ -3,6 +3,9 @@
 mod project_context;
 pub(crate) use project_context::load_project_context;
 
+mod choice_card;
+pub use choice_card::reply_offers_choice;
+
 use crate::skills::Skill;
 use crate::types::AgentTool;
 
@@ -412,6 +415,13 @@ fn build_identity_section(opts: &PromptOptions) -> String {
     parts.push(execution);
     parts.push(include_str!("approval.md").trim().to_owned());
     parts.push(include_str!("communication.md").trim().to_owned());
+    // Right after "how to talk to the user", because a choice card is one of the
+    // shapes a reply ends in: the model writes the closing question there and
+    // nowhere else. Unconditional — the fence is plain markdown, so a client
+    // that cannot draw the card (TUI, IM bots) still renders the options as the
+    // code block it already is, and withholding it from such a session would
+    // remove the only thing that tells the model the fence exists.
+    parts.push(include_str!("choice.md").trim().to_owned());
     if !opts.prompt_guidelines.is_empty() {
         let guidelines = dedup(opts.prompt_guidelines.clone())
             .into_iter()
@@ -1155,6 +1165,7 @@ mod tests {
             "# Tool Execution",
             "# Approval Feedback",
             "# User Communication",
+            "# Offering Choices",
         ] {
             assert!(!prompt.contains(heading));
         }
@@ -1174,19 +1185,102 @@ mod tests {
         let execution = prompt.find("# Tool Execution").unwrap();
         let approval = prompt.find("# Approval Feedback").unwrap();
         let communication = prompt.find("# User Communication").unwrap();
+        let choice = prompt.find("# Offering Choices").unwrap();
         let additional = prompt.find("# Additional Guidelines").unwrap();
         let project = prompt.find("# Project Context").unwrap();
         let append = prompt.find("APPEND_INSTRUCTION").unwrap();
         let environment = prompt.find("# Environment").unwrap();
-        assert!(execution < approval && approval < communication);
-        assert!(communication < additional && additional < project);
+        assert!(execution < approval && approval < communication && communication < choice);
+        assert!(choice < additional && additional < project);
         assert!(project < append && append < environment);
         assert_eq!(prompt.matches(&rule).count(), 1);
         assert!(prompt[execution..approval].contains(&rule));
         assert!(!prompt[approval..communication].contains(&rule));
-        assert!(!prompt[communication..additional].contains(&rule));
+        assert!(!prompt[communication..choice].contains(&rule));
+        assert!(!prompt[choice..additional].contains(&rule));
         assert!(prompt[additional..project].contains("ADDITIONAL_INSTRUCTION"));
         assert!(prompt[project..append].contains("PROJECT_INSTRUCTION"));
+    }
+
+    /// A choice card only exists if the model knows the fence does. Without this
+    /// section the parser, the desktop card and the answer pill were all
+    /// unreachable product code: nothing in the prompt said `futureos-choice`
+    /// existed, so no reply ever carried one.
+    #[test]
+    fn prompt_teaches_the_choice_card_fence() {
+        let prompt = build_prompt(&PromptOptions {
+            tools: vec![crate::tools::read_tool(), crate::tools::shell_tool()],
+            ..Default::default()
+        });
+
+        // The section, and the fence language spelled exactly as the parser
+        // matches it (`CHOICE_FENCE` in packages/markdown) — a renamed fence is
+        // a plain code block, so a paraphrase here silently disables the card.
+        assert!(prompt.contains("# Offering Choices"));
+        // The opening fence line exactly — `contains("futureos-choice")` alone
+        // would also match a near miss such as `futureos-choices`, which the
+        // parser does not know and would draw as a plain code block.
+        assert!(prompt.contains("\n```futureos-choice\n"));
+        assert_eq!(prompt.matches("# Offering Choices").count(), 1);
+
+        // The option line's shape: repeated `option:` rows of
+        // `<id> | <label> | <note>`, in a real three-field example.
+        let option = "option: forest | 重画森林图 | 按 Dreher 2025 的样本量重算两篇的置信区间";
+        assert!(prompt.contains(option));
+        assert!(prompt.contains("`option: <id> | <label> | <note>`"));
+
+        // The parser's tolerances, stated where the model writes them: a card
+        // outside 2–4 rows is dropped whole, so the reply loses its question.
+        assert!(prompt.contains("choices are 2–4"));
+        assert!(prompt.contains("fewer than 2 or more than 4 is not drawn as a card"));
+        // An id the parser rejects (`CHOICE_OPTION_ID`) takes its row with it.
+        assert!(prompt.contains("[a-z0-9-]` only (no spaces)"));
+        // `mode` is optional and defaults to a single pick, and the one thing the
+        // model has to get right is when several can be done at once. Three
+        // wordings have been tried: "unless several can be done in one go" (read
+        // as "usually single"), a yes/no question about the *reader* (read as a
+        // hypothetical), and the test on the rows with `single` as the exception.
+        //
+        // Now the default is reversed on purpose: `multi` is what a card starts
+        // from, and `single` is the fallback for rows that fill one slot. That
+        // only holds up if the rows are independent, so the prompt says that in
+        // the same breath — overlapping rows turn "tick as many as you want"
+        // into "tick two and ask for the same work twice".
+        assert!(prompt.contains("start from `multi`, fall back only when the rows compete"));
+        assert!(prompt.contains("→ `mode: multi`"));
+        assert!(prompt.contains("`single` is what an omitted line means"));
+        assert!(prompt.contains("the rows must be independent"));
+        assert!(prompt.contains("is one job written twice"));
+        assert!(prompt.contains("There is no third mode"));
+        // A worked multi card, not just the word: the only example used to be a
+        // single one, and few-shot beat the rule. It comes first now — the card
+        // the model is being nudged toward is the one it sees first.
+        assert!(prompt.contains("```futureos-choice\ntitle: 这一批里先做哪些？\nmode: multi"));
+        assert!(
+            prompt.find("title: 这一批里先做哪些？").unwrap()
+                < prompt.find("title: 接下来做哪一件？").unwrap(),
+            "the multi example leads"
+        );
+
+        // Where it goes: the fence is the reply's closing question, not a block
+        // mid-answer, and a second card would be an unanswerable choice.
+        assert!(prompt.contains("put it last and"));
+        assert!(prompt.contains("never two cards in one reply"));
+
+        // The answer comes back as text with `→` (the only fixed marker), and it
+        // is a decision: asking the same question again wastes the pick.
+        assert!(prompt.contains("[这一批里先做哪些？ → 图注改成中文、图例挪到右下]"));
+        assert!(prompt.contains("Treat it as a decision already made"));
+        assert!(prompt.contains("do not ask again"));
+
+        // A client that cannot draw the card shows the fence as what it is, so
+        // the model is told the degradation exists instead of being held back
+        // from cards in a TUI session.
+        assert!(prompt.contains("show it as a code block"));
+
+        // Read on every turn, so it stays short: the budget is lines of prompt,
+        // not lines of documentation.
+        assert!(include_str!("choice.md").lines().count() <= 40);
     }
 
     #[test]

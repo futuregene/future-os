@@ -31,6 +31,30 @@ export { compactionTerminalOf, COMPACTION_TERMINAL_TIMEOUT_MS } from "./timeline
 const TIMELINE_LOAD_TIMEOUT_MS = 15_000;
 const TIMELINE_LOAD_CEILING_MS = 45_000;
 
+/**
+ * How many extra backward pages one open may spend completing its window.
+ *
+ * A tail page comes back `trimmed` when one exchange is bigger than the reply
+ * budget, and the window then backfills until it holds
+ * `HISTORY_PAGE_USER_EXCHANGES` exchanges. A conversation that is streaming has
+ * a turn in flight, and one turn is one exchange: the pages above its tail hold
+ * that same turn's steps, so no number of them brings the count to three. The
+ * loop used to walk the whole run looking for an exchange that is not there —
+ * measured 2026-11-13 on session `8ac7afd8` (one run at turn 325 owning 1,176 of
+ * the conversation's 1,678 display rows, 70%): every page of it is one turn.
+ *
+ * Two, and not one: an exchange spans its user row and every step after it, so
+ * the first page alone cannot separate "this turn continues above" from "the
+ * previous turn starts above" — a page whose oldest row is a step may still be
+ * followed by the user row that opens it. The second page is what shows that
+ * the page above is *still* inside the same turn. And not four: past that point
+ * the window is already short by exactly the run's own length, every further
+ * page is a round trip the reader waits on before the transcript is drawn, and
+ * the rows above stay reachable by paging up. The cap is the bound; the notice
+ * below is what keeps it from being a silent shortfall.
+ */
+const HISTORY_TAIL_BACKFILL_MAX_PAGES = 2;
+
 interface TimelineControllerOptions {
   clientRef: MutableRefObject<RemoteClient | null>;
   selectedRef: MutableRefObject<string>;
@@ -96,6 +120,23 @@ export function useTimelineController({
   >({});
   const olderFailureRef = useRef<Record<string, boolean>>({});
   const [olderFailure, setOlderFailure] = useState<Record<string, boolean>>({});
+  /**
+   * The last open stopped backfilling before the window held its exchange
+   * count. Kept per conversation and read back through
+   * `historyBackfillTruncated`, which also stops reporting it once the window
+   * does hold the count (the reader paged up far enough).
+   */
+  const backfillTruncatedRef = useRef<Record<string, boolean>>({});
+  const [backfillTruncated, setBackfillTruncated] = useState<Record<string, boolean>>({});
+  const markBackfillTruncated = useCallback((sessionId: string, truncated: boolean) => {
+    if (truncated === (backfillTruncatedRef.current[sessionId] ?? false)) return;
+    backfillTruncatedRef.current = { ...backfillTruncatedRef.current, [sessionId]: truncated };
+    setBackfillTruncated((previous) =>
+      (previous[sessionId] ?? false) === truncated
+        ? previous
+        : { ...previous, [sessionId]: truncated },
+    );
+  }, []);
   const olderHiddenRef = useRef<PendingOlderPage | null>(null);
   // Mirrored so the foreground-recommit listener subscribes only while a page
   // is actually parked; the ref alone would not re-render to arm it.
@@ -260,12 +301,20 @@ export function useTimelineController({
       const countUsers = (rows: HistoryEntry[]) =>
         rows.reduce((n, row) => n + (row.role === "user" ? 1 : 0), 0);
       let tailTrimmed = response.trimmed === true;
+      // Why the backfill stopped short, so the screen can say it instead of
+      // drawing a window with fewer exchanges and no word about it.
+      let tailBackfillPages = 0;
+      let tailBackfillTruncated = false;
       while (
         tailTrimmed &&
         hasMore &&
         countUsers(entries) < HISTORY_PAGE_USER_EXCHANGES &&
         nextBefore > 0
       ) {
+        if (tailBackfillPages >= HISTORY_TAIL_BACKFILL_MAX_PAGES) {
+          tailBackfillTruncated = true;
+          break;
+        }
         const older = await readHistoryPage(client, sessionId, nextBefore, isCurrent);
         const olderEntries = older.entries ?? [];
         const start = older.nextOffset ?? 0;
@@ -275,12 +324,26 @@ export function useTimelineController({
         ) {
           throw new Error("history_tail_backfill_cursor_invalid");
         }
+        const addedUsers = countUsers(olderEntries);
         entries = [...olderEntries, ...entries];
         nextBefore = start;
         hasMore = older.hasMore === true && start > 0;
         tailTrimmed = older.trimmed === true;
+        tailBackfillPages += 1;
         if (olderEntries.length === 0) break;
+        if (addedUsers === 0 && countUsers(entries) > 0) {
+          tailBackfillTruncated = hasMore;
+          break;
+        }
+        // A page that adds no user row is the inside of one turn: a single
+        // run is a single exchange, so no number of further pages completes
+        // the window — they only march through that run, one round trip each,
+        // before the transcript can be drawn. Stop once the window already
+        // holds a turn, because that is what the statement needs to draw; a
+        // window with no user row at all is left to the page cap, so this
+        // guard can never be the thing that leaves a transcript blank.
       }
+      markBackfillTruncated(sessionId, tailBackfillTruncated);
       const endOffset = nextBefore + entries.length;
       // A newer durable window supersedes any page still waiting to commit.
       if (olderRequestRef.current?.sessionId === sessionId)
@@ -361,7 +424,7 @@ export function useTimelineController({
         },
       };
     },
-    [clientRef, selectedRef],
+    [clientRef, markBackfillTruncated, selectedRef],
   );
 
   /** Mark a page failure (or clear it) for the failure surface. */
@@ -775,6 +838,25 @@ export function useTimelineController({
   const selectedHistoryPaging = selectedSessionId
     ? historyPaging[selectedSessionId]
     : undefined;
+  /**
+   * The open stopped backfilling before the window held its exchange count, and
+   * that window still does not hold it.
+   *
+   * Derived rather than stored so it stops being true the moment the reader
+   * pages up far enough: the notice describes the window on screen, not the
+   * decision that built it.
+   */
+  const historyBackfillTruncated = useMemo(() => {
+    if (!selectedSessionId || backfillTruncated[selectedSessionId] !== true) return false;
+    let users = 0;
+    for (let index = timeline.items.length - 1; index >= 0; index -= 1) {
+      const item = timeline.items[index];
+      if (item?.kind !== "message" || item.role !== "user") continue;
+      users += 1;
+      if (users >= HISTORY_PAGE_USER_EXCHANGES) return false;
+    }
+    return true;
+  }, [backfillTruncated, selectedSessionId, timeline.items]);
 
   useEffect(() => {
     if (!timelinePending || !selectedSessionId || timelineError) return;
@@ -881,6 +963,8 @@ export function useTimelineController({
     olderHistoryFailed: selectedSessionId
       ? (olderFailure[selectedSessionId] ?? false)
       : false,
+    /** The open's backfill stopped short of the window's exchange count. */
+    historyBackfillTruncated,
     loadOlderTimeline,
     reloadTimeline,
     prepareTimelineOpen,

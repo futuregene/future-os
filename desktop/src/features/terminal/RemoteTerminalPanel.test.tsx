@@ -31,14 +31,23 @@ const request = hoisted.request;
 
 function controller(): TerminalPanelController {
   return {
-    open: true,
+    canDockRight: true,
+    dock: "bottom",
+    enabled: true,
     height: 300,
     maxHeight: 600,
-    enabled: true,
-    toggle: vi.fn(),
-    setOpen: vi.fn(),
+    maximized: false,
+    maxWidth: 900,
+    open: true,
+    setDock: vi.fn(),
     setHeight: vi.fn(),
+    setOpen: vi.fn(),
+    setWidth: vi.fn(),
     shortcut: "Ctrl+J",
+    toggle: vi.fn(),
+    toggleDock: vi.fn(),
+    toggleMaximized: vi.fn(),
+    width: 420,
   };
 }
 
@@ -102,6 +111,44 @@ describe("remoteTerminalPanel", () => {
     // The panel says whose machine it is, so a shell is never mistaken for this
     // one's.
     expect(host.textContent).toContain("Mini");
+
+    await act(async () => root.unmount());
+  });
+
+  it("offers the same dock and maximize controls on that machine's shells", async () => {
+    request.mockImplementation(async (_desktopId: string, command: { type: string }) => {
+      if (command.type === "terminal_list")
+        return { terminals: [running("term-b1", "Build")] };
+      return {};
+    });
+
+    const panel = controller();
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(createElement(RemoteTerminalPanel, {
+        desktopId: "desk-b",
+        sessionId: "sess-1",
+        hostLabel: "Mini",
+        panel,
+      }));
+    });
+    await act(flush);
+
+    // The layout controls are the panel's, not the shell transport's: a paired
+    // machine's terminal docks and maximizes exactly like this one's.
+    const maximize = host.querySelector<HTMLButtonElement>("button[aria-label=\"Maximize terminal\"]");
+    const toRight = host.querySelector<HTMLButtonElement>("button[aria-label=\"Dock terminal to the right\"]");
+    expect(maximize).not.toBeNull();
+    expect(toRight).not.toBeNull();
+
+    await act(async () => {
+      maximize!.click();
+      toRight!.click();
+    });
+    expect(panel.toggleMaximized).toHaveBeenCalledTimes(1);
+    expect(panel.toggleDock).toHaveBeenCalledTimes(1);
+    // Nothing about the layout went to the host: it is this window's decision.
+    expect(request.mock.calls.some(call => call[1].type !== "terminal_list")).toBe(false);
 
     await act(async () => root.unmount());
   });

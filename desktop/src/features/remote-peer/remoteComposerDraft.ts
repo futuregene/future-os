@@ -1,3 +1,4 @@
+import type { ChoiceAnswer } from "../agent/composer/choiceAnswer";
 import type { RemoteUpload } from "./remotePeerClient";
 import type { RemoteReferenceMap } from "./remoteSessionReference";
 
@@ -25,6 +26,14 @@ export interface RemoteComposerDraft {
   uploads?: RemoteUpload[];
   /** The `#` tokens in `text` and the conversation each one stands for. */
   references?: RemoteReferenceMap;
+  /**
+   * The answer to this conversation's closing `futureos-choice` card.
+   *
+   * In the draft and not only in view state, because the answer is part of the
+   * unsent message: switching conversations and coming back must find the chip
+   * still there, exactly as the text is (design §2, §5.4).
+   */
+  choice?: ChoiceAnswer;
 }
 
 const DRAFT_VERSION = 1;
@@ -51,8 +60,13 @@ export function loadRemoteComposerDraft(desktopId: string, sessionId: string): R
 }
 
 /**
- * Persist a remote conversation's draft. An empty draft (no text and no
- * uploads) clears the slot instead of writing a blank entry.
+ * Persist a remote conversation's draft. An empty draft (no text, no uploads and
+ * no answer) clears the slot instead of writing a blank entry.
+ *
+ * The answer counts as content: a draft that is only an answer is exactly what a
+ * reader has after picking an option and not typing anything, and dropping it
+ * here would lose the pick on the next visit while the chip was still the reason
+ * the send button was live.
  */
 export function saveRemoteComposerDraft(
   desktopId: string,
@@ -60,7 +74,8 @@ export function saveRemoteComposerDraft(
   draft: Omit<RemoteComposerDraft, "version">,
 ): void {
   const hasUploads = (draft.uploads?.length ?? 0) > 0;
-  if (!hasUploads && (draft.text ?? "").trim().length === 0) {
+  const hasChoice = Boolean(draft.choice);
+  if (!hasUploads && !hasChoice && (draft.text ?? "").trim().length === 0) {
     clearRemoteComposerDraft(desktopId, sessionId);
     return;
   }

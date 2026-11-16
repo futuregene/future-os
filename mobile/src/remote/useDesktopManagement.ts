@@ -16,6 +16,8 @@ import type {
   ModelsData,
   ProvidersView,
   RemoteCommand,
+  ThinkingLevelProbeInput,
+  ThinkingLevelProbeOutcome,
 } from "./types";
 
 /** Commands act on one connected desktop. No local preference storage or offline
@@ -71,6 +73,17 @@ export function useDesktopManagement(clientRef: RefObject<RemoteClient | null>) 
       request<ProvidersView>({ type: "upsert_custom_provider", provider }, true),
     deleteCustomProvider: (providerId: string) =>
       request<ProvidersView>({ type: "delete_custom_provider", providerId }, true),
+    /**
+     * Ask the host whether one thinking level works for the provider being
+     * edited there.
+     *
+     * One level per call, on the settings lane: the host waits for the
+     * provider's first stream frame, which outlives the ordinary command
+     * budget. `ok: false` is an answer about the level; a rejection here means
+     * the call itself failed, and the caller stops detecting.
+     */
+    probeThinkingLevel: (probe: ThinkingLevelProbeInput) =>
+      request<ThinkingLevelProbeOutcome>({ type: "probe_thinking_level", probe }, true),
     // Tasks: the phone manages them and reads run ledgers; execution stays on
     // the paired desktop's tick loop.
     listTasks: async () => (await request<{ tasks: RemoteTaskRow[] }>({ type: "list_tasks" })).tasks,
