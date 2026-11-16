@@ -203,7 +203,7 @@ pub fn list_runs_in_window(
         "SELECT {columns} FROM runs WHERE thread_id=?1
         AND (?2 IS NULL OR coalesce(ended_at,updated_at)>=?2)
         AND (?3 IS NULL OR coalesce(started_at,created_at)<=?3)
-        ORDER BY created_at DESC"
+        ORDER BY created_at DESC, rowid DESC"
     ))?;
     let rows = stmt.query_map(params![thread_id, after, before], run_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -253,7 +253,7 @@ pub fn find_run_by_trigger_message_id(
                  FROM runs
                  WHERE trigger_message_id = ?1
                    AND remote_accepted_at IS NOT NULL
-                 ORDER BY created_at DESC, id DESC
+                 ORDER BY created_at DESC, rowid DESC
                  LIMIT 1"
         ),
         params![trigger_message_id],
@@ -305,9 +305,17 @@ pub fn latest_run(thread_id: &str) -> Result<Option<RunRecord>, crate::Error> {
 /// same question for one thread and for a page of threads; letting them order
 /// differently made the sidebar and the open view disagree about which run was
 /// live.
+///
+/// The tie-break is `rowid`, not `id`: `created_at` is a millisecond stamp, so a
+/// burst lands two rows on the same value (a prompt accepted while a reply
+/// streams, a phone and the desktop writing together), and `id` is a v4 UUID —
+/// ordering by it made "the latest run" a coin flip, which is how a catalogue
+/// snapshot came to badge a conversation with the *older* run's "offered a
+/// choice". `runs` is an ordinary rowid table (`id` is `TEXT PRIMARY KEY`), so
+/// every insert takes `max(rowid) + 1` and `rowid DESC` is insertion order.
 fn latest_run_ordering() -> String {
     format!(
-        "CASE WHEN status IN ({EXECUTING_RUN_STATUSES_SQL}) THEN 0 ELSE 1 END, created_at DESC, id DESC"
+        "CASE WHEN status IN ({EXECUTING_RUN_STATUSES_SQL}) THEN 0 ELSE 1 END, created_at DESC, rowid DESC"
     )
 }
 
@@ -2456,6 +2464,94 @@ mod tests {
             latest_run("t1").expect("latest").expect("a run").id,
             "queued_new",
             "an idle conversation's newest row is still the one to show"
+        );
+    }
+
+    /// Two rows written in the same millisecond still have one definite newest
+    /// row, and it is the row written last.
+    ///
+    /// `create_run` stamps `created_at` from the wall clock, so a burst lands
+    /// two rows on the same millisecond: a prompt accepted while a reply streams
+    /// (the Agent queues it, the desktop records it immediately), a paired
+    /// phone writing while the desktop does, a goal worker steering its own
+    /// thread. Ties were broken by `id DESC` — a v4 UUID — so "the
+    /// conversation's latest run" was a coin flip. It is not theoretical:
+    /// `remote_host::catalog`'s offers-choice snapshot read the older of two
+    /// same-millisecond runs and reported the wrong badge.
+    ///
+    /// Insertion order is the only monotonic fact the `runs` table carries
+    /// (`id` is `TEXT PRIMARY KEY`, `created_at` is a millisecond stamp), and
+    /// SQLite keeps it in the implicit `rowid`: the table is not `WITHOUT
+    /// ROWID`, so every insert takes `max(rowid) + 1`.
+    #[test]
+    fn same_millisecond_runs_have_a_stable_newest() {
+        let (_home, conn) = guarded_conn("runs_same_millisecond");
+        conn.execute_batch(
+            "INSERT INTO workspaces (
+                 id, name, kind, path, cleanup_status, created_at, updated_at
+             ) VALUES ('ws1', 'WS', 'temporary', '/tmp/ws1', 'active', 1, 1);
+             INSERT INTO threads (
+                 id, workspace_id, mode, title, created_at, updated_at
+             ) VALUES ('t1', 'ws1', 'chat', 'T1', 1, 1);
+             -- Written oldest first; the ids sort the other way round on
+             -- purpose, which is what two v4 UUIDs do by chance half the time.
+             INSERT INTO runs (id, thread_id, status, created_at, updated_at)
+             VALUES ('run_c', 't1', 'completed', 500, 500),
+                    ('run_b', 't1', 'completed', 500, 500),
+                    ('run_a', 't1', 'completed', 500, 500);",
+        )
+        .expect("seed");
+        drop(conn);
+
+        assert_eq!(
+            latest_run("t1").expect("latest").expect("a run").id,
+            "run_a",
+            "same-millisecond runs are ordered by insertion, not by a random id"
+        );
+        assert_eq!(
+            latest_run_infos(&["t1".to_string()]).expect("infos")[0].run_id,
+            "run_a",
+            "the sidebar/catalogue read answers like the open view"
+        );
+        assert_eq!(
+            list_runs("t1")
+                .expect("list")
+                .first()
+                .map(|r| r.id.as_str()),
+            Some("run_a"),
+            "history lists are newest-first the same way"
+        );
+
+        // Through the real entry point, where the ids are v4 UUIDs and only the
+        // clock is under test: cost the whole test nothing to prove the two
+        // rows share a millisecond and the later call still wins.
+        let first = create_run(CreateRunInput {
+            id: None,
+            thread_id: "t1".to_string(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("create the older run");
+        let second = create_run(CreateRunInput {
+            id: None,
+            thread_id: "t1".to_string(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("create the newer run");
+        let conn = connect().expect("connect");
+        conn.execute(
+            "UPDATE runs SET created_at = 900 WHERE id IN (?1, ?2)",
+            params![first.id, second.id],
+        )
+        .expect("force a shared millisecond");
+        drop(conn);
+        assert_eq!(
+            latest_run("t1").expect("latest").expect("a run").id,
+            second.id,
+            "the run created last is the newest even when the clock cannot say so"
         );
     }
 
