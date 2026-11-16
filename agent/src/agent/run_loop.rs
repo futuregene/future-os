@@ -599,7 +599,14 @@ impl Loop {
                     } else {
                         future_fusion::FIRST_ACTION_REMINDER
                     };
-                    message.content.push(ContentBlock::text(reminder));
+                    // Keep adjacent text in one part, matching the supplied
+                    // task's wire representation across compatible providers.
+                    if let Some(ContentBlock::Text { text }) = message.content.last_mut() {
+                        text.push_str("\n\n");
+                        text.push_str(reminder);
+                    } else {
+                        message.content.push(ContentBlock::text(reminder));
+                    }
                 }
             }
 
