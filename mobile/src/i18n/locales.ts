@@ -927,6 +927,8 @@ export const resources = {
           "This file type isn't available on mobile. View it in the desktop app.",
         noHandler:
           "No app available to this runtime can open this file type. You can still save or share it.",
+        exportCacheFull:
+          "Recent shares are still using this phone's temporary space. Close the other app and try again in a few minutes.",
         imagesUnsupported:
           "The current model doesn't support images and may not read this image correctly.",
         markdownTruncated:
@@ -2129,6 +2131,7 @@ export const resources = {
         shareUnavailable: "当前设备无法打开分享面板。",
         unsupportedType: "手机端暂不支持查看此类文件，请在桌面端查看。",
         noHandler: "当前运行环境没有可用的应用打开此类文件，仍可保存或分享。",
+        exportCacheFull: "最近分享的文件仍占用手机临时空间，请关闭其他应用后过几分钟再试。",
         imagesUnsupported: "当前模型不支持图片，可能无法正确理解图片内容。",
         markdownTruncated: "仅渲染前 2 MB 内容，完整文件请在桌面端查看。",
         textTruncated: "仅显示前 2 MB 内容，完整文件请在桌面端查看。",
