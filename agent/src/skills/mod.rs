@@ -29,10 +29,22 @@ pub const AGENTS_SKILLS_DIR: &str = "~/.agents/skills/";
 /// DiscoverSkills finds all skills in the given directories.
 /// Earlier directories take priority; duplicates (by name) are skipped.
 pub fn discover_skills(dirs: &[String]) -> Result<Vec<Skill>> {
+    discover_skills_in(&resolve_skill_dirs(dirs))
+}
+
+/// The configured spellings resolved against the *current* environment: `~`
+/// goes through `$HOME`/`FUTURE_HOME`, so the same strings name different
+/// directories in a process whose home can be redirected (a second instance, a
+/// test fixture). Everything below uses these resolved roots as the identity of
+/// a discovery, which is also what makes the cache correct.
+fn resolve_skill_dirs(dirs: &[String]) -> Vec<PathBuf> {
+    dirs.iter().map(|dir| expand_tilde(dir)).collect()
+}
+
+fn discover_skills_in(roots: &[PathBuf]) -> Result<Vec<Skill>> {
     let mut skills = vec![];
     let mut seen = std::collections::HashSet::new();
-    for dir in dirs {
-        let path = expand_tilde(dir);
+    for path in roots {
         if !path.exists() {
             continue;
         }
@@ -107,9 +119,18 @@ pub(crate) fn expand_tilde(dir: &str) -> PathBuf {
 /// How long the cached skills list stays fresh before a refresh is triggered.
 const SKILLS_CACHE_TTL_SECS: u64 = 60;
 
+/// A cached discovery, together with the resolved roots it was built from.
+/// The roots are part of the identity: `~` resolves through `$HOME` /
+/// `FUTURE_HOME`, so an entry built under one home must never answer a read
+/// made under another.
+struct SkillsCacheEntry {
+    refreshed_at: std::time::Instant,
+    roots: Vec<PathBuf>,
+    skills: Vec<Skill>,
+}
+
 /// Global cached skills list, refreshed lazily on access.
-static SKILLS_CACHE: std::sync::RwLock<Option<(std::time::Instant, Vec<Skill>)>> =
-    std::sync::RwLock::new(None);
+static SKILLS_CACHE: std::sync::RwLock<Option<SkillsCacheEntry>> = std::sync::RwLock::new(None);
 
 /// Serialises cache refreshes so only one thread does the I/O work.
 static REFRESH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -119,38 +140,51 @@ pub(crate) fn hold_refresh_lock_for_test() -> std::sync::MutexGuard<'static, ()>
     REFRESH_LOCK.lock().unwrap()
 }
 
+/// The cached skills for `roots`, if the entry was built from those same roots
+/// and is still within its TTL.
+fn fresh_cached_skills(roots: &[PathBuf]) -> Option<Vec<Skill>> {
+    let cache = SKILLS_CACHE.read().unwrap();
+    match cache.as_ref() {
+        Some(entry)
+            if entry.roots == roots
+                && entry.refreshed_at.elapsed().as_secs() < SKILLS_CACHE_TTL_SECS =>
+        {
+            Some(entry.skills.clone())
+        }
+        _ => None,
+    }
+}
+
 /// Returns a cached skills list, refreshing when older than
 /// SKILLS_CACHE_TTL_SECS. Fast path is lock-free for concurrent readers;
 /// slow path serialises file I/O with a dedicated refresh mutex so multiple
 /// concurrent prompts never block each other on the write lock.
 ///
-/// All call sites are expected to pass `global_skill_dirs()`; the cache is
-/// global and does NOT key on `dirs`, so mixing different dir lists across
-/// call sites would return stale results for the minority list.
+/// The cache keys on the *resolved* directories: call sites pass
+/// `global_skill_dirs()`, whose `~` prefix resolves through `$HOME` and
+/// `FUTURE_HOME`. Two different homes therefore have two different keys, and a
+/// process whose home moved (a second instance, a redirected test home) never
+/// serves skills discovered under the previous one.
 pub fn discover_skills_cached(dirs: &[String]) -> Vec<Skill> {
+    let roots = resolve_skill_dirs(dirs);
     // Fast path: read lock, check TTL — multiple readers OK.
-    {
-        let cache = SKILLS_CACHE.read().unwrap();
-        if let Some((ref ts, ref skills)) = *cache {
-            if ts.elapsed().as_secs() < SKILLS_CACHE_TTL_SECS {
-                return skills.clone();
-            }
-        }
+    if let Some(skills) = fresh_cached_skills(&roots) {
+        return skills;
     }
     // Slow path: one thread refreshes; others wait on the refresh lock
     // then double-check (the first thread may have already refreshed).
     let _refresh = REFRESH_LOCK.lock().unwrap();
-    {
-        let cache = SKILLS_CACHE.read().unwrap();
-        if let Some((ref ts, ref skills)) = *cache {
-            if ts.elapsed().as_secs() < SKILLS_CACHE_TTL_SECS {
-                return skills.clone();
-            }
-        }
+    if let Some(skills) = fresh_cached_skills(&roots) {
+        return skills;
     }
-    // File I/O outside any lock — only one thread reaches here.
-    let skills = discover_skills(dirs).unwrap_or_default();
-    *SKILLS_CACHE.write().unwrap() = Some((std::time::Instant::now(), skills.clone()));
+    // File I/O outside any lock — only one thread reaches here, and it reads
+    // exactly the roots it has just keyed on.
+    let skills = discover_skills_in(&roots).unwrap_or_default();
+    *SKILLS_CACHE.write().unwrap() = Some(SkillsCacheEntry {
+        refreshed_at: std::time::Instant::now(),
+        roots,
+        skills: skills.clone(),
+    });
     skills
 }
 
@@ -958,9 +992,12 @@ This is a test skill body.
         let stale_ts = std::time::Instant::now()
             .checked_sub(std::time::Duration::from_secs(SKILLS_CACHE_TTL_SECS + 1))
             .expect("uptime exceeds skills cache TTL");
-        *SKILLS_CACHE.write().unwrap() = Some((
-            stale_ts,
-            vec![Skill {
+        *SKILLS_CACHE.write().unwrap() = Some(SkillsCacheEntry {
+            refreshed_at: stale_ts,
+            // Same key as the read below (an empty dir list resolves to no
+            // roots), so only the TTL can reject this entry.
+            roots: resolve_skill_dirs(&[]),
+            skills: vec![Skill {
                 name: "stale-marker".to_string(),
                 description: String::new(),
                 name_zh: None,
@@ -969,7 +1006,7 @@ This is a test skill body.
                 location: String::new(),
                 disable_model_invocation: false,
             }],
-        ));
+        });
 
         // Empty dir list: a refresh returns no skills, proving the stale
         // marker was NOT served from the fast path.
@@ -989,9 +1026,12 @@ This is a test skill body.
         let worker = std::thread::spawn(|| discover_skills_cached(&[]));
         // Give the worker a moment to reach the refresh-lock wait.
         std::thread::sleep(std::time::Duration::from_millis(100));
-        *SKILLS_CACHE.write().unwrap() = Some((
-            std::time::Instant::now(),
-            vec![Skill {
+        *SKILLS_CACHE.write().unwrap() = Some(SkillsCacheEntry {
+            refreshed_at: std::time::Instant::now(),
+            // The key the blocked worker is waiting on, so its post-lock
+            // double-check can serve this entry.
+            roots: resolve_skill_dirs(&[]),
+            skills: vec![Skill {
                 name: "double-check-marker".to_string(),
                 description: String::new(),
                 name_zh: None,
@@ -1000,12 +1040,49 @@ This is a test skill body.
                 location: String::new(),
                 disable_model_invocation: false,
             }],
-        ));
+        });
         drop(refresh_guard);
 
         let skills = worker.join().unwrap();
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "double-check-marker");
+        invalidate_skills_cache();
+    }
+
+    /// The cache is process-global while `$HOME` (and with it `FUTURE_HOME`) is
+    /// process-wide mutable state: tests redirect it to install fake skills.
+    /// A cached entry therefore may only answer reads for the *same* resolved
+    /// skill roots — serving one home's skills under another home's prompt is
+    /// what made a run's system prompt disagree with the one rebuilt right
+    /// after it (`# Available Skills` present in one, gone in the other).
+    #[test]
+    fn cached_discovery_does_not_serve_another_home() {
+        let _guard = skills_cache_test_lock();
+        invalidate_skills_cache();
+        let dirs = global_skill_dirs();
+
+        let home_with_skill = crate::test_support::TestHome::new();
+        let skill_dir = home_with_skill.path().join(".agents/skills/pinned-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: pinned-skill\ndescription: home fixture\n---\n# body\n",
+        )
+        .unwrap();
+        let found = discover_skills_cached(&dirs);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].name, "pinned-skill");
+        drop(home_with_skill);
+
+        // A home with no skills must not inherit the previous home's entry just
+        // because it is still inside the TTL.
+        let home_without_skills = crate::test_support::TestHome::new();
+        let found = discover_skills_cached(&dirs);
+        assert!(
+            found.is_empty(),
+            "cached discovery leaked another home's skills: {found:?}"
+        );
+        drop(home_without_skills);
         invalidate_skills_cache();
     }
 }

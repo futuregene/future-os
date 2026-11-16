@@ -1,4 +1,4 @@
-import type { GitGraphListing } from "./types";
+import type { GitCommitDetail, GitGraphListing } from "./types";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -16,9 +16,9 @@ import { GitHistoryPanel } from "./GitHistoryPanel";
  */
 
 const listLocal = vi.fn<(path: string) => Promise<GitGraphListing>>();
-const getLocal = vi.fn<(path: string, sha: string) => Promise<{ patch: string; short: string; truncated: boolean }>>();
+const getLocal = vi.fn<(path: string, sha: string) => Promise<GitCommitDetail>>();
 const listRemote = vi.fn<(desktopId: string, sessionId: string) => Promise<GitGraphListing>>();
-const getRemote = vi.fn<(desktopId: string, sessionId: string, sha: string) => Promise<{ patch: string; short: string; truncated: boolean }>>();
+const getRemote = vi.fn<(desktopId: string, sessionId: string, sha: string) => Promise<GitCommitDetail>>();
 
 vi.mock("../../integrations/tauri/invoke", () => ({
   invokeCommand: (command: string, args: Record<string, unknown>) => {
@@ -85,11 +85,22 @@ beforeEach(() => {
   listLocal.mockReset().mockResolvedValue(listing());
   getLocal.mockReset().mockResolvedValue({
     patch: "commit aaa111\nAuthor: Rin\n\n    third\n\ndiff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,2 +1,3 @@\n context\n+added line\n-removed line\n",
+    refs: {
+      branches: ["main"],
+      head: true,
+      remotes: ["origin/main"],
+      tags: ["v1.0", "v1.1"],
+    },
     short: "aaa111",
     truncated: false,
   });
   listRemote.mockReset().mockResolvedValue(listing());
-  getRemote.mockReset().mockResolvedValue({ patch: "", short: "aaa111", truncated: false });
+  getRemote.mockReset().mockResolvedValue({
+    patch: "",
+    refs: { branches: [], head: false, remotes: [], tags: [] },
+    short: "aaa111",
+    truncated: false,
+  });
 });
 
 /** The commit rows, in order. */
@@ -128,19 +139,78 @@ it("draws lanes as strokes rather than glyphs", async () => {
   }
 });
 
-it("gives each lane its own colour, and says which lane a row is on", async () => {
+it("puts the commit's dot on the subject's line, not in the gap between the lines", async () => {
   await mount({ kind: "local", path: "/Users/reader/repo" });
-  // The row's left stripe carries its lane colour, which is what makes a page
-  // scannable without reading the picture.
-  const stripes = [...container.querySelectorAll<HTMLElement>("[data-lane-stripe]")]
-    .map((stripe) => {
-      return stripe.style.backgroundColor;
+  const dot = rows()[0]!.querySelector("circle")!;
+  // The row stacks a subject and a metadata line, so the row's middle is the gap
+  // between them: a dot there sits beside neither. It belongs on the first line,
+  // which with a 17px subject line and a 15px metadata line in a 34px row puts
+  // its centre at (34 - 32)/2 + 8.5 = 9.5.
+  expect(dot.getAttribute("cy")).toBe("9.5");
+  // A connection runs on the dot's own axis, so a merge's elbow leaves the dot's
+  // height rather than the row's middle.
+  const elbow = rows()[1]!.querySelector("path")!.getAttribute("d")!;
+  expect(elbow).toContain(" 9.5 ");
+});
+
+it("says when, then the hash, then who made it", async () => {
+  await mount({ kind: "local", path: "/Users/reader/repo" });
+  // One line, three fields: the date first ("is this the change I am after?"),
+  // then the hash you copy out, then the author.
+  expect(rows()[0]!.textContent).toContain("2 hours ago · aaa111 · Rin");
+});
+
+it("lists every ref on the open commit, one kind per row", async () => {
+  await mount({ kind: "local", path: "/Users/reader/repo" });
+  await act(async () => {
+    rows()[0]!.click();
+  });
+  await flush();
+
+  // The row's decoration is one line and drops local branches once a commit
+  // carries several; the detail asks for the whole set instead.
+  const refs = container.querySelector("[data-git-refs]");
+  expect(refs).not.toBeNull();
+  const text = refs!.textContent ?? "";
+  for (const name of ["main", "origin/main", "v1.0", "v1.1"]) {
+    expect(text).toContain(name);
+  }
+  expect(text).toContain("Branches");
+  expect(text).toContain("Remote");
+  expect(text).toContain("Tags");
+  // HEAD points at this commit, so the checkout is named too.
+  expect(text).toContain("Here");
+});
+
+it("draws no refs block for a commit no ref points at", async () => {
+  getLocal.mockResolvedValueOnce({
+    patch: "commit aaa111\n",
+    refs: { branches: [], head: false, remotes: [], tags: [] },
+    short: "aaa111",
+    truncated: false,
+  });
+  await mount({ kind: "local", path: "/Users/reader/repo" });
+  await act(async () => {
+    rows()[0]!.click();
+  });
+  await flush();
+
+  expect(container.querySelector("[data-git-refs]")).toBeNull();
+});
+
+it("says which lane a row is on in words, not with a tinted edge", async () => {
+  await mount({ kind: "local", path: "/Users/reader/repo" });
+  // The picture is what says which column a commit is on. A hairline of the
+  // lane's colour used to sit at the row's left edge; pinned to the row rather
+  // than to the lane column, it read as a stray border beside the graph.
+  expect(container.querySelectorAll("[data-lane-stripe]")).toHaveLength(0);
+  // The lane is still there to be read — in the picture, where the dot's x is
+  // the lane column.
+  const lanes = [...container.querySelectorAll("[data-lane-graph] circle")]
+    .map((dot) => {
+      return dot.getAttribute("cx");
     });
-  expect(stripes).toHaveLength(COMMITS.length);
-  // Commit "ccc333" sits on lane 1 and "eee555" on lane 2 in the fixture, so a
-  // page of rows is not one colour repeated — which is what makes a page of
-  // lanes readable at a glance rather than only inside the picture.
-  expect(new Set(stripes).size).toBeGreaterThan(1);
+  expect(new Set(lanes).size).toBeGreaterThan(1);
 });
 
 it("opens a commit's patch, coloured by line role", async () => {
@@ -160,6 +230,21 @@ it("opens a commit's patch, coloured by line role", async () => {
     .find(node => node.getAttribute("data-patch-role") === "removed");
   expect(added?.className).toContain("text-success");
   expect(removed?.className).toContain("text-danger");
+  // A tinted band and a bar at the left, not a text hue alone — the same
+  // reading the phone gives a patch, so one patch looks the same on both.
+  expect(added?.className).toContain("bg-success-soft");
+  expect(added?.className).toContain("border-success");
+  expect(removed?.className).toContain("bg-danger-soft");
+  expect(removed?.className).toContain("border-danger");
+
+  // Context is neither tinted nor barred, so the tinted rows are what stands
+  // out. The bar is kept (transparent) so every line indents by the same
+  // amount and the patch columns stay aligned.
+  const context = [...container.querySelectorAll("[data-patch-role]")]
+    .find(node => node.getAttribute("data-patch-role") === "plain");
+  expect(context?.className).toContain("border-transparent");
+  expect(context?.className).not.toContain("bg-success-soft");
+  expect(context?.className).not.toContain("bg-danger-soft");
 });
 
 it("reads a remote commit's patch from the peer, not from this machine", async () => {

@@ -61,6 +61,24 @@
 | `remote_peer/` | 客户端角色：本机**配对出去**连另一台 Desktop | `host/src/remote_peer/mod.rs` |
 | `remote_platform.rs` | Remote 两个角色与 relay 控制共用的 HTTP 客户端 | `host/src/remote_platform.rs` |
 
+**改名是通过 catalogue 通道到达对端的，不是那个活动信号。** 有两处看起来像答案、
+其实都不是，所以写在这里：`emit_remote_activity(&thread.id)`
+（`host/src/remote_host/business/catalog.rs:53`）只唤醒**本机**的 GUI
+（`Event::RemoteActivity` → `desktop/src-tauri/src/lib.rs:123` → `remote-activity`
+→ `AppShell.tsx:893`），它不带任何远端读者能应用的载荷；客户端的
+`session_name_changed` 处理器也不是它（Agent 在该事件上清空 `runId`，
+`useRemotePeers` 因此把它当设置变更，从不碰某行的标题）。真正送出新标题的是
+publisher 平常那趟变更驱动的 catalogue tick：`title` 是每一行的组成部分
+（`host/src/remote_host/catalog.rs:371`），也在 delta 行的签名里，所以本库里的
+`rename_thread` 会把 catalogue 标脏，每秒一次（`PublisherTiming::catalog` = 1s）的
+tick 就以 `sessions_delta` 包把该行发到 `p.{pair}.state.sessions`，对端按
+`sessionId` 合并，其行解析器读的就是 `title`
+（`desktop/src/features/remote-peer/remotePeerClient.ts:306`）。在
+`host/src/remote_peer/runtime_tests.rs` 里实测：从 `rename_thread` 到该行抵达对端
+约 22 ms。客户端的 `CATALOG_POLL_MS`（60 秒）只是不推送的主机的兜底，所以
+「改名最多要一分钟才在别处可见」并不是实际行为 —— 改名没显示出来，要找的是
+一次失败的写库（由 `rename_session` 上报），而不是一个缺失的信号。
+
 ## 进程生命周期与共享服务
 
 | 模块 | 职责 | 从这里读起 |

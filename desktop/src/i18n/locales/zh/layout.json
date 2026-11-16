@@ -42,6 +42,7 @@
     "archived": "已归档",
     "running": "运行中",
     "pendingApproval": "{{count}} 项审批待处理",
+    "pendingChoice": "这条回复在等你选一项",
     "completed": "已完成",
     "failed": "失败",
     "cancelled": "已取消",
@@ -141,11 +142,18 @@
     "approvedInGui": "已在 GUI 中批准。",
     "rejectedInGui": "已在 GUI 中拒绝。"
   },
+  "autoArchive": {
+    "completed": "已自动归档 {{count}} 个超过 {{idleDays}} 天未活跃的会话。",
+    "completedWithCleanup": "已自动归档 {{count}} 个超过 {{idleDays}} 天未活跃的会话，并按设置清理运行日志。"
+  },
   "threadDialogs": {
     "titleEmpty": "标题不能为空。",
     "archiveSkipped": "{{names}}{{more}} 仍在运行，结束后才能归档。",
     "archiveTitle": "归档此会话？",
     "archiveDescription": "该会话及其 {{count}} 条派生会话将一起归档，之后可随时取消归档。",
+    "archiveCleanupDescription": "提问、助手回答、命令标题和生成的文件都会保留，取消归档后可以继续对话。本次将清理点击命令后看到的输出和运行回放，清理后无法恢复。此功能默认开启，可以在归档设置中更改。",
+    "archiveCleanupSettings": "查看归档设置",
+    "archiveCleanupConfirm": "归档并清理运行日志",
     "archiveRunningTitle": "会话正在进行中",
     "archiveRunningDescription": "{{count}} 个会话正在进行中，结束或停止后才能归档。",
     "archiveRunningMore": "另有 {{count}} 个会话正在进行",

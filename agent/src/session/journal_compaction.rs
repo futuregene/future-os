@@ -199,9 +199,37 @@ impl SqliteStore {
     ///
     /// The epoch is part of the cache's identity: a restart or fork bumps it,
     /// and a fold taken before that is not this run's projection any more.
+    ///
+    /// It is read from whichever store holds this run's journal. A converted
+    /// conversation keeps its events in the canonical stream tables and never in
+    /// `run_events`, so asking only the legacy table answered `None` for every run
+    /// written since the conversion: the fold cache added in #1486 was then never
+    /// consulted, and each open of a run no longer in memory paid the whole fold
+    /// again — the cost that cache exists to remove (4.1 s → 0.2 s, measured
+    /// there). `run_replay_watermark` answers the same question for the same two
+    /// stores and is the shape this follows; a retired stream is not a source,
+    /// exactly as it is not one there.
     pub(crate) fn run_epoch(&self, session: &str, run: &str) -> Result<Option<i64>> {
         let (session, run) = (session.to_owned(), run.to_owned());
         self.db.read(move |db| {
+            if crate::session::content::format(db, &session)?
+                == crate::session::content::FORMAT_VERSION
+            {
+                let run = crate::session::identity::BoundIdentity::run(db, &session, &run)?;
+                let session = crate::session::identity::BoundIdentity::session(db, &session)?;
+                let epoch = db
+                    .query_row(
+                        "SELECT epoch FROM stream_runs WHERE session_id=?1 AND run_id=?2
+                         AND NOT EXISTS(SELECT 1 FROM retired_streams d WHERE d.stream_id=stream_runs.id)
+                         ORDER BY epoch DESC LIMIT 1",
+                        params![session, run],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .optional()?;
+                if epoch.is_some() {
+                    return Ok(epoch);
+                }
+            }
             Ok(db
                 .query_row(
                     "SELECT epoch FROM run_events WHERE session_id=?1 AND run_id=?2

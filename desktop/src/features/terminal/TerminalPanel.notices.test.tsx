@@ -80,14 +80,23 @@ function running(id: string, overrides: Record<string, unknown> = {}) {
 
 function controller(overrides: Partial<TerminalPanelController> = {}): TerminalPanelController {
   return {
+    canDockRight: true,
+    dock: "bottom",
     enabled: true,
     height: 300,
     maxHeight: 600,
+    maximized: false,
+    maxWidth: 900,
     open: true,
+    setDock: vi.fn(),
     setHeight: vi.fn(),
     setOpen: vi.fn(),
+    setWidth: vi.fn(),
     shortcut: "Ctrl+J",
     toggle: vi.fn(),
+    toggleDock: vi.fn(),
+    toggleMaximized: vi.fn(),
+    width: 420,
     ...overrides,
   };
 }

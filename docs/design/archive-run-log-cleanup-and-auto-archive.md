@@ -1,7 +1,7 @@
 # Conversation Archiving: Run-Log Cleanup and Automatic Archiving
 
-> Status: the run-log cleanup design is substantially settled; automatic archiving is a design proposal awaiting review. Implementation has not started.
-> Date: 2026-11-13.
+> Status: run-log cleanup and idle automatic archiving are implemented.
+> Design date: 2026-11-13; implementation date: 2026-11-16.
 > Scope: Desktop (`desktop/`), the shared host (`host/`), and Agent history storage (`agent/`). Remote conversations follow the owning host's rules.
 > Related: [Workspace & Conversation Pagination and Archive Design](workspace-thread-archive-and-paging.md).
 

@@ -103,6 +103,27 @@ export const sessions = [
 ];
 
 /**
+ * `?listMarks=1`: the two "this one is waiting on you" states a row can be in.
+ *
+ * A row's marks are gated on its *run* — `status` for the approval badge, and
+ * the run's own `offersChoice` for the choice mark — and every fixture row is
+ * idle and read, so neither state is reachable from the default catalogue. Named
+ * sessions rather than a parameter per state: one capture should show the two
+ * marks side by side, which is what makes them tellable apart.
+ */
+const LIST_MARKS: Record<string, Record<string, unknown>> = {
+  // A finished reply that closed with a `futureos-choice` card.
+  sess_dopamine_clean: { status: "completed", offersChoice: true },
+  // A run parked on an approval request.
+  sess_sc_marker: { status: "waiting_approval" },
+};
+
+export function withListMarks<T extends { sessionId: string }>(row: T): T {
+  const mark = LIST_MARKS[row.sessionId];
+  return mark ? { ...row, ...mark } : row;
+}
+
+/**
  * `?recentMany=1`: a phone that has been in use for a while.
  *
  * Forty finished conversations spread over a fortnight, so the recency page's
@@ -290,6 +311,54 @@ const POST_COMPACTION_ANSWER = `## 结论
 - **建议**：先上 gzip 协商，再考虑先压缩后分片。
 
 要不要我把这四步写成一份设计文档？`;
+
+/**
+ * `?choiceCard=1`: the same conversation, with the reply's closing question
+ * written as a `futureos-choice` fence — what a model that followed the prompt's
+ * guidance emits. The phone draws it as a card (design
+ * `docs/design/choice-cards.zh-CN.md` §5.7) whose answer lands in the composer's
+ * chip row, so this is the fixture the card, the chip and the change sheet are all
+ * captured from.
+ */
+const CHOICE_FENCE = [
+  "```futureos-choice",
+  "title: 接下来做哪一件？",
+  "mode: single",
+  "option: forest | 重画森林图 | 按 Dreher 2025 的样本量重算两篇的置信区间",
+  "option: flow | 补一张实验流程图 | 把两篇的被试流程画成一张对照图",
+  "option: table | 表里加一列样本量 | Frank 42 / Dreher 186，标出测量手段",
+  "```",
+].join("\n");
+
+export const choiceCardEntries = demoEntries.map(entry =>
+  entry.id === "e2"
+    // A second text block, not a rewrite of the answer: the reply keeps the words
+    // the fixture already has and ends with the fence, which is exactly the shape
+    // a real reply takes (the block is the question's own).
+    ? { ...entry, blocks: [...entry.blocks, { kind: "text" as const, text: CHOICE_FENCE }] }
+    : entry);
+
+/**
+ * `?choiceCard=1&choiceAnswer=1`: the same conversation *after* the reader
+ * answered that card — the prompt whose head prints the answer
+ * (`choiceAnswerText`, design §7), which the phone draws as a tag inside its
+ * accent bubble rather than as bracket prose (§5.2.3).
+ *
+ * Its own flag rather than an addition to `choiceCardEntries`: the card captures
+ * (`choice-card-phone-*`) were measured against that transcript, and one more
+ * bubble at its end would move them.
+ */
+export const choiceAnsweredEntries = [
+  ...choiceCardEntries,
+  {
+    id: "e9",
+    kind: "message" as const,
+    role: "user" as const,
+    createdAtMs: now - 6 * minute,
+    runId: "run_1",
+    blocks: [{ kind: "text" as const, text: "[接下来做哪一件？ → 重画森林图] 顺便把图例挪到右下，图注也改成中文。" }],
+  },
+];
 
 export const compactResumeEntries = [
   {
@@ -983,4 +1052,12 @@ index 8d2a551..f30bc92 100644
  )
 `,
   truncated: false,
+  // What this demo commit carries: it is on `main`, its remote, cut as a release
+  // tag, and it is the commit the demo checkout is sitting on.
+  refs: {
+    branches: ["main"],
+    head: true,
+    remotes: ["origin/main"],
+    tags: ["v3.2.0", "supplement-v1"],
+  },
 };

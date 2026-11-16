@@ -10,6 +10,9 @@
     "toolCalls": "工具调用",
     "noToolCalls": "没有记录工具调用。",
     "noMatchingToolCalls": "没有匹配的工具调用。",
+    "logsPurgedBadge": "已清理",
+    "logsPurgedTitle": "运行日志已清理",
+    "logsPurgedDetail": "该会话归档时已删除此命令的输出和运行回放。命令记录、聊天正文和生成的文件仍保留，已删除的日志无法恢复。",
     "toolFallback": "工具",
     "field": {
       "kind": "类型",

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { timedCommand } from '../ci/timed-command.mjs';
-import { affected, catalog, manualPlan, rustTestGroups } from '../ci/affected.mjs';
+import { affected, catalog, manualPlan, rustTestGroups, AGENT_TEST_SHARDS, shardedTestGroups } from '../ci/affected.mjs';
 import { checkResult, GROUPS, requiredGroups, runJobs } from '../ci/ci-result.mjs';
 
 // Exercise the real manifests so newly introduced path dependencies participate.
@@ -375,6 +375,34 @@ test('Host tests always expand to exactly remote/core while checks stay crate sc
     ]);
     assert.deepEqual(rustTestGroups(result.rust).filter(group => !group.hostSuite),
       result.rust.filter(group => group.name !== 'host'));
+  }
+});
+
+test('the sharded matrix splits only the agent lane and leaves every other group intact', () => {
+  const groups = rustTestGroups(plan('agent/src/main.rs').rust);
+  const sharded = shardedTestGroups(plan('agent/src/main.rs').rust);
+  // agent is the run's critical path (21.9 of 22.4 min); nothing else is split.
+  assert.deepEqual(sharded.filter(group => group.shard).map(group => group.name),
+    Array.from({ length: AGENT_TEST_SHARDS }, (_, index) => `agent (${index + 1}/${AGENT_TEST_SHARDS})`));
+  assert.deepEqual(sharded.filter(group => group.shard).map(group => group.shard),
+    Array.from({ length: AGENT_TEST_SHARDS }, (_, index) => `${index + 1}/${AGENT_TEST_SHARDS}`));
+  // Every non-agent group is byte-identical to the unsharded plan, so the shard
+  // cannot leak onto Host, the libraries or the checks.
+  assert.deepEqual(sharded.filter(group => !group.shard), groups.filter(group => group.name !== 'agent'));
+  // Exactly one extra job: peak concurrency already touches the 20-job limit.
+  assert.equal(sharded.length, groups.length + AGENT_TEST_SHARDS - 1);
+  // Each shard keeps the crate selection of the lane it came from.
+  for (const group of sharded.filter(group => group.shard)) {
+    assert.deepEqual(group.packages, groups.find(plain => plain.name === 'agent').packages);
+  }
+});
+
+test('a shard spec is rejected unless it is n/N', () => {
+  // rust-checks.mjs throws on anything else, so the planner must not emit one.
+  for (const group of shardedTestGroups([{ name: 'agent', packages: ['future-agent'], desktop: false }])) {
+    assert.match(group.shard, /^[1-9]\d*\/[1-9]\d*$/);
+    const [index, count] = group.shard.split('/');
+    assert.ok(Number(index) <= Number(count));
   }
 });
 

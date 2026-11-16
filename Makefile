@@ -290,29 +290,34 @@ build-mobile-ios:
 # ─── Test ───────────────────────────────────────────────────────────────────
 # The unit tests are the CI regression gate. The *-diff / *-tmux targets are
 # manual TS→Rust migration-acceptance gates (pre-release only).
+#
+# Rust targets go through scripts/run-rust-tests.mjs so they use cargo nextest
+# when it is installed (one process per test, every test in one pool) and fall
+# back to `cargo test` otherwise. Same selection flags either way.
+RUST_TESTS := node scripts/run-rust-tests.mjs
 
 test: test-agent test-channels test-cli test-app-settings test-config test-http test-tui test-desktop test-desktop-rust test-mobile
 
 test-agent:
-	cargo test -p future-agent
+	$(RUST_TESTS) -p future-agent
 
 test-channels:
-	cargo test -p future-channel
+	$(RUST_TESTS) -p future-channel
 
 test-cli:
-	cargo test -p future-cli
+	$(RUST_TESTS) -p future-cli
 
 test-app-settings:
-	cargo test -p future-app-settings
+	$(RUST_TESTS) -p future-app-settings
 
 test-config:
-	cargo test -p future-config
+	$(RUST_TESTS) -p future-config
 
 test-http:
-	cargo test -p future-http
+	$(RUST_TESTS) -p future-http
 
 test-tui:
-	cargo test -p future-tui
+	$(RUST_TESTS) -p future-tui
 
 test-cli-diff:
 	./cli/tests/golden-diff.sh
@@ -322,6 +327,9 @@ test-desktop:
 	$(call npm-install-if-needed,desktop)
 	cd desktop && npm test
 
+# Stays on `cargo test`: `desktop/src-tauri`'s `gui_main_thread_drive` target is
+# `harness = false` (it hands its tests the AppKit main thread), so nextest exits
+# while enumerating it. CI excludes the same binary for the same reason.
 test-desktop-rust:
 	cd desktop/src-tauri && cargo test
 

@@ -37,6 +37,15 @@ export interface RemoteSession {
   streaming: boolean;
   status?: string;
   /**
+   * This conversation's last finished reply closed with a choice card, so the
+   * conversation is waiting on the reader's answer.
+   *
+   * Optional by contract: a desktop older than the field omits it, and a client
+   * that does not read it draws no mark — which is what it did before. The mark
+   * belongs to the run, so a follow-up turn clears it without any second write.
+   */
+  offersChoice?: boolean;
+  /**
    * The name of the workspace this conversation sits in, as its own machine
    * calls it. Sent per session row (a client grouping a merged list needs the
    * name for its heading), omitted by a desktop older than the field.
@@ -100,6 +109,8 @@ export interface PresenceSession {
   archived?: boolean;
   streaming: boolean;
   status?: string;
+  /** Same wire field as `RemoteSession.offersChoice`: waiting on a card's answer. */
+  offersChoice?: boolean;
   /** The workspace's own name, pin and place, as the host reports them per row. */
   workspaceName?: string | null;
   workspacePinned?: boolean | null;
@@ -271,6 +282,13 @@ export interface RemoteCustomProvider {
   name: string;
   api: string;
   baseUrl: string;
+  /**
+   * True when the agent skips TLS certificate verification for this provider's
+   * endpoint — a self-hosted gateway on a self-signed certificate, or one no
+   * platform CA knows, where TLS is wanted for encryption only. Absent means
+   * verified (the default), so an older host that never sends it stays safe.
+   */
+  skipTlsVerify?: boolean;
   hasApiKey: boolean;
   models: RemoteProviderModel[];
 }
@@ -289,6 +307,12 @@ export interface CustomProviderUpsert {
   name: string;
   api: string;
   baseUrl: string;
+  /**
+   * Opt out of TLS certificate verification for this endpoint. Omitted keeps
+   * whatever is stored (so a client without the control cannot silently switch
+   * verification back on); `false` clears it.
+   */
+  skipTlsVerify?: boolean | null;
   /** Absent keeps the stored key; the desktop writes it only when non-empty. */
   apiKey?: string | null;
   models: RemoteProviderModel[];
@@ -305,6 +329,40 @@ export interface BuiltinProviderUpdate {
   baseUrl?: string;
   apiKey?: string | null;
   updateApiKey: boolean;
+}
+
+/**
+ * One thinking-level probe against the provider a client is editing
+ * (mirrors `agent_providers::ThinkingLevelProbeInput`).
+ *
+ * The payload is the form's live state, not stored config: nothing is saved
+ * before a probe. `apiKey` absent/empty means "use the key the host already
+ * stores for `providerId`", and `level` absent/empty is the calibration call,
+ * which sends no thinking parameter at all.
+ */
+export interface ThinkingLevelProbeInput {
+  api: string;
+  baseUrl: string;
+  apiKey?: string | null;
+  providerId?: string;
+  modelId: string;
+  level?: string;
+  /**
+   * Probe over TLS without verifying the certificate, matching the editor's
+   * `skipTlsVerify` switch. Absent means the agent falls back to the saved
+   * provider's own setting, so a `provider/model` probe needs nothing here.
+   */
+  skipTlsVerify?: boolean | null;
+}
+
+/** One probe's verdict, as the editor renders it. */
+export interface ThinkingLevelProbeOutcome {
+  /** `default` for the calibration call, else the level that was tested. */
+  level: string;
+  /** True when the endpoint accepted the request carrying this level. */
+  ok: boolean;
+  /** The provider's own message when it did not. */
+  error?: string;
 }
 
 export interface InstalledSkill extends RemoteSkill {
@@ -524,7 +582,11 @@ export interface GitGraphRow {
   short: string;
   /** `YYYY-MM-DD HH:MM`, minute precision and no zone. */
   when: string;
-  /** The committer's name, as git prints it. */
+  /**
+   * The *author's* name, as git prints it. Not the committer: a squash merge on
+   * GitHub, a rebase or a cherry-pick all rewrite the committer, so reading that
+   * field made a page of real work look like it was done by "GitHub".
+   */
   who: string;
   /** `HEAD -> main, origin/main, tag: v1`, empty when the commit has no refs. */
   decorations: string;
@@ -556,6 +618,26 @@ export interface GitCommitDetail {
   patch: string;
   /** The host cut the patch at its row/byte ceiling and said so in `patch`. */
   truncated: boolean;
+  /** Every ref pointing at this commit, split the way a reader asks for them. */
+  refs: GitCommitRefs;
+}
+
+/**
+ * The refs on one commit.
+ *
+ * The list row carries git's short decoration, which drops local branches once
+ * a commit has several. The detail page asks `for-each-ref --points-at` instead,
+ * so a commit on five branches lists five.
+ */
+export interface GitCommitRefs {
+  /** Local branches, without `refs/heads/`. */
+  branches: string[];
+  /** Remote-tracking branches, without `refs/remotes/` (`origin/main`). */
+  remotes: string[];
+  /** Tags, without `refs/tags/`. */
+  tags: string[];
+  /** `HEAD` is this commit — a detached checkout names no branch. */
+  head: boolean;
 }
 
 export interface DownloadInfo {

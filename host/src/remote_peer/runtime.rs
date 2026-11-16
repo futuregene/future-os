@@ -270,6 +270,26 @@ pub async fn request(desktop_id: &str, command: Value, lane: &str) -> Result<Val
         .map_err(Into::into)
 }
 
+/// [`request`], with an explicit round-trip budget.
+///
+/// Nearly every command fits the phone's 10 s budget, and the default is what
+/// keeps a dropped host from stalling a UI. A command that legitimately waits
+/// longer has to say so: a thinking-level probe waits for the provider's first
+/// frame (up to 30 s on the Agent side), and under the default budget a slow
+/// provider would be reported as a transport timeout instead of as its own
+/// answer.
+pub async fn request_within(
+    desktop_id: &str,
+    command: Value,
+    lane: &str,
+    timeout: Duration,
+) -> Result<Value, crate::Error> {
+    client()
+        .request_at(desktop_id, command, lane, timeout)
+        .await
+        .map_err(Into::into)
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub async fn put_chunk(
     desktop_id: &str,

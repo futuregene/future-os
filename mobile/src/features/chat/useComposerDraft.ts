@@ -7,6 +7,7 @@ import { flushSessionDraft, loadSessionDraft, scheduleSessionDraft } from "../..
 import { desktopDraftKey } from "../../remote/desktopDraftKey";
 import { deleteTemporaryAttachment, recoverPendingImagePickerAttachments } from "../../remote/files";
 import type { MobileAttachment, SessionReferenceMap, SessionReferenceTarget } from "../../remote/types";
+import { answerOrNull, parseChoiceAnswer, type ChoiceAnswer } from "./choiceAnswer";
 import { pruneSessionReferences } from "./sessionCompletion";
 import { showToast } from "./utils";
 
@@ -16,6 +17,14 @@ export interface ComposerDraftApi {
   setMessage: Dispatch<SetStateAction<string>>;
   attachments: MobileAttachment[];
   setAttachments: Dispatch<SetStateAction<MobileAttachment[]>>;
+  /**
+   * The draft's answer to a `futureos-choice` card, or null.
+   *
+   * A draft item like an attachment: the phone's field cannot hold it, so it lives
+   * beside the field and is counted as content (see `ComposerDock`).
+   */
+  choice: ChoiceAnswer | null;
+  setChoice: Dispatch<SetStateAction<ChoiceAnswer | null>>;
   sessionRefs: SessionReferenceMap;
   rememberSessionRef: (token: string, target: SessionReferenceTarget) => void;
   restoring: boolean;
@@ -24,10 +33,13 @@ interface DraftState {
   key: string;
   message: string;
   attachments: MobileAttachment[];
+  choice: ChoiceAnswer | null;
   sessionRefs: SessionReferenceMap;
   restoring: boolean;
 }
-const emptyDraft = (key: string): DraftState => ({ key, message: "", attachments: [], sessionRefs: {}, restoring: true });
+const emptyDraft = (key: string): DraftState => ({
+  key, message: "", attachments: [], choice: null, sessionRefs: {}, restoring: true
+});
 
 export function useComposerDraft(remote: Remote, t: TFunction): ComposerDraftApi {
   const draftKey = desktopDraftKey(remote.credentials!.expectedDesktopId, remote.selectedSessionId);
@@ -69,7 +81,7 @@ export function useComposerDraft(remote: Remote, t: TFunction): ComposerDraftApi
       }
       setState({
         key: draftKey, message: draft?.text ?? "", attachments,
-        sessionRefs: draft?.refs ?? {}, restoring: false
+        choice: parseChoiceAnswer(draft?.choice), sessionRefs: draft?.refs ?? {}, restoring: false
       });
     })();
     return () => { if (loadRef.current === operation) loadRef.current = null; };
@@ -89,6 +101,17 @@ export function useComposerDraft(remote: Remote, t: TFunction): ComposerDraftApi
       ...current, attachments: typeof value === "function" ? value(current.attachments) : value, restoring: false,
     });
   }, [draftKey]);
+  const setChoice = useCallback<Dispatch<SetStateAction<ChoiceAnswer | null>>>(value => {
+    if (activeKeyRef.current !== draftKey) return;
+    editRevisionRef.current += 1;
+    setState(current => current.key !== draftKey ? current : {
+      // Zero ticks is no answer (§7), and every entrance lands here — the card's
+      // row, the sheet's row, a restored draft — so the rule lives at this one
+      // write instead of at each of them. A chip drawn from an answer with no
+      // pick would name the question and answer nothing.
+      ...current, choice: answerOrNull(typeof value === "function" ? value(current.choice) : value), restoring: false,
+    });
+  }, [draftKey]);
   const rememberSessionRef = useCallback((token: string, target: SessionReferenceTarget) => {
     if (activeKeyRef.current !== draftKey) return;
     editRevisionRef.current += 1;
@@ -103,6 +126,7 @@ export function useComposerDraft(remote: Remote, t: TFunction): ComposerDraftApi
     if (state.key !== draftKey || state.restoring) return;
     scheduleSessionDraft(draftKey, {
       text: state.message, attachments: state.attachments,
+      choice: state.choice ?? undefined,
       refs: pruneSessionReferences(state.sessionRefs, state.message)
     });
   }, [draftKey, state]);
@@ -113,5 +137,5 @@ export function useComposerDraft(remote: Remote, t: TFunction): ComposerDraftApi
     return () => { subscription.remove(); void flushSessionDraft(draftKey); };
   }, [draftKey]);
   const current = state.key === draftKey ? state : emptyDraft(draftKey);
-  return { ...current, setMessage, setAttachments, rememberSessionRef };
+  return { ...current, setMessage, setAttachments, setChoice, rememberSessionRef };
 }

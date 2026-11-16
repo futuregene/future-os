@@ -38,6 +38,7 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                     upload_references: cmd.attachments.clone(),
                     command_id: cmd.id.clone(),
                     busy_policy,
+                    choice: parse_command_choice(cmd.choice.as_ref()),
                 },
             )
             .await
@@ -65,6 +66,20 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 crate::agent_bridge::release_queued_run(&cmd.session_id, &cmd.run_id)
                     .await
                     .map(|_| ()),
+            )
+            .await
+        }
+        "edit_queued_run" => {
+            reply_unit(
+                sink,
+                crate::agent_bridge::edit_queued_run_with_choice(
+                    &cmd.session_id,
+                    &cmd.run_id,
+                    &cmd.message,
+                    parse_command_choice(cmd.choice.as_ref()),
+                )
+                .await
+                .map(|_| ()),
             )
             .await
         }
@@ -110,6 +125,9 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                     // Continuing a run is a fresh turn of its own; it never
                     // overtakes a queue the reader already built.
                     busy_policy: String::new(),
+                    // A continuation answers no card: it is the same run, with
+                    // no new question put to the reader.
+                    choice: None,
                 },
             )
             .await
@@ -339,6 +357,62 @@ pub(crate) struct RemotePromptOptions {
     /// What this send means while the session still runs something, as an Agent
     /// `BusyPolicy` value. Empty keeps the refusal below.
     pub(crate) busy_policy: String,
+    /// The answer a `futureos-choice` card gave this message, already parsed from
+    /// the command's own JSON carrier. `None` when the message answered no card
+    /// (and, for `edit_queued_run`, when the accepted answer must stay as it is).
+    pub(crate) choice: Option<future_rpc::payloads::QueuedRunChoice>,
+}
+
+/// A choice card's answer, as a remote command carries it.
+///
+/// The command schema keeps this field as loose JSON (`serde_json::Value`) so a
+/// phone and a host cannot drift on a wire type neither of them owns; it is
+/// parsed into the same shape the Agent's own payload uses here. Anything
+/// malformed reads as "no answer" rather than as an empty card: the row would
+/// otherwise offer a change onto a list it cannot draw.
+pub(crate) fn parse_command_choice(
+    raw: Option<&serde_json::Value>,
+) -> Option<future_rpc::payloads::QueuedRunChoice> {
+    let raw = raw?;
+    let title = raw.get("title")?.as_str()?.trim().to_string();
+    if title.is_empty() {
+        return None;
+    }
+    let options = raw
+        .get("options")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let id = item.get("id")?.as_str()?.to_string();
+                    let label = item.get("label")?.as_str()?.to_string();
+                    Some(future_rpc::payloads::QueuedRunChoiceOption { id, label })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if options.is_empty() {
+        return None;
+    }
+    let selected_ids = raw
+        .get("selectedIds")
+        .and_then(serde_json::Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(|id| id.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Some(future_rpc::payloads::QueuedRunChoice {
+        mode: match raw.get("mode").and_then(serde_json::Value::as_str) {
+            Some("multi") => "multi".to_string(),
+            _ => "single".to_string(),
+        },
+        title,
+        options,
+        selected_ids,
+    })
 }
 
 /// The policy values a Remote client may ask for.
@@ -412,6 +486,7 @@ pub(crate) async fn prepare_remote_prompt(
         upload_references,
         command_id,
         busy_policy,
+        choice,
     } = options;
     let thread = match crate::store::find_thread_by_agent_session(session_id)? {
         Some(thread) => thread,
@@ -489,7 +564,7 @@ pub(crate) async fn prepare_remote_prompt(
         )));
     }
     let attachments = crate::remote_host::files::claim_uploads(&upload_references, &thread.id)?;
-    let prepared = crate::agent_bridge::prepare_prompt_persisted_busy(
+    let prepared = crate::agent_bridge::prepare_prompt_persisted_busy_with_choice(
         &thread,
         message,
         model_id,
@@ -497,6 +572,7 @@ pub(crate) async fn prepare_remote_prompt(
         attachments.clone(),
         (!command_id.trim().is_empty()).then_some(command_id),
         busy_policy,
+        choice,
     );
     #[cfg(test)]
     let prepared = prepared.and_then(|prepared| injected_prepare_failure().map(|()| prepared));
@@ -590,6 +666,7 @@ mod tests {
             upload_references: Vec::new(),
             command_id: "cmd-busy".to_string(),
             busy_policy: policy.to_string(),
+            choice: None,
         };
 
         // `expect_err` would need `PreparedPrompt: Debug`; the refusal is what
@@ -758,6 +835,7 @@ mod tests {
                 upload_references: Vec::new(),
                 command_id: "cmd-draft-session".to_string(),
                 busy_policy: String::new(),
+                choice: None,
             },
         )
         .await

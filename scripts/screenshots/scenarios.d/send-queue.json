@@ -156,41 +156,75 @@
       ]
     },
     "send-queue-refused-edit": {
-      "note": "What a queue looks like when the host would not take it, and the row being fixed. The reader interrupts with the queue waiting, the phone sends it as one message, the host refuses (`?queueFail=1` reports `session_busy`), and the sentence stays exactly where it was — still readable, still editable. The panel swaps its hint for `重试`, and the row is opened into a field in the same frame: a state that must not be retried on its own, and must not look the same as one still waiting.",
-      "url": "http://localhost:8099/?lang=zh&streaming=1&queueFail=1&session=sess_dopamine_review",
+      "note": "What the phone can honestly show when the host would not take a waiting message. Two rows wait behind the running turn (`?queue=2`), so the panel is there as its header line — `2 条等待中` and `当前回复结束后合并成一条发送` — and draws no rows until the header is tapped, which is the phone's whole queue surface: rows of the conversation the composer sits over. The reader then hands a new sentence over with `加入发送队列`, and the host refuses it (`?queueFail=1` reports `session_busy`): the sentence stays in the field, the queue keeps the two rows it had, and the run keeps going — so nothing was queued and nothing was lost. The phone's own sentence for that refusal goes through a native alert, which the web harness cannot draw, so what this capture asserts is the state the refusal must leave behind, not its copy. Finally one tap opens the header, and the first waiting row opens into a field holding its own words, with `保存` and `取消` beside it and its bin still on the row.",
+      "url": "http://localhost:8099/?lang=zh&streaming=1&queueFail=1&queue=2&session=sess_dopamine_review",
       "steps": [
-        { "wait": 1200 },
         {
-          "eval": "(async () => { const deadline = Date.now() + 12000; while (Date.now() < deadline) { if (document.querySelector('[aria-label=\"给 FutureOS 发消息\"]')) return 'chat open'; const dismiss = [...document.querySelectorAll('button,[role=button]')].find(button => /以后再说|稍后再说/.test(button.textContent || '')); if (dismiss) { dismiss.click(); } await new Promise(r => setTimeout(r, 300)); } throw new Error('the conversation never opened'); })()"
+          "wait": 1200
         },
-        { "wait": 600 },
+        {
+          "eval": "(async () => { const deadline = Date.now() + 15000; while (Date.now() < deadline) { if (document.querySelector('[aria-label=\"给 FutureOS 发消息\"]')) return 'chat open'; const dismiss = [...document.querySelectorAll('button,[role=button]')].find(button => /以后再说|稍后再说/.test(button.textContent || '')); if (dismiss) { dismiss.click(); } await new Promise(r => setTimeout(r, 300)); } throw new Error('the conversation never opened'); })()"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "eval": "(async () => { const dismiss = [...document.querySelectorAll('button,[role=button]')].find(button => /以后再说|稍后再说/.test(button.textContent || '')); if (dismiss) { dismiss.click(); await new Promise(r => setTimeout(r, 500)); return 'dismissed the update prompt'; } return 'no update prompt'; })()"
+        },
+        {
+          "wait": 500
+        },
         {
           "eval": "(() => {\n  const box = document.querySelector('[aria-label=\"给 FutureOS 发消息\"]');\n  box.focus();\n  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;\n  setter.call(box, '');\n  box.dispatchEvent(new Event('input', { bubbles: true }));\n  return 'draft cleared';\n})()"
         },
-        { "wait": 300 },
-        { "type": "顺便把图注也改成中文" },
-        { "wait": 400 },
-        { "eval": "document.querySelector(\"[aria-label='选择如何处理这条消息']\").click()" },
-        { "wait": 600 },
         {
-          "eval": "(() => {\n  const row = [...document.querySelectorAll('[role=button],button')].find(button => (button.textContent || '').trim().startsWith('加入发送队列'));\n  if (!row) throw new Error('the sheet has no queue row');\n  row.click();\n  return 'queued';\n})()"
-        },
-        { "wait": 700 },
-        {
-          "eval": "(() => {\n  const stop = document.querySelector(\"[aria-label='停止并发送队列中的消息']\");\n  if (!stop) throw new Error('the interrupt control is missing');\n  stop.click();\n  return 'interrupted';\n})()"
-        },
-        { "wait": 1500 },
-        {
-          "eval": "(() => {\n  const panel = document.querySelector('[data-testid=\"send-queue\"]');\n  if (!panel) throw new Error('the refused queue is not shown');\n  if (!(panel.innerText || '').includes('顺便把图注也改成中文')) throw new Error('the refused message was dropped');\n  if (!panel.querySelector('[aria-label=\"重试\"]')) throw new Error('the panel offers no retry');\n  const edit = panel.querySelector('[aria-label=\"修改队列中的消息\"]');\n  if (!edit) throw new Error('the refused row cannot be edited');\n  edit.click();\n  return 'refused, still held, opened for editing';\n})()"
-        },
-        { "wait": 600 },
-        {
-          "eval": "(() => {\n  const panel = document.querySelector('[data-testid=\"send-queue\"]');\n  if (!panel.querySelector('input, textarea')) throw new Error('the row did not become a field');\n  if (!panel.querySelector('[aria-label=\"重试\"]')) throw new Error('editing dropped the retry control');\n  return 'editing inside a refused queue';\n})()"
+          "wait": 300
         },
         {
-          "eval": "(async () => {\n  const close = [...document.querySelectorAll('button,[role=button]')].find(element => (element.textContent || '').trim() === '关闭');\n  if (close) { close.click(); await new Promise(r => setTimeout(r, 500)); return 'dismissed the refusal alert'; }\n  return 'no alert';\n})()"
+          "eval": "(() => {\n  const panel = document.querySelector('[data-testid=send-queue]');\n  if (!panel) throw new Error('the fixture queue is not shown');\n  const body = panel.innerText || '';\n  if (!body.includes('2 条等待中')) throw new Error('the header does not count what waits: ' + JSON.stringify(body));\n  if (!body.includes('当前回复结束后合并成一条发送')) throw new Error('the header does not say what will happen to them: ' + JSON.stringify(body));\n  const rows = panel.querySelectorAll('[data-testid=send-queue-item]').length;\n  if (rows !== 0) throw new Error('the queue draws ' + rows + ' rows without being asked');\n  return JSON.stringify({ rows, header: body.slice(0, 60) });\n})()"
         },
-        { "shot": "m-send-queue-refused-edit.png" }
+        {
+          "type": "顺便把图注也改成中文"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => {\n  const choose = document.querySelector(\"[aria-label='选择如何处理这条消息']\");\n  if (!choose) throw new Error('a draft during a run offers no queue choice');\n  choose.click();\n  return 'choice sheet opened';\n})()"
+        },
+        {
+          "wait": 700
+        },
+        {
+          "eval": "(() => {\n  const row = [...document.querySelectorAll('[role=button],button')].find(button => (button.textContent || '').trim().startsWith('加入发送队列'));\n  if (!row) throw new Error('the sheet has no queue row');\n  row.click();\n  return 'handed over';\n})()"
+        },
+        {
+          "wait": 1500
+        },
+        {
+          "eval": "(() => {\n  const box = document.querySelector('[aria-label=\"给 FutureOS 发消息\"]');\n  if ((box.value || '') !== '顺便把图注也改成中文') throw new Error('the refused sentence was dropped: ' + JSON.stringify(box.value));\n  const panel = document.querySelector('[data-testid=send-queue]');\n  if (!panel) throw new Error('the fixture queue left when a send was refused');\n  const rows = panel.querySelectorAll('[data-testid=send-queue-item]').length;\n  if (rows !== 0) throw new Error('a refused hand-over drew ' + rows + ' rows');\n  if (!panel.innerText.includes('2 条等待中')) throw new Error('a refused hand-over changed the queue: ' + JSON.stringify(panel.innerText));\n  const choose = document.querySelector(\"[aria-label='选择如何处理这条消息']\");\n  if (!choose) throw new Error('the refusal stopped the run: the composer no longer offers the send choice');\n  return 'refused: sentence kept, queue unchanged, run still going';\n})()"
+        },
+        {
+          "eval": "(() => {\n  const toggle = document.querySelector('[data-testid=send-queue-toggle]');\n  if (!toggle) throw new Error('the queue header is not a control');\n  toggle.click();\n  return 'expanded';\n})()"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "eval": "(() => {\n  const panel = document.querySelector('[data-testid=send-queue]');\n  const rows = panel.querySelectorAll('[data-testid=send-queue-item]');\n  if (rows.length !== 2) throw new Error('one tap did not open the queue: ' + rows.length);\n  const edit = rows[0].querySelector('[data-testid=send-queue-edit]');\n  if (!edit) throw new Error('the waiting row offers no way to correct its words');\n  if (!rows[0].querySelector('[data-testid=send-queue-remove]')) throw new Error('the waiting row has no bin');\n  edit.click();\n  return 'opened the row for editing';\n})()"
+        },
+        {
+          "wait": 700
+        },
+        {
+          "eval": "(() => {\n  const panel = document.querySelector('[data-testid=send-queue]');\n  const field = panel.querySelector('[aria-label=\"队列消息内容\"]');\n  if (!field) throw new Error('the row did not become a field');\n  if (!(field.value || '').includes('goal goal_4ce46c920eb8')) throw new Error('the field does not hold the row\\'s own words: ' + JSON.stringify((field.value || '').slice(0, 60)));\n  const save = [...panel.querySelectorAll('button,[role=button]')].find(b => (b.textContent || '').trim() === '保存');\n  if (!save) throw new Error('the editor offers no save');\n  if (![...panel.querySelectorAll('button,[role=button]')].some(b => (b.textContent || '').trim() === '取消')) throw new Error('the editor offers no cancel');\n  return JSON.stringify({ field: (field.value || '').slice(0, 40) });\n})()"
+        },
+        {
+          "shot": "m-send-queue-refused-edit.png"
+        },
+        {
+          "eval": "(() => { localStorage.clear(); return 'storage cleared, so the next capture starts on the conversation list'; })()"
+        }
       ]
     }
   }

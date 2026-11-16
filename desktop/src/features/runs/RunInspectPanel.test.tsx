@@ -12,6 +12,23 @@ vi.mock("../../integrations/storage/threadStore", async importOriginal => ({
 }));
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
+it("shows the purged-log explanation instead of command output", async () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const run = { id: "r1", status: "completed", createdAt: 1, logsPurgedAt: 2 } as StoredRun;
+  const tool: StoredToolCall = { id: "t1", runId: "r1", name: "shell", kind: "shell", status: "completed", createdAt: 1, endedAt: 2 };
+  try {
+    await act(async () => root.render(<RunInspectPanel compact run={run} tools={[tool]} onBack={() => {}} />));
+    expect(container.textContent).toContain("Run logs cleared");
+    expect(container.textContent).not.toContain("stdout");
+  }
+  finally {
+    act(() => root.unmount());
+    container.remove();
+  }
+});
+
 it("does not refetch settled outputs for freshly allocated equivalent tool props", async () => {
   const container = document.createElement("div");
   document.body.append(container);

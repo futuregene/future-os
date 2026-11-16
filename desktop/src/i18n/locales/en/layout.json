@@ -42,6 +42,7 @@
     "archived": "Archived",
     "running": "Running",
     "pendingApproval": "{{count}} pending approval(s)",
+    "pendingChoice": "This reply is waiting on your choice",
     "completed": "Completed",
     "failed": "Failed",
     "cancelled": "Cancelled",
@@ -141,11 +142,18 @@
     "approvedInGui": "Approved in GUI.",
     "rejectedInGui": "Rejected in GUI."
   },
+  "autoArchive": {
+    "completed": "Automatically archived {{count}} conversation(s) idle for more than {{idleDays}} days.",
+    "completedWithCleanup": "Automatically archived {{count}} conversation(s) idle for more than {{idleDays}} days and cleared run logs according to your settings."
+  },
   "threadDialogs": {
     "titleEmpty": "Title cannot be empty.",
     "archiveSkipped": "{{names}}{{more}} still running; finish or stop them before archiving.",
     "archiveTitle": "Archive this conversation?",
     "archiveDescription": "The conversation and its {{count}} forked conversations will be archived together. You can unarchive them later.",
+    "archiveCleanupDescription": "Prompts, assistant answers, command titles, and generated files will be preserved, and you can restore the conversation to continue talking. Command output and run replay will be cleared permanently. This feature is on by default and can be changed in Archive Settings.",
+    "archiveCleanupSettings": "View Archive Settings",
+    "archiveCleanupConfirm": "Archive and Clear Run Logs",
     "archiveRunningTitle": "This conversation is running",
     "archiveRunningDescription": "{{count}} conversation(s) are still running; finish or stop them before archiving.",
     "archiveRunningMore": "and {{count}} more running",

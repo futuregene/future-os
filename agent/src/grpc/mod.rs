@@ -377,6 +377,21 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             model_context: cmd.model_context,
             images: internal_images,
             attachments: internal_attachments,
+            choice: cmd
+                .choice
+                .map(|choice| future_rpc::payloads::QueuedRunChoice {
+                    mode: choice.mode,
+                    title: choice.title,
+                    options: choice
+                        .options
+                        .into_iter()
+                        .map(|option| future_rpc::payloads::QueuedRunChoiceOption {
+                            id: option.id,
+                            label: option.label,
+                        })
+                        .collect(),
+                    selected_ids: choice.selected_ids,
+                }),
             parent_session: cmd.parent_session,
             model_id: cmd.model_id,
             level: cmd.level,
@@ -467,6 +482,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                     create_only: config.create_only,
                     api_key: nonempty(config.api_key),
                     clear_api_key: config.clear_api_key,
+                    skip_tls_verify: config.skip_tls_verify,
                 }
             }),
             thinking_probe: cmd.thinking_probe.map(Into::into),
@@ -1134,6 +1150,7 @@ mod tests {
                 create_only: false,
                 api_key: "k".to_string(),
                 clear_api_key: false,
+                skip_tls_verify: None,
             }),
             message: "hello".to_string(),
             ..Default::default()

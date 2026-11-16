@@ -42,6 +42,7 @@ Agent 执行一个有界回合（gRPC）→ 写证据 → 内核据此决定下�
 | 证据 evidence | `todo complete --evidence` | **非空强制**：关单必须写明实际落地了什么（路径、attempt id、测量结果），`--force` 是操作者显式覆盖；关 advancement 任务还要求交代退出意图——`--no-follow-up` 或 `--successor <todo>`，静默关单会被拒绝 |
 | 验收契约 acceptance | `todo add --acceptance "tok1,tok2"` | 关单证据必须包含全部 token（大小写不敏感）——"done ≠ delivered" 的硬形式 |
 | 验证器 verify | `todo add --verify "cmd"` | 每个 **run 回合边界**后内核执行命令，exit 0 才算完成；上限 `--max-validation-attempts`。用于机器可判的确定性交付物。**不适用于探索性任务**（检索/报告）——内核判不了其正确性，正确性由编排 agent 读工件判断；手动 `todo complete` 也刻意不重跑 `--verify` |
+| 写作用域 write scope | `todo add --required-write-scope` | 任务声明的写集合，检查两次：claim 时对比同行的有效 lease，**add 时对比所有未完成 todo 的声明**——若新 todo 的作用域与未完成的 todo 重叠（相同路径，或一个是另一个的祖先目录）则直接拒绝，并在报错里点名占位方（todo id、状态、占用者、作用域），让派工方改名重派。唯一放行口是派工方主动共用：`--role supervisor --note "为什么"`。每个 todo 还记录 `created_by`（角色 token 或 `--created-by <id>`）——只看 `role` 分不出“supervisor 派的”和“worker 自建的” |
 | 租约 lease | `lease claim/renew/release/expire/status` | 任务被谁租用、多久过期。**租约活性自愈**：记录持有进程 pid，进程死了自动回收——杀掉 worker 后无需手动清理 |
 | 门禁 gate | `gate resolve` | 普通门禁只阻塞依赖它的任务，无关工作可继续执行和完成；`--global-gate` 才全局冻结。门禁是决策点不是工作项：对 gate 用 `todo complete` 会**报错并指向 `gate resolve`**（决策被记录，绝不默默标 done）；user-action（不冻结的人待办）展示给用户但不阻塞 agent |
 | 交付闭环 delivery | `delivery status/record/followthrough` | 完成 = `delivered` 待验证态；操作者用 `verified/failed/rework` 结案；3 回合未验证自动派生跟进任务 |

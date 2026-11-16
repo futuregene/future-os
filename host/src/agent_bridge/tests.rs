@@ -603,6 +603,56 @@ mod bridge_tests {
     }
 
     #[tokio::test]
+    async fn rename_session_reports_a_mirror_write_the_store_refused() {
+        use crate::remote::test_support::{init_store, raw_store_connection, HomeGuard};
+        let _home = HomeGuard::new("bridge-rename-mirror-refused");
+        init_store();
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("Before".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some("sess-mirror-refused".to_string()),
+        })
+        .expect("create the thread to rename");
+        {
+            let conn = raw_store_connection();
+            conn.execute_batch(
+                "CREATE TRIGGER refuse_thread_rename BEFORE UPDATE ON threads
+                 BEGIN SELECT RAISE(ABORT, 'thread rename refused'); END;",
+            )
+            .expect("install the failing-write fixture");
+        }
+
+        let mock = mock_agent();
+        mock.push("set_session_name", Reply::Data("{}".to_string()));
+        let error = crate::agent_bridge::rename_session(
+            "sess-mirror-refused".to_string(),
+            "After".to_string(),
+        )
+        .await
+        .expect_err("a mirror write the store refused must not be reported as a rename");
+
+        // The Agent did take the name; the caller has to learn that the local
+        // title did not follow, instead of the two stores silently disagreeing
+        // until the discovery pass reverts one of them.
+        assert_eq!(mock.requests_of("set_session_name").len(), 1);
+        assert!(
+            error.to_string().contains("could not be saved"),
+            "the mirror failure is surfaced: {error}"
+        );
+        assert_eq!(
+            crate::store::get_thread(&thread.id)
+                .expect("thread")
+                .expect("exists")
+                .title,
+            "Before",
+            "a refused write leaves the stored title untouched"
+        );
+    }
+
+    #[tokio::test]
     async fn rename_session_mirrors_into_the_store() {
         let home = TestHome::new("bridge-rename");
         let mock = mock_agent();
@@ -1993,6 +2043,7 @@ mod pipeline_tests {
             model_id: None,
             thinking_level: None,
             busy_policy: "enqueue_coalescing".to_string(),
+            choice: None,
         })
         .await
         .expect_err("an empty prompt is not a turn");
@@ -2041,6 +2092,7 @@ mod pipeline_tests {
             model_id: Some("future/k3".to_string()),
             thinking_level: Some("high".to_string()),
             busy_policy: String::new(),
+            choice: None,
         })
         .await
         .expect("prompt");
@@ -3244,6 +3296,39 @@ mod pipeline_tests {
         );
     }
 
+    /// A run this host did not start (a TUI or an IM channel prompting the Agent
+    /// directly) settles here, and the same `agent_end` carries whether the reply
+    /// closed with a choice card. Recorded before the status CAS, so a list that
+    /// reads the row afterwards gets both facts from one read.
+    #[test]
+    fn the_observer_records_a_reply_that_offered_a_choice() {
+        let home = TestHome::new("bridge-settle-offers-choice");
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-choice"));
+
+        let offered = seed_run(&thread.id);
+        settle_agent_end(&offered.id, r#"{"state":"completed","offers_choice":true}"#);
+        let record = crate::store::get_run(&offered.id)
+            .expect("run")
+            .expect("some");
+        assert_eq!(record.status, "completed");
+        let infos =
+            crate::store::latest_run_infos(std::slice::from_ref(&thread.id)).expect("infos");
+        assert!(
+            infos[0].offers_choice,
+            "the mark travels with the settled run"
+        );
+
+        // An ordinary reply offers nothing, and neither does an event that never
+        // carried the field (every producer before it).
+        let plain = seed_run(&thread.id);
+        settle_agent_end(&plain.id, r#"{"state":"completed"}"#);
+        let infos =
+            crate::store::latest_run_infos(std::slice::from_ref(&thread.id)).expect("infos");
+        assert_eq!(infos[0].run_id, plain.id);
+        assert!(!infos[0].offers_choice);
+    }
+
     #[test]
     fn settle_from_agent_terminal_maps_all_states() {
         let home = TestHome::new("pipe-settle");
@@ -3531,5 +3616,162 @@ mod presence_fence_tests {
 
         assert_eq!(answer.sessions[0].status, "present");
         assert_eq!(mock.requests_of("get_session_presence").len(), 1);
+    }
+}
+
+/// Measure a run's first paint against the live Agent, both ways.
+///
+/// Read-only: it asks the same `get_events_since` and `get_state` the remote
+/// path asks, and never issues a command that writes. Run it with real ids:
+///
+/// ```text
+/// $env:FUTURE_REPLAY_SESSION = "<session of an in-flight run>"
+/// $env:FUTURE_REPLAY_RUN     = "<its run id>"
+/// cargo test -p future-host --lib measure_first_paint_on_a_real_run -- --ignored --nocapture
+/// ```
+#[cfg(test)]
+mod first_paint_measurement {
+    use std::time::Instant;
+
+    /// The number of events a client page carries (`REPLAY_PAGE_EVENTS`).
+    const CLIENT_PAGE: usize = 1_000;
+
+    /// The Agent channel is entry-owned (the probe documents the same
+    /// precondition): the library needs a process-lifetime runtime before it can
+    /// dial the running Agent.
+    fn runtime() {
+        crate::install_rustls_provider();
+        let _ = crate::agent_client::provide_channel_runtime("first-paint-measure", || {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .thread_name("first-paint-measure")
+                .build()
+                .expect("build the measurement's Agent channel runtime")
+        });
+    }
+
+    #[ignore = "live measurement: reads the running Agent"]
+    #[tokio::test]
+    async fn measure_first_paint_on_a_real_run() {
+        let Ok(session) = std::env::var("FUTURE_REPLAY_SESSION") else {
+            return;
+        };
+        let run = std::env::var("FUTURE_REPLAY_RUN").expect("FUTURE_REPLAY_RUN");
+        runtime();
+
+        // Before: the run from its beginning, paged the way a client pages it.
+        let started = Instant::now();
+        let mut cursor = -1i64;
+        let (mut pages, mut events) = (0usize, 0usize);
+        let mut watermark = None;
+        loop {
+            let page = crate::agent_bridge::get_events_since_page_until(
+                session.clone(),
+                run.clone(),
+                cursor,
+                CLIENT_PAGE,
+                watermark,
+            )
+            .await
+            .expect("page");
+            pages += 1;
+            events += page["events"].as_array().map_or(0, Vec::len);
+            watermark = page["watermark"].as_i64();
+            let next = page["nextSinceIdx"].as_i64().unwrap_or(-1);
+            if page["hasMore"].as_bool() != Some(true) || next <= cursor || pages >= 64 {
+                break;
+            }
+            cursor = next;
+        }
+        let before = started.elapsed();
+
+        // After: the same run, from the boundary the handler chooses — the newest
+        // index (the watermark the read above pinned) minus one client page.
+        let newest = watermark.unwrap_or(-1);
+        let start = (newest - (CLIENT_PAGE as i64 - 1)).max(0);
+        let started = Instant::now();
+        let page = crate::agent_bridge::get_events_since_page_until(
+            session.clone(),
+            run.clone(),
+            start,
+            CLIENT_PAGE,
+            Some(newest),
+        )
+        .await
+        .expect("page");
+        let first_paint_events = page["events"].as_array().map_or(0, Vec::len);
+        let after = started.elapsed();
+
+        println!(
+            "run {run}: from the beginning = {pages} round trips, {events} events, {before:?}; \
+             first paint = 1 round trip from idx {start} (watermark {newest}), \
+             {first_paint_events} events, {after:?}"
+        );
+    }
+}
+
+/// The first paint's budget is spent on what the lean lane will send.
+///
+/// The weight is the number the completion walk spends, so it has to be the
+/// bytes the client receives: a tool row's body and shell envelope are removed
+/// by the trim, and counting them would buy thirty rows where the shipped bytes
+/// hold a few hundred.
+#[cfg(test)]
+mod first_paint_weight {
+    use serde_json::json;
+
+    fn tool_row() -> future_rpc::payloads::SessionEntryPayload {
+        serde_json::from_value(json!({
+            "id": "e1",
+            "kind": "tool",
+            "role": "tool",
+            "createdAtMs": 1,
+            "runId": "r",
+            "blocks": [{
+                "kind": "tool_result",
+                "toolCallId": "c1",
+                "text": "x".repeat(50_000),
+            }],
+            "metadata": {"shell_result": {
+                "status": "exited",
+                "is_error": false,
+                "command": "future session transcript",
+                "attempts": [{"output": "y".repeat(50_000)}],
+            }},
+        }))
+        .expect("a tool row")
+    }
+
+    #[tokio::test]
+    async fn a_lean_row_weighs_what_the_trim_leaves() {
+        let entry = tool_row();
+        let raw = crate::agent_bridge::queries::page_weight_as_sent(&entry);
+        assert!(
+            raw > 100_000,
+            "the row itself is what the Agent sent: {raw}"
+        );
+        let lean = crate::remote_host::lean::in_request(true, async {
+            crate::agent_bridge::queries::page_weight_as_sent(&entry)
+        })
+        .await;
+        assert!(
+            lean * 4 < raw,
+            "a lean page is weighed after the trim, not before it: {lean} of {raw}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_client_without_the_lane_is_weighed_by_its_own_bytes() {
+        let entry = tool_row();
+        let plain = crate::remote_host::lean::in_request(false, async {
+            crate::agent_bridge::queries::page_weight_as_sent(&entry)
+        })
+        .await;
+        assert_eq!(
+            plain,
+            crate::agent_bridge::queries::page_weight_as_sent(&entry),
+            "nothing is removed for this client, so nothing is discounted"
+        );
     }
 }

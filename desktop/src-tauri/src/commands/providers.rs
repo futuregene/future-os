@@ -103,6 +103,9 @@ mod tests {
             name: "Acme".to_string(),
             api: "openai-completions".to_string(),
             base_url: "https://api.acme.com/v1".to_string(),
+            // The TLS switch belongs to the editor's form, not to this wrapper
+            // test: `None` states nothing and leaves any stored value alone.
+            skip_tls_verify: None,
             api_key: None,
             models: vec![],
             create: true,
@@ -153,6 +156,7 @@ mod tests {
             provider_id: Some("acme".to_string()),
             model_id: "qwen".to_string(),
             level: Some("high".to_string()),
+            skip_tls_verify: None,
         })
         .await
         .expect("probe");

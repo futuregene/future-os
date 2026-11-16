@@ -13,9 +13,21 @@ jest.mock("../../../theme/ThemeContext", () => {
   const graphColors = ["#2563eb", "#0e7490", "#a16207"];
   const theme = {
     colors: {
-      accent: "#accent", ink: "#ink", inkMuted: "#muted", inkSoft: "#soft",
-      inkStrong: "#strong", danger: "#danger", success: "#success",
-      info: "#info", lineSoft: "#line", surface: "#surface", surfaceSubtle: "#subtle",
+      accent: "#accent",
+      ink: "#ink",
+      inkMuted: "#muted",
+      inkSoft: "#soft",
+      inkStrong: "#strong",
+      danger: "#danger",
+      dangerSoft: "#dangerSoft",
+      success: "#success",
+      successSoft: "#successSoft",
+      info: "#info",
+      infoSoft: "#infoSoft",
+      line: "#line",
+      lineSoft: "#line",
+      surface: "#surface",
+      surfaceSubtle: "#subtle",
     },
     graphColors,
     font: (size: number) => size,
@@ -67,6 +79,12 @@ const detail: GitCommitDetail = {
     "",
   ].join("\n"),
   truncated: false,
+  refs: {
+    branches: ["feature/analysis"],
+    remotes: ["origin/main"],
+    tags: ["v3.2"],
+    head: false,
+  },
 };
 
 let tree: ReactTestRenderer;
@@ -74,20 +92,47 @@ const listCommits = jest.fn<Promise<GitGraphListing>, []>(async () => listing);
 const getCommit = jest.fn<Promise<GitCommitDetail>, [string]>(async () => detail);
 const onClose = jest.fn();
 const removeBack = jest.fn();
+/** The stepper the panel hands the conversation bar, if it registered one. */
+let panelBack: (() => boolean) | null = null;
+const registerBack = jest.fn((handler: () => boolean) => { panelBack = handler; });
 
 const mount = async (overrides: Partial<Parameters<typeof GitGraphPanel>[0]> = {}) => {
   await act(async () => {
     tree = create(createElement(GitGraphPanel, {
-      online: true, supported: true, listCommits, getCommit, onClose, ...overrides,
+      online: true, supported: true, listCommits, getCommit, onClose, registerBack,
+      ...overrides,
     }));
   });
   await act(async () => { await Promise.resolve(); });
 };
 const commits = () => tree.root.findByType(FlatList);
+
+test("the first commit is not flush against the surface above it", async () => {
+  await mount();
+  // The history starts immediately under the conversation's bar, so the list
+  // gives it a little air rather than butting the first row against the edge.
+  const content = commits().props.contentContainerStyle;
+  const style = Object.assign({}, ...[content].flat().filter(
+    (entry): entry is Record<string, unknown> => !!entry && typeof entry === "object",
+  ));
+  expect(style.paddingTop).toBeGreaterThan(0);
+});
 /** Every string the panel currently paints, for the status messages. */
 const texts = () => tree.root
   .findAll(node => String(node.type) === "Text")
   .map(node => node.children.map(String).join(""));
+/** One node's text with its nested `Text` children in place — the order a reader
+ * sees, which a per-node join cannot show because the pieces are separate
+ * nodes. */
+const textOf = (node: { children: unknown[] }): string => node.children
+  .map((child) => {
+    if (typeof child === "string") return child;
+    if (child && typeof child === "object" && "children" in child) {
+      return textOf(child as { children: unknown[] });
+    }
+    return "";
+  })
+  .join("");
 /** The system-back handler the panel has installed right now. A pop re-renders
  * and re-subscribes, so the newest subscription is the one Android would call. */
 const backHandler = () => (BackHandler.addEventListener as jest.Mock).mock.calls.at(-1)![1];
@@ -97,16 +142,16 @@ const rowPress = (sha: string) =>
     typeof node.props.accessibilityLabel === "string"
     && node.props.accessibilityLabel.startsWith(`git.openCommit:{"sha":"${sha}"`)
     && node.props.onPress)[0]!;
-/** The way out of whichever page is showing — `Back to commits` on a patch,
- * `Close` on the list. Found by label so the test does not depend on the icon. */
-const escapeButton = (label: string) =>
+/** Whether any control carries this label right now. */
+const hasButton = (label: string) =>
   tree.root.findAll(node =>
     node.props.accessibilityRole === "button"
     && node.props.accessibilityLabel === label
-    && node.props.onPress)[0]!;
+    && node.props.onPress).length > 0;
 
 beforeEach(() => {
   jest.clearAllMocks();
+  panelBack = null;
   jest.spyOn(BackHandler, "addEventListener").mockReturnValue({ remove: removeBack });
 });
 afterEach(async () => {
@@ -163,19 +208,25 @@ test("a merge is drawn as a ring and a plain commit as a disc", async () => {
   expect(rings[0]!.props.fill).toBe("none");
 });
 
-/** Neither page has a header bar: one control, top-left, and the content. */
-test("the list has no header: just the way out", async () => {
+/** Neither page has a header bar, and the list has no control of its own. */
+test("the list has no header and no second way out", async () => {
   await mount();
   // Nothing names the repository at the top of the list; the commits are the
   // page.
   expect(texts()).not.toContain("dopamine-decision");
   expect(texts()).not.toContain("/Users/lixin/Research/dopamine-decision");
-  // The one control is the back button, labelled for leaving.
-  expect(escapeButton("common.close")).toBeDefined();
-  act(() => escapeButton("common.close").props.onPress());
-  expect(onClose).toHaveBeenCalledTimes(1);
+  // And no arrow of its own: the conversation bar's back button is the only back
+  // control on screen, and it already leaves the history from here.
+  const labels = tree.root
+    .findAll(node => node.props.accessibilityRole === "button")
+    .map(node => node.props.accessibilityLabel)
+    .filter((label): label is string => typeof label === "string");
+  expect(labels).not.toContain("common.close");
+  expect(labels).not.toContain("git.back");
+  // Nothing is left to pop, so the bar's back should be free to leave.
+  expect(panelBack?.()).toBe(false);
+  expect(onClose).not.toHaveBeenCalled();
 });
-
 test("a tapped commit opens its patch, coloured by line role", async () => {
   await mount();
   act(() => rowPress("4c1a7e2").props.onPress());
@@ -184,14 +235,136 @@ test("a tapped commit opens its patch, coloured by line role", async () => {
   expect(getCommit).toHaveBeenCalledWith("4c1a7e2");
   // The role, not the raw text: an addition and a removal are told apart by
   // colour rather than by their leading character alone.
-  const styles = tree.root.findAll(node =>
-    String(node.type) === "Text" && node.props.style && Array.isArray(node.props.style));
-  const colours = styles
-    .flatMap(node => (node.props.style as unknown[]).flat())
-    .filter((entry): entry is { color?: string } => !!entry && typeof entry === "object")
-    .map(entry => entry.color);
+  const entryStyles = patchEntries();
+  const colours = entryStyles.map(entry => entry.color);
   expect(colours).toContain("#success");
   expect(colours).toContain("#danger");
+});
+
+/**
+ * The style objects the patch page paints each line with.
+ *
+ * A line's role is spread over several style entries (the base line, then the
+ * role), so the merged view is what a reader actually sees.
+ */
+function patchEntries() {
+  return tree.root
+    .findAll(node => String(node.type) === "Text" && Array.isArray(node.props.style))
+    .map(node => Object.assign({}, ...(node.props.style as unknown[]).flat().filter(
+      (entry): entry is Record<string, unknown> => !!entry && typeof entry === "object",
+    )));
+}
+
+test("the patch tints each line across its width, with a bar at the left", async () => {
+  await mount();
+  act(() => rowPress("4c1a7e2").props.onPress());
+  await act(async () => { await Promise.resolve(); });
+
+  const entries = patchEntries();
+  // A tint plus a bar, not a text hue alone: 11px monospace on a phone screen is
+  // too small to sort by hue, and the bar is what a thumb follows down the page.
+  const added = entries.find(entry => entry.color === "#success");
+  expect(added?.backgroundColor).toBe("#successSoft");
+  expect(added?.borderLeftColor).toBe("#success");
+  expect(added?.borderLeftWidth).toBe(2);
+
+  const removed = entries.find(entry => entry.color === "#danger");
+  expect(removed?.backgroundColor).toBe("#dangerSoft");
+  expect(removed?.borderLeftColor).toBe("#danger");
+
+  const hunk = entries.find(entry => entry.color === "#info");
+  expect(hunk?.backgroundColor).toBe("#infoSoft");
+  expect(hunk?.borderLeftColor).toBe("#info");
+
+  // Context stays untinted and unbarred, so the tinted rows are what stands out.
+  const plain = entries.find(entry => entry.color === "#soft" && entry.borderLeftWidth === 2);
+  expect(plain?.backgroundColor).toBeUndefined();
+  expect(plain?.borderLeftColor).toBe("transparent");
+});
+
+test("the tint runs the full width of the row, not just behind the text", async () => {
+  await mount();
+  act(() => rowPress("4c1a7e2").props.onPress());
+  await act(async () => { await Promise.resolve(); });
+
+  // The coloured band belongs to the line, and the line owns its own padding:
+  // a padded container would leave an untinted gutter down both edges.
+  const card = tree.root.findAll(node =>
+    String(node.type) === "View" && (node.props.style as { overflow?: string } | undefined)?.overflow === "hidden");
+  expect(card.length).toBeGreaterThan(0);
+  const entries = patchEntries();
+  const tinted = entries.filter(entry => entry.backgroundColor === "#successSoft" || entry.backgroundColor === "#dangerSoft");
+  expect(tinted.length).toBeGreaterThan(0);
+  for (const entry of tinted) {
+    expect(entry.paddingHorizontal).toBeGreaterThan(0);
+  }
+});
+
+test("a row says when, then its hash, then who made it", async () => {
+  await mount();
+  const painted = rowPress("4c1a7e2").findAll(node => String(node.type) === "Text")
+    .map(node => node.children.map(String).join(""));
+  // Three fields on the second line: the date first ("is this the change I am
+  // after?"), then the hash you copy out, then the author.
+  expect(painted).toContain("2026-11-11 18:42 · 4c1a7e2 · Lixin Zhou");
+});
+
+test("the patch page lists every ref on the commit, one kind per row", async () => {
+  await mount();
+  act(() => rowPress("4c1a7e2").props.onPress());
+  await act(async () => { await Promise.resolve(); });
+
+  const painted = texts();
+  // Branches, remotes and tags are separate rows: "is it released?" and "is it
+  // pushed?" are different questions, and the list row's one-line decoration
+  // cannot answer either once a commit carries several refs.
+  for (const name of ["feature/analysis", "origin/main", "v3.2"]) {
+    expect(painted).toContain(name);
+  }
+  expect(painted).toContain("git.ref.branches");
+  expect(painted).toContain("git.ref.remotes");
+  expect(painted).toContain("git.ref.tags");
+});
+
+test("a commit that is the checkout says so, even with no branch on it", async () => {
+  getCommit.mockResolvedValueOnce({
+    ...detail,
+    // A detached checkout of an old commit: no branch and no tag point at it.
+    refs: { branches: [], head: true, remotes: [], tags: [] },
+  });
+  await mount();
+  act(() => rowPress("4c1a7e2").props.onPress());
+  await act(async () => { await Promise.resolve(); });
+
+  const painted = texts();
+  expect(painted).toContain("git.ref.checkedOut");
+  expect(painted).toContain("git.ref.yes");
+});
+
+test("a commit with no refs shows no refs block at all", async () => {
+  getCommit.mockResolvedValueOnce({
+    ...detail,
+    refs: { branches: [], head: false, remotes: [], tags: [] },
+  });
+  await mount();
+  act(() => rowPress("4c1a7e2").props.onPress());
+  await act(async () => { await Promise.resolve(); });
+
+  const painted = texts();
+  expect(painted).not.toContain("git.ref.branches");
+  expect(painted).not.toContain("git.ref.checkedOut");
+});
+
+test("the commit's dot sits on the subject's line, not in the gap between the two", async () => {
+  await mount();
+  const circles = rowPress("9b30d18").findAllByType(Circle);
+  expect(circles).toHaveLength(1);
+  // The row stacks two lines of text, so its own middle is the gap between them.
+  // The dot is drawn at the first line's centre instead. With the mock theme's
+  // identity `leading`, the row is `max(34, 19 + 11 + 8)` = 38 high and holds
+  // 19 + 14 = 33 of text, so that centre is (38 - 33)/2 + 19/2 = 12 — seven
+  // points above the row's own middle.
+  expect(circles[0]!.props.cy).toBe(12);
 });
 
 /** The patch page's header is gone too, so what it used to say moved into the
@@ -204,9 +377,20 @@ test("the patch page has no header either: the commit says who and when itself",
   const painted = texts();
   expect(painted.some(text => text.includes("Lixin Zhou") && text.includes("2026-11-11 16:05")))
     .toBe(true);
+  // The same three fields in the same order as the row it was opened from: the
+  // patch page is the same commit, so it does not reorder them. The sha is its
+  // own selectable `Text` inside the line, so the line is read with its nested
+  // children in place rather than node by node.
+  const meta = tree.root
+    .findAll(node => String(node.type) === "Text" && textOf(node).includes("9b30d18"))
+    .map(textOf)
+    .find(text => text.split("9b30d18").length === 2 && text.includes("2026-11-11"));
+  expect(meta).toBe("2026-11-11 16:05 · 9b30d18 · Lixin Zhou");
   expect(painted).toContain("merge side");
-  // The only control is the way back to the list.
-  expect(escapeButton("git.back")).toBeDefined();
+  // No second arrow on the patch either: the bar's back is the one control, and
+  // it steps back to the list before it leaves.
+  expect(hasButton("git.back")).toBe(false);
+  expect(hasButton("common.close")).toBe(false);
 });
 
 test("the detail pane is the one place a commit's bytes can be read, and back pops it", async () => {
@@ -215,11 +399,16 @@ test("the detail pane is the one place a commit's bytes can be read, and back po
   await act(async () => { await Promise.resolve(); });
   expect(getCommit).toHaveBeenCalledWith("e27f5a0");
 
-  // The back button returns to the list, and the list's back button leaves.
-  act(() => escapeButton("git.back").props.onPress());
+  // The bar's back steps back to the list, and only then leaves the history.
+  act(() => { expect(panelBack?.()).toBe(true); });
   expect(onClose).not.toHaveBeenCalled();
-  act(() => escapeButton("common.close").props.onPress());
-  expect(onClose).toHaveBeenCalledTimes(1);
+  await act(async () => { await Promise.resolve(); });
+  // Back on the list: the commit rows are what is painted again, not the patch.
+  expect(commits().props.data).toHaveLength(5);
+  expect(texts()).not.toContain("merge side");
+  // …and the same press now has nothing to step out of, so it leaves.
+  expect(panelBack?.()).toBe(false);
+  expect(onClose).not.toHaveBeenCalled();
 });
 
 test("system back pops the patch before it closes the sheet", async () => {

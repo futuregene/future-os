@@ -1600,6 +1600,7 @@ mod tests {
                 api_key: "k".into(),
                 auth: crate::llm::schema::AuthScheme::Bearer,
                 headers: Default::default(),
+                skip_tls_verify: false,
             },
             protocol,
             capabilities: Default::default(),

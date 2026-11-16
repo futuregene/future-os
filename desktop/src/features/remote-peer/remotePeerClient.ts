@@ -1,5 +1,9 @@
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
-import type { ProvidersView } from "../../integrations/agent/providers";
+import type {
+  ProvidersView,
+  ThinkingLevelProbeInput,
+  ThinkingLevelProbeOutcome,
+} from "../../integrations/agent/providers";
 import type { GitCommitDetail, GitGraphListing } from "../git-history/types";
 import type { RemoteCatalog, RemoteSessionRow, RemoteWorkspaceRow } from "./mergeConversations";
 import { requestNativeRead } from "../../integrations/storage/historyTransfer";
@@ -331,6 +335,12 @@ export function normalizeRemoteSessionRows(raw: unknown): RemoteSessionRow[] {
       pinned: row.pinned === true,
       streaming: row.streaming === true,
       ...(typeof row.status === "string" ? { status: row.status } : {}),
+      // Whether the host's last finished reply closed with a choice card — the
+      // mark the merged list draws beside the approval badge. Named here for the
+      // same reason as every field above: this parser is field-by-field, so a
+      // host field it does not name never reaches the row (the badge stayed
+      // absent until this line existed).
+      ...(row.offersChoice === true ? { offersChoice: true } : {}),
       lastMessageAt: typeof row.lastMessageAt === "number" ? row.lastMessageAt : null,
       // When the conversation started: the recent view's key for the rows that
       // are still running (see `RemoteSessionRow.createdAt`). Named here for the
@@ -1434,6 +1444,26 @@ export async function listRemoteProviders(desktopId: string): Promise<ProvidersV
 }
 
 /**
+ * Ask that host whether one thinking level works for the provider its user is
+ * editing.
+ *
+ * Its own invoke rather than `requestRemotePeer`, because the round trip waits
+ * for the provider's first stream frame: the host bounds that at 30 s, and the
+ * ordinary 10 s command budget would report a slow provider as a transport
+ * failure. `ok: false` is an answer about the level; a rejection here means the
+ * call itself failed and the caller must stop detecting.
+ */
+export async function probeRemoteThinkingLevel(
+  desktopId: string,
+  probe: ThinkingLevelProbeInput,
+): Promise<ThinkingLevelProbeOutcome> {
+  return await invokeCommand<ThinkingLevelProbeOutcome>("remote_peer_probe_thinking_level", {
+    desktopId,
+    probe,
+  });
+}
+
+/**
  * Write one built-in provider's key and/or base URL on that host.
  *
  * `updateApiKey` is what distinguishes "leave the key alone" from "set it": the
@@ -1459,6 +1489,8 @@ export async function upsertRemoteCustomProvider(
     name: string;
     api: string;
     baseUrl: string;
+    /** Opt out of TLS certificate verification on that host's endpoint. */
+    skipTlsVerify?: boolean | null;
     apiKey?: string | null;
     models: unknown[];
     create: boolean;

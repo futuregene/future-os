@@ -59,6 +59,8 @@ pub struct IncomingCmd {
     pub message_hash: String,
     /// Provider configuration: one whole provider write (see `list_providers` in `remote_host::business`).
     pub provider: serde_json::Value,
+    /// probe_thinking_level: one thinking-level probe of the provider the client is editing (`ThinkingLevelProbeInput`). The host asks its Agent, which builds the same request a real call would; nothing is saved.
+    pub probe: serde_json::Value,
     /// set_approval_tier
     pub tier: String,
     /// set_session_name / upload_init (display name) / download_prepare (the name the phone already shows, so the desktop needn't scan the session)
@@ -88,6 +90,8 @@ pub struct IncomingCmd {
     pub transfer_id: String,
     pub file_path: String,
     pub attachments: Vec<UploadReference>,
+    /// prompt / edit_queued_run: the answer a futureos-choice card gave this message. The message already reads `[question → answer]`; this rides alongside because it also carries the options the card offered, which the sentence drops — that is what lets a waiting row offer a different pick. Absent means "answered no card", and on edit_queued_run it also means "leave the accepted answer alone". An older host ignores it.
+    pub choice: Option<serde_json::Value>,
     /// signed application-level pairing handshake
     pub protocol_version: u32,
     pub pair_id: String,
@@ -162,6 +166,7 @@ impl Default for IncomingCmd {
             candidates: serde_json::Value::Null,
             message_hash: String::new(),
             provider: serde_json::Value::Null,
+            probe: serde_json::Value::Null,
             tier: String::new(),
             name: String::new(),
             transfer_name: String::new(),
@@ -181,6 +186,7 @@ impl Default for IncomingCmd {
             transfer_id: String::new(),
             file_path: String::new(),
             attachments: Vec::new(),
+            choice: None,
             protocol_version: 0,
             pair_id: String::new(),
             device_id: String::new(),

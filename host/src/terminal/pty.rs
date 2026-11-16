@@ -821,14 +821,25 @@ mod tests {
     fn teardown_escalates_to_sigkill_for_a_child_that_ignores_sigterm() {
         let root = tempfile::tempdir().expect("tempdir");
         let ready = root.path().join("trap-installed");
+        // `exec cat` blocks *in the shell's own process*, reading the stdin this
+        // test keeps open. The obvious `while true; do sleep 0.2; done` forked a
+        // `sleep` grandchild every 200 ms, and `kill_tree(None, …)` signals only
+        // the pid it was given: the fork in flight survived the escalation as an
+        // orphan (measured: `sleep 0.2` with ppid 1 for up to 200 ms after the
+        // shell was reaped). macOS cannot sweep it either — the `ps` session
+        // column reads 0 for every process there. nextest waits 100 ms for leaked
+        // children, so the macOS runner reported this test as `LEAK` while the
+        // SIGKILL assertion itself held. A process that blocks without forking has
+        // nothing to leave behind.
         let mut child = std::process::Command::new("/bin/sh")
             .args([
                 "-c",
                 &format!(
-                    "trap \"\" TERM; printf ready > '{}'; while true; do sleep 0.2; done",
+                    "trap \"\" TERM; printf ready > '{}'; exec cat",
                     ready.display()
                 ),
             ])
+            .stdin(std::process::Stdio::piped())
             .spawn()
             .expect("spawn fixture child");
         let pid = child.id() as i32;

@@ -15,6 +15,8 @@ export interface StoredThread {
   updatedAt: number;
   /** Set when the user shelved this conversation (or its workspace); NULL means active. */
   archivedAt?: number | null;
+  /** Restore time used to give the conversation a fresh automatic-archive idle period. */
+  restoredAt?: number | null;
 }
 
 export interface StoredWorkspace {
@@ -61,6 +63,8 @@ export interface StoredRun {
   errorType?: "stream_disconnected" | "command_failed" | "model_failed" | "abort_requested" | "timeout" | "unknown" | null;
   /** Set when hidden from the Runs panel; the record and Agent events remain available. */
   archivedAt?: number | null;
+  /** Set only after Shell output and replay were actually purged on archive. */
+  logsPurgedAt?: number | null;
   createdAt: number;
   updatedAt: number;
 }

@@ -7,5 +7,12 @@
   "notRepo": "This workspace is not a Git repository.",
   "truncated": "The oldest commits are not shown.",
   "back": "Back to commits",
-  "openCommit": "Open commit {{sha}}: {{subject}}"
+  "openCommit": "Open commit {{sha}}: {{subject}}",
+  "ref": {
+    "checkedOut": "Here",
+    "yes": "checked out",
+    "branches": "Branches",
+    "remotes": "Remote",
+    "tags": "Tags"
+  }
 }

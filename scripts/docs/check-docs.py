@@ -104,6 +104,7 @@ WHITELIST = {
     # placement belongs to the prompt module; they are not user documentation.
     "agent/src/prompt/approval.md",
     "agent/src/prompt/communication.md",
+    "agent/src/prompt/choice.md",
     "agent/src/prompt/execution.md",
     # Release-pipeline dependency: build-macos-signed.yml, build-windows-signed.yml
     # and build-linux.yaml copy this provenance notice into the shipped

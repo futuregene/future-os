@@ -26,6 +26,10 @@ pub fn mark_thread_opened(thread_id: String) -> Result<(), crate::Error> {
     store::mark_thread_opened(&thread_id)
 }
 
+pub fn set_foreground_thread(thread_id: Option<String>) {
+    super::auto_archive::set_foreground_thread(thread_id);
+}
+
 pub fn create_thread(input: store::CreateThreadInput) -> Result<store::ThreadRecord, crate::Error> {
     // No auto `git init` for workspace-mode threads (§14.3); shadow review
     // handles non-git Workspaces.
@@ -225,7 +229,9 @@ async fn streaming_thread_ids() -> Vec<String> {
 /// Archive one fork tree, refusing while any member is running.
 pub async fn archive_thread_tree(thread_id: String) -> Result<store::ThreadRecord, crate::Error> {
     let streaming = streaming_thread_ids().await;
-    store::archive_thread_tree(&thread_id, &streaming)
+    let archived = store::archive_thread_tree(&thread_id, &streaming)?;
+    super::archive_cleanup::thread_tree_if_enabled(&thread_id).await;
+    Ok(archived)
 }
 
 pub fn restore_thread_tree(thread_id: String) -> Result<store::ThreadRecord, crate::Error> {
@@ -237,7 +243,19 @@ pub async fn batch_archive_threads(
     thread_ids: Vec<String>,
 ) -> Result<store::BatchArchiveResult, crate::Error> {
     let streaming = streaming_thread_ids().await;
-    store::batch_archive_threads(&thread_ids, &streaming)
+    let result = store::batch_archive_threads(&thread_ids, &streaming)?;
+    let skipped: std::collections::HashSet<&str> = result
+        .skipped
+        .iter()
+        .map(|item| item.thread_id.as_str())
+        .collect();
+    for thread_id in thread_ids
+        .iter()
+        .filter(|thread_id| !skipped.contains(thread_id.as_str()))
+    {
+        super::archive_cleanup::thread_tree_if_enabled(thread_id).await;
+    }
+    Ok(result)
 }
 
 /// One paged slice of a conversation list (`chat`, `workspace:<id>`, `recent`,

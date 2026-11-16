@@ -23,6 +23,9 @@ themselves.
 | `future doctor` | One pass over login, agent connectivity, sandbox, providers, sessions and skills |
 | `future models --json` | Models this agent can use |
 | `future models refresh` | Pull the Future platform catalogue (the desktop's "Update model list"), so a model published after the app started appears without a restart |
+| `future models providers [--json]` | Every provider and model setting: built-in providers (key present, base URL, model count) and each custom provider's models with their limits, image input, thinking levels and prices |
+| `future models provider set\|remove`, `future models model set\|remove` | Write those settings from the terminal: a provider's key and base URL (built-in) or name/API/address (custom), and one model's name, limits, image input, thinking levels and per-1M prices |
+| `future models probe <provider>/<model> [--json]` | Which thinking levels that model's endpoint actually accepts, measured through the Agent's own adapters; nothing is saved |
 | `future version --json` | Which build this is: version, commit, target, dirty state |
 | `future auth status` | Whether a platform login is configured (and to what) |
 | `future account profile` / `balance` | The user's account and remaining credits |
@@ -465,10 +468,16 @@ tick).
 future workspace list                 # the user's own workspaces
 future workspace list --json
 future workspace list --archived      # the archived view
+future workspace list --pinned        # the app's pinned section
 future workspace add ~/projects/demo  # register an existing directory
 future workspace add /srv/app --name "Service"
 future workspace archive ~/projects/demo   # shelve it and its conversations
 future workspace restore ws-1a2b3c         # bring it, and what it hid, back
+future workspace pin demo                  # keep it above the unpinned groups
+future workspace unpin ws-1a2b3c           # let it follow recency again
+future session pin <session-id>            # pin one conversation
+future session unpin <session-id>
+future session pinned                      # what is pinned right now
 ```
 
 The directory must already exist — a workspace points at a directory, it does
@@ -492,6 +501,31 @@ running — a shelved run would hide its approval request — and clear the pin.
 `--archived` for the archived view and `--all` for both, marked; a session the
 desktop app has never imported has no conversation to shelve, and says so
 instead of pretending it archived something.
+
+`pin` and `unpin` are the same store's other flag, at both scopes, and they mean
+the opposite of a shelf: the pinned section is a shortcut *out of* the active
+list, so a pin leads rather than hides. It is an ordering flag, not activity —
+`updated_at` and `last_opened_at` are left alone, so unpinning returns a row to
+the position its own activity earns instead of sending it to the front. Two
+consequences follow from the app's own rules, and the commands state both rather
+than letting a reader discover them:
+
+- **Archiving clears the pin.** A pinned row on the shelf would hide behind it,
+  so `archive` drops the flag. `unpin` is therefore not the inverse of `archive`;
+  `restore` is.
+- **A pin can be stored but invisible.** Pin an archived conversation, or a live
+  one inside an archived workspace, and the flag is written while the pinned
+  section keeps the row out of sight until `future session restore` or
+  `future workspace restore` brings it back. The command says so, read from the
+  row and its workspace rather than guessed.
+
+`future session pinned` and `future workspace list --pinned` read the section
+back through the store's own queries (`list_pinned_threads` with the app's
+`Recent` scope, `list_pinned_workspaces`), so the terminal, the sidebar and a
+paired phone cannot disagree about what is pinned or in which order. The
+conversation list prints the Agent session id, which is what `pin`/`unpin` take;
+the Agent itself has no pin — `future session list` is a gRPC call to the Agent
+and carries none.
 
 Workspaces also appear without `add`: `future session set <id> --cwd <dir>`
 files that conversation under the directory's workspace, exactly as the desktop

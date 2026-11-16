@@ -44,6 +44,7 @@ const {
   listRemoteWorkspaces,
   localizedSkill,
   pinRemoteConversation,
+  probeRemoteThinkingLevel,
   promptRemoteConversation,
   remoteModelProvider,
   remoteModelReference,
@@ -430,6 +431,30 @@ describe("fetchRemoteSessions", () => {
 
     invokeMock.mockResolvedValue(null);
     await expect(fetchRemoteSessions("desktop_a")).resolves.toEqual({ desktopId: "desktop_a", sessions: [] });
+  });
+
+  /**
+   * "This one is waiting on your answer", as the host reported it.
+   *
+   * The parser is field-by-field, so a host field it does not name never reaches
+   * the merged list — the choice mark stayed absent from every peer row until
+   * this field was named here, and only a capture of the real list showed it.
+   */
+  it("carries a host's choice mark and leaves it absent otherwise", async () => {
+    invokeMock.mockResolvedValue({
+      sessions: [
+        { sessionId: "sess_asks", status: "completed", offersChoice: true },
+        { sessionId: "sess_prose", status: "completed" },
+        { sessionId: "sess_odd", offersChoice: "yes" },
+      ],
+    });
+
+    const [asks, prose, odd] = (await fetchRemoteSessions("desktop_a")).sessions;
+    expect(asks!.offersChoice).toBe(true);
+    // Absent, not `false`: a host that predates the field has not said anything,
+    // and every reader treats the two the same.
+    expect(prose).not.toHaveProperty("offersChoice");
+    expect(odd).not.toHaveProperty("offersChoice");
   });
 
   /** Missing/odd fields become the total shape the merge and UI assume. */
@@ -1255,6 +1280,32 @@ describe("remote machine commands", () => {
     expect(lastCall()).toEqual({
       args: { desktopId: "desktop_a", command: { type: "get_prompt_receipt", promptId: "cmd_1" }, lane: "list" },
       command: "remote_peer_request",
+    });
+  });
+});
+
+describe("probing a host's provider", () => {
+  /**
+   * Its own command rather than `remote_peer_request`: a probe waits for the
+   * provider's first stream frame, and the ordinary command budget is shorter
+   * than that wait — routed through it, a slow provider would be reported as a
+   * transport failure instead of as its own answer.
+   */
+  it("sends the form's inputs to the dedicated probe command", async () => {
+    const outcome = { level: "high", ok: false, error: "unsupported value" };
+    invokeMock.mockResolvedValue(outcome);
+    const probe = {
+      api: "anthropic",
+      baseUrl: "https://api.example.test",
+      modelId: "claude-ish",
+      level: "high",
+      providerId: "acme",
+    };
+
+    await expect(probeRemoteThinkingLevel("desktop_a", probe)).resolves.toEqual(outcome);
+    expect(lastCall()).toEqual({
+      args: { desktopId: "desktop_a", probe },
+      command: "remote_peer_probe_thinking_level",
     });
   });
 });

@@ -11,6 +11,7 @@ import { useProviderNames } from "../../../integrations/agent/useProviderNames";
 import { isWriteOnlySandbox, useSandboxAvailability } from "../../../integrations/agent/useSandboxAvailability";
 import { isLinux, isWindows } from "../../../lib/platform";
 import { useCommand } from "../../keyboard/commands";
+import { SendChoiceMenu } from "./SendChoiceMenu";
 
 /** Approval-tier order for the composer dropdown (availability is host-gated). */
 const APPROVAL_TIERS: ApprovalTier[] = ["manual", "sandbox", "auto", "off"];
@@ -355,45 +356,14 @@ export function ComposerControls({ disabled, preparing, modelId, modelOptions, m
                     /* A run is streaming and there is something to send: the button
                        asks what "send" should mean here. The draft is never taken
                        away by pressing it — only by picking a row. */
-                    <SelectMenu
-                      align="right"
+                    <SendChoiceMenu
+                      count={queue.count}
+                      disabled={disabled || sendPending || compactionPending || recommendPending}
+                      onEnqueue={queue.onEnqueue}
+                      onInterruptAndSend={queue.onInterruptAndSend}
+                      onOpenChange={queue.onChoiceOpenChange}
                       open={queue.choiceOpen}
-                      onDismiss={() => queue.onChoiceOpenChange(false)}
-                      panelClassName="w-72 overflow-hidden"
-                      trigger={(
-                        <button
-                          className="inline-flex size-7 items-center justify-center rounded-md bg-accent-fill text-white transition-colors hover:bg-accent-fill-hover disabled:bg-accent-fill-disabled"
-                          disabled={disabled || sendPending || compactionPending || recommendPending}
-                          onClick={() => queue.onChoiceOpenChange(!queue.choiceOpen)}
-                          type="button"
-                          aria-label={t("composer.sendWhileRunning.choose")}
-                          title={t("composer.sendWhileRunning.choose")}
-                        >
-                          <ArrowUp className="size-3.5" />
-                        </button>
-                      )}
-                    >
-                      <SelectMenuItem className="py-1.5" selected={false} onSelect={queue.onEnqueue}>
-                        <span className="min-w-0 flex-1 space-y-0.5">
-                          <span className="block truncate font-medium leading-tight text-ink">
-                            {t("composer.sendWhileRunning.queue")}
-                          </span>
-                          <span className="block text-xs leading-tight text-ink-muted">
-                            {t("composer.sendWhileRunning.queueHint")}
-                          </span>
-                        </span>
-                      </SelectMenuItem>
-                      <SelectMenuItem className="py-1.5" selected={false} onSelect={queue.onInterruptAndSend}>
-                        <span className="min-w-0 flex-1 space-y-0.5">
-                          <span className="block truncate font-medium leading-tight text-ink">
-                            {t(queue.count > 0 ? "composer.sendWhileRunning.interruptAll" : "composer.sendWhileRunning.interrupt")}
-                          </span>
-                          <span className="block text-xs leading-tight text-ink-muted">
-                            {t(queue.count > 0 ? "composer.sendWhileRunning.interruptAllHint" : "composer.sendWhileRunning.interruptHint")}
-                          </span>
-                        </span>
-                      </SelectMenuItem>
-                    </SelectMenu>
+                    />
                   )
                 : (
                     <button

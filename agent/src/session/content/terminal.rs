@@ -52,6 +52,14 @@ pub(crate) fn publish(tx: &Transaction<'_>, session: &str, entry: &Value) -> Res
             data[field] = value.clone();
         }
     }
+    // The run's reply closed by offering the reader a choice. Clients that list
+    // conversations read it to badge "this one is waiting on your answer"; it is
+    // carried on the terminal event so the desktop's run row learns it at the
+    // same moment it learns the run finished. Absent (rather than `false`) when
+    // there is no card, which is what every producer before this field meant.
+    if content["offers_choice"].as_bool() == Some(true) {
+        data["offers_choice"] = json!(true);
+    }
     if state == crate::session::RUN_STATE_INCOMPLETE
         || state == crate::session::RUN_STATE_INTERRUPTED_BY_RESTART
     {

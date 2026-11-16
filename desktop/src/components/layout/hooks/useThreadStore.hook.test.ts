@@ -746,6 +746,48 @@ describe("useThreadStore", () => {
     vi.useRealTimers();
   });
 
+  /**
+   * A settled run carries a fact the push does not spell out: whether its reply
+   * closed with a choice card (`offersChoice` on the row). The push is what says
+   * "this run just ended", and the row read that follows is what puts the mark
+   * on the rail — instead of the reader waiting up to the reconciliation pass for
+   * a conversation they never opened.
+   */
+  it("re-reads a settled run's row so a reply that offered a choice is marked", async () => {
+    const h = await mountStore();
+    listLatestRunInfos.mockResolvedValue([
+      { threadId: "t1", runId: "r2", status: "completed", endedAt: 5, offersChoice: true },
+    ]);
+    act(() => {
+      listeners.get("thread-runtime-updated")?.({
+        payload: {
+          updates: [{ threadId: "t1", revision: 2, runId: "r2", status: "completed", resetProjection: false }],
+        },
+      });
+    });
+    await flushAsync();
+    expect(h.current.threadRunStatuses.t1).toMatchObject({
+      offersChoice: true,
+      runId: "r2",
+      status: "completed",
+    });
+    // A settling run that offered nothing clears any earlier mark, because the
+    // row's own value is what the list draws.
+    listLatestRunInfos.mockResolvedValue([
+      { threadId: "t1", runId: "r3", status: "completed", endedAt: 9, offersChoice: false },
+    ]);
+    act(() => {
+      listeners.get("thread-runtime-updated")?.({
+        payload: {
+          updates: [{ threadId: "t1", revision: 3, runId: "r3", status: "completed", resetProjection: false }],
+        },
+      });
+    });
+    await flushAsync();
+    expect(h.current.threadRunStatuses.t1).toMatchObject({ offersChoice: false, runId: "r3" });
+    h.unmount();
+  });
+
   it("drops a stale reconciliation response when a push invalidated it", async () => {
     vi.useFakeTimers();
     const h = renderHook(() => useThreadStore());

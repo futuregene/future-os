@@ -1918,6 +1918,74 @@ async fn queued_follow_ups_keep_model_context_sidecars_independent() {
     session.abort_run(Some(&started.run_id)).unwrap();
 }
 
+/// An edit corrects what the queue holds, where it holds it: the same run id, the
+/// same sequence, and everything the prompt was accepted with — its model-context
+/// sidecar included — untouched. A removal and a re-send would have answered just
+/// as successfully while sending the message to the back of the queue.
+#[tokio::test(flavor = "current_thread")]
+async fn an_edited_queued_prompt_is_corrected_where_it_waits() {
+    let provider = ScriptedProvider::new(vec![
+        Script::Stall(vec![text_event("stalled")]),
+        Script::Stall(vec![text_event("second")]),
+    ]);
+    let fixture = run_fixture(provider, "edit-queued-in-place");
+    let mut session = fixture.session;
+
+    let first = session.prompt("first", &[], &[], None, None).unwrap();
+    for _ in 0..200 {
+        if session.runtime.snapshot().is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    let a = session
+        .enqueue_prompt_with_model_context(
+            PromptText::new("keep me", ""),
+            &[],
+            &[],
+            None,
+            "req-2",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    let b = session
+        .enqueue_prompt_with_model_context(
+            PromptText::new("fix me", "context-b"),
+            &[],
+            &[],
+            None,
+            "req-3",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+
+    session.edit_queued_run(&b.run_id, "fixed").unwrap();
+
+    let queued = session.scheduler.queued();
+    assert_eq!(
+        queued
+            .iter()
+            .map(|run| run.run_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![a.run_id.as_str(), b.run_id.as_str()],
+        "the corrected message did not move"
+    );
+    assert_eq!(queued[1].payload["message"], "fixed");
+    assert_eq!(
+        queued[1].payload["model_context"], "context-b",
+        "the correction changes the words, not what the run reads"
+    );
+    assert_eq!(
+        Some(queued[1].run_sequence),
+        b.run_sequence,
+        "an edit is not a new submission"
+    );
+    // A prompt that is not waiting is not the queue's to correct.
+    assert!(session.edit_queued_run(&first.run_id, "nope").is_err());
+
+    session.abort_run(Some(&first.run_id)).unwrap();
+}
+
 // ─── batch 3: rare error arms ──────────────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]

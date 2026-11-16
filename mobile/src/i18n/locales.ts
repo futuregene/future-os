@@ -90,6 +90,13 @@ export const resources = {
         openCommit: "Open commit {{sha}}: {{subject}}",
         /** Named for the screen reader: the graph is a picture of the lanes. */
         graphLabel: "Commit {{sha}} on lane {{lane}}",
+        ref: {
+          checkedOut: "Here",
+          yes: "checked out",
+          branches: "Branches",
+          remotes: "Remote",
+          tags: "Tags",
+        },
       },
       remote: "Phone Control",
       desktops: {
@@ -407,6 +414,7 @@ export const resources = {
         archivedBack: "All conversations",
         archive: "Archive",
         restore: "Unarchive",
+        pendingChoice: "This reply is waiting on your choice",
         archiveFailed: "Couldn't archive or unarchive it. Reconnect and try again.",
         archiveRunningTitle: "This conversation is running",
         archiveRunningConfirm:
@@ -454,6 +462,28 @@ export const resources = {
           "Could not delete the workspace. Reconnect and retry.",
         openOnDesktopFailed:
           "Could not switch to {{name}} to open that conversation. Reconnect and retry.",
+      },
+      // A `futureos-choice` card's own wording (design
+      // `docs/design/choice-cards.zh-CN.md` §9): the model supplies the question and
+      // the options, never these.
+      choice: {
+        mode: { single: "Single choice", multi: "Multiple choice" },
+        hint: {
+          single: "Pick one and it lands in the input; you can type something else instead",
+          multi: "Pick as many as apply",
+          readonly: "An earlier question — this card can no longer be picked",
+        },
+        foot: {
+          queued: "Chosen — the answer is above the input. Send it as is, or add a note first.",
+        },
+        chip: {
+          change: "Change the answer to \"{{title}}\"",
+          remove: "Remove the answer to \"{{title}}\"",
+        },
+        sheet: {
+          title: "Change \"{{title}}\"",
+          hint: "Pick another one and the answer above the input follows.",
+        },
       },
       chat: {
         "fusionTitle": "Fusion · Discussion",
@@ -553,8 +583,10 @@ export const resources = {
           removeLastAttachment: "This message is only files. Use the bin to remove it.",
           emptyMessage: "A message needs some text or a file.",
           emptyEdit: "A message needs some text. Use the bin to remove it.",
+          emptyChoice: "A waiting message needs one answer picked. Use the bin to remove it.",
           edit: "Edit queued message",
           editLabel: "Queued message text",
+          choiceChange: "Change the answer to \"{{title}}\": {{label}}",
           editDropsFiles: "This desktop does not report the files this message carries, so saving sends the new text only.",
           previewAttachment: "Open {{name}}",
           removeAttachment: "Remove {{name}}",
@@ -658,6 +690,7 @@ export const resources = {
           "Loading this conversation timed out. Please try again.",
         loadingOlder: "Loading earlier messages…",
         loadOlderFailed: "Couldn't load earlier messages — tap to retry",
+        loadOlderTruncated: "Earlier messages aren't all loaded — tap to load them",
         model: "Model",
         thinkingLevel: "Thinking",
         rename: "Rename",
@@ -1038,6 +1071,8 @@ export const resources = {
         baseUrlHint: "The address the desktop calls for this provider.",
         baseUrlRequired: "Enter the Base URL.",
         baseUrlInvalid: "Enter a valid http(s) Base URL.",
+        skipTlsVerify: "Skip TLS certificate verification",
+        skipTlsVerifyHint: "For an endpoint with a self-signed certificate or one no system CA issued (e.g. a self-hosted gateway). The connection stays encrypted; the desktop just stops checking who is on the other end. Only enable it for an endpoint you trust.",
         save: "Save",
         providerId: "Provider ID",
         providerIdHint: "Lowercase letters, digits, '-' and '_'. It cannot be changed later.",
@@ -1062,6 +1097,14 @@ export const resources = {
         modelSupportsImagesHint: "Send image attachments to this model.",
         modelThinkingLevels: "Thinking levels",
         modelThinkingLevelsHint: "The extra levels this model accepts. Default is always available.",
+        probeThinkingLevels: "Detect thinking levels",
+        probeRunning: "Trying {{level}}…",
+        probeAccepted: "{{count}} levels accepted.",
+        probeNone: "No extra level was accepted; only the default level remains.",
+        probeCalibrationFailed: "The endpoint refused the request without a thinking parameter: {{error}}",
+        probeFailed: "Detection stopped: {{error}}",
+        probeNeedModelId: "Enter a model ID before detecting thinking levels.",
+        probeNeedBaseUrl: "Enter a valid Base URL before detecting thinking levels.",
         modelThinkingLevelsMax: "Model `{{id}}` can offer at most 16 thinking levels.",
         modelPrices: "Prices (per 1M tokens)",
         modelPriceInput: "Input",
@@ -1353,6 +1396,13 @@ export const resources = {
         commitFailed: "无法读取该提交，请重试。",
         openCommit: "打开提交 {{sha}}：{{subject}}",
         graphLabel: "提交 {{sha}}，第 {{lane}} 条甬道",
+        ref: {
+          checkedOut: "当前",
+          yes: "已检出",
+          branches: "分支",
+          remotes: "远端",
+          tags: "标签",
+        },
       },
       remote: "手机遥控",
       desktops: {
@@ -1618,6 +1668,7 @@ export const resources = {
         archivedBack: "全部会话",
         archive: "归档",
         restore: "取消归档",
+        pendingChoice: "这条回复在等你选一项",
         archiveFailed: "归档或取消归档失败，请恢复连接后重试。",
         archiveRunningTitle: "会话正在进行中",
         archiveRunningConfirm: "「{{name}}」正在运行，结束或停止后才能归档。",
@@ -1660,6 +1711,25 @@ export const resources = {
         deleteWorkspaceFailed: "工作区删除失败，请恢复连接后重试。",
         openOnDesktopFailed:
           "切换到「{{name}}」打开该会话失败，请恢复连接后重试。",
+      },
+      choice: {
+        mode: { single: "单选", multi: "多选" },
+        hint: {
+          single: "选一个就放进输入框；也可以直接在输入框里写别的",
+          multi: "可以多选，点几个都行",
+          readonly: "只作展示：这张卡不能选",
+        },
+        foot: {
+          queued: "已选，答案在下面的输入框上方；可以直接发送，也可以补充文字",
+        },
+        chip: {
+          change: "修改「{{title}}」的选择",
+          remove: "移除「{{title}}」的选择",
+        },
+        sheet: {
+          title: "修改「{{title}}」",
+          hint: "换个选项，输入框里的答案跟着变",
+        },
       },
       chat: {
         "fusionTitle": "Fusion · 讨论",
@@ -1759,8 +1829,10 @@ export const resources = {
           removeLastAttachment: "这条消息只有文件，要删它请点旁边的垃圾桶。",
           emptyMessage: "消息需要一点文字或一个文件。",
           emptyEdit: "消息需要一点文字，要删它请点旁边的垃圾桶。",
+          emptyChoice: "等待中的消息要保留一个选择，要删它请点旁边的垃圾桶。",
           edit: "修改队列中的消息",
           editLabel: "队列消息内容",
+          choiceChange: "更换这条消息里的选择：{{title}} · {{label}}",
           editDropsFiles: "这个桌面没有上报这条消息带的文件，保存只会重发文字。",
           previewAttachment: "打开 {{name}}",
           removeAttachment: "移除 {{name}}",
@@ -1844,6 +1916,7 @@ export const resources = {
         historyLoadTimedOut: "加载对话超时，请重试。",
         loadingOlder: "正在加载更早的对话…",
         loadOlderFailed: "更早的对话没能加载出来，点按重试",
+        loadOlderTruncated: "更早的对话未全部载入，点按加载",
         model: "模型",
         thinkingLevel: "思考强度",
         rename: "重命名",
@@ -2189,6 +2262,8 @@ export const resources = {
         baseUrlHint: "桌面端访问该提供商使用的地址。",
         baseUrlRequired: "请填写 Base URL。",
         baseUrlInvalid: "请填写合法的 http(s) 地址。",
+        skipTlsVerify: "忽略 TLS 证书校验",
+        skipTlsVerifyHint: "适用于使用自签名证书、或不是系统 CA 签发证书的地址（例如自建网关）。连接仍会加密，只是桌面端不再校验对端身份。请只对你信任的地址开启。",
         save: "保存",
         providerId: "提供商 ID",
         providerIdHint: "小写字母、数字、'-' 和 '_'，创建后不可修改。",
@@ -2213,6 +2288,14 @@ export const resources = {
         modelSupportsImagesHint: "可以向该模型发送图片附件。",
         modelThinkingLevels: "思考等级",
         modelThinkingLevelsHint: "该模型额外支持的思考等级；默认等级始终可选。",
+        probeThinkingLevels: "探测思考等级",
+        probeRunning: "正在尝试 {{level}}……",
+        probeAccepted: "已确认 {{count}} 个等级可用。",
+        probeNone: "没有额外等级被接受，只保留默认等级。",
+        probeCalibrationFailed: "端点拒绝了不带思考参数的请求：{{error}}",
+        probeFailed: "探测中断：{{error}}",
+        probeNeedModelId: "请先填写模型 ID。",
+        probeNeedBaseUrl: "请先填写有效的 Base URL。",
         modelThinkingLevelsMax: "模型「{{id}}」最多支持 16 个思考等级。",
         modelPrices: "价格（每 100 万 token）",
         modelPriceInput: "输入",

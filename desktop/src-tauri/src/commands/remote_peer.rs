@@ -175,6 +175,28 @@ pub async fn remote_peer_request<R: tauri::Runtime>(
     runtime::request(&desktop_id, command, lane.as_deref().unwrap_or("list")).await
 }
 
+/// Ask a host whether one thinking level works for the provider its user is
+/// editing.
+///
+/// Its own command, like `remote_peer_list_files`, because it needs a longer
+/// budget than `remote_peer_request`: a probe waits for the provider's first
+/// stream frame (the Agent bounds that at 30 s), and the ordinary 10 s command
+/// budget would report a slow provider as a transport failure instead of as its
+/// own answer.
+#[tauri::command]
+pub async fn remote_peer_probe_thinking_level(
+    desktop_id: String,
+    probe: Value,
+) -> Result<Value, crate::AppError> {
+    runtime::request_within(
+        &desktop_id,
+        serde_json::json!({ "type": "probe_thinking_level", "probe": probe }),
+        "list",
+        std::time::Duration::from_secs(40),
+    )
+    .await
+}
+
 /// Upload a local file to a host, and return the id that references it there.
 ///
 /// The id is the whole point: the host keeps the bytes in a staging area, and a

@@ -32,9 +32,11 @@ function readStoredWidth(): number {
  * Clamp a desired right-panel width so the center keeps ≥ `MIN_CENTER` and the
  *  right keeps ≥ `MIN_RIGHT`. `centerLeft` is the center pane's left edge (i.e.
  *  the left rail's right edge); the window right edge is the app's right edge.
+ *  `reserveRight` is space another column already holds between this panel and
+ *  the window's edge — the terminal, when it is docked to the right.
  */
-function clampWidth(desired: number, centerLeft: number): number {
-  const available = window.innerWidth - centerLeft;
+function clampWidth(desired: number, centerLeft: number, reserveRight: number): number {
+  const available = window.innerWidth - centerLeft - reserveRight;
   // Center is the priority: never let it fall below MIN_CENTER. On a window too
   // narrow to honor both floors, the upper bound wins and the right panel takes
   // whatever is left (Math.max keeps the range non-inverted).
@@ -46,8 +48,16 @@ function clampWidth(desired: number, centerLeft: number): number {
  * Drag-to-resize state for the right context panel. `centerRef` points at the
  * center `<main>` element so the clamp can read its live left edge (which moves
  * when the left rail expands/collapses or the window resizes).
+ *
+ * `reserveRight` is read at clamp time rather than passed as a number: the
+ * terminal's width lives in a hook declared after this one (it needs the
+ * conversations), so the shell hands over a getter over its latest value. Only
+ * the clamp paths call it, and they all run from an event or an effect.
  */
-export function useRightPanelWidth(centerRef: RefObject<HTMLElement | null>) {
+export function useRightPanelWidth(
+  centerRef: RefObject<HTMLElement | null>,
+  reserveRight: () => number = () => 0,
+) {
   const [width, setWidth] = useState<number>(readStoredWidth);
   const [resizing, setResizing] = useState(false);
   const centerLeftRef = useRef(0);
@@ -67,8 +77,8 @@ export function useRightPanelWidth(centerRef: RefObject<HTMLElement | null>) {
 
   const reclamp = useCallback(() => {
     const centerLeft = centerRef.current?.getBoundingClientRect().left ?? 0;
-    setWidth(current => clampWidth(current, centerLeft));
-  }, [centerRef]);
+    setWidth(current => clampWidth(current, centerLeft, reserveRight()));
+  }, [centerRef, reserveRight]);
 
   // Re-clamp on mount and whenever the window resizes, so a shrunk window (or a
   // width restored from a larger session) can't leave the center below its floor.
@@ -88,7 +98,7 @@ export function useRightPanelWidth(centerRef: RefObject<HTMLElement | null>) {
     setResizing(true);
 
     const onMove = (moveEvent: globalThis.MouseEvent) => {
-      setWidth(clampWidth(window.innerWidth - moveEvent.clientX, centerLeftRef.current));
+      setWidth(clampWidth(window.innerWidth - moveEvent.clientX, centerLeftRef.current, reserveRight()));
     };
     const onUp = () => {
       setResizing(false);
@@ -99,15 +109,15 @@ export function useRightPanelWidth(centerRef: RefObject<HTMLElement | null>) {
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
     dragCleanupRef.current = onUp;
-  }, [centerRef]);
+  }, [centerRef, reserveRight]);
 
   // Detach any in-progress resize drag on unmount (the normal path detaches on mouseup).
   useEffect(() => () => dragCleanupRef.current?.(), []);
 
   const nudge = useCallback((deltaPx: number) => {
     const centerLeft = centerRef.current?.getBoundingClientRect().left ?? 0;
-    setWidth(current => clampWidth(current + deltaPx, centerLeft));
-  }, [centerRef]);
+    setWidth(current => clampWidth(current + deltaPx, centerLeft, reserveRight()));
+  }, [centerRef, reserveRight]);
 
   return { width, resizing, startResize, reclamp, nudge };
 }

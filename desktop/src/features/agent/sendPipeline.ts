@@ -73,7 +73,7 @@ export interface SendPipelineDeps {
  */
 export async function runSendPipeline(
   { thread, modelId, thinkingLevel, setMessages, setRecentRun, refreshRecentRun, onThreadActivity, isCurrentSend, onAccepted, busyPolicy }: SendPipelineDeps,
-  { attachments, content }: ComposerSendPayload,
+  { attachments, content, choice }: ComposerSendPayload,
 ): Promise<void> {
   // Validate and prepare images before adding optimistic messages. A failed
   // decode rejects the send, leaves the composer draft intact, and surfaces a
@@ -218,6 +218,10 @@ export async function runSendPipeline(
       attachments: attachmentInputs(importedAttachments),
       thinkingLevel,
       ...(busyPolicy ? { busyPolicy } : {}),
+      // Kept beside the message, not folded into it: the sentence already names
+      // the picked option, and this is what the Agent stores so a row still
+      // waiting can offer a different one (§5.8).
+      ...(choice ? { choice } : {}),
     });
     acknowledge();
     await finalizeTemporaryAttachmentSources(preparedAttachments.temporarySources);

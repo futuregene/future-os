@@ -3,9 +3,9 @@
 //! and the parent module's prompt finalization.
 
 use super::client::{
-    cancel_queued_run_command, compact_command, connect_agent, get_state_command,
-    is_session_not_found, map_rpc_error, release_queued_run_command, run_control_command,
-    RpcResponseExt,
+    archive_shell_outputs_command, cancel_queued_run_command, compact_command, connect_agent,
+    get_state_command, is_session_not_found, map_rpc_error, release_queued_run_command,
+    run_control_command, RpcResponseExt,
 };
 use super::replica::AGENT_REPLICAS;
 use crate::store;
@@ -346,6 +346,67 @@ pub async fn release_queued_run(session_id: &str, run_id: &str) -> Result<(), cr
     Ok(())
 }
 
+/// Correct one waiting prompt's words, in the place it already holds.
+///
+/// The reader ordered this queue by hand, so a corrected message stays in its
+/// slot: the Agent replaces the text of the accepted prompt in place instead of
+/// dropping the row and sending a new one, which would have put the correction at
+/// the back. Everything else about the accepted prompt — its files, images, model
+/// context and frozen run settings — is untouched, which is also why nothing has
+/// to be re-read here.
+pub async fn edit_queued_run(
+    session_id: &str,
+    run_id: &str,
+    message: &str,
+) -> Result<(), crate::Error> {
+    edit_queued_run_with_choice(session_id, run_id, message, None).await
+}
+
+/// The same in-place edit, restating the answer the corrected words send.
+///
+/// `None` corrects the words alone and leaves the accepted answer untouched, so
+/// fixing a typo cannot silently drop the option the reader picked. The caller
+/// that changes an answer derives both from one state and passes `Some` — a row
+/// whose chip and text disagreed about what will be sent would be worse than
+/// either alone.
+pub async fn edit_queued_run_with_choice(
+    session_id: &str,
+    run_id: &str,
+    message: &str,
+    choice: Option<future_rpc::payloads::QueuedRunChoice>,
+) -> Result<(), crate::Error> {
+    if run_id.trim().is_empty() {
+        return Err("Run id is required to change a queued message.".into());
+    }
+    // An answer-only change still has to name the message it belongs to, but it
+    // is a legitimate edit even when the message is nothing but the answer: the
+    // row's text already carries `[question → answer]`, so an empty `message`
+    // here means the caller had nothing new to say about it.
+    if message.trim().is_empty() && choice.is_none() {
+        return Err("A queued message needs some text; remove it instead.".into());
+    }
+    let mut client = connect_agent().await?;
+    super::verify_session_database(&mut client, session_id).await?;
+    let response = client
+        .execute_command(crate::agent_commands::edit_queued_run_command_with_choice(
+            run_id.to_string(),
+            message.to_string(),
+            session_id.to_string(),
+            choice,
+        ))
+        .await
+        .map_err(|error| format!("Unable to change the queued message: {error}"))?
+        .into_inner();
+    if !response.success {
+        return Err(format!(
+            "Future Agent did not change the queued message: {}",
+            response.error
+        )
+        .into());
+    }
+    Ok(())
+}
+
 pub(super) fn mark_run_failed_if_active(run_id: Option<&str>, error: &str) {
     let Some(run_id) = run_id else {
         return;
@@ -497,6 +558,25 @@ pub async fn compact_thread_context(thread_id: String) -> Result<serde_json::Val
 /// same operation and validate the same acknowledgement. The Agent answers an
 /// acceptance carrying the operation id; the checkpoint itself is reported
 /// later on the compacting session's event stream.
+/// Remove archived Shell output without breaking provider tool-call pairing.
+/// The Agent preserves the call, result status and timestamps, replaces only
+/// the output body, and retires replay data for every affected run.
+pub async fn purge_archived_shell_outputs(
+    session_id: String,
+) -> Result<serde_json::Value, crate::Error> {
+    let mut client = connect_agent()
+        .await
+        .map_err(|error| format!("Future Agent unreachable: {error}"))?;
+    super::verify_session_database(&mut client, &session_id).await?;
+    let response = client
+        .execute_command(archive_shell_outputs_command(session_id))
+        .await
+        .map_err(|error| format!("archive run-log cleanup failed: {error}"))?
+        .into_inner()
+        .ok_or_rpc_error("archive run-log cleanup returned an error")?;
+    Ok(future_rpc::decode::response_data(&response))
+}
+
 pub async fn compact_agent_session(session_id: String) -> Result<serde_json::Value, crate::Error> {
     let mut client = connect_agent()
         .await
@@ -592,6 +672,26 @@ mod tests {
         seed_workspace, Reply, TestHome,
     };
     use super::*;
+
+    #[tokio::test]
+    async fn archive_cleanup_uses_the_shell_output_only_reset_selector() {
+        let _home = TestHome::new("archive-shell-output-reset");
+        let mock = mock_agent();
+        mock.push(
+            "reset_session_history",
+            Reply::Data(serde_json::json!({"applied": true}).to_string()),
+        );
+        let result = purge_archived_shell_outputs("session".into())
+            .await
+            .expect("archive cleanup");
+        assert_eq!(result["applied"], serde_json::json!(true));
+        let request = mock.requests_of("reset_session_history")[0]
+            .reset_history
+            .clone()
+            .expect("history reset");
+        assert!(request.apply);
+        assert_eq!(request.drop, vec!["archive-shell-outputs"]);
+    }
 
     #[tokio::test]
     async fn an_unanswered_state_rpc_cannot_exceed_the_idle_confirmation_budget() {

@@ -17,10 +17,12 @@ vi.mock("./MessageBlock", () => ({
     hovered: boolean;
     isLast: boolean;
     recoverySource: AgentMessage | null;
+    choiceAnswer?: unknown;
     onHover: (id: string) => void;
     onLeave: (id: string) => void;
   }) => (
     <div
+      data-choice={String(Boolean(props.choiceAnswer))}
       data-hovered={String(props.hovered)}
       data-last={String(props.isLast)}
       data-recovery={props.recoverySource?.id ?? ""}
@@ -117,7 +119,6 @@ it("renders one row per message and only the last one can be a recovery target",
 });
 
 it("tolerates an empty thread and a thread with no user message", () => {
-  // boundary: nothing to render.
   render([]);
   expect(container.querySelectorAll("[data-row]")).toHaveLength(0);
 
@@ -125,6 +126,21 @@ it("tolerates an empty thread and a thread with no user message", () => {
   render([assistant("a1")]);
   expect(row("a1").dataset.recovery).toBe("");
   expect(row("a1").dataset.last).toBe("true");
+});
+
+it("hands the choice card's answer surface to the trailing reply only", () => {
+  const surface = { onSelect: () => {}, selectedIds: [] };
+  act(() => root.render(<MessageList choiceAnswer={surface} messages={HISTORY} />));
+
+  // §2: an earlier reply's card asks a question that is already past, and the
+  // user's own messages are not where a card's answer is written.
+  expect(HISTORY.map(message => row(message.id).dataset.choice)).toEqual(["false", "false", "false", "true"]);
+
+  // A card still being written can be rewritten under the click, so the live
+  // surface waits for the reply to settle.
+  const streaming = [user("u1"), assistant("a1"), { ...assistant("a2"), status: "streaming" } as AgentMessage];
+  act(() => root.render(<MessageList choiceAnswer={surface} messages={streaming} />));
+  expect(row("a2").dataset.choice).toBe("false");
 });
 
 it("keeps at most one row's controls shown", () => {

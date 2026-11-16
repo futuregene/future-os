@@ -18,6 +18,9 @@ import { mimeFor, pickAttachments, pickFromAlbum, takePhoto } from "../../remote
 import { useConversationOperation } from "./useConversationOperation";
 import { useComposerSubmission } from "./composer/useComposerSubmission";
 import { useComposerDraft } from "./useComposerDraft";
+import { choiceAnswerFromCard, choiceAnswerText, pickChoiceOption, type ChoiceAnswer } from "./choiceAnswer";
+import type { ChoiceCardAnswer } from "../../components/ChoiceCard";
+import type { ChoiceCardNode } from "@future-os/markdown";
 import { useAttachmentPicker } from "./useAttachmentPicker";
 import { useChatFiles } from "./files/useChatFiles";
 import { useMarkdownImageLoader } from "./useMarkdownImageLoader";
@@ -52,6 +55,20 @@ import { showToast } from "./utils";
 
 const SYNC_NOTICE_MIN_MS = 750;
 
+/**
+ * Whether the desktop answered a command it does not have.
+ *
+ * The phone and the desktop it drives are updated on their own schedules, so a
+ * command this build sends can reach a machine that predates it. "Unsupported
+ * command" is then the absence of the verb, not a failure of what the reader just
+ * did — the caller keeps the reader's action by falling back to what that version
+ * can do, instead of reporting an error for a feature it simply does not have.
+ */
+function isUnsupportedCommandError(error: unknown): boolean {
+  return (error instanceof Error ? error.message : String(error))
+    .includes("Unsupported command");
+}
+
 export function ChatScreen() {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -82,7 +99,17 @@ export function ChatScreen() {
   const gitOpen = !remote.draft && gitSession === conversationKey;
   const gitSupported = remote.capabilities.has("git_graph_v1");
   const gitRepo = gitProbe?.key === conversationKey ? gitProbe.isRepo : null;
+  // A surface that stacks pages inside itself (the Git history: a list, then one
+  // commit's patch) registers a stepper here, so the bar's single back button
+  // walks out the way it walked in. Set through a ref rather than state: it is
+  // read inside `goBack`, and storing it in state would re-render the whole
+  // conversation on every navigation inside the panel.
+  const panelBack = useRef<(() => boolean) | null>(null);
+  const registerPanelBack = useCallback((handler: () => boolean) => {
+    panelBack.current = handler;
+  }, []);
   const goBack = useCallback(() => {
+    if (gitOpen && panelBack.current?.()) return;
     if (gitOpen) setGitSession(null);
     else if (filesOpen) setFilesSession(null);
     else {
@@ -221,9 +248,47 @@ export function ChatScreen() {
   // plain label there rather than offering an expansion it cannot deliver.
   const reasoningFetchSupported = remote.capabilities.has("reasoning_fetch_v1");
 
-  const { message, setMessage, attachments, setAttachments, sessionRefs, rememberSessionRef, restoring } = useComposerDraft(
+  const { message, setMessage, attachments, setAttachments, choice, setChoice, sessionRefs, rememberSessionRef, restoring } = useComposerDraft(
     remote,
     t,
+  );
+  /**
+   * A `futureos-choice` row was picked (§6 b): the answer belongs to the draft, so
+   * this writes the draft and nothing else — the card's marked row and the chip
+   * above the field both re-read it from there (§2).
+   *
+   * Picking on a *different* question starts that question's answer over: an old
+   * answer must not lend its option ids to a card that asked something else.
+   */
+  const pickChoice = useCallback((card: ChoiceCardNode, optionId: string) => {
+    setChoice((current) => {
+      const base = current?.title === card.title ? current : choiceAnswerFromCard(card);
+      // Unticking the last option of a multi-choice answer leaves no answer at
+      // all — `setChoice` drops it and the chip goes with it (`answerOrNull`).
+      return pickChoiceOption(base, optionId);
+    });
+  }, [setChoice]);
+  const clearChoice = useCallback(() => setChoice(null), [setChoice]);
+  /**
+   * What the transcript may do with the draft's answer.
+   *
+   * Handed to every reply (`TimelineCard` gives it to the thread's last settled
+   * reply, and only to that reply's last card): an older card's question is
+   * already answered, and letting it change would make "which pick am I editing"
+   * unanswerable (§2).
+   *
+   * It is present **before** anything is picked — an empty answer is what the first
+   * pick is written into — so a card's rows are live even though the draft holds
+   * nothing yet. `title` is empty until an answer exists, which is what keeps every
+   * row unmarked; `MarkdownText` matches rows against it.
+   */
+  const choiceCardAnswer = useMemo<ChoiceCardAnswer>(
+    () => ({
+      onPick: pickChoice,
+      selectedIds: choice?.selectedIds ?? [],
+      title: choice?.title ?? "",
+    }),
+    [choice, pickChoice],
   );
   const { openAttachmentMenu, attachmentMenu, albumPicker } = useAttachmentPicker(
     attachments,
@@ -276,6 +341,7 @@ export function ChatScreen() {
   const queuePanelItems = useMemo(
     () => queuedRows.map(row => ({
       attachments: row.attachments,
+      choice: row.choice,
       content: row.text,
       id: row.runId,
       parked: isParkedSessionQueueRow(row),
@@ -329,9 +395,9 @@ export function ChatScreen() {
   }, [changeQueue, remote, sessionId]);
 
   /**
-   * Replace a waiting message.
+   * Replace a waiting message, for a desktop with no in-place edit.
    *
-   * The session has no rename and no attachment edit, so an edit is the row taken
+   * The session has no attachment edit on such a host, so this is the row taken
    * back and sent again: its files are copied down FIRST (a row cancelled before
    * its files arrived would lose them), then the queued run is cancelled, then the
    * new text and files are sent — which also queues it behind whatever else waits,
@@ -339,32 +405,38 @@ export function ChatScreen() {
    * files back in the box: the row is gone on the desktop by then, and losing the
    * correction as well would leave nothing to retry.
    */
+  const resendQueuedMessage = useCallback(async (
+    row: SessionQueueRow,
+    text: string,
+    loadAttachments: () => Promise<MobileAttachment[]>,
+  ) => {
+    const attachments = await loadAttachments();
+    // A message needs words or files. Refusing before the cancel is what keeps
+    // the row: the sender answers an empty prompt by doing nothing, so a cancel
+    // first would take the message away and send nothing in its place.
+    if (!text.trim() && attachments.length === 0) {
+      showToast(t("chat.queue.emptyMessage"));
+      return;
+    }
+    await remote.cancelQueuedRun(sessionId, row.runId);
+    forgetQueuedRow(row.runId);
+    try {
+      await remote.sendMessage(text, attachments, undefined, { busyPolicy: QUEUED_SEND_POLICY });
+    }
+    catch (error) {
+      setMessage(current => (current.trim() ? current : text));
+      setAttachments(current => [...attachments, ...current]);
+      throw error;
+    }
+  }, [forgetQueuedRow, remote, sessionId, setAttachments, setMessage, t]);
+
   const replaceQueuedMessage = useCallback((
     row: SessionQueueRow,
     text: string,
     loadAttachments: () => Promise<MobileAttachment[]>,
   ) => {
-    changeQueue(async () => {
-      const attachments = await loadAttachments();
-      // A message needs words or files. Refusing before the cancel is what keeps
-      // the row: the sender answers an empty prompt by doing nothing, so a cancel
-      // first would take the message away and send nothing in its place.
-      if (!text.trim() && attachments.length === 0) {
-        showToast(t("chat.queue.emptyMessage"));
-        return;
-      }
-      await remote.cancelQueuedRun(sessionId, row.runId);
-      forgetQueuedRow(row.runId);
-      try {
-        await remote.sendMessage(text, attachments, undefined, { busyPolicy: QUEUED_SEND_POLICY });
-      }
-      catch (error) {
-        setMessage(current => (current.trim() ? current : text));
-        setAttachments(current => [...attachments, ...current]);
-        throw error;
-      }
-    });
-  }, [changeQueue, forgetQueuedRow, remote, sessionId, setAttachments, setMessage, t]);
+    changeQueue(() => resendQueuedMessage(row, text, loadAttachments));
+  }, [changeQueue, resendQueuedMessage]);
 
   /** A queued file as this phone can send it: a local copy, downloaded on demand. */
   const materializeQueuedAttachment = useCallback(async (
@@ -400,10 +472,17 @@ export function ChatScreen() {
   }, [remote]);
 
   /**
-   * Rewrite a waiting message, keeping the files it carries.
+   * Correct a waiting message where it already holds its place.
    *
-   * The files used to be dropped here, which is what the editor warned about. Now
-   * the row reports them, so the correction keeps them: text changes, photos stay.
+   * The desktop edits the accepted prompt in place, so the row keeps its slot and
+   * the files it carries. It used to be a cancel and a re-send, and a re-send
+   * enters the queue at the back: a typo fixed in the second of four waiting
+   * messages went out after the fourth, an order the reader never chose (reported
+   * 2026-11-14).
+   *
+   * A desktop too old for the command answers "Unsupported command", and is edited
+   * the only way that version can be: [`resendQueuedMessage`], which is also how
+   * this phone's own file changes to a waiting row still work.
    */
   const updateQueuedMessage = useCallback((id: string, content: string) => {
     const text = content.trim();
@@ -417,10 +496,71 @@ export function ChatScreen() {
       return;
     }
     const reported = row.attachments;
-    replaceQueuedMessage(row, text, () => reported === undefined
-      ? Promise.resolve([])
-      : Promise.all(reported.map(materializeQueuedAttachment)));
-  }, [materializeQueuedAttachment, queuedRows, replaceQueuedMessage, t]);
+    const carry = () => reported === undefined
+      ? Promise.resolve([] as MobileAttachment[])
+      : Promise.all(reported.map(materializeQueuedAttachment));
+    changeQueue(async () => {
+      try {
+        await remote.editQueuedRun(sessionId, row.runId, text);
+        return;
+      }
+      catch (error) {
+        if (!isUnsupportedCommandError(error))
+          throw error;
+      }
+      await resendQueuedMessage(row, text, carry);
+    });
+  }, [changeQueue, materializeQueuedAttachment, queuedRows, remote, resendQueuedMessage, sessionId, t]);
+
+  /**
+   * Change the pick a waiting message carries (§5.8.2).
+   *
+   * The row's own words say `[question → answer]`, so changing the answer means
+   * the sentence has to change with it — otherwise the message still runs with
+   * the old pick. Both travel in one `edit_queued_run`, and the choice rides
+   * along so the row keeps offering the other options.
+   */
+  const updateQueuedChoice = useCallback((id: string, next: ChoiceAnswer) => {
+    const row = queuedRows.find(item => item.runId === id);
+    if (!row?.choice)
+      return;
+    // Zero ticks is not an answer (design §7, §5.8.2): the row's sentence is
+    // `[question → answer]`, so rewriting it from an empty pick would queue
+    // `[接下来做哪一件？ → ]` — a question the agent reads as an answer — or leave
+    // only the bracketed question. Refused here rather than silently kept: the
+    // reader is editing a message that is already waiting, so its text must not
+    // change under them, and the row's bin is what removes it (the same shape as
+    // `removeQueuedAttachment`'s last-file refusal below).
+    if (next.selectedIds.length === 0) {
+      showToast(t("chat.queue.emptyChoice"));
+      return;
+    }
+    // The row's text is `[question → answer]` possibly followed by whatever the
+    // reader typed after it. Only the bracketed head is rewritten: the note the
+    // message was queued with is theirs, not the card's.
+    const answer = choiceAnswerText(next);
+    const note = row.text.replace(/^\[[^\]]+\]\s*/u, "");
+    const text = note.trim() ? `${answer} ${note.trim()}` : answer;
+    const reported = row.attachments;
+    const carry = () => reported === undefined
+      ? Promise.resolve([] as MobileAttachment[])
+      : Promise.all(reported.map(materializeQueuedAttachment));
+    changeQueue(async () => {
+      try {
+        await remote.editQueuedRun(sessionId, row.runId, text, {
+          mode: next.mode,
+          options: next.options,
+          selectedIds: next.selectedIds,
+          title: next.title,
+        });
+      }
+      catch (error) {
+        if (!isUnsupportedCommandError(error))
+          throw error;
+        await resendQueuedMessage(row, text, carry);
+      }
+    });
+  }, [changeQueue, materializeQueuedAttachment, queuedRows, remote, resendQueuedMessage, sessionId, t]);
 
   /** Open one file a waiting message carries, exactly as the transcript would. */
   const previewQueuedAttachment = useCallback((attachment: SendQueueAttachmentItem) => {
@@ -676,7 +816,7 @@ export function ChatScreen() {
   );
   const { sendFromComposer, dismissSuggestedSkill, installSuggestedSkill, installingSkill }
     = useComposerSubmission({
-      remote, t, message, attachments, restoring, setMessage, send: sendAndReadQueue,
+      remote, t, message, attachments, choice, clearChoice, restoring, setMessage, send: sendAndReadQueue,
       recommendation: skillRecommendation, scrollToLatest
     });
 
@@ -777,6 +917,7 @@ export function ChatScreen() {
     ({ item }: { item: TimelineItem; }) => (
       <View onLayout={onRowLayout}>
         <TimelineCard
+          choiceAnswer={choiceCardAnswer}
           item={item}
           isLatestAssistant={item.id === latestAssistantId}
           onOpenAttachment={handleTimelineAttachment}
@@ -791,6 +932,7 @@ export function ChatScreen() {
       </View>
     ),
     [
+      choiceCardAnswer,
       forkSupported,
       handleResolveReasoning,
       reasoningFetchSupported,
@@ -946,6 +1088,8 @@ export function ChatScreen() {
                     keyboardHeight={keyboardHeight}
                     message={message}
                     setMessage={setMessage}
+                    choice={choice}
+                    onChangeChoice={setChoice}
                     sessionRefs={sessionRefs}
                     rememberSessionRef={rememberSessionRef}
                     attachments={attachments}
@@ -981,6 +1125,7 @@ export function ChatScreen() {
                     queueItems={queuePanelItems}
                     queueNotice={queueNoticeText}
                     onQueueUpdate={updateQueuedMessage}
+                    onQueueUpdateChoice={updateQueuedChoice}
                     onQueueRemove={removeQueuedMessage}
                     onQueueRelease={releaseQueuedMessage}
                     onQueuePreviewAttachment={previewQueuedAttachment}
@@ -1014,6 +1159,7 @@ export function ChatScreen() {
                   listCommits={remote.listGitCommits}
                   getCommit={remote.getGitCommit}
                   onClose={() => setGitSession(null)}
+                  registerBack={registerPanelBack}
                 />
               )}
 

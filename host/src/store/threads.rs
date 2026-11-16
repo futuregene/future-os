@@ -32,6 +32,7 @@ pub struct ThreadRecord {
     pub created_at: i64,
     pub updated_at: i64,
     pub archived_at: Option<i64>,
+    pub restored_at: Option<i64>,
     pub deleted_at: Option<i64>,
 }
 
@@ -40,13 +41,24 @@ pub struct ThreadRecord {
 sql_record!(pub(super) THREAD_COLUMNS, thread_from_row -> ThreadRecord {
     id, workspace_id, mode, title, title_seed, status, pinned, readonly,
     agent_session_id, parent_session_id, asset_root_id, last_message_at, last_opened_at,
-    created_at, updated_at, archived_at, deleted_at,
+    created_at, updated_at, archived_at, restored_at, deleted_at,
 });
+
+const THREAD_COLUMNS_WITHOUT_RESTORE: &str = "id, workspace_id, mode, title, title_seed, status, pinned, readonly, agent_session_id, parent_session_id, asset_root_id, last_message_at, last_opened_at, created_at, updated_at, archived_at, NULL AS restored_at, deleted_at";
+
+pub(super) fn thread_columns(conn: &Connection) -> Result<&'static str, crate::Error> {
+    Ok(if column_exists(conn, "threads", "restored_at")? {
+        THREAD_COLUMNS
+    } else {
+        THREAD_COLUMNS_WITHOUT_RESTORE
+    })
+}
 
 pub fn list_threads() -> Result<Vec<ThreadRecord>, crate::Error> {
     let conn = connect()?;
+    let columns = thread_columns(&conn)?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT {THREAD_COLUMNS}
+        "SELECT {columns}
              FROM threads
              WHERE status != 'deleted'
              ORDER BY pinned DESC, COALESCE(last_message_at, updated_at, created_at) DESC"
@@ -58,9 +70,10 @@ pub fn list_threads() -> Result<Vec<ThreadRecord>, crate::Error> {
 
 pub fn get_recent_thread() -> Result<Option<ThreadRecord>, crate::Error> {
     let conn = connect()?;
+    let columns = thread_columns(&conn)?;
     conn.query_row(
         &format!(
-            "SELECT {THREAD_COLUMNS}
+            "SELECT {columns}
          FROM threads
          WHERE status = 'active'
          ORDER BY COALESCE(last_opened_at, last_message_at, updated_at) DESC
@@ -81,8 +94,9 @@ pub fn find_thread_by_agent_session(
     let conn = connect()?;
     conn.query_row(
         &format!(
-            "SELECT {THREAD_COLUMNS} FROM threads \
-             WHERE agent_session_id = ?1 AND status != 'deleted' LIMIT 1"
+            "SELECT {} FROM threads \
+             WHERE agent_session_id = ?1 AND status != 'deleted' LIMIT 1",
+            thread_columns(&conn)?
         ),
         params![session_id],
         thread_from_row,
@@ -291,7 +305,10 @@ pub(super) fn get_thread_in(
     thread_id: &str,
 ) -> Result<Option<ThreadRecord>, crate::Error> {
     conn.query_row(
-        &format!("SELECT {THREAD_COLUMNS} FROM threads WHERE id = ?1"),
+        &format!(
+            "SELECT {} FROM threads WHERE id = ?1",
+            thread_columns(conn)?
+        ),
         params![thread_id],
         thread_from_row,
     )
@@ -516,7 +533,9 @@ pub(super) fn update_thread_status(
         None
     };
     const SQL: &str = "UPDATE threads
-         SET status = ?1, archived_at = ?2, updated_at = ?3
+         SET status = ?1, archived_at = ?2,
+             restored_at = CASE WHEN ?1 = 'active' THEN ?3 ELSE restored_at END,
+             updated_at = ?3
          WHERE id = ?4 AND status != 'deleted'";
     let conn = connect()?;
     conn.execute(SQL, params![status, archived_at, now, thread_id])?;
@@ -605,7 +624,7 @@ pub fn restore_thread_tree(thread_id: &str) -> Result<ThreadRecord, crate::Error
     for thread in &closure {
         if thread.status == "archived" {
             tx.execute(
-                "UPDATE threads SET status = 'active', archived_at = NULL, updated_at = ?1
+                "UPDATE threads SET status = 'active', archived_at = NULL, restored_at = ?1, updated_at = ?1
                  WHERE id = ?2 AND status = 'archived'",
                 params![now, thread.id],
             )?;
@@ -778,27 +797,48 @@ pub fn batch_archive_threads(
 
 /// Every live conversation whose run has not finished (or that the Agent is
 /// streaming right now), for the recent view's "active" stretch.
+///
+/// The stretch is a slice of the recent view, so it is read under the same
+/// workspace rule the recent page is (`w.archived_at IS NULL`, see
+/// [`super::paging`]'s `Recent` scope): shelving a folder takes its
+/// conversations off the list, and the members keep their own `active` status
+/// while it is shelved — the *container* is what left. Without the condition
+/// here the row came back through this one read and the rail drew it under
+/// "Active" while the page that should have held it had already dropped it.
+///
+/// The conversation's own status is deliberately not narrowed to `active`: a
+/// conversation shelved on its own is kept off the list by the rail, which reads
+/// the status on the row. What no listing can express is the folder's shelf,
+/// because a member's status says nothing about it.
 pub fn list_active_threads(
     streaming_thread_ids: &[String],
 ) -> Result<Vec<ThreadRecord>, crate::Error> {
     let conn = connect()?;
+    let columns = thread_columns(&conn)?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT {THREAD_COLUMNS} FROM threads
-         WHERE status != 'deleted' AND (
-             id IN (SELECT thread_id FROM runs WHERE status NOT IN ({TERMINAL_RUN_STATUSES_SQL}))
+        "SELECT {columns} FROM threads t JOIN workspaces w ON w.id = t.workspace_id
+         WHERE t.status != 'deleted' AND w.archived_at IS NULL AND (
+             t.id IN (SELECT thread_id FROM runs WHERE status NOT IN ({TERMINAL_RUN_STATUSES_SQL}))
          )
-         ORDER BY COALESCE(last_message_at, updated_at, created_at) DESC"
+         ORDER BY COALESCE(t.last_message_at, t.updated_at, t.created_at) DESC",
+        columns = qualify_columns("t", columns)
     ))?;
     let rows = stmt.query_map([], thread_from_row)?;
     let mut threads = rows.collect::<rusqlite::Result<Vec<_>>>()?;
     // Sessions streaming in another client without a local run row would be
-    // missed by the SQL above; append them by id.
+    // missed by the SQL above; append them by id — under the same rule, or a
+    // shelved folder's member would slip into the stretch by this route instead.
     for id in streaming_thread_ids {
         if threads.iter().any(|thread| &thread.id == id) {
             continue;
         }
         if let Some(thread) = get_thread_in(&conn, id)? {
-            if thread.status != "deleted" {
+            if thread.status == "deleted" {
+                continue;
+            }
+            let shelved = get_workspace_in(&conn, &thread.workspace_id)?
+                .is_some_and(|workspace| workspace.archived_at.is_some());
+            if !shelved {
                 threads.push(thread);
             }
         }
@@ -1536,6 +1576,115 @@ mod tests {
         assert!(
             !crate::store::take_catalog_dirty(),
             "the flag is a one-shot signal, not a level"
+        );
+    }
+
+    /// A conversation with a run that has not finished — what puts a row in the
+    /// recent view's active stretch.
+    fn seed_running(conn: &Connection, thread_id: &str, run_id: &str) {
+        conn.execute(
+            "INSERT INTO runs (id, thread_id, status, created_at, updated_at)
+             VALUES (?1, ?2, 'running', 1, 1)",
+            params![run_id, thread_id],
+        )
+        .expect("seed run");
+    }
+
+    /// The shelf a workspace's archive leaves behind: the *container* carries
+    /// `archived_at`, every member keeps its own status.
+    fn shelve_workspace(conn: &Connection, workspace_id: &str) {
+        conn.execute(
+            "UPDATE workspaces SET archived_at = 5 WHERE id = ?1",
+            params![workspace_id],
+        )
+        .expect("shelve workspace");
+    }
+
+    fn active_ids() -> Vec<String> {
+        list_active_threads(&[])
+            .expect("active threads")
+            .into_iter()
+            .map(|thread| thread.id)
+            .collect()
+    }
+
+    /// Shelving a workspace takes its conversations off the recent view — and
+    /// the active stretch is part of that view, so a member with a run still
+    /// going must not come back through it.
+    ///
+    /// The members keep their own `active` status when the folder is shelved
+    /// (only the container leaves the lists), so the status on the row cannot
+    /// answer this: the read has to look at the workspace. It did not, and the
+    /// row returned by this one read was drawn under "Active" while the page
+    /// that should have held it had already dropped it.
+    #[test]
+    fn a_shelved_workspace_keeps_its_rows_out_of_the_active_stretch() {
+        let (_home, conn) = guarded_conn("active_stretch_shelved");
+        seed_two_threads(&conn);
+        seed_running(&conn, "t1", "run1");
+        drop(conn);
+        assert_eq!(active_ids(), vec!["t1"], "the running row is the stretch");
+
+        let conn = connect().expect("reopen");
+        shelve_workspace(&conn, "ws1");
+        drop(conn);
+        assert!(
+            active_ids().is_empty(),
+            "the folder left the recent view, so its running member is not part of the stretch"
+        );
+    }
+
+    /// The negative control: the same row in a folder that is still in use stays.
+    /// Without this the test above would pass on a read that returns nothing.
+    #[test]
+    fn an_open_workspace_keeps_its_running_row_in_the_active_stretch() {
+        let (_home, conn) = guarded_conn("active_stretch_open");
+        seed_two_threads(&conn);
+        seed_running(&conn, "t1", "run1");
+        drop(conn);
+        assert_eq!(active_ids(), vec!["t1"]);
+    }
+
+    /// A run that finished is not the stretch, whatever its workspace is doing.
+    #[test]
+    fn a_finished_run_is_not_part_of_the_active_stretch() {
+        let (_home, conn) = guarded_conn("active_stretch_finished");
+        seed_two_threads(&conn);
+        conn.execute(
+            "INSERT INTO runs (id, thread_id, status, created_at, updated_at)
+             VALUES ('run1', 't1', 'completed', 1, 1)",
+            [],
+        )
+        .expect("seed finished run");
+        drop(conn);
+        assert!(active_ids().is_empty());
+    }
+
+    /// A session another client reports as streaming arrives by id, not by the
+    /// run query — and it has to meet the same rule, or a shelved folder's
+    /// member would slip into the stretch by that route instead.
+    #[test]
+    fn a_streaming_session_in_a_shelved_workspace_stays_out() {
+        let (_home, conn) = guarded_conn("active_stretch_streaming_shelved");
+        seed_two_threads(&conn);
+        drop(conn);
+        let streaming = vec!["t2".to_string()];
+        assert_eq!(
+            list_active_threads(&streaming)
+                .expect("active")
+                .iter()
+                .map(|thread| thread.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["t2"],
+            "a session streaming in another client is part of the stretch"
+        );
+
+        let conn = connect().expect("reopen");
+        shelve_workspace(&conn, "ws1");
+        drop(conn);
+        assert!(
+            list_active_threads(&streaming).expect("active").is_empty(),
+            "the same rule applies to the streaming route"
         );
     }
 
@@ -2557,6 +2706,9 @@ mod archive_tests {
         assert_eq!(get_thread("root").unwrap().unwrap().status, "active");
         assert_eq!(get_thread("child").unwrap().unwrap().status, "active");
         assert_eq!(get_thread("keep").unwrap().unwrap().status, "active");
+        assert!(get_thread("root").unwrap().unwrap().restored_at.is_some());
+        assert!(get_thread("child").unwrap().unwrap().restored_at.is_some());
+        assert!(get_thread("keep").unwrap().unwrap().restored_at.is_none());
     }
 
     /// Restoring one conversation out of a shelved workspace reopens the

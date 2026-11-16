@@ -18,7 +18,7 @@ use std::path::PathBuf;
 
 /// Desktop-app preferences, as the Tauri command layer serializes them
 /// (camelCase).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     /// Approval tier: `"off"` (fully open, default), `"manual"` (ask), or
@@ -45,6 +45,14 @@ pub struct AppSettings {
     /// its coachmark bubble). Off by default; once set, archiving never
     /// re-teaches the destination.
     pub archive_guide_seen: bool,
+    /// Clear Shell output and replay when a conversation is archived. On by default.
+    pub archive_run_log_cleanup: bool,
+    /// The one-time explanation of destructive archive cleanup was acknowledged.
+    pub archive_run_log_notice_seen: bool,
+    /// Automatically archive idle conversation trees. Off by default.
+    pub auto_archive_enabled: bool,
+    /// Minimum meaningful-activity idle time before automatic archiving.
+    pub auto_archive_idle_days: u32,
     /// Play a completion bell + request window attention when an agent run
     /// finishes. On by default.
     pub bell_on_complete: bool,
@@ -82,6 +90,10 @@ pub struct UpdateAppSettingsInput {
     pub skill_guide_dismissed: Option<bool>,
     pub skill_intro_dismissed: Option<bool>,
     pub archive_guide_seen: Option<bool>,
+    pub archive_run_log_cleanup: Option<bool>,
+    pub archive_run_log_notice_seen: Option<bool>,
+    pub auto_archive_enabled: Option<bool>,
+    pub auto_archive_idle_days: Option<u32>,
     pub bell_on_complete: Option<bool>,
     #[serde(alias = "autoCompactFirstTurn")]
     pub auto_title_first_turn: Option<bool>,
@@ -97,6 +109,10 @@ pub const KEY_AUTO_CONNECT_REMOTE: &str = "auto_connect_remote";
 pub const KEY_SKILL_GUIDE_DISMISSED: &str = "skill_guide_dismissed";
 pub const KEY_SKILL_INTRO_DISMISSED: &str = "skill_intro_dismissed";
 pub const KEY_ARCHIVE_GUIDE_SEEN: &str = "archive_guide_seen";
+pub const KEY_ARCHIVE_RUN_LOG_CLEANUP: &str = "archive_run_log_cleanup";
+pub const KEY_ARCHIVE_RUN_LOG_NOTICE_SEEN: &str = "archive_run_log_notice_seen";
+pub const KEY_AUTO_ARCHIVE_ENABLED: &str = "auto_archive_enabled";
+pub const KEY_AUTO_ARCHIVE_IDLE_DAYS: &str = "auto_archive_idle_days";
 pub const KEY_BELL_ON_COMPLETE: &str = "bell_on_complete";
 // Retain the original stored key so existing opt-ins survive the behavior fix.
 // This preference now generates titles only; it never requests compaction.
@@ -172,6 +188,8 @@ pub enum ValueKind {
     Language,
     /// A JSON array of model ids, or a comma-separated list.
     Models,
+    /// An unsigned integer, validated further by the owning setting.
+    Number,
 }
 
 impl ValueKind {
@@ -182,6 +200,7 @@ impl ValueKind {
             ValueKind::Tier => "off|manual|sandbox|auto",
             ValueKind::Language => "en|zh",
             ValueKind::Models => "JSON array or comma-separated model ids",
+            ValueKind::Number => "1|30|365",
         }
     }
 
@@ -203,6 +222,10 @@ impl ValueKind {
                 Ok(serde_json::json!(raw))
             }
             ValueKind::Models => parse_models(raw).map(|models| serde_json::json!(models)),
+            ValueKind::Number => raw
+                .parse::<u32>()
+                .map(|value| serde_json::json!(value))
+                .map_err(|_| format!("expected a non-negative integer, got {raw:?}")),
         }
     }
 }
@@ -260,6 +283,30 @@ pub const SETTINGS: &[Setting] = &[
         stored: KEY_ARCHIVE_GUIDE_SEEN,
         kind: ValueKind::Bool,
         help: "First-archive guide shown",
+    },
+    Setting {
+        key: "archiveRunLogCleanup",
+        stored: KEY_ARCHIVE_RUN_LOG_CLEANUP,
+        kind: ValueKind::Bool,
+        help: "Clear Shell output and replay when archiving a conversation",
+    },
+    Setting {
+        key: "archiveRunLogNoticeSeen",
+        stored: KEY_ARCHIVE_RUN_LOG_NOTICE_SEEN,
+        kind: ValueKind::Bool,
+        help: "Archive run-log cleanup notice acknowledged",
+    },
+    Setting {
+        key: "autoArchiveEnabled",
+        stored: KEY_AUTO_ARCHIVE_ENABLED,
+        kind: ValueKind::Bool,
+        help: "Automatically archive idle conversation trees",
+    },
+    Setting {
+        key: "autoArchiveIdleDays",
+        stored: KEY_AUTO_ARCHIVE_IDLE_DAYS,
+        kind: ValueKind::Number,
+        help: "Idle days before automatic archiving (1-365)",
     },
     Setting {
         key: "bellOnComplete",
@@ -335,7 +382,7 @@ pub fn app_db_path() -> Result<PathBuf, Error> {
 
 /// On-disk Desktop contract. Shared writers must reject future/foreign files.
 pub const APP_DB_APPLICATION_ID: i64 = 0x46554150;
-pub const APP_DB_SCHEMA_VERSION: i64 = 6;
+pub const APP_DB_SCHEMA_VERSION: i64 = 8;
 
 pub fn validate_database_header(conn: &Connection) -> Result<(), Error> {
     let application: i64 = conn.pragma_query_value(None, "application_id", |row| row.get(0))?;
@@ -445,6 +492,12 @@ pub fn normalize_tier(value: &str) -> String {
     }
 }
 
+impl Default for AppSettings {
+    fn default() -> Self {
+        defaults()
+    }
+}
+
 /// The effective defaults, before anything has been written. A reader with no
 /// database at all reports these instead of creating one.
 pub fn defaults() -> AppSettings {
@@ -456,6 +509,10 @@ pub fn defaults() -> AppSettings {
         skill_guide_dismissed: false,
         skill_intro_dismissed: false,
         archive_guide_seen: false,
+        archive_run_log_cleanup: true,
+        archive_run_log_notice_seen: false,
+        auto_archive_enabled: false,
+        auto_archive_idle_days: 30,
         bell_on_complete: true,
         auto_title_first_turn: true,
         title_language: "en".to_string(),
@@ -508,6 +565,19 @@ pub fn read(conn: &Connection) -> Result<AppSettings, Error> {
     let archive_guide_seen = read_value(conn, KEY_ARCHIVE_GUIDE_SEEN)?
         .map(|value| value == "true")
         .unwrap_or(false); // Off by default — the first archive teaches the destination.
+    let archive_run_log_cleanup = read_value(conn, KEY_ARCHIVE_RUN_LOG_CLEANUP)?
+        .map(|value| value == "true")
+        .unwrap_or(true);
+    let archive_run_log_notice_seen = read_value(conn, KEY_ARCHIVE_RUN_LOG_NOTICE_SEEN)?
+        .map(|value| value == "true")
+        .unwrap_or(false);
+    let auto_archive_enabled = read_value(conn, KEY_AUTO_ARCHIVE_ENABLED)?
+        .map(|value| value == "true")
+        .unwrap_or(false);
+    let auto_archive_idle_days = read_value(conn, KEY_AUTO_ARCHIVE_IDLE_DAYS)?
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|days| (1..=365).contains(days))
+        .unwrap_or(30);
     let bell_on_complete = read_value(conn, KEY_BELL_ON_COMPLETE)?
         .map(|value| value == "true")
         .unwrap_or(true); // On by default — a finished run should get noticed.
@@ -532,6 +602,10 @@ pub fn read(conn: &Connection) -> Result<AppSettings, Error> {
         skill_guide_dismissed,
         skill_intro_dismissed,
         archive_guide_seen,
+        archive_run_log_cleanup,
+        archive_run_log_notice_seen,
+        auto_archive_enabled,
+        auto_archive_idle_days,
         bell_on_complete,
         auto_title_first_turn,
         title_language,
@@ -596,6 +670,23 @@ pub fn apply(
             bool_str(archive_guide_seen),
             now,
         )?;
+    }
+    if let Some(enabled) = input.archive_run_log_cleanup {
+        write_value(conn, KEY_ARCHIVE_RUN_LOG_CLEANUP, bool_str(enabled), now)?;
+    }
+    if let Some(seen) = input.archive_run_log_notice_seen {
+        write_value(conn, KEY_ARCHIVE_RUN_LOG_NOTICE_SEEN, bool_str(seen), now)?;
+    }
+    if let Some(enabled) = input.auto_archive_enabled {
+        write_value(conn, KEY_AUTO_ARCHIVE_ENABLED, bool_str(enabled), now)?;
+    }
+    if let Some(days) = input.auto_archive_idle_days {
+        if !(1..=365).contains(&days) {
+            return Err(Error::Invalid(
+                "Automatic archive idle days must be between 1 and 365".into(),
+            ));
+        }
+        write_value(conn, KEY_AUTO_ARCHIVE_IDLE_DAYS, &days.to_string(), now)?;
     }
     if let Some(bell_on_complete) = input.bell_on_complete {
         write_value(conn, KEY_BELL_ON_COMPLETE, bool_str(bell_on_complete), now)?;
@@ -722,6 +813,10 @@ mod tests {
             skill_guide_dismissed: Some(true),
             skill_intro_dismissed: Some(true),
             archive_guide_seen: None,
+            archive_run_log_cleanup: None,
+            archive_run_log_notice_seen: None,
+            auto_archive_enabled: None,
+            auto_archive_idle_days: None,
             bell_on_complete: None,
             auto_title_first_turn: None,
             title_language: None,
@@ -806,6 +901,7 @@ mod tests {
                 ValueKind::Tier => Some("manual"),
                 ValueKind::Language => Some("zh"),
                 ValueKind::Models => Some(r#"["future/x"]"#),
+                ValueKind::Number => Some("30"),
             }
         }
     }
@@ -824,6 +920,10 @@ mod tests {
                 "skillGuideDismissed": input.skill_guide_dismissed,
                 "skillIntroDismissed": input.skill_intro_dismissed,
                 "archiveGuideSeen": input.archive_guide_seen,
+                "archiveRunLogCleanup": input.archive_run_log_cleanup,
+                "archiveRunLogNoticeSeen": input.archive_run_log_notice_seen,
+                "autoArchiveEnabled": input.auto_archive_enabled,
+                "autoArchiveIdleDays": input.auto_archive_idle_days,
                 "bellOnComplete": input.bell_on_complete,
                 "autoTitleFirstTurn": input.auto_title_first_turn,
                 "titleLanguage": input.title_language,
@@ -1198,10 +1298,11 @@ mod tests {
     /// and the parser must reject what is not advertised.
     #[test]
     fn every_value_kind_documents_exactly_what_it_accepts() {
-        let documented: [(ValueKind, &[&str]); 3] = [
+        let documented: [(ValueKind, &[&str]); 4] = [
             (ValueKind::Bool, &["true", "false"]),
             (ValueKind::Tier, &["off", "manual", "sandbox", "auto"]),
             (ValueKind::Language, &["en", "zh"]),
+            (ValueKind::Number, &["1", "30", "365"]),
         ];
         for (kind, accepted) in documented {
             for value in accepted {
