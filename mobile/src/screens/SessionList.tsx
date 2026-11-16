@@ -1112,8 +1112,12 @@ export function SessionList({
     ) : status === "waiting_approval" ? (
       <CircleAlert size={16} color={colors.warning} />
     ) : choiceWaiting ? (
+      // The approval mark's ink, not the accent: both mean "this one needs you"
+      // and a bluer, quieter glyph next to an amber one made the card look like
+      // an informational state. The glyph still separates "waiting on a pick"
+      // from "blocked on an approval".
       <View accessibilityLabel={t("sessions.pendingChoice")} testID="session-choice-mark">
-        <ListChecks size={16} color={colors.accent} />
+        <ListChecks size={16} color={colors.warning} />
       </View>
     ) : unread && (status === "completed" || status === "failed") ? (
       <View

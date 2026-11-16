@@ -1231,21 +1231,36 @@ mod tests {
 
         // The parser's tolerances, stated where the model writes them: a card
         // outside 2–4 rows is dropped whole, so the reply loses its question.
-        assert!(prompt.contains("2–4 genuine alternatives"));
+        assert!(prompt.contains("choices are 2–4"));
         assert!(prompt.contains("fewer than 2 or more than 4 is not drawn as a card"));
         // An id the parser rejects (`CHOICE_OPTION_ID`) takes its row with it.
         assert!(prompt.contains("[a-z0-9-]` only (no spaces)"));
         // `mode` is optional and defaults to a single pick, and the one thing the
-        // model has to get right is when several can be done at once: phrasing it
-        // as "unless several can be done in one go" was read as "usually single",
-        // so every card came out single even when both halves were one job. The
-        // criterion is now a question with a yes/no answer, and the two modes are
-        // named as the only two — a third one silently parses as `single`.
-        assert!(prompt.contains("if the reader ticked two rows, would you do both"));
-        assert!(prompt.contains("Yes → `mode: multi`"));
-        assert!(prompt.contains("omit the"));
+        // model has to get right is when several can be done at once. Three
+        // wordings have been tried: "unless several can be done in one go" (read
+        // as "usually single"), a yes/no question about the *reader* (read as a
+        // hypothetical), and the test on the rows with `single` as the exception.
+        //
+        // Now the default is reversed on purpose: `multi` is what a card starts
+        // from, and `single` is the fallback for rows that fill one slot. That
+        // only holds up if the rows are independent, so the prompt says that in
+        // the same breath — overlapping rows turn "tick as many as you want"
+        // into "tick two and ask for the same work twice".
+        assert!(prompt.contains("start from `multi`, fall back only when the rows compete"));
+        assert!(prompt.contains("→ `mode: multi`"));
         assert!(prompt.contains("`single` is what an omitted line means"));
-        assert!(prompt.contains("No third mode exists"));
+        assert!(prompt.contains("the rows must be independent"));
+        assert!(prompt.contains("is one job written twice"));
+        assert!(prompt.contains("There is no third mode"));
+        // A worked multi card, not just the word: the only example used to be a
+        // single one, and few-shot beat the rule. It comes first now — the card
+        // the model is being nudged toward is the one it sees first.
+        assert!(prompt.contains("```futureos-choice\ntitle: 这一批里先做哪些？\nmode: multi"));
+        assert!(
+            prompt.find("title: 这一批里先做哪些？").unwrap()
+                < prompt.find("title: 接下来做哪一件？").unwrap(),
+            "the multi example leads"
+        );
 
         // Where it goes: the fence is the reply's closing question, not a block
         // mid-answer, and a second card would be an unanswerable choice.
@@ -1254,9 +1269,9 @@ mod tests {
 
         // The answer comes back as text with `→` (the only fixed marker), and it
         // is a decision: asking the same question again wastes the pick.
-        assert!(prompt.contains("[接下来做哪一件？ → 重画森林图]"));
+        assert!(prompt.contains("[这一批里先做哪些？ → 图注改成中文、图例挪到右下]"));
         assert!(prompt.contains("Treat it as a decision already made"));
-        assert!(prompt.contains("do not ask the same question again"));
+        assert!(prompt.contains("do not ask again"));
 
         // A client that cannot draw the card shows the fence as what it is, so
         // the model is told the degradation exists instead of being held back
