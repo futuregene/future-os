@@ -402,8 +402,11 @@ Agent commits the run ──┬─> terminal entry `content.offers_choice`
 
 ### 5.9.3 Icon and copy
 
-- `list-checks` (the card head's own icon) in the accent ink. The approval badge
-  is `circle-alert` in warning, so shape and colour separate the two at a glance.
+- `list-checks` (the card head's own icon) in the **warning** ink, the approval
+  badge's own: both say "this cannot move without you", and the accent made the
+  card read as information rather than as a request. The glyph keeps them apart
+  — `circle-alert` is the agent blocked on a command, `list-checks` is a reply
+  that finished and is waiting for a pick.
 - One key on every surface: `pendingChoice` = "This reply is waiting on your
   choice" / 这条回复在等你选一项.
 - On the phone it **takes the unread dot's slot** for a completed conversation:

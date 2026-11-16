@@ -205,10 +205,12 @@ describe("the choice mark", () => {
       // Named, so it is not a mystery glyph to a screen reader or a tooltip.
       expect(mark.getAttribute("aria-label")).toBe("This reply is waiting on your choice");
       expect(mark.getAttribute("title")).toBe("This reply is waiting on your choice");
-      // The list-checks glyph, in the accent ink — a different control from the
-      // approval badge beside it, which keeps the warning colour.
+      // The list-checks glyph in the warning ink: the same loudness as the
+      // approval badge beside it (both mean "this cannot move without you"),
+      // and a different shape (a card waits for the next send; an approval
+      // blocks the agent).
       expect(mark.querySelector("svg")!.classList.contains("lucide-list-checks")).toBe(true);
-      expect(mark.classList.contains("text-accent")).toBe(true);
+      expect(mark.classList.contains("text-warning")).toBe(true);
     }
     finally {
       view.dispose();

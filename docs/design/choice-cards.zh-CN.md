@@ -374,7 +374,7 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
 
 ### 5.9.3 图标与文案
 
-- 图标 `list-checks`（与卡头同一枚），颜色用 accent——审批用 `circle-alert` + warning，两者形状和色相都不同，扫一眼就能分开。
+- 图标 `list-checks`（与卡头同一枚），**颜色和审批那枚一样用 warning**：两者都在说「这条不点就不动」，而蓝色读起来像一条信息，不像一次请求。区别留在形状上——审批是 `circle-alert`（agent 卡在命令上，动不了），选择是清单（回复已经答完，等你选一项）。
 - 三端同一个 key：`pendingChoice` = "这条回复在等你选一项" / "This reply is waiting on your choice"。
 - 手机端它**占用**未读圆点的位置（已完成的会话）：两者说的都是"你不在时它结束了"，而只有卡说的那件事有欠账；未读仍由标题加粗表达。
 

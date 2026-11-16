@@ -189,7 +189,10 @@ export function RemoteConversationRow({
                 ? (
                     <span
                       aria-label={t("pendingChoice")}
-                      className="pointer-events-none inline-flex size-5 shrink-0 items-center justify-center text-accent"
+                      // The approval badge's ink, like the local row's: two marks
+                      // that both mean "this one needs you" must not differ in
+                      // how loudly they shout.
+                      className="pointer-events-none inline-flex size-5 shrink-0 items-center justify-center text-warning"
                       data-thread-choice="true"
                       title={t("pendingChoice")}
                     >
