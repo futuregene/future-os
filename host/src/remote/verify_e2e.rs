@@ -2874,13 +2874,49 @@ mod multi_device {
             echo.unsubscribe().await.expect("probe unsubscribe");
         }
 
-        /// Whether any control packet arrives within `window`, without
-        /// assuming which one. Used for "the machine said *nothing*".
-        async fn control_pending(&mut self, window: Duration) -> bool {
-            tokio::time::timeout(window, self.control.next())
-                .await
-                .map(|message| message.is_some())
-                .unwrap_or(false)
+        /// Whether the machine tells this device, within `window`, that it is no
+        /// longer the one driving the machine.
+        ///
+        /// A control packet is not by itself news. The machine also announces a
+        /// device's *own* arrival on this channel — that is why
+        /// [`DeviceLink::await_control`] has to read past an `active` before it
+        /// can see the `standby` behind it — and that notice is published from a
+        /// task the handshake spawns *after* it has answered, so it races the
+        /// activation of the sealed channel. Whichever side wins, the packet is
+        /// legitimate: polled first, the notice finds no sealed channel and is
+        /// dropped; polled after the client's `secure_ready` activated one, it
+        /// goes out and lands here, possibly inside this window. Measured on this
+        /// machine both of a device's own announcements were dropped
+        /// (`seal` had no key yet), which made "no packet arrived" look like the
+        /// machine's silence; a loaded runner loses that race the other way, the
+        /// `active` arrives, and an assertion that read "any packet" as "told to
+        /// stand by" reported a displacement that never happened.
+        ///
+        /// So this asks the question the machine actually promises to answer:
+        /// anything other than `active` is a packet that moves this device off the
+        /// machine. A state this test has never heard of counts too, and so does a
+        /// packet it cannot open — an unclassifiable notice must fail, never pass.
+        async fn told_to_stand_by(&mut self, window: Duration) -> bool {
+            let deadline = tokio::time::Instant::now() + window;
+            loop {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                let Ok(message) = tokio::time::timeout(remaining, self.control.next()).await else {
+                    return false;
+                };
+                let Some(message) = message else {
+                    return false;
+                };
+                let body: Value = match self
+                    .channel
+                    .open(message.subject.as_str(), &message.payload)
+                {
+                    Ok(plaintext) => serde_json::from_slice(&plaintext).expect("control is JSON"),
+                    Err(_) => return true,
+                };
+                if body["control"] != json!("active") {
+                    return true;
+                }
+            }
         }
 
         /// Receive one event if one arrives within `window`.
@@ -3020,7 +3056,10 @@ mod multi_device {
         assert_eq!(holder["pairId"], json!(machine.a.pair_id));
         // B is refused over the wire, not by this process's opinion.
         assert!(!b.may_drive("b-before-consent").await);
-        // A was told nothing and keeps driving: no notice, no break.
+        // A was told to stand by by nobody and keeps driving: no displacement, no
+        // break. Its own arrival announcement is a different packet, and one this
+        // test has to read past rather than count as news (see
+        // `told_to_stand_by`).
         assert!(a.may_drive("a-after-b-connected").await);
         assert_eq!(a.presence_control().await, "active");
 
@@ -3043,7 +3082,7 @@ mod multi_device {
             "a standby device must not receive the machine's events"
         );
         assert!(
-            !a.control_pending(Duration::from_millis(300)).await,
+            !a.told_to_stand_by(Duration::from_millis(300)).await,
             "the controller must not be told to stand by just because a device connected"
         );
 
