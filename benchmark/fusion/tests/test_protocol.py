@@ -272,7 +272,9 @@ class ReasoningProtocolTests(unittest.TestCase):
                     result["routing_outcome"], "completed" if count else "not_invoked"
                 )
 
-    def daily_case_with_consultations(self, count, consultation=None):
+    def daily_case_with_consultations(
+        self, count, consultation=None, diagnostic_error=None
+    ):
         client = Future("unused-binary")
 
         def response(args, **kwargs):
@@ -311,7 +313,12 @@ class ReasoningProtocolTests(unittest.TestCase):
             patch.object(client, "call", side_effect=response),
             patch.object(client, "wait", return_value={"text": "FINAL_ANSWER: 7"}),
             patch.object(client, "transcript", return_value={"entries": entries}),
-            patch.object(client, "collect_consultation", return_value=consultation),
+            patch.object(
+                client,
+                "collect_consultation",
+                return_value=consultation,
+                side_effect=diagnostic_error,
+            ),
         ):
             return client.run_case(
                 {
@@ -325,6 +332,18 @@ class ReasoningProtocolTests(unittest.TestCase):
                 Path(temporary) / "case",
                 100,
             )
+
+    def test_diagnostic_failure_preserves_the_completed_parent_answer(self):
+        result = self.daily_case_with_consultations(
+            1, diagnostic_error=RuntimeError("diagnostic RPC disconnected")
+        )
+        self.assertEqual(result["status"], "completed")
+        self.assertTrue(result["grade"]["correct"])
+        self.assertEqual(result["text"], "FINAL_ANSWER: 7")
+        self.assertTrue(result["diagnostics_pending"])
+        self.assertEqual(result["routing_outcome"], "evidence_pending")
+        self.assertEqual(result["fusion_invocations"], 1)
+        self.assertEqual(result["completed_consultations"], 0)
 
     def test_unsupported_effort_fails_before_model_execution(self):
         settings = {

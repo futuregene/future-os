@@ -2,12 +2,14 @@
 """Run an isolated Host with local Fusion settings, leaving the source home intact."""
 
 import argparse
+import datetime
 import json
 import os
 import shutil
 import socket
 import sqlite3
 import subprocess
+import time
 import uuid
 from pathlib import Path
 
@@ -48,6 +50,60 @@ def local_settings(source):
             "No saved local Fusion configuration; refusing to substitute defaults"
         )
     return json.loads(row[0])
+
+
+def wait_for_ready(process, home, endpoint, fusion_enabled, binary, env, timeout=60):
+    """Publish running only after Agent transport and the Fusion owner are live."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError(
+                f"Isolated Host exited during startup: {process.returncode}"
+            )
+        try:
+            # Host/Agent startup is lazy. A read-only CLI request activates the
+            # owned service; waiting only on a socket would wait for itself.
+            probe = subprocess.run(
+                [str(binary), "session", "list", "--json"],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            if probe.returncode:
+                time.sleep(0.25)
+                continue
+            host, port = endpoint.rsplit(":", 1)
+            with socket.create_connection((host, int(port)), timeout=0.5):
+                pass
+            if fusion_enabled:
+                connection = sqlite3.connect(
+                    (home / "fusion/fusion.db").as_uri() + "?mode=ro",
+                    uri=True,
+                    timeout=0.5,
+                )
+                try:
+                    row = connection.execute(
+                        "SELECT value FROM fusion_meta WHERE key='host'"
+                    ).fetchone()
+                finally:
+                    connection.close()
+                age = (
+                    time.time() * 1000 - json.loads(row[0]).get("at", 0)
+                    if row
+                    else float("inf")
+                )
+                if not 0 <= age < 5000:
+                    time.sleep(0.25)
+                    continue
+            return
+        except (OSError, sqlite3.Error, ValueError, subprocess.TimeoutExpired):
+            pass
+        time.sleep(0.25)
+    raise RuntimeError(
+        "Isolated Host startup did not become ready; inspect host-stdio.log"
+    )
 
 
 def main():
@@ -167,9 +223,20 @@ def main():
             stderr=subprocess.STDOUT,
         )
         document["host_pid"] = process.pid
+        document["phase"] = "starting"
+        document["launcher_pid"] = os.getpid()
+        document["started_at_utc"] = datetime.datetime.now(
+            datetime.timezone.utc
+        ).isoformat()
         temporary = ROOT / ".local/runtime-next.json"
         write_json(temporary, document)
         temporary.replace(ROOT / ".local/runtime.json")
+        wait_for_ready(process, home, endpoint, settings is not None, binary, env)
+        document["phase"] = "running"
+        document["ready_at_utc"] = datetime.datetime.now(
+            datetime.timezone.utc
+        ).isoformat()
+        write_json(ROOT / ".local/runtime.json", document)
         print("Isolated runtime: benchmark/fusion/.local/runtime.json", flush=True)
         print("Host output is retained in its private home/host-stdio.log.", flush=True)
         print(
@@ -198,6 +265,23 @@ def main():
                 path.unlink(missing_ok=True)
             if log is not None:
                 log.close()
+            snapshot = ROOT / ".local/runtime.json"
+            if process is not None and snapshot.exists():
+                current = read_json(snapshot)
+                # A newer launcher may already own the shared snapshot.
+                if current.get("host_pid") == process.pid and current.get(
+                    "home"
+                ) == str(home):
+                    current.update(
+                        phase="startup_failed"
+                        if current.get("phase") == "starting"
+                        else "exited",
+                        exit_code=process.poll(),
+                        exited_at_utc=datetime.datetime.now(
+                            datetime.timezone.utc
+                        ).isoformat(),
+                    )
+                    write_json(snapshot, current)
             print("Removed copied authentication/model configuration.", flush=True)
 
 

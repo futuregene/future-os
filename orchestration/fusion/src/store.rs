@@ -878,7 +878,8 @@ mod tests {
         assert!(output["conclusion"].is_null());
         assert!(output.get("report").is_none());
         assert!(output.get("coverage").is_some());
-        assert!(!failed.tool_output().unwrap().contains("Public analysis"));
+        assert_eq!(output["available_results"][0]["text"], "Public analysis");
+        assert_eq!(output["available_results"][0]["participant"], "P1");
         assert_eq!(
             failed.report.unwrap().degradations[0].kind,
             Some(crate::FailureKind::Authentication)

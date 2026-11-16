@@ -1975,6 +1975,15 @@ impl ServerSession {
                     let _ = runtime.mark_persistence_degraded(&task_lease, &format!("{error:#}"));
                     tracing::error!(%error, "could not publish the durably committed terminal");
                 }
+                let settled_broadcaster = broadcaster.clone();
+                match tokio::task::spawn_blocking(move || {
+                    settled_broadcaster.retire_journal_writer()
+                })
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    error => tracing::warn!(?error, "could not retire the settled event worker"),
+                }
                 return;
             }
 

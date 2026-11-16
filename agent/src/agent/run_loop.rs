@@ -586,6 +586,23 @@ impl Loop {
                 .map(|projected| projected.message)
                 .collect();
 
+            // Keep the first action salient after a long self-contained task.
+            // Only the run-scoped Fusion tool enables this; ordinary runs and
+            // inner participants are unchanged. Never persist it as user text.
+            if turn == 0 && tool_defs.iter().any(|tool| tool.function.name == "fusion") {
+                if let Some(message) = work_messages
+                    .last_mut()
+                    .filter(|message| message.role == "user")
+                {
+                    let reminder = if tool_defs.len() == 1 {
+                        future_fusion::CLOSED_TASK_FIRST_ACTION_REMINDER
+                    } else {
+                        future_fusion::FIRST_ACTION_REMINDER
+                    };
+                    message.content.push(ContentBlock::text(reminder));
+                }
+            }
+
             // Make continuation explicit rather than relying on assistant
             // prefill support. This is request-only recovery context, not a
             // fabricated user submission in the durable conversation or UI.

@@ -10,8 +10,25 @@ use std::time::{Duration, Instant};
 
 static HEALTH: LazyLock<Mutex<BTreeMap<String, Instant>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
-static COOLDOWN: LazyLock<Mutex<BTreeMap<String, (Instant, FailureKind)>>> =
+static COOLDOWN: LazyLock<Mutex<BTreeMap<String, Cooldown>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
+
+struct Cooldown {
+    at: Instant,
+    delay: Duration,
+    kind: FailureKind,
+}
+impl Cooldown {
+    fn after_failure(previous: Option<&Self>, kind: FailureKind) -> Self {
+        Self {
+            at: Instant::now(),
+            delay: previous.map_or(Duration::from_secs(15), |p| {
+                (p.delay * 2).min(Duration::from_secs(300))
+            }),
+            kind,
+        }
+    }
+}
 
 #[derive(Default)]
 pub(super) struct PanelDeadline(Option<tokio::time::Instant>);
@@ -157,8 +174,11 @@ impl<'a> Runtime<'a> {
     }
     pub fn circuit(&self, model: &str) -> Option<FailureKind> {
         let mut cache = COOLDOWN.lock().unwrap_or_else(|e| e.into_inner());
-        cache.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(15));
-        cache.get(&self.provider_key(model)).map(|(_, kind)| *kind)
+        cache.retain(|_, state| state.at.elapsed() < Duration::from_secs(900));
+        cache
+            .get(&self.provider_key(model))
+            .filter(|state| state.at.elapsed() < state.delay)
+            .map(|state| state.kind)
     }
     pub fn observe_failure(&self, model: &str, kind: FailureKind) -> Result<()> {
         let mut trip = kind.provider_wide();
@@ -174,11 +194,13 @@ impl<'a> Runtime<'a> {
         if trip {
             {
                 let mut cache = COOLDOWN.lock().unwrap_or_else(|e| e.into_inner());
-                cache.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(15));
+                cache.retain(|_, state| state.at.elapsed() < Duration::from_secs(900));
                 if cache.len() >= 64 {
                     cache.clear();
                 }
-                cache.insert(self.provider_key(model), (Instant::now(), kind));
+                let key = self.provider_key(model);
+                let next = Cooldown::after_failure(cache.get(&key), kind);
+                cache.insert(key, next);
             }
             self.invalidate_health();
             self.update(|report| {
@@ -206,6 +228,10 @@ impl<'a> Runtime<'a> {
         cache.contains_key(&self.health_key) && self.circuit(&self.config.moderator.model).is_none()
     }
     pub fn mark_healthy(&self) {
+        COOLDOWN
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.provider_key(&self.config.moderator.model));
         let mut cache = HEALTH.lock().unwrap_or_else(|e| e.into_inner());
         cache.retain(|_, at| at.elapsed() < Duration::from_secs(60));
         if cache.len() >= 64 {
@@ -285,6 +311,16 @@ pub(super) fn safe_error(error: &anyhow::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_provider_outages_back_off_without_unbounded_delay() {
+        let mut state = Cooldown::after_failure(None, FailureKind::Transient);
+        assert_eq!(state.delay, Duration::from_secs(15));
+        for _ in 0..8 {
+            state = Cooldown::after_failure(Some(&state), FailureKind::Transient);
+        }
+        assert_eq!(state.delay, Duration::from_secs(300));
+    }
 
     #[test]
     fn panel_wait_starts_with_a_usable_result_and_never_extends() {
