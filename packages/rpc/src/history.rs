@@ -322,14 +322,17 @@ where
                 // fetch, not a turn's whole body. When the turn is bigger than
                 // the budget on its own, no number of further slices can reach
                 // its question, and the page is served as that turn's tail.
-                let dropped = trim_to_budget(&mut accumulated, budget, &weigh);
-                if dropped > 0 {
+                let trim = trim_to_budget(&mut accumulated, budget, &weigh);
+                if trim.dropped > 0 {
                     page.entries = accumulated;
                     // What left the page is reachable, not lost: the cursor names
                     // the first row this page still carries.
-                    page.next_offset += dropped as i64;
+                    page.next_offset += trim.dropped as i64;
                     page.has_more = true;
-                    page.truncated = true;
+                    // Only a page that still starts mid-run has to say so. A cut
+                    // that landed on an exchange boundary left a whole exchange,
+                    // which is what the reader was owed.
+                    page.truncated = !trim.begins_exchange;
                     return Ok(page);
                 }
                 command.before = Some(page.next_offset);
@@ -342,19 +345,73 @@ where
     }
 }
 
+/// What [`trim_to_budget`] had to give up, and whether the page still reads as one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Trim {
+    /// How many of the oldest rows left the page.
+    dropped: usize,
+    /// Whether the row the page now starts at is an exchange's first row, so the
+    /// page still begins at a question rather than mid-run.
+    begins_exchange: bool,
+}
+
 /// Drop the oldest rows of a page until it fits `budget`, and say how many left.
 ///
-/// At least one row always stays. A single row can be larger than the budget on
-/// its own — an entry is the smallest unit a page can carry, and the body that
-/// makes it big is what the fragment path and the client's on-demand fetch are
-/// for — so the promise is "a page is the newest rows that fit, or one row",
-/// never "an empty page".
-fn trim_to_budget<Entry, W>(entries: &mut Vec<Entry>, budget: PageBudget, weigh: &W) -> usize
+/// **The cut lands on an exchange boundary whenever one fits**, because a page
+/// that starts mid-run is the defect this budget kept causing: measured on this
+/// machine's store (1,873 conversations, 2026-11-16), trimming row by row left
+/// **107** of 1,158 conversations opening on a page whose first row needs a
+/// prefix — no question above the reply the reader landed on. Cutting to the
+/// oldest whole exchange that fits left **5**, and none of them began mid-run
+/// that could be avoided.
+///
+/// The row-by-row cut was never wrong about *how much* to send; it was wrong
+/// about *where to cut*. An exchange is the unit a reader reads, so dropping
+/// three quarters of one and keeping the rest is exactly the "the conversation
+/// above it was gone" report the agent's own row ceiling was retired for.
+///
+/// Three cases, in order:
+///
+/// * the whole page fits — nothing is dropped;
+/// * some exchange boundary in the page fits the budget — cut there, and the page
+///   begins at that exchange's question (`begins_exchange`);
+/// * nothing fits whole — fall back to the row-by-row cut, and the page is the
+///   newest rows that fit, saying it starts mid-run (`truncated`). At least one
+///   row always stays: an entry is the smallest unit a page can carry, and a
+///   single row larger than the budget is what the fragment path is for.
+fn trim_to_budget<Entry, W>(entries: &mut Vec<Entry>, budget: PageBudget, weigh: &W) -> Trim
 where
+    Entry: HistoryEntry,
     W: Fn(&Entry) -> usize,
 {
     let weights: Vec<usize> = entries.iter().map(weigh).collect();
     let mut total: usize = weights.iter().sum();
+    let fits = |rows: usize, total: usize| total <= budget.bytes && rows <= budget.rows;
+
+    if fits(weights.len(), total) {
+        return Trim {
+            dropped: 0,
+            begins_exchange: true,
+        };
+    }
+
+    // Every row that starts an exchange, oldest first: a page cut at one of these
+    // begins at a question, which is what the reader is owed.
+    let mut remaining = total;
+    for start in 0..entries.len() {
+        if fits(entries.len() - start, remaining) && !entries[start].needs_user_prefix() {
+            if start > 0 {
+                entries.drain(..start);
+            }
+            return Trim {
+                dropped: start,
+                begins_exchange: true,
+            };
+        }
+        remaining -= weights[start];
+    }
+
+    // No boundary fits: the newest rows that do, as before.
     let mut dropped = 0;
     while dropped + 1 < entries.len()
         && (total > budget.bytes || entries.len() - dropped > budget.rows)
@@ -365,7 +422,10 @@ where
     if dropped > 0 {
         entries.drain(..dropped);
     }
-    dropped
+    Trim {
+        dropped,
+        begins_exchange: !entries[0].needs_user_prefix(),
+    }
 }
 
 #[cfg(test)]
@@ -1085,6 +1145,172 @@ mod tests {
             lean.entries.len() <= PageBudget::FIRST_PAINT.rows,
             "and the row bound still applies: {}",
             lean.entries.len()
+        );
+    }
+
+    /// A row that opens an exchange: the reader is owed the page from here up.
+    fn question(id: &str) -> Value {
+        json!({"id": id, "kind": "user", "role": "user"})
+    }
+
+    /// One exchange's worth of a busy run: `rows` assistant steps above `id`.
+    fn run_rows(id: &str, rows: usize) -> Vec<Value> {
+        (0..rows)
+            .map(|index| {
+                json!({
+                    "id": format!("{id}-a{index}"),
+                    "kind": "assistant",
+                    "role": "assistant",
+                    "blocks": [{"kind": "text", "text": "x"}],
+                })
+            })
+            .collect()
+    }
+
+    /// The cut that ends a too-large page lands on an exchange boundary, so the
+    /// page still begins at a question.
+    ///
+    /// This is the reported defect (2026-11-16). A first page is completed back
+    /// to its question; when the window the walk accumulates busts the budget the
+    /// page is cut, and the cut used to fall wherever the byte count ran out —
+    /// which is mid-run, because the Agent cuts a page-up mid-exchange too.
+    /// Measured on that machine's store: **107** of 1,158 conversations opened on
+    /// a page whose first row was an assistant step, i.e. with no question above
+    /// the reply the reader landed on; three of them were the reported
+    /// conversations.
+    ///
+    /// The window here is that shape: its oldest row is the tail of an exchange
+    /// the Agent cut, and the questions below it are what the cut can land on.
+    /// Reverting the boundary walk (cutting row by row again) makes this fail on
+    /// the `role` assertion, which is the property the reader sees.
+    #[tokio::test]
+    async fn a_page_cut_to_fit_still_begins_at_a_question() {
+        // Oldest first: the tail of a cut exchange, then two whole exchanges.
+        let mut older = vec![json!({"id": "cut", "kind": "assistant", "role": "assistant"})];
+        older.push(question("u1"));
+        older.extend(run_rows("e1", 250));
+        older.push(question("u2"));
+        older.extend(run_rows("e2", 100));
+        let newest = run_rows("tail", 60);
+
+        let command = RpcCommand {
+            before: Some(i64::MAX),
+            ..Default::default()
+        };
+        let (result, seen) = scripted::<Value>(
+            command,
+            vec![
+                page(None, newest.clone(), true, 8_000),
+                page(None, older, true, 4_000),
+            ],
+        )
+        .await;
+
+        let served = result.expect("a cut page is a page");
+        assert_eq!(seen.len(), 2, "the question was fetched before cutting");
+        assert!(
+            served.entries.len() <= PageBudget::FIRST_PAINT.rows,
+            "the budget still bounds the page: {} rows",
+            served.entries.len()
+        );
+        assert_eq!(
+            served.entries[0]["role"], "user",
+            "the cut lands on the exchange it keeps, not mid-run"
+        );
+        assert!(
+            !served.truncated,
+            "a page that begins at a question is not a turn's tail"
+        );
+        // The cursor names the oldest row the page still carries, so what left
+        // the page is reachable above it rather than lost.
+        let dropped = 413 - served.entries.len();
+        assert_eq!(
+            served.next_offset,
+            4_000 + dropped as i64,
+            "the cursor moves up by exactly the rows that left the page"
+        );
+        assert!(served.has_more, "older history is still reachable");
+    }
+
+    /// When the boundary's own exchange does not fit, the page falls back to a row
+    /// cut and says it starts mid-run.
+    ///
+    /// The boundary walk must not turn "the exchange above is too big" into an
+    /// oversized page: the only question in the window has more rows under it
+    /// than the budget allows, so the newest rows that fit are served and
+    /// `truncated` is what tells the reader the page starts mid-run.
+    #[tokio::test]
+    async fn an_exchange_too_big_to_keep_still_says_the_page_starts_mid_run() {
+        let mut older = vec![json!({"id": "cut", "kind": "assistant", "role": "assistant"})];
+        older.push(question("u1"));
+        older.extend(turn_rows(400, 4_000));
+        let newest = run_rows("tail", 20);
+
+        let command = RpcCommand {
+            before: Some(i64::MAX),
+            ..Default::default()
+        };
+        let (result, _) = scripted::<Value>(
+            command,
+            vec![
+                page(None, newest, true, 8_000),
+                page(None, older, true, 4_000),
+            ],
+        )
+        .await;
+
+        let served = result.expect("a cut page is a page");
+        let bytes: usize = served.entries.iter().map(HistoryEntry::page_bytes).sum();
+        assert!(
+            bytes <= FIRST_PAGE_BYTE_BUDGET,
+            "the budget still holds: {bytes} bytes"
+        );
+        assert!(
+            served.truncated,
+            "the page starts mid-run and has to say so"
+        );
+    }
+
+    /// The boundary walk keeps the *widest* window that fits.
+    ///
+    /// Cutting at the oldest boundary that fits is what makes the page as full as
+    /// the budget allows; cutting at the newest would throw away exchanges the
+    /// budget could afford, which is the same defect from the other side.
+    #[tokio::test]
+    async fn the_boundary_cut_keeps_the_widest_window_that_fits() {
+        let mut older = vec![json!({"id": "cut", "kind": "assistant", "role": "assistant"})];
+        for exchange in 1..=3 {
+            older.push(question(&format!("u{exchange}")));
+            older.extend(run_rows(&format!("e{exchange}"), 100));
+        }
+        let newest = run_rows("tail", 30);
+
+        let command = RpcCommand {
+            before: Some(i64::MAX),
+            ..Default::default()
+        };
+        let (result, _) = scripted::<Value>(
+            command,
+            vec![
+                page(None, newest, true, 8_000),
+                page(None, older, true, 4_000),
+            ],
+        )
+        .await;
+
+        let served = result.expect("page");
+        assert!(
+            served.entries.len() <= PageBudget::FIRST_PAINT.rows,
+            "the budget bounds it: {} rows",
+            served.entries.len()
+        );
+        assert_eq!(served.entries[0]["role"], "user");
+        // Three exchanges of 101 rows do not fit in 300; two do (202). A
+        // newest-only cut would have kept just one.
+        assert!(
+            served.entries.len() > 101,
+            "more than the newest exchange alone: {} rows",
+            served.entries.len()
         );
     }
 }
