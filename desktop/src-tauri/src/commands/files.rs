@@ -221,6 +221,78 @@ fn open_path_with_system(path: &str) -> Result<(), crate::AppError> {
     open::that(path).map_err(|_| format!("Failed to open: {path}").into())
 }
 
+/// Reveal a path in the OS file manager: the containing folder opens with the
+/// item selected (Windows/macOS), or the folder itself opens when it *is* a
+/// folder.
+///
+/// This is what "Show in folder" means to a user who is looking at a file name
+/// and wants to find the file, not to open it in its default app. `open_path`
+/// would launch the editor/PDF viewer instead, which is a different question.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub fn reveal_in_file_manager(path: String) -> Result<(), crate::AppError> {
+    reveal_in_file_manager_with(&path, reveal_with_system)
+}
+
+/// Validation + revealer, with the OS layer injectable so both arms are
+/// testable without opening a window.
+///
+/// Same credential guard as [`open_path_with`]: revealing a credential file's
+/// folder would show a directory the webview must not lead a user to, and a
+/// window left standing on it is the one thing a later screenshot could capture.
+fn reveal_in_file_manager_with(
+    path: &str,
+    reveal: impl Fn(&Path) -> Result<(), crate::AppError>,
+) -> Result<(), crate::AppError> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("path cannot be empty.".to_string().into());
+    }
+    let target = Path::new(trimmed);
+    ensure_path_allowed(target)?;
+    reveal(target)
+}
+
+/// The platform arms of [`reveal_in_file_manager`]. Built from `explorer`/`open`
+/// rather than a shell so a path with `&`, `^` or `%VAR%` is passed as one
+/// argument and cannot be reinterpreted.
+#[cfg(target_os = "windows")]
+fn reveal_with_system(path: &Path) -> Result<(), crate::AppError> {
+    // `explorer` returns exit code 1 even on success, so its status is not
+    // evidence either way; only a failure to spawn is. `/select,` needs the
+    // path as its own argument to keep quoting intact.
+    std::process::Command::new("explorer")
+        .arg(format!("/select,{}", path.display()))
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Failed to reveal {}: {error}", path.display()).into())
+}
+
+/// macOS selects the item inside Finder; `-R` is a no-op "reveal" that never
+/// launches the file's own application.
+#[cfg(target_os = "macos")]
+fn reveal_with_system(path: &Path) -> Result<(), crate::AppError> {
+    std::process::Command::new("open")
+        .arg("-R")
+        .arg("--")
+        .arg(path)
+        .status()
+        .map_err(|error| format!("Failed to reveal {}: {error}", path.display()))?
+        .success()
+        .then_some(())
+        .ok_or_else(|| format!("Failed to reveal {}", path.display()).into())
+}
+
+/// No portable "select this item" on Linux desktops, so open the containing
+/// folder — the same thing the tree's own Open Folder button does.
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn reveal_with_system(path: &Path) -> Result<(), crate::AppError> {
+    let folder = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    open::that(folder.unwrap_or(path))
+        .map_err(|error| format!("Failed to reveal {}: {error}", path.display()).into())
+}
+
 #[cfg_attr(feature = "gui", tauri::command)]
 pub fn inspect_attachment(path: String) -> Result<AttachmentInfo, crate::AppError> {
     future_host::files::inspect_attachment(path)
@@ -392,6 +464,29 @@ mod tests {
         std::fs::write(agent_dir.join("auth.json"), "{}").unwrap();
         let cred = agent_dir.join("auth.json");
         assert!(open_path_with(cred.to_str().unwrap(), |_| unreachable!()).is_err());
+    }
+
+    #[test]
+    fn reveal_path_validates_before_reaching_the_os() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("files_reveal_seam");
+        assert!(reveal_in_file_manager_with("   ", |_| unreachable!()).is_err());
+        assert!(reveal_in_file_manager_with("/tmp/ok", |path| {
+            assert_eq!(path, std::path::Path::new("/tmp/ok"));
+            Ok(())
+        })
+        .is_ok());
+        assert!(
+            reveal_in_file_manager_with("/tmp/err", |_| Err("os failed".to_string().into()))
+                .is_err()
+        );
+        // The credential guard holds here too: a window standing on the folder
+        // of `auth.json` is exposure the raw-bytes guard exists to prevent.
+        let home = std::env::var("HOME").expect("test home");
+        let agent_dir = std::path::Path::new(&home).join(".future/agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(agent_dir.join("auth.json"), "{}").unwrap();
+        let cred = agent_dir.join("auth.json");
+        assert!(reveal_in_file_manager_with(cred.to_str().unwrap(), |_| unreachable!()).is_err());
     }
 
     #[test]

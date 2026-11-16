@@ -1050,6 +1050,7 @@ mod gui {
                 install_app_update,
                 restart_after_app_update,
                 open_path,
+                reveal_in_file_manager,
                 list_directory,
                 open_external_url,
                 resolve_preview_link_path,

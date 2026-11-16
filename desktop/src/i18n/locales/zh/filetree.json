@@ -13,6 +13,7 @@
   "menu": {
     "attach": "附加到上下文",
     "open": "打开",
+    "revealInFolder": "在文件夹中显示",
     "preview": "预览"
   }
 }

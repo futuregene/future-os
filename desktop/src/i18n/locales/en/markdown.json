@@ -29,6 +29,7 @@
     "copyPath": "Copy path",
     "copyRelativePath": "Copy relative path",
     "copyFilename": "Copy filename",
+    "revealInFolder": "Show in folder",
     "open": "Open",
     "notFound": "File not found: {{name}}"
   },
