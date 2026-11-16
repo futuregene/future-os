@@ -74,14 +74,16 @@ Fields:
 | Field | Required | Meaning |
 |---|---|---|
 | `title` | yes | The question itself, one line, ≤ 60 chars. It is the card's heading |
-| `mode` | no | `single` (default) / `multi` — and `multiple`, `multi-select`, `多选` read as `multi` (see below) |
+| `mode` | no | `multi` (**first choice**) / `single` (the fallback when the rows compete; an omitted line means this). `multiple`, `multi-select`, `多选` read as `multi` — see below |
 | `option` | yes (2–4) | One per line: `id \| label \| one-line note`; the note may be omitted |
 | `id` | — | Stable identifier to send back: ASCII, `[a-z0-9-]`, ≤ 24 chars, unique within the card |
 | `hint` | no | Overrides the default subtitle ("pick one and it lands in the input…") |
 
 **How `mode` is decided** (anyone rewriting the prompt has to follow this; it is a rule, not a style preference):
 
-> Settle it from the **rows**: rows that are one deliverable in parts (a figure and its caption), or jobs that do not compete for the same step, go in the same batch → `multi`. If picking one rules the others out — the next step is *one* of them — `single` (the default, which an omitted line means). There is no third mode.
+> **Start from `multi`**: rows that are separate pieces of work (a figure, its caption, a legend, a table column) can all be done → `multi`, and the reader owes you everything they ticked. Fall back to `single` (which an omitted line means) only when the rows compete for **one** slot — picking one means the others are not done. There is no third mode.
+>
+> Rows in a multi card must be **independent**: no row may contain another ("调卡片" and "卡片和气泡一起调" is one job written twice), and no two rows may be the same work — any subset the reader ticks has to be a coherent request rather than double work.
 
 `single` asks a **choice** between steps that compete: "which of these next". `multi` is one job in several **parts**, or several jobs that can run together: "接新浪和 Nasdaq 两个源". A card that fails the test must not say `multi`: a multi card still lets the reader tick one, so it never adds work — but writing a mutually exclusive question as `multi` makes the reader work out that they should only tick one, which is the ambiguity the card exists to remove.
 
@@ -145,7 +147,7 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 
 The point: **an option's label must be the sentence the user would say**, because on send it becomes part of the message. Not "option A/B/C".
 
-**Why §4 was revised twice, 2026-11-15 and 11-16.** The first wording described `multi` as a
+**Why §4 was revised three times, 2026-11-15 and 11-16.** The first wording described `multi` as a
 last resort ("omit `mode: multi` unless several can be done in one go") and put it in
 a list of conditions for using the card at all. Every card the model then wrote came
 out single, including a row of tasks where picking two was obviously one job — the
@@ -162,6 +164,8 @@ The parsing side is tolerant for the same reason: `multi | multiple | multi-sele
 multi_select | 多选` all read as multi, and anything else (absent, `single`, `单选`, a
 typo) stays single. The old exact-string read turned `multiple` into a silent single —
 the card looked right and only refused the second tick, which no screenshot would show.
+
+**The second 11-16 change flipped the default.** The previous wording still made `single` the resting state and treated `multi` as the exception, and in practice every card stayed single. Both marks mean "this cannot move without you", and a list-shaped next step is usually several separable pieces (a figure, its caption, a legend, a table column) — so the prompt now starts from `multi` and falls back to `single` only when the rows compete for one slot. That only works if the rows are **independent**: "调卡片" next to "卡片和气泡一起调" is harmless noise on a single card and double work on a multi one, so the independence rule ships in the same paragraph as the default and the test pins both.
 
 **A deployment trap.** This prompt is compiled in with `include_str!`, so a machine
 running an older build keeps the old wording no matter what the repository says
