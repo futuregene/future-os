@@ -74,16 +74,16 @@ Fields:
 | Field | Required | Meaning |
 |---|---|---|
 | `title` | yes | The question itself, one line, ≤ 60 chars. It is the card's heading |
-| `mode` | no | `single` (default) / `multi` |
+| `mode` | no | `single` (default) / `multi` — and `multiple`, `multi-select`, `多选` read as `multi` (see below) |
 | `option` | yes (2–4) | One per line: `id \| label \| one-line note`; the note may be omitted |
 | `id` | — | Stable identifier to send back: ASCII, `[a-z0-9-]`, ≤ 24 chars, unique within the card |
 | `hint` | no | Overrides the default subtitle ("pick one and it lands in the input…") |
 
 **How `mode` is decided** (anyone rewriting the prompt has to follow this; it is a rule, not a style preference):
 
-> If the reader ticked two rows, would you do **both** in the one stretch of work that follows this reply? Yes → `multi`. No, because picking one rules the others out → `single` (the default, which an omitted line means). There is no third mode.
+> Settle it from the **rows**: rows that are one deliverable in parts (a figure and its caption), or jobs that do not compete for the same step, go in the same batch → `multi`. If picking one rules the others out — the next step is *one* of them — `single` (the default, which an omitted line means). There is no third mode.
 
-`single` asks a **choice** between mutually exclusive steps: "which of these next". `multi` is one job in several **parts**, or several jobs that can run together: "接新浪和 Nasdaq 两个源". A card that fails the test must not say `multi`: a multi card still lets the reader tick one, so it never adds work — but writing a mutually exclusive question as `multi` makes the reader work out that they should only tick one, which is the ambiguity the card exists to remove.
+`single` asks a **choice** between steps that compete: "which of these next". `multi` is one job in several **parts**, or several jobs that can run together: "接新浪和 Nasdaq 两个源". A card that fails the test must not say `multi`: a multi card still lets the reader tick one, so it never adds work — but writing a mutually exclusive question as `multi` makes the reader work out that they should only tick one, which is the ambiguity the card exists to remove.
 
 **Why a fence rather than an inline link or JSON:**
 
@@ -122,16 +122,19 @@ Use it only when all of these hold:
 - The reply genuinely ends with a question about the next step, and you can carry
   out every option yourself right after they pick.
 - There are 2–4 real alternatives. One option, or five, is a paragraph — not a card.
-- The options are mutual alternatives — you would do one of them next.
+- The options are 2–4 genuine alternatives you would act on next — one of them, or
+  several that do not compete for the same step.
 
 Do not use it for: confirming a risky action (the approval card already owns that),
 restating what you just did, "let me know if you need anything", or a question whose
 answer needs a sentence rather than a pick.
 
-`mode:` — one test decides it: if the reader ticked two rows, would you do both in
-the one stretch of work that follows this reply? Yes → `mode: multi`; no, because each
-rules the others out → omit the line, and `single` is what an omitted line means. There
-is no third mode.
+`mode:` — settle it from the *rows*: rows that are one deliverable in parts, or jobs that
+do not compete for the same step, go in the same batch → `mode: multi`, and the reader
+ticks as many as they want. If picking one rules the others out — the next step is *one*
+of them — omit the line: `single` is what an omitted line means. Do not default to
+`single` to be safe: one-job cards are exactly the ones people answer with two ticks.
+There is no third mode.
 
 Write each option as the instruction you would follow if chosen — the user's words,
 not a menu label ("重画森林图", not "选项 A"). The third field says what changes or
@@ -142,14 +145,29 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 
 The point: **an option's label must be the sentence the user would say**, because on send it becomes part of the message. Not "option A/B/C".
 
-**Why §4 was revised on 2026-11-15.** The first wording described `multi` as a
+**Why §4 was revised twice, 2026-11-15 and 11-16.** The first wording described `multi` as a
 last resort ("omit `mode: multi` unless several can be done in one go") and put it in
 a list of conditions for using the card at all. Every card the model then wrote came
 out single, including a row of tasks where picking two was obviously one job — the
-answer had to be typed by hand, which is the waste the card exists to remove. The
-rule now states a **yes/no test** (would you do both rows in the same stretch of work?)
-in the §3 field table and in §4's field list — the criterion cannot live only in the
+answer had to be typed by hand, which is the waste the card exists to remove. The first
+fix made it a **yes/no test**, but one asked about the *reader* ("would you do both in
+the same stretch of work?") — models read that as a hypothetical and still omitted the
+line. The rule now sits on the **rows** (one deliverable in parts vs one of them being
+the next step), the prompt carries a **worked multi card** (the only example used to be
+a single one, and few-shot beats a rule), and it names the failure it kept producing
+("Do not default to `single` to be safe"). The criterion cannot live only in the
 prompt, or whoever rewrites the prompt next will not know why it is worded that way.
+
+The parsing side is tolerant for the same reason: `multi | multiple | multi-select |
+multi_select | 多选` all read as multi, and anything else (absent, `single`, `单选`, a
+typo) stays single. The old exact-string read turned `multiple` into a silent single —
+the card looked right and only refused the second tick, which no screenshot would show.
+
+**A deployment trap.** This prompt is compiled in with `include_str!`, so a machine
+running an older build keeps the old wording no matter what the repository says
+(measured: the installed `futureos.exe` still carried "the default, so usually omit it"
+after two rewrites had landed). A prompt change only ships with a rebuild **and** a
+restart.
 
 ## 5. The interface
 

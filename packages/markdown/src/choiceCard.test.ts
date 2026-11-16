@@ -48,6 +48,24 @@ describe("futureos-choice fence", () => {
     expect(node).toMatchObject({ mode: "single" });
   });
 
+  /**
+   * Every spelling of "several" the model has been seen (or could plausibly be)
+   * to write for `multi`. Reading only the exact word turned the rest into a
+   * silent `single` — a card that lets one tick where the reply asked for
+   * several, and nothing in the UI to show it had been misread.
+   */
+  it("reads the spellings of multi, and only those", () => {
+    for (const spelling of ["multi", "MULTI", "multiple", "multi-select", "multi_select", "多选", " Multi "]) {
+      const node = first(fence(`title: T\nmode: ${spelling}\noption: a | A\noption: b | B`));
+      expect(node, spelling).toMatchObject({ mode: "multi" });
+    }
+    // Anything that is not one of those stays the default, including a typo.
+    for (const spelling of ["single", "单选", "multii", "both", ""]) {
+      const node = first(fence(`title: T\nmode: ${spelling}\noption: a | A\noption: b | B`));
+      expect(node, spelling).toMatchObject({ mode: "single" });
+    }
+  });
+
   it("ignores unknown fields", () => {
     const node = first(fence("title: T\nfooter: nope\noption: a | A | x\noption: b | B"));
     expect(node?.type).toBe("choiceCard");
