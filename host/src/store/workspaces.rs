@@ -30,6 +30,23 @@ pub fn list_workspaces() -> Result<Vec<WorkspaceRecord>, crate::Error> {
 /// `future_app_workspaces::create`, shared with `future workspace add`.
 pub fn create_workspace(input: CreateWorkspaceInput) -> Result<WorkspaceRecord, crate::Error> {
     let mut conn = connect()?;
+    // The database constraint behind "one directory, one workspace". A database
+    // written before that rule was guarded in the insert can still hold a
+    // duplicate pair, and SQLite will not index over it — the write below keeps
+    // the rule on its own in that case, so this is the belt, not the braces.
+    match future_app_workspaces::ensure_unique_user_path_index(&conn) {
+        Ok(true) => {}
+        Ok(false) => tracing::warn!(
+            event = "workspace_path_index_skipped",
+            "FutureOS: the workspaces table holds two rows for one directory; \
+             the unique path index stays out until they are merged"
+        ),
+        Err(error) => tracing::warn!(
+            event = "workspace_path_index_failed",
+            %error,
+            "FutureOS: could not install the unique workspace path index"
+        ),
+    }
     let workspace = workspaces::create(
         &mut conn,
         &input.path,
@@ -1263,6 +1280,96 @@ mod tests {
         drop(conn);
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The desktop's own create door installs the constraint behind "one
+    /// directory is one workspace", and a database that already holds a
+    /// duplicate (written before the guarded insert existed) still opens: the
+    /// pair is left for the user to merge rather than deleted on the way in.
+    #[test]
+    fn create_workspace_installs_the_unique_path_index_and_tolerates_an_existing_duplicate() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("ws_path_index");
+        let conn = connect().expect("connect");
+        apply_schema(&conn).expect("apply schema");
+        drop(conn);
+
+        let dir = std::env::temp_dir().join(format!("futureos-wsidx-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create the directory");
+        let path = future_app_workspaces::normalize_path(&dir)
+            .display()
+            .to_string();
+        let created = create_workspace(CreateWorkspaceInput {
+            name: None,
+            description: None,
+            path: path.clone(),
+            create_directory: Some(true),
+        })
+        .expect("create");
+
+        let conn = connect().expect("connect");
+        let indexed: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE type = 'index'
+                  AND name = 'idx_workspaces_user_path_unique'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read the index");
+        assert_eq!(indexed, 1, "the create door installs the index");
+        // The index is what a second row for the same directory runs into.
+        assert!(conn
+            .execute(
+                "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                 VALUES ('ws_dup', 'Dup', 'user', ?1, 1, 1)",
+                params![path],
+            )
+            .is_err());
+        // And a workspace already there is reopened, not duplicated.
+        let again = create_workspace(CreateWorkspaceInput {
+            name: None,
+            description: None,
+            path: dir.display().to_string(),
+            create_directory: Some(false),
+        })
+        .expect("reopen");
+        assert_eq!(again.id, created.id);
+        conn.execute("DROP INDEX idx_workspaces_user_path_unique", [])
+            .expect("simulate a database written before the index");
+        conn.execute(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+             VALUES ('ws_legacy', 'Legacy', 'user', ?1, 2, 2)",
+            params![future_app_workspaces::normalize_path(&dir)
+                .display()
+                .to_string()],
+        )
+        .expect("seed the duplicate pair");
+        drop(conn);
+
+        // Both rows stay, and the next create still opens the store.
+        let reopened = create_workspace(CreateWorkspaceInput {
+            name: None,
+            description: None,
+            path: dir.display().to_string(),
+            create_directory: Some(false),
+        })
+        .expect("a database holding a duplicate pair still creates");
+        assert_eq!(reopened.id, created.id, "the first row is the directory's");
+        let conn = connect().expect("connect");
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM workspaces WHERE kind = 'user' AND path = ?1",
+                params![future_app_workspaces::normalize_path(&dir)
+                    .display()
+                    .to_string()],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("count"),
+            2,
+            "existing duplicates are the user's to merge, not the store's to delete"
+        );
+        drop(conn);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -1299,7 +1299,9 @@ function ReadyAppShell({
   }
 
   function handleOpenArchiveSettings() {
-    setSettingsTab("archive");
+    // Archive settings live on the General page now, so the "view archive
+    // settings" affordance opens that page rather than a dedicated tab.
+    setSettingsTab("general");
     setSettingsOpen(true);
   }
 
