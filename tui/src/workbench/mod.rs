@@ -351,8 +351,8 @@ pub enum WbAction {
     /// frame painted and the driver's snapshot handed out (see
     /// `chat_area::RowStop`).
     ToggleChatRow(usize),
-    /// The `[复制]` control under a message: the message covering this rendered
-    /// row goes to the clipboard. The row, not the text: the surface paints
+    /// The `[复制]` control under the transcript's last answer: that message's
+    /// text goes to the clipboard. The row, not the text: the surface paints
     /// ANSI and never sees the message, so the driver is what reads the words
     /// off the transcript (`Live::copy_message`).
     CopyMessage(usize),

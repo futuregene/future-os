@@ -414,6 +414,7 @@ export const resources = {
         archivedBack: "All conversations",
         archive: "Archive",
         restore: "Unarchive",
+        pendingChoice: "This reply is waiting on your choice",
         archiveFailed: "Couldn't archive or unarchive it. Reconnect and try again.",
         archiveRunningTitle: "This conversation is running",
         archiveRunningConfirm:
@@ -470,6 +471,7 @@ export const resources = {
         hint: {
           single: "Pick one and it lands in the input; you can type something else instead",
           multi: "Pick as many as apply",
+          readonly: "An earlier question — this card can no longer be picked",
         },
         foot: {
           queued: "Chosen — the answer is above the input. Send it as is, or add a note first.",
@@ -482,7 +484,6 @@ export const resources = {
           title: "Change \"{{title}}\"",
           hint: "Pick another one and the answer above the input follows.",
         },
-        stale: "This card is no longer active",
       },
       chat: {
         "fusionTitle": "Fusion · Discussion",
@@ -582,6 +583,7 @@ export const resources = {
           removeLastAttachment: "This message is only files. Use the bin to remove it.",
           emptyMessage: "A message needs some text or a file.",
           emptyEdit: "A message needs some text. Use the bin to remove it.",
+          emptyChoice: "A waiting message needs one answer picked. Use the bin to remove it.",
           edit: "Edit queued message",
           editLabel: "Queued message text",
           choiceChange: "Change the answer to \"{{title}}\": {{label}}",
@@ -1666,6 +1668,7 @@ export const resources = {
         archivedBack: "全部会话",
         archive: "归档",
         restore: "取消归档",
+        pendingChoice: "这条回复在等你选一项",
         archiveFailed: "归档或取消归档失败，请恢复连接后重试。",
         archiveRunningTitle: "会话正在进行中",
         archiveRunningConfirm: "「{{name}}」正在运行，结束或停止后才能归档。",
@@ -1714,6 +1717,7 @@ export const resources = {
         hint: {
           single: "选一个就放进输入框；也可以直接在输入框里写别的",
           multi: "可以多选，点几个都行",
+          readonly: "只作展示：这张卡不能选",
         },
         foot: {
           queued: "已选，答案在下面的输入框上方；可以直接发送，也可以补充文字",
@@ -1726,7 +1730,6 @@ export const resources = {
           title: "修改「{{title}}」",
           hint: "换个选项，输入框里的答案跟着变",
         },
-        stale: "这张卡已经过期",
       },
       chat: {
         "fusionTitle": "Fusion · 讨论",
@@ -1826,6 +1829,7 @@ export const resources = {
           removeLastAttachment: "这条消息只有文件，要删它请点旁边的垃圾桶。",
           emptyMessage: "消息需要一点文字或一个文件。",
           emptyEdit: "消息需要一点文字，要删它请点旁边的垃圾桶。",
+          emptyChoice: "等待中的消息要保留一个选择，要删它请点旁边的垃圾桶。",
           edit: "修改队列中的消息",
           editLabel: "队列消息内容",
           choiceChange: "更换这条消息里的选择：{{title}} · {{label}}",

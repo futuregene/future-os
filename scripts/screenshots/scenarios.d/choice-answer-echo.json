@@ -1,0 +1,103 @@
+{
+  "_comment": "设计稿 docs/design/choice-cards.zh-CN.md §5.2.3：回答了选项卡之后，用户气泡抬头那句 `[问题 → 答案]` 被画成标签，而不是方括号字样。四个场景都是真实组件（MessageBlock / TimelineCard + ChoiceAnswerTags），不含注入原型；数据的已作答状态由 `?choiceAnswer=1` 提供，卡片本身的场景（choice-card-*）不受影响。",
+  "desktop": {
+    "choice-answer-echo": {
+      "note": "真实组件 · 桌面 · 浅色。选了「重画森林图」又补了一句之后，提示语在气泡里被画成一块标签：清单图标 + 淡色的问题 + `→` + 强调的答案，下面的正文仍是用户自己写的字。断言同时核对两件事——气泡里不再出现 `[接下来做哪一件？` 这段方括号原文，标签后面的「顺便把图例挪到右下」仍在正文里。",
+      "url": "http://localhost:5299/shot/?lang=zh&thread=th_choice&choiceAnswer=1&theme=light",
+      "width": 1440,
+      "height": 900,
+      "steps": [
+        { "wait": 3500 },
+        {
+          "eval": "(() => { const t=document.body.innerText; if (t.includes('允许一次')) { const b=[...document.querySelectorAll('button')].find(x => /拒绝/.test(x.textContent||'')); b && b.click(); return 'dismissed the approval card'; } return 'no approval card'; })()"
+        },
+        { "wait": 800 },
+        {
+          "eval": "(() => { const tags=document.querySelector('[data-choice-answer-tags]'); if (!tags) throw new Error('the answer tag did not render'); tags.scrollIntoView({block:'center'}); return 'scrolled'; })()"
+        },
+        { "wait": 700 },
+        {
+          "eval": "(() => { const tags=document.querySelector('[data-choice-answer-tags]'); const tag=tags.firstElementChild; const r=tag.getBoundingClientRect(); if (r.height < 20 || r.height > 40) throw new Error('the tag is ' + Math.round(r.height) + 'px tall, outside the one-line bound'); const words=(tag.innerText||'').replace(/\\s+/g,' '); for (const needle of ['接下来做哪一件？', '→', '重画森林图']) if (!words.includes(needle)) throw new Error('the tag lost ' + needle); const bubble=tags.closest('[data-message-id]'); const text=bubble ? bubble.innerText : ''; if (text.includes('[接下来做哪一件？')) throw new Error('the brackets are still printed in the bubble'); if (!text.includes('顺便把图例挪到右下')) throw new Error('the typed note is missing from the bubble'); const cs=getComputedStyle(tag); return JSON.stringify({ tag:[Math.round(r.width),Math.round(r.height)], bg:cs.backgroundColor, border:cs.borderTopColor }); })()"
+        },
+        { "shot": "choice-answer-echo.png" }
+      ]
+    },
+    "choice-answer-echo-dark": {
+      "note": "真实组件 · 桌面 · 深色。同一块标签在深色外观下：气泡是 `accent-soft` 的深蓝，标签是 accent 10% 的薄薄一层加 25% 描边，问题淡、答案亮——材质跟着语义 token 走，没有为深色单独写一份颜色。",
+      "url": "http://localhost:5299/shot/?lang=zh&thread=th_choice&choiceAnswer=1&theme=dark",
+      "width": 1440,
+      "height": 900,
+      "steps": [
+        { "wait": 3500 },
+        {
+          "eval": "(() => { const t=document.body.innerText; if (t.includes('允许一次')) { const b=[...document.querySelectorAll('button')].find(x => /拒绝/.test(x.textContent||'')); b && b.click(); return 'dismissed the approval card'; } return 'no approval card'; })()"
+        },
+        { "wait": 800 },
+        {
+          "eval": "(() => { if (!document.documentElement.classList.contains('dark')) throw new Error('the capture is not in the dark appearance'); const tags=document.querySelector('[data-choice-answer-tags]'); if (!tags) throw new Error('the answer tag did not render'); tags.scrollIntoView({block:'center'}); return 'scrolled'; })()"
+        },
+        { "wait": 700 },
+        {
+          "eval": "(() => { const tags=document.querySelector('[data-choice-answer-tags]'); const tag=tags.firstElementChild; const r=tag.getBoundingClientRect(); const cs=getComputedStyle(tag); const words=(tag.innerText||'').replace(/\\s+/g,' '); if (!words.includes('重画森林图')) throw new Error('the tag lost the answer: ' + words); if (r.height < 20 || r.height > 40) throw new Error('the tag is ' + Math.round(r.height) + 'px tall, outside the one-line bound'); return JSON.stringify({ tag:[Math.round(r.width),Math.round(r.height)], bg:cs.backgroundColor, border:cs.borderTopColor }); })()"
+        },
+        { "shot": "choice-answer-echo-dark.png" }
+      ]
+    }
+  },
+  "mobile": {
+    "choice-answer-echo-phone": {
+      "note": "真实组件 · 手机 · 浅色。手机气泡是 accent 实底，所以标签取气泡自身 ink（浅色下就是白）的 12% 作底纹、20% 作描边，圆角 6、行高 16；问题 `opacity .82`、答案 600 字重。断言核对了标签落在有底色气泡内、气泡里没有方括号原文、以及补写的正文仍在。外观在这里显式钉成 light：本机系统是深色，`system` 会把这张图拍成深色的。",
+      "query": "?session=sess_dopamine_review&choiceCard=1&choiceAnswer=1",
+      "lang": "zh-CN",
+      "steps": [
+        { "wait": 4000 },
+        {
+          "eval": "(() => { const stored = JSON.parse(localStorage.getItem('future.mobile.appearance') || 'null') || { themeMode: 'system', fontSize: 'medium', replyDetail: 'default' }; localStorage.setItem('future.mobile.appearance', JSON.stringify({ ...stored, themeMode: 'light' })); location.reload(); return 'light set, reloading'; })()"
+        },
+        { "wait": 6000 },
+        {
+          "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+        },
+        { "wait": 900 },
+        {
+          "eval": "(() => { const tags=document.querySelectorAll('[data-testid=\"choice-answer-tag\"]'); if (!tags.length) throw new Error('the answer tag did not render'); tags[0].scrollIntoView({block:'center'}); return 'scrolled'; })()"
+        },
+        { "wait": 700 },
+        {
+          "eval": "(() => { const tag=document.querySelector('[data-testid=\"choice-answer-tag\"]'); const r=tag.getBoundingClientRect(); const words=(tag.innerText||'').replace(/\\s+/g,' '); if (!words.includes('重画森林图')) throw new Error('the tag lost the answer: ' + words); let bubble=tag.parentElement; while (bubble && getComputedStyle(bubble).backgroundColor === 'rgba(0, 0, 0, 0)') bubble=bubble.parentElement; if (!bubble) throw new Error('the tag is not inside a filled bubble'); const bubbleText=(bubble.innerText||''); if (bubbleText.includes('[接下来做哪一件？')) throw new Error('the brackets are still printed in the bubble'); if (!bubbleText.includes('顺便把图例挪到右下')) throw new Error('the typed note is missing from the bubble'); const cs=getComputedStyle(tag); return JSON.stringify({ tag:[Math.round(r.width),Math.round(r.height)], bg:cs.backgroundColor, border:cs.borderTopColor, bubble:getComputedStyle(bubble).backgroundColor }); })()"
+        },
+        { "shot": "choice-answer-echo-phone.png" },
+        {
+          "eval": "(() => { try { localStorage.clear(); } catch (error) { return 'no storage to clear'; } return 'storage cleared for the next scenario'; })()"
+        }
+      ]
+    },
+    "choice-answer-echo-phone-dark": {
+      "note": "真实组件 · 手机 · 深色。手机深色下 accent 变成浅蓝（rgb(96,165,250)），气泡的 ink 变成深色，于是标签成了气泡里更暗的一小块——同一份代码、同一个 `surface` 混色，只是两个 token 的值换了。",
+      "query": "?session=sess_dopamine_review&choiceCard=1&choiceAnswer=1",
+      "lang": "zh-CN",
+      "steps": [
+        { "wait": 4000 },
+        {
+          "eval": "(() => { const stored = JSON.parse(localStorage.getItem('future.mobile.appearance') || 'null') || { themeMode: 'system', fontSize: 'medium', replyDetail: 'default' }; localStorage.setItem('future.mobile.appearance', JSON.stringify({ ...stored, themeMode: 'dark' })); location.reload(); return 'dark set, reloading'; })()"
+        },
+        { "wait": 6000 },
+        {
+          "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+        },
+        { "wait": 900 },
+        {
+          "eval": "(() => { const tags=document.querySelectorAll('[data-testid=\"choice-answer-tag\"]'); if (!tags.length) throw new Error('the answer tag did not render'); tags[0].scrollIntoView({block:'center'}); return 'scrolled'; })()"
+        },
+        { "wait": 700 },
+        {
+          "eval": "(() => { const tag=document.querySelector('[data-testid=\"choice-answer-tag\"]'); const r=tag.getBoundingClientRect(); const cs=getComputedStyle(tag); let bubble=tag.parentElement; while (bubble && getComputedStyle(bubble).backgroundColor === 'rgba(0, 0, 0, 0)') bubble=bubble.parentElement; if (!bubble) throw new Error('the tag is not inside a filled bubble'); const fill=getComputedStyle(bubble).backgroundColor; if (fill !== 'rgb(96, 165, 250)') throw new Error('the bubble is not the dark accent: ' + fill); return JSON.stringify({ tag:[Math.round(r.width),Math.round(r.height)], bg:cs.backgroundColor, border:cs.borderTopColor, bubble:fill }); })()"
+        },
+        { "shot": "choice-answer-echo-phone-dark.png" },
+        {
+          "eval": "(() => { try { localStorage.clear(); } catch (error) { return 'no storage to clear'; } return 'storage cleared for the next scenario'; })()"
+        }
+      ]
+    }
+  }
+}

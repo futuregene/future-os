@@ -612,7 +612,7 @@ function parseChoiceCard(node: Code): ChoiceCardNode | null {
   const title = first("title").trim() || options[0]!.label.trim();
 
   const hint = first("hint").trim();
-  const mode: ChoiceCardMode = first("mode").trim().toLowerCase() === "multi" ? "multi" : "single";
+  const mode = parseChoiceMode(first("mode"));
   return {
     ...(hint ? { hint } : {}),
     mode,
@@ -620,6 +620,22 @@ function parseChoiceCard(node: Code): ChoiceCardNode | null {
     title,
     type: "choiceCard",
   };
+}
+
+/**
+ * `mode:` → the two modes, tolerantly.
+ *
+ * The prompt asks for `multi`, but a model that writes `multiple`, `multi-select`
+ * or `多选` means the same thing, and the old exact-string read turned every one of
+ * those into a silent `single` — a card that lets one tick where the reply asked
+ * for several. Only `multi` and its spellings are read as multi; anything else
+ * (absent, `single`, `单选`, a word nobody defined) stays `single`, which is what
+ * an omitted line has always meant.
+ */
+const CHOICE_MULTI = /^(multi|multiple|multi-select|multi_select|多选)$/;
+
+function parseChoiceMode(raw: string): ChoiceCardMode {
+  return CHOICE_MULTI.test(raw.trim().toLowerCase()) ? "multi" : "single";
 }
 
 /**

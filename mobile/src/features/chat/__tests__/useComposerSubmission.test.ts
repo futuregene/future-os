@@ -247,3 +247,28 @@ test("an empty draft with no answer sends nothing", async () => {
   await act(async () => { expect(await delivered).toBe(false); });
   expect(options.send).not.toHaveBeenCalled();
 });
+
+test("an answer with nothing ticked is no answer: no tag, and nothing to send alone", async () => {
+  // Unticking a multi-choice answer's last row leaves a question with no pick.
+  // §7's sentence is `[question → answer]`, so it would send `[接下来做哪一件？ → ]`
+  // — a question the model reads as an answer. The draft already drops it
+  // (`answerOrNull`); this is the same rule at the last gate every send passes.
+  const unpicked = { ...CARD_ANSWER, mode: "multi" as const, selectedIds: [] as string[] };
+
+  const alone = { ...optionsFor(), message: "", attachments: [], choice: unpicked };
+  render(alone);
+  let delivered!: Promise<boolean>;
+  act(() => { delivered = api.sendFromComposer(); });
+  await act(async () => { expect(await delivered).toBe(false); });
+  // Nothing to send on its own, and above all no sentence carrying `→ ]`.
+  expect(alone.send).not.toHaveBeenCalled();
+
+  // With a note beside it the note goes out alone — the reader's own words are
+  // theirs, and dropping the answer must not take them.
+  const withNote = { ...optionsFor(), message: "顺便把图例挪到右下", choice: unpicked };
+  render(withNote);
+  await act(async () => { await api.sendFromComposer(); });
+  expect(withNote.send).toHaveBeenLastCalledWith("顺便把图例挪到右下");
+  for (const call of (withNote.send as jest.Mock).mock.calls)
+    expect(String(call[0])).not.toContain("→");
+});

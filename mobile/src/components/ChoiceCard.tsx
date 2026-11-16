@@ -74,7 +74,9 @@ export function ChoiceCard({ live, node }: { live: boolean; node: ChoiceCardNode
         </Text>
       </View>
       <Text style={styles.hint}>
-        {node.hint || (multi ? t("choice.hint.multi") : t("choice.hint.single"))}
+        {live
+          ? node.hint || (multi ? t("choice.hint.multi") : t("choice.hint.single"))
+          : t("choice.hint.readonly")}
       </Text>
       <View
         accessibilityLabel={multi ? undefined : node.title}

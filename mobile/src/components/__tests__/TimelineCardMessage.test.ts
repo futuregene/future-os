@@ -21,7 +21,7 @@ jest.mock("../../features/chat/components/PromptReader", () => ({ PromptReader: 
 const messageStyles = useStyles.forTheme(lightTheme);
 jest.mock("lucide-react-native", () => Object.fromEntries(
   ["AlertTriangle", "Brain", "Check", "ChevronDown", "ChevronUp", "CircleAlert", "Copy",
-    "FileText", "GitBranch", "Paperclip", "Pencil", "TerminalSquare", "TriangleAlert", "Wrench", "X"]
+    "FileText", "GitBranch", "ListChecks", "Paperclip", "Pencil", "TerminalSquare", "TriangleAlert", "Wrench", "X"]
     .map(name => [name, name]),
 ));
 jest.mock("../appAlerts", () => ({ AppAlert: { alert: jest.fn() } }));
@@ -106,8 +106,39 @@ describe("a user message is the user's own markdown, plus their attachments", ()
     });
   });
 
-  test("a reply renders the same component without a tone of its own", () => {
-    // boundary: the other side of the tone — the app's own surface — plus the
+  test("draws a choice card's printed answer as a tag, not as words inside the prompt", () => {
+    // Sending writes `[question → answer]` as plain text (§7), so a prompt that
+    // picked one of a card's rows opens with a bracket sandwich. The bubble
+    // lifts that sentence into a tag and hands the renderer only what was typed
+    // under it — the prompt is not rewritten, it is drawn in two places.
+    render(message({ role: "user", text: "[接下来先做哪一块？ → 把归因搬进页面] 那个英伟达的归因做好了吗？" }));
+
+    const tags = tree.root.findAll(node => node.props.testID === "choice-answer-tag");
+    expect(tags.length).toBeGreaterThan(0);
+    const words = tags[0]!.findAll(inner => typeof inner.props.children === "string")
+      .map(inner => inner.props.children as string);
+    expect(words).toEqual(expect.arrayContaining(["接下来先做哪一块？", " → ", "把归因搬进页面"]));
+    // The renderer sees the reader's own words only.
+    expect(markdownNodes().map(node => node.props.text)).toEqual(["那个英伟达的归因做好了吗？"]);
+  });
+
+  test("an answer with nothing typed under it leaves no empty markdown row", () => {
+    // boundary: the bubble is the tag alone, so nothing hands an empty string to
+    // the renderer and leaves it padding a blank line.
+    render(message({ role: "user", text: "[接下来先做哪一块？ → 把归因搬进页面]" }));
+
+    expect(tree.root.findAll(node => node.props.testID === "choice-answer-tag").length).toBeGreaterThan(0);
+    expect(markdownNodes()).toHaveLength(0);
+  });
+
+  test("leaves a prompt whose leading bracket is not a card answer alone", () => {
+    render(message({ role: "user", text: "[更新日志] 修了那个归因" }));
+
+    expect(tree.root.findAll(node => node.props.testID === "choice-answer-tag")).toHaveLength(0);
+    expect(markdownNodes().map(node => node.props.text)).toEqual(["[更新日志] 修了那个归因"]);
+  });
+
+  test("a reply renders the same component without a tone of its own", () => {    // boundary: the other side of the tone — the app's own surface — plus the
     // streaming flag only a reply can carry.
     render(message({ id: "a1", streaming: true, text: "half an answer" }));
     const rendered = markdownNodes();

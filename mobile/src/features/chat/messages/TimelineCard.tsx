@@ -6,8 +6,10 @@ import { Pressable, Text, useWindowDimensions, View } from "react-native";
 import { friendlyRunError, friendlyRunErrorTitle } from "../../../components/errorMessage";
 import { MarkdownText } from "../../../components/MarkdownText";
 import { ChoiceCardAnswerProvider } from "../../../components/ChoiceCard";
+import { splitChoiceAnswerEcho } from "@future-os/markdown";
 import { canRecoverMessage } from "@future-os/remote-client/recovery";
 import { useAppearance, useTheme } from "../../../theme/ThemeContext";
+import { spacing } from "../../../theme/tokens";
 import { Button } from "../../../components/Button";
 import { useStyles } from "./messageStyles";
 import type { ReasoningLoader, TimelineCardProps } from "./types";
@@ -20,6 +22,7 @@ import { formatSentAt } from "./sentAt";
 import { PromptReader } from "../components/PromptReader";
 import { StatusDivider } from "./MessageStatus";
 import { buildReplyBlocks, ProcessFold, ReplyBlockRow, splitFinalAnswer, type ReplyBlock } from "./ReplyBlocks";
+import { ChoiceAnswerTags } from "./ChoiceAnswerTags";
 
 /**
  * The key of a reply's last prose block — where its closing choice card lives.
@@ -120,6 +123,7 @@ function TimelineCardView({
           : item.truncated
             ? t("failure.modelResponseError")
             : null;
+      const canRecover = canRecoverMessage(item, isLatestAssistant ? item.id : null);
       const copyableText = item.text;
       // The reply's rendered slices.
       const blocks = buildReplyBlocks(item.segments ?? [], item.streaming);
@@ -148,6 +152,26 @@ function TimelineCardView({
       const copyPayload = folded
         ? folded.answer.flatMap(block => (block.kind === "segment" && block.segment.kind === "text" ? [block.segment.text] : [])).join("\n\n")
         : copyableText;
+      // A row with nothing to draw draws nothing at all.
+      //
+      // The live lane materializes an accumulator for every run any frame names,
+      // so a run that never wrote a word still becomes an item — and once it
+      // settles with no prose, no slices, no clock, no token count and no
+      // verdict, the only thing left is the footer's fallback label. That is the
+      // card a reader saw sitting under a finished reply (2026-11-15): it said
+      // "completed" and held nothing. Durable history never draws such a row
+      // (`messageToItems` drops it for exactly this reason), so this renderer
+      // must not invent one either. The condition is the projection's, restated
+      // over an item: nothing visible, no stats, no outcome to report.
+      const drawsNothing =
+        item.streaming !== true
+        && !dividerOnly
+        && !terminationNotice
+        && !canRecover
+        && footerStats.length === 0
+        && item.text.trim().length === 0
+        && (item.segments?.length ?? 0) === 0;
+      if (drawsNothing) return null;
       return (
         <View style={styles.assistantMessage}>
           {item.segments && item.segments.length > 0 ? (
@@ -212,7 +236,7 @@ function TimelineCardView({
           {/* Desktop parity: the retry/continue row sits right below the bubble
               content, above the copy/stats footer. It asks nothing about *why*
               the reply stopped — see `canRecoverMessage`. */}
-          {canRecoverMessage(item, isLatestAssistant ? item.id : null) && (
+          {canRecover && (
             <View style={styles.recoveryRow}>
               <Button
                 compact
@@ -297,6 +321,15 @@ function TimelineCardView({
     // durable row carries the journal's, so a re-open still says when it was
     // asked rather than when this phone read it.
     const sentAt = item.createdAt ? formatSentAt(item.createdAt, i18n.language) : "";
+    // A prompt that answered a choice card carries the card's printed sentence
+    // at its head (§7), where a bracket sandwich among the reader's own words
+    // reads as prose they typed rather than as a pick they made. The bubble
+    // draws that sentence as a tag and the words after it as the prompt; only
+    // the drawing changes, and the long-prompt preview above still measures the
+    // whole prompt, so a collapsed one keeps its cap.
+    const echo = item.text.trim().length > 0 ? splitChoiceAnswerEcho(preview.head) : null;
+    const answers = echo && echo.echoes.length > 0 ? echo.echoes : null;
+    const promptText = answers && echo ? echo.rest : preview.head;
     return (
       <View style={styles.userBlock}>
         {item.text.trim().length > 0 && (
@@ -310,12 +343,19 @@ function TimelineCardView({
               ? [styles.promptCollapsed, { maxHeight: collapsedPromptHeight(chat.lineHeight, windowHeight) }]
               : null,
           ]}>
-            <MarkdownText
-              onOpenFile={onOpenFile}
-              onOpenSession={onOpenSession}
-              text={preview.head}
-              tone="onAccent"
-            />
+            {answers
+              ? <ChoiceAnswerTags echoes={answers} style={promptText.trim().length > 0 ? { marginBottom: spacing.sm } : undefined} />
+              : null}
+            {promptText.trim().length > 0
+              ? (
+                  <MarkdownText
+                    onOpenFile={onOpenFile}
+                    onOpenSession={onOpenSession}
+                    text={promptText}
+                    tone="onAccent"
+                  />
+                )
+              : null}
           </View>
         )}
         {longPrompt && item.text.trim().length > 0 && (

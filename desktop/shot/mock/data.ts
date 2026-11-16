@@ -275,6 +275,27 @@ export const choiceEntries: MockEntry[] = [
   },
 ];
 
+/**
+ * `?thread=th_choice&choiceAnswer=1`: the same conversation *after* the reader
+ * answered that card — a prompt whose head prints the answer (`choiceAnswerText`,
+ * design §7), which the bubble draws as a tag rather than as prose (§5.2.3).
+ *
+ * Its own flag rather than an addition to `choiceEntries`: the card-only captures
+ * (`choice-card-*`) were measured against that transcript, and a second bubble at
+ * its end would move every one of them.
+ */
+export const choiceAnsweredEntries: MockEntry[] = [
+  ...choiceEntries,
+  {
+    id: "cc3",
+    kind: "message",
+    role: "user",
+    createdAtMs: now - 2 * minute,
+    runId: "run_choice",
+    blocks: [{ kind: "text", text: "[接下来做哪一件？ → 重画森林图] 顺便把图例挪到右下，图注也改成中文。" }],
+  },
+];
+
 const choiceRuns = [
   {
     id: "run_choice",
@@ -875,8 +896,18 @@ export const entriesByThread: Record<string, MockEntry[]> = {
   th_review: mainEntries,
   th_fig: figureEntries,
   ...(requestedThread() === PARSER_THREAD_ID ? { [PARSER_THREAD_ID]: parserEntries() } : {}),
-  ...(requestedThread() === CHOICE_THREAD_ID ? { [CHOICE_THREAD_ID]: choiceEntries } : {}),
+  ...(requestedThread() === CHOICE_THREAD_ID
+    // `?choiceAnswer=1` adds the prompt that answered the card (§5.2.3); without
+    // it the thread is the card's own, which is what the card captures frame.
+    ? { [CHOICE_THREAD_ID]: choiceAnswerRequested() ? choiceAnsweredEntries : choiceEntries }
+    : {}),
 };
+
+/** Whether this capture asked for the answered state (`?choiceAnswer=1`). */
+function choiceAnswerRequested(): boolean {
+  return typeof window !== "undefined"
+    && new URLSearchParams(window.location.search).get("choiceAnswer") === "1";
+}
 
 /**
  * `?compactHistory=1` history: one run that compacted mid-turn (the

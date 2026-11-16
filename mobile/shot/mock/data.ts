@@ -103,6 +103,27 @@ export const sessions = [
 ];
 
 /**
+ * `?listMarks=1`: the two "this one is waiting on you" states a row can be in.
+ *
+ * A row's marks are gated on its *run* — `status` for the approval badge, and
+ * the run's own `offersChoice` for the choice mark — and every fixture row is
+ * idle and read, so neither state is reachable from the default catalogue. Named
+ * sessions rather than a parameter per state: one capture should show the two
+ * marks side by side, which is what makes them tellable apart.
+ */
+const LIST_MARKS: Record<string, Record<string, unknown>> = {
+  // A finished reply that closed with a `futureos-choice` card.
+  sess_dopamine_clean: { status: "completed", offersChoice: true },
+  // A run parked on an approval request.
+  sess_sc_marker: { status: "waiting_approval" },
+};
+
+export function withListMarks<T extends { sessionId: string }>(row: T): T {
+  const mark = LIST_MARKS[row.sessionId];
+  return mark ? { ...row, ...mark } : row;
+}
+
+/**
  * `?recentMany=1`: a phone that has been in use for a while.
  *
  * Forty finished conversations spread over a fortnight, so the recency page's
@@ -316,6 +337,28 @@ export const choiceCardEntries = demoEntries.map(entry =>
     // a real reply takes (the block is the question's own).
     ? { ...entry, blocks: [...entry.blocks, { kind: "text" as const, text: CHOICE_FENCE }] }
     : entry);
+
+/**
+ * `?choiceCard=1&choiceAnswer=1`: the same conversation *after* the reader
+ * answered that card — the prompt whose head prints the answer
+ * (`choiceAnswerText`, design §7), which the phone draws as a tag inside its
+ * accent bubble rather than as bracket prose (§5.2.3).
+ *
+ * Its own flag rather than an addition to `choiceCardEntries`: the card captures
+ * (`choice-card-phone-*`) were measured against that transcript, and one more
+ * bubble at its end would move them.
+ */
+export const choiceAnsweredEntries = [
+  ...choiceCardEntries,
+  {
+    id: "e9",
+    kind: "message" as const,
+    role: "user" as const,
+    createdAtMs: now - 6 * minute,
+    runId: "run_1",
+    blocks: [{ kind: "text" as const, text: "[接下来做哪一件？ → 重画森林图] 顺便把图例挪到右下，图注也改成中文。" }],
+  },
+];
 
 export const compactResumeEntries = [
   {

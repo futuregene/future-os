@@ -41,9 +41,17 @@ Three hard rules follow:
 
 | Rule | Why |
 |---|---|
-| Only the **last card in the thread** is interactive; earlier cards are read-only (the chosen row stays highlighted, the rest dim) | An old card answers a question that is over; letting it change makes "which pick did I just change" unanswerable |
-| The card never stores "chosen" itself | It derives from the draft. After sending, the draft empties and the card stays highlighted because the answer is now in the user message right below it |
+| Only the **last card in the thread** is interactive; earlier cards are read-only (`aria-disabled`, out of the tab order, subtitle says it cannot be picked) | An old card answers a question that is over; letting it change makes "which pick did I just change" unanswerable |
+| The card never stores "chosen" itself | It derives from the draft. After sending, the draft empties and **the card does not stay highlighted** — the answer is shown by the tag on the user's message, not by the card |
 | Changing the answer means changing the draft | Clicking a row, the pill/chip's pencil, the phone's bottom sheet, and the choice chip on a queue row all write the same value |
+
+**Why the card does not re-highlight after sending** (corrected 2026-11-16 — this
+section used to claim it did): a sent answer is already visible as the tag on the
+user's message, so re-marking the card adds no information, and doing it means the
+card reading the message that follows it — a new cross-entry timing dependency in
+return for a purely decorative effect. `ChoiceCardAnswer.test.tsx` pins the actual
+behaviour (`markedRow` is empty after sending), which is the shape of the decision:
+the type says a card holds no answer of its own.
 
 **Several threads / several questions** cannot interfere: the draft is per conversation, and both the card and the chip read that conversation's draft.
 
@@ -66,10 +74,18 @@ Fields:
 | Field | Required | Meaning |
 |---|---|---|
 | `title` | yes | The question itself, one line, ≤ 60 chars. It is the card's heading |
-| `mode` | no | `single` (default) / `multi` |
+| `mode` | no | `multi` (**first choice**) / `single` (the fallback when the rows compete; an omitted line means this). `multiple`, `multi-select`, `多选` read as `multi` — see below |
 | `option` | yes (2–4) | One per line: `id \| label \| one-line note`; the note may be omitted |
 | `id` | — | Stable identifier to send back: ASCII, `[a-z0-9-]`, ≤ 24 chars, unique within the card |
 | `hint` | no | Overrides the default subtitle ("pick one and it lands in the input…") |
+
+**How `mode` is decided** (anyone rewriting the prompt has to follow this; it is a rule, not a style preference):
+
+> **Start from `multi`**: rows that are separate pieces of work (a figure, its caption, a legend, a table column) can all be done → `multi`, and the reader owes you everything they ticked. Fall back to `single` (which an omitted line means) only when the rows compete for **one** slot — picking one means the others are not done. There is no third mode.
+>
+> Rows in a multi card must be **independent**: no row may contain another ("调卡片" and "卡片和气泡一起调" is one job written twice), and no two rows may be the same work — any subset the reader ticks has to be a coherent request rather than double work.
+
+`single` asks a **choice** between steps that compete: "which of these next". `multi` is one job in several **parts**, or several jobs that can run together: "接新浪和 Nasdaq 两个源". A card that fails the test must not say `multi`: a multi card still lets the reader tick one, so it never adds work — but writing a mutually exclusive question as `multi` makes the reader work out that they should only tick one, which is the ambiguity the card exists to remove.
 
 **Why a fence rather than an inline link or JSON:**
 
@@ -89,6 +105,8 @@ In the AST the card is its own node type (not a `futureEmbed` reference), becaus
 | Fence mid-reply (not the last block) | Renders normally but read-only (the "last card" rule in §2) |
 | Unknown field | Ignored |
 
+**A read-only card must say so** (2026-11-16): when one reply holds two or more cards, only the last is interactive. That criterion depends solely on the **number of parsed cards**, not on anything the model was asked to write, so it lives in the parse/render layer rather than in the prompt. A card judged read-only is not just `aria-readonly` and out of the tab order — its **subtitle must also switch to "this card can no longer be picked"** (`choice.hint.readonly`). The subtitle is the one place a card can promise an action, and printing "pick one and it lands in the input" over inert rows is a button that looks pressable and is not. The model's own `hint` describes picking too, so it is replaced as well. Pinned in `ChoiceCard.test.tsx` and `MarkdownContent.test.tsx` on text, `aria-disabled` and focus — **never on colour**.
+
 ## 4. What goes into the system prompt
 
 A new `agent/src/prompt/choice.md`, pushed in via `include_str!` next to `communication.md` in `agent/src/prompt/mod.rs` (end of `parts`), so "how to ask the user" sits next to "how to talk to the user".
@@ -106,12 +124,19 @@ Use it only when all of these hold:
 - The reply genuinely ends with a question about the next step, and you can carry
   out every option yourself right after they pick.
 - There are 2–4 real alternatives. One option, or five, is a paragraph — not a card.
-- The options are mutually exclusive (omit `mode: multi` unless several can be done
-  in one go).
+- The options are 2–4 genuine alternatives you would act on next — one of them, or
+  several that do not compete for the same step.
 
 Do not use it for: confirming a risky action (the approval card already owns that),
 restating what you just did, "let me know if you need anything", or a question whose
 answer needs a sentence rather than a pick.
+
+`mode:` — settle it from the *rows*: rows that are one deliverable in parts, or jobs that
+do not compete for the same step, go in the same batch → `mode: multi`, and the reader
+ticks as many as they want. If picking one rules the others out — the next step is *one*
+of them — omit the line: `single` is what an omitted line means. Do not default to
+`single` to be safe: one-job cards are exactly the ones people answer with two ticks.
+There is no third mode.
 
 Write each option as the instruction you would follow if chosen — the user's words,
 not a menu label ("重画森林图", not "选项 A"). The third field says what changes or
@@ -121,6 +146,32 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 ```
 
 The point: **an option's label must be the sentence the user would say**, because on send it becomes part of the message. Not "option A/B/C".
+
+**Why §4 was revised three times, 2026-11-15 and 11-16.** The first wording described `multi` as a
+last resort ("omit `mode: multi` unless several can be done in one go") and put it in
+a list of conditions for using the card at all. Every card the model then wrote came
+out single, including a row of tasks where picking two was obviously one job — the
+answer had to be typed by hand, which is the waste the card exists to remove. The first
+fix made it a **yes/no test**, but one asked about the *reader* ("would you do both in
+the same stretch of work?") — models read that as a hypothetical and still omitted the
+line. The rule now sits on the **rows** (one deliverable in parts vs one of them being
+the next step), the prompt carries a **worked multi card** (the only example used to be
+a single one, and few-shot beats a rule), and it names the failure it kept producing
+("Do not default to `single` to be safe"). The criterion cannot live only in the
+prompt, or whoever rewrites the prompt next will not know why it is worded that way.
+
+The parsing side is tolerant for the same reason: `multi | multiple | multi-select |
+multi_select | 多选` all read as multi, and anything else (absent, `single`, `单选`, a
+typo) stays single. The old exact-string read turned `multiple` into a silent single —
+the card looked right and only refused the second tick, which no screenshot would show.
+
+**The second 11-16 change flipped the default.** The previous wording still made `single` the resting state and treated `multi` as the exception, and in practice every card stayed single. Both marks mean "this cannot move without you", and a list-shaped next step is usually several separable pieces (a figure, its caption, a legend, a table column) — so the prompt now starts from `multi` and falls back to `single` only when the rows compete for one slot. That only works if the rows are **independent**: "调卡片" next to "卡片和气泡一起调" is harmless noise on a single card and double work on a multi one, so the independence rule ships in the same paragraph as the default and the test pins both.
+
+**A deployment trap.** This prompt is compiled in with `include_str!`, so a machine
+running an older build keeps the old wording no matter what the repository says
+(measured: the installed `futureos.exe` still carried "the default, so usually omit it"
+after two rewrites had landed). A prompt change only ships with a rebuild **and** a
+restart.
 
 ## 5. The interface
 
@@ -164,6 +215,8 @@ Moved into the editor, all four requirements follow from machinery that already 
 - (d) only a pill ⇒ `isEditorEmpty` false ⇒ button live;
 - (b) the pencil and × ride on the pill itself and write the same value.
 
+**Zero ticks is not an answer, so there is no pill at all.** A pill exists to answer *what was picked* (§5.2); a question with nothing ticked cannot answer that, and a pill built from it would print the card's question as if the reader had answered it. So the rule sits at the one place the answer is **written** (`answerOrNull`, `composer/choiceAnswer.ts`), not at "draw an empty pill but emit no text": zero ticks ⇒ the answer is dropped ⇒ no pill, (a)'s grey button holds again, and (d) stops claiming content. §7's "zero ticks emits no `[…] → ]`" is the other end of the same rule, and both layers exist: dropped on write, and caught again on send (`withChoiceAnswer`). Unticking a multi-choice card's last row is the ✕ path of §5.3, and the pill goes along with its own trailing space.
+
 **Measured** (1440×900, pill injected into the real contenteditable and the DOM read back; no product code changed):
 
 | State | `disabled` |
@@ -178,7 +231,17 @@ The pill measured `bg rgb(232,240,255)` (`accent-soft`), `color rgb(37,99,235)` 
 
 ![Desktop: typing after the pill](assets/choice-cards/desktop-6-chosen-text.png)
 
-Requirement (c) on screen. The pill and the words share one editor flow, so the order on screen is the order that ships: `serialize()` writes the pill's `[question → answer]` first, then the text. What the user's bubble shows is what was actually sent — no second rendering that could drift.
+Requirement (c) on screen. The pill and the words share one editor flow, so the order on screen is the order that ships: `serialize()` writes the pill's `[question → answer]` first, then the text. What the user's bubble shows is what was actually sent — no second rendering that could drift. After sending, that sentence is drawn in the bubble as a tag rather than as brackets (§5.2.3): the same sentence, no longer mixed into the words the reader typed themselves.
+
+### 5.2.3 The user's bubble after sending
+
+One treatment on all three clients: the run of `[question → answer]` at the **head** of a prompt is drawn as a tag — a `ListChecks` glyph, the question in a lighter ink, `→`, the answer in a heavier one — and the text after it goes through markdown as before. Picked a row and typed nothing else, and the bubble is just the tag.
+
+- **The text is unchanged.** The tag is a *drawing* of the sentence `choiceAnswerText` writes, not a second copy of it: the copy button, the agent and a paste elsewhere all still see `[question → answer]`. That is exactly why §7 sends plain text — how the display layer draws it cannot change how readable the sentence is;
+- **The test is conservative** (`packages/markdown/src/choiceAnswerEcho.ts`): only the head of the message, only with an `→`, never when the closing bracket is followed by `(` or `[` (that is a link, or another bracket run), at most four answers (a card's own bound). A false negative costs the styling, never a character;
+- **The material follows the bubble.** The desktop bubble is `accent-soft`, so the tag is `accent/10` on `accent/25`; the phone's bubble is solid `accent`, so the tag mixes the bubble's own ink at 12% with a 20% border — the same colours `MarkdownText`'s `onAccent` tone uses, readable in both appearances.
+
+All four states (desktop light/dark, phone light/dark) are reproducible in the screenshot harness: the scenarios live in `scripts/screenshots/scenarios.d/choice-answer-echo.json` (`capture-desktop choice-answer-echo{,-dark}`, `capture-mobile choice-answer-echo-phone{,-dark}`), and the demo data comes from the fixture's `?choiceAnswer=1` — the card that produced the answer is still `choiceCard=1`'s.
 
 ### 5.3 Desktop · changing it
 
@@ -232,6 +295,7 @@ Two explored and **rejected** approaches, recorded so they are not redone:
 
 - The card is full width (358pt, 16pt margins), `radius 12px`, rows **≥ 44pt** (measured: 60pt each), notes wrap rather than truncate;
 - The chosen chip sits inside the dock above the textarea (measured: chip `y 702..736`, field `y 737..783`);
+- **With zero ticks the chip is not drawn and does not count as content.** The phone has no in-editor pill, so "does an answer exist" rests entirely on three decisions in `ComposerDock` (`canSend`, `hasDraft`, whether to draw the chip), and they share one `hasAnswer` — the same rule as desktop's `answerOrNull`: untick everything ⇒ no chip, send button grey, and no §7 sentence. The rule lives upstream where the draft is written (`useComposerDraft.setChoice`), and `ComposerDock` asks it again for itself rather than relying on that;
 - **Changing it uses a bottom sheet**: at 390pt there is no room for an in-place popover. The sheet's top lands at 559pt, rows stay 44pt, a pick writes straight back to the chip and the draft is untouched.
 
 ### 5.7.1 Why v1's chosen state looked wrong, and what v2 changes
@@ -284,9 +348,13 @@ The corrected rule, identical on all three surfaces:
 | change the option | **press the chip itself** (`role=button`, one chevron, aria-label `更换这条消息里的选择：<title> · <option>`), which opens the desktop popover / the phone sheet |
 | edit this message's words | the row's own pencil (there is exactly one) |
 | delete the whole message | the row's own bin |
-| drop just the choice, keep the words | the "no choice" entry in the option list — the same entry the card itself offers, not a new button on the chip |
+| drop the choice to nothing | **refused at the last tick**: the row's text and answer stay exactly as they were, and the reader is told once (below) |
 
 A chevron rather than a pencil is deliberate: it says "this opens something" and cannot be read as "edit the words".
+
+**Zero ticks is not an answer, so a waiting message cannot be rewritten into one.** The row's sentence is `[question → answer]` (§7), and rewriting it from an empty pick yields `[question → ]` — a question the model reads as an answer — or the bracketed question alone. The row is **already waiting to send**, so changing its text under the reader is more surprising than saying it once: this path refuses, says why, and touches nothing — no text, no answer, no `edit_queued_run` call. Removing the message is the row's own bin (the same shape `removeQueuedAttachment` uses for the last file of a message with no words). The phone's sheet stays open there, so the reader can pick again instead of watching it close on a change that never happened.
+
+This is the same rule as §5.2.1 (the editor's pill), §7 (the sent text) and §5.7 (the phone's chip), at its fourth and last landing: `answerOrNull` catches it on write, `ComposerDock`'s `hasAnswer` on render, `withChoiceAnswer` on send, and this one on a queue rewrite. One criterion, not four rules that happen to agree.
 
 #### 5.8.3 Data shape
 
@@ -306,12 +374,73 @@ The write path **stays out of the plain-text edit**. On the desktop the queue pa
 
 All three rows keep their own pencil and bin: the assertions check that the chip's right edge is left of the pencil's left edge, and that `[data-queue-edit]` / `[data-testid=send-queue-edit]` still exist. The chip is **inserted into** the row, not a replacement for the row's controls.
 
+## 5.9 The list mark: this one is waiting on your choice
+
+A card is only visible inside the conversation that holds it — the reader has to
+open it, read the reply, and then see the card. But a conversation *list* (the
+desktop rail, the phone's session list, the merged list that includes another
+desktop's conversations) is exactly the place that answers "which one is waiting
+on me", so it gets its own mark beside the approval badge.
+
+### 5.9.1 When it appears
+
+| Condition | Why |
+|---|---|
+| The conversation's **latest run finished** (`completed`) | A run still streaming is "wait a moment", not "waiting on your answer" |
+| And that reply **closed with a valid card** | A card earlier in the history does not count: that question is long past (the same judgement as §2's "only the last card is interactive") |
+| And the row is **not the one on screen** (desktop / remote) | The card is right there; a second mark is noise (the rule the approval badge already follows) |
+
+Nothing is drawn otherwise. Choosing an option without sending does **not**
+clear the mark: the conversation still sits on that card, one send short of
+done.
+
+### 5.9.2 Where the fact comes from: one write, every list reads it
+
+A list cannot read another conversation's reply (the desktop rail reads the
+local store, the phone reads the peer's catalogue), so "this reply ended with a
+card" has to be recorded where the reply is produced instead of guessed from
+text by each client:
+
+```
+Agent commits the run ──┬─> terminal entry `content.offers_choice`
+                        └─> agent_end `offers_choice: true`
+                                 │
+        desktop host writes runs.offers_choice ──┬─> latest_run_infos → rail
+                                                 └─> sessions catalog → phone / remote rows
+```
+
+- **The Agent decides once** (`agent/src/prompt/choice_card.rs`), with the
+  renderer's own rules (`parseChoiceCard`): the `futureos-choice` fence, 2–4
+  `option:` rows, ids in `[a-z0-9-]` (≤ 24), a non-empty label; a card quoted
+  inside a document fence is not one, and neither is a card followed by more
+  prose (the card closes the reply, alone).
+- **Only a clean finish carries it**: a cancelled, failed or truncated reply is
+  not something to answer.
+- **The mark travels with the run row**: the next send is a new row, so the mark
+  clears by itself — no second pass to keep in step.
+- Lists read one boolean: `ThreadRunInfo.offersChoice` on the desktop (re-read
+  when a terminal push lands) and `offersChoice` on a catalogue row (shared by
+  the phone and the desktop's remote rows).
+
+### 5.9.3 Icon and copy
+
+- `list-checks` (the card head's own icon) in the **warning** ink, the approval
+  badge's own: both say "this cannot move without you", and the accent made the
+  card read as information rather than as a request. The glyph keeps them apart
+  — `circle-alert` is the agent blocked on a command, `list-checks` is a reply
+  that finished and is waiting for a pick.
+- One key on every surface: `pendingChoice` = "This reply is waiting on your
+  choice" / 这条回复在等你选一项.
+- On the phone it **takes the unread dot's slot** for a completed conversation:
+  both say "this finished while you were away", and only the card says something
+  is owed; unread is still carried by the bolder title.
+
 ## 6. Composer behaviour (requirements a–d)
 
 | Requirement | Behaviour | Implementation constraint |
 |---|---|---|
 | (a) may pick nothing and stay empty | Nothing picked, nothing typed ⇒ send stays disabled (the existing `inputEmpty` logic) | The card's presence does **not** count as draft content. A card appearing must never enable Send |
-| (b) a pick can be changed | Five entries: any row in the card, the pill/chip's pencil, the phone's bottom sheet, **the choice chip on a queue row — pressed directly, it is its own button** (§5.8.2), and that queue row's own pencil for the words. They write the same value | Afterwards focus stays in the composer (desktop) / the sheet closes (phone); existing text is never disturbed |
+| (b) a pick can be changed | Five entries: any row in the card, the pill/chip's pencil, the phone's bottom sheet, **the choice chip on a queue row — pressed directly, it is its own button** (§5.8.2), and that queue row's own pencil for the words. They write the same value | Afterwards focus stays in the composer (desktop) / the sheet closes (phone); existing text is never disturbed. One exception: unticking to zero is "no answer", so that change is refused (dropped in the draft, reported on a queue row) and the sheet stays open for another pick |
 | (c) extra text can be typed and sent | Pill/text coexist; on send the answer comes first | Desktop relies on `isEditorEmpty` accepting a pill (measured); phone/remote must count the answer among the draft items `canSend` already reads |
 | (d) send with no text at all | A pill alone ⇒ Send is enabled | Measured `disabled:false` on desktop; phone/remote follow (c) |
 
@@ -327,10 +456,11 @@ The answer must be readable by the agent **and** on the degraded paths (TUI, IM 
 | Picked and added a note | `[接下来做哪一件？ → 重画森林图] 顺便把图例挪到右下` |
 | Multiple picks | `[这三项都要 → 重画森林图、补一张实验流程图]` |
 | Only typed (nothing picked / chip removed) | Just what the user wrote |
+| Picked then all unticked (multi card) | Just what the user wrote — zero ticks is not an answer, and neither end emits `[…] → ]` |
 
 `→` is the only fixed token; the question and the label come from the model's own output. The `title` is included so that "重画森林图" has an owner when several cards have appeared in one thread.
 
-**Why not send a `futureos://choice/...` link:** that needs a new reference type, `isFutureReferenceType` widened, and server-side understanding — and the only gain is a chip in the user's bubble. Version one sends text, so the user's bubble shows what actually went out: honest, copyable, readable by any client. Pill-ifying it is deferred (§10).
+**Why not send a `futureos://choice/...` link:** that needs a new reference type, `isFutureReferenceType` widened, and server-side understanding — and the only gain is a chip in the user's bubble. Version one sends text, so the user's bubble shows what actually went out: honest, copyable, readable by any client. The tag in that bubble is display only (§5.2.3): the sentence is not rewritten and no second protocol exists.
 
 ## 8. Compatibility and degradation
 
@@ -354,10 +484,10 @@ Fixed copy (the model neither provides nor should provide it) — keys needed on
 | `choice.mode.multi` | 多选 | Multiple choice |
 | `choice.hint.single` | 选一个就放进输入框；也可以直接在输入框里写别的 | Pick one and it lands in the input; you can type something else instead |
 | `choice.hint.multi` | 可以多选，点几个都行 | Pick as many as apply |
+| `choice.hint.readonly` | 只作展示：这张卡不能选 | An earlier question — this card can no longer be picked |
 | `choice.foot.queued` | 已放进输入框，可以继续补充，也可以直接发送 | In the input — add a note if you want, or send as is |
 | `choice.chip.change` | 修改「{{title}}」的选择 | Change the answer to "{{title}}" |
 | `choice.chip.remove` | 移除「{{title}}」的选择 | Remove the answer to "{{title}}" |
-| `choice.stale` | 这张卡已经过期 | This card is no longer active |
 | `choice.mobile.change` | 修改「{{title}}」 | Change "{{title}}" |
 | `choice.queue.change` | 更换这条消息里的选择：{{title}} · {{label}} | Change the choice in this message: {{title}} · {{label}} |
 
@@ -374,7 +504,7 @@ Fixed copy (the model neither provides nor should provide it) — keys needed on
 | A free-text field inside the card | The composer is the free-text field (§5.6) |
 | Digit shortcuts on rows | They would hijack the composer's digits (§5.6) |
 | Nested cards / a card mid-reply | "Which pick did I change" becomes unanswerable |
-| Editing historical cards | Same; read-only plus a highlighted chosen row |
+| Editing historical cards | Same; read-only, and the subtitle says it cannot be picked (§3) |
 | An interactive TUI / IM version | This pass only guarantees readable degradation; the TUI already has its own local choice UI (`SendChoiceSheet`), which is app UI, not transcript content |
 | Pill-ifying the answer in the user's bubble | Needs a new reference type plus server understanding, and the gain is purely visual; version two |
 | Structured choice records on the model side | Reading the text is enough for v1; add it when something actually needs the counts |
@@ -400,7 +530,7 @@ In dependency order; each step merges on its own:
 
 - **Parsing**: legal single/multi; the 2 and 4 boundaries; degradation below 3 and above 5; duplicate id, malformed id, missing title; a mid-reply fence; unknown fields ignored.
 - **Desktop, three states (must-test)**: empty editor ⇒ `disabled:true`; only a pill ⇒ **`disabled:false`**; pill removed ⇒ `disabled:true`. This is exactly what v1 got wrong, so it gets pinned.
-- **Desktop**: card renders; read-only ↔ interactive switching; clicking a row puts a pill in; the pencil changes it; ✕ removes it and the send button goes grey; sent content for all four cases in §7, asserted one by one; after sending the pill is gone and the card stays highlighted.
+- **Desktop**: card renders; read-only ↔ interactive switching; clicking a row puts a pill in; the pencil changes it; ✕ removes it and the send button goes grey; sent content for all four cases in §7, asserted one by one; after sending the pill is gone and the card does **not** keep a highlighted row (the answer is the tag on the user message; see §2 for why backfilling it is not done).
 - **Remote**: as above, plus asserting the chip is above the textarea rather than inside it, **that the send button is live with only a chip** (also missed by v1), and that switching conversations does not leak an answer.
 - **Mobile**: 44pt rows; the chosen row carries **exactly one cue** (no border); the pencil and × use the same ink; a sheet pick updates the chip; **`canSend` is true with only a chip**; the keyboard does not cover the chip row.
 - **Queue (all three surfaces)**: after enqueueing, the answer is a `choice` rather than flattened text; changing it updates both the row's chip and the text that eventually sends; removing the whole row and removing only the choice are distinct paths; an older Agent that omits `choice` degrades without error.

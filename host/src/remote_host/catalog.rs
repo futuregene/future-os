@@ -347,10 +347,11 @@ fn read_sessions(pair_id: &str, cursor: Option<&str>, limit: i64) -> Option<Valu
 
     let thread_ids: Vec<String> = threads.iter().map(|t| t.id.clone()).collect();
     let run_infos = crate::store::latest_run_infos(&thread_ids).ok()?;
-    let run_status_by_thread: std::collections::HashMap<&str, &str> = run_infos
-        .iter()
-        .map(|info| (info.thread_id.as_str(), info.status.as_str()))
-        .collect();
+    let run_info_by_thread: std::collections::HashMap<&str, &crate::store::LatestRunInfo> =
+        run_infos
+            .iter()
+            .map(|info| (info.thread_id.as_str(), info))
+            .collect();
 
     let mut sessions: Vec<serde_json::Value> = Vec::new();
     for t in &threads {
@@ -363,7 +364,12 @@ fn read_sessions(pair_id: &str, cursor: Option<&str>, limit: i64) -> Option<Valu
             continue;
         };
         let streaming = active_sessions.iter().any(|active| active == sid);
-        let status = run_status_by_thread.get(t.id.as_str()).copied();
+        let status = run_info_by_thread
+            .get(t.id.as_str())
+            .map(|info| info.status.as_str());
+        let offers_choice = run_info_by_thread
+            .get(t.id.as_str())
+            .is_some_and(|info| info.offers_choice);
         let workspace = workspaces.get(&t.workspace_id);
         sessions.push(json!({
             "sessionId": sid,
@@ -394,6 +400,14 @@ fn read_sessions(pair_id: &str, cursor: Option<&str>, limit: i64) -> Option<Valu
                 || workspace.is_some_and(|(_, _, _, archived)| *archived),
             "streaming": streaming,
             "status": status,
+            // Whether this conversation's last finished reply closed with a
+            // choice card — the row a list badges to say "this one is waiting on
+            // your answer". Read from the latest run rather than from the
+            // transcript: the newest run is the conversation's current state, so
+            // a follow-up turn clears the mark without a second pass. Optional
+            // by contract: a reader that predates the field draws no badge,
+            // which is what it did before.
+            "offersChoice": offers_choice,
             // Last-activity timestamp, in the *same* coalesce the store's own
             // ordering uses (`pinned DESC, COALESCE(last_message_at, updated_at,
             // created_at) DESC`). A client merging several desktops shows this as
@@ -864,6 +878,71 @@ mod tests {
         assert_eq!(row["createdAt"], json!(thread.created_at));
         // It does not move with the run's activity, which is the whole point.
         assert_ne!(row["createdAt"], row["lastMessageAt"]);
+    }
+
+    /// "This conversation is waiting on your answer", as the host reports it.
+    ///
+    /// The phone badges a card-unanswered conversation from the catalogue alone —
+    /// it never reads the reply — so the mark has to be on the row. It comes from
+    /// the conversation's latest run, which is what makes a follow-up turn clear
+    /// it without the host tracking anything separately.
+    #[test]
+    fn sessions_snapshot_carries_whether_the_reply_offered_a_choice() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-offers-choice");
+        crate::remote::test_support::init_store();
+
+        let thread = new_thread("sess-choosing", "Choosing");
+        let session = "sess-choosing";
+
+        let row = |session: &str| -> serde_json::Value {
+            let (payload, _signature) = sessions("pair_test").expect("snapshot");
+            payload["sessions"]
+                .as_array()
+                .expect("sessions array")
+                .iter()
+                .find(|row| row["sessionId"] == json!(session))
+                .expect("session in snapshot")
+                .clone()
+        };
+        // No run at all reads as "nothing offered", not as an absent field the
+        // client would have to guess about.
+        assert_eq!(row(session)["offersChoice"], json!(false));
+
+        let run = crate::store::create_run(crate::store::CreateRunInput {
+            id: None,
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("create the run");
+        crate::store::mark_run_offers_choice(&run.id);
+        crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+            run_id: run.id.clone(),
+            status: "completed".into(),
+            error_message: None,
+            error_type: None,
+        })
+        .expect("settle the run");
+        assert_eq!(row(session)["offersChoice"], json!(true));
+
+        // A later turn is its own row, and an ordinary reply is not a card.
+        let next = crate::store::create_run(crate::store::CreateRunInput {
+            id: None,
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("create the next run");
+        crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+            run_id: next.id.clone(),
+            status: "completed".into(),
+            error_message: None,
+            error_type: None,
+        })
+        .expect("settle the next run");
+        assert_eq!(row(session)["offersChoice"], json!(false));
     }
 
     /// The workspace's *name*, not its id: the merged list groups remote sessions

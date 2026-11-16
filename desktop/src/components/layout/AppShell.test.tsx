@@ -80,6 +80,8 @@ const mocks = vi.hoisted(() => ({
   geometry: { left: true, right: true },
   hooks: {} as HookSpies,
   nudgeLeftPanel: undefined as undefined | ReturnType<typeof vi.fn>,
+  nudgeRightPanel: undefined as undefined | ReturnType<typeof vi.fn>,
+  startRightPanelResize: undefined as undefined | ReturnType<typeof vi.fn>,
   remotePeers: undefined as undefined | { catalogs?: unknown[]; peers?: unknown[] },
   invoke: vi.fn<(command: string, args?: unknown) => Promise<unknown>>(async () => {}),
   isFullscreen: false,
@@ -182,8 +184,6 @@ vi.mock("../../features/remote-peer/RemoteWorkspaceCreateDialog", async () => {
 vi.mock("../../features/remote-peer/RemoteFilesPanel", async () => {
   const { createElement } = await import("react");
   return {
-    // The shell reserves this column beside a right-docked terminal.
-    REMOTE_FILES_PANEL_WIDTH: 320,
     RemoteFilesPanel: (props: { expanded: boolean }) => {
       children.filesPanel = props;
       // The collapsed panel is the floating affordance over the header; the
@@ -345,7 +345,13 @@ vi.mock("./hooks/useLeftPanelWidth", () => ({
   useLeftPanelWidth: () => ({ maxWidth: 400, nudge: (mocks.nudgeLeftPanel ??= vi.fn()), resizing: Boolean(mocks.store.leftResizing), startResize: vi.fn(), width: (mocks.store.leftWidth as number) ?? 288 }),
 }));
 vi.mock("./hooks/useRightPanelWidth", () => ({
-  useRightPanelWidth: () => ({ nudge: vi.fn(), reclamp: mocks.hooks.reclamp, resizing: Boolean(mocks.store.rightResizing), startResize: vi.fn(), width: 360 }),
+  useRightPanelWidth: () => ({
+    nudge: (mocks.nudgeRightPanel ??= vi.fn()),
+    reclamp: mocks.hooks.reclamp,
+    resizing: Boolean(mocks.store.rightResizing),
+    startResize: (mocks.startRightPanelResize ??= vi.fn()),
+    width: 360,
+  }),
 }));
 vi.mock("./hooks/useAgentConnection", () => ({
   useAgentConnection: () => ({
@@ -3462,6 +3468,12 @@ describe("app shell collapsed-panel affordances", () => {
       act(() => (children.filesPanel as { onToggleExpanded: () => void }).onToggleExpanded());
       expect(view.container.querySelector("[data-child='remote-files']")).not.toBeNull();
       expect(children.filesPanel).toMatchObject({ expanded: true });
+      // The remote column is the local one's column: the same drag-resized
+      // width and the same divider callbacks, so a drag on either keeps one
+      // width for both (a fixed 320px column is what this guards against).
+      expect(children.filesPanel).toMatchObject({ width: 360 });
+      act(() => (children.filesPanel as { onResizeNudge: (deltaPx: number) => void }).onResizeNudge(16));
+      expect(mocks.nudgeRightPanel).toHaveBeenCalledWith(16);
       view.unmount();
     });
 

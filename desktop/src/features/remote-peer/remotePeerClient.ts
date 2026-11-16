@@ -335,6 +335,12 @@ export function normalizeRemoteSessionRows(raw: unknown): RemoteSessionRow[] {
       pinned: row.pinned === true,
       streaming: row.streaming === true,
       ...(typeof row.status === "string" ? { status: row.status } : {}),
+      // Whether the host's last finished reply closed with a choice card — the
+      // mark the merged list draws beside the approval badge. Named here for the
+      // same reason as every field above: this parser is field-by-field, so a
+      // host field it does not name never reaches the row (the badge stayed
+      // absent until this line existed).
+      ...(row.offersChoice === true ? { offersChoice: true } : {}),
       lastMessageAt: typeof row.lastMessageAt === "number" ? row.lastMessageAt : null,
       // When the conversation started: the recent view's key for the rows that
       // are still running (see `RemoteSessionRow.createdAt`). Named here for the

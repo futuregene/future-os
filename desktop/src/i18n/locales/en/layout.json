@@ -42,6 +42,7 @@
     "archived": "Archived",
     "running": "Running",
     "pendingApproval": "{{count}} pending approval(s)",
+    "pendingChoice": "This reply is waiting on your choice",
     "completed": "Completed",
     "failed": "Failed",
     "cancelled": "Cancelled",

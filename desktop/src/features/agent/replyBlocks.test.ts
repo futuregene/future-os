@@ -90,6 +90,47 @@ describe("folding a settled reply onto its final answer", () => {
   });
 });
 
+describe("folding stops once the notes are the reply", () => {
+  const split = (segments: MessageSegment[]) => splitFinalAnswer(buildReplyBlocks(segments));
+  const note = (id: string, text = "Looking around"): MessageSegment => ({ id, kind: "text", text });
+  const answer: MessageSegment = { id: "answer", kind: "text", text: "It works" };
+  const visibleProse = (result: ReturnType<typeof split>) =>
+    result.answer
+      .filter((block): block is { kind: "segment"; segment: MessageSegment } =>
+        block.kind === "segment" && block.segment.kind === "text")
+      .map(block => (block.segment as Extract<MessageSegment, { kind: "text" }>).text);
+
+  // The reported defect (2026-11-16). A long run narrates its work between tool
+  // calls, and folding it onto the last paragraph hid a median of 10 prose
+  // blocks and ~15 KB per reply — 78% of replies lost more than half their
+  // prose. Measured on this machine's Agent store over 4,713 replies.
+  it("keeps a reply whole once three notes would be hidden", () => {
+    const result = split([note("n1"), tool, note("n2"), thought, note("n3"), tool, answer]);
+    expect(result.process).toEqual([]);
+    expect(visibleProse(result)).toEqual(["Looking around", "Looking around", "Looking around", "It works"]);
+  });
+
+  it("still folds one or two short notes", () => {
+    expect(split([note("n1"), tool, answer]).process.length).toBeGreaterThan(0);
+    const two = split([note("n1"), tool, note("n2"), thought, answer]);
+    expect(two.process.length).toBeGreaterThan(0);
+    expect(visibleProse(two)).toEqual(["It works"]);
+  });
+
+  it("keeps a reply whole when the hidden note alone exceeds the character ceiling", () => {
+    const long = note("long", "x".repeat(801));
+    const result = split([long, tool, answer]);
+    expect(result.process).toEqual([]);
+    expect(visibleProse(result)[0]).toHaveLength(801);
+  });
+
+  it("measures only prose, so a wall of tool rows is still a fold", () => {
+    const steps = Array.from({ length: 40 }, (_, index) => ({ ...tool, id: `t${index}` }) as MessageSegment);
+    const result = split([note("n1"), ...steps, answer]);
+    expect(visibleProse(result)).toEqual(["It works"]);
+  });
+});
+
 describe("replyCopyText", () => {
   const note: MessageSegment = { id: "note", kind: "text", text: "Working on it" };
 

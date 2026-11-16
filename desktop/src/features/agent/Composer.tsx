@@ -20,7 +20,7 @@ import { useCommittedRef } from "../../lib/useCommittedRef";
 import { useOperationLifetime } from "../../lib/useOperationLifetime";
 import { useCommand } from "../keyboard/commands";
 import { splitFileName } from "./attachments";
-import { answerFromPick } from "./composer/choiceAnswer";
+import { answerFromPick, answerOrNull } from "./composer/choiceAnswer";
 import { ComposerControls } from "./composer/ComposerControls";
 import { useComposerAttachments } from "./composer/useComposerAttachments";
 import { clearComposerDraft, loadComposerDraft, saveComposerDraft } from "./composerDraft";
@@ -388,7 +388,12 @@ function ComposerImpl({
    * caller's business: the draft load must not rewrite storage, and a clear that
    * leaves attachments behind persists through `saveDraft`.
    */
-  const writeChoice = useCallback((next: ChoiceAnswer | null) => {
+  const writeChoice = useCallback((rawNext: ChoiceAnswer | null) => {
+    // Zero ticks is no answer (design §7, §5.2.1): the pill's whole job is to say
+    // what was picked, and the transcript's card must stop marking rows for an
+    // answer that no longer exists. One rule for the four entrances — a row on the
+    // card, the pill's pencil, its cross, and the draft load.
+    const next = answerOrNull(rawNext);
     setChoice(next);
     editorRef.current?.setChoice(next);
     onChoiceChangeRef.current?.(next);

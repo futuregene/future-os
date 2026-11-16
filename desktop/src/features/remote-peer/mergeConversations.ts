@@ -71,6 +71,15 @@ export interface RemoteSessionRow {
   streaming?: boolean;
   status?: string;
   /**
+   * This conversation's last finished reply closed with a choice card.
+   *
+   * Optional by contract: a host that predates the field reports nothing, and a
+   * row without it draws no mark — which is what that host's own list did. The
+   * host derives it from the conversation's latest run, so a follow-up turn
+   * clears it without any second write.
+   */
+  offersChoice?: boolean;
+  /**
    * Unix millis. Absent on a host that predates the field.
    *
    * Written by the host and only by the host — its own
@@ -245,6 +254,17 @@ export interface MergedConversation {
    * machine reports nothing.
    */
   runStatus?: string | null;
+  /**
+   * Whether the conversation's last finished reply closed with a choice card,
+   * as the machine that owns it reports.
+   *
+   * Always `false` for this machine's rows: their mark lives on the rail's own
+   * run status (`threadRunStatuses`), and a second copy here is how two answers
+   * to the same question come to disagree. A host's row carries what its
+   * catalogue says, so the merged list badges a peer's waiting conversation the
+   * same way it badges a local one.
+   */
+  offersChoice?: boolean;
   /**
    * Whether the conversation sits in the archived view rather than the active
    * lists.
@@ -614,6 +634,8 @@ export function mergeConversations(
         // This machine's run status is the rail's, per thread; a second copy
         // here is how two answers to "is this running" come to disagree.
         runStatus: null,
+        // Same rule for the choice mark: the rail reads it from that run status.
+        offersChoice: false,
         // A local thread's archive status; the rail's active lists hold only
         // active rows, but the merge states the fact rather than assuming it, so
         // one filter over the merged rows is correct for both machines.
@@ -660,6 +682,7 @@ export function mergeConversations(
         lastMessageAt: typeof session.lastMessageAt === "number" ? session.lastMessageAt : null,
         createdAt: typeof session.createdAt === "number" ? session.createdAt : null,
         runStatus: typeof session.status === "string" ? session.status : null,
+        offersChoice: session.offersChoice === true,
         // The host marks a conversation inside a shelved workspace too, so this
         // one field is the whole answer for the remote half — no join against
         // the workspace list is needed here.

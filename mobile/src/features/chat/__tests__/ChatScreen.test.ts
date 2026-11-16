@@ -26,6 +26,7 @@ import type { RemoteSession, RemoteSessionUsage, RemoteWorkspace, TimelineItem }
 import { QUEUE_POLL_MS, type SessionQueueRow, type SessionQueueSnapshot } from "../../../remote/sessionQueue";
 import { QUEUED_SEND_POLICY } from "../useSendMessage";
 import * as chatUtils from "../utils";
+import type { ChoiceAnswer } from "../choiceAnswer";
 
 const mockRemote = {
   credentials: { expectedDesktopId: "desktop" },
@@ -165,12 +166,19 @@ const mockDraft: {
   setMessage: jest.Mock;
   setAttachments: jest.Mock;
   sessionRefs: Record<string, unknown>;
+  // The `futureos-choice` answer the draft holds (§2), and its setter. Mutable
+  // like `message`, so a test can tell what a pick wrote — the real hook's
+  // `setChoice` is a `useState` setter and this mirrors that contract.
+  choice: ChoiceAnswer | null;
+  setChoice: jest.Mock;
 } = {
   message: "",
   attachments: [],
   setMessage: jest.fn(),
   setAttachments: jest.fn(),
   sessionRefs: {},
+  choice: null,
+  setChoice: jest.fn(),
 };
 jest.mock("../useComposerDraft", () => ({
   useComposerDraft: () => mockDraft,
@@ -306,7 +314,9 @@ beforeEach(async () => {
   mockRemote.loadOlderTimeline.mockReset().mockResolvedValue([]);
   mockDraft.message = "";
   mockDraft.attachments = [];
+  mockDraft.choice = null;
   mockDraft.setMessage.mockImplementation((value: string) => { mockDraft.message = value; });
+  mockDraft.setChoice.mockReset();
   mockSkillReco.suggestion = null;
   mockSkillReco.evaluating = false;
   act(() => {
@@ -1493,6 +1503,87 @@ test("editing a waiting message corrects it where it waits", async () => {
   expect(mockRemote.sendMessage).not.toHaveBeenCalled();
 });
 
+test("unticking a waiting message's last answer changes nothing and says why", async () => {
+  // The row's sentence is `[question → answer]`, so rewriting it from an empty
+  // pick would queue `[接下来做哪一件？ → ]` — a question the agent reads as an
+  // answer — or leave only the bracketed question. The row is already waiting, so
+  // its text must not change under the reader: refused, with the reason said out
+  // loud, and the bin is what removes it (the shape `removeQueuedAttachment` uses
+  // for a message that is only files).
+  const toast = jest.spyOn(chatUtils, "showToast").mockImplementation(() => {});
+  try {
+    await mountWithQueue([
+      queueRow({ choice: queuedAnswer, runId: "run_a", text: "[接下来做哪一件？ → 重画森林图]" }),
+    ]);
+    mockRemote.editQueuedRun.mockClear();
+
+    await act(async () => {
+      tree.root.findByType(ComposerDock).props.onQueueUpdateChoice("run_a", {
+        ...queuedAnswer,
+        mode: "multi",
+        selectedIds: [],
+      });
+    });
+    await settleQueue();
+
+    // The spy is the assertion that matters: no request may carry an empty answer,
+    // whatever the row's text would have become. Checking the call's arguments
+    // (not only the final string) is what makes a silent rewrite impossible to
+    // reintroduce.
+    for (const call of mockRemote.editQueuedRun.mock.calls) {
+      expect(String(call[2])).not.toContain("→ ]");
+      expect(String(call[2])).not.toMatch(/\[[^\]]*→\s*\]/u);
+      const carried = call[3] as { selectedIds?: string[] } | undefined;
+      expect(carried?.selectedIds ?? []).not.toHaveLength(0);
+    }
+    expect(mockRemote.editQueuedRun).not.toHaveBeenCalled();
+    // Nothing else took the row away either: a refusal is not a removal.
+    expect(mockRemote.cancelQueuedRun).not.toHaveBeenCalled();
+    expect(mockRemote.sendMessage).not.toHaveBeenCalled();
+    // And the reader is told, rather than left with a change that never happened.
+    expect(toast).toHaveBeenCalledWith("chat.queue.emptyChoice");
+  } finally {
+    toast.mockRestore();
+  }
+});
+
+test("a waiting message's answer still takes one or two picks", async () => {
+  // The contrast that keeps the guard above from passing vacuously: one pick
+  // rewrites the sentence, two join with `、`.
+  await mountWithQueue([
+    queueRow({ choice: queuedAnswer, runId: "run_a", text: "[接下来做哪一件？ → 重画森林图]" }),
+  ]);
+
+  await act(async () => {
+    tree.root.findByType(ComposerDock).props.onQueueUpdateChoice("run_a", {
+      ...queuedAnswer,
+      selectedIds: ["flow"],
+    });
+  });
+  await settleQueue();
+  expect(mockRemote.editQueuedRun).toHaveBeenLastCalledWith(
+    "history",
+    "run_a",
+    "[接下来做哪一件？ → 补一张流程图]",
+    expect.objectContaining({ selectedIds: ["flow"] }),
+  );
+
+  await act(async () => {
+    tree.root.findByType(ComposerDock).props.onQueueUpdateChoice("run_a", {
+      ...queuedAnswer,
+      mode: "multi",
+      selectedIds: ["forest", "flow"],
+    });
+  });
+  await settleQueue();
+  expect(mockRemote.editQueuedRun).toHaveBeenLastCalledWith(
+    "history",
+    "run_a",
+    "[接下来做哪一件？ → 重画森林图、补一张流程图]",
+    expect.objectContaining({ selectedIds: ["forest", "flow"] }),
+  );
+});
+
 test("an edit that empties the row is not a message, so nothing is sent", async () => {
   const toast = jest.spyOn(chatUtils, "showToast").mockImplementation(() => {});
   await mountWithQueue([queueRow({ runId: "run_a", text: "typo" })]);
@@ -1846,4 +1937,77 @@ test("a queue that cannot be read leaves the panel empty rather than failing the
   await settleQueue();
   expect(queueContents()).toEqual([]);
   expect(mockRemote.getQueue).toHaveBeenCalled();
+});
+
+/**
+ * Unticking a multi-choice card's last row.
+ *
+ * §7 prints an answer as `[question → label]`, so an answer with a question and
+ * no pick would print `[接下来做哪一件？ → ]` — a question with an empty answer,
+ * which the agent reads as an answer. This phone drops the answer at the pick
+ * site (`ChatScreen`'s `pickChoice` keeps it only while something is ticked), so
+ * the card goes back to unanswered and the send carries no bracket at all. The
+ * desktop prints the same nothing from `serialize`; these two cases are the pair
+ * that keeps the ends from forking again.
+ */
+test("unticking a multi-choice card's last row leaves no answer, and the send carries no arrow", async () => {
+  const multi: ChoiceAnswer = {
+    mode: "multi",
+    options: [{ id: "forest", label: "重画森林图" }, { id: "flow", label: "补一张实验流程图" }],
+    selectedIds: ["forest"],
+    title: "接下来做哪一件？",
+  };
+  mockDraft.choice = multi;
+  // Mirror `useState`'s contract: the pick writes through an updater, and the
+  // value it returns is what the next render reads. The real hook also drops an
+  // answer with nothing ticked (`answerOrNull`), so the mirror does too — a mock
+  // that kept it would test a draft the app cannot produce.
+  mockDraft.setChoice.mockImplementation((update: ChoiceAnswer | null | ((current: ChoiceAnswer | null) => ChoiceAnswer | null)) => {
+    const next = typeof update === "function" ? update(mockDraft.choice) : update;
+    mockDraft.choice = next && next.selectedIds.length > 0 ? next : null;
+    act(() => tree.update(createElement(ChatScreen)));
+  });
+  act(() => tree.update(createElement(ChatScreen)));
+
+  const onPick = () => tree.root.findAllByType("TimelineCard" as never)
+    .map(card => card.props.choiceAnswer?.onPick)
+    .find(pick => typeof pick === "function") as (card: unknown, id: string) => void;
+  const card = {
+    mode: "multi",
+    options: multi.options,
+    title: multi.title,
+    type: "choiceCard",
+  };
+
+  // The format around the guard, so the two cases below are a contrast rather
+  // than a vacuous pass: one tick sends §7's sentence, two ticks join with `、`.
+  await act(async () => onPick()(card, "flow"));
+  expect(mockDraft.choice?.selectedIds).toEqual(["forest", "flow"]);
+  await act(async () => {
+    await tree.root.findByType(ComposerDock).props.send();
+  });
+  expect(mockSendApi.send).toHaveBeenLastCalledWith("[接下来做哪一件？ → 重画森林图、补一张实验流程图]");
+
+  // Unticking back to nothing drops the answer whole — no half-answer with a
+  // question and no pick, and no chip over a field with nothing to say.
+  await act(async () => onPick()(card, "flow"));
+  await act(async () => onPick()(card, "forest"));
+
+  const before = mockSendApi.send.mock.calls.length;
+  await act(async () => {
+    await tree.root.findByType(ComposerDock).props.send();
+  });
+  // The harm this guards is a sentence, not a field: an answer with a question
+  // and no pick prints `[接下来做哪一件？ → ]`, a question with an empty answer,
+  // which the model reads as an answer. No send may ever carry that shape — so
+  // this is checked first, and a regression fails on the text the agent would
+  // read rather than on an internal field.
+  for (const call of mockSendApi.send.mock.calls) {
+    expect(String(call[0])).not.toContain("→ ]");
+    expect(String(call[0])).not.toContain("[接下来做哪一件？ → ]");
+  }
+  // Nothing typed and nothing ticked is nothing to send.
+  expect(mockSendApi.send.mock.calls.length).toBe(before);
+  // And the draft holds no answer at all, so the chip is gone too.
+  expect(mockDraft.choice).toBeNull();
 });
