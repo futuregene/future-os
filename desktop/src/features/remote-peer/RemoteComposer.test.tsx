@@ -226,6 +226,23 @@ async function settle(): Promise<void> {
   });
 }
 
+/**
+ * Open the send queue's rows.
+ *
+ * The panel draws its header line — title, count, what will become of the waiting
+ * messages — and no rows until it is pressed, the same as the phone's. A test
+ * about a row crosses that press first, exactly as a reader does.
+ */
+async function openQueue(view: { container: HTMLElement }) {
+  await act(async () => {
+    const toggle = view.container.querySelector<HTMLButtonElement>("[data-queue-toggle]");
+    if (!toggle)
+      throw new Error("the send queue draws no toggle");
+    toggle.click();
+    await Promise.resolve();
+  });
+}
+
 beforeEach(() => {
   // The composer persists drafts and outbox in localStorage; without this
   // tests leak queued prompts and staged uploads between cases.
@@ -1703,6 +1720,9 @@ describe("a send made behind a running reply", () => {
     queueRows = [hostRow()];
     const view = await mount({ streaming: true });
     expect(view.container.querySelector("[data-send-queue]")).not.toBeNull();
+    // The panel opens as its header line; the row is one press away.
+    expect(view.container.querySelectorAll("[data-queue-item]")).toHaveLength(0);
+    await openQueue(view);
     expect(view.text()).toContain("held while it runs");
     // A queued row runs by itself, so there is no "start it now" to offer — and
     // the empty-field control says the rows go with the run it stops.
@@ -1721,6 +1741,7 @@ describe("a send made behind a running reply", () => {
   it("edits a waiting message where it waits, without re-sending it", async () => {
     queueRows = [hostRow()];
     const view = await mount({ streaming: true });
+    await openQueue(view);
     await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
     const box = view.container.querySelector<HTMLTextAreaElement>("[data-queue-item] textarea")!;
     await act(async () => {
@@ -1743,6 +1764,7 @@ describe("a send made behind a running reply", () => {
   it("treats a row edited down to nothing as a removal", async () => {
     queueRows = [hostRow()];
     const view = await mount({ streaming: true });
+    await openQueue(view);
     await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
     const box = view.container.querySelector<HTMLTextAreaElement>("[data-queue-item] textarea")!;
     await act(async () => {
@@ -1776,6 +1798,7 @@ describe("a send made behind a running reply", () => {
     editQueued.mockRejectedValueOnce(new Error("Unsupported command: edit_queued_run"));
     upload.mockResolvedValue({ uploadId: "upload_kept", name: "shot.png", contentHash: "hash" });
     const view = await mount({ streaming: true });
+    await openQueue(view);
     await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
     const box = view.container.querySelector<HTMLTextAreaElement>("[data-queue-item] textarea")!;
     await act(async () => {
@@ -1812,6 +1835,7 @@ describe("a send made behind a running reply", () => {
     editQueued.mockRejectedValueOnce(new Error("Unsupported command: edit_queued_run"));
     previewRemote.mockRejectedValue(new Error("peer_not_connected"));
     const view = await mount({ streaming: true });
+    await openQueue(view);
     await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
     const box = view.container.querySelector<HTMLTextAreaElement>("[data-queue-item] textarea")!;
     await act(async () => {
@@ -1842,6 +1866,7 @@ describe("a send made behind a running reply", () => {
     })];
     const view = await mount({ streaming: true });
     try {
+      await openQueue(view);
       const chip = view.container.querySelector<HTMLButtonElement>("[data-queue-attachment]")!;
       expect(chip.textContent).toContain("notes.md");
       await act(async () => chip.click());
@@ -1865,6 +1890,7 @@ describe("a send made behind a running reply", () => {
   it("starts a parked row now, on the host that parked it", async () => {
     queueRows = [hostRow({ state: "stale:stale", text: "waited too long" })];
     const view = await mount({ streaming: true });
+    await openQueue(view);
     const release = view.container.querySelector<HTMLButtonElement>("[data-queue-release]");
     expect(release).not.toBeNull();
     await act(async () => release!.click());
@@ -1918,6 +1944,7 @@ describe("a send made behind a running reply", () => {
   it("does not treat its own removal as news", async () => {
     queueRows = [hostRow()];
     const view = await mount({ streaming: true });
+    await openQueue(view);
     await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-remove]")!.click());
     await settle();
     expect(forgetQueued).toHaveBeenCalledWith("run_9");
@@ -1934,6 +1961,7 @@ describe("a send made behind a running reply", () => {
     const view = await mount({ streaming: true });
     try {
       expect(view.container.querySelector("[data-send-queue]")!.textContent).not.toContain("Attachments:");
+      await openQueue(view);
       await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
       expect(view.container.querySelector("[data-send-queue]")!.textContent)
         .toContain("Saving sends the new text only");
@@ -1955,6 +1983,7 @@ describe("a send made behind a running reply", () => {
     prompt.mockRejectedValue(new Error("prompt_too_large"));
     const view = await mount({ streaming: true });
     try {
+      await openQueue(view);
       await act(async () => view.container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
       const box = view.container.querySelector<HTMLTextAreaElement>("[data-queue-item] textarea")!;
       await act(async () => {

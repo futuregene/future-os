@@ -304,6 +304,17 @@ async function click(selector: string) {
   });
 }
 
+/**
+ * Open the send queue's rows.
+ *
+ * The panel opens as its header line — title, count, what will become of the
+ * waiting messages — and draws no rows until it is pressed, so a test about a row
+ * has to cross that first press, exactly as a reader does.
+ */
+async function openQueue() {
+  await click("[data-queue-toggle]");
+}
+
 function composer() {
   return container.querySelector<HTMLElement>("[data-composer]")!;
 }
@@ -1169,6 +1180,11 @@ describe("agentThread send while the reply streams", () => {
 
     const panel = container.querySelector("[data-send-queue]");
     expect(panel).not.toBeNull();
+    // The panel opens as its header line: what waits is readable there, and the
+    // rows are one press away.
+    expect(panel!.textContent).toContain("1 waiting");
+    expect(container.querySelectorAll("[data-queue-item]")).toHaveLength(0);
+    await openQueue();
     expect(panel!.textContent).toContain("waiting");
 
     await act(async () => {
@@ -1210,6 +1226,7 @@ describe("agentThread send while the reply streams", () => {
     };
     render();
 
+    await openQueue();
     // The files the message carries are still shown; the edit keeps them without
     // naming them again.
     expect(container.querySelectorAll("[data-queue-attachment]")).toHaveLength(2);
@@ -1252,6 +1269,7 @@ describe("agentThread send while the reply streams", () => {
     const toasts: { message: string; tone?: string }[] = [];
     const off = onFutureEvent("toast", toast => void toasts.push(toast));
 
+    await openQueue();
     await act(async () => container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
     const box = container.querySelector<HTMLTextAreaElement>("[data-queue-item] textarea")!;
     await act(async () => {
@@ -1281,6 +1299,7 @@ describe("agentThread send while the reply streams", () => {
     };
     render();
 
+    await openQueue();
     await act(async () => {
       container.querySelector<HTMLButtonElement>("[data-queue-release]")!.click();
       await Promise.resolve();
@@ -1324,6 +1343,7 @@ describe("agentThread send while the reply streams", () => {
     // with, so the panel must not claim the message carried none.
     expect(container.querySelector("[data-send-queue]")!.textContent).not.toContain("Attachments:");
 
+    await openQueue();
     await act(async () => {
       container.querySelector<HTMLButtonElement>("[data-queue-remove]")!.click();
       await Promise.resolve();
@@ -1356,6 +1376,7 @@ describe("agentThread send while the reply streams", () => {
     const off = onFutureEvent("toast", toast => void toasts.push(toast));
     render();
 
+    await openQueue();
     await act(async () => {
       container.querySelector<HTMLButtonElement>("[data-queue-remove]")!.click();
       await Promise.resolve();
