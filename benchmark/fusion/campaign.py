@@ -7,7 +7,7 @@ import datetime
 import json
 import re
 import time
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
@@ -273,12 +273,12 @@ def run_window(items, jobs, jobs_per_group, routes, worker, record, before_submi
     if not items:
         return
     if jobs_per_group is None and not routes:
-        queues = {None: iter(items)}
+        queues = {None: deque(items)}
     else:
         grouped = defaultdict(list)
         for item in items:
             grouped[item[0]].append(item)
-        queues = {group: iter(rows) for group, rows in grouped.items()}
+        queues = {group: deque(rows) for group, rows in grouped.items()}
     lanes = (
         [
             (f"{group}/{index}", group, route["jobs"])
@@ -297,19 +297,23 @@ def run_window(items, jobs, jobs_per_group, routes, worker, record, before_submi
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         pending = {}
         for lane, group, slots in lanes:
-            queue = queues.get(group, iter(()))
+            queue = queues.get(group, deque())
             for _ in range(slots):
-                item = next(queue, None)
+                item = queue.popleft() if queue else None
                 if item is not None:
                     pending[pool.submit(worker, item, lane)] = (lane, group)
         while pending:
             done, _ = wait(pending, return_when=FIRST_COMPLETED)
             for future in done:
-                record(*future.result())
+                followup = record(*future.result())
+                if followup is not None:
+                    # Append behind unsubmitted work, while allowing a ready
+                    # technical makeup to use a slot before slow peers finish.
+                    queues[pending[future][1]].append(followup)
             replacements = []
             for future in done:
                 lane, group = pending.pop(future)
-                item = next(queues[group], None)
+                item = queues[group].popleft() if queues[group] else None
                 if item is not None:
                     replacements.append((item, lane, group))
             if replacements and before_submit:
@@ -350,6 +354,7 @@ def prepare(args):
         "makeup_passes": args.makeup_passes,
         "jobs": jobs,
         "jobs_per_group": args.jobs_per_group,
+        "rolling_makeups": args.rolling_makeups,
         "harness_sha256": {
             name: digest((ROOT / name).read_bytes())
             for name in ("campaign.py", "future_runner.py", "scoring.py", "datasets.py")
@@ -388,6 +393,7 @@ def prepare(args):
             "started_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "jobs": jobs,
             "jobs_per_group": args.jobs_per_group,
+            "rolling_makeups": args.rolling_makeups,
             "campaign_sha256": config["harness_sha256"]["campaign.py"],
             "harness_sha256": config["harness_sha256"],
             "allow_runner_update": args.allow_runner_update,
@@ -408,7 +414,8 @@ def frozen_inputs(config, allow_runner_update=False, allow_binary_update=False):
     inputs = {
         key: value
         for key, value in config.items()
-        if key not in {"jobs", "jobs_per_group", "timeout", "makeup_passes"}
+        if key
+        not in {"jobs", "jobs_per_group", "timeout", "makeup_passes", "rolling_makeups"}
     }
     inputs["harness_sha256"] = {
         name: sha
@@ -648,6 +655,9 @@ def execute(args):
             raise ValueError(
                 f"Inspect {attempt_path(args.out, group, identifier, attempt)}"
             )
+        if args.rolling_makeups and network_failure(result) and attempt < max_attempts:
+            return group, identifier, attempt + 1
+        return None
 
     def before_submit():
         if backoff is not None:
@@ -662,11 +672,13 @@ def execute(args):
         for group, identifier in histories:
             mark_case(group, identifier)
         phase = "first_pass_and_makeup" if routes else "first_pass"
+        if args.rolling_makeups:
+            phase = "rolling_makeups"
         progress(phase)
         initial = [
             (group, identifier, len(history) + 1)
             for (group, identifier), history in histories.items()
-            if routes
+            if (routes or args.rolling_makeups)
             and history
             and len(history) <= args.makeup_passes
             and network_failure(history[-1])
@@ -687,7 +699,10 @@ def execute(args):
             before_submit if backoff is not None else None,
         )
 
-        for attempt in range(2, args.makeup_passes + 2):
+        makeup_attempts = (
+            () if args.rolling_makeups else range(2, args.makeup_passes + 2)
+        )
+        for attempt in makeup_attempts:
             phase = f"makeup_{attempt - 1}"
             progress(phase)
             run_window(
@@ -785,6 +800,11 @@ def main():
     )
     parser.add_argument("--timeout", type=int, default=0)
     parser.add_argument("--makeup-passes", type=int, default=3)
+    parser.add_argument(
+        "--rolling-makeups",
+        action="store_true",
+        help="queue eligible technical retries behind pending work without a global pass barrier",
+    )
     args = parser.parse_args()
     if (
         args.jobs < 1
