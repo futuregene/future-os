@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import type { StoredFile } from "../../../integrations/storage/types";
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { openPath } from "../../../integrations/storage/files";
+import { openPath, revealPath } from "../../../integrations/storage/files";
 import { copyText } from "../../../lib/clipboard";
 import { emitFutureEvent } from "../../../lib/futureEvents";
 import { FilePreviewOverlay } from "../../filepreview/FilePreviewOverlay";
@@ -60,6 +60,11 @@ export function FileLink({ file, children }: { file: StoredFile; children?: Reac
   const closePreview = useCallback(() => setPreviewing(false), []);
   const openPreview = useCallback(() => setPreviewing(true), []);
 
+  // Reveal is best-effort and silent on failure: the menu entry exists so a user
+  // looking at a file name can find the file, and a folder window that will not
+  // open is not worth a toast over the message they were reading.
+  const reveal = useCallback(() => void revealPath(file.path).catch(() => {}), [file.path]);
+
   function activate() {
     // In preview mode a previewable target opens one level deeper in the
     // overlay's stack, so the reader walks back out with Escape instead of
@@ -85,7 +90,8 @@ export function FileLink({ file, children }: { file: StoredFile; children?: Reac
       ? [{ label: t("fileLink.copyRelativePath"), onSelect: () => void copyText(file.relativePath ?? "") }]
       : []),
     { label: t("fileLink.copyFilename"), onSelect: () => void copyText(file.name) },
-    { divider: true, label: t("fileLink.open"), onSelect: openExternal },
+    { divider: true, label: t("fileLink.revealInFolder"), onSelect: reveal },
+    { label: t("fileLink.open"), onSelect: openExternal },
   ];
 
   return (

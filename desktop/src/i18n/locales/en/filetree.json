@@ -13,6 +13,7 @@
   "menu": {
     "attach": "Attach to context",
     "open": "Open",
+    "revealInFolder": "Show in folder",
     "preview": "Preview"
   }
 }
