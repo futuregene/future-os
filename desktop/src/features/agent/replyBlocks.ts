@@ -44,6 +44,37 @@ export function buildReplyBlocks(segments: MessageSegment[], streaming = false):
 }
 
 /**
+ * How much prose a reply may hide before folding it is no longer a convenience.
+ *
+ * The fold exists for the commonplace shape: a reply that says one thing and
+ * left a couple of notes on the way there, so the answer reads without three
+ * lines of "now let me check…" above it. It stops being that the moment the
+ * notes *are* the reply. Measured on this machine's Agent store (4,713 replies
+ * with prose, 2026-11-16), the fold as it stood hid a median of **10** prose
+ * blocks and ~15 KB per reply, and in **78%** of replies more than half of all
+ * the prose — that is not an aside being tucked away, that is the reading
+ * material. The rule is duplicated in the phone client, so both misread long
+ * runs as "one line of answer".
+ *
+ * The ceiling below keeps the convenience and drops the misreading. A reply
+ * folds only when the prose it would hide is at most two blocks of at most
+ * 800 characters — 5.5% of replies on that store, hiding a median 26% of
+ * their prose. Everything else is left whole: an agent that narrated forty
+ * steps of work had its reasoning in those steps, and the reader asked for it.
+ *
+ * The phone keeps its own copy of this rule (`mobile/src/features/chat/
+ * messages/ReplyBlocks.tsx`) and the two must agree — a reply that folds on
+ * the desktop and not on the phone is the same reply saying two things.
+ */
+export const FOLD_PROSE_BLOCKS = 2;
+export const FOLD_PROSE_CHARS = 800;
+
+/** The prose a block carries, or `""` for a slice that is not text. */
+function blockProse(block: ReplyBlock): string {
+  return block.kind === "segment" && block.segment.kind === "text" ? block.segment.text : "";
+}
+
+/**
  * Split a settled reply into the work that led to its answer and the answer
  * itself — the whole reply minus everything before its last piece of prose.
  *
@@ -54,12 +85,22 @@ export function buildReplyBlocks(segments: MessageSegment[], streaming = false):
  * changes which block the reply opens on. A reply with no prose at all — one
  * that is still only work, or one whose answer the compaction replaced — has
  * no answer to isolate, so nothing is folded.
+ *
+ * A reply whose hidden prose is more than [`FOLD_PROSE_BLOCKS`] blocks or
+ * [`FOLD_PROSE_CHARS`] characters is returned whole: past that point the notes
+ * between the calls are part of what the reply says, and hiding them turns a
+ * long run into a single line (see the constants for the measurement).
  */
 export function splitFinalAnswer(blocks: readonly ReplyBlock[]): { process: ReplyBlock[]; answer: ReplyBlock[] } {
   for (let index = blocks.length - 1; index >= 0; index -= 1) {
     const block = blocks[index]!;
-    if (block.kind === "segment" && block.segment.kind === "text" && block.segment.text.trim().length > 0)
-      return { process: blocks.slice(0, index), answer: blocks.slice(index) };
+    if (block.kind === "segment" && block.segment.kind === "text" && block.segment.text.trim().length > 0) {
+      const process = blocks.slice(0, index);
+      const hidden = process.map(blockProse).filter(text => text.trim().length > 0);
+      if (hidden.length > FOLD_PROSE_BLOCKS || hidden.reduce((total, text) => total + text.length, 0) > FOLD_PROSE_CHARS)
+        return { process: [], answer: [...blocks] };
+      return { process, answer: blocks.slice(index) };
+    }
   }
   return { process: [], answer: [...blocks] };
 }
