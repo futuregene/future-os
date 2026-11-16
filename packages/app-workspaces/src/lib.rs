@@ -114,7 +114,8 @@ pub fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Workspace> {
 /// Create the `workspaces` table when it does not exist, so a first write from
 /// the CLI does not require the desktop app to have run. Idempotent: the
 /// desktop's own schema is created first whenever the app has started, and its
-/// migration state is left untouched by this.
+/// migration state is left untouched by this. The uniqueness rule below is
+/// installed here for the same reason.
 pub fn ensure_table(conn: &Connection) -> Result<(), Error> {
     future_app_settings::validate_database_header(conn)
         .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -136,7 +137,35 @@ pub fn ensure_table(conn: &Connection) -> Result<(), Error> {
              deleted_at INTEGER
          )",
     )?;
+    ensure_unique_user_path_index(conn)?;
     Ok(())
+}
+
+/// The constraint behind "one directory is one workspace": at most one live
+/// `user` row per path. A chat scratch workspace is a different kind of row, and
+/// a deleted row is history, so neither is covered.
+pub const UNIQUE_USER_PATH_INDEX: &str =
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_workspaces_user_path_unique \
+     ON workspaces(path) WHERE kind = 'user' AND deleted_at IS NULL";
+
+/// Install [`UNIQUE_USER_PATH_INDEX`], and say whether it is in place.
+///
+/// A database written before [`find_or_create_user`] guarded its insert can
+/// already hold two rows for one directory, and SQLite refuses a unique index
+/// over such a table. That is not a reason to fail the open: the constraint is
+/// left out, `find_or_create_user` keeps the rule on its own, and the pair stays
+/// where it is — merging it means moving conversations between ids and dropping
+/// a row, which is the user's decision, not a migration's.
+pub fn ensure_unique_user_path_index(conn: &Connection) -> Result<bool, Error> {
+    match conn.execute_batch(UNIQUE_USER_PATH_INDEX) {
+        Ok(()) => Ok(true),
+        Err(rusqlite::Error::SqliteFailure(error, _))
+            if error.code == rusqlite::ErrorCode::ConstraintViolation =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Every live workspace row, most recently *active* first — the newest
@@ -252,8 +281,10 @@ pub fn find_user_by_path(conn: &Connection, path: &Path) -> Result<Option<Worksp
 }
 
 /// Resolve the workspace for a directory, creating it when the directory has
-/// none. The caller owns the transaction: a composite write (the desktop's
-/// `create_thread`) runs this inside its own.
+/// none. The caller may own a transaction (a composite write such as the
+/// desktop's `create_thread` runs this inside one), but does not have to: "one
+/// directory is one workspace" is enforced by the insert below, not by the
+/// transaction the caller happens to hold.
 pub fn find_or_create_user(
     conn: &Connection,
     name: String,
@@ -262,31 +293,57 @@ pub fn find_or_create_user(
     now: i64,
 ) -> Result<Workspace, Error> {
     if let Some(workspace) = find_user_by_path(conn, path)? {
-        // New work landing in an archived workspace means the directory is in
-        // use again: the container comes back. Archiving hides a workspace
-        // until something writes into it, never disables its directory.
-        wake_workspace(conn, &workspace.id, now)?;
-        return get(conn, &workspace.id)?
-            .ok_or_else(|| Error::Invalid("Workspace could not be loaded.".to_string()));
+        return reopened(conn, &workspace.id, now);
     }
 
+    // The decision and the write are one statement, so no second writer can
+    // land a row for this directory between them. A lookup followed by a
+    // separate `INSERT` cannot be made safe that way: whatever transaction the
+    // caller holds, the window only closes for writers that *also* took the
+    // write lock before reading, and the cwd filing
+    // (`file_session_for_cwd`) read before it wrote. That is how the user's
+    // database ended up with two workspaces for one directory, 1 ms apart
+    // (`ws-20261116-141317-…-e62d87` and `…-05aa4d`, 2026-11-16 14:13:17).
+    //
+    // `?3` is the stored spelling, which every writer canonicalizes first, so
+    // two spellings of one directory meet here as one path.
     let workspace_id = new_id("ws");
-    conn.execute(
+    let stored = normalize_path(path).display().to_string();
+    let inserted = conn.execute(
         "INSERT INTO workspaces (
              id, name, kind, path, description, cleanup_status, last_opened_at,
              created_at, updated_at
-         ) VALUES (?1, ?2, 'user', ?3, ?4, 'active', ?5, ?5, ?5)",
-        params![
-            workspace_id,
-            name,
-            normalize_path(path).display().to_string(),
-            description,
-            now
-        ],
+         )
+         SELECT ?1, ?2, 'user', ?3, ?4, 'active', ?5, ?5, ?5
+          WHERE NOT EXISTS (
+                SELECT 1 FROM workspaces
+                 WHERE kind = 'user' AND path = ?3 AND deleted_at IS NULL
+          )",
+        params![workspace_id, name, stored, description, now],
     )?;
+
+    if inserted == 0 {
+        // A creator committed while this call was looking. Its row is the
+        // workspace for the directory; this call adopts it instead of adding
+        // one of its own.
+        let existing = find_user_by_path(conn, path)?.ok_or_else(|| {
+            Error::Invalid("Workspace could not be loaded after a concurrent write.".to_string())
+        })?;
+        return reopened(conn, &existing.id, now);
+    }
 
     get(conn, &workspace_id)?
         .ok_or_else(|| Error::Invalid("Created workspace could not be loaded.".to_string()))
+}
+
+/// Hand back a workspace that already exists, waking it first: new work landing
+/// in an archived workspace means the directory is in use again, so the
+/// container comes back. Archiving hides a workspace until something writes
+/// into it, never disables its directory.
+fn reopened(conn: &Connection, workspace_id: &str, now: i64) -> Result<Workspace, Error> {
+    wake_workspace(conn, workspace_id, now)?;
+    get(conn, workspace_id)?
+        .ok_or_else(|| Error::Invalid("Workspace could not be loaded.".to_string()))
 }
 
 /// Clear a workspace's archived marker. Idempotent; a no-op for a workspace
@@ -306,9 +363,13 @@ pub fn wake_workspace(conn: &Connection, workspace_id: &str, now: i64) -> Result
 /// name defaults to the directory's own name, and a directory that already has
 /// a workspace reopens that row instead of gaining a second one.
 ///
-/// The `SELECT`-then-`INSERT` runs in one `BEGIN IMMEDIATE` transaction, so the
-/// CLI and the desktop app creating the same directory at the same moment
-/// cannot produce two workspaces for it.
+/// "One directory, one workspace" is enforced by
+/// [`find_or_create_user`]'s single `INSERT … WHERE NOT EXISTS` statement, which
+/// holds even for a writer that read before another creator committed — the
+/// case that produced two rows for one directory at 2026-11-16 14:13:17. The
+/// `BEGIN IMMEDIATE` here adds the ordering, not the guarantee: it makes the
+/// reopen path's wake part of the same unit as the lookup, and it keeps this
+/// writer behind any other write transaction instead of failing on it.
 pub fn create(
     conn: &mut Connection,
     path: &str,
@@ -493,6 +554,12 @@ pub enum CwdFiling {
 /// the app surfaces it (a toast) and what the CLI reports as a note rather than
 /// failing the cwd change itself. An empty cwd is `Ok(None)`: there is no
 /// directory to file under.
+///
+/// The filing is one unit: the workspace it resolves or creates, the thread's
+/// move into it and the wake all commit together, inside a `BEGIN IMMEDIATE`
+/// transaction. It used to write outside any transaction, which left its "no
+/// workspace for this directory yet" reading stale by the time it inserted —
+/// the second writer in the 2026-11-16 14:13:17 duplicate.
 pub fn file_session_for_cwd(
     conn: &mut Connection,
     session_id: &str,
@@ -503,10 +570,26 @@ pub fn file_session_for_cwd(
     if cwd.is_empty() {
         return Ok(None);
     }
+    // The answer that writes nothing is decided before the write lock is taken,
+    // so a cwd change the desktop is not filing costs a read.
     let Some(thread) = find_thread_by_agent_session(conn, session_id)? else {
         return Ok(Some(CwdFiling::NotImported));
     };
+    let transaction = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let filing = file_known_thread(&transaction, &thread, cwd, now)?;
+    transaction.commit()?;
+    Ok(Some(filing))
+}
 
+/// [`file_session_for_cwd`] for a session the desktop has already imported: the
+/// workspace half of the rule, on the connection the caller's transaction gives
+/// it.
+fn file_known_thread(
+    conn: &Connection,
+    thread: &ThreadRef,
+    cwd: &str,
+    now: i64,
+) -> Result<CwdFiling, Error> {
     if is_chat_directory(cwd) {
         let scratch = chat_workspaces_root()?
             .join(&thread.id)
@@ -519,7 +602,7 @@ pub fn file_session_for_cwd(
                 params![cwd, now, scratch],
             )?;
         }
-        return Ok(Some(CwdFiling::ChatWorkspaceUpdated));
+        return Ok(CwdFiling::ChatWorkspaceUpdated);
     }
 
     // Identity is the canonical directory, not the spelling that arrived: the
@@ -532,13 +615,13 @@ pub fn file_session_for_cwd(
     };
     let workspace_id = match &filing {
         CwdFiling::WorkspaceCreated(id) | CwdFiling::WorkspaceReused(id) => id.clone(),
-        _ => unreachable!("the chat and unimported cases returned above"),
+        _ => unreachable!("the chat case returned above"),
     };
     move_thread_to_workspace(conn, &thread.id, &workspace_id)?;
     // A conversation filed by cwd change is new work in that directory: an
     // archived workspace is woken so the row does not end up JOIN-hidden.
     wake_workspace(conn, &workspace_id, now)?;
-    Ok(Some(filing))
+    Ok(filing)
 }
 
 /// The `archived_at` marker of a workspace, when it is archived.
@@ -665,6 +748,286 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create test directory");
         dir
+    }
+
+    /// A file-backed database two connections can open at once — the shape the
+    /// desktop app and a CLI process have. An in-memory one cannot be shared, so
+    /// the write races below need a real file.
+    fn racing_conn(database: &Path) -> Connection {
+        let conn = Connection::open(database).expect("open the shared database");
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;",
+        )
+        .expect("pragmas");
+        conn
+    }
+
+    /// `SELECT count(*) FROM workspaces WHERE path = ?` — what "one directory is
+    /// one workspace" means on disk.
+    fn rows_for_path(conn: &Connection, path: &Path) -> i64 {
+        conn.query_row(
+            "SELECT count(*) FROM workspaces WHERE kind = 'user' AND path = ?1 AND deleted_at IS NULL",
+            params![normalize_path(path).display().to_string()],
+            |row| row.get(0),
+        )
+        .expect("count rows")
+    }
+
+    /// Establish the write lock the racing write has to wait behind, with a row
+    /// for `path` written but not yet committed: the state the winning creator
+    /// is in between its own write and its commit.
+    fn uncommitted_winner(conn: &Connection, path: &Path) {
+        conn.execute_batch("BEGIN IMMEDIATE").expect("begin");
+        conn.execute(
+            "INSERT INTO workspaces (id, name, kind, path, cleanup_status, last_opened_at, created_at, updated_at)
+             VALUES ('ws-winner', 'winner', 'user', ?1, 'active', 1, 1, 1)",
+            params![normalize_path(path).display().to_string()],
+        )
+        .expect("insert the winning row");
+    }
+
+    /// Run `work` on another connection while this one holds an uncommitted row
+    /// for the same directory, then commit — the interleaving that produced
+    /// `ws-20261116-141317-e62d87` and `ws-20261116-141317-05aa4d` for one
+    /// directory one millisecond apart. The racing write cannot finish first:
+    /// its insert waits for this connection's lock, so committing afterwards
+    /// lands exactly in its window, not somewhere near it.
+    fn race_against_uncommitted_row<T: Send + 'static>(
+        database: &Path,
+        path: &Path,
+        work: impl FnOnce(Connection) -> T + Send + 'static,
+    ) -> T {
+        let winner = racing_conn(database);
+        uncommitted_winner(&winner, path);
+        let racer_database = database.to_path_buf();
+        let racer = std::thread::spawn(move || work(racing_conn(&racer_database)));
+        // Give the racing write time to reach its insert and block there. It
+        // cannot complete while the lock is held, so this is an ordering
+        // guarantee, not a race: if it finished, it would be because the write
+        // returned early, which no writer should do.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(
+            !racer.is_finished(),
+            "the racing write finished while the winning row was still uncommitted; \
+             it did not wait for the write lock"
+        );
+        winner.execute_batch("COMMIT").expect("commit the winner");
+        racer.join().expect("racing thread")
+    }
+
+    /// One directory, one workspace row — including when the row that answers
+    /// the lookup is committed *after* the other writer looked. That is the
+    /// interleaving that put two workspaces in the user's database at
+    /// 2026-11-16 14:13:17 (…504 and …505), and the guard has to be the write
+    /// itself: a lookup followed by an insert in a second statement leaves the
+    /// window open no matter how the caller spells it.
+    #[test]
+    fn a_concurrent_creator_of_one_directory_leaves_one_row() {
+        let base = temp_dir("race-create");
+        let database = base.join("app.db");
+        let dir = base.join("project");
+        std::fs::create_dir_all(&dir).expect("create the directory");
+        ensure_table(&racing_conn(&database)).expect("schema");
+
+        let racing_dir = dir.clone();
+        let created = race_against_uncommitted_row(&database, &dir, move |mut conn| {
+            create(
+                &mut conn,
+                &racing_dir.display().to_string(),
+                None,
+                None,
+                false,
+                2,
+            )
+            .expect("create under the race")
+        });
+
+        let reader = racing_conn(&database);
+        assert_eq!(
+            rows_for_path(&reader, &dir),
+            1,
+            "one directory must stay one workspace row, got {:?}",
+            list(&reader)
+                .expect("list")
+                .into_iter()
+                .map(|workspace| workspace.id)
+                .collect::<Vec<_>>()
+        );
+        // The loser reports the row that won instead of a row of its own.
+        assert_eq!(created.id, "ws-winner");
+        assert_eq!(created.path, normalize_path(&dir).display().to_string());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The same rule for the third writer: filing a conversation under a
+    /// directory (`future session set --cwd`, and the desktop noticing a cwd
+    /// change) creates the workspace when it is missing. It took its "no
+    /// workspace yet" reading outside any transaction, so a creator committing
+    /// in that window left the directory with two rows — one of them holding
+    /// the conversation that caused it.
+    #[test]
+    fn a_cwd_filing_racing_a_creator_leaves_one_row() {
+        let base = temp_dir("race-filing");
+        let database = base.join("app.db");
+        let dir = base.join("project");
+        std::fs::create_dir_all(&dir).expect("create the directory");
+        let seeded = racing_conn(&database);
+        ensure_table(&seeded).expect("schema");
+        seeded
+            .execute_batch(
+                "CREATE TABLE threads (
+                     id TEXT PRIMARY KEY,
+                     workspace_id TEXT NOT NULL DEFAULT '',
+                     mode TEXT NOT NULL DEFAULT 'chat',
+                     agent_session_id TEXT,
+                     status TEXT NOT NULL DEFAULT 'active',
+                     last_message_at INTEGER,
+                     created_at INTEGER NOT NULL DEFAULT 0,
+                     updated_at INTEGER NOT NULL DEFAULT 0
+                 );
+                 INSERT INTO threads (id, workspace_id, agent_session_id, status)
+                      VALUES ('thread-1', '', 'sess-1', 'active');",
+            )
+            .expect("threads table");
+
+        let racing_dir = dir.clone();
+        let filing = race_against_uncommitted_row(&database, &dir, move |mut conn| {
+            file_session_for_cwd(&mut conn, "sess-1", &racing_dir.display().to_string(), 2)
+                .expect("file under the race")
+        });
+
+        let reader = racing_conn(&database);
+        assert_eq!(
+            rows_for_path(&reader, &dir),
+            1,
+            "the filing must join the existing workspace, not add a second one"
+        );
+        let filed_under: String = reader
+            .query_row(
+                "SELECT workspace_id FROM threads WHERE id = 'thread-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("thread workspace");
+        assert_eq!(filed_under, "ws-winner", "got filing {filing:?}");
+        assert_eq!(
+            get(&reader, "ws-winner")
+                .expect("get")
+                .expect("exists")
+                .name,
+            "winner",
+            "the winner's row keeps its own name"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The index, where the data allows it: a second row for one directory is
+    /// refused by the schema itself, but a database that already holds such a
+    /// pair still opens — the constraint is skipped rather than the rows being
+    /// deleted, because which of the two to keep is the user's decision.
+    #[test]
+    fn the_unique_index_is_installed_but_never_costs_existing_duplicates() {
+        let conn = test_conn();
+        assert!(ensure_unique_user_path_index(&conn).expect("first attempt"));
+        assert!(
+            ensure_unique_user_path_index(&conn).expect("idempotent"),
+            "a second attempt is a no-op, not a failure"
+        );
+        conn.execute(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+             VALUES ('ws-a', 'A', 'user', '/tmp/dup', 1, 1)",
+            [],
+        )
+        .expect("seed");
+        let refused = conn.execute(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+             VALUES ('ws-b', 'B', 'user', '/tmp/dup', 1, 1)",
+            [],
+        );
+        assert!(refused.is_err(), "the index must refuse a second row");
+        // A deleted row is history, not a live workspace: it may share a path.
+        conn.execute(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at, deleted_at)
+             VALUES ('ws-gone', 'Gone', 'user', '/tmp/dup', 1, 1, 1)",
+            [],
+        )
+        .expect("a deleted row may reuse the path");
+        // And a chat scratch workspace is a different kind of row.
+        conn.execute(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+             VALUES ('ws-chat', 'Chat', 'temporary', '/tmp/dup', 1, 1)",
+            [],
+        )
+        .expect("a temporary workspace may reuse the path");
+
+        // The legacy layout (no index, two rows for one directory) still opens.
+        let legacy = Connection::open_in_memory().expect("open");
+        legacy
+            .execute_batch(
+                "CREATE TABLE workspaces (
+                     id TEXT PRIMARY KEY,
+                     name TEXT NOT NULL,
+                     kind TEXT NOT NULL CHECK (kind IN ('user', 'temporary')),
+                     path TEXT NOT NULL,
+                     description TEXT,
+                     pinned INTEGER NOT NULL DEFAULT 0,
+                     cleanup_status TEXT NOT NULL DEFAULT 'active',
+                     cleanup_requested_at INTEGER,
+                     cleaned_at INTEGER,
+                     last_opened_at INTEGER,
+                     created_at INTEGER NOT NULL,
+                     updated_at INTEGER NOT NULL,
+                     archived_at INTEGER,
+                     deleted_at INTEGER
+                 );
+                 INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                      VALUES ('ws-1', 'W', 'user', '/tmp/dup', 1, 1),
+                             ('ws-2', 'W', 'user', '/tmp/dup', 2, 2);",
+            )
+            .expect("legacy database");
+        assert!(
+            !ensure_unique_user_path_index(&legacy).expect("tolerated"),
+            "an existing duplicate leaves the index out instead of failing the open"
+        );
+        assert_eq!(
+            legacy
+                .query_row("SELECT count(*) FROM workspaces", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("count"),
+            2,
+            "the duplicate rows are the user's to merge, so they stay"
+        );
+        // ensure_table refuses to fail on it too.
+        ensure_table(&legacy).expect("ensure_table tolerates the duplicate");
+    }
+
+    /// Two creators that both read "no workspace yet" outside a transaction is
+    /// the shape this crate must not break on: whichever write lands second
+    /// adopts the row the first one made.
+    #[test]
+    fn a_losing_create_adopts_the_row_that_won() {
+        let conn = test_conn();
+        let dir = temp_dir("adopt");
+        let mut first = find_or_create_user(&conn, "Mine".into(), &dir, None, 1).expect("first");
+        assert!(first.id.starts_with("ws-"));
+        // The second call looks at a database that already has the row, and the
+        // guarded insert reports it inserted nothing.
+        let second = find_or_create_user(&conn, "Theirs".into(), &dir, None, 2).expect("second");
+        assert_eq!(second.id, first.id);
+        assert_eq!(second.name, "Mine", "the stored name wins");
+        assert_eq!(rows_for_path(&conn, &dir), 1);
+        // A wake on the adopted row still clears an archived marker.
+        conn.execute(
+            "UPDATE workspaces SET archived_at = 5 WHERE id = ?1",
+            params![first.id],
+        )
+        .expect("archive");
+        first = find_or_create_user(&conn, "Mine".into(), &dir, None, 3).expect("third");
+        assert_eq!(first.archived_at, None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A workspace this crate creates has no archived marker, and archiving
