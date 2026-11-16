@@ -17,6 +17,7 @@ const STEPS: &[(i64, &str)] = &[
     (4, include_str!("retire_reference_caches.sql")),
     (5, include_str!("workspace_archive.sql")),
     (6, include_str!("review_snapshot_ignored_paths.sql")),
+    (7, include_str!("runs_offers_choice.sql")),
 ];
 
 /// Contract steps that add exactly one column. A fresh database already has
@@ -27,6 +28,7 @@ const STEPS: &[(i64, &str)] = &[
 const ADDITIVE_COLUMN_STEPS: &[(i64, &str, &str)] = &[
     (5, "workspaces", "archived_at"),
     (6, "review_snapshots", "ignored_paths"),
+    (7, "runs", "offers_choice"),
 ];
 
 fn checksum(version: i64) -> String {
@@ -528,6 +530,106 @@ mod tests {
         assert!(column_names(&conn, "review_snapshots")
             .unwrap()
             .contains("ignored_paths"));
+        assert_eq!(
+            admit(&conn).unwrap(),
+            future_app_settings::APP_DB_SCHEMA_VERSION
+        );
+        validate_core(&conn).unwrap();
+    }
+
+    /// The released contract-6 layout: a run cannot say whether its reply closed
+    /// with a choice card, because the column reached `SCHEMA` without a contract
+    /// of its own. Every database written before that contract — the released 6
+    /// and every developer's desktop — is at version 6 without it, while a fresh
+    /// install already has it, so a current open must adopt either layout.
+    fn contract_six_without_run_offers_choice(conn: &Connection) {
+        legacy(conn);
+        initialize(conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO runs(id,thread_id,status,offers_choice,created_at,updated_at)
+                 VALUES('run','t','completed',1,1,1);
+             DELETE FROM app_schema_migrations WHERE version>=7; PRAGMA user_version=6;
+             ALTER TABLE runs DROP COLUMN offers_choice;",
+        )
+        .unwrap();
+        assert_eq!(admit(conn).unwrap(), 6);
+    }
+
+    #[test]
+    fn contract_six_upgrade_adds_the_run_choice_mark() {
+        for wrote_the_column_early in [false, true] {
+            let conn = Connection::open_in_memory().unwrap();
+            contract_six_without_run_offers_choice(&conn);
+            if wrote_the_column_early {
+                // A build that shipped the column before its contract: the step
+                // records itself without replaying the ALTER, and the marks it
+                // already wrote survive.
+                conn.execute_batch(
+                    "ALTER TABLE runs ADD COLUMN offers_choice INTEGER NOT NULL DEFAULT 0;
+                     UPDATE runs SET offers_choice=1 WHERE id='run';",
+                )
+                .unwrap();
+                validate_core(&conn).unwrap();
+            } else {
+                // The reported failure: startup validated the contract before any
+                // migration could add the column, so the desktop refused to open.
+                let error = validate_core(&conn).unwrap_err().to_string();
+                assert!(error.contains("runs.offers_choice is missing"), "{error}");
+            }
+            initialize(&conn).unwrap();
+            initialize(&conn).unwrap();
+            validate_core(&conn).unwrap();
+            assert_eq!(
+                admit(&conn).unwrap(),
+                future_app_settings::APP_DB_SCHEMA_VERSION
+            );
+            // The run written before the column existed keeps its row, and the
+            // mark defaults to "no choice offered" rather than NULL.
+            assert_eq!(
+                conn.query_row("SELECT offers_choice FROM runs WHERE id='run'", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+                i64::from(wrote_the_column_early)
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT content FROM legacy_messages WHERE id='u'",
+                    [],
+                    |row| { row.get::<_, String>(0) }
+                )
+                .unwrap(),
+                "保留历史"
+            );
+        }
+    }
+
+    #[test]
+    fn contract_seven_upgrade_rolls_back_and_retries_with_its_ledger() {
+        let conn = Connection::open_in_memory().unwrap();
+        contract_six_without_run_offers_choice(&conn);
+        conn.execute_batch(
+            "CREATE TRIGGER refuse_v7 BEFORE INSERT ON app_schema_migrations
+             WHEN NEW.version=7 BEGIN SELECT RAISE(ABORT,'injected'); END;",
+        )
+        .unwrap();
+        assert!(initialize(&conn).is_err());
+        assert_eq!(admit(&conn).unwrap(), 6);
+        assert!(!column_names(&conn, "runs")
+            .unwrap()
+            .contains("offers_choice"));
+        assert_eq!(
+            conn.query_row("SELECT status FROM runs WHERE id='run'", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap(),
+            "completed"
+        );
+        conn.execute_batch("DROP TRIGGER refuse_v7").unwrap();
+        initialize(&conn).unwrap();
+        assert!(column_names(&conn, "runs")
+            .unwrap()
+            .contains("offers_choice"));
         assert_eq!(
             admit(&conn).unwrap(),
             future_app_settings::APP_DB_SCHEMA_VERSION
