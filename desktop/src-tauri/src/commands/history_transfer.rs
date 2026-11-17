@@ -260,8 +260,20 @@ fn read_chunk(
     Ok(bytes)
 }
 
+/// Serve one bounded chunk of a snapshot.
+///
+/// This is deliberately **async**. A synchronous `tauri::command` runs on the
+/// main thread, and the reader calls this once per 64 KiB — 25 times for a
+/// 1.5 MB conversation, back to back. Every one of those then queued behind
+/// whatever the UI was painting: measured 2026-11-17, the same 64 KiB chunk
+/// cost 7.7 ms while the window was idle and 70–128 ms when it was busy, and a
+/// 1.57 MB conversation spent 3.2 s of which the backend read was 80 ms. An
+/// async command is dispatched on the runtime instead, so the copy and the
+/// lock cannot stall a frame. The body still never awaits (it would have to
+/// hold a `std` mutex across the await), which is why the work moves off the
+/// main thread rather than becoming concurrent.
 #[tauri::command]
-pub fn read_session_history_transfer<R: tauri::Runtime>(
+pub async fn read_session_history_transfer<R: tauri::Runtime>(
     window: tauri::WebviewWindow<R>,
     transfer_id: String,
     offset: usize,
@@ -627,20 +639,18 @@ mod tests {
 
         let first = reply_bytes(
             read_session_history_transfer(window.clone(), transfer.id.clone(), 0)
+                .await
                 .expect("the first chunk is served"),
         );
         assert_eq!(first, bytes[..CHUNK_BYTES].to_vec());
         let rest = reply_bytes(
             read_session_history_transfer(window.clone(), transfer.id.clone(), CHUNK_BYTES)
+                .await
                 .expect("the last chunk is served"),
         );
         assert_eq!(rest, bytes[CHUNK_BYTES..].to_vec());
         assert_eq!(
-            refusal(read_session_history_transfer(
-                window.clone(),
-                transfer.id.clone(),
-                0
-            )),
+            refusal(read_session_history_transfer(window.clone(), transfer.id.clone(), 0).await),
             "history_transfer_expired"
         );
 
@@ -651,16 +661,12 @@ mod tests {
             admit().await.expect("a transfer is admitted"),
         );
         assert_eq!(
-            refusal(read_session_history_transfer(
-                window.clone(),
-                transfer.id.clone(),
-                1
-            )),
+            refusal(read_session_history_transfer(window.clone(), transfer.id.clone(), 1).await),
             "history_transfer_invalid_offset"
         );
         let (_other_app, other) = mock_window("other-window");
         assert_eq!(
-            refusal(read_session_history_transfer(other, transfer.id.clone(), 0)),
+            refusal(read_session_history_transfer(other, transfer.id.clone(), 0).await),
             "history_transfer_owner_mismatch"
         );
         release_session_history_transfer(window, transfer.id).expect("the owner releases it");
@@ -702,7 +708,7 @@ mod tests {
             .expect("the owner releases");
         assert_eq!(ACTIVE.clone().available_permits(), active);
         assert_eq!(
-            refusal(read_session_history_transfer(window, mine.id, 0)),
+            refusal(read_session_history_transfer(window, mine.id, 0).await),
             "history_transfer_expired"
         );
     }
@@ -732,6 +738,7 @@ mod tests {
         for offset in (0..transfer.total_bytes).step_by(CHUNK_BYTES) {
             bytes.extend(reply_bytes(
                 read_session_history_transfer(window.clone(), transfer.id.clone(), offset)
+                    .await
                     .expect("each chunk is served in order"),
             ));
         }
