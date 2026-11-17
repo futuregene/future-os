@@ -114,6 +114,13 @@ export function useThreadMessages({
     initialCursor?.hasMore ?? false,
   );
   const [historyError, setHistoryError] = useState<string | null>(null);
+  // The oldest page on screen opens mid-turn (too large to send whole), so the
+  // question it belongs to is not in the page. The projection cannot show a
+  // fragment as a turn; this flag is what makes the gap a stated fact instead of
+  // a conversation that looks like it begins with an answer.
+  const [historyTruncated, setHistoryTruncated] = useState(
+    initialCursor?.truncated ?? false,
+  );
   const historyCursorRef = useRef<number | null>(initialCursor?.before ?? null);
   const [historyStatus, setHistoryStatus] = useState<HistoryStatus | null>(initialCursor?.history ?? null);
   const historyStatusRef = useRef(historyStatus);
@@ -144,6 +151,7 @@ export function useThreadMessages({
     setHistoryStatus(null);
     cacheEligibleRef.current = false;
     setHasOlderHistory(false);
+    setHistoryTruncated(false);
     setHistoryError(null);
     if (replacing) {
       setSessionChanged(true);
@@ -175,10 +183,10 @@ export function useThreadMessages({
         messages,
         historyCursorRef.current === null
           ? undefined
-          : { before: historyCursorRef.current, hasMore: hasOlderHistory, ...(historyStatus ? { history: historyStatus } : {}) },
+          : { before: historyCursorRef.current, hasMore: hasOlderHistory, truncated: historyTruncated, ...(historyStatus ? { history: historyStatus } : {}) },
       );
     }
-  }, [messages, normalizedAgentSessionId, threadId, hasOlderHistory, historyStatus]);
+  }, [messages, normalizedAgentSessionId, threadId, hasOlderHistory, historyTruncated, historyStatus]);
 
   const refreshRecentRun = useCallback(
     async (targetThreadId: string) => {
@@ -262,6 +270,7 @@ export function useThreadMessages({
         historyCursorRef.current = result.nextOffset;
         hasOlderHistoryRef.current = result.hasMore;
         setHasOlderHistory(result.hasMore);
+        setHistoryTruncated(result.truncated);
       }
       replacingRef.current = false;
       cacheEligibleRef.current = true;
@@ -321,6 +330,9 @@ export function useThreadMessages({
         historyCursorRef.current = result.nextOffset;
         hasOlderHistoryRef.current = result.hasMore;
         setHasOlderHistory(result.hasMore);
+        // The page that just landed is now the oldest on screen, so its flag is
+        // the one that describes the top of the transcript.
+        setHistoryTruncated(result.truncated);
         setHistoryError(null);
         setMessages((current) => {
           const ids = new Set(current.map(message => message.id));
@@ -443,6 +455,7 @@ export function useThreadMessages({
     loadingThread,
     loadingIndicator,
     hasOlderHistory,
+    historyTruncated,
     loadOlderHistory,
     loadAllHistoryForSearch,
     historyError,
