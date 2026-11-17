@@ -1,0 +1,30 @@
+{
+  "_comment": "多选卡：同一份 th_choice 回复，只把围栏的 mode 换成 multi（mock 的 ?choiceMode=multi）。这张截图要证的是形状——多选的行标记是方框、单选是圆圈——所以断言读的是计算后的 border-radius，而不是 class 名。",
+  "desktop": {
+    "choice-card-multi": {
+      "note": "真实组件 · 桌面 · 多选。回复末尾的 futureos-choice 围栏以 mode: multi 解析：行是 role=checkbox，标记画成 16px 方框（圆角 3px），卡片右上角标「多选」；未选时发送键仍灰。选一行后同位置出现对勾与 accent-soft 底色，行不跳。",
+      "url": "http://localhost:5299/shot/?lang=zh&thread=th_choice&choiceMode=multi",
+      "width": 1440,
+      "height": 900,
+      "steps": [
+        { "wait": 2600 },
+        {
+          "eval": "(() => { const card = document.querySelector('[data-choice-card]'); if (!card) throw new Error('the multi-choice card did not render'); card.scrollIntoView({ block: 'center' }); return 'ok'; })()"
+        },
+        { "wait": 600 },
+        {
+          "eval": "(() => { const card = document.querySelector('[data-choice-card]'); if (!card) throw new Error('the reply did not render a choice card'); if (card.getAttribute('data-choice-mode') !== 'multi') throw new Error('the card is ' + card.getAttribute('data-choice-mode')); if (!card.textContent.includes('多选')) throw new Error('the mode label is not 多选'); const rows = [...card.querySelectorAll('[data-choice-option]')]; if (rows.length !== 3) throw new Error('the card draws ' + rows.length + ' options'); if (!rows.every(row => row.getAttribute('role') === 'checkbox')) throw new Error('a multi card must draw checkbox rows'); const marks = [...card.querySelectorAll('[data-choice-mark]')]; if (marks.length !== 3) throw new Error('expected a mark per row, got ' + marks.length); if (!marks.every(mark => mark.getAttribute('data-choice-mark') === 'box')) throw new Error('the marks are not checkbox marks'); const radius = getComputedStyle(marks[0]).borderTopLeftRadius; if (radius !== '3px') throw new Error('the box radius is ' + radius + ', expected 3px'); if (getComputedStyle(marks[0]).width !== '16px') throw new Error('the mark is ' + getComputedStyle(marks[0]).width); return JSON.stringify({ rows: rows.length, radius }); })()"
+        },
+        { "shot": "choice-card-multi.png" },
+        {
+          "eval": "(() => { const row = document.querySelector('[data-choice-option=\"forest\"]'); if (!row) throw new Error('no forest row'); row.click(); const card = document.querySelector('[data-choice-card]'); card.scrollIntoView({ block: 'center' }); const r = card.getBoundingClientRect(); return JSON.stringify({ top: Math.round(r.top), bottom: Math.round(r.bottom), height: Math.round(r.height) }); })()"
+        },
+        { "wait": 600 },
+        {
+          "eval": "(() => { const card = document.querySelector('[data-choice-card]'); const row = card.querySelector('[data-choice-option=\"forest\"]'); if (row.getAttribute('aria-checked') !== 'true') throw new Error('the pick did not land'); if (!card.querySelector('[data-choice-footer]')) throw new Error('the picked card has no footer'); const mark = row.querySelector('[data-choice-mark]'); if (!mark.textContent.trim() && !mark.querySelector('svg')) throw new Error('the picked box has no check'); return 'picked state ok'; })()"
+        },
+        { "shot": "choice-card-multi-picked.png" }
+      ]
+    }
+  }
+}

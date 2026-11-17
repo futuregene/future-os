@@ -49,6 +49,20 @@ export function requestedThread(): string | null {
   return new URLSearchParams(window.location.search).get("thread");
 }
 
+/**
+ * `?thread=th_choice&choiceMode=multi`: the same conversation with its closing
+ * question asked as a multi-choice card.
+ *
+ * The fence's `mode:` line is the only difference — everything else about the
+ * reply stays as it is — because what such a capture exists to show is the
+ * rows' mark, and that mark is drawn from the mode.
+ */
+export function requestedChoiceMode(): "multi" | "single" {
+  if (typeof window === "undefined")
+    return "single";
+  return new URLSearchParams(window.location.search).get("choiceMode") === "multi" ? "multi" : "single";
+}
+
 /** The expression-parser session: the conversation the two language captures open. */
 export const PARSER_THREAD_ID = "th_parser";
 
@@ -264,7 +278,7 @@ export const choiceEntries: MockEntry[] = [
           "",
           "```futureos-choice",
           "title: 接下来做哪一件？",
-          "mode: single",
+          `mode: ${requestedChoiceMode()}`,
           "option: forest | 重画森林图 | 按 Dreher 2025 的样本量重算两篇的置信区间",
           "option: flow | 补一张实验流程图 | 把两篇的被试流程画成一张对照图",
           "option: table | 表里加一列样本量 | Frank 42 / Dreher 186，标出测量手段",
