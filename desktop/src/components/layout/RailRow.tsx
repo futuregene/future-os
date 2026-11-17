@@ -96,12 +96,19 @@ export function RailRow({
  * must say is "more of these". `compact` picks the column the rows it continues
  * use — the rail's own two (16 for a section's own conversations, 28 for the
  * conversations inside a group), never a third value invented here.
+ *
+ * One control for every list, deliberately. The recent view used to draw its own
+ * copy centred in an accent-tinted bordered pill while the workspace view drew
+ * this left-aligned one, so the same sentence read as two different kinds of
+ * control a tab apart, and only one of them lined up with the conversations it
+ * continued.
  */
 export function RailLoadMoreRow({
   compact,
   count,
   disabled,
   onClick,
+  testId = "rail-load-more",
 }: {
   compact?: boolean;
   /**
@@ -115,13 +122,18 @@ export function RailLoadMoreRow({
   count: number;
   disabled?: boolean;
   onClick: () => void;
+  /**
+   * The view's own test hook, so a view that has several lists can still be
+   * asserted on by which one it is. Appearance is never per-view.
+   */
+  testId?: string;
 }) {
   const { t } = useTranslation("layout");
   return (
     <button
       className="flex h-7 w-full items-center rounded-md text-xs text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft disabled:opacity-50"
       data-load-more={count}
-      data-testid="rail-load-more"
+      data-testid={testId}
       disabled={disabled}
       onClick={onClick}
       style={{ paddingLeft: compact ? 28 : 16 }}
