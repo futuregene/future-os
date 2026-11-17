@@ -863,8 +863,15 @@ nothing running in front of it. A row written into a long turn is not parked whe
 that turn ends: the wait it signed up for *was* the turn, however long it ran. The waiting rows
 are listed above the composer, read from the Agent: taking one back cancels it
 (editing it cancels and re-sends the corrected text, since the Agent has no
-update-in-place), and a parked row offers to start now. Interrupting
-sends the draft as its own turn.
+update-in-place), and a parked row offers to start now. The panel opens as that
+header line — how many wait, and what will become of them — and draws its rows
+only when the header is pressed, the same as the phone's: every row it draws is a
+row of the conversation pushed up, and the header already says what is waiting.
+Interrupting sends the draft as its own turn. While rows wait, the interrupt
+control itself says so (**Stop and send the queued messages**): ending the run is
+what lets them go, since the session starts them at the turn boundary. A parked
+row is left out of that count, because a stop does not release it — it waits for
+someone to press its own button.
 
 The same rule holds for every client that drives a conversation: this app's view
 of another computer's conversation and the phone both hand a queued message to

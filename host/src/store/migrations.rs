@@ -1,5 +1,4 @@
-//! Admission, independent upgrade snapshots and the versioned schema contract.
-//! The historical migration chain keeps its released identities and transactions.
+//! Admission, independent upgrade snapshots and the versioned schema contract.//! The historical migration chain keeps its released identities and transactions.
 use std::{collections::HashSet, path::PathBuf};
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -17,9 +16,9 @@ const STEPS: &[(i64, &str)] = &[
     (4, include_str!("retire_reference_caches.sql")),
     (5, include_str!("workspace_archive.sql")),
     (6, include_str!("review_snapshot_ignored_paths.sql")),
-    (7, include_str!("run_log_cleanup.sql")),
-    (8, include_str!("thread_restore_activity.sql")),
-    (9, include_str!("run_offers_choice.sql")),
+    (7, include_str!("runs_offers_choice.sql")),
+    (8, include_str!("run_log_cleanup.sql")),
+    (9, include_str!("thread_restore_activity.sql")),
 ];
 
 /// Contract steps that add exactly one column. A fresh database already has
@@ -30,9 +29,9 @@ const STEPS: &[(i64, &str)] = &[
 const ADDITIVE_COLUMN_STEPS: &[(i64, &str, &str)] = &[
     (5, "workspaces", "archived_at"),
     (6, "review_snapshots", "ignored_paths"),
-    (7, "runs", "logs_purged_at"),
-    (8, "threads", "restored_at"),
-    (9, "runs", "offers_choice"),
+    (7, "runs", "offers_choice"),
+    (8, "runs", "logs_purged_at"),
+    (9, "threads", "restored_at"),
 ];
 
 fn checksum(version: i64) -> String {
@@ -541,6 +540,106 @@ mod tests {
         validate_core(&conn).unwrap();
     }
 
+    /// The released contract-6 layout: a run cannot say whether its reply closed
+    /// with a choice card, because the column reached `SCHEMA` without a contract
+    /// of its own. Every database written before that contract — the released 6
+    /// and every developer's desktop — is at version 6 without it, while a fresh
+    /// install already has it, so a current open must adopt either layout.
+    fn contract_six_without_run_offers_choice(conn: &Connection) {
+        legacy(conn);
+        initialize(conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO runs(id,thread_id,status,offers_choice,created_at,updated_at)
+                 VALUES('run','t','completed',1,1,1);
+             DELETE FROM app_schema_migrations WHERE version>=7; PRAGMA user_version=6;
+             ALTER TABLE runs DROP COLUMN offers_choice;",
+        )
+        .unwrap();
+        assert_eq!(admit(conn).unwrap(), 6);
+    }
+
+    #[test]
+    fn contract_six_upgrade_adds_the_run_choice_mark() {
+        for wrote_the_column_early in [false, true] {
+            let conn = Connection::open_in_memory().unwrap();
+            contract_six_without_run_offers_choice(&conn);
+            if wrote_the_column_early {
+                // A build that shipped the column before its contract: the step
+                // records itself without replaying the ALTER, and the marks it
+                // already wrote survive.
+                conn.execute_batch(
+                    "ALTER TABLE runs ADD COLUMN offers_choice INTEGER NOT NULL DEFAULT 0;
+                     UPDATE runs SET offers_choice=1 WHERE id='run';",
+                )
+                .unwrap();
+                validate_core(&conn).unwrap();
+            } else {
+                // The reported failure: startup validated the contract before any
+                // migration could add the column, so the desktop refused to open.
+                let error = validate_core(&conn).unwrap_err().to_string();
+                assert!(error.contains("runs.offers_choice is missing"), "{error}");
+            }
+            initialize(&conn).unwrap();
+            initialize(&conn).unwrap();
+            validate_core(&conn).unwrap();
+            assert_eq!(
+                admit(&conn).unwrap(),
+                future_app_settings::APP_DB_SCHEMA_VERSION
+            );
+            // The run written before the column existed keeps its row, and the
+            // mark defaults to "no choice offered" rather than NULL.
+            assert_eq!(
+                conn.query_row("SELECT offers_choice FROM runs WHERE id='run'", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+                i64::from(wrote_the_column_early)
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT content FROM legacy_messages WHERE id='u'",
+                    [],
+                    |row| { row.get::<_, String>(0) }
+                )
+                .unwrap(),
+                "保留历史"
+            );
+        }
+    }
+
+    #[test]
+    fn contract_seven_upgrade_rolls_back_and_retries_with_its_ledger() {
+        let conn = Connection::open_in_memory().unwrap();
+        contract_six_without_run_offers_choice(&conn);
+        conn.execute_batch(
+            "CREATE TRIGGER refuse_v7 BEFORE INSERT ON app_schema_migrations
+             WHEN NEW.version=7 BEGIN SELECT RAISE(ABORT,'injected'); END;",
+        )
+        .unwrap();
+        assert!(initialize(&conn).is_err());
+        assert_eq!(admit(&conn).unwrap(), 6);
+        assert!(!column_names(&conn, "runs")
+            .unwrap()
+            .contains("offers_choice"));
+        assert_eq!(
+            conn.query_row("SELECT status FROM runs WHERE id='run'", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap(),
+            "completed"
+        );
+        conn.execute_batch("DROP TRIGGER refuse_v7").unwrap();
+        initialize(&conn).unwrap();
+        assert!(column_names(&conn, "runs")
+            .unwrap()
+            .contains("offers_choice"));
+        assert_eq!(
+            admit(&conn).unwrap(),
+            future_app_settings::APP_DB_SCHEMA_VERSION
+        );
+        validate_core(&conn).unwrap();
+    }
+
     #[test]
     fn reference_cache_retirement_is_atomic_retryable_and_preserves_live_history() {
         let conn = Connection::open_in_memory().unwrap();
@@ -881,23 +980,23 @@ mod tests {
     }
 
     #[test]
-    fn version_eight_without_offers_choice_upgrades_without_losing_archive_columns() {
+    fn contract_seven_upgrade_adds_archive_cleanup_columns_in_order() {
         let conn = Connection::open_in_memory().unwrap();
         legacy(&conn);
         initialize(&conn).unwrap();
+        // A database written by the build that shipped only the run's choice
+        // mark: version 7, with neither archive-cleanup column yet.
         conn.execute_batch(
-            "DELETE FROM app_schema_migrations WHERE version>=7;
-             PRAGMA user_version=6;
-             ALTER TABLE runs DROP COLUMN offers_choice;",
+            "DELETE FROM app_schema_migrations WHERE version>=8;
+             PRAGMA user_version=7;
+             ALTER TABLE runs DROP COLUMN logs_purged_at;
+             ALTER TABLE threads DROP COLUMN restored_at;",
         )
         .unwrap();
-        assert_eq!(admit(&conn).unwrap(), 6);
-        assert!(validate_core(&conn)
-            .unwrap_err()
-            .to_string()
-            .contains("runs.offers_choice"));
+        assert_eq!(admit(&conn).unwrap(), 7);
 
         initialize(&conn).unwrap();
+        // A second open must not replay the additive steps or rewrite them.
         initialize(&conn).unwrap();
         validate_core(&conn).unwrap();
         for column in ["logs_purged_at", "offers_choice"] {
@@ -913,14 +1012,24 @@ mod tests {
             admit(&conn).unwrap(),
             future_app_settings::APP_DB_SCHEMA_VERSION
         );
-        let default: i64 = conn
+        // Both new columns start empty, so an existing archive never claims to
+        // have been cleaned.
+        let purged: i64 = conn
             .query_row(
-                "SELECT COALESCE(MAX(offers_choice),0) FROM runs",
+                "SELECT COALESCE(MAX(logs_purged_at),0) FROM runs",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(default, 0, "existing runs keep their original outcome");
+        assert_eq!(purged, 0);
+        let restored: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(restored_at),0) FROM threads",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(restored, 0);
     }
 
     #[test]

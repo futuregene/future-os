@@ -855,6 +855,12 @@ export function AgentThread({
           controls={composerControls}
           onQueue={onQueue}
           onEnqueue={queueEnabled ? handleEnqueueDraft : undefined}
+          // What the stop control carries when it ends the run: the session
+          // starts waiting rows itself at the turn boundary, so stopping here
+          // is also what lets them go. A parked row is not one of them — it
+          // waits for a person to release it (`hintParked`), which is why it is
+          // counted out rather than merely counted.
+          queueCount={queueEnabled ? agentQueue.rows.filter(row => !isParkedRow(row)).length : 0}
           onSend={handleComposerSend}
           workspaceId={thread?.workspaceId}
           sessionMentions={sessionMentions}
