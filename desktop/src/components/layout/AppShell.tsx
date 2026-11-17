@@ -46,6 +46,7 @@ import { RemoteWorkspaceRenameDialog } from "../../features/remote-peer/RemoteWo
 import { useRemoteApprovals } from "../../features/remote-peer/useRemoteApprovals";
 import { useRemoteConversationSettings } from "../../features/remote-peer/useRemoteConversationSettings";
 import { useRemoteSkillCatalog } from "../../features/remote-peer/useRemoteSkillCatalog";
+import { useRemoteChoiceCards } from "../../features/remote-peer/useRemoteChoiceCards";
 import { useRemoteSkillRecommend } from "../../features/remote-peer/useRemoteSkillRecommend";
 import { useRemoteTimeline } from "../../features/remote-peer/useRemoteTimeline";
 import { useRemoteWorkspaceRows } from "../../features/remote-peer/useRemoteWorkspaces";
@@ -1495,6 +1496,13 @@ function ReadyAppShell({
    * computer's account that matters, this machine cannot read it, and the host
    * answers "no recommendation" when its own account cannot produce one.
    */
+  /**
+   * That machine's own choice-card switch. Read here rather than in the
+   * transcript because it is a fact about the *host*: it also decides whether
+   * that machine's agent is taught the fence, so its conversations draw what it
+   * allows, whatever this machine's Settings says.
+   */
+  const remoteChoiceCards = useRemoteChoiceCards(activeRemote?.desktopId ?? "");
   const remoteSkillRecommend = useRemoteSkillRecommend(activeRemote?.desktopId ?? "");
   const remoteCatalog = useRemoteSkillCatalog(
     activeRemote?.desktopId ?? "",
@@ -2219,6 +2227,7 @@ function ReadyAppShell({
                                       approvals={remoteApprovals.approvals}
                                       approvalErrors={remoteApprovals.errors}
                                       approvalPending={remoteApprovals.pending}
+                                      choiceCards={remoteChoiceCards}
                                       choiceSelectedIds={remoteChoice?.selectedIds}
                                       desktopId={activeRemote.desktopId}
                                       onChoiceSelect={handleRemoteChoiceSelect}
