@@ -37,6 +37,7 @@
     "emptyTitle": "No background programs",
     "emptyDetailNeverRun": "No programs have run yet.",
     "emptyDetailArchived": "Finished programs have been archived.",
+    "emptyDetailLogsPurged": "This conversation is archived and its run logs have been cleared. The conversation and generated files remain.",
     "runningFinished": "{{running}} running / {{finished}} finished",
     "archiveFinished": "Archive finished",
     "commands_one": "{{count}} command",
