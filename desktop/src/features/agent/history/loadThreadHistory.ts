@@ -30,6 +30,7 @@ export type AgentLoadResult
     messages: AgentMessage[];
     hasMore: boolean;
     nextOffset: number;
+    truncated: boolean;
   }
   | { status: "failed"; error: string };
 
@@ -57,6 +58,7 @@ export async function loadThreadHistory(
         messages: [],
         hasMore: result.hasMore,
         nextOffset: result.nextOffset,
+        truncated: result.truncated === true,
       };
     }
     const turns = entriesToTurns(entries as unknown as import("@future-os/thread-projection").SessionEntry[]);
@@ -76,6 +78,7 @@ export async function loadThreadHistory(
         messages: [],
         hasMore: result.hasMore,
         nextOffset: result.nextOffset,
+        truncated: result.truncated === true,
       };
     }
     // Agent transcript doesn't record a run's GUI-side outcome (failed/cancelled/
@@ -152,6 +155,7 @@ export async function loadThreadHistory(
       ),
       hasMore: result.hasMore,
       nextOffset: result.nextOffset,
+      truncated: result.truncated === true,
     };
   }
   catch (error) {

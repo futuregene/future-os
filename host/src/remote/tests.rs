@@ -3671,6 +3671,11 @@ mod runtime_tests {
         let body = baseline.json();
         let (lane, packets, bytes) = SUPERVISOR.catalogue_traffic(&pair);
         assert_eq!(lane, 1);
+        // Readable the moment the packet is: the publisher counts a packet as it
+        // hands it to the endpoint, not after the send returns, so a packet the
+        // fixture has already accepted is never one this counter has yet to see.
+        // (The reverse order failed here on CI: the tap returned the first full
+        // packet while the count still read zero.)
         assert!(packets >= 1, "a published packet is counted: {packets}");
         assert!(bytes > 0, "and its sealed size with it: {bytes}");
         assert_eq!(body["full"], json!(true));

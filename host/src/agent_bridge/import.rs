@@ -48,6 +48,12 @@ pub struct AgentSessionSummary {
     /// Whether the agent is currently streaming a response for this session.
     #[allow(dead_code)]
     pub is_streaming: bool,
+    /// How many user queries the agent reports for this session.
+    ///
+    /// This is the only field that lets the import pass skip a session it would
+    /// otherwise have to read to classify. `list_sessions` already carries it,
+    /// so consulting it costs nothing.
+    pub query_count: usize,
 }
 
 // ─── fetch helpers ──────────────────────────────────────────────────────────
@@ -98,6 +104,7 @@ async fn list_agent_sessions() -> Vec<AgentSessionSummary> {
             first_message: summary.first_message,
             parent_session_id: summary.parent_session_id.unwrap_or_default(),
             is_streaming: summary.is_streaming,
+            query_count: summary.query_count,
         })
         .collect()
 }
@@ -538,6 +545,32 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::Error
         return Ok(0);
     }
 
+    // A session the agent itself reports as never prompted cannot have a
+    // message, so reading its history to find that out is wasted work. A CLI
+    // or harness invocation creates such a session on every run — measured
+    // 2026-11-17: 639 were created on one day, all `created_by: cli` with no
+    // message and no thread, and the discovery pass spent one 250-row read on
+    // each of them every 60 s forever, 15 697 reads an hour for sessions that
+    // will never hold a conversation.
+    //
+    // `query_count == 0` is the agent's own count of user entries, taken from
+    // the same `list_sessions` answer that reached this function, so nothing
+    // extra is asked. It is not "empty" evidence on its own: the fallback below
+    // still decides, and this only skips the read for a session that has
+    // neither a query nor a name. A prompt that lands between the list and this
+    // check is picked up by the next discovery pass, which is the same
+    // lossless wait the no-message case already relies on.
+    if summary.query_count == 0
+        && summary
+            .name
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
+    {
+        return Ok(0);
+    }
+
     // Validate/read the history before creating any local rows. A corrupt
     // journal must not leave behind a thread that looks like an empty session.
     let entries = fetch_session_entries(&summary.id).await?;
@@ -703,6 +736,10 @@ pub(crate) async fn import_discovered_session(session_id: &str) -> Result<bool, 
             .unwrap_or_default()
             .to_string(),
         is_streaming: true,
+        // This path already proved the session holds a message (see the
+        // `session_has_messages` guard above), so it is not one of the
+        // never-prompted sessions `import_one` skips on `query_count`.
+        query_count: 1,
     };
     let title = session_title(&summary);
     let (mode, workspace_id, workspace_path, workspace_name) = thread_mode(&summary, &title);
@@ -848,6 +885,7 @@ mod tests {
             first_message: Some("help me debug this".into()),
             parent_session_id: String::new(),
             is_streaming: false,
+            query_count: 1,
         };
         assert_eq!(session_title(&summary), "help me debug this");
     }
@@ -863,6 +901,7 @@ mod tests {
             first_message: None,
             parent_session_id: String::new(),
             is_streaming: false,
+            query_count: 1,
         };
         assert_eq!(session_title(&summary), "custom name");
     }
@@ -878,6 +917,7 @@ mod tests {
             first_message: None,
             parent_session_id: String::new(),
             is_streaming: false,
+            query_count: 1,
         };
         assert_eq!(session_title(&summary), "my-project"); // falls back to cwd_basename
     }
@@ -893,6 +933,7 @@ mod tests {
             first_message: None,
             parent_session_id: String::new(),
             is_streaming: false,
+            query_count: 1,
         };
         assert_eq!(session_title(&summary), "Imported Chat");
     }
@@ -908,6 +949,7 @@ mod tests {
             first_message: Some(format!("first message for {id}")),
             parent_session_id: String::new(),
             is_streaming: false,
+            query_count: 1,
         }
     }
 
@@ -1138,6 +1180,7 @@ mod tests {
             first_message: Some(long.clone()),
             parent_session_id: String::new(),
             is_streaming: false,
+            query_count: 1,
         };
         let title = session_title(&summary);
         assert!(title.ends_with('…'), "{title}");
@@ -1338,6 +1381,7 @@ mod tests {
             ),
             parent_session_id: String::new(),
             is_streaming: false,
+            query_count: 1,
         };
         assert_eq!(session_title(&summary), "这个会话在流式回复中");
     }
@@ -1352,6 +1396,7 @@ mod tests {
             first_message: Some("   \n".into()),
             parent_session_id: String::new(),
             is_streaming: false,
+            query_count: 1,
         };
         // The whitespace-only first message is ignored (inner `if` is false),
         // falling through to the agent-stored name.
@@ -1491,6 +1536,58 @@ mod tests {
 
         settle_spawns().await;
         std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
+    }
+
+    /// A session nobody has ever prompted costs the discovery pass no Agent
+    /// read at all.
+    ///
+    /// This is the fix for the 60-second sweep: a CLI or harness run creates a
+    /// session it never prompts, the pass used to read 250 rows of it to learn
+    /// that, and never created a thread — so it read it again a minute later,
+    /// forever. 639 such sessions existed on 2026-11-17, costing 15 697 reads
+    /// an hour.
+    ///
+    /// The assertion is on the *absence* of the read, which is what makes this
+    /// case fail if the early return above is removed. A thread is not
+    /// consulted: this session is empty by both signals, so the old code would
+    /// have issued a read and still imported nothing.
+    #[tokio::test]
+    async fn import_one_reads_nothing_for_a_session_never_prompted() {
+        let _home = super::super::test_support::TestHome::new("import-unprompted");
+        let mock = super::super::test_support::mock_agent();
+        let mut s = summary("sess-unprompted", "");
+        s.query_count = 0;
+        s.name = None;
+        s.first_message = None;
+
+        assert_eq!(import_one(&s).await.expect("skip"), 0);
+        assert_eq!(
+            mock.requests_of("get_session_entries").len(),
+            0,
+            "an unprompted session must be classified from list_sessions alone"
+        );
+    }
+
+    /// A named session with no query is still read: the name is content someone
+    /// put there, so `query_count == 0` alone is not permission to skip.
+    #[tokio::test]
+    async fn import_one_still_reads_a_named_session_without_queries() {
+        let _home = super::super::test_support::TestHome::new("import-named-noquery");
+        let mock = super::super::test_support::mock_agent();
+        mock.push_typed_data(
+            "get_session_entries",
+            serde_json::json!({"entries": [], "hasMore": false, "nextOffset": 0}),
+        );
+        let mut s = summary("sess-named", "");
+        s.query_count = 0;
+        s.name = Some("named by someone".to_string());
+
+        assert_eq!(import_one(&s).await.expect("read"), 0);
+        assert_eq!(
+            mock.requests_of("get_session_entries").len(),
+            1,
+            "the name alone obliges the pass to look before deciding"
+        );
     }
 
     #[tokio::test]
@@ -1945,6 +2042,7 @@ mod tests {
             first_message: Some(format!("first message for {id}")),
             parent_session_id: parent.to_string(),
             is_streaming: false,
+            query_count: 1,
         }
     }
 

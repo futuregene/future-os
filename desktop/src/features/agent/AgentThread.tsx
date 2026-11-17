@@ -234,6 +234,7 @@ export function AgentThread({
     loadingThread,
     loadingIndicator,
     hasOlderHistory,
+    historyTruncated,
     loadOlderHistory,
     loadAllHistoryForSearch,
     historyError,
@@ -906,6 +907,18 @@ export function AgentThread({
           </button>
         </div>
       )}
+      {/* A page can open mid-turn when one turn is too large to send whole
+          (items-rpc trims bytes first and keeps the question only while it
+          fits). The projection shows no turn for such a fragment, so the page
+          says where it starts — otherwise the transcript looks broken instead
+          of merely cut. */}
+      {historyTruncated
+        ? (
+            <div className="px-8 pt-3 text-xs text-ink-soft" role="note">
+              {t("thread.startsMidTurn")}
+            </div>
+          )
+        : null}
       {showLoadOlderHint
         ? (
             <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center px-8 pt-5">

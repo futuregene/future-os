@@ -7,7 +7,7 @@ const MAX_CACHED_THREADS = 12;
 interface ThreadMessageSnapshot {
   agentSessionId: string | null;
   messages: AgentMessage[];
-  cursor?: { before: number; hasMore: boolean; history?: HistoryStatus };
+  cursor?: { before: number; hasMore: boolean; truncated?: boolean; history?: HistoryStatus };
 }
 
 const snapshots = new Map<string, ThreadMessageSnapshot>();
@@ -39,7 +39,7 @@ export function setThreadMessageSnapshot(
   threadId: string,
   agentSessionId: string | null,
   messages: AgentMessage[],
-  cursor?: { before: number; hasMore: boolean; history?: HistoryStatus },
+  cursor?: { before: number; hasMore: boolean; truncated?: boolean; history?: HistoryStatus },
 ) {
   snapshots.delete(threadId);
   snapshots.set(threadId, { agentSessionId, messages, cursor });
