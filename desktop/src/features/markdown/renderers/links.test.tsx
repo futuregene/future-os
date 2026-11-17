@@ -161,6 +161,21 @@ describe("linkContextMenu", () => {
     expect(html).toBe("");
   });
 
+  /// The agent writes a document reference as `**中文设计文档**`, so the link sits
+  /// inside `<strong>`; the menu is a DOM sibling of that anchor and inherited its
+  /// weight, which drew every row bold. A menu is chrome — its weight must not
+  /// follow the sentence it was opened from.
+  it("keeps its own weight when opened from a bold link", () => {
+    const md: StoredFile = { path: "/w/doc.md", name: "doc.md", relativePath: "doc.md", insideWorkspace: true };
+    const { cleanup } = mount(
+      createElement("strong", { className: "font-semibold" }, createElement(FileLink, { file: md })),
+    );
+    rightClick(document.querySelector("a")!);
+    const panel = document.querySelector(".fixed.z-50");
+    expect(panel?.className).toContain("font-normal");
+    cleanup();
+  });
+
   it("renders dividers and danger styling, and selects items", () => {
     const onSelect = vi.fn();
     const close = vi.fn();

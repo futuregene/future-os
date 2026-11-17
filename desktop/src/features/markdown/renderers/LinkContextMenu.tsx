@@ -65,7 +65,12 @@ export function LinkContextMenu({
 
   return (
     <MenuPanel
-      className="fixed z-50 min-w-44 overflow-hidden py-1"
+      // `font-normal` is load-bearing, not tidiness: the menu is positioned
+      // `fixed` but inherits through the DOM, so a link inside bold prose —
+      // which is how the agent usually writes a document reference — handed its
+      // `font-semibold` down to every menu row. A menu is chrome, and its
+      // weight must not follow the sentence it was opened from.
+      className="fixed z-50 min-w-44 overflow-hidden py-1 font-normal"
       ref={layerRef}
       style={{ left: pos.x, top: pos.y }}
     >
