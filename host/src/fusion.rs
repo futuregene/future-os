@@ -1136,7 +1136,7 @@ async fn step_inner(
     } else {
         None
     };
-    let report = reports::collect(&mut child, input, &phase, capacity, |text| {
+    let validate_report = |text: &str| {
         validate_step_output(&phase, text, ctx.config.panel.len())?;
         if ctx.run.input.answer_only && matches!(phase.as_str(), "analyzing" | "synthesizing") {
             let task = ctx
@@ -1168,8 +1168,19 @@ async fn step_inner(
             review::validate(text, source_prompt, &participant, review_snapshot.as_ref())?;
         }
         Ok(())
-    })
-    .await?;
+    };
+    let mut report =
+        reports::collect(&mut child, input, &phase, capacity, &validate_report).await?;
+    if phase == "synthesizing" {
+        let packet = ctx.synthesis_audit.lock().unwrap().clone();
+        if let Some(packet) = packet {
+            report = reports::reconcile(&mut child, report, capacity, |text| {
+                validate_report(text)?;
+                deliberation::validate_consistency(text, &packet, ctx.run.input.answer_only)
+            })
+            .await?;
+        }
+    }
     if report.recovered_output_limit {
         ctx.note(
             "output_limit_report_recovered",
