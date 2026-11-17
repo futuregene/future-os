@@ -13,6 +13,19 @@ pub enum Event<'a> {
     ReviewUpdated(&'a str),
     RemoteActivity(&'a str),
     ThreadsUpdated,
+    /// The archived shelf changed: a conversation or a workspace was shelved,
+    /// restored or deleted, by another client — a phone over Remote, or another
+    /// process sharing this home.
+    ///
+    /// `ThreadsUpdated` is not that signal, and cannot stand in for it: it is a
+    /// re-list of the *live* conversations, which is what a new session needs,
+    /// while the shelf holds two other streams (`archived` and
+    /// `workspace-archived:<id>`) that the store's paged lists answer for
+    /// separately. Measured consequence of conflating them: restoring a
+    /// workspace on the phone left its heading on the desktop's shelf, with no
+    /// conversations under it, until some local archive action refreshed the
+    /// view — the row was gone from the store, and the shelf still drew it.
+    ArchiveChanged,
     /// A scheduled task was created, changed, deleted or asked to run — by a
     /// phone over Remote, or by any other process sharing this home. The
     /// conversation list did not change, so this is its own signal: a panel
@@ -86,6 +99,13 @@ pub fn emit_remote_activity(thread_id: &str) {
 pub fn emit_threads_updated() {
     publish(Event::ThreadsUpdated);
 }
+/// The archived shelf's contents moved. Sent beside `ThreadsUpdated` — not
+/// instead of it — because the shelf and the live list are different streams:
+/// a client drawing both re-reads both, and one drawing only the live list
+/// still ignores this.
+pub fn emit_archive_changed() {
+    publish(Event::ArchiveChanged);
+}
 pub fn emit_tasks_updated() {
     publish(Event::TasksUpdated);
 }
@@ -133,6 +153,7 @@ mod tests {
         publish_to(None, Event::ReviewUpdated("thread"));
         publish_to(None, Event::RemoteActivity("thread"));
         publish_to(None, Event::ThreadsUpdated);
+        publish_to(None, Event::ArchiveChanged);
         publish_to(None, Event::TasksUpdated);
         publish_to(None, Event::ControlClaimed);
         publish_to(

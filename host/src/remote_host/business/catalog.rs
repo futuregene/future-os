@@ -170,6 +170,7 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                         // the row from the store; the first re-lists, the second
                         // is pushed the new snapshot.
                         crate::emit_threads_updated();
+                        crate::emit_archive_changed();
                         crate::emit_remote_activity(&cmd.thread_id);
                         reply(sink, true, json!({}), None).await
                     }
@@ -184,6 +185,7 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 match crate::store::restore_thread_tree(&cmd.thread_id) {
                     Ok(_) => {
                         crate::emit_threads_updated();
+                        crate::emit_archive_changed();
                         crate::emit_remote_activity(&cmd.thread_id);
                         reply(sink, true, json!({}), None).await
                     }
@@ -207,6 +209,10 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                         // it, exactly like its own GUI delete.
                         match crate::store::delete_thread_tree(&cmd.thread_id, false) {
                             Ok(_) => {
+                                // A row deleted from the shelf leaves a heading
+                                // behind it, exactly as a restored one does;
+                                // see `ArchiveChanged`.
+                                crate::emit_archive_changed();
                                 crate::emit_remote_activity(&cmd.thread_id);
                                 reply(sink, true, json!({}), None).await
                             }
@@ -325,6 +331,7 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 match crate::workspaces::delete_workspace(cmd.workspace_id.clone(), scope).await {
                     Ok(_) => {
                         crate::emit_threads_updated();
+                        crate::emit_archive_changed();
                         reply(sink, true, json!({}), None).await
                     }
                     Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
@@ -343,6 +350,7 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 match crate::workspaces::archive_workspace(cmd.workspace_id.clone()).await {
                     Ok(_) => {
                         crate::emit_threads_updated();
+                        crate::emit_archive_changed();
                         reply(sink, true, json!({}), None).await
                     }
                     Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
@@ -355,7 +363,13 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             } else {
                 match crate::workspaces::restore_workspace(cmd.workspace_id.clone()) {
                     Ok(_) => {
+                        // This is the case that made the signal necessary: a
+                        // workspace restored from the phone leaves the desktop's
+                        // shelf drawing its heading — with no conversations under
+                        // it, because restoring moved them off the shelved
+                        // streams — until the shelf is re-read.
                         crate::emit_threads_updated();
+                        crate::emit_archive_changed();
                         reply(sink, true, json!({}), None).await
                     }
                     Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
