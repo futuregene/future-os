@@ -2262,6 +2262,28 @@ describe("app shell event bridges", () => {
     view.unmount();
   });
 
+  /**
+   * A phone's archive/restore arrives as its own event, not as a thread refresh.
+   *
+   * The archived shelf holds its own paged streams (`archived`,
+   * `workspace-archived:<id>`), which `refreshStore` does not touch. Restoring a
+   * workspace on the phone therefore left its heading on this window's shelf with
+   * no conversations under it until some local archive action re-read the view —
+   * and it must re-read it through `archive-changed`, the event the shelf already
+   * listens to, rather than a second path invented for the phone.
+   */
+  it("re-reads the archived shelf when another client moved it", async () => {
+    const view = mount(<AppShell />);
+    mocks.emit.mockClear();
+    mocks.refreshStore.mockClear();
+    act(() => tauri("archive-changed")(undefined));
+    expect(mocks.emit).toHaveBeenCalledWith("archive-changed", undefined);
+    // The shelf's own signal is not a reason to re-list the live conversations:
+    // one event, one reader, and the store's list was not what moved.
+    expect(mocks.refreshStore).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
   it("opens Settings on the About tab from the macOS menu event", () => {
     const view = mount(<AppShell />);
     act(() => tauri("open-settings")(undefined));

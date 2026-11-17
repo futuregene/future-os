@@ -914,6 +914,17 @@ function ReadyAppShell({
     void refreshStore();
   });
 
+  // The archived shelf moved behind this window's back: a phone shelved or
+  // restored a conversation or a workspace over Remote. The shelf holds its own
+  // paged streams, so `refreshStore` above does not reach it — restoring a
+  // workspace on the phone left its heading on this shelf, with no
+  // conversations under it, until some local archive action re-read the view.
+  // Raised as the shell's own `archive-changed` so the shelf re-reads through
+  // the path a local archive already uses.
+  useTauriEvent("archive-changed", () => {
+    emitFutureEvent("archive-changed", undefined);
+  });
+
   useTauriEvent<{ count: number; idleDays: number; cleanupEnabled: boolean }>(
     "auto-archive-completed",
     ({ count, idleDays, cleanupEnabled }) => {
