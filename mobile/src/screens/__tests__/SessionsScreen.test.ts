@@ -54,7 +54,12 @@ const mockRemote = {
   capabilities: new Set(["desktop_settings_v1", "skill_management_v1", "workspace_create_v1"]),
   desktopSettingsRevision: 0,
   skillsRevision: 0,
-  getDesktopSettings: jest.fn(async () => ({ autoUpgradeSkills: true, autoTitleFirstTurn: true, autoConnectRemote: true, hiddenModels: [] })),
+  getDesktopSettings: jest.fn(async () => ({
+    autoUpgradeSkills: true, autoTitleFirstTurn: true, autoConnectRemote: true, hiddenModels: [],
+    // The archiving notice counts as answered by default, so a case that is not
+    // about it archives straight through as it did before the notice existed.
+    archiveRunLogCleanup: true, archiveRunLogNoticeSeen: true,
+  })),
   listSettingsModels: jest.fn(async () => []),
   listInstalledSkills: jest.fn(async () => []),
   listAvailableSkills: jest.fn(async () => []),
@@ -1216,6 +1221,12 @@ describe("conversations on other machines", () => {
   afterEach(() => {
     mockCatalogs.machines = [];
     mockCatalogs.commandsFor = jest.fn(() => null);
+    // Restore the case-wide settings snapshot: a per-case override of the
+    // archiving notice would otherwise follow the reader into the next case.
+    mockRemote.getDesktopSettings.mockImplementation(async () => ({
+      autoUpgradeSkills: true, autoTitleFirstTurn: true, autoConnectRemote: true, hiddenModels: [],
+      archiveRunLogCleanup: true, archiveRunLogNoticeSeen: true,
+    }));
   });
 
   const openMenu = () =>
@@ -1266,15 +1277,59 @@ describe("conversations on other machines", () => {
     expect(mockRemote.rename).not.toHaveBeenCalled();
   });
 
+  test("the first archive from the phone asks about clearing run logs", async () => {
+    // A desktop whose cleanup switch is on but whose notice has not been shown:
+    // archiving from the phone is exactly the path the notice exists for.
+    peerCommands.capabilities = new Set(["archive_v1"]);
+    mockRemote.getDesktopSettings.mockImplementation(async () => ({
+      autoUpgradeSkills: true, autoTitleFirstTurn: true, autoConnectRemote: true, hiddenModels: [],
+      archiveRunLogCleanup: true, archiveRunLogNoticeSeen: false,
+    }));
+    try {
+      mockCatalogs.machines = [
+        { desktopId: "desktop_2", label: "Office", active: false, status: "connected" },
+      ];
+      // Re-mount with the override already in place: the case's own tree was
+      // built from the default snapshot in `beforeEach`.
+      act(() => { tree.unmount(); });
+      act(() => { tree = create(createElement(SessionsScreen, { onManageDesktops })); });
+      // The archiving settings arrive from the paired machine asynchronously;
+      // the notice is decided from that snapshot, so let it land first.
+      await act(async () => { await Promise.resolve(); });
+      openMenu();
+      act(() => button("sessions.archive").props.onPress());
+      await act(async () => { visibleMenu().findByType(Modal).props.onDismiss(); });
+
+      // Nothing is shelved until the reader answers the notice, and the dialog
+      // says what the archiving clears. The answer itself, and writing the flag
+      // that stops the desktop asking again, are covered where the prompt is:
+      // `archiveAction.test.ts` drives them without a dismissal timer in the way.
+      expect(peerCommands.archiveSession).not.toHaveBeenCalled();
+      expect(modalText().join(" ")).toContain("sessions.archiveCleanupNotice");
+    }
+    finally {
+      // Nothing to unwind here: the group's afterEach restores the shared
+      // settings snapshot.
+    }
+  });
+
   test("a conversation is shelved and restored through the machine that owns it", async () => {
     peerCommands.capabilities = new Set(["archive_v1"]);
     mockCatalogs.machines = [
       { desktopId: "desktop_2", label: "Office", active: false, status: "connected" },
     ];
     act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
+    // Let the archiving settings snapshot land: the notice is decided from it,
+    // and the default mock already counts it as answered.
+    await act(async () => { await Promise.resolve(); });
+    // The archiving settings arrive asynchronously, and an unseen notice would
+    // put its own question in front of the menu item; this case is about which
+    // machine the shelving goes to, so let the snapshot land first.
+    await act(async () => { await Promise.resolve(); });
     openMenu();
     act(() => button("sessions.archive").props.onPress());
     await act(async () => { visibleMenu().findByType(Modal).props.onDismiss(); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
     expect(peerCommands.archiveSession).toHaveBeenCalledWith("elsewhere", "t-elsewhere");
     expect(mockRemote.archiveSession).not.toHaveBeenCalled();
 
