@@ -304,6 +304,12 @@ impl crate::Consultation {
             }
         }
         value["has_conclusion"] = serde_json::json!(self.result.is_some());
+        if self.result.is_some() && matches!(self.status.as_str(), "delivering" | "completed") {
+            value["continuation"] = serde_json::json!({
+                "mode": "apply_conclusion",
+                "guidance": crate::FOLLOW_THROUGH_POLICY,
+            });
+        }
         if self.result.is_none() {
             if let Some(report) = &self.report {
                 value["available_results"] = serde_json::to_value(&report.available_results)?;
