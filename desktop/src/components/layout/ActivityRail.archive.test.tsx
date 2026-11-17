@@ -179,6 +179,59 @@ describe("archive entry and its guide", () => {
     void archivedRow;
   });
 
+  /**
+   * Archiving shelves a conversation *with every fork under it*
+   * (`archive_thread_tree`), so the archive list holds trees. Drawing those back
+   * as a flat list of equal rows made a fork read as an unrelated conversation
+   * that happened to be shelved at the same time — reported as "I archived the
+   * parent and two separate conversations showed up in the archive".
+   */
+  it("keeps an archived parent and its fork as one tree", () => {
+    currentView = "archived";
+    archivedThreads.length = 0;
+    archivedWorkspaces.length = 0;
+    const parent = {
+      agentSessionId: "s-parent",
+      createdAt: 2,
+      id: "parent",
+      mode: "chat",
+      pinned: false,
+      readonly: false,
+      status: "archived",
+      title: "The parent",
+      updatedAt: 2,
+      workspaceId: "w1",
+    } as unknown as StoredThread;
+    const fork = {
+      ...parent,
+      agentSessionId: "s-fork",
+      createdAt: 3,
+      id: "fork",
+      parentSessionId: "s-parent",
+      title: "Its fork",
+      updatedAt: 3,
+    } as unknown as StoredThread;
+    archivedThreads.push(parent, fork);
+
+    const view = mount(createElement(ActivityRail, props({ onShowArchiveGuide: undefined })));
+    const titles = () => [...view.container.querySelectorAll<HTMLElement>("[data-row-title]")]
+      .map(node => node.textContent);
+
+    // Folded by default: the shelf draws the tree's root and says it has work
+    // under it, exactly as the active lists draw a fork.
+    expect(titles()).toEqual(["The parent"]);
+
+    // Opening the row reveals the fork, one level in. The toggle is the tree
+    // `+` the active lists use; it is the only button inside a row whose label
+    // names the tree expander.
+    const expander = [...view.container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => (button.getAttribute("aria-label") ?? "").startsWith("Expand child conversations"));
+    expect(expander).toBeTruthy();
+    act(() => expander!.click());
+    expect(titles()).toEqual(["The parent", "Its fork"]);
+    view.unmount();
+  });
+
   it("keeps a workspace on the shelf for its shelved conversations, on both sides", () => {
     currentView = "archived";
     archivedThreads.length = 0;

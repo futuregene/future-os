@@ -1402,6 +1402,17 @@ fn describe(published: &Published) -> String {
 }
 
 impl FakeNats {
+    pub(crate) fn subscription_count(&self, pattern: &str) -> usize {
+        self.state
+            .lock()
+            .unwrap()
+            .conns
+            .values()
+            .flat_map(|connection| &connection.subs)
+            .filter(|subscription| subscription.pattern == pattern)
+            .count()
+    }
+
     pub async fn start() -> Self {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await

@@ -7,6 +7,7 @@ import { PeerIconGlyph } from "../remote/PeerIconGlyph";
 import { useRemoteControls } from "../remote/RemoteContext";
 import { pairedMachines } from "../remote/desktopStatus";
 import type { RemoteSession, RemoteWorkspace } from "../remote/types";
+import { activeWorkspaces } from "../screens/archived";
 import { useTheme } from "../theme/ThemeContext";
 import { needsDeviceStep, shareDevices, type ShareDevice } from "./shareDevices";
 import { shareSessionGroups } from "./shareSessionGroups";
@@ -46,9 +47,13 @@ export function ShareIntakeMenu() {
   const sessions: RemoteSession[] = readingOpenMachine
     ? remote.sessions
     : remote.catalogs.catalogs.find(entry => entry.desktopId === targetId)?.sessions ?? [];
-  const workspaces: RemoteWorkspace[] = readingOpenMachine
-    ? remote.workspaces
-    : deviceWorkspaces ?? [];
+  // Shelved workspaces are not destinations: archiving one takes it off every
+  // list, and a share dropped into it would put a conversation back into a
+  // folder the reader had cleared. Same filter the list pages and the
+  // new-conversation picker apply.
+  const workspaces: RemoteWorkspace[] = activeWorkspaces(
+    readingOpenMachine ? remote.workspaces : deviceWorkspaces ?? [],
+  );
   // A destination is offered only on a machine that will take the share: the
   // catalogue of a machine that went away would otherwise still list rows.
   const canTake = devices.find(device => device.desktopId === targetId)?.canTake === true;

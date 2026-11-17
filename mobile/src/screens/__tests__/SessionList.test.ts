@@ -2762,6 +2762,49 @@ const archivedHeadingNames = (): string[] =>
     .filter((row: { kind: string }) => row.kind === "workspace")
     .map((row: { workspace: RemoteWorkspace }) => row.workspace.name);
 
+/**
+ * A folder the reader is looking at *on the shelf* offers restore, whether or
+ * not the folder itself is the thing that was shelved.
+ *
+ * Shelving one conversation leaves its workspace in use (`archived: false`) and
+ * yet draws that workspace as a heading here, because the conversation under it
+ * is shelved. A menu built from the folder's own flag offered "archive" on a
+ * row the reader could already see was on the shelf — an action that would have
+ * shelved conversations already shelved. The desktop's shelf menu offers restore
+ * for every folder entry for the same reason.
+ */
+test("a folder on the shelf offers restore even when only its conversation was shelved", () => {
+  shelvingMachines = true;
+  renderArchived(
+    [{
+      sessionId: "a1",
+      threadId: "ta1",
+      title: "Shelved",
+      mode: "workspace",
+      workspaceId: "w-live",
+      workspaceName: "Live project",
+      streaming: false,
+      archived: true,
+    }],
+    // The folder itself was never shelved: only the conversation inside it was.
+    [{ id: "w-live", name: "Live project", path: "/tmp/live", archived: false }],
+  );
+
+  act(() => button("sessions.workspaceActions:Live project").props.onPress());
+  const menu = tree.root.findByType(ActionMenu);
+  const labels = menu.props.actions
+    .map((item: { label: string }) => item.label);
+  expect(labels).toContain("sessions.restore");
+  expect(labels).not.toContain("sessions.archive");
+
+  // And it acts: restoring the folder brings back everything the reader saw
+  // under it, which is what the host's `restore_workspace` does.
+  act(() => button("sessions.restore").props.onPress());
+  act(() => menu.findByType(Modal).props.onDismiss());
+  expect(activeCommands.restoreWorkspace).toHaveBeenCalledWith("w-live");
+  shelvingMachines = false;
+});
+
 test("the shelf draws a shelved workspace with its conversations, then the loose ones", () => {
   renderArchived(
     [
@@ -2886,8 +2929,7 @@ test("deleting from the shelf asks the desktop for the shelf's half", async () =
   expect(shelves!.deleteWorkspace).toHaveBeenCalledWith("w-shut", "archived");
 });
 
-test("the shelf's row opens on tap and offers its own actions menu", () => {
-  onMenu.mockClear();
+test("the shelf's row opens on tap and offers its own actions menu", () => {  onMenu.mockClear();
   mockRemote.selectSession.mockClear();
   renderArchived(
     [{ sessionId: "a1", threadId: "ta1", title: "Shelved", streaming: false, archived: true }],

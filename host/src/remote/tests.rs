@@ -964,6 +964,10 @@ mod runtime_tests {
             "the desktop must display the invitation it just minted: {shown}"
         );
 
+        // Ready includes retirement of the old queue subscriber: routing the
+        // first handshake to that generation would silently lose the request.
+        assert_eq!(nats.subscription_count(&format!("p.{pair_id}.cmd.>")), 1);
+
         // The phone scans exactly what the desktop is showing.
         let mobile = nats_connect(&nats).await;
         let _channel = super::test_support::secure_pair(&mobile, &shown, &second.pair_id).await;
