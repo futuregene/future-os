@@ -1414,10 +1414,33 @@ impl FakeNats {
             .count()
     }
 
+    #[cfg(test)]
+    pub(crate) fn retirement_receipt_subject(&self) -> Option<String> {
+        self.publishes
+            .find(|message| message.subject.contains("._retired.") && message.payload.is_empty())
+            .map(|message| message.subject)
+    }
+
     pub async fn start() -> Self {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .expect("bind fake nats");
+        // A broker is an independent service. Running its accept/read/write
+        // loops on the caller's current-thread runtime makes a busy GUI test
+        // starve both ends of a connection and manufacture network timeouts.
+        static BROKER_RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> =
+            std::sync::LazyLock::new(|| {
+                tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .thread_name("fake-nats")
+                    .enable_all()
+                    .build()
+                    .expect("fake nats runtime")
+            });
+        let socket = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind fake nats");
+        socket.set_nonblocking(true).expect("nonblocking fake nats");
+        let listener = {
+            // Register the socket with the broker's reactor, not the caller's.
+            let _entered = BROKER_RUNTIME.enter();
+            tokio::net::TcpListener::from_std(socket).expect("fake nats listener")
+        };
         let port = listener.local_addr().expect("fake nats addr").port();
         let state = Arc::new(Mutex::new(NatsState::default()));
         let (tap, _) = tokio::sync::broadcast::channel(256);
@@ -1428,7 +1451,7 @@ impl FakeNats {
         };
         let accept_state = state.clone();
         let accept_publishes = publishes.clone();
-        let accept_task = tokio::spawn(async move {
+        let accept_task = BROKER_RUNTIME.spawn(async move {
             loop {
                 if let Ok((stream, _)) = listener.accept().await {
                     // Small request/reply frames must leave immediately, as on
@@ -1848,15 +1871,17 @@ async fn serve_conn(
         "\"host\":\"127.0.0.1\",\"port\":0,\"max_payload\":8388608,\"client_id\":1,",
         "\"proto\":1,\"headers\":true,\"auth_required\":false,\"nonce\":\"dGVzdA==\"}\r\n"
     );
-    state
+    let info_sent = state
         .lock()
         .unwrap()
         .conns
         .get(&conn_id)
-        .expect("connection registered while its read loop runs")
-        .tx
-        .send(Out::Line(info.to_string()))
-        .expect("fresh connection channel");
+        .is_some_and(|connection| connection.tx.send(Out::Line(info.to_string())).is_ok());
+    if !info_sent {
+        // Fixture teardown may close a connection before its read loop starts.
+        writer.abort();
+        return;
+    }
 
     let mut reader = tokio::io::BufReader::new(read_half);
     let mut line = Vec::new();
@@ -2685,6 +2710,32 @@ mod tests {
             blanked.starts_with("a ") && blanked.ends_with(" e"),
             "only the comment may be blanked, got {blanked:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn the_fake_broker_progresses_while_the_callers_runtime_is_blocked() {
+        let broker = FakeNats::start().await;
+        let address = broker.url().strip_prefix("nats://").unwrap().to_string();
+        let client = std::thread::spawn(move || {
+            use std::io::{BufRead, Write};
+            let stream = std::net::TcpStream::connect(address).unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert!(line.starts_with("INFO "));
+            reader.get_mut().write_all(b"PING\r\n").unwrap();
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            assert_eq!(line, "PONG\r\n");
+        });
+        // Deliberately block this current-thread runtime. A real broker is an
+        // independent service; its INFO/PONG must not need this thread to poll.
+        client
+            .join()
+            .expect("the broker runs independently of its caller");
     }
 
     /// Read one CRLF-terminated line from a raw socket (with a deadline).
