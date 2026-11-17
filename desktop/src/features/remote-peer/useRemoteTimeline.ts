@@ -4,6 +4,7 @@ import type { RemoteLiveReply } from "./remoteRunStreams";
 import { copyEventPayload, createContentEventLane, entriesToMessages, eventPayload, HISTORY_PAGE_USER_EXCHANGES, HISTORY_TAIL_CURSOR } from "@future-os/thread-projection";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { forgetRemoteLaneWarnings, warnRemoteLane } from "./remoteLaneWarnings";
 import { requestRemotePeer } from "./remotePeerClient";
 import { forgetRemoteReasonings } from "./remoteReasoning";
 import { fetchRunReplay, replayTailCovers, replayUnsupported } from "./remoteRunReplay";
@@ -278,6 +279,10 @@ function snapshotKey(desktopId: string, sessionId: string): string {
 /** Drop a conversation's snapshot, so the next open reads it fresh. */
 export function forgetRemoteTimeline(desktopId: string, sessionId: string): void {
   snapshots.delete(snapshotKey(desktopId, sessionId));
+  // The lane's own account of what it did goes with the conversation it was
+  // about: it is kept so a report about *this* conversation can be answered, not
+  // so a window accumulates history.
+  forgetRemoteLaneWarnings(desktopId, sessionId);
 }
 
 /**
@@ -472,6 +477,19 @@ export function useRemoteTimeline(
       if (replayUnsupported(err)) {
         unsupportedRef.current = true;
         setReplayUnavailable(true);
+        // A permanent shape for this connection, and one the reader would
+        // otherwise never learn: every reply is drawn from the record plus the
+        // pushes, so a run this window joined mid-flight is never rebuilt from
+        // its log.
+        warnRemoteLane(desktop, session, "this host serves no run logs (get_events_since refused); replies are drawn from the record and the pushes");
+      }
+      else {
+        // Anything else is a read that failed: the reply keeps whatever the page
+        // and the pushes gave it, and the reason used to vanish here. Named, it
+        // answers "why is this answer short" from the other side of the report.
+        warnRemoteLane(desktop, session, full
+          ? "the run's log could not be read; its reply keeps only what the record and the pushes gave it"
+          : "a gap in the run's feed could not be filled; the reply may be missing events", { runId, error: err });
       }
     }
     finally {
@@ -558,6 +576,12 @@ export function useRemoteTimeline(
         // read that could have been answered early.
         const inFlight = inFlightRunRef.current;
         if (inFlight && settled.has(inFlight)) {
+          // Worth saying: the two lanes disagree. The page has the run's reply
+          // written down as finished while the host last said it was executing
+          // it, and this client follows the page — the reply on screen is about
+          // to become the record's copy, which is the shape a reader reports as
+          // "it says it is done and the answer stops halfway".
+          warnRemoteLane(desktop, session, "the record settles a run the host reports as in flight; the reply is drawn from the record from here", { runId: inFlight });
           applyInFlightRun(null);
           setStreaming(false);
         }
@@ -860,8 +884,15 @@ export function useRemoteTimeline(
         // the reply stops looking unfinished the moment the host says it is.
         if (runId && inFlightRunRef.current === runId)
           applyInFlightRun(null);
-        if (runId)
-          streams?.settle(runId);
+        if (runId) {
+          // A fragment dropped here takes its words off the screen until the
+          // record is read back, and a run whose terminal frame arrived before
+          // its content did is the one case where the record can *trail* the
+          // frame by more than a moment. Named, it is a line in the log instead
+          // of a reply that quietly got shorter.
+          if (streams?.settle(runId) === "dropped")
+            warnRemoteLane(desktopId, sessionId, "the live reply was built from pushes only and is dropped at its terminal frame; the record's copy is the reply until it is read back", { runId });
+        }
         publishReplies();
         void readPage("history", sessionId, desktopId, true);
       }
@@ -885,7 +916,12 @@ export function useRemoteTimeline(
         contentRequest,
       }, sessionId, () => !cancelled),
       deliver: event => processEvent({ ...event.original, payload: copyEventPayload(event, { ...(event.original.payload as Record<string, unknown>), data: event.data }) }),
-      recover: () => {
+      recover: (error) => {
+        // The lane dropped every frame it was holding — a run's terminal frame is
+        // among them if it arrived while a body was loading. Without this the
+        // conversation could end up looking busy for ever (a stopped Stop) with
+        // nothing anywhere saying why.
+        warnRemoteLane(desktopId, sessionId, "the event lane was reset and the frames it held are gone; the record is re-read and the run in flight is asked for again", { error });
         streamsRef.current?.restart();
         prefixAskedRef.current.clear();
         void readPage("history", sessionId, desktopId, true).then(() => reconcileActiveRun(desktopId, sessionId));

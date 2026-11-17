@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import type { SessionEntry } from "@future-os/thread-projection";
 import { act } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushAsync, renderHook } from "../../test/renderHook";
 
 /**
@@ -2114,6 +2114,183 @@ describe("useRemoteTimeline stale answers", () => {
     // ...and the host's record was read again, which is where the whole message
     // lives once the pushed copy cannot be completed.
     expect(historyReads.length).toBeGreaterThan(before);
+    hook.unmount();
+  });
+});
+
+/**
+ * What the lane admits about a run it stopped drawing.
+ *
+ * Every path below used to be silent, and each produces the *same* report from
+ * the reader — "my answer stops halfway" or "this conversation looks finished and
+ * it isn't" — so the line is what tells the four apart. None of them is a UI
+ * decision: the reader is not asked to diagnose their own transcript
+ * (`remoteLaneWarnings`).
+ */
+describe("useRemoteTimeline lane warnings", () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  async function openTimeline() {
+    requestMock.mockResolvedValue(page([]));
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+    return hook;
+  }
+
+  /**
+   * Open a conversation whose host answers each command as the test needs it.
+   *
+   * Not `openTimeline`: that one installs a page-reply implementation, and these
+   * tests are about what happens when a read *fails* instead.
+   */
+  async function openWith(answer: (command: { type?: string }) => unknown) {
+    requestMock.mockImplementation(async (_desktop: string, command: { type?: string }) => answer(command));
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+    return hook;
+  }
+
+  function said(fragment: string): string[] {
+    return warn.mock.calls
+      .map((call: unknown[]) => String(call[0]))
+      .filter((line: string) => line.startsWith("[remote]") && line.includes(fragment));
+  }
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  /**
+   * A read that fails for any reason other than "this host has no such command".
+   *
+   * The reply keeps whatever the page and the pushes gave it, which is a short
+   * answer with nothing on screen explaining it — the case this line exists for.
+   */
+  it("says when a run's log could not be read, naming the run", async () => {
+    stateReply = { activeRun: { runId: "run_1" } };
+    const hook = await openWith((command) => {
+      if (command?.type === "get_events_since")
+        throw new Error("content_page_changed");
+      return page([]);
+    });
+
+    const lines = said("could not be read");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("run_1");
+    expect(lines[0]).toContain("content_page_changed");
+    hook.unmount();
+  });
+
+  /**
+   * A host that refuses the command outright: permanent for this connection, and
+   * the reason no reply joined mid-flight will ever be rebuilt from its log.
+   */
+  it("says when the host serves no run logs at all, once", async () => {
+    stateReply = { activeRun: { runId: "run_1" } };
+    const answer = (command: { type?: string }) => {
+      if (command?.type === "get_events_since")
+        throw new Error("Unsupported command: get_events_since");
+      return page([]);
+    };
+    const hook = await openWith(answer);
+
+    expect(said("serves no run logs")).toHaveLength(1);
+
+    // Reopening the same conversation is the same fact, not a new one — and it
+    // is why the line is said once per conversation rather than once per read.
+    hook.unmount();
+    const again = await openWith(answer);
+    expect(said("serves no run logs")).toHaveLength(1);
+    again.unmount();
+  });
+
+  /**
+   * The content lane dropping its queue takes every frame in it — including a
+   * run's terminal frame, which is what leaves a conversation looking busy for
+   * ever with the composer still offering Stop.
+   */
+  it("says when the event lane was reset, with the error that ended it", async () => {
+    const reference = {
+      cursor: 1,
+      databaseId: "db",
+      epoch: 1,
+      field: "/data/text",
+      restoreGeneration: "generation",
+    };
+    const hook = await openWith((command) => {
+      if (command?.type === "get_event_content_range")
+        throw new Error("content_read_failed");
+      return page([]);
+    });
+
+    push({
+      sessionId: "sess_1",
+      type: "user_message",
+      eventId: "evt_ref",
+      timestamp: "2026-01-01T00:00:00Z",
+      data: JSON.stringify({ content_refs: { text: reference }, text: "" }),
+    });
+    await settle();
+
+    const lines = said("event lane was reset");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("content_read_failed");
+    hook.unmount();
+  });
+
+  /**
+   * The one that answers the *other* half of the report: the record has the run
+   * written down as finished while the host last said it was executing it, so the
+   * client draws the record's copy — a half-written answer presented as the
+   * answer. (The reply is still marked as in flight, so it no longer *looks*
+   * finished; this line is what says the two lanes disagreed.)
+   */
+  it("says when the record settles a run the host reports as in flight", async () => {
+    stateReply = { activeRun: { runId: "run_1" } };
+    const hook = await openTimeline();
+    expect(hook.current.inFlightRunId).toBe("run_1");
+
+    // The host's own answer now says nothing is running, and the page carries
+    // that run's reply as a settled turn.
+    stateReply = {};
+    requestMock.mockResolvedValue(page([
+      entry("e1", "user", "hi", { runId: "run_1", status: "completed" }),
+      entry("e2", "assistant", "half of it", { runId: "run_1", status: "completed" }),
+    ]));
+    await act(async () => {
+      await hook.current.refresh();
+    });
+    await settle();
+
+    const lines = said("record settles a run");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("run_1");
+    hook.unmount();
+  });
+
+  it("says when a push-only reply is dropped at its terminal frame", async () => {
+    const hook = await openTimeline();
+
+    // A fragment: this window joined the run mid-way, and its log was refused.
+    push({
+      sessionId: "sess_1",
+      type: "text_chunk",
+      runId: "run_1",
+      idx: 3,
+      eventId: "run_1:3",
+      timestamp: "2026-01-01T00:00:00Z",
+      data: JSON.stringify({ text: "the tail of it" }),
+    });
+    push({ sessionId: "sess_1", type: "agent_end", runId: "run_1", idx: 4, eventId: "run_1:4", timestamp: "2026-01-01T00:00:01Z", data: "{}" });
+    await settle();
+
+    const lines = said("dropped at its terminal frame");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("run_1");
     hook.unmount();
   });
 });
