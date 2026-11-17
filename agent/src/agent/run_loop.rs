@@ -1874,6 +1874,56 @@ impl Loop {
             self.execute_tools(turn, &tool_calls, messages, &on_event, ctx)
                 .await?;
             if closed_fusion {
+                if self.is_interrupted() {
+                    return Ok(String::new());
+                }
+                if let Some((discussion_id, answer)) = crate::fusion::completed_answer(messages) {
+                    ctx.await_durability().await?;
+                    let entry_id = crate::utils::generate_entry_id();
+                    let block_id = "fusion-answer".to_string();
+                    if ctx.segmented_storage {
+                        on_event(RunEvent::MessageStart {
+                            entry_id: entry_id.clone(),
+                        });
+                    }
+                    on_event(RunEvent::Model(ModelStreamEvent::TextStart {
+                        id: block_id.clone(),
+                    }));
+                    on_event(RunEvent::Model(ModelStreamEvent::TextDelta {
+                        id: block_id.clone(),
+                        text: answer.clone(),
+                    }));
+                    on_text(answer.clone());
+                    on_event(RunEvent::Model(ModelStreamEvent::TextEnd {
+                        id: block_id.clone(),
+                    }));
+                    if ctx.segmented_storage {
+                        on_event(RunEvent::MessageEnd {
+                            entry_id: entry_id.clone(),
+                            complete: true,
+                        });
+                    }
+                    ctx.await_durability().await?;
+                    let mut delivered = AgentMessage {
+                        role: "assistant".into(),
+                        content: vec![ContentBlock::text(&answer)],
+                        ..Default::default()
+                    };
+                    delivered.metadata.get_or_insert_with(serde_json::Map::new).insert("fusion_delivery".into(), serde_json::json!({"version":1, "origin":"moderator_answer", "fusion_run_id":discussion_id, "additional_model_request":false}));
+                    if ctx.segmented_storage {
+                        bind_stream_message(
+                            &mut delivered,
+                            &entry_id,
+                            vec![Some(format!("text:{block_id}"))],
+                        );
+                    }
+                    messages.push(delivered);
+                    if let Some(ref save) = ctx.save_callback {
+                        save(messages.last_mut().unwrap());
+                    }
+                    ctx.await_durability().await?;
+                    return Ok(answer);
+                }
                 fusion_stage = Some(crate::fusion::ParentStage::after_tools(messages));
                 fusion_stage_started = tokio::time::Instant::now();
                 fusion_delivery_progress = false;

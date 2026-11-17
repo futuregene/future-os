@@ -401,6 +401,7 @@ mod tests {
             goal: "decide".into(),
             background: "facts".into(),
             constraints: vec![],
+            answer_only: false,
             parent_request: None,
             legacy_options: vec![],
             evidence: vec![],

@@ -98,6 +98,8 @@ pub struct OpenAiChatConfig {
     /// The effort values this access path accepts (`compat.reasoningEffort`).
     /// `None` sends a level verbatim, which is the historical contract.
     pub reasoning_effort: Option<ReasoningEffortVocabulary>,
+    /// Explicit wire value required to disable effort on this access path.
+    pub disabled_reasoning_effort: Option<String>,
     /// Echo the assistant turn's `reasoning_content` back in history
     /// (`compat.requiresReasoningContentOnAssistantMessages`).
     ///
@@ -658,6 +660,19 @@ pub fn apply_effort_param(
     insert_dotted(body, param, value);
 }
 
+/// A disabled spelling is an explicit access-path declaration, not an effort
+/// to round back to the nearest thinking level.
+pub fn apply_disabled_effort(
+    body: &mut Value,
+    value: &str,
+    vocabulary: Option<&ReasoningEffortVocabulary>,
+) {
+    let param = vocabulary
+        .map(|v| v.param())
+        .unwrap_or(ReasoningEffortVocabulary::DEFAULT_PARAM);
+    insert_dotted(body, param, serde_json::json!(value));
+}
+
 /// Insert `value` at a dotted path, merging into an existing object when one of
 /// the parent segments already is one (`chat_template_kwargs` is also written by
 /// the Qwen thinking format).
@@ -1209,6 +1224,7 @@ fn parse_chat_config(model: &crate::models::Model) -> Result<OpenAiChatConfig> {
     Ok(OpenAiChatConfig {
         reasoning,
         reasoning_effort: parse_reasoning_effort_vocabulary(model)?,
+        disabled_reasoning_effort: string("disabledReasoningEffort")?.map(str::to_owned),
         replay_assistant_reasoning,
         max_tokens_field,
         tool_stream: boolean("toolStream")? || model.provider == "zai",

@@ -332,6 +332,13 @@ impl Store {
         mut result: Conclusion,
         completeness: &str,
     ) -> Result<()> {
+        if let Some(answer) = &result.final_answer {
+            ensure!(!answer.trim().is_empty(), "Empty closed-task final answer");
+            ensure!(
+                self.get(id)?.input.answer_only,
+                "Direct final answer requires sealed parent scope"
+            );
+        }
         result.fusion_run_id = id.into();
         result.completeness = completeness.into();
         self.change(id, Some(owner), "result_ready", |r| {
@@ -570,6 +577,7 @@ mod tests {
                 goal: "choose".into(),
                 background: "new facts".into(),
                 constraints: vec![],
+                answer_only: false,
                 parent_request: Some("Preserved user directions and constraints".into()),
                 legacy_options: vec![],
                 evidence: vec![],
@@ -632,6 +640,7 @@ mod tests {
             goal: "Answer".into(),
             background: "Facts".into(),
             constraints: vec![],
+            answer_only: false,
             parent_request: None,
             legacy_options: vec![],
             evidence: vec![],
@@ -697,6 +706,7 @@ mod tests {
             goal: "choose".into(),
             background: "facts".into(),
             constraints: vec![],
+            answer_only: false,
             parent_request: None,
             legacy_options: vec![],
             evidence: vec![],
@@ -764,6 +774,7 @@ mod tests {
             goal: "choose".into(),
             background: "facts".into(),
             constraints: vec![],
+            answer_only: false,
             parent_request: None,
             legacy_options: vec![],
             evidence: vec![],
@@ -798,6 +809,7 @@ mod tests {
         let result = Conclusion {
             fusion_run_id: String::new(),
             conclusion: "late".into(),
+            final_answer: None,
             rationale: vec![],
             conditions: vec![],
             unresolved: vec![],
@@ -825,6 +837,7 @@ mod tests {
             goal: "choose".into(),
             background: "facts".into(),
             constraints: vec![],
+            answer_only: false,
             parent_request: None,
             legacy_options: vec![],
             evidence: vec![],
@@ -881,6 +894,7 @@ mod tests {
             goal: "decide".into(),
             background: "facts".into(),
             constraints: vec![],
+            answer_only: false,
             parent_request: None,
             legacy_options: vec![],
             evidence: vec![],
@@ -946,6 +960,7 @@ mod tests {
             goal: "decide".into(),
             background: "facts".into(),
             constraints: vec![],
+            answer_only: false,
             parent_request: None,
             legacy_options: vec![],
             evidence: vec![],
@@ -958,6 +973,7 @@ mod tests {
         let result = Conclusion {
             fusion_run_id: String::new(),
             conclusion: "A".into(),
+            final_answer: None,
             rationale: vec!["facts".into()],
             conditions: vec![],
             unresolved: vec![],

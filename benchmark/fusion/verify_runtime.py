@@ -69,6 +69,8 @@ def main():
     entry_tool_choices = []
     delivery_requests = []
     stalled = set()
+    exhausted = set()
+    report_recovery_requests = []
     barrier = threading.Barrier(3, timeout=15)
 
     class Handler(BaseHTTPRequestHandler):
@@ -123,6 +125,22 @@ def main():
                 return
             prompt = "\n".join(strings(request.get("messages", [])))
             answer = ANSWER
+            if (
+                model == "moderator"
+                and "moderator" in exhausted
+                and "Closed answer protocol:" in prompt
+            ):
+                if "The working response exhausted its output budget" not in prompt:
+                    emit(
+                        {
+                            "reasoning_content": "The supported result is already in the supplied reports."
+                        },
+                        "length",
+                    )
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    self.wfile.flush()
+                    return
+                report_recovery_requests.append(request)
             if model == "parent" and not any(
                 m.get("role") == "tool" for m in request["messages"]
             ):
@@ -201,6 +219,29 @@ def main():
                         answer = json.dumps(
                             {"consensus": [], "issues": [], "excluded": []}
                         )
+                if (
+                    "Closed answer protocol:" in prompt
+                    and "\nReview packet:\n" not in prompt
+                ):
+                    answer = json.dumps(
+                        {
+                            "answer": ANSWER,
+                            "support": "The supplied request asks to return 7.",
+                            "unresolved": [],
+                            "checks": (
+                                [
+                                    {
+                                        "claim": "The requested value is 7",
+                                        "quote": "Return 7",
+                                        "assessment": "supports",
+                                        "effect": "Deliver the requested value",
+                                    }
+                                ]
+                                if model == "moderator"
+                                else []
+                            ),
+                        }
+                    )
                 emit({"content": answer})
                 # Keep the SSE open while the CLI attaches its read-only wait.
                 time.sleep(0.3)
@@ -229,7 +270,23 @@ def main():
                     "apiKey": "local-fixture",
                     "baseUrl": f"http://127.0.0.1:{server.server_port}/v1",
                     "models": [
-                        {"id": name, "contextWindow": 1000000, "maxTokens": 16384}
+                        {
+                            "id": name,
+                            "contextWindow": 1000000,
+                            "maxTokens": 16384,
+                            **(
+                                {
+                                    "reasoning": True,
+                                    "thinkingLevels": ["off", "default"],
+                                    "compat": {
+                                        "thinkingFormat": "deepseek",
+                                        "disabledReasoningEffort": "none",
+                                    },
+                                }
+                                if name == "moderator"
+                                else {}
+                            ),
+                        }
                         for name in names
                     ],
                 }
@@ -402,7 +459,10 @@ def main():
                 "status"
             ]
             assert sorted(report["analysis_participants"]) == ["P1", "P2", "P3"], report
-            assert sorted(report["review_participants"]) == ["P1", "P2", "P3"], report
+            assert report["review_participants"] == [], report
+            assert report["strategy"] == "direct_consensus", report
+            assert discussion["run"]["input"]["answer_only"] is True
+            assert discussion["run"]["result"]["final_answer"] == ANSWER
             assert len(arrivals) == 3 and {a["model"] for a in arrivals} == {
                 "a",
                 "b",
@@ -447,6 +507,36 @@ def main():
                     "routing_outcome",
                 )
             }
+            exhausted.add("moderator")
+            recovered = run("parent", fusion=True)
+            recovered_discussion = client.call(
+                ["fusion", "show", recovered["sessionId"], "--json"]
+            )
+            exhausted.clear()
+            write_json(
+                home / "exhausted-moderator-discussion.json", recovered_discussion
+            )
+            assert recovered_discussion["run"]["status"] == "completed", (
+                recovered_discussion
+            )
+            recovered_step = next(
+                step
+                for step in recovered_discussion["steps"]
+                if step["phase"] == "synthesizing"
+            )
+            assert recovered_step["settings"]["report_revision"] == 1, recovered_step
+            assert recovered_step["settings"]["thinking_level"] == "default"
+            assert recovered_step["settings"]["report_thinking_level"] == "off"
+            assert len(report_recovery_requests) == 1
+            assert report_recovery_requests[0]["reasoning_effort"] == "none"
+            assert recovered_discussion["run"]["result"]["final_answer"] == ANSWER
+            evidence["moderator_output_limit"] = {
+                "recovered": True,
+                "report_only_requests": 1,
+                "original_thinking_level": "default",
+                "report_thinking_level": "off",
+                "explicit_disabled_effort": "none",
+            }
             if args.check_idle:
                 c_requests = counts["c"]
                 stalled.add("c")
@@ -486,11 +576,12 @@ def main():
             assert (
                 entry_tool_choices and evidence["fusion"]["required_fusion_tool_choice"]
             ), entry_tool_choices
-            assert delivery_requests and all(
-                request.get("max_tokens") == 16384 and not request.get("tool_choice")
-                for request in delivery_requests
-            ), delivery_requests
-            evidence["fusion"]["bounded_delivery_requests"] = len(delivery_requests)
+            assert not delivery_requests, (
+                "A sealed completed answer must not invoke the parent model again"
+            )
+            evidence["fusion"]["additional_parent_delivery_requests"] = 0
+            evidence["fusion"]["typed_answer_delivered"] = True
+            write_json(home / "verification.json", evidence)
             print(
                 json.dumps(
                     {"evidence": str(home / "verification.json"), "results": evidence},

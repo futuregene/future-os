@@ -23,6 +23,7 @@ pub(super) struct Report {
     pub text: String,
     pub validation_errors: Vec<String>,
     pub generation: u32,
+    pub recovered_output_limit: bool,
 }
 
 /// One repair in the original session, shared by format, citations and capacity.
@@ -49,19 +50,36 @@ pub(super) async fn collect(
         ensure!(errors.is_empty(), "{}", errors.join("\n"));
         Ok(())
     };
-    let original = session.generate(message, false).await?;
+    let original = match session.generate(message, false).await {
+        Ok(text) => text,
+        Err(error)
+            if failure_kind(&error) == FailureKind::OutputLimit
+                && matches!(phase, "analyzing" | "reviewing" | "synthesizing") =>
+        {
+            let text = session.generate("The working response exhausted its output budget before completing a public report. Use the existing work in this session. Do not restart the investigation or repeat the reasoning. Return your best supported answer in the original required report format now, qualify unresolved premises explicitly, and stop after the report.".into(), true).await?;
+            check(&text)?;
+            return Ok(Report {
+                text,
+                validation_errors: vec![],
+                generation: 1,
+                recovered_output_limit: true,
+            });
+        }
+        Err(error) => return Err(error),
+    };
     let first_error = match check(&original) {
         Ok(()) => {
             return Ok(Report {
                 text: original,
                 validation_errors: vec![],
                 generation: 0,
+                recovered_output_limit: false,
             })
         }
         Err(error) => error.to_string(),
     };
     let message = format!(
-        "You have ONE report repair opportunity. Revise ONLY your last final report using the existing work in this conversation. Do not repeat the task, investigate again, call tools or add new facts. Fix the reported fields; preserve the current answer and other valid content. Return a complete replacement report in the same required format. Quotes must copy visible source wording and belong to the named participant; typography differences are allowed, paraphrases are not quotes. No commentary about the revision. Validation feedback: {first_error}. Final report capacity: {capacity} UTF-8 bytes in its downstream representation; this is not a thinking-token budget."
+        "You have ONE report repair opportunity. Revise ONLY your last final report using the existing work in this conversation. Do not repeat the task, investigate again, call tools or add new facts. Fix the reported fields; preserve valid content and the current answer unless the reported source error changes its support; then correct the inference and resulting answer explicitly. Return a complete replacement report in the same required format. Quotes must copy visible source wording and belong to the named participant; typography differences are allowed, paraphrases are not quotes. No commentary about the revision. Validation feedback: {first_error}. Final report capacity: {capacity} UTF-8 bytes in its downstream representation; this is not a thinking-token budget."
     );
     let repaired = match session.generate(message, true).await {
         Ok(text) => text,
@@ -78,6 +96,7 @@ pub(super) async fn collect(
             return Ok(Report {
                 text: original,
                 generation: 0,
+                recovered_output_limit: false,
                 validation_errors: vec![future_fusion::bounded_text(
                     &format!("{first_error}\nReport repair did not complete: {error}"),
                     2048,
@@ -91,6 +110,7 @@ pub(super) async fn collect(
             text: repaired,
             validation_errors: vec![],
             generation: 1,
+            recovered_output_limit: false,
         }),
         Err(error) if matches!(phase, "analyzing" | "reviewing") => {
             // Prefer the repaired answer; an empty repair must not discard an
@@ -108,6 +128,7 @@ pub(super) async fn collect(
                 text,
                 validation_errors: vec![future_fusion::bounded_text(&error.to_string(), 2048)],
                 generation,
+                recovered_output_limit: false,
             })
         }
         Err(error) => Err(failure(
@@ -173,6 +194,55 @@ mod tests {
             self.requests.push((message, report_only));
             Ok(self.responses.pop_front().expect("unexpected regeneration"))
         }
+    }
+    struct ExhaustedSession {
+        requests: usize,
+        recovery_fails: bool,
+    }
+    impl ReportSession for ExhaustedSession {
+        async fn generate(&mut self, _message: String, report_only: bool) -> Result<String> {
+            self.requests += 1;
+            if !report_only || self.recovery_fails {
+                return Err(failure(FailureKind::OutputLimit, "exhausted"));
+            }
+            Ok("supported report".into())
+        }
+    }
+    #[tokio::test]
+    async fn exhaustion_has_one_bounded_same_session_report_attempt() {
+        for recovery_fails in [false, true] {
+            let mut session = ExhaustedSession {
+                requests: 0,
+                recovery_fails,
+            };
+            let result = collect(&mut session, "investigate".into(), "analyzing", 100, |_| {
+                Ok(())
+            })
+            .await;
+            assert_eq!(session.requests, 2);
+            if recovery_fails {
+                assert_eq!(failure_kind(&result.unwrap_err()), FailureKind::OutputLimit);
+            } else {
+                assert!(result.unwrap().recovered_output_limit);
+            }
+        }
+        let mut session = ExhaustedSession {
+            requests: 0,
+            recovery_fails: false,
+        };
+        assert!(
+            collect(
+                &mut session,
+                "synthesize".into(),
+                "synthesizing",
+                100,
+                |_| Ok(())
+            )
+            .await
+            .unwrap()
+            .recovered_output_limit
+        );
+        assert_eq!(session.requests, 2);
     }
     #[tokio::test]
     async fn oversized_report_is_revised_without_repeating_investigation() {

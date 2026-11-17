@@ -10,7 +10,7 @@ pub const PANEL_MODELS: [&str; 3] = [
 ];
 pub const MODERATOR_MODEL: &str = "future/deepseek-flash";
 /// Input contracts must match before new records are admitted or dispatched.
-pub const INPUT_POLICY_VERSION: u32 = 1;
+pub const INPUT_POLICY_VERSION: u32 = 2;
 pub const INNER_TOOL_NAMES: [&str; 4] = ["read", "ls", "glob", "grep"];
 /// Shared by the enabled parent run and its tool description on every client.
 pub const DISCUSSION_POLICY: &str = "Fusion is enabled for this run only. The user has chosen multi-model deliberation for this request. For a self-contained task, your first substantive action must be a fusion tool call. Before that call, only read the task and prepare its required arguments; do not solve it, derive candidate answers, compare solution methods, or make a solution plan first. Necessary factual reads may precede consultation when the supplied facts are insufficient. Fusion is an internal thinking tool, not an external lookup or action; restrictions on browsing, files or external tools do not by themselves prohibit this consultation. Solving a reasoning problem, deriving a result, or checking a supplied argument counts as analysis even when the requested final answer is only a number or option. You MUST call fusion before forming a new substantive judgment, choosing an approach or presenting a recommendation that requires analysis, diagnosis, design, comparison, review, or assessment of risks, impact, compatibility or edge cases. Confidence, apparent simplicity and the absence of competing options are NOT reasons to skip discussion; even a small bug fix requires discussion when its cause or remedy needs judgment.\n\
@@ -26,7 +26,7 @@ pub const FOLLOW_THROUGH_POLICY: &str = "This is the result of the completed Fus
 
 /// Applied in each inner phase so compression and re-review do not silently
 /// turn an assistant hypothesis into a supplied fact or change the question.
-pub const GROUNDING_POLICY: &str = "Keep the original question, requested outcome, constraints and decision criterion stable throughout this discussion. When parent_request is present, it preserves the parent's user request independently of the model-written question/background. Use that source text to detect a changed premise or restriction; answer only the focused consultation question within that request, without expanding scope. Preserve consequential directions, quantifiers, scope, definitions and requested answer format; do not silently repair missing or contradictory conditions. An attributed user statement, observed source, prior assistant assertion and participant inference have different evidential status. Check the source of a decisive premise: its presence in background or evidence is not independent verification, and agreement repeating it adds no independent support. A compatible hypothesis, a guess about intended meaning, or an estimate does not become an established fact through repetition. Resolve contradictory examples and consequential counterexamples against the supplied task; do not discard them as anomalies or suppress them by voting or confidence. When the task leaves a decisive definition or condition missing, identify it and preserve justified conditional results rather than inventing a unique answer or a numeric placeholder.";
+pub const GROUNDING_POLICY: &str = "Keep the original question, requested outcome, constraints and decision criterion stable throughout this discussion. When parent_request is present, it preserves the parent's user request independently of the model-written question/background. Use that source text to detect a changed premise or restriction; answer only the focused consultation question within that request, without expanding scope. Preserve consequential directions, quantifiers, scope, definitions and requested answer format; do not silently repair missing or contradictory conditions. An attributed user statement, observed source, prior assistant assertion and participant inference have different evidential status. Check the source of a decisive premise: its presence in background or evidence is not independent verification, and agreement repeating it adds no independent support. A compatible hypothesis, a guess about intended meaning, or an estimate does not become an established fact through repetition. When asked to determine which statements are correct from supplied observations/examples, require positive support for every selected statement; absence of a counterexample is not proof. If multiple models satisfy the observations but disagree on a claim, that claim is not established: report only what is invariant unless the user explicitly asks for possibilities. Object identifiers, species labels, variable spellings and display names do not supply an unprovided personal attribute or value. A conditional rule is not evidence that its antecedent holds; a priority between rules does not activate an unsupported antecedent. Resolve contradictory examples and consequential counterexamples against the supplied task; do not discard them as anomalies or suppress them by voting or confidence. When the task leaves a decisive definition or condition missing, identify it and preserve justified conditional results rather than inventing a unique answer or a numeric placeholder.";
 
 /// Request-only reminder placed after the supplied task on the first model
 /// turn. It is not a fabricated user submission or a persistent session mode.
@@ -58,6 +58,9 @@ pub struct ConsultationInput {
     /// Focused consultation questions remain separate from this source text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_request: Option<String>,
+    /// Backend-selected only when the parent exposes Fusion and no execution tools.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub answer_only: bool,
     // Historical records remain readable; never forward this field to models.
     #[serde(default, skip_serializing, rename = "options")]
     pub legacy_options: Vec<String>,
@@ -76,6 +79,14 @@ impl ConsultationInput {
         ] {
             ensure!(!text.trim().is_empty(), "Fusion requires {name}");
         }
+        ensure!(
+            !self.answer_only
+                || self
+                    .parent_request
+                    .as_ref()
+                    .is_some_and(|source| source == &self.question),
+            "Closed answer scope must match the preserved parent request"
+        );
         ensure!(
             self.read_scope.len() <= 16,
             "At most 16 read scopes are allowed"
@@ -135,6 +146,9 @@ pub struct Conclusion {
     #[serde(default)]
     pub fusion_run_id: String,
     pub conclusion: String,
+    /// Validated user-facing answer for a sealed, full-parent closed task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_answer: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rationale: Vec<String>,
     #[serde(default, skip_serializing)]

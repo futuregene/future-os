@@ -16,6 +16,7 @@ pub(crate) enum ContextScope {
     Parent {
         parent: Parent,
         parent_request: Option<String>,
+        answer_only: bool,
         workspace: PathBuf,
         store: Store,
         sandbox: Arc<crate::sandbox::ResolvedSandbox>,
@@ -177,6 +178,34 @@ impl ParentStage {
     }
 }
 
+/// Only a completed backend conclusion may bypass a second model request.
+pub(crate) fn completed_answer(
+    messages: &[crate::types::AgentMessage],
+) -> Option<(String, String)> {
+    let last = messages
+        .last()
+        .filter(|m| m.role == "tool" && m.name == "fusion")?;
+    last.content.iter().find_map(|block| {
+        let crate::types::ContentBlock::ToolResult {
+            content,
+            is_error: false,
+            ..
+        } = block
+        else {
+            return None;
+        };
+        let value: Value = serde_json::from_str(content).ok()?;
+        if value["status"] != "completed" || value["has_conclusion"] != true {
+            return None;
+        }
+        let answer = value["final_answer"].as_str()?.to_owned();
+        if answer.trim().is_empty() {
+            return None;
+        }
+        Some((value["fusion_run_id"].as_str()?.to_owned(), answer))
+    })
+}
+
 fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
     Box::pin(async move {
         let context = CONTEXT
@@ -185,6 +214,7 @@ fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
         let ContextScope::Parent {
             mut parent,
             parent_request,
+            answer_only,
             workspace,
             store,
             sandbox,
@@ -210,8 +240,23 @@ fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
             args.get("parent_request").is_none(),
             "Fusion parent_request is backend-owned"
         );
+        ensure!(
+            args.get("answer_only").is_none(),
+            "Fusion answer_only is backend-owned"
+        );
         let mut input: ConsultationInput = serde_json::from_value(args)?;
+        input.answer_only = answer_only;
+        if answer_only {
+            input.question = parent_request
+                .clone()
+                .context("Closed task requires its preserved parent request")?;
+        }
         input.parent_request = parent_request;
+        if answer_only {
+            input.goal =
+                "Answer the preserved user request with its original scope and requested format."
+                    .into();
+        }
         input.validate()?;
         let (run, created) = store.prepare(parent, input, &workspace)?;
         let mut guard = InvocationGuard {
@@ -399,7 +444,12 @@ pub(crate) fn inner_execution(
         .settings
         .context("Fusion generation settings are missing; upgrade Host and Agent together")?;
     ensure!(
-        settings.thinking_level == thinking,
+        settings
+            .report_thinking_level
+            .as_deref()
+            .filter(|_| settings.report_revision > 0)
+            .unwrap_or(&settings.thinking_level)
+            == thinking,
         "Fusion thinking level differs from configured policy; fallback prohibited"
     );
     let file_tools = file_tools_allowed(
@@ -639,6 +689,8 @@ fn request_context_bytes(request: &crate::llm::schema::ModelRequest) -> Result<u
 
 #[cfg(test)]
 mod input_contract_tests {
+    use super::completed_answer;
+    use serde_json::{json, Value};
     #[test]
     fn retained_original_selects_its_run_without_exposing_later_repair() {
         use crate::session::SessionEntry;
@@ -691,6 +743,7 @@ mod input_contract_tests {
                 context_window: 16384,
                 max_public_bytes: 4096,
                 report_revision: 0,
+                report_thinking_level: None,
                 timeout_ms: 1000,
                 idle_timeout_ms: None,
                 retry_reason: None,
@@ -742,6 +795,7 @@ mod input_contract_tests {
                 context_window: 65_536,
                 max_public_bytes: 1,
                 report_revision: 0,
+                report_thinking_level: None,
                 timeout_ms: 300_000,
                 idle_timeout_ms: None,
                 retry_reason: None,
@@ -770,6 +824,7 @@ mod input_contract_tests {
             provider: Arc::new(Capture(limits.clone())),
             settings: future_fusion::StepSettings {
                 report_revision: 1,
+                report_thinking_level: None,
                 ..guarded.settings.clone()
             },
         };
@@ -815,5 +870,28 @@ mod input_contract_tests {
             .as_str()
             .unwrap()
             .contains("empty array"));
+    }
+    #[test]
+    fn sealed_delivery_requires_a_completed_nonempty_backend_artifact() {
+        use crate::types::{AgentMessage, ContentBlock};
+        let mut value = json!({"status":"completed","has_conclusion":true,"fusion_run_id":"owned","final_answer":"public answer"});
+        let message = |v: &Value, is_error| AgentMessage {
+            role: "tool".into(),
+            name: "fusion".into(),
+            content: vec![ContentBlock::tool_result("call", v.to_string(), is_error)],
+            ..Default::default()
+        };
+        assert_eq!(
+            completed_answer(&[message(&value, false)]),
+            Some(("owned".into(), "public answer".into()))
+        );
+        assert!(completed_answer(&[message(&value, true)]).is_none());
+        for status in ["failed", "cancelled", "interrupted", "running"] {
+            value["status"] = json!(status);
+            assert!(completed_answer(&[message(&value, false)]).is_none());
+        }
+        value["status"] = json!("completed");
+        value["final_answer"] = json!(" ");
+        assert!(completed_answer(&[message(&value, false)]).is_none());
     }
 }
