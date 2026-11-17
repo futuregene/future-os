@@ -179,6 +179,16 @@ impl Store {
         input: ConsultationInput,
         workspace: &Path,
     ) -> Result<(Consultation, bool)> {
+        self.prepare_with_revisit(parent, input, workspace, None)
+    }
+
+    pub fn prepare_with_revisit(
+        &self,
+        parent: Parent,
+        input: ConsultationInput,
+        workspace: &Path,
+        revisit: Option<crate::Revisit>,
+    ) -> Result<(Consultation, bool)> {
         input.validate()?;
         let mut db = self.connect()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -192,11 +202,100 @@ impl Store {
             let old: Consultation = serde_json::from_str(&raw)?;
             ensure!(
                 serde_json::to_value(&old.input)? == serde_json::to_value(&input)?
-                    && old.parent == parent,
+                    && old.parent == parent
+                    && old.lineage.as_ref().map(|l| &l.revisit) == revisit.as_ref(),
                 "Fusion invocation key reused with a different input"
             );
             return Ok((old, false));
         }
+        let workspace = workspace
+            .to_str()
+            .context("Fusion requires a Unicode workspace path")?;
+        // Restrict automatic reuse to this turn and identical inputs; a new user
+        // turn may legitimately change evidence or the world outside this store.
+        let mut statement = tx.prepare("SELECT data FROM fusion_runs WHERE parent_session=?1 AND status='completed' AND ((?2 IS NOT NULL AND (id=?2 OR (parent_run=?3 AND json_extract(data,'$.lineage.revisit.previous_run_id')=?2))) OR (?2 IS NULL AND parent_run=?3)) ORDER BY rowid DESC")?;
+        let previous = statement
+            .query_map(
+                params![
+                    parent.session_id,
+                    revisit.as_ref().map(|r| &r.previous_run_id),
+                    parent.run_id
+                ],
+                |row| row.get::<_, String>(0),
+            )?
+            .map(|raw| -> Result<Consultation> { Ok(serde_json::from_str(&raw?)?) })
+            .collect::<Result<Vec<_>>>()?;
+        drop(statement);
+        let compatible = |old: &&Consultation| {
+            old.parent.database_id == parent.database_id
+                && old.workspace == workspace
+                && old
+                    .result
+                    .as_ref()
+                    .is_some_and(|r| !r.conclusion.trim().is_empty())
+        };
+        let lineage = if let Some(revisit) = revisit {
+            ensure!(
+                !revisit.reason.trim().is_empty(),
+                "Reopening needs a concrete reason"
+            );
+            if let Some(reused) = previous.iter().filter(compatible).find(|old| {
+                old.parent.run_id == parent.run_id
+                    && old.lineage.as_ref().map(|l| &l.revisit) == Some(&revisit)
+                    && serde_json::to_value(&old.input).ok() == serde_json::to_value(&input).ok()
+            }) {
+                return Ok((reused.clone(), false));
+            }
+            let old = previous
+                .iter()
+                .filter(compatible)
+                .find(|old| old.id == revisit.previous_run_id)
+                .context(
+                    "Reopening requires a completed decision in this conversation and workspace",
+                )?;
+            if revisit.kind == crate::RevisitKind::UserScopeChange {
+                let quote = revisit
+                    .user_scope_quote
+                    .as_deref()
+                    .filter(|q| !q.trim().is_empty())
+                    .context(
+                        "User scope changes require user_scope_quote from the current request",
+                    )?;
+                let request = input
+                    .parent_request
+                    .as_deref()
+                    .context("Missing current user request")?;
+                ensure!(
+                    request.contains(quote) && old.input.parent_request.as_deref() != Some(request),
+                    "Scope change must quote a new user request"
+                );
+            } else {
+                // Closed tasks retain the complete new user turn as question;
+                // general consultations can add new facts in evidence/background
+                // without changing the decision question itself.
+                let sealed_followup = old.input.answer_only
+                    && input.answer_only
+                    && old.parent.run_id != parent.run_id
+                    && old.input.parent_request != input.parent_request;
+                ensure!(old.input.goal == input.goal && old.input.constraints == input.constraints
+                    && (old.input.question == input.question || sealed_followup),
+                    "Reopening must preserve the previous question, goal and constraints; only a quoted user_scope_change may change the criterion");
+            }
+            Some(crate::DecisionLineage {
+                revisit,
+                previous_input: old.input.clone(),
+                previous_result: old.result.clone().context("Missing prior result")?,
+            })
+        } else {
+            if let Some(old) = previous.iter().filter(compatible).find(|old| {
+                old.parent.run_id == parent.run_id && old.input.question == input.question
+            }) {
+                ensure!(serde_json::to_value(&old.input)? == serde_json::to_value(&input)?,
+                    "Decision {} already completed. Use revisit with its ID and a concrete new_evidence, counterexample, corrected_inference or user_scope_change reason", old.id);
+                return Ok((old.clone(), false));
+            }
+            None
+        };
         let settings = Self::read_settings(&tx)?;
         ensure!(settings.enabled, "Fusion is disabled in settings");
         let root = self.root.join("snapshots").join(&id);
@@ -204,10 +303,7 @@ impl Store {
             id: id.clone(),
             parent,
             input,
-            workspace: workspace
-                .to_str()
-                .context("Fusion requires a Unicode workspace path")?
-                .into(),
+            workspace: workspace.into(),
             snapshot_root: root
                 .to_str()
                 .context("Fusion requires a Unicode snapshot path")?
@@ -217,6 +313,7 @@ impl Store {
             completeness: "none".into(),
             configuration: Some(settings.configuration),
             report: Some(crate::ExecutionReport::default()),
+            lineage,
             result: None,
             error: None,
             created_at: now_ms(),
@@ -610,6 +707,157 @@ mod tests {
     }
 
     #[test]
+    fn completed_decisions_reuse_and_reopening_inherits_frozen_criterion() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let parent = Parent {
+            database_id: "db".into(),
+            session_id: "s".into(),
+            run_id: "r".into(),
+            tool_call_id: "t1".into(),
+        };
+        let input: ConsultationInput = serde_json::from_value(json!({"question":"Choose storage","goal":"Keep data","background":"Workload unknown","constraints":["Preserve records"],"parent_request":"Choose storage"})).unwrap();
+        let (old, _) = store
+            .prepare(parent.clone(), input.clone(), dir.path())
+            .unwrap();
+        store.ready(&old.id).unwrap();
+        store.claim("owner").unwrap().unwrap();
+        store
+            .finish(
+                &old.id,
+                "owner",
+                Conclusion {
+                    conclusion: "Use SQLite provisionally".into(),
+                    unresolved: vec!["Check write concurrency".into()],
+                    ..Default::default()
+                },
+                "full",
+            )
+            .unwrap();
+        store.delivered(&old.id).unwrap();
+        let mut parent = parent;
+        parent.tool_call_id = "t2".into();
+        let (reused, created) = store
+            .prepare(parent.clone(), input.clone(), dir.path())
+            .unwrap();
+        assert!(!created);
+        assert_eq!(reused.id, old.id);
+        let mut changed = input.clone();
+        changed.evidence.push("Observed concurrent writers".into());
+        assert!(store
+            .prepare(parent.clone(), changed.clone(), dir.path())
+            .is_err());
+        let revisit = crate::Revisit {
+            previous_run_id: old.id.clone(),
+            kind: crate::RevisitKind::NewEvidence,
+            reason: "Observed concurrent writers".into(),
+            user_scope_quote: None,
+        };
+        let (new, created) = store
+            .prepare_with_revisit(
+                parent.clone(),
+                changed.clone(),
+                dir.path(),
+                Some(revisit.clone()),
+            )
+            .unwrap();
+        assert!(created);
+        assert_eq!(
+            new.lineage.as_ref().unwrap().previous_result.unresolved,
+            vec!["Check write concurrency"]
+        );
+        assert_eq!(
+            serde_json::to_value(new.configuration).unwrap(),
+            serde_json::to_value(old.configuration).unwrap()
+        );
+        let (_, created) = store
+            .prepare_with_revisit(
+                parent.clone(),
+                changed.clone(),
+                dir.path(),
+                Some(revisit.clone()),
+            )
+            .unwrap();
+        assert!(!created);
+        store.ready(&new.id).unwrap();
+        store.claim("owner").unwrap().unwrap();
+        store
+            .finish(
+                &new.id,
+                "owner",
+                Conclusion {
+                    conclusion: "Still use SQLite provisionally".into(),
+                    ..Default::default()
+                },
+                "full",
+            )
+            .unwrap();
+        store.delivered(&new.id).unwrap();
+        let mut repeat_parent = parent.clone();
+        repeat_parent.tool_call_id = "repeat-revisit".into();
+        let (reused, created) = store
+            .prepare_with_revisit(
+                repeat_parent,
+                changed.clone(),
+                dir.path(),
+                Some(revisit.clone()),
+            )
+            .unwrap();
+        assert!(!created);
+        assert_eq!(reused.id, new.id);
+        let mut wrong_revisit = revisit.clone();
+        wrong_revisit.reason = "Different replay reason".into();
+        assert!(store
+            .prepare_with_revisit(
+                parent.clone(),
+                changed.clone(),
+                dir.path(),
+                Some(wrong_revisit)
+            )
+            .is_err());
+        parent.tool_call_id = "t3".into();
+        changed.question = "Which storage might possibly work?".into();
+        assert!(store
+            .prepare_with_revisit(
+                parent.clone(),
+                changed.clone(),
+                dir.path(),
+                Some(revisit.clone())
+            )
+            .is_err());
+        changed.question = input.question.clone();
+        changed.goal = "Discard data".into();
+        assert!(store
+            .prepare_with_revisit(
+                parent.clone(),
+                changed.clone(),
+                dir.path(),
+                Some(revisit.clone())
+            )
+            .is_err());
+        let mut scope = revisit.clone();
+        scope.kind = crate::RevisitKind::UserScopeChange;
+        scope.user_scope_quote = Some("Discard data".into());
+        assert!(store
+            .prepare_with_revisit(
+                parent.clone(),
+                changed.clone(),
+                dir.path(),
+                Some(scope.clone())
+            )
+            .is_err());
+        changed.parent_request = Some("Discard data and choose storage".into());
+        store
+            .prepare_with_revisit(parent.clone(), changed.clone(), dir.path(), Some(scope))
+            .unwrap();
+        parent.tool_call_id = "t4".into();
+        parent.session_id = "other".into();
+        assert!(store
+            .prepare_with_revisit(parent, input, dir.path(), Some(revisit))
+            .is_err());
+    }
+
+    #[test]
     fn saved_deadline_policy_upgrades_without_changing_thinking_or_history() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
@@ -809,6 +1057,7 @@ mod tests {
         let result = Conclusion {
             fusion_run_id: String::new(),
             conclusion: "late".into(),
+            decision_audit: None,
             final_answer: None,
             rationale: vec![],
             conditions: vec![],
@@ -973,6 +1222,7 @@ mod tests {
         let result = Conclusion {
             fusion_run_id: String::new(),
             conclusion: "A".into(),
+            decision_audit: None,
             final_answer: None,
             rationale: vec!["facts".into()],
             conditions: vec![],

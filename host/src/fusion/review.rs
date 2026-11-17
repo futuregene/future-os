@@ -10,6 +10,7 @@ Start with the moderator's review_focus when provided. Resolve the checks that c
 For each consequential own position, quote your original answer and state whether you maintain, revise or withdraw it, the resulting position and your reason. For a change, identify the new evidence, inference or criterion that warrants it. Keep conditional positions conditional unless their premises have been established. Do not invent a previous position just to narrate a change. Distinguish new proposals, unverified claims and verified facts: only use verified_fact for something actually checked against identified supplied evidence or a tool result, with inspectable evidence references; agreement, memory and moderator summaries do not verify a fact. Otherwise use unverified_claim. You may investigate only through provided authorized read-only snapshot tools. Never write, execute commands or take external action.
 Keep the original evidential standard: a claim that is not contradicted is not thereby established. Use a countermodel or missing premise to challenge an unsupported selection. Entity labels do not supply unknown attributes. Return ONLY JSON. current_answer must directly answer the original question with your current, self-contained position, including any material uncertainty; the remaining fields explain only consequential changes, not a full meeting transcript:
 {"participant":"your ID","current_answer":"your current answer to the original question","responses":[{"participant":"other ID","quote":"exact excerpt from their source quote in moderator_map","decision":"agree|disagree|qualify|insufficient_information","reason":"reason"}],"self_review":[{"original_quote":"exact excerpt from your original_analysis","decision":"maintain|revise|withdraw","updated_position":"your current position","reason":"why"}],"mapping_corrections":[{"summary_quote":"exact excerpt from moderator_map","source_quote":"exact visible original excerpt supporting your correction","correction":"what the map got wrong","reason":"why"}],"additions":[{"kind":"proposal|unverified_claim|verified_fact","content":"new material","evidence":[{"source_id":"request or evidence:N or snapshot:<path>","sha256":"version from the source manifest or read tool","quote":"exact source excerpt"}]}]}
+Optionally add objections:[{"participant":"source participant ID","quote":"exact excerpt from your original_analysis, current_answer, or the named participant source quote in moderator_map","reason":"decisive counterexample or missing premise","effect":"how it could change the answer"}]. Include only decision-critical objections that still need explicit disposition, not stylistic differences. A new counterexample may quote your own current_answer. These remain attributed arguments, not verified facts.
 For snapshot references also include start_line and end_line (one-based, at most 400 lines) matching the read tool result. Inline sources do not use line fields. Never cite a moderator/participant statement, background summary or a fabricated label as source-verified evidence. An unavailable source must remain an unverified_claim. All four arrays must exist and may be empty except self_review, which must address your own answer. Do not repeat the entire original plan. A verified_fact label is not a claim that the whole proposal was tested."#;
 
 pub(super) fn prompt(
@@ -18,12 +19,13 @@ pub(super) fn prompt(
     analyses: &[Value],
     mapping: &Value,
     snapshot: Option<&Snapshot>,
+    lineage: Option<&future_fusion::DecisionLineage>,
 ) -> Result<String> {
     let own = analyses
         .iter()
         .find(|a| a["participant"].as_str() == Some(participant))
         .context("Missing reviewer's first answer")?;
-    let packet = json!({"participant":participant,"task":input,"original_analysis":own["response"].as_str().context("Missing original public answer")?,"moderator_map":mapping,"source_manifest":super::evidence::Sources::new(input, snapshot).manifest()});
+    let packet = json!({"participant":participant,"task":input,"decision_lineage":lineage,"original_analysis":own["response"].as_str().context("Missing original public answer")?,"moderator_map":mapping,"source_manifest":super::evidence::Sources::new(input, snapshot).manifest()});
     Ok(format!(
         "{INSTRUCTIONS}\n{}\n{}\nReview packet:\n{}",
         future_fusion::GROUNDING_POLICY,
@@ -41,6 +43,16 @@ struct Review {
     self_review: Vec<Revision>,
     mapping_corrections: Vec<Correction>,
     additions: Vec<Addition>,
+    #[serde(default)]
+    objections: Vec<Objection>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Objection {
+    participant: String,
+    quote: String,
+    reason: String,
+    effect: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -170,6 +182,20 @@ pub(super) fn validate(
         }
         let _ = &response.decision;
     }
+    for (index, objection) in review.objections.iter().enumerate() {
+        let visible = if objection.participant == participant {
+            contains(own, &objection.quote) || contains(&review.current_answer, &objection.quote)
+        } else {
+            sources.iter().any(|(id, quote)| {
+                *id == objection.participant && contains(quote, &objection.quote)
+            })
+        };
+        if !visible || objection.reason.trim().is_empty() || objection.effect.trim().is_empty() {
+            errors.push(format!(
+                "objections[{index}] requires a visible attributed quote, reason and effect"
+            ));
+        }
+    }
     if review.self_review.is_empty() {
         errors.push("self_review must address your own answer".into());
     }
@@ -248,7 +274,7 @@ mod tests {
             {"participant":"P1","status":"stated","position":"SQLite","quote":"I prefer SQLite."},
             {"participant":"P2","status":"stated","position":"Files","quote":"Use files."}
         ]}], "excluded":[]});
-        let prompt = prompt("P1", &input, &analyses, &mapping, None).unwrap();
+        let prompt = prompt("P1", &input, &analyses, &mapping, None, None).unwrap();
         let review = json!({"participant":"P1", "current_answer":"Prefer SQLite pending workload evidence",
             "responses":[{"participant":"P2","quote":"Use files.","decision":"insufficient_information","reason":"No rationale in the visible excerpt"}],
             "self_review":[{"original_quote":"I prefer SQLite.","decision":"maintain","updated_position":"Prefer SQLite pending investigation","reason":"No new contrary evidence"}],
@@ -300,6 +326,19 @@ mod tests {
         changed["mapping_corrections"] = json!([{"summary_quote":"SQLite","source_quote":"I prefer SQLite.","correction":"This is a preference, not proof","reason":"The original is qualified"}]);
         validate(&changed.to_string(), &prompt, "P1", None).unwrap();
     }
+    #[test]
+    fn critical_objections_require_visible_attribution_and_material_effect() {
+        let (mut review, prompt) = fixture();
+        review["objections"] = json!([{"participant":"P1","quote":"Prefer SQLite pending workload evidence","reason":"Workload evidence is missing","effect":"Recommendation remains conditional"}]);
+        validate(&review.to_string(), &prompt, "P1", None).unwrap();
+        review["objections"][0]["participant"] = json!("P2");
+        assert!(validate(&review.to_string(), &prompt, "P1", None).is_err());
+        review["objections"][0]["quote"] = json!("Use files.");
+        validate(&review.to_string(), &prompt, "P1", None).unwrap();
+        review["objections"][0]["effect"] = json!("");
+        assert!(validate(&review.to_string(), &prompt, "P1", None).is_err());
+    }
+
     #[test]
     fn verified_facts_require_resolvable_versioned_source_quotes() {
         let (mut review, prompt) = fixture();

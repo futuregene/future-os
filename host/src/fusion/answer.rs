@@ -7,11 +7,13 @@ pub(super) const INSTRUCTIONS: &str = r#"Closed answer protocol: return ONLY a J
 {"answer":"the complete user-facing answer in exactly the user's requested format","support":"concise public justification, separate from the answer","unresolved":[],"checks":[]}
 Encode newlines and control characters inside JSON strings with JSON escapes (for example \n), never raw line breaks inside strings. This is a full-parent answer-only task. The backend will deliver answer verbatim; no later model will re-solve or reformat it. Include any requested FINAL_ANSWER line in answer itself. Do not append option descriptions, alternative spellings, meeting notes or qualifications that the user did not request; put necessary justification in support. If the user requests an explanation, answer includes that explanation. Never select a guessed value just to satisfy a numeric format. Keep actual uncertainty visible when the task cannot be determined.
 In support, distinguish what is established from what is only compatible. For every selected claim, ask whether another model of the supplied facts could make it false. If so, it is not established unless the task explicitly asks for possible outcomes. Do not infer unknown attributes from entity labels or their spelling. Treat conditional antecedents as proof obligations; priority alone does not satisfy them. Give only the decisive derivation, not an exhaustive investigation or a recap of every rule.
-checks contains only consequential source checks. Each check has claim, quote, assessment (supports|does_not_establish|contradicts), and effect. quote must be a short exact excerpt from parent_request (or question if no parent_request), not from a prior assistant assertion. Explain what the excerpt actually establishes and what it leaves unknown. Assumptions and conditional implications cannot silently become observations. Resolve source mistakes before publishing answer; repeating an advisor's assertion is not a check. Participants may leave checks empty; the final moderator must include at least one decisive source check. unresolved lists only gaps that actually prevent the supported answer or change its applicability. Return an empty array when none remain."#;
+checks contains only consequential source checks. Each check has claim, quote, assessment (supports|does_not_establish|contradicts), and effect. quote must be a short exact excerpt from parent_request (or question if no parent_request), or the backend-provided previous_input original request when explicitly reopening a decision, not from a prior assistant assertion. Explain what the excerpt actually establishes and what it leaves unknown. Assumptions and conditional implications cannot silently become observations. Resolve source mistakes before publishing answer; repeating an advisor's assertion is not a check. Participants may leave checks empty; the final moderator must include at least one decisive source check. unresolved lists only gaps that actually prevent the supported answer or change its applicability. Return an empty array when none remain."#;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Answer {
+    #[serde(default)]
+    pub decision_audit: Option<super::deliberation::Audit>,
     pub answer: String,
     pub support: String,
     pub unresolved: Vec<String>,
@@ -37,8 +39,14 @@ pub(super) fn parse(text: &str) -> Result<Answer> {
     future_fusion::parse_json(text)
 }
 
+#[cfg(test)]
 pub(super) fn validate(text: &str, task: &str, final_report: bool) -> Result<()> {
+    validate_sources(text, &[task], final_report)
+}
+
+pub(super) fn validate_sources(text: &str, tasks: &[&str], final_report: bool) -> Result<()> {
     let answer = parse(text)?;
+    let _ = &answer.decision_audit;
     ensure!(
         !answer.answer.trim().is_empty(),
         "Missing user-facing answer"
@@ -60,7 +68,7 @@ pub(super) fn validate(text: &str, task: &str, final_report: bool) -> Result<()>
             !check.claim.trim().is_empty() && !check.effect.trim().is_empty(),
             "Source check must identify the claim and its effect on the answer"
         );
-        ensure!(super::quotes::contains(task, &check.quote), "Source check quote is not present in the preserved request; do not use an assistant claim as a supplied fact: {}", check.quote);
+        ensure!(tasks.iter().any(|task| super::quotes::contains(task, &check.quote)), "Source check quote is not present in the preserved request; do not use an assistant claim as a supplied fact: {}", check.quote);
         match check.assessment {
             Assessment::Supports | Assessment::DoesNotEstablish | Assessment::Contradicts => {}
         }
@@ -130,6 +138,17 @@ mod tests {
         assert!(validate(&value.to_string(), "task", true).is_err());
         assert!(validate(&value.to_string(), "task", false).is_ok());
     }
+    #[test]
+    fn reopened_checks_can_quote_the_backend_inherited_request_but_not_join_sources() {
+        let mut value = json!({"answer":"result","support":"derivation","unresolved":[],"checks":[{"claim":"prior premise","quote":"Original premise","assessment":"supports","effect":"Keep result"}]});
+        validate_sources(&value.to_string(), &["Follow up", "Original premise"], true).unwrap();
+        assert!(validate_sources(&value.to_string(), &["Follow up"], true).is_err());
+        value["checks"][0]["quote"] = json!("Follow up Original premise");
+        assert!(
+            validate_sources(&value.to_string(), &["Follow up", "Original premise"], true).is_err()
+        );
+    }
+
     #[test]
     fn unresolved_reduced_or_invalid_reports_cannot_shortcut_review() {
         let report = json!({"answer":"answer", "support":"independent derivation", "unresolved":[], "checks":[]}).to_string();

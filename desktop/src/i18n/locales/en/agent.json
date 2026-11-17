@@ -507,6 +507,23 @@
           "unverified_claim": "Unverified claim",
           "verified_fact": "Reported checked fact · evidence cited"
         }
+      },
+      "audit": {
+        "title": "Critical objection dispositions",
+        "objections": "Critical objections",
+        "inheritance": "Previous decision",
+        "decisions": {
+          "accepted": "Accepted",
+          "rejected": "Rejected",
+          "unresolved": "Unresolved",
+          "maintain": "Maintained",
+          "revise": "Revised"
+        },
+        "resolutions": {
+          "settled": "Settled",
+          "conditional": "Conditional",
+          "insufficient_information": "Insufficient information"
+        }
       }
     }
   }

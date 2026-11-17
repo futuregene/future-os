@@ -119,7 +119,7 @@ pub(crate) fn main_tool() -> AgentTool {
         "fusion",
         &description,
         json!({"type":"object","additionalProperties":false,"required":["question","goal","background","constraints"],"properties":{
-            "question":{"type":"string","description":"Preserve the user's wording and original decision criterion, including consequential directions, quantifiers and scope; change only for necessary disambiguation or focus. No added requirements, answer checklist, assumptions or preferred approach. Split broad topics across discussions rather than overloading this question."},"goal":{"type":"string","description":"Only the outcome the user actually requested; do not add quality criteria, detail, audience assumptions, compliance framing or deliverables the user did not specify."},"background":{"type":"string","description":"Faithful compression of relevant context and user requirements, attributed facts and unknowns. Attribute user-provided proposals here. No main-agent reasoning, invented plans or preferences; prior assistant claims are not verified facts. Do not relocate invented requirements here or turn research facts into user instructions. Unknown identity, location, equipment and intent remain unknown."},"constraints":{"type":"array","description":"Only brief task restrictions explicitly established by the user or relevant prior context; use an empty array when none apply. Never infer restrictions from your preferred answer. No invented compliance, equipment, language, length or formatting demands.","items":{"type":"string"}},"evidence":{"type":"array","description":"Sourced observations with inspectable provenance. Keep user statements, observed tool/source results and assistant inferences distinct. Repeated assistant claims and agreement are not independent evidence; do not place a preferred answer or unsourced judgment here","items":{"type":"string"}},"read_scope":{"type":"array","items":{"type":"string"},"description":"Only necessary workspace-relative files/directories. Omit for conceptual decisions."}
+            "question":{"type":"string","description":"Preserve the user's wording and original decision criterion, including consequential directions, quantifiers and scope; change only for necessary disambiguation or focus. No added requirements, answer checklist, assumptions or preferred approach. Split broad topics across discussions rather than overloading this question."},"goal":{"type":"string","description":"Only the outcome the user actually requested; do not add quality criteria, detail, audience assumptions, compliance framing or deliverables the user did not specify."},"background":{"type":"string","description":"Faithful compression of relevant context and user requirements, attributed facts and unknowns. Attribute user-provided proposals here. No main-agent reasoning, invented plans or preferences; prior assistant claims are not verified facts. Do not relocate invented requirements here or turn research facts into user instructions. Unknown identity, location, equipment and intent remain unknown."},"constraints":{"type":"array","description":"Only brief task restrictions explicitly established by the user or relevant prior context; use an empty array when none apply. Never infer restrictions from your preferred answer. No invented compliance, equipment, language, length or formatting demands.","items":{"type":"string"}},"evidence":{"type":"array","description":"Sourced observations with inspectable provenance. Keep user statements, observed tool/source results and assistant inferences distinct. Repeated assistant claims and agreement are not independent evidence; do not place a preferred answer or unsourced judgment here","items":{"type":"string"}},"revisit":{"type":"object","additionalProperties":false,"required":["previous_run_id","kind","reason"],"description":"Reopen a completed discussion only for a concrete change. Inherit its conclusion, unresolved objections, goal and constraints. New independent questions need no revisit. An identical completed question in this turn reuses its result; do not paraphrase it to evade reuse.","properties":{"previous_run_id":{"type":"string"},"kind":{"type":"string","enum":["new_evidence","counterexample","corrected_inference","user_scope_change"]},"reason":{"type":"string","description":"Specific changed evidence, counterexample or corrected inference; reassurance or another vote is insufficient."},"user_scope_quote":{"type":"string","description":"Required for user_scope_change: exact excerpt from the new user request."}}},"read_scope":{"type":"array","items":{"type":"string"},"description":"Only necessary workspace-relative files/directories. Omit for conceptual decisions."}
         }}),
         invoke,
     )
@@ -243,6 +243,13 @@ fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
             args.get("answer_only").is_none(),
             "Fusion answer_only is backend-owned"
         );
+        let mut args = args;
+        let revisit: Option<future_fusion::Revisit> = args
+            .as_object_mut()
+            .context("Fusion arguments must be an object")?
+            .remove("revisit")
+            .map(serde_json::from_value)
+            .transpose()?;
         let mut input: ConsultationInput = serde_json::from_value(args)?;
         input.answer_only = answer_only;
         if answer_only {
@@ -257,7 +264,7 @@ fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
                     .into();
         }
         input.validate()?;
-        let (run, created) = store.prepare(parent, input, &workspace)?;
+        let (run, created) = store.prepare_with_revisit(parent, input, &workspace, revisit)?;
         let mut guard = InvocationGuard {
             store: store.clone(),
             id: run.id.clone(),

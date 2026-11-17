@@ -59,6 +59,11 @@ def main():
         help="exercise source receipts and repair fabricated verified_fact references",
     )
     parser.add_argument(
+        "--check-decisions",
+        action="store_true",
+        help="exercise explicit critical objection disposition and omitted-item repair",
+    )
+    parser.add_argument(
         "--artifact-root", help="Directory for retained local verification records"
     )
     args = parser.parse_args()
@@ -79,6 +84,8 @@ def main():
     exhausted = set()
     report_recovery_requests = []
     source_probe = {"enabled": False, "reviews": []}
+    decision_probe = {"enabled": False, "attempts": []}
+    lineage_probe = {"previous_run_id": None}
     barrier = threading.Barrier(3, timeout=15)
 
     class Handler(BaseHTTPRequestHandler):
@@ -147,9 +154,21 @@ def main():
                     self.wfile.flush()
                     return
                 report_recovery_requests.append(request)
+            needs_consultation = not any(
+                m.get("role") == "tool" for m in request["messages"]
+            )
+            if model == "parent" and lineage_probe["previous_run_id"]:
+                last_user = max(
+                    i
+                    for i, m in enumerate(request["messages"])
+                    if m.get("role") == "user"
+                )
+                needs_consultation = not any(
+                    m.get("role") == "tool"
+                    for m in request["messages"][last_user + 1 :]
+                )
             if model == "parent" and (
-                model in repeat_after_failure
-                or not any(m.get("role") == "tool" for m in request["messages"])
+                model in repeat_after_failure or needs_consultation
             ):
                 payload = {
                     "question": "Return 7",
@@ -157,6 +176,12 @@ def main():
                     "background": "Local concurrency verification",
                     "read_scope": [],
                 }
+                if lineage_probe["previous_run_id"]:
+                    payload["revisit"] = {
+                        "previous_run_id": lineage_probe["previous_run_id"],
+                        "kind": "corrected_inference",
+                        "reason": "Recheck whether the prior premise is a literal request rather than an inference from agreement",
+                    }
                 emit(
                     {
                         "tool_calls": [
@@ -230,6 +255,18 @@ def main():
                                 ],
                                 "mapping_corrections": [],
                                 "additions": additions,
+                                "objections": (
+                                    [
+                                        {
+                                            "participant": packet["participant"],
+                                            "quote": ANSWER,
+                                            "reason": "Check whether 7 is actually requested rather than merely compatible",
+                                            "effect": "An unsupported value must not be delivered",
+                                        }
+                                    ]
+                                    if decision_probe["enabled"] and model == "c"
+                                    else []
+                                ),
                             }
                         )
                     else:
@@ -272,7 +309,10 @@ def main():
                             "support": "The supplied request asks to return 7.",
                             "unresolved": (
                                 ["Check the supplied source before finalizing"]
-                                if source_probe["enabled"] and model == "c"
+                                if (
+                                    source_probe["enabled"] or decision_probe["enabled"]
+                                )
+                                and model == "c"
                                 else []
                             ),
                             "checks": (
@@ -288,6 +328,43 @@ def main():
                                 else []
                             ),
                         }
+                    )
+                if model == "moderator" and "\nDecision audit packet:\n" in prompt:
+                    packet, _ = json.JSONDecoder().raw_decode(
+                        prompt.rsplit("\nDecision audit packet:\n", 1)[1]
+                    )
+                    repaired = "Validation feedback:" in prompt
+                    value = json.loads(answer)
+                    value["decision_audit"] = {
+                        "resolution": "settled",
+                        "decision_update": (
+                            {
+                                "decision": "maintain",
+                                "reason": "The literal request still supplies 7; the challenged inference does not change the answer",
+                            }
+                            if repaired and packet["lineage"]
+                            else None
+                        ),
+                        "dispositions": (
+                            [
+                                {
+                                    "id": key,
+                                    "decision": "rejected",
+                                    "reason": "The literal value is supplied by the request",
+                                    "effect": "Deliver 7 without inventing an unstated premise",
+                                    "basis": [
+                                        {"source_id": "request", "quote": "Return 7"}
+                                    ],
+                                }
+                                for key in packet["objections"]
+                            ]
+                            if repaired
+                            else []
+                        ),
+                    }
+                    answer = json.dumps(value)
+                    decision_probe["attempts"].append(
+                        {"repaired": repaired, "objections": list(packet["objections"])}
                     )
                 emit({"content": answer})
                 # Keep the SSE open while the CLI attaches its read-only wait.
@@ -787,6 +864,77 @@ def main():
                     "self_contained_task_completed_without_external_evidence": True,
                     "user_settings_preserved": True,
                 }
+            if args.check_decisions:
+                decision_probe["attempts"].clear()
+                exhausted.clear()
+                stalled.clear()
+                decision_probe["enabled"] = True
+                decided = run("parent", fusion=True)
+                decision_probe["enabled"] = False
+                discussion = client.call(
+                    ["fusion", "show", decided["sessionId"], "--json"]
+                )
+                write_json(home / "critical-objections-discussion.json", discussion)
+                result = discussion["run"]["result"]
+                assert result["final_answer"] == ANSWER, result
+                audit = result["decision_audit"]
+                assert audit["resolution"] == "settled", audit
+                assert len(audit["dispositions"]) == 1, audit
+                assert audit["dispositions"][0]["id"] == "OP3-1", audit
+                synth = next(
+                    step
+                    for step in discussion["steps"]
+                    if step["phase"] == "synthesizing"
+                )
+                assert synth["settings"]["report_revision"] == 1, synth
+                assert not synth.get("report_quality"), synth
+                assert len(decision_probe["attempts"]) == 2, decision_probe
+                assert [
+                    attempt["repaired"] for attempt in decision_probe["attempts"]
+                ] == [False, True]
+                assert all(
+                    request.get("reasoning_effort") == "high"
+                    and request.get("max_tokens") == 65536
+                    for request in configured_requests
+                )
+                evidence["critical_objections"] = {
+                    "omitted_disposition_rejected": True,
+                    "same_session_repair": True,
+                    "disposition_persisted": True,
+                    "user_settings_preserved": True,
+                }
+                lineage_probe["previous_run_id"] = discussion["run"]["id"]
+                reopened = run("parent", fusion=True, session=decided["sessionId"])
+                lineage_probe["previous_run_id"] = None
+                inherited = client.call(
+                    ["fusion", "show", reopened["sessionId"], "--json"]
+                )
+                write_json(home / "inherited-decision-discussion.json", inherited)
+                lineage = inherited["run"]["lineage"]
+                assert (
+                    lineage["revisit"]["previous_run_id"] == discussion["run"]["id"]
+                ), lineage
+                assert lineage["previous_result"]["final_answer"] == ANSWER, lineage
+                assert (
+                    inherited["run"]["result"]["decision_audit"]["decision_update"][
+                        "decision"
+                    ]
+                    == "maintain"
+                ), inherited
+                assert (
+                    inherited["run"]["configuration"]
+                    == discussion["run"]["configuration"]
+                ), inherited
+                assert all(
+                    request.get("reasoning_effort") == "high"
+                    and request.get("max_tokens") == 65536
+                    for request in configured_requests
+                )
+                evidence["decision_inheritance"] = {
+                    "previous_result_frozen": True,
+                    "maintained_answer": True,
+                    "user_settings_preserved": True,
+                }
             write_json(home / "verification.json", evidence)
             print(
                 json.dumps(
@@ -804,6 +952,7 @@ def main():
                 process.terminate()
                 process.wait(timeout=20)
         server.shutdown()
+        write_json(home / "fixture-requests.json", configured_requests)
         for filename in ("auth.json", "models.json", ".future-models-cache.json"):
             (home / "agent" / filename).unlink(missing_ok=True)
 

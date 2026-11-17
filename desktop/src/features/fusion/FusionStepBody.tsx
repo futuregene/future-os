@@ -105,6 +105,12 @@ function StepResponse({ text, phase }: { text: string; phase: string }) {
             quoted(textField(entry, "source_quote")),
             textField(entry, "reason"),
           ].filter(Boolean).join("\n\n")),
+          section(t("fusion.detail.audit.objections"), value.objections, entry => [
+            textField(entry, "participant"),
+            quoted(textField(entry, "quote")),
+            textField(entry, "reason"),
+            textField(entry, "effect"),
+          ].filter(Boolean).join("\n\n")),
           section(t("fusion.detail.review.additions"), value.additions, entry => [
             `**${t(`fusion.detail.review.kinds.${textField(entry, "kind")}`)}**`,
             textField(entry, "content"),
@@ -146,6 +152,26 @@ function StepResponse({ text, phase }: { text: string; phase: string }) {
             ].filter(Boolean).join("\n\n")).join("\n\n")
           : "";
         content = [consensus ? `### ${t("fusion.detail.consensus")}\n${consensus}` : "", issues ? `### ${t("fusion.detail.disagreements")}\n${issues}` : "", excluded ? `### ${t("fusion.detail.excluded")}\n${excluded}` : ""].filter(Boolean).join("\n\n") || t("fusion.detail.noMappedViews");
+      }
+      if (phase === "synthesizing" && isRecord(value.decision_audit)) {
+        const audit = value.decision_audit;
+        const field = (entry: Record<string, unknown>, key: string) => typeof entry[key] === "string" ? entry[key] as string : "";
+        const dispositions = Array.isArray(audit.dispositions)
+          ? audit.dispositions.filter(isRecord).map(entry => [
+              `**${field(entry, "id")} · ${t(`fusion.detail.audit.decisions.${field(entry, "decision")}`)}**`,
+              field(entry, "reason"),
+              field(entry, "effect"),
+              Array.isArray(entry.basis) ? entry.basis.filter(isRecord).map(basis => [field(basis, "source_id"), `> ${field(basis, "quote").replace(/\n/gu, "\n> ")}`].join("\n\n")).join("\n\n") : "",
+            ].filter(Boolean).join("\n\n"))
+          : [];
+        const update = isRecord(audit.decision_update)
+          ? [
+              `### ${t("fusion.detail.audit.inheritance")}`,
+              t(`fusion.detail.audit.decisions.${field(audit.decision_update, "decision")}`),
+              field(audit.decision_update, "reason"),
+            ].join("\n\n")
+          : "";
+        content = [content, `### ${t("fusion.detail.audit.title")}`, t(`fusion.detail.audit.resolutions.${field(audit, "resolution")}`), ...dispositions, update].filter(Boolean).join("\n\n");
       }
     }
   }
