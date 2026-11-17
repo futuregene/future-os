@@ -600,6 +600,37 @@ it("writes the skill-suggestion switch's own key", async () => {
   await view.unmount();
 });
 
+/**
+ * The choice-card switch, on the machine that draws the cards.
+ *
+ * It has to be settable *there* rather than only in this app's own Settings
+ * dialog: the value governs that machine's prompt — whether its agent is even
+ * told the fence — so a headless host with no screen would otherwise be stuck
+ * with it off, and its conversations could never offer a card.
+ */
+it("offers the choice-card switch, and shows that host's own value", async () => {
+  answerHost({ get_desktop_settings: { autoUpgradeSkills: false, choiceCards: true } });
+  const view = await mount();
+  const toggle = view.switchFor("Choice cards")!;
+  expect(toggle.getAttribute("aria-checked")).toBe("true");
+  await view.unmount();
+});
+
+it("writes the choice-card switch's own key", async () => {
+  const view = await mount();
+  // Off on a host that has never turned it on: the shipped default.
+  expect(view.switchFor("Choice cards")!.getAttribute("aria-checked")).toBe("false");
+
+  await act(async () => view.switchFor("Choice cards")!.click());
+  await settle();
+
+  const calls = request.mock.calls;
+  const settings = (calls[calls.length - 1]![1] as { settings: Record<string, unknown> }).settings;
+  expect(Object.keys(settings)).toEqual(["choiceCards"]);
+  expect(settings.choiceCards).toBe(true);
+  await view.unmount();
+});
+
 it("writes the auto-connect switch's own key", async () => {
   const view = await mount();
   const toggle = view.switchFor("Keep the remote desktop on after a restart")!;

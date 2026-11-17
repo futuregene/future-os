@@ -179,6 +179,30 @@ async fn drive_one_stop(
     // make the listener stage unsettled for a reason that has nothing to do with
     // the client below.
     let mut server = Box::pin(running.serve(None));
+    // ...and it has to be polled *before* the stop can be requested, not merely
+    // before the stop is awaited. `serve` enters the service's admission on its
+    // first poll (service/mod.rs:457), while `AgentHandle::request_shutdown`
+    // closes that admission synchronously, before it spawns the drain
+    // (service/shutdown.rs:124). A stop that wins the race to that first poll
+    // therefore makes `serve` refuse with "Agent service is stopping" — the
+    // refusal of a service that is already stopping, which is not the serving
+    // failure this case is about, and it happens while the stop itself reports
+    // `Stopped`.
+    //
+    // `select!` below polls one randomly chosen branch first, so a client whose
+    // `connect` is ready on its own first poll can complete that arm without
+    // this future ever being polled: measured on CI 2026-11-17, where the case
+    // reported exactly that refusal as a failed stop. Polling it once here — as
+    // every host does — makes the ordering explicit instead of
+    // scheduler-dependent.
+    assert!(
+        std::future::Future::poll(
+            server.as_mut(),
+            &mut std::task::Context::from_waker(std::task::Waker::noop())
+        )
+        .is_pending(),
+        "the serving future must still be running before a client connects"
+    );
     // A connection that never speaks: what a paused Desktop, a half-closed
     // socket or a client holding the endpoint looks like to the accepting side,
     // and the state the listener stage has to be able to abandon. Holding it

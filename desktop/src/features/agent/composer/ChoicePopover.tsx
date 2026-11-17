@@ -107,10 +107,13 @@ export function ChoicePopover({
           >
             <span
               className={cn(
-                "flex size-3.5 shrink-0 items-center justify-center rounded-full border",
+                "flex size-3.5 shrink-0 items-center justify-center border",
+                // Same shape rule as the card: square for checkbox rows.
+                multi ? "rounded-[3px]" : "rounded-full",
                 selected ? "border-accent text-accent" : "border-line",
               )}
               aria-hidden="true"
+              data-choice-mark={multi ? "box" : "ring"}
             >
               {selected ? <Check className="size-2" strokeWidth={3} /> : null}
             </span>

@@ -282,6 +282,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     // The desktop always reports this one; omitting it would make the harness
     // exercise the phone's older-desktop fallback instead of the real path.
     skillRecommend: true,
+    // Captures show the card, so the demo settings leave the switch on.
+    choiceCards: true,
     hiddenModels: [],
   });
 

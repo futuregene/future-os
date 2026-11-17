@@ -19,11 +19,12 @@ import { QuestionNavControl } from "../agent/QuestionNavControl";
 import { useComposerInset } from "../agent/useComposerInset";
 import { useQuestionNav } from "../agent/useQuestionNav";
 import { useStickyAutoScroll } from "../agent/useStickyAutoScroll";
+import { ChoiceCardsProvider, useChoiceCardsEnabled } from "../markdown/ChoiceCardsContext";
 import { PeerIconGlyph } from "./PeerIconGlyph";
 import { peerBadgeText } from "./peerIcons";
 import { peerHolderName } from "./peerStatus";
 import { RemoteAttachmentProvider } from "./RemoteAttachmentOrigin";
-import { foldLiveReply, stripRunCopies } from "./remoteLiveReplies";
+import { foldLiveReply, markInFlightReply, stripRunCopies } from "./remoteLiveReplies";
 import { setRemotePeerVisibleSession } from "./remotePeerClient";
 import { fetchRemoteReasoning } from "./remoteReasoning";
 import { withRemoteRunNotices } from "./remoteRunNotices";
@@ -86,6 +87,7 @@ export function RemoteConversationView({
   composer,
   error,
   hasMore,
+  inFlightRunId,
   leftPanelExpanded,
   liveReplies,
   loading,
@@ -109,6 +111,7 @@ export function RemoteConversationView({
   workspaceName,
   sessionId,
   terminalAction,
+  choiceCards,
   chrome = "full",
   selectiveEvents = true,
 }: {
@@ -117,6 +120,13 @@ export function RemoteConversationView({
   approvalPending: string | null;
   /** The host this conversation lives on, for reads that address it. */
   desktopId: string;
+  /**
+   * Whether that machine draws `futureos-choice` cards (`useRemoteChoiceCards`).
+   *
+   * Omitted means "not known here": the transcript then draws what this machine's
+   * own switch says, exactly as the rest of the app does.
+   */
+  choiceCards?: boolean;
   /**
    * The header's terminal toggle, when this host can run shells.
    *
@@ -186,6 +196,14 @@ export function RemoteConversationView({
   /** The entry ids the host will accept as a stored record (see the timeline). */
   persistedEntryIds: ReadonlySet<string>;
   streaming: boolean;
+  /**
+   * The run the host says it is executing, if any (see `markInFlightReply`).
+   *
+   * The record cannot express this: its projection of an exchange is `complete`
+   * or `failed`, so a page read mid-run hands the view a half-written reply that
+   * looks finished. Naming the run is what lets the row be drawn as what it is.
+   */
+  inFlightRunId?: string | null;
   title: string;
   /**
    * The workspace this conversation works in, named as the rail names it.
@@ -272,6 +290,17 @@ export function RemoteConversationView({
    * list without the word, so the row stays its label.
    */
   const supportsReasoningFetch = peer?.features?.includes("reasoning_fetch_v1") === true;
+  /**
+   * The cards this transcript draws follow **that** machine's switch.
+   *
+   * Passed in by the caller (`useRemoteChoiceCards`), which reads that host's own
+   * settings: the switch decides whether its agent is even taught the fence, so
+   * the answer belongs to the host rather than to this machine's Settings. A
+   * caller that has not read it gets this machine's own value — the rule the
+   * markdown renderer applies everywhere else.
+   */
+  const localChoiceCards = useChoiceCardsEnabled();
+  const drawChoiceCards = choiceCards ?? localChoiceCards;
   const onResolveReasoning = useCallback(
     (runId: string, index: number, settled?: boolean) =>
       fetchRemoteReasoning({ desktopId, sessionId, runId, index, settled }),
@@ -285,8 +314,8 @@ export function RemoteConversationView({
    * text arrives or a run is rebuilt from its log.
    */
   const rendered = useMemo(
-    () => renderedTranscript(transcript, liveReplies),
-    [transcript, liveReplies],
+    () => markInFlightReply(renderedTranscript(transcript, liveReplies), inFlightRunId ?? null),
+    [transcript, liveReplies, inFlightRunId],
   );
 
   /**
@@ -572,29 +601,31 @@ The same two layers this app's own conversation uses (`AgentThread`):
                     : undefined;
                 return (
                   <RemoteAttachmentProvider key={message.id} value={{ desktopId, sessionId }}>
-                    <MessageBlock
-                      choiceAnswer={choiceAnswer}
-                      dataMessageId={message.id}
-                      hovered={hoveredId === message.id}
-                      isLast={index === rendered.length - 1}
-                      key={message.id}
-                      // The host refuses to continue anything that did not fail, so the
-                      // affordance appears exactly where it would be accepted — and it
-                      // is addressed by the host's own run id.
-                      onContinue={writable && message.status === "failed" && message.runId
-                        ? () => onContinueRun(message.runId!)
-                        : undefined}
-                      onFork={writable ? () => forkAt(rendered, index, persistedEntryIds, onFork) : undefined}
-                      onHover={setHoveredId}
-                      onLeave={id => setHoveredId(current => (current === id ? null : current))}
-                      // No status is stamped on: a reply's own status is what it is. The
-                      // view used to mark the *last settled* reply "streaming" while the
-                      // host reported a run in flight, which put a cursor on the previous
-                      // answer and left the new one invisible.
-                      message={message}
-                      resolveActivityTarget={resolveActivityTarget}
-                      onResolveReasoning={supportsReasoningFetch ? onResolveReasoning : undefined}
-                    />
+                    <ChoiceCardsProvider value={drawChoiceCards}>
+                      <MessageBlock
+                        choiceAnswer={choiceAnswer}
+                        dataMessageId={message.id}
+                        hovered={hoveredId === message.id}
+                        isLast={index === rendered.length - 1}
+                        key={message.id}
+                        // The host refuses to continue anything that did not fail, so the
+                        // affordance appears exactly where it would be accepted — and it
+                        // is addressed by the host's own run id.
+                        onContinue={writable && message.status === "failed" && message.runId
+                          ? () => onContinueRun(message.runId!)
+                          : undefined}
+                        onFork={writable ? () => forkAt(rendered, index, persistedEntryIds, onFork) : undefined}
+                        onHover={setHoveredId}
+                        onLeave={id => setHoveredId(current => (current === id ? null : current))}
+                        // No status is stamped on: a reply's own status is what it is. The
+                        // view used to mark the *last settled* reply "streaming" while the
+                        // host reported a run in flight, which put a cursor on the previous
+                        // answer and left the new one invisible.
+                        message={message}
+                        resolveActivityTarget={resolveActivityTarget}
+                        onResolveReasoning={supportsReasoningFetch ? onResolveReasoning : undefined}
+                      />
+                    </ChoiceCardsProvider>
                   </RemoteAttachmentProvider>
                 );
               })}

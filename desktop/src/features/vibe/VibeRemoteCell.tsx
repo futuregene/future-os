@@ -4,6 +4,7 @@ import { useCallback } from "react";
 import { RemoteConversationView } from "../remote-peer/RemoteConversationView";
 import { continueRemoteRun } from "../remote-peer/remotePeerClient";
 import { useRemoteApprovals } from "../remote-peer/useRemoteApprovals";
+import { useRemoteChoiceCards } from "../remote-peer/useRemoteChoiceCards";
 import { useRemoteTimeline } from "../remote-peer/useRemoteTimeline";
 
 /**
@@ -34,6 +35,9 @@ export function VibeRemoteCell({
   const desktopId = catalog.desktopId;
   const timeline = useRemoteTimeline(desktopId, session.sessionId, true);
   const approvals = useRemoteApprovals(desktopId, session.sessionId);
+  // The cell is read-only, but a card is still worth showing: it is the host's own
+  // answer about whether it draws them (`useRemoteChoiceCards`).
+  const choiceCards = useRemoteChoiceCards(desktopId);
 
   // A page above the loaded window, and the same request from the top of the
   // transcript: the view already asks for it (`onLoadOlder`), and this is the cell
@@ -46,6 +50,7 @@ export function VibeRemoteCell({
       approvalErrors={approvals.errors}
       approvalPending={approvals.pending}
       chrome="read"
+      choiceCards={choiceCards}
       // No composer in a cell. The panel's input layer is for this machine, and this
       // is what keeps a grid of remote conversations from mounting N editables.
       composer={null}
@@ -53,6 +58,7 @@ export function VibeRemoteCell({
       error={timeline.error}
       hasMore={timeline.hasMore}
       leftPanelExpanded
+      inFlightRunId={timeline.inFlightRunId}
       liveReplies={timeline.liveReplies}
       loading={timeline.loading}
       loadingOlder={timeline.loadingOlder}

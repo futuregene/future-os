@@ -144,8 +144,8 @@ use self::replica::AGENT_REPLICAS;
 use self::run_control::{mark_run_completed_if_active, mark_run_failed_if_active};
 pub use self::session::workspace_path_for_thread;
 use self::session::{
-    ensure_agent_session, ensure_named_agent_session, set_agent_permission_level,
-    set_agent_sandbox_policy,
+    ensure_agent_session, ensure_named_agent_session, set_agent_choice_cards,
+    set_agent_permission_level, set_agent_sandbox_policy,
 };
 
 #[cfg(any(test, feature = "test-support"))]

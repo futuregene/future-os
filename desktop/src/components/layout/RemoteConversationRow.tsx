@@ -3,6 +3,7 @@ import type { RemotePeer } from "../../features/remote-peer/remotePeerClient";
 import { CircleAlert, ListChecks } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useChoiceCardsEnabled } from "../../features/markdown/ChoiceCardsContext";
 import { PeerIconGlyph } from "../../features/remote-peer/PeerIconGlyph";
 import { RemoteConversationMenu } from "../../features/remote-peer/RemoteConversationMenu";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
@@ -94,6 +95,7 @@ export function RemoteConversationRow({
   // row's own words rather than a second set written for this list.
   const { t: tLayout } = useTranslation("layout");
   const [menuOpen, setMenuOpen] = useState(false);
+  const choiceCards = useChoiceCardsEnabled();
   // The peer's copy of the local row's approval badge: its latest run is parked
   // on a request, so nothing moves there until someone answers. Read from the
   // row's run status — the same field the phone's list badges — because a
@@ -102,8 +104,9 @@ export function RemoteConversationRow({
   const approvalWaiting = conversation.runStatus === "waiting_approval";
   // And the choice mark beside it: its last finished reply closed with a card
   // and nothing has been sent since. `runStatus` is what says "at rest" — a host
-  // reports `completed` for the run the card belongs to.
-  const choiceWaiting = conversation.offersChoice === true
+  // reports `completed` for the run the card belongs to. Off with the cards
+  // themselves: the badge points at a control the reader turned off.
+  const choiceWaiting = choiceCards && conversation.offersChoice === true
     && conversation.runStatus === "completed";
   const itemRef = useDismissableLayer<HTMLDivElement>({
     enabled: menuOpen,
