@@ -366,6 +366,8 @@ export const resources = {
         conversations: "Chats",
         workspace: "Workspace",
         noWorkspaces: "No workspaces on the desktop yet.",
+        noActiveWorkspaces:
+          "Every workspace on this desktop is archived. Restore one from Archived to start a conversation in it.",
         createWorkspace: "New workspace",
         createWorkspaceAction: "Create",
         createWorkspaceFailed:
@@ -1626,6 +1628,8 @@ export const resources = {
         conversations: "对话",
         workspace: "工作区",
         noWorkspaces: "桌面端还没有工作区。",
+        noActiveWorkspaces:
+          "这台机器上的工作区都已归档。在「已归档」里恢复一个，才能在其中新建会话。",
         createWorkspace: "新建工作区",
         createWorkspaceAction: "创建",
         createWorkspaceFailed: "创建工作区失败，请检查文件夹路径后重试。",
