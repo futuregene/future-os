@@ -812,7 +812,13 @@ export function ChatScreen() {
   );
   // The desktop's switch, mirrored: the cards and the prompt section that makes
   // one possible are one value, and the phone draws what that machine allows.
-  const choiceCardsEnabled = desktopSettings.data?.choiceCards ?? false;
+  //
+  // Only an explicit `false` hides anything. A desktop older than the switch has
+  // no such key and teaches its agent the fence regardless, so reading silence
+  // as "off" would hide a question that machine legitimately asks — and the
+  // fence's own source with it. Before the settings arrive cards stay off, which
+  // is the shipped default.
+  const choiceCardsEnabled = desktopSettings.data ? desktopSettings.data.choiceCards !== false : false;
   const skillRecommendation = useSkillRecommendation(
     desktopSettings.data?.skillRecommend ?? false,
     remote.desktopOnline,
