@@ -10,6 +10,9 @@
     "toolCalls": "工具调用",
     "noToolCalls": "没有记录工具调用。",
     "noMatchingToolCalls": "没有匹配的工具调用。",
+    "logsPurgedBadge": "已清理",
+    "logsPurgedTitle": "运行日志已清理",
+    "logsPurgedDetail": "该会话归档时已删除此命令的输出和运行回放。命令记录、聊天正文和生成的文件仍保留，已删除的日志无法恢复。",
     "toolFallback": "工具",
     "field": {
       "kind": "类型",
@@ -34,6 +37,7 @@
     "emptyTitle": "暂无后台程序",
     "emptyDetailNeverRun": "还没有运行过程序。",
     "emptyDetailArchived": "已结束的程序已归档。",
+    "emptyDetailLogsPurged": "此会话的运行日志已清理。聊天正文和生成的文件仍然保留；恢复会话后旧日志不会回来，新对话不受影响。",
     "runningFinished": "{{running}} 运行中 / {{finished}} 已结束",
     "archiveFinished": "归档已结束的程序",
     "commands_one": "{{count}} 条命令",

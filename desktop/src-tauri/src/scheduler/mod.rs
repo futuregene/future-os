@@ -17,15 +17,16 @@ use future_host::scheduler::{
 };
 #[cfg(feature = "gui")]
 use tauri::Emitter;
-/// Start the three process-lifetime maintenance loops. Their first automatic
-/// runs happen after one full interval; existing startup/login/manual paths use
-/// the `*_now` functions below and reset the matching deadline.
+/// Start the process-lifetime maintenance loops. The update/catalogue jobs
+/// first run after one full interval; archive cleanup has its own delayed
+/// startup catch-up and daily pass.
 ///
 /// Generic over the runtime so the wiring can be exercised from a
 /// `tauri::test::mock_app()` handle as well as from the real Wry one.
 #[cfg(feature = "gui")]
 pub fn start<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     crate::runtime::set(tauri::async_runtime::handle().inner().clone());
+    future_host::scheduler::start_auto_archive();
     let endpoint = crate::commands::manifest_url(crate::build_info::channel());
     spawn_fixed_interval(
         &APP_UPDATE_JOB,

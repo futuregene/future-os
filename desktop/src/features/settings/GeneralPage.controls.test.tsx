@@ -74,6 +74,12 @@ function mount(overrides: Partial<React.ComponentProps<typeof GeneralPage>> = {}
     onToggleBellOnComplete: vi.fn(),
     autoTitleFirstTurn: true,
     onToggleAutoTitleFirstTurn: vi.fn(),
+    archiveRunLogCleanup: true,
+    onToggleArchiveRunLogCleanup: vi.fn(),
+    autoArchiveEnabled: false,
+    onToggleAutoArchive: vi.fn(),
+    autoArchiveIdleDays: 30,
+    onChangeAutoArchiveIdleDays: vi.fn(),
     ...overrides,
   };
   act(() => {
@@ -470,8 +476,10 @@ describe("generalPage switches", () => {
       "Skill recommendations",
       "Generate a title after the first answer",
       "Completion bell",
+      "Clear run logs when archiving",
+      "Archive idle conversations automatically",
     ]);
-    expect(switches.map(item => item.getAttribute("aria-checked"))).toEqual(["true", "false", "true", "false"]);
+    expect(switches.map(item => item.getAttribute("aria-checked"))).toEqual(["true", "false", "true", "false", "true", "false"]);
   });
 
   it("reports each toggle to its own callback, inverted", () => {
@@ -484,5 +492,73 @@ describe("generalPage switches", () => {
 
     expect(props.onToggleAutoUpgradeSkills).toHaveBeenCalledExactlyOnceWith(false);
     expect(props.onToggleBellOnComplete).toHaveBeenCalledExactlyOnceWith(false);
+  });
+
+  it("reports the archive toggles and leaves the run-log cleanup wording on the row", () => {
+    const { container, props } = mount({ archiveRunLogCleanup: true, autoArchiveEnabled: true });
+
+    const toggle = (label: string) => container.querySelector<HTMLButtonElement>(`[role=switch][aria-label='${label}']`)!;
+
+    act(() => toggle("Clear run logs when archiving").click());
+    act(() => toggle("Archive idle conversations automatically").click());
+
+    expect(props.onToggleArchiveRunLogCleanup).toHaveBeenCalledExactlyOnceWith(false);
+    expect(props.onToggleAutoArchive).toHaveBeenCalledExactlyOnceWith(false);
+    // The row explains what is kept, so the irreversible part is not a surprise.
+    expect(container.textContent).toContain("Preserve conversation prose");
+  });
+});
+
+describe("generalPage archive settings", () => {
+  it("lives on the general page without its own settings tab", () => {
+    const { container } = mount();
+
+    // One heading for the archive block, and no separate cleanup section.
+    expect(container.textContent).toContain("Automatic conversation archiving");
+    expect(container.textContent).toContain("Clear run logs when archiving");
+    // Nothing explains how auto archiving interacts with the cleanup switch.
+    expect(container.textContent).not.toContain("Run logs are cleared");
+    // The heading carries no sub-line about the schedule or workspace scope.
+    expect(container.textContent).not.toContain("checks once per day");
+    expect(container.textContent).not.toContain("Workspaces themselves");
+  });
+
+  it("explains what an idle conversation is beside the idle days", () => {
+    const { container } = mount();
+    const help = container.querySelector<HTMLElement>("[aria-label^='Idle means']");
+
+    expect(help).not.toBeNull();
+    // Focusable so the explanation also reaches keyboard users.
+    expect(help!.getAttribute("tabindex")).toBe("0");
+    expect(help!.getAttribute("title")).toContain("no new message or run activity");
+    expect(help!.getAttribute("title")).toContain("restoring an archived conversation starts a fresh idle period");
+  });
+
+  it("only accepts a whole number of idle days in range", () => {
+    const onChangeAutoArchiveIdleDays = vi.fn();
+    const { container } = mount({ autoArchiveEnabled: true, autoArchiveIdleDays: 30, onChangeAutoArchiveIdleDays });
+
+    const days = container.querySelector<HTMLInputElement>("input[type=number][aria-label='Idle days']")!;
+    expect(days.value).toBe("30");
+    expect(days.disabled).toBe(false);
+
+    const type = (value: string) => act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(days, value);
+      days.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    type("45");
+    expect(onChangeAutoArchiveIdleDays).toHaveBeenLastCalledWith(45);
+    type("0");
+    type("366");
+    type("7.5");
+    // Out-of-range and fractional values are rejected instead of clamped.
+    expect(onChangeAutoArchiveIdleDays).toHaveBeenCalledExactlyOnceWith(45);
+  });
+
+  it("greys out the idle days until auto archiving is switched on", () => {
+    const { container } = mount({ autoArchiveEnabled: false });
+
+    expect(container.querySelector<HTMLInputElement>("input[type=number]")!.disabled).toBe(true);
   });
 });

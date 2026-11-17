@@ -29,6 +29,7 @@
     "copyPath": "复制路径",
     "copyRelativePath": "复制相对路径",
     "copyFilename": "复制文件名",
+    "revealInFolder": "在文件夹中显示",
     "open": "打开",
     "notFound": "文件找不到了：{{name}}"
   },

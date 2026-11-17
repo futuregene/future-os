@@ -17,6 +17,7 @@ import { useTranslation } from "react-i18next";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { CopyablePre } from "../../components/ui/CopyablePre";
+import { EmptyState } from "../../components/ui/EmptyState";
 import { TextInput } from "../../components/ui/TextInput";
 import {
   listToolOutputs,
@@ -108,6 +109,24 @@ export function RunInspectPanel({
     [outputsByTool, query, sortedTools],
   );
   const primaryTool = sortedTools[0];
+  const logsPurged = run.logsPurgedAt != null
+    && sortedTools.some(tool => displayToolName(tool) === "shell");
+
+  if (logsPurged) {
+    return (
+      <div className="flex h-full min-h-0 flex-col gap-2">
+        <RunInspectorToolbar
+          onBack={onBack}
+          status={<Badge tone="neutral">{t("runInspect.logsPurgedBadge")}</Badge>}
+        />
+        <EmptyState
+          className="m-4"
+          detail={t("runInspect.logsPurgedDetail")}
+          title={t("runInspect.logsPurgedTitle")}
+        />
+      </div>
+    );
+  }
 
   return (
     <div

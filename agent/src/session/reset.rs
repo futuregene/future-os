@@ -61,6 +61,11 @@ pub(crate) const ATTACHMENT_MANIFEST_PREFIX: &str =
 pub(crate) const ATTACHMENT_REMOVED_PLACEHOLDER: &str =
     "[Attachment removed by session history reset]";
 
+/// Provider-valid replacement for a Shell result whose original output was
+/// deliberately discarded when the owning conversation was archived.
+pub(crate) const ARCHIVED_SHELL_OUTPUT_PLACEHOLDER: &str =
+    "[Shell output cleared when the conversation was archived]";
+
 /// Error token for "the history moved between planning and applying". Shared so
 /// the RPC layer can map it to a retryable code without matching on prose.
 pub const HISTORY_CHANGED: &str = "reset_history_changed";
@@ -74,6 +79,9 @@ pub enum DropKind {
     ToolResults,
     Attachments,
     Compaction,
+    /// Archive-specific, intentionally absent from the user-facing reset help:
+    /// keep Shell calls and result metadata, but replace their output bodies.
+    ArchiveShellOutputs,
 }
 
 impl DropKind {
@@ -84,6 +92,7 @@ impl DropKind {
             Self::ToolResults => "tool-results",
             Self::Attachments => "attachments",
             Self::Compaction => "compaction",
+            Self::ArchiveShellOutputs => "archive-shell-outputs",
         }
     }
 
@@ -94,6 +103,7 @@ impl DropKind {
             "tool-results" => Self::ToolResults,
             "attachments" => Self::Attachments,
             "compaction" => Self::Compaction,
+            "archive-shell-outputs" => Self::ArchiveShellOutputs,
             other => bail!(
                 "unknown drop kind `{other}`; known kinds: {}",
                 DROP_KIND_NAMES.join(", ")
@@ -401,14 +411,22 @@ fn record_effect(effects: &mut Vec<DropEffect>, kind: DropKind, entries: u64, bl
 /// One `--drop` kind applied to one entry. Returns how many content blocks went,
 /// and whether the entry survives at all (an assistant that held nothing but the
 /// reasoning it just lost is not a valid message).
-fn drop_kind_from_entry(entry: &mut SessionEntry, kind: DropKind) -> (u64, bool) {
+fn drop_kind_from_entry(
+    entry: &mut SessionEntry,
+    kind: DropKind,
+    shell_call_ids: &HashSet<String>,
+) -> (u64, bool) {
     // The block-based kinds only apply to conversation messages. A session
     // record's `content` is the metadata object itself (name, cwd, model, prompt
     // segments, cost split), so rebuilding it as a block array would destroy the
     // session's identity — the one thing a reset promises not to touch.
     if matches!(
         kind,
-        DropKind::Thinking | DropKind::ToolCalls | DropKind::ToolResults | DropKind::Attachments
+        DropKind::Thinking
+            | DropKind::ToolCalls
+            | DropKind::ToolResults
+            | DropKind::Attachments
+            | DropKind::ArchiveShellOutputs
     ) && !matches!(
         entry.entry_type.as_str(),
         ENTRY_TYPE_USER | ENTRY_TYPE_ASSISTANT | ENTRY_TYPE_TOOL
@@ -451,6 +469,54 @@ fn drop_kind_from_entry(entry: &mut SessionEntry, kind: DropKind) -> (u64, bool)
             // call, and there is no body left to keep once its result is gone.
             let removed = content_blocks(entry).len() as u64;
             (removed, false)
+        }
+        DropKind::ArchiveShellOutputs => {
+            let is_shell = entry.name.eq_ignore_ascii_case("shell")
+                || shell_call_ids.contains(&entry.tool_call_id)
+                || content_blocks(entry).iter().any(|block| {
+                    block_kind(block) == "tool_result"
+                        && block
+                            .get("tool_call_id")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|id| shell_call_ids.contains(id))
+                });
+            if entry.entry_type != ENTRY_TYPE_TOOL || !is_shell {
+                return (0, true);
+            }
+            let mut changed = false;
+            match entry.content.as_mut() {
+                Some(serde_json::Value::String(text)) => {
+                    if *text != ARCHIVED_SHELL_OUTPUT_PLACEHOLDER {
+                        *text = ARCHIVED_SHELL_OUTPUT_PLACEHOLDER.to_string();
+                        changed = true;
+                    }
+                }
+                Some(serde_json::Value::Array(blocks)) => {
+                    for block in blocks {
+                        if block_kind(block) != "tool_result"
+                            || block.get("content").and_then(serde_json::Value::as_str)
+                                == Some(ARCHIVED_SHELL_OUTPUT_PLACEHOLDER)
+                        {
+                            continue;
+                        }
+                        block["content"] = serde_json::json!(ARCHIVED_SHELL_OUTPUT_PLACEHOLDER);
+                        changed = true;
+                    }
+                }
+                _ => {}
+            }
+            if let Some(meta) = entry.meta.as_mut().and_then(|meta| meta.as_object_mut()) {
+                changed |= meta.remove("shell_result").is_some();
+                if meta
+                    .get("archive_output_purged")
+                    .and_then(serde_json::Value::as_bool)
+                    != Some(true)
+                {
+                    meta.insert("archive_output_purged".into(), serde_json::json!(true));
+                    changed = true;
+                }
+            }
+            (u64::from(changed), true)
         }
         DropKind::Attachments => {
             let mut blocks = content_blocks(entry);
@@ -575,6 +641,29 @@ pub fn plan_reset(entries: &[SessionEntry], selectors: &ResetSelectors) -> Resul
     let mut effects: Vec<DropEffect> = Vec::new();
     let mut paired_results = 0u64;
     let mut paired_blocks = 0u64;
+    let shell_call_ids: HashSet<String> = if selectors.drop.contains(&DropKind::ArchiveShellOutputs)
+    {
+        let mut ids = HashSet::new();
+        for entry in &selected {
+            for block in content_blocks(entry) {
+                if block_kind(&block) == "tool_call"
+                    && block.get("name").and_then(serde_json::Value::as_str) == Some("shell")
+                {
+                    if let Some(id) = block.get("id").and_then(serde_json::Value::as_str) {
+                        ids.insert(id.to_string());
+                    }
+                }
+            }
+            for call in &entry.tool_calls {
+                if call.function.name == "shell" && !call.id.is_empty() {
+                    ids.insert(call.id.clone());
+                }
+            }
+        }
+        ids
+    } else {
+        HashSet::new()
+    };
     let mut retained: Vec<SessionEntry> = Vec::with_capacity(selected.len());
     for mut entry in selected {
         if !removed_call_ids.is_empty()
@@ -591,7 +680,7 @@ pub fn plan_reset(entries: &[SessionEntry], selectors: &ResetSelectors) -> Resul
         let mut killed_by: Option<(DropKind, u64)> = None;
         let mut changed = false;
         for kind in &kinds {
-            let (blocks, survives) = drop_kind_from_entry(&mut entry, *kind);
+            let (blocks, survives) = drop_kind_from_entry(&mut entry, *kind, &shell_call_ids);
             if !survives {
                 killed_by = Some((*kind, blocks));
                 break;
@@ -775,7 +864,14 @@ impl super::Manager {
                 hook(self);
             }
         }
-        let backup = self.write_reset_backup(id, selectors, &planned.plan, &raw)?;
+        // Archive cleanup is deliberately not a user-recoverable reset: a
+        // full backup would retain exactly the run output this operation is
+        // meant to discard. The SQLite rewrite itself remains transactional.
+        let backup = if selectors.drop.contains(&DropKind::ArchiveShellOutputs) {
+            None
+        } else {
+            Some(self.write_reset_backup(id, selectors, &planned.plan, &raw)?)
+        };
         let plan = if canonical {
             store.apply_segmented_reset(id, revision, &raw, planned)?
         } else {
@@ -792,7 +888,7 @@ impl super::Manager {
         Ok(ResetOutcome {
             plan,
             applied: true,
-            backup: Some(backup),
+            backup,
         })
     }
 

@@ -37,6 +37,8 @@ export interface ArchiveDialogState {
   submitting: boolean;
   thread: StoredThread;
   members: number;
+  /** Show the one-time destructive archive-cleanup explanation. */
+  cleanupNotice: boolean;
   /**
    * Conversations in the scope that are still running.
    *
@@ -53,6 +55,7 @@ export interface ArchiveWorkspaceDialogState {
   submitting: boolean;
   workspace: StoredWorkspace;
   running: StoredThread[];
+  cleanupNotice: boolean;
 }
 
 /** Confirm shelving a selection that still holds running conversations. */
@@ -61,6 +64,7 @@ export interface BatchArchiveDialogState {
   submitting: boolean;
   threads: StoredThread[];
   running: StoredThread[];
+  cleanupNotice: boolean;
 }
 
 interface AppShellDialogsProps {
@@ -69,6 +73,7 @@ interface AppShellDialogsProps {
   batchArchiveDialog: BatchArchiveDialogState | null;
   batchDeleteDialog: BatchDeleteDialogState | null;
   deleteDialog: DeleteDialogState | null;
+  onOpenArchiveSettings: () => void;
   onConfirmArchiveThread: () => void;
   onConfirmArchiveWorkspace: () => void;
   onConfirmBatchArchive: () => void;
@@ -91,6 +96,7 @@ export function AppShellDialogs({
   batchArchiveDialog,
   batchDeleteDialog,
   deleteDialog,
+  onOpenArchiveSettings,
   onConfirmArchiveThread,
   onConfirmArchiveWorkspace,
   onConfirmBatchArchive,
@@ -115,9 +121,11 @@ export function AppShellDialogs({
   return (
     <>
       <ConfirmDialog
+        cleanupNotice={archiveDialog?.cleanupNotice ?? false}
         confirmLabel={archiveDialog && archiveDialog.running.length > 0
           ? t("threadDialogs.archiveStopAndArchive")
           : undefined}
+        onOpenArchiveSettings={onOpenArchiveSettings}
         description={archiveDialog ? archiveDescription(archiveDialog, t) : undefined}
         error={archiveDialog?.error ?? null}
         onClose={() => setArchiveDialog(null)}
@@ -142,19 +150,27 @@ export function AppShellDialogs({
           : null}
       </ConfirmDialog>
       <ConfirmDialog
-        confirmLabel={t("threadDialogs.archiveStopAndArchive")}
-        description={archiveWorkspaceDialog
-          ? t("threadDialogs.archiveWorkspaceRunningDescription", {
-              count: archiveWorkspaceDialog.running.length,
-              name: archiveWorkspaceDialog.workspace.name,
-            })
+        cleanupNotice={archiveWorkspaceDialog?.cleanupNotice ?? false}
+        confirmLabel={archiveWorkspaceDialog && archiveWorkspaceDialog.running.length > 0
+          ? t("threadDialogs.archiveStopAndArchive")
           : undefined}
+        description={archiveWorkspaceDialog
+          ? archiveWorkspaceDialog.running.length > 0
+            ? t("threadDialogs.archiveWorkspaceRunningDescription", {
+                count: archiveWorkspaceDialog.running.length,
+                name: archiveWorkspaceDialog.workspace.name,
+              })
+            : undefined
+          : undefined}
+        onOpenArchiveSettings={onOpenArchiveSettings}
         error={archiveWorkspaceDialog?.error ?? null}
         onClose={() => setArchiveWorkspaceDialog(null)}
         onConfirm={onConfirmArchiveWorkspace}
         open={Boolean(archiveWorkspaceDialog)}
         submitting={archiveWorkspaceDialog?.submitting ?? false}
-        title={t("threadDialogs.archiveWorkspaceRunningTitle")}
+        title={archiveWorkspaceDialog && archiveWorkspaceDialog.running.length > 0
+          ? t("threadDialogs.archiveWorkspaceRunningTitle")
+          : t("threadDialogs.archiveTitle")}
       >
         {archiveWorkspaceDialog
           ? (
@@ -168,18 +184,26 @@ export function AppShellDialogs({
           : null}
       </ConfirmDialog>
       <ConfirmDialog
-        confirmLabel={t("threadDialogs.archiveStopAndArchive")}
-        description={batchArchiveDialog
-          ? t("threadDialogs.archiveBatchRunningDescription", {
-              count: batchArchiveDialog.running.length,
-            })
+        cleanupNotice={batchArchiveDialog?.cleanupNotice ?? false}
+        confirmLabel={batchArchiveDialog && batchArchiveDialog.running.length > 0
+          ? t("threadDialogs.archiveStopAndArchive")
           : undefined}
+        description={batchArchiveDialog
+          ? batchArchiveDialog.running.length > 0
+            ? t("threadDialogs.archiveBatchRunningDescription", {
+                count: batchArchiveDialog.running.length,
+              })
+            : undefined
+          : undefined}
+        onOpenArchiveSettings={onOpenArchiveSettings}
         error={batchArchiveDialog?.error ?? null}
         onClose={() => setBatchArchiveDialog(null)}
         onConfirm={onConfirmBatchArchive}
         open={Boolean(batchArchiveDialog)}
         submitting={batchArchiveDialog?.submitting ?? false}
-        title={t("threadDialogs.archiveBatchRunningTitle")}
+        title={batchArchiveDialog && batchArchiveDialog.running.length > 0
+          ? t("threadDialogs.archiveBatchRunningTitle")
+          : t("threadDialogs.archiveTitle")}
       >
         {batchArchiveDialog
           ? <RunningList count={batchArchiveDialog.running.length} threads={batchArchiveDialog.running} />
@@ -282,37 +306,62 @@ export function AppShellDialogs({
 
 function ConfirmDialog({
   children,
+  cleanupNotice = false,
   confirmLabel,
   description,
   error,
   onClose,
   onConfirm,
+  onOpenArchiveSettings,
   open,
   submitting,
   title,
 }: {
   children?: React.ReactNode;
+  cleanupNotice?: boolean;
   /** What the primary button promises; the archive's own word by default. */
   confirmLabel?: string;
   description?: string;
   error: string | null;
   onClose: () => void;
   onConfirm: () => void;
+  onOpenArchiveSettings: () => void;
   open: boolean;
   submitting: boolean;
   title: string;
 }) {
   const { t } = useTranslation("layout");
+  const fullDescription = [
+    description,
+    cleanupNotice ? t("threadDialogs.archiveCleanupDescription") : undefined,
+  ].filter(Boolean).join(" ");
   return (
     <Dialog
-      description={description}
+      description={fullDescription || undefined}
       footer={(
         <>
+          {cleanupNotice
+            ? (
+                <Button
+                  disabled={submitting}
+                  onClick={() => {
+                    onClose();
+                    onOpenArchiveSettings();
+                  }}
+                  type="button"
+                  variant="ghost"
+                >
+                  {t("threadDialogs.archiveCleanupSettings")}
+                </Button>
+              )
+            : null}
           <Button disabled={submitting} onClick={onClose} type="button" variant="ghost">
             {t("common:cancel")}
           </Button>
           <Button disabled={submitting} onClick={onConfirm} type="button" variant="primary">
-            {confirmLabel ?? t("activityRail.archive")}
+            {cleanupNotice
+              ? t("threadDialogs.archiveCleanupConfirm")
+              : (confirmLabel ?? t("activityRail.archive"))}
           </Button>
         </>
       )}

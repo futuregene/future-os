@@ -202,6 +202,7 @@ describe("app shell dialogs", () => {
       setBatchDeleteDialog,
       setDeleteDialog,
       setRenameDialog,
+      onOpenArchiveSettings: () => {},
       onConfirmArchiveThread: () => {},
       onConfirmArchiveWorkspace: () => {},
       onConfirmBatchArchive: () => {},

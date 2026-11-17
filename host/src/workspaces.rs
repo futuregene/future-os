@@ -71,7 +71,9 @@ pub async fn archive_workspace(
     let streaming = crate::agent_bridge::reconcile_streaming_observers()
         .await
         .unwrap_or_default();
-    store::archive_workspace(&workspace_id, &streaming)
+    let archived = store::archive_workspace(&workspace_id, &streaming)?;
+    crate::application::archive_cleanup::workspace_if_enabled(&workspace_id).await;
+    Ok(archived)
 }
 
 /// Bring a shelved workspace (and the conversations it was hiding) back.

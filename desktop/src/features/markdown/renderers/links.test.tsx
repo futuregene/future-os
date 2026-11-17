@@ -161,6 +161,21 @@ describe("linkContextMenu", () => {
     expect(html).toBe("");
   });
 
+  /// The agent writes a document reference as `**中文设计文档**`, so the link sits
+  /// inside `<strong>`; the menu is a DOM sibling of that anchor and inherited its
+  /// weight, which drew every row bold. A menu is chrome — its weight must not
+  /// follow the sentence it was opened from.
+  it("keeps its own weight when opened from a bold link", () => {
+    const md: StoredFile = { path: "/w/doc.md", name: "doc.md", relativePath: "doc.md", insideWorkspace: true };
+    const { cleanup } = mount(
+      createElement("strong", { className: "font-semibold" }, createElement(FileLink, { file: md })),
+    );
+    rightClick(document.querySelector("a")!);
+    const panel = document.querySelector(".fixed.z-50");
+    expect(panel?.className).toContain("font-normal");
+    cleanup();
+  });
+
   it("renders dividers and danger styling, and selects items", () => {
     const onSelect = vi.fn();
     const close = vi.fn();
@@ -286,14 +301,14 @@ describe("fileLink", () => {
     cleanup();
   });
 
-  it("offers preview / copy actions in the context menu", async () => {
+  it("offers preview / copy / reveal actions in the context menu", async () => {
     const exec = vi.fn().mockReturnValue(true);
     Object.defineProperty(document, "execCommand", { value: exec, configurable: true });
     const md: StoredFile = { path: "/w/doc.md", name: "doc.md", relativePath: "doc.md", insideWorkspace: true };
     const { container, cleanup } = mount(createElement(FileLink, { file: md }));
     rightClick(container.querySelector("a")!);
     const labels = [...document.querySelectorAll(".fixed button")].map(b => b.textContent);
-    expect(labels.length).toBe(5); // preview, copy path, copy relative, copy name, open
+    expect(labels.length).toBe(6); // preview, copy path, copy relative, copy name, reveal, open
 
     // Each copy action writes its slice of the path to the clipboard.
     click([...document.querySelectorAll(".fixed button")][1]!); // copy path
@@ -303,6 +318,13 @@ describe("fileLink", () => {
     click([...document.querySelectorAll(".fixed button")][3]!); // copy filename
     expect(exec).toHaveBeenCalledTimes(3);
 
+    // Revealing is what "where is this file?" asks for — a distinct command from
+    // opening it, which would launch the default app instead.
+    rightClick(container.querySelector("a")!);
+    click([...document.querySelectorAll(".fixed button")][4]!); // show in folder
+    expect(invokeMock).toHaveBeenCalledWith("reveal_in_file_manager", { path: md.path });
+    expect(invokeMock).not.toHaveBeenCalledWith("open_path", { path: md.path });
+
     // The preview action opens the in-app overlay.
     rightClick(container.querySelector("a")!);
     click([...document.querySelectorAll(".fixed button")][0]!);
@@ -310,6 +332,25 @@ describe("fileLink", () => {
     act(() => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     });
+    cleanup();
+  });
+
+  it("a reveal that fails leaves the message alone instead of raising a toast", async () => {
+    invokeMock.mockImplementation((cmd) => {
+      if (cmd === "reveal_in_file_manager")
+        return Promise.reject(new Error("no file manager"));
+      return Promise.resolve(null);
+    });
+    const md: StoredFile = { path: "/w/doc.md", name: "doc.md", relativePath: "doc.md", insideWorkspace: true };
+    const events: CustomEvent[] = [];
+    window.addEventListener("futureos:toast", e => events.push(e as CustomEvent));
+    const { container, cleanup } = mount(createElement(FileLink, { file: md }));
+    rightClick(container.querySelector("a")!);
+    click([...document.querySelectorAll(".fixed button")][4]!);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(events).toHaveLength(0);
     cleanup();
   });
 

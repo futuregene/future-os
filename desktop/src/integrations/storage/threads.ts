@@ -128,6 +128,11 @@ export async function markThreadOpened(threadId: string) {
   return invokeCommand<void>("mark_thread_opened", { threadId });
 }
 
+/** Keep the daily auto-archiver from shelving the conversation being read. */
+export async function setForegroundThread(threadId: string | null) {
+  return invokeCommand<void>("set_foreground_thread", { threadId });
+}
+
 export async function listThreads() {
   return invokeCommand<StoredThread[]>("list_threads");
 }
