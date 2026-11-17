@@ -2443,6 +2443,9 @@ mod bridge_tests {
         // reply reads as absent and snaps its toggle back to the default — the
         // recommendation switch could not be turned off that way.
         assert_eq!(defaults["data"]["skillRecommend"], false);
+        // Choice cards ship off, and the phone reads the same key the desktop
+        // does: an absent value must render as off, not as an invisible card.
+        assert_eq!(defaults["data"]["choiceCards"], false);
         assert!(defaults["data"].get("communityEdition").is_none());
 
         // Deliberately every writable field: `assert_eq!(updated["data"], patch)`
@@ -2453,6 +2456,7 @@ mod bridge_tests {
         // can no longer notice the reply dropping.
         let patch = json!({ "autoTitleFirstTurn": false, "autoUpgradeSkills": false,
             "autoConnectRemote": true, "skillRecommend": false,
+            "choiceCards": true,
             "hiddenModels": ["p1/shared"],
             "archiveRunLogCleanup": false, "archiveRunLogNoticeSeen": true,
             "autoArchiveEnabled": true, "autoArchiveIdleDays": 45 });
@@ -2466,6 +2470,7 @@ mod bridge_tests {
         assert!(!stored.auto_upgrade_skills);
         assert!(stored.auto_connect_remote);
         assert!(!stored.skill_recommend);
+        assert!(stored.choice_cards);
         assert_eq!(stored.hidden_models, ["p1/shared"]);
         assert!(!stored.archive_run_log_cleanup);
         assert!(stored.archive_run_log_notice_seen);

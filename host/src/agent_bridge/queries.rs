@@ -906,6 +906,9 @@ pub async fn provision_agent_session_with_policy(
         Some(tier) => set_agent_sandbox_policy_tier(&mut client, &session_id, tier).await?,
         None => set_agent_sandbox_policy(&mut client, &session_id, thread_id).await?,
     }
+    // A session created before its first prompt already carries the reader's
+    // display choice, so nothing has to wait for the prompt path to correct it.
+    set_agent_choice_cards(&mut client, &session_id).await;
     Ok(session_id)
 }
 

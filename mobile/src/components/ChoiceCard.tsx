@@ -41,6 +41,20 @@ export const ChoiceCardAnswerContext = createContext<ChoiceCardAnswer | undefine
 export const ChoiceCardAnswerProvider = ChoiceCardAnswerContext.Provider;
 
 /**
+ * Whether the paired desktop draws `futureos-choice` cards.
+ *
+ * The phone mirrors the desktop's setting rather than holding its own: a card is
+ * drawn by whichever surface the reader is on, and the desktop's switch is the
+ * one that also decides whether the agent is taught the fence (`ChatScreen`
+ * passes `desktopSettings.choiceCards` down here). The renderer's own default
+ * stays `true` so a card is only hidden on a real "off": the switch ships off in
+ * the persisted settings, and a surface that reads them gets `false` from there.
+ */
+export const ChoiceCardsEnabledContext = createContext(true);
+
+export const ChoiceCardsEnabledProvider = ChoiceCardsEnabledContext.Provider;
+
+/**
  * A `futureos-choice` block: the reply's closing question, drawn as a card.
  *
  * The phone's card (design `docs/design/choice-cards.zh-CN.md` §5.7) is the

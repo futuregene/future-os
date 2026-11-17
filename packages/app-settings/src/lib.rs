@@ -69,6 +69,12 @@ pub struct AppSettings {
     /// (PRD v1.6 §3). **Off by default**, per the integration plan's rule 1; the
     /// user opts in from Settings.
     pub skill_recommend: bool,
+    /// Draw `futureos-choice` cards — the single/multi-pick card a reply can
+    /// close with — and teach the model the fence in the system prompt.
+    /// **Off by default**: while off, a reply's fence draws nothing at all (not
+    /// even the raw code block) and the prompt section that tells the model the
+    /// fence exists is left out, so nothing produces one either.
+    pub choice_cards: bool,
     /// **Reserved — the agent has no implementation behind it.** In
     /// `9c83f6115` the agent stopped continuing an interrupted run on its own
     /// (restart auto-resume and the recovery fence it needed were removed), so
@@ -100,6 +106,7 @@ pub struct UpdateAppSettingsInput {
     pub title_language: Option<String>,
     pub community_edition: Option<bool>,
     pub skill_recommend: Option<bool>,
+    pub choice_cards: Option<bool>,
 }
 
 pub const KEY_APPROVAL_TIER: &str = "approval_tier";
@@ -121,6 +128,7 @@ pub const KEY_TITLE_LANGUAGE: &str = "title_language";
 /// Absent/JSON null = unknown, true = explicit community, false = commercial.
 pub const KEY_COMMUNITY_EDITION: &str = "community_edition";
 pub const KEY_SKILL_RECOMMEND: &str = "skill_recommend";
+pub const KEY_CHOICE_CARDS: &str = "choice_cards";
 /// Reserved, read-only: the agent has no auto-resume implementation behind it
 /// (removed in `9c83f6115`). Kept so an existing row still reads and no writer
 /// is left that would store a value nothing consumes.
@@ -338,6 +346,12 @@ pub const SETTINGS: &[Setting] = &[
         kind: ValueKind::Bool,
         help: "Recommend one uninstalled skill per conversation",
     },
+    Setting {
+        key: "choiceCards",
+        stored: KEY_CHOICE_CARDS,
+        kind: ValueKind::Bool,
+        help: "Draw choice cards and teach the model the fence",
+    },
 ];
 
 /// The `Setting` for a key, or `None` when this crate does not know it.
@@ -518,6 +532,7 @@ pub fn defaults() -> AppSettings {
         title_language: "en".to_string(),
         community_edition: true,
         skill_recommend: false,
+        choice_cards: false,
         auto_resume_interrupted: true,
     }
 }
@@ -591,6 +606,9 @@ pub fn read(conn: &Connection) -> Result<AppSettings, Error> {
     let skill_recommend = read_value(conn, KEY_SKILL_RECOMMEND)?
         .map(|value| value == "true")
         .unwrap_or(false); // Off by default (PRD v1.6 §3, integration plan rule 1); the Settings toggle opts in.
+    let choice_cards = read_value(conn, KEY_CHOICE_CARDS)?
+        .map(|value| value == "true")
+        .unwrap_or(false); // Off by default — a reply's card is opt-in, and its prompt section is paired with it.
     let auto_resume_interrupted = read_value(conn, KEY_AUTO_RESUME_INTERRUPTED)?
         .map(|value| value == "true")
         .unwrap_or(true); // Reserved: read back for old rows only; nothing consumes it.
@@ -611,6 +629,7 @@ pub fn read(conn: &Connection) -> Result<AppSettings, Error> {
         title_language,
         community_edition,
         skill_recommend,
+        choice_cards,
         auto_resume_interrupted,
     })
 }
@@ -715,6 +734,9 @@ pub fn apply(
     }
     if let Some(skill_recommend) = input.skill_recommend {
         write_value(conn, KEY_SKILL_RECOMMEND, bool_str(skill_recommend), now)?;
+    }
+    if let Some(choice_cards) = input.choice_cards {
+        write_value(conn, KEY_CHOICE_CARDS, bool_str(choice_cards), now)?;
     }
     read(conn)
 }
@@ -822,6 +844,44 @@ mod tests {
             title_language: None,
             community_edition: Some(true),
             skill_recommend: None,
+            choice_cards: None,
+        }
+    }
+
+    /// The switch ships off: a fresh install draws no card, and the agent's
+    /// prompt section that makes one possible is paired with the same value.
+    #[test]
+    fn choice_cards_default_off_and_round_trip() {
+        let conn = conn();
+        assert!(!read(&conn).expect("defaults").choice_cards);
+        assert!(!defaults().choice_cards);
+        for enabled in [true, false] {
+            let settings = apply(
+                &conn,
+                &UpdateAppSettingsInput {
+                    choice_cards: Some(enabled),
+                    ..Default::default()
+                },
+                2,
+            )
+            .expect("write choice cards");
+            assert_eq!(settings.choice_cards, enabled);
+            assert_eq!(read(&conn).expect("read back").choice_cards, enabled);
+            assert_eq!(
+                read_value(&conn, KEY_CHOICE_CARDS).expect("row").as_deref(),
+                Some(if enabled { "true" } else { "false" })
+            );
+            // An unrelated update must not disturb the saved choice.
+            let after = apply(
+                &conn,
+                &UpdateAppSettingsInput {
+                    bell_on_complete: Some(true),
+                    ..Default::default()
+                },
+                3,
+            )
+            .expect("unrelated write");
+            assert_eq!(after.choice_cards, enabled);
         }
     }
 
@@ -929,6 +989,7 @@ mod tests {
                 "titleLanguage": input.title_language,
                 "communityEdition": input.community_edition,
                 "skillRecommend": input.skill_recommend,
+                "choiceCards": input.choice_cards,
             });
             let set: Vec<&str> = serialized
                 .as_object()

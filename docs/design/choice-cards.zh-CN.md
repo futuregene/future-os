@@ -151,6 +151,33 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 
 另有一个**部署坑**：这条 prompt 是 `include_str!` 编进二进制的，所以本机装的是旧构建时，改完仓库也不会立即生效（实测 `futureos.exe` 里还是 "the default, so usually omit it" 那一句，而仓库已经改了两轮）。改 prompt 的改动必须跟一次重装 + 重启才算上线。
 
+### 4.1 开关：默认关（2026-11-17）
+
+卡片是**偏好**，不是默认行为，出厂**关**。同一个开关管住它的两半——画不画，和这一节进不进 prompt——因为把围栏教给一个不会画卡片的客户端，比只做一半更糟：模型每轮都在为读者看不到的格式花 prompt，还会写出渲染成空白的东西。
+
+| | `choice_cards` 开 | 关（默认） |
+|---|---|---|
+| 桌面 / 手机 | 卡片，可点选 | 什么都不出现——没有卡片，也没有代码块 |
+| system prompt | §4 这一节 | 不存在——`grep futureos-choice` 搜不到 |
+| 列表里「这张卡在等你选」（§5.9） | 显示 | 不显示 |
+
+为什么默认关：围栏在每个会话的每一轮都占 prompt；而卡片是在请读者从模型写的清单里挑一件——想往下走时受欢迎，否则是打断。
+
+开关只动「画不画 + 教不教」，其余不变：
+
+- **格式不动。** 同一个围栏、同样的字段、同样的单选/多选语义，只决定画不画、教不教。
+- **不重写已有历史。** 已经带卡片的回复按当前开关渲染，不迁移、不回写。
+- **关掉不留残渣。** 只「不画卡片」不够：围栏不能以自身源码的形式再冒出来，畸形围栏的兜底那条路也一样。关掉卡片的读者，回复中间永远不会看到 `futureos-choice`，也不会看到选项行；卡片前后的正文照旧，只有那一段消失。
+
+值放在哪、怎么走：
+
+- 只有一个真源：`app.db` → `packages/app-settings`（`choice_cards`，默认 `false`），读出来是 `appSettings.choiceCards`；
+- 桌面：设置 → 通用里的一个开关；值经 `ChoiceCardsContext` 到 markdown 渲染层（渲染层自身默认仍是 `true`，所以只有真正的「关」才隐藏）；
+- **每次 run 之前**告诉 agent：宿主推 `set_choice_cards`（尽力而为——不认识这条命令的旧 agent 也不影响发消息，读设置失败一律按关处理），会话记住它，由 `PromptOptions.choice_cards` 决定这一节进不进 prompt。所以全新安装的机器：prompt 里没有围栏，界面上也没有卡片；
+- 手机镜像桌面、不另存一份：`get_desktop_settings` 带上 `choiceCards`，`SettingsPatch` 写回同一行。
+
+钉住它的测试：`desktop/src/features/markdown/ChoiceCardsToggle.test.tsx`（关：卡片节点数为 0，**且**取出的正文里没有 `futureos-choice`；开：有行、能点、能答）、`mobile/src/components/__tests__/ChoiceCardsToggle.test.ts`、`agent/src/prompt/mod.rs::prompt_omits_the_choice_card_fence_when_cards_are_off`。反向验证过：把渲染层恒等于 `true`、让这一节无条件进 prompt、把默认值改成 `true`，这三处的断言分别变红。
+
 ## 5. 界面
 
 ### 5.1 桌面端 · 未选
@@ -430,6 +457,8 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
 | 第三方 Markdown 阅读器 | 代码块 | 代码块 |
 
 围栏语法让"不认识"变成"照正常渲染"，这是选它的首要理由（§3）。同时解析器永不抛错：任何畸形输入都退回代码块。
+
+这张表说的是「认识卡片」的客户端。读者把开关**关掉**时不属于「退回代码块」那一行：关掉就是整块不出现、连源码也不出现，agent 那边也不会被教这个围栏（§4.1）。
 
 ## 9. 文案 / 图标 / 无障碍
 

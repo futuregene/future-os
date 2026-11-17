@@ -25,6 +25,8 @@ it("enables title generation by default and allows opting out without context co
         onToggleAutoUpgradeSkills={() => {}}
         skillRecommend={false}
         onToggleSkillRecommend={() => {}}
+        choiceCards={false}
+        onToggleChoiceCards={() => {}}
         bellOnComplete
         onToggleBellOnComplete={() => {}}
         autoTitleFirstTurn={DEFAULT_APP_SETTINGS.autoTitleFirstTurn}
@@ -37,8 +39,9 @@ it("enables title generation by default and allows opting out without context co
         onChangeAutoArchiveIdleDays={() => {}}
       />,
     ));
-    // Four general toggles plus the two archive toggles below them.
-    expect(container.querySelectorAll("[role=switch]")).toHaveLength(6);
+    // Five general toggles (auto-upgrade, skill recommendation, choice cards,
+    // first-turn title, completion bell) plus the two archive toggles below them.
+    expect(container.querySelectorAll("[role=switch]")).toHaveLength(7);
     expect(container.textContent).not.toContain("Show thinking process");
     expect(DEFAULT_APP_SETTINGS).not.toHaveProperty("showThinking");
     const toggle = container.querySelector<HTMLButtonElement>("[role=switch][aria-label='Generate a title after the first answer']");

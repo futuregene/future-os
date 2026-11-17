@@ -371,6 +371,10 @@ pub(super) async fn agent_prompt_inner(
             .await?;
         set_agent_permission_level(&mut command_client, &session_id, "workspace").await?;
         set_agent_sandbox_policy(&mut command_client, &session_id, &thread_id).await?;
+        // Best-effort and one round-trip, before the prompt that rebuilds the
+        // system prompt: the reader's choice-card preference is what decides
+        // whether that prompt teaches the fence at all.
+        set_agent_choice_cards(&mut command_client, &session_id).await;
 
         // new_session already receives model and thinking level atomically. Do
         // not repeat two RPCs and their durable metadata writes before the prompt.
