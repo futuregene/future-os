@@ -11,6 +11,20 @@ function discussion(steps: FusionStep[], phase = "synthesizing", status = "compl
   return { run: { id: "f", phase, status, completeness, input: { question: "A or B?", goal: "choose", background: "facts", constraints: [] } }, steps };
 }
 describe("Fusion progress", () => {
+  it("keeps a pending moderator check visible after the draft completes", () => {
+    const profile = { ...newFusionParticipant(), model: deepseek, thinking_level: "high" };
+    const value = discussion([
+      step("synthesizing", deepseek, "moderator", "completed", 1),
+      step("synthesizing", deepseek, "moderator-check", "running", 2),
+      step("analyzing", deepseek, "P1", "completed", 0),
+    ], "synthesizing", "running");
+    value.run!.configuration = { version: 3, moderator: profile, panel: [profile, { ...profile, model: glm }], step_timeout_secs: 0, run_timeout_secs: 0 };
+    expect(fusionProgress(value).models.find(model => model.id === "moderator")?.status).toBe("thinking");
+    value.steps![1]!.status = "completed";
+    expect(fusionProgress(value).models.find(model => model.id === "moderator")?.status).toBe("completed");
+    expect(fusionProgress(value).models.find(model => model.id === "P1")?.status).toBe("completed");
+  });
+
   it("keeps identical models in separate roles and supports two to five participants", () => {
     for (const count of [2, 5]) {
       const profile = { ...newFusionParticipant(), model: deepseek, thinking_level: "medium" };
