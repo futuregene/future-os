@@ -572,7 +572,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         *ctx.synthesis_audit.lock().unwrap() = Some(audit_packet);
     }
 
-    let text = match with_retry(
+    let mut text = match with_retry(
         &ctx,
         "synthesizing",
         &config.moderator,
@@ -588,6 +588,28 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
             return Err(error);
         }
     };
+    if audit_required {
+        // A valid draft may follow an output-limit recovery. Do not append yet
+        // another generation to its accumulated working history: admit a fresh,
+        // separately recorded check from the original sources and public draft.
+        let check_prompt = deliberation::reconciliation_prompt(&prompt, &text)?;
+        text = match with_retry(
+            &ctx,
+            "synthesizing",
+            &config.moderator,
+            "moderator-check",
+            &check_prompt,
+            None,
+        )
+        .await
+        {
+            Ok(report) => report.text,
+            Err(error) => {
+                ctx.stop_error("synthesizing", "moderator-check", &error)?;
+                return Err(error);
+            }
+        };
+    }
     let mut result = if run.input.answer_only {
         let parsed = answer::parse(&text)?;
         Conclusion {
@@ -926,7 +948,7 @@ async fn with_retry(
                 if matches!(phase, "analyzing" | "reviewing") {
                     ctx.retain(&step, text)?;
                 }
-                if participant == "moderator" {
+                if matches!(participant, "moderator" | "moderator-check") {
                     ctx.mark_healthy();
                 }
                 return Ok(report);
@@ -940,7 +962,7 @@ async fn with_retry(
                 let saved = ctx.store.record_step(&step);
                 // Trip the gate before awaiting cancellation/receipt RPCs so
                 // another successful slot cannot dispatch into a known outage.
-                if participant == "moderator" {
+                if matches!(participant, "moderator" | "moderator-check") {
                     ctx.invalidate_health();
                 }
                 let observed = ctx.observe_failure(&model.model, kind);
@@ -1159,7 +1181,11 @@ async fn step_inner(
         }
         if phase == "synthesizing" {
             if let Some(packet) = ctx.synthesis_audit.lock().unwrap().as_ref() {
-                deliberation::validate(text, packet, ctx.run.input.answer_only)?;
+                if participant == "moderator-check" {
+                    deliberation::validate_consistency(text, packet, ctx.run.input.answer_only)?;
+                } else {
+                    deliberation::validate(text, packet, ctx.run.input.answer_only)?;
+                }
             }
         }
         if phase == "issue_mapping" {
@@ -1169,18 +1195,7 @@ async fn step_inner(
         }
         Ok(())
     };
-    let mut report =
-        reports::collect(&mut child, input, &phase, capacity, &validate_report).await?;
-    if phase == "synthesizing" {
-        let packet = ctx.synthesis_audit.lock().unwrap().clone();
-        if let Some(packet) = packet {
-            report = reports::reconcile(&mut child, report, capacity, |text| {
-                validate_report(text)?;
-                deliberation::validate_consistency(text, &packet, ctx.run.input.answer_only)
-            })
-            .await?;
-        }
-    }
+    let report = reports::collect(&mut child, input, &phase, capacity, validate_report).await?;
     if report.recovered_output_limit {
         ctx.note(
             "output_limit_report_recovered",
