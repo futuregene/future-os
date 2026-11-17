@@ -434,15 +434,25 @@ export function SessionList({
   const archivedSource = useMemo(
     () => (archived
       ? archivedCatalogs && archivedCatalogs.length > 0
-        ? archivedCatalogRows(archivedCatalogs, query.trim() ? new Set<string>() : collapsed)
+        ? archivedCatalogRows(
+          archivedCatalogs,
+          query.trim() ? new Set<string>() : collapsed,
+          // A search opens every row: a match hidden inside a closed fork is a
+          // match the reader cannot see.
+          query.trim() ? new Set<string>() : expanded,
+        )
         : archivedRows(
           remote.sessions,
           remote.workspaces,
           () => true,
           query.trim() ? new Set<string>() : collapsed,
+          undefined,
+          // A search opens every row: a match hidden inside a closed fork is a
+          // match the reader cannot see.
+          query.trim() ? new Set<string>() : expanded,
         )
       : []),
-    [archived, archivedCatalogs, remote.sessions, remote.workspaces, collapsed, query],
+    [archived, archivedCatalogs, remote.sessions, remote.workspaces, collapsed, expanded, query],
   );
   /**
    * How many archived conversations the shelf draws.

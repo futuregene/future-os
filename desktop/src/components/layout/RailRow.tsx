@@ -227,6 +227,7 @@ export function RailRowTitle({ children, grow = true, muted }: { children: React
           grow && "flex-1",
           ink,
         )}
+        data-row-title="true"
       >
         {title}
       </span>

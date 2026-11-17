@@ -270,6 +270,16 @@ export function archivedRows(
    * FlatList cannot hold two rows with one key.
    */
   desktopId?: string,
+  /**
+   * Which conversations have their forks on screen, by session id.
+   *
+   * The same fold state the default pages use, and for the same reason: it is
+   * the same fork. Archiving shelves a conversation *with every fork under it*,
+   * so the shelf holds whole trees and has to draw them nested — a flat list of
+   * equal rows said a fork was an unrelated conversation that happened to be
+   * shelved at the same time.
+   */
+  expanded: ReadonlySet<string> = new Set(),
 ): CatalogRow[] {
   const rows: CatalogRow[] = [];
   const stamp = desktopId ? { desktopId } : {};
@@ -294,6 +304,35 @@ export function archivedRows(
       loose.push(session);
     }
   }
+  /**
+   * One shelf's conversations as a tree, parents before children.
+   *
+   * A session whose parent is not in this block is a root: the parent may be
+   * behind the page window, restored on its own, or filed on the other page.
+   * That is the rule every tree in this app follows, and the only one that never
+   * loses a row.
+   */
+  const treeRows = (
+    members: RemoteSession[],
+    startDepth: number,
+  ): { session: RemoteSession; depth: number; hasChildren: boolean }[] => {
+    const out: { session: RemoteSession; depth: number; hasChildren: boolean }[] = [];
+    const walk = (nodes: SessionNode[], depth: number): void => {
+      for (const node of nodes) {
+        out.push({ session: node.session, depth, hasChildren: node.children.length > 0 });
+        // A fork is drawn only inside its ancestor's fold, so an unopened row
+        // hides its own children.
+        if (expanded.has(node.session.sessionId))
+          walk(node.children, depth + 1);
+      }
+    };
+    // `buildSessionTree` is the default pages' own tree: a pinned or orphan row is
+    // a root, a cycle loses one edge, and a parent outside `members` — another
+    // shelf's, behind the page window, or restored on its own — leaves its child a
+    // root rather than a row that cannot be drawn. The walk therefore terminates.
+    walk(buildSessionTree(members), startDepth);
+    return out;
+  };
   // A shelved workspace keeps its heading even with nothing left inside it — its
   // one action is restore. A workspace still in the active list earns a heading
   // only because some of its conversations are shelved: that is the same
@@ -315,31 +354,35 @@ export function archivedRows(
     // A folded shelved workspace keeps its heading and its count, exactly as a
     // folded group does on the active pages.
     if (collapsed.has(workspace.id)) continue;
-    for (const session of children) {
+    for (const row of treeRows(children, 1)) {
       rows.push({
         kind: "session",
-        key: rowKey(session.sessionId),
-        session,
-        depth: 1,
-        hasChildren: false,
-        foldId: rowKey(session.sessionId),
+        key: rowKey(row.session.sessionId),
+        session: row.session,
+        depth: row.depth,
+        hasChildren: row.hasChildren,
+        foldId: rowKey(row.session.sessionId),
         ...stamp,
       });
     }
   }
-  for (const session of loose) {
+  for (const row of treeRows(loose, 0)) {
     rows.push({
       kind: "session",
-      key: rowKey(session.sessionId),
-      session,
-      depth: 0,
-      hasChildren: false,
-      foldId: rowKey(session.sessionId),
+      key: rowKey(row.session.sessionId),
+      session: row.session,
+      depth: row.depth,
+      hasChildren: row.hasChildren,
+      foldId: rowKey(row.session.sessionId),
       ...stamp,
     });
   }
   return rows;
 }
+
+/**
+ * The archived rows to draw: archived trees, parents before children.
+ *
 
 /**
  * The archived rows, narrowed to a search query.
@@ -350,6 +393,11 @@ export function archivedRows(
  * shelves are already open by the time this runs — the caller drops the fold set
  * while searching — because a match hidden inside a closed group is a match the
  * reader cannot see.
+ *
+ * A conversation's forks travel with it: matching a row keeps the subtree it is
+ * the root of, so a match is never drawn without the work it started. The block
+ * boundary is a *depth*, not the constant 1, because the shelf draws trees now —
+ * a fork sits at depth 2 under its parent and is still that shelf's row.
  */
 export function filterArchivedRows(rows: CatalogRow[], query: string): CatalogRow[] {
   const needle = query.trim().toLowerCase();
@@ -363,9 +411,10 @@ export function filterArchivedRows(rows: CatalogRow[], query: string): CatalogRo
     const head = rows[index];
     if (!head) break;
     if (head.kind === "session") {
-      // A depth-0 row belongs to no shelf: it is one of the loose ones, and is
-      // judged on its own name below.
-      if (head.depth === 0) loose.push(head);
+      // A row reached at this level belongs to no shelf: the loose stretch. Its
+      // forks follow it at deeper depths and are collected here too, so a match
+      // keeps them (`keepMatchingSubtrees` reads the depths).
+      loose.push(head);
       index += 1;
       continue;
     }
@@ -374,8 +423,9 @@ export function filterArchivedRows(rows: CatalogRow[], query: string): CatalogRo
       index += 1;
       continue;
     }
-    // The shelf's own conversations are the depth-1 rows after it, up to the
-    // next heading — exactly the block `archivedRows` put there.
+    // The shelf's own conversations are the rows after it that sit deeper than
+    // the heading's own level, up to the next heading — exactly the block
+    // `archivedRows` put there.
     const children: Extract<CatalogRow, { kind: "session" }>[] = [];
     let cursor = index + 1;
     for (; cursor < rows.length; cursor += 1) {
@@ -386,16 +436,46 @@ export function filterArchivedRows(rows: CatalogRow[], query: string): CatalogRo
     index = cursor;
     const kept = matches(head.workspace.name)
       ? children
-      : children.filter(child => matches(child.session.title));
+      : keepMatchingSubtrees(children, matches);
     // A shelf with no conversation left is not drawn: a heading over nothing
     // reads as a shelf that was emptied, which is a different statement from
     // "nothing here matches".
     if (kept.length > 0) out.push(head, ...kept);
   }
-  for (const row of loose) {
-    if (matches(row.session.title)) out.push(row);
-  }
+  out.push(...keepMatchingSubtrees(loose, matches));
   return out;
+}
+
+/**
+ * A block's conversations, narrowed to the ones that match plus every fork under
+ * a row that matched.
+ *
+ * The rows arrive parents before children, so one forward pass tracks the depth a
+ * kept ancestor sat at: anything deeper than that until the next root belongs to
+ * it. A match therefore never appears without the rows it explains, and a
+ * non-matching root's forks are dropped with it rather than left floating.
+ */
+function keepMatchingSubtrees(
+  block: Extract<CatalogRow, { kind: "session" }>[],
+  matches: (title: string | undefined) => boolean,
+): Extract<CatalogRow, { kind: "session" }>[] {
+  const kept: Extract<CatalogRow, { kind: "session" }>[] = [];
+  // The depth of the root whose subtree is being kept, or `null` outside one.
+  let keepBelow: number | null = null;
+  for (const row of block) {
+    if (keepBelow !== null && row.depth > keepBelow) {
+      kept.push(row);
+      continue;
+    }
+    if (matches(row.session.title)) {
+      kept.push(row);
+      keepBelow = row.depth;
+    }
+    else {
+      keepBelow = null;
+    }
+  }
+  return kept;
 }
 
 /**

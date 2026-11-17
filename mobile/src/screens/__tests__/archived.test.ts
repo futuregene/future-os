@@ -145,6 +145,70 @@ describe("the archived shelf's rows", () => {
     expect(archivedRows([session("active")], [workspace("w")], () => true)).toEqual([]);
     expect(archivedRows([], [], never)).toEqual([]);
   });
+
+  /**
+   * Archiving shelves a conversation *with every fork under it*, so the shelf
+   * holds trees. Drawing them back flat said a fork was an unrelated
+   * conversation that happened to be shelved at the same time — reported as “I
+   * archived the parent and two separate conversations appeared in the archive”.
+   */
+  it("keeps a parent and its forks as one tree, one level in", () => {
+    const rows = archivedRows(
+      [
+        session("parent", { archived: true }),
+        session("fork", { archived: true, parentSessionId: "parent" }),
+      ],
+      [],
+      () => true,
+    );
+    // Parents are before children; the fold starts closed, so only the root is
+    // drawn until it is opened.
+    expect(sessionKeys(rows)).toEqual(["parent"]);
+    expect(rows[0]?.kind === "session" ? rows[0].hasChildren : null).toBe(true);
+
+    const open = archivedRows(
+      [
+        session("parent", { archived: true }),
+        session("fork", { archived: true, parentSessionId: "parent" }),
+      ],
+      [],
+      () => true,
+      new Set(),
+      undefined,
+      new Set(["parent"]),
+    );
+    expect(sessionKeys(open)).toEqual(["parent", "fork"]);
+    expect(open.map(row => (row.kind === "session" ? row.depth : null))).toEqual([0, 1]);
+  });
+
+  it("nests a shelved workspace's forks under their parent, one level deeper", () => {
+    const rows = archivedRows(
+      [
+        session("parent", { mode: "workspace", workspaceId: "w", archived: true }),
+        session("fork", { mode: "workspace", workspaceId: "w", archived: true, parentSessionId: "parent" }),
+      ],
+      [workspace("w", { archived: true })],
+      () => true,
+      new Set(),
+      undefined,
+      new Set(["parent"]),
+    );
+    expect(keys(rows)).toEqual(["archived-workspace:w", "parent", "fork"]);
+    expect(rows.map(row => (row.kind === "session" ? row.depth : "heading")))
+      .toEqual(["heading", 1, 2]);
+  });
+
+  it("treats a fork whose parent is not on the shelf as a root", () => {
+    // The parent was restored on its own, or sits behind the page window: its
+    // child is still a conversation the reader must be able to see and restore.
+    const rows = archivedRows(
+      [session("orphan", { archived: true, parentSessionId: "gone" })],
+      [],
+      () => true,
+    );
+    expect(sessionKeys(rows)).toEqual(["orphan"]);
+    expect(rows[0]?.kind === "session" ? rows[0].depth : null).toBe(0);
+  });
 });
 
 describe("the shelf across machines", () => {
@@ -231,6 +295,27 @@ describe("searching the shelf", () => {
   it("keeps only the conversations that match", () => {
     expect(sessionKeys(filterArchivedRows(rows, "alpha"))).toEqual(["alpha"]);
     expect(sessionKeys(filterArchivedRows(rows, "gamma"))).toEqual(["gamma"]);
+  });
+
+  it("keeps a matching conversation's forks with it", () => {
+    // A match shown without the work it started is a row the reader cannot
+    // explain; the subtree travels with the row it hangs under.
+    const withFork = archivedRows(
+      [
+        session("parent", { archived: true }),
+        session("fork", { archived: true, parentSessionId: "parent" }),
+        session("other", { archived: true }),
+      ],
+      [],
+      () => true,
+      new Set(),
+      undefined,
+      new Set(["parent"]),
+    );
+    expect(sessionKeys(filterArchivedRows(withFork, "parent"))).toEqual(["parent", "fork"]);
+    // A fork's own match is drawn on its own: the shelf cannot show it under a
+    // parent that did not match.
+    expect(sessionKeys(filterArchivedRows(withFork, "fork"))).toEqual(["fork"]);
   });
 
   it("drops a shelf with nothing left rather than drawing an empty heading", () => {
