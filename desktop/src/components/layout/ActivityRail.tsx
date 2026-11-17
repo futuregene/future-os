@@ -6,7 +6,7 @@ import type { StoredThread, StoredWorkspace } from "../../integrations/storage/t
 import type { FutureSessionStatus } from "./hooks/useFutureAccount";
 import type { RemoteIndicator } from "./hooks/useRemoteStatus";
 import type { ThreadRunInfo } from "./hooks/useThreadStore";
-import type { TreeNode } from "./threadTree";
+import type { ThreadTreeRow, TreeNode } from "./threadTree";
 import {
   Archive,
   Blocks,
@@ -62,7 +62,7 @@ import { RailViewSwitch } from "./RailViewSwitch";
 import { expandRecent, inFlightRowKeys, isActiveRun, recentSplit, recentTree } from "./recentOrder";
 import { RemoteConversationRow } from "./RemoteConversationRow";
 import { ThreadListItem } from "./ThreadListItem";
-import { buildThreadTree, buildTree, threadParentIds, visibleThreadRows, visibleTreeRows } from "./threadTree";
+import { buildThreadTree, buildTree, threadParentIds, visibleArchivedThreadRows, visibleThreadRows, visibleTreeRows } from "./threadTree";
 
 export type ActivitySection = "chat" | "workspace" | "skill" | "tasks" | "remote" | "settings";
 
@@ -1057,6 +1057,31 @@ export function ActivityRail({
         && archivedWorkspaceIds.has(thread.workspaceId))),
     [filteredArchivedThreads, archivedWorkspaceIds],
   );
+  /**
+   * The folds the archived shelf honours.
+   *
+   * A search opens every row: a match hidden inside a closed fork would be a hit
+   * the list claims to have and does not show — the rule the active lists follow
+   * for the same reason.
+   */
+  const archivedRowExpansion = useMemo<ReadonlySet<string>>(
+    () => (queryActive
+      ? new Set(looseArchivedThreads.map(thread => thread.id))
+      : expandedThreads),
+    [queryActive, looseArchivedThreads, expandedThreads],
+  );
+  /**
+   * The loose shelf's rows, as trees.
+   *
+   * The same builder the active list uses, because it is the same relation: a
+   * fork names its parent by agent session id. A fork whose parent is not on this
+   * page (behind the cursor, restored on its own, or filed under a workspace)
+   * stays a root, so nothing is lost.
+   */
+  const looseArchivedRows = useMemo(
+    () => visibleArchivedThreadRows(looseArchivedThreads, archivedRowExpansion),
+    [looseArchivedThreads, archivedRowExpansion],
+  );
 
   /**
    * The archived view's remote half.
@@ -1518,17 +1543,26 @@ export function ActivityRail({
    * One shelved conversation's row, shared by the loose list and the workspace
    * groups so a row cannot gain the restore menu in one place and lose it in
    * the other.
+   *
+   * `depth`/`hasChildren`/`expanded` are the archived tree's: archiving shelves a
+   * conversation with every fork under it, so the shelf has to draw them nested
+   * or it shows one tree as several unrelated conversations.
    */
-  function renderArchivedRow(thread: StoredThread): React.ReactNode {
+  function renderArchivedRow(row: ThreadTreeRow): React.ReactNode {
+    const thread = row.thread;
     return (
       <ArchivedThreadRow
         active={thread.id === activeThreadId}
+        depth={row.depth}
+        expanded={archivedRowExpansion.has(thread.id)}
+        hasChildren={row.hasChildren}
         key={thread.id}
         members={archivedTreeMembers(thread)}
         onDelete={onDeleteThread}
         onOpen={onOpenArchivedThread ?? onSelectThread}
         onRename={onRenameThread}
         onRestore={onRestoreThread}
+        onToggleExpanded={toggleThreadExpanded}
         onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
         selected={selectedThreadIds.has(thread.id)}
         selectionMode={threadSelectionMode(thread)}
@@ -2212,6 +2246,7 @@ export function ActivityRail({
                                                   }}
                                                 >
                                                   <ArchivedWorkspaceContents
+                                                    expanded={archivedRowExpansion}
                                                     hasMore={archiveView.workspaceNextCursor[workspace.id] !== null
                                                       && archiveView.workspaceNextCursor[workspace.id] !== undefined}
                                                     loading={archiveView.loading}
@@ -2219,6 +2254,7 @@ export function ActivityRail({
                                                     onLoadMore={() => void archiveView.loadAllWorkspaceThreads(workspace.id)}
                                                     onRename={onRenameThread}
                                                     onRestore={onRestoreThread}
+                                                    onToggleExpanded={toggleThreadExpanded}
                                                     remaining={archiveView.workspaceRemaining[workspace.id] ?? 0}
                                                     onOpen={onOpenArchivedThread ?? onSelectThread}
                                                     onToggleSelection={toggleThreadSelection}
@@ -2334,7 +2370,7 @@ export function ActivityRail({
                                   />
                                   {archivedThreadsCollapsed && !queryActive
                                     ? null
-                                    : looseArchivedThreads.length === 0 && archivedRemote.rows.length === 0
+                                    : looseArchivedRows.length === 0 && archivedRemote.rows.length === 0
                                       ? (
                                           <ArchivedEmpty
                                             label={archivedQuery.length > 0
@@ -2344,7 +2380,7 @@ export function ActivityRail({
                                         )
                                       : (
                                           <>
-                                            {looseArchivedThreads.map(thread => renderArchivedRow(thread))}
+                                            {looseArchivedRows.map(row => renderArchivedRow(row))}
                                             {/* Conversations a host shelved on
                                                 their own (a chat, or one its
                                                 workspace list no longer covers),

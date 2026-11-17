@@ -36,7 +36,7 @@ const mockRemote = {
     { desktopId: "desktop_2", pairId: "p2" },
   ],
   credentials: { pairId: "p1", expectedDesktopId: "desktop_1" },
-  workspaces: [] as { id: string; name: string }[],
+  workspaces: [] as { id: string; name: string; path?: string; archived?: boolean }[],
   // The active machine's catalogue. The header's batch entry reads it to decide
   // whether a selection has anything to hold, so it is part of the screen's
   // contract with the provider even when nothing is paired yet.
@@ -54,7 +54,12 @@ const mockRemote = {
   capabilities: new Set(["desktop_settings_v1", "skill_management_v1", "workspace_create_v1"]),
   desktopSettingsRevision: 0,
   skillsRevision: 0,
-  getDesktopSettings: jest.fn(async () => ({ autoUpgradeSkills: true, autoTitleFirstTurn: true, autoConnectRemote: true, hiddenModels: [] })),
+  getDesktopSettings: jest.fn(async () => ({
+    autoUpgradeSkills: true, autoTitleFirstTurn: true, autoConnectRemote: true, hiddenModels: [],
+    // The archiving notice counts as answered by default, so a case that is not
+    // about it archives straight through as it did before the notice existed.
+    archiveRunLogCleanup: true, archiveRunLogNoticeSeen: true,
+  })),
   listSettingsModels: jest.fn(async () => []),
   listInstalledSkills: jest.fn(async () => []),
   listAvailableSkills: jest.fn(async () => []),
@@ -792,6 +797,55 @@ test("new chat opens immediately, without an extra creation dialog", () => {
   expect(mockRemote.newConversationOn).not.toHaveBeenCalled();
 });
 
+/**
+ * A shelved workspace is not a place to start a conversation.
+ *
+ * Archiving hides a workspace from every list on the desktop, and its
+ * conversations leave with it; the phone's own pages agree. The new-conversation
+ * dialog was the one place it came back — the catalogue keeps the shelved rows
+ * (the archived view draws them from the same read), so the picker has to filter
+ * them out itself, exactly as the list pages filter their own.
+ */
+test("a shelved workspace is not offered when starting a conversation", () => {
+  mockRemote.workspaces = [
+    { id: "w-shelved", name: "Shelved project", path: "/tmp/shelved", archived: true },
+    { id: "w-open", name: "Open project", path: "/tmp/open" },
+  ];
+  act(() => tree.root.findByType(SessionList).props.onTabChange("workspace"));
+  act(() => button("sessions.new").props.onPress());
+
+  const names = modalText();
+  expect(names).toContain("Open project");
+  expect(names).not.toContain("Shelved project");
+  // The pre-selection is a workspace the reader can actually see: had the
+  // shelved row been first and still chosen, the footer would create a
+  // conversation in a folder the dialog never drew.
+  const dialog = visibleModal()!;
+  act(() => footerButton("sessions.new").props.onPress());
+  act(() => dialog.props.onDismiss());
+  expect(mockRemote.newConversationOn).toHaveBeenCalledWith("desktop_1", "workspace", "w-open");
+
+  mockRemote.workspaces = [];
+});
+
+test("a machine whose every workspace is shelved says so instead of claiming none", () => {
+  mockRemote.workspaces = [
+    { id: "w-shelved", name: "Shelved project", path: "/tmp/shelved", archived: true },
+  ];
+  act(() => tree.root.findByType(SessionList).props.onTabChange("workspace"));
+  act(() => button("sessions.new").props.onPress());
+
+  const names = modalText();
+  expect(names).toContain("sessions.noActiveWorkspaces");
+  expect(names).not.toContain("sessions.noWorkspaces");
+  // Nothing to create: the footer stays off rather than sending an empty
+  // workspace id.
+  expect(footerButton("sessions.new").props.disabled).toBe(true);
+
+  act(() => visibleModal()!.props.onDismiss());
+  mockRemote.workspaces = [];
+});
+
 const createWorkspaceRow = () =>
   tree.root.findAll(node =>
     node.props.accessibilityLabel === "sessions.createWorkspace"
@@ -1167,6 +1221,12 @@ describe("conversations on other machines", () => {
   afterEach(() => {
     mockCatalogs.machines = [];
     mockCatalogs.commandsFor = jest.fn(() => null);
+    // Restore the case-wide settings snapshot: a per-case override of the
+    // archiving notice would otherwise follow the reader into the next case.
+    mockRemote.getDesktopSettings.mockImplementation(async () => ({
+      autoUpgradeSkills: true, autoTitleFirstTurn: true, autoConnectRemote: true, hiddenModels: [],
+      archiveRunLogCleanup: true, archiveRunLogNoticeSeen: true,
+    }));
   });
 
   const openMenu = () =>
@@ -1217,15 +1277,59 @@ describe("conversations on other machines", () => {
     expect(mockRemote.rename).not.toHaveBeenCalled();
   });
 
+  test("the first archive from the phone asks about clearing run logs", async () => {
+    // A desktop whose cleanup switch is on but whose notice has not been shown:
+    // archiving from the phone is exactly the path the notice exists for.
+    peerCommands.capabilities = new Set(["archive_v1"]);
+    mockRemote.getDesktopSettings.mockImplementation(async () => ({
+      autoUpgradeSkills: true, autoTitleFirstTurn: true, autoConnectRemote: true, hiddenModels: [],
+      archiveRunLogCleanup: true, archiveRunLogNoticeSeen: false,
+    }));
+    try {
+      mockCatalogs.machines = [
+        { desktopId: "desktop_2", label: "Office", active: false, status: "connected" },
+      ];
+      // Re-mount with the override already in place: the case's own tree was
+      // built from the default snapshot in `beforeEach`.
+      act(() => { tree.unmount(); });
+      act(() => { tree = create(createElement(SessionsScreen, { onManageDesktops })); });
+      // The archiving settings arrive from the paired machine asynchronously;
+      // the notice is decided from that snapshot, so let it land first.
+      await act(async () => { await Promise.resolve(); });
+      openMenu();
+      act(() => button("sessions.archive").props.onPress());
+      await act(async () => { visibleMenu().findByType(Modal).props.onDismiss(); });
+
+      // Nothing is shelved until the reader answers the notice, and the dialog
+      // says what the archiving clears. The answer itself, and writing the flag
+      // that stops the desktop asking again, are covered where the prompt is:
+      // `archiveAction.test.ts` drives them without a dismissal timer in the way.
+      expect(peerCommands.archiveSession).not.toHaveBeenCalled();
+      expect(modalText().join(" ")).toContain("sessions.archiveCleanupNotice");
+    }
+    finally {
+      // Nothing to unwind here: the group's afterEach restores the shared
+      // settings snapshot.
+    }
+  });
+
   test("a conversation is shelved and restored through the machine that owns it", async () => {
     peerCommands.capabilities = new Set(["archive_v1"]);
     mockCatalogs.machines = [
       { desktopId: "desktop_2", label: "Office", active: false, status: "connected" },
     ];
     act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
+    // Let the archiving settings snapshot land: the notice is decided from it,
+    // and the default mock already counts it as answered.
+    await act(async () => { await Promise.resolve(); });
+    // The archiving settings arrive asynchronously, and an unseen notice would
+    // put its own question in front of the menu item; this case is about which
+    // machine the shelving goes to, so let the snapshot land first.
+    await act(async () => { await Promise.resolve(); });
     openMenu();
     act(() => button("sessions.archive").props.onPress());
     await act(async () => { visibleMenu().findByType(Modal).props.onDismiss(); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
     expect(peerCommands.archiveSession).toHaveBeenCalledWith("elsewhere", "t-elsewhere");
     expect(mockRemote.archiveSession).not.toHaveBeenCalled();
 

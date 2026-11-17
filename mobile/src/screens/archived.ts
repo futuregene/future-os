@@ -134,6 +134,13 @@ function derivedArchivedWorkspaces(
 export function archivedCatalogRows(
   catalogs: readonly ArchivedCatalog[],
   collapsed: ReadonlySet<string>,
+  /**
+   * Which conversations have their forks on screen.
+   *
+   * Passed straight through to `archivedRows`: an archived conversation keeps the
+   * fold it has on the default pages, because it is the same fork either way.
+   */
+  expanded: ReadonlySet<string> = new Set(),
 ): CatalogRow[] {
   return catalogs.flatMap(catalog => archivedRows(
     catalog.sessions,
@@ -141,6 +148,7 @@ export function archivedCatalogRows(
     () => true,
     collapsed,
     catalog.desktopId,
+    expanded,
   ));
 }
 

@@ -205,3 +205,29 @@ export function visibleThreadRows(nodes: ThreadTreeNode[], expanded: Set<string>
   return visibleTreeRows(nodes, thread => thread.id, expanded, depth)
     .map(row => ({ thread: row.item, depth: row.depth, hasChildren: row.hasChildren }));
 }
+
+/**
+ * The archived rows to draw: archived trees, parents before children, with the
+ * folds applied.
+ *
+ * Archiving is a tree operation — `archive_thread_tree` shelves a conversation
+ * and every descendant — so the shelf holds whole trees. Drawing them back as
+ * a flat list of equal rows said the opposite: a fork read as an unrelated
+ * conversation that happened to be shelved at the same time, and the one fact the
+ * shelf exists to show (this conversation and the work it started were put away
+ * together, and come back together) was gone.
+ *
+ * The parent relation is the store's own (`threadParentIds`, resolved through
+ * agent session ids) narrowed to the rows the page actually holds: a fork whose
+ * parent is behind the cursor, or one restored on its own, is a root here — the
+ * rule every tree in this rail follows, and the only one that never loses a row.
+ * A fork is drawn only inside an ancestor's fold, so a search must pass every id
+ * as expanded; a match hidden inside a closed row is a match the reader cannot
+ * see.
+ */
+export function visibleArchivedThreadRows(
+  threads: StoredThread[],
+  expanded: ReadonlySet<string>,
+): ThreadTreeRow[] {
+  return visibleThreadRows(buildThreadTree(threads), new Set(expanded));
+}

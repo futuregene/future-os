@@ -122,6 +122,7 @@ mod gui {
             Event::ReviewUpdated(thread_id) => emit_review_updated(thread_id),
             Event::RemoteActivity(thread_id) => emit_remote_activity(thread_id),
             Event::ThreadsUpdated => emit_threads_updated(),
+            Event::ArchiveChanged => emit_archive_changed(),
             Event::TasksUpdated => emit_tasks_updated(),
             Event::ControlClaimed => {
                 if let Some(app) = APP_HANDLE.get() {
@@ -515,6 +516,19 @@ mod gui {
         emit_threads_updated_via(APP_HANDLE.get());
     }
 
+    /// Notify the frontend that the archived shelf moved — a conversation or a
+    /// workspace was shelved, restored or deleted by another client (the phone
+    /// over Remote) or another process sharing this home.
+    ///
+    /// The shelf holds its own paged streams (`archived` and
+    /// `workspace-archived:<id>`), so `threads-updated` — a re-list of the live
+    /// conversations — cannot stand in for it. The webview's name is the one it
+    /// already listens for: `archive-changed`, the same event the shell raises
+    /// when a local archive dialog commits.
+    pub(crate) fn emit_archive_changed() {
+        emit_archive_changed_via(APP_HANDLE.get());
+    }
+
     /// Notify the frontend that the scheduled-task list changed behind its back
     /// — a phone toggled, edited, created or deleted one over Remote, or another
     /// process wrote the store. The task panel re-reads its list; nothing else
@@ -531,6 +545,14 @@ mod gui {
     fn emit_threads_updated_via<R: tauri::Runtime>(handle: Option<&tauri::AppHandle<R>>) {
         if let Some(handle) = handle {
             emit_threads_updated_on(handle);
+        }
+    }
+
+    /// The same routing for the archived shelf's invalidation.
+    fn emit_archive_changed_via<R: tauri::Runtime>(handle: Option<&tauri::AppHandle<R>>) {
+        if let Some(handle) = handle {
+            use tauri::Emitter;
+            let _ = handle.emit("archive-changed", ());
         }
     }
 
@@ -1932,6 +1954,7 @@ mod gui {
             present_host_event(Event::ReviewUpdated("thread-a"));
             present_host_event(Event::RemoteActivity("thread-a"));
             present_host_event(Event::ThreadsUpdated);
+            present_host_event(Event::ArchiveChanged);
             present_host_event(Event::TasksUpdated);
             present_host_event(Event::ControlClaimed);
             present_host_event(Event::ThreadActivity {

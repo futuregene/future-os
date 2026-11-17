@@ -436,21 +436,18 @@ export function MergedRows({
         ))}
         {recentRemaining > 0
           ? (
-              <button
-                aria-label={t("activityRail.showMore", { count: recentRemaining })}
+              // The same control the workspace list draws, one list over: the
+              // recent view used to paint its own centred accent pill here, so
+              // the same sentence read as a different kind of button a tab away
+              // and did not line up with the titles above it. The section's rows
+              // are top-level (`renderRow(row, false)`), so `compact` stays off
+              // and the label starts on the conversations' own column.
+              <RailLoadMoreRow
+                count={recentRemaining}
                 disabled={recentMoreBusy}
-                // Accent ink on its own soft fill: the palette contract holds
-                // that pair to AA, whereas `surface-subtle` left it short in six
-                // palettes. The hover darkens the tint instead of swapping the
-                // surface, which keeps the label on a background that is checked.
-                className="mt-1 flex h-7 w-full items-center justify-center rounded-md border border-line-soft bg-accent-soft text-xs font-medium text-accent transition-colors hover:brightness-95"
-                data-load-more={recentRemaining}
-                data-testid="recent-show-more"
                 onClick={revealRemainder}
-                type="button"
-              >
-                {t("activityRail.showMore", { count: recentRemaining })}
-              </button>
+                testId="recent-show-more"
+              />
             )
           : null}
       </div>

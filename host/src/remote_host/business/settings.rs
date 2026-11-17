@@ -236,6 +236,10 @@ struct SettingsPatch {
     auto_connect_remote: Option<bool>,
     skill_recommend: Option<bool>,
     hidden_models: Option<Vec<String>>,
+    archive_run_log_cleanup: Option<bool>,
+    archive_run_log_notice_seen: Option<bool>,
+    auto_archive_enabled: Option<bool>,
+    auto_archive_idle_days: Option<u32>,
 }
 
 fn parse_settings_patch(
@@ -247,12 +251,24 @@ fn parse_settings_patch(
     }) {
         return Err("Invalid model visibility list".into());
     }
+    // The desktop refuses an idle period outside 1-365 as well; rejecting it
+    // here keeps the phone from believing a value the desktop silently ignored.
+    if patch
+        .auto_archive_idle_days
+        .is_some_and(|days| !(1..=365).contains(&days))
+    {
+        return Err("Invalid automatic-archive idle period".into());
+    }
     Ok(crate::store::UpdateAppSettingsInput {
         auto_upgrade_skills: patch.auto_upgrade_skills,
         auto_title_first_turn: patch.auto_title_first_turn,
         auto_connect_remote: patch.auto_connect_remote,
         skill_recommend: patch.skill_recommend,
         hidden_models: patch.hidden_models,
+        archive_run_log_cleanup: patch.archive_run_log_cleanup,
+        archive_run_log_notice_seen: patch.archive_run_log_notice_seen,
+        auto_archive_enabled: patch.auto_archive_enabled,
+        auto_archive_idle_days: patch.auto_archive_idle_days,
         ..Default::default()
     })
 }
@@ -307,6 +323,10 @@ async fn reply_settings(
                     "autoConnectRemote": settings.auto_connect_remote,
                     "skillRecommend": settings.skill_recommend,
                     "hiddenModels": settings.hidden_models,
+                    "archiveRunLogCleanup": settings.archive_run_log_cleanup,
+                    "archiveRunLogNoticeSeen": settings.archive_run_log_notice_seen,
+                    "autoArchiveEnabled": settings.auto_archive_enabled,
+                    "autoArchiveIdleDays": settings.auto_archive_idle_days,
                 }),
                 None,
             )
@@ -417,6 +437,71 @@ mod tests {
         // Absent means "leave it alone", not "set it to false".
         let untouched = parse_settings_patch(json!({})).expect("parses");
         assert_eq!(untouched.skill_recommend, None);
+    }
+
+    /// The archiving settings a phone now offers must round-trip: the patch
+    /// accepts them, and the reply echoes what was stored. A writable field left
+    /// out of the reply reads as absent on the phone and its control snaps back.
+    #[tokio::test]
+    async fn archiving_settings_are_writable_and_echoed_back() {
+        use crate::remote::test_support::{
+            ensure_mock_agent, mock_agent_lock, HomeGuard, RecordingSink,
+        };
+        use future_remote_protocol::IncomingCmd;
+
+        let _agent = mock_agent_lock();
+        let _home = HomeGuard::new("remote-settings-archiving");
+        let _mock = ensure_mock_agent();
+        crate::store::initialize_app_store().unwrap();
+
+        let patch = parse_settings_patch(json!({
+            "archiveRunLogCleanup": false,
+            "archiveRunLogNoticeSeen": true,
+            "autoArchiveEnabled": true,
+            "autoArchiveIdleDays": 45,
+        }))
+        .expect("archiving settings parse");
+        assert_eq!(patch.archive_run_log_cleanup, Some(false));
+        assert_eq!(patch.auto_archive_idle_days, Some(45));
+
+        // Absent means "leave it alone", like every other field here.
+        let untouched = parse_settings_patch(json!({})).expect("parses");
+        assert_eq!(untouched.auto_archive_enabled, None);
+
+        // An idle period outside the desktop's own range is refused rather than
+        // stored as a value the machine would have ignored.
+        assert!(parse_settings_patch(json!({ "autoArchiveIdleDays": 0 })).is_err());
+        assert!(parse_settings_patch(json!({ "autoArchiveIdleDays": 366 })).is_err());
+
+        let cmd = IncomingCmd {
+            cmd_type: "update_desktop_settings".into(),
+            settings: json!({
+                "archiveRunLogCleanup": false,
+                "archiveRunLogNoticeSeen": true,
+                "autoArchiveEnabled": true,
+                "autoArchiveIdleDays": 45,
+            }),
+            ..Default::default()
+        };
+        let sink = RecordingSink::default();
+        super::execute(&cmd, &sink).await;
+        let (ok, data, error) = sink.only();
+        assert!(ok, "{error:?}");
+        assert_eq!(data["archiveRunLogCleanup"], json!(false));
+        assert_eq!(data["archiveRunLogNoticeSeen"], json!(true));
+        assert_eq!(data["autoArchiveEnabled"], json!(true));
+        assert_eq!(data["autoArchiveIdleDays"], json!(45));
+
+        // The desktop must see a phone's change without the reader touching it.
+        // That works because this handler writes through `update_app_settings`,
+        // which publishes `app_settings_changed`, and the desktop's settings
+        // hook relistens to it. Reading the store back proves the write landed
+        // where the desktop reads; the event itself is `app_settings`' contract.
+        let stored = crate::store::get_app_settings().expect("settings read");
+        assert!(!stored.archive_run_log_cleanup);
+        assert!(stored.archive_run_log_notice_seen);
+        assert!(stored.auto_archive_enabled);
+        assert_eq!(stored.auto_archive_idle_days, 45);
     }
 
     /// A store that cannot be read is reported as a failure with the store's

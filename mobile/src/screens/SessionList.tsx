@@ -434,15 +434,25 @@ export function SessionList({
   const archivedSource = useMemo(
     () => (archived
       ? archivedCatalogs && archivedCatalogs.length > 0
-        ? archivedCatalogRows(archivedCatalogs, query.trim() ? new Set<string>() : collapsed)
+        ? archivedCatalogRows(
+          archivedCatalogs,
+          query.trim() ? new Set<string>() : collapsed,
+          // A search opens every row: a match hidden inside a closed fork is a
+          // match the reader cannot see.
+          query.trim() ? new Set<string>() : expanded,
+        )
         : archivedRows(
           remote.sessions,
           remote.workspaces,
           () => true,
           query.trim() ? new Set<string>() : collapsed,
+          undefined,
+          // A search opens every row: a match hidden inside a closed fork is a
+          // match the reader cannot see.
+          query.trim() ? new Set<string>() : expanded,
         )
       : []),
-    [archived, archivedCatalogs, remote.sessions, remote.workspaces, collapsed, query],
+    [archived, archivedCatalogs, remote.sessions, remote.workspaces, collapsed, expanded, query],
   );
   /**
    * How many archived conversations the shelf draws.
@@ -943,8 +953,22 @@ export function SessionList({
   };
   /** What the open workspace menu acts through — null when it cannot act. */
   const menuWorkspaceCommands = menuWorkspace ? rowCommands(menuWorkspace) : null;
-  /** Whether the open menu is a shelved shelf, which flips the shelf item. */
-  const menuWorkspaceArchived = menuWorkspace?.workspace.archived === true;
+  /**
+   * Whether the open menu's folder is on the shelf, which flips the shelf item
+   * to "restore".
+   *
+   * A folder reaches the archived view in two ways, and only one of them sets
+   * its own `archived` flag: the reader shelved the folder, or the folder is
+   * still in use and one of its conversations was shelved on its own. `archived`
+   * says only the first, so a menu built from it alone offered "archive" on a
+   * folder the reader was looking at *on the shelf* — an item that would have
+   * shelved conversations they could already see were shelved. The desktop's
+   * shelf menu does not branch on the flag either: every folder there offers
+   * restore, because the folder is what brings everything inside it back. Being
+   * drawn on the shelf is therefore the whole condition.
+   */
+  const menuWorkspaceArchived = menuWorkspace !== null
+    && (archived || menuWorkspace.workspace.archived === true);
   /** Whether that machine answered the archive commands. */
   const menuWorkspaceCanArchive = menuWorkspaceCommands?.capabilities.has("archive_v1") === true;
 

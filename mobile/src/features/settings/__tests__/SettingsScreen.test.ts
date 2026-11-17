@@ -263,15 +263,14 @@ test("reloads a desktop-originated change", async () => {
  * The preference stays entirely on the desktop; the phone only shows the
  * preferences that take effect at once.
  */
-test("does not offer the remote desktop switch", async () => {
-  await openPreferences();
+test("does not offer the remote desktop switch", async () => {  await openPreferences();
   expect(toggle("desktopSettings.autoConnectRemote")).toBeUndefined();
   expect(strings()).not.toContain("desktopSettings.autoConnectRemote");
-  expect(tree.root.findAllByType(SettingsSwitch)).toHaveLength(3);
+  // Three automation switches plus the two archiving ones.
+  expect(tree.root.findAllByType(SettingsSwitch)).toHaveLength(5);
 });
 
-test("offline and old desktops cannot write new preferences", async () => {
-  mockRemote.desktopOnline = false;
+test("offline and old desktops cannot write new preferences", async () => {  mockRemote.desktopOnline = false;
   await act(async () => tree.update(createElement(SettingsScreen, deviceProps)));
   expect(link("desktopSettings.models").props.disabled).toBe(true);
   await openPreferences();
@@ -545,10 +544,57 @@ test("subpages use the shared back control and rounded card styling", async () =
 test("preferences auto-load without a persistent refresh button", async () => {
   await openPreferences();
   expect(mockRemote.getDesktopSettings).toHaveBeenCalledTimes(1);
-  // auto-upgrade, auto-title, skill recommendation. The remote desktop switch
-  // is the desktop's own (its Remote page), so the phone does not offer it.
-  expect(tree.root.findAllByType(SettingsSwitch)).toHaveLength(3);
+  // auto-upgrade, auto-title, skill recommendation, run-log cleanup and
+  // automatic archiving. The remote desktop switch is the desktop's own (its
+  // Remote page), so the phone does not offer it.
+  expect(tree.root.findAllByType(SettingsSwitch)).toHaveLength(5);
   expect(tree.root.findAllByType(Button)).toHaveLength(0);
+});
+
+test("offers the archiving settings and writes each one to the paired desktop", async () => {
+  stored = { ...stored, archiveRunLogCleanup: true, autoArchiveEnabled: false, autoArchiveIdleDays: 30 };
+  await openPreferences();
+
+  await act(async () => toggle("desktopSettings.archiveRunLogCleanup").props.onChange(false));
+  expect(mockRemote.updateDesktopSettings).toHaveBeenLastCalledWith({ archiveRunLogCleanup: false });
+
+  await act(async () => toggle("desktopSettings.autoArchive").props.onChange(true));
+  expect(mockRemote.updateDesktopSettings).toHaveBeenLastCalledWith({ autoArchiveEnabled: true });
+
+  await type("desktopSettings.autoArchiveIdleDays", "45");
+  expect(mockRemote.updateDesktopSettings).toHaveBeenLastCalledWith({ autoArchiveIdleDays: 45 });
+});
+
+test("reads an omitted cleanup switch as on, matching the desktop's default", async () => {
+  // An older desktop omits the key entirely; it still clears logs on archive.
+  stored = { autoTitleFirstTurn: true, autoUpgradeSkills: true, autoConnectRemote: false, hiddenModels: [] };
+  await openPreferences();
+
+  expect(toggle("desktopSettings.archiveRunLogCleanup").props.value).toBe(true);
+  expect(toggle("desktopSettings.autoArchive").props.value).toBe(false);
+  expect(input("desktopSettings.autoArchiveIdleDays").props.value).toBe("30");
+});
+
+test("the idle period is only editable once automatic archiving is on", async () => {
+  stored = { ...stored, autoArchiveEnabled: false };
+  await openPreferences();
+  expect(input("desktopSettings.autoArchiveIdleDays").props.editable).toBe(false);
+
+  await act(async () => toggle("desktopSettings.autoArchive").props.onChange(true));
+  expect(input("desktopSettings.autoArchiveIdleDays").props.editable).toBe(true);
+});
+
+test("an out-of-range idle period is not written", async () => {
+  stored = { ...stored, autoArchiveEnabled: true, autoArchiveIdleDays: 30 };
+  await openPreferences();
+
+  await type("desktopSettings.autoArchiveIdleDays", "0");
+  await type("desktopSettings.autoArchiveIdleDays", "400");
+  // Neither is a value the desktop would store, so the phone forwards neither.
+  expect(mockRemote.updateDesktopSettings).not.toHaveBeenCalled();
+
+  await type("desktopSettings.autoArchiveIdleDays", "365");
+  expect(mockRemote.updateDesktopSettings).toHaveBeenLastCalledWith({ autoArchiveIdleDays: 365 });
 });
 
 test("the phone's own screen offers the task-finished reminder, on by default", async () => {

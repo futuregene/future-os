@@ -33,6 +33,7 @@ import { DialogSurface } from "../components/DialogSurface";
 import { useAppDialog } from "../components/useAppDialog";
 import { RenameModal } from "../features/chat/components/RenameModal";
 import { useRemoteControls as useRemote } from "../remote/RemoteContext";
+import { useDesktopResource } from "../features/settings/useDesktopResource";
 import { machineStatusKey, machinesConnected, pairedMachines, type MachineSummary } from "../remote/desktopStatus";
 import { mergeSessions, type DesktopFilter } from "../remote/mergeSessions";
 import type { DesktopCommands } from "../remote/desktopCommands";
@@ -43,7 +44,7 @@ import { SessionListActions } from "./SessionListActions";
 import { listTargets, selectableTargets } from "./sessionSelection";
 import { type Tab } from "./sessionTabs";
 import { DesktopPicker } from "./DesktopPicker";
-import { unreadableShelfMachines } from "./archived";
+import { activeWorkspaces, unreadableShelfMachines } from "./archived";
 import { archiveSessionWithPrompt } from "./archiveAction";
 import { DisconnectedScreen } from "./DisconnectedScreen";
 import { StandbyScreen } from "./StandbyScreen";
@@ -105,6 +106,15 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   const Alert = useAppDialog(active);
   const { t, i18n } = useTranslation();
   const remote = useRemote();
+  // The archiving settings decide whether an archive must explain that it
+  // clears run logs. Read here, at the surface where archiving happens, rather
+  // than only on the settings page: a reader who never opens that page is
+  // exactly the one the notice exists for.
+  const archiveSettings = useDesktopResource(
+    remote.getDesktopSettings,
+    remote.desktopSettingsRevision,
+    remote.desktopOnline,
+  );
   const [tab, setTabState] = useState<Tab>(lastTab);
   /**
    * Which desktops the session list shows. Kept for the life of the screen: a
@@ -434,7 +444,10 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
    */
   const selectDeviceWorkspaces = (workspaces: RemoteWorkspace[] | null) => {
     setDeviceWorkspaces(workspaces);
-    setWorkspaceId((workspaces ?? remote.workspaces)[0]?.id ?? "");
+    // The default is the first workspace the picker will actually offer, so a
+    // shelved one at the head of the machine's list cannot become the
+    // pre-selection of a conversation nobody can see the workspace for.
+    setWorkspaceId(activeWorkspaces(workspaces ?? remote.workspaces)[0]?.id ?? "");
   };
 
   const openNewWorkspaceForm = () => {
@@ -723,8 +736,25 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   /**
    * The workspaces the dialog offers: the picked machine's own list when the
    * phone is still on another one, else the connected machine's.
+   *
+   * A shelved workspace is not one of them. Archiving hides a workspace from
+   * every list on the desktop — its conversations leave with it — and the phone's
+   * pages agree (`activeWorkspaces`), so a new conversation is the one place it
+   * must not come back: starting one there would put a conversation back into a
+   * folder the reader had cleared. The catalogue keeps the shelved rows (the
+   * archived view draws them without a second read), which is why the filter is
+   * here rather than in the read.
    */
-  const workspaceOptions = deviceWorkspaces ?? remote.workspaces;
+  const workspaceOptions = useMemo(
+    () => activeWorkspaces(deviceWorkspaces ?? remote.workspaces),
+    [deviceWorkspaces, remote.workspaces],
+  );
+  /**
+   * Whether the empty list is empty because everything on that machine is
+   * shelved — the other reason the picker can hold nothing.
+   */
+  const hasArchivedWorkspaces = (deviceWorkspaces ?? remote.workspaces)
+    .some(workspace => workspace.archived === true);
   /**
    * Whether this dialog may register a folder as a workspace.
    *
@@ -795,7 +825,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     // it — and left no way to start a *workspace* conversation from the one list
     // that shows every workspace's conversations.
     setNewMode("workspace");
-    setWorkspaceId(remote.workspaces[0]?.id ?? "");
+    setWorkspaceId(activeWorkspaces(remote.workspaces)[0]?.id ?? "");
     setNewStep(multiple || named !== null ? "device" : "target");
     setNewOpen(true);
   };
@@ -1107,11 +1137,26 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
                     return;
                   }
                   // A running conversation is a question, not a refusal: the
-                  // reader can cancel or let the stop happen first.
+                  // reader can cancel or let the stop happen first. A reader who
+                  // has not yet been told that archiving clears run logs is asked
+                  // once about that too, whichever surface they archive from.
                   archiveSessionWithPrompt({
                     alert: (title, message, buttons) => Alert.alert(title, message, buttons),
+                    cleanup: {
+                      enabled: archiveSettings.data?.archiveRunLogCleanup ?? true,
+                      noticeSeen: archiveSettings.data?.archiveRunLogNoticeSeen ?? false,
+                    },
                     commands,
                     onFailed: () => Alert.alert(t("common.error"), t("sessions.archiveFailed")),
+                    onNoticeSeen: () => {
+                      // Recorded on the owning machine, so the desktop does not
+                      // repeat a notice this reader already answered here. Best
+                      // effort: a stale flag only costs the reader one more
+                      // explanation, whereas failing the archive for it would be
+                      // a worse trade.
+                      void remote.updateDesktopSettings({ archiveRunLogNoticeSeen: true })
+                        .catch(() => {});
+                    },
                     session,
                     t,
                   });
@@ -1414,7 +1459,14 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
                         </Pressable>
                       ))}
                       {workspaceOptions.length === 0 && (
-                        <Text style={styles.emptyInside}>{t("sessions.noWorkspaces")}</Text>
+                        // Two different facts, and the filter above is what
+                        // makes them different: "nothing on that desktop yet"
+                        // and "everything there is shelved". Saying the first
+                        // while the second is true sends the reader looking for
+                        // a workspace that is there, under Archived.
+                        <Text style={styles.emptyInside}>
+                          {t(hasArchivedWorkspaces ? "sessions.noActiveWorkspaces" : "sessions.noWorkspaces")}
+                        </Text>
                       )}
                     </View>
                   )}
