@@ -121,6 +121,38 @@ describe("runsPanel empty states", () => {
     expect(scroller).not.toBeNull();
     expect(scroller!.textContent).toContain("No background programs");
   });
+
+  it("drops rows whose run logs were cleared with the conversation", () => {
+    const { container } = mount({
+      runs: [run("run-1", { logsPurgedAt: 5 })],
+      toolsByRun: { "run-1": [tool("tool-1")] },
+    });
+
+    // The command text is gone from this panel entirely: not merely collapsed
+    // into a "cleared" badge.
+    expect(rows(container)).toHaveLength(0);
+    expect(container.textContent).not.toContain("echo tool-1");
+    expect(container.textContent).toContain("run logs have been cleared");
+  });
+
+  it("still lists runs the conversation archive left alone", () => {
+    const { container } = mount({
+      runs: [
+        run("run-1", { logsPurgedAt: 5 }),
+        run("run-2"),
+      ],
+      toolsByRun: {
+        "run-1": [tool("tool-1")],
+        "run-2": [tool("tool-2", { runId: "run-2" })],
+      },
+    });
+
+    // Only the purged run left the list; a run that was never cleaned keeps
+    // its row, so a live conversation is unaffected.
+    expect(rows(container)).toHaveLength(1);
+    expect(container.textContent).toContain("echo tool-2");
+    expect(container.textContent).not.toContain("echo tool-1");
+  });
 });
 
 describe("runsPanel header and archive", () => {
