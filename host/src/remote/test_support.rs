@@ -1402,6 +1402,7 @@ fn describe(published: &Published) -> String {
 }
 
 impl FakeNats {
+    #[cfg(test)]
     pub(crate) fn subscription_count(&self, pattern: &str) -> usize {
         self.state
             .lock()
