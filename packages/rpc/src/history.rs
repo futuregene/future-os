@@ -308,6 +308,17 @@ where
 {
     let backward = command.before.is_some();
     let mut accumulated = Vec::new();
+    // The walk below asks two questions of everything it has read so far: how
+    // much it weighs, and whether anything in it opens an exchange. Both are
+    // answered from the rows as they arrive, never by re-scanning what is
+    // already in `accumulated`: the weight is the caller's, and the host's is a
+    // *serialization* of the row (`page_weight_as_sent` strips the lean lane's
+    // bodies), so re-weighing the window once per fetched slice turns a page
+    // that walks twenty slices into twenty serializations of every row it
+    // holds. Measured on this walk (2026-11-17) that is what made a
+    // history-dense session's page-up read quadratic in the rows it carried.
+    let mut walked: usize = 0;
+    let mut has_question = false;
     loop {
         let mut page = execute(command.clone()).await?;
         if let Some(first) = page.fragment.take() {
@@ -354,6 +365,14 @@ where
         } else if command.fragment_offset.is_some() {
             return Err("missing history fragment".into());
         }
+        // Weigh the rows this slice brought, once each. A backward read only
+        // ever prepends to `accumulated`, so the running total is the window's.
+        if backward {
+            for entry in &page.entries {
+                walked += weigh(entry);
+            }
+            has_question |= page.entries.iter().any(|entry| !entry.needs_user_prefix());
+        }
         if backward {
             page.entries.append(&mut accumulated);
             accumulated = page.entries;
@@ -375,8 +394,6 @@ where
             // turn back in for a first paint (that is the 10 MB page this budget
             // retired) — but only for a budget that bounds the page as well
             // (`PageBudget::walk_limit`).
-            let has_question = accumulated.iter().any(|entry| !entry.needs_user_prefix());
-            let walked: usize = accumulated.iter().map(&weigh).sum();
             if start == ExchangeStart::Complete {
                 if needs_prefix && page.has_more && !has_question && walked <= budget.walk_limit() {
                     if accumulated.is_empty()
@@ -1654,6 +1671,83 @@ mod tests {
         assert_eq!(
             served.next_offset, 0,
             "the cursor reached the top of history"
+        );
+    }
+
+    /// The walk weighs each row once, however many slices it reads.
+    ///
+    /// The weight is the caller's, and the host's is a serialization of the row
+    /// (the lean lane strips bodies before measuring), so re-weighing the window
+    /// after every slice makes a page-up read quadratic in the rows it carries —
+    /// which is what a history-dense session's page-up was doing. Counting the
+    /// weigh calls is the property, not their cost: a page assembled from twenty
+    /// slices must ask about each of its rows once, not twenty times.
+    #[tokio::test]
+    async fn the_walk_weighs_each_row_once_however_many_slices_it_reads() {
+        const SLICES: usize = 20;
+        const ROWS: usize = 3;
+        let mut history = vec![json!({"id": "u0", "kind": "user", "role": "user"})];
+        for slice in 0..SLICES {
+            for row in 0..ROWS {
+                history.push(json!({
+                    "id": format!("e{slice}-a{row}"),
+                    "kind": "assistant",
+                    "role": "assistant",
+                }));
+            }
+        }
+        // Newest slice first, the question on the last one.
+        let mut pages = std::collections::VecDeque::from(
+            (0..SLICES)
+                .rev()
+                .map(|slice| {
+                    let start = 1 + slice * ROWS;
+                    // Every slice still has the question above it; only the
+                    // page that carries it ends the walk.
+                    page(
+                        None,
+                        history[start..start + ROWS].to_vec(),
+                        true,
+                        start as i64,
+                    )
+                })
+                .chain(std::iter::once(page(
+                    None,
+                    vec![history[0].clone()],
+                    false,
+                    0,
+                )))
+                .collect::<Vec<_>>(),
+        );
+
+        let weighed = std::cell::Cell::new(0usize);
+        let result = read_page_with(
+            RpcCommand {
+                before: Some(i64::MAX),
+                limit: Some(1),
+                ..Default::default()
+            },
+            ExchangeStart::Complete,
+            PageBudget::FIRST_PAINT,
+            |_: &Value| {
+                weighed.set(weighed.get() + 1);
+                1
+            },
+            |_| std::future::ready(Ok(pages.pop_front().expect("scripted page"))),
+        )
+        .await;
+
+        let served = result.expect("page");
+        assert_eq!(served.entries.len(), history.len());
+        // One pass over the rows to walk, one to cut: a constant, however many
+        // slices the page was assembled from. Re-weighing the window per slice
+        // (what this replaced) is 21 passes here and grows with the square of the
+        // slice count — the shape that made a history-dense page-up read slow.
+        assert!(
+            weighed.get() <= history.len() * 2,
+            "the walk weighs each row once: {} calls for {} rows over {SLICES} slices",
+            weighed.get(),
+            history.len()
         );
     }
 
