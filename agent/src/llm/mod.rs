@@ -783,6 +783,39 @@ impl crate::types::LLMProvider for Client {
         limited.stream_model(request).await
     }
 
+    async fn stream_model_with_controls(
+        &self,
+        request: schema::ModelRequest,
+        controls: schema::RequestControls,
+    ) -> Result<ReceiverStream<schema::ModelStreamEvent>> {
+        let mut target = self.target_for_request()?;
+        if let Some(limit) = controls.max_output_tokens {
+            anyhow::ensure!(limit > 0, "request output budget must be positive");
+            let configured = target.generation.max_output_tokens.unwrap_or(limit);
+            let model_cap = if target.capabilities.max_output_tokens > 0 {
+                target.capabilities.max_output_tokens
+            } else {
+                limit
+            };
+            target.generation.max_output_tokens = Some(limit.min(configured).min(model_cap));
+        }
+        if let Some(level) = controls.thinking_level {
+            target.generation.thinking_level = level;
+            target.generation.thinking_budget = 0;
+        }
+        target.generation.required_tool = controls.required_tool;
+        // A private target freezes one coherent route/config snapshot; neither
+        // the live registry nor the session's selected generation is mutated.
+        let scoped = Self {
+            http: self.http.clone(),
+            generation: RwLock::new(target.generation.clone()),
+            target: RwLock::new(Some(target)),
+            live_model: None,
+            adapters: self.adapters.clone(),
+        };
+        scoped.stream_model(request).await
+    }
+
     fn snapshot(&self) -> Option<std::sync::Arc<dyn crate::types::LLMProvider>> {
         Some(std::sync::Arc::new(Self {
             http: self.http.clone(),
@@ -2149,6 +2182,69 @@ mod tests {
             assert_eq!(ordinary["max_tokens"], 256);
             assert_eq!(ordinary["reasoning_effort"], "high");
         }
+    }
+
+    #[tokio::test]
+    async fn fusion_request_controls_do_not_mutate_the_next_model_step() {
+        let server = mock_server(|_| {
+            (200, "text/event-stream", "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".into())
+        });
+        let mut target = protocol_target(
+            &server.base_url,
+            schema::ProtocolConfig::OpenAiChat(schema::OpenAiChatConfig {
+                reasoning: schema::ChatReasoningFormat::DeepSeek,
+                ..Default::default()
+            }),
+        );
+        target.generation.max_output_tokens = Some(16_384);
+        target.generation.thinking_level = "max".into();
+        target.capabilities.max_output_tokens = 32_768;
+        let client = Client::from_target(target);
+        let mut request = canonical_request();
+        request.tools = vec![crate::fusion::main_tool().def];
+        let _: Vec<_> = client
+            .stream_model_with_controls(
+                request.clone(),
+                schema::RequestControls {
+                    required_tool: Some("fusion".into()),
+                    max_output_tokens: Some(4_096),
+                    thinking_level: Some("off".into()),
+                },
+            )
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        let _: Vec<_> = client
+            .stream_model(request.clone())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        let _: Vec<_> = client
+            .stream_model_with_controls(
+                request,
+                schema::RequestControls {
+                    max_output_tokens: Some(65_536),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        let requests = server.requests.lock().unwrap();
+        let scoped: Value = serde_json::from_str(&requests[0]).unwrap();
+        assert_eq!(scoped["tool_choice"]["function"]["name"], "fusion");
+        assert_eq!(scoped["max_tokens"], 4_096);
+        assert_eq!(scoped["thinking"]["type"], "disabled");
+        let ordinary: Value = serde_json::from_str(&requests[1]).unwrap();
+        assert!(ordinary.get("tool_choice").is_none());
+        assert_eq!(ordinary["max_tokens"], 16_384);
+        assert_eq!(ordinary["reasoning_effort"], "max");
+        let capped: Value = serde_json::from_str(&requests[2]).unwrap();
+        assert_eq!(capped["max_tokens"], 16_384);
+        assert!(capped.get("tool_choice").is_none());
     }
 
     #[tokio::test]

@@ -69,6 +69,9 @@ impl ProtocolAdapter for OpenAiChatAdapter {
                 body["tool_stream"] = Value::Bool(true);
             }
         }
+        if let Some(name) = crate::llm::schema::required_tool(target, request)? {
+            body["tool_choice"] = json!({"type":"function", "function":{"name":name}});
+        }
         if let Some(temperature) = target.generation.temperature {
             body["temperature"] = json!(temperature);
         }
@@ -714,6 +717,20 @@ mod tests {
         // DeepSeek's thinking format carries the toggle and the level itself.
         assert_eq!(body["thinking"]["type"], "enabled");
         assert_eq!(body["reasoning_effort"], "high");
+        let mut constrained = target.clone();
+        let tool_name = request.tools[0].function.name.clone();
+        constrained.generation.required_tool = Some(tool_name.clone());
+        constrained.generation.thinking_level = "off".into();
+        constrained.generation.thinking_budget = 0;
+        let forced = OpenAiChatAdapter
+            .build_body(&constrained, &request)
+            .unwrap();
+        assert_eq!(forced["tool_choice"]["function"]["name"], tool_name);
+        constrained.generation.required_tool = Some("not_in_catalog".into());
+        assert!(OpenAiChatAdapter
+            .build_body(&constrained, &request)
+            .is_err());
+        assert!(body.get("tool_choice").is_none());
     }
 
     #[test]

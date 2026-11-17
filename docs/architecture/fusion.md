@@ -84,6 +84,7 @@ The following is the semantic baseline for matching English and Chinese tool des
 | `constraints` | Brief restrictions explicitly established by the user/relevant context; empty otherwise. No inferred compliance/equipment/detail/language/format demands |
 | `evidence` | Optional file/line references, collected output and version references; externally dependent facts should have inspectable support |
 | `read_scope` | Optional proposed read paths, intersected with existing parent authorization rather than expanding it |
+| `parent_request` | Backend-only preserved current user request; model tool arguments cannot set it. Missing on historical records. Used to check whether focused question/background changed a supplied premise; it does not expand consultation scope |
 
 Trusted backend code supplies parent source identity, parent run, tool call ID, model configuration, policy and budget. Models cannot supply credentials or override permissions. Do not copy the entire parent chat or workspace by default. Supply common material sufficient to understand this decision independently; missing decisive evidence remains an unknown or evidence request, not an invented fact.
 
@@ -106,6 +107,16 @@ Topic formation only disambiguates or focuses the request. Do not append unsolic
 For `/fusion 我要查找业余无线电中继上的恶意干扰有什么办法？`, a sufficient question is “业余无线电爱好者可以采取哪些方法来发现、确认并测向定位中继台（repeater）上出现的恶意干扰？”. Do not append “separately explain … VHF/UHF handheld/car equipment … reporting procedures”. A faithful goal is “Learn methods for finding the interference source”; background may simply state that no location, equipment or field observations were supplied, and constraints may be `[]`. When a topic is genuinely large, use multiple focused discussions as needed; discussion count remains unlimited.
 
 This rule is shared in the enabled run policy, tool description and field schemas in Rust, so Desktop, Mobile and terminal do not maintain independent topic rewriting rules. It guides semantic behavior; structural validation cannot prove that every paraphrase is faithful.
+
+Host heartbeats and Agent status advertise the Fusion input contract version. Admission and dispatch reject an incompatible Host/Agent pair before using the new input shape; upgrade both together. Historical records without `parent_request` remain readable.
+
+### Closed-task runtime guards
+
+Parent request policy v1 applies only when an enabled parent run exposes exactly one tool, `fusion` (for example `future run --no-tools '/fusion …'`). The first model request selects that named tool through the protocol's `tool_choice`, uses request-local thinking `off`, caps output at 16,384 tokens and has a 180-second stage deadline. A completed model step must produce exactly one Fusion call; an answer or another tool is rejected with `FUSION_ROUTING_FAILED`, and no consultation receipt is fabricated. Providers that reject the named choice surface their error rather than silently accepting an unconsulted answer.
+
+After each actual consultation, a completed result enters delivery; failed/no-conclusion material enters recovery. Each next response requests thinking `off` and retains the selected model's configured output limit, so a long requested answer is not cut to a smaller delivery budget. A 300-second deadline bounds connect and pre-delivery reasoning until visible text begins; once delivery starts, ordinary content-idle and cancellation rules govern the stream. Routing retains its absolute deadline. Stage deadlines survive reconnects and reset only after another actual tool round; they do not include the inner discussion's execution time. `FUSION_STAGE_TIMEOUT` identifies this orchestration bound separately from provider idle timeout or output exhaustion. Output exhaustion before visible delivery does not trigger ordinary same-step continuation; a visible answer prefix retains the ordinary bounded continuation allowance. Explicit reasoning disable depends on the protocol/model; pre-delivery deadlines remain in force when it is unavailable.
+
+These settings are private request projections: they do not change the selected model, session thinking level, registry or inner model profiles. Completed assistant records carry `fusion_request_policy` metadata with version, stage, requested thinking, output cap and timeout; actual token usage remains provider-reported. General runs that also expose factual/implementation tools keep their original generation and tool selection. There is no discussion-count limit: a later actual consultation starts its own delivery/recovery stage. The independent inner scheduling/idle policies and whole-case benchmark guard remain unchanged.
 
 ### Final result
 

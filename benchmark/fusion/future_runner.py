@@ -19,6 +19,35 @@ class RunDeadlineExceeded(RuntimeError):
     pass
 
 
+def canonical_answer(transcript, run_id):
+    if transcript.get("hasMore"):
+        raise RuntimeError("Incomplete transcript while collecting the final answer")
+    entries = [
+        entry
+        for entry in transcript.get("entries", [])
+        if entry.get("runId") == run_id
+        and (entry.get("kind") == "assistant" or entry.get("role") == "assistant")
+    ]
+    if not entries:
+        raise RuntimeError(f"No assistant entry for accepted run {run_id}")
+    entry = entries[-1]
+    if any(block.get("kind") == "tool_call" for block in entry.get("blocks", [])):
+        raise RuntimeError(f"Run {run_id} has no final answer after its last tool call")
+    text = "\n".join(
+        block.get("text", "")
+        for block in entry.get("blocks", [])
+        if block.get("kind") == "text"
+    )
+    if not text.strip():
+        raise RuntimeError(f"Run {run_id} ended without a visible final answer")
+    return {
+        "run_id": run_id,
+        "entry_id": entry.get("id"),
+        "text": text,
+        "source": "terminal_transcript",
+    }
+
+
 class Future:
     def __init__(
         self, binary, runtime=None, model=None, thinking=None, full_trace=False
@@ -91,7 +120,7 @@ class Future:
             "binary": self.call(["version", "--json"]),
             "system_prompt": "product default, with project-context files disabled for the closed-text task",
             "fusion_routing_prompt": None,
-            "entry": "normal /fusion prompt; automatic tool selection; no benchmark routing instructions",
+            "entry": "normal /fusion prompt; tool routing follows the binary runtime policy; no benchmark-only routing instructions",
         }
 
     def transcript(self, session):
@@ -163,20 +192,8 @@ class Future:
         transcript = self.transcript(session)
         if transcript.get("hasMore"):
             raise RuntimeError("Incomplete transcript during terminal recovery")
-        answers = [
-            "\n".join(
-                block.get("text", "")
-                for block in entry.get("blocks", [])
-                if block.get("kind") == "text"
-            )
-            for entry in transcript.get("entries", [])
-            if entry.get("runId") == run_id and entry.get("role") == "assistant"
-        ]
-        text = next((answer for answer in reversed(answers) if answer.strip()), "")
-        if not text:
-            raise RuntimeError(
-                f"run {run_id} ended as empty_answer: terminal transcript has no final answer"
-            )
+        answer = canonical_answer(transcript, run_id)
+        text = answer["text"]
         return {
             "sessionId": session,
             "runId": run_id,
@@ -329,11 +346,21 @@ class Future:
             answer_received = True
             write_json(directory / "output.json", output)
             result["answer_wall_seconds"] = time.monotonic() - started
-            result["text"] = output["text"]
             result["wait_reconnects"] = output.get("benchmark_wait_reconnects", 0)
-            result["outer_grade"] = score(case, output["text"])
             parent_transcript = self.transcript(session)
             write_json(directory / "parent-transcript.json", parent_transcript)
+            answer = canonical_answer(parent_transcript, ack["runId"])
+            write_json(directory / "canonical-answer.json", answer)
+            result["text"] = answer["text"]
+            result["text_source"] = answer["source"]
+            result["answer_entry_id"] = answer["entry_id"]
+            result["stream_text_mismatch"] = output["text"] != answer["text"]
+            result["stream_text_is_suffix"] = bool(
+                result["stream_text_mismatch"]
+                and output["text"]
+                and answer["text"].endswith(output["text"])
+            )
+            result["outer_grade"] = score(case, answer["text"])
             ledger = self.call(
                 [
                     "session",
@@ -354,6 +381,11 @@ class Future:
             result["parent_usage"] = state.get("usage", {})
             result["effective_parent_model"] = state.get("model")
             result["effective_parent_thinking"] = state.get("thinkingLevel")
+            result["parent_thinking_binding_scope"] = (
+                "session selection; Fusion request policy may override individual stages"
+                if arm == "fusion"
+                else "session selection"
+            )
             if (
                 state.get("model") != self.model
                 or state.get("thinkingLevel") != self.thinking
@@ -363,7 +395,7 @@ class Future:
                 )
             if ledger.get("hasMore") or parent_transcript.get("hasMore"):
                 raise ValueError("Incomplete parent transcript or usage ledger")
-            calls = tool_calls(parent_transcript)
+            calls = tool_calls(parent_transcript, ack["runId"])
             if arm == "single":
                 if calls:
                     raise ValueError("Single-model run used tools")
@@ -527,7 +559,10 @@ class Future:
             raise ValueError("Fusion received a nonempty read_scope")
         source = run["input"]
         supplied = "\n".join(
-            [source.get(key, "") for key in ("question", "goal", "background")]
+            [
+                source.get(key) or ""
+                for key in ("parent_request", "question", "goal", "background")
+            ]
             + source.get("evidence", [])
         )
         whole_question = case["question"] in supplied
@@ -672,10 +707,11 @@ def prompt_for(case):
     )
 
 
-def tool_calls(transcript):
+def tool_calls(transcript, run_id=None):
     return [
         block
         for entry in transcript.get("entries", [])
+        if run_id is None or entry.get("runId") == run_id
         for block in entry.get("blocks", [])
         if block.get("kind") == "tool_call"
     ]

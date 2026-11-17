@@ -140,7 +140,9 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     config.validate()?;
     let status = rpc(command("get_fusion_status", "")).await?;
     ensure!(
-        status["generation_policy_version"].as_u64() == Some(u64::from(config.version))
+        status["input_policy_version"].as_u64()
+            == Some(u64::from(future_fusion::INPUT_POLICY_VERSION))
+            && status["generation_policy_version"].as_u64() == Some(u64::from(config.version))
             && status["resilience_policy_version"].as_u64()
                 == Some(u64::from(future_fusion::RESILIENCE_POLICY_VERSION)),
         "Agent does not support this Fusion policy; upgrade Agent and Host together"

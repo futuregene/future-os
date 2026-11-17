@@ -1042,6 +1042,21 @@ pub trait LLMProvider: Send + Sync {
         self.stream_model(request).await
     }
 
+    /// Request-scoped orchestration controls. Immutable providers may preserve
+    /// their behavior; the run loop still validates the required tool outcome.
+    async fn stream_model_with_controls(
+        &self,
+        request: crate::llm::schema::ModelRequest,
+        controls: crate::llm::schema::RequestControls,
+    ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>>
+    {
+        if let Some(limit) = controls.max_output_tokens {
+            self.stream_model_with_output_limit(request, limit).await
+        } else {
+            self.stream_model(request).await
+        }
+    }
+
     /// Update thinking level and budget at runtime (after set_thinking_level / cycle_thinking_level).
     fn update_thinking(&self, _level: &str, _budget: i32) {}
 

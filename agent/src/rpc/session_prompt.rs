@@ -1230,7 +1230,7 @@ impl ServerSession {
                 crate::fusion::settings_enabled()?,
                 "Fusion is disabled in settings"
             );
-            anyhow::ensure!(crate::fusion::available(), "Fusion host is unavailable");
+            anyhow::ensure!(crate::fusion::available(), "Fusion host is unavailable or incompatible; start matching Host and Agent versions");
             let identity = self.session_manager.storage()?.storage_identity()?;
             run_loop
                 .tools
@@ -1247,6 +1247,11 @@ impl ServerSession {
                     run_id: run_lease.run_id.clone(),
                     tool_call_id: String::new(),
                 },
+                parent_request: Some(
+                    future_fusion::fusion_prompt(prompt.message)
+                        .unwrap_or(prompt.message)
+                        .to_owned(),
+                ),
                 workspace: std::path::PathBuf::from(&session_cwd),
                 store: future_fusion::Store::existing(&crate::utils::future_home())?,
                 sandbox: sandbox.clone(),

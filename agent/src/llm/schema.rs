@@ -766,6 +766,30 @@ pub struct GenerationConfig {
     pub max_output_tokens: Option<i32>,
     pub thinking_level: String,
     pub thinking_budget: i32,
+    /// Request-local constraint, never a session/model setting.
+    pub required_tool: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RequestControls {
+    pub required_tool: Option<String>,
+    pub max_output_tokens: Option<i32>,
+    pub thinking_level: Option<String>,
+}
+
+/// Validate against the actual outbound catalog before selecting a tool.
+pub fn required_tool<'a>(
+    target: &'a ResolvedModelTarget,
+    request: &ModelRequest,
+) -> anyhow::Result<Option<&'a str>> {
+    let Some(name) = target.generation.required_tool.as_deref() else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        request.tools.iter().any(|t| t.function.name == name),
+        "Required tool is absent from the request catalog: {name}"
+    );
+    Ok(Some(name))
 }
 
 #[derive(Debug, Clone)]

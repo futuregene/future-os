@@ -122,7 +122,7 @@ impl Store {
     }
 
     pub fn heartbeat(&self, owner: &str) -> Result<()> {
-        self.connect()?.execute("INSERT INTO fusion_meta(key,value) VALUES('host',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [json!({"owner":owner,"at":now_ms()}).to_string()])?;
+        self.connect()?.execute("INSERT INTO fusion_meta(key,value) VALUES('host',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [json!({"owner":owner,"at":now_ms(),"input_policy_version":crate::INPUT_POLICY_VERSION}).to_string()])?;
         Ok(())
     }
 
@@ -136,7 +136,9 @@ impl Store {
                 .optional()?;
             let value: Value = serde_json::from_str(raw.as_deref().unwrap_or("null"))?;
             let age = now_ms().saturating_sub(value["at"].as_i64().unwrap_or(0));
-            Ok((0..5000).contains(&age))
+            Ok((0..5000).contains(&age)
+                && value["input_policy_version"].as_u64()
+                    == Some(u64::from(crate::INPUT_POLICY_VERSION)))
         })()
         .unwrap_or(false)
     }
@@ -527,6 +529,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn incompatible_host_heartbeat_cannot_admit_new_input_contracts() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        store.heartbeat("owner").unwrap();
+        assert!(store.host_available());
+        for version in [None, Some(crate::INPUT_POLICY_VERSION + 1)] {
+            let mut heartbeat = json!({"owner":"old-or-new-host", "at":now_ms()});
+            if let Some(version) = version {
+                heartbeat["input_policy_version"] = json!(version);
+            }
+            store
+                .connect()
+                .unwrap()
+                .execute(
+                    "UPDATE fusion_meta SET value=?1 WHERE key='host'",
+                    [heartbeat.to_string()],
+                )
+                .unwrap();
+            assert!(!store.host_available());
+        }
+        store.heartbeat("owner").unwrap();
+        assert!(store.host_available());
+    }
+
+    #[test]
     fn same_parent_run_admits_further_discussions_without_losing_replay_identity() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
@@ -543,6 +570,7 @@ mod tests {
                 goal: "choose".into(),
                 background: "new facts".into(),
                 constraints: vec![],
+                parent_request: Some("Preserved user directions and constraints".into()),
                 legacy_options: vec![],
                 evidence: vec![],
                 read_scope: vec![],
@@ -563,6 +591,10 @@ mod tests {
             assert!(!created);
             assert_eq!(&replayed.id, id);
             assert_eq!(&reopened.get(id).unwrap().parent, parent);
+            assert_eq!(
+                reopened.get(id).unwrap().input.parent_request,
+                input.parent_request
+            );
         }
         let (parent, mut conflict, _) = admissions.pop().unwrap();
         conflict.question = "different decision for the same call".into();
@@ -600,6 +632,7 @@ mod tests {
             goal: "Answer".into(),
             background: "Facts".into(),
             constraints: vec![],
+            parent_request: None,
             legacy_options: vec![],
             evidence: vec![],
             read_scope: vec![],
@@ -664,6 +697,7 @@ mod tests {
             goal: "choose".into(),
             background: "facts".into(),
             constraints: vec![],
+            parent_request: None,
             legacy_options: vec![],
             evidence: vec![],
             read_scope: vec![],
@@ -730,6 +764,7 @@ mod tests {
             goal: "choose".into(),
             background: "facts".into(),
             constraints: vec![],
+            parent_request: None,
             legacy_options: vec![],
             evidence: vec![],
             read_scope: vec![],
@@ -790,6 +825,7 @@ mod tests {
             goal: "choose".into(),
             background: "facts".into(),
             constraints: vec![],
+            parent_request: None,
             legacy_options: vec![],
             evidence: vec![],
             read_scope: vec![],
@@ -845,6 +881,7 @@ mod tests {
             goal: "decide".into(),
             background: "facts".into(),
             constraints: vec![],
+            parent_request: None,
             legacy_options: vec![],
             evidence: vec![],
             read_scope: vec![],
@@ -909,6 +946,7 @@ mod tests {
             goal: "decide".into(),
             background: "facts".into(),
             constraints: vec![],
+            parent_request: None,
             legacy_options: vec![],
             evidence: vec![],
             read_scope: vec![],
@@ -916,6 +954,7 @@ mod tests {
         let (run, _) = store.prepare(parent, input, dir.path()).unwrap();
         store.ready(&run.id).unwrap();
         store.claim("owner").unwrap();
+        assert!(run.input.parent_request.is_none());
         let result = Conclusion {
             fusion_run_id: String::new(),
             conclusion: "A".into(),

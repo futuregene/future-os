@@ -88,6 +88,9 @@ impl ProtocolAdapter for AnthropicMessagesAdapter {
                     .collect(),
             );
         }
+        if let Some(name) = crate::llm::schema::required_tool(target, request)? {
+            body["tool_choice"] = json!({"type":"tool", "name":name});
+        }
         let level = target.generation.thinking_level.trim();
         let level_is_thinking = !level.is_empty()
             && level != crate::llm::schema::DEFAULT_THINKING_LEVEL
@@ -1009,6 +1012,21 @@ mod tests {
         assert!(body["tools"].is_array());
         assert_eq!(body["system"][0]["text"], "sys");
         assert_eq!(body["temperature"], 0.5);
+        let mut constrained = t.clone();
+        let tool_name = request.tools[0].function.name.clone();
+        constrained.generation.required_tool = Some(tool_name.clone());
+        constrained.generation.thinking_level = "off".into();
+        constrained.generation.thinking_budget = 0;
+        let forced = AnthropicMessagesAdapter
+            .build_body(&constrained, &request)
+            .unwrap();
+        assert_eq!(forced["tool_choice"]["name"], tool_name);
+        assert!(forced.get("thinking").is_none());
+        constrained.generation.required_tool = Some("not_in_catalog".into());
+        assert!(AnthropicMessagesAdapter
+            .build_body(&constrained, &request)
+            .is_err());
+        assert!(body.get("tool_choice").is_none());
     }
 
     #[test]
