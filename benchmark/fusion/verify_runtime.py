@@ -54,6 +54,11 @@ def main():
         help="exercise a two-second fixture-only inactivity threshold",
     )
     parser.add_argument(
+        "--check-evidence",
+        action="store_true",
+        help="exercise source receipts and repair fabricated verified_fact references",
+    )
+    parser.add_argument(
         "--artifact-root", help="Directory for retained local verification records"
     )
     args = parser.parse_args()
@@ -73,6 +78,7 @@ def main():
     stalled = set()
     exhausted = set()
     report_recovery_requests = []
+    source_probe = {"enabled": False, "reviews": []}
     barrier = threading.Barrier(3, timeout=15)
 
     class Handler(BaseHTTPRequestHandler):
@@ -173,6 +179,42 @@ def main():
                         packet, _ = json.JSONDecoder().raw_decode(
                             prompt.rsplit("\nReview packet:\n", 1)[1]
                         )
+                        additions = []
+                        if source_probe["enabled"]:
+                            manifest = packet["source_manifest"]
+                            assert manifest["supplied_evidence"] == "not_supplied", (
+                                manifest
+                            )
+                            assert manifest["file_scope"] == "not_requested", manifest
+                            repaired = "Validation feedback:" in prompt
+                            reference = (
+                                [
+                                    {
+                                        "source_id": "request",
+                                        "sha256": manifest["inline_sources"][0][
+                                            "sha256"
+                                        ],
+                                        "quote": "Return 7",
+                                    }
+                                ]
+                                if repaired
+                                else ["fabricated-source-id"]
+                            )
+                            additions = [
+                                {
+                                    "kind": "verified_fact",
+                                    "content": "The request asks to return 7",
+                                    "evidence": reference,
+                                }
+                            ]
+                            with lock:
+                                source_probe["reviews"].append(
+                                    {
+                                        "participant": packet["participant"],
+                                        "repaired": repaired,
+                                        "source_manifest": manifest,
+                                    }
+                                )
                         answer = json.dumps(
                             {
                                 "participant": packet["participant"],
@@ -187,7 +229,7 @@ def main():
                                     }
                                 ],
                                 "mapping_corrections": [],
-                                "additions": [],
+                                "additions": additions,
                             }
                         )
                     else:
@@ -228,7 +270,11 @@ def main():
                         {
                             "answer": ANSWER,
                             "support": "The supplied request asks to return 7.",
-                            "unresolved": [],
+                            "unresolved": (
+                                ["Check the supplied source before finalizing"]
+                                if source_probe["enabled"] and model == "c"
+                                else []
+                            ),
                             "checks": (
                                 [
                                     {
@@ -696,6 +742,50 @@ def main():
                     "fusion_invocations": 1,
                     "tools_removed": True,
                     "unexpected_repeat_blocked": True,
+                }
+            if args.check_evidence:
+                stalled.clear()
+                source_probe["enabled"] = True
+                sourced = run("parent", fusion=True)
+                source_probe["enabled"] = False
+                source_discussion = client.call(
+                    ["fusion", "show", sourced["sessionId"], "--json"]
+                )
+                write_json(
+                    home / "source-validation-discussion.json", source_discussion
+                )
+                reviews = [
+                    step
+                    for step in source_discussion["steps"]
+                    if step["phase"] == "reviewing"
+                ]
+                assert len(reviews) == 3, reviews
+                assert all(
+                    step["settings"]["report_revision"] == 1 for step in reviews
+                ), reviews
+                assert all(not step.get("report_quality") for step in reviews), reviews
+                assert len(source_probe["reviews"]) == 6, source_probe
+                assert sum(item["repaired"] for item in source_probe["reviews"]) == 3
+                for step in reviews:
+                    report = json.loads(step["output"])
+                    reference = report["additions"][0]["evidence"][0]
+                    assert reference["source_id"] == "request"
+                    assert (
+                        reference["sha256"] == hashlib.sha256(b"Return 7").hexdigest()
+                    )
+                assert source_discussion["run"]["result"]["final_answer"] == ANSWER
+                assert all(
+                    request.get("reasoning_effort") == "high"
+                    and request.get("max_tokens") == 65536
+                    for request in configured_requests
+                )
+                evidence["source_validation"] = {
+                    "fabricated_references_rejected": 3,
+                    "same_session_repairs": 3,
+                    "repaired_references_validated": True,
+                    "missing_evidence_distinct_from_empty_query": True,
+                    "self_contained_task_completed_without_external_evidence": True,
+                    "user_settings_preserved": True,
                 }
             write_json(home / "verification.json", evidence)
             print(
