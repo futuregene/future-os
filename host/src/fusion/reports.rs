@@ -151,53 +151,6 @@ pub(super) async fn collect(
     }
 }
 
-/// One focused same-session reconciliation, with at most one local report repair.
-/// Keep the draft in the transcript; never fall back to it if reconciliation fails.
-pub(super) async fn reconcile(
-    session: &mut impl ReportSession,
-    draft: Report,
-    capacity: usize,
-    validate: impl Fn(&str) -> Result<()>,
-) -> Result<Report> {
-    let check = |text: &str| -> Result<()> {
-        ensure!(
-            capacity == 0 || forwarded_bytes("synthesizing", text)? <= capacity,
-            "Reconciled report exceeds {capacity} UTF-8 bytes in downstream input"
-        );
-        validate(text)
-    };
-    let mut message = format!(
-        "{}\n{}",
-        super::deliberation::CONSISTENCY_INSTRUCTIONS,
-        capacity_instruction(capacity)
-    );
-    for revision in 1..=2 {
-        let text = session.generate(message, true).await?;
-        match check(&text) {
-            Ok(()) => {
-                return Ok(Report {
-                    text,
-                    validation_errors: vec![],
-                    generation: draft.generation + revision,
-                    recovered_output_limit: draft.recovered_output_limit,
-                })
-            }
-            Err(error) if revision == 1 => {
-                message = format!("Repair only the final reconciliation report in this session; do not investigate or re-solve. Preserve valid fields and copy exact source wording for citation repairs. Return the complete replacement report including the final answer and decision_audit.consistency. Fix every validation error: {error}\n{}", capacity_instruction(capacity));
-            }
-            Err(error) => {
-                return Err(failure(
-                    FailureKind::InvalidOutput,
-                    format!(
-                        "Conclusion consistency validation failed after one local repair: {error}"
-                    ),
-                ))
-            }
-        }
-    }
-    unreachable!("bounded reconciliation always returns")
-}
-
 /// UTF-8-safe forwarding only, retaining full originals in the child session.
 pub(super) fn fit_text(text: &str, capacity: usize) -> Result<String> {
     if forwarded_bytes("analyzing", text)? <= capacity {
@@ -334,51 +287,6 @@ mod tests {
         assert_eq!(failure_kind(&error), FailureKind::InvalidOutput);
         assert_eq!(session.requests, 2);
     }
-    #[tokio::test]
-    async fn reconciliation_is_bounded_report_only_and_never_returns_an_unchecked_draft() {
-        for repaired in [true, false] {
-            let mut session = WorkingSession {
-                requests: vec![],
-                responses: [
-                    "inconsistent".into(),
-                    if repaired {
-                        "reconciled".into()
-                    } else {
-                        "still inconsistent".into()
-                    },
-                ]
-                .into(),
-            };
-            let draft = Report {
-                text: "unchecked draft".into(),
-                validation_errors: vec![],
-                generation: 1,
-                recovered_output_limit: true,
-            };
-            let result = reconcile(&mut session, draft, 100, |text| {
-                ensure!(
-                    text == "reconciled",
-                    "Answer still contradicts its disposition"
-                );
-                Ok(())
-            })
-            .await;
-            assert_eq!(session.requests.len(), 2);
-            assert!(session.requests.iter().all(|(_, report_only)| *report_only));
-            if repaired {
-                let report = result.unwrap();
-                assert_eq!(report.text, "reconciled");
-                assert_eq!(report.generation, 3);
-                assert!(report.recovered_output_limit);
-            } else {
-                assert_eq!(
-                    failure_kind(&result.unwrap_err()),
-                    FailureKind::InvalidOutput
-                );
-            }
-        }
-    }
-
     #[tokio::test]
     async fn oversized_report_is_revised_without_repeating_investigation() {
         let mut session = WorkingSession {
