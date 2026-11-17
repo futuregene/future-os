@@ -2007,7 +2007,11 @@ export function ActivityRail({
         {expanded
           ? (
               <>
-                <div className="mb-3 shrink-0 space-y-0.5">
+                {/* Named so a test can click a standing entry by its own label.
+                    Clicking by body text was ambiguous: a conversation titled
+                    "远程桌面…" also matched "远程", and the harness clicks the last
+                    match, so the click opened a session instead of the rail entry. */}
+                <div className="mb-3 shrink-0 space-y-0.5" data-testid="rail-nav">
                   <NavButton icon={SquarePen} label={t("activityRail.newChat")} onClick={() => onNewChat()} primary />
                   <NavButton icon={Sparkles} label={t("activityRail.models")} onClick={onOpenModels} />
                   <div className="relative">
