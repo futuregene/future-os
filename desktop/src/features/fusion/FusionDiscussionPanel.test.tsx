@@ -154,7 +154,11 @@ it("renders own revisions and separates proposals from reported facts", async ()
     responses: [{ participant: "P2", quote: "Use files", decision: "insufficient_information", reason: "Missing rationale" }],
     self_review: [{ original_quote: "Prefer SQLite", decision: "revise", updated_position: "Investigate storage requirements first", reason: "Need workload evidence" }],
     mapping_corrections: [{ summary_quote: "Always SQLite", source_quote: "Prefer SQLite", correction: "Preference is conditional", reason: "The map overstated certainty" }],
-    additions: [{ kind: "proposal", content: "Measure the workload", evidence: [] }, { kind: "unverified_claim", content: "Latency may differ", evidence: [] }],
+    additions: [
+      { kind: "proposal", content: "Measure the workload", evidence: [] },
+      { kind: "unverified_claim", content: "Latency may differ", evidence: ["Legacy source label"] },
+      { kind: "verified_fact", content: "Observed source line", evidence: [{ source_id: "snapshot:src/main.rs", sha256: "a".repeat(64), quote: "let count = 7;", start_line: 12, end_line: 14 }] },
+    ],
   }) };
   const transcript = JSON.stringify([{ role: "assistant", content: [{ type: "text", text: step.output }] }]);
   const split = Math.floor(transcript.length / 2);
@@ -170,6 +174,11 @@ it("renders own revisions and separates proposals from reported facts", async ()
   expect(output).toContain("Preference is conditional");
   expect(output).toContain("New proposal");
   expect(output).toContain("Unverified claim");
+  expect(output).toContain("Legacy source label");
+  expect(output).toContain("snapshot:src/main.rs:12-14");
+  expect(output).toContain("let count = 7;");
+  expect(output).toContain(`SHA-256: ${"a".repeat(64)}`);
+  expect(output).not.toContain("[object Object]");
 });
 
 it("renders the sealed answer separately from its public support", async () => {

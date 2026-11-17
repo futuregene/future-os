@@ -73,6 +73,19 @@ function StepResponse({ text, phase }: { text: string; phase: string }) {
         const textField = (entry: Record<string, unknown>, field: string) => typeof entry[field] === "string" ? entry[field] as string : "";
         const quoted = (text: string) => text ? `> ${text.replace(/\n/gu, "\n> ")}` : "";
         const decision = (entry: Record<string, unknown>) => t(`fusion.detail.review.decisions.${textField(entry, "decision")}`);
+        const evidenceReference = (reference: unknown) => {
+          if (typeof reference === "string")
+            return `- ${reference}`;
+          if (!isRecord(reference))
+            return "";
+          const source = textField(reference, "source_id");
+          const quote = textField(reference, "quote");
+          const version = textField(reference, "sha256");
+          const start = typeof reference.start_line === "number" && Number.isSafeInteger(reference.start_line) && reference.start_line > 0 ? reference.start_line : null;
+          const end = typeof reference.end_line === "number" && Number.isSafeInteger(reference.end_line) && start !== null && reference.end_line >= start ? reference.end_line : null;
+          const range = start === null ? "" : `:${start}${end !== null && end !== start ? `-${end}` : ""}`;
+          return [source ? `- ${source}${range}` : "", quoted(quote), version ? `SHA-256: ${version}` : ""].filter(Boolean).join("\n\n");
+        };
         content = [
           typeof value.current_answer === "string" ? value.current_answer : "",
           section(t("fusion.detail.review.responses"), value.responses, entry => [
@@ -95,7 +108,7 @@ function StepResponse({ text, phase }: { text: string; phase: string }) {
           section(t("fusion.detail.review.additions"), value.additions, entry => [
             `**${t(`fusion.detail.review.kinds.${textField(entry, "kind")}`)}**`,
             textField(entry, "content"),
-            Array.isArray(entry.evidence) ? entry.evidence.filter((v): v is string => typeof v === "string").map(v => `- ${v}`).join("\n") : "",
+            Array.isArray(entry.evidence) ? entry.evidence.map(evidenceReference).filter(Boolean).join("\n\n") : "",
           ].filter(Boolean).join("\n\n")),
         ].filter(Boolean).join("\n\n");
       }
