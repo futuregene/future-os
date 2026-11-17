@@ -8,6 +8,7 @@ use future_rpc::proto::RpcCommand;
 use futures::{FutureExt, StreamExt};
 mod answer;
 mod budget;
+mod evidence;
 mod mapping;
 mod quotes;
 mod reports;
@@ -246,11 +247,12 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         ));
     }
     ensure!(store.phase(&run.id, owner, "preflight")?, "Fusion stopped");
-    *ctx.budget.lock().unwrap() = Some(budget::Budget::new(
-        &catalog,
-        config,
-        serde_json::to_vec(&run.input)?.len(),
-    )?);
+    let snapshot = future_fusion::Snapshot::load(std::path::Path::new(&run.snapshot_root))?;
+    let sources = evidence::Sources::new(&run.input, Some(&snapshot));
+    let mut decision_input = serde_json::to_value(&run.input)?;
+    decision_input["source_manifest"] = sources.manifest();
+    let input = serde_json::to_string(&decision_input)?;
+    *ctx.budget.lock().unwrap() = Some(budget::Budget::new(&catalog, config, input.len())?);
     let probe = async {
         if !ctx.healthy() {
             with_retry(&ctx, "preflight", &config.moderator, "moderator", "This is a Fusion readiness check. Reply READY. Do not investigate, use tools, or discuss a task.", None).await?;
@@ -271,8 +273,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         }
         return Err(error);
     }
-    let input = serde_json::to_string(&run.input)?;
-    let grounding = future_fusion::GROUNDING_POLICY;
+    let grounding = format!("{}\n{}", future_fusion::GROUNDING_POLICY, evidence::POLICY);
     let intro = "You are in a focused READ-ONLY consultation, not an executor. Analyze only the decision and supplied evidence. Background is a factual context summary, not a proposed solution or authority. Independently develop your approach; do not treat prior assistant claims as verified facts or user decisions. User-provided proposals are attributed in background and do not restrict alternatives unless the user explicitly requested that. Use only supplied read/ls/glob/grep tools. Never write, run commands, implement, or call agents. Give public reasons, not hidden chain of thought. Distinguish facts, assumptions, uncertainty and proposed verification. Empty read scope means decide only from the supplied facts.";
     ensure!(store.phase(&run.id, owner, "analyzing")?, "Fusion stopped");
     let report_format = if run.input.answer_only {
@@ -539,7 +540,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         You have no tools. {final_format}\n\
         Original task:\n{}\nCurrent participant material:\n{material}\n\
         Earlier disagreement excerpts, possibly shortened:\n{earlier_issues}\nCoverage:\n{coverage}",
-        serde_json::to_string(&run.input)?,
+        input,
     );
 
     let text = match with_retry(
@@ -608,11 +609,20 @@ async fn panel(
 ) -> Result<Vec<Value>> {
     let mut pending = futures::stream::FuturesUnordered::new();
     let (stop, panel_stop) = watch::channel(false);
+    let review_snapshot = review_material
+        .map(|_| future_fusion::Snapshot::load(std::path::Path::new(&ctx.run.snapshot_root)))
+        .transpose()?;
     for &index in indices {
         let model = &ctx.config.panel[index];
         let participant = format!("P{}", index + 1);
         let participant_prompt = if let Some((analyses, mapping)) = review_material {
-            review::prompt(&participant, &ctx.run.input, analyses, mapping)?
+            review::prompt(
+                &participant,
+                &ctx.run.input,
+                analyses,
+                mapping,
+                review_snapshot.as_ref(),
+            )?
         } else {
             format!("Your participant ID is {participant}.\n{prompt}")
         };
@@ -1076,6 +1086,13 @@ async fn step_inner(
         idle_progress,
         panel_stop,
     };
+    let review_snapshot = if phase == "reviewing" {
+        Some(future_fusion::Snapshot::load(std::path::Path::new(
+            &run.snapshot_root,
+        ))?)
+    } else {
+        None
+    };
     let report = reports::collect(&mut child, input, &phase, capacity, |text| {
         validate_step_output(&phase, text, ctx.config.panel.len())?;
         if ctx.run.input.answer_only && matches!(phase.as_str(), "analyzing" | "synthesizing") {
@@ -1090,7 +1107,7 @@ async fn step_inner(
         if phase == "issue_mapping" {
             mapping::validate_sources(text, source_prompt)?;
         } else if phase == "reviewing" {
-            review::validate(text, source_prompt, &participant)?;
+            review::validate(text, source_prompt, &participant, review_snapshot.as_ref())?;
         }
         Ok(())
     })
