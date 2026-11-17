@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useImperativeHandle, useRef, useState, useSyncExternalStore, type Ref } from "react";
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { ArrowLeft } from "lucide-react-native";
@@ -24,7 +24,7 @@ import { ProvidersSettingsPage } from "./ProvidersSettingsPage";
 import { SkillsSettingsPage } from "./SkillsSettingsPage";
 import { TasksSettingsPage } from "./TasksSettingsPage";
 import type { SettingsPageBack } from "./pageBack";
-import { ResourceStatus, SettingsLink, SettingsSection, SettingsSwitch, createSettingsStyles, useSettingsStyles } from "./SettingsPrimitives";
+import { ResourceStatus, SettingsField, SettingsLink, SettingsSection, SettingsSwitch, createSettingsStyles, useSettingsStyles } from "./SettingsPrimitives";
 import { ThisDeviceIdRow } from "./ThisDeviceIdRow";
 import { useDesktopResource } from "./useDesktopResource";
 import { useKeyboardHeight } from "../../lib/useKeyboardHeight";
@@ -306,6 +306,37 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
                 showing the old answer until a restart). It is changed on the
                 desktop only. */}
             {enabled ? <ResourceStatus loading={resource.loading || saving} failed={resource.failed} onReload={() => void resource.reload()} /> : null}
+          </SettingsSection>
+          <SettingsSection title={t("desktopSettings.archiveSection")}>
+            {/* Both switches sit together because archiving follows them as one
+                behaviour: what is cleared, and when a conversation is shelved at
+                all. The cleanup toggle is on by default on the desktop, so its
+                value is read from the snapshot rather than defaulted here. */}
+            <SettingsSwitch label={t("desktopSettings.archiveRunLogCleanup")} description={t("desktopSettings.archiveRunLogCleanupHint")}
+              value={resource.data?.archiveRunLogCleanup ?? true} disabled={disabled}
+              onChange={archiveRunLogCleanup => void changeSettings({ archiveRunLogCleanup })} />
+            <SettingsSwitch label={t("desktopSettings.autoArchive")} description={t("desktopSettings.autoArchiveHint")}
+              value={resource.data?.autoArchiveEnabled ?? false} disabled={disabled}
+              onChange={autoArchiveEnabled => void changeSettings({ autoArchiveEnabled })} />
+            {/* An older desktop does not report the period; 30 is its own
+                default, so the row still describes what that machine does. */}
+            <SettingsField label={t("desktopSettings.autoArchiveIdleDays")} hint={t("desktopSettings.autoArchiveIdleDaysHint")}>
+              <TextInput
+                accessibilityLabel={t("desktopSettings.autoArchiveIdleDays")}
+                editable={!disabled && (resource.data?.autoArchiveEnabled ?? false)}
+                keyboardType="number-pad"
+                style={[settingsStyles.input, !(resource.data?.autoArchiveEnabled ?? false) && { opacity: 0.5 }]}
+                value={String(resource.data?.autoArchiveIdleDays ?? 30)}
+                onChangeText={(text) => {
+                  const days = Number.parseInt(text.replace(/[^0-9]/g, ""), 10);
+                  // Out-of-range input is left alone rather than clamped: the
+                  // desktop rejects it, and clamping would report a value the
+                  // machine never stored.
+                  if (Number.isInteger(days) && days >= 1 && days <= 365)
+                    void changeSettings({ autoArchiveIdleDays: days });
+                }}
+              />
+            </SettingsField>
           </SettingsSection>
           <SettingsSection title={t("approvalTier.title")}>
             <View accessibilityRole="radiogroup" style={settingsStyles.actions}>

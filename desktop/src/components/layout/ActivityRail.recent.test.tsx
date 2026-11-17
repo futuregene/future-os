@@ -643,10 +643,53 @@ describe("the recent view's stream", () => {
 
     const more = view.container.querySelector<HTMLButtonElement>("[data-testid=\"recent-show-more\"]")!;
     expect(more.textContent).toContain("476");
-    expect(more.getAttribute("aria-label")).toContain("476");
 
     act(() => more.click());
     expect(loadRemainingThreadScope).toHaveBeenCalledWith("recent");
+    view.unmount();
+  });
+
+  /**
+   * One control across both views.
+   *
+   * Reported as “the `show N more` under Recent and under Workspace look
+   * different, and the Recent one is not aligned with the titles”. The recent
+   * view drew its own centred, bordered, accent-tinted pill while every other
+   * list drew the left-aligned muted row — so the same sentence was two
+   * different kinds of button a tab apart, and only one of them started on the
+   * conversations' column. Both now render `RailLoadMoreRow`.
+   */
+  it("draws the same load-more control, on the same column, as the workspace list", () => {
+    const page = streamed(RECENT_PAGE_SIZE);
+    const view = mount(
+      <ActivityRail {...props(page, {
+        loadRemainingThreadScope: vi.fn(async () => {}),
+        recentThreadIds: new Set(page.map(row => row.id)),
+        threadScopeHasMore: () => true,
+        threadScopeRemaining: (scope: string) => (scope === "recent" ? 5 : 7),
+        workspaces: [workspace("ws", "Workspace")],
+      })}
+      />,
+    );
+
+    // The workspace view's own control — the shape both must share.
+    const workspaceMore = [...view.container.querySelectorAll<HTMLButtonElement>("[data-testid=\"rail-load-more\"]")]
+      .find(row => row.textContent?.includes("7"));
+    expect(workspaceMore).toBeTruthy();
+
+    showRecent(view.container);
+    const recentMore = view.container.querySelector<HTMLButtonElement>("[data-testid=\"recent-show-more\"]")!;
+    expect(recentMore).toBeTruthy();
+
+    // Same element classes, and the same left inset as the control it replaces:
+    // the recent list's rows are top-level, so it must not be the 28px in-group
+    // column either.
+    expect(recentMore.className).toBe(workspaceMore!.className);
+    expect(recentMore.style.paddingLeft).toBe("16px");
+    // And it is neither centred nor painted as an accent pill, which is what the
+    // report was about.
+    expect(recentMore.className).not.toContain("justify-center");
+    expect(recentMore.className).not.toContain("accent");
     view.unmount();
   });
 
@@ -708,7 +751,6 @@ describe("the recent view's stream", () => {
     expect(more).toHaveLength(1);
     expect(remote).toBeNull();
     expect(more[0]!.textContent).toContain("478");
-    expect(more[0]!.getAttribute("aria-label")).toContain("478");
 
     act(() => more[0]!.click());
     expect(loadRemainingThreadScope).toHaveBeenCalledWith("recent");

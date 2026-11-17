@@ -6,7 +6,8 @@ import { cn } from "../../lib/cn";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { ArchivedThreadMenu } from "./ActivityRailMenus";
 import { RailDisclosure } from "./RailChrome";
-import { RailLoadMoreRow, RailRow, RailRowMenuButton, RailRowTitle } from "./RailRow";
+import { RailLoadMoreRow, RailRow, RailRowMenuButton, RailRowTitle, RailRowTreeToggle } from "./RailRow";
+import { visibleArchivedThreadRows } from "./threadTree";
 
 /**
  * One archived conversation tree's row in the archived view.
@@ -18,27 +19,41 @@ import { RailLoadMoreRow, RailRow, RailRowMenuButton, RailRowTitle } from "./Rai
  * archived list reads as the same list with different contents.
  *
  * The tree is the unit: `members` is every conversation archived with this root,
- * so restoring it brings all of them back.
+ * so restoring it brings all of them back. That is also why the rows nest —
+ * archiving a parent takes its forks with it, and drawing those back flat said
+ * they were unrelated conversations that happened to be shelved together.
  */
 export function ArchivedThreadRow({
   active,
+  depth = 0,
+  expanded = false,
+  hasChildren = false,
   members,
   onDelete,
   onOpen,
   onRename,
   onRestore,
+  onToggleExpanded,
   onToggleSelection,
   selected,
   selectionMode,
   thread,
 }: {
   active: boolean;
+  /** How far in this row sits under the archived tree's root. */
+  depth?: number;
+  /** Whether this row's forks are on screen. Only meaningful with `hasChildren`. */
+  expanded?: boolean;
+  /** Whether an archive of this row brought forks with it. */
+  hasChildren?: boolean;
   /** How many conversations this archived tree holds. */
   members: number;
   onDelete: (thread: StoredThread) => void;
   onOpen: (thread: StoredThread) => void;
   onRename: (thread: StoredThread) => void;
   onRestore: (thread: StoredThread) => void;
+  /** Open/close this row's forks — the same `+`/`−` the active lists fold with. */
+  onToggleExpanded?: (thread: StoredThread) => void;
   onToggleSelection?: (thread: StoredThread) => void;
   selected?: boolean;
   selectionMode?: boolean;
@@ -60,11 +75,21 @@ export function ArchivedThreadRow({
     <RailRow
       active={active}
       compact
+      depth={depth}
       onContextMenu={() => setMenuOpen(true)}
       onSelect={() => onOpen(thread)}
       rowRef={menuRef}
       title={thread.title}
     >
+      {hasChildren
+        ? (
+            <RailRowTreeToggle
+              expanded={expanded}
+              label={t(expanded ? "activityRail.collapseThread" : "activityRail.expandThread", { title: thread.title })}
+              onToggle={() => onToggleExpanded?.(thread)}
+            />
+          )
+        : null}
       <RailRowTitle>{thread.title}</RailRowTitle>
       {selectionMode
         ? (
@@ -255,6 +280,7 @@ export function ArchivedEmpty({ label }: { label: string }) {
  * it read-only before the reader decides to restore anything.
  */
 export function ArchivedWorkspaceContents({
+  expanded,
   hasMore,
   loading,
   onDelete,
@@ -262,12 +288,15 @@ export function ArchivedWorkspaceContents({
   onOpen,
   onRename,
   onRestore,
+  onToggleExpanded,
   onToggleSelection,
   remaining,
   selectedIds,
   selectionMode,
   threads,
 }: {
+  /** Which rows have their forks on screen (the rail's fold state). */
+  expanded?: ReadonlySet<string>;
   /** Whether this group's own list has another page. */
   hasMore?: boolean;
   loading: boolean;
@@ -278,6 +307,7 @@ export function ArchivedWorkspaceContents({
   onOpen: (thread: StoredThread) => void;
   onRename: (thread: StoredThread) => void;
   onRestore: (thread: StoredThread) => void;
+  onToggleExpanded?: (thread: StoredThread) => void;
   onToggleSelection?: (thread: StoredThread) => void;
   /** Ids of the rows ticked in a batch. */
   selectedIds?: ReadonlySet<string>;
@@ -291,25 +321,33 @@ export function ArchivedWorkspaceContents({
     return <div className="px-4 py-1 text-xs text-ink-muted">{t("activityRail.loading")}</div>;
   if (threads.length === 0)
     return <div className="px-4 py-1 text-xs text-ink-muted">{t("activityRail.archivedThreadsEmpty")}</div>;
+  // The group's conversations nest the same way the loose shelf's do: a fork
+  // archived with its parent is that row's work, not a second conversation
+  // beside it.
+  const rows = visibleArchivedThreadRows(threads, expanded ?? new Set());
   return (
     <div className="space-y-0.5 pl-2">
       {/* The same row the loose shelf draws, menu included: a conversation
           shelved with its workspace is still a conversation the reader can
           restore (or rename, or delete) on its own. Restoring one reopens the
           workspace and leaves the rest of the shelf behind it. */}
-      {threads.map(thread => (
+      {rows.map(row => (
         <ArchivedThreadRow
           active={false}
-          key={thread.id}
+          depth={row.depth}
+          expanded={expanded?.has(row.thread.id) ?? false}
+          hasChildren={row.hasChildren}
+          key={row.thread.id}
           members={1}
           onDelete={onDelete}
           onOpen={onOpen}
           onRename={onRename}
           onRestore={onRestore}
+          onToggleExpanded={onToggleExpanded}
           onToggleSelection={selectionMode ? onToggleSelection : undefined}
-          selected={selectedIds?.has(thread.id) ?? false}
+          selected={selectedIds?.has(row.thread.id) ?? false}
           selectionMode={selectionMode}
-          thread={thread}
+          thread={row.thread}
         />
       ))}
       {hasMore

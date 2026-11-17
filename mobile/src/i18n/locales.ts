@@ -366,6 +366,8 @@ export const resources = {
         conversations: "Chats",
         workspace: "Workspace",
         noWorkspaces: "No workspaces on the desktop yet.",
+        noActiveWorkspaces:
+          "Every workspace on this desktop is archived. Restore one from Archived to start a conversation in it.",
         createWorkspace: "New workspace",
         createWorkspaceAction: "Create",
         createWorkspaceFailed:
@@ -423,6 +425,11 @@ export const resources = {
         archiveWorkspaceRunningConfirm:
           '"{{name}}" has {{count}} conversations still running. Finish or stop them before archiving.',
         archiveStopAndArchive: "Stop and archive",
+        archiveNoticeTitle: "Archive this conversation?",
+        archiveCleanupNotice:
+          "Prompts, answers, command titles and generated files are kept, and restoring lets you keep talking. Command output and run replay are cleared permanently. This can be changed in the paired desktop's archiving settings.",
+        archiveAndClear: "Archive and clear run logs",
+        archiveStopAndClear: "Stop, archive and clear run logs",
         archivedEmpty:
           "Nothing archived yet. Conversations and workspaces archived on the desktop show up here.",
         archivedMachineSilent:
@@ -1009,6 +1016,14 @@ export const resources = {
         skillRecommendHint: "When on, sending a message suggests one skill you have not installed yet. Off by default.",
         autoTitleFirstTurn: "Generate a title after the first answer",
         autoTitleFirstTurnHint: "Generate and save a title after the first successful answer. Conversation context is not compacted.",
+        archiveSection: "Archiving",
+        archiveRunLogCleanup: "Clear run logs when archiving",
+        archiveRunLogCleanupHint: "Keep prompts, answers, command titles and generated files; clear command output and run replay. Restoring continues the conversation, but cleared logs cannot be recovered.",
+        autoArchive: "Archive idle conversations automatically",
+        autoArchiveHint: "Only conversations past the idle period are archived. Pinned, running, approval-waiting and currently open conversations are skipped. Workspaces themselves are not archived.",
+        autoArchiveIdleDays: "Idle days",
+        autoArchiveIdleDaysHint: "Idle means no new message or run activity since the conversation's last exchange. Between 1 and 365 days, 30 by default. Restoring starts a fresh idle period.",
+        autoArchiveIdleDaysValue: "{{days}} days",
         followAccount: "Official account",
         followAccountDescription: "Follow {{name}} on WeChat for release notes, feature guides and research tips.",
         followAccountQrAlt: "WeChat QR code for the {{name}} official account",
@@ -1626,6 +1641,8 @@ export const resources = {
         conversations: "对话",
         workspace: "工作区",
         noWorkspaces: "桌面端还没有工作区。",
+        noActiveWorkspaces:
+          "这台机器上的工作区都已归档。在「已归档」里恢复一个，才能在其中新建会话。",
         createWorkspace: "新建工作区",
         createWorkspaceAction: "创建",
         createWorkspaceFailed: "创建工作区失败，请检查文件夹路径后重试。",
@@ -1677,6 +1694,11 @@ export const resources = {
         archiveWorkspaceRunningTitle: "工作区里有会话正在进行",
         archiveWorkspaceRunningConfirm: "「{{name}}」中有 {{count}} 个会话正在进行，结束或停止后才能归档。",
         archiveStopAndArchive: "停止并归档",
+        archiveNoticeTitle: "归档此会话？",
+        archiveCleanupNotice:
+          "提问、回答、命令标题和生成的文件都会保留，取消归档后可以继续对话。命令输出和运行回放会被清理，无法恢复。此功能可在已配对桌面端的归档设置中更改。",
+        archiveAndClear: "归档并清理运行日志",
+        archiveStopAndClear: "停止、归档并清理运行日志",
         archivedEmpty: "还没有归档内容。在桌面端归档的会话和工作区会显示在这里。",
         archivedMachineSilent:
           "「{{name}}」当前没有响应，它的归档内容暂时读不到。该桌面重新连接后会显示在这里。",
@@ -2201,6 +2223,14 @@ export const resources = {
         skillRecommendHint: "开启后，发送消息时会推荐一个你尚未安装的技能；默认关闭。",
         autoTitleFirstTurn: "首轮回答后自动生成标题",
         autoTitleFirstTurnHint: "在首轮回答成功结束后生成并保存标题，不压缩对话上下文。",
+        archiveSection: "归档",
+        archiveRunLogCleanup: "归档时自动清理运行日志",
+        archiveRunLogCleanupHint: "保留提问、回答、命令标题和生成的文件，清理命令输出和运行回放。恢复后仍可继续对话，但已清理的日志无法恢复。",
+        autoArchive: "自动归档闲置会话",
+        autoArchiveHint: "仅归档超过闲置天数的会话；置顶、运行中、等待审批和当前查看的会话会跳过。工作区本身不会自动归档。",
+        autoArchiveIdleDays: "闲置天数",
+        autoArchiveIdleDaysHint: "闲置指距离该会话最后一次对话后，一直没有新的消息或运行活动。可设置 1–365 天，默认 30 天；恢复会话后重新计算。",
+        autoArchiveIdleDaysValue: "{{days}} 天",
         followAccount: "微信公众号",
         followAccountDescription: "关注 {{name}} 公众号，获取版本更新、功能说明与研究技巧。",
         followAccountQrAlt: "{{name}} 公众号二维码",

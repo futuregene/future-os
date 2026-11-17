@@ -234,6 +234,22 @@ export interface DesktopSettings {
    * default, so an older desktop that omits it must not read as "off".
    */
   skillRecommend?: boolean;
+  /**
+   * Clear a conversation's Shell output and run replay when it is archived.
+   * On by default, so an older desktop that omits it must not read as "off".
+   */
+  archiveRunLogCleanup?: boolean;
+  /**
+   * The one-time notice that archiving clears run logs has been shown. Kept on
+   * the desktop so the phone and the desktop tell the reader once between
+   * them, not once each.
+   */
+  archiveRunLogNoticeSeen?: boolean;
+  /** Archive conversations whose last meaningful activity is older than
+   * `autoArchiveIdleDays`. Off by default: absent reads as "off". */
+  autoArchiveEnabled?: boolean;
+  /** Idle days before automatic archiving (1-365, 30 by default). */
+  autoArchiveIdleDays?: number;
 }
 
 /**

@@ -58,42 +58,65 @@ export function runningInWorkspace(
 }
 
 /**
- * Archive one conversation, asking first when it is still running.
+ * Archive one conversation, asking first when it is still running, and — while
+ * the desktop still owes the one-time cleanup notice — saying what archiving
+ * clears.
  *
- * Same two choices the desktop dialog offers: cancel, or stop it and archive.
- * A conversation that was not running skips the question — the menu item is the
- * decision there.
+ * The notice is the desktop's own: `archiveRunLogNoticeSeen` is one flag in the
+ * paired machine's settings, so a reader who was told on either surface is not
+ * told again on the other. It is written only after the archive actually
+ * starts, so a reader who asked the question and then changed their mind is not
+ * recorded as having been told.
  */
 export function archiveSessionWithPrompt(input: {
   alert: AlertFn;
   commands: DesktopCommands;
+  /** The owning machine's settings snapshot, when the phone can read it. */
+  cleanup?: { enabled: boolean; noticeSeen: boolean };
+  /** Records the notice as shown on the owning machine. Best effort. */
+  onNoticeSeen?: () => void;
   onFailed: () => void;
   session: RemoteSession;
   t: (key: string, options?: Record<string, unknown>) => string;
 }): void {
-  const { alert, commands, onFailed, session, t } = input;
+  const { alert, commands, cleanup, onFailed, onNoticeSeen, session, t } = input;
   const name = session.title || t("sessions.unnamed");
   const archive = () => archiveWhenStopped(() =>
     commands.archiveSession(session.sessionId, session.threadId));
-  if (!session.streaming) {
+  const noticePending = cleanup?.enabled === true && cleanup.noticeSeen !== true;
+  if (!noticePending && !session.streaming) {
     void commands.archiveSession(session.sessionId, session.threadId).catch(onFailed);
     return;
   }
-  alert(
-    t("sessions.archiveRunningTitle"),
-    t("sessions.archiveRunningConfirm", { name }),
-    [
-      { text: t("chat.cancel"), style: "cancel" },
-      {
-        text: t("sessions.archiveStopAndArchive"),
-        onPress: () => {
-          void commands.abortSession(session.sessionId)
-            .then(archive)
-            .catch(onFailed);
-        },
+  // A notice that has not been shown yet is its own reason to ask, even for a
+  // conversation that is not running: the clearing is permanent, and the menu
+  // item alone cannot say what it takes with it.
+  const title = session.streaming
+    ? t("sessions.archiveRunningTitle")
+    : t("sessions.archiveNoticeTitle");
+  const body = [
+    session.streaming ? t("sessions.archiveRunningConfirm", { name }) : null,
+    noticePending ? t("sessions.archiveCleanupNotice") : null,
+  ].filter(Boolean).join("\n\n");
+  const confirmText = session.streaming
+    ? (noticePending ? t("sessions.archiveStopAndClear") : t("sessions.archiveStopAndArchive"))
+    : (noticePending ? t("sessions.archiveAndClear") : t("sessions.archive"));
+  const run = session.streaming
+    ? () => commands.abortSession(session.sessionId).then(archive)
+    : archive;
+  alert(t(title), body, [
+    { text: t("chat.cancel"), style: "cancel" },
+    {
+      text: t(confirmText),
+      onPress: () => {
+        void run()
+          .then(() => {
+            if (noticePending) onNoticeSeen?.();
+          })
+          .catch(onFailed);
       },
-    ],
-  );
+    },
+  ]);
 }
 
 /**
