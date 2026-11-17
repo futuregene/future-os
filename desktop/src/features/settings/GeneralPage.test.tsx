@@ -29,9 +29,16 @@ it("enables title generation by default and allows opting out without context co
         onToggleBellOnComplete={() => {}}
         autoTitleFirstTurn={DEFAULT_APP_SETTINGS.autoTitleFirstTurn}
         onToggleAutoTitleFirstTurn={onToggle}
+        archiveRunLogCleanup={DEFAULT_APP_SETTINGS.archiveRunLogCleanup}
+        onToggleArchiveRunLogCleanup={() => {}}
+        autoArchiveEnabled={DEFAULT_APP_SETTINGS.autoArchiveEnabled}
+        onToggleAutoArchive={() => {}}
+        autoArchiveIdleDays={DEFAULT_APP_SETTINGS.autoArchiveIdleDays}
+        onChangeAutoArchiveIdleDays={() => {}}
       />,
     ));
-    expect(container.querySelectorAll("[role=switch]")).toHaveLength(4);
+    // Four general toggles plus the two archive toggles below them.
+    expect(container.querySelectorAll("[role=switch]")).toHaveLength(6);
     expect(container.textContent).not.toContain("Show thinking process");
     expect(DEFAULT_APP_SETTINGS).not.toHaveProperty("showThinking");
     const toggle = container.querySelector<HTMLButtonElement>("[role=switch][aria-label='Generate a title after the first answer']");

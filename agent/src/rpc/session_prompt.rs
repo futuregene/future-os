@@ -1247,6 +1247,8 @@ impl ServerSession {
                     run_id: run_lease.run_id.clone(),
                     tool_call_id: String::new(),
                 },
+                answer_only: run_loop.tools.len() == 1
+                    && run_loop.tools[0].def.function.name == "fusion",
                 parent_request: Some(
                     future_fusion::fusion_prompt(prompt.message)
                         .unwrap_or(prompt.message)

@@ -53,6 +53,16 @@ function StepResponse({ text, phase }: { text: string; phase: string }) {
         const items = Array.isArray(value[field]) ? value[field].filter((item): item is string => typeof item === "string" && !!item.trim()) : [];
         return items.length ? `### ${label}\n${items.map(item => `- ${item}`).join("\n")}` : "";
       };
+      if (typeof value.answer === "string" && typeof value.support === "string") {
+        const checks = Array.isArray(value.checks)
+          ? value.checks.filter(isRecord).map(check => [
+              typeof check.claim === "string" ? `**${check.claim}**` : "",
+              typeof check.quote === "string" ? `> ${check.quote.replace(/\n/gu, "\n> ")}` : "",
+              typeof check.effect === "string" ? check.effect : "",
+            ].filter(Boolean).join("\n\n"))
+          : [];
+        content = [value.answer, value.support, list("unresolved", t("fusion.result.unresolved")), ...checks].filter(Boolean).join("\n\n");
+      }
       if (phase === "synthesizing" && typeof value.conclusion === "string") {
         content = [value.conclusion, ...["rationale", "unresolved"].map(field => list(field, t(`fusion.result.${field}`)))].filter(Boolean).join("\n\n");
       }

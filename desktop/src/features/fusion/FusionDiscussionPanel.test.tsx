@@ -171,3 +171,14 @@ it("renders own revisions and separates proposals from reported facts", async ()
   expect(output).toContain("New proposal");
   expect(output).toContain("Unverified claim");
 });
+
+it("renders the sealed answer separately from its public support", async () => {
+  const step = { ...discussion().steps![0]!, output: JSON.stringify({ answer: "FINAL_ANSWER: value", support: "Derived from the request", unresolved: [], checks: [{ claim: "A premise", quote: "Given premise", assessment: "supports", effect: "Establishes the answer" }] }) };
+  mocks.invoke.mockResolvedValue({ ...step, transcript: "", next_offset: 0, total_bytes: 0 });
+  await act(async () => root.render(<FusionStepBody step={step} runId="r1" toolCallId="t1" />));
+  const output = container.querySelector("[data-fusion-public-output]")?.textContent;
+  expect(output).toContain("FINAL_ANSWER: value");
+  expect(output).toContain("Derived from the request");
+  expect(output).toContain("Given premise");
+  expect(output).not.toContain("\"checks\"");
+});

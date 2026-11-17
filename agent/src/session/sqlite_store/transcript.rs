@@ -171,6 +171,10 @@ impl SqliteStore {
                     params![session, run],
                 )?;
                 tx.execute(
+                    "DELETE FROM run_snapshot_cache WHERE session_id=?1 AND run_id=?2",
+                    params![session, run],
+                )?;
+                tx.execute(
                     "DELETE FROM stream_runs WHERE session_id=?1 AND run_id=?2",
                     params![session, run],
                 )?;

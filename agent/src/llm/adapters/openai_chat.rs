@@ -358,6 +358,11 @@ fn apply_reasoning(
             }
         }
     }
+    if !enabled {
+        if let Some(value) = &config.disabled_reasoning_effort {
+            crate::llm::schema::apply_disabled_effort(body, value, vocabulary);
+        }
+    }
 }
 
 fn arguments_string(value: &Value) -> String {

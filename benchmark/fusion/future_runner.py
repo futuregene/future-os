@@ -382,7 +382,7 @@ class Future:
             result["effective_parent_model"] = state.get("model")
             result["effective_parent_thinking"] = state.get("thinkingLevel")
             result["parent_thinking_binding_scope"] = (
-                "session selection; Fusion request policy may override individual stages"
+                "session selection; inspect the frozen runtime policy for per-request settings"
                 if arm == "fusion"
                 else "session selection"
             )
@@ -587,6 +587,14 @@ class Future:
             if raw_tool_calls(transcript):
                 raise ValueError("Fusion child used an external tool")
             text = last_assistant_text(transcript)
+            if run["input"].get("answer_only") and step["phase"] == "analyzing":
+                try:
+                    typed = json.loads(
+                        text.strip().removeprefix("```json").removesuffix("```").strip()
+                    )
+                    text = typed.get("answer", "")
+                except (ValueError, AttributeError):
+                    text = ""
             if step["phase"] == "reviewing":
                 try:
                     review = json.loads(
@@ -606,7 +614,9 @@ class Future:
                         "grade": score(case, text),
                     }
                 )
-        conclusion = (run.get("result") or {}).get("conclusion", "")
+        conclusion = (run.get("result") or {}).get("final_answer") or (
+            run.get("result") or {}
+        ).get("conclusion", "")
         return {
             "id": run["id"],
             "tool_call_id": tool_id,

@@ -70,8 +70,14 @@ export function RunsPanel({
     () => buildToolEntries(runs, toolsByRun),
     [runs, toolsByRun],
   );
+  // Two ways a row stops belonging to this list: the user shelved the finished
+  // programs themselves (`archivedAt`), or archiving the conversation cleared
+  // this run's output and replay (`logsPurgedAt`). A purged run keeps its
+  // identity in the store and still draws in the transcript, so this only
+  // decides whether the right panel lists it — never whether the conversation
+  // itself still shows the command.
   const entries = useMemo(
-    () => allEntries.filter(entry => !entry.run.archivedAt),
+    () => allEntries.filter(entry => !entry.run.archivedAt && entry.run.logsPurgedAt == null),
     [allEntries],
   );
   const { runningCount, finishedCount } = useMemo(
@@ -103,6 +109,9 @@ export function RunsPanel({
   }, [entries.length, listScrollbar, loadNextPage, visibleCount]);
 
   if (entries.length === 0) {
+    const hasPurgedLogs = allEntries.some(
+      entry => entry.run.logsPurgedAt != null,
+    );
     const hasArchivedPrograms = allEntries.some(
       entry => entry.run.archivedAt,
     );
@@ -117,9 +126,11 @@ export function RunsPanel({
             <EmptyState
               className="m-4"
               detail={t(
-                hasArchivedPrograms
-                  ? "runsPanel.emptyDetailArchived"
-                  : "runsPanel.emptyDetailNeverRun",
+                hasPurgedLogs
+                  ? "runsPanel.emptyDetailLogsPurged"
+                  : hasArchivedPrograms
+                    ? "runsPanel.emptyDetailArchived"
+                    : "runsPanel.emptyDetailNeverRun",
               )}
               title={t("runsPanel.emptyTitle")}
             />

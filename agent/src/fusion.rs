@@ -16,6 +16,7 @@ pub(crate) enum ContextScope {
     Parent {
         parent: Parent,
         parent_request: Option<String>,
+        answer_only: bool,
         workspace: PathBuf,
         store: Store,
         sandbox: Arc<crate::sandbox::ResolvedSandbox>,
@@ -142,10 +143,9 @@ impl ParentStage {
     pub(crate) fn controls(self) -> crate::llm::schema::RequestControls {
         crate::llm::schema::RequestControls {
             required_tool: (self == Self::Routing).then(|| "fusion".into()),
-            // Routing only needs tool arguments. Delivery retains the selected
-            // model's output budget so long user-requested answers can finish.
-            max_output_tokens: (self == Self::Routing).then_some(16_384),
-            thinking_level: Some("off".into()),
+            // Routing requirements never override the user's generation settings.
+            max_output_tokens: None,
+            thinking_level: None,
         }
     }
     pub(crate) fn after_tools(messages: &[crate::types::AgentMessage]) -> Self {
@@ -177,6 +177,34 @@ impl ParentStage {
     }
 }
 
+/// Only a completed backend conclusion may bypass a second model request.
+pub(crate) fn completed_answer(
+    messages: &[crate::types::AgentMessage],
+) -> Option<(String, String)> {
+    let last = messages
+        .last()
+        .filter(|m| m.role == "tool" && m.name == "fusion")?;
+    last.content.iter().find_map(|block| {
+        let crate::types::ContentBlock::ToolResult {
+            content,
+            is_error: false,
+            ..
+        } = block
+        else {
+            return None;
+        };
+        let value: Value = serde_json::from_str(content).ok()?;
+        if value["status"] != "completed" || value["has_conclusion"] != true {
+            return None;
+        }
+        let answer = value["final_answer"].as_str()?.to_owned();
+        if answer.trim().is_empty() {
+            return None;
+        }
+        Some((value["fusion_run_id"].as_str()?.to_owned(), answer))
+    })
+}
+
 fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
     Box::pin(async move {
         let context = CONTEXT
@@ -185,6 +213,7 @@ fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
         let ContextScope::Parent {
             mut parent,
             parent_request,
+            answer_only,
             workspace,
             store,
             sandbox,
@@ -210,8 +239,23 @@ fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
             args.get("parent_request").is_none(),
             "Fusion parent_request is backend-owned"
         );
+        ensure!(
+            args.get("answer_only").is_none(),
+            "Fusion answer_only is backend-owned"
+        );
         let mut input: ConsultationInput = serde_json::from_value(args)?;
+        input.answer_only = answer_only;
+        if answer_only {
+            input.question = parent_request
+                .clone()
+                .context("Closed task requires its preserved parent request")?;
+        }
         input.parent_request = parent_request;
+        if answer_only {
+            input.goal =
+                "Answer the preserved user request with its original scope and requested format."
+                    .into();
+        }
         input.validate()?;
         let (run, created) = store.prepare(parent, input, &workspace)?;
         let mut guard = InvocationGuard {
@@ -639,6 +683,24 @@ fn request_context_bytes(request: &crate::llm::schema::ModelRequest) -> Result<u
 
 #[cfg(test)]
 mod input_contract_tests {
+    use super::completed_answer;
+    use serde_json::{json, Value};
+    #[test]
+    fn routing_and_recovery_never_override_user_generation_settings() {
+        for stage in [
+            super::ParentStage::Routing,
+            super::ParentStage::Delivery,
+            super::ParentStage::Recovery,
+        ] {
+            let controls = stage.controls();
+            assert!(controls.thinking_level.is_none());
+            assert!(controls.max_output_tokens.is_none());
+            assert_eq!(
+                controls.required_tool.is_some(),
+                stage == super::ParentStage::Routing
+            );
+        }
+    }
     #[test]
     fn retained_original_selects_its_run_without_exposing_later_repair() {
         use crate::session::SessionEntry;
@@ -815,5 +877,28 @@ mod input_contract_tests {
             .as_str()
             .unwrap()
             .contains("empty array"));
+    }
+    #[test]
+    fn sealed_delivery_requires_a_completed_nonempty_backend_artifact() {
+        use crate::types::{AgentMessage, ContentBlock};
+        let mut value = json!({"status":"completed","has_conclusion":true,"fusion_run_id":"owned","final_answer":"public answer"});
+        let message = |v: &Value, is_error| AgentMessage {
+            role: "tool".into(),
+            name: "fusion".into(),
+            content: vec![ContentBlock::tool_result("call", v.to_string(), is_error)],
+            ..Default::default()
+        };
+        assert_eq!(
+            completed_answer(&[message(&value, false)]),
+            Some(("owned".into(), "public answer".into()))
+        );
+        assert!(completed_answer(&[message(&value, true)]).is_none());
+        for status in ["failed", "cancelled", "interrupted", "running"] {
+            value["status"] = json!(status);
+            assert!(completed_answer(&[message(&value, false)]).is_none());
+        }
+        value["status"] = json!("completed");
+        value["final_answer"] = json!(" ");
+        assert!(completed_answer(&[message(&value, false)]).is_none());
     }
 }

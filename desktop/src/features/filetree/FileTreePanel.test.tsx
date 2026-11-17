@@ -10,10 +10,12 @@ import { FileTreePanel } from "./FileTreePanel";
 
 const listDirectory = vi.fn<(path: string) => Promise<DirEntry[]>>();
 const openPath = vi.fn<(path: string) => Promise<void>>();
+const revealPath = vi.fn<(path: string) => Promise<void>>();
 
 vi.mock("../../integrations/storage/files", () => ({
   listDirectory: (path: string) => listDirectory(path),
   openPath: (path: string) => openPath(path),
+  revealPath: (path: string) => revealPath(path),
 }));
 
 vi.mock("../filepreview/FilePreviewOverlay", () => ({
@@ -109,8 +111,10 @@ async function openRowMenu(name: string) {
 beforeEach(() => {
   listDirectory.mockReset();
   openPath.mockReset();
+  revealPath.mockReset();
   listDirectory.mockResolvedValue([entry("readme.md"), entry("src", true)]);
   openPath.mockResolvedValue(undefined);
+  revealPath.mockResolvedValue(undefined);
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -487,7 +491,7 @@ describe("fileTreePanel file activation", () => {
 });
 
 describe("fileTreePanel context menu", () => {
-  it("offers only Open for a directory", async () => {
+  it("offers only Open and Show in folder for a directory", async () => {
     const rootPath = freshRoot("menu-dir");
     listDirectory.mockResolvedValue([entry("src", true, rootPath)]);
     await mount({ rootPath });
@@ -502,6 +506,39 @@ describe("fileTreePanel context menu", () => {
     });
     await flush();
     expect(openPath).toHaveBeenCalledWith(`${rootPath}/src`);
+  });
+
+  /// The `...` menu is where a user lands when they are looking at a file name
+  /// and want to find the file on disk — the one action the row menu was missing
+  /// (the header's "Open Folder" only reaches the workspace root). It must not
+  /// be a second way to launch the file's default app: that is what Open is for.
+  it("reveals a file's folder without opening the file itself", async () => {
+    const rootPath = freshRoot("menu-reveal-file");
+    listDirectory.mockResolvedValue([entry("note.md", false, rootPath)]);
+    await mount({ rootPath });
+    await openRowMenu("note.md");
+
+    await act(async () => {
+      menuItem("Show in folder")?.click();
+    });
+    await flush();
+    expect(revealPath).toHaveBeenCalledWith(`${rootPath}/note.md`);
+    expect(openPath).not.toHaveBeenCalled();
+  });
+
+  it("a reveal that fails does not replace the tree with an error", async () => {
+    const rootPath = freshRoot("menu-reveal-fail");
+    listDirectory.mockResolvedValue([entry("note.md", false, rootPath)]);
+    revealPath.mockRejectedValue(new Error("no file manager"));
+    await mount({ rootPath });
+    await openRowMenu("note.md");
+
+    await act(async () => {
+      menuItem("Show in folder")?.click();
+    });
+    await flush();
+    expect(rowNames()).toContain("note.md");
+    expect(container.textContent).not.toContain("Couldn't open this file");
   });
 
   it("offers attach/preview/open for a previewable file", async () => {

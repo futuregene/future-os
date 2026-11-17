@@ -211,6 +211,12 @@ export function SettingsDialog({
                     onToggleAutoTitleFirstTurn={value => onChangeSettings({ autoTitleFirstTurn: value })}
                     bellOnComplete={appSettings.bellOnComplete}
                     onToggleBellOnComplete={value => onChangeSettings({ bellOnComplete: value })}
+                    archiveRunLogCleanup={appSettings.archiveRunLogCleanup}
+                    onToggleArchiveRunLogCleanup={value => onChangeSettings({ archiveRunLogCleanup: value })}
+                    autoArchiveEnabled={appSettings.autoArchiveEnabled}
+                    onToggleAutoArchive={value => onChangeSettings({ autoArchiveEnabled: value })}
+                    autoArchiveIdleDays={appSettings.autoArchiveIdleDays}
+                    onChangeAutoArchiveIdleDays={value => onChangeSettings({ autoArchiveIdleDays: value })}
                   />
                 )
               : null}

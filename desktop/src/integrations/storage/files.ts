@@ -19,6 +19,16 @@ export async function openPath(path: string) {
 }
 
 /**
+ * Reveal a file in the OS file manager, with the item selected where the
+ * platform supports it. Distinct from {@link openPath}, which launches the
+ * file's default application: "show me where this is" is a different question
+ * from "open it".
+ */
+export async function revealPath(path: string) {
+  return invokeCommand<void>("reveal_in_file_manager", { path });
+}
+
+/**
  * List a single directory level (no recursion), sorted directories-first then
  * by name. Backs the file-tree panel's lazy per-level loading.
  */

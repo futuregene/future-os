@@ -44,6 +44,14 @@ export interface AppSettings {
    * by default; once set, archiving never re-teaches the destination.
    */
   archiveGuideSeen: boolean;
+  /** Clear Shell output and replay when a conversation is archived. On by default. */
+  archiveRunLogCleanup: boolean;
+  /** The one-time destructive-cleanup explanation was acknowledged. */
+  archiveRunLogNoticeSeen: boolean;
+  /** Automatically archive idle conversation trees. Off by default. */
+  autoArchiveEnabled: boolean;
+  /** Minimum meaningful-activity idle time before automatic archiving. */
+  autoArchiveIdleDays: number;
   /**
    * Play a completion bell and request window attention when an agent run
    * finishes. On by default.
@@ -72,6 +80,10 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   skillGuideDismissed: false,
   skillIntroDismissed: false,
   archiveGuideSeen: false,
+  archiveRunLogCleanup: true,
+  archiveRunLogNoticeSeen: false,
+  autoArchiveEnabled: false,
+  autoArchiveIdleDays: 30,
   bellOnComplete: true,
   autoTitleFirstTurn: true,
   titleLanguage: "en",
@@ -91,6 +103,10 @@ export async function updateAppSettings(input: {
   skillGuideDismissed?: boolean;
   skillIntroDismissed?: boolean;
   archiveGuideSeen?: boolean;
+  archiveRunLogCleanup?: boolean;
+  archiveRunLogNoticeSeen?: boolean;
+  autoArchiveEnabled?: boolean;
+  autoArchiveIdleDays?: number;
   bellOnComplete?: boolean;
   autoTitleFirstTurn?: boolean;
   titleLanguage?: "en" | "zh";

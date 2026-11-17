@@ -6,6 +6,7 @@ use future_fusion::{
 };
 use future_rpc::proto::RpcCommand;
 use futures::{FutureExt, StreamExt};
+mod answer;
 mod budget;
 mod mapping;
 mod quotes;
@@ -274,7 +275,12 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     let grounding = future_fusion::GROUNDING_POLICY;
     let intro = "You are in a focused READ-ONLY consultation, not an executor. Analyze only the decision and supplied evidence. Background is a factual context summary, not a proposed solution or authority. Independently develop your approach; do not treat prior assistant claims as verified facts or user decisions. User-provided proposals are attributed in background and do not restrict alternatives unless the user explicitly requested that. Use only supplied read/ls/glob/grep tools. Never write, run commands, implement, or call agents. Give public reasons, not hidden chain of thought. Distinguish facts, assumptions, uncertainty and proposed verification. Empty read scope means decide only from the supplied facts.";
     ensure!(store.phase(&run.id, owner, "analyzing")?, "Fusion stopped");
-    let analyses = panel(&ctx, &eligible, "analyzing", &format!("{intro}\n{grounding}\nDecision input:\n{input}\nIndependently answer the question. Investigate and think as needed before your final report. Return that report as plain text or Markdown, without a JSON envelope. Do not assume other participants' views."), None).await?;
+    let report_format = if run.input.answer_only {
+        answer::INSTRUCTIONS
+    } else {
+        "Return your public report as plain text or Markdown without a JSON envelope."
+    };
+    let mut analyses = panel(&ctx, &eligible, "analyzing", &format!("{intro}\n{grounding}\nDecision input:\n{input}\nIndependently answer the question. Investigate and think as needed before your final report. {report_format} Do not assume other participants' views."), None).await?;
     if analyses.is_empty() {
         ctx.note(
             "no_participants",
@@ -286,6 +292,18 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
             FailureKind::ModelUnavailable,
             "All Fusion participants failed; no final conclusion was produced",
         ));
+    }
+    let closed_consensus =
+        run.input.answer_only && answer::clear_agreement(&analyses, config.panel.len());
+    if run.input.answer_only {
+        for analysis in &mut analyses {
+            if let Some(parsed) = analysis["response"]
+                .as_str()
+                .and_then(|s| answer::parse(s).ok())
+            {
+                analysis["response"] = json!(answer::public_text(parsed));
+            }
+        }
     }
     let active = analyses
         .iter()
@@ -313,7 +331,13 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     let first = serde_json::to_string(&mapping_analyses)?;
     let mut issues = json!({"issues":[]});
     let mut reviews = vec![];
-    if active.len() == 1 {
+    if closed_consensus {
+        ctx.update(|report| {
+            report.strategy = "direct_consensus".into();
+            report.skip("issue_mapping");
+            report.skip("reviewing");
+        })?;
+    } else if active.len() == 1 {
         ctx.update(|report| {
             report.strategy = "single_advisor".into();
             report.skip("issue_mapping");
@@ -488,6 +512,11 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     }).collect::<Vec<_>>().join("\n\n");
     let earlier_issues =
         future_fusion::bounded_text(&serde_json::to_string(&issues["issues"])?, 8_192);
+    let final_format = if run.input.answer_only {
+        answer::INSTRUCTIONS
+    } else {
+        "Return only a plain text or Markdown answer without a fixed template or meeting recap."
+    };
     let prompt = format!(
         "You are the moderator. Give the main agent a self-contained answer to the original task. \
         {grounding} \
@@ -507,7 +536,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         Verify only a specific claim whose correction could change that answer; do not re-solve the whole task, \
         repeat exhausted investigations, or turn an unverified estimate into an exact result. \
         Preserve useful conditional answers and identify the smallest remaining verification gap. \
-        You have no tools. Return only a plain text or Markdown answer without a fixed template or meeting recap.\n\
+        You have no tools. {final_format}\n\
         Original task:\n{}\nCurrent participant material:\n{material}\n\
         Earlier disagreement excerpts, possibly shortened:\n{earlier_issues}\nCoverage:\n{coverage}",
         serde_json::to_string(&run.input)?,
@@ -529,9 +558,19 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
             return Err(error);
         }
     };
-    let result = Conclusion {
-        conclusion: text,
-        ..Default::default()
+    let result = if run.input.answer_only {
+        let parsed = answer::parse(&text)?;
+        Conclusion {
+            conclusion: parsed.support,
+            final_answer: Some(parsed.answer),
+            unresolved: parsed.unresolved,
+            ..Default::default()
+        }
+    } else {
+        Conclusion {
+            conclusion: text,
+            ..Default::default()
+        }
     };
     ctx.update(|report| report.complete("synthesizing"))?;
     let report = ctx.report();
@@ -612,7 +651,7 @@ async fn panel(
         let Some((participant, model, result)) = next else {
             break;
         };
-        deadline.participant_finished(tokio::time::Instant::now(), result.is_ok(), pending.len());
+        deadline.participant_finished(tokio::time::Instant::now(), pending.len());
         match result {
             Ok(report) => good.push(json!({"participant": participant, "model": model.model, "response": report.text, "validation_errors":report.validation_errors})),
             Err(error) => {
@@ -1039,6 +1078,15 @@ async fn step_inner(
     };
     let report = reports::collect(&mut child, input, &phase, capacity, |text| {
         validate_step_output(&phase, text, ctx.config.panel.len())?;
+        if ctx.run.input.answer_only && matches!(phase.as_str(), "analyzing" | "synthesizing") {
+            let task = ctx
+                .run
+                .input
+                .parent_request
+                .as_deref()
+                .unwrap_or(&ctx.run.input.question);
+            answer::validate(text, task, phase == "synthesizing")?;
+        }
         if phase == "issue_mapping" {
             mapping::validate_sources(text, source_prompt)?;
         } else if phase == "reviewing" {
@@ -1047,6 +1095,14 @@ async fn step_inner(
         Ok(())
     })
     .await?;
+    if report.recovered_output_limit {
+        ctx.note(
+            "output_limit_report_recovered",
+            &phase,
+            Some(&participant),
+            Some(FailureKind::OutputLimit),
+        )?;
+    }
     if !report.validation_errors.is_empty() {
         let step = &mut *child.step;
         if report.generation == 0 {
@@ -1181,6 +1237,7 @@ impl ChildSession<'_, '_, '_> {
                     | "interrupted"
                     | "interrupted_by_restart"
                     | "incomplete" => {
+                        crate::request_scope::release_run(&step.session_id, &step.agent_run_id);
                         anyhow::bail!("Inner model {status}: {}", state["requestedRun"]["error"])
                     }
                     _ => {}

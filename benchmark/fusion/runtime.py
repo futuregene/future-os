@@ -55,6 +55,7 @@ def local_settings(source):
 def wait_for_ready(process, home, endpoint, fusion_enabled, binary, env, timeout=60):
     """Publish running only after Agent transport and the Fusion owner are live."""
     deadline = time.monotonic() + timeout
+    last_probe = {}
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise RuntimeError(
@@ -71,15 +72,23 @@ def wait_for_ready(process, home, endpoint, fusion_enabled, binary, env, timeout
                 timeout=10,
                 check=False,
             )
+            last_probe = {
+                "returncode": probe.returncode,
+                "stderr": probe.stderr[-4096:],
+            }
             if probe.returncode:
+                write_json(home / "readiness-last-probe.json", last_probe)
                 time.sleep(0.25)
                 continue
             host, port = endpoint.rsplit(":", 1)
             with socket.create_connection((host, int(port)), timeout=0.5):
                 pass
             if fusion_enabled:
+                # This is our private runtime, not source history. mode=rw
+                # permits SQLite sidecar initialization while forbidding a
+                # missing database from being created; the query is read-only.
                 connection = sqlite3.connect(
-                    (home / "fusion/fusion.db").as_uri() + "?mode=ro",
+                    (home / "fusion/fusion.db").as_uri() + "?mode=rw",
                     uri=True,
                     timeout=0.5,
                 )
@@ -94,13 +103,17 @@ def wait_for_ready(process, home, endpoint, fusion_enabled, binary, env, timeout
                     if row
                     else float("inf")
                 )
+                last_probe["fusion_heartbeat_age_ms"] = age if row else None
                 if not 0 <= age < 5000:
+                    write_json(home / "readiness-last-probe.json", last_probe)
                     time.sleep(0.25)
                     continue
             return
-        except (OSError, sqlite3.Error, ValueError, subprocess.TimeoutExpired):
-            pass
+        except (OSError, sqlite3.Error, ValueError, subprocess.TimeoutExpired) as error:
+            last_probe["readiness_error"] = f"{type(error).__name__}: {error}"
+        write_json(home / "readiness-last-probe.json", last_probe)
         time.sleep(0.25)
+    write_json(home / "readiness-failure.json", last_probe)
     raise RuntimeError(
         "Isolated Host startup did not become ready; inspect host-stdio.log"
     )

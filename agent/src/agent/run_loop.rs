@@ -701,16 +701,22 @@ impl Loop {
                 tracing::info!(
                     ?stage,
                     output_limit = stage.controls().max_output_tokens,
-                    thinking = "off",
+                    thinking = "configured",
                     timeout_secs = stage.timeout_secs(),
-                    "Fusion closed-task request policy v1"
+                    "Fusion closed-task request policy v2"
                 );
             }
             let stage_request = async {
                 let request = crate::llm::schema::ModelRequest {
                     model: ctx.model.clone(),
                     messages: work_messages,
-                    tools: tool_defs.clone(),
+                    tools: if closed_fusion
+                        && fusion_stage != Some(crate::fusion::ParentStage::Routing)
+                    {
+                        vec![]
+                    } else {
+                        tool_defs.clone()
+                    },
                     system_prompt: request_system_prompt.to_string(),
                 };
                 let stream = async {
@@ -1640,8 +1646,8 @@ impl Loop {
             if let Some(stage) = fusion_stage {
                 assistant_msg.metadata.get_or_insert_with(serde_json::Map::new).insert(
                     "fusion_request_policy".into(), serde_json::json!({
-                        "version": 1, "stage": format!("{stage:?}").to_lowercase(),
-                        "thinking_level": "off", "max_output_tokens_cap": stage.controls().max_output_tokens,
+                        "version": 2, "stage": format!("{stage:?}").to_lowercase(),
+                        "generation_settings": "user_configured", "thinking_level_override": stage.controls().thinking_level, "max_output_tokens_cap": stage.controls().max_output_tokens,
                         "timeout_seconds": stage.timeout_secs(),
                         "timeout_scope": if stage == crate::fusion::ParentStage::Routing { "absolute" } else { "before_visible_text" },
                     }),
@@ -1812,6 +1818,21 @@ impl Loop {
                 return Err(anyhow!("[FUSION_ROUTING_FAILED] provider did not produce exactly one required fusion call; refusing an unconsulted answer"));
             }
 
+            if closed_fusion
+                && fusion_stage != Some(crate::fusion::ParentStage::Routing)
+                && !tool_calls.is_empty()
+            {
+                append_skipped_tool_placeholders(
+                    messages,
+                    &agent_tool_calls,
+                    "a closed answer discussion cannot be automatically restarted",
+                    ctx.save_callback.as_ref(),
+                );
+                return Err(anyhow!(
+                    "[FUSION_REPEAT_BLOCKED] closed answer recovery cannot restart a discussion"
+                ));
+            }
+
             // Check stop condition. The is_some_and closure keeps the None
             // edge branchless (a nested if's closing brace here collected a
             // phantom zero-count coverage region).
@@ -1874,6 +1895,56 @@ impl Loop {
             self.execute_tools(turn, &tool_calls, messages, &on_event, ctx)
                 .await?;
             if closed_fusion {
+                if self.is_interrupted() {
+                    return Ok(String::new());
+                }
+                if let Some((discussion_id, answer)) = crate::fusion::completed_answer(messages) {
+                    ctx.await_durability().await?;
+                    let entry_id = crate::utils::generate_entry_id();
+                    let block_id = "fusion-answer".to_string();
+                    if ctx.segmented_storage {
+                        on_event(RunEvent::MessageStart {
+                            entry_id: entry_id.clone(),
+                        });
+                    }
+                    on_event(RunEvent::Model(ModelStreamEvent::TextStart {
+                        id: block_id.clone(),
+                    }));
+                    on_event(RunEvent::Model(ModelStreamEvent::TextDelta {
+                        id: block_id.clone(),
+                        text: answer.clone(),
+                    }));
+                    on_text(answer.clone());
+                    on_event(RunEvent::Model(ModelStreamEvent::TextEnd {
+                        id: block_id.clone(),
+                    }));
+                    if ctx.segmented_storage {
+                        on_event(RunEvent::MessageEnd {
+                            entry_id: entry_id.clone(),
+                            complete: true,
+                        });
+                    }
+                    ctx.await_durability().await?;
+                    let mut delivered = AgentMessage {
+                        role: "assistant".into(),
+                        content: vec![ContentBlock::text(&answer)],
+                        ..Default::default()
+                    };
+                    delivered.metadata.get_or_insert_with(serde_json::Map::new).insert("fusion_delivery".into(), serde_json::json!({"version":1, "origin":"moderator_answer", "fusion_run_id":discussion_id, "additional_model_request":false}));
+                    if ctx.segmented_storage {
+                        bind_stream_message(
+                            &mut delivered,
+                            &entry_id,
+                            vec![Some(format!("text:{block_id}"))],
+                        );
+                    }
+                    messages.push(delivered);
+                    if let Some(ref save) = ctx.save_callback {
+                        save(messages.last_mut().unwrap());
+                    }
+                    ctx.await_durability().await?;
+                    return Ok(answer);
+                }
                 fusion_stage = Some(crate::fusion::ParentStage::after_tools(messages));
                 fusion_stage_started = tokio::time::Instant::now();
                 fusion_delivery_progress = false;

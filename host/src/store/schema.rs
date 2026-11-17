@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS threads (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     archived_at INTEGER,
+    restored_at INTEGER,
     deleted_at INTEGER
 );
 
@@ -75,6 +76,7 @@ CREATE TABLE IF NOT EXISTS runs (
     error_message TEXT,
     error_type TEXT,
     archived_at INTEGER,
+    logs_purged_at INTEGER,
     remote_accepted_at INTEGER,
     -- The run's reply closed by offering the reader a choice (a
     -- `futureos-choice` card). Lists badge such a conversation as waiting on an

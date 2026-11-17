@@ -86,7 +86,8 @@ pub use self::reconciliation::{
     spawn_active_run_watchdog,
 };
 pub use self::run_control::{
-    abort_run, compact_agent_session, compact_thread_context, stop_thread,
+    abort_run, compact_agent_session, compact_thread_context, purge_archived_shell_outputs,
+    stop_thread,
 };
 pub use self::run_control::{
     abort_session, cancel_queued_run, edit_queued_run, edit_queued_run_with_choice,

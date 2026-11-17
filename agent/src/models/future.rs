@@ -503,7 +503,7 @@ fn fetch_future_models(api_key: &str, base_url: &str) -> Option<Vec<Model>> {
 /// `/v1/models` payload still advertises `off` among the model's levels.
 /// The payload has no field for this fact yet, so it is declared here; drop the
 /// entry once the platform can state it.
-const FUTURE_ALWAYS_THINKING_MODELS: &[&str] = &["glm-5.3"];
+const FUTURE_ALWAYS_THINKING_MODELS: &[&str] = &["glm-5.3", "glm-5.3-flash"];
 
 /// Record the always-thinking fact in a Future catalogue model's compat.
 fn apply_always_thinking(compat: &mut HashMap<String, serde_json::Value>, id: &str) {
@@ -515,6 +515,29 @@ fn apply_always_thinking(compat: &mut HashMap<String, serde_json::Value>, id: &s
             super::ALWAYS_THINKING_COMPAT_KEY.into(),
             serde_json::json!(true),
         );
+    }
+}
+
+/// The Future gateway needs its explicit disabled effort as well as the
+/// vendor toggle. A thinking toggle alone leaves gateway effort enabled.
+fn apply_disabled_effort_compat(model: &mut Model) {
+    if model.id == "deepseek-flash"
+        && model
+            .compat
+            .get("thinkingFormat")
+            .and_then(serde_json::Value::as_str)
+            == Some("deepseek")
+        && model.thinking_levels.iter().any(|level| level == "off")
+        && !model
+            .compat
+            .get(super::ALWAYS_THINKING_COMPAT_KEY)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    {
+        model
+            .compat
+            .entry("disabledReasoningEffort".into())
+            .or_insert_with(|| serde_json::json!("none"));
     }
 }
 
@@ -691,7 +714,7 @@ fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
 
     let name = entry.name.unwrap_or_else(|| entry.id.clone());
 
-    Model {
+    let mut model = Model {
         id: entry.id,
         name: name.clone(),
         provider: "future".to_string(),
@@ -717,7 +740,9 @@ fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
         description: entry.description,
         description_en: entry.description_en,
         recommended: entry.recommended.unwrap_or(false),
-    }
+    };
+    apply_disabled_effort_compat(&mut model);
+    model
 }
 
 /// Parse price string to per-million-tokens cost
@@ -739,6 +764,7 @@ fn load_future_models_cache() -> Option<FutureModelsCache> {
     // without waiting for the next network refresh.
     for model in &mut cache.models {
         apply_always_thinking(&mut model.compat, &model.id);
+        apply_disabled_effort_compat(model);
     }
     Some(cache)
 }
@@ -1249,6 +1275,23 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn disabled_effort_compat_is_limited_to_the_verified_access_path() {
+        let mut model = convert_future_model(serde_json::from_value(serde_json::json!({"id":"deepseek-flash","supported_parameters":["reasoning_effort"],"thinking_levels":["off","high"]})).unwrap(), "https://example.invalid");
+        assert_eq!(
+            model.compat.get("disabledReasoningEffort"),
+            Some(&serde_json::json!("none"))
+        );
+        model.compat.remove("disabledReasoningEffort");
+        model.id = "untested-model".into();
+        apply_disabled_effort_compat(&mut model);
+        assert!(!model.compat.contains_key("disabledReasoningEffort"));
+        model.id = "deepseek-flash".into();
+        model.thinking_levels = vec!["high".into()];
+        apply_disabled_effort_compat(&mut model);
+        assert!(!model.compat.contains_key("disabledReasoningEffort"));
     }
 
     #[test]
@@ -2190,20 +2233,20 @@ mod tests {
     /// record that fact so no client offers the level.
     #[test]
     fn conversion_marks_an_always_thinking_platform_model() {
-        let model = convert_future_model(
+        for id in ["glm-5.3", "glm-5.3-flash"] {
+            let model = convert_future_model(
             serde_json::from_str(
-                r#"{"id":"glm-5.3","supported_parameters":["thinking_budget"],
-                    "thinking_levels":["off","low","medium","high","max"]}"#,
+                &format!(r#"{{"id":"{id}","supported_parameters":["thinking_budget"],"thinking_levels":["off","low","medium","high","max"]}}"#),
             )
             .unwrap(),
             "https://future-os.cn/api",
         );
-        assert!(model.always_thinking());
-        assert_eq!(
-            model.allowed_thinking_levels(),
-            vec!["default", "low", "medium", "high", "max"]
-        );
-
+            assert!(model.always_thinking());
+            assert_eq!(
+                model.allowed_thinking_levels(),
+                vec!["default", "low", "medium", "high", "max"]
+            );
+        }
         let ordinary = convert_future_model(
             serde_json::from_str(r#"{"id":"kimi-k3","thinking_levels":["off","low","high"]}"#)
                 .unwrap(),
