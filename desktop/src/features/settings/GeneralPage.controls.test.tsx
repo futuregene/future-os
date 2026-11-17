@@ -518,6 +518,9 @@ describe("generalPage archive settings", () => {
     expect(container.textContent).toContain("Clear run logs when archiving");
     // Nothing explains how auto archiving interacts with the cleanup switch.
     expect(container.textContent).not.toContain("Run logs are cleared");
+    // The heading carries no sub-line about the schedule or workspace scope.
+    expect(container.textContent).not.toContain("checks once per day");
+    expect(container.textContent).not.toContain("Workspaces themselves");
   });
 
   it("explains what an idle conversation is beside the idle days", () => {

@@ -85,6 +85,7 @@ vi.mock("./Composer", () => ({
       data-compacting={String(props.compactionInProgress)}
       data-disabled={String(props.disabled)}
       data-empty-reason={String(props.modelsEmptyReason)}
+      data-queue-count={String(props.queueCount)}
       data-sending={String(props.sending)}
     >
       <button data-abort="" onClick={() => (props.onAbort as () => void)()} type="button" />
@@ -302,6 +303,17 @@ async function click(selector: string) {
     element.click();
     await Promise.resolve();
   });
+}
+
+/**
+ * Open the send queue's rows.
+ *
+ * The panel opens as its header line — title, count, what will become of the
+ * waiting messages — and draws no rows until it is pressed, so a test about a row
+ * has to cross that first press, exactly as a reader does.
+ */
+async function openQueue() {
+  await click("[data-queue-toggle]");
 }
 
 function composer() {
@@ -1169,6 +1181,11 @@ describe("agentThread send while the reply streams", () => {
 
     const panel = container.querySelector("[data-send-queue]");
     expect(panel).not.toBeNull();
+    // The panel opens as its header line: what waits is readable there, and the
+    // rows are one press away.
+    expect(panel!.textContent).toContain("1 waiting");
+    expect(container.querySelectorAll("[data-queue-item]")).toHaveLength(0);
+    await openQueue();
     expect(panel!.textContent).toContain("waiting");
 
     await act(async () => {
@@ -1180,6 +1197,52 @@ describe("agentThread send while the reply streams", () => {
     // and a row the Agent accepted from somewhere else has no local run to look
     // the conversation up from.
     expect(h.queue.cancel).toHaveBeenCalledWith("T1", "run-7");
+  });
+
+  /**
+   * The stop control is told what it carries, because it does carry it.
+   *
+   * Rows are the session's and start at the turn boundary, so ending the run is
+   * also what lets them go. The count driving that wording is the Agent's own
+   * queue (`agentQueue`), not a copy held here — this is the prop
+   * `ComposerControls` already reads to decide between "Stop" and "Stop and send
+   * the queued messages", and before it was supplied the control said plain
+   * "Stop" however many rows were waiting.
+   */
+  it("tells the composer how many waiting rows a stop would carry", async () => {
+    h.queue.value = {
+      forget: vi.fn(),
+      notice: null,
+      refresh: vi.fn(),
+      rows: [
+        { acceptedAt: "2026-11-03T10:00:00Z", position: 1, runId: "run-3", state: "queued", text: "waiting" },
+        { acceptedAt: "2026-11-03T10:00:01Z", position: 2, runId: "run-4", state: "queued", text: "also waiting" },
+      ],
+    };
+    setMessages([user("u1"), assistant("a1", { status: "streaming" })]);
+    render();
+
+    expect(composer().dataset.queueCount).toBe("2");
+  });
+
+  /**
+   * A parked row is not carried by a stop: it waits for a person to release it
+   * (`hintParked`), so counting it would promise a send that never happens.
+   */
+  it("leaves a row that waits for a release out of what a stop carries", async () => {
+    h.queue.value = {
+      forget: vi.fn(),
+      notice: null,
+      refresh: vi.fn(),
+      rows: [
+        { acceptedAt: "2026-11-03T10:00:00Z", position: 1, runId: "run-4", state: "stale-waiting", text: "parked" },
+        { acceptedAt: "2026-11-03T10:00:01Z", position: 2, runId: "run-5", state: "queued", text: "waiting" },
+      ],
+    };
+    setMessages([user("u1"), assistant("a1", { status: "streaming" })]);
+    render();
+
+    expect(composer().dataset.queueCount).toBe("1");
   });
 
   /**
@@ -1210,6 +1273,7 @@ describe("agentThread send while the reply streams", () => {
     };
     render();
 
+    await openQueue();
     // The files the message carries are still shown; the edit keeps them without
     // naming them again.
     expect(container.querySelectorAll("[data-queue-attachment]")).toHaveLength(2);
@@ -1252,6 +1316,7 @@ describe("agentThread send while the reply streams", () => {
     const toasts: { message: string; tone?: string }[] = [];
     const off = onFutureEvent("toast", toast => void toasts.push(toast));
 
+    await openQueue();
     await act(async () => container.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
     const box = container.querySelector<HTMLTextAreaElement>("[data-queue-item] textarea")!;
     await act(async () => {
@@ -1281,6 +1346,7 @@ describe("agentThread send while the reply streams", () => {
     };
     render();
 
+    await openQueue();
     await act(async () => {
       container.querySelector<HTMLButtonElement>("[data-queue-release]")!.click();
       await Promise.resolve();
@@ -1324,6 +1390,7 @@ describe("agentThread send while the reply streams", () => {
     // with, so the panel must not claim the message carried none.
     expect(container.querySelector("[data-send-queue]")!.textContent).not.toContain("Attachments:");
 
+    await openQueue();
     await act(async () => {
       container.querySelector<HTMLButtonElement>("[data-queue-remove]")!.click();
       await Promise.resolve();
@@ -1356,6 +1423,7 @@ describe("agentThread send while the reply streams", () => {
     const off = onFutureEvent("toast", toast => void toasts.push(toast));
     render();
 
+    await openQueue();
     await act(async () => {
       container.querySelector<HTMLButtonElement>("[data-queue-remove]")!.click();
       await Promise.resolve();

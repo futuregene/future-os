@@ -265,4 +265,85 @@ mod tests {
             }
         }
     }
+
+    #[tokio::test]
+    async fn a_pinned_conversation_is_never_a_candidate() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("auto-archive-pinned");
+        crate::store::initialize_app_store().unwrap();
+        let now = crate::store::now_millis();
+        let long_idle = now - 31 * 24 * 60 * 60 * 1000;
+        let pinned = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".into(),
+            title: Some("pinned".into()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some("pinned-session".into()),
+        })
+        .unwrap();
+        crate::store::record_thread_message_activity(&pinned.id, long_idle).unwrap();
+        crate::store::pin_thread(crate::store::PinThreadInput {
+            thread_id: pinned.id.clone(),
+            pinned: true,
+        })
+        .unwrap();
+        let idle = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".into(),
+            title: Some("idle".into()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some("idle-session".into()),
+        })
+        .unwrap();
+        crate::store::record_thread_message_activity(&idle.id, long_idle).unwrap();
+
+        let candidates = candidate_tree_ids(
+            &crate::store::list_threads().unwrap(),
+            &HashSet::new(),
+            None,
+            now,
+            30,
+        )
+        .unwrap();
+        // Pinning keeps a conversation out of automatic archiving even after it
+        // has been idle far past the threshold.
+        assert_eq!(candidates, vec![idle.id]);
+    }
+
+    #[tokio::test]
+    async fn automatic_archiving_stays_off_until_it_is_enabled() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("auto-archive-default-off");
+        crate::store::initialize_app_store().unwrap();
+        let now = crate::store::now_millis();
+        let idle = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".into(),
+            title: Some("idle".into()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some("default-off-session".into()),
+        })
+        .unwrap();
+        crate::store::record_thread_message_activity(&idle.id, now - 31 * 24 * 60 * 60 * 1000)
+            .unwrap();
+
+        // The shipped default is off, so a pass archives nothing at all.
+        assert!(
+            !crate::store::get_app_settings()
+                .unwrap()
+                .auto_archive_enabled
+        );
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        mock.push_data(
+            "list_streaming_sessions",
+            serde_json::json!({"sessionIds": []}),
+        );
+        let report = auto_archive_now().await.unwrap();
+        assert_eq!(report.archived_trees, 0);
+        assert_eq!(
+            crate::store::get_thread(&idle.id).unwrap().unwrap().status,
+            "active"
+        );
+    }
 }

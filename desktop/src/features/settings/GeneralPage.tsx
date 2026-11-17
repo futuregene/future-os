@@ -216,7 +216,6 @@ export function GeneralPage({
       </SettingsSection>
 
       <SettingsSection
-        description={t("archive.autoSectionDescription")}
         title={t("archive.autoSection")}
       >
         <SettingsList>

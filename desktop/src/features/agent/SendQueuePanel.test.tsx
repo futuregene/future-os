@@ -6,7 +6,12 @@ import { SendQueuePanel } from "./SendQueuePanel";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
-function renderPanel(overrides: Partial<Parameters<typeof SendQueuePanel>[0]> = {}) {
+/**
+ * Mount the panel. The rows are one press away from the header (the panel opens
+ * closed, like the phone's), so a test that reads rows opens it first — unless it
+ * is the test about the closed state itself.
+ */
+function renderPanel(overrides: Partial<Parameters<typeof SendQueuePanel>[0]> = {}, options: { expand?: boolean } = {}) {
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
@@ -28,6 +33,8 @@ function renderPanel(overrides: Partial<Parameters<typeof SendQueuePanel>[0]> = 
     ...overrides,
   };
   act(() => root.render(<SendQueuePanel {...props} />));
+  if (options.expand !== false)
+    act(() => host.querySelector<HTMLButtonElement>("[data-queue-toggle]")!.click());
   return {
     host,
     props,
@@ -37,6 +44,61 @@ function renderPanel(overrides: Partial<Parameters<typeof SendQueuePanel>[0]> = 
     },
   };
 }
+
+/**
+ * A queue nobody asked to see is a queue that does not cover the reply.
+ *
+ * Every row the panel draws is a row of the conversation pushed further up, and
+ * the header already says how many are waiting and what will become of them — so
+ * the panel opens as that line, exactly as the phone's does, and the rows are one
+ * press away.
+ */
+it("opens as its header line, with the rows one press away", () => {
+  const panel = renderPanel({}, { expand: false });
+  try {
+    const header = panel.host.querySelector("[data-send-queue]")!;
+    expect(header.textContent).toContain("Send queue");
+    expect(header.textContent).toContain("2 waiting");
+    expect(header.textContent).toContain("Sent as one message when this reply ends");
+    // Nothing of the rows is drawn while it is closed…
+    expect(panel.host.querySelectorAll("[data-queue-item]")).toHaveLength(0);
+    expect(panel.host.querySelector("[data-queue-list]")).toBeNull();
+    const toggle = panel.host.querySelector<HTMLButtonElement>("[data-queue-toggle]")!;
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.getAttribute("aria-label")).toBe("Show the queued messages");
+
+    // …and the whole header is the control that opens them.
+    act(() => toggle.click());
+    expect(panel.host.querySelectorAll("[data-queue-item]")).toHaveLength(2);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle.getAttribute("aria-label")).toBe("Hide the queued messages");
+
+    act(() => toggle.click());
+    expect(panel.host.querySelectorAll("[data-queue-item]")).toHaveLength(0);
+  }
+  finally {
+    panel.cleanup();
+  }
+});
+
+it("folds an edit that was open away with the rows", () => {
+  // The editor lives inside the rows. A reader who folded the queue with one open
+  // walked away from those words; drawing the field again, half-typed, on the
+  // next open would put them back in an edit they thought they had left.
+  const panel = renderPanel();
+  try {
+    act(() => panel.host.querySelector<HTMLButtonElement>("[data-queue-edit]")!.click());
+    expect(panel.host.querySelector("textarea")).not.toBeNull();
+    act(() => panel.host.querySelector<HTMLButtonElement>("[data-queue-toggle]")!.click());
+    act(() => panel.host.querySelector<HTMLButtonElement>("[data-queue-toggle]")!.click());
+    expect(panel.host.querySelectorAll("[data-queue-item]")).toHaveLength(2);
+    expect(panel.host.querySelector("textarea")).toBeNull();
+    expect(panel.props.onUpdate).not.toHaveBeenCalled();
+  }
+  finally {
+    panel.cleanup();
+  }
+});
 
 it("lists what is waiting, with an attachment-only row said in words", () => {
   const panel = renderPanel();
