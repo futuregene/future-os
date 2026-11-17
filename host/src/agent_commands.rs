@@ -231,6 +231,14 @@ pub fn set_permission_level_command(level: String, session_id: String) -> RpcCom
     }
 }
 
+/// Whether the reader's client draws `futureos-choice` cards.
+pub fn set_choice_cards_command(enabled: bool, session_id: String) -> RpcCommand {
+    RpcCommand {
+        enabled,
+        ..base_command("set_choice_cards", session_id)
+    }
+}
+
 pub fn set_sandbox_policy_command(
     policy: future_rpc::proto::SandboxPolicy,
     session_id: String,

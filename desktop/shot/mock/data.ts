@@ -1374,6 +1374,8 @@ export const appSettings = {
   communityEdition: false,
   // Mirrors the shipped default (PRD v1.6 §3: recommendation is on).
   skillRecommend: true,
+  // Captures show the card, so the demo settings leave the switch on.
+  choiceCards: true,
 };
 
 export const buildInfo = {

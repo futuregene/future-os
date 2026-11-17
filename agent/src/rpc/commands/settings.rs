@@ -398,6 +398,30 @@ pub(crate) fn handle_set_context_files(
     RpcResponse::ok(id, "set_context_files", serde_json::json!({}))
 }
 
+/// Whether the reader's client draws `futureos-choice` cards.
+///
+/// A client preference, not a session one: the host reads it from `app.db` and
+/// pushes it before every run, so a toggle reaches the next turn of every
+/// conversation without a restart. Off by default — a session whose client never
+/// says anything gets no choice-card section in its prompt.
+pub(crate) fn handle_set_choice_cards(
+    session: &Arc<parking_lot::RwLock<ServerSession>>,
+    cmd: &RpcCommand,
+    id: &str,
+) -> String {
+    let enabled = cmd.enabled;
+    session.write().choice_cards = enabled;
+    // Rebuilding here would cost a context/memory reload for a flag that only
+    // feeds the prompt; the run boundary rebuilds it before the request anyway
+    // (`build_prompt` reads the session value). `reload_config` remains the
+    // explicit way to read the new value in the live loop.
+    RpcResponse::ok(
+        id,
+        "set_choice_cards",
+        serde_json::json!({ "enabled": enabled }),
+    )
+}
+
 pub(crate) fn handle_set_system_prompt(
     session: &Arc<parking_lot::RwLock<ServerSession>>,
     cmd: &RpcCommand,

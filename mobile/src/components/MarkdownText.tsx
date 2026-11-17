@@ -21,7 +21,7 @@ import { MarkdownToneContext, type MarkdownTone } from "./markdownTone";
 import type { StyleProp, TextStyle } from "react-native";
 import { Animated, FlatList, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { AppAlert as Alert } from "./appAlerts";
-import { ChoiceCard, ChoiceCardAnswerContext } from "./ChoiceCard";
+import { ChoiceCard, ChoiceCardAnswerContext, ChoiceCardsEnabledContext } from "./ChoiceCard";
 import { useStreamingText } from "./useStreamingText";
 import { radius, spacing } from "../theme/tokens";
 import type { Theme } from "../theme/theme";
@@ -278,6 +278,7 @@ function renderListItem(
   openTarget: OpenTarget,
   parentKey: string,
   styles: MarkdownStyles,
+  choiceCards = true,
 ) {
   const key = `${parentKey}:item${itemIndex}`;
   return (
@@ -295,7 +296,7 @@ function renderListItem(
         ) : null}
         {item.blocks?.length ? (
           <View style={styles.nestedBlocks}>
-            {renderBlocks(item.blocks, openTarget, `${key}:blocks`, styles)}
+            {renderBlocks(item.blocks, openTarget, `${key}:blocks`, styles, choiceCards)}
           </View>
         ) : null}
       </View>
@@ -315,6 +316,8 @@ function renderBlock(
    * other card is read-only.
    */
   liveChoice = false,
+  /** The desktop's choice-card switch; off draws no card and no fenced source. */
+  choiceCards = true,
 ): ReactNode {
   // Heading sizes scale with the reader's text size like the sheet's own styles,
   // so they are indexed out of it rather than held in a module constant.
@@ -338,6 +341,10 @@ function renderBlock(
         </View>
       );
     case "code":
+      // With the cards off, a malformed `futureos-choice` block must not leak its
+      // source either: the reader asked for no card, not for its markdown.
+      if (!choiceCards && node.language?.trim().toLowerCase() === "futureos-choice")
+        return null;
       return (
         <View key={key} style={isLast ? undefined : styles.blockSpacing}>
           <CodeSource code={node.code} language={node.language} />
@@ -352,14 +359,14 @@ function renderBlock(
     case "blockquote":
       return (
         <View key={key} style={[styles.quote, isLast ? styles.noBottom : null]}>
-          {renderBlocks(node.children, openTarget, `${key}:quote`, styles)}
+          {renderBlocks(node.children, openTarget, `${key}:quote`, styles, choiceCards)}
         </View>
       );
     case "list":
       return (
         <View key={key} style={[styles.list, isLast ? styles.noBottom : null]}>
           {node.items.map((item, index) =>
-            renderListItem(item, index, node.ordered, node.start ?? 1, openTarget, key, styles),
+            renderListItem(item, index, node.ordered, node.start ?? 1, openTarget, key, styles, choiceCards),
           )}
         </View>
       );
@@ -382,6 +389,8 @@ function renderBlock(
       );
     }
     case "choiceCard":
+      if (!choiceCards)
+        return null;
       return (
         <View key={key} style={isLast ? undefined : styles.blockSpacing}>
           <ChoiceCard live={liveChoice} node={node} />
@@ -401,9 +410,10 @@ function renderBlocks(
   openTarget: OpenTarget,
   parentKey: string,
   styles: MarkdownStyles,
+  choiceCards = true,
 ): ReactNode[] {
   return nodes.map((node, index) =>
-    renderBlock(node, openTarget, `${parentKey}:b${index}`, index === nodes.length - 1, styles),
+    renderBlock(node, openTarget, `${parentKey}:b${index}`, index === nodes.length - 1, styles, false, choiceCards),
   );
 }
 
@@ -497,7 +507,8 @@ const MarkdownBlock = memo(function MarkdownBlock({ node, openTarget, isLast, an
     return () => animation.stop();
   }, [animate, opacity]);
   // Only new blocks fade once. Updating a token never fades the whole message.
-  return <Animated.View style={{ opacity }}>{renderBlock(node, openTarget, "block", isLast, styles, liveChoice)}</Animated.View>;
+  const choiceCards = useContext(ChoiceCardsEnabledContext);
+  return <Animated.View style={{ opacity }}>{renderBlock(node, openTarget, "block", isLast, styles, liveChoice, choiceCards)}</Animated.View>;
 });
 
 export function MarkdownText({ text, onOpenFile, onOpenSession, imageBasePath, mode = "message", streaming = false, tone = "default" }: MarkdownTextProps) {

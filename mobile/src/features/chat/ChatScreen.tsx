@@ -20,6 +20,7 @@ import { useComposerSubmission } from "./composer/useComposerSubmission";
 import { useComposerDraft } from "./useComposerDraft";
 import { choiceAnswerFromCard, choiceAnswerText, pickChoiceOption, type ChoiceAnswer } from "./choiceAnswer";
 import type { ChoiceCardAnswer } from "../../components/ChoiceCard";
+import { ChoiceCardsEnabledProvider } from "../../components/ChoiceCard";
 import type { ChoiceCardNode } from "@future-os/markdown";
 import { useAttachmentPicker } from "./useAttachmentPicker";
 import { useChatFiles } from "./files/useChatFiles";
@@ -809,6 +810,9 @@ export function ChatScreen() {
     remote.desktopSettingsRevision,
     remote.desktopOnline,
   );
+  // The desktop's switch, mirrored: the cards and the prompt section that makes
+  // one possible are one value, and the phone draws what that machine allows.
+  const choiceCardsEnabled = desktopSettings.data?.choiceCards ?? false;
   const skillRecommendation = useSkillRecommendation(
     desktopSettings.data?.skillRecommend ?? false,
     remote.desktopOnline,
@@ -915,24 +919,27 @@ export function ChatScreen() {
 
   const renderTimelineItem = useCallback(
     ({ item }: { item: TimelineItem; }) => (
-      <View onLayout={onRowLayout}>
-        <TimelineCard
-          choiceAnswer={choiceCardAnswer}
-          item={item}
-          isLatestAssistant={item.id === latestAssistantId}
-          onOpenAttachment={handleTimelineAttachment}
-          onOpenFile={handleTimelineFile}
-          onOpenSession={handleTimelineSession}
-          onRetry={handleTimelineRetry}
-          onContinue={handleTimelineContinue}
-          onFork={forkSupported ? handleTimelineFork : undefined}
-          onResolveToolTarget={handleResolveToolTarget}
-          onResolveReasoning={reasoningFetchSupported ? handleResolveReasoning : undefined}
-        />
-      </View>
+      <ChoiceCardsEnabledProvider value={choiceCardsEnabled}>
+        <View onLayout={onRowLayout}>
+          <TimelineCard
+            choiceAnswer={choiceCardAnswer}
+            item={item}
+            isLatestAssistant={item.id === latestAssistantId}
+            onOpenAttachment={handleTimelineAttachment}
+            onOpenFile={handleTimelineFile}
+            onOpenSession={handleTimelineSession}
+            onRetry={handleTimelineRetry}
+            onContinue={handleTimelineContinue}
+            onFork={forkSupported ? handleTimelineFork : undefined}
+            onResolveToolTarget={handleResolveToolTarget}
+            onResolveReasoning={reasoningFetchSupported ? handleResolveReasoning : undefined}
+          />
+        </View>
+      </ChoiceCardsEnabledProvider>
     ),
     [
       choiceCardAnswer,
+      choiceCardsEnabled,
       forkSupported,
       handleResolveReasoning,
       reasoningFetchSupported,

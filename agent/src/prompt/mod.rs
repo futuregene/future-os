@@ -363,6 +363,12 @@ pub struct PromptOptions {
     /// (`reject_deep_parent`), and offering the commands would invite a run
     /// that cannot succeed.
     pub is_subsession: bool,
+    /// Whether the reader's client draws `futureos-choice` cards. Off (the
+    /// default, and a fresh install's setting) leaves the section out entirely:
+    /// the fence is taught *because* a card will be drawn, so a session whose
+    /// client does not draw one is never told the fence exists — which is the
+    /// only way "no card anywhere" also means "no card in the prompt".
+    pub choice_cards: bool,
 }
 
 // ─── Identity Section ───────────────────────────────────────────────────────
@@ -417,11 +423,12 @@ fn build_identity_section(opts: &PromptOptions) -> String {
     parts.push(include_str!("communication.md").trim().to_owned());
     // Right after "how to talk to the user", because a choice card is one of the
     // shapes a reply ends in: the model writes the closing question there and
-    // nowhere else. Unconditional — the fence is plain markdown, so a client
-    // that cannot draw the card (TUI, IM bots) still renders the options as the
-    // code block it already is, and withholding it from such a session would
-    // remove the only thing that tells the model the fence exists.
-    parts.push(include_str!("choice.md").trim().to_owned());
+    // nowhere else. Omitted while the reader's client draws no card: the section
+    // exists to make the fence reachable, so teaching it to a client that will
+    // not draw one buys nothing and costs prompt on every turn.
+    if opts.choice_cards {
+        parts.push(include_str!("choice.md").trim().to_owned());
+    }
     if !opts.prompt_guidelines.is_empty() {
         let guidelines = dedup(opts.prompt_guidelines.clone())
             .into_iter()
@@ -1180,6 +1187,9 @@ mod tests {
             prompt_guidelines: vec!["ADDITIONAL_INSTRUCTION".into()],
             agent_content: "PROJECT_INSTRUCTION".into(),
             append_prompt: "APPEND_INSTRUCTION".into(),
+            // The ordering below includes the choice section, so this reader
+            // draws cards.
+            choice_cards: true,
             ..Default::default()
         });
         let execution = prompt.find("# Tool Execution").unwrap();
@@ -1210,6 +1220,7 @@ mod tests {
     fn prompt_teaches_the_choice_card_fence() {
         let prompt = build_prompt(&PromptOptions {
             tools: vec![crate::tools::read_tool(), crate::tools::shell_tool()],
+            choice_cards: true,
             ..Default::default()
         });
 
@@ -1281,6 +1292,48 @@ mod tests {
         // Read on every turn, so it stays short: the budget is lines of prompt,
         // not lines of documentation.
         assert!(include_str!("choice.md").lines().count() <= 40);
+    }
+
+    /// The switch's second half: with cards off the section is not in the
+    /// prompt at all.
+    ///
+    /// The card lives in the client, but the *fence* lives in the prompt — so a
+    /// reply can only carry a `futureos-choice` block because this section told
+    /// the model the block exists. Turning the setting off removes both ends;
+    /// hiding the card while still teaching the fence would leave the model
+    /// emitting markdown the reader's client refuses to draw.
+    #[test]
+    fn prompt_omits_the_choice_card_fence_when_cards_are_off() {
+        // Off is the default: a client that never pushes the preference (TUI,
+        // CLI, an older host) must not be taught a fence it cannot draw.
+        assert!(!PromptOptions::default().choice_cards);
+        let prompt = build_prompt(&PromptOptions {
+            tools: vec![crate::tools::read_tool(), crate::tools::shell_tool()],
+            agent_content: "PROJECT_INSTRUCTION".into(),
+            append_prompt: "APPEND_INSTRUCTION".into(),
+            prompt_guidelines: vec!["ADDITIONAL_INSTRUCTION".into()],
+            ..Default::default()
+        });
+        assert!(!prompt.contains("# Offering Choices"));
+        // The fence name itself is the load-bearing string (`CHOICE_FENCE` in
+        // packages/markdown), so its absence is the assertion — a heading gone
+        // while an example block stayed would still teach the format.
+        assert!(!prompt.contains("futureos-choice"));
+        // The mode line is the other load-bearing half of the format.
+        assert!(!prompt.contains("mode: multi"));
+        // Every other section survives, and in the same order: the flag removes
+        // one section, not a band of them.
+        let communication = prompt.find("# User Communication").unwrap();
+        let additional = prompt.find("# Additional Guidelines").unwrap();
+        assert!(communication < additional);
+        assert!(prompt.contains("APPEND_INSTRUCTION"));
+
+        // On: the same options plus the flag bring the section back where it was.
+        let on = build_prompt(&PromptOptions {
+            choice_cards: true,
+            ..Default::default()
+        });
+        assert!(on.contains("\n```futureos-choice\n"));
     }
 
     #[test]

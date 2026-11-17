@@ -173,6 +173,33 @@ running an older build keeps the old wording no matter what the repository says
 after two rewrites had landed). A prompt change only ships with a rebuild **and** a
 restart.
 
+### 4.1 The switch: off by default (2026-11-17)
+
+The card is a **preference**, not a default, and it ships **off**. One switch owns both halves of it — the drawing and this section — because teaching a fence to a client that will not draw it is worse than either half alone: the model spends prompt on a format the reader never sees, and writes markdown that renders as nothing.
+
+| | `choice_cards` on | off (the default) |
+|---|---|---|
+| Desktop / phone | the card, pickable | nothing at all — not the card, not a code block |
+| System prompt | §4's section | absent — `grep futureos-choice` finds nothing |
+| List mark "this one is waiting on your choice" (§5.9) | shown | not shown |
+
+Why off rather than on: the fence costs prompt on every turn of every session, and a card asks the reader to pick from a list the model wrote — welcome when they already want to move on, an interruption otherwise.
+
+Rules kept while gating it:
+
+- **The format does not change.** Same fence, same fields, same single/multi semantics; only whether it is drawn and taught.
+- **Stored history is not rewritten.** A reply that already carries a card renders according to the current switch; nothing migrates, nothing is edited.
+- **No residue when off.** Not drawing the card is not enough: the fence must not resurface as its own source, the malformed-fence fallback included. A reader who turned cards off never sees `futureos-choice` or the option rows in the middle of a reply. The prose around the block survives — only the block goes.
+
+Where the value lives, and how it travels:
+
+- one stored value: `app.db` → `packages/app-settings` (`choice_cards`, default `false`), read as `appSettings.choiceCards`;
+- desktop: Settings → General, a switch; the value reaches the markdown renderer through `ChoiceCardsContext` (the renderer's own default stays `true`, so only a real "off" hides anything);
+- the agent is told **before every run**: the host pushes `set_choice_cards` (best-effort — an agent that predates the command still accepts the message, and an unreadable store counts as off), the session keeps it, and `PromptOptions.choice_cards` decides whether this section is in the prompt. A fresh install therefore has no fence in the prompt *and* no card on screen;
+- the phone mirrors the desktop rather than holding its own setting: `get_desktop_settings` carries `choiceCards`, and `SettingsPatch` writes it back to the same row.
+
+Pinned by `desktop/src/features/markdown/ChoiceCardsToggle.test.tsx` (off: zero card nodes **and** no `futureos-choice` in the extracted text; on: rows, pick, answer), `mobile/src/components/__tests__/ChoiceCardsToggle.test.ts`, and `agent/src/prompt/mod.rs::prompt_omits_the_choice_card_fence_when_cards_are_off`. Falsified on purpose: forcing the renderer to `true`, always pushing the section, and shipping the default as `true` each turns exactly those assertions red.
+
 ## 5. The interface
 
 ### 5.1 Desktop · nothing chosen
@@ -473,6 +500,8 @@ The answer must be readable by the agent **and** on the degraded paths (TUI, IM 
 | Third-party Markdown readers | A code block | A code block |
 
 The fence syntax makes "unknown" mean "renders normally", which is the main reason it was chosen (§3). The parser never throws: any malformed input falls back to a code block.
+
+The table describes a client that knows cards. A client whose reader turned the switch **off** is not in the "degrades to a code block" row: off means the block does not appear at all, source included, and the agent is not taught the fence either (§4.1).
 
 ## 9. Copy / icons / accessibility
 

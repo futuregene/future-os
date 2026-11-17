@@ -260,6 +260,55 @@ pub async fn set_agent_sandbox_policy_tier(
     Ok(())
 }
 
+/// Push the desktop's choice-card switch to the agent, before a run.
+///
+/// The reader's saved choice lives in `app.db` (`choice_cards`), while the
+/// prompt section that makes a `futureos-choice` block possible is built by the
+/// agent — so the value has to travel with every prompt, exactly as the approval
+/// tier does. Reading the store each time is what makes a toggle take effect on
+/// the *next* turn of every conversation, including ones already open.
+///
+/// Best-effort on purpose: an older agent that does not know the command answers
+/// "unknown command", and failing the prompt over a display preference would
+/// make an agent upgrade mandatory for sending a message. The only consequence of
+/// skipping it is that the reader keeps whatever the agent already assumed (off).
+pub(super) async fn set_agent_choice_cards(
+    client: &mut super::client::AgentClient,
+    session_id: &str,
+) {
+    let enabled = match store::get_app_settings() {
+        Ok(settings) => settings.choice_cards,
+        Err(error) => {
+            // Never invent "on" from a failed read: the request would then teach
+            // the fence to a reader who turned cards off. Off is the shipping
+            // default, and the next successful read applies the saved value.
+            tracing::warn!(event = "set_agent_choice_cards", error = %error,
+                "FutureOS: choice-card settings unavailable; leaving cards off: {error}"
+            );
+            false
+        }
+    };
+    match client
+        .execute_command(crate::agent_commands::set_choice_cards_command(
+            enabled,
+            session_id.to_string(),
+        ))
+        .await
+    {
+        Ok(response) => {
+            let response = response.into_inner();
+            if !response.success {
+                tracing::warn!(event = "set_agent_choice_cards", session_id, enabled,
+                    error = %response.error, "FutureOS: agent refused the choice-card setting"
+                );
+            }
+        }
+        Err(error) => tracing::warn!(event = "set_agent_choice_cards", session_id, enabled,
+            %error, "FutureOS: choice-card setting did not reach the agent"
+        ),
+    }
+}
+
 pub fn workspace_path_for_thread(thread_id: &str) -> Result<String, crate::Error> {
     let thread =
         store::get_thread(thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string())?;
@@ -867,6 +916,7 @@ mod tests {
             title_language: None,
             community_edition: None,
             skill_recommend: None,
+            choice_cards: None,
         })
         .expect("update settings");
         mock.push("set_sandbox_policy", Reply::Data("{}".to_string()));
@@ -958,6 +1008,56 @@ mod tests {
             .await
             .expect_err("reject");
         assert_eq!(error.to_string(), "bad tier");
+        drop(home);
+    }
+
+    /// The reader's saved choice reaches the agent before each run: off on a
+    /// fresh store, the stored value afterwards. This is the wire half of "off
+    /// means the prompt does not teach the fence" — the agent decides that from
+    /// the flag this pushes.
+    #[tokio::test]
+    async fn choice_card_switch_is_pushed_from_the_store() {
+        let home = TestHome::new("session-choice-cards");
+        let (mock, mut client) = mock_client().await;
+
+        mock.push("set_choice_cards", Reply::Data("{}".to_string()));
+        set_agent_choice_cards(&mut client, "sess-1").await;
+        assert!(
+            !mock.requests_of("set_choice_cards")[0].enabled,
+            "a store with no row is off"
+        );
+
+        crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
+            choice_cards: Some(true),
+            ..Default::default()
+        })
+        .expect("enable choice cards");
+        mock.push("set_choice_cards", Reply::Data("{}".to_string()));
+        set_agent_choice_cards(&mut client, "sess-1").await;
+        let requests = mock.requests_of("set_choice_cards");
+        assert!(requests[1].enabled, "the stored value is pushed verbatim");
+        assert_eq!(requests[1].session_id, "sess-1");
+
+        // Display-only, so every failure is swallowed: an agent that predates the
+        // command must not make sending a message impossible.
+        mock.push(
+            "set_choice_cards",
+            Reply::Status(tonic::Code::Internal, "unknown command"),
+        );
+        set_agent_choice_cards(&mut client, "sess-1").await;
+        mock.push("set_choice_cards", Reply::Reject("nope".to_string()));
+        set_agent_choice_cards(&mut client, "sess-1").await;
+
+        // An unreadable store leaves cards off rather than inventing "on".
+        let previous = break_home();
+        mock.push("set_choice_cards", Reply::Data("{}".to_string()));
+        set_agent_choice_cards(&mut client, "sess-1").await;
+        restore_home(previous);
+        let requests = mock.requests_of("set_choice_cards");
+        assert!(
+            !requests[4].enabled,
+            "a failed read must never enable cards"
+        );
         drop(home);
     }
 
