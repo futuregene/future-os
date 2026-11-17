@@ -527,6 +527,7 @@ impl Supervisor {
                         let bytes =
                             serde_json::to_vec(&body).expect("a delta Value always serializes");
                         let sealed = bytes.len();
+                        self.note_catalogue_packet(&pair_id, sealed);
                         match secure::publish_json(
                             &client,
                             &security,
@@ -546,10 +547,10 @@ impl Supervisor {
                                 if window_moved {
                                     delivered_window = Some(window_sig);
                                 }
-                                self.note_catalogue_packet(&pair_id, sealed);
                             }
-                            Ok(false) => {}
+                            Ok(false) => self.retract_catalogue_packet(&pair_id, sealed),
                             Err(e) => {
+                                self.retract_catalogue_packet(&pair_id, sealed);
                                 if let Some(line) =
                                     self.publisher_failures.record("state_publish", e)
                                 {
@@ -574,6 +575,7 @@ impl Supervisor {
                             let bytes = serde_json::to_vec(&catalog.payload)
                                 .expect("a sessions Value always serializes");
                             let sealed = bytes.len();
+                            self.note_catalogue_packet(&pair_id, sealed);
                             match secure::publish_json(
                                 &client,
                                 &security,
@@ -592,10 +594,10 @@ impl Supervisor {
                                     last_sessions_sig = catalog.signature.clone();
                                     last_structural_sig = catalog.structural.clone();
                                     delivered_activity = catalog.activity.iter().cloned().collect();
-                                    self.note_catalogue_packet(&pair_id, sealed);
                                 }
-                                Ok(false) => {}
+                                Ok(false) => self.retract_catalogue_packet(&pair_id, sealed),
                                 Err(e) => {
+                                    self.retract_catalogue_packet(&pair_id, sealed);
                                     if let Some(line) =
                                         self.publisher_failures.record("state_publish", e)
                                     {

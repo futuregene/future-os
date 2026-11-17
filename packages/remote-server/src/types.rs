@@ -168,6 +168,11 @@ pub struct RemoteDevice {
     /// Packets and bytes this connection has been sent on that lane since its
     /// bridge came up. Bytes are the sealed payload, which is what the relay
     /// carries; the compression in front of it is already applied.
+    ///
+    /// A packet is counted as it is handed to the endpoint rather than after the
+    /// send returns, so this number never trails what the client can already have
+    /// received — a reader is allowed to compare it against the wire without
+    /// waiting. A packet the endpoint refused is taken back.
     pub catalogue_packets: u64,
     /// The relay link in the terms a reader can act on.
     ///
