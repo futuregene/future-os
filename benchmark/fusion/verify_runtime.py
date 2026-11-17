@@ -64,9 +64,26 @@ def main():
         help="exercise explicit critical objection disposition and omitted-item repair",
     )
     parser.add_argument(
+        "--check-local-repair",
+        action="store_true",
+        help="repair multiple incorrect disposition quotes together",
+    )
+    parser.add_argument(
+        "--check-recovery-progress",
+        action="store_true",
+        help="real-clock recovery reasoning for over 300 seconds; no paid calls",
+    )
+    parser.add_argument(
+        "--expect-recovery-progress",
+        choices=("preserved", "absolute-timeout"),
+        default="preserved",
+    )
+    parser.add_argument(
         "--artifact-root", help="Directory for retained local verification records"
     )
     args = parser.parse_args()
+    if args.check_recovery_progress:
+        args.check_idle = True
     home = Path(args.artifact_root or ROOT / ".local") / (
         "verification-" + uuid.uuid4().hex[:12]
     )
@@ -86,6 +103,8 @@ def main():
     source_probe = {"enabled": False, "reviews": []}
     decision_probe = {"enabled": False, "attempts": []}
     lineage_probe = {"previous_run_id": None}
+    local_repair = {"enabled": False, "feedback": []}
+    recovery_progress = {"enabled": False, "chunks": 0}
     barrier = threading.Barrier(3, timeout=15)
 
     class Handler(BaseHTTPRequestHandler):
@@ -362,10 +381,63 @@ def main():
                             else []
                         ),
                     }
+                    if local_repair["enabled"]:
+                        if repaired:
+                            assert (
+                                "basis[0].quote" in prompt
+                                and "basis[1].quote" in prompt
+                            ), prompt[-3000:]
+                            assert (
+                                "Original source excerpts for local quote repair"
+                                in prompt
+                            )
+                            assert "Return 7" in prompt
+                            local_repair["feedback"].append(prompt)
+                            for disposition in value["decision_audit"]["dispositions"]:
+                                disposition["basis"] = [
+                                    {"source_id": "request", "quote": "Return 7"},
+                                    {"source_id": "request", "quote": "7"},
+                                ]
+                        else:
+                            value["decision_audit"]["dispositions"] = [
+                                {
+                                    "id": key,
+                                    "decision": "rejected",
+                                    "reason": "The request states the value",
+                                    "effect": "Return 7",
+                                    "basis": [
+                                        {
+                                            "source_id": "request",
+                                            "quote": "Return the 7",
+                                        },
+                                        {
+                                            "source_id": "request",
+                                            "quote": "Return number 7",
+                                        },
+                                    ],
+                                }
+                                for key in packet["objections"]
+                            ]
                     answer = json.dumps(value)
                     decision_probe["attempts"].append(
                         {"repaired": repaired, "objections": list(packet["objections"])}
                     )
+                if (
+                    recovery_progress["enabled"]
+                    and model == "parent"
+                    and any(m.get("role") == "tool" for m in request["messages"])
+                ):
+                    try:
+                        for _ in range(62):
+                            emit(
+                                {
+                                    "reasoning_content": "Checking the existing failed-discussion material. "
+                                }
+                            )
+                            recovery_progress["chunks"] += 1
+                            time.sleep(5)
+                    except (BrokenPipeError, ConnectionResetError):
+                        return
                 emit({"content": answer})
                 # Keep the SSE open while the CLI attaches its read-only wait.
                 time.sleep(0.3)
@@ -479,7 +551,7 @@ def main():
                 assert configured["configuration"]["run_timeout_secs"] == 0
                 assert configured["configuration"]["idle_timeout_secs"] == 2
 
-            def run(model, fusion=False, session=None):
+            def run(model, fusion=False, session=None, timeout=90):
                 ack = client.call(
                     [
                         "run",
@@ -502,7 +574,7 @@ def main():
                         ("/fusion " if fusion else "") + "Return 7",
                     ]
                 )
-                output = client.wait(ack["sessionId"], ack["runId"], 90)
+                output = client.wait(ack["sessionId"], ack["runId"], timeout)
                 assert ANSWER in output["text"], output
                 state = client.call(["session", "status", ack["sessionId"], "--json"])
                 assert not state.get("eventJournalError"), state.get(
@@ -935,6 +1007,64 @@ def main():
                     "maintained_answer": True,
                     "user_settings_preserved": True,
                 }
+            if args.check_local_repair:
+                exhausted.clear()
+                stalled.clear()
+                decision_probe["enabled"] = True
+                local_repair["enabled"] = True
+                repaired = run("parent", fusion=True)
+                decision_probe["enabled"] = False
+                local_repair["enabled"] = False
+                discussion = client.call(
+                    ["fusion", "show", repaired["sessionId"], "--json"]
+                )
+                write_json(home / "local-quote-repair-discussion.json", discussion)
+                write_json(
+                    home / "local-quote-repair-feedback.json", local_repair["feedback"]
+                )
+                assert discussion["run"]["result"]["final_answer"] == ANSWER
+                assert len(local_repair["feedback"]) == 1
+                evidence["local_quote_repair"] = {
+                    "all_bad_fields_reported": True,
+                    "original_excerpts_provided": True,
+                    "same_session_repair": True,
+                    "answer_preserved": True,
+                }
+            if args.check_recovery_progress:
+                exhausted.clear()
+                stalled.update(("a", "b", "c"))
+                recovery_progress["enabled"] = True
+                started = time.monotonic()
+                try:
+                    recovered = run("parent", fusion=True, timeout=400)
+                except RuntimeError as error:
+                    if args.expect_recovery_progress != "absolute-timeout":
+                        raise
+                    assert "FUSION_STAGE_TIMEOUT" in str(error), str(error)
+                    evidence["recovery_progress"] = {
+                        "expected_old_failure_reproduced": True,
+                        "elapsed_seconds": time.monotonic() - started,
+                        "reasoning_chunks": recovery_progress["chunks"],
+                    }
+                else:
+                    assert args.expect_recovery_progress == "preserved", (
+                        "Old absolute timeout unexpectedly passed"
+                    )
+                    assert time.monotonic() - started > 300
+                    transcript = client.transcript(recovered["sessionId"])
+                    write_json(home / "recovery-progress-transcript.json", transcript)
+                    evidence["recovery_progress"] = {
+                        "continuous_reasoning_over_300_seconds_completed": True,
+                        "elapsed_seconds": time.monotonic() - started,
+                        "reasoning_chunks": recovery_progress["chunks"],
+                    }
+                recovery_progress["enabled"] = False
+                assert all(
+                    request.get("reasoning_effort") == "high"
+                    and request.get("max_tokens") == 65536
+                    for request in configured_requests
+                )
+                evidence["recovery_progress"]["user_settings_preserved"] = True
             write_json(home / "verification.json", evidence)
             print(
                 json.dumps(

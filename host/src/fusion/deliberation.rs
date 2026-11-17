@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 const MARKER: &str = "\nDecision audit packet:\n";
-pub(super) const INSTRUCTIONS: &str = r#"Decision audit protocol: the packet lists consequential objections, not every difference. Address EVERY listed ID exactly once in decision_audit.dispositions. Each disposition has id, decision (accepted|rejected|unresolved), reason, effect, and basis (array of {source_id,quote}, exact excerpts from packet.sources). Accepted/rejected require at least one source excerpt AND a reason explaining why it answers the objection; quotation or majority alone is not a refutation. Accepted means its impact is incorporated; rejected means it does not overturn the conclusion; unresolved means the decisive check remains open. Never mark resolution settled with an unresolved objection. Use resolution conditional or insufficient_information and explain applicability in the answer and unresolved list. Source matches verify provenance, not truth or entailment.
+pub(super) const INSTRUCTIONS: &str = r#"Decision audit protocol: the packet lists consequential objections, not every difference. Address EVERY listed ID exactly once in decision_audit.dispositions. Each disposition has id, decision (accepted|rejected|unresolved), reason, effect, and basis (array of {source_id,quote}, exact excerpts from packet.sources). Accepted/rejected require at least one source excerpt AND a reason explaining why it answers the objection; quotation or majority alone is not a refutation. Accepted means its impact is incorporated; rejected means it does not overturn the conclusion; unresolved means the decisive check remains open. Never mark resolution settled with an unresolved objection. Use resolution conditional or insufficient_information and explain applicability in the answer and unresolved list. Source matches verify provenance, not truth or entailment. A missing premise cannot be disposed of merely by demanding disproof of the conclusion that depends on it. Distinguish the conclusion that is usable under established premises from an optional extension that needs an extra assumption. If an unresolved premise changes which answer or action is justified, identify exactly that dependency; do not merely label the metadata conditional while presenting the extension as established. A user-requested conditional plan or possible outcome may remain conditional; do not suppress useful supported results.
 Return JSON with decision_audit:{resolution:"settled|conditional|insufficient_information",dispositions:[],decision_update:null}. For a reopened decision, decision_update must be {decision:"maintain|revise",reason:"specific evidence/counterexample/corrected inference and its impact under the inherited criterion"}. Maintaining means preserving the previous user-facing answer verbatim. Revising needs a concrete justification; another vote or confidence is not enough. Inherit unresolved checks until explicitly disposed of. The previous conclusion is the working result; do not restart the whole problem. For closed tasks add decision_audit to the closed answer protocol. For general tasks use {conclusion:"self-contained answer in the requested format",unresolved:[],decision_audit:{...}}; only conclusion is delivered as prose."#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,53 +199,75 @@ pub(super) fn validate(text: &str, packet: &Value, closed: bool) -> Result<()> {
         .as_object()
         .context("Missing objection ledger")?;
     let mut seen = BTreeSet::new();
-    for d in &audit.dispositions {
-        ensure!(
-            objections.contains_key(&d.id) && seen.insert(&d.id),
-            "Unknown or duplicate objection ID: {}",
-            d.id
-        );
-        ensure!(
-            !d.reason.trim().is_empty() && !d.effect.trim().is_empty(),
-            "Disposition {} requires reason and effect",
-            d.id
-        );
-        ensure!(
-            d.decision == Decision::Unresolved || !d.basis.is_empty(),
-            "Resolved objection {} requires a source basis",
-            d.id
-        );
-        for basis in &d.basis {
-            let source = packet["sources"]
-                .get(&basis.source_id)
-                .context("Unknown disposition source")?;
+    let mut errors = vec![];
+    let mut hints = BTreeMap::new();
+    for (index, d) in audit.dispositions.iter().enumerate() {
+        let field = format!("decision_audit.dispositions[{index}] ({})", d.id);
+        if !objections.contains_key(&d.id) {
+            errors.push(format!("{field}: unknown objection ID"));
+        }
+        if !seen.insert(&d.id) {
+            errors.push(format!("{field}: duplicate objection ID"));
+        }
+        if d.reason.trim().is_empty() || d.effect.trim().is_empty() {
+            errors.push(format!("{field}: requires reason and effect"));
+        }
+        if d.decision != Decision::Unresolved && d.basis.is_empty() {
+            errors.push(format!(
+                "{field}: resolved objection requires a source basis"
+            ));
+        }
+        for (reference, basis) in d.basis.iter().enumerate() {
+            let field = format!("{field}.basis[{reference}]");
+            let Some(source) = packet["sources"].get(&basis.source_id) else {
+                errors.push(format!("{field}: unknown source {:?}", basis.source_id));
+                continue;
+            };
             let material = if basis.source_id.starts_with("report:") {
                 &source["response"]
             } else {
                 source
             };
-            ensure!(
-                strings(material)
-                    .iter()
-                    .any(|s| super::quotes::contains(s, &basis.quote)),
-                "Disposition {} quote is absent from its source",
-                d.id
-            );
+            // Reports are JSON-encoded strings in the packet. Their decoded
+            // string fields are the original wording too, not paraphrases.
+            let decoded = if basis.source_id.starts_with("report:") {
+                material
+                    .as_str()
+                    .and_then(|text| parse_json::<Value>(text).ok())
+            } else {
+                None
+            };
+            let mut candidates = decoded.as_ref().map(strings).unwrap_or_default();
+            candidates.extend(strings(material));
+            if !candidates
+                .iter()
+                .any(|s| super::quotes::contains(s, &basis.quote))
+            {
+                errors.push(format!("{field}.quote is absent from source {:?}; supplied: {:?}. Copy an exact source excerpt, without adding words.",
+                    basis.source_id, future_fusion::bounded_text(&basis.quote, 240)));
+                if hints.len() < 8 {
+                    hints.insert(
+                        basis.source_id.clone(),
+                        future_fusion::bounded_text(&serde_json::to_string(&candidates)?, 1600),
+                    );
+                }
+            }
         }
-        ensure!(
-            d.decision != Decision::Unresolved || audit.resolution != Resolution::Settled,
-            "Unresolved objection {} cannot be settled",
-            d.id
-        );
+        if d.decision == Decision::Unresolved && audit.resolution == Resolution::Settled {
+            errors.push(format!("{field}: unresolved objection cannot be settled"));
+        }
     }
-    ensure!(
-        seen.len() == objections.len(),
-        "Every critical objection needs an explicit disposition; missing: {:?}",
-        objections
-            .keys()
-            .filter(|id| !seen.contains(id))
-            .collect::<Vec<_>>()
-    );
+    let missing = objections
+        .keys()
+        .filter(|id| !seen.contains(id))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        errors.push(format!(
+            "Every critical objection needs an explicit disposition; missing: {missing:?}"
+        ));
+    }
+    ensure!(errors.is_empty(), "{}\nOriginal source excerpts for local quote repair (remaining sources stay in the original packet): {}",
+        errors.join("\n"), serde_json::to_string(&hints)?);
     let answer = result[if closed { "answer" } else { "conclusion" }]
         .as_str()
         .filter(|s| !s.trim().is_empty())
@@ -385,6 +407,33 @@ mod tests {
         value["decision_audit"]["resolution"] = json!("settled");
         assert!(validate(&value.to_string(), &prompt, false).is_err());
     }
+    #[test]
+    fn quote_repair_lists_every_bad_reference_and_the_original_source_wording() {
+        let (mut value, packet) = fixture();
+        value["decision_audit"]["dispositions"][0]["basis"] = json!([
+            {"source_id":"request","quote":"If the extra premise holds"},
+            {"source_id":"request","quote":"return the 7"}
+        ]);
+        let error = validate(&value.to_string(), &packet, false)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("basis[0].quote"));
+        assert!(error.contains("basis[1].quote"));
+        assert!(error.contains("If the premise holds, return 7."));
+        assert!(error.contains("Copy an exact source excerpt"));
+    }
+    #[test]
+    fn report_citations_match_original_json_string_values_without_accepting_paraphrases() {
+        let (mut value, mut packet) = fixture();
+        packet["sources"]["report:P1"] = json!({"response":json!({"current_answer":"Keep \"existing records\".\nCheck the condition."}).to_string()});
+        value["decision_audit"]["dispositions"][0]["basis"] =
+            json!([{"source_id":"report:P1","quote":"Keep \"existing records\"."}]);
+        validate(&value.to_string(), &packet, false).unwrap();
+        value["decision_audit"]["dispositions"][0]["basis"][0]["quote"] =
+            json!("Keep all existing records.");
+        assert!(validate(&value.to_string(), &packet, false).is_err());
+    }
+
     #[test]
     fn inherited_answer_changes_require_explicit_revision() {
         let (mut value, prompt) = fixture();

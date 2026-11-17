@@ -324,7 +324,7 @@ impl Loop {
         ) && tool_defs.len() == 1
             && tool_defs[0].function.name == "fusion";
         let mut fusion_stage = closed_fusion.then_some(crate::fusion::ParentStage::Routing);
-        let mut fusion_stage_started = tokio::time::Instant::now();
+        let mut fusion_progress = fusion_stage.map(crate::fusion::ParentProgress::new);
         let mut fusion_delivery_progress = false;
 
         if self.verbose {
@@ -692,18 +692,16 @@ impl Loop {
             // time-to-first-byte takes effect immediately instead of blocking
             // on the request to return (especially noticeable on Windows where
             // flaky connections make this phase slow).
-            let stage_deadline = fusion_stage
-                .filter(|stage| {
-                    *stage == crate::fusion::ParentStage::Routing || !fusion_delivery_progress
-                })
-                .map(|stage| fusion_stage_started + Duration::from_secs(stage.timeout_secs()));
+            let stage_deadline = fusion_progress
+                .as_ref()
+                .map(crate::fusion::ParentProgress::deadline);
             if let Some(stage) = fusion_stage {
                 tracing::info!(
                     ?stage,
                     output_limit = stage.controls().max_output_tokens,
                     thinking = "configured",
                     timeout_secs = stage.timeout_secs(),
-                    "Fusion closed-task request policy v2"
+                    "Fusion closed-task request policy v3"
                 );
             }
             let stage_request = async {
@@ -973,11 +971,14 @@ impl Loop {
             let mut truncation_detected_by: Option<&'static str> = None;
 
             loop {
-                // No event deadline: providers can reason silently for minutes.
-                // Reuse the interrupt helper so flag-only cancellation also wakes
+                // Delivery/recovery only time out without substantive content;
+                // status/usage events do not keep a silent provider alive. Reuse the interrupt helper so flag-only cancellation also wakes
                 // this wait, even without an interrupt channel.
                 let next = async {
-                    if let Some(deadline) = stage_deadline.filter(|_| !fusion_delivery_progress) {
+                    if let Some(deadline) = fusion_progress
+                        .as_ref()
+                        .map(crate::fusion::ParentProgress::deadline)
+                    {
                         tokio::time::timeout_at(deadline, rx.next())
                             .await
                             .map_err(|_| ())
@@ -994,8 +995,11 @@ impl Loop {
                     }
                     Some(Err(())) => {
                         let message = format!(
-                            "[FUSION_STAGE_TIMEOUT] {:?}: stage budget expired",
+                            "[FUSION_STAGE_TIMEOUT] {:?}: {}",
+                            fusion_stage,
                             fusion_stage
+                                .map(|stage| stage.timeout_description())
+                                .unwrap_or("stage deadline expired")
                         );
                         on_event(RunEvent::Model(ModelStreamEvent::Error {
                             message: message.clone(),
@@ -1019,6 +1023,9 @@ impl Loop {
                         break;
                     }
                 };
+                if let Some(progress) = fusion_progress.as_mut() {
+                    progress.observe(&model_event);
+                }
                 if fusion_stage.is_some_and(|stage| stage != crate::fusion::ParentStage::Routing)
                     && matches!(&model_event,
                         ModelStreamEvent::TextDelta { text, .. } if !text.is_empty())
@@ -1646,10 +1653,10 @@ impl Loop {
             if let Some(stage) = fusion_stage {
                 assistant_msg.metadata.get_or_insert_with(serde_json::Map::new).insert(
                     "fusion_request_policy".into(), serde_json::json!({
-                        "version": 2, "stage": format!("{stage:?}").to_lowercase(),
+                        "version": 3, "stage": format!("{stage:?}").to_lowercase(),
                         "generation_settings": "user_configured", "thinking_level_override": stage.controls().thinking_level, "max_output_tokens_cap": stage.controls().max_output_tokens,
                         "timeout_seconds": stage.timeout_secs(),
-                        "timeout_scope": if stage == crate::fusion::ParentStage::Routing { "absolute" } else { "before_visible_text" },
+                        "timeout_scope": if stage == crate::fusion::ParentStage::Routing { "absolute" } else { "reasoning_or_text_inactivity" },
                     }),
                 );
             }
@@ -1946,7 +1953,7 @@ impl Loop {
                     return Ok(answer);
                 }
                 fusion_stage = Some(crate::fusion::ParentStage::after_tools(messages));
-                fusion_stage_started = tokio::time::Instant::now();
+                fusion_progress = fusion_stage.map(crate::fusion::ParentProgress::new);
                 fusion_delivery_progress = false;
             }
 
