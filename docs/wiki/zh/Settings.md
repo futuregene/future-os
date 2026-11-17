@@ -19,6 +19,7 @@
   - **Full access（完全访问，默认）** —— 不询问、不沙箱，一切照跑。
 - **Auto-upgrade skills(技能自动升级)** —— 每次应用打开时,静默把已安装技能升级到最新版本。
 - **Skill recommendations（技能推荐）**（默认关闭）—— 开启后，发送消息时最多推荐一个你尚未安装的技能。
+- **Choice cards（选项卡）**（默认关闭）—— 允许回复末尾带一张可勾选的选项卡。关闭时不显示卡片，也**不会在系统提示词里告诉智能体有这种格式**，所以没有回复会带卡；开启后，之前关闭期间看不了的历史卡片会重新显示。设计见[回复里的选项卡](../../design/choice-cards.zh-CN.md)。
 - **Generate a title after the first answer（首轮回答后生成标题）**（默认开启）—— 新会话首次成功回答后自动命名；之后的回答不会再次触发。
 - **Completion bell（完成提示音）** —— agent 跑完时播放提示音并提醒窗口。
 - **Continue interrupted conversations（继续被中断的对话）**（默认开启）—— agent 运行在应用进程内，关闭 FutureOS 会中断正在跑的对话；开启后下次启动会自动继续。
