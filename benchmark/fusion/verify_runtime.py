@@ -14,7 +14,6 @@ import uuid
 from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from unittest.mock import patch
 
 from datasets import ROOT, digest, write_json
 from future_runner import Future
@@ -54,8 +53,13 @@ def main():
         action="store_true",
         help="exercise a two-second fixture-only inactivity threshold",
     )
+    parser.add_argument(
+        "--artifact-root", help="Directory for retained local verification records"
+    )
     args = parser.parse_args()
-    home = ROOT / ".local" / ("verification-" + uuid.uuid4().hex[:12])
+    home = Path(args.artifact_root or ROOT / ".local") / (
+        "verification-" + uuid.uuid4().hex[:12]
+    )
     (home / "agent").mkdir(parents=True, mode=0o700)
     home.chmod(0o700)
     counts = Counter()
@@ -63,6 +67,7 @@ def main():
     arrivals = []
     entry_policies = []
     entry_tool_choices = []
+    delivery_requests = []
     stalled = set()
     barrier = threading.Barrier(3, timeout=15)
 
@@ -84,7 +89,10 @@ def main():
                     )
                 )
                 entry_policies.append("Fusion is enabled for this run only." in system)
-                entry_tool_choices.append(request.get("tool_choice"))
+                if any(m.get("role") == "tool" for m in request["messages"]):
+                    delivery_requests.append(request)
+                else:
+                    entry_tool_choices.append(request.get("tool_choice"))
             with lock:
                 counts[model] += 1
                 attempt = counts[model]
@@ -202,7 +210,16 @@ def main():
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    names = ["long-open", "long-closed", "parent", "moderator", "a", "b", "c"]
+    names = [
+        "long-open",
+        "long-closed",
+        "parent",
+        "bypass-parent",
+        "moderator",
+        "a",
+        "b",
+        "c",
+    ]
     write_json(
         home / "agent/models.json",
         {
@@ -212,7 +229,7 @@ def main():
                     "apiKey": "local-fixture",
                     "baseUrl": f"http://127.0.0.1:{server.server_port}/v1",
                     "models": [
-                        {"id": name, "contextWindow": 1000000, "maxTokens": 8192}
+                        {"id": name, "contextWindow": 1000000, "maxTokens": 16384}
                         for name in names
                     ],
                 }
@@ -313,6 +330,39 @@ def main():
                 )
                 return ack
 
+            bypass = client.call(
+                [
+                    "run",
+                    "--model",
+                    "fixture/bypass-parent",
+                    "--no-tools",
+                    "--no-title",
+                    "--permission",
+                    "all",
+                    "--mode",
+                    "json",
+                    "--no-wait",
+                    "--cwd",
+                    str(home),
+                    "/fusion Return 7",
+                ]
+            )
+            try:
+                client.wait(bypass["sessionId"], bypass["runId"], 30)
+                raise AssertionError("Unconsulted answer was accepted")
+            except RuntimeError:
+                ledger = client.run_ledger(
+                    bypass["sessionId"], bypass["runId"], wait_terminal=30
+                )
+                write_json(home / "bypass-ledger.json", ledger)
+                rejected = next(
+                    row for row in ledger["ledger"] if row["runId"] == bypass["runId"]
+                )
+                assert (
+                    rejected["status"] == "failed"
+                    and "FUSION_ROUTING_FAILED" in rejected["error"]
+                ), rejected
+            evidence["unconsulted_answer_rejected"] = True
             expected = FRAGMENT * CHUNKS
             for model in ("long-open", "long-closed"):
                 ack = run(model)
@@ -344,6 +394,9 @@ def main():
             ack = run("parent", fusion=True)
             discussion = client.call(["fusion", "show", ack["sessionId"], "--json"])
             write_json(home / "discussion.json", discussion)
+            assert discussion["run"]["input"]["parent_request"] == "Return 7", (
+                discussion["run"]["input"]
+            )
             report = discussion["run"]["report"]
             assert discussion["run"]["status"] == "completed", discussion["run"][
                 "status"
@@ -366,22 +419,21 @@ def main():
             }
             # Run the shipping benchmark caller too, binding its routing role
             # to this local fixture rather than any real paid provider.
-            with (
-                patch("future_runner.BASE_MODEL", "fixture/parent"),
-                patch("future_runner.BASE_THINKING", "default"),
-            ):
-                harness_result = client.run_case(
-                    {
-                        "id": "fixture:7",
-                        "dataset": "fixture",
-                        "scorer": "integer",
-                        "question": "Return 7",
-                        "answer": "7",
-                    },
-                    "fusion",
-                    home / "harness-case",
-                    90,
-                )
+            harness_client = Future(
+                args.binary, runtime, model="fixture/parent", thinking="default"
+            )
+            harness_result = harness_client.run_case(
+                {
+                    "id": "fixture:7",
+                    "dataset": "fixture",
+                    "scorer": "integer",
+                    "question": "Return 7",
+                    "answer": "7",
+                },
+                "fusion",
+                home / "harness-case",
+                90,
+            )
             assert harness_result["status"] == "completed", harness_result.get("error")
             assert harness_result["grade"]["correct"]
             assert harness_result["fusion_invocations"] == 1
@@ -422,15 +474,23 @@ def main():
                     "heartbeat_only_failure_kind": failures[0]["failure_kind"],
                     "heartbeat_only_retries": 0,
                 }
-            evidence["fusion"]["automatic_tool_choice"] = all(
-                choice in (None, "auto") for choice in entry_tool_choices
+            evidence["fusion"]["required_fusion_tool_choice"] = all(
+                choice == {"type": "function", "function": {"name": "fusion"}}
+                for choice in entry_tool_choices
             )
             write_json(home / "verification.json", evidence)
             assert entry_policies and all(
                 present == (args.expect_entry_policy == "present")
                 for present in entry_policies
             ), entry_policies
-            assert evidence["fusion"]["automatic_tool_choice"], entry_tool_choices
+            assert (
+                entry_tool_choices and evidence["fusion"]["required_fusion_tool_choice"]
+            ), entry_tool_choices
+            assert delivery_requests and all(
+                request.get("max_tokens") == 16384 and not request.get("tool_choice")
+                for request in delivery_requests
+            ), delivery_requests
+            evidence["fusion"]["bounded_delivery_requests"] = len(delivery_requests)
             print(
                 json.dumps(
                     {"evidence": str(home / "verification.json"), "results": evidence},

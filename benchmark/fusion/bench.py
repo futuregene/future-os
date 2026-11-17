@@ -322,7 +322,7 @@ def main():
                 {
                     "schema": 1,
                     "started_at_utc": datetime.datetime.now(
-                        datetime.timezone.utc
+                        datetime.timezone.utc  # noqa: UP017 - macOS system Python 3.9 has no datetime.UTC
                     ).isoformat(),
                     "git_commit": git,
                     "source_worktree_dirty": bool(
@@ -351,7 +351,7 @@ def main():
                     "http_502_retries": args.http_502_retries,
                     "http_502_retry_delay": args.http_502_retry_delay,
                     "timeout_seconds": args.timeout,
-                    "protocol": "daily final answer primary; normal /fusion entry and automatic tool selection; report activation and kernel diagnostics separately; no external tools; no equal-budget claim",
+                    "protocol": "daily final answer primary; normal /fusion entry with product runtime tool routing; report activation and kernel diagnostics separately; no external tools; no equal-budget claim",
                     "execution_profile": "daily",
                     "primary_endpoint": "daily_final_answer",
                     "question_bundle_sha256": digest(question_bundle.read_bytes())

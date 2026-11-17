@@ -318,6 +318,14 @@ impl Loop {
                 0
             };
         let mut provider_limit_checkpoint_id: Option<String> = None;
+        let closed_fusion = matches!(
+            self.fusion_context,
+            Some(crate::fusion::ContextScope::Parent { .. })
+        ) && tool_defs.len() == 1
+            && tool_defs[0].function.name == "fusion";
+        let mut fusion_stage = closed_fusion.then_some(crate::fusion::ParentStage::Routing);
+        let mut fusion_stage_started = tokio::time::Instant::now();
+        let mut fusion_delivery_progress = false;
 
         if self.verbose {
             tracing::info!(
@@ -684,17 +692,45 @@ impl Loop {
             // time-to-first-byte takes effect immediately instead of blocking
             // on the request to return (especially noticeable on Windows where
             // flaky connections make this phase slow).
+            let stage_deadline = fusion_stage
+                .filter(|stage| {
+                    *stage == crate::fusion::ParentStage::Routing || !fusion_delivery_progress
+                })
+                .map(|stage| fusion_stage_started + Duration::from_secs(stage.timeout_secs()));
+            if let Some(stage) = fusion_stage {
+                tracing::info!(
+                    ?stage,
+                    output_limit = stage.controls().max_output_tokens,
+                    thinking = "off",
+                    timeout_secs = stage.timeout_secs(),
+                    "Fusion closed-task request policy v1"
+                );
+            }
+            let stage_request = async {
+                let request = crate::llm::schema::ModelRequest {
+                    model: ctx.model.clone(),
+                    messages: work_messages,
+                    tools: tool_defs.clone(),
+                    system_prompt: request_system_prompt.to_string(),
+                };
+                let stream = async {
+                    if let Some(stage) = fusion_stage {
+                        self.provider
+                            .stream_model_with_controls(request, stage.controls())
+                            .await
+                    } else {
+                        self.provider.stream_model(request).await
+                    }
+                };
+                if let Some(deadline) = stage_deadline {
+                    tokio::time::timeout_at(deadline, stream).await
+                        .map_err(|_| anyhow!("[FUSION_STAGE_TIMEOUT] {:?}: stage budget expired before response headers", fusion_stage))?
+                } else {
+                    stream.await
+                }
+            };
             let stream_result = match self
-                .await_or_interrupt(
-                    self.provider
-                        .stream_model(crate::llm::schema::ModelRequest {
-                            model: ctx.model.clone(),
-                            messages: work_messages,
-                            tools: tool_defs.clone(),
-                            system_prompt: request_system_prompt.to_string(),
-                        }),
-                    interrupt_rx.as_mut(),
-                )
+                .await_or_interrupt(stage_request, interrupt_rx.as_mut())
                 .await
             {
                 Some(r) => r,
@@ -706,6 +742,9 @@ impl Loop {
             let mut rx = match stream_result {
                 Ok(rx) => rx,
                 Err(last_error) => {
+                    if last_error.to_string().contains("[FUSION_STAGE_TIMEOUT]") {
+                        return Err(last_error);
+                    }
                     if self.config.max_retries > 0
                         && retry_attempt < self.config.max_retries as usize
                     {
@@ -931,17 +970,42 @@ impl Loop {
                 // No event deadline: providers can reason silently for minutes.
                 // Reuse the interrupt helper so flag-only cancellation also wakes
                 // this wait, even without an interrupt channel.
-                let model_event = match self
-                    .await_or_interrupt(rx.next(), interrupt_rx.as_mut())
-                    .await
-                {
-                    Some(Some(event)) => event,
+                let next = async {
+                    if let Some(deadline) = stage_deadline.filter(|_| !fusion_delivery_progress) {
+                        tokio::time::timeout_at(deadline, rx.next())
+                            .await
+                            .map_err(|_| ())
+                    } else {
+                        Ok(rx.next().await)
+                    }
+                };
+                let model_event = match self.await_or_interrupt(next, interrupt_rx.as_mut()).await {
+                    Some(Ok(Some(event))) => event,
+                    Some(Err(())) if saw_terminal_event => {
+                        // Optional usage after a terminal finish must not turn
+                        // an already completed answer into a failed/replayed run.
+                        break;
+                    }
+                    Some(Err(())) => {
+                        let message = format!(
+                            "[FUSION_STAGE_TIMEOUT] {:?}: stage budget expired",
+                            fusion_stage
+                        );
+                        on_event(RunEvent::Model(ModelStreamEvent::Error {
+                            message: message.clone(),
+                        }));
+                        stream_error = Some(anyhow!(message));
+                        model_stream_failed = true;
+                        stream_truncated = true;
+                        truncation_detected_by = Some("fusion_stage_timeout");
+                        break;
+                    }
                     None => {
                         interrupted_during_stream = true;
                         stream_error = Some(anyhow!("interrupted"));
                         break;
                     }
-                    Some(None) => {
+                    Some(Ok(None)) => {
                         if !saw_terminal_event {
                             stream_truncated = true;
                             truncation_detected_by.get_or_insert("eof_no_terminal");
@@ -949,6 +1013,15 @@ impl Loop {
                         break;
                     }
                 };
+                if fusion_stage.is_some_and(|stage| stage != crate::fusion::ParentStage::Routing)
+                    && matches!(&model_event,
+                        ModelStreamEvent::TextDelta { text, .. } if !text.is_empty())
+                {
+                    // Real delivery may legitimately be long. Once visible
+                    // output begins, normal content-idle/cancellation guards
+                    // own liveness instead of a fixed wall-clock cut.
+                    fusion_delivery_progress = true;
+                }
                 // Provider indices must never directly control unbounded vector
                 // allocation (including usize::MAX + 1 overflow).
                 if matches!(&model_event,
@@ -1564,6 +1637,16 @@ impl Loop {
                 content,
                 ..Default::default()
             };
+            if let Some(stage) = fusion_stage {
+                assistant_msg.metadata.get_or_insert_with(serde_json::Map::new).insert(
+                    "fusion_request_policy".into(), serde_json::json!({
+                        "version": 1, "stage": format!("{stage:?}").to_lowercase(),
+                        "thinking_level": "off", "max_output_tokens_cap": stage.controls().max_output_tokens,
+                        "timeout_seconds": stage.timeout_secs(),
+                        "timeout_scope": if stage == crate::fusion::ParentStage::Routing { "absolute" } else { "before_visible_text" },
+                    }),
+                );
+            }
             if ctx.segmented_storage {
                 bind_stream_message(&mut assistant_msg, &stream_entry_id, keys);
             }
@@ -1601,6 +1684,7 @@ impl Loop {
                 // the same refusal. A user interrupt outranks both.
                 let output_budget_spent = truncation_detected_by == Some("finish_length");
                 if output_budget_spent
+                    && (fusion_stage.is_none() || fusion_delivery_progress)
                     && !interrupted_after_stream
                     && output_limit_continuations < max_output_limit_continuations
                 {
@@ -1722,6 +1806,12 @@ impl Loop {
             output_limit_continuation_pending = false;
             output_limit_continuation_had_visible_output = false;
 
+            if fusion_stage == Some(crate::fusion::ParentStage::Routing)
+                && (tool_calls.len() != 1 || tool_calls[0].function.name != "fusion")
+            {
+                return Err(anyhow!("[FUSION_ROUTING_FAILED] provider did not produce exactly one required fusion call; refusing an unconsulted answer"));
+            }
+
             // Check stop condition. The is_some_and closure keeps the None
             // edge branchless (a nested if's closing brace here collected a
             // phantom zero-count coverage region).
@@ -1783,6 +1873,11 @@ impl Loop {
             }
             self.execute_tools(turn, &tool_calls, messages, &on_event, ctx)
                 .await?;
+            if closed_fusion {
+                fusion_stage = Some(crate::fusion::ParentStage::after_tools(messages));
+                fusion_stage_started = tokio::time::Instant::now();
+                fusion_delivery_progress = false;
+            }
 
             // Log per-turn usage: tokens and cost.
             if let Some(ref u) = total_usage {

@@ -15,6 +15,7 @@ use std::sync::{
 pub(crate) enum ContextScope {
     Parent {
         parent: Parent,
+        parent_request: Option<String>,
         workspace: PathBuf,
         store: Store,
         sandbox: Arc<crate::sandbox::ResolvedSandbox>,
@@ -123,6 +124,59 @@ pub(crate) fn main_tool() -> AgentTool {
     )
 }
 
+/// Closed tasks need routing and delivery, not a second independent solve.
+/// General execution runs keep their full catalog and configured generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ParentStage {
+    Routing,
+    Delivery,
+    Recovery,
+}
+impl ParentStage {
+    pub(crate) fn timeout_secs(self) -> u64 {
+        match self {
+            Self::Routing => 180,
+            Self::Delivery | Self::Recovery => 300,
+        }
+    }
+    pub(crate) fn controls(self) -> crate::llm::schema::RequestControls {
+        crate::llm::schema::RequestControls {
+            required_tool: (self == Self::Routing).then(|| "fusion".into()),
+            // Routing only needs tool arguments. Delivery retains the selected
+            // model's output budget so long user-requested answers can finish.
+            max_output_tokens: (self == Self::Routing).then_some(16_384),
+            thinking_level: Some("off".into()),
+        }
+    }
+    pub(crate) fn after_tools(messages: &[crate::types::AgentMessage]) -> Self {
+        let completed = messages
+            .last()
+            .filter(|m| m.role == "tool" && m.name == "fusion")
+            .is_some_and(|m| {
+                m.content.iter().any(|block| {
+                    let crate::types::ContentBlock::ToolResult {
+                        content,
+                        is_error: false,
+                        ..
+                    } = block
+                    else {
+                        return false;
+                    };
+                    serde_json::from_str::<Value>(content).is_ok_and(|value| {
+                        value["has_conclusion"] == true
+                            && value["status"] == "completed"
+                            && value["continuation"]["mode"] == "apply_conclusion"
+                    })
+                })
+            });
+        if completed {
+            Self::Delivery
+        } else {
+            Self::Recovery
+        }
+    }
+}
+
 fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
     Box::pin(async move {
         let context = CONTEXT
@@ -130,6 +184,7 @@ fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
             .context("Fusion unavailable outside an explicitly enabled parent run")?;
         let ContextScope::Parent {
             mut parent,
+            parent_request,
             workspace,
             store,
             sandbox,
@@ -140,7 +195,7 @@ fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
         };
         ensure!(
             store.host_available(),
-            "Fusion host is unavailable; start the FutureOS host"
+            "Fusion host is unavailable or incompatible; start matching FutureOS Host and Agent versions"
         );
         parent.tool_call_id = crate::tools::current_tool_call_id();
         ensure!(
@@ -151,7 +206,12 @@ fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
             args.get("options").is_none(),
             "Fusion no longer accepts options; attribute user-provided proposals in background"
         );
-        let input: ConsultationInput = serde_json::from_value(args)?;
+        ensure!(
+            args.get("parent_request").is_none(),
+            "Fusion parent_request is backend-owned"
+        );
+        let mut input: ConsultationInput = serde_json::from_value(args)?;
+        input.parent_request = parent_request;
         input.validate()?;
         let (run, created) = store.prepare(parent, input, &workspace)?;
         let mut guard = InvocationGuard {
@@ -394,6 +454,7 @@ pub(crate) fn query_status(state: &crate::rpc::AppState) -> Result<Value> {
         "moderator_model": settings.configuration.moderator.model,
         "context_budget_version": future_fusion::CONTEXT_POLICY_VERSION,
         "generation_policy_version": future_fusion::GENERATION_POLICY_VERSION,
+        "input_policy_version": future_fusion::INPUT_POLICY_VERSION,
         "resilience_policy_version": future_fusion::RESILIENCE_POLICY_VERSION,
         "agent_instance_id": state.agent_instance_id,
         "config_revision": state.control_plane.current_config_revision(),

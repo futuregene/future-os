@@ -366,8 +366,10 @@ benchmark/fusion/.venv/bin/python benchmark/fusion/verify_runtime.py --check-idl
 
 **日常使用配置的主指标**：两组最终回答的正确率。
 两组主 Agent 均为 DeepSeek Flash `max`，使用产品默认系统提示词，关闭无关项目上下文。
-Fusion 组通过普通 `/fusion` 前缀启用功能，模型按日常共用提示词自然选择工具；
-不使用强制 `tool_choice`，不添加“第一步必须调用”“只能调用一次”等评测专用指令。
+Fusion 组通过普通 `/fusion` 前缀启用功能，工具路由遵循被测产品版本的共用运行时策略；
+评测脚本不额外设置强制 `tool_choice` 或“只能调用一次”等专用指令。
+父请求策略 v1 的封闭任务会由产品要求首次咨询，并使用请求级路由/交付配置；
+记录策略及二进制版本，不把会话所选思考等级当作每一轮的实际生成设置。
 另外记录 Fusion 启动率、实际讨论次数、完成情况、讨论结论评分及最终回答与结论的差异。
 未调用时即使最终答对，也不能据此宣称 Fusion 参与或带来了推理收益。
 
@@ -457,3 +459,19 @@ benchmark/fusion/.venv/bin/ruff format --check benchmark/fusion
 或 iOS 编译和测试，仍保留轻量的影响范围检测与主干必需的 `CI result` 汇总检查。
 
 Technical diagnostics are independent of completed parent answers: a failed consultation read is retained as `diagnostics_pending`, without re-generating or erasing the answer. Unknown acceptance/validation failures remain ungraded as `needs_review`, never automatically replayed, while healthy cases continue. Campaigns finish with `completed_with_review_needed` when evidence still requires inspection. The isolated runtime records running/exited lifecycle and launcher/Host process identities; an external kill can still require checking the actual process and accepted run ledger.
+
+## 结果采集与父请求策略（2026-11-17）
+
+新采集结果以对应 accepted run 的终态 transcript 中最后一条助手记录的公开正文为准，
+保存 `canonical-answer.json`、`answer_entry_id` 与 `text_source`。原始 `output.json` 保留 CLI 流式返回；
+`stream_text_mismatch` 和 `stream_text_is_suffix` 标记差异，不拼接猜测、不调用模型补答案。
+记录不完整、run 不匹配、最后一条仍是工具调用或没有公开正文时，报告采集错误，不借用更早或其他 run 的答案。
+既有原始结果与成绩不原地改写，评分器及题目也保持不变。
+
+Fusion-only 封闭运行使用父请求策略 v1：首轮指定 Fusion 工具，路由上限 16,384 token / 180 秒；
+咨询后交付或失败收尾保留模型原有输出上限，正文开始前最多等待 300 秒；两阶段请求思考 `off`。
+正文开始后沿用普通内容空闲超时，避免截断合法长答案。路由上限不提高模型原有上限。
+策略只覆盖外层路由/交付请求，内层模型和主持的配置保持各自设置。
+因此新旧成绩比较必须记录该策略版本，不能把会话所选 `max` 当作每一轮实际请求的思考等级。
+完整助手记录中的 `fusion_request_policy` 元数据和请求日志保留这些设置。
+本地模拟服务验证不代表真实提供商兼容性或题目准确率提升，仍需同配置配对验证。
