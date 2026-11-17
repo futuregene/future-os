@@ -333,13 +333,48 @@ impl Supervisor {
             .store(lane, Ordering::Release);
     }
 
-    /// Record one published catalogue packet and its sealed size.
+    /// Record one catalogue packet and its sealed size, *before* it is handed to
+    /// the endpoint, and take it back with
+    /// [`Supervisor::retract_catalogue_packet`] if the endpoint did not take it.
+    ///
+    /// The order is the whole point. Handing the bytes to the endpoint is what
+    /// makes a packet observable to anybody else — the client, the relay, a
+    /// fixture — and that send completes in a task of the transport's own, so a
+    /// count recorded after the publish returns can trail a packet a reader has
+    /// already received. Status would then answer "how much have I been sent?"
+    /// with a number that is briefly lower than the wire, which is the opposite of
+    /// what the field is for, and it is what failed
+    /// `catalogue_delta_lane_carries_only_what_changed` on CI (run 44016274423):
+    /// the fixture had accepted the first full packet while this counter still
+    /// read zero. Counted first, the count may lead the wire by at most the one
+    /// packet in flight, and never lags it.
     pub fn note_catalogue_packet(&self, pair_id: &str, bytes: usize) {
         let shared = self.shared_or_insert(pair_id);
         shared.catalogue_packets.fetch_add(1, Ordering::AcqRel);
         shared
             .catalogue_bytes
             .fetch_add(bytes as u64, Ordering::AcqRel);
+    }
+
+    /// Take back a packet [`Supervisor::note_catalogue_packet`] counted whose
+    /// bytes the endpoint never took: the secure channel had no key yet, or the
+    /// transport failed. Paired with a note that strictly precedes it, so the
+    /// counter returns to what it read before that packet — and saturating, so a
+    /// record cleared by a stop between the two can never read as a wrapped
+    /// count.
+    pub fn retract_catalogue_packet(&self, pair_id: &str, bytes: usize) {
+        let shared = self.shared_or_insert(pair_id);
+        let _ =
+            shared
+                .catalogue_packets
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |counted| {
+                    Some(counted.saturating_sub(1))
+                });
+        let _ = shared
+            .catalogue_bytes
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |counted| {
+                Some(counted.saturating_sub(bytes as u64))
+            });
     }
 
     /// What this connection has been sent on the catalogue lane, for status.
@@ -1290,6 +1325,35 @@ mod tests {
         assert!(
             inert.tasks.lock().unwrap().is_empty(),
             "cancel_tasks drains the registry"
+        );
+    }
+
+    /// The traffic record only keeps packets the endpoint took: a count taken
+    /// before the handoff is the ordering status needs (it may then lead the wire
+    /// by the packet in flight, never trail it), and the price of that ordering is
+    /// this retraction. It must return the record exactly to what it read before
+    /// the packet, and must not wrap when the record it was paired with is gone.
+    #[test]
+    fn a_packet_the_endpoint_refused_is_taken_back_out_of_the_record() {
+        let supervisor = isolated();
+        supervisor.set_catalogue_lane("pair_traffic", 1);
+        supervisor.note_catalogue_packet("pair_traffic", 120);
+        assert_eq!(supervisor.catalogue_traffic("pair_traffic"), (1, 1, 120));
+
+        supervisor.retract_catalogue_packet("pair_traffic", 120);
+        assert_eq!(
+            supervisor.catalogue_traffic("pair_traffic"),
+            (1, 0, 0),
+            "a packet the endpoint did not take is not traffic"
+        );
+
+        // A retract whose record was cleared underneath it (a stop empties the
+        // shared runtime) saturates, rather than reporting 2^64 packets sent.
+        supervisor.retract_catalogue_packet("pair_traffic", 120);
+        assert_eq!(
+            supervisor.catalogue_traffic("pair_traffic"),
+            (1, 0, 0),
+            "the record never reads backwards"
         );
     }
 
