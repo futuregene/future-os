@@ -36,7 +36,7 @@ const mockRemote = {
     { desktopId: "desktop_2", pairId: "p2" },
   ],
   credentials: { pairId: "p1", expectedDesktopId: "desktop_1" },
-  workspaces: [] as { id: string; name: string }[],
+  workspaces: [] as { id: string; name: string; path?: string; archived?: boolean }[],
   // The active machine's catalogue. The header's batch entry reads it to decide
   // whether a selection has anything to hold, so it is part of the screen's
   // contract with the provider even when nothing is paired yet.
@@ -790,6 +790,55 @@ test("new chat opens immediately, without an extra creation dialog", () => {
   // the open machine's own verb is what the shortcut has always used.
   expect(mockRemote.newConversation).toHaveBeenCalledWith("chat");
   expect(mockRemote.newConversationOn).not.toHaveBeenCalled();
+});
+
+/**
+ * A shelved workspace is not a place to start a conversation.
+ *
+ * Archiving hides a workspace from every list on the desktop, and its
+ * conversations leave with it; the phone's own pages agree. The new-conversation
+ * dialog was the one place it came back — the catalogue keeps the shelved rows
+ * (the archived view draws them from the same read), so the picker has to filter
+ * them out itself, exactly as the list pages filter their own.
+ */
+test("a shelved workspace is not offered when starting a conversation", () => {
+  mockRemote.workspaces = [
+    { id: "w-shelved", name: "Shelved project", path: "/tmp/shelved", archived: true },
+    { id: "w-open", name: "Open project", path: "/tmp/open" },
+  ];
+  act(() => tree.root.findByType(SessionList).props.onTabChange("workspace"));
+  act(() => button("sessions.new").props.onPress());
+
+  const names = modalText();
+  expect(names).toContain("Open project");
+  expect(names).not.toContain("Shelved project");
+  // The pre-selection is a workspace the reader can actually see: had the
+  // shelved row been first and still chosen, the footer would create a
+  // conversation in a folder the dialog never drew.
+  const dialog = visibleModal()!;
+  act(() => footerButton("sessions.new").props.onPress());
+  act(() => dialog.props.onDismiss());
+  expect(mockRemote.newConversationOn).toHaveBeenCalledWith("desktop_1", "workspace", "w-open");
+
+  mockRemote.workspaces = [];
+});
+
+test("a machine whose every workspace is shelved says so instead of claiming none", () => {
+  mockRemote.workspaces = [
+    { id: "w-shelved", name: "Shelved project", path: "/tmp/shelved", archived: true },
+  ];
+  act(() => tree.root.findByType(SessionList).props.onTabChange("workspace"));
+  act(() => button("sessions.new").props.onPress());
+
+  const names = modalText();
+  expect(names).toContain("sessions.noActiveWorkspaces");
+  expect(names).not.toContain("sessions.noWorkspaces");
+  // Nothing to create: the footer stays off rather than sending an empty
+  // workspace id.
+  expect(footerButton("sessions.new").props.disabled).toBe(true);
+
+  act(() => visibleModal()!.props.onDismiss());
+  mockRemote.workspaces = [];
 });
 
 const createWorkspaceRow = () =>
