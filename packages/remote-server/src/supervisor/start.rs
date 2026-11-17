@@ -755,10 +755,12 @@ impl Supervisor {
                 }
                 // A flush only writes bytes. Receiving our own marker on the
                 // same connection proves the broker processed the preceding
-                // UNSUB before this replacement advertises Ready. Empty command
-                // payloads are ignored by the business command parser.
+                // UNSUB before this replacement advertises Ready. Use the
+                // bridge's own reply namespace: its relay credentials forbid
+                // publishing commands or subscribing to another device's replies.
                 let marker_subject = format!(
-                    "p.{pair_id}.cmd._retired.{}",
+                    "p.{pair_id}.rep.{}._retired.{}",
+                    previous.desktop_id,
                     nkeys::KeyPair::new_user().public_key()
                 );
                 let mut receipt = previous

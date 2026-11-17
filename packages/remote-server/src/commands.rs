@@ -527,15 +527,6 @@ pub async fn command_loop_with_ready(
                     None => break,
                 },
             };
-            // The empty retirement marker is a broker fence, never a user
-            // command or a malformed secure-handshake attempt.
-            if msg.payload.is_empty()
-                && msg
-                    .subject
-                    .starts_with(&format!("p.{pair_id}.cmd._retired."))
-            {
-                continue;
-            }
             served = true;
             let client = client.clone();
             let reply_slots = reply_slots.clone();

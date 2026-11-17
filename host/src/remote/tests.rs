@@ -967,6 +967,12 @@ mod runtime_tests {
         // Ready includes retirement of the old queue subscriber: routing the
         // first handshake to that generation would silently lose the request.
         assert_eq!(nats.subscription_count(&format!("p.{pair_id}.cmd.>")), 1);
+        assert!(
+            nats.retirement_receipt_subject()
+                .unwrap()
+                .starts_with(&format!("p.{pair_id}.rep.{}._retired.", first.desktop_id)),
+            "the retirement receipt must stay inside the bridge's relay permissions"
+        );
 
         // The phone scans exactly what the desktop is showing.
         let mobile = nats_connect(&nats).await;
