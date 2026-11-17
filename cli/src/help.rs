@@ -249,6 +249,10 @@ Settable keys (camelCase, as the desktop API spells them):
   skillGuideDismissed     true|false         Skills onboarding banner dismissed
   skillIntroDismissed     true|false         Skills intro bubble acknowledged
   archiveGuideSeen        true|false         First-archive guide shown
+  archiveRunLogCleanup    true|false         Clear Shell output and replay when archiving
+  archiveRunLogNoticeSeen true|false         Archive run-log cleanup notice acknowledged
+  autoArchiveEnabled      true|false         Archive idle conversations automatically
+  autoArchiveIdleDays     1-365              Idle days before automatic archiving
   bellOnComplete          true|false         Bell when a run finishes
   autoTitleFirstTurn      true|false         Generate a title after the first answer
   titleLanguage           en|zh              Language used for generated titles

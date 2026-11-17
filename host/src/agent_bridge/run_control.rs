@@ -3,9 +3,9 @@
 //! and the parent module's prompt finalization.
 
 use super::client::{
-    cancel_queued_run_command, compact_command, connect_agent, get_state_command,
-    is_session_not_found, map_rpc_error, release_queued_run_command, run_control_command,
-    RpcResponseExt,
+    archive_shell_outputs_command, cancel_queued_run_command, compact_command, connect_agent,
+    get_state_command, is_session_not_found, map_rpc_error, release_queued_run_command,
+    run_control_command, RpcResponseExt,
 };
 use super::replica::AGENT_REPLICAS;
 use crate::store;
@@ -558,6 +558,25 @@ pub async fn compact_thread_context(thread_id: String) -> Result<serde_json::Val
 /// same operation and validate the same acknowledgement. The Agent answers an
 /// acceptance carrying the operation id; the checkpoint itself is reported
 /// later on the compacting session's event stream.
+/// Remove archived Shell output without breaking provider tool-call pairing.
+/// The Agent preserves the call, result status and timestamps, replaces only
+/// the output body, and retires replay data for every affected run.
+pub async fn purge_archived_shell_outputs(
+    session_id: String,
+) -> Result<serde_json::Value, crate::Error> {
+    let mut client = connect_agent()
+        .await
+        .map_err(|error| format!("Future Agent unreachable: {error}"))?;
+    super::verify_session_database(&mut client, &session_id).await?;
+    let response = client
+        .execute_command(archive_shell_outputs_command(session_id))
+        .await
+        .map_err(|error| format!("archive run-log cleanup failed: {error}"))?
+        .into_inner()
+        .ok_or_rpc_error("archive run-log cleanup returned an error")?;
+    Ok(future_rpc::decode::response_data(&response))
+}
+
 pub async fn compact_agent_session(session_id: String) -> Result<serde_json::Value, crate::Error> {
     let mut client = connect_agent()
         .await
@@ -653,6 +672,26 @@ mod tests {
         seed_workspace, Reply, TestHome,
     };
     use super::*;
+
+    #[tokio::test]
+    async fn archive_cleanup_uses_the_shell_output_only_reset_selector() {
+        let _home = TestHome::new("archive-shell-output-reset");
+        let mock = mock_agent();
+        mock.push(
+            "reset_session_history",
+            Reply::Data(serde_json::json!({"applied": true}).to_string()),
+        );
+        let result = purge_archived_shell_outputs("session".into())
+            .await
+            .expect("archive cleanup");
+        assert_eq!(result["applied"], serde_json::json!(true));
+        let request = mock.requests_of("reset_session_history")[0]
+            .reset_history
+            .clone()
+            .expect("history reset");
+        assert!(request.apply);
+        assert_eq!(request.drop, vec!["archive-shell-outputs"]);
+    }
 
     #[tokio::test]
     async fn an_unanswered_state_rpc_cannot_exceed_the_idle_confirmation_budget() {

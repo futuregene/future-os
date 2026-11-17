@@ -33,6 +33,11 @@ pub fn mark_thread_opened(thread_id: String) -> Result<(), crate::AppError> {
 }
 
 #[tauri::command]
+pub fn set_foreground_thread(thread_id: Option<String>) {
+    future_host::application::threads::set_foreground_thread(thread_id);
+}
+
+#[tauri::command]
 pub async fn create_thread(
     input: store::CreateThreadInput,
 ) -> Result<store::ThreadRecord, crate::AppError> {

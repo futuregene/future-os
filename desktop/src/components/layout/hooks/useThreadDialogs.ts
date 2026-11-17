@@ -25,6 +25,10 @@ interface UseThreadDialogsParams {
   refreshStore: (nextActiveThreadId?: string | null, options?: RefreshStoreOptions) => Promise<void>;
   /** Called after a successful archive so the shell can show its guide. */
   onArchived?: () => void;
+  /** Whether the first actual cleanup still needs its one-time confirmation. */
+  archiveCleanupNoticePending?: boolean;
+  /** Persist the cleanup notice only after an archive really succeeded. */
+  onCleanupNoticeConfirmed?: () => void;
   /** The store's rows, for the tree-member count a multi-member archive confirms. */
   threads?: StoredThread[];
 }
@@ -74,7 +78,14 @@ export interface ThreadDialogs {
  * submitting/error state machines and, for chat deletes, the cleanup-summary
  * fetch. Refreshes the store after a successful mutation.
  */
-export function useThreadDialogs({ activeThreadId, onArchived, refreshStore, threads = [] }: UseThreadDialogsParams): ThreadDialogs {
+export function useThreadDialogs({
+  activeThreadId,
+  archiveCleanupNoticePending = false,
+  onArchived,
+  onCleanupNoticeConfirmed,
+  refreshStore,
+  threads = [],
+}: UseThreadDialogsParams): ThreadDialogs {
   const [deleteDialog, setDeleteDialog] = useState<DeleteDialogState | null>(null);
   const [renameDialog, setRenameDialog] = useState<RenameDialogState | null>(null);
   const [batchDeleteDialog, setBatchDeleteDialog] = useState<BatchDeleteDialogState | null>(null);
@@ -294,10 +305,10 @@ export function useThreadDialogs({ activeThreadId, onArchived, refreshStore, thr
     const members = treeMemberCount(lineage, thread.id);
     const running = await runningMembers(treeMemberIds(lineage, thread.id), thread.id);
     if (running.length > 0) {
-      setArchiveDialog({ error: null, members, running, submitting: false, thread });
+      setArchiveDialog({ cleanupNotice: archiveCleanupNoticePending, error: null, members, running, submitting: false, thread });
       return;
     }
-    if (members <= 1) {
+    if (members <= 1 && !archiveCleanupNoticePending) {
       try {
         await archiveThreadTree(thread.id);
         onArchived?.();
@@ -314,7 +325,7 @@ export function useThreadDialogs({ activeThreadId, onArchived, refreshStore, thr
       }
       return;
     }
-    setArchiveDialog({ error: null, members, running: [], submitting: false, thread });
+    setArchiveDialog({ cleanupNotice: archiveCleanupNoticePending, error: null, members, running: [], submitting: false, thread });
   }
 
   async function confirmArchive() {
@@ -329,6 +340,8 @@ export function useThreadDialogs({ activeThreadId, onArchived, refreshStore, thr
       if (dialog.running.length > 0)
         await stopThreads(dialog.running.map(thread => thread.id));
       await archiveThreadTree(dialog.thread.id);
+      if (dialog.cleanupNotice)
+        onCleanupNoticeConfirmed?.();
       onArchived?.();
       emitFutureEvent("archive-changed", undefined);
       await refreshStore(undefined, {
@@ -358,8 +371,8 @@ export function useThreadDialogs({ activeThreadId, onArchived, refreshStore, thr
     if (threads.length === 0)
       return;
     const running = await runningInTrees(threadsRef.current, threads);
-    if (running.length > 0) {
-      setBatchArchiveDialog({ error: null, running, submitting: false, threads });
+    if (running.length > 0 || archiveCleanupNoticePending) {
+      setBatchArchiveDialog({ cleanupNotice: archiveCleanupNoticePending, error: null, running, submitting: false, threads });
       return;
     }
     await archiveThreadsNow(threads);
@@ -375,8 +388,11 @@ export function useThreadDialogs({ activeThreadId, onArchived, refreshStore, thr
     try {
       if (dialog.running.length > 0)
         await stopThreads(dialog.running.map(thread => thread.id));
-      await archiveThreadsNow(dialog.threads);
-      setBatchArchiveDialog(null);
+      const archived = await archiveThreadsNow(dialog.threads);
+      if (dialog.cleanupNotice && archived)
+        onCleanupNoticeConfirmed?.();
+      if (archived)
+        setBatchArchiveDialog(null);
     }
     catch (error) {
       setBatchArchiveDialog(current =>
@@ -387,7 +403,7 @@ export function useThreadDialogs({ activeThreadId, onArchived, refreshStore, thr
     }
   }
 
-  async function archiveThreadsNow(threads: StoredThread[]) {
+  async function archiveThreadsNow(threads: StoredThread[]): Promise<boolean> {
     const wanted = threads.flatMap(thread => archivedIdsFor(threadsRef.current, thread.id));
     try {
       const result = await batchArchiveThreads(threads.map(thread => thread.id));
@@ -403,9 +419,11 @@ export function useThreadDialogs({ activeThreadId, onArchived, refreshStore, thr
       if (result.skipped.length > 0) {
         emitArchiveSkipped(result.skipped);
       }
+      return result.archivedCount > 0;
     }
     catch (error) {
       emitArchiveError(errorMessage(error));
+      return false;
     }
   }
 

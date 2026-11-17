@@ -7,7 +7,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
-import { openPath } from "../../integrations/storage/files";
+import { openPath, revealPath } from "../../integrations/storage/files";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { relativizeWorkspacePath } from "../../lib/workspacePath";
@@ -80,6 +80,16 @@ export function FileTreePanel({
       void openPath(rootPath).catch(() => {});
   }, [rootPath]);
 
+  // Reveal the row in the OS file manager. Best-effort and silent on failure,
+  // same as the transcript's file-link menu: a window that will not open must
+  // not replace the tree with an error for a navigational convenience.
+  const revealEntry = useCallback(
+    (entry: DirEntry) => {
+      void revealPath(entry.path).catch(() => {});
+    },
+    [],
+  );
+
   const openEntry = useCallback(
     async (entry: DirEntry) => {
       try {
@@ -133,7 +143,10 @@ export function FileTreePanel({
 
   const menuItems: LinkMenuItem[] = menuTarget
     ? menuTarget.isDir
-      ? [{ label: t("menu.open"), onSelect: () => void openEntry(menuTarget) }]
+      ? [
+          { label: t("menu.open"), onSelect: () => void openEntry(menuTarget) },
+          { label: t("menu.revealInFolder"), onSelect: () => revealEntry(menuTarget) },
+        ]
       : [
           { label: t("menu.attach"), onSelect: () => attachEntry(menuTarget) },
           ...(previewKindForPath(menuTarget.path)
@@ -149,6 +162,7 @@ export function FileTreePanel({
             label: t("menu.open"),
             onSelect: () => void openEntry(menuTarget),
           },
+          { label: t("menu.revealInFolder"), onSelect: () => revealEntry(menuTarget) },
         ]
     : [];
 
