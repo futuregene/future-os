@@ -30,6 +30,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS fusion_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS fusion_runs(id TEXT PRIMARY KEY,parent_session TEXT NOT NULL,parent_run TEXT NOT NULL,tool_call TEXT NOT NULL,status TEXT NOT NULL,owner TEXT,data TEXT NOT NULL CHECK(json_valid(data)),UNIQUE(parent_session,parent_run,tool_call));
             CREATE INDEX IF NOT EXISTS fusion_queue ON fusion_runs(status);
+            CREATE TABLE IF NOT EXISTS fusion_aliases(id TEXT PRIMARY KEY,parent_session TEXT NOT NULL,parent_run TEXT NOT NULL,tool_call TEXT NOT NULL,run_id TEXT NOT NULL REFERENCES fusion_runs(id),request TEXT NOT NULL CHECK(json_valid(request)),UNIQUE(parent_session,parent_run,tool_call));
             CREATE TABLE IF NOT EXISTS fusion_steps(id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES fusion_runs(id),data TEXT NOT NULL CHECK(json_valid(data)));
             CREATE INDEX IF NOT EXISTS fusion_step_run ON fusion_steps(run_id);
             CREATE TABLE IF NOT EXISTS fusion_events(seq INTEGER PRIMARY KEY AUTOINCREMENT,run_id TEXT NOT NULL REFERENCES fusion_runs(id),kind TEXT NOT NULL,data TEXT NOT NULL CHECK(json_valid(data)),timestamp INTEGER NOT NULL);
@@ -121,6 +122,27 @@ impl Store {
         Ok(db)
     }
 
+    fn record_alias(
+        tx: &rusqlite::Transaction<'_>,
+        id: &str,
+        parent: &Parent,
+        run: &Consultation,
+        request: &str,
+    ) -> Result<()> {
+        tx.execute(
+            "INSERT INTO fusion_aliases VALUES(?1,?2,?3,?4,?5,?6)",
+            params![
+                id,
+                parent.session_id,
+                parent.run_id,
+                parent.tool_call_id,
+                run.id,
+                request
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn heartbeat(&self, owner: &str) -> Result<()> {
         self.connect()?.execute("INSERT INTO fusion_meta(key,value) VALUES('host',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [json!({"owner":owner,"at":now_ms(),"input_policy_version":crate::INPUT_POLICY_VERSION}).to_string()])?;
         Ok(())
@@ -154,7 +176,12 @@ impl Store {
     }
 
     pub fn for_tool(&self, session: &str, run: &str, tool: &str) -> Result<Option<Consultation>> {
-        let raw: Option<String> = self.connect()?.query_row("SELECT data FROM fusion_runs WHERE parent_session=?1 AND parent_run=?2 AND tool_call=?3", params![session,run,tool], |r|r.get(0)).optional()?;
+        let db = self.connect()?;
+        let mut raw: Option<String> = db.query_row("SELECT data FROM fusion_runs WHERE parent_session=?1 AND parent_run=?2 AND tool_call=?3", params![session,run,tool], |r|r.get(0)).optional()?;
+        // Existing read-only history may predate the additive alias table.
+        if raw.is_none() && db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='fusion_aliases')", [], |row| row.get::<_, bool>(0))? {
+            raw = db.query_row("SELECT r.data FROM fusion_aliases a JOIN fusion_runs r ON r.id=a.run_id WHERE a.parent_session=?1 AND a.parent_run=?2 AND a.tool_call=?3", params![session,run,tool], |row| row.get(0)).optional()?;
+        }
         raw.map(|s| serde_json::from_str(&s).map_err(Into::into))
             .transpose()
     }
@@ -211,6 +238,28 @@ impl Store {
         let workspace = workspace
             .to_str()
             .context("Fusion requires a Unicode workspace path")?;
+        let request = serde_json::to_string(
+            &json!({"parent":parent,"input":input,"workspace":workspace,"revisit":revisit}),
+        )?;
+        let alias: Option<(String, String)> = tx
+            .query_row(
+                "SELECT run_id,request FROM fusion_aliases WHERE id=?1",
+                [&id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if let Some((run_id, saved_request)) = alias {
+            ensure!(
+                saved_request == request,
+                "Fusion invocation key reused with a different input"
+            );
+            let raw: String = tx.query_row(
+                "SELECT data FROM fusion_runs WHERE id=?1",
+                [run_id],
+                |row| row.get(0),
+            )?;
+            return Ok((serde_json::from_str(&raw)?, false));
+        }
         // Restrict automatic reuse to this turn and identical inputs; a new user
         // turn may legitimately change evidence or the world outside this store.
         let mut statement = tx.prepare("SELECT data FROM fusion_runs WHERE parent_session=?1 AND status='completed' AND ((?2 IS NOT NULL AND (id=?2 OR (parent_run=?3 AND json_extract(data,'$.lineage.revisit.previous_run_id')=?2))) OR (?2 IS NULL AND parent_run=?3)) ORDER BY rowid DESC")?;
@@ -240,10 +289,13 @@ impl Store {
                 "Reopening needs a concrete reason"
             );
             if let Some(reused) = previous.iter().filter(compatible).find(|old| {
-                old.parent.run_id == parent.run_id
+                input.read_scope.is_empty()
+                    && old.parent.run_id == parent.run_id
                     && old.lineage.as_ref().map(|l| &l.revisit) == Some(&revisit)
                     && serde_json::to_value(&old.input).ok() == serde_json::to_value(&input).ok()
             }) {
+                Self::record_alias(&tx, &id, &parent, reused, &request)?;
+                tx.commit()?;
                 return Ok((reused.clone(), false));
             }
             let old = previous
@@ -290,8 +342,10 @@ impl Store {
             if let Some(old) = previous.iter().filter(compatible).find(|old| {
                 old.parent.run_id == parent.run_id && old.input.question == input.question
             }) {
-                ensure!(serde_json::to_value(&old.input)? == serde_json::to_value(&input)?,
-                    "Decision {} already completed. Use revisit with its ID and a concrete new_evidence, counterexample, corrected_inference or user_scope_change reason", old.id);
+                ensure!(input.read_scope.is_empty() && serde_json::to_value(&old.input)? == serde_json::to_value(&input)?,
+                    "Decision {} already completed. File-scoped decisions need an explicit revisit to capture current files. Use revisit with its ID and a concrete new_evidence, counterexample, corrected_inference or user_scope_change reason", old.id);
+                Self::record_alias(&tx, &id, &parent, old, &request)?;
+                tx.commit()?;
                 return Ok((old.clone(), false));
             }
             None
@@ -568,6 +622,7 @@ impl Store {
             let mut db = self.connect()?;
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
             for table in [
+                "fusion_aliases",
                 "fusion_positions",
                 "fusion_issues",
                 "fusion_messages",
@@ -742,11 +797,17 @@ mod tests {
             .unwrap();
         assert!(!created);
         assert_eq!(reused.id, old.id);
+        assert_eq!(store.for_tool("s", "r", "t2").unwrap().unwrap().id, old.id);
+        let (_, created) = store
+            .prepare(parent.clone(), input.clone(), dir.path())
+            .unwrap();
+        assert!(!created);
         let mut changed = input.clone();
         changed.evidence.push("Observed concurrent writers".into());
         assert!(store
             .prepare(parent.clone(), changed.clone(), dir.path())
             .is_err());
+        parent.tool_call_id = "reopen".into();
         let revisit = crate::Revisit {
             previous_run_id: old.id.clone(),
             kind: crate::RevisitKind::NewEvidence,
@@ -805,6 +866,14 @@ mod tests {
             .unwrap();
         assert!(!created);
         assert_eq!(reused.id, new.id);
+        assert_eq!(
+            store
+                .for_tool("s", "r", "repeat-revisit")
+                .unwrap()
+                .unwrap()
+                .id,
+            new.id
+        );
         let mut wrong_revisit = revisit.clone();
         wrong_revisit.reason = "Different replay reason".into();
         assert!(store
@@ -855,6 +924,96 @@ mod tests {
         assert!(store
             .prepare_with_revisit(parent, input, dir.path(), Some(revisit))
             .is_err());
+        store.purge_parent("s").unwrap();
+        assert!(store.for_tool("s", "r", "t2").unwrap().is_none());
+        assert!(store
+            .for_tool("s", "r", "repeat-revisit")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn file_scoped_revisits_capture_fresh_snapshots_instead_of_reusing_old_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let mut parent = Parent {
+            database_id: "db".into(),
+            session_id: "s".into(),
+            run_id: "r".into(),
+            tool_call_id: "first".into(),
+        };
+        let input: ConsultationInput = serde_json::from_value(json!({"question":"Review implementation","goal":"Find defects","background":"Workspace code","constraints":[],"read_scope":["src"]})).unwrap();
+        let (old, _) = store
+            .prepare(parent.clone(), input.clone(), dir.path())
+            .unwrap();
+        store.ready(&old.id).unwrap();
+        store.claim("owner").unwrap().unwrap();
+        store
+            .finish(
+                &old.id,
+                "owner",
+                Conclusion {
+                    conclusion: "Review complete for the old snapshot".into(),
+                    ..Default::default()
+                },
+                "full",
+            )
+            .unwrap();
+        store.delivered(&old.id).unwrap();
+        parent.tool_call_id = "again".into();
+        assert!(store
+            .prepare(parent.clone(), input.clone(), dir.path())
+            .is_err());
+        let revisit = crate::Revisit {
+            previous_run_id: old.id,
+            kind: crate::RevisitKind::NewEvidence,
+            reason: "Inspect current files after implementation changes".into(),
+            user_scope_quote: None,
+        };
+        let (new, created) = store
+            .prepare_with_revisit(
+                parent.clone(),
+                input.clone(),
+                dir.path(),
+                Some(revisit.clone()),
+            )
+            .unwrap();
+        assert!(created);
+        store.ready(&new.id).unwrap();
+        store.claim("owner").unwrap().unwrap();
+        store
+            .finish(
+                &new.id,
+                "owner",
+                Conclusion {
+                    conclusion: "Current snapshot reviewed".into(),
+                    ..Default::default()
+                },
+                "full",
+            )
+            .unwrap();
+        store.delivered(&new.id).unwrap();
+        parent.tool_call_id = "fresh".into();
+        let (fresh, created) = store
+            .prepare_with_revisit(parent, input, dir.path(), Some(revisit))
+            .unwrap();
+        assert!(created);
+        assert_ne!(fresh.snapshot_root, new.snapshot_root);
+    }
+
+    #[test]
+    fn history_reads_allow_databases_without_the_new_alias_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        store
+            .connect()
+            .unwrap()
+            .execute("DROP TABLE fusion_aliases", [])
+            .unwrap();
+        let old = Store::existing(dir.path()).unwrap();
+        assert!(old.for_tool("s", "r", "t").unwrap().is_none());
+        Store::open(dir.path()).unwrap();
+        assert!(old.for_tool("s", "r", "t").unwrap().is_none());
     }
 
     #[test]

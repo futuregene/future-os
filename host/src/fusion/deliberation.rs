@@ -74,6 +74,9 @@ pub(super) fn packet(
             .as_deref()
             .unwrap_or(&run.input.question)),
     );
+    for (index, evidence) in run.input.evidence.iter().enumerate() {
+        sources.insert(format!("evidence:{index}"), json!(evidence));
+    }
     for report in current {
         if let (Some(id), Some(text)) =
             (report["participant"].as_str(), report["response"].as_str())
@@ -142,6 +145,17 @@ pub(super) fn packet(
     }
     if let Some(lineage) = &run.lineage {
         sources.insert("previous_decision".into(), json!(lineage.previous_result));
+        sources.insert(
+            "previous_request".into(),
+            json!(lineage
+                .previous_input
+                .parent_request
+                .as_deref()
+                .unwrap_or(&lineage.previous_input.question)),
+        );
+        for (index, evidence) in lineage.previous_input.evidence.iter().enumerate() {
+            sources.insert(format!("previous_evidence:{index}"), json!(evidence));
+        }
         for (i, pending) in lineage.previous_result.unresolved.iter().enumerate() {
             objections.insert(
                 format!("previous:{}:U{}", lineage.revisit.previous_run_id, i + 1),
@@ -205,8 +219,13 @@ pub(super) fn validate(text: &str, packet: &Value, closed: bool) -> Result<()> {
             let source = packet["sources"]
                 .get(&basis.source_id)
                 .context("Unknown disposition source")?;
+            let material = if basis.source_id.starts_with("report:") {
+                &source["response"]
+            } else {
+                source
+            };
             ensure!(
-                strings(source)
+                strings(material)
                     .iter()
                     .any(|s| super::quotes::contains(s, &basis.quote)),
                 "Disposition {} quote is absent from its source",
@@ -298,7 +317,7 @@ mod tests {
     fn ledger_survives_report_packing_and_preserves_quality_metadata() {
         let run: Consultation = serde_json::from_value(json!({
             "id":"run","parent":{"database_id":"db","session_id":"s","run_id":"r","tool_call_id":"t"},
-            "input":{"question":"Choose storage","goal":"Keep data","background":"Unknown workload","constraints":[]},
+            "input":{"question":"Choose storage","goal":"Keep data","background":"Unknown workload","constraints":[],"evidence":["Observed 100 writes per second"]},
             "workspace":"/workspace","snapshot_root":"/snapshot","status":"running","phase":"synthesizing",
             "completeness":"none","created_at":0,"updated_at":0
         })).unwrap();
@@ -317,6 +336,10 @@ mod tests {
         assert_eq!(
             packet["sources"]["report:P1"]["validation_errors"],
             json!(["unmatched quote"])
+        );
+        assert_eq!(
+            packet["sources"]["evidence:0"],
+            "Observed 100 writes per second"
         );
         assert!(required(&packet));
     }
