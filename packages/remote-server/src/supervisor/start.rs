@@ -718,7 +718,26 @@ impl Supervisor {
         // sender, so its candidate cannot begin renewing a discarded generation.
         let _ = installed_tx.send(());
         if let Some(previous) = previous {
+            // Aborting a subscriber only schedules its UNSUB on another task.
+            // Until the broker sees it, a request can still be routed to the
+            // cancelled generation in this device's queue group and disappear.
+            // Drain before cancellation so every old subscription is removed
+            // from the wire before this replacement reports ready. A draining
+            // client cannot reconnect and reintroduce the old subscribers.
+            let retired = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                previous.client.drain().await?;
+                // A drain closes the connection after flushing its UNSUBs, so
+                // the flush observer may end with that close rather than PONG.
+                let _ = previous.client.flush().await;
+                Ok::<_, async_nats::client::DrainError>(())
+            })
+            .await;
             abort_generation(previous);
+            if !matches!(retired, Ok(Ok(()))) {
+                future_remote_protocol::remote_log!(
+                    "remote: previous generation drain did not complete for {pair_id}"
+                );
+            }
         }
         self.spawn_runtime_supervisor(pair_id.clone(), generation_id);
         if web_bind_failed {

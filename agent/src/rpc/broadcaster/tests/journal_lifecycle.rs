@@ -533,7 +533,7 @@ impl HeldWriter {
             let writer = journal
                 .writer
                 .as_ref()
-                .expect("a configured journal owns its writer");
+                .expect("the first append starts the journal writer");
             writer
                 .admission
                 .set_age_limit_for_test(std::time::Duration::from_millis(1));
@@ -594,6 +594,13 @@ fn an_append_past_the_pending_age_limit_fails_the_journal_until_a_commit_lands()
         broadcaster.uses_segmented_storage(),
         "the pending-age bound only guards the segmented writer"
     );
+
+    // Start the lazy writer without adding an event to the run under test.
+    broadcaster.broadcast_session(SseEvent::new(
+        "model_changed",
+        serde_json::json!({"model":"mock"}),
+    ));
+    broadcaster.flush_journal().unwrap();
 
     // `start_run` clears the health and the interrupt flag, so both are
     // installed after it — the same order the run path uses.
