@@ -232,7 +232,7 @@ No notification is emitted when nothing was archived. Cleanup failure does not u
 Archive settings live on **Settings → General**, alongside language and appearance, instead of occupying a settings module of their own. In order:
 
 1. **Automatically clear run logs when archiving** — on by default.
-2. **Automatic conversation archiving** (block heading) — “Uses the latest conversation activity and checks once per day while the app is running.”
+2. **Automatic conversation archiving** (block heading, no description line).
 3. **Archive idle conversations automatically** — off by default.
 4. **Idle days** — editable only when automatic archiving is on; 30 days by default. A small question mark beside the label explains what “idle” means.
 
