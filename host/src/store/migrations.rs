@@ -43,11 +43,77 @@ fn checksum(version: i64) -> String {
     format!("{:x}", Sha256::digest(sql))
 }
 
+/// Contract 7–9 were renumbered mid-flight: an unreleased build recorded the
+/// archive-cleanup steps as 7/8 and the run's choice mark as 9, and once that
+/// build wrote a database, the ledger said so while `main` numbered the same
+/// three steps differently (choice mark 7, cleanup 8, restore 9). The columns
+/// are identical, only the labels differ, so a database carrying the interim
+/// ordering is adopted instead of being refused: the ledger is rewritten to the
+/// current numbering once the columns those steps add are all present. Without
+/// this, a single developer build would leave a database no later build opens.
+const INTERIM_CONTRACT_7: &str = "d0da5a5cd23dc37af80dbdf8f7ef54ae1db3261df3ffdf43ecd445a6439e6f90";
+const INTERIM_CONTRACT_8: &str = "c2f127262f6ef1ebb5a17348389e7eb31fe69bb87fb18b53e855881c1dfedf9c";
+const INTERIM_CONTRACT_9: &str = "079f26aed8b786033d678310f792b66ce194cc946c58f358e6c45fdfbdee34ec";
+
+/// Columns the interim ordering's three steps added, and therefore the proof
+/// that the interim ledger describes a database that does hold them.
+const INTERIM_CONTRACT_COLUMNS: &[(&str, &str)] = &[
+    ("runs", "logs_purged_at"),
+    ("threads", "restored_at"),
+    ("runs", "offers_choice"),
+];
+
+/// Rewrite an interim ledger to the current numbering. Returns whether it did.
+/// Refuses when the database lacks a column the interim steps added: that is a
+/// database we cannot vouch for, and guessing would make it look migrated.
+fn adopt_interim_contract(conn: &Connection) -> Result<bool, Error> {
+    if conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))? < 9 {
+        return Ok(false);
+    }
+    let stored: Vec<String> = conn
+        .prepare("SELECT checksum FROM app_schema_migrations WHERE version BETWEEN 7 AND 9 ORDER BY version")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    if stored
+        != [
+            INTERIM_CONTRACT_7.to_string(),
+            INTERIM_CONTRACT_8.to_string(),
+            INTERIM_CONTRACT_9.to_string(),
+        ]
+    {
+        return Ok(false);
+    }
+    for (table, column) in INTERIM_CONTRACT_COLUMNS {
+        if !column_names(conn, table)?.contains(*column) {
+            return Err(format!(
+                "Desktop database records the retired migration ordering but is missing {table}.{column}; preserve it for recovery."
+            )
+            .into());
+        }
+    }
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    for step in 7..=9 {
+        tx.execute(
+            "UPDATE app_schema_migrations SET checksum=?2 WHERE version=?1",
+            params![step, checksum(step)],
+        )?;
+    }
+    tx.commit()?;
+    tracing::info!(
+        event = "database_adopted_interim_contract",
+        database = "app"
+    );
+    Ok(true)
+}
+
 /// Runs before WAL configuration or any schema write, including on pooled opens.
 pub(super) fn admit(conn: &Connection) -> Result<i64, Error> {
     future_app_settings::validate_database_header(conn)?;
     let version = conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?;
     if version != 0 {
+        // A database written by the interim ordering is valid data under a
+        // retired label; adopt it before the ledger check would refuse it.
+        adopt_interim_contract(conn)?;
         let ledger: (i64, i64, i64) = conn.query_row(
             "SELECT count(*),min(version),max(version) FROM app_schema_migrations",
             [],
@@ -1030,6 +1096,77 @@ mod tests {
             )
             .unwrap();
         assert_eq!(restored, 0);
+    }
+
+    /// The shape a developer database got from the build that shipped the
+    /// interim ordering: all three columns present, version 9, but the ledger
+    /// labels 7/8/9 belong to that retired ordering. Opening it must adopt the
+    /// numbering instead of refusing the database.
+    fn write_interim_contract(conn: &Connection) {
+        initialize(conn).unwrap();
+        conn.execute(
+            "UPDATE app_schema_migrations SET checksum=?2 WHERE version=7",
+            params![7, INTERIM_CONTRACT_7],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE app_schema_migrations SET checksum=?2 WHERE version=8",
+            params![8, INTERIM_CONTRACT_8],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE app_schema_migrations SET checksum=?2 WHERE version=9",
+            params![9, INTERIM_CONTRACT_9],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn interim_migration_ordering_is_adopted_not_refused() {
+        let conn = Connection::open_in_memory().unwrap();
+        legacy(&conn);
+        write_interim_contract(&conn);
+        // The unmodified ledger still fails the documented check...
+        assert!(validate_core(&conn).is_ok());
+
+        // ...but admission adopts it, so the app opens normally afterwards.
+        assert_eq!(
+            admit(&conn).unwrap(),
+            future_app_settings::APP_DB_SCHEMA_VERSION
+        );
+        initialize(&conn).unwrap();
+        initialize(&conn).unwrap();
+        validate_core(&conn).unwrap();
+        // The three adopted steps now carry the current checksums.
+        for step in 7..=9 {
+            let stored: String = conn
+                .query_row(
+                    "SELECT checksum FROM app_schema_migrations WHERE version=?1",
+                    [step],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(stored, checksum(step), "contract {step}");
+        }
+        // Adoption rewrites labels only: it must not replay a step's SQL.
+        assert_eq!(
+            admit(&conn).unwrap(),
+            future_app_settings::APP_DB_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn interim_ordering_without_its_columns_is_refused() {
+        let conn = Connection::open_in_memory().unwrap();
+        legacy(&conn);
+        write_interim_contract(&conn);
+        conn.execute_batch("ALTER TABLE threads DROP COLUMN restored_at;")
+            .unwrap();
+
+        // Without the column the interim steps claim to have added, guessing
+        // would mark a database migrated that is not: refuse and keep it.
+        let error = admit(&conn).unwrap_err().to_string();
+        assert!(error.contains("retired migration ordering"), "{error}");
     }
 
     #[test]
