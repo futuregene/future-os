@@ -160,9 +160,13 @@ function ChoiceOptionRow({
       <span
         aria-hidden="true"
         className={cn(
-          "mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border transition-colors",
+          "mt-0.5 flex size-4 shrink-0 items-center justify-center border transition-colors",
+          // Shape is what tells the two cards apart at a glance: a row that may
+          // carry several picks wears a checkbox, not the radio circle.
+          mode === "multi" ? "rounded-[3px]" : "rounded-full",
           selected ? "border-accent text-accent" : "border-line",
         )}
+        data-choice-mark={mode === "multi" ? "box" : "ring"}
       >
         {selected ? <Check className="size-2.5" strokeWidth={3} /> : null}
       </span>

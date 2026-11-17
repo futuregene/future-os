@@ -1,5 +1,5 @@
 import type { ChoiceCardMode, ChoiceCardNode, ChoiceCardOption } from "@future-os/markdown";
-import { ListChecks } from "lucide-react-native";
+import { Check, ListChecks } from "lucide-react-native";
 import { createContext, useContext } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, StyleSheet, Text, View } from "react-native";
@@ -132,6 +132,8 @@ export function ChoiceOptionRow({
   testID?: string;
 }) {
   const styles = useStyles();
+  const { colors } = useTheme();
+  const multi = mode === "multi";
   return (
     <Pressable
       accessibilityLabel={option.description ? `${option.label}，${option.description}` : option.label}
@@ -153,8 +155,17 @@ export function ChoiceOptionRow({
       ]}
       testID={testID}
     >
-      <View style={[styles.ring, picked ? styles.ringPicked : null]}>
-        {picked ? <View style={styles.dot} /> : null}
+      {/*
+        Shape carries the mode: a radio ring for a mutually exclusive pick, a
+        square checkbox for rows that may be picked together. The mark keeps its
+        size either way, so a row does not jump as it becomes the answer.
+      */}
+      <View style={[styles.mark, multi ? styles.box : styles.ring, picked ? styles.markPicked : null]}>
+        {picked
+          ? multi
+            ? <Check color={colors.accent} size={12} strokeWidth={3} />
+            : <View style={styles.dot} />
+          : null}
       </View>
       <View style={styles.rowCopy}>
         <Text style={[styles.rowLabel, picked ? styles.rowLabelPicked : null]}>
@@ -222,20 +233,21 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   },
   rowPicked: { backgroundColor: theme.colors.accentSoft },
   rowPressed: { opacity: 0.72 },
-  ring: {
+  mark: {
     width: 18,
     height: 18,
     marginTop: 1,
     flexShrink: 0,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: radius.pill,
     borderWidth: 1.5,
     borderColor: theme.colors.line,
   },
-  // Only the stroke thickens and turns: the box keeps its size, so the row does
+  ring: { borderRadius: radius.pill },
+  box: { borderRadius: 4 },
+  // Only the stroke thickens and turns: the mark keeps its size, so the row does
   // not shift as it becomes the answer.
-  ringPicked: { borderWidth: 2, borderColor: theme.colors.accent },
+  markPicked: { borderWidth: 2, borderColor: theme.colors.accent },
   dot: {
     width: 8,
     height: 8,
