@@ -33,6 +33,7 @@ import { DialogSurface } from "../components/DialogSurface";
 import { useAppDialog } from "../components/useAppDialog";
 import { RenameModal } from "../features/chat/components/RenameModal";
 import { useRemoteControls as useRemote } from "../remote/RemoteContext";
+import { useDesktopResource } from "../features/settings/useDesktopResource";
 import { machineStatusKey, machinesConnected, pairedMachines, type MachineSummary } from "../remote/desktopStatus";
 import { mergeSessions, type DesktopFilter } from "../remote/mergeSessions";
 import type { DesktopCommands } from "../remote/desktopCommands";
@@ -105,6 +106,15 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   const Alert = useAppDialog(active);
   const { t, i18n } = useTranslation();
   const remote = useRemote();
+  // The archiving settings decide whether an archive must explain that it
+  // clears run logs. Read here, at the surface where archiving happens, rather
+  // than only on the settings page: a reader who never opens that page is
+  // exactly the one the notice exists for.
+  const archiveSettings = useDesktopResource(
+    remote.getDesktopSettings,
+    remote.desktopSettingsRevision,
+    remote.desktopOnline,
+  );
   const [tab, setTabState] = useState<Tab>(lastTab);
   /**
    * Which desktops the session list shows. Kept for the life of the screen: a
@@ -1127,11 +1137,26 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
                     return;
                   }
                   // A running conversation is a question, not a refusal: the
-                  // reader can cancel or let the stop happen first.
+                  // reader can cancel or let the stop happen first. A reader who
+                  // has not yet been told that archiving clears run logs is asked
+                  // once about that too, whichever surface they archive from.
                   archiveSessionWithPrompt({
                     alert: (title, message, buttons) => Alert.alert(title, message, buttons),
+                    cleanup: {
+                      enabled: archiveSettings.data?.archiveRunLogCleanup ?? true,
+                      noticeSeen: archiveSettings.data?.archiveRunLogNoticeSeen ?? false,
+                    },
                     commands,
                     onFailed: () => Alert.alert(t("common.error"), t("sessions.archiveFailed")),
+                    onNoticeSeen: () => {
+                      // Recorded on the owning machine, so the desktop does not
+                      // repeat a notice this reader already answered here. Best
+                      // effort: a stale flag only costs the reader one more
+                      // explanation, whereas failing the archive for it would be
+                      // a worse trade.
+                      void remote.updateDesktopSettings({ archiveRunLogNoticeSeen: true })
+                        .catch(() => {});
+                    },
                     session,
                     t,
                   });
