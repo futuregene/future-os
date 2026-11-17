@@ -37,7 +37,7 @@
     "emptyTitle": "暂无后台程序",
     "emptyDetailNeverRun": "还没有运行过程序。",
     "emptyDetailArchived": "已结束的程序已归档。",
-    "emptyDetailLogsPurged": "此会话已归档，运行日志已清理。聊天正文和生成的文件仍然保留。",
+    "emptyDetailLogsPurged": "此会话的运行日志已清理。聊天正文和生成的文件仍然保留；恢复会话后旧日志不会回来，新对话不受影响。",
     "runningFinished": "{{running}} 运行中 / {{finished}} 已结束",
     "archiveFinished": "归档已结束的程序",
     "commands_one": "{{count}} 条命令",

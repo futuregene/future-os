@@ -37,7 +37,7 @@
     "emptyTitle": "No background programs",
     "emptyDetailNeverRun": "No programs have run yet.",
     "emptyDetailArchived": "Finished programs have been archived.",
-    "emptyDetailLogsPurged": "This conversation is archived and its run logs have been cleared. The conversation and generated files remain.",
+    "emptyDetailLogsPurged": "This conversation's run logs have been cleared. The conversation and generated files remain; restoring the conversation does not bring the logs back, and new turns are unaffected.",
     "runningFinished": "{{running}} running / {{finished}} finished",
     "archiveFinished": "Archive finished",
     "commands_one": "{{count}} command",

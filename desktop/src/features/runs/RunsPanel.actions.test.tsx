@@ -133,6 +133,10 @@ describe("runsPanel empty states", () => {
     expect(rows(container)).toHaveLength(0);
     expect(container.textContent).not.toContain("echo tool-1");
     expect(container.textContent).toContain("run logs have been cleared");
+    // Restoring the conversation does not restore the logs, so the copy never
+    // claims the conversation is still archived.
+    expect(container.textContent).not.toContain("is archived");
+    expect(container.textContent).toContain("restoring the conversation does not bring the logs back");
   });
 
   it("still lists runs the conversation archive left alone", () => {
