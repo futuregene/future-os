@@ -70,6 +70,7 @@ pub struct RemoteState {
     pub drop_counters: Arc<DropCounters>,
     pub event_task: TaskHandle,
     pub cmd_task: TaskHandle,
+    pub command_retire: Option<tokio::sync::oneshot::Sender<()>>,
     pub transfer_task: TaskHandle,
     pub heartbeat_task: TaskHandle,
     pub refresh_task: TaskHandle,
