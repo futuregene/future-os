@@ -975,6 +975,43 @@ mod runtime_tests {
         stop();
     }
 
+    #[tokio::test]
+    async fn an_unconfirmed_retirement_removes_the_candidate_and_can_restart() {
+        let _home = HomeGuard::new("remote-retirement-failure");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        let pair_id = format!("pair_{}", unique("retirement"));
+        platform.respond_pair_code_for(&pair_id, nats.url());
+        assert_eq!(
+            start(RemoteStartInput {}).await.unwrap().phase,
+            RemotePhase::Ready
+        );
+
+        platform.respond_pair_code_for(&pair_id, nats.url());
+        SUPERVISOR
+            .hooks
+            .inject_retirement_failure
+            .store(1, Ordering::SeqCst);
+        let failed = super::start_once(true).await.unwrap();
+        assert_eq!(failed.phase, RemotePhase::Reconnecting);
+        assert!(
+            SUPERVISOR.state.lock().unwrap().is_empty(),
+            "a failed retirement must not leave its replacement installed"
+        );
+        assert_ne!(super::status().phase, RemotePhase::Ready);
+
+        platform.respond_pair_code_for(&pair_id, nats.url());
+        let recovered = super::start_once(true).await.unwrap();
+        assert_eq!(recovered.phase, RemotePhase::Ready);
+        let mobile = nats_connect(&nats).await;
+        let _channel =
+            super::test_support::secure_pair(&mobile, &recovered.pairing_code.unwrap(), &pair_id)
+                .await;
+        stop();
+    }
+
     /// Control for the test above: when the rebuild gets a NEW pair_id the
     /// identity is rebuilt with it, so the displayed invitation pairs. This
     /// isolates "the same pair_id came back" as the trigger.
