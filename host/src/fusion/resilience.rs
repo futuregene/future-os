@@ -34,13 +34,8 @@ impl Cooldown {
 pub(super) struct PanelDeadline(Option<tokio::time::Instant>);
 
 impl PanelDeadline {
-    pub fn participant_finished(
-        &mut self,
-        now: tokio::time::Instant,
-        usable: bool,
-        remaining: usize,
-    ) {
-        if usable && self.0.is_none() {
+    pub fn participant_finished(&mut self, now: tokio::time::Instant, remaining: usize) {
+        if self.0.is_none() {
             self.0 = Some(now + Duration::from_secs(10 * 60));
         }
         if let Some(deadline) = self.0.as_mut().filter(|_| remaining == 1) {
@@ -323,29 +318,29 @@ mod tests {
     }
 
     #[test]
-    fn panel_wait_starts_with_a_usable_result_and_never_extends() {
+    fn panel_wait_starts_after_any_terminal_result_and_never_extends() {
         let now = tokio::time::Instant::now();
         let minutes = |count: u64| Duration::from_secs(count * 60);
         let mut deadline = PanelDeadline::default();
 
-        deadline.participant_finished(now, false, 3);
-        assert_eq!(deadline.cutoff(), None);
-        deadline.participant_finished(now + minutes(1), true, 2);
-        assert_eq!(deadline.cutoff(), Some(now + minutes(11)));
-        deadline.participant_finished(now + minutes(8), true, 1);
-        assert_eq!(deadline.cutoff(), Some(now + minutes(11)));
+        deadline.participant_finished(now, 3);
+        assert_eq!(deadline.cutoff(), Some(now + minutes(10)));
+        deadline.participant_finished(now + minutes(1), 2);
+        assert_eq!(deadline.cutoff(), Some(now + minutes(10)));
+        deadline.participant_finished(now + minutes(8), 1);
+        assert_eq!(deadline.cutoff(), Some(now + minutes(10)));
     }
 
     #[test]
     fn the_last_pending_participant_tightens_the_deadline_even_after_a_failure() {
         let now = tokio::time::Instant::now();
         let mut deadline = PanelDeadline::default();
-        deadline.participant_finished(now, true, 2);
-        deadline.participant_finished(now + Duration::from_secs(120), false, 1);
+        deadline.participant_finished(now, 2);
+        deadline.participant_finished(now + Duration::from_secs(120), 1);
         assert_eq!(deadline.cutoff(), Some(now + Duration::from_secs(420)));
 
         let mut two_participants = PanelDeadline::default();
-        two_participants.participant_finished(now, true, 1);
+        two_participants.participant_finished(now, 1);
         assert_eq!(
             two_participants.cutoff(),
             Some(now + Duration::from_secs(300))

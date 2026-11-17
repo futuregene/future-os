@@ -382,7 +382,7 @@ class Future:
             result["effective_parent_model"] = state.get("model")
             result["effective_parent_thinking"] = state.get("thinkingLevel")
             result["parent_thinking_binding_scope"] = (
-                "session selection; Fusion request policy may override individual stages"
+                "session selection; inspect the frozen runtime policy for per-request settings"
                 if arm == "fusion"
                 else "session selection"
             )

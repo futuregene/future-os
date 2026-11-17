@@ -503,7 +503,7 @@ fn fetch_future_models(api_key: &str, base_url: &str) -> Option<Vec<Model>> {
 /// `/v1/models` payload still advertises `off` among the model's levels.
 /// The payload has no field for this fact yet, so it is declared here; drop the
 /// entry once the platform can state it.
-const FUTURE_ALWAYS_THINKING_MODELS: &[&str] = &["glm-5.3"];
+const FUTURE_ALWAYS_THINKING_MODELS: &[&str] = &["glm-5.3", "glm-5.3-flash"];
 
 /// Record the always-thinking fact in a Future catalogue model's compat.
 fn apply_always_thinking(compat: &mut HashMap<String, serde_json::Value>, id: &str) {
@@ -2233,20 +2233,20 @@ mod tests {
     /// record that fact so no client offers the level.
     #[test]
     fn conversion_marks_an_always_thinking_platform_model() {
-        let model = convert_future_model(
+        for id in ["glm-5.3", "glm-5.3-flash"] {
+            let model = convert_future_model(
             serde_json::from_str(
-                r#"{"id":"glm-5.3","supported_parameters":["thinking_budget"],
-                    "thinking_levels":["off","low","medium","high","max"]}"#,
+                &format!(r#"{{"id":"{id}","supported_parameters":["thinking_budget"],"thinking_levels":["off","low","medium","high","max"]}}"#),
             )
             .unwrap(),
             "https://future-os.cn/api",
         );
-        assert!(model.always_thinking());
-        assert_eq!(
-            model.allowed_thinking_levels(),
-            vec!["default", "low", "medium", "high", "max"]
-        );
-
+            assert!(model.always_thinking());
+            assert_eq!(
+                model.allowed_thinking_levels(),
+                vec!["default", "low", "medium", "high", "max"]
+            );
+        }
         let ordinary = convert_future_model(
             serde_json::from_str(r#"{"id":"kimi-k3","thinking_levels":["off","low","high"]}"#)
                 .unwrap(),

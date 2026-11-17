@@ -57,10 +57,23 @@ pub(super) async fn collect(
                 && matches!(phase, "analyzing" | "reviewing" | "synthesizing") =>
         {
             let text = session.generate("The working response exhausted its output budget before completing a public report. Use the existing work in this session. Do not restart the investigation or repeat the reasoning. Return your best supported answer in the original required report format now, qualify unresolved premises explicitly, and stop after the report.".into(), true).await?;
-            check(&text)?;
+            let validation_errors = match check(&text) {
+                Ok(()) => vec![],
+                Err(error)
+                    if matches!(phase, "analyzing" | "reviewing") && !text.trim().is_empty() =>
+                {
+                    vec![future_fusion::bounded_text(&error.to_string(), 2048)]
+                }
+                Err(error) => {
+                    return Err(failure(
+                        FailureKind::InvalidOutput,
+                        format!("Output-limit report recovery is invalid: {error}"),
+                    ))
+                }
+            };
             return Ok(Report {
                 text,
-                validation_errors: vec![],
+                validation_errors,
                 generation: 1,
                 recovered_output_limit: true,
             });
@@ -242,6 +255,36 @@ mod tests {
             .unwrap()
             .recovered_output_limit
         );
+        assert_eq!(session.requests, 2);
+    }
+    #[tokio::test]
+    async fn invalid_recovery_remains_attributed_material_and_never_a_final_conclusion() {
+        let mut session = ExhaustedSession {
+            requests: 0,
+            recovery_fails: false,
+        };
+        let report = collect(&mut session, "investigate".into(), "analyzing", 100, |_| {
+            anyhow::bail!("invalid JSON")
+        })
+        .await
+        .unwrap();
+        assert!(report.recovered_output_limit);
+        assert_eq!(report.validation_errors.len(), 1);
+        assert_eq!(report.generation, 1);
+        let mut session = ExhaustedSession {
+            requests: 0,
+            recovery_fails: false,
+        };
+        let error = collect(
+            &mut session,
+            "synthesize".into(),
+            "synthesizing",
+            100,
+            |_| anyhow::bail!("invalid JSON"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(failure_kind(&error), FailureKind::InvalidOutput);
         assert_eq!(session.requests, 2);
     }
     #[tokio::test]

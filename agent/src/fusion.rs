@@ -143,10 +143,9 @@ impl ParentStage {
     pub(crate) fn controls(self) -> crate::llm::schema::RequestControls {
         crate::llm::schema::RequestControls {
             required_tool: (self == Self::Routing).then(|| "fusion".into()),
-            // Routing only needs tool arguments. Delivery retains the selected
-            // model's output budget so long user-requested answers can finish.
-            max_output_tokens: (self == Self::Routing).then_some(16_384),
-            thinking_level: Some("off".into()),
+            // Routing requirements never override the user's generation settings.
+            max_output_tokens: None,
+            thinking_level: None,
         }
     }
     pub(crate) fn after_tools(messages: &[crate::types::AgentMessage]) -> Self {
@@ -444,12 +443,7 @@ pub(crate) fn inner_execution(
         .settings
         .context("Fusion generation settings are missing; upgrade Host and Agent together")?;
     ensure!(
-        settings
-            .report_thinking_level
-            .as_deref()
-            .filter(|_| settings.report_revision > 0)
-            .unwrap_or(&settings.thinking_level)
-            == thinking,
+        settings.thinking_level == thinking,
         "Fusion thinking level differs from configured policy; fallback prohibited"
     );
     let file_tools = file_tools_allowed(
@@ -692,6 +686,22 @@ mod input_contract_tests {
     use super::completed_answer;
     use serde_json::{json, Value};
     #[test]
+    fn routing_and_recovery_never_override_user_generation_settings() {
+        for stage in [
+            super::ParentStage::Routing,
+            super::ParentStage::Delivery,
+            super::ParentStage::Recovery,
+        ] {
+            let controls = stage.controls();
+            assert!(controls.thinking_level.is_none());
+            assert!(controls.max_output_tokens.is_none());
+            assert_eq!(
+                controls.required_tool.is_some(),
+                stage == super::ParentStage::Routing
+            );
+        }
+    }
+    #[test]
     fn retained_original_selects_its_run_without_exposing_later_repair() {
         use crate::session::SessionEntry;
         let entries = vec![
@@ -743,7 +753,6 @@ mod input_contract_tests {
                 context_window: 16384,
                 max_public_bytes: 4096,
                 report_revision: 0,
-                report_thinking_level: None,
                 timeout_ms: 1000,
                 idle_timeout_ms: None,
                 retry_reason: None,
@@ -795,7 +804,6 @@ mod input_contract_tests {
                 context_window: 65_536,
                 max_public_bytes: 1,
                 report_revision: 0,
-                report_thinking_level: None,
                 timeout_ms: 300_000,
                 idle_timeout_ms: None,
                 retry_reason: None,
@@ -824,7 +832,6 @@ mod input_contract_tests {
             provider: Arc::new(Capture(limits.clone())),
             settings: future_fusion::StepSettings {
                 report_revision: 1,
-                report_thinking_level: None,
                 ..guarded.settings.clone()
             },
         };

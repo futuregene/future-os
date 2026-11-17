@@ -651,7 +651,7 @@ async fn panel(
         let Some((participant, model, result)) = next else {
             break;
         };
-        deadline.participant_finished(tokio::time::Instant::now(), result.is_ok(), pending.len());
+        deadline.participant_finished(tokio::time::Instant::now(), pending.len());
         match result {
             Ok(report) => good.push(json!({"participant": participant, "model": model.model, "response": report.text, "validation_errors":report.validation_errors})),
             Err(error) => {
@@ -724,7 +724,6 @@ fn attempt_settings(
         context_window: 0,
         max_public_bytes: 0,
         report_revision: 0,
-        report_thinking_level: None,
         timeout_ms: if idle_timeout_ms.is_some() {
             0
         } else {
@@ -1145,29 +1144,8 @@ impl reports::ReportSession for ChildSession<'_, '_, '_> {
         let step = &mut *self.step;
         ctx.ensure_provider(&step.model)?;
         if report_only {
-            let catalog = rpc(command("list_models", "")).await?;
-            let supports_off = catalog["models"].as_array().is_some_and(|models| {
-                models.iter().any(|model| {
-                    format!(
-                        "{}/{}",
-                        model["provider"].as_str().unwrap_or_default(),
-                        model["id"].as_str().unwrap_or_default()
-                    ) == step.model
-                        && model["thinkingLevels"]
-                            .as_array()
-                            .is_some_and(|levels| levels.iter().any(|level| level == "off"))
-                })
-            });
             let settings = step.settings.as_mut().context("Missing report settings")?;
             settings.report_revision = settings.report_revision.saturating_add(1);
-            if supports_off {
-                rpc(crate::agent_commands::set_thinking_level_command(
-                    "off".into(),
-                    step.session_id.clone(),
-                ))
-                .await?;
-                settings.report_thinking_level = Some("off".into());
-            }
             step.agent_run_id = format!("run_{}", uuid::Uuid::new_v4());
         }
         let request_id = format!("{}-generation-{}", step.id, self.generation);

@@ -77,6 +77,7 @@ def wait_for_ready(process, home, endpoint, fusion_enabled, binary, env, timeout
                 "stderr": probe.stderr[-4096:],
             }
             if probe.returncode:
+                write_json(home / "readiness-last-probe.json", last_probe)
                 time.sleep(0.25)
                 continue
             host, port = endpoint.rsplit(":", 1)
@@ -104,6 +105,7 @@ def wait_for_ready(process, home, endpoint, fusion_enabled, binary, env, timeout
                 )
                 last_probe["fusion_heartbeat_age_ms"] = age if row else None
                 if not 0 <= age < 5000:
+                    write_json(home / "readiness-last-probe.json", last_probe)
                     time.sleep(0.25)
                     continue
             return
