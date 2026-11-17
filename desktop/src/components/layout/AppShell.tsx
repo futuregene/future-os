@@ -2327,6 +2327,7 @@ function ReadyAppShell({
                                     terminalAction={terminalHeaderAction}
                                     sessionId={activeRemote.sessionId}
                                     streaming={remoteTimeline.streaming}
+                                    inFlightRunId={remoteTimeline.inFlightRunId}
                                     title={remoteDraft
                                       // A draft is named as this machine's own new
                                       // conversation is, rather than by the empty

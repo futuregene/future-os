@@ -53,6 +53,7 @@ export function VibeRemoteCell({
       error={timeline.error}
       hasMore={timeline.hasMore}
       leftPanelExpanded
+      inFlightRunId={timeline.inFlightRunId}
       liveReplies={timeline.liveReplies}
       loading={timeline.loading}
       loadingOlder={timeline.loadingOlder}
