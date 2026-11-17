@@ -191,3 +191,25 @@ it("renders the sealed answer separately from its public support", async () => {
   expect(output).toContain("Given premise");
   expect(output).not.toContain("\"checks\"");
 });
+
+it("renders critical dispositions and inherited decision reasons", async () => {
+  const step = { ...discussion().steps![0]!, phase: "synthesizing", output: JSON.stringify({
+    conclusion: "Use SQLite conditionally",
+    unresolved: [],
+    decision_audit: {
+      resolution: "conditional",
+      dispositions: [{ id: "I1", decision: "accepted", reason: "Missing concurrency evidence", effect: "Keep the recommendation conditional", basis: [{ source_id: "request", quote: "Preserve records" }] }],
+      decision_update: { decision: "revise", reason: "New evidence corrected the earlier premise" },
+    },
+  }) };
+  mocks.invoke.mockResolvedValue({ ...step, transcript: "", next_offset: 0, total_bytes: 0 });
+  await act(async () => root.render(<FusionStepBody step={step} runId="r1" toolCallId="t1" />));
+  const output = container.querySelector("[data-fusion-public-output]")?.textContent;
+  expect(output).toContain("Use SQLite conditionally");
+  expect(output).toContain("Critical objection dispositions");
+  expect(output).toContain("I1 · Accepted");
+  expect(output).toContain("Preserve records");
+  expect(output).toContain("Revised");
+  expect(output).toContain("New evidence corrected the earlier premise");
+  expect(output).not.toContain("\"decision_audit\"");
+});

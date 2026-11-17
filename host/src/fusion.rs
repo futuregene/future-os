@@ -8,6 +8,7 @@ use future_rpc::proto::RpcCommand;
 use futures::{FutureExt, StreamExt};
 mod answer;
 mod budget;
+mod deliberation;
 mod evidence;
 mod mapping;
 mod quotes;
@@ -251,6 +252,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     let sources = evidence::Sources::new(&run.input, Some(&snapshot));
     let mut decision_input = serde_json::to_value(&run.input)?;
     decision_input["source_manifest"] = sources.manifest();
+    decision_input["decision_lineage"] = serde_json::to_value(&run.lineage)?;
     let input = serde_json::to_string(&decision_input)?;
     *ctx.budget.lock().unwrap() = Some(budget::Budget::new(&catalog, config, input.len())?);
     let probe = async {
@@ -504,6 +506,8 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     fit_material(&ctx, "synthesizing", &mut current)?;
     let report = ctx.report();
     let coverage = json!({"strategy":report.strategy,"completed_phases":report.completed_phases,"skipped_phases":report.skipped_phases,"analysis_participants":report.analysis_participants,"review_participants":report.review_participants,"degradations":report.degradations});
+    let audit_packet = deliberation::packet(run, &issues, &reviews, &current);
+    let audit_required = deliberation::required(&audit_packet);
     let material = current.iter().map(|source| {
         let response = source["response"].as_str().unwrap_or_default();
         format!("Participant {} ({}) report, {} UTF-8 bytes. Validation issues: {}. Shortened for context: {}\n{}",
@@ -511,14 +515,35 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
             source["source_phase"].as_str().unwrap_or_default(), response.len(),
             source["validation_errors"], source["forwarded_truncated"].as_bool().unwrap_or(false), response)
     }).collect::<Vec<_>>().join("\n\n");
-    let earlier_issues =
-        future_fusion::bounded_text(&serde_json::to_string(&issues["issues"])?, 8_192);
+    let material = if audit_required {
+        "See packed reports and their validation/truncation metadata in decision audit packet.sources.".to_string()
+    } else {
+        material
+    };
+    let earlier_issues = if audit_required {
+        "See complete numbered objections in decision audit packet.objections.".to_string()
+    } else {
+        future_fusion::bounded_text(&serde_json::to_string(&issues["issues"])?, 8_192)
+    };
+    // Lineage is complete in the audit packet; don't duplicate the entire old
+    // request and decision at the expense of current participant material.
+    let final_input = if audit_required {
+        let mut task = decision_input.clone();
+        task.as_object_mut()
+            .context("Invalid decision input")?
+            .remove("decision_lineage");
+        serde_json::to_string(&task)?
+    } else {
+        input.clone()
+    };
     let final_format = if run.input.answer_only {
         answer::INSTRUCTIONS
+    } else if audit_required {
+        "Use the internal decision audit JSON below, preserving the user's requested format inside conclusion."
     } else {
         "Return only a plain text or Markdown answer without a fixed template or meeting recap."
     };
-    let prompt = format!(
+    let mut prompt = format!(
         "You are the moderator. Give the main agent a self-contained answer to the original task. \
         {grounding} \
         Judge consequential claims by their support in the original task and participant material. \
@@ -540,8 +565,12 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         You have no tools. {final_format}\n\
         Original task:\n{}\nCurrent participant material:\n{material}\n\
         Earlier disagreement excerpts, possibly shortened:\n{earlier_issues}\nCoverage:\n{coverage}",
-        input,
+        final_input,
     );
+    if audit_required {
+        prompt.push_str(&deliberation::suffix(&audit_packet)?);
+        *ctx.synthesis_audit.lock().unwrap() = Some(audit_packet);
+    }
 
     let text = match with_retry(
         &ctx,
@@ -559,7 +588,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
             return Err(error);
         }
     };
-    let result = if run.input.answer_only {
+    let mut result = if run.input.answer_only {
         let parsed = answer::parse(&text)?;
         Conclusion {
             conclusion: parsed.support,
@@ -567,12 +596,25 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
             unresolved: parsed.unresolved,
             ..Default::default()
         }
+    } else if audit_required {
+        let value: Value = parse_json(&text)?;
+        Conclusion {
+            conclusion: value["conclusion"]
+                .as_str()
+                .context("Missing conclusion")?
+                .into(),
+            unresolved: serde_json::from_value(value["unresolved"].clone())?,
+            ..Default::default()
+        }
     } else {
         Conclusion {
-            conclusion: text,
+            conclusion: text.clone(),
             ..Default::default()
         }
     };
+    if audit_required {
+        deliberation::attach(&mut result, &text)?;
+    }
     ctx.update(|report| report.complete("synthesizing"))?;
     let report = ctx.report();
     let completeness = if analyses.len() == 1 {
@@ -622,6 +664,7 @@ async fn panel(
                 analyses,
                 mapping,
                 review_snapshot.as_ref(),
+                ctx.run.lineage.as_ref(),
             )?
         } else {
             format!("Your participant ID is {participant}.\n{prompt}")
@@ -1102,7 +1145,22 @@ async fn step_inner(
                 .parent_request
                 .as_deref()
                 .unwrap_or(&ctx.run.input.question);
-            answer::validate(text, task, phase == "synthesizing")?;
+            let mut tasks = vec![task];
+            if let Some(lineage) = &ctx.run.lineage {
+                tasks.push(
+                    lineage
+                        .previous_input
+                        .parent_request
+                        .as_deref()
+                        .unwrap_or(&lineage.previous_input.question),
+                );
+            }
+            answer::validate_sources(text, &tasks, phase == "synthesizing")?;
+        }
+        if phase == "synthesizing" {
+            if let Some(packet) = ctx.synthesis_audit.lock().unwrap().as_ref() {
+                deliberation::validate(text, packet, ctx.run.input.answer_only)?;
+            }
         }
         if phase == "issue_mapping" {
             mapping::validate_sources(text, source_prompt)?;

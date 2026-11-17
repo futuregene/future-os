@@ -298,7 +298,10 @@ def main():
                 "orchestration/fusion/src/store.rs",
                 "orchestration/fusion/src/types.rs",
                 "host/src/fusion.rs",
-                "host/src/fusion/resilience.rs",
+                *sorted(
+                    str(path.relative_to(repository))
+                    for path in (repository / "host/src/fusion").glob("*.rs")
+                ),
                 "rust-toolchain.toml",
                 "benchmark/fusion/third_party/bbeh/evaluate.py",
                 "benchmark/fusion/third_party/bbeh/LICENSE",
