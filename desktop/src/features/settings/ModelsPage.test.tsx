@@ -276,6 +276,39 @@ describe("modelsPage visibility", () => {
     expect(onChangeHidden).toHaveBeenCalledExactlyOnceWith(["other/x"]);
   });
 
+  // A partly hidden provider is neither on nor off. Reporting it as "off"
+  // (checked={every(visible)}) told the user the whole group was unavailable;
+  // a Terra visual rerun caught exactly that on a two-model provider with one
+  // model hidden, so the third state is pinned here.
+  it("reports a partly hidden provider as mixed, not off", async () => {
+    const container = await renderPage({ modelOptions: TWO_MODEL_PROVIDER, hiddenModels: ["vendor/a"] });
+    const providerSwitch = switches(container)[0]!;
+
+    expect(providerSwitch.getAttribute("aria-label")).toBe("vendor");
+    expect(providerSwitch.getAttribute("aria-checked")).toBe("mixed");
+  });
+
+  it("turns a mixed provider fully on instead of flipping it to off", async () => {
+    const onChangeHidden = vi.fn();
+    const container = await renderPage({ modelOptions: TWO_MODEL_PROVIDER, hiddenModels: ["vendor/a"], onChangeHidden });
+
+    act(() => switches(container)[0]!.click());
+
+    expect(onChangeHidden).toHaveBeenCalledExactlyOnceWith([]);
+  });
+
+  it("stays true when every model of the provider is visible", async () => {
+    const container = await renderPage({ modelOptions: TWO_MODEL_PROVIDER });
+
+    expect(switches(container)[0]!.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("stays false when no model of the provider is visible", async () => {
+    const container = await renderPage({ modelOptions: TWO_MODEL_PROVIDER, hiddenModels: ["vendor/a", "vendor/b"] });
+
+    expect(switches(container)[0]!.getAttribute("aria-checked")).toBe("false");
+  });
+
   it("labels every switch with its model or provider name for assistive tech", async () => {
     const container = await renderPage();
 
