@@ -433,6 +433,7 @@ pub async fn command_loop(
         handshake,
         std::sync::Arc::new(crate::health::NatsHealth::default()),
         None,
+        None,
     )
     .await;
 }
@@ -462,6 +463,7 @@ pub async fn command_loop_with_ready(
     handshake: HandshakeState,
     health: std::sync::Arc<crate::health::NatsHealth>,
     mut ready: Option<tokio::sync::oneshot::Sender<()>>,
+    mut retire: Option<tokio::sync::oneshot::Receiver<()>>,
 ) {
     let subject = format!("p.{pair_id}.cmd.>");
     let queue = format!("bridge.{pair_id}");
@@ -506,7 +508,34 @@ pub async fn command_loop_with_ready(
             let _ = sender.send(());
         }
         let mut served = false;
-        while let Some(msg) = sub.next().await {
+        loop {
+            let msg = tokio::select! {
+                biased;
+                _ = async {
+                    match retire.as_mut() {
+                        Some(receiver) => { let _ = receiver.await; }
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {
+                    // Unlike Subscriber::drop, this queues UNSUB before the
+                    // task completes. The caller can then fence the broker.
+                    let _ = sub.unsubscribe().await;
+                    return;
+                }
+                message = sub.next() => match message {
+                    Some(message) => message,
+                    None => break,
+                },
+            };
+            // The empty retirement marker is a broker fence, never a user
+            // command or a malformed secure-handshake attempt.
+            if msg.payload.is_empty()
+                && msg
+                    .subject
+                    .starts_with(&format!("p.{pair_id}.cmd._retired."))
+            {
+                continue;
+            }
             served = true;
             let client = client.clone();
             let reply_slots = reply_slots.clone();

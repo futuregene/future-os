@@ -2227,6 +2227,7 @@ pub(in crate::remote) async fn fake_state(
         drop_counters: Arc::new(DropCounters::new()),
         event_task,
         cmd_task: crate::remote::SUPERVISOR.spawn_fixture_task(std::future::pending()),
+        command_retire: None,
         transfer_task: crate::remote::SUPERVISOR.spawn_fixture_task(std::future::pending()),
         heartbeat_task: crate::remote::SUPERVISOR.spawn_fixture_task(std::future::pending()),
         refresh_task: crate::remote::SUPERVISOR.spawn_fixture_task(std::future::pending()),
