@@ -126,6 +126,12 @@ pub const FIRST_PAGE_BYTE_BUDGET: usize = 512 * 1024;
 /// exists for. Most turns reach their question in one or two slices; this is the
 /// backstop that keeps a pathological single turn from pulling its whole body
 /// back on every open.
+///
+/// It is a *first paint's* backstop, so it only applies to a bounded budget: a
+/// caller that asked for the exchange itself ([`PageBudget::UNBOUNDED`], which
+/// [`read_page`] passes) has no screen to keep cheap, and stopping here would
+/// serve it the tail of what it asked for — the row cut below then has no
+/// question to land on and drops the head of the turn. See `walk_limit`.
 const COMPLETION_WALK_BYTES: usize = 8 * 1024 * 1024;
 
 /// How much one first paint may carry, and how a row is counted against it.
@@ -186,6 +192,28 @@ impl PageBudget {
         bytes: usize::MAX,
         rows: usize::MAX,
     };
+
+    /// Whether this budget bounds nothing, as [`PageBudget::UNBOUNDED`] does.
+    ///
+    /// A budget that bounds nothing bounds neither the page nor the walk that
+    /// completes it: the two are one decision, and a walk stopped at
+    /// [`COMPLETION_WALK_BYTES`] under an unbounded budget would hand back the
+    /// tail of the exchange the caller asked for.
+    fn is_unbounded(self) -> bool {
+        self.bytes == usize::MAX && self.rows == usize::MAX
+    }
+
+    /// How far the walk to a page's question may read, under this budget.
+    ///
+    /// A bounded first paint gets the backstop; an unbounded reader gets the
+    /// whole exchange, because that is what it asked for.
+    fn walk_limit(self) -> usize {
+        if self.is_unbounded() {
+            usize::MAX
+        } else {
+            COMPLETION_WALK_BYTES
+        }
+    }
 }
 
 /// Assemble oversized entries before exposing them to message projection.
@@ -342,14 +370,15 @@ where
             // slice is the difference between a page and a fragment of one turn,
             // and a window that already holds a question does not need it (the
             // cut below lands there — cheaper than a round trip, and it keeps
-            // the page's own turns whole). The walk is bounded too: reaching the
-            // question of an enormous turn would otherwise read the whole turn
-            // back in (the 10 MB first page this budget retired).
+            // the page's own turns whole). The walk is bounded too, so that
+            // reaching the question of an enormous turn does not read the whole
+            // turn back in for a first paint (that is the 10 MB page this budget
+            // retired) — but only for a budget that bounds the page as well
+            // (`PageBudget::walk_limit`).
             let has_question = accumulated.iter().any(|entry| !entry.needs_user_prefix());
             let walked: usize = accumulated.iter().map(&weigh).sum();
             if start == ExchangeStart::Complete {
-                if needs_prefix && page.has_more && !has_question && walked <= COMPLETION_WALK_BYTES
-                {
+                if needs_prefix && page.has_more && !has_question && walked <= budget.walk_limit() {
                     if accumulated.is_empty()
                         || page.next_offset >= command.before.unwrap_or(i64::MAX)
                     {
@@ -840,6 +869,73 @@ mod tests {
         assert_eq!(
             served.entries[0], question,
             "the page begins at the question it answers"
+        );
+    }
+
+    /// The walk itself has no backstop when the page has no bound.
+    ///
+    /// [`COMPLETION_WALK_BYTES`] exists so a *first paint* does not read an
+    /// enormous turn back in to find its question. A caller with no screen to
+    /// paint asked for the exchange, so stopping the walk at that backstop hands
+    /// it the turn's tail: the row cut below then has no question to land on and
+    /// drops the head of the turn it just asked for. The shape below is the one
+    /// the Agent's own paging contract test drives
+    /// (`a_backward_exchange_larger_than_the_budget_is_complete_before_projection`):
+    /// a single exchange whose rows weigh more than the backstop on their own.
+    ///
+    /// Weights are the caller's (a page is bounded *as it is sent*), so each row
+    /// here is one mebibyte however small it is. Applying the backstop to an
+    /// unbounded budget makes this fail on the served page's first row, which
+    /// comes back assistant instead of the question.
+    #[tokio::test]
+    async fn a_page_with_no_bound_walks_all_the_way_to_its_question() {
+        fn mib(_: &Value) -> usize {
+            1024 * 1024
+        }
+        let question = json!({"id": "u0", "kind": "user", "role": "user"});
+        let answers = turn_rows(11, 8);
+        let mut turn = vec![question.clone()];
+        turn.extend(answers.clone());
+        assert_eq!(turn.len(), 12);
+        assert!(
+            turn.len() * mib(&Value::Null) > COMPLETION_WALK_BYTES,
+            "the fixture has to outrun the first paint's walk backstop"
+        );
+        // The Agent cuts the turn into slices that each still need the older one;
+        // only the last one carries the question.
+        let pages = vec![
+            page(None, answers[8..].to_vec(), true, 9),
+            page(None, answers[4..8].to_vec(), true, 5),
+            page(None, answers[..4].to_vec(), true, 1),
+            page(None, vec![question.clone()], false, 0),
+        ];
+
+        let (result, seen) = scripted_with_budget(
+            RpcCommand {
+                before: Some(i64::MAX),
+                ..Default::default()
+            },
+            ExchangeStart::Complete,
+            PageBudget::UNBOUNDED,
+            mib,
+            pages,
+        )
+        .await;
+
+        let served = result.expect("a completed exchange is a page");
+        assert_eq!(
+            seen.len(),
+            4,
+            "the walk reads past the first paint's backstop to the question"
+        );
+        assert!(!served.truncated, "nothing was left behind");
+        assert_eq!(
+            served.entries, turn,
+            "the page is the exchange the caller asked for, whole and in order"
+        );
+        assert_eq!(
+            served.next_offset, 0,
+            "the cursor names the row the page still carries"
         );
     }
 
