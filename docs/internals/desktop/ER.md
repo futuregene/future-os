@@ -274,6 +274,7 @@ Field draft:
 | `error_type` | structured error classification (`stream_interrupted`, `command_failed`, `model_failed`, `abort_requested`, `timeout`, `interrupted`, `unknown`, etc.; paired with `run_error.rs`, NULL when not failed) |
 | `remote_accepted_at` | when the Agent durably accepted a remote (phone) prompt; a remote receipt is only visible or recoverable after this boundary (`store/runs.rs` `mark_remote_prompt_accepted`, index `idx_runs_remote_prompt_receipt`) |
 | `archived_at` | archive time; when non-null the run is not shown in the right "Runs" list, but the record and Agent events are kept for command-detail jumps from the intermediate information flow |
+| `offers_choice` | the run's reply closed by offering the reader a choice card (`futureos-choice`); lists badge such a conversation as waiting on an answer. Typed at settlement, so a follow-up turn is a new row and clears it (`docs/design/choice-cards.md` §5.9) |
 | `created_at` | creation time |
 | `updated_at` | update time |
 

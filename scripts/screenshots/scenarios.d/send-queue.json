@@ -48,6 +48,8 @@
         { "wait": 400 },
         { "tap": "加入发送队列" },
         { "wait": 300 },
+        { "eval": "(() => {\n  // The panel opens as its header line and draws rows only when asked.\n  const toggle = document.querySelector('[data-queue-toggle]');\n  if (!toggle) throw new Error('the queue header is not a control');\n  toggle.click();\n  return 'opened the queue';\n})()" },
+        { "wait": 250 },
         { "eval": "document.querySelector('[role=textbox]').focus()" },
         { "wait": 150 },
         { "type": "最后把配色换成低对比" },
@@ -63,7 +65,10 @@
         },
         { "shot": "d-send-queue-interrupt-instant.png" },
         {
-          "eval": "(async () => {\n  const wanted = ['顺便把图注也改成中文', '最后把配色换成低对比'];\n  const deadline = Date.now() + 15000;\n  const rows = () => [...document.querySelectorAll('[data-message-id]')];\n  while (Date.now() < deadline) {\n    const hits = wanted.map(text => rows().filter(row => (row.innerText || '').includes(text)));\n    if (hits.some(list => list.length > 1)) throw new Error('a queued sentence left as its own message');\n    if (hits.every(list => list.length === 1)) {\n      if (new Set(hits.map(list => list[0])).size !== 1) throw new Error('the two sentences did not travel as one message');\n      if (document.querySelector('[data-send-queue]')) throw new Error('the queue outlived the interrupt');\n      return 'one message carried both';\n    }\n    await new Promise(r => setTimeout(r, 200));\n  }\n  throw new Error('the queue never left the composer');\n})()"
+          "eval": "(async () => {\n  const wanted = ['顺便把图注也改成中文', '最后把配色换成低对比'];\n  const deadline = Date.now() + 15000;\n  const rows = () => [...document.querySelectorAll('[data-message-id]')];\n  while (Date.now() < deadline) {\n    const hits = wanted.map(text => rows().filter(row => (row.innerText || '').includes(text)));\n    if (hits.some(list => list.length > 1)) throw new Error('a queued sentence left as its own message');\n    if (hits.every(list => list.length === 1)) {\n      if (new Set(hits.map(list => list[0])).size !== 1) throw new Error('the two sentences did not travel as one message');\n      return 'one message carried both';\n    }\n    await new Promise(r => setTimeout(r, 200));\n  }\n  throw new Error('the queue never left the composer');\n})()"
+        },
+        {
+          "eval": "(async () => {\n  // The panel reads the queue on its own tick (`QUEUE_POLL_MS`), so it does not\n  // leave on the same frame the message lands on: a folded row is reported by\n  // `recentTerminalAcks` on the next read. Waited for as a separate step, so\n  // 'the rows merged' is not judged by a panel that has not caught up yet.\n  const deadline = Date.now() + 8000;\n  while (Date.now() < deadline) {\n    if (!document.querySelector('[data-send-queue]')) return 'the queue emptied';\n    await new Promise(r => setTimeout(r, 100));\n  }\n  throw new Error('the queue outlived the interrupt');\n})()"
         },
         { "wait": 600 },
         { "shot": "d-send-queue-interrupt-merged.png" }
@@ -119,7 +124,11 @@
         { "tap": "加入发送队列" },
         { "wait": 350 },
         {
-          "eval": "(() => {\n  const panel = document.querySelector('[data-send-queue]');\n  if (!panel) throw new Error('the queued message is not shown');\n  if (panel.querySelectorAll('[data-queue-item]').length !== 1) throw new Error('the panel does not hold one row');\n  if (!(panel.innerText || '').includes('顺便把图注也改成中文')) throw new Error('the row does not carry the held message');\n  if (!document.querySelector(\"button[aria-label='停止并发送队列中的消息']\")) throw new Error('the interrupt control does not say the queue goes with it');\n  return 'one row, stop-and-send named';\n})()"
+          "eval": "(() => {\n  const panel = document.querySelector('[data-send-queue]');\n  if (!panel) throw new Error('the queued message is not shown');\n  // Closed by default, like the phone's: the header line carries the count and\n  // the promise, and the rows are one press away.\n  if (panel.querySelectorAll('[data-queue-item]').length !== 0) throw new Error('the queue drew its rows without being asked');\n  const toggle = panel.querySelector('[data-queue-toggle]');\n  if (!toggle) throw new Error('the queue header is not a control');\n  if (toggle.getAttribute('aria-expanded') !== 'false') throw new Error('the closed queue does not say so');\n  toggle.click();\n  return 'closed by default, then opened';\n})()"
+        },
+        { "wait": 300 },
+        {
+          "eval": "(() => {\n  const panel = document.querySelector('[data-send-queue]');\n  if (panel.querySelectorAll('[data-queue-item]').length !== 1) throw new Error('the panel does not hold one row');\n  if (!(panel.innerText || '').includes('顺便把图注也改成中文')) throw new Error('the row does not carry the held message');\n  if (panel.querySelector('[data-queue-toggle]').getAttribute('aria-expanded') !== 'true') throw new Error('the opened queue does not say so');\n  if (!document.querySelector(\"button[aria-label='停止并发送队列中的消息']\")) throw new Error('the interrupt control does not say the queue goes with it');\n  return 'one row, stop-and-send named';\n})()"
         },
         { "shot": "d-send-queue-local-queued.png" }
       ]

@@ -330,7 +330,6 @@ pub(super) const ADDED_COLUMNS: &[(&str, &str)] = &[
     ("review_file_changes", "omission_reason TEXT"),
     // Phase 2 sandbox: suggested rule (JSON) for session/always-allow buttons.
     ("approval_requests", "save_suggestion TEXT"),
-    ("runs", "offers_choice INTEGER NOT NULL DEFAULT 0"),
 ];
 
 /// Optional run-archive migrations, whose failures do not block startup.
