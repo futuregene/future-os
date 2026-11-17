@@ -117,6 +117,23 @@ pub enum ExchangeStart {
 /// for any data: no single turn can turn an open into a multi-megabyte transfer.
 pub const FIRST_PAGE_BYTE_BUDGET: usize = 512 * 1024;
 
+/// How much history one completed backward page may be assembled from.
+///
+/// The page itself is bounded by its budget; this bounds the *walk* that finds
+/// the page's question. A turn taller than the budget has to be read up to its
+/// question before the page can be cut from it — the alternative is serving the
+/// rows above an unseen question, which is the blank conversation this walk
+/// exists for. Most turns reach their question in one or two slices; this is the
+/// backstop that keeps a pathological single turn from pulling its whole body
+/// back on every open.
+///
+/// It is a *first paint's* backstop, so it only applies to a bounded budget: a
+/// caller that asked for the exchange itself ([`PageBudget::UNBOUNDED`], which
+/// [`read_page`] passes) has no screen to keep cheap, and stopping here would
+/// serve it the tail of what it asked for — the row cut below then has no
+/// question to land on and drops the head of the turn. See `walk_limit`.
+const COMPLETION_WALK_BYTES: usize = 8 * 1024 * 1024;
+
 /// How much one first paint may carry, and how a row is counted against it.
 ///
 /// Two independent bounds, because they pay for different things:
@@ -134,7 +151,10 @@ pub const FIRST_PAGE_BYTE_BUDGET: usize = 512 * 1024;
 pub struct PageBudget {
     /// Bytes as the caller will send them, weighed by its own function.
     pub bytes: usize,
-    /// Rows, whatever they weigh.
+    /// Rows, whatever they weigh. The bound yields to the page's question: a
+    /// first page that would have to begin mid-run to stay inside it is served
+    /// longer instead (see `trim_to_budget`), because a page without a question
+    /// projects to nothing at all.
     pub rows: usize,
 }
 
@@ -146,6 +166,13 @@ impl PageBudget {
     /// of them is a thousand row models to build before the newest screen is on
     /// screen. The rows a reader actually reads in one screenful are far fewer;
     /// the rest is a scroll away, one page per scroll.
+    ///
+    /// The *byte* bound is what a reply has to fit in, and it is respected by
+    /// dropping whole older exchanges. One exchange is indivisible, so a turn
+    /// larger than these bytes is served whole — the page is then as large as
+    /// the turn it lands in, which is the case the reply lane chunks. The row
+    /// bound is only a bound on what fits, and a page may exceed it rather than
+    /// lose the question that makes it readable.
     pub const FIRST_PAINT: PageBudget = PageBudget {
         bytes: FIRST_PAGE_BYTE_BUDGET,
         rows: 300,
@@ -165,6 +192,28 @@ impl PageBudget {
         bytes: usize::MAX,
         rows: usize::MAX,
     };
+
+    /// Whether this budget bounds nothing, as [`PageBudget::UNBOUNDED`] does.
+    ///
+    /// A budget that bounds nothing bounds neither the page nor the walk that
+    /// completes it: the two are one decision, and a walk stopped at
+    /// [`COMPLETION_WALK_BYTES`] under an unbounded budget would hand back the
+    /// tail of the exchange the caller asked for.
+    fn is_unbounded(self) -> bool {
+        self.bytes == usize::MAX && self.rows == usize::MAX
+    }
+
+    /// How far the walk to a page's question may read, under this budget.
+    ///
+    /// A bounded first paint gets the backstop; an unbounded reader gets the
+    /// whole exchange, because that is what it asked for.
+    fn walk_limit(self) -> usize {
+        if self.is_unbounded() {
+            usize::MAX
+        } else {
+            COMPLETION_WALK_BYTES
+        }
+    }
 }
 
 /// Assemble oversized entries before exposing them to message projection.
@@ -259,6 +308,17 @@ where
 {
     let backward = command.before.is_some();
     let mut accumulated = Vec::new();
+    // The walk below asks two questions of everything it has read so far: how
+    // much it weighs, and whether anything in it opens an exchange. Both are
+    // answered from the rows as they arrive, never by re-scanning what is
+    // already in `accumulated`: the weight is the caller's, and the host's is a
+    // *serialization* of the row (`page_weight_as_sent` strips the lean lane's
+    // bodies), so re-weighing the window once per fetched slice turns a page
+    // that walks twenty slices into twenty serializations of every row it
+    // holds. Measured on this walk (2026-11-17) that is what made a
+    // history-dense session's page-up read quadratic in the rows it carried.
+    let mut walked: usize = 0;
+    let mut has_question = false;
     loop {
         let mut page = execute(command.clone()).await?;
         if let Some(first) = page.fragment.take() {
@@ -305,39 +365,58 @@ where
         } else if command.fragment_offset.is_some() {
             return Err("missing history fragment".into());
         }
+        // Weigh the rows this slice brought, once each. A backward read only
+        // ever prepends to `accumulated`, so the running total is the window's.
+        if backward {
+            for entry in &page.entries {
+                walked += weigh(entry);
+            }
+            has_question |= page.entries.iter().any(|entry| !entry.needs_user_prefix());
+        }
         if backward {
             page.entries.append(&mut accumulated);
             accumulated = page.entries;
+            // Only a page that is asked to begin at a question is bounded: a page
+            // allowed to begin anywhere (`ExchangeStart::Anywhere`, the terminal's
+            // switch and page-up) is returned as the agent cut it, unbounded and
+            // uncompleted — see the two variants on `ExchangeStart`.
             let needs_prefix = start == ExchangeStart::Complete
                 && accumulated
                     .first()
                     .is_some_and(HistoryEntry::needs_user_prefix);
-            if page.has_more && needs_prefix {
-                if accumulated.is_empty() || page.next_offset >= command.before.unwrap_or(i64::MAX)
-                {
-                    return Err("history returned a non-advancing backward cursor".into());
+            // Walking up is what a page that begins mid-run is worth, but only
+            // while the window holds no question at all to be cut to: one more
+            // slice is the difference between a page and a fragment of one turn,
+            // and a window that already holds a question does not need it (the
+            // cut below lands there — cheaper than a round trip, and it keeps
+            // the page's own turns whole). The walk is bounded too, so that
+            // reaching the question of an enormous turn does not read the whole
+            // turn back in for a first paint (that is the 10 MB page this budget
+            // retired) — but only for a budget that bounds the page as well
+            // (`PageBudget::walk_limit`).
+            if start == ExchangeStart::Complete {
+                if needs_prefix && page.has_more && !has_question && walked <= budget.walk_limit() {
+                    if accumulated.is_empty()
+                        || page.next_offset >= command.before.unwrap_or(i64::MAX)
+                    {
+                        return Err("history returned a non-advancing backward cursor".into());
+                    }
+                    command.before = Some(page.next_offset);
+                    command.limit = Some(1);
+                    continue;
                 }
-                // Ask for the next older slice only while the page so far is
-                // still a page: completing an exchange is worth one small extra
-                // fetch, not a turn's whole body. When the turn is bigger than
-                // the budget on its own, no number of further slices can reach
-                // its question, and the page is served as that turn's tail.
                 let trim = trim_to_budget(&mut accumulated, budget, &weigh);
+                // What left the page is reachable, not lost: the cursor names the
+                // first row this page still carries.
+                page.next_offset += trim.dropped as i64;
                 if trim.dropped > 0 {
-                    page.entries = accumulated;
-                    // What left the page is reachable, not lost: the cursor names
-                    // the first row this page still carries.
-                    page.next_offset += trim.dropped as i64;
                     page.has_more = true;
-                    // Only a page that still starts mid-run has to say so. A cut
-                    // that landed on an exchange boundary left a whole exchange,
-                    // which is what the reader was owed.
-                    page.truncated = !trim.begins_exchange;
-                    return Ok(page);
                 }
-                command.before = Some(page.next_offset);
-                command.limit = Some(1);
-                continue;
+                // The page begins mid-run: the rows above it are behind the
+                // cursor, but its own first turn is cut, and a fragment projects
+                // to nothing. That is the reader's business, so the page states
+                // it.
+                page.truncated = !trim.begins_exchange;
             }
             page.entries = accumulated;
         }
@@ -348,47 +427,74 @@ where
 /// What [`trim_to_budget`] had to give up, and whether the page still reads as one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Trim {
-    /// How many of the oldest rows left the page.
+    /// How many of the oldest rows left the page. The caller's backward cursor
+    /// moves up by exactly this, so it names the first row the page carries.
     dropped: usize,
     /// Whether the row the page now starts at is an exchange's first row, so the
     /// page still begins at a question rather than mid-run.
     begins_exchange: bool,
 }
 
-/// Drop the oldest rows of a page until it fits `budget`, and say how many left.
+/// Drop rows the page cannot afford, without ever leaving it without its question.
 ///
-/// **The cut lands on an exchange boundary whenever one fits**, because a page
-/// that starts mid-run is the defect this budget kept causing: measured on this
-/// machine's store (1,873 conversations, 2026-11-16), trimming row by row left
-/// **107** of 1,158 conversations opening on a page whose first row needs a
-/// prefix — no question above the reply the reader landed on. Cutting to the
-/// oldest whole exchange that fits left **5**, and none of them began mid-run
-/// that could be avoided.
+/// **A page that begins mid-run is the defect this function kept causing.** Two
+/// rules, in this order, and the second one wins:
 ///
-/// The row-by-row cut was never wrong about *how much* to send; it was wrong
-/// about *where to cut*. An exchange is the unit a reader reads, so dropping
-/// three quarters of one and keeping the rest is exactly the "the conversation
-/// above it was gone" report the agent's own row ceiling was retired for.
+/// * A page is a slice of a conversation being read front to back, so it begins
+///   at the question its reply answers — the row bound yields to that, because a
+///   first page with no question above its reply projects to *no turns at all*
+///   (`turnFromAcc` builds a turn from its question). Measured on this machine's
+///   store (2026-11-17, 332 first pages read through this function): **7** came
+///   back with no user row in them at all — seven conversations that opened
+///   blank, and every one of them was a turn of more than 700 rows, where the
+///   row cut below had thrown the question away.
+/// * An exchange is indivisible. The byte bound is respected by dropping whole
+///   *older* exchanges, never by splitting the one the page lands in: cutting
+///   inside it either discards the question (the blank conversation again) or
+///   opens a hole between the question and the newest rows, and rows in that
+///   hole are reachable by no cursor — the page above is fetched from the
+///   question, so the middle is gone for good. A turn larger than the byte bound
+///   is therefore served whole: one exchange bigger than a reply is what the
+///   reply lane's chunking exists for
+///   (`prepare_backward_entries_page_with_cap` never splits an exchange either),
+///   and a page may be as large as the one turn the reader opened the
+///   conversation to read.
 ///
-/// Three cases, in order:
+/// Which is why the cases, in order, are:
 ///
 /// * the whole page fits — nothing is dropped;
-/// * some exchange boundary in the page fits the budget — cut there, and the page
-///   begins at that exchange's question (`begins_exchange`);
-/// * nothing fits whole — fall back to the row-by-row cut, and the page is the
-///   newest rows that fit, saying it starts mid-run (`truncated`). At least one
-///   row always stays: an entry is the smallest unit a page can carry, and a
-///   single row larger than the budget is what the fragment path is for.
+/// * some exchange boundary in the page fits both bounds, or (failing that) the
+///   byte bound alone — cut there, and the page begins at that exchange's
+///   question;
+/// * nothing fits and the page already begins at its question — the turn is
+///   bigger than a page on its own and leaves whole;
+/// * nothing fits and the window begins mid-run — no question came with it, so
+///   the newest rows that fit are served and the page says it starts mid-run.
+///   Only a walk that hit its own bound gets here; the caller walks first
+///   precisely so that this is the rare case and not the blank page.
 fn trim_to_budget<Entry, W>(entries: &mut Vec<Entry>, budget: PageBudget, weigh: &W) -> Trim
 where
     Entry: HistoryEntry,
     W: Fn(&Entry) -> usize,
 {
+    // An empty page is an empty conversation, not a cut one: there is nothing to
+    // begin at and nothing to say about it.
+    if entries.is_empty() {
+        return Trim {
+            dropped: 0,
+            begins_exchange: true,
+        };
+    }
+
     let weights: Vec<usize> = entries.iter().map(weigh).collect();
     let mut total: usize = weights.iter().sum();
     let fits = |rows: usize, total: usize| total <= budget.bytes && rows <= budget.rows;
 
-    if fits(weights.len(), total) {
+    // A page that fits and opens at a question is done. One that fits but opens
+    // mid-run is not: its first rows belong to a turn whose question is above
+    // them, so the cut below takes the first question the window holds — those
+    // rows stay reachable behind the cursor, and the page opens readable.
+    if !entries[0].needs_user_prefix() && fits(entries.len(), total) {
         return Trim {
             dropped: 0,
             begins_exchange: true,
@@ -396,10 +502,17 @@ where
     }
 
     // Every row that starts an exchange, oldest first: a page cut at one of these
-    // begins at a question, which is what the reader is owed.
+    // begins at a question, which is what the reader is owed. The widest such
+    // window is taken — cutting at the newest boundary would throw away
+    // exchanges the budget could afford.
+    //
+    // The widest exchange boundary that fits both bounds.
     let mut remaining = total;
     for start in 0..entries.len() {
-        if fits(entries.len() - start, remaining) && !entries[start].needs_user_prefix() {
+        if remaining <= budget.bytes
+            && entries.len() - start <= budget.rows
+            && !entries[start].needs_user_prefix()
+        {
             if start > 0 {
                 entries.drain(..start);
             }
@@ -411,7 +524,40 @@ where
         remaining -= weights[start];
     }
 
-    // No boundary fits: the newest rows that do, as before.
+    // No boundary fits the row bound — the newest turn is longer than it on its
+    // own, so every boundary that carries that turn exceeds it. The row bound
+    // yields, as little as it can: the *newest* boundary that fits the byte
+    // bound is taken, which keeps the page to the one turn the reader opened the
+    // conversation for instead of the several that reaching further back would
+    // pull in. It also settles a page that begins at its own question: cutting at
+    // row zero is a no-op, and the page leaves whole even though it is longer
+    // than the row bound.
+    let mut carried = 0usize;
+    for start in (0..entries.len()).rev() {
+        carried += weights[start];
+        if carried <= budget.bytes && !entries[start].needs_user_prefix() {
+            if start > 0 {
+                entries.drain(..start);
+            }
+            return Trim {
+                dropped: start,
+                begins_exchange: true,
+            };
+        }
+    }
+
+    // Nothing fits, and the page begins at its own question: the turn is larger
+    // than the budget and indivisible (see above). It leaves whole.
+    if !entries[0].needs_user_prefix() {
+        return Trim {
+            dropped: 0,
+            begins_exchange: true,
+        };
+    }
+
+    // Nothing in the window opens an exchange: the walk that completes it hit
+    // its bound, so the newest rows that fit are the truthful answer — a page
+    // that says it starts mid-run, and can do no better than that.
     let mut dropped = 0;
     while dropped + 1 < entries.len()
         && (total > budget.bytes || entries.len() - dropped > budget.rows)
@@ -598,7 +744,8 @@ mod tests {
             .collect()
     }
 
-    /// A turn too big to complete is served as its tail, not as itself.
+    /// A page with no question in it at all — rows written before exchanges were
+    /// marked as such — falls back to the newest rows that fit.
     ///
     /// This is the reported conversation (2026-11-13): one turn of 1,113 rows
     /// and 10.35 MB. Completing it means walking back until the page starts at
@@ -609,7 +756,7 @@ mod tests {
     /// FIRST_PAGE_BYTE_BUDGET` line below fail, which is the point of writing it
     /// against the constant.
     #[tokio::test]
-    async fn a_turn_larger_than_the_budget_comes_back_as_its_tail() {
+    async fn a_page_with_no_question_in_it_falls_back_to_the_newest_rows_that_fit() {
         let rows = turn_rows(30, 40_000);
         let whole: usize = rows.iter().map(HistoryEntry::page_bytes).sum();
         assert!(
@@ -620,8 +767,10 @@ mod tests {
             before: Some(i64::MAX),
             ..Default::default()
         };
+        // Nothing above it: the walk has nowhere to go, which is the shape of a
+        // session written before exchanges were marked as such.
         let (result, seen) =
-            scripted::<Value>(command, vec![page(None, rows.clone(), true, 1_000)]).await;
+            scripted::<Value>(command, vec![page(None, rows.clone(), false, 1_000)]).await;
 
         let served = result.expect("a truncated page is a page");
         assert_eq!(
@@ -740,6 +889,73 @@ mod tests {
         );
     }
 
+    /// The walk itself has no backstop when the page has no bound.
+    ///
+    /// [`COMPLETION_WALK_BYTES`] exists so a *first paint* does not read an
+    /// enormous turn back in to find its question. A caller with no screen to
+    /// paint asked for the exchange, so stopping the walk at that backstop hands
+    /// it the turn's tail: the row cut below then has no question to land on and
+    /// drops the head of the turn it just asked for. The shape below is the one
+    /// the Agent's own paging contract test drives
+    /// (`a_backward_exchange_larger_than_the_budget_is_complete_before_projection`):
+    /// a single exchange whose rows weigh more than the backstop on their own.
+    ///
+    /// Weights are the caller's (a page is bounded *as it is sent*), so each row
+    /// here is one mebibyte however small it is. Applying the backstop to an
+    /// unbounded budget makes this fail on the served page's first row, which
+    /// comes back assistant instead of the question.
+    #[tokio::test]
+    async fn a_page_with_no_bound_walks_all_the_way_to_its_question() {
+        fn mib(_: &Value) -> usize {
+            1024 * 1024
+        }
+        let question = json!({"id": "u0", "kind": "user", "role": "user"});
+        let answers = turn_rows(11, 8);
+        let mut turn = vec![question.clone()];
+        turn.extend(answers.clone());
+        assert_eq!(turn.len(), 12);
+        assert!(
+            turn.len() * mib(&Value::Null) > COMPLETION_WALK_BYTES,
+            "the fixture has to outrun the first paint's walk backstop"
+        );
+        // The Agent cuts the turn into slices that each still need the older one;
+        // only the last one carries the question.
+        let pages = vec![
+            page(None, answers[8..].to_vec(), true, 9),
+            page(None, answers[4..8].to_vec(), true, 5),
+            page(None, answers[..4].to_vec(), true, 1),
+            page(None, vec![question.clone()], false, 0),
+        ];
+
+        let (result, seen) = scripted_with_budget(
+            RpcCommand {
+                before: Some(i64::MAX),
+                ..Default::default()
+            },
+            ExchangeStart::Complete,
+            PageBudget::UNBOUNDED,
+            mib,
+            pages,
+        )
+        .await;
+
+        let served = result.expect("a completed exchange is a page");
+        assert_eq!(
+            seen.len(),
+            4,
+            "the walk reads past the first paint's backstop to the question"
+        );
+        assert!(!served.truncated, "nothing was left behind");
+        assert_eq!(
+            served.entries, turn,
+            "the page is the exchange the caller asked for, whole and in order"
+        );
+        assert_eq!(
+            served.next_offset, 0,
+            "the cursor names the row the page still carries"
+        );
+    }
+
     /// A page that is allowed to begin anywhere is returned as the agent cut it.
     ///
     /// The completion fetch (`limit = 1` for the exchange's missing prefix) is
@@ -778,6 +994,70 @@ mod tests {
         assert_eq!(seen.len(), 2, "the prefix was fetched: {:?}", seen.len());
         assert_eq!(seen[1].limit, Some(1), "one exchange at a time");
         assert!(result.is_ok());
+    }
+
+    /// An empty page is an empty conversation, not a cut one.
+    ///
+    /// The desktop tells a conversation that has not written anything yet from
+    /// one whose history is missing by this page; indexing row zero of it would
+    /// panic that read out (found by the host's `an_empty_tail_page_belongs_to_
+    /// the_live_turn_that_has_not_landed_yet`).
+    #[tokio::test]
+    async fn an_empty_page_is_not_a_cut_page() {
+        let (result, _) = scripted::<Value>(
+            RpcCommand {
+                before: Some(i64::MAX),
+                ..Default::default()
+            },
+            vec![page(None, Vec::<Value>::new(), false, 0)],
+        )
+        .await;
+        let served = result.expect("a page");
+        assert!(served.entries.is_empty());
+        assert!(!served.truncated, "there is no turn to have been cut");
+        assert_eq!(served.next_offset, 0);
+    }
+
+    /// A page allowed to begin anywhere is not bounded either.
+    ///
+    /// The terminal's switch and page-up read `ExchangeStart::Anywhere` and take
+    /// what the agent cut, unbounded: completing or trimming it here would undo
+    /// the bound the repeated reads exist to keep. Pinned because the trimming
+    /// that a `Complete` page needs would otherwise leak into this one — the
+    /// same call, one variant apart.
+    #[tokio::test]
+    async fn a_page_that_may_begin_anywhere_is_not_trimmed() {
+        let mut rows = run_rows("mid", 399);
+        rows.push(question("u1"));
+        rows.extend(turn_rows(150, 4_000));
+        let whole: usize = rows.iter().map(HistoryEntry::page_bytes).sum();
+        assert!(
+            whole > FIRST_PAGE_BYTE_BUDGET && rows.len() > PageBudget::FIRST_PAINT.rows,
+            "the fixture has to be over both bounds: {whole} bytes, {} rows",
+            rows.len()
+        );
+
+        let (result, seen) = scripted_from::<Value>(
+            RpcCommand {
+                before: Some(i64::MAX),
+                ..Default::default()
+            },
+            ExchangeStart::Anywhere,
+            vec![page(None, rows.clone(), false, 9_000)],
+        )
+        .await;
+
+        let served = result.expect("a page");
+        assert_eq!(seen.len(), 1, "no prefix fetch, no completion");
+        assert_eq!(
+            served.entries, rows,
+            "the page is what the agent cut, not what the budget would keep"
+        );
+        assert_eq!(served.next_offset, 9_000, "the cursor is the agent's");
+        assert!(
+            !served.truncated,
+            "nothing here claims a cut it did not make"
+        );
     }
 
     /// A two-chunk fragmented read of `json`, whose first fragment claims
@@ -1074,14 +1354,23 @@ mod tests {
         })));
     }
 
-    /// A first paint is bounded by rows as well as bytes.
+    /// The row bound still bounds a page — where it can do so without losing the
+    /// question.
     ///
     /// A thousand rows of a few bytes each are nowhere near the byte budget and
     /// are still a thousand row models to build before the newest screen is on
-    /// screen, so the page stops at the row bound and says what it left behind.
+    /// screen, so a page made of whole exchanges is cut to the newest window the
+    /// row bound affords, at a question. What the row bound may **not** do is cut
+    /// a page that begins at its own question — that page is one turn, the reader
+    /// is reading it, and the turn above the cut is not the one they landed on.
     #[tokio::test]
-    async fn a_first_paint_is_bounded_by_rows_as_well_as_bytes() {
-        let rows = turn_rows(1_000, 10);
+    async fn the_row_bound_still_cuts_a_page_at_a_question() {
+        let mut rows = vec![question("u1")];
+        rows.extend(run_rows("e1", 100));
+        rows.push(question("u2"));
+        rows.extend(run_rows("e2", 249));
+        assert_eq!(rows.len(), 351);
+
         let command = RpcCommand {
             before: Some(i64::MAX),
             ..Default::default()
@@ -1089,15 +1378,29 @@ mod tests {
         let (result, _) =
             scripted::<Value>(command, vec![page(None, rows.clone(), true, 5_000)]).await;
         let served = result.expect("page");
-        assert!(served.truncated, "the page says what it left behind");
+        assert!(
+            served.entries.len() <= PageBudget::FIRST_PAINT.rows,
+            "the row bound is what bounded it: {} rows",
+            served.entries.len()
+        );
         assert_eq!(
-            served.entries.len(),
-            PageBudget::FIRST_PAINT.rows,
-            "the row bound is what stopped it, not the bytes"
+            served.entries[0],
+            question("u2"),
+            "and the cut lands on the newest question that fits, not mid-run"
         );
         assert_eq!(
             served.next_offset,
-            5_000 + (rows.len() - PageBudget::FIRST_PAINT.rows) as i64
+            5_000 + 101,
+            "the cursor moves up by exactly the rows that left the page"
+        );
+        assert!(
+            !served.truncated,
+            "a whole exchange is what the reader was owed"
+        );
+        let bytes: usize = served.entries.iter().map(HistoryEntry::page_bytes).sum();
+        assert!(
+            bytes <= FIRST_PAGE_BYTE_BUDGET,
+            "and the byte bound still holds for what the reply carries: {bytes} bytes"
         );
     }
 
@@ -1107,9 +1410,19 @@ mod tests {
     /// buy several times the rows a raw weight buys. This is the property the
     /// two weights differ for — if the caller's weight were ignored, the two
     /// pages would be identical.
+    ///
+    /// Both pages keep a question: the raw weight can only afford the newest
+    /// exchange and cuts there, the lean weight affords all three and is served
+    /// whole. Three exchanges, because asking a page to shed is what a byte bound
+    /// is for — one exchange is indivisible and leaves whole either way.
     #[tokio::test]
     async fn a_cheaper_weight_fits_more_rows_in_the_same_budget() {
-        let rows = turn_rows(400, 4_000);
+        let mut rows = vec![question("u1")];
+        rows.extend(turn_rows(80, 4_000));
+        rows.push(question("u2"));
+        rows.extend(turn_rows(80, 4_000));
+        rows.push(question("u3"));
+        rows.extend(turn_rows(80, 4_000));
         let command = RpcCommand {
             before: Some(i64::MAX),
             ..Default::default()
@@ -1141,10 +1454,366 @@ mod tests {
             lean.entries.len(),
             raw.entries.len()
         );
+        let raw_bytes: usize = raw.entries.iter().map(HistoryEntry::page_bytes).sum();
         assert!(
-            lean.entries.len() <= PageBudget::FIRST_PAINT.rows,
-            "and the row bound still applies: {}",
-            lean.entries.len()
+            raw_bytes <= FIRST_PAGE_BYTE_BUDGET,
+            "the raw page fits what will be sent: {raw_bytes} bytes"
+        );
+        // The lean page is bounded by the lean weight — what it will actually
+        // cost on the wire — rather than by its raw bodies.
+        let lean_bytes: usize = lean.entries.iter().map(|_| 80).sum();
+        assert!(lean_bytes <= FIRST_PAGE_BYTE_BUDGET, "{lean_bytes} bytes");
+        assert_eq!(
+            lean.entries[0],
+            question("u1"),
+            "and begins at the question"
+        );
+        assert_eq!(
+            raw.entries[0],
+            question("u3"),
+            "the raw page begins at the question of the exchange it could afford"
+        );
+    }
+
+    /// A conversation numbering its rows the way the store does: row *i* has
+    /// ordinal *i*, so a page's first row is also the cursor that names it.
+    ///
+    /// Questions at 0, 100, 200 and 300, and a newest run of **400** rows —
+    /// longer than the first paint's row bound, which is the blank page's shape.
+    fn conversation() -> Vec<Value> {
+        let mut rows = vec![question("q0")];
+        rows.extend(run_rows("e0", 99));
+        rows.push(question("q1"));
+        rows.extend(run_rows("e1", 99));
+        rows.push(question("q2"));
+        rows.extend(run_rows("e2", 99));
+        rows.push(question("q3"));
+        rows.extend(run_rows("e3", 399));
+        assert_eq!(rows.len(), 700);
+        rows
+    }
+
+    fn ids(rows: &[Value]) -> Vec<String> {
+        rows.iter()
+            .map(|row| row["id"].as_str().unwrap_or_default().to_owned())
+            .collect()
+    }
+
+    /// The page-up and the first paint are two slices of one conversation: the
+    /// cursor of the first names the row above which the second continues.
+    ///
+    /// This is also the three-path property: the desktop's streaming and
+    /// non-streaming opens share this one read (the live bubble is an overlay on
+    /// top of it, never a different history window), so what is asserted here is
+    /// what both paths see — the same cursor, the same rows.
+    ///
+    /// The Agent cuts a backward page at 150 rows, so the first paint here is two
+    /// fetches: the newest 150 rows, then the slice that completes the turn to
+    /// its question. Concatenated with the page-up they are exactly
+    /// `conversation()[100..]` — no gap, no repeat, and the cursor at its head.
+    #[tokio::test]
+    async fn the_first_paint_and_the_page_above_it_are_one_contiguous_suffix() {
+        let history = conversation();
+        let tail = |range: std::ops::RangeInclusive<usize>| history[range].to_vec();
+
+        let (first, seen) = scripted::<Value>(
+            RpcCommand {
+                before: Some(i64::MAX),
+                limit: Some(10),
+                ..Default::default()
+            },
+            vec![
+                page(None, tail(550..=699), true, 550),
+                page(None, tail(300..=549), true, 300),
+            ],
+        )
+        .await;
+        let first = first.expect("first paint");
+        assert_eq!(seen.len(), 2, "the turn was completed to its question");
+        assert_eq!(ids(&first.entries), ids(&history[300..=699]));
+        assert_eq!(
+            first.next_offset, 300,
+            "the cursor is the ordinal of the first row the page carries"
+        );
+        assert!(!first.truncated, "the whole turn was served");
+
+        let (older, _) = scripted::<Value>(
+            RpcCommand {
+                before: Some(first.next_offset),
+                limit: Some(10),
+                ..Default::default()
+            },
+            vec![page(None, tail(100..=299), true, 100)],
+        )
+        .await;
+        let older = older.expect("page up");
+        assert_eq!(ids(&older.entries), ids(&history[100..=299]));
+
+        // No repeat, no gap: the two pages are the suffix they claim to be.
+        let mut joined = ids(&older.entries);
+        joined.extend(ids(&first.entries));
+        assert_eq!(joined, ids(&history[100..=699]));
+        assert_eq!(
+            older.next_offset, 100,
+            "and its own cursor is the row it starts at"
+        );
+    }
+
+    /// A page-up lands mid-run like a first paint does, and may not come back
+    /// without the question it landed on either.
+    ///
+    /// Scrolling up asks for a slice of the *same* oversized turn; the walk
+    /// completes it back to its question and the row bound then yields to it.
+    /// Reverting the walk serves 399 assistant rows here instead of the turn's
+    /// 399 rows from `q3`.
+    #[tokio::test]
+    async fn a_page_up_keeps_the_question_it_lands_in() {
+        let history = conversation();
+        let (result, seen) = scripted::<Value>(
+            RpcCommand {
+                before: Some(699),
+                limit: Some(10),
+                ..Default::default()
+            },
+            vec![
+                page(None, history[550..=698].to_vec(), true, 550),
+                page(None, history[300..=549].to_vec(), true, 300),
+            ],
+        )
+        .await;
+
+        let served = result.expect("page up");
+        assert_eq!(seen.len(), 2, "one slice, then the question");
+        assert_eq!(
+            served.entries.first(),
+            Some(&history[300]),
+            "the page begins at the question it landed in, not mid-run"
+        );
+        assert_eq!(served.entries.len(), 399);
+        assert_eq!(served.next_offset, 300);
+    }
+
+    /// The same cursor serves the same rows, twice: a history read has no state
+    /// that a second reader could see differently.
+    #[tokio::test]
+    async fn the_same_cursor_serves_the_same_rows_every_time() {
+        let history = conversation();
+        let pages = || {
+            vec![
+                page(None, history[550..=699].to_vec(), true, 550),
+                page(None, history[300..=549].to_vec(), true, 300),
+            ]
+        };
+        let read = |pages: Vec<SessionEntriesPage<Value>>| async move {
+            scripted::<Value>(
+                RpcCommand {
+                    before: Some(i64::MAX),
+                    limit: Some(10),
+                    ..Default::default()
+                },
+                pages,
+            )
+            .await
+            .0
+            .expect("page")
+        };
+        let live = read(pages()).await;
+        let settled = read(pages()).await;
+        assert_eq!(ids(&live.entries), ids(&settled.entries));
+        assert_eq!(live.next_offset, settled.next_offset);
+        assert_eq!(live.truncated, settled.truncated);
+    }
+
+    /// A mid-run window is not something to cut: it is a page that has not
+    /// reached its question yet, so the walk continues until it has.
+    ///
+    /// This is the reported blank conversation in the shape the store produced it
+    /// (2026-11-17): the Agent cuts a backward read at its own row ceiling, so the
+    /// first two slices here (150 and 600 rows of one long run) hold no question
+    /// at all. The row bound used to cut that window to its newest 300 rows —
+    /// every one of them an assistant or tool row — and the page projected to
+    /// zero turns. Seven conversations on this machine were served exactly that.
+    /// Reverting the walk makes the first assertion below see an assistant row
+    /// instead of `q0`.
+    #[tokio::test]
+    async fn a_mid_run_window_keeps_walking_until_it_reaches_its_question() {
+        let mut history = vec![question("q0")];
+        history.extend(run_rows("e0", 900));
+        assert_eq!(history.len(), 901);
+
+        let (result, seen) = scripted::<Value>(
+            RpcCommand {
+                before: Some(i64::MAX),
+                limit: Some(10),
+                ..Default::default()
+            },
+            vec![
+                page(None, history[751..=900].to_vec(), true, 751),
+                page(None, history[151..=750].to_vec(), true, 151),
+                page(None, history[0..=150].to_vec(), false, 0),
+            ],
+        )
+        .await;
+
+        let served = result.expect("page");
+        assert_eq!(
+            served.entries.first(),
+            Some(&history[0]),
+            "the page reaches and keeps the question it was walking to"
+        );
+        assert_eq!(
+            seen.len(),
+            3,
+            "two mid-run slices were not enough, and the walk said so instead of cutting"
+        );
+        assert!(!served.truncated, "the turn is served from its question");
+        assert_eq!(served.entries.len(), history.len());
+        assert_eq!(
+            served.next_offset, 0,
+            "the cursor reached the top of history"
+        );
+    }
+
+    /// The walk weighs each row once, however many slices it reads.
+    ///
+    /// The weight is the caller's, and the host's is a serialization of the row
+    /// (the lean lane strips bodies before measuring), so re-weighing the window
+    /// after every slice makes a page-up read quadratic in the rows it carries —
+    /// which is what a history-dense session's page-up was doing. Counting the
+    /// weigh calls is the property, not their cost: a page assembled from twenty
+    /// slices must ask about each of its rows once, not twenty times.
+    #[tokio::test]
+    async fn the_walk_weighs_each_row_once_however_many_slices_it_reads() {
+        const SLICES: usize = 20;
+        const ROWS: usize = 3;
+        let mut history = vec![json!({"id": "u0", "kind": "user", "role": "user"})];
+        for slice in 0..SLICES {
+            for row in 0..ROWS {
+                history.push(json!({
+                    "id": format!("e{slice}-a{row}"),
+                    "kind": "assistant",
+                    "role": "assistant",
+                }));
+            }
+        }
+        // Newest slice first, the question on the last one.
+        let mut pages = std::collections::VecDeque::from(
+            (0..SLICES)
+                .rev()
+                .map(|slice| {
+                    let start = 1 + slice * ROWS;
+                    // Every slice still has the question above it; only the
+                    // page that carries it ends the walk.
+                    page(
+                        None,
+                        history[start..start + ROWS].to_vec(),
+                        true,
+                        start as i64,
+                    )
+                })
+                .chain(std::iter::once(page(
+                    None,
+                    vec![history[0].clone()],
+                    false,
+                    0,
+                )))
+                .collect::<Vec<_>>(),
+        );
+
+        let weighed = std::cell::Cell::new(0usize);
+        let result = read_page_with(
+            RpcCommand {
+                before: Some(i64::MAX),
+                limit: Some(1),
+                ..Default::default()
+            },
+            ExchangeStart::Complete,
+            PageBudget::FIRST_PAINT,
+            |_: &Value| {
+                weighed.set(weighed.get() + 1);
+                1
+            },
+            |_| std::future::ready(Ok(pages.pop_front().expect("scripted page"))),
+        )
+        .await;
+
+        let served = result.expect("page");
+        assert_eq!(served.entries.len(), history.len());
+        // One pass over the rows to walk, one to cut: a constant, however many
+        // slices the page was assembled from. Re-weighing the window per slice
+        // (what this replaced) is 21 passes here and grows with the square of the
+        // slice count — the shape that made a history-dense page-up read slow.
+        assert!(
+            weighed.get() <= history.len() * 2,
+            "the walk weighs each row once: {} calls for {} rows over {SLICES} slices",
+            weighed.get(),
+            history.len()
+        );
+    }
+
+    /// A turn too heavy to reach within the budget is walked to anyway, and then
+    /// served whole.
+    ///
+    /// This is the other half of the blank report: the window exceeds the byte
+    /// budget before a question is in it, and the old cut kept the newest rows —
+    /// the reply with nothing above it. The walk spends one slice past the budget
+    /// on reaching the question, because a page is worthless without it.
+    ///
+    /// Once the question is here the page is one exchange, and an exchange is
+    /// indivisible: the question without its reply, or the reply without its
+    /// question, is not a page, and a hole between them is reachable by no
+    /// cursor. So it leaves whole — one turn bigger than a reply is the case the
+    /// reply lane's chunking carries (`a_page_larger_than_one_reply_arrives_
+    /// intact` in the host's tests).
+    #[tokio::test]
+    async fn a_turn_over_the_byte_budget_is_walked_to_its_question_and_served_whole() {
+        let mut history = vec![question("q0")];
+        history.extend(turn_rows(400, 4_000));
+        let whole: usize = history.iter().map(HistoryEntry::page_bytes).sum();
+        assert!(whole > FIRST_PAGE_BYTE_BUDGET, "{whole} bytes");
+
+        let (result, seen) = scripted::<Value>(
+            RpcCommand {
+                before: Some(i64::MAX),
+                limit: Some(10),
+                ..Default::default()
+            },
+            vec![
+                page(None, history[250..=400].to_vec(), true, 250),
+                page(None, history[0..=249].to_vec(), false, 0),
+            ],
+        )
+        .await;
+
+        let served = result.expect("page");
+        assert_eq!(
+            served.entries.first(),
+            Some(&history[0]),
+            "the page keeps the question it walked to"
+        );
+        assert_eq!(
+            served.entries.len(),
+            history.len(),
+            "and the whole turn with it: the question without its reply, or the \
+             reply without its question, is not a page"
+        );
+        assert_eq!(
+            served.entries.last(),
+            Some(&history[400]),
+            "the newest row is what a reader opened the conversation for"
+        );
+        assert!(
+            !served.truncated,
+            "nothing was left out, so nothing is claimed missing"
+        );
+        assert!(
+            whole > FIRST_PAGE_BYTE_BUDGET,
+            "and this is the case a page is allowed to be that large in: one turn"
+        );
+        assert_eq!(
+            seen.len(),
+            2,
+            "one slice past the budget, and no more: the question was in the second"
         );
     }
 
@@ -1232,43 +1901,154 @@ mod tests {
         assert!(served.has_more, "older history is still reachable");
     }
 
-    /// When the boundary's own exchange does not fit, the page falls back to a row
-    /// cut and says it starts mid-run.
+    /// When a turn is bigger than the *byte* budget, it is served whole — from
+    /// its question, not as the fragment that opened blank.
     ///
-    /// The boundary walk must not turn "the exchange above is too big" into an
-    /// oversized page: the only question in the window has more rows under it
-    /// than the budget allows, so the newest rows that fit are served and
-    /// `truncated` is what tells the reader the page starts mid-run.
+    /// This used to be the "starts mid-run" case, and it was wrong: the row cut
+    /// kept the newest rows that fit and threw the question away, so the page
+    /// held a reply with nothing above it. Measured on this machine's store
+    /// (2026-11-17, 332 first pages): seven conversations were served exactly
+    /// that page and opened blank, because `turnFromAcc` returns null for a page
+    /// whose first row is not a question.
+    ///
+    /// The page cannot be made both readable and small: one exchange is
+    /// indivisible, and this fixture is a single one. Keeping the question and
+    /// dropping the newest rows would hide the reply the reader opened the
+    /// conversation for; keeping a middle hole would put rows out of every
+    /// cursor's reach. So it leaves whole and the reply lane chunks it.
+    ///
+    /// Reverting to the row cut makes the first assertion below fail: the page
+    /// would begin with an assistant row.
     #[tokio::test]
-    async fn an_exchange_too_big_to_keep_still_says_the_page_starts_mid_run() {
-        let mut older = vec![json!({"id": "cut", "kind": "assistant", "role": "assistant"})];
-        older.push(question("u1"));
-        older.extend(turn_rows(400, 4_000));
-        let newest = run_rows("tail", 20);
+    async fn a_turn_too_big_for_the_byte_budget_is_served_whole_from_its_question() {
+        let mut rows = vec![question("u1")];
+        rows.extend(turn_rows(400, 4_000));
+        let whole: usize = rows.iter().map(HistoryEntry::page_bytes).sum();
+        assert!(
+            whole > FIRST_PAGE_BYTE_BUDGET,
+            "the fixture has to be the case this bound is for: {whole} bytes"
+        );
 
         let command = RpcCommand {
             before: Some(i64::MAX),
             ..Default::default()
         };
-        let (result, _) = scripted::<Value>(
-            command,
-            vec![
-                page(None, newest, true, 8_000),
-                page(None, older, true, 4_000),
-            ],
-        )
-        .await;
+        let (result, _) =
+            scripted::<Value>(command, vec![page(None, rows.clone(), true, 4_000)]).await;
 
-        let served = result.expect("a cut page is a page");
+        let served = result.expect("a page is a page");
+        assert_eq!(
+            served.entries[0], rows[0],
+            "the page keeps the question it landed on"
+        );
+        assert_eq!(
+            served.entries.len(),
+            rows.len(),
+            "and carries the turn it opened: {} of {} rows",
+            served.entries.len(),
+            rows.len()
+        );
+        assert_eq!(
+            served.entries.last().map(HistoryEntry::entry_id),
+            rows.last().map(HistoryEntry::entry_id),
+            "the newest row is still the newest row"
+        );
+        assert!(
+            !served.truncated,
+            "nothing is missing, so the page does not claim to start mid-run"
+        );
+        assert_eq!(
+            served.next_offset, 4_000,
+            "the cursor names the first row the page carries — the question"
+        );
+        assert!(
+            served.has_more,
+            "the rows above it are still reachable behind the cursor"
+        );
+    }
+
+    /// A turn longer than the row bound is served whole, from its question.
+    ///
+    /// This is the reported blank conversation (2026-11-17): a 400-row turn
+    /// whose bytes are a fraction of the budget, stopped by the 300-row render
+    /// bound alone. The bound is real, but a page that stays inside it can only
+    /// begin mid-run here — and then it projects to **no turns**, because
+    /// `turnFromAcc` builds a turn from its question. The question wins: the row
+    /// bound yields, the byte bound does not.
+    ///
+    /// Reverting the fix makes `entries[0]` an assistant row and `truncated`
+    /// true, which is the blank page.
+    #[tokio::test]
+    async fn a_turn_longer_than_the_row_bound_is_served_from_its_question() {
+        let mut rows = vec![question("u1")];
+        rows.extend(run_rows("e1", 399));
+        assert_eq!(rows.len(), 400);
+
+        let command = RpcCommand {
+            before: Some(i64::MAX),
+            ..Default::default()
+        };
+        let (result, _) =
+            scripted::<Value>(command, vec![page(None, rows.clone(), true, 1_000)]).await;
+
+        let served = result.expect("page");
+        assert_eq!(
+            served.entries.len(),
+            rows.len(),
+            "the turn is served whole rather than cut to the row bound"
+        );
+        assert_eq!(
+            served.entries[0], rows[0],
+            "and it begins at that turn's question, which is what the projection needs"
+        );
+        assert!(
+            !served.truncated,
+            "nothing was left out, so nothing is claimed to be missing"
+        );
+        assert_eq!(served.next_offset, 1_000);
         let bytes: usize = served.entries.iter().map(HistoryEntry::page_bytes).sum();
-        assert!(
-            bytes <= FIRST_PAGE_BYTE_BUDGET,
-            "the budget still holds: {bytes} bytes"
-        );
-        assert!(
-            served.truncated,
-            "the page starts mid-run and has to say so"
-        );
+        assert!(bytes <= FIRST_PAGE_BYTE_BUDGET, "{bytes} bytes");
+    }
+
+    /// Whatever the row budget, the page begins at a question when one exists,
+    /// and never costs more than the byte budget.
+    ///
+    /// The three budgets are the interesting ones: smaller than a single row, the
+    /// shipped first paint, and no bound at all. The rule they all obey is the
+    /// one the reader sees — the question is always in the page — and the one
+    /// that must survive it: the page still fits a reply.
+    #[tokio::test]
+    async fn a_first_page_begins_at_a_question_at_any_row_budget() {
+        let mut rows = vec![question("u1")];
+        rows.extend(run_rows("e1", 399));
+        for budget_rows in [1_usize, PageBudget::FIRST_PAINT.rows, 10_000] {
+            let command = RpcCommand {
+                before: Some(i64::MAX),
+                ..Default::default()
+            };
+            let (result, _) = scripted_with_budget(
+                command,
+                ExchangeStart::Complete,
+                PageBudget {
+                    bytes: FIRST_PAGE_BYTE_BUDGET,
+                    rows: budget_rows,
+                },
+                |entry: &Value| entry.page_bytes(),
+                vec![page(None, rows.clone(), true, 1_000)],
+            )
+            .await;
+
+            let served = result.expect("page");
+            assert_eq!(
+                served.entries[0], rows[0],
+                "rows={budget_rows}: the page begins at the question"
+            );
+            let bytes: usize = served.entries.iter().map(HistoryEntry::page_bytes).sum();
+            assert!(
+                bytes <= FIRST_PAGE_BYTE_BUDGET,
+                "rows={budget_rows}: the page still fits a reply: {bytes} bytes"
+            );
+        }
     }
 
     /// The boundary walk keeps the *widest* window that fits.
