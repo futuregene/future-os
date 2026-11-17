@@ -742,6 +742,17 @@ impl Supervisor {
                     previous.cmd_task.abort();
                 }
                 previous.cmd_task.clone().completed().await;
+                #[cfg(any(test, feature = "test-support"))]
+                if self
+                    .hooks
+                    .inject_retirement_failure
+                    .swap(0, Ordering::SeqCst)
+                    > 0
+                {
+                    return Err(crate::Error::RemoteTransport(
+                        "injected retirement receipt failure".into(),
+                    ));
+                }
                 // A flush only writes bytes. Receiving our own marker on the
                 // same connection proves the broker processed the preceding
                 // UNSUB before this replacement advertises Ready. Empty command
@@ -777,6 +788,26 @@ impl Supervisor {
             abort_generation(previous);
             retiring_tasks.installed();
             if !matches!(retired, Ok(Ok(()))) {
+                // Publication precedes the retirement fence. A failed handoff
+                // must not leave that candidate looking ready or without its
+                // generation supervisor. Never remove a newer replacement.
+                let failed = self
+                    .access
+                    .commit(epoch, || {
+                        let mut state = self.state.lock().unwrap();
+                        if state.get(&pair_id).is_some_and(|state| {
+                            state.generation_id == generation_id
+                                && state.bridge_instance_id == bridge_instance_id
+                        }) {
+                            state.remove(&pair_id)
+                        } else {
+                            None
+                        }
+                    })
+                    .flatten();
+                if let Some(failed) = failed {
+                    abort_generation(failed);
+                }
                 return Err(crate::Error::RemoteTransport(
                     "previous command generation retirement was not confirmed".into(),
                 ));
