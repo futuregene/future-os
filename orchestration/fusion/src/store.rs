@@ -875,6 +875,7 @@ mod tests {
         let output: Value = serde_json::from_str(&failed.tool_output().unwrap()).unwrap();
         assert_eq!(output["status"], "failed");
         assert_eq!(output["has_conclusion"], false);
+        assert!(output.get("continuation").is_none());
         assert!(output["conclusion"].is_null());
         assert!(output.get("report").is_none());
         assert!(output.get("coverage").is_some());
@@ -933,6 +934,19 @@ mod tests {
         assert_eq!(run.completeness, "full");
         let envelope: Value = serde_json::from_str(&run.tool_output().unwrap()).unwrap();
         assert_eq!(envelope["conclusion"], "A");
+        assert_eq!(envelope["continuation"]["mode"], "apply_conclusion");
+        assert_eq!(
+            envelope["continuation"]["guidance"],
+            crate::FOLLOW_THROUGH_POLICY
+        );
+        let mut completed = run.clone();
+        completed.status = "completed".into();
+        let delivered: Value = serde_json::from_str(&completed.tool_output().unwrap()).unwrap();
+        assert_eq!(delivered["continuation"], envelope["continuation"]);
+        let mut interrupted = run.clone();
+        interrupted.status = "interrupted".into();
+        let interrupted: Value = serde_json::from_str(&interrupted.tool_output().unwrap()).unwrap();
+        assert!(interrupted.get("continuation").is_none());
         for field in ["conditions", "next_steps", "report", "available_results"] {
             assert!(envelope.get(field).is_none());
         }

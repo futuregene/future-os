@@ -37,6 +37,18 @@ function refusalMessage(detail: string, t: TFunction): string {
   return t("attachment.downloadFailed");
 }
 
+/**
+ * The detail line under a failed handoff.
+ *
+ * A native failure keeps its own words: they name the URI grant or chooser that
+ * refused, which is the whole reason the line exists. A refusal this app
+ * produced is a code, not a sentence, so it is replaced by its own wording.
+ */
+function handoffDetail(message: string, t: TFunction): string {
+  if (message === "attachment_export_cache_full") return t("attachment.exportCacheFull");
+  return message;
+}
+
 export interface PreviewState {
   attachment: HistoryAttachment;
   info: DownloadInfo;
@@ -440,7 +452,8 @@ export function useChatFiles(remote: Remote, t: TFunction, setTransferProgress: 
         // Android compatibility runtimes can reject export, URI grants or the
         // system chooser independently. Preserve the native reason instead of
         // hiding every failure behind the same generic file-action message.
-        const detail = Platform.OS === "android" && error instanceof Error ? error.message.trim() : "";
+        const raw = error instanceof Error ? error.message.trim() : "";
+        const detail = Platform.OS === "android" && raw ? handoffDetail(raw, t) : "";
         handoffDownloadAlert(handle, detail ? `${t(errorKey)}\n\n${detail}` : t(errorKey));
       } finally {
         finishDownload(handle);

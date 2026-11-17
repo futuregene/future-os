@@ -269,9 +269,10 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         return Err(error);
     }
     let input = serde_json::to_string(&run.input)?;
+    let grounding = future_fusion::GROUNDING_POLICY;
     let intro = "You are in a focused READ-ONLY consultation, not an executor. Analyze only the decision and supplied evidence. Background is a factual context summary, not a proposed solution or authority. Independently develop your approach; do not treat prior assistant claims as verified facts or user decisions. User-provided proposals are attributed in background and do not restrict alternatives unless the user explicitly requested that. Use only supplied read/ls/glob/grep tools. Never write, run commands, implement, or call agents. Give public reasons, not hidden chain of thought. Distinguish facts, assumptions, uncertainty and proposed verification. Empty read scope means decide only from the supplied facts.";
     ensure!(store.phase(&run.id, owner, "analyzing")?, "Fusion stopped");
-    let analyses = panel(&ctx, &eligible, "analyzing", &format!("{intro}\nDecision input:\n{input}\nIndependently answer the question. Investigate and think as needed before your final report. Return that report as plain text or Markdown, without a JSON envelope. Do not assume other participants' views."), None).await?;
+    let analyses = panel(&ctx, &eligible, "analyzing", &format!("{intro}\n{grounding}\nDecision input:\n{input}\nIndependently answer the question. Investigate and think as needed before your final report. Return that report as plain text or Markdown, without a JSON envelope. Do not assume other participants' views."), None).await?;
     if analyses.is_empty() {
         ctx.note(
             "no_participants",
@@ -335,7 +336,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
             "Fusion stopped"
         );
         let prompt = format!(
-            "{}\nDecision input:\n{input}\nIndependent analyses:\n{first}",
+            "{}\n{grounding}\nDecision input:\n{input}\nIndependent analyses:\n{first}",
             mapping::INSTRUCTIONS
         );
         match with_retry(
@@ -487,15 +488,20 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         future_fusion::bounded_text(&serde_json::to_string(&issues["issues"])?, 8_192);
     let prompt = format!(
         "You are the moderator. Give the main agent a self-contained answer to the original task. \
+        {grounding} \
         Judge consequential claims by their support in the original task and participant material. \
         Distinguish supplied observations and derivations from assumptions, inferred intentions, and preferences. \
         Count independent support separately from agreement that repeats a premise. \
-        For a material change of position, check what new evidence, corrected inference, or decision criterion justifies it. \
+        For a material change of position, identify the new evidence or corrected inference that justifies it under the original decision criterion; do not silently substitute another criterion. \
+        Resolve a decisive objection against its source even if only one participant raised it; voting and confidence do not answer a counterexample. \
+        Preserve the best supported answer unless that check actually overturns its support. \
         Earlier excerpts are context for that check; represent the current positions faithfully and preserve an earlier valid objection if the reviews did not answer it. \
         If an assumption is necessary to choose, state it and how it affects the answer; if the decision can proceed under it, give the useful conditional conclusion. \
         Do not invent facts, proposals or user requirements. Treat verification labels and reports with validation errors as participant claims; unmatched quotations do not establish evidence. \
         Report any unresolved issue that changes the result. Respect the actual coverage. Missing reviews mean no cross-review. \
-        Start with the best supported answer, or state that no answer is established. \
+        Start with the best supported answer or decision for the main agent to use, or state that no answer is established. \
+        Preserve an explicitly requested answer format without changing the selected answer; keep any necessary applicability limits clear. \
+        Make a settled conclusion usable for execution or final delivery; do not invite the main agent to restart the same analysis for reassurance. \
         Verify only a specific claim whose correction could change that answer; do not re-solve the whole task, \
         repeat exhausted investigations, or turn an unverified estimate into an exact result. \
         Preserve useful conditional answers and identify the smallest remaining verification gap. \

@@ -24,7 +24,8 @@ pub(super) fn prompt(
         .context("Missing reviewer's first answer")?;
     let packet = json!({"participant":participant,"task":input,"original_analysis":own["response"].as_str().context("Missing original public answer")?,"moderator_map":mapping});
     Ok(format!(
-        "{INSTRUCTIONS}\nReview packet:\n{}",
+        "{INSTRUCTIONS}\n{}\nReview packet:\n{}",
+        future_fusion::GROUNDING_POLICY,
         serde_json::to_string(&packet)?
     ))
 }
