@@ -336,6 +336,13 @@ export interface SessionHistoryPage {
   entries: Record<string, unknown>[];
   hasMore: boolean;
   nextOffset: number;
+  /**
+   * The page does not start where its oldest turn starts: the turn is too large
+   * to send whole, so the page opens mid-turn. The projection drops such a
+   * fragment (no user row, no turn), which is why the reader is told rather than
+   * left to notice a missing question.
+   */
+  truncated?: boolean;
 }
 
 /**

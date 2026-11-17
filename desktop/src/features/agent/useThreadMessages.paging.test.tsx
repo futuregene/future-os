@@ -398,6 +398,38 @@ describe("on-demand history", () => {
   });
 });
 
+describe("a page that opens mid-turn", () => {
+  // A turn too large to send whole comes back as its tail: the page carries a
+  // reply with no question in front of it, the projection has no turn to build
+  // from it, and the reader sees an answer to nothing. The flag is what keeps
+  // that from reading as the whole conversation.
+  const answerPage = (ids: string[], nextOffset: number, truncated: boolean) => ({
+    entries: ids.map(id => ({
+      id,
+      kind: "assistant",
+      role: "assistant",
+      createdAtMs: Date.parse("2026-01-01T00:00:00Z"),
+      blocks: [{ kind: "text", text: id }],
+    })),
+    nextOffset,
+    hasMore: nextOffset > 0,
+    truncated,
+  });
+
+  it("carries the flag to the reader, then drops it once a page starts at its question", async () => {
+    page.mockResolvedValueOnce(answerPage(["a1", "a2"], 40, true));
+    const root = createRoot(document.createElement("div"));
+    await act(async () => root.render(<Harness />));
+    expect(current.historyTruncated).toBe(true);
+
+    page.mockResolvedValueOnce({ ...history(["u1"], 0, false), truncated: false });
+    await act(async () => current.loadOlderHistory());
+    expect(current.historyTruncated).toBe(false);
+    expect(current.messages.map(message => message.content)).toEqual(["u1"]);
+    await act(async () => root.unmount());
+  });
+});
+
 it("a repeated mobile prompt stays after the previous reply", async () => {
   page.mockResolvedValueOnce(history(["same prompt"], 0, false));
   const root = createRoot(document.createElement("div"));
