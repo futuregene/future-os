@@ -44,9 +44,9 @@ import { RemoteUsageDialog } from "../../features/remote-peer/RemoteUsageDialog"
 import { RemoteWorkspaceCreateDialog } from "../../features/remote-peer/RemoteWorkspaceCreateDialog";
 import { RemoteWorkspaceRenameDialog } from "../../features/remote-peer/RemoteWorkspaceRenameDialog";
 import { useRemoteApprovals } from "../../features/remote-peer/useRemoteApprovals";
+import { useRemoteChoiceCards } from "../../features/remote-peer/useRemoteChoiceCards";
 import { useRemoteConversationSettings } from "../../features/remote-peer/useRemoteConversationSettings";
 import { useRemoteSkillCatalog } from "../../features/remote-peer/useRemoteSkillCatalog";
-import { useRemoteChoiceCards } from "../../features/remote-peer/useRemoteChoiceCards";
 import { useRemoteSkillRecommend } from "../../features/remote-peer/useRemoteSkillRecommend";
 import { useRemoteTimeline } from "../../features/remote-peer/useRemoteTimeline";
 import { useRemoteWorkspaceRows } from "../../features/remote-peer/useRemoteWorkspaces";
