@@ -491,6 +491,17 @@ mod tests {
         assert_eq!(data["archiveRunLogNoticeSeen"], json!(true));
         assert_eq!(data["autoArchiveEnabled"], json!(true));
         assert_eq!(data["autoArchiveIdleDays"], json!(45));
+
+        // The desktop must see a phone's change without the reader touching it.
+        // That works because this handler writes through `update_app_settings`,
+        // which publishes `app_settings_changed`, and the desktop's settings
+        // hook relistens to it. Reading the store back proves the write landed
+        // where the desktop reads; the event itself is `app_settings`' contract.
+        let stored = crate::store::get_app_settings().expect("settings read");
+        assert!(!stored.archive_run_log_cleanup);
+        assert!(stored.archive_run_log_notice_seen);
+        assert!(stored.auto_archive_enabled);
+        assert_eq!(stored.auto_archive_idle_days, 45);
     }
 
     /// A store that cannot be read is reported as a failure with the store's
