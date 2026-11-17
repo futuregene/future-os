@@ -161,6 +161,7 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 - 卡头 12px 半粗标题 + 右侧 11px 模式标注（`单选` / `多选`）；
 - 副标题 11px，说明"选一个就放进输入框；也可以直接在输入框里写别的"——这句话替代了卡内的"自己写…"行（§5.6 说明为什么删掉）；
 - 每个选项一行：16px 单选圈 + 13px 文案 + 12px 一行说明（`ink-muted`）；未选行无边框、无底色，靠留白分列；
+- **多选卡的标记是方框**（16px，圆角 3px，选中后同色对勾），单选卡才是圆圈：两种卡的差别不只在右上角那行小字，形状本身就是判据，扫一眼就知道能不能多选。手机端同一规则（18px 方框，圆角 4px）；
 - 卡片外框 `1px line` / `radius 10px` / `surface` 底 / 极轻投影，与审批卡同一套材质，但**位置不同**：审批卡浮在输入框上方，选项卡长在正文里。
 
 ### 5.2 桌面端 · 已选
@@ -450,7 +451,7 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
 - 图标：卡头 `list-checks`（一批待办里挑一件），铅笔、叉沿用现有 `lucide` 图标集；
 - 语义：卡片是 `role="group"` + `aria-labelledby` 指向标题；选项行是 `role="radio"`（单选）/ `role="checkbox"`（多选），带 `aria-checked`；输入框里的 chip 是 `role="group"`，两个按钮各有 `aria-label`（上表）；**队列行里的 chip 反过来——整个 chip 是一个 `role="button"`**，`aria-label` 用 `choice.queue.change`，因为它只表示一件事（换选择），而行的铅笔、垃圾桶各自独立。
 - 键盘：Tab 进卡 → 方向键在选项间移动 → Enter/Space 选中 → 焦点进输入框。`Esc` 关浮层；
-- 选中状态不只靠颜色：实心圆对勾 + 描边 + 底色三重区分（灰度或色弱下仍可辨）。
+- 选中状态不只靠颜色：对勾 + 描边 + 底色三重区分（灰度或色弱下仍可辨）；单选的圆与多选的方框让模式也不只靠颜色。
 
 ## 10. 明确不做的部分
 
