@@ -23,7 +23,7 @@ import { PeerIconGlyph } from "./PeerIconGlyph";
 import { peerBadgeText } from "./peerIcons";
 import { peerHolderName } from "./peerStatus";
 import { RemoteAttachmentProvider } from "./RemoteAttachmentOrigin";
-import { foldLiveReply, stripRunCopies } from "./remoteLiveReplies";
+import { foldLiveReply, markInFlightReply, stripRunCopies } from "./remoteLiveReplies";
 import { setRemotePeerVisibleSession } from "./remotePeerClient";
 import { fetchRemoteReasoning } from "./remoteReasoning";
 import { withRemoteRunNotices } from "./remoteRunNotices";
@@ -86,6 +86,7 @@ export function RemoteConversationView({
   composer,
   error,
   hasMore,
+  inFlightRunId,
   leftPanelExpanded,
   liveReplies,
   loading,
@@ -186,6 +187,14 @@ export function RemoteConversationView({
   /** The entry ids the host will accept as a stored record (see the timeline). */
   persistedEntryIds: ReadonlySet<string>;
   streaming: boolean;
+  /**
+   * The run the host says it is executing, if any (see `markInFlightReply`).
+   *
+   * The record cannot express this: its projection of an exchange is `complete`
+   * or `failed`, so a page read mid-run hands the view a half-written reply that
+   * looks finished. Naming the run is what lets the row be drawn as what it is.
+   */
+  inFlightRunId?: string | null;
   title: string;
   /**
    * The workspace this conversation works in, named as the rail names it.
@@ -285,8 +294,8 @@ export function RemoteConversationView({
    * text arrives or a run is rebuilt from its log.
    */
   const rendered = useMemo(
-    () => renderedTranscript(transcript, liveReplies),
-    [transcript, liveReplies],
+    () => markInFlightReply(renderedTranscript(transcript, liveReplies), inFlightRunId ?? null),
+    [transcript, liveReplies, inFlightRunId],
   );
 
   /**
