@@ -2447,9 +2447,15 @@ mod bridge_tests {
 
         // Deliberately every writable field: `assert_eq!(updated["data"], patch)`
         // then fails if the reply drops one, which is the bug class this guards.
+        // The archive-maintenance four joined the writable set with the phone's
+        // archive settings page, and are listed here for the same reason as the
+        // rest: a field left out of this patch is a field the comparison above
+        // can no longer notice the reply dropping.
         let patch = json!({ "autoTitleFirstTurn": false, "autoUpgradeSkills": false,
             "autoConnectRemote": true, "skillRecommend": false,
-            "hiddenModels": ["p1/shared"] });
+            "hiddenModels": ["p1/shared"],
+            "archiveRunLogCleanup": false, "archiveRunLogNoticeSeen": true,
+            "autoArchiveEnabled": true, "autoArchiveIdleDays": 45 });
         let updated = bridge
             .call(json!({ "type": "update_desktop_settings", "settings": patch }))
             .await;
@@ -2461,6 +2467,10 @@ mod bridge_tests {
         assert!(stored.auto_connect_remote);
         assert!(!stored.skill_recommend);
         assert_eq!(stored.hidden_models, ["p1/shared"]);
+        assert!(!stored.archive_run_log_cleanup);
+        assert!(stored.archive_run_log_notice_seen);
+        assert!(stored.auto_archive_enabled);
+        assert_eq!(stored.auto_archive_idle_days, 45);
 
         for invalid in [
             json!({"communityEdition": true}),
