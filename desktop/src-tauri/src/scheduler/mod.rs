@@ -27,6 +27,7 @@ use tauri::Emitter;
 pub fn start<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     crate::runtime::set(tauri::async_runtime::handle().inner().clone());
     future_host::scheduler::start_auto_archive();
+    future_host::scheduler::start_store_watch();
     let endpoint = crate::commands::manifest_url(crate::build_info::channel());
     spawn_fixed_interval(
         &APP_UPDATE_JOB,
