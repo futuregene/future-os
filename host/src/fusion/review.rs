@@ -211,13 +211,17 @@ pub(super) fn validate(
         if addition.content.trim().is_empty() {
             errors.push(format!("additions[{index}].content is empty"));
         }
-        if addition.kind == AdditionKind::VerifiedFact {
-            if addition.evidence.is_empty() {
-                errors.push(format!(
-                    "additions[{index}] labels a verified_fact without source references"
-                ));
-            }
-            for (reference_index, reference) in addition.evidence.iter().enumerate() {
+        if addition.kind == AdditionKind::VerifiedFact && addition.evidence.is_empty() {
+            errors.push(format!(
+                "additions[{index}] labels a verified_fact without source references"
+            ));
+        }
+        for (reference_index, reference) in addition.evidence.iter().enumerate() {
+            // A structured reference claims a concrete location even when the
+            // surrounding proposal or interpretation remains unverified.
+            if addition.kind == AdditionKind::VerifiedFact
+                || matches!(reference, super::evidence::Reference::Citation(_))
+            {
                 if let Err(error) = evidence.validate(reference) {
                     errors.push(format!(
                         "additions[{index}].evidence[{reference_index}]: {error}"
@@ -307,6 +311,8 @@ mod tests {
             "quote":"Choose storage"}]);
         validate(&review.to_string(), &prompt, "P1", None).unwrap();
         review["additions"][0]["evidence"][0]["quote"] = json!("PRIVATE_OTHER_DETAILS");
+        assert!(validate(&review.to_string(), &prompt, "P1", None).is_err());
+        review["additions"][0]["kind"] = json!("proposal");
         assert!(validate(&review.to_string(), &prompt, "P1", None).is_err());
         // Unverified attributed claims retain legacy references, without gaining
         // the source-checked status merely because the string is nonempty.

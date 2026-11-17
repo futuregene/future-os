@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-pub(super) const POLICY: &str = "Source manifest is backend-generated availability metadata, not an additional user requirement. request identifies the preserved request (or the consultation question when unavailable); evidence:N identifies a zero-based supplied evidence item. Background, prior assistant statements and participant reports are attributed context, not source-verified observations. File metadata means captured, not read; use the authorized snapshot tools before citing file contents. not_supplied and excluded content do not mean an empty dataset or a query with no matches. Do not apply a business empty-result default to unavailable input. If the task depends on missing material, identify that gap and preserve useful conditional results. Tasks that do not need external evidence may proceed normally. Source validation checks location, version and quotation only: it does not establish truth, independence, exhaustive coverage or entailment. A verified_fact remains a participant's source-checked claim; evaluate its support and counterexamples before adopting it.";
+pub(super) const POLICY: &str = "Source manifest is backend-generated availability metadata, not an additional user requirement. request identifies the preserved request (or the consultation question when unavailable); evidence:N identifies a zero-based supplied evidence item. The supplied_evidence status describes only the optional evidence array; data may already be present in request. Background, prior assistant statements and participant reports are attributed context, not source-verified observations. File metadata means captured, not read; use the authorized snapshot tools before citing file contents. not_supplied and excluded content do not mean an empty dataset or a query with no matches. Do not apply a business empty-result default to unavailable input. If the task depends on missing material, identify that gap and preserve useful conditional results. Tasks that do not need external evidence may proceed normally. Source validation checks location, version and quotation only: it does not establish truth, independence, exhaustive coverage or entailment. A verified_fact remains a participant's source-checked claim; evaluate its support and counterexamples before adopting it.";
 
 pub(super) fn digest(text: &str) -> String {
     format!("{:x}", Sha256::digest(text.as_bytes()))
@@ -204,6 +204,8 @@ mod tests {
         input.evidence = vec![" ".into()];
         let manifest = Sources::new(&input, None).manifest();
         assert_eq!(manifest["supplied_evidence"], "not_supplied");
+        assert_eq!(manifest["inline_sources"][0]["source_id"], "request");
+        assert_eq!(manifest["inline_sources"][0]["availability"], "provided");
         assert_eq!(manifest["file_scope"], "not_requested");
         assert_eq!(manifest["snapshot"]["availability"], "not_loaded");
         // Missing external evidence is not a blanket rejection of a valid task.
