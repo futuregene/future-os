@@ -133,11 +133,45 @@ pub(crate) enum ParentStage {
     Delivery,
     Recovery,
 }
+/// Routing is bounded; delivery/recovery are live while substantive content arrives.
+pub(crate) struct ParentProgress {
+    stage: ParentStage,
+    last_content: tokio::time::Instant,
+}
+impl ParentProgress {
+    pub(crate) fn new(stage: ParentStage) -> Self {
+        Self {
+            stage,
+            last_content: tokio::time::Instant::now(),
+        }
+    }
+    pub(crate) fn deadline(&self) -> tokio::time::Instant {
+        self.last_content + std::time::Duration::from_secs(self.stage.timeout_secs())
+    }
+    pub(crate) fn observe(&mut self, event: &crate::llm::schema::ModelStreamEvent) {
+        use crate::llm::schema::ModelStreamEvent;
+        if self.stage != ParentStage::Routing
+            && matches!(event,
+            ModelStreamEvent::ReasoningDelta { text, .. } | ModelStreamEvent::TextDelta { text, .. } if !text.trim().is_empty())
+        {
+            self.last_content = tokio::time::Instant::now();
+        }
+    }
+}
+
 impl ParentStage {
     pub(crate) fn timeout_secs(self) -> u64 {
         match self {
             Self::Routing => 180,
             Self::Delivery | Self::Recovery => 300,
+        }
+    }
+    pub(crate) fn timeout_description(self) -> &'static str {
+        match self {
+            Self::Routing => "routing stage deadline expired",
+            Self::Delivery | Self::Recovery => {
+                "no new reasoning or text within the stage idle interval"
+            }
         }
     }
     pub(crate) fn controls(self) -> crate::llm::schema::RequestControls {
@@ -907,5 +941,51 @@ mod input_contract_tests {
         value["status"] = json!("completed");
         value["final_answer"] = json!(" ");
         assert!(completed_answer(&[message(&value, false)]).is_none());
+    }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+    use crate::llm::schema::ModelStreamEvent;
+    use std::time::Duration;
+
+    #[tokio::test(start_paused = true)]
+    async fn recovery_and_delivery_stay_live_during_reasoning_then_expire_after_silence() {
+        for stage in [ParentStage::Recovery, ParentStage::Delivery] {
+            let mut progress = ParentProgress::new(stage);
+            for _ in 0..10 {
+                tokio::time::advance(Duration::from_secs(120)).await;
+                assert!(tokio::time::Instant::now() < progress.deadline());
+                progress.observe(&ModelStreamEvent::ReasoningDelta {
+                    id: "r".into(),
+                    text: "Checking the preserved result".into(),
+                });
+            }
+            tokio::time::advance(Duration::from_secs(299)).await;
+            assert!(tokio::time::Instant::now() < progress.deadline());
+            progress.observe(&ModelStreamEvent::ReasoningDelta {
+                id: "r".into(),
+                text: " \n".into(),
+            });
+            progress.observe(&ModelStreamEvent::TextStart { id: "t".into() });
+            tokio::time::advance(Duration::from_secs(2)).await;
+            assert!(tokio::time::Instant::now() >= progress.deadline());
+        }
+    }
+    #[tokio::test(start_paused = true)]
+    async fn routing_remains_bounded_and_visible_output_also_refreshes_the_idle_guard() {
+        let mut routing = ParentProgress::new(ParentStage::Routing);
+        let mut recovery = ParentProgress::new(ParentStage::Recovery);
+        tokio::time::advance(Duration::from_secs(170)).await;
+        let event = ModelStreamEvent::TextDelta {
+            id: "t".into(),
+            text: "Continued answer".into(),
+        };
+        routing.observe(&event);
+        recovery.observe(&event);
+        tokio::time::advance(Duration::from_secs(131)).await;
+        assert!(tokio::time::Instant::now() >= routing.deadline());
+        assert!(tokio::time::Instant::now() < recovery.deadline());
     }
 }
