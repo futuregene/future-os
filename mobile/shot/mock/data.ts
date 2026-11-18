@@ -1012,13 +1012,34 @@ export const demoTaskDetails = demoTasks.map(task => ({
  * a message whose text and files travel together.
  */
 export function demoQueueRows(count: number, withFiles = false) {
+  // `?queueChoice=1` (design §5.8): the first waiting row is one that answered a
+  // card, so the phone's panel draws the choice chip in it. Its text is the
+  // sentence the answer sends (§7) and `choice` is what the chip re-offers.
+  const withChoice = typeof window !== "undefined"
+    && new URLSearchParams(window.location.search).get("queueChoice") === "1";
   return Array.from({ length: count }, (_, index) => ({
     runId: `run_queued_${index + 1}`,
     position: index + 1,
     acceptedAt: new Date(now - (count - index) * 20 * minute).toISOString(),
-    text: "[future-goal] goal goal_4ce46c920eb8: 1 event(s). Reconcile current status before acting; events may be stale. Read the goal's own state before answering.",
+    text: withChoice && index === 0
+      ? "[接下来做哪一件？ → 重画森林图]"
+      : "[future-goal] goal goal_4ce46c920eb8: 1 event(s). Reconcile current status before acting; events may be stale. Read the goal's own state before answering.",
     // `queued` runs at the next turn boundary; a `stale…` state parks the row.
     state: "queued",
+    ...(withChoice && index === 0
+      ? {
+          choice: {
+            mode: "single" as const,
+            title: "接下来做哪一件？",
+            options: [
+              { id: "forest", label: "重画森林图" },
+              { id: "flow", label: "补一张实验流程图" },
+              { id: "table", label: "表里加一列样本量" },
+            ],
+            selectedIds: ["forest"],
+          },
+        }
+      : {}),
     ...(withFiles && index === 0
       ? {
           // The reported shape of an attachment-only send: no words, one photo.
