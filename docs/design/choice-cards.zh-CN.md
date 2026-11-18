@@ -138,12 +138,15 @@ There is no third mode.
 
 Write each option as the instruction you would follow if chosen — the user's words,
 not a menu label ("重画森林图", not "选项 A"). The third field says what changes or
-what it costs, one line, no marketing.
+what it costs, one line, no marketing. Put the option you recommend **first**, in
+both modes: row order is the recommendation, and nothing downstream re-sorts it.
 
 The block goes last, alone. Never two cards in one reply, never one mid-reply.
 ```
 
 要点：**选项文案必须是用户会说的那句话**（因为发送时它就是消息的一部分），不是"选项 A/B/C"。
+
+**行的顺序就是推荐顺序，所以最好的选项放第一**（2026-11-18）。解析器、桌面卡片和手机都按围栏里的书写顺序画 `options`，之后没有任何一步会重排，所以第一行就是读者眼里的「模型推荐的那个」；`multi` 也一样，它是其余行所依附的那一件。把最好的选项放在最后的卡，等于让读者重新替模型排一次序，和回到散文列表是同一种浪费。这条规则住在 `choice.md` 里（由 `prompt_teaches_the_choice_card_fence` 钉住），不放在渲染层：客户端重排行会和回复自己的措辞对不上（"先做这个"指的是被挪走的那一行）。
 
 **2026-11-15 / 11-16 三次修订了 §4 的措辞**：原稿把 `multi` 写成兜底选项（"omit `mode: multi` unless several can be done in one go"）并塞进"什么时候才配用这张卡"的条件列表里。结果是模型写出来的卡一律单选，连"接新浪和 Nasdaq 两个源"这种明显是一件事的两半，也得用户自己打字回答——正是卡片要消灭的那种浪费。第一次改成一道**能回答是/否**的检验，但问的是**读者**会怎么做（"if the reader ticked two rows…"），模型把它当假设题答，仍然是每次省 `mode:`。现在的版本：判据落在**行**上（一件交付物的两半 vs 下一步只有一步），prompt 里多了一张**多选示例卡**（此前 few-shot 只有单选），并直接点名它一直在犯的那个错——"Do not default to `single` to be safe"。
 
