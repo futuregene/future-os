@@ -1246,6 +1246,12 @@ mod tests {
         assert!(prompt.contains("fewer than 2 or more than 4 is not drawn as a card"));
         // An id the parser rejects (`CHOICE_OPTION_ID`) takes its row with it.
         assert!(prompt.contains("[a-z0-9-]` only (no spaces)"));
+        // Row order is a recommendation the reader acts on, in both modes. The
+        // renderer draws rows in file order and nothing re-sorts them, so the
+        // first row is the one the reader takes as the pick — a card whose best
+        // option sits last asks them to re-rank it themselves.
+        assert!(prompt.contains("The option you recommend comes"));
+        assert!(prompt.contains("first**, single or multi"));
         // `mode` is optional and defaults to a single pick, and the one thing the
         // model has to get right is when several can be done at once. Three
         // wordings have been tried: "unless several can be done in one go" (read
@@ -1290,8 +1296,10 @@ mod tests {
         assert!(prompt.contains("show it as a code block"));
 
         // Read on every turn, so it stays short: the budget is lines of prompt,
-        // not lines of documentation.
-        assert!(include_str!("choice.md").lines().count() <= 40);
+        // not lines of documentation. Raised from 40 to 42 when the row-order
+        // rule joined — it changes what the model writes on every card, unlike
+        // the rest of §4's prose.
+        assert!(include_str!("choice.md").lines().count() <= 42);
     }
 
     /// The switch's second half: with cards off the section is not in the

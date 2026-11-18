@@ -181,13 +181,38 @@ where
     }
 }
 
+/// How long [`cancel_test_tasks`] waits for process-lifetime work that cannot be
+/// cancelled.
+///
+/// Tokio cannot stop a blocking closure that has already started, which is why
+/// [`run_blocking`] keeps its completion registered after the waiter is dropped.
+/// So this is a budget for the *work*, not a spin timeout: it has to outlast the
+/// longest blocking job the Host starts on purpose, or work that is merely slow
+/// fails a fixture boundary on a loaded machine.
+///
+/// Twice `shadow_review::process::COMMAND_TIMEOUT` (30 s), the longest such job
+/// — a shadow-review Git command or its lock wait. The old 5 s sat below it.
+///
+/// Measured 2026-11-18 on `Rust Windows test / host-core` (PR #1642): the
+/// deferred review materialization behind a headless test — two store reads that
+/// take 40-70 ms on a developer machine and 0.69 s in that same run's *passing*
+/// `run_prepared_prompt_completes_a_clean_run` — outlived the 5 s budget while
+/// the runner was busy, and failed two tests with this barrier's panic. Store
+/// work is genuinely variable there (the same lane's `initialize_app_store`
+/// took 20-24 s). The barrier keeps its meaning: a task that really hangs still
+/// fails the `expect` in [`cancel_test_tasks`] and still names where it was
+/// registered. It is the rule the CI lane already follows — nextest adds no
+/// per-test deadline, so a loaded runner cannot fail a slow-but-passing test.
+#[cfg(any(test, feature = "test-support"))]
+const TEST_TASKS_STOP_BUDGET: std::time::Duration =
+    crate::shadow_review::process::COMMAND_TIMEOUT.saturating_mul(2);
+
 /// Stop every process-lifetime test task and wait until its future has been
 /// dropped. Call this before changing HOME: otherwise a task created by an
 /// earlier test can resolve the newly published HOME and lock its database.
 #[cfg(any(test, feature = "test-support"))]
 pub fn cancel_test_tasks() {
-    cancel_all_tasks(std::time::Duration::from_secs(5))
-        .expect("test tasks must stop before changing HOME");
+    cancel_all_tasks(TEST_TASKS_STOP_BUDGET).expect("test tasks must stop before changing HOME");
     *TASKS.lock().unwrap_or_else(|p| p.into_inner()) = Registry::default();
 }
 
@@ -430,6 +455,40 @@ mod tests {
             .expect_err("shutdown refuses new blocking jobs");
         assert!(error.to_string().contains("admission is closed"));
         assert!(running.try_recv().is_err(), "refused job must never run");
+    }
+
+    /// The fixture barrier waits out real blocking work, so its budget has to
+    /// cover what the Host itself allows that work to take. A budget below
+    /// `shadow_review`'s command deadline fails work that is merely slow on a
+    /// loaded runner — measured on `Rust Windows test / host-core` (PR #1642),
+    /// where a deferred review materialization outlived the old flat 5 s.
+    #[test]
+    fn the_fixture_stop_budget_outlasts_the_longest_blocking_deadline() {
+        assert!(
+            super::TEST_TASKS_STOP_BUDGET > crate::shadow_review::process::COMMAND_TIMEOUT,
+            "cleanup below the Host's own blocking deadline fails healthy work"
+        );
+    }
+
+    /// The budget is a ceiling on a hang, not a spin timeout: blocking work that
+    /// finishes inside it — here a review materialization running after its
+    /// waiter was dropped — must pass the barrier the fixture actually uses.
+    #[test]
+    fn the_fixture_barrier_waits_for_blocking_work_that_still_finishes() {
+        let _registry = RegistryGuard::new();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _context = runtime.enter();
+        let (done, finished) = std::sync::mpsc::channel();
+        drop(super::run_blocking(move || {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            done.send(()).unwrap();
+        }));
+        // Panics (through the `expect` in `cancel_test_tasks`) when the barrier
+        // cannot outlast the job it is waiting for.
+        super::cancel_test_tasks();
+        finished
+            .try_recv()
+            .expect("the barrier returns only after the blocking job finishes");
     }
 
     #[test]

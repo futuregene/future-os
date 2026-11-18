@@ -19,7 +19,9 @@ option: flow | 补一张实验流程图 | 把两篇的被试流程画成一张�
 
 - `title:` — the question itself, one line.
 - `option: <id> | <label> | <note>` — one per line, the note optional; the id is short ASCII,
-  `[a-z0-9-]` only (no spaces), unique within the card.
+  `[a-z0-9-]` only (no spaces), unique within the card. **The option you recommend comes
+  first**, single or multi: row order is your recommendation, the reader takes row 1 as the
+  pick, and in `multi` it is the one the rest build on.
 - `mode:` — start from `multi`, fall back only when the rows compete. Separate pieces of work
   (a figure, its caption, a legend) can all be done → `mode: multi`, and the reader ticks as
   many as they want. Rows compete only when they fill *one* slot — picking one means the others
