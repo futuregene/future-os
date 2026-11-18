@@ -221,6 +221,12 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 - **多选卡的标记是方框**（16px，圆角 3px，选中后同色对勾），单选卡才是圆圈：两种卡的差别不只在右上角那行小字，形状本身就是判据，扫一眼就知道能不能多选。手机端同一规则（18px 方框，圆角 4px）；
 - 卡片外框 `1px line` / `radius 10px` / `surface` 底 / 极轻投影，与审批卡同一套材质，但**位置不同**：审批卡浮在输入框上方，选项卡长在正文里。
 
+**展开后**（同一张卡、同一段情境，只是按下了那个按钮）：
+
+![桌面端：情境展开——按钮变成「收起」，全文都在](assets/choice-cards/desktop-10-expanded.png)
+
+*真实组件截图*，场景 `choice-context-expanded-desktop`（1440×900 @2×，取自 `0d4bf428b`）：fixture 的 `?longContext=1` 把情境写到估算**超过六行**（折叠阈值：四行可见、六行起折），再按下「展开」。实测折叠时情境段高 `72px`（4×18）、展开后 `126px`，卡片 `310→364px` 且与输入框仍隔着一整段空白；按钮的 `aria-expanded` 由 `false` 变 `true`、文案变「收起」，`aria-controls` 仍指向同一个节点——所以屏幕阅读器读到的段落自始至终是完整的一段，变的只是它被画了几行。
+
 ### 5.1.1 早先的提问：只读卡把它写过的东西全留着
 
 ![桌面端：一条回复里两张卡，上面那张是早先的提问——只读、情境已折叠](assets/choice-cards/desktop-9-history-fold.png)
@@ -237,6 +243,8 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 ### 5.2 桌面端 · 已选
 
 ![桌面端：选中一项，答案成为输入框里的 pill](assets/choice-cards/desktop-2-chosen.png)
+
+*真实组件截图*，场景 `choice-pill-implemented`（1440×900 @2×，取自 `0d4bf428b`）：选中行与输入框里的 pill 是同一次点击的两个结果，不是两张各自摆拍的图。折叠阈值与 §5.1 同一组数字（四行可见、六行起折）——这张卡的情境估算在四行以内，所以卡上没有「展开」。
 
 - 选中行：`accent-soft` 底 + 文案转 500 权重（不再加描边——填充与描边两重强调是 v1 的问题，§5.7 同理）；
 - 卡底多一条 8px 的分隔脚注（`line-soft` 上边框 + `surface-subtle` 底）。**v2 把这句话改短了**：v1 写"已放进输入框"并配一个框外的 chip，而答案其实不在框里；现在答案真的在编辑器里，这句话不再需要替位置打补丁；
@@ -282,6 +290,8 @@ pill 实测 `bg rgb(232,240,255)`（`accent-soft`）、`color rgb(37,99,235)`（
 
 ![桌面端：pill 后面接着打字](assets/choice-cards/desktop-6-chosen-text.png)
 
+*真实组件截图*，场景 `choice-card-chosen-text-implemented`（1440×900 @2×，取自 `0d4bf428b`）：pill 后面那句是读者自己敲的字，两者在同一个 `contenteditable` 流里、顺序就是看到的顺序。
+
 需求 (c) 的样张。pill 与文字在同一个编辑器流里，顺序就是读者看到的顺序；发送时 `serialize()` 按这个顺序输出（pill → `[问题 → 答案]`，以及读者写的文字）。所以用户气泡里显示的就是真正发出去的内容——不靠额外渲染去"补"一个不同步的显示。pill 落在光标处（§5.2.1），所以答案在句首、句中还是句尾，取决于读者点选项时把光标放在哪里（§7 有一行句中例子）；不论位置，气泡都把它画成标签而不是方括号字样（§5.2.3）：还是同一句话，只是不再混在用户自己写的文字里。
 
 ### 5.2.3 发送后的用户气泡
@@ -300,6 +310,8 @@ pill 实测 `bg rgb(232,240,255)`（`accent-soft`）、`color rgb(37,99,235)`（
 
 ![桌面端：铅笔在 pill 上方展开同一张卡](assets/choice-cards/desktop-3-change.png)
 
+*真实组件截图*，场景 `choice-card-change-implemented`（1440×900 @2×，取自 `0d4bf428b`）：浮层确实开着（断言查的是 `[data-choice-popover]` 与它里面的三行），不是摆一个浮层外壳。
+
 - pill 上的铅笔把问题**原地**展开（360px 浮层，贴在 pill 上方 10px），不滚动、不跳回正文；
 - 浮层里是同一份选项（紧凑行，去掉说明），选中项仍是那个；
 - 换一个 ⇒ pill 文案跟着变，草稿里的旧答案被替换；`Esc` 或点外部关闭，答案不变；
@@ -308,6 +320,8 @@ pill 实测 `bg rgb(232,240,255)`（`accent-soft`）、`color rgb(37,99,235)`（
 ### 5.4 远程桌面
 
 ![远程会话：同一张卡，chip 在远程输入框上方](assets/choice-cards/desktop-4-remote.png)
+
+*真实组件截图*，场景 `choice-card-remote-implemented`（1440×900 @2×，取自 `0d4bf428b`）：卡由本机渲染，输入框里的 chip 是远程端自己那一套（`RemoteChoiceChip`）。折叠阈值仍是四行可见、六行起折。
 
 远程会话的正文是宿主送来的 markdown、由**本机**渲染，所以卡片自动就是同一个组件、同一套 token——不需要为远程单独做一份。实测卡宽 768 与远程输入框同宽。
 
@@ -320,6 +334,8 @@ pill 实测 `bg rgb(232,240,255)`（`accent-soft`）、`color rgb(37,99,235)`（
 ### 5.5 深色
 
 ![深色外观下的同一张卡](assets/choice-cards/desktop-5-dark.png)
+
+*真实组件截图*，场景 `choice-card-implemented-dark`（1440×900 @2×，取自 `0d4bf428b`）。
 
 全部用语义 token（`surface` / `line` / `line-soft` / `surface-subtle` / `accent` / `accent-soft` / `ink*`），不写死颜色。实测深色卡底 `rgb(22,27,34)`（`--color-surface` 的深色值），选中行 `accent-soft` 深色值 `#16243c`。
 
@@ -342,7 +358,7 @@ pill 实测 `bg rgb(232,240,255)`（`accent-soft`）、`color rgb(37,99,235)`（
 
 ### 5.7 移动端
 
-手机 390×844，三张图分别是未选 / 已选 / 改回来。"未选"那张是**真实组件截图**（场景 `choice-card-phone-card`，780×1688 @2×，取自 `56462a7da`）——`mobile/src/components/ChoiceCard.tsx` 画的卡，不是注入原型。折叠阈值与桌面**同一组数字**（四行可见、六行起折），但 350pt 的列一行只放 24 个单位（桌面是 120），所以同一段文字在这里更早折。
+手机 390×844，三张图分别是未选 / 已选 / 改回来。三张都是**真实组件截图**（场景 `choice-card-phone-card` / `choice-card-phone-picked` / `choice-card-phone-change`，780×1688 @2×，取自 `0d4bf428b`）——`mobile/src/components/ChoiceCard.tsx` 画的卡，不是注入原型。折叠阈值与桌面**同一组数字**（四行可见、六行起折），但 350pt 的列一行只放 24 个单位（桌面是 120），所以同一段文字在这里更早折。
 
 | 未选 | 已选 | 改回来 |
 |---|---|---|
@@ -352,6 +368,12 @@ pill 实测 `bg rgb(232,240,255)`（`accent-soft`）、`color rgb(37,99,235)`（
 - 已选项的 chip 在 dock 内、textarea 之上（实测 chip `y 702..736`，field `y 737..783`）；
 - **零个勾选时 chip 不画，也不计入内容。** 手机没有编辑器内的 pill，答案的"是否存在"全靠这三处判断（`ComposerDock` 的 `canSend`、`hasDraft`、是否画 chip），所以它们共用同一个 `hasAnswer`，与桌面 `answerOrNull` 同一条判据：勾选全撤销 ⇒ 没有 chip、发送键变灰、也没有 §7 的句子。判据写在上游的 draft 写入处（`useComposerDraft.setChoice`），`ComposerDock` 再自理一次，避免"靠上游保证"的隐患；
 - **改答案用底部 sheet**：390pt 宽没有空间在原地放浮层。sheet 顶到 559pt，三行仍 44pt，选中即写回 chip，底稿不动；
+
+**情境展开后**（同一张卡，按钮变成「收起」）：
+
+![手机：情境展开——四行限制解除，全文与三个选项都在屏内](assets/choice-cards/phone-6-expanded.png)
+
+*真实组件截图*，场景 `choice-context-expanded-phone`（780×1688 @2×，取自 `0d4bf428b`）：与桌面那张是**同一段文字**（fixture 的 `?longContext=1`），只是列宽 350pt ⇒ 展开后情境段 `253pt`（折叠时 `82pt`），卡片 `99..616`，仍在转写区 `60..732` 之内，下面的三个选项一个没被推出屏。同一个 `aria-expanded`、同一句「收起」——两端的折叠只是各画各的，规则只有一份（`packages/markdown/src/choiceContext.ts`）。
 
 #### 5.7.1 v1 的已选态哪里难看，v2 怎么改
 
@@ -379,11 +401,13 @@ v1 的已选行同时在三个地方宣告"选中"：`accent-soft` 填充 + `acc
 
 ### 5.8 队列里的选择
 
-三端各一张，因为队列面板**不是同一个组件**：
+两张：桌面（本地会话）与手机。远程那格**故意不补**（理由在 §5.8.1）。
 
-| 桌面（本地会话） | 远程桌面 | 手机 |
-|---|---|---|
-| ![桌面：队列里的选择](assets/choice-cards/desktop-7-queue.png) | ![远程桌面：队列里的选择](assets/choice-cards/desktop-8-queue-remote.png) | ![手机：队列里的选择](assets/choice-cards/phone-4-queue.png) |
+| 桌面（本地会话） | 手机 |
+|---|---|
+| ![桌面：队列里的选择](assets/choice-cards/desktop-7-queue.png) | ![手机：队列里的选择](assets/choice-cards/phone-4-queue.png) |
+
+两张都是*真实组件截图*（场景 `send-queue-choice-implemented`，1440×900 与 780×1688 @2×，取自 `0d4bf428b`），队列行由 fixture 的 `?queue=1&queueChoice=1` 造成：行文字是答案要发出去的句子，行里的 `choice` 字段才是 chip 的依据。
 
 先说 **今天实际发生什么**（已核代码，不靠猜）：
 
@@ -397,8 +421,9 @@ v1 的已选行同时在三个地方宣告"选中"：`accent-soft` 填充 + `acc
 
 这一节决定了实现量，所以先讲清楚：
 
-- **远程桌面复用桌面端的 `SendQueuePanel`**：`RemoteComposer.tsx:23` 直接 `import { SendQueuePanel } from "../agent/SendQueuePanel"`，在 `:1244` 渲染。远程的输入框是另一套（纯 textarea，没有 pill），但队列**面板**是同一个组件。所以远程的队列样式就是桌面的队列样式——不需要为远程设计第二遍，只需要确认它没被远程样式表带歪。实测两边的 chip 都是 `136×22`、铅笔都在 `x=1181`、行宽都是 `746`。
-- **手机有它自己的一份** `mobile/src/features/chat/components/SendQueuePanel.tsx`：表头是一行 `Pressable` 折叠条（`accessibilityState.expanded`，文案 `展开队列中的消息` / `收起队列中的消息`），**一律默认收起**——条上已经有条数、那句「当前回复结束后合并成一条发送」和 parked 行的警示，而展开的每一行都会盖住它下面的对话。展开后列表高度 `sendQueueListHeight(vh, kb) = max(96, min(240, round((vh-kb)*0.3)))`，再长就在列表内滚动。手机端因此需要单独设计一遍 chip 的尺寸与位置。
+- **远程桌面复用桌面端的 `SendQueuePanel`**：`RemoteComposer.tsx:25` 直接 `import { SendQueuePanel } from "../agent/SendQueuePanel"`，在 `:1361` 渲染。远程的输入框是另一套（纯 textarea，没有 pill），但队列**面板**是同一个组件。所以远程的队列样式就是桌面的队列样式——不需要为远程设计第二遍。
+- **但是：远程的行今天画不出 chip，这是缺口，不是设计。** 宿主那一行带着 `choice` 过来，本机在解析时把它丢了：`remoteQueue.ts` 的 `parseRemoteQueueRows` 没有 `choice` 字段，`RemoteComposer.tsx:1366` 拼 `items` 时只传 `attachments/content/id/parked`、也不传 `onRequestChoiceChange`——而面板的 chip 恰好要求这两样（`SendQueuePanel.tsx:249` 是 `item.choice && … && onRequestChoiceChange`）。所以远程的队列行只有文字、铅笔、垃圾桶，没有 chip；远程要换答案仍得对着 `[问题 → 答案]` 手改文字。**上一版这里写的「实测两边 chip 都是 136×22」是错的**，也解释了为什么本节不再有远程那一张图（拿旧图充数比空着更糟）；补齐它需要新增一条远程“改队列里的选择”的命令，属于未做的实现，不在本稿范围内。
+- **手机有它自己的一份** `mobile/src/features/chat/components/SendQueuePanel.tsx`：表头是一行 `Pressable` 折叠条（`aria-expanded`——不是 `accessibilityState`，react-native-web 只转发 `aria-*`；文案 `展开队列中的消息` / `收起队列中的消息`），**一律默认收起**——条上已经有条数、那句「当前回复结束后合并成一条发送」和 parked 行的警示，而展开的每一行都会盖住它下面的对话。展开后列表高度 `sendQueueListHeight(vh, kb) = max(96, min(240, round((vh-kb)*0.3)))`，再长就在列表内滚动。手机端因此需要单独设计一遍 chip 的尺寸与位置。
 
 ### 5.8.2 行里画什么：chip **自己就是按钮**
 
@@ -423,21 +448,22 @@ chevron 而不是铅笔，是刻意的：它说的是“这里能打开点什么
 
 ### 5.8.3 数据形状
 
-给 `SendQueuePanelItem` 与 `AgentQueueRow` 加一个**可选**的 `choice?: { title, optionId, label }`，照 `attachments?` 的先例（`undefined` = 这一端的队列不报该字段，旧 Agent 不会因此被说成“没有选择”，也就不会画出空 chip）。
+给 `SendQueuePanelItem` 与 `AgentQueueRow` 加一个**可选**的 `choice`，照 `attachments?` 的先例（`undefined` = 这一端的队列不报该字段，旧 Agent 不会因此被说成“没有选择”，也就不会画出空 chip）。落地的形状是 `SessionQueueChoice`：`{ mode: "single" | "multi", title, options: {id, label}[], selectedIds: string[] }`——chip 要能自己开一个选项表，所以它带的是整道题，而不只是“标题 + 一个标签”。
 
 写回路径**不**拖进纯文本编辑：新增 `onUpdateChoice(id, choice)`（而不是给 `onUpdate(id, content)` 加可选参数）。纯文本编辑与结构化选择是两件事，混在一个签名里，实现时必然要在一个函数里分支。
 
 ### 5.8.4 实测（真实面板 + 真实“加入发送队列”流程，不是画的）
 
-| | 桌面 | 远程 | 手机 |
-|---|---|---|---|
-| chip 尺寸 | `136×22` | `136×22` | `129×23` |
-| chip 右边缘 / 铅笔左边 | `659` / `1181` | `659` / `1181` | `180` / `297` |
-| 行尺寸 | `746×60` | `746×52` | `348×52` |
-| chip 上的图标数 | 1（chevron） | 1（chevron） | 1（chevron） |
-| 行文字 | `1 接下来 · 重画森林图 顺便把图注也改成中文` | 同左 | 同左 |
+| | 桌面 | 手机 |
+|---|---|---|
+| chip 尺寸 | 宽填满行内容区，高 `22` | `185×21` |
+| 行尺寸 | `746×60` | `348×52` |
+| chip 上的图标数 | 1（chevron） | 1（chevron） |
+| 行文字 | `[接下来做哪一件？ → 重画森林图]` | 同左 |
 
-三行都保留了自己的铅笔与垃圾桶：断言里直接检查了 chip 的右边缘小于铅笔的左边缘，以及 `[data-queue-edit]` / `[data-testid=send-queue-edit]` 仍然存在。也就是说 chip 是**插在**行里，不是替换掉行的操作。
+远程那一列**删了**：它的行今天不画 chip（§5.8.1 的缺口），没有可实测的东西。上一版的 `136×22` 是错的，一并撤回。
+
+两端的行都保留了自己的铅笔与垃圾桶：断言里直接查了 chip 的 `aria-label` 与行文字同时成立，以及 `[aria-label="修改队列中的消息"]` / `[aria-label="从队列中删除"]` 仍然在行里。也就是说 chip 是**插在**行里的，不是替换掉行的操作。
 
 ## 5.9 会话列表里的标记：这一条在等你选
 
@@ -569,7 +595,7 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
    - 7b. **远程桌面**：`RemoteComposer.tsx:1244` 复用同一个 `SendQueuePanel`，所以这一端**不需要新代码**，只需要在远程会话里验证一次（远程样式表可能把行宽/字号带歪）。
    - 7c. **手机**：`mobile/src/features/chat/components/SendQueuePanel.tsx` 单独改——它是另一份实现（折叠表头 + `sendQueueListHeight` 上限），chip 11px 字、行内插在文字上方；面板只上报“要改哪一行”（`onRequestChoiceChange`），`ChoiceSheet` 由 `ComposerDock` 渲染——sheet 是 `Modal`，不放进行列表里。
 8. **prompt**：`agent/src/prompt/choice.md` + `mod.rs` 推入；改 `agent/src/prompt/mod.rs` 的既有测试（断言 prompt 段落顺序的那几条）。
-9. **回归**：`scripts/screenshots/scenarios.d/choice-cards.json` 已经把本文的每一屏变成可重跑的场景（桌面 10 个、手机 4 个，含 `chosen-text`、`queue`、`queue-remote`、`phone-queue`），实现完成后用它做视觉回归（把注入换成真实组件即可）。
+9. **回归**：`scripts/screenshots/scenarios.d/choice-cards.json` 已经把本文的每一屏变成可重跑的场景（目前桌面 20 个、手机 11 个，含 `chosen-text`、`queue`、`expanded`、`history-fold`；远程队列那一个**没有**，理由见 §5.8.1）。
 
 ## 12. 测试点
 
@@ -583,11 +609,11 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
 - **移动端**：44pt 行高；选中行**只有一处强调**（无描边）；铅笔与叉同墨色；sheet 改选后 chip 更新；**只有 chip 时 `canSend` 为真**；键盘弹起时 chip 行不遮 field。
 - **队列（三端都要测）**：入队后答案作为 `choice` 而非纯文本；改选择后行内 chip 与最终发出的文本都变；删整行与“只删选择保留文字”两条路径；旧 Agent 不报 `choice` 时退化不报错。
   - **chip 不抢行铅笔的活**（v3 的硬约束）：chip 是 `role=button` 且**只有一个**图标（chevron）；chip 的右边缘小于铅笔的左边缘；行自己的铅笔与垃圾桶仍然存在且可点。断言三条，缺一条就退回到"两支铅笔"的歧义。
-  - **远程**：远程复用桌面的面板，所以断言里要确认 `[data-send-queue]` 在远程帧里也画出了 chip，且尺寸与桌面一致（`136×22`）。
-  - **手机**：折叠表头能展开/收起；chip 在行内不溢出（`129×23`，行宽 `348`）；行仍保留 `send-queue-edit` 与 `send-queue-remove`。
+  - **远程**：远程复用同一个面板，但**今天不画 chip**：`parseRemoteQueueRows` 与 `RemoteComposer` 都不传 `choice`（§5.8.1）。所以远程的断言目前是反过来的——行正常画出、铅笔与垃圾桶在、chip 不存在、`[问题 → 答案]` 仍是纯文本可手改。补齐这条通道时，把这条断言改成正向的“远程也画出 chip”。
+  - **手机**：折叠表头能展开/收起，且报 `aria-expanded`（不是 `accessibilityState`，web 上会被整块丢掉）；chip 在行内不溢出（实测 `185×21`，行宽 `348`）；行仍保留 `send-queue-edit` 与 `send-queue-remove`。
 - **降级**：TUI 打印代码块内容；未知客户端同。
 - **无障碍**：`role`/`aria-checked`/`aria-label` 三条断言；方向键与 Enter 的键路径。
-- **视觉回归**：`choice-cards.json` 的 23 个场景（桌面 14 + 手机 9，含两种样式对比表与两个被否方案）。
+- **视觉回归**：`choice-cards.json` 的 31 个场景（桌面 20 + 手机 11，含两种样式对比表与两个被否方案）。
 
 ## 13. 截图怎么重跑
 
@@ -597,7 +623,6 @@ python3 scripts/screenshots/capture.py serve-mobile         # 手机 harness（8
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   capture-desktop choice-card-empty choice-card-chosen choice-card-change \
                   choice-card-chosen-text choice-card-queue \
-                  choice-card-queue-remote \
                   choice-card-remote choice-card-dark
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   variants-desktop choice-card-styles --columns 3
@@ -606,11 +631,17 @@ python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   capture-mobile choice-card-phone choice-card-phone-chosen \
                  choice-card-phone-change choice-card-phone-queue
-# 真实组件的样张（§5.1 / §5.1.1 / §5.7 / §5.7.2 引的就是这几张）
+# 真实组件的样张（§5.1 / §5.1.1 / §5.2 / §5.3 / §5.4 / §5.5 / §5.7 / §5.7.2 / §5.8 引的就是这几张）
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
-  capture-desktop choice-card-implemented choice-history-fold-desktop
+  capture-desktop choice-card-implemented choice-history-fold-desktop \
+                  choice-context-expanded-desktop choice-pill-implemented \
+                  choice-card-chosen-text-implemented choice-card-change-implemented \
+                  choice-card-implemented-dark choice-card-remote-implemented \
+                  send-queue-choice-implemented
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
-  capture-mobile choice-card-phone-card choice-history-fold-phone
+  capture-mobile choice-card-phone-card choice-history-fold-phone \
+                 choice-context-expanded-phone choice-card-phone-picked \
+                 choice-card-phone-change send-queue-choice-implemented
 ```
 
 顺序有讲究：`serve-mobile` 会往 `mobile` 工作区装 `react-native-web` 等仅 harness 需要的包（`--no-save`，不进 lockfile），它会顺带挪动几个依赖；跑完手机截图再跑 `mobile` 的 jest，需要 `npm ci` 一次把 `@react-native/jest-preset` 装回来（否则 jest-expo 报 "the React Native Jest preset … has moved to a separate package"）。
