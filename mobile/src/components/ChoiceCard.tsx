@@ -125,7 +125,13 @@ export function ChoiceCard({ live, node }: { live: boolean; node: ChoiceCardNode
                 ? (
                     <Pressable
                       accessibilityRole="button"
-                      accessibilityState={{ expanded: contextExpanded }}
+                      /**
+                       * `aria-expanded` for the same reason the rows spell
+                       * `aria-checked`: react-native-web forwards `aria-*` and
+                       * drops `accessibilityState`, so the button's state would
+                       * vanish on the web build while the native tree kept it.
+                       */
+                      aria-expanded={contextExpanded}
                       hitSlop={8}
                       onPress={() => setContextExpanded(expanded => !expanded)}
                       style={styles.contextToggle}

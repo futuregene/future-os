@@ -228,14 +228,15 @@ describe("a futureos-choice card on the phone", () => {
     expect(folded.props.children).toBe(long);
 
     const toggle = root.findAllByProps({ testID: "choice-card-context-toggle" })[0]!;
-    expect(toggle.props.accessibilityState).toEqual({ expanded: false });
+    expect(toggle.props["aria-expanded"]).toBe(false);
+    expect(toggle.props.accessibilityState).toBeUndefined();
     expect(toggle.props.accessibilityRole).toBe("button");
 
     act(() => toggle.props.onPress());
     const opened = root.findAllByProps({ testID: "choice-card-context" })[0]!;
     expect(opened.props.numberOfLines).toBeUndefined();
     const after = root.findAllByProps({ testID: "choice-card-context-toggle" })[0]!;
-    expect(after.props.accessibilityState).toEqual({ expanded: true });
+    expect(after.props["aria-expanded"]).toBe(true);
 
     act(() => after.props.onPress());
     expect(root.findAllByProps({ testID: "choice-card-context" })[0]!.props.numberOfLines).toBe(CHOICE_CONTEXT_VISIBLE_LINES);
