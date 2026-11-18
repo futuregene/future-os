@@ -318,6 +318,14 @@ impl Loop {
                 0
             };
         let mut provider_limit_checkpoint_id: Option<String> = None;
+        let closed_fusion = matches!(
+            self.fusion_context,
+            Some(crate::fusion::ContextScope::Parent { .. })
+        ) && tool_defs.len() == 1
+            && tool_defs[0].function.name == "fusion";
+        let mut fusion_stage = closed_fusion.then_some(crate::fusion::ParentStage::Routing);
+        let mut fusion_progress = fusion_stage.map(crate::fusion::ParentProgress::new);
+        let mut fusion_delivery_progress = false;
 
         if self.verbose {
             tracing::info!(
@@ -586,6 +594,30 @@ impl Loop {
                 .map(|projected| projected.message)
                 .collect();
 
+            // Keep the first action salient after a long self-contained task.
+            // Only the run-scoped Fusion tool enables this; ordinary runs and
+            // inner participants are unchanged. Never persist it as user text.
+            if turn == 0 && tool_defs.iter().any(|tool| tool.function.name == "fusion") {
+                if let Some(message) = work_messages
+                    .last_mut()
+                    .filter(|message| message.role == "user")
+                {
+                    let reminder = if tool_defs.len() == 1 {
+                        future_fusion::CLOSED_TASK_FIRST_ACTION_REMINDER
+                    } else {
+                        future_fusion::FIRST_ACTION_REMINDER
+                    };
+                    // Keep adjacent text in one part, matching the supplied
+                    // task's wire representation across compatible providers.
+                    if let Some(ContentBlock::Text { text }) = message.content.last_mut() {
+                        text.push_str("\n\n");
+                        text.push_str(reminder);
+                    } else {
+                        message.content.push(ContentBlock::text(reminder));
+                    }
+                }
+            }
+
             // Make continuation explicit rather than relying on assistant
             // prefill support. This is request-only recovery context, not a
             // fabricated user submission in the durable conversation or UI.
@@ -660,17 +692,49 @@ impl Loop {
             // time-to-first-byte takes effect immediately instead of blocking
             // on the request to return (especially noticeable on Windows where
             // flaky connections make this phase slow).
+            let stage_deadline = fusion_progress
+                .as_ref()
+                .map(crate::fusion::ParentProgress::deadline);
+            if let Some(stage) = fusion_stage {
+                tracing::info!(
+                    ?stage,
+                    output_limit = stage.controls().max_output_tokens,
+                    thinking = "configured",
+                    timeout_secs = stage.timeout_secs(),
+                    "Fusion closed-task request policy v3"
+                );
+            }
+            let stage_request = async {
+                let request = crate::llm::schema::ModelRequest {
+                    model: ctx.model.clone(),
+                    messages: work_messages,
+                    tools: if closed_fusion
+                        && fusion_stage != Some(crate::fusion::ParentStage::Routing)
+                    {
+                        vec![]
+                    } else {
+                        tool_defs.clone()
+                    },
+                    system_prompt: request_system_prompt.to_string(),
+                };
+                let stream = async {
+                    if let Some(stage) = fusion_stage {
+                        self.provider
+                            .stream_model_with_controls(request, stage.controls())
+                            .await
+                    } else {
+                        self.provider.stream_model(request).await
+                    }
+                };
+                if let Some(deadline) = stage_deadline {
+                    tokio::time::timeout_at(deadline, stream).await
+                        .map_err(|_| anyhow!("[FUSION_STAGE_TIMEOUT] {:?}: stage budget expired before response headers", fusion_stage))?
+                } else {
+                    stream.await
+                }
+            };
             let stream_result = match self
-                .await_or_interrupt(
-                    self.provider
-                        .stream_model(crate::llm::schema::ModelRequest {
-                            model: ctx.model.clone(),
-                            messages: work_messages,
-                            tools: tool_defs.clone(),
-                            system_prompt: request_system_prompt.to_string(),
-                        }),
-                    interrupt_rx.as_mut(),
-                )
+                .await_or_interrupt(stage_request, interrupt_rx.as_mut())
                 .await
             {
                 Some(r) => r,
@@ -682,6 +746,9 @@ impl Loop {
             let mut rx = match stream_result {
                 Ok(rx) => rx,
                 Err(last_error) => {
+                    if last_error.to_string().contains("[FUSION_STAGE_TIMEOUT]") {
+                        return Err(last_error);
+                    }
                     if self.config.max_retries > 0
                         && retry_attempt < self.config.max_retries as usize
                     {
@@ -904,20 +971,51 @@ impl Loop {
             let mut truncation_detected_by: Option<&'static str> = None;
 
             loop {
-                // No event deadline: providers can reason silently for minutes.
-                // Reuse the interrupt helper so flag-only cancellation also wakes
+                // Delivery/recovery only time out without substantive content;
+                // status/usage events do not keep a silent provider alive. Reuse the interrupt helper so flag-only cancellation also wakes
                 // this wait, even without an interrupt channel.
-                let model_event = match self
-                    .await_or_interrupt(rx.next(), interrupt_rx.as_mut())
-                    .await
-                {
-                    Some(Some(event)) => event,
+                let next = async {
+                    if let Some(deadline) = fusion_progress
+                        .as_ref()
+                        .map(crate::fusion::ParentProgress::deadline)
+                    {
+                        tokio::time::timeout_at(deadline, rx.next())
+                            .await
+                            .map_err(|_| ())
+                    } else {
+                        Ok(rx.next().await)
+                    }
+                };
+                let model_event = match self.await_or_interrupt(next, interrupt_rx.as_mut()).await {
+                    Some(Ok(Some(event))) => event,
+                    Some(Err(())) if saw_terminal_event => {
+                        // Optional usage after a terminal finish must not turn
+                        // an already completed answer into a failed/replayed run.
+                        break;
+                    }
+                    Some(Err(())) => {
+                        let message = format!(
+                            "[FUSION_STAGE_TIMEOUT] {:?}: {}",
+                            fusion_stage,
+                            fusion_stage
+                                .map(|stage| stage.timeout_description())
+                                .unwrap_or("stage deadline expired")
+                        );
+                        on_event(RunEvent::Model(ModelStreamEvent::Error {
+                            message: message.clone(),
+                        }));
+                        stream_error = Some(anyhow!(message));
+                        model_stream_failed = true;
+                        stream_truncated = true;
+                        truncation_detected_by = Some("fusion_stage_timeout");
+                        break;
+                    }
                     None => {
                         interrupted_during_stream = true;
                         stream_error = Some(anyhow!("interrupted"));
                         break;
                     }
-                    Some(None) => {
+                    Some(Ok(None)) => {
                         if !saw_terminal_event {
                             stream_truncated = true;
                             truncation_detected_by.get_or_insert("eof_no_terminal");
@@ -925,6 +1023,18 @@ impl Loop {
                         break;
                     }
                 };
+                if let Some(progress) = fusion_progress.as_mut() {
+                    progress.observe(&model_event);
+                }
+                if fusion_stage.is_some_and(|stage| stage != crate::fusion::ParentStage::Routing)
+                    && matches!(&model_event,
+                        ModelStreamEvent::TextDelta { text, .. } if !text.is_empty())
+                {
+                    // Real delivery may legitimately be long. Once visible
+                    // output begins, normal content-idle/cancellation guards
+                    // own liveness instead of a fixed wall-clock cut.
+                    fusion_delivery_progress = true;
+                }
                 // Provider indices must never directly control unbounded vector
                 // allocation (including usize::MAX + 1 overflow).
                 if matches!(&model_event,
@@ -1253,7 +1363,9 @@ impl Loop {
                         // without matching reqwest/provider wording.
                         stream_truncated = true;
                         truncation_detected_by.get_or_insert(
-                            if message.starts_with("[RESPONSE_TIMEOUT]") {
+                            if message.starts_with("[RESPONSE_TIMEOUT] idle_timeout") {
+                                "idle_timeout"
+                            } else if message.starts_with("[RESPONSE_TIMEOUT]") {
                                 "request_timeout"
                             } else if message.starts_with(crate::llm::UPSTREAM_DISCONNECTED) {
                                 "upstream_disconnected"
@@ -1538,6 +1650,16 @@ impl Loop {
                 content,
                 ..Default::default()
             };
+            if let Some(stage) = fusion_stage {
+                assistant_msg.metadata.get_or_insert_with(serde_json::Map::new).insert(
+                    "fusion_request_policy".into(), serde_json::json!({
+                        "version": 3, "stage": format!("{stage:?}").to_lowercase(),
+                        "generation_settings": "user_configured", "thinking_level_override": stage.controls().thinking_level, "max_output_tokens_cap": stage.controls().max_output_tokens,
+                        "timeout_seconds": stage.timeout_secs(),
+                        "timeout_scope": if stage == crate::fusion::ParentStage::Routing { "absolute" } else { "reasoning_or_text_inactivity" },
+                    }),
+                );
+            }
             if ctx.segmented_storage {
                 bind_stream_message(&mut assistant_msg, &stream_entry_id, keys);
             }
@@ -1575,6 +1697,7 @@ impl Loop {
                 // the same refusal. A user interrupt outranks both.
                 let output_budget_spent = truncation_detected_by == Some("finish_length");
                 if output_budget_spent
+                    && (fusion_stage.is_none() || fusion_delivery_progress)
                     && !interrupted_after_stream
                     && output_limit_continuations < max_output_limit_continuations
                 {
@@ -1696,6 +1819,27 @@ impl Loop {
             output_limit_continuation_pending = false;
             output_limit_continuation_had_visible_output = false;
 
+            if fusion_stage == Some(crate::fusion::ParentStage::Routing)
+                && (tool_calls.len() != 1 || tool_calls[0].function.name != "fusion")
+            {
+                return Err(anyhow!("[FUSION_ROUTING_FAILED] provider did not produce exactly one required fusion call; refusing an unconsulted answer"));
+            }
+
+            if closed_fusion
+                && fusion_stage != Some(crate::fusion::ParentStage::Routing)
+                && !tool_calls.is_empty()
+            {
+                append_skipped_tool_placeholders(
+                    messages,
+                    &agent_tool_calls,
+                    "a closed answer discussion cannot be automatically restarted",
+                    ctx.save_callback.as_ref(),
+                );
+                return Err(anyhow!(
+                    "[FUSION_REPEAT_BLOCKED] closed answer recovery cannot restart a discussion"
+                ));
+            }
+
             // Check stop condition. The is_some_and closure keeps the None
             // edge branchless (a nested if's closing brace here collected a
             // phantom zero-count coverage region).
@@ -1757,6 +1901,61 @@ impl Loop {
             }
             self.execute_tools(turn, &tool_calls, messages, &on_event, ctx)
                 .await?;
+            if closed_fusion {
+                if self.is_interrupted() {
+                    return Ok(String::new());
+                }
+                if let Some((discussion_id, answer)) = crate::fusion::completed_answer(messages) {
+                    ctx.await_durability().await?;
+                    let entry_id = crate::utils::generate_entry_id();
+                    let block_id = "fusion-answer".to_string();
+                    if ctx.segmented_storage {
+                        on_event(RunEvent::MessageStart {
+                            entry_id: entry_id.clone(),
+                        });
+                    }
+                    on_event(RunEvent::Model(ModelStreamEvent::TextStart {
+                        id: block_id.clone(),
+                    }));
+                    on_event(RunEvent::Model(ModelStreamEvent::TextDelta {
+                        id: block_id.clone(),
+                        text: answer.clone(),
+                    }));
+                    on_text(answer.clone());
+                    on_event(RunEvent::Model(ModelStreamEvent::TextEnd {
+                        id: block_id.clone(),
+                    }));
+                    if ctx.segmented_storage {
+                        on_event(RunEvent::MessageEnd {
+                            entry_id: entry_id.clone(),
+                            complete: true,
+                        });
+                    }
+                    ctx.await_durability().await?;
+                    let mut delivered = AgentMessage {
+                        role: "assistant".into(),
+                        content: vec![ContentBlock::text(&answer)],
+                        ..Default::default()
+                    };
+                    delivered.metadata.get_or_insert_with(serde_json::Map::new).insert("fusion_delivery".into(), serde_json::json!({"version":1, "origin":"moderator_answer", "fusion_run_id":discussion_id, "additional_model_request":false}));
+                    if ctx.segmented_storage {
+                        bind_stream_message(
+                            &mut delivered,
+                            &entry_id,
+                            vec![Some(format!("text:{block_id}"))],
+                        );
+                    }
+                    messages.push(delivered);
+                    if let Some(ref save) = ctx.save_callback {
+                        save(messages.last_mut().unwrap());
+                    }
+                    ctx.await_durability().await?;
+                    return Ok(answer);
+                }
+                fusion_stage = Some(crate::fusion::ParentStage::after_tools(messages));
+                fusion_progress = fusion_stage.map(crate::fusion::ParentProgress::new);
+                fusion_delivery_progress = false;
+            }
 
             // Log per-turn usage: tokens and cost.
             if let Some(ref u) = total_usage {

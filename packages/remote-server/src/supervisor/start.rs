@@ -624,6 +624,7 @@ impl Supervisor {
             event_tx,
             event_task,
             cmd_task,
+            command_retire,
             transfer_task,
             heartbeat_task,
             mut candidate_tasks,
@@ -696,6 +697,7 @@ impl Supervisor {
                     drop_counters: shared.drop_counters.clone(),
                     event_task,
                     cmd_task,
+                    command_retire: Some(command_retire),
                     transfer_task,
                     heartbeat_task,
                     refresh_task,
@@ -717,8 +719,101 @@ impl Supervisor {
         // as if its generation had been replaced. A cancelled install drops the
         // sender, so its candidate cannot begin renewing a discarded generation.
         let _ = installed_tx.send(());
-        if let Some(previous) = previous {
+        if let Some(mut previous) = previous {
+            // Once removed from state, the old generation is ours to tear down
+            // even if stop cancels this future while it awaits the broker.
+            let mut retiring_tasks = lifecycle::CandidateTasks::default();
+            for task in [
+                &previous.event_task,
+                &previous.cmd_task,
+                &previous.transfer_task,
+                &previous.heartbeat_task,
+                &previous.refresh_task,
+            ] {
+                retiring_tasks.track_owned(task);
+            }
+            if let Some(task) = &previous.web_task {
+                retiring_tasks.track_owned(task);
+            }
+            let retired = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                if let Some(retire) = previous.command_retire.take() {
+                    let _ = retire.send(());
+                } else {
+                    previous.cmd_task.abort();
+                }
+                previous.cmd_task.clone().completed().await;
+                #[cfg(any(test, feature = "test-support"))]
+                if self
+                    .hooks
+                    .inject_retirement_failure
+                    .swap(0, Ordering::SeqCst)
+                    > 0
+                {
+                    return Err(crate::Error::RemoteTransport(
+                        "injected retirement receipt failure".into(),
+                    ));
+                }
+                // A flush only writes bytes. Receiving our own marker on the
+                // same connection proves the broker processed the preceding
+                // UNSUB before this replacement advertises Ready. Use the
+                // bridge's own reply namespace: its relay credentials forbid
+                // publishing commands or subscribing to another device's replies.
+                let marker_subject = format!(
+                    "p.{pair_id}.rep.{}._retired.{}",
+                    previous.desktop_id,
+                    nkeys::KeyPair::new_user().public_key()
+                );
+                let mut receipt = previous
+                    .client
+                    .subscribe(marker_subject.clone())
+                    .await
+                    .map_err(|error| crate::Error::RemoteTransport(error.to_string()))?;
+                previous
+                    .client
+                    .publish(marker_subject, Vec::new().into())
+                    .await
+                    .map_err(|error| crate::Error::RemoteTransport(error.to_string()))?;
+                use futures::StreamExt;
+                receipt.next().await.ok_or_else(|| {
+                    crate::Error::RemoteTransport("retirement receipt ended".into())
+                })?;
+                Ok::<_, crate::Error>(())
+            })
+            .await;
+            // Retire every remaining lane too; the command lane above is the
+            // one that can steal the first handshake from a new invitation.
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_millis(750),
+                previous.client.drain(),
+            )
+            .await;
             abort_generation(previous);
+            retiring_tasks.installed();
+            if !matches!(retired, Ok(Ok(()))) {
+                // Publication precedes the retirement fence. A failed handoff
+                // must not leave that candidate looking ready or without its
+                // generation supervisor. Never remove a newer replacement.
+                let failed = self
+                    .access
+                    .commit(epoch, || {
+                        let mut state = self.state.lock().unwrap();
+                        if state.get(&pair_id).is_some_and(|state| {
+                            state.generation_id == generation_id
+                                && state.bridge_instance_id == bridge_instance_id
+                        }) {
+                            state.remove(&pair_id)
+                        } else {
+                            None
+                        }
+                    })
+                    .flatten();
+                if let Some(failed) = failed {
+                    abort_generation(failed);
+                }
+                return Err(crate::Error::RemoteTransport(
+                    "previous command generation retirement was not confirmed".into(),
+                ));
+            }
         }
         self.spawn_runtime_supervisor(pair_id.clone(), generation_id);
         if web_bind_failed {

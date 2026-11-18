@@ -93,6 +93,11 @@ function modelStatus(step: FusionStep): FusionModelStatus {
   if (["completed", "cancelled", "interrupted"].includes(step.status)) return step.status as FusionModelStatus;
   return "waiting";
 }
+/** Both draft synthesis and its final check belong to the moderator role. */
+export function isFusionModerator(participant: string): boolean {
+  return participant === "moderator" || participant === "moderator-check";
+}
+
 export function fusionProgress(discussion: FusionDiscussion | null, toolStatus?: string) {
   const run = discussion?.run;
   const status = toolStatus === "failed" && (!run || ["preparing", "queued", "running", "delivering"].includes(run.status)) ? "interrupted" : run?.status ?? "preparing";
@@ -120,7 +125,7 @@ export function fusionProgress(discussion: FusionDiscussion | null, toolStatus?:
   ] : [...new Set([...configured, ...[...latest.values()].map(step => step.model)])].map(model => ({ id: model, role: null, number: null, model }));
   const models = roles.map(slot => {
     const model = slot.model;
-    const steps = [...latest.values()].filter(step => step.model === model && (!slot.role || step.participant === slot.id)).sort((a, b) => a.started_at - b.started_at);
+    const steps = [...latest.values()].filter(step => step.model === model && (!slot.role || (slot.role === "moderator" ? isFusionModerator(step.participant) : step.participant === slot.id))).sort((a, b) => a.started_at - b.started_at);
     const currentSteps = steps.filter(step => step.phase === phase);
     const current = currentSteps[currentSteps.length - 1];
     let state: FusionModelStatus = "waiting";

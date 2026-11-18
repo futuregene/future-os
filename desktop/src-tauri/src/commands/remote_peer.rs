@@ -837,7 +837,12 @@ mod tests {
     /// was refused for a limit that exists for a phone's memory budget. The bytes
     /// are compared in full, because "it saved something" is not the assertion the
     /// user cares about.
-    #[tokio::test]
+    // The desktop runs its transport on a multithreaded executor. Keep the
+    // large-file fixture on that topology too: debug-build file generation,
+    // hashing and chunk crypto must not monopolize the only thread that can
+    // poll the peer's socket and its request deadline. Preserve the production
+    // timeout, the above-phone-limit payload and the full byte comparison.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_desktop_download_of_an_installer_is_not_held_to_the_phones_limits() {
         let (_home, fx) = start("peer-cmd-desktop-tier").await;
         let desktop_id = fx.paired.creds.desktop_id.clone();
