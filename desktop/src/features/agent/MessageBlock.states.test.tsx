@@ -244,6 +244,26 @@ it("draws the answer to a choice card as a tag rather than as prose in the promp
   expect(container.textContent).not.toContain("[接下来先做哪一块？");
 });
 
+it("draws an answer the reader typed before picking, wherever it sits", () => {
+  // The composer appends the pill to the end of the editor, so typing first and
+  // picking a row after sends the answer at the end of the reader's sentence.
+  // It is a pick either way: the tag is drawn, and the words keep their order.
+  render(message({
+    content: "另外 asrbench 可以删除[删哪些？ → 删 A 类全部、删未在用的 ~/omlx 副本]",
+    id: "u1",
+    role: "user",
+  }));
+
+  const tag = container.querySelector<HTMLElement>("[data-choice-answer='删哪些？']")!;
+  expect(tag.textContent).toBe("删哪些？→删 A 类全部、删未在用的 ~/omlx 副本");
+  expect(container.textContent).toContain("另外 asrbench 可以删除");
+  // Not both: the sentence is drawn as the tag, not printed beside it.
+  expect(container.textContent).not.toContain("[删哪些？");
+  // And it is not read as a file link, which is what a bracketed path used to
+  // turn the whole sentence into.
+  expect(container.querySelector("a")).toBeNull();
+});
+
 it("leaves a prompt whose leading bracket is not a card answer alone", () => {
   // The parse is the styling's only input, so its false-negative side is
   // asserted too: prose that merely opens with a bracket renders as it was sent.
