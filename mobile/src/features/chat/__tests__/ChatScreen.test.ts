@@ -992,6 +992,7 @@ test("the model selector receives the model the reference resolves to", () => {
   mockRemote.models = [
     { id: "a", provider: "p", label: "Model A" },
     { id: "b", provider: "p", label: "Model B" },
+    { id: "Qwen3.8-27B-oQ4e-mtp", provider: "omlx", label: "Qwen 3.8" },
   ];
   mockRemote.modelId = "p/b";
   act(() => tree.update(createElement(ChatScreen)));
@@ -1000,11 +1001,19 @@ test("the model selector receives the model the reference resolves to", () => {
   // provider-qualified reference is matched against the catalogue.
   expect(tree.root.findByType(ComposerDock).props.activeModelLabel).toBe("Model B");
 
-  // A reference the catalogue does not list falls back to the raw id, never to
-  // a blank label the user cannot act on.
+  // A reference the catalogue does not list falls back to the model's own id —
+  // never to the whole `provider/id` string, and never to a blank label the user
+  // cannot act on. (`p/missing` used to print verbatim; that is the string a
+  // doubled `omlx/omlx/...` reference also used to put on screen.)
   mockRemote.modelId = "p/missing";
   act(() => tree.update(createElement(ChatScreen)));
-  expect(tree.root.findByType(ComposerDock).props.activeModelLabel).toBe("p/missing");
+  expect(tree.root.findByType(ComposerDock).props.activeModelLabel).toBe("missing");
+
+  // And the bug itself: a stored reference with the provider written twice
+  // resolves to the catalogue model instead of being printed raw.
+  mockRemote.modelId = "omlx/omlx/Qwen3.8-27B-oQ4e-mtp";
+  act(() => tree.update(createElement(ChatScreen)));
+  expect(tree.root.findByType(ComposerDock).props.activeModelLabel).toBe("Qwen 3.8");
 });
 
 /**

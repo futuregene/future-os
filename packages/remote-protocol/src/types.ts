@@ -440,6 +440,82 @@ export function modelProviderFromReference(modelReference: string): string | und
 }
 
 /**
+ * The model's own id inside a reference: the reference minus its provider
+ * segment.
+ *
+ * A reference is `provider/id`, so exactly one leading segment is the provider
+ * and nothing more can be assumed from the string: `openrouter`'s model really
+ * is called `openrouter/auto`, and its reference `openrouter/openrouter/auto`
+ * must reduce to that id — not to `auto`. Deciding whether a second `provider/`
+ * is a stray prefix needs the catalogue, which is
+ * [`resolveModelReference`]'s job.
+ *
+ * `omlx/Qwen3.8-27B-oQ4e-mtp` → `Qwen3.8-27B-oQ4e-mtp`, `p/missing` → `missing`,
+ * `gpt-5` → `gpt-5`.
+ */
+export function modelIdFromReference(modelReference: string): string {
+  const trimmed = modelReference.trim();
+  const separator = trimmed.indexOf("/");
+  return separator > 0 ? trimmed.slice(separator + 1) : trimmed;
+}
+
+/**
+ * The catalogue entry a stored reference names, if any.
+ *
+ * A reference is `provider/id` and the id is whatever the provider calls the
+ * model, slashes and provider names included — so `openrouter/openrouter/auto`
+ * is the *correct* reference for openrouter's `openrouter/auto`, while
+ * `omlx/omlx/Qwen3.8-27B-oQ4e-mtp` is a client that prefixed an id already
+ * beginning with its provider. The string alone cannot tell them apart; only
+ * the catalogue can. So: an exact reference wins, then one leading provider
+ * segment at a time is collapsed and the first level the catalogue recognizes
+ * is taken, then a legacy bare id that exactly one provider owns.
+ *
+ * `undefined` means "this reference names no model the host offers" — the
+ * caller decides what to show, rather than having a guess made for it.
+ */
+export function resolveModelReference<M extends Pick<RemoteModel, "id" | "provider">>(
+  reference: string,
+  models: readonly M[],
+): M | undefined {
+  const trimmed = reference.trim();
+  if (!trimmed) return undefined;
+  const exact = models.find(model => modelReference(model) === trimmed);
+  if (exact) return exact;
+  // Only a provider the catalogue actually has can be the repeated segment;
+  // anything else is part of the model's own id and must not be eaten.
+  let candidate = trimmed;
+  for (;;) {
+    const separator = candidate.indexOf("/");
+    if (separator <= 0) break;
+    const provider = candidate.slice(0, separator);
+    if (!models.some(model => model.provider === provider)) break;
+    candidate = candidate.slice(separator + 1);
+    const collapsed = models.find(model => modelReference(model) === candidate);
+    if (collapsed) return collapsed;
+  }
+  const legacy = models.filter(model => model.id === trimmed);
+  return legacy.length === 1 ? legacy[0] : undefined;
+}
+
+/**
+ * The name to put in a model chip for a stored reference.
+ *
+ * A model the catalogue knows is shown under its label (or its id); one it does
+ * not — an unlisted model, or a catalogue the host could not answer with — shows
+ * the reference's bare model id instead of the whole `provider/id` string, which
+ * is what left a doubled `omlx/omlx/...` reference on screen verbatim.
+ */
+export function modelLabelForReference<M extends Pick<RemoteModel, "id" | "provider" | "label">>(
+  reference: string,
+  models: readonly M[],
+): string {
+  const model = resolveModelReference(reference, models);
+  if (model) return model.label || model.id;
+  return modelIdFromReference(reference);
+}
+
+/**
  * Session-level token usage and the amount it represents, mirroring the
  * agent's get_state `usage` object. The per-category amounts are priced by the
  * agent from the model's rates; a model with no rates on file reports zeros.
