@@ -1,4 +1,5 @@
 import type { ChoiceAnswer } from "../agent/composer/choiceAnswer";
+import type { SendQueueChoiceItem } from "../agent/SendQueuePanel";
 import type { RemoteComposerHandle } from "./RemoteComposer";
 // @vitest-environment jsdom
 import type { RemotePeer } from "./remotePeerClient";
@@ -62,7 +63,7 @@ const refreshQueue = vi.fn<() => void>();
 const forgetQueued = vi.fn<(runId: string) => void>();
 const cancelQueued = vi.fn<(desktopId: string, sessionId: string, runId: string) => Promise<void>>();
 const releaseQueued = vi.fn<(desktopId: string, sessionId: string, runId: string) => Promise<void>>();
-const editQueued = vi.fn<(desktopId: string, sessionId: string, runId: string, message: string) => Promise<void>>();
+const editQueued = vi.fn<(desktopId: string, sessionId: string, runId: string, message: string, choice?: SendQueueChoiceItem) => Promise<void>>();
 vi.mock("./remoteQueue", () => ({
   // The value the real module defines (`remoteQueue.test.ts` holds it to this).
   QUEUED_SEND_POLICY: "enqueue_coalescing",
@@ -1757,6 +1758,60 @@ describe("a send made behind a running reply", () => {
     expect(editQueued).toHaveBeenCalledWith("desktop_a", "sess_1", "run_9", "fixed text");
     expect(cancelQueued).not.toHaveBeenCalled();
     expect(prompt).not.toHaveBeenCalled();
+    expect(refreshQueue).toHaveBeenCalled();
+    await view.unmount();
+  });
+
+  /**
+   * A waiting row that answered a card (design §5.8.2), one machine away.
+   *
+   * The chip is drawn from the host's own `choice` — not re-parsed out of the
+   * sentence — and changing the pick sends the answer **and** the sentence it
+   * states in one in-place edit. Both, because the text is what the run actually
+   * sends: a new pick beside the old sentence would send the old pick.
+   */
+  it("changes a waiting answer's pick, and sends the sentence it states", async () => {
+    const answer: SendQueueChoiceItem = {
+      mode: "single",
+      options: [
+        { id: "forest", label: "重画森林图" },
+        { id: "flow", label: "补一张实验流程图" },
+      ],
+      selectedIds: ["forest"],
+      title: "接下来做哪一件？",
+    };
+    queueRows = [hostRow({
+      choice: answer,
+      text: "[接下来做哪一件？ → 重画森林图] 顺便把图注也改成中文",
+    })];
+    const view = await mount({ streaming: true });
+    await openQueue(view);
+
+    const chip = view.container.querySelector<HTMLButtonElement>("[data-queue-choice-action=change]")!;
+    // Drawn at all is the point: this field used to be dropped on arrival.
+    expect(chip).not.toBeNull();
+    expect(chip.getAttribute("aria-label")).toContain("重画森林图");
+    await act(async () => chip.click());
+
+    // The menu is portalled out of the row, so it is found from the document.
+    const option = [...document.querySelectorAll<HTMLElement>("[role=menuitem], button, li")]
+      .find(node => node.textContent === "补一张实验流程图");
+    expect(option).toBeDefined();
+    await act(async () => option!.click());
+    await settle();
+
+    // One command: the new sentence, the whole answer, the same row. Not a
+    // cancel and a re-send — that would have put the message at the back of a
+    // queue the reader ordered.
+    expect(editQueued).toHaveBeenCalledWith(
+      "desktop_a",
+      "sess_1",
+      "run_9",
+      "[接下来做哪一件？ → 补一张实验流程图] 顺便把图注也改成中文",
+      { ...answer, selectedIds: ["flow"] },
+    );
+    expect(cancelQueued).not.toHaveBeenCalled();
+    // The panel is re-read from the host: this window holds no copy to edit.
     expect(refreshQueue).toHaveBeenCalled();
     await view.unmount();
   });
