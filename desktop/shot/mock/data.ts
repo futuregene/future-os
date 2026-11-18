@@ -63,6 +63,37 @@ export function requestedChoiceMode(): "multi" | "single" {
   return new URLSearchParams(window.location.search).get("choiceMode") === "multi" ? "multi" : "single";
 }
 
+/**
+ * `?thread=th_choice&longContext=1`: the same card with a `context:` long enough
+ * to cross the fold threshold (`CHOICE_CONTEXT_VISIBLE_LINES`, four lines).
+ *
+ * Only the situation paragraph changes, because the fold is what such a capture
+ * exists to show: four lines, then the "show more" button, then the whole text
+ * once it is clicked. The wording is the reply's own — a real state of the work,
+ * not lorem ipsum — so the capture also reads as a card someone would meet. One
+ * entry per `context:` line: repeated lines become paragraphs
+ * (`parseChoiceCard`), which is the only way a multi-paragraph context can
+ * travel in a line-based fence.
+ */
+export const LONG_CHOICE_CONTEXT_LINES = [
+  "森林图现在能读，但两篇的置信区间按不同的样本量算：Frank 42 人、Dreher 186 人，都是被试间设计，",
+  "Dreher 报的区间明显更窄，所以两篇的数值不能直接放在一起比。",
+  "图注还挂着旧的 42 人，得跟着森林图一起改；图例现在压在曲线上，挪到右下就腾出空白。",
+  "流程图还没有，补它要把两篇的被试流程画成一张对照图，Frank 的三个条件与 Dreher 的两个条件不在同一层，",
+  "画之前得先定用哪一层对齐。",
+  "表里还缺一列样本量，Frank 42 / Dreher 186 都写清楚，测量手段也一并标出来，读者才知道两篇为什么不一样。",
+  "重算、补图、加列三件事互不依赖，先做哪件都行。",
+];
+
+export const SHORT_CHOICE_CONTEXT
+  = "森林图现在能读，但两篇的置信区间按不同的样本量算，放在一起对不上号；流程图还没有。重算和补图互不依赖，先做哪件都行。";
+
+export function requestedLongContext(): boolean {
+  if (typeof window === "undefined")
+    return false;
+  return new URLSearchParams(window.location.search).get("longContext") === "1";
+}
+
 /** The expression-parser session: the conversation the two language captures open. */
 export const PARSER_THREAD_ID = "th_parser";
 
@@ -279,7 +310,9 @@ export const choiceEntries: MockEntry[] = [
           "```futureos-choice",
           "title: 接下来做哪一件？",
           `mode: ${requestedChoiceMode()}`,
-          "context: 森林图现在能读，但两篇的置信区间按不同的样本量算，放在一起对不上号；流程图还没有。重算和补图互不依赖，先做哪件都行。",
+          requestedLongContext()
+            ? LONG_CHOICE_CONTEXT_LINES.map(line => `context: ${line}`).join("\n")
+            : `context: ${SHORT_CHOICE_CONTEXT}`,
           "option: forest | 重画森林图 | 按 Dreher 2025 的样本量重算两篇的置信区间",
           "option: flow | 补一张实验流程图 | 把两篇的被试流程画成一张对照图",
           "option: table | 表里加一列样本量 | Frank 42 / Dreher 186，标出测量手段",

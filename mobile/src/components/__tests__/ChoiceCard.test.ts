@@ -1,3 +1,4 @@
+import { CHOICE_CONTEXT_VISIBLE_LINES } from "@future-os/markdown";
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { StyleSheet } from "react-native";
@@ -7,7 +8,12 @@ import { ChoiceCardAnswerProvider, type ChoiceCardAnswer } from "../ChoiceCard";
 // The icon set ships as an ES module, and these suites load the real
 // `MarkdownText` (which a choice card pulls it into). Node 24+ can require it
 // directly; older runtimes cannot, so the shapes are stubbed here.
-jest.mock("lucide-react-native", () => ({ Check: () => null, ListChecks: () => null }));
+jest.mock("lucide-react-native", () => ({
+  Check: () => null,
+  ChevronDown: () => null,
+  ChevronUp: () => null,
+  ListChecks: () => null,
+}));
 
 jest.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key, i18n: { language: "zh-CN" } }),
@@ -18,6 +24,16 @@ const CARD = [
   "title: 接下来做哪一件？",
   "mode: single",
   "option: forest | 重画森林图 | 按 Dreher 2025 的样本量重算置信区间",
+  "option: flow | 补一张实验流程图",
+  "```",
+].join("\n");
+
+/** A card whose fence carries `context:`, which is what folds. */
+const withContextFence = (context: string) => [
+  "```futureos-choice",
+  "title: 接下来做哪一件？",
+  `context: ${context}`,
+  "option: forest | 重画森林图",
   "option: flow | 补一张实验流程图",
   "```",
 ].join("\n");
@@ -187,6 +203,53 @@ describe("a futureos-choice card on the phone", () => {
     const root = render(CARD, answer);
     expect(root.findAllByProps({ testID: "choice-card-hint" })).toHaveLength(0);
     expect(hintKeys(root)).toEqual([]);
+  });
+
+  /**
+   * A context that outgrows the card folds down to four lines behind a button;
+   * one that fits is left alone with no button at all (same rule as the desktop,
+   * `packages/markdown/src/choiceContext.ts`).
+   */
+  test("leaves a context that fits unfolded and offers no button", () => {
+    const root = render(withContextFence("森林图已重画完了。图例仍压在曲线上。"));
+    const drawn = root.findAllByProps({ testID: "choice-card-context" })[0]!;
+    expect(drawn.props.numberOfLines).toBeUndefined();
+    expect(root.findAllByProps({ testID: "choice-card-context-toggle" })).toHaveLength(0);
+  });
+
+  test("folds a long context and opens it on one tap", () => {
+    const long = Array.from({ length: 12 }, (_, index) => `第 ${index + 1} 条：图注还挂着旧的 42。`).join(" ");
+    const root = render(withContextFence(long));
+    const folded = root.findAllByProps({ testID: "choice-card-context" })[0]!;
+    // The phone's column is narrower, so the same text folds where the desktop
+    // still shows it whole — the estimate gets the card's own units per line.
+    expect(folded.props.numberOfLines).toBe(CHOICE_CONTEXT_VISIBLE_LINES);
+    // The whole text is still what the card carries, not a truncated prefix.
+    expect(folded.props.children).toBe(long);
+
+    const toggle = root.findAllByProps({ testID: "choice-card-context-toggle" })[0]!;
+    expect(toggle.props.accessibilityState).toEqual({ expanded: false });
+    expect(toggle.props.accessibilityRole).toBe("button");
+
+    act(() => toggle.props.onPress());
+    const opened = root.findAllByProps({ testID: "choice-card-context" })[0]!;
+    expect(opened.props.numberOfLines).toBeUndefined();
+    const after = root.findAllByProps({ testID: "choice-card-context-toggle" })[0]!;
+    expect(after.props.accessibilityState).toEqual({ expanded: true });
+
+    act(() => after.props.onPress());
+    expect(root.findAllByProps({ testID: "choice-card-context" })[0]!.props.numberOfLines).toBe(CHOICE_CONTEXT_VISIBLE_LINES);
+  });
+
+  test("folds the context on a read-only card too", () => {
+    // Reading is what a past card is for, so the fold works there; the toggle
+    // answers nothing and does not unlock the rows.
+    const long = Array.from({ length: 16 }, () => "图注还挂着旧的 42。").join(" ");
+    const root = render(withContextFence(long));
+    const toggle = root.findAllByProps({ testID: "choice-card-context-toggle" })[0]!;
+    act(() => toggle.props.onPress());
+    expect(root.findAllByProps({ testID: "choice-card-context" })[0]!.props.numberOfLines).toBeUndefined();
+    for (const row of rows(root)) expect(row.props.disabled).toBe(true);
   });
 
   test("without an answer surface every card is read-only", () => {

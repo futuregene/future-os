@@ -1,6 +1,7 @@
 import type { ChoiceCardMode, ChoiceCardNode, ChoiceCardOption } from "@future-os/markdown";
-import { Check, ListChecks } from "lucide-react-native";
-import { createContext, useContext } from "react";
+import { CHOICE_CONTEXT_VISIBLE_LINES, choiceContextFolds } from "@future-os/markdown";
+import { Check, ChevronDown, ChevronUp, ListChecks } from "lucide-react-native";
+import { createContext, useContext, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { layout, radius, spacing } from "../theme/tokens";
@@ -55,6 +56,18 @@ export const ChoiceCardsEnabledContext = createContext(true);
 export const ChoiceCardsEnabledProvider = ChoiceCardsEnabledContext.Provider;
 
 /**
+ * Width units one line of a phone card's context holds: 350pt less the card's
+ * 16pt padding, at 13px, is about 24 CJK characters — 48 units by
+ * `estimateContextLines`'s accounting. The phone's column is 2.5x narrower than
+ * the desktop's, so the same context that fits a desktop card in four lines
+ * already folds here, which is the point of passing it in.
+ *
+ * The visible line count is the shared `CHOICE_CONTEXT_VISIBLE_LINES`, so
+ * `numberOfLines` and the fold rule cannot drift apart.
+ */
+const CONTEXT_UNITS_PER_LINE = 48;
+
+/**
  * A `futureos-choice` block: the reply's closing question, drawn as a card.
  *
  * The phone's card (design `docs/design/choice-cards.zh-CN.md` §5.7) is the
@@ -83,6 +96,12 @@ export function ChoiceCard({ live, node }: { live: boolean; node: ChoiceCardNode
   // something the composer shows by itself. The model's own line still shows;
   // a past card adds the notice underneath.
   const guidance = node.hint;
+  // Nothing bounds what a model writes, and a card carrying twenty lines of
+  // context has become the reply it was meant to replace. Above the visible
+  // lines the tail folds behind a button. Below it, no control at all.
+  const [contextExpanded, setContextExpanded] = useState(false);
+  const contextFolds = node.context ? choiceContextFolds(node.context, CONTEXT_UNITS_PER_LINE) : false;
+  const contextFolded = contextFolds && !contextExpanded;
   return (
     <View style={styles.card} testID="choice-card">
       <View style={styles.head}>
@@ -94,7 +113,34 @@ export function ChoiceCard({ live, node }: { live: boolean; node: ChoiceCardNode
       </View>
       {node.context
         ? (
-            <Text style={styles.context} testID="choice-card-context">{node.context}</Text>
+            <>
+              <Text
+                numberOfLines={contextFolded ? CHOICE_CONTEXT_VISIBLE_LINES : undefined}
+                style={styles.context}
+                testID="choice-card-context"
+              >
+                {node.context}
+              </Text>
+              {contextFolds
+                ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{ expanded: contextExpanded }}
+                      hitSlop={8}
+                      onPress={() => setContextExpanded(expanded => !expanded)}
+                      style={styles.contextToggle}
+                      testID="choice-card-context-toggle"
+                    >
+                      {contextExpanded
+                        ? <ChevronUp color={colors.inkMuted} size={13} />
+                        : <ChevronDown color={colors.inkMuted} size={13} />}
+                      <Text style={styles.contextToggleText}>
+                        {contextExpanded ? t("choice.context.collapse") : t("choice.context.expand")}
+                      </Text>
+                    </Pressable>
+                  )
+                : null}
+            </>
           )
         : null}
       {guidance
@@ -253,6 +299,23 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     color: theme.colors.inkSoft,
     fontSize: theme.font(13),
     lineHeight: theme.leading(19),
+  },
+  // "展开"/"收起": a row of its own under the context, 44pt tall like every other
+  // touch target on this card (hitSlop covers the rest), quiet enough to read as
+  // chrome rather than a fifth option.
+  contextToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    marginTop: -2,
+    paddingHorizontal: spacing.md,
+    paddingBottom: 6,
+    minHeight: layout.touchTarget,
+  },
+  contextToggleText: {
+    color: theme.colors.inkMuted,
+    fontSize: theme.font(12),
+    lineHeight: theme.leading(17),
   },
   hint: {
     paddingHorizontal: spacing.md,

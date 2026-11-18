@@ -79,7 +79,7 @@ option: table | 表里加一列样本量 | Frank 42 / Dreher 186，标出测量�
 **`context` 是卡片的「就地问答」能力**（2026-11-18）。卡片此前只有标题、选项说明和一行副标题，要判断"接下来做哪件"仍得往上看那几百字的复盘——正是卡片要消灭的那种来回。加上 `context` 之后，卡片把**结论**搬进自己：图注还挂着旧数据、图例压着曲线、两篇的样本量不一致，这类事实恰恰是选择的依据。它有三个边界，写在 prompt 里也写在渲染上：
 
 - **是情境，不是摘要**。不重述正文里没有任何一行会用到的东西，也不写寒暄；正文可以因此更短（同一句话只说一次）。
-- **有上限**。目标 1–3 句、200 字左右；卡片会随它变高，超过就是又一次"往上翻"。
+- **有上限，而且真的会收**（2026-11-18 补）。目标 1–3 句、200 字左右；超过四行（`CHOICE_CONTEXT_VISIBLE_LINES`）就折起来只显示前四行，下面一行"展开"按钮一点展开全文。折叠的判据来自文本、**驱动** CSS 的 clamp，不是反过来测量高度：估算说"够短"就完全不裁，所以估错的后果只是"早折/晚折一行"，绝不会出现文字被裁掉却没有按钮可点。
 - **可多段**。重复写 `context:` 行按行序拼成多段（渲染 `pre-line`），但两段以上只有在真的分得开时才值那点高度。
 
 渲染位置在标题之下，`12px / 18px`、`ink-soft`（比 `hint` 的 `11px / ink-muted` 重一档：它是内容，`hint` 和只读提示是 chrome）。**只读卡保留 context**——另加一行"早先的提问，这张卡不能再选"（§2），但情境是信息，一张历史卡仍然要说清它在问什么。手机同一规则（`13px`、`inkSoft`）。
@@ -213,6 +213,7 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 - 卡宽 768px，与正文列同宽（`max-w-3xl`），左对齐、跟在最后一个块之后 4px；
 - 卡头 12px 半粗标题 + 右侧 11px 模式标注（`单选` / `多选`）；
 - 标题下是 `context` 情境段（12px / 18px、`ink-soft`、段内换行保留），没写 `context` 的卡不占这段高度；
+- **超过四行的情境会折起来**：`line-clamp-4` 截断出省略号，下面一行 11px 的"展开 / 收起"按钮（带 chevron，`aria-expanded` + `aria-controls` 指向情境段）。全文一直在 DOM 里，所以屏幕阅读器读到的是完整文本，展开只是把它画出来。四行及以下不画任何控件——对已经全部可见的文字放一个"展开"，是又一个按了没反应的按钮；手机同一规则，`numberOfLines={4}` 由系统画省略号；
 - **没有默认副标题**（2026-11-18 删除）：原来那行"选一个就放进输入框；也可以直接在输入框里写别的"解释的是机制，而机制已经由答案 pill 自己演示了（选了就出现在输入框里，见 §5.2）；"单选/多选"也在卡头右上角说过了。一条每次都要读、只读一次有用的说明，等于在每张卡上收一次税。模型自己写的 `hint` 仍会渲染在这里（11px、`ink-muted`）；只读卡则多一行 `choice.hint.readonly`（§3）；
 - 每个选项一行：16px 单选圈 + 13px 文案 + 12px 一行说明（`ink-muted`）；未选行无边框、无底色，靠留白分列；
 - **多选卡的标记是方框**（16px，圆角 3px，选中后同色对勾），单选卡才是圆圈：两种卡的差别不只在右上角那行小字，形状本身就是判据，扫一眼就知道能不能多选。手机端同一规则（18px 方框，圆角 4px）；
@@ -500,6 +501,8 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
 |---|---|---|
 | `choice.mode.single` | 单选 | Single choice |
 | `choice.mode.multi` | 多选 | Multiple choice |
+| `choice.context.expand` | 展开 | Show more |
+| `choice.context.collapse` | 收起 | Show less |
 | `choice.hint.readonly` | 早先的提问，这张卡不能再选 | An earlier question — this card can no longer be picked |
 | `choice.foot.queued` | 已放进输入框，可以继续补充，也可以直接发送 | In the input — add a note if you want, or send as is |
 | `choice.chip.change` | 修改「{{title}}」的选择 | Change the answer to "{{title}}" |
@@ -546,6 +549,7 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
 
 - **解析**：合法单/多选；2 与 4 的边界；3 个以下/5 个以上降级；重复 id、非法 id、缺 title 的降级；围栏在中途；未知字段忽略。
 - **`context`（2026-11-18）**：单行原样保留；重复行拼成多段；写了但空掉的不出现；桌面与手机都画在标题下；只读卡仍保留；没写时不占高度。（`choiceCard.test.ts`、`ChoiceCard.test.tsx`、`MarkdownContent.test.tsx`、手机 `ChoiceCard.test.ts`）
+- **折叠（2026-11-18）**：行数估算（宽字符算两格、显式换行算新段、零宽列不炸）；四行及以下**不画按钮也不裁**；六行起折叠，`aria-expanded` 从 `false` 变 `true` 后 clamp 消失、全文仍在 DOM；只读卡上按钮同样可用且不解锁任何行；`line-clamp-4` 与 `CHOICE_CONTEXT_VISIBLE_LINES` 由测试读常量对齐。（`choiceContext.test.ts`、桌面与手机的 `ChoiceCard.test`）
 - **桌面（三态回归，必测）**：空编辑器 ⇒ `disabled:true`；只有 pill ⇒ **`disabled:false`**；移除 pill ⇒ `disabled:true`。这是 v1 错误的那一条，必须钉死。
 - **桌面**：卡片渲染与只读/可交互切换；点行 → pill 出现；铅笔改 pill；叉移除 pill 且发送键变灰；pill + 文字一起发送的内容（§7 四种情况逐条断言）；发送后 pill 消失，**卡面不保留高亮**（答案在用户消息的标签上，为什么不做回填见 §2）。
 - **远程**：同上，且断言 chip 在 textarea 之上而不是里面；**只有 chip 时发送键可用**（v1 同样漏掉的那一条）；远程草稿切换不串答案。

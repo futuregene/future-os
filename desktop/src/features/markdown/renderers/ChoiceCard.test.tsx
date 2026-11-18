@@ -1,5 +1,6 @@
 import type { ChoiceCardProps } from "./ChoiceCard";
 // @vitest-environment jsdom
+import { CHOICE_CONTEXT_VISIBLE_LINES } from "@future-os/markdown";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -220,5 +221,62 @@ describe("choice card rendering", () => {
     expect(card.textContent).not.toContain("An earlier question");
     // With no model hint there is nothing to describe the group with at all.
     expect(card.getAttribute("aria-describedby")).toBeNull();
+  });
+
+  /**
+   * A context that outgrows the card folds down to `CHOICE_CONTEXT_VISIBLE_LINES`
+   * lines behind a button; one that fits is left alone, with no button at all — a
+   * "show more" over text that is already fully visible is a control that does
+   * nothing (the same reason the default subtitle went, §5.1).
+   */
+  it("leaves a context that fits in the visible lines unclamped and without a button", () => {
+    const card = mount({ context: "森林图已重画完了。图例仍压在曲线上。" });
+    const context = card.querySelector<HTMLElement>("[data-choice-context]")!;
+    expect(context.className).not.toContain("line-clamp");
+    expect(context.getAttribute("data-choice-context-folded")).toBeNull();
+    expect(card.querySelector("[data-choice-context-toggle]")).toBeNull();
+  });
+
+  it("folds a long context and expands it on one click", () => {
+    const card = mount({
+      context: Array.from({ length: 8 }, (_, index) => `第 ${index + 1} 条：图注还挂着旧的 42。`).join("\n"),
+      onSelect: vi.fn(),
+    });
+    const context = card.querySelector<HTMLElement>("[data-choice-context]")!;
+    // The clamp follows the estimate (choiceContext.ts) and mirrors the shared
+    // line count: if the constant moves, this reads the new number and fails.
+    expect(context.className).toContain(`line-clamp-${CHOICE_CONTEXT_VISIBLE_LINES}`);
+    expect(context.getAttribute("data-choice-context-folded")).toBe("true");
+    // The whole text stays in the DOM, so the reader and the accessibility tree
+    // never lose a word of it — only the first lines are drawn.
+    expect(context.textContent).toContain("第 8 条");
+
+    const toggle = card.querySelector<HTMLButtonElement>("[data-choice-context-toggle]")!;
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.getAttribute("aria-controls")).toBe(context.id);
+    expect(toggle.textContent).toContain("Show more");
+
+    act(() => toggle.click());
+
+    const expanded = card.querySelector<HTMLElement>("[data-choice-context]")!;
+    expect(expanded.className).not.toContain("line-clamp");
+    expect(expanded.getAttribute("data-choice-context-folded")).toBeNull();
+    const after = card.querySelector<HTMLButtonElement>("[data-choice-context-toggle]")!;
+    expect(after.getAttribute("aria-expanded")).toBe("true");
+    expect(after.textContent).toContain("Show less");
+
+    act(() => after.click());
+    expect(card.querySelector("[data-choice-context]")!.getAttribute("data-choice-context-folded")).toBe("true");
+  });
+
+  it("folds the context on a card that cannot be picked too", () => {
+    // Reading is exactly what a past card is for, so the fold must work there:
+    // the toggle answers nothing and therefore is not part of the answer surface.
+    const card = mount({ context: Array.from({ length: 8 }).fill("图注还挂着旧的 42。").join("\n") });
+    const toggle = card.querySelector<HTMLButtonElement>("[data-choice-context-toggle]")!;
+    act(() => toggle.click());
+    expect(card.querySelector("[data-choice-context]")!.getAttribute("data-choice-context-folded")).toBeNull();
+    // No answer surface appeared alongside it.
+    expect(card.querySelector("[data-choice-card]")!.getAttribute("aria-disabled")).toBe("true");
   });
 });

@@ -475,6 +475,7 @@ export const resources = {
       // the options, never these.
       choice: {
         mode: { single: "Single choice", multi: "Multiple choice" },
+        context: { expand: "Show more", collapse: "Show less" },
         hint: {
           readonly: "An earlier question — this card can no longer be picked",
         },
@@ -1738,6 +1739,7 @@ export const resources = {
       },
       choice: {
         mode: { single: "单选", multi: "多选" },
+        context: { expand: "展开", collapse: "收起" },
         hint: {
           readonly: "早先的提问，这张卡不能再选",
         },
