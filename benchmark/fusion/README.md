@@ -82,14 +82,51 @@ python3 benchmark/fusion/bench.py plan --counts bbeh=460,omni=540 --exclude omni
 用 `runtime.py --single-only --binary <future>` 启动隔离 Host，再准备一个 JSON 文件。对象的键是组名，值包含 `model` 和 `thinking_level`，例如 `{"deepseek-flash-max":{"model":"future/deepseek-flash","thinking_level":"max"}}`。启动命令如下。
 
 ```sh
-python3 benchmark/fusion/campaign.py --suite benchmark/fusion/suites/max-1000.json --binary <future> --runtime benchmark/fusion/.local/runtime.json --profiles <profiles.json> --out benchmark/fusion/runs/max-1000-campaign --jobs-per-group 2
+python3 benchmark/fusion/campaign.py --suite benchmark/fusion/suites/max-1000.json --binary <future> --runtime benchmark/fusion/.local/runtime.json --profiles <profiles.json> --out benchmark/fusion/runs/max-1000-campaign --jobs-per-group 2 --makeup-passes 3
 ```
 
 `--jobs-per-group 2` 为每组保留两路，四组最多同时运行八个对话。`--jobs` 则设置所有组共享的并发上限。续跑可以调整并发，原始清单继续保留，`executions.json` 记录每次续跑采用的并发配置和调度脚本摘要。
 
+`--routes <routes.json>` 可以为每组指定多个提供商，例如 `{"qwen-3-7-plus-high":[{"model":"future/qwen3.7-plus","thinking_level":"high","jobs":3},{"model":"alibaba-cn/qwen3.7-plus","thinking_level":"high","jobs":3}]}`。配置需要覆盖所有组，每条路由独立限制并发，同一组共享待测队列。启用路由后，已有网络失败与剩余首轮题目一起调度。原绑定与历史结果继续保存，每次执行记录路由和实际模型绑定，续接原请求时使用该请求原来的提供商。
+
+等待程序每分钟核对一次终态账本。已完成的请求可以按 run ID 从完整转录取回最终答案。`--timeout 1800` 设置单题 30 分钟上限，超时后中止该请求，并在账本确认终态后进入补测队列。更新等待程序后续跑需要显式指定 `--allow-runner-update`，每次采用的脚本摘要与超时配置写入 `executions.json`。
+
 首轮遇到已确认终态的模型网络故障时，保留原尝试并继续调度。所有组首轮结束后补测这些题，默认最多补测三遍。终态账本确认触及输出上限时，该题记录为 `output_limit`，后续题继续运行。认证、额度、回执不明和采证失败会暂停调度。续跑使用原题包、模型绑定、二进制、判分脚本与隔离 Host 数据目录。已接受但尚无结果的尝试只重新等待原请求。隔离 Host 已停止时，可用 `runtime.py --single-only --resume-home <原隔离数据目录>` 重启。若进程非正常退出，确认旧进程已停止后再移除输出目录中的 `campaign.lock`。
 
 输出目录中的 `progress.json` 可随时查看，结束后生成 `results.csv`。逐题提示词、回答、公开转录、可获取的推理、用量和错误分别保存在各组的 `attempt-*/` 目录。首轮与补测的记录均留在本地。冻结清单记录题包、脚本和二进制哈希，模型目录与生效档位另存。
+
+`--makeup-passes` 设置技术失败的补测轮数，默认 3 轮，合计最多 4 次尝试。响应时限超时、网关错误及账本已确认终态的响应结束未确认等技术失败单独记录，预算用尽仍无结果时标为 `technical_incomplete`，`graded=false`、`passed=null`。它们不作为模型答错计入能力正确率，报告另列完成率与技术失败次数。已返回的完整答案按对错判分，答错不重跑。输出上限和空答计入模型未通过。`case-status.json` 记录每题状态，最终 CSV 保留同样的标记，进度中的 `accuracy` 只按 `graded_cases` 计算。
+
+技术失败不消耗模型结果的“两次未通过”标记。只有存在两次实际模型结果且均未通过时，才标记 `failed_after_two_attempts`。续跑调整补测上限时，历史尝试继续保留，新规则写入执行记录。
+
+同一套长测调度器支持 `--arm fusion`。用 `runtime.py --fusion-settings <settings.json>` 启动带显式配置快照的隔离 Host，配置文件包含 `enabled` 和 `configuration`。模型与思考等级在启动前验证，实际生效的 Fusion 配置写入清单，每道题提交前再次核对。下例同时运行五道题，`profiles.json` 为父会话模型绑定，参与模型与主持模型来自 Fusion 快照。
+
+```sh
+python3 benchmark/fusion/campaign.py --arm fusion --suite benchmark/fusion/suites/max-1000.json --binary <future> --runtime benchmark/fusion/.local/runtime.json --profiles <profiles.json> --out benchmark/fusion/runs/fusion-max-1000 --jobs 5 --timeout 7200 --makeup-passes 3
+```
+
+Fusion 使用正常的 `/fusion` 入口，逐次记录是否实际调用讨论工具、父会话答案、参与者与主持人的公开转录、讨论结论、用量及失败原因。主成绩取父会话最终答案。完整答案答错后不重跑，技术补测仍保留每次尝试。`--timeout` 是整道题的保护上限，参与者之间的等待策略由冻结的 Fusion 实现和配置决定。
+整题时限到达并请求取消后，收集器只读等待对应 run 的终态账本最多 30 秒，避免把异步落盘
+期间的空账本当作未知故障。确认已结束后才进入补测；若取消时恰好完成，则保留原最终答案。
+
+单个 Host 最多同时执行五场 Fusion 讨论。因明确请求升级二进制而续跑时，需要 `--allow-binary-update`，执行记录保留新二进制摘要，原始清单和已生成结果继续作为历史记录。
+
+`--rolling-makeups` 让已确认的技术失败按题滚动补测：下一次尝试排在尚未派发的题目之后，
+有空闲槽位就接续，无需等待同轮的慢请求全部结束。并发上限、每题技术补测次数和完整答案
+不重跑的规则保持不变；恢复执行时继续等待原有 accepted run，调度模式写入 `executions.json`。
+
+Fusion 长测连续出现 5 次已确认的技术失败时，自动暂停新题派发 5 分钟；故障持续时，
+退避增加为 10、20、40 分钟，最多 1 小时，拿到非技术失败结果后复位。已接受的请求继续
+执行，等待不占用整题时限；退避状态和事件单独保留，进程重启后仍遵守剩余等待时间。
+这只调节请求频率，不更改输出预算、评分或每题补测次数，也不重跑已有完整答案。
+已确认终止的提供商流错误（`model_response_error` / `finish_error`，如服务端推理引擎故障）
+也进入技术补测；内容过滤和输出上限不因这项分类而重跑。
+隔离 Host 进程退出后，先恢复同一私有目录并核对原始 run 的账本。仅对确认已中断、
+另存重启证据并标记 `host_runtime_interrupted` 的尝试开放技术补测；进程不存在或读取失败
+本身不授权重新发送题目。这类已恢复的本机中断不触发提供商故障退避。
+本地持久化故障同样先保留原始空/降级账本及日志，重启同一隔离目录后核验原 run 已终止，
+再显式标记 `runtime_persistence_failure` 开放技术补测。恢复账本的零用量不代表实际零消耗，
+无法恢复的用量需标记不完整。此规则只用于无外部副作用的闭卷评测，不是通用任务自动重放授权。
 
 ## 安装
 
@@ -291,7 +328,7 @@ Agent/Host 自身的阶段修正和上游重试仍按实际策略执行，
 
 生成策略 3 不设置步骤或整场固定总时长：`step_timeout_secs=0`、`run_timeout_secs=0`，
 `idle_timeout_secs=300`。连续 300 秒没有新增推理或正文会触发空闲超时。心跳、usage、状态通知
-及只读回放不算内容进展。分析和评议另有并行收束规则，首份有效报告后最多等 10 分钟，
+及只读回放不算内容进展。分析和评议另有并行收束规则，首位成员结束（包括失败退出）后最多等 10 分钟，
 只剩一路时最多再等 5 分钟，取较早的截止时间。旧设置读取时升级，但模型、思考等级和历史讨论快照保持原值。
 Fusion 子请求也不再受原 30 分钟 HTTP 总时限截断，普通会话的传输配置不随之改变。
 以每次运行的有效配置快照为准。
@@ -304,16 +341,21 @@ Fusion 子请求也不再受原 30 分钟 HTTP 总时限截断，普通会话的
 在已构建的 CLI 上执行本地模拟集成验证（不调用付费模型）：
 
 ```sh
-benchmark/fusion/.venv/bin/python benchmark/fusion/verify_runtime.py --check-idle
+benchmark/fusion/.venv/bin/python benchmark/fusion/verify_runtime.py --check-idle --check-evidence
 ```
 
 该脚本启动回环 SSE 服务和隔离 Host，要求同一提供商三路分析请求全部到达后才放行，
-并检查三人分析及评议完成；另模拟两种长推理断流路径，验证 1,310,720 字节 UTF-8
+并检查三人分析完成与一致结论交付；来源场景再触发三人评议及同会话报告修复。
+另模拟两种长推理断流路径，验证 1,310,720 字节 UTF-8
 原文、重试完成及同一会话后续请求。结果写入 `.local/verification-*/verification.json`。
-另核验实际系统提示包含日常 Fusion 规则且工具选择仍是自动模式；
+另核验首次请求指定 Fusion 工具，完成的封闭结论由后台直接交付；
 空闲看门狗在隔离夹具中缩短为 2 秒：持续推理输出 2.5 秒仍应完成，仅发送心跳的参与者应被终止且不重试。
 这个缩短值仅写入夹具自己的设置，真实评测仍用 300 秒。模拟服务首帧延迟 300 毫秒让 CLI 订阅接入；
 该脚本不用于衡量真实模型速度。
+`--check-evidence` 会让三个参与者先提交编造的来源名，要求后台拒绝，并在原会话的一次报告修复中
+改为包含来源 ID、SHA-256 版本和原文的引用。它同时检查缺失证据与空查询结果分开记录，
+自包含问题仍可在没有外部证据时完成，所有请求保留原有 `high` 和 65,536 输出上限。
+该校验只保证来源及引文匹配，不保证原文蕴含模型结论。
 本地不运行单元测试，新增 Rust 回归测试由 CI 执行。
 
 ## 如何读结果
@@ -329,8 +371,10 @@ benchmark/fusion/.venv/bin/python benchmark/fusion/verify_runtime.py --check-idl
 
 **日常使用配置的主指标**：两组最终回答的正确率。
 两组主 Agent 均为 DeepSeek Flash `max`，使用产品默认系统提示词，关闭无关项目上下文。
-Fusion 组通过普通 `/fusion` 前缀启用功能，模型按日常共用提示词自然选择工具；
-不使用强制 `tool_choice`，不添加“第一步必须调用”“只能调用一次”等评测专用指令。
+Fusion 组通过普通 `/fusion` 前缀启用功能，工具路由遵循被测产品版本的共用运行时策略；
+评测脚本不额外设置强制 `tool_choice` 或“只能调用一次”等专用指令。
+父请求策略 v1 的封闭任务会由产品要求首次咨询，并使用请求级路由/交付配置；
+记录策略及二进制版本，不把会话所选思考等级当作每一轮的实际生成设置。
 另外记录 Fusion 启动率、实际讨论次数、完成情况、讨论结论评分及最终回答与结论的差异。
 未调用时即使最终答对，也不能据此宣称 Fusion 参与或带来了推理收益。
 
@@ -343,6 +387,10 @@ Fusion 组通过普通 `/fusion` 前缀启用功能，模型按日常共用提�
 并核验空 `read_scope`。自然发生的零次或多次讨论都保留，不为凑调用数重新生成答案。
 若主模型流中断导致工具在执行前取消，保留对应工具回执并标记 `not_started`；
 这类调用尝试不算已完成讨论，也不应因缺少讨论记录而覆盖主模型最终答案。
+工具回执明确报告缺少必填字段、字段类型错误，或空问题、目标、背景等启动前参数校验失败时，
+同样记录为未启动，单独标记
+`tool_input_rejected`。保留最终回答和评分，不为修正工具参数而重跑整题；缺少匹配回执的
+讨论记录仍需检查，不能把未知故障当作未执行。
 
 输出必须包含 `FINAL_ANSWER:`。网格题明确给出列名 schema，不泄露格子中的答案。
 缺少答案、格式失败、超时或调用失败都保留在分母中，同时单独列出错误与解析失败。
@@ -414,3 +462,72 @@ benchmark/fusion/.venv/bin/ruff format --check benchmark/fusion
 通过本机命令手动执行。`tests/` 中的离线回归文件保留。
 常规 `ci.yml` 的规则保持不变：纯 `benchmark/` 改动不会安排 Rust、TypeScript、Android
 或 iOS 编译和测试，仍保留轻量的影响范围检测与主干必需的 `CI result` 汇总检查。
+
+Technical diagnostics are independent of completed parent answers: a failed consultation read is retained as `diagnostics_pending`, without re-generating or erasing the answer. Unknown acceptance/validation failures remain ungraded as `needs_review`, never automatically replayed, while healthy cases continue. Campaigns finish with `completed_with_review_needed` when evidence still requires inspection. The isolated runtime records running/exited lifecycle and launcher/Host process identities; an external kill can still require checking the actual process and accepted run ledger.
+
+## 结果采集与父请求策略（2026-11-17）
+
+新采集结果以对应 accepted run 的终态 transcript 中最后一条助手记录的公开正文为准，
+保存 `canonical-answer.json`、`answer_entry_id` 与 `text_source`。原始 `output.json` 保留 CLI 流式返回；
+`stream_text_mismatch` 和 `stream_text_is_suffix` 标记差异，不拼接猜测、不调用模型补答案。
+记录不完整、run 不匹配、最后一条仍是工具调用或没有公开正文时，报告采集错误，不借用更早或其他 run 的答案。
+既有原始结果与成绩不原地改写，评分器及题目也保持不变。
+
+历史父请求策略 v1 曾限制路由输出并请求关闭外层思考；该策略已撤回。
+当前路由、交付、主持、成员及同会话修复请求均保留用户所选模型、思考等级和模型输出上限，
+Fusion 仅控制工具路由及既有超时策略。比较历史成绩时仍须记录二进制和策略版本；
+不能把旧策略的实际请求配置当作当前配置。本地模拟服务验证不代表真实提供商兼容性或准确率提升。
+
+## 仅答复 Fusion 的交付与诊断
+
+仅开放 Fusion 工具的完整题目由后端保留原始请求，并将主持的结构化 `final_answer` 作为实际助手答复交付，不再追加主模型生成。正式终点仍为落盘后的最终助手答复，评分器与冻结题目不变；主持结果、成员输出和来源检查另外留档，不能用阶段正确替代最终正确。该协议变化应作为新实验版本记录，不覆盖历史结果。
+
+所有成员提供有效、相同答案且无未解决项时，可以跳过议题整理及全员评议，但主持仍核查关键前提。运行清单须记录二进制和实现摘要，以区分协议变化、模型配置变化及重复试验。故障筛选的小样本只能用于诊断，不能作为整体正确率提升的估计。
+
+隔离运行时的就绪检查在私有 Fusion 数据库上使用 `mode=rw` 执行查询，允许 SQLite 初始化运行所需的旁文件，且禁止创建缺失数据库；不写入源用户数据库。启动失败保留 `readiness-failure.json`，最近一次失败探针保留 `readiness-last-probe.json`，包括 CLI 返回码、错误及执行器心跳状态。启动阶段尚未提交题目时不计为模型答题尝试。
+
+## 关键异议处置与重复讨论
+
+主持定稿前会收到后端编号的关键异议清单：已验证的议题分歧、评议中的实质反对或保留、
+参与者显式提出且通过引用校验的 `objections`，以及重开讨论继承的未决项。
+这不要求评述每处措辞差异。主持对每个编号必须给出采纳、驳回或未解决的处置，说明理由、
+对答案的影响及可核对的来源摘录。遗漏、重复编号、伪造出处或把未解决异议宣称为已定论会触发
+既有的一次同会话修复；仍未通过就保留失败原始记录，不发布有效结论。来源校验只检查引用出处，
+不能机械保证理由在逻辑上充分，少数意见是否被正确回答仍需真实模型配对评估。
+关键清单不随普通报告的上下文压缩而静默截断；超出上下文容量会明确拒绝该请求。
+处置及结论继承理由保存在 `decision_audit`，桌面讨论详情可以查看。
+
+同一父运行、同一工作区、完全相同且未请求文件快照的已完成问题和输入会复用前次结论；改变输入后重新讨论
+必须提供 `revisit`（`previous_run_id`、`kind`、具体 `reason`）。支持 `new_evidence`、
+`counterexample`、`corrected_inference`、`user_scope_change`，不要求所有纠错都必须先找到新事实。
+后端只接受同一会话、同一工作区的已完成有效结论，将其原始目标、约束、结论和未决项冻结继承
+到分析、议题整理、评议和定稿。非用户改范围时目标和约束必须保持；用户改范围还需引用后端保留
+的新用户请求。定稿必须说明保持或修正前次结论；保持时答案不能悄悄改变。
+文件可能在执行过程中改变，因此涉及 `read_scope` 的相同问题必须显式重开并捕获当前文件，
+不把旧快照当成当前证据；同一工具调用的幂等重放仍保留原快照。
+独立问题仍可另开讨论，失败结果不当作有效结论。自动重复检测目前基于同一运行内的精确问题匹配，
+不声称能识别改写后的语义重复，也不跨新用户轮次自动复用可能过期的外部事实；跨轮次可显式 `revisit`。
+
+本地端到端协议验证可使用 `verify_runtime.py --check-idle --check-evidence --check-decisions`，
+模拟遗漏异议后原会话补齐处置，并检查请求仍发送用户的 `high` 和原有 `65536` 输出上限。
+模拟服务不产生付费模型请求，也不修改历史基准成绩；运行记录继续保存在忽略目录。
+
+## Recovery 空闲保护与局部引用修复
+
+父模型的 Delivery / Recovery 使用五分钟无新增推理或正文的空闲保护；连续的非空推理和正文
+刷新计时，正文开始后仍保留该保护。状态、usage、开始标记、空白片段不刷新计时。
+Routing 仍沿用既有 180 秒路由总时限，评测收集器的整题一小时保护保持独立，不因阶段进展延长。
+这些变化不覆盖用户的模型、思考等级或输出预算。请求元数据策略 v3 将该范围记为
+`reasoning_or_text_inactivity`，便于和历史 `before_visible_text` 固定时限区分。
+
+异议处置的校验会一次报告所有错误位置；对引用错误提供有界的原始来源片段，要求只修正出错
+引用并保留其余有效内容。同一会话仍只有一次报告修复，不自动改写、删除或宽松认可错误引用。
+结构化成员报告中的 JSON 字符串按原始字段内容匹配，避免把转义符当成正文的一部分。
+来源匹配仍不证明推理正确；主持须区分已建立前提下可直接使用的结论，以及依赖额外假设的扩展。
+仅在元数据里写 conditional，不能使未经建立的扩展变成确定结论。
+
+`verify_runtime.py --check-local-repair` 用本地模拟模型检查多处错误引用的一次局部修复。
+`--check-recovery-progress` 使用真实时钟让失败咨询后的父模型持续推理超过 300 秒再给出答案，
+验证不被旧总时限截断；它自动启用成员的两秒测试空闲阈值，不调用付费提供商。
+`--expect-recovery-progress absolute-timeout` 可对保留的旧二进制复现原始截止行为。
+新增的暂停时钟单元回归由 CI 执行，覆盖推理后的静默、空白/状态事件与路由边界。

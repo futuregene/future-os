@@ -283,6 +283,20 @@ fn a_declared_value_travels_verbatim_for_each_chat_format() {
 }
 
 #[test]
+fn disabled_effort_is_explicit_and_does_not_replace_normal_thinking() {
+    let model = configured_model(
+        "openai-completions",
+        json!({"id":"gateway", "thinkingLevels":["off","high"], "compat":{"thinkingFormat":"deepseek","disabledReasoningEffort":"none"}}),
+    );
+    let disabled = request_at_level(&model, "off");
+    assert_eq!(disabled["thinking"]["type"], "disabled");
+    assert_eq!(disabled["reasoning_effort"], "none");
+    let high = request_at_level(&model, "high");
+    assert_eq!(high["thinking"]["type"], "enabled");
+    assert_eq!(high["reasoning_effort"], "high");
+}
+
+#[test]
 fn off_sends_each_protocols_disable_spelling() {
     for (format, expected) in [
         ("deepseek", json!({"thinking": {"type": "disabled"}})),

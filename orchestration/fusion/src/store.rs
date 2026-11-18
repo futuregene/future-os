@@ -30,6 +30,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS fusion_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS fusion_runs(id TEXT PRIMARY KEY,parent_session TEXT NOT NULL,parent_run TEXT NOT NULL,tool_call TEXT NOT NULL,status TEXT NOT NULL,owner TEXT,data TEXT NOT NULL CHECK(json_valid(data)),UNIQUE(parent_session,parent_run,tool_call));
             CREATE INDEX IF NOT EXISTS fusion_queue ON fusion_runs(status);
+            CREATE TABLE IF NOT EXISTS fusion_aliases(id TEXT PRIMARY KEY,parent_session TEXT NOT NULL,parent_run TEXT NOT NULL,tool_call TEXT NOT NULL,run_id TEXT NOT NULL REFERENCES fusion_runs(id),request TEXT NOT NULL CHECK(json_valid(request)),UNIQUE(parent_session,parent_run,tool_call));
             CREATE TABLE IF NOT EXISTS fusion_steps(id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES fusion_runs(id),data TEXT NOT NULL CHECK(json_valid(data)));
             CREATE INDEX IF NOT EXISTS fusion_step_run ON fusion_steps(run_id);
             CREATE TABLE IF NOT EXISTS fusion_events(seq INTEGER PRIMARY KEY AUTOINCREMENT,run_id TEXT NOT NULL REFERENCES fusion_runs(id),kind TEXT NOT NULL,data TEXT NOT NULL CHECK(json_valid(data)),timestamp INTEGER NOT NULL);
@@ -121,8 +122,29 @@ impl Store {
         Ok(db)
     }
 
+    fn record_alias(
+        tx: &rusqlite::Transaction<'_>,
+        id: &str,
+        parent: &Parent,
+        run: &Consultation,
+        request: &str,
+    ) -> Result<()> {
+        tx.execute(
+            "INSERT INTO fusion_aliases VALUES(?1,?2,?3,?4,?5,?6)",
+            params![
+                id,
+                parent.session_id,
+                parent.run_id,
+                parent.tool_call_id,
+                run.id,
+                request
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn heartbeat(&self, owner: &str) -> Result<()> {
-        self.connect()?.execute("INSERT INTO fusion_meta(key,value) VALUES('host',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [json!({"owner":owner,"at":now_ms()}).to_string()])?;
+        self.connect()?.execute("INSERT INTO fusion_meta(key,value) VALUES('host',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [json!({"owner":owner,"at":now_ms(),"input_policy_version":crate::INPUT_POLICY_VERSION}).to_string()])?;
         Ok(())
     }
 
@@ -136,7 +158,9 @@ impl Store {
                 .optional()?;
             let value: Value = serde_json::from_str(raw.as_deref().unwrap_or("null"))?;
             let age = now_ms().saturating_sub(value["at"].as_i64().unwrap_or(0));
-            Ok((0..5000).contains(&age))
+            Ok((0..5000).contains(&age)
+                && value["input_policy_version"].as_u64()
+                    == Some(u64::from(crate::INPUT_POLICY_VERSION)))
         })()
         .unwrap_or(false)
     }
@@ -152,7 +176,12 @@ impl Store {
     }
 
     pub fn for_tool(&self, session: &str, run: &str, tool: &str) -> Result<Option<Consultation>> {
-        let raw: Option<String> = self.connect()?.query_row("SELECT data FROM fusion_runs WHERE parent_session=?1 AND parent_run=?2 AND tool_call=?3", params![session,run,tool], |r|r.get(0)).optional()?;
+        let db = self.connect()?;
+        let mut raw: Option<String> = db.query_row("SELECT data FROM fusion_runs WHERE parent_session=?1 AND parent_run=?2 AND tool_call=?3", params![session,run,tool], |r|r.get(0)).optional()?;
+        // Existing read-only history may predate the additive alias table.
+        if raw.is_none() && db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='fusion_aliases')", [], |row| row.get::<_, bool>(0))? {
+            raw = db.query_row("SELECT r.data FROM fusion_aliases a JOIN fusion_runs r ON r.id=a.run_id WHERE a.parent_session=?1 AND a.parent_run=?2 AND a.tool_call=?3", params![session,run,tool], |row| row.get(0)).optional()?;
+        }
         raw.map(|s| serde_json::from_str(&s).map_err(Into::into))
             .transpose()
     }
@@ -177,6 +206,16 @@ impl Store {
         input: ConsultationInput,
         workspace: &Path,
     ) -> Result<(Consultation, bool)> {
+        self.prepare_with_revisit(parent, input, workspace, None)
+    }
+
+    pub fn prepare_with_revisit(
+        &self,
+        parent: Parent,
+        input: ConsultationInput,
+        workspace: &Path,
+        revisit: Option<crate::Revisit>,
+    ) -> Result<(Consultation, bool)> {
         input.validate()?;
         let mut db = self.connect()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -190,11 +229,127 @@ impl Store {
             let old: Consultation = serde_json::from_str(&raw)?;
             ensure!(
                 serde_json::to_value(&old.input)? == serde_json::to_value(&input)?
-                    && old.parent == parent,
+                    && old.parent == parent
+                    && old.lineage.as_ref().map(|l| &l.revisit) == revisit.as_ref(),
                 "Fusion invocation key reused with a different input"
             );
             return Ok((old, false));
         }
+        let workspace = workspace
+            .to_str()
+            .context("Fusion requires a Unicode workspace path")?;
+        let request = serde_json::to_string(
+            &json!({"parent":parent,"input":input,"workspace":workspace,"revisit":revisit}),
+        )?;
+        let alias: Option<(String, String)> = tx
+            .query_row(
+                "SELECT run_id,request FROM fusion_aliases WHERE id=?1",
+                [&id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if let Some((run_id, saved_request)) = alias {
+            ensure!(
+                saved_request == request,
+                "Fusion invocation key reused with a different input"
+            );
+            let raw: String = tx.query_row(
+                "SELECT data FROM fusion_runs WHERE id=?1",
+                [run_id],
+                |row| row.get(0),
+            )?;
+            return Ok((serde_json::from_str(&raw)?, false));
+        }
+        // Restrict automatic reuse to this turn and identical inputs; a new user
+        // turn may legitimately change evidence or the world outside this store.
+        let mut statement = tx.prepare("SELECT data FROM fusion_runs WHERE parent_session=?1 AND status='completed' AND ((?2 IS NOT NULL AND (id=?2 OR (parent_run=?3 AND json_extract(data,'$.lineage.revisit.previous_run_id')=?2))) OR (?2 IS NULL AND parent_run=?3)) ORDER BY rowid DESC")?;
+        let previous = statement
+            .query_map(
+                params![
+                    parent.session_id,
+                    revisit.as_ref().map(|r| &r.previous_run_id),
+                    parent.run_id
+                ],
+                |row| row.get::<_, String>(0),
+            )?
+            .map(|raw| -> Result<Consultation> { Ok(serde_json::from_str(&raw?)?) })
+            .collect::<Result<Vec<_>>>()?;
+        drop(statement);
+        let compatible = |old: &&Consultation| {
+            old.parent.database_id == parent.database_id
+                && old.workspace == workspace
+                && old
+                    .result
+                    .as_ref()
+                    .is_some_and(|r| !r.conclusion.trim().is_empty())
+        };
+        let lineage = if let Some(revisit) = revisit {
+            ensure!(
+                !revisit.reason.trim().is_empty(),
+                "Reopening needs a concrete reason"
+            );
+            if let Some(reused) = previous.iter().filter(compatible).find(|old| {
+                input.read_scope.is_empty()
+                    && old.parent.run_id == parent.run_id
+                    && old.lineage.as_ref().map(|l| &l.revisit) == Some(&revisit)
+                    && serde_json::to_value(&old.input).ok() == serde_json::to_value(&input).ok()
+            }) {
+                Self::record_alias(&tx, &id, &parent, reused, &request)?;
+                tx.commit()?;
+                return Ok((reused.clone(), false));
+            }
+            let old = previous
+                .iter()
+                .filter(compatible)
+                .find(|old| old.id == revisit.previous_run_id)
+                .context(
+                    "Reopening requires a completed decision in this conversation and workspace",
+                )?;
+            if revisit.kind == crate::RevisitKind::UserScopeChange {
+                let quote = revisit
+                    .user_scope_quote
+                    .as_deref()
+                    .filter(|q| !q.trim().is_empty())
+                    .context(
+                        "User scope changes require user_scope_quote from the current request",
+                    )?;
+                let request = input
+                    .parent_request
+                    .as_deref()
+                    .context("Missing current user request")?;
+                ensure!(
+                    request.contains(quote) && old.input.parent_request.as_deref() != Some(request),
+                    "Scope change must quote a new user request"
+                );
+            } else {
+                // Closed tasks retain the complete new user turn as question;
+                // general consultations can add new facts in evidence/background
+                // without changing the decision question itself.
+                let sealed_followup = old.input.answer_only
+                    && input.answer_only
+                    && old.parent.run_id != parent.run_id
+                    && old.input.parent_request != input.parent_request;
+                ensure!(old.input.goal == input.goal && old.input.constraints == input.constraints
+                    && (old.input.question == input.question || sealed_followup),
+                    "Reopening must preserve the previous question, goal and constraints; only a quoted user_scope_change may change the criterion");
+            }
+            Some(crate::DecisionLineage {
+                revisit,
+                previous_input: old.input.clone(),
+                previous_result: old.result.clone().context("Missing prior result")?,
+            })
+        } else {
+            if let Some(old) = previous.iter().filter(compatible).find(|old| {
+                old.parent.run_id == parent.run_id && old.input.question == input.question
+            }) {
+                ensure!(input.read_scope.is_empty() && serde_json::to_value(&old.input)? == serde_json::to_value(&input)?,
+                    "Decision {} already completed. File-scoped decisions need an explicit revisit to capture current files. Use revisit with its ID and a concrete new_evidence, counterexample, corrected_inference or user_scope_change reason", old.id);
+                Self::record_alias(&tx, &id, &parent, old, &request)?;
+                tx.commit()?;
+                return Ok((old.clone(), false));
+            }
+            None
+        };
         let settings = Self::read_settings(&tx)?;
         ensure!(settings.enabled, "Fusion is disabled in settings");
         let root = self.root.join("snapshots").join(&id);
@@ -202,10 +357,7 @@ impl Store {
             id: id.clone(),
             parent,
             input,
-            workspace: workspace
-                .to_str()
-                .context("Fusion requires a Unicode workspace path")?
-                .into(),
+            workspace: workspace.into(),
             snapshot_root: root
                 .to_str()
                 .context("Fusion requires a Unicode snapshot path")?
@@ -215,6 +367,7 @@ impl Store {
             completeness: "none".into(),
             configuration: Some(settings.configuration),
             report: Some(crate::ExecutionReport::default()),
+            lineage,
             result: None,
             error: None,
             created_at: now_ms(),
@@ -330,6 +483,13 @@ impl Store {
         mut result: Conclusion,
         completeness: &str,
     ) -> Result<()> {
+        if let Some(answer) = &result.final_answer {
+            ensure!(!answer.trim().is_empty(), "Empty closed-task final answer");
+            ensure!(
+                self.get(id)?.input.answer_only,
+                "Direct final answer requires sealed parent scope"
+            );
+        }
         result.fusion_run_id = id.into();
         result.completeness = completeness.into();
         self.change(id, Some(owner), "result_ready", |r| {
@@ -462,6 +622,7 @@ impl Store {
             let mut db = self.connect()?;
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
             for table in [
+                "fusion_aliases",
                 "fusion_positions",
                 "fusion_issues",
                 "fusion_messages",
@@ -527,6 +688,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn incompatible_host_heartbeat_cannot_admit_new_input_contracts() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        store.heartbeat("owner").unwrap();
+        assert!(store.host_available());
+        for version in [None, Some(crate::INPUT_POLICY_VERSION + 1)] {
+            let mut heartbeat = json!({"owner":"old-or-new-host", "at":now_ms()});
+            if let Some(version) = version {
+                heartbeat["input_policy_version"] = json!(version);
+            }
+            store
+                .connect()
+                .unwrap()
+                .execute(
+                    "UPDATE fusion_meta SET value=?1 WHERE key='host'",
+                    [heartbeat.to_string()],
+                )
+                .unwrap();
+            assert!(!store.host_available());
+        }
+        store.heartbeat("owner").unwrap();
+        assert!(store.host_available());
+    }
+
+    #[test]
     fn same_parent_run_admits_further_discussions_without_losing_replay_identity() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
@@ -543,6 +729,8 @@ mod tests {
                 goal: "choose".into(),
                 background: "new facts".into(),
                 constraints: vec![],
+                answer_only: false,
+                parent_request: Some("Preserved user directions and constraints".into()),
                 legacy_options: vec![],
                 evidence: vec![],
                 read_scope: vec![],
@@ -563,10 +751,269 @@ mod tests {
             assert!(!created);
             assert_eq!(&replayed.id, id);
             assert_eq!(&reopened.get(id).unwrap().parent, parent);
+            assert_eq!(
+                reopened.get(id).unwrap().input.parent_request,
+                input.parent_request
+            );
         }
         let (parent, mut conflict, _) = admissions.pop().unwrap();
         conflict.question = "different decision for the same call".into();
         assert!(reopened.prepare(parent, conflict, dir.path()).is_err());
+    }
+
+    #[test]
+    fn completed_decisions_reuse_and_reopening_inherits_frozen_criterion() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let parent = Parent {
+            database_id: "db".into(),
+            session_id: "s".into(),
+            run_id: "r".into(),
+            tool_call_id: "t1".into(),
+        };
+        let input: ConsultationInput = serde_json::from_value(json!({"question":"Choose storage","goal":"Keep data","background":"Workload unknown","constraints":["Preserve records"],"parent_request":"Choose storage"})).unwrap();
+        let (old, _) = store
+            .prepare(parent.clone(), input.clone(), dir.path())
+            .unwrap();
+        store.ready(&old.id).unwrap();
+        store.claim("owner").unwrap().unwrap();
+        store
+            .finish(
+                &old.id,
+                "owner",
+                Conclusion {
+                    conclusion: "Use SQLite provisionally".into(),
+                    unresolved: vec!["Check write concurrency".into()],
+                    ..Default::default()
+                },
+                "full",
+            )
+            .unwrap();
+        store.delivered(&old.id).unwrap();
+        let mut parent = parent;
+        parent.tool_call_id = "t2".into();
+        let (reused, created) = store
+            .prepare(parent.clone(), input.clone(), dir.path())
+            .unwrap();
+        assert!(!created);
+        assert_eq!(reused.id, old.id);
+        assert_eq!(store.for_tool("s", "r", "t2").unwrap().unwrap().id, old.id);
+        let (_, created) = store
+            .prepare(parent.clone(), input.clone(), dir.path())
+            .unwrap();
+        assert!(!created);
+        let mut changed = input.clone();
+        changed.evidence.push("Observed concurrent writers".into());
+        assert!(store
+            .prepare(parent.clone(), changed.clone(), dir.path())
+            .is_err());
+        parent.tool_call_id = "reopen".into();
+        let revisit = crate::Revisit {
+            previous_run_id: old.id.clone(),
+            kind: crate::RevisitKind::NewEvidence,
+            reason: "Observed concurrent writers".into(),
+            user_scope_quote: None,
+        };
+        let (new, created) = store
+            .prepare_with_revisit(
+                parent.clone(),
+                changed.clone(),
+                dir.path(),
+                Some(revisit.clone()),
+            )
+            .unwrap();
+        assert!(created);
+        assert_eq!(
+            new.lineage.as_ref().unwrap().previous_result.unresolved,
+            vec!["Check write concurrency"]
+        );
+        assert_eq!(
+            serde_json::to_value(new.configuration).unwrap(),
+            serde_json::to_value(old.configuration).unwrap()
+        );
+        let (_, created) = store
+            .prepare_with_revisit(
+                parent.clone(),
+                changed.clone(),
+                dir.path(),
+                Some(revisit.clone()),
+            )
+            .unwrap();
+        assert!(!created);
+        store.ready(&new.id).unwrap();
+        store.claim("owner").unwrap().unwrap();
+        store
+            .finish(
+                &new.id,
+                "owner",
+                Conclusion {
+                    conclusion: "Still use SQLite provisionally".into(),
+                    ..Default::default()
+                },
+                "full",
+            )
+            .unwrap();
+        store.delivered(&new.id).unwrap();
+        let mut repeat_parent = parent.clone();
+        repeat_parent.tool_call_id = "repeat-revisit".into();
+        let (reused, created) = store
+            .prepare_with_revisit(
+                repeat_parent,
+                changed.clone(),
+                dir.path(),
+                Some(revisit.clone()),
+            )
+            .unwrap();
+        assert!(!created);
+        assert_eq!(reused.id, new.id);
+        assert_eq!(
+            store
+                .for_tool("s", "r", "repeat-revisit")
+                .unwrap()
+                .unwrap()
+                .id,
+            new.id
+        );
+        let mut wrong_revisit = revisit.clone();
+        wrong_revisit.reason = "Different replay reason".into();
+        assert!(store
+            .prepare_with_revisit(
+                parent.clone(),
+                changed.clone(),
+                dir.path(),
+                Some(wrong_revisit)
+            )
+            .is_err());
+        parent.tool_call_id = "t3".into();
+        changed.question = "Which storage might possibly work?".into();
+        assert!(store
+            .prepare_with_revisit(
+                parent.clone(),
+                changed.clone(),
+                dir.path(),
+                Some(revisit.clone())
+            )
+            .is_err());
+        changed.question = input.question.clone();
+        changed.goal = "Discard data".into();
+        assert!(store
+            .prepare_with_revisit(
+                parent.clone(),
+                changed.clone(),
+                dir.path(),
+                Some(revisit.clone())
+            )
+            .is_err());
+        let mut scope = revisit.clone();
+        scope.kind = crate::RevisitKind::UserScopeChange;
+        scope.user_scope_quote = Some("Discard data".into());
+        assert!(store
+            .prepare_with_revisit(
+                parent.clone(),
+                changed.clone(),
+                dir.path(),
+                Some(scope.clone())
+            )
+            .is_err());
+        changed.parent_request = Some("Discard data and choose storage".into());
+        store
+            .prepare_with_revisit(parent.clone(), changed.clone(), dir.path(), Some(scope))
+            .unwrap();
+        parent.tool_call_id = "t4".into();
+        parent.session_id = "other".into();
+        assert!(store
+            .prepare_with_revisit(parent, input, dir.path(), Some(revisit))
+            .is_err());
+        store.purge_parent("s").unwrap();
+        assert!(store.for_tool("s", "r", "t2").unwrap().is_none());
+        assert!(store
+            .for_tool("s", "r", "repeat-revisit")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn file_scoped_revisits_capture_fresh_snapshots_instead_of_reusing_old_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let mut parent = Parent {
+            database_id: "db".into(),
+            session_id: "s".into(),
+            run_id: "r".into(),
+            tool_call_id: "first".into(),
+        };
+        let input: ConsultationInput = serde_json::from_value(json!({"question":"Review implementation","goal":"Find defects","background":"Workspace code","constraints":[],"read_scope":["src"]})).unwrap();
+        let (old, _) = store
+            .prepare(parent.clone(), input.clone(), dir.path())
+            .unwrap();
+        store.ready(&old.id).unwrap();
+        store.claim("owner").unwrap().unwrap();
+        store
+            .finish(
+                &old.id,
+                "owner",
+                Conclusion {
+                    conclusion: "Review complete for the old snapshot".into(),
+                    ..Default::default()
+                },
+                "full",
+            )
+            .unwrap();
+        store.delivered(&old.id).unwrap();
+        parent.tool_call_id = "again".into();
+        assert!(store
+            .prepare(parent.clone(), input.clone(), dir.path())
+            .is_err());
+        let revisit = crate::Revisit {
+            previous_run_id: old.id,
+            kind: crate::RevisitKind::NewEvidence,
+            reason: "Inspect current files after implementation changes".into(),
+            user_scope_quote: None,
+        };
+        let (new, created) = store
+            .prepare_with_revisit(
+                parent.clone(),
+                input.clone(),
+                dir.path(),
+                Some(revisit.clone()),
+            )
+            .unwrap();
+        assert!(created);
+        store.ready(&new.id).unwrap();
+        store.claim("owner").unwrap().unwrap();
+        store
+            .finish(
+                &new.id,
+                "owner",
+                Conclusion {
+                    conclusion: "Current snapshot reviewed".into(),
+                    ..Default::default()
+                },
+                "full",
+            )
+            .unwrap();
+        store.delivered(&new.id).unwrap();
+        parent.tool_call_id = "fresh".into();
+        let (fresh, created) = store
+            .prepare_with_revisit(parent, input, dir.path(), Some(revisit))
+            .unwrap();
+        assert!(created);
+        assert_ne!(fresh.snapshot_root, new.snapshot_root);
+    }
+
+    #[test]
+    fn history_reads_allow_databases_without_the_new_alias_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        store
+            .connect()
+            .unwrap()
+            .execute("DROP TABLE fusion_aliases", [])
+            .unwrap();
+        let old = Store::existing(dir.path()).unwrap();
+        assert!(old.for_tool("s", "r", "t").unwrap().is_none());
+        Store::open(dir.path()).unwrap();
+        assert!(old.for_tool("s", "r", "t").unwrap().is_none());
     }
 
     #[test]
@@ -600,6 +1047,8 @@ mod tests {
             goal: "Answer".into(),
             background: "Facts".into(),
             constraints: vec![],
+            answer_only: false,
+            parent_request: None,
             legacy_options: vec![],
             evidence: vec![],
             read_scope: vec![],
@@ -664,6 +1113,8 @@ mod tests {
             goal: "choose".into(),
             background: "facts".into(),
             constraints: vec![],
+            answer_only: false,
+            parent_request: None,
             legacy_options: vec![],
             evidence: vec![],
             read_scope: vec![],
@@ -730,6 +1181,8 @@ mod tests {
             goal: "choose".into(),
             background: "facts".into(),
             constraints: vec![],
+            answer_only: false,
+            parent_request: None,
             legacy_options: vec![],
             evidence: vec![],
             read_scope: vec![],
@@ -763,6 +1216,8 @@ mod tests {
         let result = Conclusion {
             fusion_run_id: String::new(),
             conclusion: "late".into(),
+            decision_audit: None,
+            final_answer: None,
             rationale: vec![],
             conditions: vec![],
             unresolved: vec![],
@@ -790,6 +1245,8 @@ mod tests {
             goal: "choose".into(),
             background: "facts".into(),
             constraints: vec![],
+            answer_only: false,
+            parent_request: None,
             legacy_options: vec![],
             evidence: vec![],
             read_scope: vec![],
@@ -845,6 +1302,8 @@ mod tests {
             goal: "decide".into(),
             background: "facts".into(),
             constraints: vec![],
+            answer_only: false,
+            parent_request: None,
             legacy_options: vec![],
             evidence: vec![],
             read_scope: vec![],
@@ -875,10 +1334,12 @@ mod tests {
         let output: Value = serde_json::from_str(&failed.tool_output().unwrap()).unwrap();
         assert_eq!(output["status"], "failed");
         assert_eq!(output["has_conclusion"], false);
+        assert!(output.get("continuation").is_none());
         assert!(output["conclusion"].is_null());
         assert!(output.get("report").is_none());
         assert!(output.get("coverage").is_some());
-        assert!(!failed.tool_output().unwrap().contains("Public analysis"));
+        assert_eq!(output["available_results"][0]["text"], "Public analysis");
+        assert_eq!(output["available_results"][0]["participant"], "P1");
         assert_eq!(
             failed.report.unwrap().degradations[0].kind,
             Some(crate::FailureKind::Authentication)
@@ -907,6 +1368,8 @@ mod tests {
             goal: "decide".into(),
             background: "facts".into(),
             constraints: vec![],
+            answer_only: false,
+            parent_request: None,
             legacy_options: vec![],
             evidence: vec![],
             read_scope: vec![],
@@ -914,9 +1377,12 @@ mod tests {
         let (run, _) = store.prepare(parent, input, dir.path()).unwrap();
         store.ready(&run.id).unwrap();
         store.claim("owner").unwrap();
+        assert!(run.input.parent_request.is_none());
         let result = Conclusion {
             fusion_run_id: String::new(),
             conclusion: "A".into(),
+            decision_audit: None,
+            final_answer: None,
             rationale: vec!["facts".into()],
             conditions: vec![],
             unresolved: vec![],
@@ -932,6 +1398,19 @@ mod tests {
         assert_eq!(run.completeness, "full");
         let envelope: Value = serde_json::from_str(&run.tool_output().unwrap()).unwrap();
         assert_eq!(envelope["conclusion"], "A");
+        assert_eq!(envelope["continuation"]["mode"], "apply_conclusion");
+        assert_eq!(
+            envelope["continuation"]["guidance"],
+            crate::FOLLOW_THROUGH_POLICY
+        );
+        let mut completed = run.clone();
+        completed.status = "completed".into();
+        let delivered: Value = serde_json::from_str(&completed.tool_output().unwrap()).unwrap();
+        assert_eq!(delivered["continuation"], envelope["continuation"]);
+        let mut interrupted = run.clone();
+        interrupted.status = "interrupted".into();
+        let interrupted: Value = serde_json::from_str(&interrupted.tool_output().unwrap()).unwrap();
+        assert!(interrupted.get("continuation").is_none());
         for field in ["conditions", "next_steps", "report", "available_results"] {
             assert!(envelope.get(field).is_none());
         }

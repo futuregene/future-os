@@ -15,6 +15,39 @@ BASE_MODEL = "future/deepseek-flash"
 BASE_THINKING = "max"
 
 
+class RunDeadlineExceeded(RuntimeError):
+    pass
+
+
+def canonical_answer(transcript, run_id):
+    if transcript.get("hasMore"):
+        raise RuntimeError("Incomplete transcript while collecting the final answer")
+    entries = [
+        entry
+        for entry in transcript.get("entries", [])
+        if entry.get("runId") == run_id
+        and (entry.get("kind") == "assistant" or entry.get("role") == "assistant")
+    ]
+    if not entries:
+        raise RuntimeError(f"No assistant entry for accepted run {run_id}")
+    entry = entries[-1]
+    if any(block.get("kind") == "tool_call" for block in entry.get("blocks", [])):
+        raise RuntimeError(f"Run {run_id} has no final answer after its last tool call")
+    text = "\n".join(
+        block.get("text", "")
+        for block in entry.get("blocks", [])
+        if block.get("kind") == "text"
+    )
+    if not text.strip():
+        raise RuntimeError(f"Run {run_id} ended without a visible final answer")
+    return {
+        "run_id": run_id,
+        "entry_id": entry.get("id"),
+        "text": text,
+        "source": "terminal_transcript",
+    }
+
+
 class Future:
     def __init__(
         self, binary, runtime=None, model=None, thinking=None, full_trace=False
@@ -26,6 +59,10 @@ class Future:
         self.env = os.environ.copy()
         if runtime:
             settings = read_json(runtime)
+            if settings.get("phase") in {"starting", "startup_failed", "exited"}:
+                raise RuntimeError(
+                    f"Isolated runtime is {settings['phase']}; wait for readiness or start a new runtime before submitting"
+                )
             self.env.pop("FUTURE_AGENT_SOCKET", None)
             self.env.update(
                 FUTURE_HOME=settings["home"],
@@ -39,11 +76,13 @@ class Future:
             text=True,
             encoding="utf-8",
             capture_output=True,
+            check=False,
             timeout=timeout,
         )
         if proc.returncode:
             raise RuntimeError(
-                f"future {args[0]} failed ({proc.returncode}): {proc.stderr.strip()}"
+                f"future {args[0]} failed ({proc.returncode}): "
+                f"{(proc.stderr.strip() or proc.stdout.strip())[:4096]}"
             )
         return json.loads(proc.stdout) if json_output else proc.stdout
 
@@ -81,7 +120,7 @@ class Future:
             "binary": self.call(["version", "--json"]),
             "system_prompt": "product default, with project-context files disabled for the closed-text task",
             "fusion_routing_prompt": None,
-            "entry": "normal /fusion prompt; automatic tool selection; no benchmark routing instructions",
+            "entry": "normal /fusion prompt; tool routing follows the binary runtime policy; no benchmark-only routing instructions",
         }
 
     def transcript(self, session):
@@ -102,6 +141,69 @@ class Future:
             ]
         )
 
+    def run_ledger(self, session, run_id, wait_terminal=0):
+        deadline = time.monotonic() + wait_terminal
+        while True:
+            ledger = self.call(
+                [
+                    "session",
+                    "transcript",
+                    "--session",
+                    session,
+                    "--runs",
+                    "--all",
+                    "--max-bytes",
+                    "0",
+                    "--json",
+                ]
+            )
+            if ledger.get("hasMore"):
+                raise RuntimeError("Incomplete run ledger during terminal recovery")
+            run = next(
+                (row for row in ledger.get("ledger", []) if row.get("runId") == run_id),
+                {},
+            )
+            if not wait_terminal or run.get("status") in {
+                "completed",
+                "failed",
+                "error",
+                "interrupted",
+                "cancelled",
+            }:
+                return ledger
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"Terminal ledger not yet available for run {run_id}"
+                )
+            time.sleep(0.25)
+
+    def terminal_output(self, session, run_id):
+        ledger = self.run_ledger(session, run_id)
+        run = next(
+            (row for row in ledger.get("ledger", []) if row.get("runId") == run_id), {}
+        )
+        state = run.get("status")
+        if state in {"failed", "error", "interrupted", "cancelled"}:
+            raise RuntimeError(
+                f"run {run_id} ended as error: {run.get('error') or state}"
+            )
+        if state != "completed":
+            return None
+        transcript = self.transcript(session)
+        if transcript.get("hasMore"):
+            raise RuntimeError("Incomplete transcript during terminal recovery")
+        answer = canonical_answer(transcript, run_id)
+        text = answer["text"]
+        return {
+            "sessionId": session,
+            "runId": run_id,
+            "text": text,
+            "finishReason": "answer",
+            "messages": [],
+            "benchmark_recovered_from": "terminal_transcript",
+            "benchmark_run_duration_ms": run.get("durationMs"),
+        }
+
     def wait(self, session, run_id, timeout, fusion=False):
         # CLI has a 300s event-idle limit independent of its --timeout. Reattach
         # to the same accepted run on that read-only transport failure; never
@@ -109,8 +211,27 @@ class Future:
         deadline = time.monotonic() + timeout if timeout else None
         reconnects = 0
         while True:
+            recovered = self.terminal_output(session, run_id)
+            if recovered is not None:
+                recovered["benchmark_wait_reconnects"] = reconnects
+                return recovered
+            if deadline and time.monotonic() >= deadline:
+                self.call(["session", "abort", session], json_output=False)
+                try:
+                    self.run_ledger(session, run_id, wait_terminal=30)
+                    recovered = self.terminal_output(session, run_id)
+                except RuntimeError as error:
+                    raise RunDeadlineExceeded(
+                        f"Benchmark deadline exceeded for run {run_id}"
+                    ) from error
+                if recovered is not None:
+                    recovered["benchmark_wait_reconnects"] = reconnects
+                    return recovered
+                raise RunDeadlineExceeded(
+                    f"Benchmark deadline exceeded for run {run_id}"
+                )
             remaining = max(1, int(deadline - time.monotonic())) if deadline else 300
-            read_timeout = min(60 if fusion else 300, remaining)
+            read_timeout = min(60, remaining)
             try:
                 output = self.call(
                     [
@@ -131,9 +252,7 @@ class Future:
             except RuntimeError as error:
                 idle = "Event stream timed out waiting for an event" in str(error)
                 read_expired = "Timed out waiting for run" in str(error)
-                if not (idle or read_expired) or (
-                    deadline and time.monotonic() >= deadline
-                ):
+                if not (idle or read_expired):
                     raise
                 reconnects += 1
                 # Observe the same daily run through a failed consultation too.
@@ -153,6 +272,10 @@ class Future:
             )
         directory.mkdir(parents=True, exist_ok=resume)
         (directory / ".gitignore").write_text("*\n", encoding="utf-8")
+        write_json(
+            directory / "model-binding.json",
+            {"model": self.model, "thinking_level": self.thinking},
+        )
         workspace = directory / "workspace"
         workspace.mkdir(exist_ok=resume)
         prompt = prompt_for(case)
@@ -208,15 +331,36 @@ class Future:
                 write_json(directory / "ack.json", ack)
             session = ack["sessionId"]
             result.update(session_id=session, run_id=ack["runId"])
-            output = self.wait(session, ack["runId"], timeout, fusion=arm == "fusion")
+            wait_timeout = (
+                max(
+                    1,
+                    timeout
+                    - int(time.time() - (directory / "ack.json").stat().st_mtime),
+                )
+                if timeout
+                else 0
+            )
+            output = self.wait(
+                session, ack["runId"], wait_timeout, fusion=arm == "fusion"
+            )
             answer_received = True
             write_json(directory / "output.json", output)
             result["answer_wall_seconds"] = time.monotonic() - started
-            result["text"] = output["text"]
             result["wait_reconnects"] = output.get("benchmark_wait_reconnects", 0)
-            result["outer_grade"] = score(case, output["text"])
             parent_transcript = self.transcript(session)
             write_json(directory / "parent-transcript.json", parent_transcript)
+            answer = canonical_answer(parent_transcript, ack["runId"])
+            write_json(directory / "canonical-answer.json", answer)
+            result["text"] = answer["text"]
+            result["text_source"] = answer["source"]
+            result["answer_entry_id"] = answer["entry_id"]
+            result["stream_text_mismatch"] = output["text"] != answer["text"]
+            result["stream_text_is_suffix"] = bool(
+                result["stream_text_mismatch"]
+                and output["text"]
+                and answer["text"].endswith(output["text"])
+            )
+            result["outer_grade"] = score(case, answer["text"])
             ledger = self.call(
                 [
                     "session",
@@ -237,6 +381,11 @@ class Future:
             result["parent_usage"] = state.get("usage", {})
             result["effective_parent_model"] = state.get("model")
             result["effective_parent_thinking"] = state.get("thinkingLevel")
+            result["parent_thinking_binding_scope"] = (
+                "session selection; inspect the frozen runtime policy for per-request settings"
+                if arm == "fusion"
+                else "session selection"
+            )
             if (
                 state.get("model") != self.model
                 or state.get("thinkingLevel") != self.thinking
@@ -246,7 +395,7 @@ class Future:
                 )
             if ledger.get("hasMore") or parent_transcript.get("hasMore"):
                 raise ValueError("Incomplete parent transcript or usage ledger")
-            calls = tool_calls(parent_transcript)
+            calls = tool_calls(parent_transcript, ack["runId"])
             if arm == "single":
                 if calls:
                     raise ValueError("Single-model run used tools")
@@ -255,24 +404,44 @@ class Future:
                 if any(call.get("name") != "fusion" for call in calls):
                     raise ValueError("Fusion-enabled parent used an external tool")
                 result["fusion_invocations"] = len(calls)
-                consultations = [
-                    self.collect_consultation(
-                        case,
-                        session,
-                        ack["runId"],
-                        call["toolCallId"],
-                        directory,
-                        index,
-                    )
-                    for index, call in enumerate(calls)
-                ]
+                consultations = []
+                for index, call in enumerate(calls):
+                    try:
+                        consultations.append(
+                            self.collect_consultation(
+                                case,
+                                session,
+                                ack["runId"],
+                                call["toolCallId"],
+                                directory,
+                                index,
+                            )
+                        )
+                    except (
+                        RuntimeError,
+                        ValueError,
+                        KeyError,
+                        subprocess.TimeoutExpired,
+                    ) as error:
+                        # The accepted parent already finished and its binding,
+                        # transcript and answer were validated above. A failed
+                        # diagnostic read must not erase it or stop other cases.
+                        result.setdefault("diagnostic_errors", []).append(
+                            {
+                                "tool_call_id": call["toolCallId"],
+                                "error": str(error),
+                            }
+                        )
+                        result["diagnostics_pending"] = True
                 result["consultations"] = consultations
                 result["completed_consultations"] = sum(
                     item["status"] == "completed" and bool(item["kernel_text"])
                     for item in consultations
                 )
                 result["routing_outcome"] = (
-                    "not_invoked"
+                    "evidence_pending"
+                    if result.get("diagnostics_pending")
+                    else "not_invoked"
                     if not calls
                     else "completed"
                     if result["completed_consultations"]
@@ -313,25 +482,27 @@ class Future:
                 result.update(status="completed", grade=result["outer_grade"])
         except (RuntimeError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
             result["error"] = str(error)
+            if isinstance(error, RunDeadlineExceeded) and session:
+                try:
+                    self.call(["session", "abort", session], json_output=False)
+                    result["benchmark_deadline_exceeded"] = True
+                except (RuntimeError, subprocess.TimeoutExpired) as abort_error:
+                    result["abort_error"] = str(abort_error)
             if submitting and not result.get("run_id"):
                 result["submission_uncertain"] = True
             # CLI wait errors can hide the upstream HTTP status. Use the accepted
             # run's terminal ledger, never text from the model, to classify 502s.
             if session and result.get("run_id"):
                 try:
-                    ledger = self.call(
-                        [
-                            "session",
-                            "transcript",
-                            "--session",
-                            session,
-                            "--runs",
-                            "--all",
-                            "--max-bytes",
-                            "0",
-                            "--json",
-                        ]
+                    ledger = self.run_ledger(
+                        session,
+                        result["run_id"],
+                        wait_terminal=30
+                        if result.get("benchmark_deadline_exceeded")
+                        else 0,
                     )
+                    if ledger.get("hasMore"):
+                        raise ValueError("Incomplete terminal failure ledger")
                     write_json(directory / "failure-ledger.json", ledger)
                     result["parent_usage_ledger"] = ledger
                     result["parent_usage"] = sum_usage(
@@ -388,7 +559,10 @@ class Future:
             raise ValueError("Fusion received a nonempty read_scope")
         source = run["input"]
         supplied = "\n".join(
-            [source.get(key, "") for key in ("question", "goal", "background")]
+            [
+                source.get(key) or ""
+                for key in ("parent_request", "question", "goal", "background")
+            ]
             + source.get("evidence", [])
         )
         whole_question = case["question"] in supplied
@@ -413,6 +587,14 @@ class Future:
             if raw_tool_calls(transcript):
                 raise ValueError("Fusion child used an external tool")
             text = last_assistant_text(transcript)
+            if run["input"].get("answer_only") and step["phase"] == "analyzing":
+                try:
+                    typed = json.loads(
+                        text.strip().removeprefix("```json").removesuffix("```").strip()
+                    )
+                    text = typed.get("answer", "")
+                except (ValueError, AttributeError):
+                    text = ""
             if step["phase"] == "reviewing":
                 try:
                     review = json.loads(
@@ -432,7 +614,9 @@ class Future:
                         "grade": score(case, text),
                     }
                 )
-        conclusion = (run.get("result") or {}).get("conclusion", "")
+        conclusion = (run.get("result") or {}).get("final_answer") or (
+            run.get("result") or {}
+        ).get("conclusion", "")
         return {
             "id": run["id"],
             "tool_call_id": tool_id,
@@ -457,23 +641,50 @@ class Future:
 
 
 def unexecuted_consultation(discussion, tool_id, transcript):
-    """A truncated tool call can have a terminal result without a durable run."""
-    results = [
-        block.get("text", "")
+    """Rejected inputs and cancelled calls have receipts but no durable run."""
+    receipts = [
+        block
         for entry in transcript.get("entries", [])
         for block in entry.get("blocks", [])
         if block.get("kind") == "tool_result" and block.get("toolCallId") == tool_id
     ]
-    if discussion.get("pending") is not True or not any(
+    results = [block.get("text", "") for block in receipts]
+    cancelled = any(
         "fusion was not executed due to connection interruption" in text
         for text in results
-    ):
+    )
+    rejected = any(
+        block.get("isError") is True
+        and (
+            re.fullmatch(r"Error: missing field `[a-z_]+`", block.get("text", ""))
+            # serde rejects these arguments before store.prepare creates a run.
+            or block.get("text", "").startswith(
+                (
+                    "Error: invalid type:",
+                    "Error: invalid value:",
+                    "Error: unknown field ",
+                    "Error: unknown variant ",
+                    "Error: duplicate field ",
+                )
+            )
+            or block.get("text")
+            in {
+                "Error: Fusion requires question",
+                "Error: Fusion requires goal",
+                "Error: Fusion requires background",
+                "Error: At most 16 read scopes are allowed",
+                "Error: Fusion no longer accepts options; attribute user-provided proposals in background",
+            }
+        )
+        for block in receipts
+    )
+    if discussion.get("pending") is not True or not (cancelled or rejected):
         raise ValueError("Missing Fusion record without an unexecuted tool receipt")
     return {
         "id": None,
         "tool_call_id": tool_id,
         "status": "not_started",
-        "error_category": "tool_not_executed",
+        "error_category": "tool_input_rejected" if rejected else "tool_not_executed",
         "tool_result": "\n".join(results),
         "configuration": None,
         "completeness": "none",
@@ -506,10 +717,11 @@ def prompt_for(case):
     )
 
 
-def tool_calls(transcript):
+def tool_calls(transcript, run_id=None):
     return [
         block
         for entry in transcript.get("entries", [])
+        if run_id is None or entry.get("runId") == run_id
         for block in entry.get("blocks", [])
         if block.get("kind") == "tool_call"
     ]

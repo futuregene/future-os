@@ -1,5 +1,5 @@
 import type { AgentActivityItem, FusionDiscussion, FusionReadRequest } from "@future-os/thread-projection";
-import { FUSION_PHASES, fusionProgress } from "@future-os/thread-projection";
+import { FUSION_PHASES, fusionProgress, isFusionModerator } from "@future-os/thread-projection";
 import { Check, ChevronDown, ChevronUp, Circle, CircleAlert, CircleMinus, CirclePause, CircleStop, CircleX, Clock, LoaderCircle, TriangleAlert, UserRoundGroup } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -42,9 +42,9 @@ export function FusionActivity({ item, runId, resolveTarget }: {
     ? []
     : progress.models.filter((model) => {
         if (moderatorOnly)
-          return model.role === "moderator" || (!model.role && !!data?.steps?.some(step => step.participant === "moderator" && step.model === model.model));
+          return model.role === "moderator" || (!model.role && !!data?.steps?.some(step => isFusionModerator(step.participant) && step.model === model.model));
         if (participantsOnly)
-          return model.role === "participant" || (!model.role && !!data?.steps?.some(step => step.participant !== "moderator" && step.model === model.model));
+          return model.role === "participant" || (!model.role && !!data?.steps?.some(step => !isFusionModerator(step.participant) && step.model === model.model));
         return true;
       });
   useEffect(() => {

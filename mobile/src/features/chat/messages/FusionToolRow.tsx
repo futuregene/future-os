@@ -1,4 +1,4 @@
-import { FUSION_PHASES, fusionProgress, type FusionDiscussion } from "@future-os/thread-projection";
+import { FUSION_PHASES, fusionProgress, isFusionModerator, type FusionDiscussion } from "@future-os/thread-projection";
 import { Check, ChevronDown, ChevronUp, Circle, CircleAlert, CircleMinus, CirclePause, CircleStop, CircleX, Clock, TriangleAlert, UserRoundGroup } from "lucide-react-native";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -29,9 +29,9 @@ export function FusionToolRow({ tool, resolveTarget }: { tool: TimelineToolRow; 
   const participantsOnly = progress.phase === "analyzing" || progress.phase === "reviewing";
   const models = progress.status === "completed" ? [] : progress.models.filter((model) => {
     if (moderatorOnly)
-      return model.role === "moderator" || (!model.role && !!data?.steps?.some(step => step.participant === "moderator" && step.model === model.model));
+      return model.role === "moderator" || (!model.role && !!data?.steps?.some(step => isFusionModerator(step.participant) && step.model === model.model));
     if (participantsOnly)
-      return model.role === "participant" || (!model.role && !!data?.steps?.some(step => step.participant !== "moderator" && step.model === model.model));
+      return model.role === "participant" || (!model.role && !!data?.steps?.some(step => !isFusionModerator(step.participant) && step.model === model.model));
     return true;
   });
   useEffect(() => {

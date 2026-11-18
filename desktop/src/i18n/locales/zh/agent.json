@@ -508,6 +508,23 @@
           "unverified_claim": "未验证判断",
           "verified_fact": "模型报告已核查 · 附证据"
         }
+      },
+      "audit": {
+        "title": "关键异议处置",
+        "objections": "关键异议",
+        "inheritance": "前次结论继承",
+        "decisions": {
+          "accepted": "采纳",
+          "rejected": "驳回",
+          "unresolved": "未解决",
+          "maintain": "保持结论",
+          "revise": "修正结论"
+        },
+        "resolutions": {
+          "settled": "已形成结论",
+          "conditional": "有条件成立",
+          "insufficient_information": "信息不足"
+        }
       }
     }
   }

@@ -15,6 +15,8 @@ use std::sync::{
 pub(crate) enum ContextScope {
     Parent {
         parent: Parent,
+        parent_request: Option<String>,
+        answer_only: bool,
         workspace: PathBuf,
         store: Store,
         sandbox: Arc<crate::sandbox::ResolvedSandbox>,
@@ -117,10 +119,124 @@ pub(crate) fn main_tool() -> AgentTool {
         "fusion",
         &description,
         json!({"type":"object","additionalProperties":false,"required":["question","goal","background","constraints"],"properties":{
-            "question":{"type":"string","description":"Preserve the user's wording; change only for necessary disambiguation or focus. No added requirements, answer checklist, assumptions or preferred approach. Split broad topics across discussions rather than overloading this question."},"goal":{"type":"string","description":"Only the outcome the user actually requested; do not add quality criteria, detail, audience assumptions, compliance framing or deliverables the user did not specify."},"background":{"type":"string","description":"Faithful compression of relevant context and user requirements, attributed facts and unknowns. Attribute user-provided proposals here. No main-agent reasoning, invented plans or preferences; prior assistant claims are not verified facts. Do not relocate invented requirements here or turn research facts into user instructions. Unknown identity, location, equipment and intent remain unknown."},"constraints":{"type":"array","description":"Only brief task restrictions explicitly established by the user or relevant prior context; use an empty array when none apply. Never infer restrictions from your preferred answer. No invented compliance, equipment, language, length or formatting demands.","items":{"type":"string"}},"evidence":{"type":"array","description":"Sourced observations with provenance, not unsourced main-agent judgments","items":{"type":"string"}},"read_scope":{"type":"array","items":{"type":"string"},"description":"Only necessary workspace-relative files/directories. Omit for conceptual decisions."}
+            "question":{"type":"string","description":"Preserve the user's wording and original decision criterion, including consequential directions, quantifiers and scope; change only for necessary disambiguation or focus. No added requirements, answer checklist, assumptions or preferred approach. Split broad topics across discussions rather than overloading this question."},"goal":{"type":"string","description":"Only the outcome the user actually requested; do not add quality criteria, detail, audience assumptions, compliance framing or deliverables the user did not specify."},"background":{"type":"string","description":"Faithful compression of relevant context and user requirements, attributed facts and unknowns. Attribute user-provided proposals here. No main-agent reasoning, invented plans or preferences; prior assistant claims are not verified facts. Do not relocate invented requirements here or turn research facts into user instructions. Unknown identity, location, equipment and intent remain unknown."},"constraints":{"type":"array","description":"Only brief task restrictions explicitly established by the user or relevant prior context; use an empty array when none apply. Never infer restrictions from your preferred answer. No invented compliance, equipment, language, length or formatting demands.","items":{"type":"string"}},"evidence":{"type":"array","description":"Sourced observations with inspectable provenance. Keep user statements, observed tool/source results and assistant inferences distinct. Repeated assistant claims and agreement are not independent evidence; do not place a preferred answer or unsourced judgment here","items":{"type":"string"}},"revisit":{"type":"object","additionalProperties":false,"required":["previous_run_id","kind","reason"],"description":"Reopen a completed discussion only for a concrete change. Inherit its conclusion, unresolved objections, goal and constraints. New independent questions need no revisit. An identical completed question in this turn reuses its result; do not paraphrase it to evade reuse.","properties":{"previous_run_id":{"type":"string"},"kind":{"type":"string","enum":["new_evidence","counterexample","corrected_inference","user_scope_change"]},"reason":{"type":"string","description":"Specific changed evidence, counterexample or corrected inference; reassurance or another vote is insufficient."},"user_scope_quote":{"type":"string","description":"Required for user_scope_change: exact excerpt from the new user request."}}},"read_scope":{"type":"array","items":{"type":"string"},"description":"Only necessary workspace-relative files/directories. Omit for conceptual decisions."}
         }}),
         invoke,
     )
+}
+
+/// Closed tasks need routing and delivery, not a second independent solve.
+/// General execution runs keep their full catalog and configured generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ParentStage {
+    Routing,
+    Delivery,
+    Recovery,
+}
+/// Routing is bounded; delivery/recovery are live while substantive content arrives.
+pub(crate) struct ParentProgress {
+    stage: ParentStage,
+    last_content: tokio::time::Instant,
+}
+impl ParentProgress {
+    pub(crate) fn new(stage: ParentStage) -> Self {
+        Self {
+            stage,
+            last_content: tokio::time::Instant::now(),
+        }
+    }
+    pub(crate) fn deadline(&self) -> tokio::time::Instant {
+        self.last_content + std::time::Duration::from_secs(self.stage.timeout_secs())
+    }
+    pub(crate) fn observe(&mut self, event: &crate::llm::schema::ModelStreamEvent) {
+        use crate::llm::schema::ModelStreamEvent;
+        if self.stage != ParentStage::Routing
+            && matches!(event,
+            ModelStreamEvent::ReasoningDelta { text, .. } | ModelStreamEvent::TextDelta { text, .. } if !text.trim().is_empty())
+        {
+            self.last_content = tokio::time::Instant::now();
+        }
+    }
+}
+
+impl ParentStage {
+    pub(crate) fn timeout_secs(self) -> u64 {
+        match self {
+            Self::Routing => 180,
+            Self::Delivery | Self::Recovery => 300,
+        }
+    }
+    pub(crate) fn timeout_description(self) -> &'static str {
+        match self {
+            Self::Routing => "routing stage deadline expired",
+            Self::Delivery | Self::Recovery => {
+                "no new reasoning or text within the stage idle interval"
+            }
+        }
+    }
+    pub(crate) fn controls(self) -> crate::llm::schema::RequestControls {
+        crate::llm::schema::RequestControls {
+            required_tool: (self == Self::Routing).then(|| "fusion".into()),
+            // Routing requirements never override the user's generation settings.
+            max_output_tokens: None,
+            thinking_level: None,
+        }
+    }
+    pub(crate) fn after_tools(messages: &[crate::types::AgentMessage]) -> Self {
+        let completed = messages
+            .last()
+            .filter(|m| m.role == "tool" && m.name == "fusion")
+            .is_some_and(|m| {
+                m.content.iter().any(|block| {
+                    let crate::types::ContentBlock::ToolResult {
+                        content,
+                        is_error: false,
+                        ..
+                    } = block
+                    else {
+                        return false;
+                    };
+                    serde_json::from_str::<Value>(content).is_ok_and(|value| {
+                        value["has_conclusion"] == true
+                            && value["status"] == "completed"
+                            && value["continuation"]["mode"] == "apply_conclusion"
+                    })
+                })
+            });
+        if completed {
+            Self::Delivery
+        } else {
+            Self::Recovery
+        }
+    }
+}
+
+/// Only a completed backend conclusion may bypass a second model request.
+pub(crate) fn completed_answer(
+    messages: &[crate::types::AgentMessage],
+) -> Option<(String, String)> {
+    let last = messages
+        .last()
+        .filter(|m| m.role == "tool" && m.name == "fusion")?;
+    last.content.iter().find_map(|block| {
+        let crate::types::ContentBlock::ToolResult {
+            content,
+            is_error: false,
+            ..
+        } = block
+        else {
+            return None;
+        };
+        let value: Value = serde_json::from_str(content).ok()?;
+        if value["status"] != "completed" || value["has_conclusion"] != true {
+            return None;
+        }
+        let answer = value["final_answer"].as_str()?.to_owned();
+        if answer.trim().is_empty() {
+            return None;
+        }
+        Some((value["fusion_run_id"].as_str()?.to_owned(), answer))
+    })
 }
 
 fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
@@ -130,6 +246,8 @@ fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
             .context("Fusion unavailable outside an explicitly enabled parent run")?;
         let ContextScope::Parent {
             mut parent,
+            parent_request,
+            answer_only,
             workspace,
             store,
             sandbox,
@@ -140,7 +258,7 @@ fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
         };
         ensure!(
             store.host_available(),
-            "Fusion host is unavailable; start the FutureOS host"
+            "Fusion host is unavailable or incompatible; start matching FutureOS Host and Agent versions"
         );
         parent.tool_call_id = crate::tools::current_tool_call_id();
         ensure!(
@@ -151,9 +269,36 @@ fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
             args.get("options").is_none(),
             "Fusion no longer accepts options; attribute user-provided proposals in background"
         );
-        let input: ConsultationInput = serde_json::from_value(args)?;
+        ensure!(
+            args.get("parent_request").is_none(),
+            "Fusion parent_request is backend-owned"
+        );
+        ensure!(
+            args.get("answer_only").is_none(),
+            "Fusion answer_only is backend-owned"
+        );
+        let mut args = args;
+        let revisit: Option<future_fusion::Revisit> = args
+            .as_object_mut()
+            .context("Fusion arguments must be an object")?
+            .remove("revisit")
+            .map(serde_json::from_value)
+            .transpose()?;
+        let mut input: ConsultationInput = serde_json::from_value(args)?;
+        input.answer_only = answer_only;
+        if answer_only {
+            input.question = parent_request
+                .clone()
+                .context("Closed task requires its preserved parent request")?;
+        }
+        input.parent_request = parent_request;
+        if answer_only {
+            input.goal =
+                "Answer the preserved user request with its original scope and requested format."
+                    .into();
+        }
         input.validate()?;
-        let (run, created) = store.prepare(parent, input, &workspace)?;
+        let (run, created) = store.prepare_with_revisit(parent, input, &workspace, revisit)?;
         let mut guard = InvocationGuard {
             store: store.clone(),
             id: run.id.clone(),
@@ -394,6 +539,7 @@ pub(crate) fn query_status(state: &crate::rpc::AppState) -> Result<Value> {
         "moderator_model": settings.configuration.moderator.model,
         "context_budget_version": future_fusion::CONTEXT_POLICY_VERSION,
         "generation_policy_version": future_fusion::GENERATION_POLICY_VERSION,
+        "input_policy_version": future_fusion::INPUT_POLICY_VERSION,
         "resilience_policy_version": future_fusion::RESILIENCE_POLICY_VERSION,
         "agent_instance_id": state.agent_instance_id,
         "config_revision": state.control_plane.current_config_revision(),
@@ -578,6 +724,24 @@ fn request_context_bytes(request: &crate::llm::schema::ModelRequest) -> Result<u
 
 #[cfg(test)]
 mod input_contract_tests {
+    use super::completed_answer;
+    use serde_json::{json, Value};
+    #[test]
+    fn routing_and_recovery_never_override_user_generation_settings() {
+        for stage in [
+            super::ParentStage::Routing,
+            super::ParentStage::Delivery,
+            super::ParentStage::Recovery,
+        ] {
+            let controls = stage.controls();
+            assert!(controls.thinking_level.is_none());
+            assert!(controls.max_output_tokens.is_none());
+            assert_eq!(
+                controls.required_tool.is_some(),
+                stage == super::ParentStage::Routing
+            );
+        }
+    }
     #[test]
     fn retained_original_selects_its_run_without_exposing_later_repair() {
         use crate::session::SessionEntry;
@@ -754,5 +918,74 @@ mod input_contract_tests {
             .as_str()
             .unwrap()
             .contains("empty array"));
+    }
+    #[test]
+    fn sealed_delivery_requires_a_completed_nonempty_backend_artifact() {
+        use crate::types::{AgentMessage, ContentBlock};
+        let mut value = json!({"status":"completed","has_conclusion":true,"fusion_run_id":"owned","final_answer":"public answer"});
+        let message = |v: &Value, is_error| AgentMessage {
+            role: "tool".into(),
+            name: "fusion".into(),
+            content: vec![ContentBlock::tool_result("call", v.to_string(), is_error)],
+            ..Default::default()
+        };
+        assert_eq!(
+            completed_answer(&[message(&value, false)]),
+            Some(("owned".into(), "public answer".into()))
+        );
+        assert!(completed_answer(&[message(&value, true)]).is_none());
+        for status in ["failed", "cancelled", "interrupted", "running"] {
+            value["status"] = json!(status);
+            assert!(completed_answer(&[message(&value, false)]).is_none());
+        }
+        value["status"] = json!("completed");
+        value["final_answer"] = json!(" ");
+        assert!(completed_answer(&[message(&value, false)]).is_none());
+    }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+    use crate::llm::schema::ModelStreamEvent;
+    use std::time::Duration;
+
+    #[tokio::test(start_paused = true)]
+    async fn recovery_and_delivery_stay_live_during_reasoning_then_expire_after_silence() {
+        for stage in [ParentStage::Recovery, ParentStage::Delivery] {
+            let mut progress = ParentProgress::new(stage);
+            for _ in 0..10 {
+                tokio::time::advance(Duration::from_secs(120)).await;
+                assert!(tokio::time::Instant::now() < progress.deadline());
+                progress.observe(&ModelStreamEvent::ReasoningDelta {
+                    id: "r".into(),
+                    text: "Checking the preserved result".into(),
+                });
+            }
+            tokio::time::advance(Duration::from_secs(299)).await;
+            assert!(tokio::time::Instant::now() < progress.deadline());
+            progress.observe(&ModelStreamEvent::ReasoningDelta {
+                id: "r".into(),
+                text: " \n".into(),
+            });
+            progress.observe(&ModelStreamEvent::TextStart { id: "t".into() });
+            tokio::time::advance(Duration::from_secs(2)).await;
+            assert!(tokio::time::Instant::now() >= progress.deadline());
+        }
+    }
+    #[tokio::test(start_paused = true)]
+    async fn routing_remains_bounded_and_visible_output_also_refreshes_the_idle_guard() {
+        let mut routing = ParentProgress::new(ParentStage::Routing);
+        let mut recovery = ParentProgress::new(ParentStage::Recovery);
+        tokio::time::advance(Duration::from_secs(170)).await;
+        let event = ModelStreamEvent::TextDelta {
+            id: "t".into(),
+            text: "Continued answer".into(),
+        };
+        routing.observe(&event);
+        recovery.observe(&event);
+        tokio::time::advance(Duration::from_secs(131)).await;
+        assert!(tokio::time::Instant::now() >= routing.deadline());
+        assert!(tokio::time::Instant::now() < recovery.deadline());
     }
 }

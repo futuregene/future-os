@@ -1,7 +1,7 @@
 import type { FusionDiscussion, FusionStep } from "@future-os/thread-projection";
 import type { FusionResolver } from "../../integrations/fusion/queries";
 import type { FusionSelection } from "./types";
-import { FUSION_PHASES, fusionProgress } from "@future-os/thread-projection";
+import { FUSION_PHASES, fusionProgress, isFusionModerator } from "@future-os/thread-projection";
 import { ChevronDown, RefreshCw } from "lucide-react";
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -101,7 +101,7 @@ function StepCard({ step, runId, toolCallId, resolveTarget, terminal, onOpen }: 
         }}
       >
         <span className="min-w-0 flex-1 space-y-1">
-          <span className="block text-xs font-medium text-ink">{step.participant === "moderator" ? t("fusion.moderatorRole") : t("fusion.participantRole", { number: step.participant.replace(/^P/u, "") })}</span>
+          <span className="block text-xs font-medium text-ink">{isFusionModerator(step.participant) ? t("fusion.moderatorRole") : t("fusion.participantRole", { number: step.participant.replace(/^P/u, "") })}</span>
           <span className="block wrap-break-word text-xs text-ink-muted">{step.model}</span>
           {step.attempt > 0 && <span className="block text-xs text-ink-muted">{t("fusion.retry", { count: step.attempt })}</span>}
         </span>
