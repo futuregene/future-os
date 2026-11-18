@@ -49,6 +49,16 @@ describe("choiceContextFolds", () => {
     expect(choiceContextFolds("森".repeat(6 * 60), 120)).toBe(true);
   });
 
+  it("keeps a context inside the prompt's budget visible on a phone", () => {
+    // The prompt asks for ~100 characters (`agent/src/prompt/choice.md`), which is
+    // the amount a 350pt card draws in four or five lines: inside the fold. 144
+    // characters is where the same column starts folding, so the two numbers are
+    // what make "write ~100 characters" and "the reader sees all of it" the same
+    // statement rather than two wishes.
+    expect(choiceContextFolds("森".repeat(100), 48)).toBe(false);
+    expect(choiceContextFolds("森".repeat(144), 48)).toBe(true);
+  });
+
   it("folds the same text on a phone, where it is already tall", () => {
     expect(estimateContextLines(fourLinesOnDesktop, 120)).toBe(CHOICE_CONTEXT_VISIBLE_LINES);
     expect(estimateContextLines(fourLinesOnDesktop, 48)).toBeGreaterThan(CHOICE_CONTEXT_VISIBLE_LINES);

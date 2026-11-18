@@ -78,7 +78,7 @@ Fields:
 | `option` | yes (2–4) | One per line: `id \| label \| one-line note`; the note may be omitted |
 | `id` | — | Stable identifier to send back: ASCII, `[a-z0-9-]`, ≤ 24 chars, unique within the card |
 | `hint` | no | One line the model writes itself, drawn under `context`. There is **no default subtitle** any more (removed 2026-11-18, §5.1) |
-| `context` | no | One to three sentences of situation, so the card can be answered without scrolling back up. Repeated `context:` lines become separate paragraphs; an empty one disappears |
+| `context` | no | One to three sentences of situation, around 100 characters — what four lines of a phone card hold (tightened from 200 on 2026-11-18) — so the card can be answered without scrolling back up. Repeated `context:` lines become separate paragraphs; an empty one disappears |
 
 **How `mode` is decided** (anyone rewriting the prompt has to follow this; it is a rule, not a style preference):
 
@@ -224,7 +224,7 @@ Pinned by `desktop/src/features/markdown/ChoiceCardsToggle.test.tsx` (off: zero 
 - Header: 12px semibold title plus an 11px mode label on the right (`单选` / `多选`);
 - **No default subtitle** (removed 2026-11-18): the old line ("pick one and it lands in the input; you can type something else instead") explained the mechanism, which the answer pill already demonstrates (§5.2), and `单选` / `多选` is already in the header. A sentence that has to be read on every card and is useful once is a tax on every card. A `hint` the reply wrote itself is still drawn here at 11px `ink-muted`; a read-only card gains the `choice.hint.readonly` line (§3);
 - `context`, when present, sits between the header and that line: 12px / 18px, `ink-soft` — one weight heavier than `hint` because it is content, not chrome. A card without it takes no height from it; a read-only card keeps it;
-- **A context taller than four lines folds**: `line-clamp-4` cuts it with an ellipsis and a 11px “show more / show less” button (chevron, `aria-expanded`, `aria-controls` pointing at the paragraph) sits under it. The full text never leaves the DOM, so a screen reader reads all of it and expanding only draws it. Four lines or fewer get no control at all — a “show more” over text that is already fully visible is another button that does nothing. The phone follows the same rule with `numberOfLines={4}`, which lets the platform draw the ellipsis.
+- **A context taller than four lines folds**: `line-clamp-4` cuts it with an ellipsis and a 11px “show more / show less” button (chevron, `aria-expanded`, `aria-controls` pointing at the paragraph) sits under it. The full text never leaves the DOM, so a screen reader reads all of it and expanding only draws it. Four lines or fewer get no control at all — a “show more” over text that is already fully visible is another button that does nothing. The phone follows the same rule with `numberOfLines={4}`, which lets the platform draw the ellipsis. The prompt asks for ~100 characters for the same reason: that is four or five lines in this column, so a card written to its budget is read whole on the narrowest surface.
 - Each option is a row: a 16px radio, a 13px label, a 12px one-line note (`ink-muted`); unselected rows have no border and no fill and are separated by spacing alone;
 - Card shell: `1px line` / `radius 10px` / `surface` / a very light shadow — the approval card's material, but a **different position**: the approval card floats above the composer, a choice card grows inside the reply.
 

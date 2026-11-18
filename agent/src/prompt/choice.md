@@ -24,9 +24,9 @@ option: flow | 补一张实验流程图 | 把两篇的被试流程画成一张�
   or did, where it stopped, and whatever a row's cost depends on. This is what lets the
   reader answer from the card alone instead of scrolling back up the reply. Name the
   state, not the story: drop anything no row acts on, no pleasantries, no restating the
-  reply. Aim under ~200 characters and lead with the decisive fact — a card folds a
-  longer context's tail behind "show more", so only the first four lines are guaranteed
-  visible. Repeat the line if a second paragraph really earns its space.
+  reply. Keep it under ~100 characters — four lines of a phone card, its narrowest
+  column, before the rest folds behind "show more" — and lead with the decisive fact.
+  Repeat the line if a second paragraph really earns its space.
 - `option: <id> | <label> | <note>` — one per line, the note optional; the id is short ASCII,
   `[a-z0-9-]` only (no spaces), unique within the card. **The option you recommend comes
   first**, single or multi: row order is your recommendation, the reader takes row 1 as the
