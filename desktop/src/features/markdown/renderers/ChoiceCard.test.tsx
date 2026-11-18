@@ -68,6 +68,27 @@ describe("choice card rendering", () => {
     expect([...card.querySelectorAll("[data-choice-mark]")].every(mark => mark.getAttribute("data-choice-mark") === "ring")).toBe(true);
   });
 
+  it("draws the context above the subtitle, and nothing when the fence omitted it", () => {
+    const html = render({
+      context: "森林图已按新样本量重画，图注还挂着旧的 42。\n图例仍压在曲线上。",
+      onSelect: vi.fn(),
+    });
+    expect(html).toContain("data-choice-context");
+    // Repeated `context:` lines are paragraphs, so the break is kept.
+    expect(html).toContain("图注还挂着旧的 42。\n图例仍压在曲线上。");
+    // Order: the situation is read before the instruction about picking.
+    expect(html.indexOf("森林图已按新样本量重画")).toBeLessThan(html.indexOf("Pick one and it lands in the input"));
+
+    expect(render({ onSelect: vi.fn() })).not.toContain("data-choice-context");
+  });
+
+  it("keeps the context on a card that cannot be picked", () => {
+    // The subtitle turns into "this card cannot be picked" (§2), but the
+    // situation is information: a past card still says what it was asking about.
+    const html = render({ context: "森林图已重画完了。" });
+    expect(html).toContain("森林图已重画完了。");
+  });
+
   it("uses checkbox rows for a multi-choice card and its own hint", () => {
     const html = render({ mode: "multi", onSelect: vi.fn() });
     expect(html).toContain("Multiple choice");
@@ -150,22 +171,33 @@ describe("choice card rendering", () => {
 
   /**
    * The subtitle is the only place a card can promise an action. A card that
-   * cannot answer must not print the answering one: "pick one and it lands in
+   * cannot answer must not print a *default* promise: "pick one and it lands in
    * the input" over rows that do nothing is a button that looks pressable and
-   * isn't — the whole point of the read-only state (§3's tolerance table).
+   * isn't. What the model itself wrote is a different thing — it is part of the
+   * reply the reader is re-reading — so history keeps it and the notice follows
+   * it, saying plainly that the rows are inert.
    */
-  it("does not promise a pick on a read-only card, in visible text or to a screen reader", () => {
+  it("does not promise a pick on a read-only card, but keeps what the reply itself said", () => {
     const card = mount({ hint: "点几个都行" }).querySelector<HTMLElement>("[data-choice-card]")!;
     expect(card.textContent).toContain("An earlier question — this card can no longer be picked");
     expect(card.textContent).not.toContain("Pick one and it lands in the input");
-    // The model's own hint describes picking too, so it goes the same way.
-    expect(card.textContent).not.toContain("点几个都行");
-    // And the same sentence is what a screen reader reads for the group.
+    expect(card.textContent).toContain("点几个都行");
+    // Order matters: what was said at the time, then the fact that it is inert.
+    expect(card.textContent!.indexOf("点几个都行"))
+      .toBeLessThan(card.textContent!.indexOf("An earlier question"));
     expect(card.getAttribute("aria-disabled")).toBe("true");
-    const describedBy = card.getAttribute("aria-describedby");
-    expect(describedBy).toBeTruthy();
-    expect(document.getElementById(describedBy!)?.textContent)
-      .toBe("An earlier question — this card can no longer be picked");
+    // Both sentences describe the group to a screen reader, in the same order.
+    const describedBy = card.getAttribute("aria-describedby")!;
+    expect(describedBy.split(" ").map(id => document.getElementById(id)?.textContent))
+      .toEqual(["点几个都行", "An earlier question — this card can no longer be picked"]);
+  });
+
+  it("says only that a past card is inert when the reply carried no hint of its own", () => {
+    const card = mount().querySelector<HTMLElement>("[data-choice-card]")!;
+    const describedBy = card.getAttribute("aria-describedby")!;
+    expect(describedBy.split(" ").map(id => document.getElementById(id)?.textContent))
+      .toEqual(["An earlier question — this card can no longer be picked"]);
+    expect(card.textContent).not.toContain("Pick one and it lands in the input");
   });
 
   it("keeps a read-only card out of the tab order and refuses focus", () => {

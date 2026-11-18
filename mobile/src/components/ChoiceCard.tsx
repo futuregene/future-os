@@ -78,6 +78,13 @@ export function ChoiceCard({ live, node }: { live: boolean; node: ChoiceCardNode
   const picked = live && answer?.title === node.title ? answer.selectedIds : [];
   const multi = node.mode === "multi";
   const onPick = live ? answer?.onPick : undefined;
+  // A live card falls back to the default instruction; a past card keeps the
+  // model's own words and gets the "cannot be picked" notice underneath — the
+  // history a reader returns to should keep what the reply said, not just the
+  // notice that replaced it.
+  const guidance = live
+    ? node.hint || (multi ? t("choice.hint.multi") : t("choice.hint.single"))
+    : node.hint;
   return (
     <View style={styles.card} testID="choice-card">
       <View style={styles.head}>
@@ -87,11 +94,21 @@ export function ChoiceCard({ live, node }: { live: boolean; node: ChoiceCardNode
           {multi ? t("choice.mode.multi") : t("choice.mode.single")}
         </Text>
       </View>
-      <Text style={styles.hint}>
-        {live
-          ? node.hint || (multi ? t("choice.hint.multi") : t("choice.hint.single"))
-          : t("choice.hint.readonly")}
-      </Text>
+      {node.context
+        ? (
+            <Text style={styles.context} testID="choice-card-context">{node.context}</Text>
+          )
+        : null}
+      {guidance
+        ? <Text style={styles.hint}>{guidance}</Text>
+        : null}
+      {live
+        ? null
+        : (
+            <Text style={styles.readonly} testID="choice-card-readonly">
+              {t("choice.hint.readonly")}
+            </Text>
+          )}
       <View
         accessibilityLabel={multi ? undefined : node.title}
         accessibilityRole={multi ? undefined : "radiogroup"}
@@ -228,12 +245,32 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     fontWeight: "600",
   },
   mode: { color: theme.colors.inkMuted, fontSize: theme.font(11) },
+  // The situation, above the instruction: the reader answers from the card, not
+  // from a scroll back up the reply. A step louder than `hint` — it is content,
+  // the line below it is chrome — and pre-line so repeated `context:` lines keep
+  // their breaks.
+  context: {
+    paddingHorizontal: spacing.md,
+    paddingBottom: 6,
+    color: theme.colors.inkSoft,
+    fontSize: theme.font(13),
+    lineHeight: theme.leading(19),
+  },
   hint: {
     paddingHorizontal: spacing.md,
-    paddingBottom: spacing.sm,
+    paddingBottom: 6,
     color: theme.colors.inkMuted,
     fontSize: theme.font(12),
     lineHeight: theme.leading(17),
+  },
+  // A past card says why it cannot be picked, after the model's own hint rather
+  // than in place of it (§2, revised 2026-11-18).
+  readonly: {
+    paddingHorizontal: spacing.md,
+    paddingBottom: spacing.sm,
+    color: theme.colors.inkMuted,
+    fontSize: theme.font(11),
+    lineHeight: theme.leading(16),
   },
   rows: { gap: 2, paddingHorizontal: 6, paddingBottom: spacing.sm },
   row: {
