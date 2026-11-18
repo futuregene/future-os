@@ -233,9 +233,9 @@ function MessageBlockImpl({
   // A prompt that answers a choice card carries the card's printed sentence
   // (`choiceAnswerText`), and the bubble draws that sentence as a tag rather
   // than as prose the reader typed. It need not be at the head: the composer
-  // appends the pill to the end of the editor, so a prompt typed before a row
-  // was picked carries the answer mid-sentence. The text is only classified,
-  // never rewritten — the copy button still yields the sentence that was sent.
+  // writes the pill at the caret, so an answer picked mid-sentence lands inside
+  // the words. The text is only classified, never rewritten — the copy button
+  // still yields the sentence that was sent.
   const promptEcho = isUser && message.content ? splitChoiceAnswerEcho(message.content) : null;
   const promptProse = promptEcho && promptEcho.echoes.length > 0 ? promptEcho.rest : null;
   const userPrompt = promptEcho && promptEcho.echoes.length > 0

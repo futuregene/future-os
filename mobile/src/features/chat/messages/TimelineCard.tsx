@@ -324,8 +324,8 @@ function TimelineCardView({
     // A prompt that answered a choice card carries the card's printed sentence
     // (§7), where a bracket sandwich among the reader's own words reads as prose
     // they typed rather than as a pick they made. It need not be at the head —
-    // the desktop appends its pill to the end of the editor, so an answer picked
-    // after typing lands mid-sentence — and the bubble draws it as a tag
+    // the desktop writes its pill at the caret, so an answer picked mid-sentence
+    // lands inside the reader's own sentence — and the bubble draws it as a tag
     // wherever it sits. The words keep their order around it; only the drawing
     // changes, and the long-prompt preview above still measures the whole
     // prompt, so a collapsed one keeps its cap.

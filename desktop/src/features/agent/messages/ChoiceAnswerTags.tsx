@@ -10,9 +10,9 @@ import { cn } from "../../../lib/cn";
  * would otherwise read as a bracket sandwich in the middle of the reader's own
  * words. Here the sentence is the same one — nothing is rewritten, and the copy
  * button still yields it — but it is drawn as what it is: a pick, one step in
- * from the prose the reader typed around it (the pill is appended to the end of
- * the editor, so the answer often sits at the end of a sentence rather than
- * ahead of it).
+ * from the prose the reader typed around it (the pill lands at the caret, so the
+ * answer sits wherever the reader left the cursor rather than always behind
+ * their words).
  *
  * The material is the card's, reduced: the accent hairline and the glyph that
  * head the card, on a tint light enough to sit *inside* the user's bubble rather

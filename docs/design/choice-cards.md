@@ -255,6 +255,8 @@ Moved into the editor, all four requirements follow from machinery that already 
 - (d) only a pill ⇒ `isEditorEmpty` false ⇒ button live;
 - (b) the pencil and × ride on the pill itself and write the same value.
 
+**The answer lands at the caret** (fixed 2026-11-18): the pill used to be `appendChild`-ed to the end of the editor, so typing first and picking a row after put the answer *behind* the reader's sentence instead of where they were typing. A card's rows live in the transcript, so clicking one takes focus and the browser drops the selection; the editor therefore remembers the last range that landed inside it (`lastCaretRef`, kept on `selectionchange`) and inserts there. A *selection* collapses to its end rather than being replaced, so clicking a row never deletes words the reader had highlighted. Changing the answer (the pencil, or another row) still rewrites the pill in place — it does not move. `insertNode` splits the text at the caret, so the words on both sides survive.
+
 **Zero ticks is not an answer, so there is no pill at all.** A pill exists to answer *what was picked* (§5.2); a question with nothing ticked cannot answer that, and a pill built from it would print the card's question as if the reader had answered it. So the rule sits at the one place the answer is **written** (`answerOrNull`, `composer/choiceAnswer.ts`), not at "draw an empty pill but emit no text": zero ticks ⇒ the answer is dropped ⇒ no pill, (a)'s grey button holds again, and (d) stops claiming content. §7's "zero ticks emits no `[…] → ]`" is the other end of the same rule, and both layers exist: dropped on write, and caught again on send (`withChoiceAnswer`). Unticking a multi-choice card's last row is the ✕ path of §5.3, and the pill goes along with its own trailing space.
 
 **Measured** (1440×900, pill injected into the real contenteditable and the DOM read back; no product code changed):
@@ -271,7 +273,7 @@ The pill measured `bg rgb(232,240,255)` (`accent-soft`), `color rgb(37,99,235)` 
 
 ![Desktop: typing after the pill](assets/choice-cards/desktop-6-chosen-text.png)
 
-Requirement (c) on screen. The pill and the words share one editor flow, so the order on screen is the order that ships: `serialize()` writes them in that order (the pill as `[question → answer]`, then the words). What the user's bubble shows is what was actually sent — no second rendering that could drift. The pill is **appended to the end** of the editor (`writeChoicePill`), so typing first and picking after puts the answer behind the words (§7 has that row); either way the bubble draws it as a tag rather than as brackets (§5.2.3): the same sentence, no longer mixed into the words the reader typed themselves.
+Requirement (c) on screen. The pill and the words share one editor flow, so the order on screen is the order that ships: `serialize()` writes them in that order (the pill as `[question → answer]`, then the words). What the user's bubble shows is what was actually sent — no second rendering that could drift. The pill lands **at the caret** (§5.2.1), so whether the answer sits ahead of, inside or behind the reader's words is decided by where they left the caret when they picked a row (§7 has an in-sentence row); wherever it lands, the bubble draws it as a tag rather than as brackets (§5.2.3): the same sentence, no longer mixed into the words the reader typed themselves.
 
 ### 5.2.3 The user's bubble after sending
 
@@ -279,7 +281,7 @@ One treatment on all three clients: a `[question → answer]` printed in a promp
 
 - **The text is unchanged.** The tag is a *drawing* of the sentence `choiceAnswerText` writes, not a second copy of it: the copy button, the agent and a paste elsewhere all still see `[question → answer]`. That is exactly why §7 sends plain text — how the display layer draws it cannot change how readable the sentence is;
 - **The test is conservative** (`packages/markdown/src/choiceAnswerEcho.ts`): it needs the `→`, never reads a closing bracket followed by `(` or `[` (that is a link, or another bracket run), reads at most four answers (a card's own bound), and leaves a run inside a fenced block or an inline code span alone — that is an example the reader pasted, and cutting it out would unbalance the fence or the backticks. A false negative costs the styling, never a character;
-- **An answer need not be at the head** (2026-11-18). The pill is appended to the end of the editor (`writeChoicePill`), so a reader who types first and picks after sends the answer in the middle of their own sentence; being a pick is not a matter of position, so the tag is drawn there too, and the words on either side are joined back in their own order (`先说 [question → answer] 再说` → the tag plus `先说 再说`, the doubled whitespace at the seam closed). It is lifted above the prose rather than drawn inline because a React Native `View` cannot sit inside a `Text` flow — one shape on all three clients beats two;
+- **An answer need not be at the head** (2026-11-18). The pill lands at the caret (§5.2.1), so a reader who leaves the caret mid-sentence sends the answer inside their own sentence (and text typed *after* the answer lands behind it); being a pick is not a matter of position, so the tag is drawn there too, and the words on either side are joined back in their own order (`先说 [question → answer] 再说` → the tag plus `先说 再说`, the doubled whitespace at the seam closed). It is lifted above the prose rather than drawn inline because a React Native `View` cannot sit inside a `Text` flow — one shape on all three clients beats two;
 - **A path inside an answer cannot turn the sentence into a link** (fixed 2026-11-18): before, an answer naming a path (`删未在用的 ~/omlx 副本`) made the whole bracket run look like a bare relative path, so the bubble drew the reader's sentence as a file link that opened "file not found". That rule now lives in the parser (`bracketMentionPath` in `packages/markdown/src/parseFutureMarkdown.ts`): whitespace or `→` inside the brackets means prose, never a file reference. A path that really holds spaces is spelled as a link — `[name](<with space.md>)` — which is unambiguous;
 - **The material follows the bubble.** The desktop bubble is `accent-soft`, so the tag is `accent/10` on `accent/25`; the phone's bubble is solid `accent`, so the tag mixes the bubble's own ink at 12% with a 20% border — the same colours `MarkdownText`'s `onAccent` tone uses, readable in both appearances.
 
@@ -496,7 +498,7 @@ The answer must be readable by the agent **and** on the degraded paths (TUI, IM 
 |---|---|
 | Picked, nothing typed | `[接下来做哪一件？ → 重画森林图]` |
 | Picked and added a note | `[接下来做哪一件？ → 重画森林图] 顺便把图例挪到右下` |
-| Typed first, picked after (the pill is appended) | `另外 asrbench 可以删除[删哪些？ → 删 A 类全部]` |
+| Typed first, picked with the caret mid-sentence | `另外 asrbench 可以删除[删哪些？ → 删 A 类全部]` |
 | Multiple picks | `[这三项都要 → 重画森林图、补一张实验流程图]` |
 | Only typed (nothing picked / chip removed) | Just what the user wrote |
 | Picked then all unticked (multi card) | Just what the user wrote — zero ticks is not an answer, and neither end emits `[…] → ]` |

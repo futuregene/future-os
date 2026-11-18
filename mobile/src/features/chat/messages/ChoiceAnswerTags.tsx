@@ -12,8 +12,7 @@ import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
  * would otherwise read as a bracket sandwich inside the reader's own words. The
  * sentence is not rewritten here — the copy button still yields it — it is drawn
  * as what it is: a pick, one step in from the prose typed around it (the desktop
- * appends its pill to the end of the editor, so an answer picked after typing
- * lands at the end of a sentence).
+ * writes its pill at the caret, so the answer can sit anywhere in the sentence).
  *
  * The bubble behind this is the accent fill, not the app surface, so the tag is
  * mixed from the same two colours `MarkdownText`'s `onAccent` tone uses: an
