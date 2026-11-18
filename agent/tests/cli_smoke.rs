@@ -721,10 +721,14 @@ fn agent_survives_unwritable_profile_path() {
         ])
         .output()
         .expect("spawn future-agent");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // The status is part of the evidence: a signal (`137`/`139`) and a clean
+    // `Some(1)` are different investigations.
+    assert!(output.status.success(), "{:?}\n{stderr}", output.status);
     assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        stderr.contains("continuing without profiling"),
+        "a destination that cannot be written must be refused before the \
+         sampler starts, not discovered at exit: {stderr}"
     );
 }
 
