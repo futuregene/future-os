@@ -139,19 +139,39 @@ fn apply_scoped(
 /// Manual organization preserves the per-step pricing projection before its
 /// source stream disappears, in the same transaction that hides the stream.
 fn preserve_pricing(tx: &Transaction<'_>, stream: i64) -> Result<()> {
-    let ids = {
-        let mut query = tx.prepare("SELECT id FROM stream_changes WHERE stream_id=?1 AND event_type IN ('usage','model_changed') ORDER BY id")?;
-        let rows = query
-            .query_map([stream], |r| r.get(0))?
-            .collect::<rusqlite::Result<Vec<i64>>>()?;
-        rows
-    };
-    let changes = super::compact::read_ids(tx, &ids)?;
-    ensure!(ids.len() == changes.len(), "incomplete pricing stream");
-    for (id, change) in ids.into_iter().zip(changes) {
-        let mut payload = change.metadata;
-        payload["event_type"] = serde_json::json!(change.event_type);
-        tx.execute("INSERT OR IGNORE INTO run_pricing(session_id,run_id,sequence,payload) SELECT session_id,run_id,?2,?3 FROM stream_runs WHERE id=?1",params![stream,id,payload.to_string()])?;
+    // Keep both the selection and decoding within the reader's page budget.
+    // All pages share the retirement transaction, so a failed page rolls back
+    // the projection and leaves the source stream available for another try.
+    let mut after = 0i64;
+    loop {
+        let ids = {
+            let mut query = tx.prepare_cached("SELECT c.id,length(CAST(c.metadata_json AS BLOB))+length(CAST(x.descriptor_json AS BLOB))+x.symbol_bytes FROM stream_changes c LEFT JOIN stream_contexts x ON x.id=c.context_id AND x.stream_id=c.stream_id AND x.event_kind=c.event_kind WHERE c.stream_id=?1 AND c.id>?2 AND c.event_type IN ('usage','model_changed') ORDER BY c.id LIMIT 256")?;
+            let mut rows = query.query(params![stream, after])?;
+            let mut ids = Vec::new();
+            let mut bytes = 0usize;
+            while let Some(row) = rows.next()? {
+                let size = usize::try_from(row.get::<_, i64>(1)?)?;
+                if !ids.is_empty()
+                    && bytes.saturating_add(size) > super::stream::CHANGE_METADATA_BYTES
+                {
+                    break;
+                }
+                bytes = bytes.saturating_add(size);
+                ids.push(row.get(0)?);
+            }
+            ids
+        };
+        let Some(&last) = ids.last() else {
+            break;
+        };
+        let changes = super::compact::read_ids(tx, &ids)?;
+        ensure!(ids.len() == changes.len(), "incomplete pricing stream");
+        for (id, change) in ids.into_iter().zip(changes) {
+            let mut payload = change.metadata;
+            payload["event_type"] = serde_json::json!(change.event_type);
+            tx.execute("INSERT OR IGNORE INTO run_pricing(session_id,run_id,sequence,payload) SELECT session_id,run_id,?2,?3 FROM stream_runs WHERE id=?1",params![stream,id,payload.to_string()])?;
+        }
+        after = last;
     }
     Ok(())
 }
