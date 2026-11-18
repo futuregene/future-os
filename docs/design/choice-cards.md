@@ -220,7 +220,7 @@ Pinned by `desktop/src/features/markdown/ChoiceCardsToggle.test.tsx` (off: zero 
 
 ![Desktop: a choice card at the end of a reply, nothing chosen](assets/choice-cards/desktop-1-empty.png)
 
-*A real-component capture*, scenario `choice-card-implemented` (1440×900 at 2×, taken from `56462a7da`): the card is not an injected prototype — `packages/markdown` parses the `futureos-choice` fence and `desktop/src/features/markdown/renderers/ChoiceCard.tsx` draws it. This card's context is one line, so it has **no** “show more” button; the threshold is in the fourth bullet.
+*A real-component capture*, scenario `choice-card-implemented` (1440×900 at 2×, taken from `56462a7da`): the card is not an injected prototype — `packages/markdown` parses the `futureos-choice` fence and `desktop/src/features/markdown/renderers/ChoiceCard.tsx` draws it. This card's context is one line, so it has **no** “show more” button. **Fold threshold: four lines visible, folds from six** (`choiceContextFolds` — four visible plus a two-line margin, so hiding a single line never buys a control).
 
 - 768px wide, the same as the text column (`max-w-3xl`), left-aligned, 4px below the last block;
 - Header: 12px semibold title plus an 11px mode label on the right (`单选` / `多选`);
@@ -234,7 +234,7 @@ Pinned by `desktop/src/features/markdown/ChoiceCardsToggle.test.tsx` (off: zero 
 
 ![Desktop: two cards in one reply, the upper one an earlier question — read-only, its context folded](assets/choice-cards/desktop-9-history-fold.png)
 
-*A real-component capture*, scenario `choice-history-fold-desktop` (1440×900 at 2×, taken from `56462a7da`): one reply holds two cards, the upper one an earlier question and the lower one the thread's latest. The rule depends only on **how many cards were parsed** (§2), not on anything the reply wrote, so both cards come from one fixture and one renderer.
+*A real-component capture*, scenario `choice-history-fold-desktop` (1440×900 at 2×, taken from `56462a7da`): one reply holds two cards, the upper one an earlier question and the lower one the thread's latest. The upper card's context estimates **past six lines** (fold threshold: four visible, folds from six), so it is folded to four lines plus “show more”. The rule depends only on **how many cards were parsed** (§2), not on anything the reply wrote, so both cards come from one fixture and one renderer.
 
 - The upper card: `data-choice-state="readonly"`, `aria-disabled="true"`, rows out of the tab order, a press does nothing;
 - It **keeps the `hint` it was written with** — “点几个都行” here, 11px `ink-muted` — followed by the read-only notice (“早先的提问，这张卡不能再选”). A past card exists to be re-read, and deleting the reply's own line would delete the only hint it had at the time; the default subtitle still does not come back, because that one promises an action;
@@ -349,7 +349,7 @@ Two explored and **rejected** approaches, recorded so they are not redone:
 
 ### 5.7 Mobile
 
-390×844, three frames: nothing chosen, one chosen, changing it. The “nothing chosen” frame is a **real-component capture** (scenario `choice-card-phone-card`, 780×1688 at 2×, taken from `56462a7da`) — `mobile/src/components/ChoiceCard.tsx` drew it, not an injected prototype.
+390×844, three frames: nothing chosen, one chosen, changing it. The “nothing chosen” frame is a **real-component capture** (scenario `choice-card-phone-card`, 780×1688 at 2×, taken from `56462a7da`) — `mobile/src/components/ChoiceCard.tsx` drew it, not an injected prototype. The fold threshold is **the same pair of numbers** as the desktop's (four visible, folds from six), but a 350pt column holds 24 units per line against the desktop's 120, so the same paragraph folds earlier here.
 
 | Nothing chosen | One chosen | Changing it |
 |---|---|---|
@@ -378,7 +378,7 @@ v1's chosen row announced itself in three places at once: `accent-soft` fill, `a
 
 ![Phone: two cards in one reply, the upper one read-only with its context folded](assets/choice-cards/phone-5-history-fold.png)
 
-*A real-component capture*, scenario `choice-history-fold-phone` (780×1688 at 2×, taken from `56462a7da`), from the **same fixture** as the desktop one (`?choiceHistory=1`): the same two cards, the same `hint`, the same notice.
+*A real-component capture*, scenario `choice-history-fold-phone` (780×1688 at 2×, taken from `56462a7da`), from the **same fixture** as the desktop one (`?choiceHistory=1`): the same two cards, the same `hint`, the same notice. That context fits four lines on the desktop and runs past six here, so it folds to four lines plus “show more” — same threshold, a column 2.5× narrower.
 
 - The same context folds far earlier here than on the desktop: a 350pt column with `CONTEXT_UNITS_PER_LINE = 48` (a bit over a quarter of the desktop's 120) means a paragraph the desktop shows whole is already “four lines + show more” on the phone;
 - The button's state is spelled `aria-expanded`, not `accessibilityState` — react-native-web forwards `aria-*` and drops the other entirely, the same reason the rows spell `aria-checked`;
