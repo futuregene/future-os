@@ -1,4 +1,6 @@
+import type { SendQueueChoiceItem } from "../agent/SendQueuePanel";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { parseQueueChoice } from "../agent/agentQueue";
 import { requestRemotePeer } from "./remotePeerClient";
 
 /**
@@ -16,8 +18,10 @@ import { requestRemotePeer } from "./remotePeerClient";
  * Reading is the host's `get_queue` (its `get_state`'s `queuedRuns`,
  * normalised — `host/src/agent_bridge/queue.rs`); removing and starting one early
  * go through `cancel_queued_run` / `release_queued_run`, addressed by run id.
- * There is no "edit in place": changing a waiting message is a cancel and a
- * re-send, which is what the composer does.
+ * Correcting one in place is `edit_queued_run`, which the host applies where the
+ * row already waits (a cancel and a re-send would put it at the back of a queue
+ * the reader ordered); that same command also carries a new answer, so a waiting
+ * row's pick can be changed here exactly as on a local conversation.
  */
 
 /**
@@ -57,6 +61,15 @@ export interface RemoteQueueRow {
    * claiming the message carries none. A message with no files reports `[]`.
    */
   attachments?: RemoteQueueAttachment[];
+  /**
+   * The answer this waiting message carries, when it came from a choice card.
+   *
+   * `undefined` when the host's queue does not report it — a prompt that answered
+   * no card, and also a host older than the field — and the row is then drawn
+   * without a chip rather than with an empty one (§5.8.2). The same parser reads
+   * it here and on the local queue, so "malformed" means the same thing on both.
+   */
+  choice?: SendQueueChoiceItem;
   /**
    * `queued` runs at the turn boundary. `stale…` waited too long: the Agent
    * parked it rather than spend credits on a message the conversation moved past,
@@ -154,6 +167,7 @@ function asRow(raw: unknown): RemoteQueueRow | null {
           (attachment): attachment is RemoteQueueAttachment => attachment !== null,
         )
       : undefined,
+    choice: parseQueueChoice(row.choice),
   };
 }
 
@@ -270,16 +284,23 @@ export async function releaseRemoteQueuedRun(
  * The host replaces the text of the accepted prompt in place: same row, same
  * position, and the files it was sent with stay attached. A cancel and a re-send
  * would have put the corrected message at the back of the queue.
+ *
+ * `choice` travels with the words because they are one statement: the text is
+ * what the run actually sends, so a new pick with the old sentence would send the
+ * old one. The host stores both in one edit (it reads that field out of this same
+ * command — `remote_host/business/prompt.rs`). Omitted for a words-only edit,
+ * where the accepted answer must stay as it is.
  */
 export async function editRemoteQueuedRun(
   desktopId: string,
   sessionId: string,
   runId: string,
   message: string,
+  choice?: SendQueueChoiceItem,
 ): Promise<void> {
   await requestRemotePeer(
     desktopId,
-    { type: "edit_queued_run", sessionId, runId, message },
+    { type: "edit_queued_run", sessionId, runId, message, ...(choice ? { choice } : {}) },
     sessionId,
   );
 }

@@ -160,7 +160,7 @@ function asRow(raw: unknown): AgentQueueRow | null {
           (attachment): attachment is AgentQueueAttachment => attachment !== null,
         )
       : undefined,
-    choice: asChoice(row.choice),
+    choice: parseQueueChoice(row.choice),
   };
 }
 
@@ -170,8 +170,12 @@ function asRow(raw: unknown): AgentQueueRow | null {
  * Malformed data reads as "no answer" rather than as an empty one: the chip is
  * the only thing that would show it, and a chip opening onto nothing is worse
  * than the row the reader already knows (§5.8.2).
+ *
+ * Exported because the remote client parses the same field out of the *host's*
+ * queue reply (`features/remote-peer/remoteQueue`): one answer shape, one parser,
+ * so a rule fixed here is fixed on both machines' screens.
  */
-function asChoice(raw: unknown): SendQueueChoiceItem | undefined {
+export function parseQueueChoice(raw: unknown): SendQueueChoiceItem | undefined {
   if (!raw || typeof raw !== "object")
     return undefined;
   const choice = raw as Record<string, unknown>;

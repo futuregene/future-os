@@ -855,6 +855,88 @@
           "shot": "send-queue-choice-implemented.png"
         }
       ]
+    },
+    "send-queue-choice-remote-implemented": {
+      "note": "真实组件 · 远程桌面 · 队列里的选择（§5.8.1/§5.8.2）。远程复用桌面的 `SendQueuePanel`，行的数据来自宿主的 `get_queue`：宿主那一行带着 `choice`，本机解析后画成 chip，按下 chip 换答案走同一条 `edit_queued_run`（答案与它声明的句子一起发）。所以这行的 chip、铅笔、垃圾桶与本地会话长得一模一样——不是另画的一份。",
+      "url": "http://localhost:5299/shot/?lang=zh&remoteChoiceCard=1&queue=1&queueChoice=1",
+      "width": 1440,
+      "height": 900,
+      "steps": [
+        {
+          "wait": 1200
+        },
+        {
+          "eval": "(() => { sessionStorage.clear(); localStorage.clear(); return 'cleared'; })()"
+        },
+        {
+          "eval": "(() => { location.reload(); return 'reloading'; })()"
+        },
+        {
+          "wait": 2600
+        },
+        {
+          "tapText": "重画森林图并核对置信区间"
+        },
+        {
+          "wait": 3200
+        },
+        {
+          "eval": "(() => { if (!document.querySelector('[data-testid=\"remote-thread-usage\"]')) throw new Error('this frame is not a remote conversation, so the figure would be lying'); const panel = document.querySelector('[data-send-queue]'); if (!panel) throw new Error('the remote queue panel did not render'); const toggle = panel.querySelector('[aria-label=\"展开队列中的消息\"]'); if (toggle) { toggle.click(); return 'expanded'; } return 'already-open rows=' + panel.querySelectorAll('[data-queue-item]').length; })()"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "eval": "(() => { if (!document.querySelector('[data-testid=\"remote-thread-usage\"]')) throw new Error('this frame is not a remote conversation, so the figure would be lying'); const panel = document.querySelector('[data-send-queue]'); if (!panel) throw new Error('the remote queue panel did not render'); const chip = panel.querySelector('[data-queue-choice-action=change]'); if (!chip) { const rows = [...panel.querySelectorAll('[data-queue-item]')].map(row => (row.innerText || '').replace(/\\n/g, ' | ').slice(0, 70)); throw new Error('the remote queued row drew no choice chip; rows: ' + JSON.stringify(rows)); } const label = chip.getAttribute('aria-label') || ''; if (!label.includes('重画森林图')) throw new Error('the chip does not name the picked option: ' + label); const text = chip.innerText || chip.textContent || ''; if (!text.includes('重画森林图')) throw new Error('the chip text lost the option: ' + text); if (chip.disabled) throw new Error('the chip is disabled, so the pick cannot be changed'); const row = chip.closest('[data-queue-item]'); if (!row) throw new Error('the chip is not inside a queue row'); if (!row.querySelector('[data-queue-edit]')) throw new Error('the row lost its own pencil'); if (!row.querySelector('[data-queue-remove]')) throw new Error('the row lost its bin'); const cr = chip.getBoundingClientRect(); const panelBox = panel.getBoundingClientRect(); if (cr.left < panelBox.left - 1 || cr.right > panelBox.right + 1) throw new Error('the chip escaped the panel'); return JSON.stringify({ chip: text.trim().slice(0, 30), box: [Math.round(cr.left), Math.round(cr.top), Math.round(cr.width), Math.round(cr.height)] }); })()"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "shot": "send-queue-choice-remote-implemented.png"
+        }
+      ]
+    },
+    "choice-history-expanded-desktop": {
+      "note": "真实组件 · 桌面 · 历史卡（展开）。与「历史卡（折叠）」同一份 fixture、同一帧：点开情境的「展开」后，早先那张卡把 `context` 全部露出来（72px → 126px），「展开」变成「收起」且 `aria-expanded=true`；只读提示、当年的 `hint`、卡底与输入框的间距都还在。折叠态只证明藏得住，这张证明展开后不越界、不裁切。",
+      "url": "http://localhost:5299/shot/?lang=zh&thread=th_choice&choiceHistory=1",
+      "width": 1440,
+      "height": 900,
+      "steps": [
+        {
+          "wait": 2600
+        },
+        {
+          "eval": "(() => { const cards = [...document.querySelectorAll('[data-choice-card]')]; if (cards.length !== 2) throw new Error('the reply drew ' + cards.length + ' cards, not 2'); let node = cards[0].parentElement, scroller = null; while (node) { if (node.scrollHeight > node.clientHeight + 1 && getComputedStyle(node).overflowY !== 'visible') { scroller = node; break; } node = node.parentElement; } if (!scroller) throw new Error('no scroll container around the cards'); scroller.scrollTop += cards[0].getBoundingClientRect().top - scroller.getBoundingClientRect().top; return JSON.stringify({ scrollTop: Math.round(scroller.scrollTop), frame: Math.round(scroller.getBoundingClientRect().top) }); })()"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "eval": "(() => { const cards = [...document.querySelectorAll('[data-choice-card]')]; if (cards.length !== 2) throw new Error('the reply drew ' + cards.length + ' cards, not 2'); const history = cards[0]; const context = history.querySelector('[data-choice-context]'); if (!context) throw new Error('the earlier card lost its context'); if (context.getAttribute('data-choice-context-folded') !== 'true') throw new Error('the context is not folded before the click, so there is nothing to open'); const before = Math.round(context.getBoundingClientRect().height); const toggle = history.querySelector('[data-choice-context-toggle]'); if (!toggle) throw new Error('no show-more button on the folded context'); if (toggle.getAttribute('aria-expanded') !== 'false') throw new Error('the button already reads expanded before the click'); toggle.click(); return JSON.stringify({ before }); })()"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "eval": "(() => { const cards = [...document.querySelectorAll('[data-choice-card]')]; if (cards.length !== 2) throw new Error('the reply drew ' + cards.length + ' cards, not 2'); let node = cards[0].parentElement, scroller = null; while (node) { if (node.scrollHeight > node.clientHeight + 1 && getComputedStyle(node).overflowY !== 'visible') { scroller = node; break; } node = node.parentElement; } if (!scroller) throw new Error('no scroll container around the cards'); scroller.scrollTop += cards[0].getBoundingClientRect().top - scroller.getBoundingClientRect().top; return JSON.stringify({ scrollTop: Math.round(scroller.scrollTop), frame: Math.round(scroller.getBoundingClientRect().top) }); })()"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "wait": 400
+        },
+        {
+          "eval": "(() => { const cards = [...document.querySelectorAll('[data-choice-card]')]; const [history, live] = cards; if (history.getAttribute('data-choice-state') !== 'readonly') throw new Error('the opened card is not the read-only one: ' + history.getAttribute('data-choice-state')); if (live.getAttribute('data-choice-state') !== 'active') throw new Error('the last card stopped being answerable'); const context = history.querySelector('[data-choice-context]'); if (context.getAttribute('data-choice-context-folded') === 'true') throw new Error('the context still reports itself folded after the click'); if (getComputedStyle(context).webkitLineClamp !== 'none') throw new Error('the paragraph is still clamped: ' + getComputedStyle(context).webkitLineClamp); const height = Math.round(context.getBoundingClientRect().height); if (height < 108) throw new Error('the opened context is ' + height + 'px, expected the whole text (126px)'); if (height > 140) throw new Error('the opened context is ' + height + 'px, taller than the text needs'); if (context.scrollHeight - context.clientHeight > 1) throw new Error('the opened context is cut off by ' + (context.scrollHeight - context.clientHeight) + 'px'); const toggle = history.querySelector('[data-choice-context-toggle]'); if (toggle.getAttribute('aria-expanded') !== 'true') throw new Error('the button does not report itself expanded'); if (!toggle.textContent.includes('收起')) throw new Error('the button still reads: ' + toggle.textContent); if (toggle.getAttribute('aria-controls') !== context.id) throw new Error('the button points at ' + toggle.getAttribute('aria-controls') + ', not the paragraph'); const hint = history.querySelector('[data-choice-hint]'); if (!hint || !hint.textContent.includes('点几个都行')) throw new Error('opening the context lost the hint it was written with'); const notice = history.querySelector('[data-choice-readonly]'); if (!notice || !notice.textContent.includes('早先的提问，这张卡不能再选')) throw new Error('opening the context lost the read-only notice'); const card = history.getBoundingClientRect(); const form = document.querySelector('form').getBoundingClientRect(); if (card.bottom > form.top - 8) throw new Error('the opened card runs under the composer: ' + Math.round(card.bottom) + ' vs ' + Math.round(form.top)); let node = history.parentElement, scroller = null; while (node) { if (node.scrollHeight > node.clientHeight + 1 && getComputedStyle(node).overflowY !== 'visible') { scroller = node; break; } node = node.parentElement; } const frameTop = scroller ? scroller.getBoundingClientRect().top : 0; if (card.top < frameTop - 1) throw new Error('the opened card is cut off at the top by ' + Math.round(frameTop - card.top) + 'px'); const rows = [...live.querySelectorAll('[data-choice-option]')]; if (rows.length !== 3) throw new Error('the live card draws ' + rows.length + ' rows'); return JSON.stringify({ expandedHeight: height, toggle: toggle.textContent.trim(), card: [Math.round(card.top), Math.round(card.bottom)], composer: Math.round(form.top), notice: !!notice, hint: !!hint }); })()"
+        },
+        {
+          "wait": 700
+        },
+        {
+          "shot": "choice-history-expanded-desktop.png"
+        }
+      ]
     }
   },
   "mobile": {
@@ -1383,6 +1465,67 @@
         },
         {
           "shot": "send-queue-choice-implemented-phone.png"
+        }
+      ]
+    },
+    "choice-history-expanded-phone": {
+      "note": "真实组件 · 手机 · 历史卡（展开）。同一份 fixture：350pt 列里同一段 `context` 折叠态只有四行（~82pt），点「展开」后全部露出（~253pt），按钮变「收起」且 `aria-expanded=true`；只读提示与当年的 `hint` 都还在，展开后的那张卡整个落在转写框内、一个字没被裁掉。展开后的卡几乎占满手机一屏，所以下面那张可选卡只露出开头——这也是这张图要说明的事：展开是有代价的，折叠才是手机上的默认读法。",
+      "query": "?session=sess_dopamine_review&choiceCard=1&choiceHistory=1",
+      "lang": "zh-CN",
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tap": "工作区"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tapText": "整理两篇文献的结论对比表"
+        },
+        {
+          "wait": 2600
+        },
+        {
+          "wait": 300
+        },
+        {
+          "eval": "(() => { const cards = [...document.querySelectorAll('[data-testid=\"choice-card\"]')]; let node = cards[0].parentElement, scroller = null; while (node) { if (node.scrollHeight > node.clientHeight + 1 && getComputedStyle(node).overflowY !== 'visible') { scroller = node; break; } node = node.parentElement; } if (!scroller) throw new Error('no scroll container around the cards'); const gap = () => Math.round(cards[0].getBoundingClientRect().top - scroller.getBoundingClientRect().top); let previous = gap(); for (let pass = 0; pass < 4 && Math.abs(gap()) > 2; pass++) { previous = gap(); scroller.scrollTop += previous; if (Math.abs(gap()) >= Math.abs(previous)) scroller.scrollTop -= 2 * previous; } const top = gap(); if (Math.abs(top) > 2) throw new Error('could not park the card at the frame top: ' + top + 'pt'); return JSON.stringify({ frameTop: top, cards: cards.length }); })()"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "eval": "(() => { const cards = [...document.querySelectorAll('[data-testid=\"choice-card\"]')]; if (cards.length !== 2) throw new Error('the reply drew ' + cards.length + ' cards, not 2'); const history = cards[0]; const context = history.querySelector('[data-testid=\"choice-card-context\"]'); if (!context) throw new Error('the earlier card lost its context'); const toggle = history.querySelector('[data-testid=\"choice-card-context-toggle\"]'); if (!toggle) throw new Error('no show-more button on the folded context'); if (toggle.getAttribute('aria-expanded') !== 'false') throw new Error('the button already reads expanded before the tap'); const before = Math.round(context.getBoundingClientRect().height); if (before > 90) throw new Error('the context was not folded before the tap: ' + before + 'pt'); toggle.click(); return JSON.stringify({ before: before }); })()"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "eval": "(() => { const cards = [...document.querySelectorAll('[data-testid=\"choice-card\"]')]; let node = cards[0].parentElement, scroller = null; while (node) { if (node.scrollHeight > node.clientHeight + 1 && getComputedStyle(node).overflowY !== 'visible') { scroller = node; break; } node = node.parentElement; } if (!scroller) throw new Error('no scroll container around the cards'); const gap = () => Math.round(cards[0].getBoundingClientRect().top - scroller.getBoundingClientRect().top); let previous = gap(); for (let pass = 0; pass < 4 && Math.abs(gap()) > 2; pass++) { previous = gap(); scroller.scrollTop += previous; if (Math.abs(gap()) >= Math.abs(previous)) scroller.scrollTop -= 2 * previous; } const top = gap(); if (Math.abs(top) > 2) throw new Error('could not park the card at the frame top: ' + top + 'pt'); return JSON.stringify({ frameTop: top, cards: cards.length }); })()"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => { const cards = [...document.querySelectorAll('[data-testid=\"choice-card\"]')]; const [history, live] = cards; const context = history.querySelector('[data-testid=\"choice-card-context\"]'); const toggle = history.querySelector('[data-testid=\"choice-card-context-toggle\"]'); if (toggle.getAttribute('aria-expanded') !== 'true') throw new Error('the button does not report itself expanded after the tap'); const height = Math.round(context.getBoundingClientRect().height); if (height < 160) throw new Error('the opened context is ' + height + 'pt, expected the whole text (~253pt)'); if (context.scrollHeight - context.clientHeight > 1) throw new Error('the opened context is cut off by ' + (context.scrollHeight - context.clientHeight) + 'pt'); if (!(toggle.innerText || '').includes('收起')) throw new Error('the button still reads: ' + (toggle.innerText || '')); const notice = history.querySelector('[data-testid=\"choice-card-readonly\"]'); if (!notice || !(notice.innerText || '').includes('早先的提问')) throw new Error('opening the context lost the read-only notice'); const hint = history.querySelector('[data-testid=\"choice-card-hint\"]'); if (!hint || !(hint.innerText || '').includes('点几个都行')) throw new Error('opening the context lost the hint it was written with'); let node = history.parentElement, scroller = null; while (node) { if (node.scrollHeight > node.clientHeight + 1 && getComputedStyle(node).overflowY !== 'visible') { scroller = node; break; } node = node.parentElement; } if (!scroller) throw new Error('no scroll container around the cards'); const frame = scroller.getBoundingClientRect(); const card = history.getBoundingClientRect(); if (card.top < frame.top - 1) throw new Error('the opened card is cut off at the top by ' + Math.round(frame.top - card.top) + 'pt'); if (card.bottom > frame.bottom + 1) throw new Error('the opened card runs past the frame by ' + Math.round(card.bottom - frame.bottom) + 'pt'); const next = live.getBoundingClientRect(); if (next.top < card.bottom - 1) throw new Error('the answerable card is not below the opened one'); if (next.top > frame.bottom) throw new Error('nothing of the answerable card is in frame; the thread looks finished'); const rows = [...live.querySelectorAll('[data-testid^=\"choice-option-\"]')]; if (rows.length !== 3) throw new Error('the live card draws ' + rows.length + ' rows'); return JSON.stringify({ expandedHeight: height, toggle: (toggle.innerText || '').trim(), card: [Math.round(card.top), Math.round(card.bottom)], frame: [Math.round(frame.top), Math.round(frame.bottom)], nextTop: Math.round(next.top), notice: !!notice }); })()"
+        },
+        {
+          "wait": 700
+        },
+        {
+          "shot": "choice-history-expanded-phone.png"
         }
       ]
     }

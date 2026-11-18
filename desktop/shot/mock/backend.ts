@@ -1588,6 +1588,45 @@ const handlers: Record<string, (args: any) => unknown> = {
       case "get_state":
         return slow({ ...remoteConversationState, ...replayState(String(command.sessionId ?? "")) });
       /**
+       * The host's own queue, as this client reads it (`get_queue`, design §5.8.1).
+       *
+       * The remote composer draws the same `SendQueuePanel` as a local
+       * conversation, but its rows come from the host, not from this window's
+       * `session_queue` — so a fixture that only seeds `shotQueue` leaves the
+       * remote panel with nothing to draw. Seeded from the same `?queue` /
+       * `?queueChoice` flags, and answered for whatever session this lane holds:
+       * the fixture has one host conversation.
+       */
+      case "get_queue": {
+        const size = queuedFixtureSize();
+        const withChoice = new URLSearchParams(window.location.search).get("queueChoice") === "1";
+        const queued = Array.from({ length: size }, (_, index) => ({
+          runId: `shot_remote_queued_${index + 1}`,
+          position: index + 1,
+          acceptedAt: new Date(Date.now() - (size - index) * 20_000).toISOString(),
+          text: withChoice && index === 0
+            ? "[接下来做哪一件？ → 重画森林图]"
+            : "[future-goal] goal goal_4ce46c920eb8: 1 event(s). Reconcile current status before acting; events may be stale. Read the goal's own state before answering.",
+          state: "queued",
+          attachments: [],
+          ...(withChoice && index === 0
+            ? {
+                choice: {
+                  mode: "single",
+                  title: "接下来做哪一件？",
+                  options: [
+                    { id: "forest", label: "重画森林图" },
+                    { id: "flow", label: "补一张实验流程图" },
+                    { id: "table", label: "表里加一列样本量" },
+                  ],
+                  selectedIds: ["forest"],
+                },
+              }
+            : { choice: null }),
+        }));
+        return { activeRunId: null, queued, recentTerminalAcks: [] };
+      }
+      /**
        * The run's log, for the client that reads it rather than guessing.
        *
        * Served for the fixture's in-flight run only; anything else answers an
