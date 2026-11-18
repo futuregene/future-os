@@ -6,6 +6,12 @@ import { useTranslation } from "react-i18next";
 import { cn } from "../../../lib/cn";
 
 export interface ChoiceCardProps {
+  /**
+   * The situation the question sits in, in the model's own words (§3). It sits
+   * under the title so the reader can answer without scrolling back up the reply;
+   * the fence may omit it.
+   */
+  context?: string;
   /** Overrides the default subtitle; the model may supply one in the fence. */
   hint?: string;
   mode: ChoiceCardMode;
@@ -30,6 +36,7 @@ export interface ChoiceCardProps {
  * composer's own digits are never taken over (§5.6).
  */
 export function ChoiceCard({
+  context,
   hint,
   mode,
   onSelect,
@@ -65,6 +72,20 @@ export function ChoiceCard({
             {multi ? t("choice.mode.multi") : t("choice.mode.single")}
           </span>
         </div>
+        {/*
+          The situation, above the instruction. The card has to be answerable on
+          its own: a reader who arrives at the bottom of a long reply should not
+          have to scroll back up to know what is being decided. It stays a step
+          quieter than the title (`ink-soft`, not `ink-muted`) because it is
+          content, not chrome — the subtitle below it is the chrome.
+        */}
+        {context
+          ? (
+              <p className="mt-1.5 text-[12px] leading-[18px] whitespace-pre-line text-ink-soft" data-choice-context>
+                {context}
+              </p>
+            )
+          : null}
         {/*
           The subtitle is the one place a card can promise an action, so a card
           that cannot answer must not print the answering one: "pick one and it

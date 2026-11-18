@@ -87,6 +87,11 @@ export function ChoiceCard({ live, node }: { live: boolean; node: ChoiceCardNode
           {multi ? t("choice.mode.multi") : t("choice.mode.single")}
         </Text>
       </View>
+      {node.context
+        ? (
+            <Text style={styles.context} testID="choice-card-context">{node.context}</Text>
+          )
+        : null}
       <Text style={styles.hint}>
         {live
           ? node.hint || (multi ? t("choice.hint.multi") : t("choice.hint.single"))
@@ -228,6 +233,17 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     fontWeight: "600",
   },
   mode: { color: theme.colors.inkMuted, fontSize: theme.font(11) },
+  // The situation, above the instruction: the reader answers from the card, not
+  // from a scroll back up the reply. A step louder than `hint` — it is content,
+  // the line below it is chrome — and pre-line so repeated `context:` lines keep
+  // their breaks.
+  context: {
+    paddingHorizontal: spacing.md,
+    paddingBottom: 6,
+    color: theme.colors.inkSoft,
+    fontSize: theme.font(13),
+    lineHeight: theme.leading(19),
+  },
   hint: {
     paddingHorizontal: spacing.md,
     paddingBottom: spacing.sm,

@@ -145,6 +145,22 @@ describe("choice cards in a reply", () => {
     expect(html).not.toContain("futureos-choice");
   });
 
+  it("carries the fence's context into the card", () => {
+    // §3: the card is answerable from itself — the reply above it stays where it
+    // is; the situation paragraph is what `context:` puts inside the card.
+    const withContext = [
+      "```futureos-choice",
+      "title: 接下来做哪一件？",
+      "context: 森林图已按 Dreher 2025 的样本量重画，图注还挂着旧的 42。",
+      "option: forest | 重画森林图 | 按 Dreher 2025 的样本量重算",
+      "option: flow | 补一张实验流程图",
+      "```",
+    ].join("\n");
+    const html = renderToStaticMarkup(<MarkdownContent content={withContext} />);
+    expect(html).toContain("data-choice-context");
+    expect(html).toContain("图注还挂着旧的 42");
+  });
+
   it("leaves every card read-only when no answer surface is passed", () => {
     const html = renderToStaticMarkup(<MarkdownContent content={fence} />);
     expect(html).toContain("data-choice-state=\"readonly\"");

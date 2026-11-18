@@ -279,6 +279,7 @@ export const choiceEntries: MockEntry[] = [
           "```futureos-choice",
           "title: 接下来做哪一件？",
           `mode: ${requestedChoiceMode()}`,
+          "context: 森林图现在能读，但两篇的置信区间按不同的样本量算，放在一起对不上号；流程图还没有。重算和补图互不依赖，先做哪件都行。",
           "option: forest | 重画森林图 | 按 Dreher 2025 的样本量重算两篇的置信区间",
           "option: flow | 补一张实验流程图 | 把两篇的被试流程画成一张对照图",
           "option: table | 表里加一列样本量 | Frank 42 / Dreher 186，标出测量手段",

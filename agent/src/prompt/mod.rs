@@ -1240,6 +1240,17 @@ mod tests {
         assert!(prompt.contains(option));
         assert!(prompt.contains("`option: <id> | <label> | <note>`"));
 
+        // `context:` is what makes the card answerable on its own — the reader
+        // should not have to scroll back up: the field must be in the syntax, in
+        // a worked example, and with both of its bounds stated (short, but long
+        // enough to carry the situation).
+        assert!(prompt.contains("`context:` — 1–3 sentences"));
+        assert!(prompt.contains("mode: multi\ncontext: "));
+        assert!(prompt.contains("answer from the card alone"));
+        assert!(prompt.contains("under ~200 characters"));
+        // Repeated lines are paragraphs (`parseChoiceCard` joins them with `\n`).
+        assert!(prompt.contains("repeat\n  the line"));
+
         // The parser's tolerances, stated where the model writes them: a card
         // outside 2–4 rows is dropped whole, so the reply loses its question.
         assert!(prompt.contains("choices are 2–4"));
@@ -1298,8 +1309,10 @@ mod tests {
         // Read on every turn, so it stays short: the budget is lines of prompt,
         // not lines of documentation. Raised from 40 to 42 when the row-order
         // rule joined — it changes what the model writes on every card, unlike
-        // the rest of §4's prose.
-        assert!(include_str!("choice.md").lines().count() <= 42);
+        // the rest of §4's prose. Raised to 51 when `context:` did the same:
+        // every card now carries a situation paragraph, and the examples had to
+        // show one.
+        assert!(include_str!("choice.md").lines().count() <= 51);
     }
 
     /// The switch's second half: with cards off the section is not in the

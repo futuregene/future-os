@@ -68,6 +68,27 @@ describe("choice card rendering", () => {
     expect([...card.querySelectorAll("[data-choice-mark]")].every(mark => mark.getAttribute("data-choice-mark") === "ring")).toBe(true);
   });
 
+  it("draws the context above the subtitle, and nothing when the fence omitted it", () => {
+    const html = render({
+      context: "森林图已按新样本量重画，图注还挂着旧的 42。\n图例仍压在曲线上。",
+      onSelect: vi.fn(),
+    });
+    expect(html).toContain("data-choice-context");
+    // Repeated `context:` lines are paragraphs, so the break is kept.
+    expect(html).toContain("图注还挂着旧的 42。\n图例仍压在曲线上。");
+    // Order: the situation is read before the instruction about picking.
+    expect(html.indexOf("森林图已按新样本量重画")).toBeLessThan(html.indexOf("Pick one and it lands in the input"));
+
+    expect(render({ onSelect: vi.fn() })).not.toContain("data-choice-context");
+  });
+
+  it("keeps the context on a card that cannot be picked", () => {
+    // The subtitle turns into "this card cannot be picked" (§2), but the
+    // situation is information: a past card still says what it was asking about.
+    const html = render({ context: "森林图已重画完了。" });
+    expect(html).toContain("森林图已重画完了。");
+  });
+
   it("uses checkbox rows for a multi-choice card and its own hint", () => {
     const html = render({ mode: "multi", onSelect: vi.fn() });
     expect(html).toContain("Multiple choice");
