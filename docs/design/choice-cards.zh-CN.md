@@ -625,7 +625,7 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
   - **chip 不抢行铅笔的活**（v3 的硬约束）：chip 是 `role=button` 且**只有一个**图标（chevron）；chip 的右边缘小于铅笔的左边缘；行自己的铅笔与垃圾桶仍然存在且可点。断言三条，缺一条就退回到"两支铅笔"的歧义。
   - **远程**：远程复用同一个面板，且行的 `choice` 现在会被解析（`parseQueueChoice`，与本地共用一个）；断言：chip 在远程帧里画出、`aria-label` 与行文字同时成立、铅笔与垃圾桶仍在、按下只会发一条 `edit_queued_run`（`message` 与 `choice` 同行，不是 cancel+重发）。宿主不报该字段时（旧宿主）不画 chip——`remoteQueue.test.ts` 单独钉了“缺/空/不可用三种都读作没有答案”。
   - **手机**：折叠表头能展开/收起，且报 `aria-expanded`（不是 `accessibilityState`，web 上会被整块丢掉）；chip 在行内不溢出（实测 `185×21`，行宽 `348`）；行仍保留 `send-queue-edit` 与 `send-queue-remove`。
-  - **手机换答案落到宿主队列，不落到本机草稿**：面板 chip → sheet 选项 → `onQueueUpdateChoice` 的链路在 `ComposerDock.test.ts` 里驱动真实面板，并断言**没有**碰 `onChangeChoice`（那是草稿那条路，两者答案形状一模一样，串了就会把同一个答案发两次）；`ChatScreen.test.ts` 从面板递上来的那个入口断言发出的载荷是 `editQueuedRun(会话, 行, 重写后的句子, {mode,options,selectedIds,title})`，且这一屏的 `choice` 事件前后都是 `null`——答案留在那一行，没有进输入框。反向断言做过一次：把第四个参数删掉，两条测试同时变红。
+  - **手机换答案落到宿主队列，不落到本机草稿**：`queueChoiceWiring.test.ts` 把整屏**不 mock 面板**地挂起来，按 `send-queue-toggle` → `send-queue-choice` → `choice-sheet-option-flow` 真正点下去，断言宿主收到的是 `editQueuedRun(会话, 行, 重写后的句子, {mode,options,selectedIds,title})`，并读真实 dock 的 `choice` 证明这一屏的草稿前后都是 `null`（答案留在那一行，没有进输入框）。反向断证三条：删掉第四个参数 → 红；把 `onQueueUpdateChoice` 接成 `undefined`（面板不再连到处理函数）→ 红；把 dock 与屏幕里"零勾不是答案"的两道拒绝一起删掉 → 第二条测试红（只删一道仍然绿，所以那条测试钉的是结果而不是哪一层拒绝，注释里写明了）。同一件事在两个 mock 掉面板的文件里各有半边：`ComposerDock.test.ts` 驱动真实面板并断言**没有**碰 `onChangeChoice`（草稿那条路，两者答案形状一模一样，串了会把同一个答案发两次），`ChatScreen.test.ts` 从面板递上来的入口断言载荷与草稿。
 - **降级**：TUI 打印代码块内容；未知客户端同。
 - **无障碍**：`role`/`aria-checked`/`aria-label` 三条断言；方向键与 Enter 的键路径。
 - **视觉回归**：`choice-cards.json` 的 34 个场景（桌面 22 + 手机 12，含两种样式对比表与两个被否方案）。
