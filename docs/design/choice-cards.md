@@ -105,7 +105,14 @@ In the AST the card is its own node type (not a `futureEmbed` reference), becaus
 | Fence mid-reply (not the last block) | Renders normally but read-only (the "last card" rule in §2) |
 | Unknown field | Ignored |
 
-**A read-only card must say so** (2026-11-16): when one reply holds two or more cards, only the last is interactive. That criterion depends solely on the **number of parsed cards**, not on anything the model was asked to write, so it lives in the parse/render layer rather than in the prompt. A card judged read-only is not just `aria-readonly` and out of the tab order — its **subtitle must also switch to "this card can no longer be picked"** (`choice.hint.readonly`). The subtitle is the one place a card can promise an action, and printing "pick one and it lands in the input" over inert rows is a button that looks pressable and is not. The model's own `hint` describes picking too, so it is replaced as well. Pinned in `ChoiceCard.test.tsx` and `MarkdownContent.test.tsx` on text, `aria-disabled` and focus — **never on colour**.
+**A read-only card must say so** (2026-11-16): when one reply holds two or more cards, only the last is interactive. That criterion depends solely on the **number of parsed cards**, not on anything the model was asked to write, so it lives in the parse/render layer rather than in the prompt. A card judged read-only is not just `aria-readonly` and out of the tab order — its **subtitle must also switch to "this card can no longer be picked"** (`choice.hint.readonly`). The subtitle is the one place a card can promise an action, and printing "pick one and it lands in the input" over inert rows is a button that looks pressable and is not. Pinned in `ChoiceCard.test.tsx` and `MarkdownContent.test.tsx` on text, `aria-disabled` and focus — **never on colour**.
+
+**Replacing the default subtitle is not replacing the reply's own hint** (revised 2026-11-18). The rule above also dropped the model's `hint`, on the grounds that it too describes picking; in history that loses information — a reader who comes back is often looking for exactly that line. So the two are now separate:
+
+- the **default** instruction never appears on a card that cannot answer — that promise is still a lie;
+- the model's **`hint` stays**, followed by a `choice.hint.readonly` line saying this is an earlier question that can no longer be picked. Both are the group's `aria-describedby`, in visual order; a card that carried no hint gets only the notice.
+
+What changed is the copy, not the promise: `hint` is part of the history, and the notice remains the only place that says the rows are inert. The Chinese string moves from "只作展示：这张卡不能选" to "早先的提问，这张卡不能再选", i.e. the same statement the English copy already made.
 
 ## 4. What goes into the system prompt
 
