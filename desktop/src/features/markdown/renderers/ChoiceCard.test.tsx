@@ -42,15 +42,19 @@ describe("choice card rendering", () => {
     return container;
   }
 
-  it("draws the title, the mode label, the hint and one row per option", () => {
+  it("draws the title, the mode label and one row per option — and no subtitle of its own", () => {
     const html = render({ onSelect: vi.fn() });
     expect(html).toContain("接下来做哪一件？");
     expect(html).toContain("Single choice");
-    expect(html).toContain("Pick one and it lands in the input; you can type something else instead");
     for (const option of options) {
       expect(html).toContain(option.label);
       expect(html).toContain(option.description ?? "");
     }
+    // 2026-11-18: the default subtitle is gone. "单选" plus the radio rings say
+    // one-or-several already, and the old line explained a mechanism (the answer
+    // lands in the input) that the composer shows by itself.
+    expect(html).not.toContain("lands in the input");
+    expect(html).not.toContain("Pick as many as apply");
   });
 
   it("carries the accessible structure from §9: named group, radio rows, aria-checked", () => {
@@ -68,7 +72,7 @@ describe("choice card rendering", () => {
     expect([...card.querySelectorAll("[data-choice-mark]")].every(mark => mark.getAttribute("data-choice-mark") === "ring")).toBe(true);
   });
 
-  it("draws the context above the subtitle, and nothing when the fence omitted it", () => {
+  it("draws the context under the title, and nothing when the fence omitted it", () => {
     const html = render({
       context: "森林图已按新样本量重画，图注还挂着旧的 42。\n图例仍压在曲线上。",
       onSelect: vi.fn(),
@@ -76,8 +80,9 @@ describe("choice card rendering", () => {
     expect(html).toContain("data-choice-context");
     // Repeated `context:` lines are paragraphs, so the break is kept.
     expect(html).toContain("图注还挂着旧的 42。\n图例仍压在曲线上。");
-    // Order: the situation is read before the instruction about picking.
-    expect(html.indexOf("森林图已按新样本量重画")).toBeLessThan(html.indexOf("Pick one and it lands in the input"));
+    // Order: title, then the situation, then the rows.
+    expect(html.indexOf("接下来做哪一件？")).toBeLessThan(html.indexOf("森林图已按新样本量重画"));
+    expect(html.indexOf("森林图已按新样本量重画")).toBeLessThan(html.indexOf("重画森林图"));
 
     expect(render({ onSelect: vi.fn() })).not.toContain("data-choice-context");
   });
@@ -89,21 +94,22 @@ describe("choice card rendering", () => {
     expect(html).toContain("森林图已重画完了。");
   });
 
-  it("uses checkbox rows for a multi-choice card and its own hint", () => {
+  it("uses checkbox rows for a multi-choice card", () => {
     const html = render({ mode: "multi", onSelect: vi.fn() });
     expect(html).toContain("Multiple choice");
-    expect(html).toContain("Pick as many as apply");
-    expect(html).not.toContain("Pick one and it lands in the input");
+    // The label and the box shape carry it; there is no "pick several" line.
+    expect(html).not.toContain("Pick as many as apply");
     const card = mount({ mode: "multi", onSelect: vi.fn() });
     expect([...card.querySelectorAll("[data-choice-option]")].every(row => row.getAttribute("role") === "checkbox")).toBe(true);
     // Shape, not just the corner label, says the rows can be picked together.
     expect([...card.querySelectorAll("[data-choice-mark]")].every(mark => mark.getAttribute("data-choice-mark") === "box")).toBe(true);
   });
 
-  it("prefers the model's own hint over the default subtitle", () => {
+  it("prints the model's own hint, and only when it wrote one", () => {
     const html = render({ hint: "点几个都行", onSelect: vi.fn() });
     expect(html).toContain("点几个都行");
-    expect(html).not.toContain("Pick one and it lands in the input");
+    // Nothing is invented when the fence carried no hint.
+    expect(render({ onSelect: vi.fn() })).not.toContain("data-choice-hint");
   });
 
   it("is read-only without an answer surface: rows out of the tab order, no hover, nothing dimmed", () => {
@@ -170,17 +176,13 @@ describe("choice card rendering", () => {
   });
 
   /**
-   * The subtitle is the only place a card can promise an action. A card that
-   * cannot answer must not print a *default* promise: "pick one and it lands in
-   * the input" over rows that do nothing is a button that looks pressable and
-   * isn't. What the model itself wrote is a different thing — it is part of the
-   * reply the reader is re-reading — so history keeps it and the notice follows
-   * it, saying plainly that the rows are inert.
+   * A past card owes the reader one fact the live card does not: the rows are
+   * inert. It says so underneath whatever the reply itself wrote, and the model's
+   * own line stays — history is re-read, not answered.
    */
-  it("does not promise a pick on a read-only card, but keeps what the reply itself said", () => {
+  it("keeps what the reply itself said on a read-only card, and adds that it is inert", () => {
     const card = mount({ hint: "点几个都行" }).querySelector<HTMLElement>("[data-choice-card]")!;
     expect(card.textContent).toContain("An earlier question — this card can no longer be picked");
-    expect(card.textContent).not.toContain("Pick one and it lands in the input");
     expect(card.textContent).toContain("点几个都行");
     // Order matters: what was said at the time, then the fact that it is inert.
     expect(card.textContent!.indexOf("点几个都行"))
@@ -197,7 +199,6 @@ describe("choice card rendering", () => {
     const describedBy = card.getAttribute("aria-describedby")!;
     expect(describedBy.split(" ").map(id => document.getElementById(id)?.textContent))
       .toEqual(["An earlier question — this card can no longer be picked"]);
-    expect(card.textContent).not.toContain("Pick one and it lands in the input");
   });
 
   it("keeps a read-only card out of the tab order and refuses focus", () => {
@@ -213,10 +214,11 @@ describe("choice card rendering", () => {
     expect(document.activeElement).not.toBe(rows[0]);
   });
 
-  it("prints the answering hint again as soon as it has an answer surface", () => {
+  it("drops the inert notice as soon as the card has an answer surface", () => {
     const card = mount({ onSelect: vi.fn() }).querySelector<HTMLElement>("[data-choice-card]")!;
-    expect(card.textContent).toContain("Pick one and it lands in the input");
-    expect(card.textContent).not.toContain("An earlier question");
     expect(card.getAttribute("aria-disabled")).toBeNull();
+    expect(card.textContent).not.toContain("An earlier question");
+    // With no model hint there is nothing to describe the group with at all.
+    expect(card.getAttribute("aria-describedby")).toBeNull();
   });
 });

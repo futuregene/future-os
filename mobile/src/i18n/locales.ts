@@ -476,8 +476,6 @@ export const resources = {
       choice: {
         mode: { single: "Single choice", multi: "Multiple choice" },
         hint: {
-          single: "Pick one and it lands in the input; you can type something else instead",
-          multi: "Pick as many as apply",
           readonly: "An earlier question — this card can no longer be picked",
         },
         foot: {
@@ -1741,8 +1739,6 @@ export const resources = {
       choice: {
         mode: { single: "单选", multi: "多选" },
         hint: {
-          single: "选一个就放进输入框；也可以直接在输入框里写别的",
-          multi: "可以多选，点几个都行",
           readonly: "早先的提问，这张卡不能再选",
         },
         foot: {

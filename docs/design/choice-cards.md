@@ -41,7 +41,7 @@ Three hard rules follow:
 
 | Rule | Why |
 |---|---|
-| Only the **last card in the thread** is interactive; earlier cards are read-only (`aria-disabled`, out of the tab order, subtitle says it cannot be picked) | An old card answers a question that is over; letting it change makes "which pick did I just change" unanswerable |
+| Only the **last card in the thread** is interactive; earlier cards are read-only (`aria-disabled`, out of the tab order, with a line saying it cannot be picked) | An old card answers a question that is over; letting it change makes "which pick did I just change" unanswerable |
 | The card never stores "chosen" itself | It derives from the draft. After sending, the draft empties and **the card does not stay highlighted** — the answer is shown by the tag on the user's message, not by the card |
 | Changing the answer means changing the draft | Clicking a row, the pill/chip's pencil, the phone's bottom sheet, and the choice chip on a queue row all write the same value |
 
@@ -77,7 +77,8 @@ Fields:
 | `mode` | no | `multi` (**first choice**) / `single` (the fallback when the rows compete; an omitted line means this). `multiple`, `multi-select`, `多选` read as `multi` — see below |
 | `option` | yes (2–4) | One per line: `id \| label \| one-line note`; the note may be omitted |
 | `id` | — | Stable identifier to send back: ASCII, `[a-z0-9-]`, ≤ 24 chars, unique within the card |
-| `hint` | no | Overrides the default subtitle ("pick one and it lands in the input…") |
+| `hint` | no | One line the model writes itself, drawn under `context`. There is **no default subtitle** any more (removed 2026-11-18, §5.1) |
+| `context` | no | One to three sentences of situation, so the card can be answered without scrolling back up. Repeated `context:` lines become separate paragraphs; an empty one disappears |
 
 **How `mode` is decided** (anyone rewriting the prompt has to follow this; it is a rule, not a style preference):
 
@@ -105,9 +106,9 @@ In the AST the card is its own node type (not a `futureEmbed` reference), becaus
 | Fence mid-reply (not the last block) | Renders normally but read-only (the "last card" rule in §2) |
 | Unknown field | Ignored |
 
-**A read-only card must say so** (2026-11-16): when one reply holds two or more cards, only the last is interactive. That criterion depends solely on the **number of parsed cards**, not on anything the model was asked to write, so it lives in the parse/render layer rather than in the prompt. A card judged read-only is not just `aria-readonly` and out of the tab order — its **subtitle must also switch to "this card can no longer be picked"** (`choice.hint.readonly`). The subtitle is the one place a card can promise an action, and printing "pick one and it lands in the input" over inert rows is a button that looks pressable and is not. Pinned in `ChoiceCard.test.tsx` and `MarkdownContent.test.tsx` on text, `aria-disabled` and focus — **never on colour**.
+**A read-only card must say so** (2026-11-16): when one reply holds two or more cards, only the last is interactive. That criterion depends solely on the **number of parsed cards**, not on anything the model was asked to write, so it lives in the parse/render layer rather than in the prompt. A card judged read-only is not just `aria-readonly` and out of the tab order — it **must also say "an earlier question — this card can no longer be picked"** (`choice.hint.readonly`). Leaving that unsaid over inert rows is a button that looks pressable and is not. Pinned in `ChoiceCard.test.tsx` and `MarkdownContent.test.tsx` on text, `aria-disabled` and focus — **never on colour**.
 
-**Replacing the default subtitle is not replacing the reply's own hint** (revised 2026-11-18). The rule above also dropped the model's `hint`, on the grounds that it too describes picking; in history that loses information — a reader who comes back is often looking for exactly that line. So the two are now separate:
+**Not printing a default subtitle is not the same as dropping the reply's own hint** (revised 2026-11-18). An earlier version of the rule above also dropped the model's `hint`, on the grounds that it too describes picking; in history that loses information — a reader who comes back is often looking for exactly that line. So the two are separate:
 
 - the **default** instruction never appears on a card that cannot answer — that promise is still a lie;
 - the model's **`hint` stays**, followed by a `choice.hint.readonly` line saying this is an earlier question that can no longer be picked. Both are the group's `aria-describedby`, in visual order; a card that carried no hint gets only the notice.
@@ -221,7 +222,8 @@ Pinned by `desktop/src/features/markdown/ChoiceCardsToggle.test.tsx` (off: zero 
 
 - 768px wide, the same as the text column (`max-w-3xl`), left-aligned, 4px below the last block;
 - Header: 12px semibold title plus an 11px mode label on the right (`单选` / `多选`);
-- Subtitle at 11px says "pick one and it lands in the input; you can type something else instead" — this line replaces the in-card "write your own" row (§5.6 says why);
+- **No default subtitle** (removed 2026-11-18): the old line ("pick one and it lands in the input; you can type something else instead") explained the mechanism, which the answer pill already demonstrates (§5.2), and `单选` / `多选` is already in the header. A sentence that has to be read on every card and is useful once is a tax on every card. A `hint` the reply wrote itself is still drawn here at 11px `ink-muted`; a read-only card gains the `choice.hint.readonly` line (§3);
+- `context`, when present, sits between the header and that line: 12px / 18px, `ink-soft` — one weight heavier than `hint` because it is content, not chrome. A card without it takes no height from it; a read-only card keeps it;
 - Each option is a row: a 16px radio, a 13px label, a 12px one-line note (`ink-muted`); unselected rows have no border and no fill and are separated by spacing alone;
 - Card shell: `1px line` / `radius 10px` / `surface` / a very light shadow — the approval card's material, but a **different position**: the approval card floats above the composer, a choice card grows inside the reply.
 
@@ -327,7 +329,7 @@ Two explored and **rejected** approaches, recorded so they are not redone:
 ![The two rejected approaches](assets/choice-cards/rejected-variants.png)
 
 - **Row numbers 1/2/3** (type a digit to choose). It looks like a keyboard accelerator and in fact collides with free text in the composer: when the user types "2 篇论文", is that `2` a choice? Choosing must be a click (or a keyboard action on the chip), never a hijack of the field's digits.
-- **An in-card "write your own…" row.** It says what the subtitle already says, and a dashed box that looks like an input but does not accept focus is worse than nothing. The free-form entry point is the composer; pointing at it is enough.
+- **An in-card "write your own…" row.** It says what the input already does, and a dashed box that looks like an input but does not accept focus is worse than nothing. The free-form entry point is the composer.
 
 ### 5.7 Mobile
 
@@ -529,8 +531,6 @@ Fixed copy (the model neither provides nor should provide it) — keys needed on
 |---|---|---|
 | `choice.mode.single` | 单选 | Single choice |
 | `choice.mode.multi` | 多选 | Multiple choice |
-| `choice.hint.single` | 选一个就放进输入框；也可以直接在输入框里写别的 | Pick one and it lands in the input; you can type something else instead |
-| `choice.hint.multi` | 可以多选，点几个都行 | Pick as many as apply |
 | `choice.hint.readonly` | 只作展示：这张卡不能选 | An earlier question — this card can no longer be picked |
 | `choice.foot.queued` | 已放进输入框，可以继续补充，也可以直接发送 | In the input — add a note if you want, or send as is |
 | `choice.chip.change` | 修改「{{title}}」的选择 | Change the answer to "{{title}}" |
@@ -551,7 +551,7 @@ Fixed copy (the model neither provides nor should provide it) — keys needed on
 | A free-text field inside the card | The composer is the free-text field (§5.6) |
 | Digit shortcuts on rows | They would hijack the composer's digits (§5.6) |
 | Nested cards / a card mid-reply | "Which pick did I change" becomes unanswerable |
-| Editing historical cards | Same; read-only, and the subtitle says it cannot be picked (§3) |
+| Editing historical cards | Same; read-only, with a line saying it cannot be picked (§3) |
 | An interactive TUI / IM version | This pass only guarantees readable degradation; the TUI already has its own local choice UI (`SendChoiceSheet`), which is app UI, not transcript content |
 | Pill-ifying the answer in the user's bubble | Needs a new reference type plus server understanding, and the gain is purely visual; version two |
 | Structured choice records on the model side | Reading the text is enough for v1; add it when something actually needs the counts |

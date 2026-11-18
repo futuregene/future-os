@@ -62,9 +62,9 @@ describe("a futureos-choice card on the phone", () => {
     });
   }
   /**
-   * The card's subtitle text(s). `t()` is stubbed to echo its key, so a card that
-   * prints an answering hint reads `choice.hint.single` / `choice.hint.multi` and
-   * a card that cannot answer reads `choice.hint.readonly`.
+   * The card's subtitle text(s). `t()` is stubbed to echo its key, so the only
+   * key that can appear is `choice.hint.readonly`; the default single/multi
+   * instructions were removed on 2026-11-18 and a model hint is literal text.
    *
    * Filtered to host nodes: a rendered `<Text>` also shows up as its composite
    * element with the same children, which would double every entry.
@@ -143,15 +143,13 @@ describe("a futureos-choice card on the phone", () => {
   });
 
   /**
-   * The subtitle is the one place a card promises an action, so the earlier card
-   * must not print the answering one: a card whose rows cannot be tapped must not
-   * say "pick one and it lands in the input". Two cards in one body, one
-   * answering hint, one that says it cannot be picked.
+   * A card that cannot be tapped says so; the live card says nothing extra about
+   * how to answer any more — the mode label and the mark already say it.
    */
-  test("the earlier card says it cannot be picked instead of promising a pick", () => {
+  test("only the earlier card carries a line, and it is the notice", () => {
     const answer: ChoiceCardAnswer = { onPick: jest.fn(), selectedIds: [], title: "接下来做哪一件？" };
     const root = render(`${CARD}\n\n还有一件事：\n\n${SECOND_CARD}`, answer);
-    expect(hintKeys(root)).toEqual(["choice.hint.readonly", "choice.hint.single"]);
+    expect(hintKeys(root)).toEqual(["choice.hint.readonly"]);
   });
 
   test("a card read-only for lack of an answer surface says so too", () => {
@@ -182,8 +180,13 @@ describe("a futureos-choice card on the phone", () => {
     expect(texts).toContain("choice.hint.readonly");
     // What was said at the time comes first; the fact that it is inert follows.
     expect(texts.indexOf("点几个都行")).toBeLessThan(texts.indexOf("choice.hint.readonly"));
-    // The default instruction still never appears on a card nobody can answer.
-    expect(texts).not.toContain("choice.hint.multi");
+  });
+
+  test("a live card with no hint from the reply shows no subtitle at all", () => {
+    const answer: ChoiceCardAnswer = { onPick: jest.fn(), selectedIds: [], title: "接下来做哪一件？" };
+    const root = render(CARD, answer);
+    expect(root.findAllByProps({ testID: "choice-card-hint" })).toHaveLength(0);
+    expect(hintKeys(root)).toEqual([]);
   });
 
   test("without an answer surface every card is read-only", () => {

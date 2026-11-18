@@ -78,13 +78,11 @@ export function ChoiceCard({ live, node }: { live: boolean; node: ChoiceCardNode
   const picked = live && answer?.title === node.title ? answer.selectedIds : [];
   const multi = node.mode === "multi";
   const onPick = live ? answer?.onPick : undefined;
-  // A live card falls back to the default instruction; a past card keeps the
-  // model's own words and gets the "cannot be picked" notice underneath — the
-  // history a reader returns to should keep what the reply said, not just the
-  // notice that replaced it.
-  const guidance = live
-    ? node.hint || (multi ? t("choice.hint.multi") : t("choice.hint.single"))
-    : node.hint;
+  // No subtitle of its own any more (§5.1): the mode label and the mark shape
+  // already say single or multi, and "the answer lands in the input" described
+  // something the composer shows by itself. The model's own line still shows;
+  // a past card adds the notice underneath.
+  const guidance = node.hint;
   return (
     <View style={styles.card} testID="choice-card">
       <View style={styles.head}>
@@ -100,7 +98,7 @@ export function ChoiceCard({ live, node }: { live: boolean; node: ChoiceCardNode
           )
         : null}
       {guidance
-        ? <Text style={styles.hint}>{guidance}</Text>
+        ? <Text style={styles.hint} testID="choice-card-hint">{guidance}</Text>
         : null}
       {live
         ? null
