@@ -258,6 +258,7 @@ Settable keys (camelCase, as the desktop API spells them):
   titleLanguage           en|zh              Language used for generated titles
   communityEdition        true|false         Use the community-edition UI
   skillRecommend          true|false         Recommend one uninstalled skill
+  choiceCards             true|false         Let replies close with a card of options
 
 A list value is a JSON array or a comma-separated list; an empty value clears it."#;
 

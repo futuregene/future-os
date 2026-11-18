@@ -26,6 +26,8 @@ export function GeneralPage({
   onToggleAutoUpgradeSkills,
   skillRecommend,
   onToggleSkillRecommend,
+  choiceCards,
+  onToggleChoiceCards,
   bellOnComplete,
   onToggleBellOnComplete,
   autoTitleFirstTurn,
@@ -44,6 +46,8 @@ export function GeneralPage({
   onToggleAutoUpgradeSkills: (value: boolean) => void;
   skillRecommend: boolean;
   onToggleSkillRecommend: (value: boolean) => void;
+  choiceCards: boolean;
+  onToggleChoiceCards: (value: boolean) => void;
   bellOnComplete: boolean;
   onToggleBellOnComplete: (value: boolean) => void;
   autoTitleFirstTurn: boolean;
@@ -199,6 +203,15 @@ export function GeneralPage({
             description={t("skillRecommend.description")}
           >
             <Switch checked={skillRecommend} label={t("skillRecommend.title")} onChange={onToggleSkillRecommend} />
+          </SettingsRow>
+          {/* Paired with the prompt section: while this is off the agent is not
+              taught the fence either, so turning it off leaves no card in a new
+              reply and no raw code block in an old one. */}
+          <SettingsRow
+            title={t("choiceCards.title")}
+            description={t("choiceCards.description")}
+          >
+            <Switch checked={choiceCards} label={t("choiceCards.title")} onChange={onToggleChoiceCards} />
           </SettingsRow>
           <SettingsRow
             title={t("autoTitleFirstTurn.title")}

@@ -125,6 +125,8 @@ async function mount(props: {
   approvalPending?: string | null;
   /** The reply the host is writing, if the test is about streaming. */
   liveReplies?: RemoteLiveReply[];
+  /** The run the host reported as executing, if the test is about in-flight. */
+  inFlightRunId?: string | null;
   onContinueRun?: (runId: string) => void;
   onDecideApproval?: (approval: RemoteApproval, decision: "allow" | "deny") => void;
   onFork?: (sourceEntryId: string, forkable: boolean) => void;
@@ -155,6 +157,7 @@ async function mount(props: {
         messages={messages}
         error={null}
         hasMore={false}
+        inFlightRunId={props.inFlightRunId ?? null}
         leftPanelExpanded
         liveReplies={props.liveReplies ?? []}
         loading={false}
@@ -887,3 +890,81 @@ it("does not label a running conversation in the header", async () => {
   expect(view.container.querySelector("header")!.textContent ?? "").not.toContain("Running");
   await view.unmount();
 });
+
+/**
+ * The reported bug: a reply the host is still writing, drawn as finished.
+ *
+ * A history page projects entries into a persisted turn, and the projector has no
+ * mid-run status at all — every reply it produces is `complete` or `failed`
+ * (a *running* status exists only on a mid-run snapshot, not on the turn). So the
+ * page's copy of a reply the host is still writing arrives looking settled, and
+ * `MessageBlock` does what it does with a settled reply on the default reading
+ * level: the work folds behind one "show process" row, copy and fork are offered
+ * over words that are still arriving, and the generating dot is gone.
+ *
+ * The run the *host* names as executing is what corrects that. It is the only
+ * statement about "now" in the whole picture: the page is a record, and a record
+ * of a run that has not finished is indistinguishable from one that has.
+ */
+it("draws the host's in-flight run as unfinished, though the page says complete", async () => {
+  const entries = [
+    entry("e1", "user", "check the relay", "run_1"),
+    entry("e2", "assistant", "I will read the file first.", "run_1"),
+    shellEntry("e3", "call_1"),
+    entry("e4", "assistant", "half of it", "run_1"),
+  ];
+
+  // Without the host's answer the page is all there is: the reply reads as a
+  // finished one, work folded away. This is the shape that was reported.
+  const settled = await mount({ entries });
+  const settledReply = replyRow(settled.container, "half of it")!;
+  expect(processToggle(settledReply)).not.toBeNull();
+  expect(generating(settledReply)).toBeNull();
+  await settled.unmount();
+
+  const running = await mount({ entries, inFlightRunId: "run_1" });
+  const runningReply = replyRow(running.container, "half of it")!;
+  // The row is the reply being written, so it carries the live marker and shows
+  // the work the run has done so far instead of folding it into a summary.
+  expect(generating(runningReply)).not.toBeNull();
+  expect(processToggle(runningReply)).toBeNull();
+  expect(runningReply.textContent ?? "").toContain("I will read the file first.");
+  // The prompt it answers is untouched: this is about the reply, not the turn.
+  expect(replyRow(running.container, "check the relay")!.textContent ?? "").not.toContain("Generating");
+  await running.unmount();
+});
+
+/** Another conversation's run does not restyle this conversation's replies. */
+it("leaves a settled reply alone when the host names a different run", async () => {
+  const view = await mount({
+    entries: [
+      entry("e1", "user", "check the relay", "run_1"),
+      entry("e2", "assistant", "I will read the file first.", "run_1"),
+      shellEntry("e3", "call_1"),
+      entry("e4", "assistant", "half of it", "run_1"),
+    ],
+    inFlightRunId: "run_2",
+  });
+  const reply = replyRow(view.container, "half of it")!;
+  expect(generating(reply)).toBeNull();
+  expect(processToggle(reply)).not.toBeNull();
+  await view.unmount();
+});
+
+/** The row whose text `needle` appears in, as the block the view drew it as. */
+function replyRow(container: HTMLElement, needle: string): HTMLElement | null {
+  return [...container.querySelectorAll<HTMLElement>("[data-message-id]")]
+    .find(node => (node.textContent ?? "").includes(needle)) ?? null;
+}
+
+/** The folded-work row, by the label it is pressed by. */
+function processToggle(scope: HTMLElement): HTMLButtonElement | null {
+  return [...scope.querySelectorAll<HTMLButtonElement>("button")]
+    .find(button => /process/i.test(button.textContent ?? "")) ?? null;
+}
+
+/** The live marker `MessageBlock` puts in place of the copy button. */
+function generating(scope: HTMLElement): Element | null {
+  return [...scope.querySelectorAll("[role='status']")]
+    .find(node => /generat/i.test(node.getAttribute("aria-label") ?? "")) ?? null;
+}

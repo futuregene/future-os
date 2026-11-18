@@ -3,35 +3,166 @@
   "title": "侧栏五个入口：模型 / 技能 / 定时任务 / 远程 / 设置",
   "area": "navigation",
   "priority": "P2",
-  "tags": ["navigation", "smoke"],
-  "description": "依次打开侧栏的五个页面。目的不是逐个功能细测，而是确认每个入口都能渲染出有内容的页面、没有空白页或崩溃；截图留给视觉分析找布局/文案问题。",
+  "tags": [
+    "navigation",
+    "smoke"
+  ],
+  "description": "依次打开侧栏的五个页面。目的不是逐个功能细测，而是确认每个入口都能渲染出有内容的页面、没有空白页或崩溃；截图留给视觉分析找布局/文案问题。2026-11-18 的 Terra 复判发现这里的断言原本断在「主区域有没有文字」上，而主区域在错误状态下也照样有文字：技能、远程两条因此不可能变红。现在这两条断在面板自身的锚点上（skills-view 根节点 / remote-hub-lead + 主机方向块），并做命中测试确认它真的在屏幕上、没被对话框盖住；模型页补一条分组开关的不变量（部分子项开启时开关自身必须是 aria-checked=mixed）。点侧栏用 rail-nav 里的按钮，不用全文匹配——会话标题「远程桌面…」也会匹配到「远程」。",
   "preconditions": "应用已启动。",
   "expectations": [
     "五个入口都能打开，页面有标题或内容，不是空白",
+    "点「技能」「远程」后主区域显示的是那个面板本身，不是上一页的会话，也没有被设置对话框盖住",
+    "模型页每组的分组开关与它下面的子开关状态一致（含「部分开启」这个混合态）",
     "切换过程中没有未捕获异常",
     "页面布局不溢出窗口，侧栏保持可见"
   ],
   "steps": [
-    { "wait": 900 },
-    { "click": { "text": "模型" } },
-    { "wait": 900 },
-    { "assert": { "expr": "document.querySelector('main')?.innerText.trim().length > 20", "message": "模型页有内容" } },
-    { "shot": "panel-models" },
-    { "click": { "text": "技能" } },
-    { "wait": 900 },
-    { "assert": { "expr": "document.querySelector('main')?.innerText.trim().length > 20", "message": "技能页有内容" } },
-    { "shot": "panel-skills" },
-    { "click": { "text": "定时任务" } },
-    { "wait": 900 },
-    { "assert": { "expr": "document.querySelector('main')?.innerText.trim().length > 20", "message": "定时任务页有内容" } },
-    { "shot": "panel-tasks" },
-    { "click": { "text": "远程" } },
-    { "wait": 900 },
-    { "assert": { "expr": "document.querySelector('main')?.innerText.trim().length > 20", "message": "远程页有内容" } },
-    { "shot": "panel-remote" },
-    { "click": { "text": "设置" } },
-    { "wait": 900 },
-    { "assert": { "expr": "document.querySelector('main')?.innerText.trim().length > 20", "message": "设置页有内容" } },
-    { "shot": "panel-settings" }
+    {
+      "wait": 900
+    },
+    {
+      "click": {
+        "selector": "[data-testid=\"rail-nav\"] button",
+        "text": "模型"
+      },
+      "label": "侧栏：模型"
+    },
+    {
+      "waitFor": {
+        "selector": "[role=\"dialog\"] [data-testid=\"provider-visibility-switch\"]"
+      },
+      "timeout": 6000
+    },
+    {
+      "assert": {
+        "expr": "(() => { const d = document.querySelector('[role=\"dialog\"]'); if (!d) return false; const groups = [...d.querySelectorAll('section')].filter(s => s.querySelectorAll('[data-testid=\"provider-visibility-switch\"]').length === 1); if (groups.length < 2) return false; return groups.some(s => [...s.querySelectorAll('[role=\"switch\"]')].length >= 3); })()",
+        "message": "模型页打开：对话框里每个 provider 一组，且有 ≥2 个模型的分组"
+      }
+    },
+    {
+      "eval": "(() => { const d = document.querySelector('[role=\"dialog\"]'); if (!d) return 'no-dialog'; const groups = [...d.querySelectorAll('section')].filter(s => s.querySelectorAll('[data-testid=\"provider-visibility-switch\"]').length === 1); for (const s of groups) { const g = s.querySelector('[data-testid=\"provider-visibility-switch\"] [role=\"switch\"]'); const kids = [...s.querySelectorAll('[role=\"switch\"]')].filter(x => x !== g); if (kids.length < 2) continue; const on = kids.find(k => k.getAttribute('aria-checked') === 'true'); if (!on) continue; on.click(); return 'hid ' + (s.querySelector('h3')?.textContent ?? '') + ' / ' + on.getAttribute('aria-label'); } return 'no-group-with-2-models'; })()",
+      "note": "关掉一个 ≥2 个模型的分组里的一个模型，让混合态真的出现（不靠夹具碰巧的初始状态）"
+    },
+    {
+      "wait": 500
+    },
+    {
+      "assert": {
+        "expr": "(() => { const d = document.querySelector('[role=\"dialog\"]'); if (!d) return false; const groups = [...d.querySelectorAll('section')].filter(s => s.querySelectorAll('[data-testid=\"provider-visibility-switch\"]').length === 1); let mixed = 0; for (const s of groups) { const g = s.querySelector('[data-testid=\"provider-visibility-switch\"] [role=\"switch\"]'); const kids = [...s.querySelectorAll('[role=\"switch\"]')].filter(x => x !== g); if (!kids.length) return false; const on = kids.filter(k => k.getAttribute('aria-checked') === 'true').length; const want = on === kids.length ? 'true' : on === 0 ? 'false' : 'mixed'; if (g.getAttribute('aria-checked') !== want) return false; if (want === 'mixed') mixed += 1; } return mixed >= 1; })()",
+        "message": "分组开关与子开关一致：部分开启时开关自身是 mixed（不是「关」），全开/全关分别对应 true/false"
+      }
+    },
+    {
+      "shot": "panel-models-mixed"
+    },
+    {
+      "eval": "(() => { const d = document.querySelector('[role=\"dialog\"]'); if (!d) return 'no-dialog'; for (const s of d.querySelectorAll('section')) { const g = s.querySelector('[data-testid=\"provider-visibility-switch\"] [role=\"switch\"]'); if (s.querySelectorAll('[data-testid=\"provider-visibility-switch\"]').length === 1 && g && g.getAttribute('aria-checked') === 'mixed') { g.click(); return 'restored'; } } return 'nothing-to-restore'; })()",
+      "optional": true,
+      "note": "点回全开，别把这个状态带进后面的截图"
+    },
+    {
+      "wait": 300
+    },
+    {
+      "shot": "panel-models"
+    },
+    {
+      "press": "Escape"
+    },
+    {
+      "waitFor": {
+        "expr": "!document.querySelector('[role=\"dialog\"]')"
+      },
+      "timeout": 4000,
+      "capture": false
+    },
+    {
+      "click": {
+        "selector": "[data-testid=\"rail-nav\"] button",
+        "text": "技能"
+      },
+      "label": "侧栏：技能"
+    },
+    {
+      "waitFor": {
+        "selector": "[data-testid=\"skills-view\"]"
+      },
+      "timeout": 6000,
+      "optional": true
+    },
+    {
+      "eval": "(() => { const v = document.querySelector('[data-testid=\"skills-view\"]'); if (!v) return 'no-skills-view'; const r = v.getBoundingClientRect(); return 'skills-view ' + Math.round(r.width) + 'x' + Math.round(r.height) + ' @' + Math.round(r.x) + ',' + Math.round(r.y); })()",
+      "note": "诊断用：技能面板此刻的尺寸与位置"
+    },
+    {
+      "assert": {
+        "expr": "(() => { const v = document.querySelector('[data-testid=\"skills-view\"]'); const m = document.querySelector('main'); if (!v || !m || !m.contains(v)) return false; if (document.querySelector('[role=\"dialog\"]')) return false; const r = v.getBoundingClientRect(); if (r.width < 400 || r.height < 400) return false; const tabs = [...v.querySelectorAll('header button')].filter(b => (b.textContent || '').trim()); if (tabs.length < 2) return false; const hit = document.elementFromPoint(r.left + r.width / 2, r.top + 60); return !!hit && v.contains(hit); })()",
+        "message": "主区域是技能页本身：skills-view 根节点占住主区域、有两个页签、点击命中的是它（不是会话，也没被对话框盖住）"
+      }
+    },
+    {
+      "shot": "panel-skills"
+    },
+    {
+      "click": {
+        "selector": "[data-testid=\"rail-nav\"] button",
+        "text": "定时任务"
+      },
+      "label": "侧栏：定时任务"
+    },
+    {
+      "wait": 900
+    },
+    {
+      "assert": {
+        "expr": "document.querySelector('main')?.innerText.trim().length > 20",
+        "message": "定时任务页有内容"
+      }
+    },
+    {
+      "shot": "panel-tasks"
+    },
+    {
+      "click": {
+        "selector": "[data-testid=\"rail-nav\"] button",
+        "text": "远程"
+      },
+      "label": "侧栏：远程"
+    },
+    {
+      "waitFor": {
+        "selector": "[data-testid=\"remote-hub-lead\"]"
+      },
+      "timeout": 6000,
+      "optional": true
+    },
+    {
+      "assert": {
+        "expr": "(() => { const lead = document.querySelector('[data-testid=\"remote-hub-lead\"]'); const host = document.querySelector('[data-testid=\"remote-hub-host\"]'); const m = document.querySelector('main'); if (!lead || !host || !m || !m.contains(lead)) return false; if (document.querySelector('[role=\"dialog\"]')) return false; if ((lead.innerText || '').trim().length < 10) return false; const r = lead.getBoundingClientRect(); const hit = document.elementFromPoint(r.left + 8, r.top + 4); return !!hit && lead.contains(hit); })()",
+        "message": "主区域是远程页本身：lead 文案有内容、主机方向块在、点击命中的是它（不是会话，也没被对话框盖住）"
+      }
+    },
+    {
+      "shot": "panel-remote"
+    },
+    {
+      "click": {
+        "selector": "[data-testid=\"rail-nav\"] button",
+        "text": "设置"
+      },
+      "label": "侧栏：设置"
+    },
+    {
+      "wait": 900
+    },
+    {
+      "assert": {
+        "expr": "document.querySelector('main')?.innerText.trim().length > 20",
+        "message": "设置页有内容"
+      }
+    },
+    {
+      "shot": "panel-settings"
+    }
   ]
 }

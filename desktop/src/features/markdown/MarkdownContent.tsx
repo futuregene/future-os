@@ -5,6 +5,7 @@ import type { ChoiceCardMode, ChoiceCardOption, FutureReference, InlineNode, Mar
 import type { PreviewFileTarget } from "./PreviewMarkdownContext";
 import { parseSessionReferenceHref } from "@future-os/markdown";
 import { memo, useMemo } from "react";
+import { useChoiceCardsEnabled } from "./ChoiceCardsContext";
 import { useFutureReference, useFutureReferences } from "./futureReferenceStore";
 import { LiveMarkdownProvider } from "./LiveMarkdownContext";
 import { joinSoftBreaks, parseFutureMarkdown } from "./parseFutureMarkdown";
@@ -77,6 +78,9 @@ export interface ChoiceCardPick {
 }
 
 function MarkdownContentImpl({ content, parsedDocument, workspaceId, basePath, onOpenPreview, live, choiceAnswer }: MarkdownContentProps) {
+  // The user's setting (AppShell provides it): off draws no card and leaves no
+  // fenced source behind either.
+  const choiceCards = useChoiceCardsEnabled();
   const document = useMemo(() => {
     const parsed = parsedDocument ?? parseFutureMarkdown(content);
     // A previewed document reflows to the reader's width: its source soft breaks
@@ -99,7 +103,7 @@ function MarkdownContentImpl({ content, parsedDocument, workspaceId, basePath, o
     }
     return null;
   }, [choiceAnswer, document]);
-  const choice = choiceAnswer && lastChoiceKey ? { answer: choiceAnswer, lastKey: lastChoiceKey } : undefined;
+  const choice = choiceCards && choiceAnswer && lastChoiceKey ? { answer: choiceAnswer, lastKey: lastChoiceKey } : undefined;
 
   const body = (
     <LiveMarkdownProvider value={Boolean(live)}>
@@ -115,7 +119,7 @@ function MarkdownContentImpl({ content, parsedDocument, workspaceId, basePath, o
         {...(live ? { "data-streamed-block": "" } : {})}
         className="space-y-3"
       >
-        {document.nodes.map((node, index) => renderBlock(node, workspaceId, `b${index}`, choice))}
+        {document.nodes.map((node, index) => renderBlock(node, workspaceId, `b${index}`, choice, choiceCards))}
       </div>
     </LiveMarkdownProvider>
   );
@@ -170,6 +174,8 @@ function renderBlock(
   workspaceId: string | null | undefined,
   key: string,
   choice?: ChoiceContext,
+  /** False when the user turned choice cards off (see `ChoiceCardsContext`). */
+  choiceCards = true,
 ) {
   switch (node.type) {
     case "heading": {
@@ -194,19 +200,26 @@ function renderBlock(
         >
           {withStableKeys(node.items, key).map(({ item, key: itemKey }) => (
             <li className="pl-1" key={itemKey}>
-              <ListItemContent item={item} itemKey={itemKey} workspaceId={workspaceId} />
+              <ListItemContent item={item} itemKey={itemKey} workspaceId={workspaceId} choiceCards={choiceCards} />
             </li>
           ))}
         </Tag>
       );
     }
     case "code":
+      // A malformed `futureos-choice` block degrades to the fenced source it
+      // is. With the cards off that source must not surface either: the reader
+      // asked for no card, not for a card's markdown in the middle of a reply.
+      if (!choiceCards && node.language?.trim().toLowerCase() === "futureos-choice")
+        return null;
       return <CodeBlock code={node.code} key={key} language={node.language} />;
     case "mathBlock":
       return <MathBlock code={node.code} key={key} />;
     case "futureEmbed":
       return <FutureEmbedView key={key} reference={node.reference} workspaceId={workspaceId} />;
     case "choiceCard": {
+      if (!choiceCards)
+        return null;
       const live = choice !== undefined && choice.lastKey === key;
       return (
         <ChoiceCard
@@ -230,7 +243,7 @@ function renderBlock(
       return (
         <blockquote className="border-l-2 border-line pl-3 text-ink-soft" key={key}>
           <div className="space-y-2">
-            {node.children.map((child, ordinal) => renderBlock(child, workspaceId, `${key}:q${ordinal}`))}
+            {node.children.map((child, ordinal) => renderBlock(child, workspaceId, `${key}:q${ordinal}`, undefined, choiceCards))}
           </div>
         </blockquote>
       );
@@ -328,10 +341,12 @@ function ListItemContent({
   item,
   itemKey,
   workspaceId,
+  choiceCards,
 }: {
   item: Extract<MarkdownNode, { type: "list" }>["items"][number];
   itemKey: string;
   workspaceId: string | null | undefined;
+  choiceCards: boolean;
 }) {
   const hasInlineContent = item.children.length > 0 || item.checked !== undefined;
   const content = item.checked === undefined
@@ -355,7 +370,7 @@ function ListItemContent({
     <div className="space-y-2">
       {hasInlineContent ? <div>{content}</div> : null}
       <div className="space-y-2">
-        {item.blocks.map((block, ordinal) => renderBlock(block, workspaceId, `${itemKey}:b${ordinal}`))}
+        {item.blocks.map((block, ordinal) => renderBlock(block, workspaceId, `${itemKey}:b${ordinal}`, undefined, choiceCards))}
       </div>
     </div>
   );

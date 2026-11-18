@@ -199,16 +199,24 @@ export class RemoteRunStreams {
    * - **Built from pushes alone**: dropped, with its projection. That copy is a
    *   fragment* — the reply's beginning is in the record, not in it — so keeping
    *   it past the end draws the words twice, once from each lane.
+   *
+   * Answers with which of the two happened, because they are different things to
+   * a reader: `kept` still has a live reply on screen waiting for the record,
+   * and `dropped` leaves the record's copy to be the reply — which, if the host
+   * was still writing it, is exactly the shape a truncated answer looks like.
+   * The caller says so (`warnRemoteLane`); the lane itself has no conversation to
+   * name.
    */
-  settle(runId: string): void {
+  settle(runId: string): "kept" | "dropped" | "unknown" {
     const run = this.runs.get(runId);
     if (!run)
-      return;
+      return "unknown";
     if (!run.fromReplay) {
       this.runs.delete(runId);
-      return;
+      return "dropped";
     }
     run.settled = true;
+    return "kept";
   }
 
   /**

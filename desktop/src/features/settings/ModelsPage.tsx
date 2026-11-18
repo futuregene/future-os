@@ -98,16 +98,22 @@ export function ModelsPage({
         : null}
 
       {groups.map(([provider, models]) => {
-        const allVisible = models.every(model => !hidden.has(modelKey(model)));
+        const visibleCount = models.filter(model => !hidden.has(modelKey(model))).length;
+        const allVisible = visibleCount === models.length;
+        // A partly hidden group is neither on nor off. Rendering it as "off"
+        // hides the fact that some of its models are usable, which is what the
+        // Terra rerun caught on 2026-11-18 (omlx: Qwen3.8 on, Qwen3.6 off).
+        const mixed = visibleCount > 0 && visibleCount < models.length;
         return (
           <SettingsSection
             key={provider}
             title={providerLabel(provider)}
             action={(
-              <div className="pr-4">
+              <div className="pr-4" data-testid="provider-visibility-switch">
                 <Switch
                   checked={allVisible}
                   label={providerLabel(provider)}
+                  mixed={mixed}
                   onChange={visible => setProviderVisibility(models, visible)}
                 />
               </div>

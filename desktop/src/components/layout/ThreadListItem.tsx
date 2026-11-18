@@ -3,6 +3,7 @@ import type { ThreadRunInfo } from "./hooks/useThreadStore";
 import { CircleAlert, ListChecks } from "lucide-react";
 import { memo, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import { useChoiceCardsEnabled } from "../../features/markdown/ChoiceCardsContext";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { ThreadItemMenu } from "./ActivityRailMenus";
@@ -101,6 +102,7 @@ function ThreadListItemImpl({
   // state cache is populated by the background prefetch — no click required.
   const agentState = useCachedAgentState(thread.id);
   const displayTitle = agentState?.sessionName || thread.title;
+  const choiceCards = useChoiceCardsEnabled();
 
   // Effective running status: use the local run-status first (most accurate
   // for GUI-initiated runs), but fall back to the agent-reported is_streaming
@@ -114,8 +116,10 @@ function ThreadListItemImpl({
   // A choice card is only worth flagging while the conversation is at rest: the
   // run that offered it finished, and nothing has been sent since. Read from the
   // run's own row (`offersChoice`), so a follow-up turn — which is a new row —
-  // clears the mark without any second write to keep in step.
-  const choiceWaiting = runStatus?.offersChoice === true
+  // clears the mark without any second write to keep in step. With choice cards
+  // turned off the mark goes too: a "waiting on your answer" badge over a reply
+  // whose card is not drawn names a control the reader cannot see.
+  const choiceWaiting = choiceCards && runStatus?.offersChoice === true
     && effectiveRunStatus === "completed";
 
   return (

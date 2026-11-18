@@ -1,6 +1,6 @@
 import type { AgentMessage, MessageSegment } from "@future-os/thread-projection";
 import { describe, expect, it } from "vitest";
-import { foldLiveReply, stripRunCopies } from "./remoteLiveReplies";
+import { foldLiveReply, markInFlightReply, stripRunCopies } from "./remoteLiveReplies";
 
 /**
  * The reply a host is writing, drawn once.
@@ -146,6 +146,62 @@ describe("remoteLiveReplies", () => {
     const transcript = [message({ id: "m_a1", segments: [text("half of it")] })];
     const live = message({ id: "stream_none", content: "being written", status: "streaming" });
     expect(foldLiveReply(transcript, live)).toEqual([transcript[0], live]);
+  });
+});
+
+/**
+ * The record cannot say a reply is still being written.
+ *
+ * A history page projects entries, and no entry says "mid-run": the run's reply
+ * is `complete` or `failed` in every page read during the run. So the row the page
+ * hands the view looks finished while the host is still writing it. `get_state`
+ * names the run that is executing, and this rule wears that fact on the row.
+ */
+describe("markInFlightReply", () => {
+  it("leaves the transcript alone when the host named no run", () => {
+    const transcript = [message({ id: "m_a1", runId: "run_1", status: "complete" })];
+    expect(markInFlightReply(transcript, null)).toEqual(transcript);
+  });
+
+  it("stamps the run the host is executing as still being written", () => {
+    const transcript = [
+      message({ id: "m_u1", role: "user", content: "keep going", runId: "run_1" }),
+      message({ id: "m_a1", runId: "run_1", status: "complete", content: "the half written so far" }),
+    ];
+
+    const [prompt, reply] = markInFlightReply(transcript, "run_1");
+
+    expect(prompt).toBe(transcript[0]);
+    expect(reply!.status).toBe("streaming");
+    // The stamp is an appearance, not content: nothing the record said is lost.
+    expect(reply!.content).toBe("the half written so far");
+    expect(reply!.id).toBe("m_a1");
+  });
+
+  it("stamps no other run, and no other author's row", () => {
+    const transcript = [
+      message({ id: "m_a1", runId: "run_1", status: "complete" }),
+      message({ id: "m_u2", role: "user", content: "next", runId: "run_2" }),
+      message({ id: "m_a2", runId: "run_2", status: "complete" }),
+    ];
+
+    const stamped = markInFlightReply(transcript, "run_2");
+
+    expect(stamped.map(item => item.status)).toEqual(["complete", undefined, "streaming"]);
+  });
+
+  it("leaves a row that is already streaming as it is", () => {
+    const transcript = [message({ id: "m_a1", runId: "run_1", status: "streaming" })];
+    expect(markInFlightReply(transcript, "run_1")[0]).toBe(transcript[0]);
+  });
+
+  /**
+   * A run whose reply is not in the record yet has nothing to stamp: the live
+   * lane is what draws it, and inventing a row here would draw an empty one.
+   */
+  it("does nothing when the page does not carry that run", () => {
+    const transcript = [message({ id: "m_a1", runId: "run_0", status: "complete" })];
+    expect(markInFlightReply(transcript, "run_1")).toEqual(transcript);
   });
 });
 

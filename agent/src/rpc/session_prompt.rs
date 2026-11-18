@@ -2187,6 +2187,7 @@ impl ServerSession {
             // rather than walking the chain keeps this O(1) on every run and
             // matches the guard: both answer "may this session start one?".
             is_subsession: !self.parent_session_id.is_empty(),
+            choice_cards: self.choice_cards,
             ..Default::default()
         });
         (prompt, context_files)

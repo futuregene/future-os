@@ -235,6 +235,12 @@ export interface DesktopSettings {
    */
   skillRecommend?: boolean;
   /**
+   * Draw `futureos-choice` cards (and teach the model the fence). Off by default,
+   * so an absent value reads as "off" on the phone exactly as it does on the
+   * desktop: the cards and their prompt section are one switch.
+   */
+  choiceCards?: boolean;
+  /**
    * Clear a conversation's Shell output and run replay when it is archived.
    * On by default, so an older desktop that omits it must not read as "off".
    */
