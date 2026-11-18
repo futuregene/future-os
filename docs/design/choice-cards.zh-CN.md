@@ -240,6 +240,12 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 
 上面这四个事实（只读态、当年的 `hint`、只读提示、折叠按钮）都是截图场景**断言过**的，不是看着像；`capture.py` 的断言失败只会报 `n/m captured`，不会给一张"看着过了"的图。
 
+**折起来只证明藏得住，展开才是另一半**：
+
+![桌面端：早先那张卡的「展开」按下之后——全文露出，按钮变「收起」](assets/choice-cards/desktop-11-history-expanded.png)
+
+*真实组件截图*，场景 `choice-history-expanded-desktop`（1440×900 @2×，取自本批提交）：与上一张**同一份 fixture、同一条回复**，只多一次点击。情境段 `72px → 126px`（四行 → 七行），按钮从「展开」变「收起」、`aria-expanded` 由 `false` 转 `true`、`aria-controls` 指向那个 `<p>` 的 `id`，`-webkit-line-clamp` 为 `none`；卡底 `452`，输入框 `774`，展开后仍隔着一整段空白。只读提示与当年的 `hint` 一个不少——展开的是情境，不是权限。
+
 ### 5.2 桌面端 · 已选
 
 ![桌面端：选中一项，答案成为输入框里的 pill](assets/choice-cards/desktop-2-chosen.png)
@@ -398,6 +404,12 @@ v1 的已选行同时在三个地方宣告"选中"：`accent-soft` 填充 + `acc
 - 同一段情境在手机上比桌面早得多就要折：列宽 350pt、`CONTEXT_UNITS_PER_LINE = 48`（桌面的四分之一强），所以桌面整段显示的一段话，手机往往已经是"四行 + 展开"；
 - 折叠按钮的展开态用 `aria-expanded`（不是 `accessibilityState`）——react-native-web 只转发 `aria-*`，另一个会被整块丢掉，与行上的 `aria-checked` 同一个理由；
 - 两张卡都完整落在转写区的可视框内（`y 60..393` 与 `401..667`，框 `60..732`），历史卡的最后一行也在框里。手机的转写是倒序列表、滚动容器自己带着 `scaleY(-1)`，所以把它停到框顶是**减**滚动量，与桌面普通容器方向相反——这条写进场景里，省得下一个人再猜一遍。
+
+**手机上展开之后，一屏就被这一张卡吃掉了**：
+
+![手机：早先那张卡的情境展开后，占满转写区，下面那张卡只露出开头](assets/choice-cards/phone-7-history-expanded.png)
+
+*真实组件截图*，场景 `choice-history-expanded-phone`（780×1688 @2×，取自本批提交），与上一张同一份 fixture，只多一次点击。`82pt → 253pt`，卡体 `60..564` 整个落在转写框 `60..732` 里、文字一个字没被裁（`scrollHeight == clientHeight`），按钮变「收起」且 `aria-expanded=true`；下面那张可选卡从 `572` 开始，只露出开头——这不是裁切，而是这张图要说的事：**展开是有代价的**，手机上它几乎占满一屏，所以折叠才是默认读法，100 字的预算（§4）也是照这一屏定的。
 
 ### 5.8 队列里的选择
 
@@ -597,7 +609,7 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
    - 7b. **远程桌面**：`RemoteComposer.tsx:1244` 复用同一个 `SendQueuePanel`，所以这一端**不需要新代码**，只需要在远程会话里验证一次（远程样式表可能把行宽/字号带歪）。
    - 7c. **手机**：`mobile/src/features/chat/components/SendQueuePanel.tsx` 单独改——它是另一份实现（折叠表头 + `sendQueueListHeight` 上限），chip 11px 字、行内插在文字上方；面板只上报“要改哪一行”（`onRequestChoiceChange`），`ChoiceSheet` 由 `ComposerDock` 渲染——sheet 是 `Modal`，不放进行列表里。
 8. **prompt**：`agent/src/prompt/choice.md` + `mod.rs` 推入；改 `agent/src/prompt/mod.rs` 的既有测试（断言 prompt 段落顺序的那几条）。
-9. **回归**：`scripts/screenshots/scenarios.d/choice-cards.json` 已经把本文的每一屏变成可重跑的场景（目前桌面 21 个、手机 11 个，含 `chosen-text`、`queue`、`queue-remote`、`expanded`、`history-fold`）。
+9. **回归**：`scripts/screenshots/scenarios.d/choice-cards.json` 已经把本文的每一屏变成可重跑的场景（目前桌面 22 个、手机 12 个，含 `chosen-text`、`queue`、`queue-remote`、`expanded`、`history-fold`、`history-expanded`）。
 
 ## 12. 测试点
 
@@ -613,9 +625,10 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
   - **chip 不抢行铅笔的活**（v3 的硬约束）：chip 是 `role=button` 且**只有一个**图标（chevron）；chip 的右边缘小于铅笔的左边缘；行自己的铅笔与垃圾桶仍然存在且可点。断言三条，缺一条就退回到"两支铅笔"的歧义。
   - **远程**：远程复用同一个面板，且行的 `choice` 现在会被解析（`parseQueueChoice`，与本地共用一个）；断言：chip 在远程帧里画出、`aria-label` 与行文字同时成立、铅笔与垃圾桶仍在、按下只会发一条 `edit_queued_run`（`message` 与 `choice` 同行，不是 cancel+重发）。宿主不报该字段时（旧宿主）不画 chip——`remoteQueue.test.ts` 单独钉了“缺/空/不可用三种都读作没有答案”。
   - **手机**：折叠表头能展开/收起，且报 `aria-expanded`（不是 `accessibilityState`，web 上会被整块丢掉）；chip 在行内不溢出（实测 `185×21`，行宽 `348`）；行仍保留 `send-queue-edit` 与 `send-queue-remove`。
+  - **手机换答案落到宿主队列，不落到本机草稿**：面板 chip → sheet 选项 → `onQueueUpdateChoice` 的链路在 `ComposerDock.test.ts` 里驱动真实面板，并断言**没有**碰 `onChangeChoice`（那是草稿那条路，两者答案形状一模一样，串了就会把同一个答案发两次）；`ChatScreen.test.ts` 从面板递上来的那个入口断言发出的载荷是 `editQueuedRun(会话, 行, 重写后的句子, {mode,options,selectedIds,title})`，且这一屏的 `choice` 事件前后都是 `null`——答案留在那一行，没有进输入框。反向断言做过一次：把第四个参数删掉，两条测试同时变红。
 - **降级**：TUI 打印代码块内容；未知客户端同。
 - **无障碍**：`role`/`aria-checked`/`aria-label` 三条断言；方向键与 Enter 的键路径。
-- **视觉回归**：`choice-cards.json` 的 32 个场景（桌面 21 + 手机 11，含两种样式对比表与两个被否方案）。
+- **视觉回归**：`choice-cards.json` 的 34 个场景（桌面 22 + 手机 12，含两种样式对比表与两个被否方案）。
 
 ## 13. 截图怎么重跑
 
@@ -636,13 +649,15 @@ python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
 # 真实组件的样张（§5.1 / §5.1.1 / §5.2 / §5.3 / §5.4 / §5.5 / §5.7 / §5.7.2 / §5.8 引的就是这几张）
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   capture-desktop choice-card-implemented choice-history-fold-desktop \
-                  choice-context-expanded-desktop choice-pill-implemented \
+                  choice-history-expanded-desktop choice-context-expanded-desktop \
+                  choice-pill-implemented \
                   choice-card-chosen-text-implemented choice-card-change-implemented \
                   choice-card-implemented-dark choice-card-remote-implemented \
                   send-queue-choice-implemented send-queue-choice-remote-implemented
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   capture-mobile choice-card-phone-card choice-history-fold-phone \
-                 choice-context-expanded-phone choice-card-phone-picked \
+                 choice-history-expanded-phone choice-context-expanded-phone \
+                 choice-card-phone-picked \
                  choice-card-phone-change send-queue-choice-implemented
 ```
 
