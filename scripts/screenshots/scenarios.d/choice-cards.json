@@ -855,6 +855,47 @@
           "shot": "send-queue-choice-implemented.png"
         }
       ]
+    },
+    "send-queue-choice-remote-implemented": {
+      "note": "真实组件 · 远程桌面 · 队列里的选择（§5.8.1/§5.8.2）。远程复用桌面的 `SendQueuePanel`，行的数据来自宿主的 `get_queue`：宿主那一行带着 `choice`，本机解析后画成 chip，按下 chip 换答案走同一条 `edit_queued_run`（答案与它声明的句子一起发）。所以这行的 chip、铅笔、垃圾桶与本地会话长得一模一样——不是另画的一份。",
+      "url": "http://localhost:5299/shot/?lang=zh&remoteChoiceCard=1&queue=1&queueChoice=1",
+      "width": 1440,
+      "height": 900,
+      "steps": [
+        {
+          "wait": 1200
+        },
+        {
+          "eval": "(() => { sessionStorage.clear(); localStorage.clear(); return 'cleared'; })()"
+        },
+        {
+          "eval": "(() => { location.reload(); return 'reloading'; })()"
+        },
+        {
+          "wait": 2600
+        },
+        {
+          "tapText": "重画森林图并核对置信区间"
+        },
+        {
+          "wait": 3200
+        },
+        {
+          "eval": "(() => { if (!document.querySelector('[data-testid=\"remote-thread-usage\"]')) throw new Error('this frame is not a remote conversation, so the figure would be lying'); const panel = document.querySelector('[data-send-queue]'); if (!panel) throw new Error('the remote queue panel did not render'); const toggle = panel.querySelector('[aria-label=\"展开队列中的消息\"]'); if (toggle) { toggle.click(); return 'expanded'; } return 'already-open rows=' + panel.querySelectorAll('[data-queue-item]').length; })()"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "eval": "(() => { if (!document.querySelector('[data-testid=\"remote-thread-usage\"]')) throw new Error('this frame is not a remote conversation, so the figure would be lying'); const panel = document.querySelector('[data-send-queue]'); if (!panel) throw new Error('the remote queue panel did not render'); const chip = panel.querySelector('[data-queue-choice-action=change]'); if (!chip) { const rows = [...panel.querySelectorAll('[data-queue-item]')].map(row => (row.innerText || '').replace(/\\n/g, ' | ').slice(0, 70)); throw new Error('the remote queued row drew no choice chip; rows: ' + JSON.stringify(rows)); } const label = chip.getAttribute('aria-label') || ''; if (!label.includes('重画森林图')) throw new Error('the chip does not name the picked option: ' + label); const text = chip.innerText || chip.textContent || ''; if (!text.includes('重画森林图')) throw new Error('the chip text lost the option: ' + text); if (chip.disabled) throw new Error('the chip is disabled, so the pick cannot be changed'); const row = chip.closest('[data-queue-item]'); if (!row) throw new Error('the chip is not inside a queue row'); if (!row.querySelector('[data-queue-edit]')) throw new Error('the row lost its own pencil'); if (!row.querySelector('[data-queue-remove]')) throw new Error('the row lost its bin'); const cr = chip.getBoundingClientRect(); const panelBox = panel.getBoundingClientRect(); if (cr.left < panelBox.left - 1 || cr.right > panelBox.right + 1) throw new Error('the chip escaped the panel'); return JSON.stringify({ chip: text.trim().slice(0, 30), box: [Math.round(cr.left), Math.round(cr.top), Math.round(cr.width), Math.round(cr.height)] }); })()"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "shot": "send-queue-choice-remote-implemented.png"
+        }
+      ]
     }
   },
   "mobile": {
