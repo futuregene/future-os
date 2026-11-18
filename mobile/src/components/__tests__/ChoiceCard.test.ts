@@ -100,6 +100,25 @@ describe("a futureos-choice card on the phone", () => {
     expect(texts).toContain("补一张实验流程图");
   });
 
+  test("draws the context above the subtitle, and nothing when the fence omitted it", () => {
+    const withContext = [
+      "```futureos-choice",
+      "title: 接下来做哪一件？",
+      "context: 森林图已按新样本量重画，图注还挂着旧的 42。",
+      "option: forest | 重画森林图",
+      "option: flow | 补一张实验流程图",
+      "```",
+    ].join("\n");
+    const root = render(withContext);
+    expect(root.findAllByProps({ testID: "choice-card-context" }).length).toBeGreaterThan(0);
+    const texts = root.findAll(node => typeof node.props.children === "string")
+      .map(node => node.props.children);
+    expect(texts).toContain("森林图已按新样本量重画，图注还挂着旧的 42。");
+    // A card without one draws no empty paragraph.
+    act(() => renderer.unmount());
+    expect(render(CARD).findAllByProps({ testID: "choice-card-context" })).toHaveLength(0);
+  });
+
   test("answers the last card only: the thread's earlier card is read-only", () => {
     const onPick = jest.fn();
     const answer: ChoiceCardAnswer = { onPick, selectedIds: [], title: "接下来做哪一件？" };

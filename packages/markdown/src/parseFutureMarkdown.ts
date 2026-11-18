@@ -635,9 +635,20 @@ function parseChoiceCard(node: Code): ChoiceCardNode | null {
   // degrades through the option count (§3) rather than through an empty title.
   const title = first("title").trim() || options[0]!.label.trim();
 
+  // `context` is the card's own account of the situation (§3): the reply's
+  // conclusion, not a copy of the reply. Repeated lines are paragraphs, so a
+  // writer can break it where the reader would; the field is optional and an
+  // empty one is simply absent.
+  const context = entries
+    .filter(([key]) => key === "context")
+    .map(([, value]) => value.trim())
+    .filter(Boolean)
+    .join("\n");
+
   const hint = first("hint").trim();
   const mode = parseChoiceMode(first("mode"));
   return {
+    ...(context ? { context } : {}),
     ...(hint ? { hint } : {}),
     mode,
     options,
