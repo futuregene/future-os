@@ -210,7 +210,7 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 
 ![桌面端：回复末尾的选项卡，尚未选择](assets/choice-cards/desktop-1-empty.png)
 
-*真实组件截图*，场景 `choice-card-implemented`（1440×900 @2×，取自 `56462a7da`）：卡片不是注入原型，而是 `packages/markdown` 解析 `futureos-choice` 围栏、`desktop/src/features/markdown/renderers/ChoiceCard.tsx` 渲染出来的。这张卡的情境只有一行，所以**没有**「展开」按钮——折叠的阈值见下面第三条。
+*真实组件截图*，场景 `choice-card-implemented`（1440×900 @2×，取自 `56462a7da`）：卡片不是注入原型，而是 `packages/markdown` 解析 `futureos-choice` 围栏、`desktop/src/features/markdown/renderers/ChoiceCard.tsx` 渲染出来的。这张卡的情境只有一行，所以**没有**「展开」按钮。**折叠阈值：四行可见，六行起折**（`choiceContextFolds`：可见四行 + 两行余量，所以只藏一行从不值得多一个控件）。
 
 - 卡宽 768px，与正文列同宽（`max-w-3xl`），左对齐、跟在最后一个块之后 4px；
 - 卡头 12px 半粗标题 + 右侧 11px 模式标注（`单选` / `多选`）；
@@ -225,7 +225,7 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 
 ![桌面端：一条回复里两张卡，上面那张是早先的提问——只读、情境已折叠](assets/choice-cards/desktop-9-history-fold.png)
 
-*真实组件截图*，场景 `choice-history-fold-desktop`（1440×900 @2×，取自 `56462a7da`）：一条回复里有两张卡，上面那张是早先的提问，下面那张才是线程的最后一问。判据只依赖**已解析出的卡片数量**（§2），与模型写了什么无关，所以两张卡由同一份 fixture、同一套渲染器画出。
+*真实组件截图*，场景 `choice-history-fold-desktop`（1440×900 @2×，取自 `56462a7da`）：一条回复里有两张卡，上面那张是早先的提问，下面那张才是线程的最后一问。上面那张的情境估算**超过六行**（折叠阈值：四行可见、六行起折），所以折成四行 + 「展开」。判据只依赖**已解析出的卡片数量**（§2），与模型写了什么无关，所以两张卡由同一份 fixture、同一套渲染器画出。
 
 - 上面那张：`data-choice-state="readonly"`、`aria-disabled="true"`、行不在 tab 序里、点了没有反应；
 - 它**保留自己当年写的 `hint`**（这里那句"点几个都行"，11px、`ink-muted`），后面紧跟一行只读提示"早先的提问，这张卡不能再选"。历史卡是拿来重读的，把模型自己那句提示抹掉，等于删掉当时唯一的提示；默认副标题则不再出现（它承诺的是可操作）；
@@ -342,7 +342,7 @@ pill 实测 `bg rgb(232,240,255)`（`accent-soft`）、`color rgb(37,99,235)`（
 
 ### 5.7 移动端
 
-手机 390×844，三张图分别是未选 / 已选 / 改回来。"未选"那张是**真实组件截图**（场景 `choice-card-phone-card`，780×1688 @2×，取自 `56462a7da`）——`mobile/src/components/ChoiceCard.tsx` 画的卡，不是注入原型。
+手机 390×844，三张图分别是未选 / 已选 / 改回来。"未选"那张是**真实组件截图**（场景 `choice-card-phone-card`，780×1688 @2×，取自 `56462a7da`）——`mobile/src/components/ChoiceCard.tsx` 画的卡，不是注入原型。折叠阈值与桌面**同一组数字**（四行可见、六行起折），但 350pt 的列一行只放 24 个单位（桌面是 120），所以同一段文字在这里更早折。
 
 | 未选 | 已选 | 改回来 |
 |---|---|---|
@@ -371,7 +371,7 @@ v1 的已选行同时在三个地方宣告"选中"：`accent-soft` 填充 + `acc
 
 ![手机：一条回复里两张卡，上面那张只读、情境已折叠](assets/choice-cards/phone-5-history-fold.png)
 
-*真实组件截图*，场景 `choice-history-fold-phone`（780×1688 @2×，取自 `56462a7da`），与桌面那张是**同一份 fixture**（`?choiceHistory=1`）：同样的两张卡、同样的 `hint`、同样的只读提示。
+*真实组件截图*，场景 `choice-history-fold-phone`（780×1688 @2×，取自 `56462a7da`），与桌面那张是**同一份 fixture**（`?choiceHistory=1`）：同样的两张卡、同样的 `hint`、同样的只读提示。同一段情境在桌面四行放得下，在这里超过六行，所以折成四行 + 「展开」——阈值一样，列宽差 2.5 倍。
 
 - 同一段情境在手机上比桌面早得多就要折：列宽 350pt、`CONTEXT_UNITS_PER_LINE = 48`（桌面的四分之一强），所以桌面整段显示的一段话，手机往往已经是"四行 + 展开"；
 - 折叠按钮的展开态用 `aria-expanded`（不是 `accessibilityState`）——react-native-web 只转发 `aria-*`，另一个会被整块丢掉，与行上的 `aria-checked` 同一个理由；
