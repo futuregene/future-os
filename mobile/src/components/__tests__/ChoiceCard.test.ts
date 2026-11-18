@@ -159,6 +159,33 @@ describe("a futureos-choice card on the phone", () => {
     expect(hintKeys(root)).toEqual(["choice.hint.readonly"]);
   });
 
+  /**
+   * History keeps what the reply said. The model's own `hint` is part of it, so a
+   * past card prints it and then the notice — replacing it with "cannot be
+   * picked" threw away the only line the reply wrote about how to choose (§2,
+   * revised 2026-11-18).
+   */
+  test("a past card keeps the model's own hint and adds the notice after it", () => {
+    const withHint = [
+      "```futureos-choice",
+      "title: 这三项都要？",
+      "mode: multi",
+      "hint: 点几个都行",
+      "option: a | 接新浪",
+      "option: b | 接 Nasdaq",
+      "```",
+    ].join("\n");
+    const root = render(withHint);
+    const texts = root.findAll(node => typeof node.props.children === "string")
+      .map(node => node.props.children as string);
+    expect(texts).toContain("点几个都行");
+    expect(texts).toContain("choice.hint.readonly");
+    // What was said at the time comes first; the fact that it is inert follows.
+    expect(texts.indexOf("点几个都行")).toBeLessThan(texts.indexOf("choice.hint.readonly"));
+    // The default instruction still never appears on a card nobody can answer.
+    expect(texts).not.toContain("choice.hint.multi");
+  });
+
   test("without an answer surface every card is read-only", () => {
     const root = render(CARD);
     const options = rows(root);

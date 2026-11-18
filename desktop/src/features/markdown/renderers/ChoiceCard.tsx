@@ -47,15 +47,26 @@ export function ChoiceCard({
   const { t } = useTranslation("markdown");
   const titleId = useId();
   const hintId = useId();
+  const readonlyId = useId();
   const interactive = Boolean(onSelect);
   const multi = mode === "multi";
   const chosen = options.filter(option => selectedIds.includes(option.id));
   // Roving tabindex (§9): Tab reaches the card, then the arrows walk the rows.
   const focusIndex = Math.max(0, options.findIndex(option => selectedIds.includes(option.id)));
+  // What the card says about answering. A live card falls back to the default
+  // instruction; a past card keeps the model's own words and adds the notice
+  // below — history is read, not answered, but the reply's own hint is part of
+  // what it said and replacing it lost information a reader comes back for.
+  const guidance = interactive
+    ? hint || (multi ? t("choice.hint.multi") : t("choice.hint.single"))
+    : hint;
+  const describedBy = [guidance ? hintId : null, interactive ? null : readonlyId]
+    .filter(Boolean)
+    .join(" ");
 
   return (
     <div
-      aria-describedby={hintId}
+      aria-describedby={describedBy}
       aria-disabled={interactive ? undefined : true}
       aria-labelledby={titleId}
       className="w-full max-w-3xl overflow-hidden rounded-[10px] border border-line bg-surface shadow-panel"
@@ -88,16 +99,29 @@ export function ChoiceCard({
           : null}
         {/*
           The subtitle is the one place a card can promise an action, so a card
-          that cannot answer must not print the answering one: "pick one and it
-          lands in the input" over inert rows is the whole defect — a button that
-          looks pressable and does nothing. The model's own `hint` goes the same
-          way, since it describes picking too.
+          that cannot answer must never print a promise: "pick one and it lands
+          in the input" over inert rows is the whole defect — a button that looks
+          pressable and does nothing. That is why a past card gets no *default*
+          instruction, and why the notice below is a statement of fact rather
+          than a plural next to it. The model's own `hint` is different: it is
+          part of what the reply said, so it stays, and the notice follows it.
         */}
-        <p className="mt-1 text-[11px] leading-4 text-ink-muted" id={hintId}>
-          {interactive
-            ? hint || (multi ? t("choice.hint.multi") : t("choice.hint.single"))
-            : t("choice.hint.readonly")}
-        </p>
+        {guidance
+          ? (
+              <p className="mt-1 text-[11px] leading-4 text-ink-muted" id={hintId}>{guidance}</p>
+            )
+          : null}
+        {interactive
+          ? null
+          : (
+              <p
+                className="mt-1 text-[11px] leading-4 text-ink-muted"
+                data-choice-readonly
+                id={readonlyId}
+              >
+                {t("choice.hint.readonly")}
+              </p>
+            )}
       </div>
       <div
         className="px-1.5 pb-1.5"

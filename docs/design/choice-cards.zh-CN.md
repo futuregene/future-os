@@ -114,7 +114,14 @@ option: table | 表里加一列样本量 | Frank 42 / Dreher 186，标出测量�
 | 围栏出现在回复中间（不在最后一块） | 照常渲染，但只读（§2 的"最后一张"规则） |
 | 未知字段 | 忽略 |
 
-**只读卡必须自己说出来**（2026-11-16）：一条回复里有 2 张及以上卡时，只有最后一张可交互——这个判据只依赖**已解析出的卡片数量**，与模型写了什么措辞无关，所以放在解析/渲染层，不放进 prompt。被判为只读的卡不只是 `aria-readonly` + 不进 Tab 序，它的**副标题也必须换成"这张卡不能选"**（`choice.hint.readonly`）：副标题是卡片唯一能"承诺动作"的地方，在一个点不动的卡上印"选一个就放进输入框"，等于画一个看起来能按、按了没反应的按钮。模型自带的 `hint` 描述的是"怎么挑"，所以同样一并换掉。判据在 `ChoiceCard.test.tsx` 与 `MarkdownContent.test.tsx` 里断言（文字 + `aria-disabled` + 不可聚焦），**不断言颜色**。
+**只读卡必须自己说出来**（2026-11-16）：一条回复里有 2 张及以上卡时，只有最后一张可交互——这个判据只依赖**已解析出的卡片数量**，与模型写了什么措辞无关，所以放在解析/渲染层，不放进 prompt。被判为只读的卡不只是 `aria-readonly` + 不进 Tab 序，它的**副标题也必须换成"这张卡不能再选"**（`choice.hint.readonly`）：副标题是卡片唯一能"承诺动作"的地方，在一个点不动的卡上印"选一个就放进输入框"，等于画一个看起来能按、按了没反应的按钮。判据在 `ChoiceCard.test.tsx` 与 `MarkdownContent.test.tsx` 里断言（文字 + `aria-disabled` + 不可聚焦），**不断言颜色**。
+
+**但"换掉默认副标题"不等于"换掉回复自己写的 hint"**（2026-11-18 修正上一条）。上一版把模型的 `hint` 也一并抹掉，理由是"它也描述怎么挑"；实际读历史时这是丢信息：读者回来往往正是要看当时那句话。现在的规则分两层——
+
+- **默认副标题不再出现**：点不动的卡上永不印"选一个就放进输入框"（那条承诺仍然是错的）；
+- **模型写的 `hint` 保留**，后面紧跟一行 `choice.hint.readonly` 说明这张卡是早先的提问、不能再选。两句都是这个 group 的 `aria-describedby`，顺序与视觉顺序一致；没写 `hint` 的卡只有后面那一行。
+
+改的是措辞而不是承诺：`hint` 是历史的一部分，`readonly` 那行仍是唯一说"不能选"的地方。文案同时从"只作展示：这张卡不能选"改成"早先的提问，这张卡不能再选"——它现在与英文版（"An earlier question — this card can no longer be picked"）说的是同一件事，而不是在替一张卡道歉。
 
 ## 4. system prompt 里加什么
 
@@ -493,7 +500,7 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
 | `choice.mode.multi` | 多选 | Multiple choice |
 | `choice.hint.single` | 选一个就放进输入框；也可以直接在输入框里写别的 | Pick one and it lands in the input; you can type something else instead |
 | `choice.hint.multi` | 可以多选，点几个都行 | Pick as many as apply |
-| `choice.hint.readonly` | 只作展示：这张卡不能选 | An earlier question — this card can no longer be picked |
+| `choice.hint.readonly` | 早先的提问，这张卡不能再选 | An earlier question — this card can no longer be picked |
 | `choice.foot.queued` | 已放进输入框，可以继续补充，也可以直接发送 | In the input — add a note if you want, or send as is |
 | `choice.chip.change` | 修改「{{title}}」的选择 | Change the answer to "{{title}}" |
 | `choice.chip.remove` | 移除「{{title}}」的选择 | Remove the answer to "{{title}}" |
