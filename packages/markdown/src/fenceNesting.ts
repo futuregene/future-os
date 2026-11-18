@@ -47,7 +47,7 @@ const FENCE = /^( {0,3})(`{3,}|~{3,})(.*)$/;
 /** Info strings that name a document rather than a programming language. */
 const DOCUMENT_LANGUAGES = new Set(["markdown", "md"]);
 
-interface FenceLine {
+export interface FenceLine {
   /** Backtick or tilde. */
   char: "`" | "~";
   /** Length of the opening run. */
@@ -56,7 +56,7 @@ interface FenceLine {
   info: string;
 }
 
-function readFence(line: string): FenceLine | null {
+export function readFenceLine(line: string): FenceLine | null {
   const match = FENCE.exec(line);
   if (!match) return null;
   const [, , run = "", rest = ""] = match;
@@ -67,7 +67,7 @@ function readFence(line: string): FenceLine | null {
   return { char: run[0] as "`" | "~", length: run.length, info };
 }
 
-function closes(line: string, open: FenceLine): boolean {
+export function closesFence(line: string, open: FenceLine): boolean {
   const match = FENCE.exec(line);
   if (!match) return false;
   const [, , run = "", rest = ""] = match;
@@ -86,7 +86,7 @@ function closes(line: string, open: FenceLine): boolean {
 function nestedClose(lines: string[], openIndex: number, open: FenceLine): number {
   let depth = 1;
   for (let index = openIndex + 1; index < lines.length; index += 1) {
-    const fence = readFence(lines[index]!);
+    const fence = readFenceLine(lines[index]!);
     if (!fence) continue;
     // Any tilde run of fence width in the body would close the rewritten outer
     // fence early, so this shape cannot be expressed by the swap below.
@@ -104,7 +104,7 @@ function nestedClose(lines: string[], openIndex: number, open: FenceLine): numbe
 /** Index of the line CommonMark would end this fence on, or -1. */
 function plainClose(lines: string[], openIndex: number, open: FenceLine): number {
   for (let index = openIndex + 1; index < lines.length; index += 1) {
-    if (closes(lines[index]!, open)) return index;
+    if (closesFence(lines[index]!, open)) return index;
   }
   return -1;
 }
@@ -112,7 +112,7 @@ function plainClose(lines: string[], openIndex: number, open: FenceLine): number
 /** Swap the leading run of one fence line for the same number of tildes. */
 function toTildes(line: string): string {
   const match = FENCE.exec(line);
-  /* v8 ignore next -- only called for lines readFence already matched */
+  /* v8 ignore next -- only called for lines readFenceLine already matched */
   if (!match) return line;
   const [, indent = "", run = "", rest = ""] = match;
   return indent + "~".repeat(run.length) + rest;
@@ -128,7 +128,7 @@ export function repairNestedDocumentFence(source: string): string {
   let changed = false;
   let index = 0;
   while (index < lines.length) {
-    const open = readFence(lines[index]!);
+    const open = readFenceLine(lines[index]!);
     if (!open) {
       index += 1;
       continue;

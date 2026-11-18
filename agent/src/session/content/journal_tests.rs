@@ -1215,6 +1215,49 @@ fn scoped_retirement_preserves_pricing_events() {
 }
 
 #[test]
+fn scoped_retirement_preserves_pricing_across_page_boundaries() {
+    for (count, model_bytes) in [(257, 0), (258, 0), (512, 0), (513, 0), (80, 8192)] {
+        let (_root, store) = store();
+        let mut writer = Writer::default();
+        let events: Vec<_> = (0..count)
+            .map(|idx| {
+                if idx % 2 == 0 {
+                    event(idx, "usage", json!({"input_tokens":idx,"output_tokens":7}))
+                } else {
+                    event(
+                        idx,
+                        "model_changed",
+                        json!({"model":format!("model-{idx}{}", "x".repeat(model_bytes))}),
+                    )
+                }
+            })
+            .collect();
+        writer.persist(&store, "s", &events).unwrap();
+        store.db.call(|db| {
+            db.execute("INSERT INTO runs(session_id,run_id,status,started_at_ms,completed_at_ms) VALUES ('s','r','completed',1,2)", [])?;
+            Ok(())
+        }).unwrap();
+        let before = store.pricing_event_payloads("s").unwrap();
+        assert_eq!(before.len(), count as usize);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let (retired, _) = store
+            .db
+            .call(move |db| super::retire::apply_for_session(db, "s", 4, deadline))
+            .unwrap();
+        assert_eq!(retired, 1, "pricing records: {count}");
+        assert_eq!(store.pricing_event_payloads("s").unwrap(), before);
+        assert!(store.events("s", "r").unwrap().is_empty());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let (retired, _) = store
+            .db
+            .call(move |db| super::retire::apply_for_session(db, "s", 4, deadline))
+            .unwrap();
+        assert_eq!(retired, 0);
+        assert_eq!(store.pricing_event_payloads("s").unwrap(), before);
+    }
+}
+
+#[test]
 fn retiring_a_settled_stream_drops_the_journal_and_keeps_the_transcript() {
     let (_root, store) = store();
     let mut writer = Writer::default();
