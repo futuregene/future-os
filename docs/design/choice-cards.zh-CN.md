@@ -79,7 +79,7 @@ option: table | 表里加一列样本量 | Frank 42 / Dreher 186，标出测量�
 **`context` 是卡片的「就地问答」能力**（2026-11-18）。卡片此前只有标题、选项说明和一行副标题，要判断"接下来做哪件"仍得往上看那几百字的复盘——正是卡片要消灭的那种来回。加上 `context` 之后，卡片把**结论**搬进自己：图注还挂着旧数据、图例压着曲线、两篇的样本量不一致，这类事实恰恰是选择的依据。它有三个边界，写在 prompt 里也写在渲染上：
 
 - **是情境，不是摘要**。不重述正文里没有任何一行会用到的东西，也不写寒暄；正文可以因此更短（同一句话只说一次）。
-- **有上限，而且真的会收**（2026-11-18 补）。目标 1–3 句、100 字左右（手机卡片只画四行，100 个中文字在 350pt 宽下是四到五行，刚好不折；2026-11-18 从 200 字收紧）；超过四行（`CHOICE_CONTEXT_VISIBLE_LINES`）就折起来只显示前四行，下面一行"展开"按钮一点展开全文。折叠的判据来自文本、**驱动** CSS 的 clamp，不是反过来测量高度：估算说"够短"就完全不裁，所以估错的后果只是"早折/晚折一行"，绝不会出现文字被裁掉却没有按钮可点。
+- **有上限，而且真的会收**（2026-11-18 补）。目标 1–3 句、100 字左右（手机卡片只画四行，100 个中文字在 350pt 宽下是四到五行，刚好不折；2026-11-18 从 200 字收紧）；**前四行可见，六行起才折**（`CHOICE_CONTEXT_VISIBLE_LINES` 与 `+ 2` 的余量：只藏一行却多一个按钮，是用一个控件换一行字，不值），下面一行"展开"按钮一点展开全文。折叠的判据来自文本、**驱动** CSS 的 clamp，不是反过来测量高度：估算说"够短"就完全不裁，所以估错的后果只是"早折/晚折一行"，绝不会出现文字被裁掉却没有按钮可点。
 - **可多段**。重复写 `context:` 行按行序拼成多段（渲染 `pre-line`），但两段以上只有在真的分得开时才值那点高度。
 
 渲染位置在标题之下，`12px / 18px`、`ink-soft`（比 `hint` 的 `11px / ink-muted` 重一档：它是内容，`hint` 和只读提示是 chrome）。**只读卡保留 context**——另加一行"早先的提问，这张卡不能再选"（§2），但情境是信息，一张历史卡仍然要说清它在问什么。手机同一规则（`13px`、`inkSoft`）。
@@ -210,14 +210,29 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 
 ![桌面端：回复末尾的选项卡，尚未选择](assets/choice-cards/desktop-1-empty.png)
 
+*真实组件截图*，场景 `choice-card-implemented`（1440×900 @2×，取自 `56462a7da`）：卡片不是注入原型，而是 `packages/markdown` 解析 `futureos-choice` 围栏、`desktop/src/features/markdown/renderers/ChoiceCard.tsx` 渲染出来的。这张卡的情境只有一行，所以**没有**「展开」按钮——折叠的阈值见下面第三条。
+
 - 卡宽 768px，与正文列同宽（`max-w-3xl`），左对齐、跟在最后一个块之后 4px；
 - 卡头 12px 半粗标题 + 右侧 11px 模式标注（`单选` / `多选`）；
 - 标题下是 `context` 情境段（12px / 18px、`ink-soft`、段内换行保留），没写 `context` 的卡不占这段高度；
-- **超过四行的情境会折起来**：`line-clamp-4` 截断出省略号，下面一行 11px 的"展开 / 收起"按钮（带 chevron，`aria-expanded` + `aria-controls` 指向情境段）。全文一直在 DOM 里，所以屏幕阅读器读到的是完整文本，展开只是把它画出来。四行及以下不画任何控件——对已经全部可见的文字放一个"展开"，是又一个按了没反应的按钮；手机同一规则，`numberOfLines={4}` 由系统画省略号；
+- **情境超过四行就折起来**：`line-clamp-4` 截断出省略号，下面一行 11px 的"展开 / 收起"按钮（带 chevron，`aria-expanded` + `aria-controls` 指向情境段）。阈值是估算**六行起**才折（四行可见 + 两行余量，`choiceContextFolds`），因为只藏一行却多一个按钮不值；四行及以下不画任何控件——对已经全部可见的文字放一个"展开"，是又一个按了没反应的按钮。全文一直在 DOM 里，所以屏幕阅读器读到的是完整文本，展开只是把它画出来。手机同一规则，`numberOfLines={4}` 由系统画省略号；
 - **没有默认副标题**（2026-11-18 删除）：原来那行"选一个就放进输入框；也可以直接在输入框里写别的"解释的是机制，而机制已经由答案 pill 自己演示了（选了就出现在输入框里，见 §5.2）；"单选/多选"也在卡头右上角说过了。一条每次都要读、只读一次有用的说明，等于在每张卡上收一次税。模型自己写的 `hint` 仍会渲染在这里（11px、`ink-muted`）；只读卡则多一行 `choice.hint.readonly`（§3）；
 - 每个选项一行：16px 单选圈 + 13px 文案 + 12px 一行说明（`ink-muted`）；未选行无边框、无底色，靠留白分列；
 - **多选卡的标记是方框**（16px，圆角 3px，选中后同色对勾），单选卡才是圆圈：两种卡的差别不只在右上角那行小字，形状本身就是判据，扫一眼就知道能不能多选。手机端同一规则（18px 方框，圆角 4px）；
 - 卡片外框 `1px line` / `radius 10px` / `surface` 底 / 极轻投影，与审批卡同一套材质，但**位置不同**：审批卡浮在输入框上方，选项卡长在正文里。
+
+### 5.1.1 早先的提问：只读卡把它写过的东西全留着
+
+![桌面端：一条回复里两张卡，上面那张是早先的提问——只读、情境已折叠](assets/choice-cards/desktop-9-history-fold.png)
+
+*真实组件截图*，场景 `choice-history-fold-desktop`（1440×900 @2×，取自 `56462a7da`）：一条回复里有两张卡，上面那张是早先的提问，下面那张才是线程的最后一问。判据只依赖**已解析出的卡片数量**（§2），与模型写了什么无关，所以两张卡由同一份 fixture、同一套渲染器画出。
+
+- 上面那张：`data-choice-state="readonly"`、`aria-disabled="true"`、行不在 tab 序里、点了没有反应；
+- 它**保留自己当年写的 `hint`**（这里那句"点几个都行"，11px、`ink-muted`），后面紧跟一行只读提示"早先的提问，这张卡不能再选"。历史卡是拿来重读的，把模型自己那句提示抹掉，等于删掉当时唯一的提示；默认副标题则不再出现（它承诺的是可操作）；
+- 情境比四行高，所以折起来：第三行末尾是省略号，下面一行"展开"。**历史卡也能展开**——折叠正是为了读，那个按钮不涉及任何选择，所以不碰只读；
+- 下面那张 `data-choice-state="active"`：情境一行，没有按钮，行在 tab 序里、可点。
+
+上面这四个事实（只读态、当年的 `hint`、只读提示、折叠按钮）都是截图场景**断言过**的，不是看着像；`capture.py` 的断言失败只会报 `n/m captured`，不会给一张"看着过了"的图。
 
 ### 5.2 桌面端 · 已选
 
@@ -327,7 +342,7 @@ pill 实测 `bg rgb(232,240,255)`（`accent-soft`）、`color rgb(37,99,235)`（
 
 ### 5.7 移动端
 
-手机 390×844，三张图分别是未选 / 已选 / 改回来。
+手机 390×844，三张图分别是未选 / 已选 / 改回来。"未选"那张是**真实组件截图**（场景 `choice-card-phone-card`，780×1688 @2×，取自 `56462a7da`）——`mobile/src/components/ChoiceCard.tsx` 画的卡，不是注入原型。
 
 | 未选 | 已选 | 改回来 |
 |---|---|---|
@@ -352,7 +367,17 @@ v1 的已选行同时在三个地方宣告"选中"：`accent-soft` 填充 + `acc
 
 **为什么手机不学桌面把答案放进 field：** RN 的输入框是 `TextInput`（原生 textarea），没有 contenteditable 的原子元素，也不存在 `isEditorEmpty` 那种“有 pill 即非空”的机制。手机的等价做法是让答案算进 `canSend`/`hasDraft` 已经计数的东西——`ComposerDock.tsx:180-181`、`:233` 都是 `!!message.trim() || attachments.length > 0`，所以答案必须作为一个 draft 项被计入（像附件那样），而不是画一个不参与判定的装饰 chip。
 
-## 5.8 队列里的选择
+#### 5.7.2 早先的提问，在手机上
+
+![手机：一条回复里两张卡，上面那张只读、情境已折叠](assets/choice-cards/phone-5-history-fold.png)
+
+*真实组件截图*，场景 `choice-history-fold-phone`（780×1688 @2×，取自 `56462a7da`），与桌面那张是**同一份 fixture**（`?choiceHistory=1`）：同样的两张卡、同样的 `hint`、同样的只读提示。
+
+- 同一段情境在手机上比桌面早得多就要折：列宽 350pt、`CONTEXT_UNITS_PER_LINE = 48`（桌面的四分之一强），所以桌面整段显示的一段话，手机往往已经是"四行 + 展开"；
+- 折叠按钮的展开态用 `aria-expanded`（不是 `accessibilityState`）——react-native-web 只转发 `aria-*`，另一个会被整块丢掉，与行上的 `aria-checked` 同一个理由；
+- 两张卡都完整落在转写区的可视框内（`y 60..393` 与 `401..667`，框 `60..732`），历史卡的最后一行也在框里。手机的转写是倒序列表、滚动容器自己带着 `scaleY(-1)`，所以把它停到框顶是**减**滚动量，与桌面普通容器方向相反——这条写进场景里，省得下一个人再猜一遍。
+
+### 5.8 队列里的选择
 
 三端各一张，因为队列面板**不是同一个组件**：
 
@@ -512,6 +537,7 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
 
 - 图标：卡头 `list-checks`（一批待办里挑一件），铅笔、叉沿用现有 `lucide` 图标集；
 - 语义：卡片是 `role="group"` + `aria-labelledby` 指向标题；选项行是 `role="radio"`（单选）/ `role="checkbox"`（多选），带 `aria-checked`；输入框里的 chip 是 `role="group"`，两个按钮各有 `aria-label`（上表）；**队列行里的 chip 反过来——整个 chip 是一个 `role="button"`**，`aria-label` 用 `choice.queue.change`，因为它只表示一件事（换选择），而行的铅笔、垃圾桶各自独立。
+- 折叠按钮是 `role="button"` + `aria-expanded` + `aria-controls`（指向情境段）；**手机也写 `aria-expanded`**，因为 react-native-web 只转发 `aria-*`、会整块丢掉 `accessibilityState`——行上的 `aria-checked` 同一个理由，三端读出同一件事。
 - 键盘：Tab 进卡 → 方向键在选项间移动 → Enter/Space 选中 → 焦点进输入框。`Esc` 关浮层；
 - 选中状态不只靠颜色：对勾 + 描边 + 底色三重区分（灰度或色弱下仍可辨）；单选的圆与多选的方框让模式也不只靠颜色。
 
@@ -550,6 +576,7 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
 - **解析**：合法单/多选；2 与 4 的边界；3 个以下/5 个以上降级；重复 id、非法 id、缺 title 的降级；围栏在中途；未知字段忽略。
 - **`context`（2026-11-18）**：单行原样保留；重复行拼成多段；写了但空掉的不出现；桌面与手机都画在标题下；只读卡仍保留；没写时不占高度。（`choiceCard.test.ts`、`ChoiceCard.test.tsx`、`MarkdownContent.test.tsx`、手机 `ChoiceCard.test.ts`）
 - **折叠（2026-11-18）**：行数估算（宽字符算两格、显式换行算新段、零宽列不炸）；四行及以下**不画按钮也不裁**；六行起折叠，`aria-expanded` 从 `false` 变 `true` 后 clamp 消失、全文仍在 DOM；只读卡上按钮同样可用且不解锁任何行；`line-clamp-4` 与 `CHOICE_CONTEXT_VISIBLE_LINES` 由测试读常量对齐；**prompt 的 100 字预算与手机列对齐**：100 个中文字（48 units/行）不折、144 字开始折（`choiceContext.test.ts`），且 `choice.md` 里每个示例的 `context:` 字数≤ 100（`prompt_teaches_the_choice_card_fence`）——教什么就得示范什么。（`choiceContext.test.ts`、桌面与手机的 `ChoiceCard.test`）
+- **历史卡（只读）**：一条回复两张卡时，上面那张 `readonly`/`aria-disabled`/不进程 tab 序，**保留它当年写的 `hint`**，并在其后画 `choice.hint.readonly`；卡片自己的 `context` 仍在，且折叠按钮可用。截图场景额外钉住两件事：两张卡与只读卡最后一行都落在转写区的可视框内，以及折叠段的实测高度（桌面 72px、手机 82pt）。
 - **桌面（三态回归，必测）**：空编辑器 ⇒ `disabled:true`；只有 pill ⇒ **`disabled:false`**；移除 pill ⇒ `disabled:true`。这是 v1 错误的那一条，必须钉死。
 - **桌面**：卡片渲染与只读/可交互切换；点行 → pill 出现；铅笔改 pill；叉移除 pill 且发送键变灰；pill + 文字一起发送的内容（§7 四种情况逐条断言）；发送后 pill 消失，**卡面不保留高亮**（答案在用户消息的标签上，为什么不做回填见 §2）。
 - **远程**：同上，且断言 chip 在 textarea 之上而不是里面；**只有 chip 时发送键可用**（v1 同样漏掉的那一条）；远程草稿切换不串答案。
@@ -560,7 +587,7 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
   - **手机**：折叠表头能展开/收起；chip 在行内不溢出（`129×23`，行宽 `348`）；行仍保留 `send-queue-edit` 与 `send-queue-remove`。
 - **降级**：TUI 打印代码块内容；未知客户端同。
 - **无障碍**：`role`/`aria-checked`/`aria-label` 三条断言；方向键与 Enter 的键路径。
-- **视觉回归**：`choice-cards.json` 的 14 个场景（含两种样式对比表与两个被否方案）。
+- **视觉回归**：`choice-cards.json` 的 23 个场景（桌面 14 + 手机 9，含两种样式对比表与两个被否方案）。
 
 ## 13. 截图怎么重跑
 
@@ -579,7 +606,14 @@ python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   capture-mobile choice-card-phone choice-card-phone-chosen \
                  choice-card-phone-change choice-card-phone-queue
+# 真实组件的样张（§5.1 / §5.1.1 / §5.7 / §5.7.2 引的就是这几张）
+python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
+  capture-desktop choice-card-implemented choice-history-fold-desktop
+python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
+  capture-mobile choice-card-phone-card choice-history-fold-phone
 ```
+
+顺序有讲究：`serve-mobile` 会往 `mobile` 工作区装 `react-native-web` 等仅 harness 需要的包（`--no-save`，不进 lockfile），它会顺带挪动几个依赖；跑完手机截图再跑 `mobile` 的 jest，需要 `npm ci` 一次把 `@react-native/jest-preset` 装回来（否则 jest-expo 报 "the React Native Jest preset … has moved to a separate package"）。
 
 每个场景都带断言（不只截图）：例如 `choice-card-chosen` 会检查 pill 在编辑器**内**、且 `window.__choiceSendButton().disabled === false`；手机场景检查选中行**没有描边**且铅笔与叉墨色相同。断言失败时 `capture.py` 报 `n/m captured`，不会静静给你一张"看着过了"的图。
 
