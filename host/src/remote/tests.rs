@@ -964,10 +964,57 @@ mod runtime_tests {
             "the desktop must display the invitation it just minted: {shown}"
         );
 
+        // Ready includes retirement of the old queue subscriber: routing the
+        // first handshake to that generation would silently lose the request.
+        assert_eq!(nats.subscription_count(&format!("p.{pair_id}.cmd.>")), 1);
+        assert!(
+            nats.retirement_receipt_subject()
+                .unwrap()
+                .starts_with(&format!("p.{pair_id}.rep.{}._retired.", first.desktop_id)),
+            "the retirement receipt must stay inside the bridge's relay permissions"
+        );
+
         // The phone scans exactly what the desktop is showing.
         let mobile = nats_connect(&nats).await;
         let _channel = super::test_support::secure_pair(&mobile, &shown, &second.pair_id).await;
 
+        stop();
+    }
+
+    #[tokio::test]
+    async fn an_unconfirmed_retirement_removes_the_candidate_and_can_restart() {
+        let _home = HomeGuard::new("remote-retirement-failure");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        let pair_id = format!("pair_{}", unique("retirement"));
+        platform.respond_pair_code_for(&pair_id, nats.url());
+        assert_eq!(
+            start(RemoteStartInput {}).await.unwrap().phase,
+            RemotePhase::Ready
+        );
+
+        platform.respond_pair_code_for(&pair_id, nats.url());
+        SUPERVISOR
+            .hooks
+            .inject_retirement_failure
+            .store(1, Ordering::SeqCst);
+        let failed = super::start_once(true).await.unwrap();
+        assert_eq!(failed.phase, RemotePhase::Reconnecting);
+        assert!(
+            SUPERVISOR.state.lock().unwrap().is_empty(),
+            "a failed retirement must not leave its replacement installed"
+        );
+        assert_ne!(super::status().phase, RemotePhase::Ready);
+
+        platform.respond_pair_code_for(&pair_id, nats.url());
+        let recovered = super::start_once(true).await.unwrap();
+        assert_eq!(recovered.phase, RemotePhase::Ready);
+        let mobile = nats_connect(&nats).await;
+        let _channel =
+            super::test_support::secure_pair(&mobile, &recovered.pairing_code.unwrap(), &pair_id)
+                .await;
         stop();
     }
 

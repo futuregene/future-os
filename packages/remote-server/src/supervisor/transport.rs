@@ -5,6 +5,7 @@ pub struct TransportTasks {
     pub event_tx: tokio::sync::mpsc::Sender<EventPublish>,
     pub event_task: TaskHandle,
     pub cmd_task: TaskHandle,
+    pub command_retire: tokio::sync::oneshot::Sender<()>,
     pub transfer_task: TaskHandle,
     pub heartbeat_task: TaskHandle,
     pub candidate_tasks: lifecycle::CandidateTasks,
@@ -61,6 +62,7 @@ impl Supervisor {
         );
         candidate_tasks.track_owned(&event_task);
         let (command_ready_tx, command_ready_rx) = tokio::sync::oneshot::channel();
+        let (command_retire, command_retired) = tokio::sync::oneshot::channel();
         let cmd_task = self.spawn_generation_for(
             epoch,
             commands::command_loop_with_ready(
@@ -70,6 +72,7 @@ impl Supervisor {
                 handshake.clone(),
                 nats_health.clone(),
                 Some(command_ready_tx),
+                Some(command_retired),
             ),
         );
         candidate_tasks.track_owned(&cmd_task);
@@ -132,6 +135,7 @@ impl Supervisor {
             event_tx,
             event_task,
             cmd_task,
+            command_retire,
             transfer_task,
             heartbeat_task,
             candidate_tasks,
@@ -403,6 +407,7 @@ impl Supervisor {
                         event_tx,
                         event_task: new_event,
                         cmd_task: new_cmd,
+                        command_retire,
                         transfer_task: new_transfer,
                         heartbeat_task: new_heartbeat,
                         mut candidate_tasks,
@@ -432,6 +437,7 @@ impl Supervisor {
                     let old_transfer = std::mem::replace(&mut state.transfer_task, new_transfer);
                     let old_heartbeat = std::mem::replace(&mut state.heartbeat_task, new_heartbeat);
                     let old_event = std::mem::replace(&mut state.event_task, new_event);
+                    state.command_retire = Some(command_retire);
                     state.event_tx = event_tx;
                     state.client = client;
                     state.nats_health = nats_health;

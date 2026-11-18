@@ -53,6 +53,16 @@ function StepResponse({ text, phase }: { text: string; phase: string }) {
         const items = Array.isArray(value[field]) ? value[field].filter((item): item is string => typeof item === "string" && !!item.trim()) : [];
         return items.length ? `### ${label}\n${items.map(item => `- ${item}`).join("\n")}` : "";
       };
+      if (typeof value.answer === "string" && typeof value.support === "string") {
+        const checks = Array.isArray(value.checks)
+          ? value.checks.filter(isRecord).map(check => [
+              typeof check.claim === "string" ? `**${check.claim}**` : "",
+              typeof check.quote === "string" ? `> ${check.quote.replace(/\n/gu, "\n> ")}` : "",
+              typeof check.effect === "string" ? check.effect : "",
+            ].filter(Boolean).join("\n\n"))
+          : [];
+        content = [value.answer, value.support, list("unresolved", t("fusion.result.unresolved")), ...checks].filter(Boolean).join("\n\n");
+      }
       if (phase === "synthesizing" && typeof value.conclusion === "string") {
         content = [value.conclusion, ...["rationale", "unresolved"].map(field => list(field, t(`fusion.result.${field}`)))].filter(Boolean).join("\n\n");
       }
@@ -63,6 +73,19 @@ function StepResponse({ text, phase }: { text: string; phase: string }) {
         const textField = (entry: Record<string, unknown>, field: string) => typeof entry[field] === "string" ? entry[field] as string : "";
         const quoted = (text: string) => text ? `> ${text.replace(/\n/gu, "\n> ")}` : "";
         const decision = (entry: Record<string, unknown>) => t(`fusion.detail.review.decisions.${textField(entry, "decision")}`);
+        const evidenceReference = (reference: unknown) => {
+          if (typeof reference === "string")
+            return `- ${reference}`;
+          if (!isRecord(reference))
+            return "";
+          const source = textField(reference, "source_id");
+          const quote = textField(reference, "quote");
+          const version = textField(reference, "sha256");
+          const start = typeof reference.start_line === "number" && Number.isSafeInteger(reference.start_line) && reference.start_line > 0 ? reference.start_line : null;
+          const end = typeof reference.end_line === "number" && Number.isSafeInteger(reference.end_line) && start !== null && reference.end_line >= start ? reference.end_line : null;
+          const range = start === null ? "" : `:${start}${end !== null && end !== start ? `-${end}` : ""}`;
+          return [source ? `- ${source}${range}` : "", quoted(quote), version ? `SHA-256: ${version}` : ""].filter(Boolean).join("\n\n");
+        };
         content = [
           typeof value.current_answer === "string" ? value.current_answer : "",
           section(t("fusion.detail.review.responses"), value.responses, entry => [
@@ -82,10 +105,16 @@ function StepResponse({ text, phase }: { text: string; phase: string }) {
             quoted(textField(entry, "source_quote")),
             textField(entry, "reason"),
           ].filter(Boolean).join("\n\n")),
+          section(t("fusion.detail.audit.objections"), value.objections, entry => [
+            textField(entry, "participant"),
+            quoted(textField(entry, "quote")),
+            textField(entry, "reason"),
+            textField(entry, "effect"),
+          ].filter(Boolean).join("\n\n")),
           section(t("fusion.detail.review.additions"), value.additions, entry => [
             `**${t(`fusion.detail.review.kinds.${textField(entry, "kind")}`)}**`,
             textField(entry, "content"),
-            Array.isArray(entry.evidence) ? entry.evidence.filter((v): v is string => typeof v === "string").map(v => `- ${v}`).join("\n") : "",
+            Array.isArray(entry.evidence) ? entry.evidence.map(evidenceReference).filter(Boolean).join("\n\n") : "",
           ].filter(Boolean).join("\n\n")),
         ].filter(Boolean).join("\n\n");
       }
@@ -123,6 +152,26 @@ function StepResponse({ text, phase }: { text: string; phase: string }) {
             ].filter(Boolean).join("\n\n")).join("\n\n")
           : "";
         content = [consensus ? `### ${t("fusion.detail.consensus")}\n${consensus}` : "", issues ? `### ${t("fusion.detail.disagreements")}\n${issues}` : "", excluded ? `### ${t("fusion.detail.excluded")}\n${excluded}` : ""].filter(Boolean).join("\n\n") || t("fusion.detail.noMappedViews");
+      }
+      if (phase === "synthesizing" && isRecord(value.decision_audit)) {
+        const audit = value.decision_audit;
+        const field = (entry: Record<string, unknown>, key: string) => typeof entry[key] === "string" ? entry[key] as string : "";
+        const dispositions = Array.isArray(audit.dispositions)
+          ? audit.dispositions.filter(isRecord).map(entry => [
+              `**${field(entry, "id")} · ${t(`fusion.detail.audit.decisions.${field(entry, "decision")}`)}**`,
+              field(entry, "reason"),
+              field(entry, "effect"),
+              Array.isArray(entry.basis) ? entry.basis.filter(isRecord).map(basis => [field(basis, "source_id"), `> ${field(basis, "quote").replace(/\n/gu, "\n> ")}`].join("\n\n")).join("\n\n") : "",
+            ].filter(Boolean).join("\n\n"))
+          : [];
+        const update = isRecord(audit.decision_update)
+          ? [
+              `### ${t("fusion.detail.audit.inheritance")}`,
+              t(`fusion.detail.audit.decisions.${field(audit.decision_update, "decision")}`),
+              field(audit.decision_update, "reason"),
+            ].join("\n\n")
+          : "";
+        content = [content, `### ${t("fusion.detail.audit.title")}`, t(`fusion.detail.audit.resolutions.${field(audit, "resolution")}`), ...dispositions, update].filter(Boolean).join("\n\n");
       }
     }
   }

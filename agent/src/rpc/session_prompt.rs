@@ -1230,7 +1230,7 @@ impl ServerSession {
                 crate::fusion::settings_enabled()?,
                 "Fusion is disabled in settings"
             );
-            anyhow::ensure!(crate::fusion::available(), "Fusion host is unavailable");
+            anyhow::ensure!(crate::fusion::available(), "Fusion host is unavailable or incompatible; start matching Host and Agent versions");
             let identity = self.session_manager.storage()?.storage_identity()?;
             run_loop
                 .tools
@@ -1247,6 +1247,13 @@ impl ServerSession {
                     run_id: run_lease.run_id.clone(),
                     tool_call_id: String::new(),
                 },
+                answer_only: run_loop.tools.len() == 1
+                    && run_loop.tools[0].def.function.name == "fusion",
+                parent_request: Some(
+                    future_fusion::fusion_prompt(prompt.message)
+                        .unwrap_or(prompt.message)
+                        .to_owned(),
+                ),
                 workspace: std::path::PathBuf::from(&session_cwd),
                 store: future_fusion::Store::existing(&crate::utils::future_home())?,
                 sandbox: sandbox.clone(),
@@ -1974,6 +1981,15 @@ impl ServerSession {
                 if let Err(error) = broadcaster.publish_committed_terminal().await {
                     let _ = runtime.mark_persistence_degraded(&task_lease, &format!("{error:#}"));
                     tracing::error!(%error, "could not publish the durably committed terminal");
+                }
+                let settled_broadcaster = broadcaster.clone();
+                match tokio::task::spawn_blocking(move || {
+                    settled_broadcaster.retire_journal_writer()
+                })
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    error => tracing::warn!(?error, "could not retire the settled event worker"),
                 }
                 return;
             }

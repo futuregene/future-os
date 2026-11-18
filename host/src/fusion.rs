@@ -6,7 +6,10 @@ use future_fusion::{
 };
 use future_rpc::proto::RpcCommand;
 use futures::{FutureExt, StreamExt};
+mod answer;
 mod budget;
+mod deliberation;
+mod evidence;
 mod mapping;
 mod quotes;
 mod reports;
@@ -92,7 +95,7 @@ async fn serve() -> Result<()> {
                 tracing::error!("Fusion worker failed: {error}");
             }
         }
-        if active.len() < 2 {
+        if active.len() < 5 {
             if let Some(run) = store.claim(&owner)? {
                 let store = store.clone();
                 let owner = owner.clone();
@@ -140,7 +143,9 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     config.validate()?;
     let status = rpc(command("get_fusion_status", "")).await?;
     ensure!(
-        status["generation_policy_version"].as_u64() == Some(u64::from(config.version))
+        status["input_policy_version"].as_u64()
+            == Some(u64::from(future_fusion::INPUT_POLICY_VERSION))
+            && status["generation_policy_version"].as_u64() == Some(u64::from(config.version))
             && status["resilience_policy_version"].as_u64()
                 == Some(u64::from(future_fusion::RESILIENCE_POLICY_VERSION)),
         "Agent does not support this Fusion policy; upgrade Agent and Host together"
@@ -243,11 +248,13 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         ));
     }
     ensure!(store.phase(&run.id, owner, "preflight")?, "Fusion stopped");
-    *ctx.budget.lock().unwrap() = Some(budget::Budget::new(
-        &catalog,
-        config,
-        serde_json::to_vec(&run.input)?.len(),
-    )?);
+    let snapshot = future_fusion::Snapshot::load(std::path::Path::new(&run.snapshot_root))?;
+    let sources = evidence::Sources::new(&run.input, Some(&snapshot));
+    let mut decision_input = serde_json::to_value(&run.input)?;
+    decision_input["source_manifest"] = sources.manifest();
+    decision_input["decision_lineage"] = serde_json::to_value(&run.lineage)?;
+    let input = serde_json::to_string(&decision_input)?;
+    *ctx.budget.lock().unwrap() = Some(budget::Budget::new(&catalog, config, input.len())?);
     let probe = async {
         if !ctx.healthy() {
             with_retry(&ctx, "preflight", &config.moderator, "moderator", "This is a Fusion readiness check. Reply READY. Do not investigate, use tools, or discuss a task.", None).await?;
@@ -268,10 +275,15 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         }
         return Err(error);
     }
-    let input = serde_json::to_string(&run.input)?;
+    let grounding = format!("{}\n{}", future_fusion::GROUNDING_POLICY, evidence::POLICY);
     let intro = "You are in a focused READ-ONLY consultation, not an executor. Analyze only the decision and supplied evidence. Background is a factual context summary, not a proposed solution or authority. Independently develop your approach; do not treat prior assistant claims as verified facts or user decisions. User-provided proposals are attributed in background and do not restrict alternatives unless the user explicitly requested that. Use only supplied read/ls/glob/grep tools. Never write, run commands, implement, or call agents. Give public reasons, not hidden chain of thought. Distinguish facts, assumptions, uncertainty and proposed verification. Empty read scope means decide only from the supplied facts.";
     ensure!(store.phase(&run.id, owner, "analyzing")?, "Fusion stopped");
-    let analyses = panel(&ctx, &eligible, "analyzing", &format!("{intro}\nDecision input:\n{input}\nIndependently answer the question. Investigate and think as needed before your final report. Return that report as plain text or Markdown, without a JSON envelope. Do not assume other participants' views."), None).await?;
+    let report_format = if run.input.answer_only {
+        answer::INSTRUCTIONS
+    } else {
+        "Return your public report as plain text or Markdown without a JSON envelope."
+    };
+    let mut analyses = panel(&ctx, &eligible, "analyzing", &format!("{intro}\n{grounding}\nDecision input:\n{input}\nIndependently answer the question. Investigate and think as needed before your final report. {report_format} Do not assume other participants' views."), None).await?;
     if analyses.is_empty() {
         ctx.note(
             "no_participants",
@@ -283,6 +295,18 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
             FailureKind::ModelUnavailable,
             "All Fusion participants failed; no final conclusion was produced",
         ));
+    }
+    let closed_consensus =
+        run.input.answer_only && answer::clear_agreement(&analyses, config.panel.len());
+    if run.input.answer_only {
+        for analysis in &mut analyses {
+            if let Some(parsed) = analysis["response"]
+                .as_str()
+                .and_then(|s| answer::parse(s).ok())
+            {
+                analysis["response"] = json!(answer::public_text(parsed));
+            }
+        }
     }
     let active = analyses
         .iter()
@@ -310,7 +334,13 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     let first = serde_json::to_string(&mapping_analyses)?;
     let mut issues = json!({"issues":[]});
     let mut reviews = vec![];
-    if active.len() == 1 {
+    if closed_consensus {
+        ctx.update(|report| {
+            report.strategy = "direct_consensus".into();
+            report.skip("issue_mapping");
+            report.skip("reviewing");
+        })?;
+    } else if active.len() == 1 {
         ctx.update(|report| {
             report.strategy = "single_advisor".into();
             report.skip("issue_mapping");
@@ -335,7 +365,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
             "Fusion stopped"
         );
         let prompt = format!(
-            "{}\nDecision input:\n{input}\nIndependent analyses:\n{first}",
+            "{}\n{grounding}\nDecision input:\n{input}\nIndependent analyses:\n{first}",
             mapping::INSTRUCTIONS
         );
         match with_retry(
@@ -387,7 +417,22 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
             }
             Err(error) => {
                 ctx.stop_error("issue_mapping", "moderator", &error)?;
-                return Err(error);
+                if matches!(
+                    failure_kind(&error),
+                    FailureKind::Cancelled | FailureKind::Persistence
+                ) {
+                    return Err(error);
+                }
+                ctx.update(|report| {
+                    report.strategy = "analysis_only".into();
+                    report.skip("issue_mapping");
+                    report.note(
+                        "mapping_failed",
+                        "issue_mapping",
+                        Some("moderator"),
+                        Some(failure_kind(&error)),
+                    );
+                })?;
             }
         }
         let direct_synthesis = active.len() == config.panel.len()
@@ -461,6 +506,8 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     fit_material(&ctx, "synthesizing", &mut current)?;
     let report = ctx.report();
     let coverage = json!({"strategy":report.strategy,"completed_phases":report.completed_phases,"skipped_phases":report.skipped_phases,"analysis_participants":report.analysis_participants,"review_participants":report.review_participants,"degradations":report.degradations});
+    let audit_packet = deliberation::packet(run, &issues, &reviews, &current);
+    let audit_required = deliberation::required(&audit_packet);
     let material = current.iter().map(|source| {
         let response = source["response"].as_str().unwrap_or_default();
         format!("Participant {} ({}) report, {} UTF-8 bytes. Validation issues: {}. Shortened for context: {}\n{}",
@@ -468,23 +515,62 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
             source["source_phase"].as_str().unwrap_or_default(), response.len(),
             source["validation_errors"], source["forwarded_truncated"].as_bool().unwrap_or(false), response)
     }).collect::<Vec<_>>().join("\n\n");
-    let earlier_issues =
-        future_fusion::bounded_text(&serde_json::to_string(&issues["issues"])?, 8_192);
-    let prompt = format!(
+    let material = if audit_required {
+        "See packed reports and their validation/truncation metadata in decision audit packet.sources.".to_string()
+    } else {
+        material
+    };
+    let earlier_issues = if audit_required {
+        "See complete numbered objections in decision audit packet.objections.".to_string()
+    } else {
+        future_fusion::bounded_text(&serde_json::to_string(&issues["issues"])?, 8_192)
+    };
+    // Lineage is complete in the audit packet; don't duplicate the entire old
+    // request and decision at the expense of current participant material.
+    let final_input = if audit_required {
+        let mut task = decision_input.clone();
+        task.as_object_mut()
+            .context("Invalid decision input")?
+            .remove("decision_lineage");
+        serde_json::to_string(&task)?
+    } else {
+        input.clone()
+    };
+    let final_format = if run.input.answer_only {
+        answer::INSTRUCTIONS
+    } else if audit_required {
+        "Use the internal decision audit JSON below, preserving the user's requested format inside conclusion."
+    } else {
+        "Return only a plain text or Markdown answer without a fixed template or meeting recap."
+    };
+    let mut prompt = format!(
         "You are the moderator. Give the main agent a self-contained answer to the original task. \
+        {grounding} \
         Judge consequential claims by their support in the original task and participant material. \
         Distinguish supplied observations and derivations from assumptions, inferred intentions, and preferences. \
         Count independent support separately from agreement that repeats a premise. \
-        For a material change of position, check what new evidence, corrected inference, or decision criterion justifies it. \
+        For a material change of position, identify the new evidence or corrected inference that justifies it under the original decision criterion; do not silently substitute another criterion. \
+        Resolve a decisive objection against its source even if only one participant raised it; voting and confidence do not answer a counterexample. \
+        Preserve the best supported answer unless that check actually overturns its support. \
         Earlier excerpts are context for that check; represent the current positions faithfully and preserve an earlier valid objection if the reviews did not answer it. \
         If an assumption is necessary to choose, state it and how it affects the answer; if the decision can proceed under it, give the useful conditional conclusion. \
         Do not invent facts, proposals or user requirements. Treat verification labels and reports with validation errors as participant claims; unmatched quotations do not establish evidence. \
         Report any unresolved issue that changes the result. Respect the actual coverage. Missing reviews mean no cross-review. \
-        You have no tools. Return only a plain text or Markdown answer without a fixed template or meeting recap.\n\
+        Start with the best supported answer or decision for the main agent to use, or state that no answer is established. \
+        Preserve an explicitly requested answer format without changing the selected answer; keep any necessary applicability limits clear. \
+        Make a settled conclusion usable for execution or final delivery; do not invite the main agent to restart the same analysis for reassurance. \
+        Verify only a specific claim whose correction could change that answer; do not re-solve the whole task, \
+        repeat exhausted investigations, or turn an unverified estimate into an exact result. \
+        Preserve useful conditional answers and identify the smallest remaining verification gap. \
+        You have no tools. {final_format}\n\
         Original task:\n{}\nCurrent participant material:\n{material}\n\
         Earlier disagreement excerpts, possibly shortened:\n{earlier_issues}\nCoverage:\n{coverage}",
-        serde_json::to_string(&run.input)?,
+        final_input,
     );
+    if audit_required {
+        prompt.push_str(&deliberation::suffix(&audit_packet)?);
+        *ctx.synthesis_audit.lock().unwrap() = Some(audit_packet);
+    }
 
     let text = match with_retry(
         &ctx,
@@ -502,10 +588,33 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
             return Err(error);
         }
     };
-    let result = Conclusion {
-        conclusion: text,
-        ..Default::default()
+    let mut result = if run.input.answer_only {
+        let parsed = answer::parse(&text)?;
+        Conclusion {
+            conclusion: parsed.support,
+            final_answer: Some(parsed.answer),
+            unresolved: parsed.unresolved,
+            ..Default::default()
+        }
+    } else if audit_required {
+        let value: Value = parse_json(&text)?;
+        Conclusion {
+            conclusion: value["conclusion"]
+                .as_str()
+                .context("Missing conclusion")?
+                .into(),
+            unresolved: serde_json::from_value(value["unresolved"].clone())?,
+            ..Default::default()
+        }
+    } else {
+        Conclusion {
+            conclusion: text.clone(),
+            ..Default::default()
+        }
     };
+    if audit_required {
+        deliberation::attach(&mut result, &text)?;
+    }
     ctx.update(|report| report.complete("synthesizing"))?;
     let report = ctx.report();
     let completeness = if analyses.len() == 1 {
@@ -542,11 +651,21 @@ async fn panel(
 ) -> Result<Vec<Value>> {
     let mut pending = futures::stream::FuturesUnordered::new();
     let (stop, panel_stop) = watch::channel(false);
+    let review_snapshot = review_material
+        .map(|_| future_fusion::Snapshot::load(std::path::Path::new(&ctx.run.snapshot_root)))
+        .transpose()?;
     for &index in indices {
         let model = &ctx.config.panel[index];
         let participant = format!("P{}", index + 1);
         let participant_prompt = if let Some((analyses, mapping)) = review_material {
-            review::prompt(&participant, &ctx.run.input, analyses, mapping)?
+            review::prompt(
+                &participant,
+                &ctx.run.input,
+                analyses,
+                mapping,
+                review_snapshot.as_ref(),
+                ctx.run.lineage.as_ref(),
+            )?
         } else {
             format!("Your participant ID is {participant}.\n{prompt}")
         };
@@ -585,7 +704,7 @@ async fn panel(
         let Some((participant, model, result)) = next else {
             break;
         };
-        deadline.participant_finished(tokio::time::Instant::now(), result.is_ok(), pending.len());
+        deadline.participant_finished(tokio::time::Instant::now(), pending.len());
         match result {
             Ok(report) => good.push(json!({"participant": participant, "model": model.model, "response": report.text, "validation_errors":report.validation_errors})),
             Err(error) => {
@@ -610,7 +729,6 @@ fn configuration(run: &Consultation) -> Result<&Configuration> {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RetryReason {
-    OutputLimit,
     InvalidOutput,
     Transient,
 }
@@ -618,7 +736,6 @@ enum RetryReason {
 impl RetryReason {
     fn code(self) -> &'static str {
         match self {
-            Self::OutputLimit => "output_limit",
             Self::InvalidOutput => "invalid_output",
             Self::Transient => "transient",
         }
@@ -627,7 +744,10 @@ impl RetryReason {
 
 fn retry_for_kind(kind: FailureKind) -> Option<RetryReason> {
     match kind {
-        FailureKind::OutputLimit => Some(RetryReason::OutputLimit),
+        // Repeating the same prompt in a fresh session with the same budget
+        // discards the work and reproduces the cap. Preserve reports/failures
+        // for the parent instead; output continuation belongs to the Agent.
+        FailureKind::OutputLimit => None,
         FailureKind::InvalidOutput => Some(RetryReason::InvalidOutput),
         FailureKind::RateLimited | FailureKind::Transient => Some(RetryReason::Transient),
         _ => None,
@@ -738,7 +858,6 @@ async fn with_retry(
             .context("Missing Fusion context budget")?
             .apply(&model.model, phase, prompt, &mut settings)?;
         let input = match retry_reason {
-            Some(RetryReason::OutputLimit) => format!("{prompt}\nPrevious attempt reached the provider output limit. Return a complete answer in the requested format."),
             Some(RetryReason::InvalidOutput) => format!("{prompt}\nPrevious attempt had invalid output. Return a complete public answer in exactly the requested format, using only supplied participant references."),
             _ => prompt.to_owned(),
         };
@@ -841,6 +960,18 @@ async fn with_retry(
                     return Err(error);
                 }
                 observed?;
+                if matches!(phase, "analyzing" | "reviewing") && !step.session_id.is_empty() {
+                    if let Ok(answer) =
+                        rpc(command("get_last_assistant_text", &step.session_id)).await
+                    {
+                        if let Some(text) = answer["text"]
+                            .as_str()
+                            .filter(|text| !text.trim().is_empty())
+                        {
+                            ctx.retain(&step, text)?;
+                        }
+                    }
+                }
                 let reason = retry_for_kind(kind);
                 last = error;
                 if attempt == 1
@@ -998,16 +1129,55 @@ async fn step_inner(
         idle_progress,
         panel_stop,
     };
-    let report = reports::collect(&mut child, input, &phase, capacity, |text| {
+    let review_snapshot = if phase == "reviewing" {
+        Some(future_fusion::Snapshot::load(std::path::Path::new(
+            &run.snapshot_root,
+        ))?)
+    } else {
+        None
+    };
+    let validate_report = |text: &str| {
         validate_step_output(&phase, text, ctx.config.panel.len())?;
+        if ctx.run.input.answer_only && matches!(phase.as_str(), "analyzing" | "synthesizing") {
+            let task = ctx
+                .run
+                .input
+                .parent_request
+                .as_deref()
+                .unwrap_or(&ctx.run.input.question);
+            let mut tasks = vec![task];
+            if let Some(lineage) = &ctx.run.lineage {
+                tasks.push(
+                    lineage
+                        .previous_input
+                        .parent_request
+                        .as_deref()
+                        .unwrap_or(&lineage.previous_input.question),
+                );
+            }
+            answer::validate_sources(text, &tasks, phase == "synthesizing")?;
+        }
+        if phase == "synthesizing" {
+            if let Some(packet) = ctx.synthesis_audit.lock().unwrap().as_ref() {
+                deliberation::validate(text, packet, ctx.run.input.answer_only)?;
+            }
+        }
         if phase == "issue_mapping" {
             mapping::validate_sources(text, source_prompt)?;
         } else if phase == "reviewing" {
-            review::validate(text, source_prompt, &participant)?;
+            review::validate(text, source_prompt, &participant, review_snapshot.as_ref())?;
         }
         Ok(())
-    })
-    .await?;
+    };
+    let report = reports::collect(&mut child, input, &phase, capacity, validate_report).await?;
+    if report.recovered_output_limit {
+        ctx.note(
+            "output_limit_report_recovered",
+            &phase,
+            Some(&participant),
+            Some(FailureKind::OutputLimit),
+        )?;
+    }
     if !report.validation_errors.is_empty() {
         let step = &mut *child.step;
         if report.generation == 0 {
@@ -1142,6 +1312,7 @@ impl ChildSession<'_, '_, '_> {
                     | "interrupted"
                     | "interrupted_by_restart"
                     | "incomplete" => {
+                        crate::request_scope::release_run(&step.session_id, &step.agent_run_id);
                         anyhow::bail!("Inner model {status}: {}", state["requestedRun"]["error"])
                     }
                     _ => {}
@@ -1206,6 +1377,20 @@ pub async fn query_for_run(
 mod tests {
     use super::*;
     #[test]
+    fn output_caps_and_lifecycle_failures_do_not_restart_the_same_investigation() {
+        for kind in [
+            FailureKind::OutputLimit,
+            FailureKind::Persistence,
+            FailureKind::Cancelled,
+        ] {
+            assert!(retry_for_kind(kind).is_none());
+        }
+        assert!(matches!(
+            retry_for_kind(FailureKind::Transient),
+            Some(RetryReason::Transient)
+        ));
+    }
+    #[test]
     fn attempt_templates_preserve_thinking_and_defer_capacity_allocation() {
         let mut config = Configuration::default();
         // Persisted pre-change budgets must not be reapplied.
@@ -1214,11 +1399,11 @@ mod tests {
         for model in config.panel.iter().chain([&config.moderator]) {
             let first = attempt_settings(&config, model, None, 0).unwrap();
             let retry =
-                attempt_settings(&config, model, Some(RetryReason::OutputLimit), 10_000).unwrap();
+                attempt_settings(&config, model, Some(RetryReason::InvalidOutput), 10_000).unwrap();
             assert_eq!(first.max_output_tokens, 0);
             assert_eq!(retry.max_output_tokens, 0);
             assert_eq!(retry.thinking_level, first.thinking_level);
-            assert_eq!(retry.retry_reason.as_deref(), Some("output_limit"));
+            assert_eq!(retry.retry_reason.as_deref(), Some("invalid_output"));
             let transient =
                 attempt_settings(&config, model, Some(RetryReason::Transient), 10_000).unwrap();
             assert_eq!(transient.max_output_tokens, first.max_output_tokens);
@@ -1243,12 +1428,10 @@ mod tests {
         ] {
             assert!(retry_for_kind(FailureKind::classify(failure)).is_none());
         }
-        assert!(matches!(
-            retry_for_kind(FailureKind::classify(
-                "Inner model interrupted: [OUTPUT_LIMIT] finish_length"
-            )),
-            Some(RetryReason::OutputLimit)
-        ));
+        assert!(retry_for_kind(FailureKind::classify(
+            "Inner model interrupted: [OUTPUT_LIMIT] finish_length"
+        ))
+        .is_none());
         assert!(matches!(
             retry_for_kind(FailureKind::classify("[UPSTREAM_DISCONNECTED]")),
             Some(RetryReason::Transient)

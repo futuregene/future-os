@@ -680,7 +680,15 @@ impl Loop {
         // Cap tool result at 100K chars (~25K tokens) to avoid
         // a single oversized result blowing past the context window.
         // Compaction can trim old messages but can't split one message.
-        let capped = if text.len() > 100_000 {
+        let typed_delivery = tool_name == "fusion"
+            && !is_error
+            && err.is_none()
+            && serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|v| {
+                v["status"] == "completed"
+                    && v["has_conclusion"] == true
+                    && v["final_answer"].is_string()
+            });
+        let capped = if text.len() > 100_000 && !typed_delivery {
             let start = text.ceil_char_boundary(text.len() - 100_000);
             format!(
                 "...(truncated, showing last 100K chars)\n{}",

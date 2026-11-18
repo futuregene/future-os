@@ -376,7 +376,7 @@ async fn an_abandoned_consumer_stops_the_pump_on_the_closing_block() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn long_silence_in_http_body_preserves_reasoning_and_completion() {
+async fn silence_below_content_idle_limit_preserves_reasoning_and_completion() {
     let (base, tx, server) = controlled_server().await;
     let client = Client::from_target(protocol_target(&base, responses()));
     tx.send(REASONING_START).await.unwrap();
@@ -389,7 +389,7 @@ async fn long_silence_in_http_body_preserves_reasoning_and_completion() {
     // Advance only after the first event has crossed the real HTTP boundary:
     // no sleeps or test-only timeout overrides in production code are needed.
     tokio::time::pause();
-    tokio::time::advance(Duration::from_secs(300)).await;
+    tokio::time::advance(Duration::from_secs(240)).await;
     tokio::task::yield_now().await;
     tokio::time::resume();
     assert!(
@@ -458,7 +458,7 @@ async fn chat_finish_waits_for_delayed_usage_and_done() {
         Some(ModelStreamEvent::Finish { .. })
     ));
     tokio::time::pause();
-    tokio::time::advance(Duration::from_secs(300)).await;
+    tokio::time::advance(Duration::from_secs(240)).await;
     tokio::task::yield_now().await;
     tokio::time::resume();
     assert!(
@@ -483,7 +483,7 @@ async fn chat_finish_waits_for_delayed_usage_and_done() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn total_request_deadline_still_ends_a_silent_http_stream() {
+async fn content_idle_deadline_ends_a_silent_http_stream() {
     let (base, tx, server) = controlled_server().await;
     let client = Client::from_target(protocol_target(&base, responses()));
     tx.send(REASONING_START).await.unwrap();
@@ -493,7 +493,7 @@ async fn total_request_deadline_still_ends_a_silent_http_stream() {
         Some(ModelStreamEvent::ReasoningStart { .. })
     ));
     tokio::time::pause();
-    tokio::time::advance(Duration::from_secs(llm_timeout_secs() + 1)).await;
+    tokio::time::advance(Duration::from_secs(llm_idle_timeout_secs() + 1)).await;
     tokio::task::yield_now().await;
     tokio::time::resume();
     let events: Vec<_> = tokio::time::timeout(Duration::from_secs(2), stream.collect())
@@ -503,7 +503,7 @@ async fn total_request_deadline_still_ends_a_silent_http_stream() {
             ModelStreamEvent::ReasoningEnd { provider_metadata, .. },
             ModelStreamEvent::Error { message },
         ] if provider_metadata["openai"].get("id").is_none()
-            && message.contains("kind=timeout") && !message.contains("idle_timeout")));
+            && message.contains("kind=content_idle") && message.contains("idle_timeout")));
     tokio::time::timeout(Duration::from_secs(2), server)
         .await
         .unwrap()
@@ -522,4 +522,108 @@ async fn consumer_cancellation_closes_a_completely_silent_http_stream() {
         .unwrap()
         .unwrap();
     drop(tx);
+}
+
+// Kept at the real HTTP boundary: byte heartbeats must not stand in for
+// semantic model progress, while content can outlive the old absolute limit.
+#[tokio::test(flavor = "current_thread")]
+async fn content_progress_survives_beyond_the_previous_total_deadline() {
+    let (base, tx, server) = controlled_server().await;
+    let client = Client::from_target(schema::ResolvedModelTarget::openai_chat_compatible(
+        "mock", &base, "secret", None, None,
+    ));
+    let text = "data: {\"choices\":[{\"delta\":{\"content\":\"text\"}}]}\n\n";
+    let reasoning = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}]}\n\n";
+    tx.send(text).await.unwrap();
+    let mut stream = client.stream_model(canonical_request()).await.unwrap();
+    loop {
+        match stream.next().await {
+            Some(ModelStreamEvent::TextDelta { .. }) => break,
+            Some(ModelStreamEvent::Error { message }) => {
+                panic!("initial content failed: {message}")
+            }
+            None => panic!("stream closed before initial content"),
+            _ => {}
+        }
+    }
+    for index in 0..10 {
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(240)).await;
+        tokio::task::yield_now().await;
+        tokio::time::resume();
+        tx.send(if index % 2 == 0 { reasoning } else { text })
+            .await
+            .unwrap();
+        loop {
+            match stream.next().await {
+                Some(
+                    ModelStreamEvent::TextDelta { .. } | ModelStreamEvent::ReasoningDelta { .. },
+                ) => break,
+                Some(ModelStreamEvent::Error { message }) => {
+                    panic!("active content timed out: {message}")
+                }
+                None => panic!("active content stream closed"),
+                _ => {}
+            }
+        }
+    }
+    tx.send("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+        .await
+        .unwrap();
+    let events: Vec<_> = stream.collect().await;
+    assert!(events
+        .iter()
+        .any(|x| matches!(x, ModelStreamEvent::Finish { .. })));
+    assert!(!events
+        .iter()
+        .any(|x| matches!(x, ModelStreamEvent::Error { .. })));
+    drop(tx);
+    server.await.unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn heartbeat_empty_delta_and_usage_do_not_extend_content_idle_deadline() {
+    let (base, tx, server) = controlled_server().await;
+    let client = Client::from_target(schema::ResolvedModelTarget::openai_chat_compatible(
+        "mock", &base, "secret", None, None,
+    ));
+    tx.send("data: {\"choices\":[{\"delta\":{\"content\":\"start\"}}]}\n\n")
+        .await
+        .unwrap();
+    let mut stream = client.stream_model(canonical_request()).await.unwrap();
+    loop {
+        match stream.next().await {
+            Some(ModelStreamEvent::TextDelta { .. }) => break,
+            Some(ModelStreamEvent::Error { message }) => {
+                panic!("initial content failed: {message}")
+            }
+            None => panic!("stream closed before initial content"),
+            _ => {}
+        }
+    }
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(240)).await;
+    tokio::task::yield_now().await;
+    tokio::time::resume();
+    tx.send(": heartbeat\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"\",\"reasoning_content\":\"\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n").await.unwrap();
+    loop {
+        match stream.next().await {
+            Some(ModelStreamEvent::Usage(_)) => break,
+            Some(ModelStreamEvent::Error { message }) => {
+                panic!("usage arrived too late: {message}")
+            }
+            None => panic!("stream closed before usage"),
+            _ => {}
+        }
+    }
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(61)).await;
+    tokio::task::yield_now().await;
+    tokio::time::resume();
+    let events: Vec<_> = stream.collect().await;
+    assert!(events.iter().any(
+        |x| matches!(x, ModelStreamEvent::Error { message } if message.contains("idle_timeout"))
+    ));
+    drop(tx);
+    server.await.unwrap();
 }

@@ -318,7 +318,7 @@ mod tests {
             // by dividing its 39,718-byte public allocation by four.
             let budget = Budget::new(&catalog, &config, 1748).unwrap();
             for phase in ["analyzing", "reviewing"] {
-                for retry in [None, Some(super::super::RetryReason::OutputLimit)] {
+                for retry in [None, Some(super::super::RetryReason::InvalidOutput)] {
                     let mut settings =
                         super::super::attempt_settings(&config, &config.panel[0], retry, 0)
                             .unwrap();
