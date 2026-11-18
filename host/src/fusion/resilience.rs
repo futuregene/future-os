@@ -275,7 +275,7 @@ impl<'a> Runtime<'a> {
     pub fn stop_error(&self, phase: &str, participant: &str, error: &anyhow::Error) -> Result<()> {
         let kind = failure_kind(error);
         self.note(
-            if matches!(participant, "moderator" | "moderator-check") {
+            if participant == "moderator" {
                 "moderator_failed"
             } else {
                 "participant_failed"
