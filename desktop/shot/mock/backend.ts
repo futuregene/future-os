@@ -261,6 +261,19 @@ interface ShotQueuedRun {
   state: string;
   /** The agent session the send named, so its run is announced on the same one. */
   sessionId: string;
+  /**
+   * The answer this queued message carries, when it was built from a card.
+   *
+   * The panel draws a chip from it (design §5.8) rather than reparsing the row's
+   * text: `[question → answer]` is a sentence, not a record of which option was
+   * picked.
+   */
+  choice?: {
+    mode: string;
+    title: string;
+    options: Array<{ id: string; label: string }>;
+    selectedIds: string[];
+  };
 }
 
 /** One row that left the queue without running, as `recentTerminalAcks` says. */
@@ -314,15 +327,36 @@ function seedQueuedFixture(threadId: string): void {
     return;
   seededQueues.add(threadId);
   const now = Date.now();
+  // `?queueChoice=1` (design §5.8): the first waiting row is one that answered a
+  // card, so the panel draws the choice chip inside it — the row's own text is
+  // the sentence the answer sends (`[question → answer]`, §7), and `choice` is
+  // what lets a reader switch the option before it leaves.
+  const withChoice = new URLSearchParams(window.location.search).get("queueChoice") === "1";
   shotQueue.set(threadId, Array.from({ length: size }, (_, index) => ({
     runId: `shot_queued_${index + 1}`,
     // Three lines of the shape these rows arrive in: the panel clamps a row to
     // three lines, so this is the tallest a row can get.
-    text: "[future-goal] goal goal_4ce46c920eb8: 1 event(s). Reconcile current status before acting; events may be stale. Read the goal's own state before answering.",
+    text: withChoice && index === 0
+      ? "[接下来做哪一件？ → 重画森林图]"
+      : "[future-goal] goal goal_4ce46c920eb8: 1 event(s). Reconcile current status before acting; events may be stale. Read the goal's own state before answering.",
     acceptedAt: new Date(now - (size - index) * 20_000).toISOString(),
     state: "queued",
     // Nothing here starts one of these runs, so no session is ever announced on.
     sessionId: "",
+    ...(withChoice && index === 0
+      ? {
+          choice: {
+            mode: "single",
+            title: "接下来做哪一件？",
+            options: [
+              { id: "forest", label: "重画森林图" },
+              { id: "flow", label: "补一张实验流程图" },
+              { id: "table", label: "表里加一列样本量" },
+            ],
+            selectedIds: ["forest"],
+          },
+        }
+      : {}),
   })));
 }
 /**
@@ -1340,6 +1374,7 @@ const handlers: Record<string, (args: any) => unknown> = {
       acceptedAt: row.acceptedAt,
       text: row.text,
       state: row.state,
+      ...(row.choice ? { choice: row.choice } : {}),
     }));
     return {
       activeRunId: shotActiveRun.get(threadId) ?? null,

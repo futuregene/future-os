@@ -591,6 +591,270 @@
           "shot": "choice-history-fold-desktop.png"
         }
       ]
+    },
+    "choice-card-chosen-text-implemented": {
+      "note": "真实组件 · 桌面 · 已选 + 补一句话（需求 c）。点一行之后 pill 落进编辑器，接着在同一编辑器里打字：pill 是原子元素，文字跟在其后，发送键已经可用。§5.2.2 那张图拍的就是这一刻——答案与文字在同一个流里，顺序就是读者看到的顺序。",
+      "url": "http://localhost:5299/shot/?lang=zh&thread=th_choice",
+      "width": 1440,
+      "height": 900,
+      "steps": [
+        {
+          "wait": 2600
+        },
+        {
+          "eval": "(() => { const card = document.querySelector('[data-choice-card]'); if (!card) throw new Error('the choice card did not render'); card.scrollIntoView({ block: 'center' }); return 'ok'; })()"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "tapText": "重画森林图"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => { const editor = document.querySelector('[role=\"textbox\"][contenteditable=\"true\"]'); if (!editor) throw new Error('no editor'); const pill = editor.querySelector('[data-mention=\"choice\"]'); if (!pill) throw new Error('the pill never appeared, so there is nothing to type beside'); const range = document.createRange(); range.selectNodeContents(editor); range.collapse(false); const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range); editor.focus(); return 'caret parked at the end of the editor, after the pill'; })()"
+        },
+        {
+          "wait": 200
+        },
+        {
+          "type": "顺手把图注也换成新的样本量。"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "eval": "(() => { const editor = document.querySelector('[role=\"textbox\"][contenteditable=\"true\"]'); const pill = editor.querySelector('[data-mention=\"choice\"]'); if (!pill) throw new Error('typing removed the pill'); if (!editor.contains(pill)) throw new Error('the pill left the editor'); const typed = [...editor.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent.replace(/[\\s\\u200B]/g, '')).join(''); if (!typed.includes('图注')) throw new Error('the typed sentence is not in the editor: ' + JSON.stringify(typed)); if (!(pill.compareDocumentPosition(document.createTextNode('')))) throw new Error('unreachable'); const after = [...editor.childNodes].filter(n => n.nodeType === 3 && n.textContent.includes('图注'))[0]; if (!after) throw new Error('the sentence is not a text node beside the pill'); if (!(pill.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING)) throw new Error('the sentence was typed above the pill, not after it'); const submit = document.querySelector('form button[type=\"submit\"]'); if (!submit || submit.disabled) throw new Error('send is disabled with an answer and a sentence'); const card = document.querySelector('[data-choice-card]'); if (!card.querySelector('[data-choice-footer]')) throw new Error('the card stopped saying the answer is waiting in the composer'); return JSON.stringify({ pillToText: true, sendDisabled: submit.disabled }); })()"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "shot": "choice-card-chosen-text-implemented.png"
+        }
+      ]
+    },
+    "choice-card-change-implemented": {
+      "note": "真实组件 · 桌面 · 改回来。pill 上的铅笔把问题**原地**展开：360px 浮层贴在 pill 上方 10px，不滚动、不跳回正文。浮层里的行是同一张卡的行（同一份解析结果），点另一行就把答案换掉。",
+      "url": "http://localhost:5299/shot/?lang=zh&thread=th_choice",
+      "width": 1440,
+      "height": 900,
+      "steps": [
+        {
+          "eval": "(() => { try { sessionStorage.clear(); localStorage.clear(); } catch (error) { return 'storage unreachable: ' + error.message; } return 'storage cleared before the reload'; })()"
+        },
+        {
+          "eval": "(() => { location.reload(); return 'reloading'; })()"
+        },
+        {
+          "wait": 2600
+        },
+        {
+          "eval": "(() => { const card = document.querySelector('[data-choice-card]'); if (!card) throw new Error('the choice card did not render'); if (document.querySelector('[data-mention=\"choice\"]')) throw new Error('the editor already holds an answer from another scenario'); if (card.querySelector('[data-choice-selected=\"true\"]')) throw new Error('the card already marks a row as answered'); if (card.querySelector('[data-choice-footer]')) throw new Error('the card already shows the answered footer'); card.scrollIntoView({ block: 'center' }); return 'ok'; })()"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "wait": 600
+        },
+        {
+          "tapText": "重画森林图"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "tap": "修改「接下来做哪一件？」的选择"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "eval": "(() => { const popover = document.querySelector('[data-choice-popover]'); if (!popover) throw new Error('the pencil opened nothing'); const pill = document.querySelector('[data-mention=\"choice\"]'); if (!pill) throw new Error('the pill is gone'); const pr = pill.getBoundingClientRect(), or = popover.getBoundingClientRect(); if (or.bottom > pr.top + 1) throw new Error('the popover is not above the pill: ' + Math.round(or.bottom) + ' vs ' + Math.round(pr.top)); const gap = Math.round(pr.top - or.bottom); if (gap < 6 || gap > 16) throw new Error('the popover sits ' + gap + 'px from the pill, expected ~10'); if (Math.abs(or.width - 360) > 12) throw new Error('the popover is ' + Math.round(or.width) + 'px wide, expected ~360'); const rows = [...popover.querySelectorAll('[data-choice-popover-option]')]; if (rows.length !== 3) throw new Error('the popover draws ' + rows.length + ' rows, not 3'); const picked = rows.filter(r => r.getAttribute('aria-checked') === 'true' || r.getAttribute('data-choice-selected') === 'true'); if (picked.length !== 1) throw new Error('the popover marks ' + picked.length + ' rows as the answer, expected 1'); if (!popover.querySelector('[data-choice-popover-option=\"forest\"]')) throw new Error('the popover lost the forest row id'); return JSON.stringify({ gap, width: Math.round(or.width), rows: rows.length }); })()"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "shot": "choice-card-change-implemented.png"
+        },
+        {
+          "tap": "补一张实验流程图"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => { if (document.querySelector('[data-choice-popover]')) throw new Error('the popover stayed open after a pick'); const pill = document.querySelector('[data-mention=\"choice\"]'); if (!pill) throw new Error('the pill vanished'); if (!pill.textContent.includes('补一张实验流程图')) throw new Error('the pill still reads: ' + pill.textContent); const card = document.querySelector('[data-choice-card]'); const marked = [...card.querySelectorAll('[data-choice-option]')].filter(r => r.getAttribute('data-choice-selected') === 'true'); if (marked.length !== 1 || marked[0].getAttribute('data-choice-option') !== 'flow') throw new Error('the transcript card did not follow the new answer'); const editor = document.querySelector('[role=\"textbox\"][contenteditable=\"true\"]'); if (!editor.contains(pill)) throw new Error('the edited pill left the editor'); return JSON.stringify({ pill: pill.textContent.trim().slice(0, 20) }); })()"
+        }
+      ]
+    },
+    "choice-card-implemented-dark": {
+      "note": "真实组件 · 桌面 · 深色。同一张卡、同一段回复，只换外观：卡底是 `surface` 的深色值 rgb(22,27,34)，选中行 `accent-soft`，分隔用 `line-soft`。全部走语义 token，所以深色不是另画一套。",
+      "url": "http://localhost:5299/shot/?lang=zh&thread=th_choice&theme=dark",
+      "width": 1440,
+      "height": 900,
+      "steps": [
+        {
+          "eval": "(() => { try { sessionStorage.clear(); localStorage.clear(); } catch (error) { return 'storage unreachable: ' + error.message; } return 'storage cleared before the reload'; })()"
+        },
+        {
+          "eval": "(() => { location.reload(); return 'reloading'; })()"
+        },
+        {
+          "wait": 2600
+        },
+        {
+          "eval": "(() => { const card = document.querySelector('[data-choice-card]'); if (!card) throw new Error('the choice card did not render'); if (document.querySelector('[data-mention=\"choice\"]')) throw new Error('the editor already holds an answer from another scenario'); if (card.querySelector('[data-choice-selected=\"true\"]')) throw new Error('the card already marks a row as answered'); if (card.querySelector('[data-choice-footer]')) throw new Error('the card already shows the answered footer'); card.scrollIntoView({ block: 'center' }); return 'ok'; })()"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "wait": 600
+        },
+        {
+          "eval": "(() => { const card = document.querySelector('[data-choice-card]'); const bg = getComputedStyle(card).backgroundColor; const m = bg.match(/\\d+/g); if (!m) throw new Error('the card has no background: ' + bg); const [r, g, b] = m.map(Number); if (r + g + b > 120) throw new Error('the card is not on a dark surface: ' + bg); if (!card.querySelector('[data-choice-context]')) throw new Error('the dark card lost its context paragraph'); return JSON.stringify({ bg }); })()"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "shot": "choice-card-implemented-dark.png"
+        }
+      ]
+    },
+    "choice-context-expanded-desktop": {
+      "note": "真实组件 · 桌面 · 情境展开后。折叠的同一张卡（`?longContext=1`）点一下「展开」：clamp 消失、全文画出来，卡片长高但仍留在正文列里，按钮变成「收起」且 `aria-expanded=true`。折叠态只能证明藏得住，这张证明展开后不越界、不裁切。",
+      "url": "http://localhost:5299/shot/?lang=zh&thread=th_choice&longContext=1",
+      "width": 1440,
+      "height": 900,
+      "steps": [
+        {
+          "eval": "(() => { try { sessionStorage.clear(); localStorage.clear(); } catch (error) { return 'storage unreachable: ' + error.message; } return 'storage cleared before the reload'; })()"
+        },
+        {
+          "eval": "(() => { location.reload(); return 'reloading'; })()"
+        },
+        {
+          "wait": 2600
+        },
+        {
+          "eval": "(() => { const card = document.querySelector('[data-choice-card]'); if (!card) throw new Error('the choice card did not render'); if (document.querySelector('[data-mention=\"choice\"]')) throw new Error('the editor already holds an answer from another scenario'); if (card.querySelector('[data-choice-selected=\"true\"]')) throw new Error('the card already marks a row as answered'); if (card.querySelector('[data-choice-footer]')) throw new Error('the card already shows the answered footer'); card.scrollIntoView({ block: 'center' }); return 'ok'; })()"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "wait": 600
+        },
+        {
+          "eval": "(() => { const card = document.querySelector('[data-choice-card]'); const ctx = card.querySelector('[data-choice-context]'); if (!ctx) throw new Error('no context paragraph'); if (ctx.getAttribute('data-choice-context-folded') !== 'true') throw new Error('the long context did not fold before expanding'); const folded = Math.round(ctx.getBoundingClientRect().height); if (folded > 78) throw new Error('the folded paragraph is ' + folded + 'px, expected four lines (72px)'); const toggle = card.querySelector('[data-choice-context-toggle]'); if (!toggle) throw new Error('no show-more button'); if (toggle.getAttribute('aria-expanded') !== 'false') throw new Error('the button already reads expanded'); return JSON.stringify({ foldedHeight: folded }); })()"
+        },
+        {
+          "tapText": "展开"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => { const card = document.querySelector('[data-choice-card]'); const ctx = card.querySelector('[data-choice-context]'); const toggle = card.querySelector('[data-choice-context-toggle]'); if (toggle.getAttribute('aria-expanded') !== 'true') throw new Error('the button still reads collapsed after a click: ' + toggle.getAttribute('aria-expanded')); if (ctx.getAttribute('data-choice-context-folded') === 'true') throw new Error('the paragraph is still marked folded'); const h = Math.round(ctx.getBoundingClientRect().height); if (h < 100) throw new Error('the paragraph is still ' + h + 'px tall — it did not open'); if (Math.abs(ctx.scrollHeight - ctx.clientHeight) > 1) throw new Error('the paragraph is clipped even when open: ' + ctx.scrollHeight + ' vs ' + ctx.clientHeight); if (!toggle.textContent.includes('收起')) throw new Error('the button does not offer to fold again: ' + toggle.textContent); const body = card.closest('[data-message-id]'); const cr = card.getBoundingClientRect(), br = body.getBoundingClientRect(); if (cr.left < br.left - 1 || cr.right > br.right + 1) throw new Error('the opened card left the reply column'); const form = document.querySelector('form').getBoundingClientRect(); if (cr.bottom > form.top) throw new Error('the opened card runs under the composer: ' + Math.round(cr.bottom) + ' vs ' + Math.round(form.top)); if (cr.top < 0) throw new Error('the opened card starts above the viewport'); return JSON.stringify({ openedHeight: h, card: [Math.round(cr.top), Math.round(cr.bottom)], composer: Math.round(form.top) }); })()"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "shot": "choice-context-expanded-desktop.png"
+        }
+      ]
+    },
+    "choice-card-remote-implemented": {
+      "note": "真实组件 · 远程桌面 · 已选。宿主送来的 markdown 由本机渲染，所以远程会话里的卡片是同一个 `ChoiceCard`、同一套 token（实测与远程输入框同宽 768）。差别只在输入框：远程 `RemoteComposer` 是纯 textarea、没有 pill 机制，答案因此落在输入框上方的 chip 行——与附件同一个槽位。",
+      "url": "http://localhost:5299/shot/?lang=zh&remoteChoiceCard=1",
+      "width": 1440,
+      "height": 900,
+      "steps": [
+        {
+          "eval": "(() => { try { sessionStorage.clear(); localStorage.clear(); } catch (error) { return 'storage unreachable'; } return 'storage cleared'; })()"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "eval": "(() => { location.reload(); return 'reloading'; })()"
+        },
+        {
+          "wait": 2600
+        },
+        {
+          "tapText": "重画森林图并核对置信区间"
+        },
+        {
+          "wait": 3000
+        },
+        {
+          "eval": "(() => { const cards = [...document.querySelectorAll('[data-choice-card]')]; if (cards.length !== 1) throw new Error('the remote reply drew ' + cards.length + ' cards, not 1'); const card = cards[0]; if (card.getAttribute('data-choice-state') !== 'active') throw new Error('the remote card is not answerable: ' + card.getAttribute('data-choice-state')); if (!card.querySelector('[data-choice-context]')) throw new Error('the remote card lost its context paragraph'); card.scrollIntoView({ block: 'center' }); return JSON.stringify({ cards: cards.length }); })()"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "tapText": "重画森林图"
+        },
+        {
+          "wait": 700
+        },
+        {
+          "eval": "(() => { const card = document.querySelector('[data-choice-card]'); const marked = [...card.querySelectorAll('[data-choice-option]')].filter(r => r.getAttribute('data-choice-selected') === 'true'); if (marked.length !== 1 || marked[0].getAttribute('data-choice-option') !== 'forest') throw new Error('the remote card did not mark the picked row'); if (document.querySelector('[data-mention=\"choice\"]')) throw new Error('the remote composer grew an in-editor pill it does not have'); const chip = document.querySelector('[data-choice-remote-answer]') || document.querySelector('[data-remote-choice-chip]') || document.querySelector('[data-choice-chip]'); if (!chip) throw new Error('the remote composer drew no chip for the answer'); const cr = card.getBoundingClientRect(); if (Math.round(cr.width) < 700) throw new Error('the remote card is ' + Math.round(cr.width) + 'px wide, expected the composer column'); return JSON.stringify({ rows: marked.length, chip: (chip.innerText || '').trim().slice(0, 24) }); })()"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "shot": "choice-card-remote-implemented.png"
+        }
+      ]
+    },
+    "send-queue-choice-implemented": {
+      "note": "真实组件 · 桌面 · 队列里的选择（§5.8）。等待发送的那一行答过一张卡：行文字是答案要发出去的句子 `[问题 → 答案]`，行里另有一枚 chip 说明它答的是哪张卡、选了哪一项——**chip 自己就是按钮**（带 chevron，`aria-label` 是「更改这条消息里的选择：问题 · 答案」），行的铅笔改文字、垃圾桶删整行，三者不混。chip 的数据来自队列行的 `choice` 字段（`QueuedRunChoice`），不是从句子反解出来的。面板默认收起，所以图里先展开。",
+      "url": "http://localhost:5299/shot/?lang=zh&thread=th_choice&queue=1&queueChoice=1",
+      "width": 1440,
+      "height": 900,
+      "steps": [
+        {
+          "wait": 1200
+        },
+        {
+          "eval": "(() => { sessionStorage.clear(); localStorage.clear(); return 'cleared'; })()"
+        },
+        {
+          "eval": "(() => { location.reload(); return 'reloading'; })()"
+        },
+        {
+          "wait": 2800
+        },
+        {
+          "eval": "(() => { const panel = document.querySelector('[data-send-queue]'); if (!panel) throw new Error('the send queue panel did not render'); const toggle = panel.querySelector('[aria-label=\"展开队列中的消息\"]'); if (toggle) { toggle.click(); return 'expanded'; } const rows = panel.querySelectorAll('[data-queue-item]').length; return 'already-open rows=' + rows; })()"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => { const panel = document.querySelector('[data-send-queue]'); if (!panel) throw new Error('the send queue panel did not render'); const chip = panel.querySelector('[aria-label*=\"这条消息里的选择\"]'); if (!chip) { const rows = [...panel.querySelectorAll('[data-queue-item]')].map(row => (row.innerText || '').replace(/\\n/g, ' | ').slice(0, 80)); throw new Error('the queued row drew no choice chip; rows: ' + JSON.stringify(rows)); } const label = chip.getAttribute('aria-label') || ''; if (!label.includes('重画森林图')) throw new Error('the chip does not name the picked option: ' + label); if (!(chip.innerText || '').includes('重画森林图')) throw new Error('the chip text does not name the picked option: ' + chip.innerText); const row = chip.closest('[data-queue-item]'); if (!row) throw new Error('the chip is not inside a queue row'); if (!(row.innerText || '').includes('[接下来做哪一件？ → 重画森林图]')) throw new Error('the row text is not the sentence the answer sends: ' + row.innerText.slice(0, 60)); if (!row.querySelector('[aria-label=\"修改队列中的消息\"]')) throw new Error('the row lost its own pencil'); if (!row.querySelector('[aria-label=\"从队列中删除\"]')) throw new Error('the row lost its bin'); return JSON.stringify({ chip: (chip.innerText || '').trim().slice(0, 30), rows: panel.querySelectorAll('[data-queue-item]').length }); })()"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "shot": "send-queue-choice-implemented.png"
+        }
+      ]
     }
   },
   "mobile": {
@@ -1023,6 +1287,102 @@
         },
         {
           "eval": "(() => { try { localStorage.clear(); } catch (error) { return 'no storage to clear'; } return 'storage cleared for the next scenario'; })()"
+        }
+      ]
+    },
+    "choice-context-expanded-phone": {
+      "note": "真实组件 · 手机 · 情境展开后。与桌面同一份 longContext fixture：四行 + 「展开」，点开后整段画出来（`aria-expanded=true`、`numberOfLines` 不再生效，情境从 82pt 长到 253pt），卡片仍在可视框内、按钮变成「收起」。展开这一步走 DOM 点击而非合成触摸：这个页面的转写是 react-native-web 的倒序列表（日志里 `neutralized … inverted-list wrapper`），合成触摸点会打到卡片**上方**的那张森林图上、顺手打开全屏看图——场景因此先确认看图器没开、再用 `.click()` 触发组件自己的 `onPress`，断言盯的是处理函数真的跑了。",
+      "query": "?session=sess_dopamine_review&choiceCard=1&longContext=1",
+      "lang": "zh-CN",
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tap": "工作区"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tapText": "整理两篇文献的结论对比表"
+        },
+        {
+          "wait": 2600
+        },
+        {
+          "eval": "(() => { const cards = [...document.querySelectorAll('[data-testid=\"choice-card\"]')]; if (cards.length !== 1) throw new Error('expected one card, drew ' + cards.length); const ctx = cards[0].querySelector('[data-testid=\"choice-card-context\"]'); if (!ctx) throw new Error('no context paragraph'); const folded = Math.round(ctx.getBoundingClientRect().height); if (folded > 92) throw new Error('the folded paragraph is ' + folded + 'pt, expected four lines (~82pt)'); const toggle = cards[0].querySelector('[data-testid=\"choice-card-context-toggle\"]'); if (!toggle) throw new Error('no show-more button'); if (toggle.getAttribute('aria-expanded') !== 'false') throw new Error('the button already reads expanded'); return JSON.stringify({ foldedHeight: folded }); })()"
+        },
+        {
+          "eval": "(() => { const viewer = document.querySelector('[data-testid=\"image-viewer\"]'); if (viewer) { const close = viewer.querySelector('[aria-label]'); if (!close) throw new Error('the image viewer is open and offers no close control'); close.click(); return 'closed the image viewer that a stray tap had opened'; } return 'no image viewer open'; })()"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "eval": "(() => { const t = document.querySelector('[data-testid=\"choice-card-context-toggle\"]'); if (!t) throw new Error('no fold button to click'); t.click(); return 'clicked the fold button'; })()"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "eval": "(() => { if (document.querySelector('[data-testid=\"image-viewer\"]')) throw new Error('an image viewer opened over the card'); const card = document.querySelector('[data-testid=\"choice-card\"]'); const ctx = card.querySelector('[data-testid=\"choice-card-context\"]'); const toggle = card.querySelector('[data-testid=\"choice-card-context-toggle\"]'); if (toggle.getAttribute('aria-expanded') !== 'true') throw new Error('the button still reads collapsed after the click: ' + toggle.getAttribute('aria-expanded')); const h = Math.round(ctx.getBoundingClientRect().height); if (h < 110) throw new Error('the paragraph is still ' + h + 'pt tall — it did not open'); if (!toggle.innerText.includes('收起')) throw new Error('the button does not offer to fold again: ' + toggle.innerText); let node = card.parentElement, scroller = null; while (node) { if (node.scrollHeight > node.clientHeight + 1 && getComputedStyle(node).overflowY !== 'visible') { scroller = node; break; } node = node.parentElement; } if (!scroller) throw new Error('no scroll container'); /** Inverted list: a larger scrollTop moves the content DOWN, so parking the card at the frame's top edge is a subtraction here. */ const delta = card.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 8; scroller.scrollTop -= delta; return JSON.stringify({ openedHeight: h }); })()"
+        },
+        {
+          "wait": 700
+        },
+        {
+          "eval": "(() => { const card = document.querySelector('[data-testid=\"choice-card\"]'); const ctx = card.querySelector('[data-testid=\"choice-card-context\"]'); const toggle = card.querySelector('[data-testid=\"choice-card-context-toggle\"]'); let node = card.parentElement, scroller = null; while (node) { if (node.scrollHeight > node.clientHeight + 1 && getComputedStyle(node).overflowY !== 'visible') { scroller = node; break; } node = node.parentElement; } const frame = scroller.getBoundingClientRect(); const cr = card.getBoundingClientRect(), tr = toggle.getBoundingClientRect(); if (cr.top < frame.top - 1) throw new Error('the card is cut off at the top by ' + Math.round(frame.top - cr.top) + 'pt'); if (tr.bottom > frame.bottom + 1) throw new Error('the fold button is below the frame: ' + Math.round(tr.bottom) + ' vs ' + Math.round(frame.bottom)); if (ctx.scrollHeight > ctx.clientHeight + 1) throw new Error('the paragraph is clipped even when open'); const rows = [...card.querySelectorAll('[data-testid^=\"choice-option-\"]')]; if (rows.length !== 3) throw new Error('the card draws ' + rows.length + ' rows, not 3'); return JSON.stringify({ card: [Math.round(cr.top), Math.round(cr.bottom)], toggle: [Math.round(tr.top), Math.round(tr.bottom)], frame: [Math.round(frame.top), Math.round(frame.bottom)] }); })()"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "shot": "choice-context-expanded-phone.png"
+        },
+        {
+          "eval": "(() => { try { localStorage.clear(); } catch (error) { return 'no storage to clear'; } return 'storage cleared for the next scenario'; })()"
+        }
+      ]
+    },
+    "send-queue-choice-implemented": {
+      "note": "真实组件 · 手机 · 队列里的选择（§5.8.2）。等待发送的那一行答过一张卡：行文字是答案要发出去的句子 `[问题 → 答案]`，行里另有一枚 chip 说明它答的是哪张卡、选了哪一项。这里 chip 是一枚**按钮**（`更换这条消息里的选择：问题 · 答案`），按下去换答案、行的铅笔只改文字——分工与桌面一致。手机列窄，chip 折到行文字下面；数据来自队列行的 `choice` 字段，不是从句子反解。面板默认收起（不挡它等的这一轮回复），图里先展开；展开按钮报 `aria-expanded`。",
+      "url": "http://localhost:8099/?lang=zh&streaming=1&queue=1&queueChoice=1&session=sess_dopamine_review",
+      "width": 390,
+      "height": 844,
+      "steps": [
+        {
+          "wait": 4600
+        },
+        {
+          "eval": "(() => { sessionStorage.clear(); localStorage.clear(); return 'cleared'; })()"
+        },
+        {
+          "eval": "(() => { location.reload(); return 'reloading'; })()"
+        },
+        {
+          "wait": 6000
+        },
+        {
+          "eval": "(() => { const toggle = document.querySelector('[data-testid=\"send-queue-toggle\"]'); if (!toggle) throw new Error('the phone queue has no toggle'); if (toggle.getAttribute('aria-expanded') !== 'false') throw new Error('the queue did not start closed: aria-expanded=' + toggle.getAttribute('aria-expanded')); toggle.click(); return 'expanded'; })()"
+        },
+        {
+          "wait": 700
+        },
+        {
+          "eval": "(() => { const toggle = document.querySelector('[data-testid=\"send-queue-toggle\"]'); if (toggle.getAttribute('aria-expanded') !== 'true') throw new Error('the toggle still reports closed after a press'); const chip = document.querySelector('[aria-label*=\"更换这条消息里的选择\"]'); if (!chip) { const panel = document.querySelector('[data-testid=\"send-queue\"]'); throw new Error('the phone queue drew no choice chip; panel text: ' + (panel ? panel.innerText : '(no panel)').replace(/\\n/g, ' | ').slice(0, 200)); } const label = chip.getAttribute('aria-label') || ''; if (!label.includes('重画森林图')) throw new Error('the chip does not name the picked option: ' + label); const text = (chip.innerText || chip.textContent || ''); if (!text.includes('重画森林图')) throw new Error('the chip text lost the option: ' + text); const row = chip.parentElement; const cr = chip.getBoundingClientRect(); if (cr.top < 40 || cr.bottom > 844 - 40) throw new Error('the chip is off screen: ' + JSON.stringify([Math.round(cr.top), Math.round(cr.bottom)])); if (!row || !(row.innerText || '').includes('[接下来做哪一件？')) throw new Error('the row text is not the sentence the answer sends'); return JSON.stringify({ toggle: toggle.getAttribute('aria-expanded'), chip: text.trim().replace(/\\n/g, '·').slice(0, 30), box: [Math.round(cr.left), Math.round(cr.top), Math.round(cr.width), Math.round(cr.height)] }); })()"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "shot": "send-queue-choice-implemented-phone.png"
         }
       ]
     }

@@ -111,6 +111,22 @@ export function requestedChoiceHistory(): boolean {
 }
 
 /**
+ * `?remoteChoiceCard=1`: the paired host's conversation closes with the same card.
+ *
+ * §5.4's claim is that a remote transcript needs no second renderer — the host
+ * sends markdown, this machine draws it — so the sample has to be a card the
+ * host's own reply carries. Nothing else about `rs_forest` changes: the tool
+ * calls, the running run and the remote composer stay exactly as they are,
+ * because the difference the figure is about lives in the composer (a textarea
+ * with a chip row, no in-editor pill), not in the card.
+ */
+export function requestedRemoteChoiceCard(): boolean {
+  if (typeof window === "undefined")
+    return false;
+  return new URLSearchParams(window.location.search).get("remoteChoiceCard") === "1";
+}
+
+/**
  * The earlier card: a different question, asked as a multi-choice, so a reader of
  * the sample cannot mistake the two cards for one card drawn twice.
  */
@@ -2101,10 +2117,30 @@ export const remoteEntries: Record<string, unknown[]> = {
       createdAtMs: Date.now() - 90_000,
       runId: "rrun_2",
       run: { status: "running" },
-      blocks: [{
-        kind: "text",
-        text: "另外两张图（`fig2-forest.R`、`figS3.R`）各自硬编码了区间，不受影响；只有这一处。",
-      }],
+      blocks: [
+        {
+          kind: "text",
+          text: "另外两张图（`fig2-forest.R`、`figS3.R`）各自硬编码了区间，不受影响；只有这一处。",
+        },
+        // `?remoteChoiceCard=1` (design §5.4): the host's reply closes with a
+        // choice card, because its markdown is rendered here by the same
+        // `ChoiceCard` the local transcript uses.
+        ...(requestedRemoteChoiceCard()
+          ? [{
+              kind: "text" as const,
+              text: [
+                "```futureos-choice",
+                "title: 接下来做哪一件？",
+                "mode: single",
+                `context: ${SHORT_CHOICE_CONTEXT}`,
+                "option: forest | 重画森林图 | 按 Dreher 2025 的样本量重算两篇的置信区间",
+                "option: flow | 补一张实验流程图 | 把两篇的被试流程画成一张对照图",
+                "option: table | 表里加一列样本量 | Frank 42 / Dreher 186，标出测量手段",
+                "```",
+              ].join("\n"),
+            }]
+          : []),
+      ],
     },
   ],
 };
