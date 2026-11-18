@@ -20,12 +20,13 @@ option: flow | 补一张实验流程图 | 把两篇的被试流程画成一张�
 ```
 
 - `title:` — the question itself, one line.
-- `context:` — 1–3 sentences on the situation the question sits in: what you just
-  found or did, where it stopped, and whatever a row's cost depends on. This is what
-  lets the reader answer from the card alone instead of scrolling back up the reply.
-  Name the state, not the story: drop anything no row acts on, no pleasantries, no
-  restating the reply. Aim under ~200 characters — the card grows with it — and repeat
-  the line if a second paragraph really earns its space.
+- `context:` — 1–3 sentences on the situation the question sits in: what you just found
+  or did, where it stopped, and whatever a row's cost depends on. This is what lets the
+  reader answer from the card alone instead of scrolling back up the reply. Name the
+  state, not the story: drop anything no row acts on, no pleasantries, no restating the
+  reply. Keep it under ~100 characters — four lines of a phone card, its narrowest
+  column, before the rest folds behind "show more" — and lead with the decisive fact.
+  Repeat the line if a second paragraph really earns its space.
 - `option: <id> | <label> | <note>` — one per line, the note optional; the id is short ASCII,
   `[a-z0-9-]` only (no spaces), unique within the card. **The option you recommend comes
   first**, single or multi: row order is your recommendation, the reader takes row 1 as the
@@ -43,9 +44,8 @@ alternatives: fewer than 2 or more than 4 is not drawn as a card. Never for a ri
 confirmation (the approval card owns that), restating what you just did, or a question that
 needs a sentence. Write each label as the sentence the user would say, not a menu label.
 
-The card closes the reply: put it last and alone, after everything else in the body —
-never two cards in one reply, never one in the middle. A card that carries its context can
-let the prose above it stay short: say once, in the place the reader needs it.
+The card closes the reply: put it last and alone — never two cards in one reply, never
+one in the middle. Its context lets the prose above stay short: say it once, where needed.
 The answer comes back as `[这一批里先做哪些？ → 图注改成中文、图例挪到右下]` with ticks joined
 by 、. Treat it as a decision already made; do not ask again. Clients that cannot draw the
 card — the TUI, IM bots — show it as a code block.

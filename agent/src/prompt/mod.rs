@@ -1247,9 +1247,37 @@ mod tests {
         assert!(prompt.contains("`context:` — 1–3 sentences"));
         assert!(prompt.contains("mode: multi\ncontext: "));
         assert!(prompt.contains("answer from the card alone"));
-        assert!(prompt.contains("under ~200 characters"));
+        // The budget is the *phone's* visible four lines, not a round number: the
+        // card is at its narrowest at 350pt, and a context longer than what fits
+        // there folds behind a button on the surface the reader is most likely
+        // holding. 100 characters is that budget in Chinese characters, which is
+        // what the examples are written in.
+        assert!(prompt.contains("under ~100 characters"));
+        assert!(prompt.contains("four lines of a phone card"));
+        // ... and inside those lines, the deciding fact has to be reachable: a
+        // model that buries it in paragraph three writes a card whose answer sits
+        // behind a button.
+        assert!(prompt.contains("lead with the decisive fact"));
+        assert!(prompt.contains("before the rest folds behind \"show more\""));
+        // The worked examples practise the budget they teach: every example
+        // `context:` stays inside the 100 characters, so what the model copies is
+        // a line the phone draws whole rather than one that folds on it.
+        for line in include_str!("choice.md")
+            .lines()
+            .filter(|line| line.starts_with("context: "))
+        {
+            let characters = line.trim_start_matches("context: ").chars().count();
+            assert!(
+                characters <= 100,
+                "example context is {characters} characters: {line}"
+            );
+        }
         // Repeated lines are paragraphs (`parseChoiceCard` joins them with `\n`).
-        assert!(prompt.contains("repeat\n  the line"));
+        // Matched on flattened whitespace: where this sentence wraps is a
+        // typesetting detail of a section that is reflowed to stay inside its
+        // line budget, not something the model's behaviour depends on.
+        let flat = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains("Repeat the line if a second paragraph"));
 
         // The parser's tolerances, stated where the model writes them: a card
         // outside 2–4 rows is dropped whole, so the reply loses its question.
@@ -1311,7 +1339,8 @@ mod tests {
         // rule joined — it changes what the model writes on every card, unlike
         // the rest of §4's prose. Raised to 51 when `context:` did the same:
         // every card now carries a situation paragraph, and the examples had to
-        // show one.
+        // show one. The fold clause (2026-11-18) fit by reflowing this section
+        // instead of raising the budget a third time.
         assert!(include_str!("choice.md").lines().count() <= 51);
     }
 

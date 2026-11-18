@@ -63,6 +63,85 @@ export function requestedChoiceMode(): "multi" | "single" {
   return new URLSearchParams(window.location.search).get("choiceMode") === "multi" ? "multi" : "single";
 }
 
+/**
+ * `?thread=th_choice&longContext=1`: the same card with a `context:` long enough
+ * to cross the fold threshold (`CHOICE_CONTEXT_VISIBLE_LINES`, four lines).
+ *
+ * Only the situation paragraph changes, because the fold is what such a capture
+ * exists to show: four lines, then the "show more" button, then the whole text
+ * once it is clicked. The wording is the reply's own — a real state of the work,
+ * not lorem ipsum — so the capture also reads as a card someone would meet. One
+ * entry per `context:` line: repeated lines become paragraphs
+ * (`parseChoiceCard`), which is the only way a multi-paragraph context can
+ * travel in a line-based fence.
+ */
+export const LONG_CHOICE_CONTEXT_LINES = [
+  "森林图现在能读，但两篇的置信区间按不同的样本量算：Frank 42 人、Dreher 186 人，都是被试间设计，",
+  "Dreher 报的区间明显更窄，所以两篇的数值不能直接放在一起比。",
+  "图注还挂着旧的 42 人，得跟着森林图一起改；图例现在压在曲线上，挪到右下就腾出空白。",
+  "流程图还没有，补它要把两篇的被试流程画成一张对照图，Frank 的三个条件与 Dreher 的两个条件不在同一层，",
+  "画之前得先定用哪一层对齐。",
+  "表里还缺一列样本量，Frank 42 / Dreher 186 都写清楚，测量手段也一并标出来，读者才知道两篇为什么不一样。",
+  "重算、补图、加列三件事互不依赖，先做哪件都行。",
+];
+
+export const SHORT_CHOICE_CONTEXT
+  = "森林图现在能读，但两篇的置信区间按不同的样本量算，放在一起对不上号；流程图还没有。重算和补图互不依赖，先做哪件都行。";
+
+export function requestedLongContext(): boolean {
+  if (typeof window === "undefined")
+    return false;
+  return new URLSearchParams(window.location.search).get("longContext") === "1";
+}
+
+/**
+ * `?thread=th_choice&choiceHistory=1`: a reply that closes with **two** cards.
+ *
+ * The earlier one is read-only, and it is the one that carries everything a
+ * historical card keeps: a `context` long enough to fold (four lines drawn, the
+ * rest behind "show more"), the reply's own `hint`, and the notice saying it can
+ * no longer be picked (design §2, §3). The last card stays the live, answerable
+ * one — which is the rule the two of them exist to show in a single frame: only
+ * the thread's last question can be picked, and history is read, not answered.
+ */
+export function requestedChoiceHistory(): boolean {
+  if (typeof window === "undefined")
+    return false;
+  return new URLSearchParams(window.location.search).get("choiceHistory") === "1";
+}
+
+/**
+ * `?remoteChoiceCard=1`: the paired host's conversation closes with the same card.
+ *
+ * §5.4's claim is that a remote transcript needs no second renderer — the host
+ * sends markdown, this machine draws it — so the sample has to be a card the
+ * host's own reply carries. Nothing else about `rs_forest` changes: the tool
+ * calls, the running run and the remote composer stay exactly as they are,
+ * because the difference the figure is about lives in the composer (a textarea
+ * with a chip row, no in-editor pill), not in the card.
+ */
+export function requestedRemoteChoiceCard(): boolean {
+  if (typeof window === "undefined")
+    return false;
+  return new URLSearchParams(window.location.search).get("remoteChoiceCard") === "1";
+}
+
+/**
+ * The earlier card: a different question, asked as a multi-choice, so a reader of
+ * the sample cannot mistake the two cards for one card drawn twice.
+ */
+const HISTORY_CARD = [
+  "```futureos-choice",
+  "title: 这三处一起改，还是分批？",
+  "mode: multi",
+  "hint: 点几个都行",
+  ...LONG_CHOICE_CONTEXT_LINES.map(line => `context: ${line}`),
+  "option: caption | 先改图注 | 旧的 42 人还挂在图上",
+  "option: legend | 再挪图例 | 现在压着曲线",
+  "option: table | 最后补样本量列 | Frank 42 / Dreher 186",
+  "```",
+].join("\n");
+
 /** The expression-parser session: the conversation the two language captures open. */
 export const PARSER_THREAD_ID = "th_parser";
 
@@ -276,10 +355,14 @@ export const choiceEntries: MockEntry[] = [
         text: [
           "两篇都读完了：Frank 42 人、Dreher 186 人，都是被试间设计，但 Dreher 报的置信区间明显更窄，所以两篇的结论在数值上不能直接放在一起。",
           "",
+          ...(requestedChoiceHistory() ? [HISTORY_CARD, ""] : []),
+          "",
           "```futureos-choice",
           "title: 接下来做哪一件？",
           `mode: ${requestedChoiceMode()}`,
-          "context: 森林图现在能读，但两篇的置信区间按不同的样本量算，放在一起对不上号；流程图还没有。重算和补图互不依赖，先做哪件都行。",
+          requestedLongContext()
+            ? LONG_CHOICE_CONTEXT_LINES.map(line => `context: ${line}`).join("\n")
+            : `context: ${SHORT_CHOICE_CONTEXT}`,
           "option: forest | 重画森林图 | 按 Dreher 2025 的样本量重算两篇的置信区间",
           "option: flow | 补一张实验流程图 | 把两篇的被试流程画成一张对照图",
           "option: table | 表里加一列样本量 | Frank 42 / Dreher 186，标出测量手段",
@@ -2034,10 +2117,30 @@ export const remoteEntries: Record<string, unknown[]> = {
       createdAtMs: Date.now() - 90_000,
       runId: "rrun_2",
       run: { status: "running" },
-      blocks: [{
-        kind: "text",
-        text: "另外两张图（`fig2-forest.R`、`figS3.R`）各自硬编码了区间，不受影响；只有这一处。",
-      }],
+      blocks: [
+        {
+          kind: "text",
+          text: "另外两张图（`fig2-forest.R`、`figS3.R`）各自硬编码了区间，不受影响；只有这一处。",
+        },
+        // `?remoteChoiceCard=1` (design §5.4): the host's reply closes with a
+        // choice card, because its markdown is rendered here by the same
+        // `ChoiceCard` the local transcript uses.
+        ...(requestedRemoteChoiceCard()
+          ? [{
+              kind: "text" as const,
+              text: [
+                "```futureos-choice",
+                "title: 接下来做哪一件？",
+                "mode: single",
+                `context: ${SHORT_CHOICE_CONTEXT}`,
+                "option: forest | 重画森林图 | 按 Dreher 2025 的样本量重算两篇的置信区间",
+                "option: flow | 补一张实验流程图 | 把两篇的被试流程画成一张对照图",
+                "option: table | 表里加一列样本量 | Frank 42 / Dreher 186，标出测量手段",
+                "```",
+              ].join("\n"),
+            }]
+          : []),
+      ],
     },
   ],
 };

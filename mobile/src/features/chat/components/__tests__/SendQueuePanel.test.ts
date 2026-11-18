@@ -127,7 +127,10 @@ describe("the send queue above the composer", () => {
     expect(painted()).toContain("1 waiting");
     expect(painted()).toContain("Sent as one message when this reply ends");
     expect(toggle().props.accessibilityLabel).toBe("Show the queued messages");
-    expect(toggle().props.accessibilityState).toEqual({ expanded: false });
+    expect(toggle().props["aria-expanded"]).toBe(false);
+    // The old `accessibilityState` form is what this replaced: react-native-web
+    // forwards `aria-*` only, so it left the toggle reporting no state on web.
+    expect(toggle().props.accessibilityState).toBeUndefined();
   });
 
   it("expands to the whole queue on a tap, and closes again on the next one", () => {
@@ -137,6 +140,7 @@ describe("the send queue above the composer", () => {
     expect(rows()).toHaveLength(8);
     expect(hasList()).toBe(true);
     expect(toggle().props.accessibilityLabel).toBe("Hide the queued messages");
+    expect(toggle().props["aria-expanded"]).toBe(true);
 
     act(() => toggle().props.onPress());
     // Closed means the rows are gone, not dimmed: the height they took is the
@@ -144,6 +148,7 @@ describe("the send queue above the composer", () => {
     expect(rows()).toHaveLength(0);
     expect(hasList()).toBe(false);
     expect(toggle().props.accessibilityLabel).toBe("Show the queued messages");
+    expect(toggle().props["aria-expanded"]).toBe(false);
   });
 
   it("keeps a parked row's warning in the header while the rows are closed", () => {

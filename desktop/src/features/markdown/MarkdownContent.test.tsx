@@ -229,7 +229,6 @@ describe("choice cards in a reply", () => {
       expect(dead!.getAttribute("data-choice-state")).toBe("readonly");
       expect(dead!.getAttribute("aria-disabled")).toBe("true");
       expect(dead!.textContent).toContain("An earlier question — this card can no longer be picked");
-      expect(dead!.textContent).not.toContain("Pick one and it lands in the input");
       const describedBy = dead!.getAttribute("aria-describedby");
       expect(document.getElementById(describedBy!)?.textContent)
         .toBe("An earlier question — this card can no longer be picked");
@@ -242,11 +241,13 @@ describe("choice cards in a reply", () => {
       deadRows[0]!.focus();
       expect(document.activeElement).not.toBe(deadRows[0]);
 
-      // Alive: the answering hint, back in the tab order, focusable.
+      // Alive: no inert notice; with no hint in the fence there is no subtitle
+      // to show at all (the default one was removed on 2026-11-18).
       expect(alive!.getAttribute("data-choice-state")).toBe("active");
       expect(alive!.getAttribute("aria-disabled")).toBeNull();
-      expect(alive!.textContent).toContain("Pick one and it lands in the input");
       expect(alive!.textContent).not.toContain("An earlier question");
+      expect(alive!.querySelector("[data-choice-hint]")).toBeNull();
+      expect(alive!.getAttribute("aria-describedby")).toBeNull();
       const aliveRows = [...alive!.querySelectorAll<HTMLElement>("[data-choice-option]")];
       expect(aliveRows.map(row => row.getAttribute("tabindex"))).toEqual(["0", "-1"]);
       aliveRows[0]!.focus();

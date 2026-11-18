@@ -43,7 +43,7 @@
 
 | 规则 | 原因 |
 |---|---|
-| 只有**线程里最后一张**卡可交互，更早的卡只读（`aria-disabled`、不进 Tab 序、副标题明说不能选） | 历史卡片对应的问题早已过去，允许改它只会让"我改的是哪一次"变得不可回答 |
+| 只有**线程里最后一张**卡可交互，更早的卡只读（`aria-disabled`、不进 Tab 序、另有一行明说不能选） | 历史卡片对应的问题早已过去，允许改它只会让"我改的是哪一次"变得不可回答 |
 | 卡片不自己保存"已选" | 它从前面的草稿派生。发送后草稿清空，**卡面不再保留选中态**——答案由用户消息上的标签呈现，不由卡面呈现 |
 | 改答案 = 改草稿 | 点卡片任意一行、点 pill/chip 的铅笔、点底部 sheet、点队列行里的选择 chip，四个入口写同一个值 |
 
@@ -70,19 +70,19 @@ option: table | 表里加一列样本量 | Frank 42 / Dreher 186，标出测量�
 | 字段 | 必填 | 说明 |
 |---|---|---|
 | `title` | 是 | 问题本身，一句话，≤ 60 字。它就是卡片标题 |
-| `context` | 否 | 卡片自己的**情境**：刚才查到了什么、停在哪、每行的代价取决于什么。1–3 句，≤ 200 字左右。写了这个字段，读者就该能只看卡片作答，不必往上翻正文；重复写多行会是多段（2026-11-18 新增，见下） |
+| `context` | 否 | 卡片自己的**情境**：刚才查到了什么、停在哪、每行的代价取决于什么。1–3 句，≤ 100 字左右（手机卡片四行的量，2026-11-18 收紧）。写了这个字段，读者就该能只看卡片作答，不必往上翻正文；重复写多行会是多段（2026-11-18 新增，见下） |
 | `mode` | 否 | `multi`（**首选**）/ `single`（行互斥时的退化，省略即此）。也接受 `multiple`、`multi-select`、`多选`，见下 |
 | `option` | 是（2–4 个） | 每行一个，`id \| 显示文案 \| 一行说明`；说明可以省略 |
 | `id` | — | 选项 id：ASCII、`[a-z0-9-]`、≤ 24 字符、卡内唯一。它是要回传的稳定标识 |
-| `hint` | 否 | 覆盖默认副标题（"选一个就放进输入框…"） |
+| `hint` | 否 | 模型自己的一句话（可选），渲染在 `context` 下方。**没有默认副标题了**（2026-11-18 删掉，见 §5.1） |
 
 **`context` 是卡片的「就地问答」能力**（2026-11-18）。卡片此前只有标题、选项说明和一行副标题，要判断"接下来做哪件"仍得往上看那几百字的复盘——正是卡片要消灭的那种来回。加上 `context` 之后，卡片把**结论**搬进自己：图注还挂着旧数据、图例压着曲线、两篇的样本量不一致，这类事实恰恰是选择的依据。它有三个边界，写在 prompt 里也写在渲染上：
 
 - **是情境，不是摘要**。不重述正文里没有任何一行会用到的东西，也不写寒暄；正文可以因此更短（同一句话只说一次）。
-- **有上限**。目标 1–3 句、200 字左右；卡片会随它变高，超过就是又一次"往上翻"。
+- **有上限，而且真的会收**（2026-11-18 补）。目标 1–3 句、100 字左右（手机卡片只画四行，100 个中文字在 350pt 宽下是四到五行，刚好不折；2026-11-18 从 200 字收紧）；**前四行可见，六行起才折**（`CHOICE_CONTEXT_VISIBLE_LINES` 与 `+ 2` 的余量：只藏一行却多一个按钮，是用一个控件换一行字，不值），下面一行"展开"按钮一点展开全文。折叠的判据来自文本、**驱动** CSS 的 clamp，不是反过来测量高度：估算说"够短"就完全不裁，所以估错的后果只是"早折/晚折一行"，绝不会出现文字被裁掉却没有按钮可点。
 - **可多段**。重复写 `context:` 行按行序拼成多段（渲染 `pre-line`），但两段以上只有在真的分得开时才值那点高度。
 
-渲染位置在标题之下、副标题之上，`12px / 18px`、`ink-soft`（比 `hint` 的 `11px / ink-muted` 重一档：它是内容，副标题是操作提示）。**只读卡保留 context**——副标题换成"这张卡不能选"（§2），但情境是信息，一张历史卡仍然要说清它在问什么。手机同一规则（`13px`、`inkSoft`）。
+渲染位置在标题之下，`12px / 18px`、`ink-soft`（比 `hint` 的 `11px / ink-muted` 重一档：它是内容，`hint` 和只读提示是 chrome）。**只读卡保留 context**——另加一行"早先的提问，这张卡不能再选"（§2），但情境是信息，一张历史卡仍然要说清它在问什么。手机同一规则（`13px`、`inkSoft`）。
 
 **`mode` 的判据**（写 prompt 的人必须照这条，不能只把它当风格偏好）：
 
@@ -114,11 +114,11 @@ option: table | 表里加一列样本量 | Frank 42 / Dreher 186，标出测量�
 | 围栏出现在回复中间（不在最后一块） | 照常渲染，但只读（§2 的"最后一张"规则） |
 | 未知字段 | 忽略 |
 
-**只读卡必须自己说出来**（2026-11-16）：一条回复里有 2 张及以上卡时，只有最后一张可交互——这个判据只依赖**已解析出的卡片数量**，与模型写了什么措辞无关，所以放在解析/渲染层，不放进 prompt。被判为只读的卡不只是 `aria-readonly` + 不进 Tab 序，它的**副标题也必须换成"这张卡不能再选"**（`choice.hint.readonly`）：副标题是卡片唯一能"承诺动作"的地方，在一个点不动的卡上印"选一个就放进输入框"，等于画一个看起来能按、按了没反应的按钮。判据在 `ChoiceCard.test.tsx` 与 `MarkdownContent.test.tsx` 里断言（文字 + `aria-disabled` + 不可聚焦），**不断言颜色**。
+**只读卡必须自己说出来**（2026-11-16）：一条回复里有 2 张及以上卡时，只有最后一张可交互——这个判据只依赖**已解析出的卡片数量**，与模型写了什么措辞无关，所以放在解析/渲染层，不放进 prompt。被判为只读的卡不只是 `aria-readonly` + 不进 Tab 序，它还**必须自己说一句"早先的提问，这张卡不能再选"**（`choice.hint.readonly`）：在一张点不动的卡上不说明这件事，等于画一个看起来能按、按了没反应的按钮。判据在 `ChoiceCard.test.tsx` 与 `MarkdownContent.test.tsx` 里断言（文字 + `aria-disabled` + 不可聚焦），**不断言颜色**。
 
 **但"换掉默认副标题"不等于"换掉回复自己写的 hint"**（2026-11-18 修正上一条）。上一版把模型的 `hint` 也一并抹掉，理由是"它也描述怎么挑"；实际读历史时这是丢信息：读者回来往往正是要看当时那句话。现在的规则分两层——
 
-- **默认副标题不再出现**：点不动的卡上永不印"选一个就放进输入框"（那条承诺仍然是错的）；
+- **默认副标题已经不存在**（§5.1）：所以问题只剩"模型自己写的那句留不留"；
 - **模型写的 `hint` 保留**，后面紧跟一行 `choice.hint.readonly` 说明这张卡是早先的提问、不能再选。两句都是这个 group 的 `aria-describedby`，顺序与视觉顺序一致；没写 `hint` 的卡只有后面那一行。
 
 改的是措辞而不是承诺：`hint` 是历史的一部分，`readonly` 那行仍是唯一说"不能选"的地方。文案同时从"只作展示：这张卡不能选"改成"早先的提问，这张卡不能再选"——它现在与英文版（"An earlier question — this card can no longer be picked"）说的是同一件事，而不是在替一张卡道歉。
@@ -164,7 +164,7 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 
 要点：**选项文案必须是用户会说的那句话**（因为发送时它就是消息的一部分），不是"选项 A/B/C"。
 
-**`context:` 是 2026-11-18 加进 prompt 的第三个必说项**：此前 `choice.md` 只教标题、选项与 `mode`，模型写出来的卡只有"问题 + 选项"，读者判断"接下来做哪件"时仍要回到几百字的正文里找依据——卡片带来的只是少打一遍字，不是少读一遍字。现在 prompt 要求每张卡都写 1–3 句情境（刚才查到什么、停在哪、每行代价取决于什么），并明确三道边界：**是情境不是摘要**（没有一行会用到的内容不写）、**目标 200 字以内**（卡会随它变高）、**重复写 `context:` 行按段落**。第二条同时放进"正文可以因此更短"一句，否则模型会把同一件事在正文和卡片里各说一遍，卡的净收益为零。
+**`context:` 是 2026-11-18 加进 prompt 的第三个必说项**：此前 `choice.md` 只教标题、选项与 `mode`，模型写出来的卡只有"问题 + 选项"，读者判断"接下来做哪件"时仍要回到几百字的正文里找依据——卡片带来的只是少打一遍字，不是少读一遍字。现在 prompt 要求每张卡都写 1–3 句情境（刚才查到什么、停在哪、每行代价取决于什么），并明确三道边界：**是情境不是摘要**（没有一行会用到的内容不写）、**目标 100 字以内**（手机卡片四行的量，更长就要点展开）、**重复写 `context:` 行按段落**。第二条同时放进"正文可以因此更短"一句，否则模型会把同一件事在正文和卡片里各说一遍，卡的净收益为零。
 
 **行的顺序就是推荐顺序，所以最好的选项放第一**（2026-11-18）。解析器、桌面卡片和手机都按围栏里的书写顺序画 `options`，之后没有任何一步会重排，所以第一行就是读者眼里的「模型推荐的那个」；`multi` 也一样，它是其余行所依附的那一件。把最好的选项放在最后的卡，等于让读者重新替模型排一次序，和回到散文列表是同一种浪费。这条规则住在 `choice.md` 里（由 `prompt_teaches_the_choice_card_fence` 钉住），不放在渲染层：客户端重排行会和回复自己的措辞对不上（"先做这个"指的是被挪走的那一行）。
 
@@ -210,17 +210,41 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 
 ![桌面端：回复末尾的选项卡，尚未选择](assets/choice-cards/desktop-1-empty.png)
 
+*真实组件截图*，场景 `choice-card-implemented`（1440×900 @2×，取自 `56462a7da`）：卡片不是注入原型，而是 `packages/markdown` 解析 `futureos-choice` 围栏、`desktop/src/features/markdown/renderers/ChoiceCard.tsx` 渲染出来的。这张卡的情境只有一行，所以**没有**「展开」按钮。**折叠阈值：四行可见，六行起折**（`choiceContextFolds`：可见四行 + 两行余量，所以只藏一行从不值得多一个控件）。
+
 - 卡宽 768px，与正文列同宽（`max-w-3xl`），左对齐、跟在最后一个块之后 4px；
 - 卡头 12px 半粗标题 + 右侧 11px 模式标注（`单选` / `多选`）；
-- 标题下是 `context` 情境段（12px / 18px、`ink-soft`、段内换行保留），它在副标题之上：先读"现在是什么情况"，再读"怎么答"；没写 `context` 的卡不占这段高度；
-- 副标题 11px，说明"选一个就放进输入框；也可以直接在输入框里写别的"——这句话替代了卡内的"自己写…"行（§5.6 说明为什么删掉）；
+- 标题下是 `context` 情境段（12px / 18px、`ink-soft`、段内换行保留），没写 `context` 的卡不占这段高度；
+- **情境超过四行就折起来**：`line-clamp-4` 截断出省略号，下面一行 11px 的"展开 / 收起"按钮（带 chevron，`aria-expanded` + `aria-controls` 指向情境段）。阈值是估算**六行起**才折（四行可见 + 两行余量，`choiceContextFolds`），因为只藏一行却多一个按钮不值；四行及以下不画任何控件——对已经全部可见的文字放一个"展开"，是又一个按了没反应的按钮。全文一直在 DOM 里，所以屏幕阅读器读到的是完整文本，展开只是把它画出来。手机同一规则，`numberOfLines={4}` 由系统画省略号；
+- **没有默认副标题**（2026-11-18 删除）：原来那行"选一个就放进输入框；也可以直接在输入框里写别的"解释的是机制，而机制已经由答案 pill 自己演示了（选了就出现在输入框里，见 §5.2）；"单选/多选"也在卡头右上角说过了。一条每次都要读、只读一次有用的说明，等于在每张卡上收一次税。模型自己写的 `hint` 仍会渲染在这里（11px、`ink-muted`）；只读卡则多一行 `choice.hint.readonly`（§3）；
 - 每个选项一行：16px 单选圈 + 13px 文案 + 12px 一行说明（`ink-muted`）；未选行无边框、无底色，靠留白分列；
 - **多选卡的标记是方框**（16px，圆角 3px，选中后同色对勾），单选卡才是圆圈：两种卡的差别不只在右上角那行小字，形状本身就是判据，扫一眼就知道能不能多选。手机端同一规则（18px 方框，圆角 4px）；
 - 卡片外框 `1px line` / `radius 10px` / `surface` 底 / 极轻投影，与审批卡同一套材质，但**位置不同**：审批卡浮在输入框上方，选项卡长在正文里。
 
+**展开后**（同一张卡、同一段情境，只是按下了那个按钮）：
+
+![桌面端：情境展开——按钮变成「收起」，全文都在](assets/choice-cards/desktop-10-expanded.png)
+
+*真实组件截图*，场景 `choice-context-expanded-desktop`（1440×900 @2×，取自 `0d4bf428b`）：fixture 的 `?longContext=1` 把情境写到估算**超过六行**（折叠阈值：四行可见、六行起折），再按下「展开」。实测折叠时情境段高 `72px`（4×18）、展开后 `126px`，卡片 `310→364px` 且与输入框仍隔着一整段空白；按钮的 `aria-expanded` 由 `false` 变 `true`、文案变「收起」，`aria-controls` 仍指向同一个节点——所以屏幕阅读器读到的段落自始至终是完整的一段，变的只是它被画了几行。
+
+### 5.1.1 早先的提问：只读卡把它写过的东西全留着
+
+![桌面端：一条回复里两张卡，上面那张是早先的提问——只读、情境已折叠](assets/choice-cards/desktop-9-history-fold.png)
+
+*真实组件截图*，场景 `choice-history-fold-desktop`（1440×900 @2×，取自 `56462a7da`）：一条回复里有两张卡，上面那张是早先的提问，下面那张才是线程的最后一问。上面那张的情境估算**超过六行**（折叠阈值：四行可见、六行起折），所以折成四行 + 「展开」。判据只依赖**已解析出的卡片数量**（§2），与模型写了什么无关，所以两张卡由同一份 fixture、同一套渲染器画出。
+
+- 上面那张：`data-choice-state="readonly"`、`aria-disabled="true"`、行不在 tab 序里、点了没有反应；
+- 它**保留自己当年写的 `hint`**（这里那句"点几个都行"，11px、`ink-muted`），后面紧跟一行只读提示"早先的提问，这张卡不能再选"。历史卡是拿来重读的，把模型自己那句提示抹掉，等于删掉当时唯一的提示；默认副标题则不再出现（它承诺的是可操作）；
+- 情境比四行高，所以折起来：第三行末尾是省略号，下面一行"展开"。**历史卡也能展开**——折叠正是为了读，那个按钮不涉及任何选择，所以不碰只读；
+- 下面那张 `data-choice-state="active"`：情境一行，没有按钮，行在 tab 序里、可点。
+
+上面这四个事实（只读态、当年的 `hint`、只读提示、折叠按钮）都是截图场景**断言过**的，不是看着像；`capture.py` 的断言失败只会报 `n/m captured`，不会给一张"看着过了"的图。
+
 ### 5.2 桌面端 · 已选
 
 ![桌面端：选中一项，答案成为输入框里的 pill](assets/choice-cards/desktop-2-chosen.png)
+
+*真实组件截图*，场景 `choice-pill-implemented`（1440×900 @2×，取自 `0d4bf428b`）：选中行与输入框里的 pill 是同一次点击的两个结果，不是两张各自摆拍的图。折叠阈值与 §5.1 同一组数字（四行可见、六行起折）——这张卡的情境估算在四行以内，所以卡上没有「展开」。
 
 - 选中行：`accent-soft` 底 + 文案转 500 权重（不再加描边——填充与描边两重强调是 v1 的问题，§5.7 同理）；
 - 卡底多一条 8px 的分隔脚注（`line-soft` 上边框 + `surface-subtle` 底）。**v2 把这句话改短了**：v1 写"已放进输入框"并配一个框外的 chip，而答案其实不在框里；现在答案真的在编辑器里，这句话不再需要替位置打补丁；
@@ -266,6 +290,8 @@ pill 实测 `bg rgb(232,240,255)`（`accent-soft`）、`color rgb(37,99,235)`（
 
 ![桌面端：pill 后面接着打字](assets/choice-cards/desktop-6-chosen-text.png)
 
+*真实组件截图*，场景 `choice-card-chosen-text-implemented`（1440×900 @2×，取自 `0d4bf428b`）：pill 后面那句是读者自己敲的字，两者在同一个 `contenteditable` 流里、顺序就是看到的顺序。
+
 需求 (c) 的样张。pill 与文字在同一个编辑器流里，顺序就是读者看到的顺序；发送时 `serialize()` 按这个顺序输出（pill → `[问题 → 答案]`，以及读者写的文字）。所以用户气泡里显示的就是真正发出去的内容——不靠额外渲染去"补"一个不同步的显示。pill 落在光标处（§5.2.1），所以答案在句首、句中还是句尾，取决于读者点选项时把光标放在哪里（§7 有一行句中例子）；不论位置，气泡都把它画成标签而不是方括号字样（§5.2.3）：还是同一句话，只是不再混在用户自己写的文字里。
 
 ### 5.2.3 发送后的用户气泡
@@ -284,6 +310,8 @@ pill 实测 `bg rgb(232,240,255)`（`accent-soft`）、`color rgb(37,99,235)`（
 
 ![桌面端：铅笔在 pill 上方展开同一张卡](assets/choice-cards/desktop-3-change.png)
 
+*真实组件截图*，场景 `choice-card-change-implemented`（1440×900 @2×，取自 `0d4bf428b`）：浮层确实开着（断言查的是 `[data-choice-popover]` 与它里面的三行），不是摆一个浮层外壳。
+
 - pill 上的铅笔把问题**原地**展开（360px 浮层，贴在 pill 上方 10px），不滚动、不跳回正文；
 - 浮层里是同一份选项（紧凑行，去掉说明），选中项仍是那个；
 - 换一个 ⇒ pill 文案跟着变，草稿里的旧答案被替换；`Esc` 或点外部关闭，答案不变；
@@ -292,6 +320,8 @@ pill 实测 `bg rgb(232,240,255)`（`accent-soft`）、`color rgb(37,99,235)`（
 ### 5.4 远程桌面
 
 ![远程会话：同一张卡，chip 在远程输入框上方](assets/choice-cards/desktop-4-remote.png)
+
+*真实组件截图*，场景 `choice-card-remote-implemented`（1440×900 @2×，取自 `0d4bf428b`）：卡由本机渲染，输入框里的 chip 是远程端自己那一套（`RemoteChoiceChip`）。折叠阈值仍是四行可见、六行起折。
 
 远程会话的正文是宿主送来的 markdown、由**本机**渲染，所以卡片自动就是同一个组件、同一套 token——不需要为远程单独做一份。实测卡宽 768 与远程输入框同宽。
 
@@ -304,6 +334,8 @@ pill 实测 `bg rgb(232,240,255)`（`accent-soft`）、`color rgb(37,99,235)`（
 ### 5.5 深色
 
 ![深色外观下的同一张卡](assets/choice-cards/desktop-5-dark.png)
+
+*真实组件截图*，场景 `choice-card-implemented-dark`（1440×900 @2×，取自 `0d4bf428b`）。
 
 全部用语义 token（`surface` / `line` / `line-soft` / `surface-subtle` / `accent` / `accent-soft` / `ink*`），不写死颜色。实测深色卡底 `rgb(22,27,34)`（`--color-surface` 的深色值），选中行 `accent-soft` 深色值 `#16243c`。
 
@@ -326,7 +358,7 @@ pill 实测 `bg rgb(232,240,255)`（`accent-soft`）、`color rgb(37,99,235)`（
 
 ### 5.7 移动端
 
-手机 390×844，三张图分别是未选 / 已选 / 改回来。
+手机 390×844，三张图分别是未选 / 已选 / 改回来。三张都是**真实组件截图**（场景 `choice-card-phone-card` / `choice-card-phone-picked` / `choice-card-phone-change`，780×1688 @2×，取自 `0d4bf428b`）——`mobile/src/components/ChoiceCard.tsx` 画的卡，不是注入原型。折叠阈值与桌面**同一组数字**（四行可见、六行起折），但 350pt 的列一行只放 24 个单位（桌面是 120），所以同一段文字在这里更早折。
 
 | 未选 | 已选 | 改回来 |
 |---|---|---|
@@ -336,6 +368,12 @@ pill 实测 `bg rgb(232,240,255)`（`accent-soft`）、`color rgb(37,99,235)`（
 - 已选项的 chip 在 dock 内、textarea 之上（实测 chip `y 702..736`，field `y 737..783`）；
 - **零个勾选时 chip 不画，也不计入内容。** 手机没有编辑器内的 pill，答案的"是否存在"全靠这三处判断（`ComposerDock` 的 `canSend`、`hasDraft`、是否画 chip），所以它们共用同一个 `hasAnswer`，与桌面 `answerOrNull` 同一条判据：勾选全撤销 ⇒ 没有 chip、发送键变灰、也没有 §7 的句子。判据写在上游的 draft 写入处（`useComposerDraft.setChoice`），`ComposerDock` 再自理一次，避免"靠上游保证"的隐患；
 - **改答案用底部 sheet**：390pt 宽没有空间在原地放浮层。sheet 顶到 559pt，三行仍 44pt，选中即写回 chip，底稿不动；
+
+**情境展开后**（同一张卡，按钮变成「收起」）：
+
+![手机：情境展开——四行限制解除，全文与三个选项都在屏内](assets/choice-cards/phone-6-expanded.png)
+
+*真实组件截图*，场景 `choice-context-expanded-phone`（780×1688 @2×，取自 `0d4bf428b`）：与桌面那张是**同一段文字**（fixture 的 `?longContext=1`），只是列宽 350pt ⇒ 展开后情境段 `253pt`（折叠时 `82pt`），卡片 `99..616`，仍在转写区 `60..732` 之内，下面的三个选项一个没被推出屏。同一个 `aria-expanded`、同一句「收起」——两端的折叠只是各画各的，规则只有一份（`packages/markdown/src/choiceContext.ts`）。
 
 #### 5.7.1 v1 的已选态哪里难看，v2 怎么改
 
@@ -351,13 +389,25 @@ v1 的已选行同时在三个地方宣告"选中"：`accent-soft` 填充 + `acc
 
 **为什么手机不学桌面把答案放进 field：** RN 的输入框是 `TextInput`（原生 textarea），没有 contenteditable 的原子元素，也不存在 `isEditorEmpty` 那种“有 pill 即非空”的机制。手机的等价做法是让答案算进 `canSend`/`hasDraft` 已经计数的东西——`ComposerDock.tsx:180-181`、`:233` 都是 `!!message.trim() || attachments.length > 0`，所以答案必须作为一个 draft 项被计入（像附件那样），而不是画一个不参与判定的装饰 chip。
 
-## 5.8 队列里的选择
+#### 5.7.2 早先的提问，在手机上
 
-三端各一张，因为队列面板**不是同一个组件**：
+![手机：一条回复里两张卡，上面那张只读、情境已折叠](assets/choice-cards/phone-5-history-fold.png)
 
-| 桌面（本地会话） | 远程桌面 | 手机 |
-|---|---|---|
-| ![桌面：队列里的选择](assets/choice-cards/desktop-7-queue.png) | ![远程桌面：队列里的选择](assets/choice-cards/desktop-8-queue-remote.png) | ![手机：队列里的选择](assets/choice-cards/phone-4-queue.png) |
+*真实组件截图*，场景 `choice-history-fold-phone`（780×1688 @2×，取自 `56462a7da`），与桌面那张是**同一份 fixture**（`?choiceHistory=1`）：同样的两张卡、同样的 `hint`、同样的只读提示。同一段情境在桌面四行放得下，在这里超过六行，所以折成四行 + 「展开」——阈值一样，列宽差 2.5 倍。
+
+- 同一段情境在手机上比桌面早得多就要折：列宽 350pt、`CONTEXT_UNITS_PER_LINE = 48`（桌面的四分之一强），所以桌面整段显示的一段话，手机往往已经是"四行 + 展开"；
+- 折叠按钮的展开态用 `aria-expanded`（不是 `accessibilityState`）——react-native-web 只转发 `aria-*`，另一个会被整块丢掉，与行上的 `aria-checked` 同一个理由；
+- 两张卡都完整落在转写区的可视框内（`y 60..393` 与 `401..667`，框 `60..732`），历史卡的最后一行也在框里。手机的转写是倒序列表、滚动容器自己带着 `scaleY(-1)`，所以把它停到框顶是**减**滚动量，与桌面普通容器方向相反——这条写进场景里，省得下一个人再猜一遍。
+
+### 5.8 队列里的选择
+
+两张：桌面（本地会话）与手机。远程那格**故意不补**（理由在 §5.8.1）。
+
+| 桌面（本地会话） | 手机 |
+|---|---|
+| ![桌面：队列里的选择](assets/choice-cards/desktop-7-queue.png) | ![手机：队列里的选择](assets/choice-cards/phone-4-queue.png) |
+
+两张都是*真实组件截图*（场景 `send-queue-choice-implemented`，1440×900 与 780×1688 @2×，取自 `0d4bf428b`），队列行由 fixture 的 `?queue=1&queueChoice=1` 造成：行文字是答案要发出去的句子，行里的 `choice` 字段才是 chip 的依据。
 
 先说 **今天实际发生什么**（已核代码，不靠猜）：
 
@@ -371,8 +421,9 @@ v1 的已选行同时在三个地方宣告"选中"：`accent-soft` 填充 + `acc
 
 这一节决定了实现量，所以先讲清楚：
 
-- **远程桌面复用桌面端的 `SendQueuePanel`**：`RemoteComposer.tsx:23` 直接 `import { SendQueuePanel } from "../agent/SendQueuePanel"`，在 `:1244` 渲染。远程的输入框是另一套（纯 textarea，没有 pill），但队列**面板**是同一个组件。所以远程的队列样式就是桌面的队列样式——不需要为远程设计第二遍，只需要确认它没被远程样式表带歪。实测两边的 chip 都是 `136×22`、铅笔都在 `x=1181`、行宽都是 `746`。
-- **手机有它自己的一份** `mobile/src/features/chat/components/SendQueuePanel.tsx`：表头是一行 `Pressable` 折叠条（`accessibilityState.expanded`，文案 `展开队列中的消息` / `收起队列中的消息`），**一律默认收起**——条上已经有条数、那句「当前回复结束后合并成一条发送」和 parked 行的警示，而展开的每一行都会盖住它下面的对话。展开后列表高度 `sendQueueListHeight(vh, kb) = max(96, min(240, round((vh-kb)*0.3)))`，再长就在列表内滚动。手机端因此需要单独设计一遍 chip 的尺寸与位置。
+- **远程桌面复用桌面端的 `SendQueuePanel`**：`RemoteComposer.tsx:25` 直接 `import { SendQueuePanel } from "../agent/SendQueuePanel"`，在 `:1361` 渲染。远程的输入框是另一套（纯 textarea，没有 pill），但队列**面板**是同一个组件。所以远程的队列样式就是桌面的队列样式——不需要为远程设计第二遍。
+- **但是：远程的行今天画不出 chip，这是缺口，不是设计。** 宿主那一行带着 `choice` 过来，本机在解析时把它丢了：`remoteQueue.ts` 的 `parseRemoteQueueRows` 没有 `choice` 字段，`RemoteComposer.tsx:1366` 拼 `items` 时只传 `attachments/content/id/parked`、也不传 `onRequestChoiceChange`——而面板的 chip 恰好要求这两样（`SendQueuePanel.tsx:249` 是 `item.choice && … && onRequestChoiceChange`）。所以远程的队列行只有文字、铅笔、垃圾桶，没有 chip；远程要换答案仍得对着 `[问题 → 答案]` 手改文字。**上一版这里写的「实测两边 chip 都是 136×22」是错的**，也解释了为什么本节不再有远程那一张图（拿旧图充数比空着更糟）；补齐它需要新增一条远程“改队列里的选择”的命令，属于未做的实现，不在本稿范围内。
+- **手机有它自己的一份** `mobile/src/features/chat/components/SendQueuePanel.tsx`：表头是一行 `Pressable` 折叠条（`aria-expanded`——不是 `accessibilityState`，react-native-web 只转发 `aria-*`；文案 `展开队列中的消息` / `收起队列中的消息`），**一律默认收起**——条上已经有条数、那句「当前回复结束后合并成一条发送」和 parked 行的警示，而展开的每一行都会盖住它下面的对话。展开后列表高度 `sendQueueListHeight(vh, kb) = max(96, min(240, round((vh-kb)*0.3)))`，再长就在列表内滚动。手机端因此需要单独设计一遍 chip 的尺寸与位置。
 
 ### 5.8.2 行里画什么：chip **自己就是按钮**
 
@@ -397,21 +448,22 @@ chevron 而不是铅笔，是刻意的：它说的是“这里能打开点什么
 
 ### 5.8.3 数据形状
 
-给 `SendQueuePanelItem` 与 `AgentQueueRow` 加一个**可选**的 `choice?: { title, optionId, label }`，照 `attachments?` 的先例（`undefined` = 这一端的队列不报该字段，旧 Agent 不会因此被说成“没有选择”，也就不会画出空 chip）。
+给 `SendQueuePanelItem` 与 `AgentQueueRow` 加一个**可选**的 `choice`，照 `attachments?` 的先例（`undefined` = 这一端的队列不报该字段，旧 Agent 不会因此被说成“没有选择”，也就不会画出空 chip）。落地的形状是 `SessionQueueChoice`：`{ mode: "single" | "multi", title, options: {id, label}[], selectedIds: string[] }`——chip 要能自己开一个选项表，所以它带的是整道题，而不只是“标题 + 一个标签”。
 
 写回路径**不**拖进纯文本编辑：新增 `onUpdateChoice(id, choice)`（而不是给 `onUpdate(id, content)` 加可选参数）。纯文本编辑与结构化选择是两件事，混在一个签名里，实现时必然要在一个函数里分支。
 
 ### 5.8.4 实测（真实面板 + 真实“加入发送队列”流程，不是画的）
 
-| | 桌面 | 远程 | 手机 |
-|---|---|---|---|
-| chip 尺寸 | `136×22` | `136×22` | `129×23` |
-| chip 右边缘 / 铅笔左边 | `659` / `1181` | `659` / `1181` | `180` / `297` |
-| 行尺寸 | `746×60` | `746×52` | `348×52` |
-| chip 上的图标数 | 1（chevron） | 1（chevron） | 1（chevron） |
-| 行文字 | `1 接下来 · 重画森林图 顺便把图注也改成中文` | 同左 | 同左 |
+| | 桌面 | 手机 |
+|---|---|---|
+| chip 尺寸 | 宽填满行内容区，高 `22` | `185×21` |
+| 行尺寸 | `746×60` | `348×52` |
+| chip 上的图标数 | 1（chevron） | 1（chevron） |
+| 行文字 | `[接下来做哪一件？ → 重画森林图]` | 同左 |
 
-三行都保留了自己的铅笔与垃圾桶：断言里直接检查了 chip 的右边缘小于铅笔的左边缘，以及 `[data-queue-edit]` / `[data-testid=send-queue-edit]` 仍然存在。也就是说 chip 是**插在**行里，不是替换掉行的操作。
+远程那一列**删了**：它的行今天不画 chip（§5.8.1 的缺口），没有可实测的东西。上一版的 `136×22` 是错的，一并撤回。
+
+两端的行都保留了自己的铅笔与垃圾桶：断言里直接查了 chip 的 `aria-label` 与行文字同时成立，以及 `[aria-label="修改队列中的消息"]` / `[aria-label="从队列中删除"]` 仍然在行里。也就是说 chip 是**插在**行里的，不是替换掉行的操作。
 
 ## 5.9 会话列表里的标记：这一条在等你选
 
@@ -500,8 +552,8 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
 |---|---|---|
 | `choice.mode.single` | 单选 | Single choice |
 | `choice.mode.multi` | 多选 | Multiple choice |
-| `choice.hint.single` | 选一个就放进输入框；也可以直接在输入框里写别的 | Pick one and it lands in the input; you can type something else instead |
-| `choice.hint.multi` | 可以多选，点几个都行 | Pick as many as apply |
+| `choice.context.expand` | 展开 | Show more |
+| `choice.context.collapse` | 收起 | Show less |
 | `choice.hint.readonly` | 早先的提问，这张卡不能再选 | An earlier question — this card can no longer be picked |
 | `choice.foot.queued` | 已放进输入框，可以继续补充，也可以直接发送 | In the input — add a note if you want, or send as is |
 | `choice.chip.change` | 修改「{{title}}」的选择 | Change the answer to "{{title}}" |
@@ -511,6 +563,7 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
 
 - 图标：卡头 `list-checks`（一批待办里挑一件），铅笔、叉沿用现有 `lucide` 图标集；
 - 语义：卡片是 `role="group"` + `aria-labelledby` 指向标题；选项行是 `role="radio"`（单选）/ `role="checkbox"`（多选），带 `aria-checked`；输入框里的 chip 是 `role="group"`，两个按钮各有 `aria-label`（上表）；**队列行里的 chip 反过来——整个 chip 是一个 `role="button"`**，`aria-label` 用 `choice.queue.change`，因为它只表示一件事（换选择），而行的铅笔、垃圾桶各自独立。
+- 折叠按钮是 `role="button"` + `aria-expanded` + `aria-controls`（指向情境段）；**手机也写 `aria-expanded`**，因为 react-native-web 只转发 `aria-*`、会整块丢掉 `accessibilityState`——行上的 `aria-checked` 同一个理由，三端读出同一件事。
 - 键盘：Tab 进卡 → 方向键在选项间移动 → Enter/Space 选中 → 焦点进输入框。`Esc` 关浮层；
 - 选中状态不只靠颜色：对勾 + 描边 + 底色三重区分（灰度或色弱下仍可辨）；单选的圆与多选的方框让模式也不只靠颜色。
 
@@ -522,7 +575,7 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
 | 卡内自由输入框 | 输入框就是自由输入框（§5.6） |
 | 行尾数字快捷键 | 会劫持输入框的数字（§5.6） |
 | 卡片嵌套 / 回复中途的卡 | 交互上无法回答"我改的是哪一次" |
-| 历史卡片可改 | 同上；只读，且副标题明说不能选（§3） |
+| 历史卡片可改 | 同上；只读，且另有一行明说不能选（§3） |
 | TUI / IM 的交互版 | 本期只保证降级可读；TUI 已经有自己的选择机制（`SendChoiceSheet` 那套是本机 UI，不是 transcript 内容） |
 | 答案胶囊化（用户气泡里的 chip） | 需要新引用类型 + 服务端理解，收益是纯视觉的；留到第二版 |
 | 模型端记账（"用户选了哪个"作为结构化字段） | 第一版让模型读文本就够了；真需要统计时再加 |
@@ -542,23 +595,25 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
    - 7b. **远程桌面**：`RemoteComposer.tsx:1244` 复用同一个 `SendQueuePanel`，所以这一端**不需要新代码**，只需要在远程会话里验证一次（远程样式表可能把行宽/字号带歪）。
    - 7c. **手机**：`mobile/src/features/chat/components/SendQueuePanel.tsx` 单独改——它是另一份实现（折叠表头 + `sendQueueListHeight` 上限），chip 11px 字、行内插在文字上方；面板只上报“要改哪一行”（`onRequestChoiceChange`），`ChoiceSheet` 由 `ComposerDock` 渲染——sheet 是 `Modal`，不放进行列表里。
 8. **prompt**：`agent/src/prompt/choice.md` + `mod.rs` 推入；改 `agent/src/prompt/mod.rs` 的既有测试（断言 prompt 段落顺序的那几条）。
-9. **回归**：`scripts/screenshots/scenarios.d/choice-cards.json` 已经把本文的每一屏变成可重跑的场景（桌面 10 个、手机 4 个，含 `chosen-text`、`queue`、`queue-remote`、`phone-queue`），实现完成后用它做视觉回归（把注入换成真实组件即可）。
+9. **回归**：`scripts/screenshots/scenarios.d/choice-cards.json` 已经把本文的每一屏变成可重跑的场景（目前桌面 20 个、手机 11 个，含 `chosen-text`、`queue`、`expanded`、`history-fold`；远程队列那一个**没有**，理由见 §5.8.1）。
 
 ## 12. 测试点
 
 - **解析**：合法单/多选；2 与 4 的边界；3 个以下/5 个以上降级；重复 id、非法 id、缺 title 的降级；围栏在中途；未知字段忽略。
-- **`context`（2026-11-18）**：单行原样保留；重复行拼成多段；写了但空掉的不出现；桌面与手机都画在标题下、副标题上；只读卡仍保留；没写时不占高度。（`choiceCard.test.ts`、`ChoiceCard.test.tsx`、`MarkdownContent.test.tsx`、手机 `ChoiceCard.test.ts`）
+- **`context`（2026-11-18）**：单行原样保留；重复行拼成多段；写了但空掉的不出现；桌面与手机都画在标题下；只读卡仍保留；没写时不占高度。（`choiceCard.test.ts`、`ChoiceCard.test.tsx`、`MarkdownContent.test.tsx`、手机 `ChoiceCard.test.ts`）
+- **折叠（2026-11-18）**：行数估算（宽字符算两格、显式换行算新段、零宽列不炸）；四行及以下**不画按钮也不裁**；六行起折叠，`aria-expanded` 从 `false` 变 `true` 后 clamp 消失、全文仍在 DOM；只读卡上按钮同样可用且不解锁任何行；`line-clamp-4` 与 `CHOICE_CONTEXT_VISIBLE_LINES` 由测试读常量对齐；**prompt 的 100 字预算与手机列对齐**：100 个中文字（48 units/行）不折、144 字开始折（`choiceContext.test.ts`），且 `choice.md` 里每个示例的 `context:` 字数≤ 100（`prompt_teaches_the_choice_card_fence`）——教什么就得示范什么。（`choiceContext.test.ts`、桌面与手机的 `ChoiceCard.test`）
+- **历史卡（只读）**：一条回复两张卡时，上面那张 `readonly`/`aria-disabled`/不进程 tab 序，**保留它当年写的 `hint`**，并在其后画 `choice.hint.readonly`；卡片自己的 `context` 仍在，且折叠按钮可用。截图场景额外钉住两件事：两张卡与只读卡最后一行都落在转写区的可视框内，以及折叠段的实测高度（桌面 72px、手机 82pt）。
 - **桌面（三态回归，必测）**：空编辑器 ⇒ `disabled:true`；只有 pill ⇒ **`disabled:false`**；移除 pill ⇒ `disabled:true`。这是 v1 错误的那一条，必须钉死。
 - **桌面**：卡片渲染与只读/可交互切换；点行 → pill 出现；铅笔改 pill；叉移除 pill 且发送键变灰；pill + 文字一起发送的内容（§7 四种情况逐条断言）；发送后 pill 消失，**卡面不保留高亮**（答案在用户消息的标签上，为什么不做回填见 §2）。
 - **远程**：同上，且断言 chip 在 textarea 之上而不是里面；**只有 chip 时发送键可用**（v1 同样漏掉的那一条）；远程草稿切换不串答案。
 - **移动端**：44pt 行高；选中行**只有一处强调**（无描边）；铅笔与叉同墨色；sheet 改选后 chip 更新；**只有 chip 时 `canSend` 为真**；键盘弹起时 chip 行不遮 field。
 - **队列（三端都要测）**：入队后答案作为 `choice` 而非纯文本；改选择后行内 chip 与最终发出的文本都变；删整行与“只删选择保留文字”两条路径；旧 Agent 不报 `choice` 时退化不报错。
   - **chip 不抢行铅笔的活**（v3 的硬约束）：chip 是 `role=button` 且**只有一个**图标（chevron）；chip 的右边缘小于铅笔的左边缘；行自己的铅笔与垃圾桶仍然存在且可点。断言三条，缺一条就退回到"两支铅笔"的歧义。
-  - **远程**：远程复用桌面的面板，所以断言里要确认 `[data-send-queue]` 在远程帧里也画出了 chip，且尺寸与桌面一致（`136×22`）。
-  - **手机**：折叠表头能展开/收起；chip 在行内不溢出（`129×23`，行宽 `348`）；行仍保留 `send-queue-edit` 与 `send-queue-remove`。
+  - **远程**：远程复用同一个面板，但**今天不画 chip**：`parseRemoteQueueRows` 与 `RemoteComposer` 都不传 `choice`（§5.8.1）。所以远程的断言目前是反过来的——行正常画出、铅笔与垃圾桶在、chip 不存在、`[问题 → 答案]` 仍是纯文本可手改。补齐这条通道时，把这条断言改成正向的“远程也画出 chip”。
+  - **手机**：折叠表头能展开/收起，且报 `aria-expanded`（不是 `accessibilityState`，web 上会被整块丢掉）；chip 在行内不溢出（实测 `185×21`，行宽 `348`）；行仍保留 `send-queue-edit` 与 `send-queue-remove`。
 - **降级**：TUI 打印代码块内容；未知客户端同。
 - **无障碍**：`role`/`aria-checked`/`aria-label` 三条断言；方向键与 Enter 的键路径。
-- **视觉回归**：`choice-cards.json` 的 14 个场景（含两种样式对比表与两个被否方案）。
+- **视觉回归**：`choice-cards.json` 的 31 个场景（桌面 20 + 手机 11，含两种样式对比表与两个被否方案）。
 
 ## 13. 截图怎么重跑
 
@@ -568,7 +623,6 @@ python3 scripts/screenshots/capture.py serve-mobile         # 手机 harness（8
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   capture-desktop choice-card-empty choice-card-chosen choice-card-change \
                   choice-card-chosen-text choice-card-queue \
-                  choice-card-queue-remote \
                   choice-card-remote choice-card-dark
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   variants-desktop choice-card-styles --columns 3
@@ -577,7 +631,20 @@ python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   capture-mobile choice-card-phone choice-card-phone-chosen \
                  choice-card-phone-change choice-card-phone-queue
+# 真实组件的样张（§5.1 / §5.1.1 / §5.2 / §5.3 / §5.4 / §5.5 / §5.7 / §5.7.2 / §5.8 引的就是这几张）
+python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
+  capture-desktop choice-card-implemented choice-history-fold-desktop \
+                  choice-context-expanded-desktop choice-pill-implemented \
+                  choice-card-chosen-text-implemented choice-card-change-implemented \
+                  choice-card-implemented-dark choice-card-remote-implemented \
+                  send-queue-choice-implemented
+python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
+  capture-mobile choice-card-phone-card choice-history-fold-phone \
+                 choice-context-expanded-phone choice-card-phone-picked \
+                 choice-card-phone-change send-queue-choice-implemented
 ```
+
+顺序有讲究：`serve-mobile` 会往 `mobile` 工作区装 `react-native-web` 等仅 harness 需要的包（`--no-save`，不进 lockfile），它会顺带挪动几个依赖；跑完手机截图再跑 `mobile` 的 jest，需要 `npm ci` 一次把 `@react-native/jest-preset` 装回来（否则 jest-expo 报 "the React Native Jest preset … has moved to a separate package"）。
 
 每个场景都带断言（不只截图）：例如 `choice-card-chosen` 会检查 pill 在编辑器**内**、且 `window.__choiceSendButton().disabled === false`；手机场景检查选中行**没有描边**且铅笔与叉墨色相同。断言失败时 `capture.py` 报 `n/m captured`，不会静静给你一张"看着过了"的图。
 

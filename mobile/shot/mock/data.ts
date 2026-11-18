@@ -320,23 +320,105 @@ const POST_COMPACTION_ANSWER = `## 结论
  * chip row, so this is the fixture the card, the chip and the change sheet are all
  * captured from.
  */
-const CHOICE_FENCE = [
+const CHOICE_FENCE = choiceFence([
+  "context: 森林图现在能读，但两篇的置信区间按不同的样本量算，放在一起对不上号；流程图还没有。",
+]);
+
+/**
+ * A situation long enough to cross the fold threshold
+ * (`CHOICE_CONTEXT_VISIBLE_LINES`, four lines): four lines drawn, a "show more"
+ * button under them, and the whole text only after it is tapped. One entry per
+ * `context:` line — repeated lines become paragraphs, which is the only way a
+ * multi-paragraph context can travel in a line-based fence.
+ */
+export const LONG_CHOICE_CONTEXT_LINES = [
+  "森林图现在能读，但两篇的置信区间按不同的样本量算：Frank 42 人、Dreher 186 人，都是被试间设计，",
+  "Dreher 报的区间明显更窄，所以两篇的数值不能直接放在一起比。",
+  "图注还挂着旧的 42 人，得跟着森林图一起改；图例现在压在曲线上，挪到右下就腾出空白。",
+  "流程图还没有，补它要把两篇的被试流程画成一张对照图，Frank 的三个条件与 Dreher 的两个条件不在同一层，",
+  "画之前得先定用哪一层对齐。",
+  "表里还缺一列样本量，Frank 42 / Dreher 186 都写清楚，测量手段也一并标出来。",
+  "重算、补图、加列三件事互不依赖，先做哪件都行。",
+];
+
+/**
+ * `?choiceCard=1&longContext=1`: the same card with a situation long enough to
+ * fold, which is the one thing that capture exists to show.
+ */
+const LONG_CHOICE_FENCE = choiceFence(
+  LONG_CHOICE_CONTEXT_LINES.map(line => `context: ${line}`),
+);
+
+/**
+ * `?choiceCard=1&choiceHistory=1`: a reply that closes with **two** cards — the
+ * earlier one read-only, with a folded `context`, the reply's own `hint` and the
+ * notice that it cannot be picked; the last one still answerable (design §2, §3).
+ */
+const HISTORY_CARD = [
   "```futureos-choice",
-  "title: 接下来做哪一件？",
-  "mode: single",
-  "option: forest | 重画森林图 | 按 Dreher 2025 的样本量重算两篇的置信区间",
-  "option: flow | 补一张实验流程图 | 把两篇的被试流程画成一张对照图",
-  "option: table | 表里加一列样本量 | Frank 42 / Dreher 186，标出测量手段",
+  "title: 这三处一起改，还是分批？",
+  "mode: multi",
+  "hint: 点几个都行",
+  ...LONG_CHOICE_CONTEXT_LINES.map(line => `context: ${line}`),
+  "option: caption | 先改图注 | 旧的 42 人还挂在图上",
+  "option: legend | 再挪图例 | 现在压着曲线",
   "```",
 ].join("\n");
+
+/** Both fences in one reply: history above, the answerable question below. */
+const HISTORY_FENCE = [HISTORY_CARD, "", CHOICE_FENCE].join("\n");
+
+/** The reply's closing text: which fences this capture asked for. */
+function choiceReplyText(): string {
+  if (requestedChoiceHistory())
+    return HISTORY_FENCE;
+  return requestedLongContext() ? LONG_CHOICE_FENCE : CHOICE_FENCE;
+}
+
+function choiceFence(contextLines: string[]): string {
+  return [
+    "```futureos-choice",
+    "title: 接下来做哪一件？",
+    "mode: single",
+    ...contextLines,
+    "option: forest | 重画森林图 | 按 Dreher 2025 的样本量重算两篇的置信区间",
+    "option: flow | 补一张实验流程图 | 把两篇的被试流程画成一张对照图",
+    "option: table | 表里加一列样本量 | Frank 42 / Dreher 186，标出测量手段",
+    "```",
+  ].join("\n");
+}
 
 export const choiceCardEntries = demoEntries.map(entry =>
   entry.id === "e2"
     // A second text block, not a rewrite of the answer: the reply keeps the words
     // the fixture already has and ends with the fence, which is exactly the shape
     // a real reply takes (the block is the question's own).
-    ? { ...entry, blocks: [...entry.blocks, { kind: "text" as const, text: CHOICE_FENCE }] }
+    ? {
+        ...entry,
+        blocks: [
+          ...entry.blocks,
+          { kind: "text" as const, text: choiceReplyText() },
+        ],
+      }
     : entry);
+
+/**
+ * `?choiceHistory=1`: two cards in one reply — history above, the answerable one
+ * below. Only the last question can be picked; the earlier card keeps what it
+ * said and says it cannot be answered (design §2).
+ */
+function requestedChoiceHistory(): boolean {
+  if (typeof window === "undefined")
+    return false;
+  return new URLSearchParams(window.location.search).get("choiceHistory") === "1";
+}
+
+/** `?longContext=1`: the choice card's `context:` crosses the fold threshold. */
+function requestedLongContext(): boolean {
+  if (typeof window === "undefined")
+    return false;
+  return new URLSearchParams(window.location.search).get("longContext") === "1";
+}
 
 /**
  * `?choiceCard=1&choiceAnswer=1`: the same conversation *after* the reader
@@ -930,13 +1012,34 @@ export const demoTaskDetails = demoTasks.map(task => ({
  * a message whose text and files travel together.
  */
 export function demoQueueRows(count: number, withFiles = false) {
+  // `?queueChoice=1` (design §5.8): the first waiting row is one that answered a
+  // card, so the phone's panel draws the choice chip in it. Its text is the
+  // sentence the answer sends (§7) and `choice` is what the chip re-offers.
+  const withChoice = typeof window !== "undefined"
+    && new URLSearchParams(window.location.search).get("queueChoice") === "1";
   return Array.from({ length: count }, (_, index) => ({
     runId: `run_queued_${index + 1}`,
     position: index + 1,
     acceptedAt: new Date(now - (count - index) * 20 * minute).toISOString(),
-    text: "[future-goal] goal goal_4ce46c920eb8: 1 event(s). Reconcile current status before acting; events may be stale. Read the goal's own state before answering.",
+    text: withChoice && index === 0
+      ? "[接下来做哪一件？ → 重画森林图]"
+      : "[future-goal] goal goal_4ce46c920eb8: 1 event(s). Reconcile current status before acting; events may be stale. Read the goal's own state before answering.",
     // `queued` runs at the next turn boundary; a `stale…` state parks the row.
     state: "queued",
+    ...(withChoice && index === 0
+      ? {
+          choice: {
+            mode: "single" as const,
+            title: "接下来做哪一件？",
+            options: [
+              { id: "forest", label: "重画森林图" },
+              { id: "flow", label: "补一张实验流程图" },
+              { id: "table", label: "表里加一列样本量" },
+            ],
+            selectedIds: ["forest"],
+          },
+        }
+      : {}),
     ...(withFiles && index === 0
       ? {
           // The reported shape of an attachment-only send: no words, one photo.

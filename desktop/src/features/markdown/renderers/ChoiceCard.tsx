@@ -1,9 +1,17 @@
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { ChoiceCardMode, ChoiceCardOption } from "../futureMarkdownTypes";
-import { Check, ListChecks } from "lucide-react";
-import { useId } from "react";
+import { choiceContextFolds } from "@future-os/markdown";
+import { Check, ChevronDown, ChevronUp, ListChecks } from "lucide-react";
+import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../../lib/cn";
+
+/**
+ * Width units one line of the desktop context holds: a 768px card (the text
+ * column) less its 12px padding, at 12px, is about 61 CJK characters — 120 units
+ * by `estimateContextLines`'s accounting.
+ */
+const CONTEXT_UNITS_PER_LINE = 120;
 
 export interface ChoiceCardProps {
   /**
@@ -12,7 +20,10 @@ export interface ChoiceCardProps {
    * the fence may omit it.
    */
   context?: string;
-  /** Overrides the default subtitle; the model may supply one in the fence. */
+  /**
+   * The model's own line about the question, shown under the context when the
+   * fence carried one. There is no default subtitle to override any more (§5.1).
+   */
   hint?: string;
   mode: ChoiceCardMode;
   /**
@@ -48,21 +59,23 @@ export function ChoiceCard({
   const titleId = useId();
   const hintId = useId();
   const readonlyId = useId();
+  const contextId = useId();
+  const [contextExpanded, setContextExpanded] = useState(false);
+  const contextFolds = context ? choiceContextFolds(context, CONTEXT_UNITS_PER_LINE) : false;
   const interactive = Boolean(onSelect);
   const multi = mode === "multi";
   const chosen = options.filter(option => selectedIds.includes(option.id));
   // Roving tabindex (§9): Tab reaches the card, then the arrows walk the rows.
   const focusIndex = Math.max(0, options.findIndex(option => selectedIds.includes(option.id)));
-  // What the card says about answering. A live card falls back to the default
-  // instruction; a past card keeps the model's own words and adds the notice
-  // below — history is read, not answered, but the reply's own hint is part of
-  // what it said and replacing it lost information a reader comes back for.
-  const guidance = interactive
-    ? hint || (multi ? t("choice.hint.multi") : t("choice.hint.single"))
-    : hint;
-  const describedBy = [guidance ? hintId : null, interactive ? null : readonlyId]
+  // The card has no subtitle of its own any more (§5.1): the mode label says
+  // single or multi, the checkbox/radio shape says the same thing again, and
+  // "pick one and it lands in the input" explained a mechanism the pill makes
+  // self-evident — a line of chrome on every card, read once and skipped after
+  // that. What the model itself wrote still shows, and a past card adds the
+  // notice saying it can no longer be picked.
+  const describedBy = [hint ? hintId : null, interactive ? null : readonlyId]
     .filter(Boolean)
-    .join(" ");
+    .join(" ") || undefined;
 
   return (
     <div
@@ -88,27 +101,74 @@ export function ChoiceCard({
           its own: a reader who arrives at the bottom of a long reply should not
           have to scroll back up to know what is being decided. It stays a step
           quieter than the title (`ink-soft`, not `ink-muted`) because it is
-          content, not chrome — the subtitle below it is the chrome.
+          content, not chrome.
+
+          Nothing bounds what a model writes, though, and a card carrying twenty
+          lines of context has become the reply it was meant to replace. Above
+          `CHOICE_CONTEXT_VISIBLE_LINES` the tail folds behind a button — the
+          whole text stays in the DOM, so the reader (and the accessibility
+          tree) always has it, and one click shows it. Below the threshold no
+          control is drawn at all: a "show more" on something already fully
+          visible is a button that does nothing.
         */}
         {context
           ? (
-              <p className="mt-1.5 text-[12px] leading-[18px] whitespace-pre-line text-ink-soft" data-choice-context>
-                {context}
-              </p>
+              <>
+                <p
+                  className={cn(
+                    "mt-1.5 text-[12px] leading-[18px] whitespace-pre-line text-ink-soft",
+                    // `line-clamp-4` mirrors CHOICE_CONTEXT_VISIBLE_LINES; the card test
+                    // reads the constant, so the two cannot drift apart silently.
+                    // The clamp *follows* the decision (see choiceContext.ts),
+                    // never the other way round: if the estimate says the text
+                    // fits, no clamp is applied and nothing can be hidden.
+                    contextFolds && !contextExpanded ? "line-clamp-4" : null,
+                  )}
+                  data-choice-context
+                  data-choice-context-folded={contextFolds && !contextExpanded ? "true" : undefined}
+                  id={contextId}
+                >
+                  {context}
+                </p>
+                {contextFolds
+                  ? (
+                      <button
+                        aria-controls={contextId}
+                        aria-expanded={contextExpanded}
+                        className="mt-1 flex items-center gap-0.5 text-[11px] leading-4 text-ink-muted transition-colors hover:text-ink"
+                        data-choice-context-toggle
+                        onClick={() => setContextExpanded(expanded => !expanded)}
+                        type="button"
+                      >
+                        {contextExpanded
+                          ? (
+                              <>
+                                <ChevronUp aria-hidden="true" className="size-3" />
+                                {t("choice.context.collapse")}
+                              </>
+                            )
+                          : (
+                              <>
+                                <ChevronDown aria-hidden="true" className="size-3" />
+                                {t("choice.context.expand")}
+                              </>
+                            )}
+                      </button>
+                    )
+                  : null}
+              </>
             )
           : null}
         {/*
-          The subtitle is the one place a card can promise an action, so a card
-          that cannot answer must never print a promise: "pick one and it lands
-          in the input" over inert rows is the whole defect — a button that looks
-          pressable and does nothing. That is why a past card gets no *default*
-          instruction, and why the notice below is a statement of fact rather
-          than a plural next to it. The model's own `hint` is different: it is
-          part of what the reply said, so it stays, and the notice follows it.
+          The model's own hint, when it wrote one. There is no default any more:
+          the mode label above already answers "one or several", and the old
+          line promised a mechanism ("lands in the input") that the composer now
+          shows by itself. The notice below is not a subtitle — it is a fact a
+          past card owes the reader.
         */}
-        {guidance
+        {hint
           ? (
-              <p className="mt-1 text-[11px] leading-4 text-ink-muted" id={hintId}>{guidance}</p>
+              <p className="mt-1 text-[11px] leading-4 text-ink-muted" data-choice-hint id={hintId}>{hint}</p>
             )
           : null}
         {interactive

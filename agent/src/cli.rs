@@ -388,6 +388,33 @@ fn profiler_fail_at(stage: &str) -> bool {
     std::env::var("FUTURE_TEST_PROFILER_FAIL_AT").is_ok_and(|v| v == stage)
 }
 
+/// Why `path` can never receive a flamegraph, if it cannot.
+///
+/// Only the destination's *shape* is decided here: a parent directory that is
+/// missing, or that is not a directory at all. That cannot become writable
+/// while the process runs, so the sampler is never worth starting for it —
+/// finding out at exit means paying for pprof's setup and for symbolizing a
+/// debug build, then discarding the report. A directory that merely looks
+/// writable can still refuse the create (permissions, a read-only mount, a full
+/// disk), so the write path keeps its own error handling; this check skips work
+/// that cannot produce output instead of replacing that handling.
+#[cfg(not(windows))]
+fn unusable_profile_destination(path: &Path) -> Option<std::io::Error> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        // A bare file name resolves against the working directory.
+        .unwrap_or_else(|| Path::new("."));
+    match std::fs::metadata(parent) {
+        Ok(metadata) if metadata.is_dir() => None,
+        Ok(_) => Some(std::io::Error::other(format!(
+            "{} is not a directory",
+            parent.display()
+        ))),
+        Err(error) => Some(error),
+    }
+}
+
 /// The full agent entry point — the former `main()` body.
 fn run(
     cli: Cli,
@@ -410,6 +437,22 @@ fn run(
             }
         })
         .map(std::path::PathBuf::from);
+
+    // A destination that cannot be written is settled before the sampler
+    // exists, and an unwritable `--profile` therefore degrades to "no
+    // profiling" instead of to "profile for the whole run, then drop the
+    // report". Kept off Windows, where `--profile` never starts a sampler.
+    #[cfg(not(windows))]
+    let profile_path = profile_path.and_then(|path| match unusable_profile_destination(&path) {
+        Some(error) => {
+            tracing::warn!(
+                "Cannot write the CPU profile to {}: {error} — continuing without profiling",
+                path.display()
+            );
+            None
+        }
+        None => Some(path),
+    });
 
     // Start CPU profiling if requested.  The guard lives in run() so it
     // covers the entire agent lifetime including gRPC startup/shutdown.
@@ -626,6 +669,35 @@ mod tests {
         std::fs::write(dir.path().join("CLAUDE.md"), "agent notes").unwrap();
         let context = crate::prompt::load_project_context(&dir.path().to_string_lossy(), true);
         assert_eq!(context.content, "agent notes");
+    }
+
+    /// A `--profile` destination whose parent cannot become a directory is
+    /// rejected before the sampler starts, so the flag degrades to "no
+    /// profiling" instead of "profile, then discard the report".
+    #[cfg(not(windows))]
+    #[test]
+    fn an_unusable_profile_destination_is_rejected_before_profiling() {
+        let dir = tempfile::tempdir().unwrap();
+        let writable = dir.path().join("flame.svg");
+        assert!(unusable_profile_destination(&writable).is_none());
+        let missing_parent = dir.path().join("missing-dir").join("flame.svg");
+        assert_eq!(
+            unusable_profile_destination(&missing_parent)
+                .expect("a missing parent is unusable")
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
+        let file_parent = dir.path().join("not-a-directory");
+        std::fs::write(&file_parent, "occupied").unwrap();
+        let under_a_file = unusable_profile_destination(&file_parent.join("flame.svg"))
+            .expect("a non-directory parent is unusable");
+        assert!(
+            under_a_file.to_string().contains("not a directory"),
+            "{under_a_file}"
+        );
+        // The default path is a bare file name, which resolves against the
+        // working directory rather than against an empty parent.
+        assert!(unusable_profile_destination(Path::new("agent-profile.svg")).is_none());
     }
 
     #[test]
