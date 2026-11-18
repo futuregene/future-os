@@ -249,6 +249,12 @@ Pinned by `desktop/src/features/markdown/ChoiceCardsToggle.test.tsx` (off: zero 
 
 Those four facts — the read-only state, the original `hint`, the notice and the fold button — are **asserted** by the capture scenario rather than eyeballed; a failed assertion makes `capture.py` report `n/m captured` instead of handing back a picture that looks fine.
 
+**Folding only proves the text can be hidden; opening it is the other half**:
+
+![Desktop: the earlier card's "show more" pressed — the whole paragraph drawn, the button reading "Show less"](assets/choice-cards/desktop-11-history-expanded.png)
+
+*A real-component capture*, scenario `choice-history-expanded-desktop` (1440×900 at 2×, taken from `67b168e89`): the **same fixture and the same reply** as the capture above, with one extra click. The context goes `72px → 126px` (four lines → seven); the button turns into “show less”, `aria-expanded` goes `false → true`, `aria-controls` names that paragraph's `id`, and `-webkit-line-clamp` is `none`. The card's bottom is at `452` and the composer at `774`, so opening it still leaves a whole blank band — expanding reveals the context, not a permission: the read-only notice and the original `hint` are both still there.
+
 ### 5.2 Desktop · one chosen
 
 ![Desktop: one option chosen, the answer as a pill inside the field](assets/choice-cards/desktop-2-chosen.png)
@@ -405,6 +411,12 @@ v1's chosen row announced itself in three places at once: `accent-soft` fill, `a
 - The same context folds far earlier here than on the desktop: a 350pt column with `CONTEXT_UNITS_PER_LINE = 48` (a bit over a quarter of the desktop's 120) means a paragraph the desktop shows whole is already “four lines + show more” on the phone;
 - The button's state is spelled `aria-expanded`, not `accessibilityState` — react-native-web forwards `aria-*` and drops the other entirely, the same reason the rows spell `aria-checked`;
 - Both cards sit wholly inside the transcript frame (`y 60..393` and `401..667`, frame `60..732`), including the folded card's last row. The phone transcript is an inverted list whose scroller carries its own `scaleY(-1)`, so parking it at the frame's top edge is a **subtraction** — the opposite sign of the desktop's plain scroller. That is written into the scenario so the next person does not have to rediscover it.
+
+**Opened on a phone, one card eats the screen**:
+
+![Phone: the earlier card's context opened, filling the transcript frame, with the next card only just starting below](assets/choice-cards/phone-7-history-expanded.png)
+
+*A real-component capture*, scenario `choice-history-expanded-phone` (780×1688 at 2×, taken from `67b168e89`), the same fixture as the capture above plus one click. `82pt → 253pt`; the card spans `60..564` wholly inside the frame `60..732` with no text cut off (`scrollHeight == clientHeight`), the button reads “收起” with `aria-expanded=true`, and the answerable card below starts at `572` — only its opening is in frame. That is not a crop, it is the point: **opening costs a screen**, which is why folding is the default reading on the phone and why the ~100-character budget (§4) is measured against this column.
 
 ### 5.8 A chosen answer in the send queue
 
@@ -643,9 +655,10 @@ In dependency order; each step merges on its own:
   - **The chip never takes over the row's pencil** (v3's hard constraint): the chip is `role=button` with **exactly one** icon (a chevron); the chip's right edge is left of the pencil's left edge; the row's own pencil and bin still exist and are hittable. Three assertions, and losing one brings back the two-pencil ambiguity.
   - **Remote**: remote reuses the same panel, and a row's `choice` is now parsed (`parseQueueChoice`, shared with the local queue). Assert: the chip draws inside the remote frame, its `aria-label` and the row text agree, the pencil and bin are still there, and a pick sends exactly one `edit_queued_run` (`message` and `choice` together, not a cancel and a re-send). A host that reports no field (an older one) draws no chip — `remoteQueue.test.ts` pins that “missing / null / unusable” all read as no answer.
   - **Phone**: the folding header opens and closes and spells `aria-expanded` (not `accessibilityState`, which web drops); the chip does not overflow its row (measured `185×21` in a `348`-wide row); the row keeps `send-queue-edit` and `send-queue-remove`.
+  - **A changed answer on the phone stays on that row, not in the draft**: the chip → sheet → `onQueueUpdateChoice` link is driven through the real panel in `ComposerDock.test.ts`, which asserts `onChangeChoice` is **not** called (that is the draft path, and both surfaces take an identically shaped answer, so a mix-up would send the same pick twice); `ChatScreen.test.ts` enters at the seam the panel calls and asserts the payload is `editQueuedRun(session, row, rewritten sentence, {mode,options,selectedIds,title})` with this screen’s `choice` prop `null` before and after — the answer stays on the row and never fills the box. Falsified once: deleting the fourth argument turns both tests red.
 - **Degradation**: the TUI prints the block's content; unknown clients likewise.
 - **Accessibility**: `role` / `aria-checked` / `aria-label` assertions; arrow keys and Enter.
-- **Visual regression**: the 32 scenarios in `choice-cards.json` (21 desktop + 11 phone, including both comparison sheets and the two rejected approaches).
+- **Visual regression**: the 34 scenarios in `choice-cards.json` (22 desktop + 12 phone, including both comparison sheets and the two rejected approaches).
 
 ## 13. Re-running the screenshots
 
@@ -666,13 +679,15 @@ python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
 # the real-component captures (§5.1 / §5.1.1 / §5.2 / §5.3 / §5.4 / §5.5 / §5.7 / §5.7.2 / §5.8 link these)
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   capture-desktop choice-card-implemented choice-history-fold-desktop \
-                  choice-context-expanded-desktop choice-pill-implemented \
+                  choice-history-expanded-desktop choice-context-expanded-desktop \
+                  choice-pill-implemented \
                   choice-card-chosen-text-implemented choice-card-change-implemented \
                   choice-card-implemented-dark choice-card-remote-implemented \
                   send-queue-choice-implemented send-queue-choice-remote-implemented
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   capture-mobile choice-card-phone-card choice-history-fold-phone \
-                 choice-context-expanded-phone choice-card-phone-picked \
+                 choice-history-expanded-phone choice-context-expanded-phone \
+                 choice-card-phone-picked \
                  choice-card-phone-change send-queue-choice-implemented
 ```
 

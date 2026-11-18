@@ -1652,6 +1652,47 @@ test("changing a waiting message's answer rewrites its sentence and carries the 
   expect(mockRemote.sendMessage).not.toHaveBeenCalled();
 });
 
+/**
+ * A waiting row's chip changes *that row*, never this box.
+ *
+ * Both surfaces are an answer to a card with the same shape, so the two screens
+ * one tap apart: the panel's chip (`onQueueUpdateChoice`) fixes a message already
+ * held by the session, while `onChangeChoice` fills the draft that the next send
+ * will carry. Nothing here may move the pick between them — an answer put in the
+ * draft would be sent a second time, and the row it came from would keep the old
+ * one.
+ */
+test("a queued row's chip edits that row and leaves this box's draft alone", async () => {
+  await mountWithQueue([
+    queueRow({ choice: queuedAnswer, runId: "run_a", text: "[接下来做哪一件？ → 重画森林图]" }),
+  ]);
+  const draft = () => tree.root.findByType(ComposerDock).props;
+  expect(draft().choice).toBeNull();
+
+  // The seam the dock's chip calls once the sheet closes (the press-to-sheet
+  // link itself is pinned in ComposerDock.test.ts, which mounts the real panel).
+  await act(async () => {
+    draft().onQueueUpdateChoice("run_a", { ...queuedAnswer, selectedIds: ["flow"] });
+  });
+  await settleQueue();
+
+  expect(mockRemote.editQueuedRun).toHaveBeenCalledWith(
+    "history",
+    "run_a",
+    "[接下来做哪一件？ → 补一张流程图]",
+    {
+      mode: "single",
+      options: queuedAnswer.options,
+      selectedIds: ["flow"],
+      title: "接下来做哪一件？",
+    },
+  );
+  // The draft is still empty: the pick went to the row, not to this box.
+  expect(draft().choice).toBeNull();
+  expect(mockRemote.sendMessage).not.toHaveBeenCalled();
+  expect(mockRemote.cancelQueuedRun).not.toHaveBeenCalled();
+});
+
 test("a note typed after the answer survives a change to the answer", async () => {
   // The bracketed head belongs to the card; the rest belongs to the reader.
   await mountWithQueue([
