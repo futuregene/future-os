@@ -140,12 +140,15 @@ There is no third mode.
 
 Write each option as the instruction you would follow if chosen — the user's words,
 not a menu label ("重画森林图", not "选项 A"). The third field says what changes or
-what it costs, one line, no marketing.
+what it costs, one line, no marketing. Put the option you recommend **first**, in
+both modes: row order is the recommendation, and nothing downstream re-sorts it.
 
 The block goes last, alone. Never two cards in one reply, never one mid-reply.
 ```
 
 The point: **an option's label must be the sentence the user would say**, because on send it becomes part of the message. Not "option A/B/C".
+
+**Row order is a recommendation, so the best option goes first** (2026-11-18). The parser, the desktop card and the phone all draw `options` in the order the fence lists them and nothing sorts them afterwards, so the first row is what a reader takes as the model's pick — in `multi` too, where it is the row the others build on. A card whose best option sits last makes the reader re-rank a question the model already answered for them, which is the same waste as a prose list. The rule lives in `choice.md` (and is pinned by `prompt_teaches_the_choice_card_fence`), not in the renderers: reordering rows in a client would silently disagree with the reply's own wording ("先做这个" pointing at a row that moved).
 
 **Why §4 was revised three times, 2026-11-15 and 11-16.** The first wording described `multi` as a
 last resort ("omit `mode: multi` unless several can be done in one go") and put it in
