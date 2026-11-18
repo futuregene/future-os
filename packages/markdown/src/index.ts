@@ -5,6 +5,11 @@ export {
   remoteMarkdownImageUrl,
 } from "./localPath";
 export type { MarkdownTarget } from "./localPath";
+export {
+  CHOICE_CONTEXT_VISIBLE_LINES,
+  choiceContextFolds,
+  estimateContextLines,
+} from "./choiceContext";
 export { parseFutureMarkdown } from "./parseFutureMarkdown";
 export { splitChoiceAnswerEcho } from "./choiceAnswerEcho";
 export type { ChoiceAnswerEcho, ChoiceAnswerEchoSplit } from "./choiceAnswerEcho";

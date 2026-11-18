@@ -71,6 +71,10 @@
       "single": "Single choice",
       "multi": "Multiple choice"
     },
+    "context": {
+      "expand": "Show more",
+      "collapse": "Show less"
+    },
     "hint": {
       "readonly": "An earlier question — this card can no longer be picked"
     },

@@ -224,6 +224,7 @@ Pinned by `desktop/src/features/markdown/ChoiceCardsToggle.test.tsx` (off: zero 
 - Header: 12px semibold title plus an 11px mode label on the right (`单选` / `多选`);
 - **No default subtitle** (removed 2026-11-18): the old line ("pick one and it lands in the input; you can type something else instead") explained the mechanism, which the answer pill already demonstrates (§5.2), and `单选` / `多选` is already in the header. A sentence that has to be read on every card and is useful once is a tax on every card. A `hint` the reply wrote itself is still drawn here at 11px `ink-muted`; a read-only card gains the `choice.hint.readonly` line (§3);
 - `context`, when present, sits between the header and that line: 12px / 18px, `ink-soft` — one weight heavier than `hint` because it is content, not chrome. A card without it takes no height from it; a read-only card keeps it;
+- **A context taller than four lines folds**: `line-clamp-4` cuts it with an ellipsis and a 11px “show more / show less” button (chevron, `aria-expanded`, `aria-controls` pointing at the paragraph) sits under it. The full text never leaves the DOM, so a screen reader reads all of it and expanding only draws it. Four lines or fewer get no control at all — a “show more” over text that is already fully visible is another button that does nothing. The phone follows the same rule with `numberOfLines={4}`, which lets the platform draw the ellipsis.
 - Each option is a row: a 16px radio, a 13px label, a 12px one-line note (`ink-muted`); unselected rows have no border and no fill and are separated by spacing alone;
 - Card shell: `1px line` / `radius 10px` / `surface` / a very light shadow — the approval card's material, but a **different position**: the approval card floats above the composer, a choice card grows inside the reply.
 
@@ -531,7 +532,9 @@ Fixed copy (the model neither provides nor should provide it) — keys needed on
 |---|---|---|
 | `choice.mode.single` | 单选 | Single choice |
 | `choice.mode.multi` | 多选 | Multiple choice |
-| `choice.hint.readonly` | 只作展示：这张卡不能选 | An earlier question — this card can no longer be picked |
+| `choice.context.expand` | 展开 | Show more |
+| `choice.context.collapse` | 收起 | Show less |
+| `choice.hint.readonly` | 早先的提问，这张卡不能再选 | An earlier question — this card can no longer be picked |
 | `choice.foot.queued` | 已放进输入框，可以继续补充，也可以直接发送 | In the input — add a note if you want, or send as is |
 | `choice.chip.change` | 修改「{{title}}」的选择 | Change the answer to "{{title}}" |
 | `choice.chip.remove` | 移除「{{title}}」的选择 | Remove the answer to "{{title}}" |

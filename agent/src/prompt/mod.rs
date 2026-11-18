@@ -1248,8 +1248,19 @@ mod tests {
         assert!(prompt.contains("mode: multi\ncontext: "));
         assert!(prompt.contains("answer from the card alone"));
         assert!(prompt.contains("under ~200 characters"));
+        // The card folds a context longer than `CHOICE_CONTEXT_VISIBLE_LINES`
+        // lines (packages/markdown/src/choiceContext.ts), so the prompt says what
+        // has to be in the part that stays visible: a model that buries the
+        // deciding fact in paragraph three writes a card whose answer sits behind
+        // a button.
+        assert!(prompt.contains("lead with the decisive fact"));
+        assert!(prompt.contains("only the first four lines are guaranteed"));
         // Repeated lines are paragraphs (`parseChoiceCard` joins them with `\n`).
-        assert!(prompt.contains("repeat\n  the line"));
+        // Matched on flattened whitespace: where this sentence wraps is a
+        // typesetting detail of a section that is reflowed to stay inside its
+        // line budget, not something the model's behaviour depends on.
+        let flat = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains("Repeat the line if a second paragraph"));
 
         // The parser's tolerances, stated where the model writes them: a card
         // outside 2–4 rows is dropped whole, so the reply loses its question.
@@ -1311,7 +1322,8 @@ mod tests {
         // rule joined — it changes what the model writes on every card, unlike
         // the rest of §4's prose. Raised to 51 when `context:` did the same:
         // every card now carries a situation paragraph, and the examples had to
-        // show one.
+        // show one. The fold clause (2026-11-18) fit by reflowing this section
+        // instead of raising the budget a third time.
         assert!(include_str!("choice.md").lines().count() <= 51);
     }
 
