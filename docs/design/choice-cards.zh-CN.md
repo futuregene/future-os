@@ -244,7 +244,7 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 
 ![桌面端：早先那张卡的「展开」按下之后——全文露出，按钮变「收起」](assets/choice-cards/desktop-11-history-expanded.png)
 
-*真实组件截图*，场景 `choice-history-expanded-desktop`（1440×900 @2×，取自本批提交）：与上一张**同一份 fixture、同一条回复**，只多一次点击。情境段 `72px → 126px`（四行 → 七行），按钮从「展开」变「收起」、`aria-expanded` 由 `false` 转 `true`、`aria-controls` 指向那个 `<p>` 的 `id`，`-webkit-line-clamp` 为 `none`；卡底 `452`，输入框 `774`，展开后仍隔着一整段空白。只读提示与当年的 `hint` 一个不少——展开的是情境，不是权限。
+*真实组件截图*，场景 `choice-history-expanded-desktop`（1440×900 @2×，取自 `67b168e89`）：与上一张**同一份 fixture、同一条回复**，只多一次点击。情境段 `72px → 126px`（四行 → 七行），按钮从「展开」变「收起」、`aria-expanded` 由 `false` 转 `true`、`aria-controls` 指向那个 `<p>` 的 `id`，`-webkit-line-clamp` 为 `none`；卡底 `452`，输入框 `774`，展开后仍隔着一整段空白。只读提示与当年的 `hint` 一个不少——展开的是情境，不是权限。
 
 ### 5.2 桌面端 · 已选
 
@@ -409,7 +409,7 @@ v1 的已选行同时在三个地方宣告"选中"：`accent-soft` 填充 + `acc
 
 ![手机：早先那张卡的情境展开后，占满转写区，下面那张卡只露出开头](assets/choice-cards/phone-7-history-expanded.png)
 
-*真实组件截图*，场景 `choice-history-expanded-phone`（780×1688 @2×，取自本批提交），与上一张同一份 fixture，只多一次点击。`82pt → 253pt`，卡体 `60..564` 整个落在转写框 `60..732` 里、文字一个字没被裁（`scrollHeight == clientHeight`），按钮变「收起」且 `aria-expanded=true`；下面那张可选卡从 `572` 开始，只露出开头——这不是裁切，而是这张图要说的事：**展开是有代价的**，手机上它几乎占满一屏，所以折叠才是默认读法，100 字的预算（§4）也是照这一屏定的。
+*真实组件截图*，场景 `choice-history-expanded-phone`（780×1688 @2×，取自 `67b168e89`），与上一张同一份 fixture，只多一次点击。`82pt → 253pt`，卡体 `60..564` 整个落在转写框 `60..732` 里、文字一个字没被裁（`scrollHeight == clientHeight`），按钮变「收起」且 `aria-expanded=true`；下面那张可选卡从 `572` 开始，只露出开头——这不是裁切，而是这张图要说的事：**展开是有代价的**，手机上它几乎占满一屏，所以折叠才是默认读法，100 字的预算（§4）也是照这一屏定的。
 
 ### 5.8 队列里的选择
 

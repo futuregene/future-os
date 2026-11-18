@@ -253,7 +253,7 @@ Those four facts — the read-only state, the original `hint`, the notice and th
 
 ![Desktop: the earlier card's "show more" pressed — the whole paragraph drawn, the button reading "Show less"](assets/choice-cards/desktop-11-history-expanded.png)
 
-*A real-component capture*, scenario `choice-history-expanded-desktop` (1440×900 at 2×, from this batch's commit): the **same fixture and the same reply** as the capture above, with one extra click. The context goes `72px → 126px` (four lines → seven); the button turns into “show less”, `aria-expanded` goes `false → true`, `aria-controls` names that paragraph's `id`, and `-webkit-line-clamp` is `none`. The card's bottom is at `452` and the composer at `774`, so opening it still leaves a whole blank band — expanding reveals the context, not a permission: the read-only notice and the original `hint` are both still there.
+*A real-component capture*, scenario `choice-history-expanded-desktop` (1440×900 at 2×, taken from `67b168e89`): the **same fixture and the same reply** as the capture above, with one extra click. The context goes `72px → 126px` (four lines → seven); the button turns into “show less”, `aria-expanded` goes `false → true`, `aria-controls` names that paragraph's `id`, and `-webkit-line-clamp` is `none`. The card's bottom is at `452` and the composer at `774`, so opening it still leaves a whole blank band — expanding reveals the context, not a permission: the read-only notice and the original `hint` are both still there.
 
 ### 5.2 Desktop · one chosen
 
@@ -416,7 +416,7 @@ v1's chosen row announced itself in three places at once: `accent-soft` fill, `a
 
 ![Phone: the earlier card's context opened, filling the transcript frame, with the next card only just starting below](assets/choice-cards/phone-7-history-expanded.png)
 
-*A real-component capture*, scenario `choice-history-expanded-phone` (780×1688 at 2×, from this batch's commit), the same fixture as the capture above plus one click. `82pt → 253pt`; the card spans `60..564` wholly inside the frame `60..732` with no text cut off (`scrollHeight == clientHeight`), the button reads “收起” with `aria-expanded=true`, and the answerable card below starts at `572` — only its opening is in frame. That is not a crop, it is the point: **opening costs a screen**, which is why folding is the default reading on the phone and why the ~100-character budget (§4) is measured against this column.
+*A real-component capture*, scenario `choice-history-expanded-phone` (780×1688 at 2×, taken from `67b168e89`), the same fixture as the capture above plus one click. `82pt → 253pt`; the card spans `60..564` wholly inside the frame `60..732` with no text cut off (`scrollHeight == clientHeight`), the button reads “收起” with `aria-expanded=true`, and the answerable card below starts at `572` — only its opening is in frame. That is not a crop, it is the point: **opening costs a screen**, which is why folding is the default reading on the phone and why the ~100-character budget (§4) is measured against this column.
 
 ### 5.8 A chosen answer in the send queue
 
