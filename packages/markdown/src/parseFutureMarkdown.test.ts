@@ -618,6 +618,16 @@ describe("parseFutureMarkdown — inline nodes", () => {
     });
   });
 
+  it("leaves a prose bracket that names a path as prose", () => {
+    // No arrow, so this is not a choice answer either — but it is the shape the
+    // file-reference shorthand used to eat: one bracketed run whose interior
+    // happens to hold a path. Prose with spaces inside the brackets is prose.
+    expect(first("另外 [见 docs/crawl.md] 那段\n")).toEqual({
+      children: [text("另外 [见 docs/crawl.md] 那段")],
+      type: "paragraph",
+    });
+  });
+
   it("leaves a choice card's answer as prose when a row names a path", () => {
     // `choiceAnswerText` sends `[question → answer]` as plain text (design
     // `docs/design/choice-cards.zh-CN.md` §7). A row that names a path made the

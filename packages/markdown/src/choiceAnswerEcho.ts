@@ -16,11 +16,11 @@ import { closesFence, readFenceLine } from "./fenceNesting";
  * prompt is not rewritten, and what the copy button yields is still the sentence
  * that was sent.
  *
- * The answer is not necessarily at the head. The composer appends its pill to
- * the end of the editor (`writeChoicePill`), so a reader who types first and
- * picks a row afterwards sends `另外 asrbench 可以删除[删哪些？ → 删未在用的 ~/omlx 副本]`
- * — the answer sits in the middle of their own sentence, and drawing it as a tag
- * is no less right there than at the head.
+ * The answer is not necessarily at the head. The composer writes its pill at the
+ * caret, so a reader who leaves the cursor mid-sentence (or types first and picks
+ * after) sends `另外 asrbench 可以删除[删哪些？ → 删未在用的 ~/omlx 副本]` — the answer
+ * sits inside their own sentence, and drawing it as a tag is no less right there
+ * than at the head.
  */
 
 /** One printed answer: the card's question and the rows that were picked. */

@@ -31,9 +31,9 @@ describe("splitChoiceAnswerEcho", () => {
   });
 
   it("reads an answer the reader typed around, and closes the seam it leaves", () => {
-    // The composer appends the pill to the end of the editor, so typing first and
-    // picking a row sends the answer mid-sentence (`writeChoicePill`). The tag is
-    // no less right there, and the words keep their order on both sides of it.
+    // The composer writes the pill at the caret, so a cursor left mid-sentence
+    // puts the answer inside the reader's own words. The tag is no less right
+    // there, and the words keep their order on both sides of it.
     expect(splitChoiceAnswerEcho("另外 asrbench 可以删除[删哪些？ → 删 A 类全部、删未在用的 ~/omlx 副本]"))
       .toEqual({
         echoes: [{ answer: "删 A 类全部、删未在用的 ~/omlx 副本", question: "删哪些？" }],
@@ -64,6 +64,14 @@ describe("splitChoiceAnswerEcho", () => {
 
   it("leaves prose that merely starts with a bracket alone", () => {
     const text = "[更新日志] 修了那个归因";
+    expect(splitChoiceAnswerEcho(text)).toEqual({ echoes: [], rest: text });
+  });
+
+  it("leaves prose that brackets a path alone — no arrow, no answer", () => {
+    // The two halves of the same rule: a normal prose bracket is not a tag here,
+    // and `bracketMentionPath` keeps it out of the file-reference promotion in
+    // the parser. A path inside the brackets does not make either happen.
+    const text = "另外 [见 docs/crawl.md] 那段";
     expect(splitChoiceAnswerEcho(text)).toEqual({ echoes: [], rest: text });
   });
 
