@@ -408,13 +408,13 @@ v1's chosen row announced itself in three places at once: `accent-soft` fill, `a
 
 ### 5.8 A chosen answer in the send queue
 
-Two captures: desktop (local session) and phone. The remote cell was **left out on purpose** (why: §5.8.1).
+Three captures: desktop (local session), remote desktop and phone. The remote cell was **filled in on 2026-11-18** — its rows could not draw the chip before (this client dropped the `choice` the host reported), and both ends now share one parser and one `edit_queued_run`.
 
-| Desktop (local session) | Phone |
-|---|---|
-| ![Desktop: a choice on a queued row](assets/choice-cards/desktop-7-queue.png) | ![Phone: a choice on a queued row](assets/choice-cards/phone-4-queue.png) |
+| Desktop (local session) | Remote desktop | Phone |
+|---|---|---|
+| ![Desktop: a choice on a queued row](assets/choice-cards/desktop-7-queue.png) | ![Remote desktop: a choice on a queued row](assets/choice-cards/desktop-8-queue-remote.png) | ![Phone: a choice on a queued row](assets/choice-cards/phone-4-queue.png) |
 
-Both are *real-component captures* (scenario `send-queue-choice-implemented`, 1440×900 and 780×1688 at 2×, taken from `0d4bf428b`); the fixture's `?queue=1&queueChoice=1` builds the row — its text is the sentence the answer sends, its `choice` field is what the chip is drawn from.
+All three are *real-component captures* (scenarios `send-queue-choice-implemented` and `send-queue-choice-remote-implemented`, 1440×900 and 780×1688 at 2×, the desktop ones from `0d4bf428b` and the remote one from this change); the desktop and remote rows come from the fixture's `?queue=1&queueChoice=1` (the remote one through the host's `get_queue`), the phone's from `demoQueueRows`. The row's text is the sentence the answer sends; its `choice` field is what the chip is drawn from.
 
 First, what **happens today** (read from the code, not guessed):
 
@@ -428,8 +428,10 @@ So the gap is not "can it be deleted" but "can the *choice* be changed": today t
 
 This decides the size of the work, so it goes first:
 
-- **Remote desktop reuses the desktop `SendQueuePanel`**: `RemoteComposer.tsx:25` imports `{ SendQueuePanel } from "../agent/SendQueuePanel"` and renders it at `:1361`. Remote has its own *composer* (a plain textarea, no pills), but the queue *panel* is the same component. So remote queue styling **is** desktop queue styling — nothing needs designing twice.
-- **But remote's rows cannot draw the chip today, and that is a gap, not a decision.** The host's row arrives carrying `choice` and this client drops it: `parseRemoteQueueRows` in `remoteQueue.ts` has no `choice` field, and `RemoteComposer.tsx:1366` builds `items` with only `attachments/content/id/parked`, passing no `onRequestChoiceChange` — while the panel's chip requires both (`SendQueuePanel.tsx:249` is `item.choice && … && onRequestChoiceChange`). So a remote row has text, a pencil and a bin, and no chip; changing a queued answer remotely still means hand-editing `[question → answer]`. **The earlier claim here — “measured on both: chip `136×22`” — was wrong**, which is also why this section no longer has a remote figure (a stale picture is worse than none). Closing the gap needs a new remote command to change a queued run's choice; that implementation is not done and is outside this document's scope.
+- **Remote desktop reuses the desktop `SendQueuePanel`**: `RemoteComposer.tsx` imports `{ SendQueuePanel } from "../agent/SendQueuePanel"` and draws it above its own queue rows. Remote has its own *composer* (a plain textarea, no pills), but the queue *panel* is the same component, so the styling **is** the desktop's — nothing needs designing twice.
+- **Remote rows draw the chip too, by the same rules** (filled in 2026-11-18). The host was always sending `choice` (`host/src/agent_bridge/queue.rs` writes it into `get_queue`); this client dropped it while parsing. `remoteQueue.ts` now reads it with the **same** `parseQueueChoice` the local queue uses (exported from `agentQueue.ts`), and `RemoteComposer` passes it to the panel together with `onUpdateChoice`. Changing the pick goes through `edit_queued_run` — **the answer and the sentence it states travel together**, rewritten in place by the host — so the row keeps its place, its files and its frozen settings, exactly like a local conversation.
+  - **No cancel-and-resend fallback, deliberately**: the chip is drawn only for a row whose host *reports* its answer, and reporting it and accepting the change landed in the same host change (`e8eb0d1ec`), so a host that can draw the chip can change it. An older host reports nothing ⇒ no chip ⇒ no button to fail. A failure is said, and the row is left as it was.
+  - **The earlier claim here — "measured on both: chip `136×22`" — was wrong**, and so was the missing figure; both were corrected in this change (measurements in §5.8.4, figure in §5.8).
 - **The phone has its own** `mobile/src/features/chat/components/SendQueuePanel.tsx`: a one-line `Pressable` header (`aria-expanded` — not `accessibilityState`, which react-native-web drops; copy `展开队列中的消息` / `收起队列中的消息`) that always starts collapsed — the header already carries the count, the hint and a parked row's warning, and every row it would draw is a row of the conversation it is covering. When open the list is bounded by `sendQueueListHeight(vh, kb) = max(96, min(240, round((vh-kb)*0.3)))` and scrolls inside that. So the phone needs its own pass on chip size and placement.
 
 #### 5.8.2 The row draws a chip that **is itself the button**
@@ -461,16 +463,16 @@ The write path **stays out of the plain-text edit**. On the desktop the queue pa
 
 #### 5.8.4 Measured (real panel, real 加入发送队列 flow — not drawn)
 
-| | Desktop | Phone |
-|---|---|---|
-| chip | fills the row's content width, `22` tall | `185×21` |
-| row | `746×60` | `348×52` |
-| icons on the chip | 1 (chevron) | 1 (chevron) |
-| row text | `[接下来做哪一件？ → 重画森林图]` | same |
+| | Desktop | Remote | Phone |
+|---|---|---|---|
+| chip | fills the row's content width, `22` tall | `182×22` | `185×21` |
+| row | `746×60` | `746×52` | `348×52` |
+| icons on the chip | 1 (chevron) | 1 (chevron) | 1 (chevron) |
+| row text | `[接下来做哪一件？ → 重画森林图]` | same | same |
 
-The remote column is **gone**: its rows draw no chip today (§5.8.1's gap), so there is nothing to measure. The earlier `136×22` was wrong and is withdrawn with it.
+All three rows keep their own pencil and bin: the assertions check the chip's `aria-label` and the row text at once, and that `[aria-label="修改队列中的消息"]` / `[aria-label="从队列中删除"]` (the phone's `send-queue-edit` / `send-queue-remove`) are still in the row. The chip is **inserted into** the row, not a replacement for the row's controls.
 
-Both rows keep their own pencil and bin: the assertions check the chip's `aria-label` and the row text at once, and that `[aria-label="修改队列中的消息"]` / `[aria-label="从队列中删除"]` are still in the row. The chip is **inserted into** the row, not a replacement for the row's controls.
+The remote column was measured on 2026-11-18, in a scenario that also asserts the frame really is a remote conversation (`[data-testid="remote-thread-usage"]`) — otherwise a local screenshot would be standing in as evidence for the remote one.
 
 ## 5.9 The list mark: this one is waiting on your choice
 
@@ -626,7 +628,7 @@ In dependency order; each step merges on its own:
    - 7b. **Remote desktop**: `RemoteComposer.tsx:1244` reuses the same `SendQueuePanel`, so this surface needs **no new code** — only one verification run inside a remote session (the remote stylesheet could drag the row width or type scale out of shape).
    - 7c. **Phone**: `mobile/src/features/chat/components/SendQueuePanel.tsx` is a separate implementation (folding header + `sendQueueListHeight` bound); the chip is 11px type, sits above the row's words, and reports which row to change (`onRequestChoiceChange`) — `ComposerDock` owns the `ChoiceSheet`, because a sheet is a `Modal` and does not belong inside a list of rows.
 8. **Prompt**: `agent/src/prompt/choice.md` plus the `include_str!` in `mod.rs`; update the prompt-assembly tests in `agent/src/prompt/mod.rs` that assert section order.
-9. **Regression**: `scripts/screenshots/scenarios.d/choice-cards.json` already turns every frame in this document into a re-runnable scenario (twenty on desktop, eleven on the phone, including `chosen-text`, `queue`, `expanded` and `history-fold`; the remote queue one is **absent**, for the reason in §5.8.1).
+9. **Regression**: `scripts/screenshots/scenarios.d/choice-cards.json` already turns every frame in this document into a re-runnable scenario (twenty-one on desktop, eleven on the phone, including `chosen-text`, `queue`, `queue-remote`, `expanded` and `history-fold`).
 
 ## 12. Test points
 
@@ -639,11 +641,11 @@ In dependency order; each step merges on its own:
 - **A past card (read-only)**: with two cards in one reply, the upper one is `readonly` / `aria-disabled` / out of the tab order, **keeps the `hint` it was written with**, and draws `choice.hint.readonly` after it; its own `context` stays and the fold button still works. The capture scenarios pin two more things: both cards and the folded card's last row sit inside the transcript frame, and the clamped paragraph measures 72px on the desktop and 82pt on the phone.
 - **Queue (all three surfaces)**: after enqueueing, the answer is a `choice` rather than flattened text; changing it updates both the row's chip and the text that eventually sends; removing the whole row and removing only the choice are distinct paths; an older Agent that omits `choice` degrades without error.
   - **The chip never takes over the row's pencil** (v3's hard constraint): the chip is `role=button` with **exactly one** icon (a chevron); the chip's right edge is left of the pencil's left edge; the row's own pencil and bin still exist and are hittable. Three assertions, and losing one brings back the two-pencil ambiguity.
-  - **Remote**: remote reuses the same panel but **draws no chip today** — neither `parseRemoteQueueRows` nor `RemoteComposer` passes `choice` (§5.8.1). So the remote assertion currently runs the other way: the row draws, its pencil and bin are there, no chip exists, and `[question → answer]` stays plain text the reader can hand-edit. When that lane is built, flip the assertion to the positive form.
+  - **Remote**: remote reuses the same panel, and a row's `choice` is now parsed (`parseQueueChoice`, shared with the local queue). Assert: the chip draws inside the remote frame, its `aria-label` and the row text agree, the pencil and bin are still there, and a pick sends exactly one `edit_queued_run` (`message` and `choice` together, not a cancel and a re-send). A host that reports no field (an older one) draws no chip — `remoteQueue.test.ts` pins that “missing / null / unusable” all read as no answer.
   - **Phone**: the folding header opens and closes and spells `aria-expanded` (not `accessibilityState`, which web drops); the chip does not overflow its row (measured `185×21` in a `348`-wide row); the row keeps `send-queue-edit` and `send-queue-remove`.
 - **Degradation**: the TUI prints the block's content; unknown clients likewise.
 - **Accessibility**: `role` / `aria-checked` / `aria-label` assertions; arrow keys and Enter.
-- **Visual regression**: the 31 scenarios in `choice-cards.json` (20 desktop + 11 phone, including both comparison sheets and the two rejected approaches).
+- **Visual regression**: the 32 scenarios in `choice-cards.json` (21 desktop + 11 phone, including both comparison sheets and the two rejected approaches).
 
 ## 13. Re-running the screenshots
 
@@ -667,7 +669,7 @@ python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
                   choice-context-expanded-desktop choice-pill-implemented \
                   choice-card-chosen-text-implemented choice-card-change-implemented \
                   choice-card-implemented-dark choice-card-remote-implemented \
-                  send-queue-choice-implemented
+                  send-queue-choice-implemented send-queue-choice-remote-implemented
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   capture-mobile choice-card-phone-card choice-history-fold-phone \
                  choice-context-expanded-phone choice-card-phone-picked \

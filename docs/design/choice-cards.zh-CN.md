@@ -401,13 +401,13 @@ v1 的已选行同时在三个地方宣告"选中"：`accent-soft` 填充 + `acc
 
 ### 5.8 队列里的选择
 
-两张：桌面（本地会话）与手机。远程那格**故意不补**（理由在 §5.8.1）。
+三张：桌面（本地会话）、远程桌面、手机。远程那一格 2026-11-18 补齐——它的行以前画不出 chip（本机把宿主报的 `choice` 丢了），现在两端共用同一个解析器与同一条 `edit_queued_run`。
 
-| 桌面（本地会话） | 手机 |
-|---|---|
-| ![桌面：队列里的选择](assets/choice-cards/desktop-7-queue.png) | ![手机：队列里的选择](assets/choice-cards/phone-4-queue.png) |
+| 桌面（本地会话） | 远程桌面 | 手机 |
+|---|---|---|
+| ![桌面：队列里的选择](assets/choice-cards/desktop-7-queue.png) | ![远程桌面：队列里的选择](assets/choice-cards/desktop-8-queue-remote.png) | ![手机：队列里的选择](assets/choice-cards/phone-4-queue.png) |
 
-两张都是*真实组件截图*（场景 `send-queue-choice-implemented`，1440×900 与 780×1688 @2×，取自 `0d4bf428b`），队列行由 fixture 的 `?queue=1&queueChoice=1` 造成：行文字是答案要发出去的句子，行里的 `choice` 字段才是 chip 的依据。
+三张都是*真实组件截图*（场景 `send-queue-choice-implemented` 与 `send-queue-choice-remote-implemented`，1440×900 与 780×1688 @2×，取自 `0d4bf428b` 与本批的这个提交）；桌面与远程的行由 fixture 的 `?queue=1&queueChoice=1` 造成（远程那份走宿主的 `get_queue`），手机那份是 `demoQueueRows`。行文字是答案要发出去的句子，行里的 `choice` 字段才是 chip 的依据。
 
 先说 **今天实际发生什么**（已核代码，不靠猜）：
 
@@ -421,8 +421,10 @@ v1 的已选行同时在三个地方宣告"选中"：`accent-soft` 填充 + `acc
 
 这一节决定了实现量，所以先讲清楚：
 
-- **远程桌面复用桌面端的 `SendQueuePanel`**：`RemoteComposer.tsx:25` 直接 `import { SendQueuePanel } from "../agent/SendQueuePanel"`，在 `:1361` 渲染。远程的输入框是另一套（纯 textarea，没有 pill），但队列**面板**是同一个组件。所以远程的队列样式就是桌面的队列样式——不需要为远程设计第二遍。
-- **但是：远程的行今天画不出 chip，这是缺口，不是设计。** 宿主那一行带着 `choice` 过来，本机在解析时把它丢了：`remoteQueue.ts` 的 `parseRemoteQueueRows` 没有 `choice` 字段，`RemoteComposer.tsx:1366` 拼 `items` 时只传 `attachments/content/id/parked`、也不传 `onRequestChoiceChange`——而面板的 chip 恰好要求这两样（`SendQueuePanel.tsx:249` 是 `item.choice && … && onRequestChoiceChange`）。所以远程的队列行只有文字、铅笔、垃圾桶，没有 chip；远程要换答案仍得对着 `[问题 → 答案]` 手改文字。**上一版这里写的「实测两边 chip 都是 136×22」是错的**，也解释了为什么本节不再有远程那一张图（拿旧图充数比空着更糟）；补齐它需要新增一条远程“改队列里的选择”的命令，属于未做的实现，不在本稿范围内。
+- **远程桌面复用桌面端的 `SendQueuePanel`**：`RemoteComposer.tsx` 直接 `import { SendQueuePanel } from "../agent/SendQueuePanel"`，在它自己的队列行上方渲染。远程的输入框是另一套（纯 textarea，没有 pill），但队列**面板**是同一个组件，所以样式就是桌面的样式——不需要为远程设计第二遍。
+- **远程的行也画得出 chip，与本地同一套规则**（2026-11-18 补齐）。宿主一直带着 `choice` 过来（`host/src/agent_bridge/queue.rs` 把它写进 `get_queue`），是本机解析时丢掉的；现在 `remoteQueue.ts` 用**同一个** `parseQueueChoice`（导出在 `agentQueue.ts`，本地队列用的就是它）读出答案，`RemoteComposer` 把它传给面板并接上 `onUpdateChoice`。换答案走 `edit_queued_run`，**答案与它声明的句子一起发**，宿主一次原地改写——行的位置、附件、冻结的设置都不动，与本地会话完全同一条路径。
+  - **没有 cancel-重发 的回退，是有意的**：chip 只为“宿主报得出答案”的行绘制，而“报得出”与“接受改写”是同一批宿主改动（`e8eb0d1ec`），所以画得出 chip 的宿主就改得动它。旧宿主不报这个字段 ⇒ 不画 chip ⇒ 也就没有会失败的按钮。失败就报一句，行保持原样。
+  - **上一版这里写的「实测两边 chip 都是 `136×22`」是错的**，远程也没有一张图；两件事都在这轮改了（实测见 §5.8.4，图见 §5.8）。
 - **手机有它自己的一份** `mobile/src/features/chat/components/SendQueuePanel.tsx`：表头是一行 `Pressable` 折叠条（`aria-expanded`——不是 `accessibilityState`，react-native-web 只转发 `aria-*`；文案 `展开队列中的消息` / `收起队列中的消息`），**一律默认收起**——条上已经有条数、那句「当前回复结束后合并成一条发送」和 parked 行的警示，而展开的每一行都会盖住它下面的对话。展开后列表高度 `sendQueueListHeight(vh, kb) = max(96, min(240, round((vh-kb)*0.3)))`，再长就在列表内滚动。手机端因此需要单独设计一遍 chip 的尺寸与位置。
 
 ### 5.8.2 行里画什么：chip **自己就是按钮**
@@ -454,16 +456,16 @@ chevron 而不是铅笔，是刻意的：它说的是“这里能打开点什么
 
 ### 5.8.4 实测（真实面板 + 真实“加入发送队列”流程，不是画的）
 
-| | 桌面 | 手机 |
-|---|---|---|
-| chip 尺寸 | 宽填满行内容区，高 `22` | `185×21` |
-| 行尺寸 | `746×60` | `348×52` |
-| chip 上的图标数 | 1（chevron） | 1（chevron） |
-| 行文字 | `[接下来做哪一件？ → 重画森林图]` | 同左 |
+| | 桌面 | 远程 | 手机 |
+|---|---|---|---|
+| chip 尺寸 | 宽填满行内容区，高 `22` | `182×22` | `185×21` |
+| 行尺寸 | `746×60` | `746×52` | `348×52` |
+| chip 上的图标数 | 1（chevron） | 1（chevron） | 1（chevron） |
+| 行文字 | `[接下来做哪一件？ → 重画森林图]` | 同左 | 同左 |
 
-远程那一列**删了**：它的行今天不画 chip（§5.8.1 的缺口），没有可实测的东西。上一版的 `136×22` 是错的，一并撤回。
+三端的行都保留了自己的铅笔与垃圾桶：断言里直接查了 chip 的 `aria-label` 与行文字同时成立，以及行的 `[aria-label="修改队列中的消息"]` / `[aria-label="从队列中删除"]`（手机是 `send-queue-edit` / `send-queue-remove`）仍然在行里。也就是说 chip 是**插在**行里的，不是替换掉行的操作。
 
-两端的行都保留了自己的铅笔与垃圾桶：断言里直接查了 chip 的 `aria-label` 与行文字同时成立，以及 `[aria-label="修改队列中的消息"]` / `[aria-label="从队列中删除"]` 仍然在行里。也就是说 chip 是**插在**行里的，不是替换掉行的操作。
+远程那一格是 2026-11-18 量的，同一个场景里还断言了“这一帧确实是远程会话”（`[data-testid="remote-thread-usage"]`），否则一张本地截图会被当成远程的证据。
 
 ## 5.9 会话列表里的标记：这一条在等你选
 
@@ -595,7 +597,7 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
    - 7b. **远程桌面**：`RemoteComposer.tsx:1244` 复用同一个 `SendQueuePanel`，所以这一端**不需要新代码**，只需要在远程会话里验证一次（远程样式表可能把行宽/字号带歪）。
    - 7c. **手机**：`mobile/src/features/chat/components/SendQueuePanel.tsx` 单独改——它是另一份实现（折叠表头 + `sendQueueListHeight` 上限），chip 11px 字、行内插在文字上方；面板只上报“要改哪一行”（`onRequestChoiceChange`），`ChoiceSheet` 由 `ComposerDock` 渲染——sheet 是 `Modal`，不放进行列表里。
 8. **prompt**：`agent/src/prompt/choice.md` + `mod.rs` 推入；改 `agent/src/prompt/mod.rs` 的既有测试（断言 prompt 段落顺序的那几条）。
-9. **回归**：`scripts/screenshots/scenarios.d/choice-cards.json` 已经把本文的每一屏变成可重跑的场景（目前桌面 20 个、手机 11 个，含 `chosen-text`、`queue`、`expanded`、`history-fold`；远程队列那一个**没有**，理由见 §5.8.1）。
+9. **回归**：`scripts/screenshots/scenarios.d/choice-cards.json` 已经把本文的每一屏变成可重跑的场景（目前桌面 21 个、手机 11 个，含 `chosen-text`、`queue`、`queue-remote`、`expanded`、`history-fold`）。
 
 ## 12. 测试点
 
@@ -609,11 +611,11 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
 - **移动端**：44pt 行高；选中行**只有一处强调**（无描边）；铅笔与叉同墨色；sheet 改选后 chip 更新；**只有 chip 时 `canSend` 为真**；键盘弹起时 chip 行不遮 field。
 - **队列（三端都要测）**：入队后答案作为 `choice` 而非纯文本；改选择后行内 chip 与最终发出的文本都变；删整行与“只删选择保留文字”两条路径；旧 Agent 不报 `choice` 时退化不报错。
   - **chip 不抢行铅笔的活**（v3 的硬约束）：chip 是 `role=button` 且**只有一个**图标（chevron）；chip 的右边缘小于铅笔的左边缘；行自己的铅笔与垃圾桶仍然存在且可点。断言三条，缺一条就退回到"两支铅笔"的歧义。
-  - **远程**：远程复用同一个面板，但**今天不画 chip**：`parseRemoteQueueRows` 与 `RemoteComposer` 都不传 `choice`（§5.8.1）。所以远程的断言目前是反过来的——行正常画出、铅笔与垃圾桶在、chip 不存在、`[问题 → 答案]` 仍是纯文本可手改。补齐这条通道时，把这条断言改成正向的“远程也画出 chip”。
+  - **远程**：远程复用同一个面板，且行的 `choice` 现在会被解析（`parseQueueChoice`，与本地共用一个）；断言：chip 在远程帧里画出、`aria-label` 与行文字同时成立、铅笔与垃圾桶仍在、按下只会发一条 `edit_queued_run`（`message` 与 `choice` 同行，不是 cancel+重发）。宿主不报该字段时（旧宿主）不画 chip——`remoteQueue.test.ts` 单独钉了“缺/空/不可用三种都读作没有答案”。
   - **手机**：折叠表头能展开/收起，且报 `aria-expanded`（不是 `accessibilityState`，web 上会被整块丢掉）；chip 在行内不溢出（实测 `185×21`，行宽 `348`）；行仍保留 `send-queue-edit` 与 `send-queue-remove`。
 - **降级**：TUI 打印代码块内容；未知客户端同。
 - **无障碍**：`role`/`aria-checked`/`aria-label` 三条断言；方向键与 Enter 的键路径。
-- **视觉回归**：`choice-cards.json` 的 31 个场景（桌面 20 + 手机 11，含两种样式对比表与两个被否方案）。
+- **视觉回归**：`choice-cards.json` 的 32 个场景（桌面 21 + 手机 11，含两种样式对比表与两个被否方案）。
 
 ## 13. 截图怎么重跑
 
@@ -637,7 +639,7 @@ python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
                   choice-context-expanded-desktop choice-pill-implemented \
                   choice-card-chosen-text-implemented choice-card-change-implemented \
                   choice-card-implemented-dark choice-card-remote-implemented \
-                  send-queue-choice-implemented
+                  send-queue-choice-implemented send-queue-choice-remote-implemented
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   capture-mobile choice-card-phone-card choice-history-fold-phone \
                  choice-context-expanded-phone choice-card-phone-picked \
