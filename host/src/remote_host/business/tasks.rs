@@ -163,6 +163,38 @@ fn optional_str_field(payload: &Value, key: &str, base: Option<&String>) -> Opti
     }
 }
 
+/// The task payload a write carries, with its model reference normalized.
+///
+/// `IncomingCmd` is shared, so this copies only the one object a write may need
+/// to rewrite.
+async fn task_payload(cmd: &IncomingCmd) -> Value {
+    let mut payload = cmd.task.clone();
+    normalize_model_id_field(&mut payload).await;
+    payload
+}
+
+/// Normalize the `modelId` a client sends before it is stored.
+///
+/// A reference is `provider/id`, and a client that spells one out itself (rather
+/// than echoing a catalogue entry) can prefix an id that already begins with its
+/// provider — `omlx/omlx/Qwen3.8-…`. Stored raw that names no model: the Agent
+/// falls back to a default and every client shows the string as the model's
+/// name. The catalogue decides which spelling it recognizes, so a value it names
+/// exactly is stored as sent, and an unreadable catalogue stores what arrived
+/// (the run path normalizes again, so nothing depends on this write).
+async fn normalize_model_id_field(payload: &mut Value) {
+    let raw = match payload.get("modelId") {
+        Some(Value::String(raw)) => raw.clone(),
+        // Absent, null or not a string: nothing to normalize, and the field's
+        // own meaning (keep / clear) is `optional_str_field`'s to decide.
+        _ => return,
+    };
+    let normalized = crate::agent_bridge::normalize_model_reference_against_catalog(&raw).await;
+    if normalized != raw {
+        payload["modelId"] = Value::String(normalized);
+    }
+}
+
 /// The zone a payload asks for.
 ///
 /// Absent keeps what the row already carries (and resolves the host's zone for
@@ -343,7 +375,7 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
         },
         "create_task" => match open_store() {
-            Ok(store) => match task_from_payload(&cmd.task, None).and_then(|task| {
+            Ok(store) => match task_from_payload(&task_payload(cmd).await, None).and_then(|task| {
                 let created = task.clone();
                 store
                     .insert_task(&task)
@@ -384,8 +416,8 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 // One chain, one error path: the history read cannot fail on
                 // its own here (the store recreates its schema on open), so a
                 // match arm for it would be a branch nothing can reach.
-                let incoming_prompt = cmd
-                    .task
+                let payload = task_payload(cmd).await;
+                let incoming_prompt = payload
                     .get("prompt")
                     .and_then(Value::as_str)
                     .unwrap_or(&existing.prompt)
@@ -402,7 +434,7 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                             None,
                             now_ms(),
                         );
-                        let task = task_from_payload(&cmd.task, Some(existing))?;
+                        let task = task_from_payload(&payload, Some(existing))?;
                         for row in &revisions {
                             store
                                 .insert_revision(row)
@@ -1076,6 +1108,67 @@ mod tests {
         for raw in [Some("manual"), Some("cron"), None] {
             assert_eq!(parse_trigger_kind(raw), TriggerKind::Manual, "{raw:?}");
         }
+    }
+
+    /// A model reference the phone (or an older client) spells with its
+    /// provider twice is normalized against the catalogue before it is stored,
+    /// so the task it creates names a model that exists.
+    ///
+    /// The catalogue is what decides: `openrouter`'s own id repeats its
+    /// provider, and that reference is stored exactly as sent.
+    #[tokio::test]
+    async fn creating_a_task_normalizes_the_model_reference() {
+        let _home = home("business-tasks-normalize-model");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        mock.push_data(
+            "list_models",
+            serde_json::json!({"models": [
+                {"id": "Qwen3.8-27B-oQ4e-mtp", "label": "Qwen 3.8", "provider": "omlx"},
+                {"id": "openrouter/auto", "label": "auto", "provider": "openrouter"}
+            ]}),
+        );
+
+        let sink = RecordingSink::default();
+        let mut cmd = command("create_task");
+        cmd.task = json!({
+            "name": "水花集",
+            "prompt": "collect the day",
+            "cwd": "/tmp/repo",
+            "modelId": "omlx/omlx/Qwen3.8-27B-oQ4e-mtp",
+        });
+        execute(&cmd, &sink).await;
+        assert_eq!(sink.ok_data()["modelId"], "omlx/Qwen3.8-27B-oQ4e-mtp");
+        let stored = sink.ok_data()["id"].as_str().unwrap().to_string();
+        let store = open_store().unwrap();
+        assert_eq!(
+            store
+                .get_task(&stored)
+                .unwrap()
+                .unwrap()
+                .model_id
+                .as_deref(),
+            Some("omlx/Qwen3.8-27B-oQ4e-mtp"),
+            "the row itself is stored normalized, not only the reply"
+        );
+
+        // A reference the catalogue names exactly is not rewritten — the
+        // counterexample a string rule would have broken.
+        mock.push_data(
+            "list_models",
+            serde_json::json!({"models": [
+                {"id": "openrouter/auto", "label": "auto", "provider": "openrouter"}
+            ]}),
+        );
+        let mut exact = command("create_task");
+        exact.task = json!({
+            "name": "router",
+            "prompt": "route it",
+            "cwd": "/tmp/repo",
+            "modelId": "openrouter/openrouter/auto",
+        });
+        let sink = RecordingSink::default();
+        execute(&exact, &sink).await;
+        assert_eq!(sink.ok_data()["modelId"], "openrouter/openrouter/auto");
     }
 
     /// The phone's create form asks for a conversation mode and a retention
