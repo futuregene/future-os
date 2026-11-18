@@ -251,6 +251,7 @@ pill 实测 `bg rgb(232,240,255)`（`accent-soft`）、`color rgb(37,99,235)`（
 
 - **文本不变。** 标签是 `choiceAnswerText` 写出的那一句的**画法**，不是第二份内容：复制按钮复制的、agent 收到的、粘贴到别处看到的，都还是 `[问题 → 答案]`。这也正是 §7 选纯文本的理由——显示层怎么画，都不影响那句话的可读性；
 - **判据保守**（`packages/markdown/src/choiceAnswerEcho.ts`）：只在正文首部认、必须带 `→`、方括号后面紧跟 `(` 或 `[` 的不认（那是链接或另一组方括号）、最多认四条（一张卡的上限）。判成"不是答案"只损失样式，不会丢字；
+- **答案里的路径不会把整句画成链接**（2026-11-18 修）：读者先打字、后点行时，pill 追加在编辑器末尾（`writeChoicePill`），`[问题 → 答案]` 就落在句子中间、不在抬头——它只该是普通文字。此前答案里一旦出现路径（如 `删未在用的 ~/omlx 副本`），整段方括号会被裸相对路径判据吃下，气泡于是把这句话画成文件链接，点开报「文件找不到了」。判据落在解析器（`packages/markdown/src/parseFutureMarkdown.ts` 的 `bracketMentionPath`）：方括号里带空白或 `→` 就不再提升为文件引用；真带空格的路径写成 `[名字](<带 空格.md>)` 这种链接形式才无歧义；
 - **材质跟着气泡走。** 桌面气泡是 `accent-soft`，标签用 `accent/10` 底 + `accent/25` 描边；手机气泡是 `accent` 实底，标签用气泡自身墨色的 12% 铺一层、20% 描边（和 `MarkdownText` 的 `onAccent` 同一套取色），深色浅色都读得清。
 
 四个状态（桌面浅色 / 深色、手机浅色 / 深色）在截图 harness 里是可复现的：场景在 `scripts/screenshots/scenarios.d/choice-answer-echo.json`（`capture-desktop choice-answer-echo{,-dark}`、`capture-mobile choice-answer-echo-phone{,-dark}`），演示数据由 fixture 的 `?choiceAnswer=1` 提供——答案本身仍由 `choiceCard=1` 的那张卡产出。
