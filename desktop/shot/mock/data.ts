@@ -94,6 +94,38 @@ export function requestedLongContext(): boolean {
   return new URLSearchParams(window.location.search).get("longContext") === "1";
 }
 
+/**
+ * `?thread=th_choice&choiceHistory=1`: a reply that closes with **two** cards.
+ *
+ * The earlier one is read-only, and it is the one that carries everything a
+ * historical card keeps: a `context` long enough to fold (four lines drawn, the
+ * rest behind "show more"), the reply's own `hint`, and the notice saying it can
+ * no longer be picked (design §2, §3). The last card stays the live, answerable
+ * one — which is the rule the two of them exist to show in a single frame: only
+ * the thread's last question can be picked, and history is read, not answered.
+ */
+export function requestedChoiceHistory(): boolean {
+  if (typeof window === "undefined")
+    return false;
+  return new URLSearchParams(window.location.search).get("choiceHistory") === "1";
+}
+
+/**
+ * The earlier card: a different question, asked as a multi-choice, so a reader of
+ * the sample cannot mistake the two cards for one card drawn twice.
+ */
+const HISTORY_CARD = [
+  "```futureos-choice",
+  "title: 这三处一起改，还是分批？",
+  "mode: multi",
+  "hint: 点几个都行",
+  ...LONG_CHOICE_CONTEXT_LINES.map(line => `context: ${line}`),
+  "option: caption | 先改图注 | 旧的 42 人还挂在图上",
+  "option: legend | 再挪图例 | 现在压着曲线",
+  "option: table | 最后补样本量列 | Frank 42 / Dreher 186",
+  "```",
+].join("\n");
+
 /** The expression-parser session: the conversation the two language captures open. */
 export const PARSER_THREAD_ID = "th_parser";
 
@@ -306,6 +338,8 @@ export const choiceEntries: MockEntry[] = [
         kind: "text",
         text: [
           "两篇都读完了：Frank 42 人、Dreher 186 人，都是被试间设计，但 Dreher 报的置信区间明显更窄，所以两篇的结论在数值上不能直接放在一起。",
+          "",
+          ...(requestedChoiceHistory() ? [HISTORY_CARD, ""] : []),
           "",
           "```futureos-choice",
           "title: 接下来做哪一件？",

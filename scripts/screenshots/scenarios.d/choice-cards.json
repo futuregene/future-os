@@ -562,6 +562,35 @@
           "shot": "choice-answer-sent.png"
         }
       ]
+    },
+    "choice-history-fold-desktop": {
+      "note": "真实组件 · 桌面 · 历史卡（折叠）。一条回复里两张卡：上面那张是早先的提问，只读——它保留了当时写的 `hint`、把超过四行的 `context` 折起来（四行 + 省略号 + 「展开」），并在最后一行说明它不能再选；下面那张才是线程的最后一问，可选。两张卡在同一帧里，正是 §2 那条规则的样子。",
+      "url": "http://localhost:5299/shot/?lang=zh&thread=th_choice&choiceHistory=1",
+      "width": 1440,
+      "height": 900,
+      "steps": [
+        {
+          "wait": 2600
+        },
+        {
+          "eval": "(() => { const cards = [...document.querySelectorAll('[data-choice-card]')]; if (cards.length !== 2) throw new Error('the reply drew ' + cards.length + ' cards, not 2'); let node = cards[0].parentElement, scroller = null; while (node) { if (node.scrollHeight > node.clientHeight + 1 && getComputedStyle(node).overflowY !== 'visible') { scroller = node; break; } node = node.parentElement; } if (!scroller) throw new Error('no scroll container around the cards'); scroller.scrollTop += cards[0].getBoundingClientRect().top - scroller.getBoundingClientRect().top; return JSON.stringify({ scrollTop: Math.round(scroller.scrollTop), frame: Math.round(scroller.getBoundingClientRect().top) }); })()"
+        },
+        {
+          "wait": 400
+        },
+        {
+          "eval": "(() => { const cards = [...document.querySelectorAll('[data-choice-card]')]; if (cards.length !== 2) throw new Error('the reply drew ' + cards.length + ' cards, not 2'); const [history, live] = cards; if (history.getAttribute('data-choice-state') !== 'readonly') throw new Error('the earlier card is not read-only: ' + history.getAttribute('data-choice-state')); if (live.getAttribute('data-choice-state') !== 'active') throw new Error('the last card is not answerable: ' + live.getAttribute('data-choice-state')); const hint = history.querySelector('[data-choice-hint]'); if (!hint || !hint.textContent.includes('点几个都行')) throw new Error('the earlier card lost the hint it was written with'); const notice = history.querySelector('[data-choice-readonly]'); if (!notice) throw new Error('the earlier card says nothing about being inert'); if (!notice.textContent.includes('早先的提问，这张卡不能再选')) throw new Error('the notice reads: ' + notice.textContent); if (!(hint.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING)) throw new Error('the notice is drawn above the hint'); const context = history.querySelector('[data-choice-context]'); if (!context) throw new Error('the earlier card lost its context'); if (context.getAttribute('data-choice-context-folded') !== 'true') throw new Error('the long context did not fold'); const height = context.getBoundingClientRect().height; if (height > 78) throw new Error('the clamped context is ' + Math.round(height) + 'px, expected four lines (72px)'); const toggle = history.querySelector('[data-choice-context-toggle]'); if (!toggle) throw new Error('no show-more button on the folded context'); if (toggle.getAttribute('aria-expanded') !== 'false') throw new Error('the show-more button already reads expanded'); if (live.querySelector('[data-choice-hint]') || live.querySelector('[data-choice-readonly]')) throw new Error('the live card says something only a past card should'); if (history.getAttribute('aria-disabled') !== 'true') throw new Error('the earlier card is not marked disabled for a screen reader'); let node = cards[0].parentElement, scroller = null; while (node) { if (node.scrollHeight > node.clientHeight + 1 && getComputedStyle(node).overflowY !== 'visible') { scroller = node; break; } node = node.parentElement; } const frameTop = scroller ? scroller.getBoundingClientRect().top : 0; if (cards[0].getBoundingClientRect().top < frameTop - 1) throw new Error('the first card is cut off at the top by ' + Math.round(frameTop - cards[0].getBoundingClientRect().top) + 'px'); return JSON.stringify({ cards: cards.length, foldedHeight: Math.round(height), hint: !!hint, notice: !!notice, toggle: !!toggle }); })()"
+        },
+        {
+          "wait": 700
+        },
+        {
+          "eval": "(() => { const cards = [...document.querySelectorAll('[data-choice-card]')]; const first = cards[0].getBoundingClientRect(); const second = cards[1].getBoundingClientRect(); const form = document.querySelector('form').getBoundingClientRect(); if (first.top < 0) throw new Error('the first card starts above the viewport: ' + Math.round(first.top)); if (second.bottom > form.top - 8) throw new Error('the second card runs under the composer: ' + Math.round(second.bottom) + ' vs ' + Math.round(form.top)); return JSON.stringify({ first: [Math.round(first.top), Math.round(first.bottom)], second: [Math.round(second.top), Math.round(second.bottom)], composer: Math.round(form.top) }); })()"
+        },
+        {
+          "shot": "choice-history-fold-desktop.png"
+        }
+      ]
     }
   },
   "mobile": {
@@ -933,6 +962,64 @@
         },
         {
           "shot": "choice-card-phone-sent.png"
+        },
+        {
+          "eval": "(() => { try { localStorage.clear(); } catch (error) { return 'no storage to clear'; } return 'storage cleared for the next scenario'; })()"
+        }
+      ]
+    },
+    "choice-history-fold-phone": {
+      "note": "真实组件 · 手机 · 历史卡（折叠）。与桌面同一份 fixture：一条回复里两张卡，上面那张只读、`context` 被折起来（四行 + 「展开」），下面那张可选。手机列宽只有 350pt，同一段情境在这里比桌面早得多就要折。",
+      "query": "?session=sess_dopamine_review&choiceCard=1&choiceHistory=1",
+      "lang": "zh-CN",
+      "steps": [
+        {
+          "wait": 900
+        },
+        {
+          "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tap": "工作区"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tapText": "整理两篇文献的结论对比表"
+        },
+        {
+          "wait": 2600
+        },
+        {
+          "eval": "(() => { const cards = [...document.querySelectorAll('[data-testid=\"choice-card\"]')]; if (cards.length !== 2) throw new Error('the reply drew ' + cards.length + ' cards, not 2'); const [history, live] = cards; const hint = history.querySelector('[data-testid=\"choice-card-hint\"]'); if (!hint || !(hint.innerText || '').includes('点几个都行')) throw new Error('the earlier card lost the hint it was written with'); const notice = history.querySelector('[data-testid=\"choice-card-readonly\"]'); if (!notice) throw new Error('the earlier card says nothing about being inert'); if (!(notice.innerText || '').includes('早先的提问')) throw new Error('the notice reads: ' + (notice.innerText || '')); const context = history.querySelector('[data-testid=\"choice-card-context\"]'); if (!context) throw new Error('the earlier card lost its context'); const height = context.getBoundingClientRect().height; if (height > 90) throw new Error('the clamped context is ' + Math.round(height) + 'px, expected four lines (~82pt)'); const toggle = history.querySelector('[data-testid=\"choice-card-context-toggle\"]'); if (!toggle) throw new Error('no show-more button on the folded context'); if (toggle.getAttribute('aria-expanded') !== 'false') throw new Error('the show-more button already reads expanded'); if (live.querySelector('[data-testid=\"choice-card-readonly\"]')) throw new Error('the last card says it cannot be picked'); const rows = [...live.querySelectorAll('[data-testid^=\"choice-option-\"]')]; if (rows.length !== 3) throw new Error('the live card draws ' + rows.length + ' rows'); if (rows.some(row => row.getAttribute('aria-disabled') === 'true')) throw new Error('the live card is not answerable');  return JSON.stringify({ cards: cards.length, foldedHeight: Math.round(height), rows: rows.length }); })()"
+        },
+        {
+          "eval": "(() => { const cards = [...document.querySelectorAll('[data-testid=\"choice-card\"]')]; if (cards.length !== 2) throw new Error('the reply drew ' + cards.length + ' cards, not 2'); let node = cards[0].parentElement, scroller = null; while (node) { if (node.scrollHeight > node.clientHeight + 1 && getComputedStyle(node).overflowY !== 'visible') { scroller = node; break; } node = node.parentElement; } if (!scroller) throw new Error('no scroll container around the cards'); /** The transcript is an inverted list: the scroller (and not just the wrapper) carries scaleY(-1), so a larger scrollTop moves the content DOWN. Parking the earlier card at the frame's top edge is therefore a subtraction here, the opposite sign of the desktop's plain scroller. */ const delta = cards[0].getBoundingClientRect().top - scroller.getBoundingClientRect().top; scroller.scrollTop -= delta; return JSON.stringify({ scrollTop: Math.round(scroller.scrollTop), frame: Math.round(scroller.getBoundingClientRect().top), delta: Math.round(delta) }); })()"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "wait": 700
+        },
+        {
+          "wait": 700
+        },
+        {
+          "eval": "(() => { const cards = [...document.querySelectorAll('[data-testid=\"choice-card\"]')]; let node = cards[0].parentElement, scroller = null; while (node) { if (node.scrollHeight > node.clientHeight + 1 && getComputedStyle(node).overflowY !== 'visible') { scroller = node; break; } node = node.parentElement; } const frame = scroller.getBoundingClientRect(); const first = cards[0].getBoundingClientRect(); const second = cards[1].getBoundingClientRect(); if (first.top < frame.top - 1) throw new Error('the earlier card is cut off at the top by ' + Math.round(frame.top - first.top) + 'px'); if (second.bottom > frame.bottom + 1) throw new Error('the last card runs past the frame by ' + Math.round(second.bottom - frame.bottom) + 'px'); const composer = document.querySelector('textarea') || document.querySelector('[data-testid=\"composer\"]'); if (composer) { const box = composer.getBoundingClientRect(); if (second.bottom > box.top) throw new Error('the last card runs under the composer: ' + Math.round(second.bottom) + ' vs ' + Math.round(box.top)); } const rows = [...cards[0].querySelectorAll('[data-testid^=\"choice-option-\"]')]; if (rows.length !== 2) throw new Error('the earlier card draws ' + rows.length + ' rows, not 2'); const lastRow = rows[rows.length - 1].getBoundingClientRect(); if (lastRow.bottom > frame.bottom + 1) throw new Error('the earlier card\\'s last row is below the frame: ' + Math.round(lastRow.bottom) + ' vs ' + Math.round(frame.bottom)); if (lastRow.bottom > first.bottom + 1) throw new Error('the earlier card\\'s last row escapes the card: ' + Math.round(lastRow.bottom) + ' vs ' + Math.round(first.bottom)); return JSON.stringify({ rows: rows.length, lastRowBottom: Math.round(lastRow.bottom), first: [Math.round(first.top), Math.round(first.bottom)], second: [Math.round(second.top), Math.round(second.bottom)], frame: [Math.round(frame.top), Math.round(frame.bottom)] }); })()"
+        },
+        {
+          "shot": "choice-history-fold-phone.png"
+        },
+        {
+          "wait": 50
+        },
+        {
+          "wait": 50
         },
         {
           "eval": "(() => { try { localStorage.clear(); } catch (error) { return 'no storage to clear'; } return 'storage cleared for the next scenario'; })()"

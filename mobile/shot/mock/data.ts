@@ -349,6 +349,32 @@ const LONG_CHOICE_FENCE = choiceFence(
   LONG_CHOICE_CONTEXT_LINES.map(line => `context: ${line}`),
 );
 
+/**
+ * `?choiceCard=1&choiceHistory=1`: a reply that closes with **two** cards — the
+ * earlier one read-only, with a folded `context`, the reply's own `hint` and the
+ * notice that it cannot be picked; the last one still answerable (design §2, §3).
+ */
+const HISTORY_CARD = [
+  "```futureos-choice",
+  "title: 这三处一起改，还是分批？",
+  "mode: multi",
+  "hint: 点几个都行",
+  ...LONG_CHOICE_CONTEXT_LINES.map(line => `context: ${line}`),
+  "option: caption | 先改图注 | 旧的 42 人还挂在图上",
+  "option: legend | 再挪图例 | 现在压着曲线",
+  "```",
+].join("\n");
+
+/** Both fences in one reply: history above, the answerable question below. */
+const HISTORY_FENCE = [HISTORY_CARD, "", CHOICE_FENCE].join("\n");
+
+/** The reply's closing text: which fences this capture asked for. */
+function choiceReplyText(): string {
+  if (requestedChoiceHistory())
+    return HISTORY_FENCE;
+  return requestedLongContext() ? LONG_CHOICE_FENCE : CHOICE_FENCE;
+}
+
 function choiceFence(contextLines: string[]): string {
   return [
     "```futureos-choice",
@@ -371,10 +397,21 @@ export const choiceCardEntries = demoEntries.map(entry =>
         ...entry,
         blocks: [
           ...entry.blocks,
-          { kind: "text" as const, text: requestedLongContext() ? LONG_CHOICE_FENCE : CHOICE_FENCE },
+          { kind: "text" as const, text: choiceReplyText() },
         ],
       }
     : entry);
+
+/**
+ * `?choiceHistory=1`: two cards in one reply — history above, the answerable one
+ * below. Only the last question can be picked; the earlier card keeps what it
+ * said and says it cannot be answered (design §2).
+ */
+function requestedChoiceHistory(): boolean {
+  if (typeof window === "undefined")
+    return false;
+  return new URLSearchParams(window.location.search).get("choiceHistory") === "1";
+}
 
 /** `?longContext=1`: the choice card's `context:` crosses the fold threshold. */
 function requestedLongContext(): boolean {
