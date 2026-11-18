@@ -8,6 +8,32 @@ DeepSeek Flash 的本机目录没有 `xhigh`，经用户确认使用最高可用
 这是无外部工具的推理评测。模型不能浏览、读文件、运行代码或查询标准答案。
 评分程序在生成结束后读取标准答案，不向模型反馈正确性。
 
+## 精简回归题库（2026-11-18）
+
+后续日常回归使用 `suites/fusion-regression-500.json`；原始 `max-1000` 题包和历史运行记录继续保留。
+新题库根据同一轮 1,000 题的四组基础模型与 Fusion 正式长测筛选，包含 8 题技术故障补测，
+不混入后续优化时挑题重跑的结果。四组基础模型是 DeepSeek Flash max / high、GLM Flash high、
+Qwen 3.7 Plus high；Fusion 是 DeepSeek Flash max 主模型、DeepSeek Flash high 主持模型。
+
+| 题包 / 分组 | BBEH mini | Omni-MATH | 合计 |
+| --- | --- | --- | --- |
+| `suites/fusion-challenge-374.json`：至少一组未通过 | 262 | 112 | 374 |
+| 从五组均答对的 626 题中抽取的回归对照题 | 43 | 83 | 126 |
+| `suites/fusion-regression-500.json`：以上两组的并集 | 305 | 195 | 500 |
+
+“未通过”包括答错、解析失败、输出超限及技术故障，不代表这些题全部属于能力难题。
+对照题在 626 题池中无放回抽取，不按数据集分层；使用固定种子
+`future-fusion-regression-500-20261118-v1`，按 `datasets.digest([seed, case_id])` 的哈希顺序取前 126 题。
+两个可运行题包均沿用原 1,000 题顺序，题面、参考答案、评分器及内容哈希不变。
+`suites/fusion-regression-500.selection.json` 冻结两个分组的完整 ID 清单、随机抽样方法、
+来源结果文件哈希和题包摘要；对应 `.cases.json` 保存完整题面与参考答案，可直接供现有 runner 使用。
+选择记录不包含模型回答或逐题成绩，原始评测数据仍只保存在本地。
+
+该题库是基于既有成绩选择的开发回归集。后续比较应分别统计 374 题组和 126 题对照组，
+500 题整体准确率不能直接与原始 1,000 题准确率比较。
+运行时将已有命令的 `--suite` 改为 `benchmark/fusion/suites/fusion-regression-500.json`，
+并指定新的 `--out` 目录；本次整理未启动模型评测。
+
 ## 当前题库与执行顺序（2026-11-04）
 
 用户已暂停此前的基线采集，取消未完成请求，固定以下两个独立题包。
