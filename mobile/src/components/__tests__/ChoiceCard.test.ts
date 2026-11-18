@@ -7,7 +7,7 @@ import { ChoiceCardAnswerProvider, type ChoiceCardAnswer } from "../ChoiceCard";
 // The icon set ships as an ES module, and these suites load the real
 // `MarkdownText` (which a choice card pulls it into). Node 24+ can require it
 // directly; older runtimes cannot, so the shapes are stubbed here.
-jest.mock("lucide-react-native", () => ({ ListChecks: () => null }));
+jest.mock("lucide-react-native", () => ({ Check: () => null, ListChecks: () => null }));
 
 jest.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key, i18n: { language: "zh-CN" } }),

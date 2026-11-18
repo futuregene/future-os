@@ -123,6 +123,7 @@ mod tests {
             title_language: None,
             community_edition: Some(true),
             skill_recommend: None,
+            choice_cards: None,
         }
     }
 
@@ -143,6 +144,9 @@ mod tests {
         // PRD v1.6 §3 / integration-plan rule 1: recommendation is off unless
         // the user opts in.
         assert!(!settings.skill_recommend);
+        // Choice cards are opt-in too: a fresh install draws none, and the
+        // prompt section that produces one is gated on the same value.
+        assert!(!settings.choice_cards);
     }
 
     #[test]

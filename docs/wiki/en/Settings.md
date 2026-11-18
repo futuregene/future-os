@@ -19,6 +19,7 @@ Desktop-level options for the app:
   - **Full access** (default) — no prompts and no sandbox; everything runs.
 - **Auto-upgrade skills** — silently upgrade installed skills to their latest version each time the app opens.
 - **Skill recommendations** (off by default) — when enabled, suggest at most one skill you don't have installed yet when you send a message.
+- **Choice cards** (off by default) — let a reply close with a card of options you can tick. While off, the card is not drawn at all **and** the agent is never told the format exists, so no reply offers one; a conversation from before you turned it off shows its cards again once it is on. Design: [choice cards](../../design/choice-cards.md).
 - **Generate a title after the first answer** (on by default) — title a new conversation from its first successful answer; later answers don't retrigger it.
 - **Completion bell** — play a sound and attract the window's attention when the agent finishes.
 - **Continue interrupted conversations** (on by default) — the agent runs inside the app, so closing FutureOS stops runs in progress; with this on, the next launch continues them by itself.

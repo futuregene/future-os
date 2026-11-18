@@ -64,6 +64,8 @@ describe("choice card rendering", () => {
     expect(rows).toHaveLength(3);
     expect([...rows].map(row => row.getAttribute("role"))).toEqual(["radio", "radio", "radio"]);
     expect([...rows].map(row => row.getAttribute("aria-checked"))).toEqual(["false", "false", "false"]);
+    // A mutually exclusive card wears the radio ring; only multi uses a box.
+    expect([...card.querySelectorAll("[data-choice-mark]")].every(mark => mark.getAttribute("data-choice-mark") === "ring")).toBe(true);
   });
 
   it("uses checkbox rows for a multi-choice card and its own hint", () => {
@@ -73,6 +75,8 @@ describe("choice card rendering", () => {
     expect(html).not.toContain("Pick one and it lands in the input");
     const card = mount({ mode: "multi", onSelect: vi.fn() });
     expect([...card.querySelectorAll("[data-choice-option]")].every(row => row.getAttribute("role") === "checkbox")).toBe(true);
+    // Shape, not just the corner label, says the rows can be picked together.
+    expect([...card.querySelectorAll("[data-choice-mark]")].every(mark => mark.getAttribute("data-choice-mark") === "box")).toBe(true);
   });
 
   it("prefers the model's own hint over the default subtitle", () => {

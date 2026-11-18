@@ -132,6 +132,14 @@ pub struct ServerSession {
     pub auto_retry: bool,
     /// Session-local opt-out of project instruction discovery (not workspace memory).
     pub no_context_files: bool,
+    /// Whether this session's reader draws `futureos-choice` cards.
+    ///
+    /// Not persisted with the session: it is the *client's* saved preference
+    /// (`app.db` → `choice_cards`), pushed by the host before each run the way
+    /// the approval tier is. Off by default, so a client that never pushes it
+    /// (TUI, CLI, an older host) gets a prompt with no choice-card section and
+    /// therefore no cards.
+    pub choice_cards: bool,
     /// Whole-prompt replacement for this session (empty = use the built-in
     /// prompt). Persisted in `session_info` and fed to `build_prompt` as its
     /// `custom_prompt` on every run, for the same reason as
@@ -430,6 +438,7 @@ impl ServerSession {
             auto_compaction: true,
             auto_retry: true,
             no_context_files: false,
+            choice_cards: false,
             custom_system_prompt: String::new(),
             append_system_prompt: String::new(),
             compaction_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),

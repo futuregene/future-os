@@ -275,7 +275,7 @@ export function SkillsView({
   }, [skillUpgrades, t]);
 
   return (
-    <section className="flex h-full min-h-0 flex-col bg-surface">
+    <section className="flex h-full min-h-0 flex-col bg-surface" data-testid="skills-view">
       <header
         className="flex h-12 shrink-0 select-none items-center justify-between border-b border-line-soft/40 px-4"
         onMouseDown={startWindowDrag}

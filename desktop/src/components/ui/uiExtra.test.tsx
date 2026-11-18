@@ -118,6 +118,19 @@ describe("switch", () => {
     expect(onChange).not.toHaveBeenCalled();
     view.unmount();
   });
+
+  // "Some of what this switch stands for is on": a partly hidden provider used
+  // to read as off. A boolean cannot express it, so the third state travels in
+  // aria-checked, and clicking it resolves to "on" rather than flipping to off.
+  it("reports the mixed state and resolves a click to on", () => {
+    const onChange = vi.fn();
+    const view = mount(createElement(Switch, { checked: false, label: "vendor", mixed: true, onChange }));
+    const button = view.container.querySelector("button")!;
+    expect(button.getAttribute("aria-checked")).toBe("mixed");
+    act(() => button.click());
+    expect(onChange).toHaveBeenCalledWith(true);
+    view.unmount();
+  });
 });
 
 describe("dialog", () => {

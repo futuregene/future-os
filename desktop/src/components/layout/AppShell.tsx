@@ -23,6 +23,7 @@ import { useSkillRecommendation } from "../../features/agent/useSkillRecommendat
 import { COMMANDS, isCommandId } from "../../features/keyboard/catalog";
 import { runCommand, useCommand } from "../../features/keyboard/commands";
 import { useShortcutDispatcher } from "../../features/keyboard/useDispatcher";
+import { ChoiceCardsProvider } from "../../features/markdown/ChoiceCardsContext";
 import { CommandPalette } from "../../features/palette/CommandPalette";
 import { ShortcutCheatSheet } from "../../features/palette/ShortcutCheatSheet";
 import { DeviceChoiceDialog } from "../../features/remote-peer/DeviceChoiceDialog";
@@ -43,6 +44,7 @@ import { RemoteUsageDialog } from "../../features/remote-peer/RemoteUsageDialog"
 import { RemoteWorkspaceCreateDialog } from "../../features/remote-peer/RemoteWorkspaceCreateDialog";
 import { RemoteWorkspaceRenameDialog } from "../../features/remote-peer/RemoteWorkspaceRenameDialog";
 import { useRemoteApprovals } from "../../features/remote-peer/useRemoteApprovals";
+import { useRemoteChoiceCards } from "../../features/remote-peer/useRemoteChoiceCards";
 import { useRemoteConversationSettings } from "../../features/remote-peer/useRemoteConversationSettings";
 import { useRemoteSkillCatalog } from "../../features/remote-peer/useRemoteSkillCatalog";
 import { useRemoteSkillRecommend } from "../../features/remote-peer/useRemoteSkillRecommend";
@@ -1494,6 +1496,13 @@ function ReadyAppShell({
    * computer's account that matters, this machine cannot read it, and the host
    * answers "no recommendation" when its own account cannot produce one.
    */
+  /**
+   * That machine's own choice-card switch. Read here rather than in the
+   * transcript because it is a fact about the *host*: it also decides whether
+   * that machine's agent is taught the fence, so its conversations draw what it
+   * allows, whatever this machine's Settings says.
+   */
+  const remoteChoiceCards = useRemoteChoiceCards(activeRemote?.desktopId ?? "");
   const remoteSkillRecommend = useRemoteSkillRecommend(activeRemote?.desktopId ?? "");
   const remoteCatalog = useRemoteSkillCatalog(
     activeRemote?.desktopId ?? "",
@@ -2057,205 +2066,207 @@ function ReadyAppShell({
     return <OnboardingGate communityEdition={communityEdition} autoLogin={forceOnboarding} hasAnyProvider={hasAnyProvider} initPending={initPending} modelsReady={modelOptions.length > 0} onEnableBYOK={enableBYOK} onInitComplete={finishInit} onCancelLogin={cancelLogin} />;
 
   return (
-    <div className="relative flex h-full min-h-0 overflow-hidden bg-canvas text-ink">
-      {/* The panel replaces the shell's columns instead of covering them: an editor
+    <ChoiceCardsProvider value={appSettings.choiceCards}>
+      <div className="relative flex h-full min-h-0 overflow-hidden bg-canvas text-ink">
+        {/* The panel replaces the shell's columns instead of covering them: an editor
         left mounted underneath would be a second place a dictation could land, and
         the panel's whole design rests on there being exactly one. Everything the
         shell owns above this return — the store, run statuses, approvals, remote
         polling — stays mounted either way, which is why the panel is drawn from
         here and not from a second window. */}
-      {vibeOpen
-        ? (
-            <VibeStage
-              catalogs={remoteCatalogs}
-              onClose={closeVibe}
-              onOpenInShell={(thread) => {
-                handleSelectThread(thread);
-                closeVibe();
-              }}
-              onOpenRemoteInShell={(desktopId, sessionId) => {
-                openRemoteSession(desktopId, sessionId);
-                closeVibe();
-              }}
-              onNewConversation={() => {
-                pinNextCreatedRef.current = true;
-                closeVibe();
-                handleOpenNewChat();
-              }}
-              onPinLocal={(threadId, pinned) => void pinLocalThread(threadId, pinned)}
-              onPinRemote={(desktopId, sessionId, pinned) => void pinRemoteSession(desktopId, sessionId, pinned)}
-              peers={remotePeers}
-              runStatuses={threadRunStatuses}
-              threads={threads}
-              unreadThreadIds={unreadThreadIds}
-              view={vibeView}
-              workspaces={workspaces}
-            />
-          )
-        : (
-            <>
-              {showLeftPanel
-                ? (
-                    <div className="relative h-full shrink-0" style={{ width: leftPanel.width }}>
-                      <ActivityRail expanded {...activityRailProps} />
+        {vibeOpen
+          ? (
+              <VibeStage
+                catalogs={remoteCatalogs}
+                onClose={closeVibe}
+                onOpenInShell={(thread) => {
+                  handleSelectThread(thread);
+                  closeVibe();
+                }}
+                onOpenRemoteInShell={(desktopId, sessionId) => {
+                  openRemoteSession(desktopId, sessionId);
+                  closeVibe();
+                }}
+                onNewConversation={() => {
+                  pinNextCreatedRef.current = true;
+                  closeVibe();
+                  handleOpenNewChat();
+                }}
+                onPinLocal={(threadId, pinned) => void pinLocalThread(threadId, pinned)}
+                onPinRemote={(desktopId, sessionId, pinned) => void pinRemoteSession(desktopId, sessionId, pinned)}
+                peers={remotePeers}
+                runStatuses={threadRunStatuses}
+                threads={threads}
+                unreadThreadIds={unreadThreadIds}
+                view={vibeView}
+                workspaces={workspaces}
+              />
+            )
+          : (
+              <>
+                {showLeftPanel
+                  ? (
+                      <div className="relative h-full shrink-0" style={{ width: leftPanel.width }}>
+                        <ActivityRail expanded {...activityRailProps} />
+                        <div
+                          role="separator"
+                          aria-label={t("activityRail.resizeSidebar")}
+                          aria-orientation="vertical"
+                          aria-valuemin={MIN_LEFT_PANEL_WIDTH}
+                          aria-valuemax={leftPanel.maxWidth}
+                          aria-valuenow={leftPanel.width}
+                          className="absolute inset-y-0 -right-1 z-40 w-2 cursor-col-resize touch-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
+                          tabIndex={0}
+                          onPointerDown={leftPanel.startResize}
+                          onKeyDown={(event) => {
+                            if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                              event.preventDefault();
+                              leftPanel.nudge(event.key === "ArrowRight" ? 16 : -16);
+                            }
+                          }}
+                        />
+                      </div>
+                    )
+                  : null}
+                {leftPanel.resizing ? <div className="fixed inset-0 z-50 cursor-col-resize select-none" /> : null}
+                {!showLeftPanel
+                  ? (
                       <div
-                        role="separator"
-                        aria-label={t("activityRail.resizeSidebar")}
-                        aria-orientation="vertical"
-                        aria-valuemin={MIN_LEFT_PANEL_WIDTH}
-                        aria-valuemax={leftPanel.maxWidth}
-                        aria-valuenow={leftPanel.width}
-                        className="absolute inset-y-0 -right-1 z-40 w-2 cursor-col-resize touch-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"
-                        tabIndex={0}
-                        onPointerDown={leftPanel.startResize}
-                        onKeyDown={(event) => {
-                          if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-                            event.preventDefault();
-                            leftPanel.nudge(event.key === "ArrowRight" ? 16 : -16);
-                          }
-                        }}
+                        aria-hidden="true"
+                        className="absolute left-0 top-0 z-30 h-full w-2 cursor-col-resize"
+                        onMouseEnter={() => handlePreviewLeftPanel(true)}
                       />
-                    </div>
-                  )
-                : null}
-              {leftPanel.resizing ? <div className="fixed inset-0 z-50 cursor-col-resize select-none" /> : null}
-              {!showLeftPanel
-                ? (
-                    <div
-                      aria-hidden="true"
-                      className="absolute left-0 top-0 z-30 h-full w-2 cursor-col-resize"
-                      onMouseEnter={() => handlePreviewLeftPanel(true)}
-                    />
-                  )
-                : null}
-              {!showLeftPanel && leftOverlayOpen
-                ? (
-                    <div
-                      className="absolute left-0 top-0 z-40 h-full"
-                      style={{ width: leftPanel.width }}
-                      onMouseEnter={() => handlePreviewLeftPanel(true)}
-                      onMouseLeave={() => handlePreviewLeftPanel(false)}
-                    >
-                      <ActivityRail expanded floating {...activityRailProps} />
-                    </div>
-                  )
-                : null}
-              {/* `relative` is the anchor for the affordances drawn over the
+                    )
+                  : null}
+                {!showLeftPanel && leftOverlayOpen
+                  ? (
+                      <div
+                        className="absolute left-0 top-0 z-40 h-full"
+                        style={{ width: leftPanel.width }}
+                        onMouseEnter={() => handlePreviewLeftPanel(true)}
+                        onMouseLeave={() => handlePreviewLeftPanel(false)}
+                      >
+                        <ActivityRail expanded floating {...activityRailProps} />
+                      </div>
+                    )
+                  : null}
+                {/* `relative` is the anchor for the affordances drawn over the
                 conversation — the collapsed files panel's button and the panel's
                 own drawer. They used to resolve against the window, which was
                 the same thing only while nothing sat to the right of this
                 column; a right-docked terminal does, and the button landed on
                 the terminal's header. */}
-              <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-                {/* A maximized terminal takes the column; the conversation and
+                <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+                  {/* A maximized terminal takes the column; the conversation and
             the files panel stay mounted behind `hidden` (not unmounted), so
             scroll positions, a draft and the mounted transcript all survive
             the trip. One display utility or the other, never both: the winner
             would depend on Tailwind's ordering rather than on this comment. */}
-                <div className={terminalMaximized ? "hidden" : "flex min-h-0 min-w-0 flex-1"}>
-                  <main ref={centerRef} className="min-w-0 flex-1 bg-surface">
-                    {centerMode === "new-chat"
-                      ? (
-                          <NewConversation
-                            key={`${newConversationMode}:${newWorkspaceForm ?? ""}:${newChatWorkspaceId ?? ""}:${newWorkspaceNonce}`}
-                            initialWorkspaceForm={newWorkspaceForm}
-                            initialMode={newConversationMode}
-                            initialWorkspaceId={newChatWorkspaceId}
-                            leftPanelExpanded={showLeftPanel}
-                            modelId={selectedModelId}
-                            modelOptions={visibleModelOptions}
-                            modelsEmptyReason={modelsEmptyReason}
-                            onAddWorkspace={handleAddWorkspace}
-                            onModelChange={changeDraftModel}
-                            thinkingLevel={selectedThinkingLevel}
-                            onThinkingLevelChange={changeDraftThinkingLevel}
-                            approvalTier={appSettings.approvalTier}
-                            onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
-                            onStart={startNewConversation}
-                            onToggleLeftPanel={handleToggleLeftPanel}
-                            skillGuideDismissed={appSettings.skillGuideDismissed}
-                            onDismissSkillGuide={() => void changeSettings({ skillGuideDismissed: true })}
-                            workspaces={userWorkspaces}
-                            skillRecommend={appSettings.skillRecommend}
-                            sessionMentions={sessionMentions}
-                            futureSessionStatus={futureSessionStatus}
-                            futureBalance={futureBalance}
-                          />
-                        )
-                      : section === "skill"
+                  <div className={terminalMaximized ? "hidden" : "flex min-h-0 min-w-0 flex-1"}>
+                    <main ref={centerRef} className="min-w-0 flex-1 bg-surface">
+                      {centerMode === "new-chat"
                         ? (
-                            <SkillsView leftPanelExpanded={showLeftPanel} onToggleLeftPanel={handleToggleLeftPanel} onStartCoachConversation={handleStartCoachConversation} onTrySkill={handleTrySkill} />
+                            <NewConversation
+                              key={`${newConversationMode}:${newWorkspaceForm ?? ""}:${newChatWorkspaceId ?? ""}:${newWorkspaceNonce}`}
+                              initialWorkspaceForm={newWorkspaceForm}
+                              initialMode={newConversationMode}
+                              initialWorkspaceId={newChatWorkspaceId}
+                              leftPanelExpanded={showLeftPanel}
+                              modelId={selectedModelId}
+                              modelOptions={visibleModelOptions}
+                              modelsEmptyReason={modelsEmptyReason}
+                              onAddWorkspace={handleAddWorkspace}
+                              onModelChange={changeDraftModel}
+                              thinkingLevel={selectedThinkingLevel}
+                              onThinkingLevelChange={changeDraftThinkingLevel}
+                              approvalTier={appSettings.approvalTier}
+                              onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
+                              onStart={startNewConversation}
+                              onToggleLeftPanel={handleToggleLeftPanel}
+                              skillGuideDismissed={appSettings.skillGuideDismissed}
+                              onDismissSkillGuide={() => void changeSettings({ skillGuideDismissed: true })}
+                              workspaces={userWorkspaces}
+                              skillRecommend={appSettings.skillRecommend}
+                              sessionMentions={sessionMentions}
+                              futureSessionStatus={futureSessionStatus}
+                              futureBalance={futureBalance}
+                            />
                           )
-                        : section === "tasks"
+                        : section === "skill"
                           ? (
-                              <TasksView
-                                leftPanelExpanded={showLeftPanel}
-                                modelOptions={visibleModelOptions}
-                                onOpenThread={handleOpenTaskThread}
-                                onToggleLeftPanel={handleToggleLeftPanel}
-                              />
+                              <SkillsView leftPanelExpanded={showLeftPanel} onToggleLeftPanel={handleToggleLeftPanel} onStartCoachConversation={handleStartCoachConversation} onTrySkill={handleTrySkill} />
                             )
-                          : section === "remote"
+                          : section === "tasks"
                             ? (
-                                <RemoteHubView
+                                <TasksView
                                   leftPanelExpanded={showLeftPanel}
-                                  onOpenRemoteSession={openRemoteSession}
-                                  onReconnectRemoteAll={reconnectRemotePeers}
-                                  onRefreshLabels={refreshRemotePeerLabels}
-                                  onRefreshPeers={refreshRemotePeers}
-                                  onRefreshRemote={refreshRemote}
+                                  modelOptions={visibleModelOptions}
+                                  onOpenThread={handleOpenTaskThread}
                                   onToggleLeftPanel={handleToggleLeftPanel}
-                                  peers={remotePeers}
-                                  peersError={remotePeersError}
-                                  peersLoading={remotePeersLoading}
-                                  remoteStatus={remoteStatus}
                                 />
                               )
-                            : section === "chat" && activeRemote
+                            : section === "remote"
                               ? (
-                                  <RemoteConversationView
-                                    approvals={remoteApprovals.approvals}
-                                    approvalErrors={remoteApprovals.errors}
-                                    approvalPending={remoteApprovals.pending}
-                                    choiceSelectedIds={remoteChoice?.selectedIds}
-                                    desktopId={activeRemote.desktopId}
-                                    onChoiceSelect={handleRemoteChoiceSelect}
-                                    composer={(
+                                  <RemoteHubView
+                                    leftPanelExpanded={showLeftPanel}
+                                    onOpenRemoteSession={openRemoteSession}
+                                    onReconnectRemoteAll={reconnectRemotePeers}
+                                    onRefreshLabels={refreshRemotePeerLabels}
+                                    onRefreshPeers={refreshRemotePeers}
+                                    onRefreshRemote={refreshRemote}
+                                    onToggleLeftPanel={handleToggleLeftPanel}
+                                    peers={remotePeers}
+                                    peersError={remotePeersError}
+                                    peersLoading={remotePeersLoading}
+                                    remoteStatus={remoteStatus}
+                                  />
+                                )
+                              : section === "chat" && activeRemote
+                                ? (
+                                    <RemoteConversationView
+                                      approvals={remoteApprovals.approvals}
+                                      approvalErrors={remoteApprovals.errors}
+                                      approvalPending={remoteApprovals.pending}
+                                      choiceCards={remoteChoiceCards}
+                                      choiceSelectedIds={remoteChoice?.selectedIds}
+                                      desktopId={activeRemote.desktopId}
+                                      onChoiceSelect={handleRemoteChoiceSelect}
+                                      composer={(
                                       // The composer and, for a draft, the row that
                                       // decides where the conversation will live. One
                                       // card, as on this app's own new-conversation
                                       // screen: the footer belongs to the box it sits
                                       // under, so the two are wrapped together and the
                                       // box's bottom corners are handed to the footer.
-                                      <div className="pointer-events-auto mx-auto w-full max-w-3xl">
-                                        <RemoteComposer
-                                          key={`remote-composer:${activeRemote.desktopId}:${activeRemote.sessionId}`}
-                                          ref={remoteComposerRef}
-                                          onChoiceChange={setRemoteChoice}
-                                          archived={activeRemoteArchived}
-                                          canCompact={remoteTimeline.canCompact}
-                                          // The conversation frame places the composer: the
-                                          // band over the transcript's foot, at the same
-                                          // width the local composer is given.
-                                          className={remoteDraft ? "w-full rounded-b-none" : "w-full"}
-                                          conversations={remoteConversations}
-                                          desktopId={activeRemote.desktopId}
-                                          // The host-owned model and thinking level live in
-                                          // the composer's control row, beside the send
-                                          // button they apply to — the same place this
-                                          // app's own model and thinking controls are.
-                                          controls={<RemoteConversationSettings settings={remoteSettings} />}
-                                          freshModelId={remoteSettings.model}
-                                          freshThinkingLevel={remoteSettings.thinkingLevel}
-                                          onCompact={() => void compactRemoteConversationOn(activeRemote.desktopId, activeRemote.sessionId)}
-                                          onCreated={(createdSessionId) => {
+                                        <div className="pointer-events-auto mx-auto w-full max-w-3xl">
+                                          <RemoteComposer
+                                            key={`remote-composer:${activeRemote.desktopId}:${activeRemote.sessionId}`}
+                                            ref={remoteComposerRef}
+                                            onChoiceChange={setRemoteChoice}
+                                            archived={activeRemoteArchived}
+                                            canCompact={remoteTimeline.canCompact}
+                                            // The conversation frame places the composer: the
+                                            // band over the transcript's foot, at the same
+                                            // width the local composer is given.
+                                            className={remoteDraft ? "w-full rounded-b-none" : "w-full"}
+                                            conversations={remoteConversations}
+                                            desktopId={activeRemote.desktopId}
+                                            // The host-owned model and thinking level live in
+                                            // the composer's control row, beside the send
+                                            // button they apply to — the same place this
+                                            // app's own model and thinking controls are.
+                                            controls={<RemoteConversationSettings settings={remoteSettings} />}
+                                            freshModelId={remoteSettings.model}
+                                            freshThinkingLevel={remoteSettings.thinkingLevel}
+                                            onCompact={() => void compactRemoteConversationOn(activeRemote.desktopId, activeRemote.sessionId)}
+                                            onCreated={(createdSessionId) => {
                                             // Adopt the conversation the host just made, so
                                             // the next prompt goes to it by name instead
                                             // of creating a second one.
-                                            setActiveRemote({ desktopId: activeRemote.desktopId, sessionId: createdSessionId, workspaceId: null });
-                                            void refreshRemotePeers();
-                                          }}
-                                          onSent={() => {
+                                              setActiveRemote({ desktopId: activeRemote.desktopId, sessionId: createdSessionId, workspaceId: null });
+                                              void refreshRemotePeers();
+                                            }}
+                                            onSent={() => {
                                             // The conversation is re-read; the catalogue is
                                             // not. A host pushes `state.sessions` when a
                                             // conversation of its own changes, and the slow
@@ -2268,333 +2279,335 @@ function ReadyAppShell({
                                             // A *new* conversation is the exception that is
                                             // already handled: `onCreated` above refreshes the
                                             // peers, so its row appears without this.
-                                            void remoteTimeline.refresh();
-                                          }}
-                                          peer={activeRemotePeer}
-                                          sessionId={activeRemote.sessionId}
-                                          skillRecommendation={remoteSkillRecommendation}
-                                          streaming={remoteTimeline.streaming}
-                                          workspaceId={activeRemote.workspaceId}
-                                        />
-                                        {remoteDraft
-                                          ? (
-                                              <RemoteDraftTargetChooser
-                                                error={draftWorkspaces.error}
-                                                loading={draftWorkspaces.loading}
-                                                onOpenWorkspace={activeRemotePeer
-                                                  ? () => setRemoteWorkspaceHost(activeRemotePeer)
-                                                  : undefined}
-                                                onSelect={workspaceId => setActiveRemote(current =>
-                                                  current ? { ...current, workspaceId } : current)}
-                                                rows={draftWorkspaces.rows}
-                                                workspaceId={remoteDraft.workspaceId}
-                                              />
-                                            )
-                                          : null}
-                                      </div>
-                                    )}
-                                    leftPanelExpanded={showLeftPanel}
-                                    liveReplies={remoteTimeline.liveReplies}
-                                    messages={remoteTimeline.messages}
-                                    error={remoteTimeline.error}
-                                    hasMore={remoteTimeline.hasMore}
-                                    loading={remoteTimeline.loading}
-                                    loadingOlder={remoteTimeline.loadingOlder}
-                                    onToggleLeftPanel={handleToggleLeftPanel}
-                                    onContinueRun={runId => void continueRemoteRunOn(activeRemote.desktopId, activeRemote.sessionId, runId)}
-                                    onDecideApproval={(approval, decision) => void remoteApprovals.decide(approval, decision)}
-                                    onFork={(sourceEntryId, forkable) =>
-                                      void forkRemoteConversationAt(
-                                        activeRemote.desktopId,
-                                        activeRemote.sessionId,
-                                        sourceEntryId,
-                                        forkable,
+                                              void remoteTimeline.refresh();
+                                            }}
+                                            peer={activeRemotePeer}
+                                            sessionId={activeRemote.sessionId}
+                                            skillRecommendation={remoteSkillRecommendation}
+                                            streaming={remoteTimeline.streaming}
+                                            workspaceId={activeRemote.workspaceId}
+                                          />
+                                          {remoteDraft
+                                            ? (
+                                                <RemoteDraftTargetChooser
+                                                  error={draftWorkspaces.error}
+                                                  loading={draftWorkspaces.loading}
+                                                  onOpenWorkspace={activeRemotePeer
+                                                    ? () => setRemoteWorkspaceHost(activeRemotePeer)
+                                                    : undefined}
+                                                  onSelect={workspaceId => setActiveRemote(current =>
+                                                    current ? { ...current, workspaceId } : current)}
+                                                  rows={draftWorkspaces.rows}
+                                                  workspaceId={remoteDraft.workspaceId}
+                                                />
+                                              )
+                                            : null}
+                                        </div>
                                       )}
-                                    onLoadOlder={() => remoteTimeline.loadOlder()}
-                                    olderHistoryFailed={remoteTimeline.olderHistoryFailed}
-                                    onOpenUsage={() => setRemoteUsageOpen(true)}
-                                    onRetry={() => void remoteTimeline.refresh()}
-                                    // The machine's own pointer, moved from inside the
-                                    // conversation it stopped serving: the notice there
-                                    // says another device holds it, and this is the act
-                                    // that takes it back (the same command the device
-                                    // picker and the Remote page send).
-                                    onTakeControl={activeRemotePeer
-                                      ? () => takeOverRemotePeer(activeRemote.desktopId)
-                                      : undefined}
-                                    peer={activeRemotePeer}
-                                    persistedEntryIds={remoteTimeline.persistedEntryIds}
-                                    terminalAction={terminalHeaderAction}
-                                    sessionId={activeRemote.sessionId}
-                                    streaming={remoteTimeline.streaming}
-                                    title={remoteDraft
+                                      leftPanelExpanded={showLeftPanel}
+                                      liveReplies={remoteTimeline.liveReplies}
+                                      messages={remoteTimeline.messages}
+                                      error={remoteTimeline.error}
+                                      hasMore={remoteTimeline.hasMore}
+                                      loading={remoteTimeline.loading}
+                                      loadingOlder={remoteTimeline.loadingOlder}
+                                      onToggleLeftPanel={handleToggleLeftPanel}
+                                      onContinueRun={runId => void continueRemoteRunOn(activeRemote.desktopId, activeRemote.sessionId, runId)}
+                                      onDecideApproval={(approval, decision) => void remoteApprovals.decide(approval, decision)}
+                                      onFork={(sourceEntryId, forkable) =>
+                                        void forkRemoteConversationAt(
+                                          activeRemote.desktopId,
+                                          activeRemote.sessionId,
+                                          sourceEntryId,
+                                          forkable,
+                                        )}
+                                      onLoadOlder={() => remoteTimeline.loadOlder()}
+                                      olderHistoryFailed={remoteTimeline.olderHistoryFailed}
+                                      onOpenUsage={() => setRemoteUsageOpen(true)}
+                                      onRetry={() => void remoteTimeline.refresh()}
+                                      // The machine's own pointer, moved from inside the
+                                      // conversation it stopped serving: the notice there
+                                      // says another device holds it, and this is the act
+                                      // that takes it back (the same command the device
+                                      // picker and the Remote page send).
+                                      onTakeControl={activeRemotePeer
+                                        ? () => takeOverRemotePeer(activeRemote.desktopId)
+                                        : undefined}
+                                      peer={activeRemotePeer}
+                                      persistedEntryIds={remoteTimeline.persistedEntryIds}
+                                      terminalAction={terminalHeaderAction}
+                                      sessionId={activeRemote.sessionId}
+                                      streaming={remoteTimeline.streaming}
+                                      inFlightRunId={remoteTimeline.inFlightRunId}
+                                      title={remoteDraft
                                       // A draft is named as this machine's own new
                                       // conversation is, rather than by the empty
                                       // session id that is about to exist.
-                                      ? tAgent("newConversation.headerTitle")
-                                      : (activeRemoteContext?.title ?? activeRemote.sessionId)}
-                                    workspaceName={activeRemoteContext?.workspaceName ?? draftWorkspace?.name ?? null}
-                                  />
-                                )
-                              : storeError
-                                ? (
-                                    <div className="flex h-full items-center justify-center p-8 text-sm text-ink-soft">
-                                      {t("appShell.storeInitFailed")}
-                                      {storeError}
-                                    </div>
+                                        ? tAgent("newConversation.headerTitle")
+                                        : (activeRemoteContext?.title ?? activeRemote.sessionId)}
+                                      workspaceName={activeRemoteContext?.workspaceName ?? draftWorkspace?.name ?? null}
+                                    />
                                   )
-                                : (
-                                    <AgentThread
+                                : storeError
+                                  ? (
+                                      <div className="flex h-full items-center justify-center p-8 text-sm text-ink-soft">
+                                        {t("appShell.storeInitFailed")}
+                                        {storeError}
+                                      </div>
+                                    )
+                                  : (
+                                      <AgentThread
                                       // One instance per conversation: switching threads
                                       // remounts, so a conversation's messages, listeners and
                                       // in-flight writes can never bleed into another.
-                                      key={activeThread?.id ?? "__none"}
-                                      activeApproval={activeApproval}
-                                      agentConnection={agentConnection}
-                                      approvalTier={approvalChipTier}
-                                      loadingStore={loadingStore}
-                                      modelId={activeThreadModelId}
-                                      modelOptions={visibleModelOptions}
-                                      onModelChange={changeModel}
-                                      onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
-                                      thinkingLevel={activeThinkingLevel}
-                                      onThinkingLevelChange={changeThinkingLevel}
-                                      pendingPrompt={pendingPrompt}
-                                      thread={activeThread}
-                                      sessionMentions={sessionMentions}
-                                      workspacePath={activeWorkspace?.path ?? null}
-                                      onApprovalDecision={handleApprovalDecision}
-                                      leftPanelExpanded={showLeftPanel}
-                                      onRetryAgentConnection={() => void refreshAgentModels()}
-                                      onOpenAccount={handleOpenAccount}
-                                      onOpenModels={handleOpenModels}
-                                      onOpenProviders={handleOpenProviders}
-                                      onToggleLeftPanel={handleToggleLeftPanel}
-                                      skillRecommend={appSettings.skillRecommend}
-                                      futureSessionStatus={futureSessionStatus}
-                                      futureBalance={futureBalance}
-                                      headerAction={terminalHeaderAction}
-                                      headerMachine={localMachineBadge}
-                                      headerWorkspace={localWorkspaceBadge}
-                                      onPromptConsumed={consumePendingPrompt}
-                                      onForked={(forkedThreadId: string) => {
-                                        void refreshStore(forkedThreadId);
-                                      }}
-                                      onThreadActivity={() => {
-                                        void refreshStore(activeThread?.id ?? undefined);
-                                      }}
-                                      onRestoreArchived={handleRestoreThread}
-                                    />
-                                  )}
-                  </main>
-                  {/* Views without thread context hide the right panel entirely, including
+                                        key={activeThread?.id ?? "__none"}
+                                        activeApproval={activeApproval}
+                                        agentConnection={agentConnection}
+                                        approvalTier={approvalChipTier}
+                                        loadingStore={loadingStore}
+                                        modelId={activeThreadModelId}
+                                        modelOptions={visibleModelOptions}
+                                        onModelChange={changeModel}
+                                        onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
+                                        thinkingLevel={activeThinkingLevel}
+                                        onThinkingLevelChange={changeThinkingLevel}
+                                        pendingPrompt={pendingPrompt}
+                                        thread={activeThread}
+                                        sessionMentions={sessionMentions}
+                                        workspacePath={activeWorkspace?.path ?? null}
+                                        onApprovalDecision={handleApprovalDecision}
+                                        leftPanelExpanded={showLeftPanel}
+                                        onRetryAgentConnection={() => void refreshAgentModels()}
+                                        onOpenAccount={handleOpenAccount}
+                                        onOpenModels={handleOpenModels}
+                                        onOpenProviders={handleOpenProviders}
+                                        onToggleLeftPanel={handleToggleLeftPanel}
+                                        skillRecommend={appSettings.skillRecommend}
+                                        futureSessionStatus={futureSessionStatus}
+                                        futureBalance={futureBalance}
+                                        headerAction={terminalHeaderAction}
+                                        headerMachine={localMachineBadge}
+                                        headerWorkspace={localWorkspaceBadge}
+                                        onPromptConsumed={consumePendingPrompt}
+                                        onForked={(forkedThreadId: string) => {
+                                          void refreshStore(forkedThreadId);
+                                        }}
+                                        onThreadActivity={() => {
+                                          void refreshStore(activeThread?.id ?? undefined);
+                                        }}
+                                        onRestoreArchived={handleRestoreThread}
+                                      />
+                                    )}
+                    </main>
+                    {/* Views without thread context hide the right panel entirely, including
           the collapsed expand affordance. */}
-                  {/* A remote conversation's right panel reads that machine's files
+                    {/* A remote conversation's right panel reads that machine's files
           and selected Fusion discussions. The local panel's other tabs (review, runs, artifacts)
           describe *this* machine, so they have no remote counterpart to show;
           the panel is hidden entirely while a remote conversation is open and
           this one is drawn instead. */}
-                  {hideRightPanel || activeRemote
-                    ? null
-                    : (
-                        <ContextPanel
-                          activeThread={activeThread}
-                          activeWorkspace={activeWorkspace}
-                          activeTab={contextTab}
-                          expanded={rightPanelOpen}
-                          floating={rightPanelFloating}
-                          width={rightPanelWidth}
-                          onResizeStart={startRightPanelResize}
-                          onResizeNudge={nudgeRightPanel}
-                          onTabChange={setContextTab}
-                          onToggleExpanded={handleToggleRightPanel}
-                        />
-                      )}
-                  {activeRemote && activeRemote.sessionId !== "" && !hideRightPanel
-                    ? (
-                        <RemoteFilesPanel
-                          desktopId={activeRemote.desktopId}
-                          expanded={rightPanelOpen}
-                          floating={rightPanelFloating}
-                          onResizeNudge={nudgeRightPanel}
-                          onResizeStart={startRightPanelResize}
-                          onToggleExpanded={handleToggleRightPanel}
-                          peer={activeRemotePeer}
-                          sessionId={activeRemote.sessionId}
-                          width={rightPanelWidth}
-                        />
-                      )
-                    : null}
-                  {/* While dragging the divider, a full-window overlay keeps the cursor and
+                    {hideRightPanel || activeRemote
+                      ? null
+                      : (
+                          <ContextPanel
+                            activeThread={activeThread}
+                            activeWorkspace={activeWorkspace}
+                            activeTab={contextTab}
+                            expanded={rightPanelOpen}
+                            floating={rightPanelFloating}
+                            width={rightPanelWidth}
+                            onResizeStart={startRightPanelResize}
+                            onResizeNudge={nudgeRightPanel}
+                            onTabChange={setContextTab}
+                            onToggleExpanded={handleToggleRightPanel}
+                          />
+                        )}
+                    {activeRemote && activeRemote.sessionId !== "" && !hideRightPanel
+                      ? (
+                          <RemoteFilesPanel
+                            desktopId={activeRemote.desktopId}
+                            expanded={rightPanelOpen}
+                            floating={rightPanelFloating}
+                            onResizeNudge={nudgeRightPanel}
+                            onResizeStart={startRightPanelResize}
+                            onToggleExpanded={handleToggleRightPanel}
+                            peer={activeRemotePeer}
+                            sessionId={activeRemote.sessionId}
+                            width={rightPanelWidth}
+                          />
+                        )
+                      : null}
+                    {/* While dragging the divider, a full-window overlay keeps the cursor and
           captures mouse events even over embedded iframes (PDF preview). */}
-                  {rightPanelResizing && !hideRightPanel
-                    ? <div className="fixed inset-0 z-50 cursor-col-resize select-none" />
-                    : null}
-                </div>
-                {/* The terminal takes the edge it is docked to: a row under the
+                    {rightPanelResizing && !hideRightPanel
+                      ? <div className="fixed inset-0 z-50 cursor-col-resize select-none" />
+                      : null}
+                  </div>
+                  {/* The terminal takes the edge it is docked to: a row under the
             conversation and the files panel (both of which it spans), or —
             rendered outside this column, below — a column at the window's edge.
             Collapsing it removes it from the layout entirely, so the
             conversation keeps the full space. */}
-                {terminalMaximized ? terminalPanelElement : null}
-                {terminalPanelElement && !terminalMaximized && terminalPanel.dock === "bottom"
-                  ? terminalPanelElement
-                  : null}
-              </div>
-              {/* The right-docked terminal takes the window's edge as a column of
+                  {terminalMaximized ? terminalPanelElement : null}
+                  {terminalPanelElement && !terminalMaximized && terminalPanel.dock === "bottom"
+                    ? terminalPanelElement
+                    : null}
+                </div>
+                {/* The right-docked terminal takes the window's edge as a column of
             its own, a sibling of the content column rather than a child of it:
             that is what leaves the column (conversation + files panel) as the
             containing block for the affordances anchored above, so they never
             land on the terminal. */}
-              {terminalRightDocked ? terminalPanelElement : null}
-            </>
-          )}
-      <AppShellDialogs
-        archiveDialog={archiveDialog}
-        archiveWorkspaceDialog={archiveWorkspaceDialog}
-        batchArchiveDialog={batchArchiveDialog}
-        batchDeleteDialog={batchDeleteDialog}
-        deleteDialog={deleteDialog}
-        renameDialog={renameDialog}
-        setArchiveDialog={setArchiveDialog}
-        setArchiveWorkspaceDialog={setArchiveWorkspaceDialog}
-        setBatchArchiveDialog={setBatchArchiveDialog}
-        setBatchDeleteDialog={setBatchDeleteDialog}
-        setDeleteDialog={setDeleteDialog}
-        setRenameDialog={setRenameDialog}
-        onOpenArchiveSettings={handleOpenArchiveSettings}
-        onConfirmArchiveThread={() => void confirmArchive()}
-        onConfirmArchiveWorkspace={() => void confirmArchiveWorkspace()}
-        onConfirmBatchArchive={() => void confirmBatchArchive()}
-        onConfirmBatchDeleteThread={() => void confirmBatchDelete()}
-        onConfirmDeleteThread={() => void confirmDelete()}
-        onConfirmRenameThread={() => void confirmRename()}
-        onGenerateTitle={() => void generateTitle()}
-      />
-      <WorkspaceDialogs
-        deleteDialog={workspaceDeleteDialog}
-        renameDialog={workspaceRenameDialog}
-        setDeleteDialog={setWorkspaceDeleteDialog}
-        setRenameDialog={setWorkspaceRenameDialog}
-        onConfirmDeleteWorkspace={() => void confirmWorkspaceDelete()}
-        onConfirmRenameWorkspace={() => void confirmWorkspaceRename()}
-      />
-      {remoteRename
-        ? (
-            <RemoteRenameDialog
-              conversation={remoteRename}
-              onClose={() => setRemoteRename(null)}
-              onRenamed={() => void refreshRemotePeers()}
-            />
-          )
-        : null}
-      {workspaceDeviceChoice
-        ? (
-            <WorkspaceDeviceDialog
-              onClose={() => setWorkspaceDeviceChoice(false)}
-              onPickLocal={() => {
-                setWorkspaceDeviceChoice(false);
-                openLocalWorkspaceForm();
-              }}
-              onPickPeer={(peer) => {
-                setWorkspaceDeviceChoice(false);
-                setRemoteWorkspaceHost(peer);
-              }}
-              peers={remotePeers}
-            />
-          )
-        : null}
-      {newChatDeviceChoice
-        ? (
-            <DeviceChoiceDialog
-              description={tRemotePeer("chooseChatDeviceHint")}
-              onClose={() => setNewChatDeviceChoice(false)}
-              onPickLocal={() => {
-                setNewChatDeviceChoice(false);
-                handleOpenNewChat();
-                // The dialog had the caret, and this is the screen the question
-                // is about to be typed on: give it back. A composer that mounts
-                // in this same commit focuses itself; the event is for the one
-                // already on screen (⌘N pressed again on the new-chat screen),
-                // which no remount would have reached.
-                emitFutureEvent("focus-composer", undefined);
-              }}
-              onPickPeer={(peer) => {
-                setNewChatDeviceChoice(false);
-                startRemoteConversation(peer.desktopId);
-                // Same reason as above, on the machine that was picked: the
-                // draft this opens may already be the one on screen.
-                emitFutureEvent("focus-composer", undefined);
-              }}
-              peers={remotePeers}
-              title={tRemotePeer("chooseChatDevice")}
-            />
-          )
-        : null}
-      {remoteWorkspaceHost
-        ? (
-            <RemoteWorkspaceCreateDialog
-              onClose={() => setRemoteWorkspaceHost(null)}
-              onCreated={workspace => handleRemoteWorkspaceCreated(remoteWorkspaceHost.desktopId, workspace)}
-              peer={remoteWorkspaceHost}
-            />
-          )
-        : null}
-      {/* A workspace on another machine is renamed on that machine, so this uses
+                {terminalRightDocked ? terminalPanelElement : null}
+              </>
+            )}
+        <AppShellDialogs
+          archiveDialog={archiveDialog}
+          archiveWorkspaceDialog={archiveWorkspaceDialog}
+          batchArchiveDialog={batchArchiveDialog}
+          batchDeleteDialog={batchDeleteDialog}
+          deleteDialog={deleteDialog}
+          renameDialog={renameDialog}
+          setArchiveDialog={setArchiveDialog}
+          setArchiveWorkspaceDialog={setArchiveWorkspaceDialog}
+          setBatchArchiveDialog={setBatchArchiveDialog}
+          setBatchDeleteDialog={setBatchDeleteDialog}
+          setDeleteDialog={setDeleteDialog}
+          setRenameDialog={setRenameDialog}
+          onOpenArchiveSettings={handleOpenArchiveSettings}
+          onConfirmArchiveThread={() => void confirmArchive()}
+          onConfirmArchiveWorkspace={() => void confirmArchiveWorkspace()}
+          onConfirmBatchArchive={() => void confirmBatchArchive()}
+          onConfirmBatchDeleteThread={() => void confirmBatchDelete()}
+          onConfirmDeleteThread={() => void confirmDelete()}
+          onConfirmRenameThread={() => void confirmRename()}
+          onGenerateTitle={() => void generateTitle()}
+        />
+        <WorkspaceDialogs
+          deleteDialog={workspaceDeleteDialog}
+          renameDialog={workspaceRenameDialog}
+          setDeleteDialog={setWorkspaceDeleteDialog}
+          setRenameDialog={setWorkspaceRenameDialog}
+          onConfirmDeleteWorkspace={() => void confirmWorkspaceDelete()}
+          onConfirmRenameWorkspace={() => void confirmWorkspaceRename()}
+        />
+        {remoteRename
+          ? (
+              <RemoteRenameDialog
+                conversation={remoteRename}
+                onClose={() => setRemoteRename(null)}
+                onRenamed={() => void refreshRemotePeers()}
+              />
+            )
+          : null}
+        {workspaceDeviceChoice
+          ? (
+              <WorkspaceDeviceDialog
+                onClose={() => setWorkspaceDeviceChoice(false)}
+                onPickLocal={() => {
+                  setWorkspaceDeviceChoice(false);
+                  openLocalWorkspaceForm();
+                }}
+                onPickPeer={(peer) => {
+                  setWorkspaceDeviceChoice(false);
+                  setRemoteWorkspaceHost(peer);
+                }}
+                peers={remotePeers}
+              />
+            )
+          : null}
+        {newChatDeviceChoice
+          ? (
+              <DeviceChoiceDialog
+                description={tRemotePeer("chooseChatDeviceHint")}
+                onClose={() => setNewChatDeviceChoice(false)}
+                onPickLocal={() => {
+                  setNewChatDeviceChoice(false);
+                  handleOpenNewChat();
+                  // The dialog had the caret, and this is the screen the question
+                  // is about to be typed on: give it back. A composer that mounts
+                  // in this same commit focuses itself; the event is for the one
+                  // already on screen (⌘N pressed again on the new-chat screen),
+                  // which no remount would have reached.
+                  emitFutureEvent("focus-composer", undefined);
+                }}
+                onPickPeer={(peer) => {
+                  setNewChatDeviceChoice(false);
+                  startRemoteConversation(peer.desktopId);
+                  // Same reason as above, on the machine that was picked: the
+                  // draft this opens may already be the one on screen.
+                  emitFutureEvent("focus-composer", undefined);
+                }}
+                peers={remotePeers}
+                title={tRemotePeer("chooseChatDevice")}
+              />
+            )
+          : null}
+        {remoteWorkspaceHost
+          ? (
+              <RemoteWorkspaceCreateDialog
+                onClose={() => setRemoteWorkspaceHost(null)}
+                onCreated={workspace => handleRemoteWorkspaceCreated(remoteWorkspaceHost.desktopId, workspace)}
+                peer={remoteWorkspaceHost}
+              />
+            )
+          : null}
+        {/* A workspace on another machine is renamed on that machine, so this uses
           the shared dialog shell (as this app's own workspace rename does) and the
           remote namespace for its words: which computer it belongs to is the one
           thing the reader needs that the local dialog never says. */}
-      {remoteWorkspaceRename
-        ? (
-            <RemoteWorkspaceRenameDialog
-              onClose={() => setRemoteWorkspaceRename(null)}
-              onRenamed={() => void refreshRemotePeers()}
-              target={remoteWorkspaceRename}
-            />
-          )
-        : null}
-      {/* The conversation's account book, as the local header's is: token usage
+        {remoteWorkspaceRename
+          ? (
+              <RemoteWorkspaceRenameDialog
+                onClose={() => setRemoteWorkspaceRename(null)}
+                onRenamed={() => void refreshRemotePeers()}
+                target={remoteWorkspaceRename}
+              />
+            )
+          : null}
+        {/* The conversation's account book, as the local header's is: token usage
           and amount for the *host's* session, read from the host's own state. */}
-      {remoteUsageOpen && activeRemote
-        ? (
-            <RemoteUsageDialog
-              desktopId={activeRemote.desktopId}
-              onClose={() => setRemoteUsageOpen(false)}
-              sessionId={activeRemote.sessionId}
-              title={activeRemoteContext?.title ?? activeRemote.sessionId}
-            />
-          )
-        : null}
-      <CommandPalette
-        commands={paletteCommands}
-        onClose={() => setPaletteOpen(false)}
-        open={paletteOpen}
-        targets={paletteTargets}
-      />
-      <ShortcutCheatSheet
-        onClose={() => setCheatSheetOpen(false)}
-        open={cheatSheetOpen}
-      />
-      <SettingsDialog
-        appSettings={appSettings}
-        cachedUpdateStatus={cachedStatus}
-        cachedUpdateCheckedAt={cachedCheckedAt}
-        futureBalance={futureBalance}
-        futureBalanceStatus={futureBalanceStatus}
-        futureEmail={futureEmail}
-        futureSessionStatus={futureSessionStatus}
-        onRefreshFutureAuth={refreshFutureAuth}
-        onRefreshFutureBalance={refreshFutureBalance}
-        hasUpdate={hasUpdate}
-        initialTab={settingsTab}
-        modelOptions={modelOptions}
-        onChangeSettings={changeSettings}
-        onClose={() => setSettingsOpen(false)}
-        onProvidersChanged={() => void refreshAgentModels()}
-        onUpdateSeen={markUpdateSeen}
-        open={settingsOpen}
-      />
-      <ToastHost />
-    </div>
+        {remoteUsageOpen && activeRemote
+          ? (
+              <RemoteUsageDialog
+                desktopId={activeRemote.desktopId}
+                onClose={() => setRemoteUsageOpen(false)}
+                sessionId={activeRemote.sessionId}
+                title={activeRemoteContext?.title ?? activeRemote.sessionId}
+              />
+            )
+          : null}
+        <CommandPalette
+          commands={paletteCommands}
+          onClose={() => setPaletteOpen(false)}
+          open={paletteOpen}
+          targets={paletteTargets}
+        />
+        <ShortcutCheatSheet
+          onClose={() => setCheatSheetOpen(false)}
+          open={cheatSheetOpen}
+        />
+        <SettingsDialog
+          appSettings={appSettings}
+          cachedUpdateStatus={cachedStatus}
+          cachedUpdateCheckedAt={cachedCheckedAt}
+          futureBalance={futureBalance}
+          futureBalanceStatus={futureBalanceStatus}
+          futureEmail={futureEmail}
+          futureSessionStatus={futureSessionStatus}
+          onRefreshFutureAuth={refreshFutureAuth}
+          onRefreshFutureBalance={refreshFutureBalance}
+          hasUpdate={hasUpdate}
+          initialTab={settingsTab}
+          modelOptions={modelOptions}
+          onChangeSettings={changeSettings}
+          onClose={() => setSettingsOpen(false)}
+          onProvidersChanged={() => void refreshAgentModels()}
+          onUpdateSeen={markUpdateSeen}
+          open={settingsOpen}
+        />
+        <ToastHost />
+      </div>
+    </ChoiceCardsProvider>
   );
 }

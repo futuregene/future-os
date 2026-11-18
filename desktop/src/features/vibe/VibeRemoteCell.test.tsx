@@ -40,7 +40,15 @@ vi.mock("../remote-peer/useRemoteTimeline", () => ({ useRemoteTimeline: () => mo
 vi.mock("../remote-peer/useRemoteApprovals", () => ({ useRemoteApprovals: () => mocks.approvals }));
 vi.mock("../remote-peer/remotePeerClient", () => ({
   continueRemoteRun: (...args: unknown[]) => mocks.continueRun(...(args as [])),
+  // The cell reads that host's own settings for its card switch, through the
+  // cached host catalogue (`useRemoteChoiceCards`). This fake host is one that
+  // answers: a build with the switch on, so nothing here changes what is drawn.
+  getRemoteDesktopSettings: async () => ({ skillRecommend: false, choiceCards: true }),
+  listRemoteAvailableSkills: async () => [],
+  listRemoteInstalledSkills: async () => [],
+  listRemoteModels: async () => [],
 }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
 vi.mock("../remote-peer/RemoteConversationView", () => ({
   RemoteConversationView: (props: Record<string, unknown>) => {
     mocks.view.props = props;

@@ -151,6 +151,36 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 
 另有一个**部署坑**：这条 prompt 是 `include_str!` 编进二进制的，所以本机装的是旧构建时，改完仓库也不会立即生效（实测 `futureos.exe` 里还是 "the default, so usually omit it" 那一句，而仓库已经改了两轮）。改 prompt 的改动必须跟一次重装 + 重启才算上线。
 
+### 4.1 开关：默认关（2026-11-17）
+
+卡片是**偏好**，不是默认行为，出厂**关**。同一个开关管住它的两半——画不画，和这一节进不进 prompt——因为把围栏教给一个不会画卡片的客户端，比只做一半更糟：模型每轮都在为读者看不到的格式花 prompt，还会写出渲染成空白的东西。
+
+| | `choice_cards` 开 | 关（默认） |
+|---|---|---|
+| 桌面 / 手机 | 卡片，可点选 | 什么都不出现——没有卡片，也没有代码块 |
+| system prompt | §4 这一节 | 不存在——`grep futureos-choice` 搜不到 |
+| 列表里「这张卡在等你选」（§5.9） | 显示 | 不显示 |
+
+为什么默认关：围栏在每个会话的每一轮都占 prompt；而卡片是在请读者从模型写的清单里挑一件——想往下走时受欢迎，否则是打断。
+
+开关只动「画不画 + 教不教」，其余不变：
+
+- **格式不动。** 同一个围栏、同样的字段、同样的单选/多选语义，只决定画不画、教不教。
+- **不重写已有历史。** 已经带卡片的回复按当前开关渲染，不迁移、不回写。
+- **关掉不留残渣。** 只「不画卡片」不够：围栏不能以自身源码的形式再冒出来，畸形围栏的兜底那条路也一样。关掉卡片的读者，回复中间永远不会看到 `futureos-choice`，也不会看到选项行；卡片前后的正文照旧，只有那一段消失。
+
+值放在哪、怎么走：
+
+- 只有一个真源：`app.db` → `packages/app-settings`（`choice_cards`，默认 `false`），读出来是 `appSettings.choiceCards`；
+- 桌面：设置 → 通用里的一个开关；值经 `ChoiceCardsContext` 到 markdown 渲染层（渲染层自身默认仍是 `true`，所以只有真正的「关」才隐藏）；
+- **每次 run 之前**告诉 agent：宿主推 `set_choice_cards`（尽力而为——不认识这条命令的旧 agent 也不影响发消息，读设置失败一律按关处理），会话记住它，由 `PromptOptions.choice_cards` 决定这一节进不进 prompt。所以全新安装的机器：prompt 里没有围栏，界面上也没有卡片；
+- 手机镜像桌面、不另存一份：`get_desktop_settings` 带上 `choiceCards`，`SettingsPatch` 写回同一行。
+- 同一个值也能**在那台机器自己的页面上**改：配对的桌面点进去（远程 → 那台电脑 → 自动化）就有这个开关，否则没有屏幕的无头宿主永远打不开它。它通过 `update_desktop_settings` 写那台机器的 `app.db`；
+- 那台机器的每一个客户端都按**它**的值渲染，而不是按客户端自己的开关：手机和桌面上的远程会话都从宿主读 `choiceCards`（`useRemoteChoiceCards`）。画出宿主智能体根本没被教过的卡片、或者把宿主写出来的卡片整块藏掉（连源码一起），两头都错，只有宿主的答案能同时避开；
+- 宿主**没有答案**时（比这个开关更旧的构建）按**开**处理：那种构建无条件教围栏，藏掉它的卡片等于删掉它合法问出的问题。只有明确的 `false` 才隐藏。客户端还没读到设置时，先按自己的值渲染，不会先闪一下再消失。
+
+钉住它的测试：`desktop/src/features/markdown/ChoiceCardsToggle.test.tsx`（关：卡片节点数为 0，**且**取出的正文里没有 `futureos-choice`；开：有行、能点、能答）、`mobile/src/components/__tests__/ChoiceCardsToggle.test.ts`、`agent/src/prompt/mod.rs::prompt_omits_the_choice_card_fence_when_cards_are_off`。反向验证过：把渲染层恒等于 `true`、让这一节无条件进 prompt、把默认值改成 `true`，这三处的断言分别变红。
+
 ## 5. 界面
 
 ### 5.1 桌面端 · 未选
@@ -161,6 +191,7 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 - 卡头 12px 半粗标题 + 右侧 11px 模式标注（`单选` / `多选`）；
 - 副标题 11px，说明"选一个就放进输入框；也可以直接在输入框里写别的"——这句话替代了卡内的"自己写…"行（§5.6 说明为什么删掉）；
 - 每个选项一行：16px 单选圈 + 13px 文案 + 12px 一行说明（`ink-muted`）；未选行无边框、无底色，靠留白分列；
+- **多选卡的标记是方框**（16px，圆角 3px，选中后同色对勾），单选卡才是圆圈：两种卡的差别不只在右上角那行小字，形状本身就是判据，扫一眼就知道能不能多选。手机端同一规则（18px 方框，圆角 4px）；
 - 卡片外框 `1px line` / `radius 10px` / `surface` 底 / 极轻投影，与审批卡同一套材质，但**位置不同**：审批卡浮在输入框上方，选项卡长在正文里。
 
 ### 5.2 桌面端 · 已选
@@ -430,6 +461,8 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
 
 围栏语法让"不认识"变成"照正常渲染"，这是选它的首要理由（§3）。同时解析器永不抛错：任何畸形输入都退回代码块。
 
+这张表说的是「认识卡片」的客户端。读者把开关**关掉**时不属于「退回代码块」那一行：关掉就是整块不出现、连源码也不出现，agent 那边也不会被教这个围栏（§4.1）。
+
 ## 9. 文案 / 图标 / 无障碍
 
 固定文案（模型不提供、也不该提供）——三端都要 key：
@@ -450,7 +483,7 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
 - 图标：卡头 `list-checks`（一批待办里挑一件），铅笔、叉沿用现有 `lucide` 图标集；
 - 语义：卡片是 `role="group"` + `aria-labelledby` 指向标题；选项行是 `role="radio"`（单选）/ `role="checkbox"`（多选），带 `aria-checked`；输入框里的 chip 是 `role="group"`，两个按钮各有 `aria-label`（上表）；**队列行里的 chip 反过来——整个 chip 是一个 `role="button"`**，`aria-label` 用 `choice.queue.change`，因为它只表示一件事（换选择），而行的铅笔、垃圾桶各自独立。
 - 键盘：Tab 进卡 → 方向键在选项间移动 → Enter/Space 选中 → 焦点进输入框。`Esc` 关浮层；
-- 选中状态不只靠颜色：实心圆对勾 + 描边 + 底色三重区分（灰度或色弱下仍可辨）。
+- 选中状态不只靠颜色：对勾 + 描边 + 底色三重区分（灰度或色弱下仍可辨）；单选的圆与多选的方框让模式也不只靠颜色。
 
 ## 10. 明确不做的部分
 
