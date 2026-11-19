@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { SkillCandidate } from "../../integrations/skills/skillsClient";
 import type { ChoiceAnswer, ChoiceCardQuestion } from "../agent/composer/choiceAnswer";
+import type { SendQueueChoiceItem } from "../agent/SendQueuePanel";
 import type { RemoteSessionRow } from "./mergeConversations";
 import type { RemoteCommand, RemoteSkillChoice, RemoteSlashItem } from "./remoteCommands";
 import type { RemotePeer, RemoteSkillInfo, RemoteUpload } from "./remotePeerClient";
@@ -20,6 +21,7 @@ import { EMPTY_EDITOR_ATTR } from "../../lib/editableTarget";
 import { errorMessage } from "../../lib/errors";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { useImeEnterGuard } from "../../lib/useImeEnterGuard";
+import { rewriteQueuedChoiceText } from "../agent/agentQueue";
 import { imageExtensionFromMime, splitFileName } from "../agent/attachments";
 import { answerFromPick, answerOrNull, choiceAnswerText } from "../agent/composer/choiceAnswer";
 import { SendQueuePanel } from "../agent/SendQueuePanel";
@@ -796,6 +798,43 @@ export function RemoteComposer({
   }
 
   /**
+   * Change which option a waiting message's answer picked (design §5.8.2).
+   *
+   * The chip is the button, and what it sends is one statement, exactly as on a
+   * local conversation: the row's text names the chosen option and the queue
+   * sends that text, so a new pick with the old sentence would send the old one.
+   * Both go in a single `edit_queued_run`, which the host applies where the row
+   * already waits — its place in the queue, its files and its frozen settings are
+   * untouched.
+   *
+   * No cancel-and-resend fallback here, deliberately: the chip is only drawn for a
+   * row whose host *reports* its answer, and reporting it and accepting it landed
+   * in the same host change, so a host that draws the chip can change it. A failure
+   * is said, and the row is left exactly as it was.
+   */
+  async function changeQueuedChoice(runId: string, choice: SendQueueChoiceItem) {
+    const row = queue.rows.find(item => item.runId === runId);
+    if (!row)
+      return;
+    setError(null);
+    try {
+      await editRemoteQueuedRun(
+        desktopId,
+        sessionId,
+        runId,
+        rewriteQueuedChoiceText(row.text, choice),
+        choice,
+      );
+    }
+    catch (err) {
+      setError(errorMessage(err));
+    }
+    finally {
+      queue.refresh();
+    }
+  }
+
+  /**
    * Change a waiting message: correct its words where it already waits.
    *
    * The host edits the accepted prompt in place, so the row keeps its place in
@@ -1365,6 +1404,7 @@ export function RemoteComposer({
                 attachmentsUnreported
                 items={queue.rows.map(row => ({
                   attachments: row.attachments,
+                  choice: row.choice,
                   content: row.text,
                   id: row.runId,
                   parked: isParkedRemoteQueueRow(row),
@@ -1373,6 +1413,10 @@ export function RemoteComposer({
                 onRelease={id => void releaseQueued(id)}
                 onRemove={id => void cancelQueued(id)}
                 onUpdate={(id, content) => void replaceQueued(id, content)}
+                // The chip re-offers the row's own answer; it is drawn only when
+                // the host reported one (§5.8.2), so no `choice` travelling here
+                // means no chip to press rather than an empty one.
+                onUpdateChoice={(id, choice) => void changeQueuedChoice(id, choice)}
               />
             </div>
           )

@@ -11,7 +11,8 @@ import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
  * design `docs/design/choice-cards.zh-CN.md` §7), so a prompt that picked one row
  * would otherwise read as a bracket sandwich inside the reader's own words. The
  * sentence is not rewritten here — the copy button still yields it — it is drawn
- * as what it is: a pick, one step in from the prose typed under it.
+ * as what it is: a pick, one step in from the prose typed around it (the desktop
+ * writes its pill at the caret, so the answer can sit anywhere in the sentence).
  *
  * The bubble behind this is the accent fill, not the app surface, so the tag is
  * mixed from the same two colours `MarkdownText`'s `onAccent` tone uses: an

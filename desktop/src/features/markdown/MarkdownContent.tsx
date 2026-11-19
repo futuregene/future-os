@@ -223,6 +223,7 @@ function renderBlock(
       const live = choice !== undefined && choice.lastKey === key;
       return (
         <ChoiceCard
+          context={node.context}
           hint={node.hint}
           key={key}
           mode={node.mode}

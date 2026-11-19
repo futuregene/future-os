@@ -10,7 +10,7 @@ import { ErrorBanner } from "../../components/ErrorBanner";
 import { StandbyNotice } from "../../components/StandbyNotice";
 import { useRemote, useRemoteControls } from "../../remote/RemoteContext";
 import { readableDeviceName } from "../../remote/deviceName";
-import { modelReference, type MobileAttachment, type TimelineItem } from "../../remote/types";
+import { modelLabelForReference, resolveModelReference, type MobileAttachment, type TimelineItem } from "../../remote/types";
 import { spacing } from "../../theme/tokens";
 import { useTransferProgress } from "./useTransferProgress";
 import { File } from "expo-file-system";
@@ -232,11 +232,13 @@ export function ChatScreen() {
   const machine = desktopId
     ? { icon: pairedDesktop?.icon, label: pairedDesktop?.name || desktopId }
     : undefined;
-  const activeModel = remote.models.find(
-    (model) => modelReference(model) === remote.modelId,
-  );
-  const activeModelLabel =
-    activeModel?.label || activeModel?.id || remote.modelId || t("chat.model");
+  const activeModel = resolveModelReference(remote.modelId ?? "", remote.models);
+  // A reference the catalogue does not name (a model removed since the
+  // conversation started, or a stored `provider/provider/id` left by an older
+  // client) shows the model's own id rather than the whole reference string.
+  const activeModelLabel = remote.modelId
+    ? modelLabelForReference(remote.modelId, remote.models)
+    : t("chat.model");
   const supportsImages = activeModel
     ? activeModel.supportsImages !== false
     : true;

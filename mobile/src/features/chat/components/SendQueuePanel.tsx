@@ -164,7 +164,11 @@ export function SendQueuePanel({
       <Pressable
         accessibilityLabel={expanded ? t("chat.queue.collapse") : t("chat.queue.expand")}
         accessibilityRole="button"
-        accessibilityState={{ expanded }}
+        // `aria-expanded`, not `accessibilityState={{ expanded }}`: on web
+        // react-native-web forwards `aria-*` and drops `accessibilityState`, so
+        // the old form left this toggle reporting no state at all — the same gap
+        // the choice card's fold button had (see `components/ChoiceCard.tsx`).
+        aria-expanded={expanded}
         onPress={() => setOpen(!expanded)}
         style={({ pressed }) => [styles.header, pressed && styles.rowPressed]}
         testID="send-queue-toggle"

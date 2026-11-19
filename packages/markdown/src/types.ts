@@ -35,6 +35,13 @@ export interface ChoiceCardOption {
  * no selection state.
  */
 export interface ChoiceCardNode {
+  /**
+   * The situation the question sits in — what the reply found, where it stopped,
+   * what the rows trade off — so the card can be answered without re-reading the
+   * reply above it. 1–3 sentences; repeated `context:` lines are paragraphs. The
+   * fence may omit it, and a card that carries it is still free to be short.
+   */
+  context?: string;
   /** Overrides the default subtitle ("pick one and it lands in the input"). */
   hint?: string;
   mode: ChoiceCardMode;

@@ -1493,3 +1493,159 @@ finding that the recorded mechanism does not match the CI log's signature, so th
 half of the pull is where the CI flake should be hunted next (§16.1); F-TAURI-3 characterized that half
 (§13.6) and shipped the contract fix and the seam, while its budget change was withdrawn on evidence;
 the gates are green.**
+
+## 18. The 2026-11-18 desktop lane: a connect timeout with no fixture in it
+
+*(No unit and no `todo_…` — a CI investigation opened from the red check on `dev-huichen`:*
+[PR #1645](https://github.com/futuregene/future-os/pull/1645),
+[run 44309082327, job 134818429573](https://github.com/futuregene/future-os/actions/runs/44309082327/job/134818429573)*.
+It ships no fix and changes no budget. It records what the run's own artifacts prove, the mechanism
+reproduced deterministically, and the two changes this author deliberately did **not** make.)*
+
+### 18.1 The signature, and two things it is not
+
+Two tests failed in the `futureos` lib binary, both inside the fixture at
+`host/src/remote_peer/testing.rs:71`:
+
+```
+commands::remote_peer::tests::a_download_reaches_the_chosen_destination
+commands::remote_peer::tests::a_desktop_download_of_an_installer_is_not_held_to_the_phones_limits
+```
+
+`start(RemoteStartInput {})` answered `phase: Reconnecting, reason: Some(Network)` with no
+invitation, right after `remote: network failure episode started [NW001]: Failed to connect to
+NATS: timed out`.
+
+* **It is not the PR under test.** `git diff origin/main 78087b10c -- host/src/remote/
+  host/src/remote_peer/ packages/remote-client/src/session.rs packages/remote-server/src/
+  packages/relay-endpoint/` is **empty**; the range is choice-card work (mobile `ChoiceCard`,
+  locale JSONs, docs figures). The same check passed on four earlier heads of that PR.
+* **It is not the access-epoch path, and `start_host` does not leave the bridge waiting.** `NW001`
+  proves a connect was attempted and returned `TimedOut`; `start()` answered immediately rather than
+  hanging; and `establish_slots: no plans to serve` — the journal line that looks like the culprit —
+  is the **normal** fresh-home path, because the mint is the statement right after it. §18.3
+  reproduces that same journal, byte for byte, on a pure timing failure.
+
+### 18.2 The numbers, from the run's own artifacts rather than from a re-run
+
+Attempt 1 (red) and attempt 2 (green) are the **same SHA** on the **same runner image**
+(`macos26 / 20261112.0504.1`), 30 minutes apart:
+
+| datum | attempt 1 (failed) | attempt 2 (passed) |
+| --- | --- | --- |
+| median test duration, nextest | **0.13 s** | **0.04 s** (≈3× faster) |
+| sum of test time in the job | 305 s | 166 s |
+| `NW001` occurrences (`Failed to connect to NATS: timed out`) | **2** — pids 61576 and its sibling, **0.7 s apart** (13:12:46.126 / .822) | 0 |
+| outcome | 2 failed | green |
+
+The two timeouts are in **two independent processes**, each with its own `FakeNats` and its own
+broker runtime, within the same second.
+
+Fixture phases of those two processes, from the job's `FUTURE_HOST_FIXTURE_TIMINGS` artifact
+(`peer-cmd-download-writes` / `peer-cmd-desktop-tier`):
+
+| phase | ms |
+| --- | --- |
+| `lock_wait` | 0.028 / 0.037 |
+| `pre_cleanup` | 0.77 / 1.03 |
+| `setup` | 0.42 / 3.18 |
+| `body` | **16 530 / 16 627** |
+
+That last row retires a story this file had not tested: **the CI disk was not slow.** A fixture whose
+lock, setup and cleanup are sub-millisecond did not lose time to I/O — it lost it inside the test
+body, i.e. inside the connect leg.
+
+And the companion job in the same run, `Rust macOS test / host-remote`, was **`cancelled` with
+`steps=0`: it never got a runner.** Two independent processes losing their leg at the same moment on
+a run that also failed to schedule a sibling job is a host under contention, not one fixture
+misbehaving.
+
+### 18.3 The mechanism, reproduced deterministically — and what it needs
+
+`connection_timeout` (5 s, `NATS_CONNECT_TIMEOUT`) covers the TCP connect **plus reading the broker's
+`INFO`** (`async-nats` 0.49.1, `connector.rs::try_connect_to_server`). On loopback that leg costs
+~ms (§18.4), so the only way it expires is that the leg *lost ≥5 s of wall clock while the broker had
+not yet spoken*. Three arms on this host, 2026-11-18:
+
+| arm | construction | result |
+| --- | --- | --- |
+| control | broker silent 300 ms, no freeze | **PASS**, connect 304 ms |
+| control | `SIGSTOP` the process 6 s at 0–20 ms after the relay line — i.e. *before* the leg's first poll | **PASS at every offset**: `Timeout` starts its clock at first poll, so a freeze outside the leg is harmless |
+| **arm** | broker silent 7 s **and** `SIGSTOP` 6 s inside the leg | **exit 101** — `NW001 … Failed to connect to NATS: timed out`, then the fixture's own panic, with **the identical `RemoteStatus` and an identical access-epoch journal** (fixture acquired / stop_with / invalidate / fixture drained / start: entered (minting) / establish_slots: no plans to serve) |
+
+So the CI signature is the fingerprint of a **≥5 s stall inside the connect leg**, and nothing in the
+fixture's logic is implicated: given that stall, the fixture reports exactly what it should.
+
+One arm says the opposite of "the broker cannot keep up": with a 300 ms-silent broker and a 6 s freeze
+inside the leg the test **passed**, because the isolated broker wins the resume race and answers
+before the client polls. `6d4b0135b` (#1637, today) moved the fake broker onto its own 2-worker
+runtime; that *narrows* this failure rather than causing it.
+
+### 18.4 It does not reproduce under load
+
+One process per test, as nextest runs the lane; the 19 `commands::remote_peer::tests`:
+
+| load | rounds | outcome |
+| --- | --- | --- |
+| none, 3 at a time (the CI shape) | 1 | 19/19, 19 s |
+| 120 burners, 19 at a time | 2 | 19/19 each, 10–11 s |
+| 60 burners, 3 at a time | 2 | 19/19 each, 20–21 s |
+| background QoS (`taskpolicy -b`), 12 burners | 1 | 19/19, 35 s |
+| the failing window's shape: the 3 heaviest peer tests concurrently | 11 | **0 connect timeouts** |
+| same, with the connect leg timed (`FLAKE_CONNECT_DIAG`) | 3 | 19/19 each |
+
+**9 full-set rounds (171 test processes) and 33 heavy runs: zero `Failed to connect to NATS: timed
+out`.** The leg's measured cost: idle n=15 → median **2 ms**, max 7 ms; 120 burners + 19-way
+parallelism n=30 → median 26 ms, p90 92 ms, **max 131 ms** — a 38× margin at the worst this host can
+produce, and §13.6.5 records that a fixture tolerance was already implemented, measured and
+withdrawn.
+
+The ceiling is the rig, not the flake: 40+ bash burners cannot even `exec` the 200 MB debug binary,
+and `taskpolicy -b` at 16 burners freezes the fixture entirely (nothing completed in 580 s) — §13.8.4's
+"above ~40 burners nothing completes, on any binary", met again.
+
+### 18.5 The instruments — and that they are gone
+
+| what | where |
+| --- | --- |
+| one process per test, N at a time, burners held for the round | `/tmp/flake-rig/experiment.sh` |
+| the failing window's shape: the three heaviest peer tests concurrently | `/tmp/flake-rig/heavy-rig.sh` |
+| a temporary `eprintln!` of the leg's elapsed ms in `packages/remote-client/src/session.rs`, gated on `FLAKE_CONNECT_DIAG` | reverted |
+| a temporary `FLAKE_BROKER_DELAY_MS` silence before the fake broker's `INFO` | reverted |
+
+`/tmp` is ephemeral; both scripts are ~40 lines of bash and §18.3/§18.4 name exactly what they do, so
+they are rebuildable from this text.
+
+Reverted **and verified, not assumed**: `git status --porcelain` empty; `cargo test -p futureos --lib
+--no-run` after the revert; then `strings -a <binary> | grep -c` → `[diag] connect` **0**,
+`FLAKE_BROKER_DELAY_MS` **0**, `FLAKE_CONNECT_DIAG` **0**, and `fake-nats` **1** (the current fixture
+is still the one in the binary).
+
+**Trap for the next reader — it cost this investigation its first corpus.** A prebuilt
+`futureos_lib-<hash>` in the repo `target/` is *not* the tree. Eight rounds were run against a binary
+built before `6d4b0135b`: no `fake-nats` thread, 355 tests, i.e. the **old** broker, and every number
+was void. The check is one second:
+`strings -a <binary> | grep -c fake-nats` (must be 1) and `--list | grep -c ": test$"` (this lane:
+**353**, matching the CI log's `352 filtered out`).
+
+### 18.6 Deliberately not done
+
+1. **Capping nextest concurrency for the desktop lane** (`-j 2` instead of the core count). It would
+   shrink the window, changes no product behaviour and no assertion — but it is a CI knob whose cost
+   (wall time on every later run) would be paid against evidence this investigation does not have:
+   *which* three tests held the failing window's slots is not identified in the log.
+2. **A bounded wait in `start_host` for the invitation the product's own retry produces.** This is
+   the tempting one, and it is principled: production does not promise that the *first* `start()`
+   answer carries an invitation — §13.8 gives a transient connect failure a bounded retry, and the
+   fixture's journal shows that retry running — so the fixture asserts more than the product
+   guarantees. Waiting on the invariant ("a host that is on serves an invitation") rather than on the
+   first answer would turn a starved runner green without touching a budget, which is the
+   "derive the wait from a condition" direction §13.6.6 asks for. Not done because it cannot be
+   shown to save *that* run: with no reproduction, the change would rest on an inference, and it
+   would also mask a genuine "the host never connects" regression unless its bound were argued
+   separately. It belongs to whoever owns the fixture, with a control that fails on today's fixture
+   and passes on the changed one — the §18.3 arm is that control's outline.
+
+One line so the next round need not re-derive it: **this signature is not a fixture defect; it is
+what a ≥5 s stall of the whole process looks like from inside the connect leg, and the honest levers
+are a CI shape or a fixture that waits on the invariant — not a larger budget.**

@@ -675,8 +675,34 @@ async fn run_inner(
     //    the store owns a `rusqlite::Connection`, which is `Send` but not
     //    `Sync`, so a `&Store` held across an await would make this future
     //    non-`Send` and break `tokio::spawn`.
+    //
+    //    The task's stored model reference is normalized against the Agent's
+    //    catalogue first: a row written by a client that prefixed an id already
+    //    beginning with its provider (`omlx/omlx/Qwen3.8-…`) names no model, so
+    //    the session was created with a reference nothing could resolve and
+    //    every client showed the raw string instead of the model. Both the
+    //    session and the prompt take the one normalized value.
+    let model_id = match task.model_id.as_deref() {
+        Some(raw) => {
+            let normalized =
+                crate::agent_bridge::normalize_model_reference_against_catalog(raw).await;
+            if normalized == raw {
+                tracing::debug!(
+                    event = "execute",
+                    model_id = raw,
+                    "FutureOS tasks: model reference already names a catalogue model"
+                );
+            } else {
+                tracing::info!(event = "execute", stored = raw, resolved = %normalized,
+                    "FutureOS tasks: normalized the task's stored model reference"
+                );
+            }
+            Some(normalized)
+        }
+        None => None,
+    };
     let (thread_id, session_id) = match task.session_policy {
-        SessionPolicy::New => match create_new_session(task).await {
+        SessionPolicy::New => match create_new_session(task, model_id.clone()).await {
             Ok(ids) => ids,
             Err(error) => return (store, Err(error)),
         },
@@ -686,7 +712,7 @@ async fn run_inner(
                 Err(error) => return (store, Err(error)),
                 Ok(Some(ids)) => ids,
                 Ok(None) => {
-                    let ids = match create_new_session(task).await {
+                    let ids = match create_new_session(task, model_id.clone()).await {
                         Ok(ids) => ids,
                         Err(error) => return (store, Err(error)),
                     };
@@ -725,7 +751,7 @@ async fn run_inner(
     let prepared = match crate::agent_bridge::prepare_prompt_persisted_with_trigger(
         &thread,
         prompt,
-        task.model_id.clone(),
+        model_id.clone(),
         task.thinking_level.clone(),
         Vec::new(),
         None,
@@ -778,7 +804,10 @@ fn conversation_title(task: &Task, started_at_ms: i64) -> String {
     )
 }
 
-async fn create_new_session(task: &Task) -> Result<(String, String), String> {
+async fn create_new_session(
+    task: &Task,
+    model_id: Option<String>,
+) -> Result<(String, String), String> {
     let title = conversation_title(task, now_ms());
     // A task's `conversation_mode` decides where the conversation is filed, and
     // — since a chat task needs no working directory of its own — where the
@@ -809,7 +838,7 @@ async fn create_new_session(task: &Task) -> Result<(String, String), String> {
     let session_id = crate::agent_bridge::provision_agent_session_with_policy(
         &thread.id,
         &title,
-        task.model_id.clone(),
+        model_id,
         task.thinking_level.clone(),
         "all",
         Some("off"),
@@ -1103,6 +1132,72 @@ mod tests {
             announcements.last(),
             Some(&(Some(thread_id), false)),
             "the settlement is announced last: {announcements:?}"
+        );
+    }
+
+    /// A task whose stored model reference repeats its provider (`omlx/omlx/X`,
+    /// written by a client that prefixed an id already beginning with its
+    /// provider) must run — and open its session — on the model the catalogue
+    /// names. Stored raw, nothing could resolve it: the Agent fell back inside
+    /// the provider and every client showed the raw string as the model's name.
+    ///
+    /// The catalogue only picks *which* reference is sent; a reference it names
+    /// exactly is passed through nowhere changed, which is why the assertion
+    /// below is an equality on the collapsed value rather than on a prefix.
+    #[tokio::test]
+    async fn a_run_normalizes_the_task_model_reference_against_the_catalog() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-normalize-model");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+
+        let mut t = task("水花集");
+        // The catalogue `list_agent_models` reads. `openrouter`'s own model id
+        // repeats its provider, so a string rule would have broken that one.
+        mock.push_data(
+            "list_models",
+            serde_json::json!({"models": [
+                {"id": "Qwen3.8-27B-oQ4e-mtp", "label": "Qwen 3.8", "provider": "omlx"},
+                {"id": "openrouter/auto", "label": "auto", "provider": "openrouter"}
+            ]}),
+        );
+        t.model_id = Some("omlx/omlx/Qwen3.8-27B-oQ4e-mtp".into());
+        store.insert_task(&t).unwrap();
+        let run = claim(&store, &t, ClaimReason::Explicit).unwrap();
+        script_agent_setup(&mock, "sess_normalized");
+        mock.push_stream(crate::agent_bridge::test_support::StreamScript::Events(
+            vec![crate::agent_bridge::test_support::stream_event(
+                "@attach",
+                0,
+                "agent_end",
+                r#"{"reason":"complete"}"#,
+            )],
+            None,
+        ));
+
+        let notify: Notifier = std::sync::Arc::new(|_| {});
+        execute(&notify, store, t.clone(), run.clone())
+            .await
+            .expect("execute");
+
+        let created = mock.requests_of("new_session");
+        let session = created.first().expect("one session was opened");
+        assert_eq!(
+            session.model_id, "omlx/Qwen3.8-27B-oQ4e-mtp",
+            "the session is created on the model the catalogue names, not the stored \
+             double-prefixed string"
+        );
+        // The task row itself is not rewritten: the write path owns what is
+        // stored, and a run must not silently edit the user's task.
+        let stored = Store::open(dir.path())
+            .unwrap()
+            .get_task(&t.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored.model_id.as_deref(),
+            Some("omlx/omlx/Qwen3.8-27B-oQ4e-mtp"),
+            "normalizing for a run is not a migration of the stored task"
         );
     }
 
