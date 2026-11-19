@@ -440,6 +440,9 @@ export function SessionList({
           // A search opens every row: a match hidden inside a closed fork is a
           // match the reader cannot see.
           query.trim() ? new Set<string>() : expanded,
+          // Which machine folds by its bare session ids — the keys its own
+          // conversations already carry on the pages this shelf replaced.
+          activeDesktopId,
         )
         : archivedRows(
           remote.sessions,
@@ -450,9 +453,10 @@ export function SessionList({
           // A search opens every row: a match hidden inside a closed fork is a
           // match the reader cannot see.
           query.trim() ? new Set<string>() : expanded,
+          activeDesktopId,
         )
       : []),
-    [archived, archivedCatalogs, remote.sessions, remote.workspaces, collapsed, expanded, query],
+    [archived, archivedCatalogs, remote.sessions, remote.workspaces, collapsed, expanded, query, activeDesktopId],
   );
   /**
    * How many archived conversations the shelf draws.

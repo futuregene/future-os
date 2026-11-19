@@ -3135,6 +3135,58 @@ test("the shelf holds ten conversations until the footer is asked for more", () 
 });
 
 /**
+ * A shelved fork opens under the conversation it came from.
+ *
+ * Reported from the phone (2026-11-19): fork a conversation, archive the parent,
+ * follow the archive entry, tap the parent — the `+`/`−` flipped and the fork
+ * never appeared. The screen draws the shelf from `archivedCatalogs` (one
+ * catalogue per answering machine), so every row carries a machine-stamped key
+ * and its `foldId` is that key; the tree looked the fold up by the bare session
+ * id instead, so the toggle and the shelf never agreed on what "open" meant.
+ * `renderArchived` alone cannot catch this — it draws the single-machine
+ * fallback, whose keys have no machine in them.
+ */
+test("a shelved fork opens under its parent on the shelf the screen draws", () => {
+  act(() => tree.update(createElement(SessionList, {
+    tab: "chat",
+    archived: true,
+    empty: null,
+    onMenu,
+    onTabChange,
+    onExitArchived: onExitArchived,
+    commandsFor: testCommandsFor,
+    ref: listRef,
+    activeDesktopId: "desk-a",
+    archivedCatalogs: [{
+      desktopId: "desk-a",
+      sessions: [
+        {
+          sessionId: "shelf-parent",
+          threadId: "tp",
+          title: "Shelved parent",
+          streaming: false,
+          archived: true,
+        },
+        {
+          sessionId: "shelf-fork",
+          threadId: "tf",
+          title: "Shelved fork",
+          streaming: false,
+          archived: true,
+          parentSessionId: "shelf-parent",
+        },
+      ],
+      workspaces: [],
+    }],
+  })));
+
+  // The fold starts closed: the parent is drawn, its fork is not.
+  expect(mergedTitles()).toEqual(["Shelved parent"]);
+  act(() => button("sessions.expandChildren").props.onPress());
+  expect(mergedTitles()).toEqual(["Shelved parent", "Shelved fork"]);
+});
+
+/**
  * "This one is waiting on your answer."
  *
  * A finished reply that closed with a `futureos-choice` card leaves the
