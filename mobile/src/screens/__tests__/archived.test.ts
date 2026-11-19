@@ -264,6 +264,60 @@ describe("the shelf across machines", () => {
     expect(rows.map(row => row.key)).toEqual(["archived-workspace:desk-a:w-case", "desk-a::hello"]);
   });
 
+  /**
+   * The shelf opens a conversation by the key its own row's toggle reports.
+   *
+   * Reported from the phone: fork a conversation, archive the parent, follow the
+   * archive entry, press the row's `+` — the glyph flipped and no fork appeared.
+   * The row reported (and toggled) a machine-stamped key while the tree looked
+   * the fold up by the bare session id, so the two never agreed.
+   */
+  it("opens a conversation's fork by the fold id its own row reports", () => {
+    const sessions = [
+      session("shelf-parent", { archived: true }),
+      session("shelf-fork", { archived: true, parentSessionId: "shelf-parent" }),
+    ];
+    const closed = archivedCatalogRows([{ desktopId: "desk-a", sessions }], new Set());
+    const parent = closed[0];
+    expect(parent?.kind === "session" ? parent.hasChildren : null).toBe(true);
+
+    const open = archivedCatalogRows(
+      [{ desktopId: "desk-a", sessions }],
+      new Set(),
+      new Set([parent?.kind === "session" ? parent.foldId : ""]),
+    );
+    expect(sessionKeys(open)).toEqual(["desk-a::shelf-parent", "desk-a::shelf-fork"]);
+    expect(open.map(row => (row.kind === "session" ? row.depth : null))).toEqual([0, 1]);
+  });
+
+  /**
+   * The machine the phone is talking to folds by its bare session id, as its
+   * conversations do on the three pages; a peer keeps its machine in the key.
+   */
+  it("shares the active machine's fold key with the pages it came from", () => {
+    const sessions = [
+      session("shelf-parent", { archived: true }),
+      session("shelf-fork", { archived: true, parentSessionId: "shelf-parent" }),
+    ];
+    const own = archivedCatalogRows(
+      [{ desktopId: "desk-a", sessions }],
+      new Set(),
+      new Set(["shelf-parent"]),
+      "desk-a",
+    );
+    expect(own[0]?.kind === "session" ? own[0].foldId : null).toBe("shelf-parent");
+    expect(sessionKeys(own)).toEqual(["desk-a::shelf-parent", "desk-a::shelf-fork"]);
+
+    // A peer's id is that machine's: one fold must not open another's twin.
+    const peer = archivedCatalogRows(
+      [{ desktopId: "desk-b", sessions }],
+      new Set(),
+      new Set(["shelf-parent"]),
+      "desk-a",
+    );
+    expect(sessionKeys(peer)).toEqual(["desk-b::shelf-parent"]);
+  });
+
   it("honours the fold set by workspace id, as the active pages do", () => {
     const rows = archivedCatalogRows([
       {

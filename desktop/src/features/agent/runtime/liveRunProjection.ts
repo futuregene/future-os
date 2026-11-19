@@ -534,14 +534,22 @@ export function ensureLiveReply(
   // exchange; an earlier one is a settled reply this run did not write.
   if (lastAssistantIdx > lastUserIdx) {
     const trailing = messages[lastAssistantIdx]!;
-    // That trailing bubble may already belong to ANOTHER run that is still
-    // streaming — a prefetched preview for this run that has not produced
-    // anything yet, landing while the real one is mid-reply. Re-stamping it
-    // would hand the running reply to this run, and the next projection of the
-    // real one would find no bubble of its own: the reply flickers, and a tool
-    // row whose result already arrived reads "interrupted" until the turn ends.
-    if (trailing.status === "streaming" && trailing.runId && trailing.runId !== runId)
-      return messages;
+    // The trailing row can belong to ANOTHER run and still sit after the last
+    // user turn — the prompt THIS run answers is not in the array yet, because a
+    // reload taken the instant the run started can precede the agent publishing
+    // the user entry. Settled or streaming, that row is not this run's reply:
+    // re-stamping it moved the running elapsed time and token count onto the
+    // previous answer and left this run with no row of its own, so the new
+    // prompt was drawn below a reply it had not produced ("the timer jumped to
+    // the message above").
+    const owner = trailing.runId ?? trailing.inFlightRunId;
+    if (owner && owner !== runId) {
+      // A reply another run is still writing keeps growing where it is; a
+      // settled one leaves room for the bubble this run opens with.
+      return trailing.status === "streaming"
+        ? messages
+        : [...messages, openLiveReply(runId, runStartedAt)];
+    }
     return messages.map((message, index): AgentMessage => (index === lastAssistantIdx
       // The snapshot's own content, segments and activity are kept — the reader
       // should not watch the work already on screen disappear — and only its
@@ -562,22 +570,24 @@ export function ensureLiveReply(
   }
   // Nothing in the transcript belongs to this run yet (entries are only saved
   // after a model call): show the bubble the run opened with.
-  return [
-    ...messages,
-    {
-      id: `stream_${runId}`,
-      role: "assistant",
-      authorKey: "author.researchCopilot",
-      content: "",
-      status: "streaming",
-      createdAt: new Date(runStartedAt ?? Date.now()).toISOString(),
-      activityItems: [],
-      segments: [],
-      thinkingActive: true,
-      runStartedAt: runStartedAt ?? undefined,
-      runId,
-    },
-  ];
+  return [...messages, openLiveReply(runId, runStartedAt)];
+}
+
+/** The bubble a run opens with, before any entry of it has been published. */
+function openLiveReply(runId: string, runStartedAt: number | null): AgentMessage {
+  return {
+    id: `stream_${runId}`,
+    role: "assistant",
+    authorKey: "author.researchCopilot",
+    content: "",
+    status: "streaming",
+    createdAt: new Date(runStartedAt ?? Date.now()).toISOString(),
+    activityItems: [],
+    segments: [],
+    thinkingActive: true,
+    runStartedAt: runStartedAt ?? undefined,
+    runId,
+  };
 }
 
 /**
