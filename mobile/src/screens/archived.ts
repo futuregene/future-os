@@ -141,6 +141,14 @@ export function archivedCatalogRows(
    * fold it has on the default pages, because it is the same fork either way.
    */
   expanded: ReadonlySet<string> = new Set(),
+  /**
+   * Which machine this phone is talking to, for the fold keys.
+   *
+   * Its shelf folds by bare session ids — the keys the default pages use — and a
+   * peer's by its machine-stamped ones. Passed through because `archivedRows`
+   * reads `expanded` with exactly the key it reports on the row.
+   */
+  activeDesktopId: string | null = null,
 ): CatalogRow[] {
   return catalogs.flatMap(catalog => archivedRows(
     catalog.sessions,
@@ -149,6 +157,7 @@ export function archivedCatalogRows(
     collapsed,
     catalog.desktopId,
     expanded,
+    activeDesktopId,
   ));
 }
 
