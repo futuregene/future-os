@@ -89,6 +89,12 @@ python3 benchmark/fusion/bench.py run --suite benchmark/fusion/suites/max-1000.j
 每次 `--out` 使用新目录；中断后用原参数与原输出目录加 `--resume`，不重跑已完成题目。
 默认题包是 Fusion 10，默认 arm 是 `fusion`；运行单模型基线应显式传 `--arms single`。
 
+新建隔离 Host 时，`runtime.py` 在隔离副本的 `agent/settings.json` 中设置
+`outputContinuation: false`。Agent 请求首次触及输出上限即记录 `OUTPUT_LIMIT`，
+避免自动续写改变该请求的思考档位。实际值写入 `runtime.json` 的 `agent_output_continuation`。
+网络重试策略沿用来源配置。用 `--resume-home` 恢复旧评测时沿用其原始配置，
+所以旧记录仍按当时的策略解释。
+
 **502 重试策略**：仅当已接受 run 的终态账本确认上游 HTTP 502 时，才在新会话中
 重新提交同一道原题。默认最多追加 3 次，等待 2、4、8 秒；可通过 `--http-502-retries`
 调整次数，`--http-502-retry-delay` 调整初始等待，指数退避最多等待 30 秒。
