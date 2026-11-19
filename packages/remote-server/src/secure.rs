@@ -110,6 +110,14 @@ struct Server {
 #[derive(Clone, Default)]
 pub struct Transport {
     server: Option<Arc<Mutex<Server>>>,
+    /// When this transport's channel last became the serving one (`activate`).
+    ///
+    /// Read by the catalogue first-packet measurement: a push cannot be read by
+    /// the client before this moment, so "how long until the phone could have
+    /// the directory" is measured from here, not from when the payload was
+    /// built. Reset by [`Transport::clear`] together with the key it describes,
+    /// because the next key's first packet is a different wait.
+    activated_at: Arc<Mutex<Option<Instant>>>,
     #[cfg(any(test, feature = "test-support"))]
     legacy_fixture: bool,
 }
@@ -125,6 +133,7 @@ impl Transport {
                     host,
                 }))
             }),
+            activated_at: Arc::new(Mutex::new(None)),
             #[cfg(any(test, feature = "test-support"))]
             legacy_fixture: creds.handshake_version == 1,
         }
@@ -133,8 +142,17 @@ impl Transport {
     pub fn legacy_fixture() -> Self {
         Self {
             server: None,
+            activated_at: Arc::new(Mutex::new(Some(Instant::now()))),
             legacy_fixture: true,
         }
+    }
+    /// When this channel became the serving one, if it ever was.
+    ///
+    /// The moment a client can first read anything this bridge pushes. `None`
+    /// while the channel is still unbuilt or has been cleared, which is exactly
+    /// the state in which a push is dropped instead of delivered.
+    pub fn activated_at(&self) -> Option<Instant> {
+        *self.activated_at.lock().unwrap()
     }
     pub fn enabled(&self) -> bool {
         self.server.is_some()
@@ -167,6 +185,7 @@ impl Transport {
             server.pending.clear();
             server.candidates.clear();
         }
+        *self.activated_at.lock().unwrap() = None;
     }
     pub fn seal(&self, context: &str, bytes: &[u8]) -> Result<Option<Vec<u8>>, crate::Error> {
         #[cfg(any(test, feature = "test-support"))]
@@ -261,6 +280,8 @@ impl Transport {
             .ok_or_else(|| error("candidate"))?;
         let candidate = server.candidates.remove(index);
         server.current = Some(candidate.channel);
+        drop(server);
+        *self.activated_at.lock().unwrap() = Some(Instant::now());
         Ok(())
     }
     /// Raw handshake messages are bounded and cannot invoke any business API.
@@ -526,6 +547,24 @@ impl Reply {
 }
 tokio::task_local! { pub static REPLY: Reply; }
 
+/// What one pushed JSON payload cost, in the three sizes a reader cares about.
+///
+/// They are separate because they answer different questions: `plain_bytes` is
+/// what the host built, `compressed_bytes` is what gzip made of it, and
+/// `wire_bytes` is what the relay actually carried (the sealed record — the
+/// compressed body plus the AEAD header and tag). Reporting only one of them is
+/// how "the catalogue costs 600 KB" and "the catalogue costs 120 KB" both end up
+/// in a report about the same packet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pushed {
+    /// Whether the endpoint took it. `false` is the pre-handshake drop that a
+    /// change-driven publisher retries on its next tick.
+    pub delivered: bool,
+    pub plain_bytes: usize,
+    pub compressed_bytes: usize,
+    pub wire_bytes: usize,
+}
+
 /// Publish a JSON push, compressed when compression actually shrinks it.
 ///
 /// Every reader of a push already decodes through a decoder that sniffs the
@@ -538,19 +577,26 @@ tokio::task_local! { pub static REPLY: Reply; }
 ///
 /// Binary transfer chunks deliberately stay on [`publish`]: already-compressed
 /// file bytes would only cost CPU.
+///
+/// The returned sizes are measured here rather than by the caller, because the
+/// compression happens here: a caller that compressed first would report the
+/// same number twice.
 pub async fn publish_json(
     client: &async_nats::Client,
     transport: &Transport,
     subject: String,
     bytes: Vec<u8>,
-) -> Result<bool, crate::Error> {
-    publish(
-        client,
-        transport,
-        subject,
-        crate::reply::compress_json_from(bytes, crate::reply::PUSH_FLOOR_BYTES),
-    )
-    .await
+) -> Result<Pushed, crate::Error> {
+    let plain_bytes = bytes.len();
+    let compressed = crate::reply::compress_json_from(bytes, crate::reply::PUSH_FLOOR_BYTES);
+    let compressed_bytes = compressed.len();
+    let wire_bytes = deliver(client, transport, subject, compressed).await?;
+    Ok(Pushed {
+        delivered: wire_bytes.is_some(),
+        plain_bytes,
+        compressed_bytes,
+        wire_bytes: wire_bytes.unwrap_or(0),
+    })
 }
 
 pub async fn publish(
@@ -559,6 +605,20 @@ pub async fn publish(
     subject: String,
     bytes: Vec<u8>,
 ) -> Result<bool, crate::Error> {
+    Ok(deliver(client, transport, subject, bytes).await?.is_some())
+}
+
+/// The one publish path: seal, hand to the endpoint, report the wire size.
+///
+/// `None` means the payload never left — the secure channel had no key yet, so
+/// it was dropped on the floor. [`publish`] and [`publish_json`] differ only in
+/// what they do with that answer and with the size.
+async fn deliver(
+    client: &async_nats::Client,
+    transport: &Transport,
+    subject: String,
+    bytes: Vec<u8>,
+) -> Result<Option<usize>, crate::Error> {
     // `seal` yields `None` while the channel has no established key yet: before
     // the client's handshake completes, and again after a credential refresh
     // cleared it. The payload is dropped on the floor. Reporting that instead of
@@ -566,13 +626,14 @@ pub async fn publish(
     // periodic one would never notice, which is exactly how the old catalog
     // self-heal timer hid this.
     let Some(wire) = transport.seal(&subject, &bytes)? else {
-        return Ok(false);
+        return Ok(None);
     };
+    let wire_bytes = wire.len();
     client
         .publish(subject, wire.into())
         .await
         .map_err(|e| crate::Error::RemoteTransport(e.to_string()))?;
-    Ok(true)
+    Ok(Some(wire_bytes))
 }
 
 /// Services required by an endpoint handshake, supplied by its owning runtime.
@@ -771,6 +832,7 @@ mod tests {
                 host: Arc::new(MemoryHost::default()),
             }))),
             legacy_fixture: false,
+            activated_at: Arc::new(Mutex::new(None)),
         }
     }
 
