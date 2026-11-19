@@ -282,6 +282,16 @@ offline push.
   off while the toolbar is searching or selecting (the tab bar is hidden then,
   so the swipe would change mode unseen); the tabs themselves still switch on
   tap.
+- Each page keeps its own scroll position for the app's lifetime, and coming
+  back to a page **places** the reader where they left it rather than scrolling
+  there: the page's first batch is sized to hold the saved offset (rows divided
+  by the 44pt touch target, so the count is only ever too large), and the
+  restore waits until the mounted content can actually hold that offset. A list
+  that is shorter than the reader's place — rows deleted between two visits —
+  stays where it is instead of travelling down to the new end. Rows moving
+  *under* a page on screen are the native anchor's business: the first visible
+  row keeps its place, and a list already at the top stays at the top, where a
+  newly received conversation belongs.
 - The input area stays two rows (text + toolbar); narrow screens tighten the
   toolbar without shrinking action-button touch targets.
 - Skill regressions: typed and button-inserted `/`, Chinese search, mid-body
