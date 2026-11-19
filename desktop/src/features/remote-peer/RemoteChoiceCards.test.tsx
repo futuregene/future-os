@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import type { SessionEntry } from "@future-os/thread-projection";
+import type { ChoiceCardQuestion } from "../agent/composer/choiceAnswer";
 import type { RemotePeer } from "./remotePeerClient";
 import { entriesToMessages } from "@future-os/thread-projection";
 import { act, createElement } from "react";
@@ -68,7 +69,7 @@ async function mount({ choiceCards, local = true, onChoiceDismiss, onChoiceSelec
   choiceCards?: boolean;
   local?: boolean;
   onChoiceDismiss?: () => void;
-  onChoiceSelect?: (question: unknown, optionId: string) => void;
+  onChoiceSelect?: (optionId: string, card: ChoiceCardQuestion) => void;
 }) {
   const container = document.createElement("div");
   document.body.append(container);
