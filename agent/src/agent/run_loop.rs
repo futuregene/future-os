@@ -308,16 +308,28 @@ impl Loop {
         // visible text. Decides which instruction the continuation carries.
         let mut output_limit_continuation_had_visible_output = false;
         let mut output_limit_continuations = 0;
-        // Two independent gates: the user's switch for this path at all, and
-        // the existing auto-retry budget (fusion and `set_auto_retry(false)`
-        // callers ask for one request per step).
+        let mut fusion_report_prefix = None;
+        let fusion_inner = matches!(
+            self.fusion_context,
+            Some(crate::fusion::ContextScope::Inner(_))
+        );
+        // Fusion delegates transport retry to Host. Its bounded output
+        // continuation is still controlled by the Agent continuation setting.
         let max_output_limit_continuations =
-            if self.output_continuation && self.config.max_retries > 0 {
+            if self.output_continuation && (fusion_inner || self.config.max_retries > 0) {
                 MAX_OUTPUT_LIMIT_CONTINUATIONS
             } else {
                 0
             };
         let mut provider_limit_checkpoint_id: Option<String> = None;
+        let closed_fusion = matches!(
+            self.fusion_context,
+            Some(crate::fusion::ContextScope::Parent { .. })
+        ) && tool_defs.len() == 1
+            && tool_defs[0].function.name == "fusion";
+        let mut fusion_stage = closed_fusion.then_some(crate::fusion::ParentStage::Routing);
+        let mut fusion_progress = fusion_stage.map(crate::fusion::ParentProgress::new);
+        let mut fusion_delivery_progress = false;
 
         if self.verbose {
             tracing::info!(
@@ -586,6 +598,30 @@ impl Loop {
                 .map(|projected| projected.message)
                 .collect();
 
+            // Keep the first action salient after a long self-contained task.
+            // Only the run-scoped Fusion tool enables this; ordinary runs and
+            // inner participants are unchanged. Never persist it as user text.
+            if turn == 0 && tool_defs.iter().any(|tool| tool.function.name == "fusion") {
+                if let Some(message) = work_messages
+                    .last_mut()
+                    .filter(|message| message.role == "user")
+                {
+                    let reminder = if tool_defs.len() == 1 {
+                        future_fusion::CLOSED_TASK_FIRST_ACTION_REMINDER
+                    } else {
+                        future_fusion::FIRST_ACTION_REMINDER
+                    };
+                    // Keep adjacent text in one part, matching the supplied
+                    // task's wire representation across compatible providers.
+                    if let Some(ContentBlock::Text { text }) = message.content.last_mut() {
+                        text.push_str("\n\n");
+                        text.push_str(reminder);
+                    } else {
+                        message.content.push(ContentBlock::text(reminder));
+                    }
+                }
+            }
+
             // Make continuation explicit rather than relying on assistant
             // prefill support. This is request-only recovery context, not a
             // fabricated user submission in the durable conversation or UI.
@@ -611,18 +647,13 @@ impl Loop {
             // model to pick it up mid-thought instead of starting over — the
             // failure mode that made an unattended worker re-solve the same
             // task from scratch on every retry.
-            if output_limit_continuation_pending
-                && work_messages
-                    .last()
-                    .is_some_and(|message| message.role == "assistant")
-            {
+            if output_limit_continuation_pending {
                 // A cut mid-reply leaves a prefix the model can keep extending;
                 // a cut where the whole budget went to reasoning leaves nothing
                 // visible to extend (and that reasoning is filtered out before
                 // the request), so telling the model to "continue where it
                 // stopped" would point at content it cannot see. Ask for the
-                // answer itself instead, which is what the stepped-down level
-                // is meant to make possible.
+                // answer itself and keep the configured generation settings.
                 let instruction = if output_limit_continuation_had_visible_output {
                     "[Your previous response was cut off by the model's output limit. Continue exactly where it stopped: keep writing the same answer or the same tool call from the point it broke off. Do not restart the answer, do not repeat text already delivered, and do not redo tool calls that already ran.]"
                 } else {
@@ -660,17 +691,49 @@ impl Loop {
             // time-to-first-byte takes effect immediately instead of blocking
             // on the request to return (especially noticeable on Windows where
             // flaky connections make this phase slow).
+            let stage_deadline = fusion_progress
+                .as_ref()
+                .map(crate::fusion::ParentProgress::deadline);
+            if let Some(stage) = fusion_stage {
+                tracing::info!(
+                    ?stage,
+                    output_limit = stage.controls().max_output_tokens,
+                    thinking = "configured",
+                    timeout_secs = stage.timeout_secs(),
+                    "Fusion closed-task request policy v3"
+                );
+            }
+            let stage_request = async {
+                let request = crate::llm::schema::ModelRequest {
+                    model: ctx.model.clone(),
+                    messages: work_messages,
+                    tools: if closed_fusion
+                        && fusion_stage != Some(crate::fusion::ParentStage::Routing)
+                    {
+                        vec![]
+                    } else {
+                        tool_defs.clone()
+                    },
+                    system_prompt: request_system_prompt.to_string(),
+                };
+                let stream = async {
+                    if let Some(stage) = fusion_stage {
+                        self.provider
+                            .stream_model_with_controls(request, stage.controls())
+                            .await
+                    } else {
+                        self.provider.stream_model(request).await
+                    }
+                };
+                if let Some(deadline) = stage_deadline {
+                    tokio::time::timeout_at(deadline, stream).await
+                        .map_err(|_| anyhow!("[FUSION_STAGE_TIMEOUT] {:?}: stage budget expired before response headers", fusion_stage))?
+                } else {
+                    stream.await
+                }
+            };
             let stream_result = match self
-                .await_or_interrupt(
-                    self.provider
-                        .stream_model(crate::llm::schema::ModelRequest {
-                            model: ctx.model.clone(),
-                            messages: work_messages,
-                            tools: tool_defs.clone(),
-                            system_prompt: request_system_prompt.to_string(),
-                        }),
-                    interrupt_rx.as_mut(),
-                )
+                .await_or_interrupt(stage_request, interrupt_rx.as_mut())
                 .await
             {
                 Some(r) => r,
@@ -682,6 +745,9 @@ impl Loop {
             let mut rx = match stream_result {
                 Ok(rx) => rx,
                 Err(last_error) => {
+                    if last_error.to_string().contains("[FUSION_STAGE_TIMEOUT]") {
+                        return Err(last_error);
+                    }
                     if self.config.max_retries > 0
                         && retry_attempt < self.config.max_retries as usize
                     {
@@ -904,20 +970,51 @@ impl Loop {
             let mut truncation_detected_by: Option<&'static str> = None;
 
             loop {
-                // No event deadline: providers can reason silently for minutes.
-                // Reuse the interrupt helper so flag-only cancellation also wakes
+                // Delivery/recovery only time out without substantive content;
+                // status/usage events do not keep a silent provider alive. Reuse the interrupt helper so flag-only cancellation also wakes
                 // this wait, even without an interrupt channel.
-                let model_event = match self
-                    .await_or_interrupt(rx.next(), interrupt_rx.as_mut())
-                    .await
-                {
-                    Some(Some(event)) => event,
+                let next = async {
+                    if let Some(deadline) = fusion_progress
+                        .as_ref()
+                        .map(crate::fusion::ParentProgress::deadline)
+                    {
+                        tokio::time::timeout_at(deadline, rx.next())
+                            .await
+                            .map_err(|_| ())
+                    } else {
+                        Ok(rx.next().await)
+                    }
+                };
+                let model_event = match self.await_or_interrupt(next, interrupt_rx.as_mut()).await {
+                    Some(Ok(Some(event))) => event,
+                    Some(Err(())) if saw_terminal_event => {
+                        // Optional usage after a terminal finish must not turn
+                        // an already completed answer into a failed/replayed run.
+                        break;
+                    }
+                    Some(Err(())) => {
+                        let message = format!(
+                            "[FUSION_STAGE_TIMEOUT] {:?}: {}",
+                            fusion_stage,
+                            fusion_stage
+                                .map(|stage| stage.timeout_description())
+                                .unwrap_or("stage deadline expired")
+                        );
+                        on_event(RunEvent::Model(ModelStreamEvent::Error {
+                            message: message.clone(),
+                        }));
+                        stream_error = Some(anyhow!(message));
+                        model_stream_failed = true;
+                        stream_truncated = true;
+                        truncation_detected_by = Some("fusion_stage_timeout");
+                        break;
+                    }
                     None => {
                         interrupted_during_stream = true;
                         stream_error = Some(anyhow!("interrupted"));
                         break;
                     }
-                    Some(None) => {
+                    Some(Ok(None)) => {
                         if !saw_terminal_event {
                             stream_truncated = true;
                             truncation_detected_by.get_or_insert("eof_no_terminal");
@@ -925,6 +1022,18 @@ impl Loop {
                         break;
                     }
                 };
+                if let Some(progress) = fusion_progress.as_mut() {
+                    progress.observe(&model_event);
+                }
+                if fusion_stage.is_some_and(|stage| stage != crate::fusion::ParentStage::Routing)
+                    && matches!(&model_event,
+                        ModelStreamEvent::TextDelta { text, .. } if !text.is_empty())
+                {
+                    // Real delivery may legitimately be long. Once visible
+                    // output begins, normal content-idle/cancellation guards
+                    // own liveness instead of a fixed wall-clock cut.
+                    fusion_delivery_progress = true;
+                }
                 // Provider indices must never directly control unbounded vector
                 // allocation (including usize::MAX + 1 overflow).
                 if matches!(&model_event,
@@ -1253,7 +1362,9 @@ impl Loop {
                         // without matching reqwest/provider wording.
                         stream_truncated = true;
                         truncation_detected_by.get_or_insert(
-                            if message.starts_with("[RESPONSE_TIMEOUT]") {
+                            if message.starts_with("[RESPONSE_TIMEOUT] idle_timeout") {
+                                "idle_timeout"
+                            } else if message.starts_with("[RESPONSE_TIMEOUT]") {
                                 "request_timeout"
                             } else if message.starts_with(crate::llm::UPSTREAM_DISCONNECTED) {
                                 "upstream_disconnected"
@@ -1538,9 +1649,40 @@ impl Loop {
                 content,
                 ..Default::default()
             };
+            if let Some(stage) = fusion_stage {
+                assistant_msg.metadata.get_or_insert_with(serde_json::Map::new).insert(
+                    "fusion_request_policy".into(), serde_json::json!({
+                        "version": 3, "stage": format!("{stage:?}").to_lowercase(),
+                        "generation_settings": "user_configured", "thinking_level_override": stage.controls().thinking_level, "max_output_tokens_cap": stage.controls().max_output_tokens,
+                        "timeout_seconds": stage.timeout_secs(),
+                        "timeout_scope": if stage == crate::fusion::ParentStage::Routing { "absolute" } else { "reasoning_or_text_inactivity" },
+                    }),
+                );
+            }
             if ctx.segmented_storage {
                 bind_stream_message(&mut assistant_msg, &stream_entry_id, keys);
             }
+
+            // Each streamed segment keeps its own journal entry. Link the
+            // segments of a continued Fusion report for the Host's final read.
+            let fusion_continuation_entry = if fusion_inner && !assistant_msg.content.is_empty() {
+                if let Some(prefix) = &fusion_report_prefix {
+                    assistant_msg
+                        .metadata
+                        .get_or_insert_with(serde_json::Map::new)
+                        .insert(
+                            AgentMessage::FUSION_REPORT_PREFIX_KEY.into(),
+                            serde_json::json!(prefix),
+                        );
+                }
+                if stream_truncated && truncation_detected_by == Some("finish_length") {
+                    Some(assistant_msg.ensure_journal_entry_id())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
             // Skip truly empty assistant messages — the LLM API rejects them
             // ("content or tool_calls must be set"). Reasoning and tool calls
@@ -1575,30 +1717,15 @@ impl Loop {
                 // the same refusal. A user interrupt outranks both.
                 let output_budget_spent = truncation_detected_by == Some("finish_length");
                 if output_budget_spent
+                    && (fusion_stage.is_none() || fusion_delivery_progress)
                     && !interrupted_after_stream
                     && output_limit_continuations < max_output_limit_continuations
                 {
-                    // This attempt's visible output decides whether repeating
-                    // the request is even plausible: when the whole budget went
-                    // to reasoning, the identical request is known to hit the
-                    // identical wall (measured: three turns at 32,768 tokens,
-                    // 32,761 of them reasoning, zero visible characters), so
-                    // the continuation buys room by thinking less.
-                    let produced_visible_output = text_blocks
-                        .iter()
-                        .any(|block| !block.text.trim().is_empty());
-                    // `assistant_text` carries the previous attempt's text
-                    // forward (`retry_text`), so it can never answer "how much
-                    // did *this* attempt write" — the per-attempt blocks can.
+                    let produced_visible_output = !assistant_text.trim().is_empty();
                     let visible_bytes: usize =
                         text_blocks.iter().map(|block| block.text.len()).sum();
                     let reasoning_bytes: usize =
                         reasoning_blocks.iter().map(|block| block.text.len()).sum();
-                    let stepped_down_to = if produced_visible_output {
-                        None
-                    } else {
-                        self.step_down_thinking_level()
-                    };
 
                     // The partial answer is a prefix of the reply the model was
                     // writing, so it stays in the history as the message this
@@ -1634,6 +1761,9 @@ impl Loop {
                             shell_result: None,
                         });
                     }
+                    if fusion_continuation_entry.is_some() {
+                        fusion_report_prefix = fusion_continuation_entry;
+                    }
                     retry_text = assistant_text;
                     output_limit_continuations += 1;
                     output_limit_continuation_pending = true;
@@ -1642,7 +1772,6 @@ impl Loop {
                     on_event(RunEvent::OutputStreamContinuing {
                         attempt: output_limit_continuations,
                         max_continuations: max_output_limit_continuations,
-                        thinking_level: stepped_down_to.clone(),
                     });
                     tracing::warn!(
                         turn,
@@ -1651,7 +1780,6 @@ impl Loop {
                         visible_output = produced_visible_output,
                         visible_bytes,
                         reasoning_bytes,
-                        stepped_down_to = stepped_down_to.as_deref().unwrap_or("-"),
                         "model output budget spent; continuing the same reply"
                     );
                     continue;
@@ -1693,8 +1821,30 @@ impl Loop {
             // A complete model step ends the output-budget episode: the next
             // cut of either kind starts from a fresh allowance.
             output_limit_continuations = 0;
+            fusion_report_prefix = None;
             output_limit_continuation_pending = false;
             output_limit_continuation_had_visible_output = false;
+
+            if fusion_stage == Some(crate::fusion::ParentStage::Routing)
+                && (tool_calls.len() != 1 || tool_calls[0].function.name != "fusion")
+            {
+                return Err(anyhow!("[FUSION_ROUTING_FAILED] provider did not produce exactly one required fusion call; refusing an unconsulted answer"));
+            }
+
+            if closed_fusion
+                && fusion_stage != Some(crate::fusion::ParentStage::Routing)
+                && !tool_calls.is_empty()
+            {
+                append_skipped_tool_placeholders(
+                    messages,
+                    &agent_tool_calls,
+                    "a closed answer discussion cannot be automatically restarted",
+                    ctx.save_callback.as_ref(),
+                );
+                return Err(anyhow!(
+                    "[FUSION_REPEAT_BLOCKED] closed answer recovery cannot restart a discussion"
+                ));
+            }
 
             // Check stop condition. The is_some_and closure keeps the None
             // edge branchless (a nested if's closing brace here collected a
@@ -1757,6 +1907,61 @@ impl Loop {
             }
             self.execute_tools(turn, &tool_calls, messages, &on_event, ctx)
                 .await?;
+            if closed_fusion {
+                if self.is_interrupted() {
+                    return Ok(String::new());
+                }
+                if let Some((discussion_id, answer)) = crate::fusion::completed_answer(messages) {
+                    ctx.await_durability().await?;
+                    let entry_id = crate::utils::generate_entry_id();
+                    let block_id = "fusion-answer".to_string();
+                    if ctx.segmented_storage {
+                        on_event(RunEvent::MessageStart {
+                            entry_id: entry_id.clone(),
+                        });
+                    }
+                    on_event(RunEvent::Model(ModelStreamEvent::TextStart {
+                        id: block_id.clone(),
+                    }));
+                    on_event(RunEvent::Model(ModelStreamEvent::TextDelta {
+                        id: block_id.clone(),
+                        text: answer.clone(),
+                    }));
+                    on_text(answer.clone());
+                    on_event(RunEvent::Model(ModelStreamEvent::TextEnd {
+                        id: block_id.clone(),
+                    }));
+                    if ctx.segmented_storage {
+                        on_event(RunEvent::MessageEnd {
+                            entry_id: entry_id.clone(),
+                            complete: true,
+                        });
+                    }
+                    ctx.await_durability().await?;
+                    let mut delivered = AgentMessage {
+                        role: "assistant".into(),
+                        content: vec![ContentBlock::text(&answer)],
+                        ..Default::default()
+                    };
+                    delivered.metadata.get_or_insert_with(serde_json::Map::new).insert("fusion_delivery".into(), serde_json::json!({"version":1, "origin":"moderator_answer", "fusion_run_id":discussion_id, "additional_model_request":false}));
+                    if ctx.segmented_storage {
+                        bind_stream_message(
+                            &mut delivered,
+                            &entry_id,
+                            vec![Some(format!("text:{block_id}"))],
+                        );
+                    }
+                    messages.push(delivered);
+                    if let Some(ref save) = ctx.save_callback {
+                        save(messages.last_mut().unwrap());
+                    }
+                    ctx.await_durability().await?;
+                    return Ok(answer);
+                }
+                fusion_stage = Some(crate::fusion::ParentStage::after_tools(messages));
+                fusion_progress = fusion_stage.map(crate::fusion::ParentProgress::new);
+                fusion_delivery_progress = false;
+            }
 
             // Log per-turn usage: tokens and cost.
             if let Some(ref u) = total_usage {
@@ -1873,40 +2078,6 @@ impl Loop {
             Some(total) => total.merge_later_chunk(u),
             None => *total_usage = Some(u.clone()),
         }
-    }
-
-    /// Lower this run's thinking level by one step, returning the level the
-    /// continuation will run at, or `None` when nothing was lowered.
-    ///
-    /// Only called when an attempt spent its *entire* output budget on
-    /// reasoning and emitted no visible character: re-sending the identical
-    /// request provably hits the identical wall, so the continuation trades
-    /// thinking room for answer room. The provider is this run's private
-    /// snapshot (`snapshot()` on accepted runs), so stepping down cannot leak
-    /// into the session's own setting — the user's next message still runs at
-    /// the level they chose.
-    fn step_down_thinking_level(&self) -> Option<String> {
-        let current = self.provider.thinking_level()?;
-        let allowed = self.resolved_allowed_thinking_levels();
-        let lower = shallower_thinking_level(&current, allowed.as_deref())?;
-        self.provider
-            .update_thinking(&lower, crate::rpc::thinking_budget_for(&lower));
-        Some(lower)
-    }
-
-    /// The thinking levels the request's model offers, when a registry is
-    /// available to resolve it. `None` leaves the fixed product scale in charge.
-    fn resolved_allowed_thinking_levels(&self) -> Option<Vec<String>> {
-        let registry = self.model_registry.as_ref()?;
-        let model_ref = if self.model_ref.is_empty() {
-            self.model.as_str()
-        } else {
-            self.model_ref.as_str()
-        };
-        registry
-            .read()
-            .resolve_request_target(model_ref)
-            .map(|(_identity, model, _api_key)| model.allowed_thinking_levels())
     }
 
     /// Charge one model request: its tokens once, its cost once, both taken
@@ -2124,53 +2295,6 @@ fn has_unclosed_string(value: &str) -> bool {
     future_rpc::tool_arguments::has_unclosed_string(value)
 }
 
-/// One thinking level shallower than `current`, or `None` when there is no
-/// shallower level this model would accept.
-///
-/// Used when an attempt spent its *entire* output budget on reasoning and
-/// produced no visible character: repeating the identical request is known to
-/// fail the same way, so the continuation is attempted with less room to think
-/// rather than being handed to a user who would have to press "继续" — which in
-/// that case repeats the same wall.
-///
-/// `allowed` is the model's own level list (display order, weakest first); when
-/// the loop has no registry it is `None` and the product's fixed scale is used
-/// as-is. `default` (and any wire value this build does not name) hides the real
-/// depth inside the provider's choice, so the step cannot be relative: `low` is
-/// tried first — the shallowest level the product ships wording for above `off`
-/// — and the model's shallowest offered level is the fallback.
-fn shallower_thinking_level(current: &str, allowed: Option<&[String]>) -> Option<String> {
-    use crate::llm::schema::{clamp_thinking_level, thinking_level_rank, KNOWN_THINKING_LEVELS};
-
-    // A model is free to declare levels this build does not name; asking for one
-    // it does not offer would put an unhonored value on the wire.
-    let offered = |level: &str| -> Option<String> {
-        match allowed {
-            Some(allowed) => (clamp_thinking_level(level, allowed) == level).then(|| level.into()),
-            None => Some(level.to_string()),
-        }
-    };
-
-    match thinking_level_rank(current.trim()) {
-        // Already at the shallowest named level: nothing left to give up.
-        Some(0) => None,
-        // Relative step: walk down the fixed scale to the nearest level this
-        // model actually offers, `off` included — a run that has already burned
-        // its whole budget thinking twice is better off answering plainly.
-        Some(rank) => KNOWN_THINKING_LEVELS[..rank]
-            .iter()
-            .rev()
-            .find_map(|level| offered(level)),
-        None => offered("low").or_else(|| {
-            allowed?
-                .iter()
-                .map(String::as_str)
-                .filter(|level| *level != crate::llm::schema::DEFAULT_THINKING_LEVEL)
-                .find_map(offered)
-        }),
-    }
-}
-
 /// Append placeholder tool-result messages for tool calls that were never
 /// executed (truncated stream or stop condition). Without a matching tool
 /// message per tool_call_id, the LLM API rejects the conversation on the
@@ -2385,10 +2509,6 @@ mod tests {
             if current.is_some() {
                 *current = Some(level.to_string());
             }
-        }
-
-        fn thinking_level(&self) -> Option<String> {
-            self.thinking_level.lock().clone()
         }
     }
 
@@ -4191,12 +4311,11 @@ mod tests {
         );
     }
 
-    /// One `output_stream_continuing` signal: (attempt, max, stepped-down level).
-    type ContinuingSignals =
-        std::sync::Arc<parking_lot::Mutex<Vec<(usize, usize, Option<String>)>>>;
+    /// One `output_stream_continuing` signal: (attempt, max).
+    type ContinuingSignals = std::sync::Arc<parking_lot::Mutex<Vec<(usize, usize)>>>;
 
     /// The `output_stream_continuing` signals a run emitted, in order.
-    fn output_continuing_events(seen: &ContinuingSignals) -> Vec<(usize, usize, Option<String>)> {
+    fn output_continuing_events(seen: &ContinuingSignals) -> Vec<(usize, usize)> {
         seen.lock().clone()
     }
 
@@ -4227,11 +4346,9 @@ mod tests {
                     if let RunEvent::OutputStreamContinuing {
                         attempt,
                         max_continuations,
-                        thinking_level,
                     } = event
                     {
-                        sink.lock()
-                            .push((attempt, max_continuations, thinking_level));
+                        sink.lock().push((attempt, max_continuations));
                     }
                 },
                 None,
@@ -4253,7 +4370,7 @@ mod tests {
 
         // Exactly one continuation, announced once, and no level was touched:
         // this attempt had visible output, so repeating it is plausible.
-        assert_eq!(output_continuing_events(&seen), vec![(1, 2, None)]);
+        assert_eq!(output_continuing_events(&seen), vec![(1, 2)]);
         assert!(
             provider.thinking_updates.lock().is_empty(),
             "a cut with visible output must not change how the model thinks"
@@ -4283,10 +4400,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn reasoning_only_cut_steps_thinking_down_before_continuing() {
+    async fn reasoning_only_cut_keeps_thinking_level_when_continuing() {
         // The measured failure: the whole output budget went to reasoning and
-        // the reply had zero visible characters. Repeating that request hits
-        // the same wall, so the continuation must be attempted shallower.
+        // the reply had zero visible characters. The continuation asks for
+        // the answer while keeping the configured thinking level.
         crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![
             Script::Events(vec![
@@ -4314,11 +4431,9 @@ mod tests {
                     if let RunEvent::OutputStreamContinuing {
                         attempt,
                         max_continuations,
-                        thinking_level,
                     } = event
                     {
-                        sink.lock()
-                            .push((attempt, max_continuations, thinking_level));
+                        sink.lock().push((attempt, max_continuations));
                     }
                 },
                 None,
@@ -4327,17 +4442,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(text, "the answer, at last");
-        // Stepped down from `high` to the next level the product names below it.
-        assert_eq!(
-            *provider.thinking_updates.lock(),
-            vec!["medium".to_string()],
-            "a cut with no visible output must buy room by thinking less"
-        );
-        assert_eq!(
-            output_continuing_events(&seen),
-            vec![(1, 2, Some("medium".to_string()))],
-            "the signal must say which level the continuation runs at"
-        );
+        assert!(provider.thinking_updates.lock().is_empty());
+        assert_eq!(provider.thinking_level.lock().as_deref(), Some("high"));
+        assert_eq!(output_continuing_events(&seen), vec![(1, 2)]);
         // Reasoning alone is not "visible output": the continuation gets the
         // instruction that asks for an answer instead of a continuation.
         let second = &provider.requests.lock()[1];
@@ -4354,6 +4461,59 @@ mod tests {
                 .any(|message| message.text().contains("endless deliberation")),
             "a reasoning-only assistant message must not be replayed upstream"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn fusion_child_uses_the_continuation_switch_without_transport_retries() {
+        crate::test_support::ensure_fd_headroom();
+        for enabled in [false, true] {
+            let provider = ScriptedProvider::new(vec![
+                Script::Events(vec![
+                    ev_text("report prefix"),
+                    ModelStreamEvent::Finish {
+                        reason: FinishReason::Length,
+                        usage: None,
+                    },
+                ]),
+                Script::Events(vec![ev_text(" and suffix"), ev_stop()]),
+            ]);
+            let mut loop_ = Loop::new(provider.clone(), "mock").with_output_continuation(enabled);
+            loop_.config.max_retries = 0;
+            loop_.fusion_context = Some(crate::fusion::ContextScope::Inner(Arc::new(
+                future_fusion::Snapshot {
+                    workspace: String::new(),
+                    root: String::new(),
+                    files: vec![],
+                    directories: vec![],
+                    excluded: vec![],
+                    capture_started_at: 0,
+                    capture_finished_at: 0,
+                },
+            )));
+            let (text, messages) = loop_
+                .run_streaming_with_messages(
+                    user_messages("hi"),
+                    &StreamContext::default(),
+                    noop_on_text,
+                    |_| {},
+                    None,
+                )
+                .await
+                .unwrap();
+            assert_eq!(provider.requests.lock().len(), if enabled { 2 } else { 1 });
+            assert_eq!(
+                loop_
+                    .stream_incomplete
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                !enabled
+            );
+            if enabled {
+                assert_eq!(text, "report prefix and suffix");
+                let prefix = messages[messages.len() - 2].journal_entry_id().unwrap();
+                let suffix = messages.last().unwrap().metadata.as_ref().unwrap();
+                assert_eq!(suffix[AgentMessage::FUSION_REPORT_PREFIX_KEY], prefix);
+            }
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -4404,7 +4564,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn auto_retry_disabled_does_not_continue_output_budget() {
         // `max_retries == 0` is how a caller says "one request per step"
-        // (fusion, and the session setting behind it). Continuation must honour
+        // for ordinary sessions. Continuation must honour
         // that rather than spending requests the caller opted out of.
         crate::test_support::ensure_fd_headroom();
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
@@ -4519,65 +4679,6 @@ mod tests {
             "the continuation must settle the cut, not surface it"
         );
         assert!(loop_.stream_truncation.lock().is_none());
-    }
-
-    #[test]
-    fn shallower_thinking_level_walks_down_the_scale() {
-        // The shallowest named level has nothing left to give up.
-        assert_eq!(shallower_thinking_level("off", None), None);
-        // A relative step on the fixed scale: one level down, not to the floor.
-        assert_eq!(
-            shallower_thinking_level("high", None).as_deref(),
-            Some("medium")
-        );
-        assert_eq!(
-            shallower_thinking_level("medium", None).as_deref(),
-            Some("low")
-        );
-        assert_eq!(
-            shallower_thinking_level("max", None).as_deref(),
-            Some("xhigh")
-        );
-        // `default` hides the real depth inside the provider's choice, so the
-        // step cannot be relative: it starts at the shallowest usable level.
-        assert_eq!(
-            shallower_thinking_level("default", None).as_deref(),
-            Some("low")
-        );
-        // A model that declares only some levels gets one it actually offers.
-        let allowed = vec![
-            "default".to_string(),
-            "off".to_string(),
-            "low".to_string(),
-            "high".to_string(),
-        ];
-        assert_eq!(
-            shallower_thinking_level("high", Some(&allowed)).as_deref(),
-            Some("low")
-        );
-        // A model offering nothing between `high` and `off` still steps down
-        // rather than reporting that it cannot.
-        let off_first = vec!["default".to_string(), "off".to_string(), "high".to_string()];
-        assert_eq!(
-            shallower_thinking_level("high", Some(&off_first)).as_deref(),
-            Some("off")
-        );
-        // The measured model: `["default","off","low","high"]`. Its `high` has
-        // `low` below it, so a real step down is available.
-        let measured = vec![
-            "default".to_string(),
-            "off".to_string(),
-            "low".to_string(),
-            "high".to_string(),
-        ];
-        assert_eq!(
-            shallower_thinking_level("high", Some(&measured)).as_deref(),
-            Some("low")
-        );
-        // Asked for a level this model does not offer: `default` is the only
-        // safe fallback, so it is not a valid step-down target.
-        let only_high = vec!["default".to_string(), "high".to_string()];
-        assert_eq!(shallower_thinking_level("high", Some(&only_high)), None);
     }
 
     #[tokio::test(flavor = "current_thread")]

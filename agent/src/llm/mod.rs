@@ -20,7 +20,7 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-const DEFAULT_TIMEOUT_SECS: u64 = 1800;
+const DEFAULT_CONTENT_IDLE_SECS: u64 = 300;
 pub(crate) const UPSTREAM_DISCONNECTED: &str = "[UPSTREAM_DISCONNECTED]";
 const MODEL_RESPONSE_ERROR: &str = "[MODEL_RESPONSE_ERROR]";
 
@@ -90,14 +90,14 @@ fn stream_progress(
     )
 }
 
-/// HTTP request timeout for a single LLM call. Defaults to 30 min (1800 s);
-/// override with the FUTURE_LLM_TIMEOUT_SECS env var without rebuilding.
-fn llm_timeout_secs() -> u64 {
-    std::env::var("FUTURE_LLM_TIMEOUT_SECS")
+/// No new reasoning or text for this interval ends an unfinished response.
+/// Transport heartbeats, usage and empty deltas do not count as content.
+fn llm_idle_timeout_secs() -> u64 {
+    std::env::var("FUTURE_LLM_IDLE_TIMEOUT_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|v| *v >= 60)
-        .unwrap_or(DEFAULT_TIMEOUT_SECS)
+        .unwrap_or(DEFAULT_CONTENT_IDLE_SECS)
 }
 
 // ─── LLM Client ────────────────────────────────────────────────────────────
@@ -170,8 +170,7 @@ impl Client {
         adapters: AdapterRegistry,
     ) -> Self {
         let http = HttpClientPair::new(|| {
-            crate::http::client_builder()
-                .timeout(std::time::Duration::from_secs(llm_timeout_secs()))
+            crate::http::client_builder().connect_timeout(std::time::Duration::from_secs(30))
         })
         .unwrap_or_else(|_| {
             HttpClientPair {
@@ -203,8 +202,7 @@ impl Client {
         registry: std::sync::Arc<parking_lot::RwLock<crate::models::Registry>>,
     ) -> Self {
         let http = HttpClientPair::new(|| {
-            crate::http::client_builder()
-                .timeout(std::time::Duration::from_secs(llm_timeout_secs()))
+            crate::http::client_builder().connect_timeout(std::time::Duration::from_secs(30))
         })
         .unwrap_or_else(|_| HttpClientPair {
             verified: crate::http::client(),
@@ -492,9 +490,16 @@ impl crate::types::LLMProvider for Client {
         }
         let adapter = self.adapters.get(target.protocol.protocol())?;
         let body = adapter.build_body(&target, &request)?;
-        let resp = self
-            .send_model_request(&target, adapter.as_ref(), &request, &body)
-            .await?;
+        // Start before awaiting headers: a server that never starts its body
+        // must obey the same content deadline as a silent streaming response.
+        let content_idle = std::time::Duration::from_secs(llm_idle_timeout_secs());
+        let mut content_deadline = tokio::time::Instant::now() + content_idle;
+        let resp = tokio::time::timeout_at(
+            content_deadline,
+            self.send_model_request(&target, adapter.as_ref(), &request, &body),
+        )
+        .await
+        .map_err(|_| anyhow!("[RESPONSE_TIMEOUT] idle_timeout: no reasoning or text for {} seconds before response headers", content_idle.as_secs()))??;
         let status = resp.status();
 
         let (tx, rx) = mpsc::channel(32);
@@ -520,9 +525,22 @@ impl crate::types::LLMProvider for Client {
             loop {
                 let next = tokio::select! {
                     _ = tx.closed() => return,
-                    // Silence is not evidence of failure: reasoning can pause
-                    // without emitting summaries or even transport heartbeats.
-                    // reqwest still enforces the whole-request deadline.
+                    _ = tokio::time::sleep_until(content_deadline) => {
+                        // A completed response must never be replayed merely
+                        // because its optional accounting tail did not arrive.
+                        if protocol_terminal {
+                            tracing::warn!(protocol = %protocol, model = %model,
+                                "LLM accounting tail exceeded content idle deadline");
+                            return;
+                        }
+                        transport_error = Some(format!(
+                            "[RESPONSE_TIMEOUT] idle_timeout: no reasoning or text for {} seconds; {}",
+                            content_idle.as_secs(),
+                            stream_progress("content_idle", chunks_received,
+                                bytes_received, frames_decoded, started_at),
+                        ));
+                        break;
+                    }
                     next = stream.next() => next,
                 };
                 let bytes = match next {
@@ -607,6 +625,13 @@ impl crate::types::LLMProvider for Client {
                         }
                     };
                     for event in events {
+                        if matches!(&event,
+                            schema::ModelStreamEvent::TextDelta { text, .. }
+                            | schema::ModelStreamEvent::ReasoningDelta { text, .. }
+                            if !text.is_empty())
+                        {
+                            content_deadline = tokio::time::Instant::now() + content_idle;
+                        }
                         protocol_terminal |= matches!(
                             event,
                             schema::ModelStreamEvent::Finish { .. }
@@ -758,6 +783,39 @@ impl crate::types::LLMProvider for Client {
         limited.stream_model(request).await
     }
 
+    async fn stream_model_with_controls(
+        &self,
+        request: schema::ModelRequest,
+        controls: schema::RequestControls,
+    ) -> Result<ReceiverStream<schema::ModelStreamEvent>> {
+        let mut target = self.target_for_request()?;
+        if let Some(limit) = controls.max_output_tokens {
+            anyhow::ensure!(limit > 0, "request output budget must be positive");
+            let configured = target.generation.max_output_tokens.unwrap_or(limit);
+            let model_cap = if target.capabilities.max_output_tokens > 0 {
+                target.capabilities.max_output_tokens
+            } else {
+                limit
+            };
+            target.generation.max_output_tokens = Some(limit.min(configured).min(model_cap));
+        }
+        if let Some(level) = controls.thinking_level {
+            target.generation.thinking_level = level;
+            target.generation.thinking_budget = 0;
+        }
+        target.generation.required_tool = controls.required_tool;
+        // A private target freezes one coherent route/config snapshot; neither
+        // the live registry nor the session's selected generation is mutated.
+        let scoped = Self {
+            http: self.http.clone(),
+            generation: RwLock::new(target.generation.clone()),
+            target: RwLock::new(Some(target)),
+            live_model: None,
+            adapters: self.adapters.clone(),
+        };
+        scoped.stream_model(request).await
+    }
+
     fn snapshot(&self) -> Option<std::sync::Arc<dyn crate::types::LLMProvider>> {
         Some(std::sync::Arc::new(Self {
             http: self.http.clone(),
@@ -784,10 +842,6 @@ impl crate::types::LLMProvider for Client {
         let mut generation = self.generation.write();
         generation.thinking_level = level.to_string();
         generation.thinking_budget = budget;
-    }
-
-    fn thinking_level(&self) -> Option<String> {
-        Some(self.generation.read().thinking_level.clone())
     }
 }
 
@@ -2124,6 +2178,69 @@ mod tests {
             assert_eq!(ordinary["max_tokens"], 256);
             assert_eq!(ordinary["reasoning_effort"], "high");
         }
+    }
+
+    #[tokio::test]
+    async fn fusion_request_controls_do_not_mutate_the_next_model_step() {
+        let server = mock_server(|_| {
+            (200, "text/event-stream", "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".into())
+        });
+        let mut target = protocol_target(
+            &server.base_url,
+            schema::ProtocolConfig::OpenAiChat(schema::OpenAiChatConfig {
+                reasoning: schema::ChatReasoningFormat::DeepSeek,
+                ..Default::default()
+            }),
+        );
+        target.generation.max_output_tokens = Some(16_384);
+        target.generation.thinking_level = "max".into();
+        target.capabilities.max_output_tokens = 32_768;
+        let client = Client::from_target(target);
+        let mut request = canonical_request();
+        request.tools = vec![crate::fusion::main_tool().def];
+        let _: Vec<_> = client
+            .stream_model_with_controls(
+                request.clone(),
+                schema::RequestControls {
+                    required_tool: Some("fusion".into()),
+                    max_output_tokens: Some(4_096),
+                    thinking_level: Some("off".into()),
+                },
+            )
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        let _: Vec<_> = client
+            .stream_model(request.clone())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        let _: Vec<_> = client
+            .stream_model_with_controls(
+                request,
+                schema::RequestControls {
+                    max_output_tokens: Some(65_536),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        let requests = server.requests.lock().unwrap();
+        let scoped: Value = serde_json::from_str(&requests[0]).unwrap();
+        assert_eq!(scoped["tool_choice"]["function"]["name"], "fusion");
+        assert_eq!(scoped["max_tokens"], 4_096);
+        assert_eq!(scoped["thinking"]["type"], "disabled");
+        let ordinary: Value = serde_json::from_str(&requests[1]).unwrap();
+        assert!(ordinary.get("tool_choice").is_none());
+        assert_eq!(ordinary["max_tokens"], 16_384);
+        assert_eq!(ordinary["reasoning_effort"], "max");
+        let capped: Value = serde_json::from_str(&requests[2]).unwrap();
+        assert_eq!(capped["max_tokens"], 16_384);
+        assert!(capped.get("tool_choice").is_none());
     }
 
     #[tokio::test]

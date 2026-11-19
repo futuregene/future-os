@@ -4,6 +4,7 @@ import type { RemoteLiveReply } from "./remoteRunStreams";
 import { copyEventPayload, createContentEventLane, entriesToMessages, eventPayload, HISTORY_PAGE_USER_EXCHANGES, HISTORY_TAIL_CURSOR } from "@future-os/thread-projection";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { forgetRemoteLaneWarnings, warnRemoteLane } from "./remoteLaneWarnings";
 import { requestRemotePeer } from "./remotePeerClient";
 import { forgetRemoteReasonings } from "./remoteReasoning";
 import { fetchRunReplay, replayTailCovers, replayUnsupported } from "./remoteRunReplay";
@@ -102,6 +103,21 @@ export interface RemoteTimeline {
   /** The host has an in-flight run for this session. */
   streaming: boolean;
   /**
+   * The run the host says it is executing, if any.
+   *
+   * The identity, not a flag: a history page cannot say "still being written" —
+   * the projector folds an exchange into a `complete` reply — so a reply drawn
+   * from the record needs to know *which* run is in flight before it can stop
+   * presenting that run's half-written copy as the answer it will be (see
+   * `markInFlightReply`). `null` while nothing is executing.
+   *
+   * Read from the host's own answer (`get_state.activeRun`) and from the frames
+   * the run pushes, and cleared the three ways a run ends for this client: its
+   * terminal frame, its record coming back settled, or a state read that names
+   * no run.
+   */
+  inFlightRunId: string | null;
+  /**
    * The host is compacting this conversation's context.
    *
    * Advisory, and derived from the host's own events rather than from the fact
@@ -164,6 +180,30 @@ const COMPACTION_SETTLED = new Set([
   "compaction_unchanged",
   "compaction_end",
 ]);
+
+/**
+ * How long after a run's last pushed frame a state read may still say it is over.
+ *
+ * `get_state` can be answered *before* a run this window just watched being
+ * accepted has started executing. Acting on that answer would take the Stop
+ * control off the field the user is watching and paint the reply the run is
+ * about to write as finished. A frame the run pushed is proof it was alive, so
+ * an answer that contradicts one this recent is a read that was early, not a run
+ * that ended.
+ */
+const RUN_ACTIVITY_GRACE_MS = 15_000;
+
+/**
+ * How often an in-flight run's state is re-read while the conversation streams.
+ *
+ * The terminal frame is what ends a run for this client, and NATS Core is
+ * at-most-once: a lost one leaves the composer offering Stop for a run the host
+ * finished, and leaves the reply reading as in flight. This is the same
+ * low-frequency pass the local transcript makes for the same reason
+ * (`useRunReattach`), and it reads state only — the run's log is not re-transported
+ * every half minute.
+ */
+const IN_FLIGHT_RECHECK_MS = 30_000;
 
 /**
  * The host's answer to `get_state`, as far as this app reads it.
@@ -239,6 +279,10 @@ function snapshotKey(desktopId: string, sessionId: string): string {
 /** Drop a conversation's snapshot, so the next open reads it fresh. */
 export function forgetRemoteTimeline(desktopId: string, sessionId: string): void {
   snapshots.delete(snapshotKey(desktopId, sessionId));
+  // The lane's own account of what it did goes with the conversation it was
+  // about: it is kept so a report about *this* conversation can be answered, not
+  // so a window accumulates history.
+  forgetRemoteLaneWarnings(desktopId, sessionId);
 }
 
 /**
@@ -290,6 +334,28 @@ export function useRemoteTimeline(
   const [error, setError] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [compacting, setCompacting] = useState(false);
+  /**
+   * The run the host is executing, as far as this window knows.
+   *
+   * Kept beside `streaming` rather than derived from it, because the two answer
+   * different questions: `streaming` is what the composer offers, and this is
+   * which reply row is the one being written.
+   */
+  const [inFlightRunId, setInFlightRunId] = useState<string | null>(null);
+  /**
+   * When the last frame of a run was pushed to this window.
+   *
+   * Read by the state passes to tell "the run ended" from "the read was early"
+   * (see `RUN_ACTIVITY_GRACE_MS`).
+   */
+  const lastActivityAtRef = useRef(0);
+  /**
+   * `inFlightRunId` as of this instant, for callbacks that decide mid-read.
+   *
+   * Those run after an `await`, where the state variable is the one from the
+   * render that started them.
+   */
+  const inFlightRunRef = useRef<string | null>(null);
   const [replayUnavailable, setReplayUnavailable] = useState(false);
   const [sessionState, setSessionState] = useState<RemoteSessionStateReading | null>(null);
   const [persistedEntryIds, setPersistedEntryIds] = useState<ReadonlySet<string>>(() => new Set());
@@ -350,6 +416,12 @@ export function useRemoteTimeline(
     setLiveReplies(streamsRef.current?.replies() ?? []);
   }, []);
 
+  /** The one place the in-flight run changes: state and ref agree or neither does. */
+  const applyInFlightRun = useCallback((runId: string | null) => {
+    inFlightRunRef.current = runId;
+    setInFlightRunId(runId);
+  }, []);
+
   /**
    * Read a run's log and rebuild its reply from it.
    *
@@ -405,6 +477,19 @@ export function useRemoteTimeline(
       if (replayUnsupported(err)) {
         unsupportedRef.current = true;
         setReplayUnavailable(true);
+        // A permanent shape for this connection, and one the reader would
+        // otherwise never learn: every reply is drawn from the record plus the
+        // pushes, so a run this window joined mid-flight is never rebuilt from
+        // its log.
+        warnRemoteLane(desktop, session, "this host serves no run logs (get_events_since refused); replies are drawn from the record and the pushes");
+      }
+      else {
+        // Anything else is a read that failed: the reply keeps whatever the page
+        // and the pushes gave it, and the reason used to vanish here. Named, it
+        // answers "why is this answer short" from the other side of the report.
+        warnRemoteLane(desktop, session, full
+          ? "the run's log could not be read; its reply keeps only what the record and the pushes gave it"
+          : "a gap in the run's feed could not be filled; the reply may be missing events", { runId, error: err });
       }
     }
     finally {
@@ -482,8 +567,25 @@ export function useRemoteTimeline(
         persistedIds: new Set(parsed.map(item => item.id)),
       });
       setError(null);
-      if (side === "history")
-        settleRunsInPage(streamsRef.current, parsed, publishReplies);
+      if (side === "history") {
+        const settled = settleRunsInPage(streamsRef.current, parsed, publishReplies);
+        // The record now holds this reply settled — which is the fact that a run
+        // ended, and the one the page states even when its terminal frame never
+        // arrived. A settled page is *not* subject to the grace window that a
+        // state read is: the record carries the finished reply, so this is not a
+        // read that could have been answered early.
+        const inFlight = inFlightRunRef.current;
+        if (inFlight && settled.has(inFlight)) {
+          // Worth saying: the two lanes disagree. The page has the run's reply
+          // written down as finished while the host last said it was executing
+          // it, and this client follows the page — the reply on screen is about
+          // to become the record's copy, which is the shape a reader reports as
+          // "it says it is done and the answer stops halfway".
+          warnRemoteLane(desktop, session, "the record settles a run the host reports as in flight; the reply is drawn from the record from here", { runId: inFlight });
+          applyInFlightRun(null);
+          setStreaming(false);
+        }
+      }
       return parsed;
     }
     catch (err) {
@@ -505,7 +607,7 @@ export function useRemoteTimeline(
         setLoadingOlder(false);
       }
     }
-  }, [publishReplies]);
+  }, [publishReplies, applyInFlightRun]);
 
   /**
    * Ask the host which run is in flight, and read its log.
@@ -514,10 +616,26 @@ export function useRemoteTimeline(
    * learns of a run when a push arrives, and a long tool call pushes nothing for
    * minutes — so a reader who opened the conversation while the host was working
    * would see the page's partial copy of the reply and no clock on it.
+   *
+   * The state read itself is never skipped, even for a host that refused the log
+   * lane: it is the only thing that can end a run for this client when its
+   * terminal frame was lost, and it costs one small command. The log read is
+   * guarded inside `readRunLog`, which is where the refusal lives.
    */
-  const reconcileActiveRun = useCallback(async (desktop: string, session: string): Promise<void> => {
-    if (unsupportedRef.current)
-      return;
+  const reconcileActiveRun = useCallback(async (
+    desktop: string,
+    session: string,
+    /**
+     * Whether this read is a background liveness probe.
+     *
+     * A probe asks only "is that run still executing", so it reads no log (a
+     * long run's log is not re-transported every half minute, which is what the
+     * periodic pass would otherwise do) and a failed probe says nothing about
+     * the conversation — a transient miss must not blank the settings an answer
+     * read earlier is already showing.
+     */
+    options?: { probe?: boolean },
+  ): Promise<void> => {
     const epoch = epochRef.current;
     let active: string | null = null;
     try {
@@ -530,15 +648,30 @@ export function useRemoteTimeline(
       // Kept as read — the whole reply, not just the run: its model and thinking
       // level are what this conversation's settings are drawn from, and reading
       // them here is what keeps an open from spending two `get_state` commands.
-      setSessionState({ sessionId: session, state: state ?? null });
+      // A background probe does not write it: that reply is about a run's
+      // liveness, and re-publishing the settings it happens to carry every half
+      // minute would churn the picker's inputs for nothing.
+      if (!options?.probe)
+        setSessionState({ sessionId: session, state: state ?? null });
       active = state?.activeRun?.runId ?? null;
       // The host's own answer to "is a run in flight", which is what a window that
       // just opened has no other way of knowing: the pushes only start arriving at
       // whatever the run does next, and a long tool call emits nothing for minutes.
-      // Only ever *set* here — a run that ends clears it on its terminal frame,
-      // which is the frame that says so.
-      if (active)
+      if (active) {
         setStreaming(true);
+        applyInFlightRun(active);
+      }
+      else if (Date.now() - lastActivityAtRef.current > RUN_ACTIVITY_GRACE_MS) {
+        // The host answered and named no run: nothing is executing, so the
+        // conversation is not streaming either. A host that lost the run's
+        // terminal frame would otherwise keep offering Stop for ever — the one
+        // thing that ends a run for this client is that frame, and the link does
+        // not deliver it twice. What the grace window holds off is the opposite
+        // mistake: a read answered before a prompt this window just watched being
+        // accepted has started executing.
+        setStreaming(false);
+        applyInFlightRun(null);
+      }
       if (typeof state?.isCompacting === "boolean")
         setCompacting(current => (current === state.isCompacting ? current : state.isCompacting === true));
     }
@@ -547,11 +680,13 @@ export function useRemoteTimeline(
       // still carry the reply; the log read is simply skipped this time. What is
       // said, though, is that this conversation's state was *not* read: the picker
       // waits for this reply, and a failed read it never heard about would leave
-      // the control loading for ever.
-      setSessionState({ sessionId: session, state: null });
+      // the control loading for ever. A background probe stays quiet: it is not
+      // the read that picker is waiting on.
+      if (!options?.probe)
+        setSessionState({ sessionId: session, state: null });
       return;
     }
-    if (!active)
+    if (!active || options?.probe)
       return;
     // From the run's *beginning*, always, on this path: the moments that reach it
     // are the moments the pushes' provenance is in doubt — a window that just
@@ -561,7 +696,7 @@ export function useRemoteTimeline(
     // and the read is bounded by the host's own snapshot bootstrap, which folds a
     // long run into one reply.
     await readRunLog(desktop, session, active, true);
-  }, [readRunLog]);
+  }, [applyInFlightRun, readRunLog]);
 
   /**
    * Re-read the conversation from the host: its record, then the run in flight.
@@ -606,6 +741,10 @@ export function useRemoteTimeline(
     setStreaming(false);
     setCompacting(false);
     setReplayUnavailable(false);
+    // Another conversation's in-flight run is not this one's: the row it names
+    // does not exist in this page.
+    applyInFlightRun(null);
+    lastActivityAtRef.current = 0;
     // The settings another conversation's reader was handed must not be applied
     // under this one's title, and the host has not answered for this one yet.
     setSessionState(null);
@@ -637,7 +776,7 @@ export function useRemoteTimeline(
       forgetRemoteToolTargets(desktopId, sessionId);
       forgetRemoteReasonings(desktopId, sessionId);
     };
-  }, [enabled, desktopId, sessionId, readPage, reconcileActiveRun]);
+  }, [enabled, desktopId, sessionId, readPage, reconcileActiveRun, applyInFlightRun]);
 
   // Live: append this session's events; ignore every other session's.
   useEffect(() => {
@@ -678,10 +817,15 @@ export function useRemoteTimeline(
       // every unrecognized type as "a run just started", so a compaction left
       // the conversation looking busy (and the composer offering Stop) with no
       // run to stop.
-      if (RUN_ACTIVITY.has(type))
+      if (RUN_ACTIVITY.has(type)) {
         setStreaming(true);
-      else if (RUN_SETTLED.has(type))
+        // Proof the run is alive *now*, which is what the state passes compare
+        // an "idle" answer against (see `RUN_ACTIVITY_GRACE_MS`).
+        lastActivityAtRef.current = Date.now();
+      }
+      else if (RUN_SETTLED.has(type)) {
         setStreaming(false);
+      }
       // A settled run also ends any compaction: neither can outlive the other,
       // and a terminal compaction frame lost over at-most-once NATS must not
       // leave the composer permanently waiting.
@@ -693,6 +837,12 @@ export function useRemoteTimeline(
       // its run-scoped `idx`, which is what the projector orders by; a frame
       // without them (a settings change, a presence tick) is not part of a reply.
       const runId = readString(payload, "runId");
+      // Every activity frame names the run that wrote it, so the reply being
+      // written is knowable from the pushes alone — the state read is only needed
+      // for a run that is quiet (a long tool call) or already under way when the
+      // window opened.
+      if (runId && RUN_ACTIVITY.has(type) && inFlightRunRef.current !== runId)
+        applyInFlightRun(runId);
       const idx = readNumber(payload, "idx");
       const rawData = readRaw(payload, "data");
       const streams = streamsRef.current;
@@ -729,8 +879,20 @@ export function useRemoteTimeline(
       // transcript until the next open. The read is a catch-up (`background`), so
       // no spinner replaces a reply the reader is already looking at.
       if (RUN_SETTLED.has(type)) {
-        if (runId)
-          streams?.settle(runId);
+        // This run's own last frame, or the record it lands in, is what stops it
+        // being drawn as in flight. Cleared here, on the frame that says so, so
+        // the reply stops looking unfinished the moment the host says it is.
+        if (runId && inFlightRunRef.current === runId)
+          applyInFlightRun(null);
+        if (runId) {
+          // A fragment dropped here takes its words off the screen until the
+          // record is read back, and a run whose terminal frame arrived before
+          // its content did is the one case where the record can *trail* the
+          // frame by more than a moment. Named, it is a line in the log instead
+          // of a reply that quietly got shorter.
+          if (streams?.settle(runId) === "dropped")
+            warnRemoteLane(desktopId, sessionId, "the live reply was built from pushes only and is dropped at its terminal frame; the record's copy is the reply until it is read back", { runId });
+        }
         publishReplies();
         void readPage("history", sessionId, desktopId, true);
       }
@@ -754,7 +916,12 @@ export function useRemoteTimeline(
         contentRequest,
       }, sessionId, () => !cancelled),
       deliver: event => processEvent({ ...event.original, payload: copyEventPayload(event, { ...(event.original.payload as Record<string, unknown>), data: event.data }) }),
-      recover: () => {
+      recover: (error) => {
+        // The lane dropped every frame it was holding — a run's terminal frame is
+        // among them if it arrived while a body was loading. Without this the
+        // conversation could end up looking busy for ever (a stopped Stop) with
+        // nothing anywhere saying why.
+        warnRemoteLane(desktopId, sessionId, "the event lane was reset and the frames it held are gone; the record is re-read and the run in flight is asked for again", { error });
         streamsRef.current?.restart();
         prefixAskedRef.current.clear();
         void readPage("history", sessionId, desktopId, true).then(() => reconcileActiveRun(desktopId, sessionId));
@@ -786,7 +953,22 @@ export function useRemoteTimeline(
       contentLane.dispose();
       dispose?.();
     };
-  }, [enabled, desktopId, sessionId, readPage, reconcileActiveRun, readRunLog, publishReplies]);
+  }, [enabled, desktopId, sessionId, readPage, reconcileActiveRun, readRunLog, publishReplies, applyInFlightRun]);
+
+  // While the conversation streams, ask the host again now and then whether it
+  // still has that run. The terminal frame is the only thing that ends a run on
+  // the push lane, and a lost one (NATS Core is at-most-once) would leave the
+  // composer offering Stop and the reply looking unfinished for as long as the
+  // window stays open. This is the read that notices, and the one that makes the
+  // reply's appearance follow the host rather than whatever arrived.
+  useEffect(() => {
+    if (!enabled || !desktopId || !sessionId || !streaming)
+      return;
+    const timer = setInterval(() => {
+      void reconcileActiveRun(desktopId, sessionId, { probe: true });
+    }, IN_FLIGHT_RECHECK_MS);
+    return () => clearInterval(timer);
+  }, [desktopId, enabled, reconcileActiveRun, sessionId, streaming]);
 
   const messages = useMemo(() => entriesToMessages(entries), [entries]);
 
@@ -809,10 +991,11 @@ export function useRemoteTimeline(
       loadOlder,
       refresh,
       streaming,
+      inFlightRunId,
       compacting,
       persistedEntryIds,
     }),
-    [entries, messages, liveReplies, replayUnavailable, sessionState, sessionId, streaming, compacting, loading, loadingOlder, hasMore, olderHistoryFailed, error, loadOlder, refresh, persistedEntryIds],
+    [entries, messages, liveReplies, replayUnavailable, sessionState, sessionId, streaming, inFlightRunId, compacting, loading, loadingOlder, hasMore, olderHistoryFailed, error, loadOlder, refresh, persistedEntryIds],
   );
 }
 
@@ -829,24 +1012,32 @@ export function useRemoteTimeline(
  * The trigger is the run's own `run.status`, which the agent writes on a settled
  * entry. A *running* status is what the mid-run snapshot carries, so it must not
  * count — that is exactly the copy the log was read to replace.
+ *
+ * Returns the runs the page states settled, whether or not this client was
+ * holding a projection for them: the caller needs the fact even for a run whose
+ * frames were all lost, because it is what ends that run for this window.
  */
 function settleRunsInPage(
   streams: RemoteRunStreams | null,
   entries: readonly RemoteEntry[],
   publish: () => void,
-): void {
-  if (!streams)
-    return;
-  const runs = streams.knownRuns();
+): ReadonlySet<string> {
+  const settled = new Set<string>();
+  for (const entry of entries) {
+    if (entry.runId && isSettledStatus(entry.run?.status))
+      settled.add(entry.runId);
+  }
+  const runs = streams?.knownRuns() ?? [];
   let dropped = false;
   for (const runId of runs) {
-    if (entries.some(entry => entry.runId === runId && isSettledStatus(entry.run?.status))) {
-      streams.markRecorded(runId);
+    if (settled.has(runId)) {
+      streams?.markRecorded(runId);
       dropped = true;
     }
   }
   if (dropped)
     publish();
+  return settled;
 }
 
 /** The `run.status` values the agent writes on a *settled* entry. */

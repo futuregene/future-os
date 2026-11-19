@@ -433,6 +433,7 @@ pub async fn command_loop(
         handshake,
         std::sync::Arc::new(crate::health::NatsHealth::default()),
         None,
+        None,
     )
     .await;
 }
@@ -462,6 +463,7 @@ pub async fn command_loop_with_ready(
     handshake: HandshakeState,
     health: std::sync::Arc<crate::health::NatsHealth>,
     mut ready: Option<tokio::sync::oneshot::Sender<()>>,
+    mut retire: Option<tokio::sync::oneshot::Receiver<()>>,
 ) {
     let subject = format!("p.{pair_id}.cmd.>");
     let queue = format!("bridge.{pair_id}");
@@ -506,7 +508,25 @@ pub async fn command_loop_with_ready(
             let _ = sender.send(());
         }
         let mut served = false;
-        while let Some(msg) = sub.next().await {
+        loop {
+            let msg = tokio::select! {
+                biased;
+                _ = async {
+                    match retire.as_mut() {
+                        Some(receiver) => { let _ = receiver.await; }
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {
+                    // Unlike Subscriber::drop, this queues UNSUB before the
+                    // task completes. The caller can then fence the broker.
+                    let _ = sub.unsubscribe().await;
+                    return;
+                }
+                message = sub.next() => match message {
+                    Some(message) => message,
+                    None => break,
+                },
+            };
             served = true;
             let client = client.clone();
             let reply_slots = reply_slots.clone();
@@ -866,7 +886,7 @@ async fn handle_command_inner(
     if !handshake.access_current() {
         return;
     }
-    let cmd: IncomingCmd = match serde_json::from_slice(&msg.payload) {
+    let mut cmd: IncomingCmd = match serde_json::from_slice(&msg.payload) {
         Ok(cmd) => cmd,
         Err(e) => {
             reply(
@@ -1116,6 +1136,18 @@ async fn handle_command_inner(
             runtime.spawn(Box::pin(finish_phone_unpair(handshake, pair_id)));
         }
         _ => {
+            // Stamp the authenticated pairing onto the command before it reaches
+            // the host. The client does not send `pairId` on business commands
+            // (it is implied by the sealed channel it arrived on), but the
+            // request path uses it as the catalogue snapshot's cache key — and
+            // the publisher writes that cache under the real pairing. Without
+            // this stamp the two keys never matched, so every pull paid for a
+            // whole store read the tick had just done.
+            //
+            // Done here and not earlier: `pair_handshake` compares this field
+            // against the pairing to validate identity, so overwriting it before
+            // that check would erase the very thing being checked.
+            cmd.pair_id = handshake.creds.pair_id.clone();
             handshake
                 .host
                 .execute(

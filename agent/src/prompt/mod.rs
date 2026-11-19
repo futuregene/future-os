@@ -363,6 +363,12 @@ pub struct PromptOptions {
     /// (`reject_deep_parent`), and offering the commands would invite a run
     /// that cannot succeed.
     pub is_subsession: bool,
+    /// Whether the reader's client draws `futureos-choice` cards. Off (the
+    /// default, and a fresh install's setting) leaves the section out entirely:
+    /// the fence is taught *because* a card will be drawn, so a session whose
+    /// client does not draw one is never told the fence exists — which is the
+    /// only way "no card anywhere" also means "no card in the prompt".
+    pub choice_cards: bool,
 }
 
 // ─── Identity Section ───────────────────────────────────────────────────────
@@ -417,11 +423,12 @@ fn build_identity_section(opts: &PromptOptions) -> String {
     parts.push(include_str!("communication.md").trim().to_owned());
     // Right after "how to talk to the user", because a choice card is one of the
     // shapes a reply ends in: the model writes the closing question there and
-    // nowhere else. Unconditional — the fence is plain markdown, so a client
-    // that cannot draw the card (TUI, IM bots) still renders the options as the
-    // code block it already is, and withholding it from such a session would
-    // remove the only thing that tells the model the fence exists.
-    parts.push(include_str!("choice.md").trim().to_owned());
+    // nowhere else. Omitted while the reader's client draws no card: the section
+    // exists to make the fence reachable, so teaching it to a client that will
+    // not draw one buys nothing and costs prompt on every turn.
+    if opts.choice_cards {
+        parts.push(include_str!("choice.md").trim().to_owned());
+    }
     if !opts.prompt_guidelines.is_empty() {
         let guidelines = dedup(opts.prompt_guidelines.clone())
             .into_iter()
@@ -1180,6 +1187,9 @@ mod tests {
             prompt_guidelines: vec!["ADDITIONAL_INSTRUCTION".into()],
             agent_content: "PROJECT_INSTRUCTION".into(),
             append_prompt: "APPEND_INSTRUCTION".into(),
+            // The ordering below includes the choice section, so this reader
+            // draws cards.
+            choice_cards: true,
             ..Default::default()
         });
         let execution = prompt.find("# Tool Execution").unwrap();
@@ -1210,6 +1220,7 @@ mod tests {
     fn prompt_teaches_the_choice_card_fence() {
         let prompt = build_prompt(&PromptOptions {
             tools: vec![crate::tools::read_tool(), crate::tools::shell_tool()],
+            choice_cards: true,
             ..Default::default()
         });
 
@@ -1229,12 +1240,57 @@ mod tests {
         assert!(prompt.contains(option));
         assert!(prompt.contains("`option: <id> | <label> | <note>`"));
 
+        // `context:` is what makes the card answerable on its own — the reader
+        // should not have to scroll back up: the field must be in the syntax, in
+        // a worked example, and with both of its bounds stated (short, but long
+        // enough to carry the situation).
+        assert!(prompt.contains("`context:` — 1–3 sentences"));
+        assert!(prompt.contains("mode: multi\ncontext: "));
+        assert!(prompt.contains("answer from the card alone"));
+        // The budget is the *phone's* visible four lines, not a round number: the
+        // card is at its narrowest at 350pt, and a context longer than what fits
+        // there folds behind a button on the surface the reader is most likely
+        // holding. 100 characters is that budget in Chinese characters, which is
+        // what the examples are written in.
+        assert!(prompt.contains("under ~100 characters"));
+        assert!(prompt.contains("four lines of a phone card"));
+        // ... and inside those lines, the deciding fact has to be reachable: a
+        // model that buries it in paragraph three writes a card whose answer sits
+        // behind a button.
+        assert!(prompt.contains("lead with the decisive fact"));
+        assert!(prompt.contains("before the rest folds behind \"show more\""));
+        // The worked examples practise the budget they teach: every example
+        // `context:` stays inside the 100 characters, so what the model copies is
+        // a line the phone draws whole rather than one that folds on it.
+        for line in include_str!("choice.md")
+            .lines()
+            .filter(|line| line.starts_with("context: "))
+        {
+            let characters = line.trim_start_matches("context: ").chars().count();
+            assert!(
+                characters <= 100,
+                "example context is {characters} characters: {line}"
+            );
+        }
+        // Repeated lines are paragraphs (`parseChoiceCard` joins them with `\n`).
+        // Matched on flattened whitespace: where this sentence wraps is a
+        // typesetting detail of a section that is reflowed to stay inside its
+        // line budget, not something the model's behaviour depends on.
+        let flat = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains("Repeat the line if a second paragraph"));
+
         // The parser's tolerances, stated where the model writes them: a card
         // outside 2–4 rows is dropped whole, so the reply loses its question.
         assert!(prompt.contains("choices are 2–4"));
         assert!(prompt.contains("fewer than 2 or more than 4 is not drawn as a card"));
         // An id the parser rejects (`CHOICE_OPTION_ID`) takes its row with it.
         assert!(prompt.contains("[a-z0-9-]` only (no spaces)"));
+        // Row order is a recommendation the reader acts on, in both modes. The
+        // renderer draws rows in file order and nothing re-sorts them, so the
+        // first row is the one the reader takes as the pick — a card whose best
+        // option sits last asks them to re-rank it themselves.
+        assert!(prompt.contains("The option you recommend comes"));
+        assert!(prompt.contains("first**, single or multi"));
         // `mode` is optional and defaults to a single pick, and the one thing the
         // model has to get right is when several can be done at once. Three
         // wordings have been tried: "unless several can be done in one go" (read
@@ -1279,8 +1335,55 @@ mod tests {
         assert!(prompt.contains("show it as a code block"));
 
         // Read on every turn, so it stays short: the budget is lines of prompt,
-        // not lines of documentation.
-        assert!(include_str!("choice.md").lines().count() <= 40);
+        // not lines of documentation. Raised from 40 to 42 when the row-order
+        // rule joined — it changes what the model writes on every card, unlike
+        // the rest of §4's prose. Raised to 51 when `context:` did the same:
+        // every card now carries a situation paragraph, and the examples had to
+        // show one. The fold clause (2026-11-18) fit by reflowing this section
+        // instead of raising the budget a third time.
+        assert!(include_str!("choice.md").lines().count() <= 51);
+    }
+
+    /// The switch's second half: with cards off the section is not in the
+    /// prompt at all.
+    ///
+    /// The card lives in the client, but the *fence* lives in the prompt — so a
+    /// reply can only carry a `futureos-choice` block because this section told
+    /// the model the block exists. Turning the setting off removes both ends;
+    /// hiding the card while still teaching the fence would leave the model
+    /// emitting markdown the reader's client refuses to draw.
+    #[test]
+    fn prompt_omits_the_choice_card_fence_when_cards_are_off() {
+        // Off is the default: a client that never pushes the preference (TUI,
+        // CLI, an older host) must not be taught a fence it cannot draw.
+        assert!(!PromptOptions::default().choice_cards);
+        let prompt = build_prompt(&PromptOptions {
+            tools: vec![crate::tools::read_tool(), crate::tools::shell_tool()],
+            agent_content: "PROJECT_INSTRUCTION".into(),
+            append_prompt: "APPEND_INSTRUCTION".into(),
+            prompt_guidelines: vec!["ADDITIONAL_INSTRUCTION".into()],
+            ..Default::default()
+        });
+        assert!(!prompt.contains("# Offering Choices"));
+        // The fence name itself is the load-bearing string (`CHOICE_FENCE` in
+        // packages/markdown), so its absence is the assertion — a heading gone
+        // while an example block stayed would still teach the format.
+        assert!(!prompt.contains("futureos-choice"));
+        // The mode line is the other load-bearing half of the format.
+        assert!(!prompt.contains("mode: multi"));
+        // Every other section survives, and in the same order: the flag removes
+        // one section, not a band of them.
+        let communication = prompt.find("# User Communication").unwrap();
+        let additional = prompt.find("# Additional Guidelines").unwrap();
+        assert!(communication < additional);
+        assert!(prompt.contains("APPEND_INSTRUCTION"));
+
+        // On: the same options plus the flag bring the section back where it was.
+        let on = build_prompt(&PromptOptions {
+            choice_cards: true,
+            ..Default::default()
+        });
+        assert!(on.contains("\n```futureos-choice\n"));
     }
 
     #[test]

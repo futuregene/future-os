@@ -244,6 +244,37 @@ it("draws the answer to a choice card as a tag rather than as prose in the promp
   expect(container.textContent).not.toContain("[接下来先做哪一块？");
 });
 
+it("draws an answer the reader typed before picking, wherever it sits", () => {
+  // The composer writes the pill at the caret, so a cursor left mid-sentence puts
+  // the answer inside the reader's own words. It is a pick either way: the tag is
+  // drawn, and the words keep their order.
+  render(message({
+    content: "另外 asrbench 可以删除[删哪些？ → 删 A 类全部、删未在用的 ~/omlx 副本]",
+    id: "u1",
+    role: "user",
+  }));
+
+  const tag = container.querySelector<HTMLElement>("[data-choice-answer='删哪些？']")!;
+  expect(tag.textContent).toBe("删哪些？→删 A 类全部、删未在用的 ~/omlx 副本");
+  expect(container.textContent).toContain("另外 asrbench 可以删除");
+  // Not both: the sentence is drawn as the tag, not printed beside it.
+  expect(container.textContent).not.toContain("[删哪些？");
+  // And it is not read as a file link, which is what a bracketed path used to
+  // turn the whole sentence into.
+  expect(container.querySelector("a")).toBeNull();
+});
+
+it("leaves a prose bracket that names a path as prose — no tag, no file link", () => {
+  // The reverse of the choice-answer rule: no `→`, so not a tag; and prose inside
+  // the brackets, so not the `[path]` shorthand either. Both false positives are
+  // asserted here because both once drew something the reader did not ask for.
+  render(message({ content: "另外 [见 docs/crawl.md] 那段", id: "u1", role: "user" }));
+
+  expect(container.querySelector("[data-choice-answer-tags]")).toBeNull();
+  expect(container.textContent).toContain("[见 docs/crawl.md]");
+  expect(container.querySelector("a")).toBeNull();
+});
+
 it("leaves a prompt whose leading bracket is not a card answer alone", () => {
   // The parse is the styling's only input, so its false-negative side is
   // asserted too: prose that merely opens with a bracket renders as it was sent.

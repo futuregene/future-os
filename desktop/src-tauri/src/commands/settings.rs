@@ -48,6 +48,7 @@ mod tests {
             title_language: None,
             community_edition: Some(true),
             skill_recommend: None,
+            choice_cards: None,
         })
         .expect("update");
         assert_eq!(updated.approval_tier, "manual");

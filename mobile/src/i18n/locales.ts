@@ -475,9 +475,8 @@ export const resources = {
       // the options, never these.
       choice: {
         mode: { single: "Single choice", multi: "Multiple choice" },
+        context: { expand: "Show more", collapse: "Show less" },
         hint: {
-          single: "Pick one and it lands in the input; you can type something else instead",
-          multi: "Pick as many as apply",
           readonly: "An earlier question — this card can no longer be picked",
         },
         foot: {
@@ -1014,6 +1013,8 @@ export const resources = {
         autoUpgradeSkillsHint: "Upgrade installed skills when the desktop app opens, or when this option is enabled.",
         skillRecommend: "Skill recommendations",
         skillRecommendHint: "When on, sending a message suggests one skill you have not installed yet. Off by default.",
+        choiceCards: "Choice cards",
+        choiceCardsHint: "Let a reply end with a card of options to tick. Off by default: no card is drawn and the desktop's agent is not told the card format exists.",
         autoTitleFirstTurn: "Generate a title after the first answer",
         autoTitleFirstTurnHint: "Generate and save a title after the first successful answer. Conversation context is not compacted.",
         archiveSection: "Archiving",
@@ -1738,10 +1739,9 @@ export const resources = {
       },
       choice: {
         mode: { single: "单选", multi: "多选" },
+        context: { expand: "展开", collapse: "收起" },
         hint: {
-          single: "选一个就放进输入框；也可以直接在输入框里写别的",
-          multi: "可以多选，点几个都行",
-          readonly: "只作展示：这张卡不能选",
+          readonly: "早先的提问，这张卡不能再选",
         },
         foot: {
           queued: "已选，答案在下面的输入框上方；可以直接发送，也可以补充文字",
@@ -2221,6 +2221,8 @@ export const resources = {
         autoUpgradeSkillsHint: "桌面端启动时或开启此选项时，升级已安装的技能。",
         skillRecommend: "智能技能推荐",
         skillRecommendHint: "开启后，发送消息时会推荐一个你尚未安装的技能；默认关闭。",
+        choiceCards: "选项卡",
+        choiceCardsHint: "允许回复末尾带一张可勾选的选项卡。默认关闭：不显示卡片，也不会告诉桌面端智能体有这种格式。",
         autoTitleFirstTurn: "首轮回答后自动生成标题",
         autoTitleFirstTurnHint: "在首轮回答成功结束后生成并保存标题，不压缩对话上下文。",
         archiveSection: "归档",

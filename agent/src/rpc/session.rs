@@ -1,5 +1,5 @@
 use crate::session::Manager;
-use crate::types::ConvertToLLM;
+use crate::types::{AgentMessage, ConvertToLLM};
 use anyhow::Result;
 use std::{collections::HashMap, sync::Arc};
 
@@ -132,6 +132,14 @@ pub struct ServerSession {
     pub auto_retry: bool,
     /// Session-local opt-out of project instruction discovery (not workspace memory).
     pub no_context_files: bool,
+    /// Whether this session's reader draws `futureos-choice` cards.
+    ///
+    /// Not persisted with the session: it is the *client's* saved preference
+    /// (`app.db` → `choice_cards`), pushed by the host before each run the way
+    /// the approval tier is. Off by default, so a client that never pushes it
+    /// (TUI, CLI, an older host) gets a prompt with no choice-card section and
+    /// therefore no cards.
+    pub choice_cards: bool,
     /// Whole-prompt replacement for this session (empty = use the built-in
     /// prompt). Persisted in `session_info` and fed to `build_prompt` as its
     /// `custom_prompt` on every run, for the same reason as
@@ -430,6 +438,7 @@ impl ServerSession {
             auto_compaction: true,
             auto_retry: true,
             no_context_files: false,
+            choice_cards: false,
             custom_system_prompt: String::new(),
             append_system_prompt: String::new(),
             compaction_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -2369,10 +2378,32 @@ impl ServerSession {
 
     pub fn get_last_assistant_text(&self) -> String {
         let msgs = self.messages.read();
-        msgs.iter()
-            .rfind(|m| m.role == "assistant")
-            .map(|m| m.text())
-            .unwrap_or_default()
+        let mut prior = msgs.iter().rev();
+        let Some(last) = prior.find(|message| message.role == "assistant") else {
+            return String::new();
+        };
+        let mut parts = vec![last.text()];
+        let mut current = last;
+        while let Some(prefix) = current
+            .metadata
+            .as_ref()
+            .and_then(|meta| meta.get(AgentMessage::FUSION_REPORT_PREFIX_KEY))
+            .and_then(serde_json::Value::as_str)
+        {
+            let Some(message) = prior
+                .by_ref()
+                .take_while(|message| message.role != "user")
+                .find(|message| {
+                    message.role == "assistant" && message.journal_entry_id() == Some(prefix)
+                })
+            else {
+                break;
+            };
+            parts.push(message.text());
+            current = message;
+        }
+        parts.reverse();
+        parts.concat()
     }
 
     /// The name of the last tool this session ran, as a one-word clue for
@@ -2945,6 +2976,48 @@ mod tests {
             });
         }
         assert_eq!(session.get_last_assistant_text(), "world");
+    }
+
+    #[test]
+    fn get_last_assistant_text_reassembles_fusion_report_segments() {
+        use crate::types::ContentBlock;
+
+        let session = make_test_session("s1");
+        let mut prefix = AgentMessage {
+            role: "assistant".into(),
+            content: vec![ContentBlock::text("report prefix")],
+            ..Default::default()
+        };
+        let id = prefix.ensure_journal_entry_id();
+        let mut suffix = AgentMessage {
+            role: "assistant".into(),
+            content: vec![ContentBlock::text(" and suffix")],
+            ..Default::default()
+        };
+        suffix
+            .metadata
+            .get_or_insert_with(serde_json::Map::new)
+            .insert(
+                AgentMessage::FUSION_REPORT_PREFIX_KEY.into(),
+                serde_json::json!(id),
+            );
+        *session.messages.write() = vec![
+            AgentMessage {
+                role: "assistant".into(),
+                content: vec![ContentBlock::text("earlier tool work")],
+                ..Default::default()
+            },
+            prefix,
+            AgentMessage {
+                role: "tool".into(),
+                ..Default::default()
+            },
+            suffix,
+        ];
+        assert_eq!(
+            session.get_last_assistant_text(),
+            "report prefix and suffix"
+        );
     }
 
     #[test]

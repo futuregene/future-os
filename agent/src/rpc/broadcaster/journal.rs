@@ -79,12 +79,9 @@ impl SseBroadcaster {
             }
             let (identity, (session_idx, loose_idx), segmented) =
                 store.journal_binding(&session_id)?;
-            let writer = EventBatchWriter::new(
-                store.clone(),
-                session_id.clone(),
-                self.journal_health.clone(),
-            )?;
-            Ok::<_, anyhow::Error>((store, writer, session_idx, loose_idx, segmented, identity))
+            // Binding/replaying history must not allocate one native thread
+            // per resident session. Start the writer on the first append.
+            Ok::<_, anyhow::Error>((store, session_idx, loose_idx, segmented, identity))
         })();
         let mut run = self.run.lock();
         let mut journal = self.journal.lock();
@@ -98,14 +95,13 @@ impl SseBroadcaster {
         }
         journal.session_id = session_id;
         match result {
-            Ok((store, writer, session_idx, loose_idx, segmented, identity)) => {
+            Ok((store, session_idx, loose_idx, segmented, identity)) => {
                 journal.storage_identity = Some(identity);
                 journal.memory_boundary = None;
                 journal.segmented = segmented;
                 if run.run_id.is_empty() {
                     run.idx = loose_idx;
                 }
-                journal.writer = Some(writer);
                 journal.store = Some(store);
                 journal.session_idx = session_idx;
                 journal.closed = false;
@@ -201,16 +197,19 @@ impl SseBroadcaster {
     /// Fence all admitted writes without retaining broadcaster locks while the
     /// writer commits. A later producer may enqueue behind this FIFO barrier.
     pub(crate) fn flush_journal(&self) -> anyhow::Result<()> {
-        let sender = {
+        let receipt = {
             let mut journal = self.journal.lock();
             if cfg!(test) && std::mem::take(&mut journal.fail_flush) {
                 return Err(anyhow::anyhow!("injected event journal drain failure"));
             }
-            journal.writer.as_ref().map(|writer| writer.control.clone())
+            journal
+                .writer
+                .as_ref()
+                .map(|writer| writer.control.queue_flush())
+                .transpose()?
         };
-        if let Some(sender) = sender {
-            sender
-                .queue_flush()?
+        if let Some(receipt) = receipt {
+            receipt
                 .recv()
                 .map_err(|_| anyhow::anyhow!("event persistence worker is unavailable"))?
                 .map_err(anyhow::Error::msg)?;
@@ -234,11 +233,14 @@ impl SseBroadcaster {
                 if journal.closed {
                     anyhow::bail!("event persistence is closed");
                 }
-                journal.writer.as_ref().map(|writer| writer.control.clone())
+                journal
+                    .writer
+                    .as_ref()
+                    .map(|writer| writer.control.queue_async_flush())
+                    .transpose()?
             };
             if let Some(control) = control {
                 control
-                    .queue_async_flush()?
                     .await
                     .map_err(|_| anyhow::anyhow!("event commit acknowledgment lost"))?
                     .map_err(anyhow::Error::msg)?;
@@ -300,6 +302,21 @@ impl SseBroadcaster {
         Ok(())
     }
 
+    /// Release a settled session's native worker without closing its durable
+    /// journal. History reads stay thread-free; a later append starts a new
+    /// ordered worker. Never retire failed/pending storage as if it succeeded.
+    pub(crate) fn retire_journal_writer(&self) -> anyhow::Result<()> {
+        let mut journal = self.journal.lock();
+        if let Some(error) = self.persistence_error() {
+            anyhow::bail!(error);
+        }
+        if let Some(writer) = journal.writer.as_mut() {
+            writer.shutdown()?;
+        }
+        journal.writer = None;
+        Ok(())
+    }
+
     /// Close admission first, then drain and join outside the lifecycle lock.
     /// No producer can recreate a session after the deletion fence returns.
     pub(crate) fn shutdown_journal(&self) -> anyhow::Result<()> {
@@ -334,12 +351,7 @@ impl SseBroadcaster {
                 .store
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("event storage is not configured"))?;
-            let sender = journal
-                .writer
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("event persistence worker is unavailable"))?
-                .control
-                .clone();
+            let sender = journal.writer.as_ref().map(|writer| writer.control.clone());
             (store, sender)
         };
         store.db.call(|db| {
@@ -348,11 +360,13 @@ impl SseBroadcaster {
             tx.commit()?;
             Ok(())
         })?;
-        sender
-            .queue_flush()?
-            .recv()
-            .map_err(|_| anyhow::anyhow!("event persistence worker is unavailable"))?
-            .map_err(anyhow::Error::msg)?;
+        if let Some(sender) = sender {
+            sender
+                .queue_flush()?
+                .recv()
+                .map_err(|_| anyhow::anyhow!("event persistence worker is unavailable"))?
+                .map_err(anyhow::Error::msg)?;
+        }
         self.journal_health.clear();
         Ok(())
     }
@@ -367,7 +381,19 @@ impl SseBroadcaster {
     /// waits for the retry.
     #[cfg(test)]
     pub(crate) fn inject_commit_failures(&self, count: usize) {
-        let journal = self.journal.lock();
+        let mut journal = self.journal.lock();
+        if journal.writer.is_none() {
+            if let Some(store) = journal.store.clone() {
+                journal.writer = Some(
+                    EventBatchWriter::new(
+                        store,
+                        journal.session_id.clone(),
+                        self.journal_health.clone(),
+                    )
+                    .unwrap(),
+                );
+            }
+        }
         if let Some(writer) = journal.writer.as_ref() {
             writer.health.inject_commit_failures(count);
         }
@@ -407,6 +433,7 @@ impl SseBroadcaster {
 
     pub(super) fn append_journal(
         journal: &mut EventJournalState,
+        health: &std::sync::Arc<super::EventJournalHealth>,
         event: &SseEvent,
         canonical_data: Option<serde_json::Value>,
         bytes: usize,
@@ -418,9 +445,20 @@ impl SseBroadcaster {
             ));
         }
         debug_assert!(!journal.closed);
-        let Some(writer) = journal.writer.as_ref() else {
-            return Ok(None);
-        };
+        if journal.writer.is_none() {
+            let Some(store) = journal.store.as_ref() else {
+                return Ok(None);
+            };
+            journal.writer = Some(
+                EventBatchWriter::new(store.clone(), journal.session_id.clone(), health.clone())
+                    .map_err(|error| {
+                        AppendFailure::Unavailable(format!(
+                            "cannot start event persistence worker: {error:#}"
+                        ))
+                    })?,
+            );
+        }
+        let writer = journal.writer.as_ref().expect("writer started");
         let event_type = event.event_type.clone();
         let mut event = serde_json::to_value(event).map_err(|error| {
             AppendFailure::Unavailable(format!("event serialization failed: {error}"))
@@ -467,35 +505,38 @@ impl SseBroadcaster {
         session_scope: bool,
         limit: Option<usize>,
     ) -> anyhow::Result<(bool, Vec<SseEvent>, Option<RunProjectionSnapshot>)> {
-        let (store, session_id, sender) = {
+        if let Some(error) = self.persistence_error() {
+            anyhow::bail!(error);
+        }
+        let (store, session_id, flushed) = {
             let journal = self.journal.lock();
             let Some(store) = journal.store.as_ref() else {
                 return Ok((false, Vec::new(), None));
             };
-            let writer = journal
-                .writer
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("event persistence worker is unavailable"))?;
             (
                 store.clone(),
                 journal.session_id.clone(),
-                writer.control.clone(),
+                journal
+                    .writer
+                    .as_ref()
+                    .map(|writer| writer.control.queue_flush())
+                    .transpose()?,
             )
         };
         // The FIFO flush fences every append that preceded this read. Wait
         // outside both broadcaster locks; later appends may enqueue normally.
-        let flushed = sender.queue_flush()?;
         #[cfg(test)]
         let notify = self.journal.lock().read_flush_queued.clone();
         #[cfg(test)]
         if let Some(notify) = notify {
             let _ = notify.send(());
         }
-        flushed
-            .recv()
-            .map_err(|_| anyhow::anyhow!("event persistence worker is unavailable"))?
-            .map_err(anyhow::Error::msg)?;
-        drop(sender);
+        if let Some(flushed) = flushed {
+            flushed
+                .recv()
+                .map_err(|_| anyhow::anyhow!("event persistence worker is unavailable"))?
+                .map_err(anyhow::Error::msg)?;
+        }
         let page = store.replay_page(&session_id, run_id, since_idx, session_scope, limit)?;
         let snapshot = page.snapshot.map(|snapshot| RunProjectionSnapshot {
             run_id: snapshot.run_id,

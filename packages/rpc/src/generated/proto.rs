@@ -1679,11 +1679,8 @@ pub struct StreamEvent {
     ///                                 writing the rest of the reply instead of
     ///                                 ending at the cut. Not a reconnect: the
     ///                                 answer keeps growing across it. attempt is
-    ///                                 1-based against maxContinuations;
-    ///                                 thinkingLevel is present only when the cut
-    ///                                 produced no visible output at all (the whole
-    ///                                 budget went to reasoning) and the
-    ///                                 continuation was started one level shallower
+    ///                                 1-based against maxContinuations. Historical
+    ///                                 events may include thinkingLevel.
     ///    user_message                 the user's prompt message
     ///    text_chunk                   assistant text token (the projected token stream)
     ///    thinking_start / thinking_delta / thinking_end   reasoning stream
@@ -1719,8 +1716,7 @@ pub struct StreamEvent {
     ///    stream_retry:  {"type":"stream_retry","attempt":1,"maxRetries":5,"delayMs":2000}
     ///    stream_resumed: {"type":"stream_resumed"}
     ///    output_stream_continuing: {"type":"output_stream_continuing","attempt":1,
-    ///                   "maxContinuations":2,"thinkingLevel":"low"}
-    ///                   (thinkingLevel omitted when the level was left alone)
+    ///                   "maxContinuations":2}
     ///    text_chunk:    {"text": "Hello"}
     ///    thinking_delta: {"text": "I need to..."}
     ///    tool_start:    {"tool_id": "...", "tool_name": "read"}

@@ -1659,3 +1659,48 @@ fn persistence_mode_cannot_change_once_a_run_has_started() {
     // Nothing changed: the session is still persistent.
     assert!(!session.read().ephemeral, "the refusal must not apply");
 }
+
+/// The choice-card switch reaches the prompt the model actually reads.
+///
+/// The card is drawn by a client, but a reply can only carry one because the
+/// prompt teaches the fence — so the switch is pushed as a session flag and the
+/// run boundary rebuilds the prompt from it. `reload_config` builds the same
+/// prompt the next run would send, which is what makes this checkable without
+/// spending a model request.
+#[test]
+fn choice_cards_switch_adds_and_removes_the_prompt_section() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    // A session whose client never says anything draws no card…
+    assert!(!session.read().choice_cards);
+    // …and therefore is not told the fence exists.
+    let prompt = || {
+        let agent_loop = session.read().agent_loop.clone();
+        let built = agent_loop.try_read().unwrap().system_prompt.clone();
+        built
+    };
+    assert!(!prompt().contains("futureos-choice"));
+
+    for enabled in [true, false] {
+        let mut cmd = make_cmd("set_choice_cards");
+        cmd.enabled = enabled;
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true, "{resp}");
+        assert_eq!(session.read().choice_cards, enabled);
+
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("reload_config")));
+        assert_eq!(resp["success"], true, "{resp}");
+        let rebuilt = prompt();
+        assert_eq!(
+            rebuilt.contains("# Offering Choices"),
+            enabled,
+            "the section must follow the switch (enabled={enabled})"
+        );
+        // The fence itself, not just the heading: the name is what the parser
+        // matches, and a section without its example teaches nothing usable.
+        assert_eq!(rebuilt.contains("```futureos-choice"), enabled);
+        // Everything else survives the switch.
+        assert!(rebuilt.contains("# User Communication"));
+        assert!(rebuilt.contains("# Tool Execution"));
+    }
+}

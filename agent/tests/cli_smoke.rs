@@ -721,10 +721,27 @@ fn agent_survives_unwritable_profile_path() {
         ])
         .output()
         .expect("spawn future-agent");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // The status is part of the evidence: a signal (`137`/`139`) and a clean
+    // `Some(1)` are different investigations.
+    assert!(output.status.success(), "{:?}\n{stderr}", output.status);
+    // Refusing the destination before the sampler starts is only a contract
+    // where a sampler exists: `unusable_profile_destination` and the guard it
+    // feeds are `cfg(not(windows))`. Windows answers `--profile` with "not
+    // available" instead (asserted below) and never starts one, so the
+    // refusal this assertion describes cannot happen there.
+    #[cfg(not(windows))]
     assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        stderr.contains("continuing without profiling"),
+        "a destination that cannot be written must be refused before the \
+         sampler starts, not discovered at exit: {stderr}"
+    );
+    // The Windows contract is narrower but still explicit: `--profile` is
+    // answered rather than silently swallowed.
+    #[cfg(windows)]
+    assert!(
+        stderr.contains("Built-in CPU profiling is not available on Windows"),
+        "--profile must report that the sampler is unavailable: {stderr}"
     );
 }
 

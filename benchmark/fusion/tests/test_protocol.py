@@ -9,11 +9,65 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from datasets import ROOT, load_frozen_questions, read_json, sample_cases, write_json  # noqa: E402
-from audit import collect  # noqa: E402
-from future_runner import Future, unexecuted_consultation  # noqa: E402
-from reporting import generate  # noqa: E402
-from scoring import score  # noqa: E402
+from audit import collect
+from datasets import ROOT, load_frozen_questions, read_json, sample_cases, write_json
+from future_runner import Future, canonical_answer, unexecuted_consultation
+from reporting import generate
+from scoring import score
+
+
+class CanonicalAnswerTests(unittest.TestCase):
+    def test_run_binding_and_full_answer_are_preserved(self):
+        transcript = {
+            "entries": [
+                {
+                    "id": "a",
+                    "runId": "current",
+                    "kind": "assistant",
+                    "blocks": [
+                        {"kind": "reasoning", "text": "private"},
+                        {"kind": "text", "text": "prefix\nFINAL_ANSWER: 7"},
+                    ],
+                },
+                {
+                    "id": "b",
+                    "runId": "other",
+                    "kind": "assistant",
+                    "blocks": [{"kind": "text", "text": "wrong run"}],
+                },
+            ]
+        }
+        result = canonical_answer(transcript, "current")
+        self.assertEqual(result["entry_id"], "a")
+        self.assertEqual(result["text"], "prefix\nFINAL_ANSWER: 7")
+        with self.assertRaises(RuntimeError):
+            canonical_answer(transcript, "absent")
+        transcript["hasMore"] = True
+        with self.assertRaises(RuntimeError):
+            canonical_answer(transcript, "current")
+
+    def test_an_earlier_answer_cannot_hide_an_unfinished_final_entry(self):
+        transcript = {
+            "entries": [
+                {
+                    "runId": "r",
+                    "kind": "assistant",
+                    "blocks": [{"kind": "text", "text": "old"}],
+                },
+                {
+                    "runId": "r",
+                    "kind": "assistant",
+                    "blocks": [{"kind": "tool_call", "name": "fusion"}],
+                },
+            ]
+        }
+        with self.assertRaises(RuntimeError):
+            canonical_answer(transcript, "r")
+        transcript["entries"][-1]["blocks"] = [
+            {"kind": "reasoning", "text": "no visible answer"}
+        ]
+        with self.assertRaises(RuntimeError):
+            canonical_answer(transcript, "r")
 
 
 class ReasoningProtocolTests(unittest.TestCase):
@@ -236,11 +290,13 @@ class ReasoningProtocolTests(unittest.TestCase):
 
     def test_model_failure_is_not_retried_as_a_transport_reconnect(self):
         client = Future("future")
-        with patch.object(
-            client, "call", side_effect=RuntimeError("authentication failed")
-        ) as call:
-            with self.assertRaisesRegex(RuntimeError, "authentication"):
-                client.wait("s", "r", 1000)
+        with (
+            patch.object(
+                client, "call", side_effect=RuntimeError("authentication failed")
+            ) as call,
+            self.assertRaisesRegex(RuntimeError, "authentication"),
+        ):
+            client.wait("s", "r", 1000)
         self.assertEqual(call.call_count, 1)
 
     def test_daily_wait_only_reattaches_and_does_not_force_or_abort_the_parent(self):
@@ -272,7 +328,9 @@ class ReasoningProtocolTests(unittest.TestCase):
                     result["routing_outcome"], "completed" if count else "not_invoked"
                 )
 
-    def daily_case_with_consultations(self, count, consultation=None):
+    def daily_case_with_consultations(
+        self, count, consultation=None, diagnostic_error=None
+    ):
         client = Future("unused-binary")
 
         def response(args, **kwargs):
@@ -292,12 +350,21 @@ class ReasoningProtocolTests(unittest.TestCase):
 
         entries = [
             {
+                "runId": "accepted",
                 "blocks": [
                     {"kind": "tool_call", "name": "fusion", "toolCallId": f"call-{i}"}
                     for i in range(count)
-                ]
+                ],
             }
         ]
+        entries.append(
+            {
+                "id": "final",
+                "runId": "accepted",
+                "kind": "assistant",
+                "blocks": [{"kind": "text", "text": "FINAL_ANSWER: 7"}],
+            }
+        )
         consultation = consultation or {
             "status": "completed",
             "kernel_text": "FINAL_ANSWER: 7",
@@ -311,7 +378,12 @@ class ReasoningProtocolTests(unittest.TestCase):
             patch.object(client, "call", side_effect=response),
             patch.object(client, "wait", return_value={"text": "FINAL_ANSWER: 7"}),
             patch.object(client, "transcript", return_value={"entries": entries}),
-            patch.object(client, "collect_consultation", return_value=consultation),
+            patch.object(
+                client,
+                "collect_consultation",
+                return_value=consultation,
+                side_effect=diagnostic_error,
+            ),
         ):
             return client.run_case(
                 {
@@ -325,6 +397,18 @@ class ReasoningProtocolTests(unittest.TestCase):
                 Path(temporary) / "case",
                 100,
             )
+
+    def test_diagnostic_failure_preserves_the_completed_parent_answer(self):
+        result = self.daily_case_with_consultations(
+            1, diagnostic_error=RuntimeError("diagnostic RPC disconnected")
+        )
+        self.assertEqual(result["status"], "completed")
+        self.assertTrue(result["grade"]["correct"])
+        self.assertEqual(result["text"], "FINAL_ANSWER: 7")
+        self.assertTrue(result["diagnostics_pending"])
+        self.assertEqual(result["routing_outcome"], "evidence_pending")
+        self.assertEqual(result["fusion_invocations"], 1)
+        self.assertEqual(result["completed_consultations"], 0)
 
     def test_unsupported_effort_fails_before_model_execution(self):
         settings = {
@@ -343,9 +427,11 @@ class ReasoningProtocolTests(unittest.TestCase):
             }
         }
         client = Future("future")
-        with patch.object(client, "call", side_effect=[settings, models]) as call:
-            with self.assertRaisesRegex(ValueError, "Unsupported"):
-                client.preflight()
+        with (
+            patch.object(client, "call", side_effect=[settings, models]) as call,
+            self.assertRaisesRegex(ValueError, "Unsupported"),
+        ):
+            client.preflight()
         self.assertEqual(call.call_count, 2)
 
 

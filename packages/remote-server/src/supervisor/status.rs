@@ -139,6 +139,7 @@ impl Supervisor {
         // sitting there, and the two facts are reported separately.
         let present = self.client_link(pair_id).present_and_report();
         let (lane, packets, bytes) = self.catalogue_traffic(pair_id);
+        let catalogue = self.catalogue_measurement(pair_id);
         RemoteDevice {
             pair_id: pair_id.to_string(),
             phase,
@@ -161,6 +162,7 @@ impl Supervisor {
             },
             catalogue_packets: packets,
             catalogue_bytes: bytes,
+            catalogue,
             relay: self.relay_health(state, present),
         }
     }

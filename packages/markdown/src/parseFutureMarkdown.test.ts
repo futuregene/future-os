@@ -617,6 +617,38 @@ describe("parseFutureMarkdown — inline nodes", () => {
       ],
     });
   });
+
+  it("leaves a prose bracket that names a path as prose", () => {
+    // No arrow, so this is not a choice answer either — but it is the shape the
+    // file-reference shorthand used to eat: one bracketed run whose interior
+    // happens to hold a path. Prose with spaces inside the brackets is prose.
+    expect(first("另外 [见 docs/crawl.md] 那段\n")).toEqual({
+      children: [text("另外 [见 docs/crawl.md] 那段")],
+      type: "paragraph",
+    });
+  });
+
+  it("leaves a choice card's answer as prose when a row names a path", () => {
+    // `choiceAnswerText` sends `[question → answer]` as plain text (design
+    // `docs/design/choice-cards.zh-CN.md` §7). A row that names a path made the
+    // whole bracket run read as one bare relative path, so the bubble drew the
+    // reader's own sentence as a file link — and clicking it opened a path that
+    // does not exist. A run with spaces, or with the arrow the printer writes, is
+    // prose, not a path.
+    expect(first("另外 asrbench 可以删除[删哪些？ → 删 A 类全部、删未在用的 ~/omlx 副本]\n")).toEqual({
+      children: [text("另外 asrbench 可以删除[删哪些？ → 删 A 类全部、删未在用的 ~/omlx 副本]")],
+      type: "paragraph",
+    });
+  });
+
+  it("leaves an answer written without spaces as prose too", () => {
+    // Chinese prose often drops the spaces around the arrow, so whitespace alone
+    // is not enough to tell the two apart.
+    expect(first("[删哪些？→删未在用的~/omlx副本]\n")).toEqual({
+      children: [text("[删哪些？→删未在用的~/omlx副本]")],
+      type: "paragraph",
+    });
+  });
 });
 
 describe("parseFutureMarkdown — autolink boundaries and CJK emphasis", () => {

@@ -10,7 +10,7 @@ import { ErrorBanner } from "../../components/ErrorBanner";
 import { StandbyNotice } from "../../components/StandbyNotice";
 import { useRemote, useRemoteControls } from "../../remote/RemoteContext";
 import { readableDeviceName } from "../../remote/deviceName";
-import { modelReference, type MobileAttachment, type TimelineItem } from "../../remote/types";
+import { modelLabelForReference, resolveModelReference, type MobileAttachment, type TimelineItem } from "../../remote/types";
 import { spacing } from "../../theme/tokens";
 import { useTransferProgress } from "./useTransferProgress";
 import { File } from "expo-file-system";
@@ -20,6 +20,7 @@ import { useComposerSubmission } from "./composer/useComposerSubmission";
 import { useComposerDraft } from "./useComposerDraft";
 import { choiceAnswerFromCard, choiceAnswerText, pickChoiceOption, type ChoiceAnswer } from "./choiceAnswer";
 import type { ChoiceCardAnswer } from "../../components/ChoiceCard";
+import { ChoiceCardsEnabledProvider } from "../../components/ChoiceCard";
 import type { ChoiceCardNode } from "@future-os/markdown";
 import { useAttachmentPicker } from "./useAttachmentPicker";
 import { useChatFiles } from "./files/useChatFiles";
@@ -231,11 +232,13 @@ export function ChatScreen() {
   const machine = desktopId
     ? { icon: pairedDesktop?.icon, label: pairedDesktop?.name || desktopId }
     : undefined;
-  const activeModel = remote.models.find(
-    (model) => modelReference(model) === remote.modelId,
-  );
-  const activeModelLabel =
-    activeModel?.label || activeModel?.id || remote.modelId || t("chat.model");
+  const activeModel = resolveModelReference(remote.modelId ?? "", remote.models);
+  // A reference the catalogue does not name (a model removed since the
+  // conversation started, or a stored `provider/provider/id` left by an older
+  // client) shows the model's own id rather than the whole reference string.
+  const activeModelLabel = remote.modelId
+    ? modelLabelForReference(remote.modelId, remote.models)
+    : t("chat.model");
   const supportsImages = activeModel
     ? activeModel.supportsImages !== false
     : true;
@@ -809,6 +812,15 @@ export function ChatScreen() {
     remote.desktopSettingsRevision,
     remote.desktopOnline,
   );
+  // The desktop's switch, mirrored: the cards and the prompt section that makes
+  // one possible are one value, and the phone draws what that machine allows.
+  //
+  // Only an explicit `false` hides anything. A desktop older than the switch has
+  // no such key and teaches its agent the fence regardless, so reading silence
+  // as "off" would hide a question that machine legitimately asks — and the
+  // fence's own source with it. Before the settings arrive cards stay off, which
+  // is the shipped default.
+  const choiceCardsEnabled = desktopSettings.data ? desktopSettings.data.choiceCards !== false : false;
   const skillRecommendation = useSkillRecommendation(
     desktopSettings.data?.skillRecommend ?? false,
     remote.desktopOnline,
@@ -915,24 +927,27 @@ export function ChatScreen() {
 
   const renderTimelineItem = useCallback(
     ({ item }: { item: TimelineItem; }) => (
-      <View onLayout={onRowLayout}>
-        <TimelineCard
-          choiceAnswer={choiceCardAnswer}
-          item={item}
-          isLatestAssistant={item.id === latestAssistantId}
-          onOpenAttachment={handleTimelineAttachment}
-          onOpenFile={handleTimelineFile}
-          onOpenSession={handleTimelineSession}
-          onRetry={handleTimelineRetry}
-          onContinue={handleTimelineContinue}
-          onFork={forkSupported ? handleTimelineFork : undefined}
-          onResolveToolTarget={handleResolveToolTarget}
-          onResolveReasoning={reasoningFetchSupported ? handleResolveReasoning : undefined}
-        />
-      </View>
+      <ChoiceCardsEnabledProvider value={choiceCardsEnabled}>
+        <View onLayout={onRowLayout}>
+          <TimelineCard
+            choiceAnswer={choiceCardAnswer}
+            item={item}
+            isLatestAssistant={item.id === latestAssistantId}
+            onOpenAttachment={handleTimelineAttachment}
+            onOpenFile={handleTimelineFile}
+            onOpenSession={handleTimelineSession}
+            onRetry={handleTimelineRetry}
+            onContinue={handleTimelineContinue}
+            onFork={forkSupported ? handleTimelineFork : undefined}
+            onResolveToolTarget={handleResolveToolTarget}
+            onResolveReasoning={reasoningFetchSupported ? handleResolveReasoning : undefined}
+          />
+        </View>
+      </ChoiceCardsEnabledProvider>
     ),
     [
       choiceCardAnswer,
+      choiceCardsEnabled,
       forkSupported,
       handleResolveReasoning,
       reasoningFetchSupported,

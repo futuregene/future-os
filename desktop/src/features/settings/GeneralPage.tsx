@@ -3,8 +3,8 @@ import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { FontSizePreference } from "../../lib/fontSize";
 import type { ReplyDetail } from "../../lib/replyDisplay";
 import type { ThemeMode } from "../../lib/theme";
-import { CircleHelp } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { HelpTip } from "../../components/ui/HelpTip";
 import { Select } from "../../components/ui/Select";
 import { TextInput } from "../../components/ui/TextInput";
 import { getLanguagePreference, LANGUAGE_LABELS, LANGUAGE_PREFERENCES, setLanguage } from "../../i18n";
@@ -26,6 +26,8 @@ export function GeneralPage({
   onToggleAutoUpgradeSkills,
   skillRecommend,
   onToggleSkillRecommend,
+  choiceCards,
+  onToggleChoiceCards,
   bellOnComplete,
   onToggleBellOnComplete,
   autoTitleFirstTurn,
@@ -44,6 +46,8 @@ export function GeneralPage({
   onToggleAutoUpgradeSkills: (value: boolean) => void;
   skillRecommend: boolean;
   onToggleSkillRecommend: (value: boolean) => void;
+  choiceCards: boolean;
+  onToggleChoiceCards: (value: boolean) => void;
   bellOnComplete: boolean;
   onToggleBellOnComplete: (value: boolean) => void;
   autoTitleFirstTurn: boolean;
@@ -200,6 +204,15 @@ export function GeneralPage({
           >
             <Switch checked={skillRecommend} label={t("skillRecommend.title")} onChange={onToggleSkillRecommend} />
           </SettingsRow>
+          {/* Paired with the prompt section: while this is off the agent is not
+              taught the fence either, so turning it off leaves no card in a new
+              reply and no raw code block in an old one. */}
+          <SettingsRow
+            title={t("choiceCards.title")}
+            description={t("choiceCards.description")}
+          >
+            <Switch checked={choiceCards} label={t("choiceCards.title")} onChange={onToggleChoiceCards} />
+          </SettingsRow>
           <SettingsRow
             title={t("autoTitleFirstTurn.title")}
             description={t("autoTitleFirstTurn.description")}
@@ -243,14 +256,7 @@ export function GeneralPage({
             title={(
               <span className="inline-flex items-center gap-1.5">
                 {t("archive.idleDays")}
-                <span
-                  aria-label={t("archive.idleDaysHelp")}
-                  className="inline-flex text-ink-muted"
-                  tabIndex={0}
-                  title={t("archive.idleDaysHelp")}
-                >
-                  <CircleHelp className="size-3.5" />
-                </span>
+                <HelpTip label={t("archive.idleDaysHelpLabel")}>{t("archive.idleDaysHelp")}</HelpTip>
               </span>
             )}
             description={t("archive.idleDaysDescription")}

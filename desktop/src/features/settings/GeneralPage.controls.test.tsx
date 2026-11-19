@@ -70,6 +70,8 @@ function mount(overrides: Partial<React.ComponentProps<typeof GeneralPage>> = {}
     onToggleAutoUpgradeSkills: vi.fn(),
     skillRecommend: true,
     onToggleSkillRecommend: vi.fn(),
+    choiceCards: false,
+    onToggleChoiceCards: vi.fn(),
     bellOnComplete: true,
     onToggleBellOnComplete: vi.fn(),
     autoTitleFirstTurn: true,
@@ -474,24 +476,29 @@ describe("generalPage switches", () => {
     expect(switches.map(item => item.getAttribute("aria-label"))).toEqual([
       "Auto-upgrade skills",
       "Skill recommendations",
+      "Choice cards",
       "Generate a title after the first answer",
       "Completion bell",
       "Clear run logs when archiving",
       "Archive idle conversations automatically",
     ]);
-    expect(switches.map(item => item.getAttribute("aria-checked"))).toEqual(["true", "false", "true", "false", "true", "false"]);
+    expect(switches.map(item => item.getAttribute("aria-checked"))).toEqual(["true", "false", "false", "true", "false", "true", "false"]);
   });
 
   it("reports each toggle to its own callback, inverted", () => {
-    const { container, props } = mount({ autoUpgradeSkills: true, bellOnComplete: true });
+    const { container, props } = mount({ autoUpgradeSkills: true, bellOnComplete: true, choiceCards: false });
 
     const toggle = (label: string) => container.querySelector<HTMLButtonElement>(`[role=switch][aria-label='${label}']`)!;
 
     act(() => toggle("Auto-upgrade skills").click());
     act(() => toggle("Completion bell").click());
+    act(() => toggle("Choice cards").click());
 
     expect(props.onToggleAutoUpgradeSkills).toHaveBeenCalledExactlyOnceWith(false);
     expect(props.onToggleBellOnComplete).toHaveBeenCalledExactlyOnceWith(false);
+    // The choice-card switch reaches its own writer, and the default it starts
+    // from is off — the shipped value.
+    expect(props.onToggleChoiceCards).toHaveBeenCalledExactlyOnceWith(true);
   });
 
   it("reports the archive toggles and leaves the run-log cleanup wording on the row", () => {
@@ -523,15 +530,26 @@ describe("generalPage archive settings", () => {
     expect(container.textContent).not.toContain("Workspaces themselves");
   });
 
-  it("explains what an idle conversation is beside the idle days", () => {
+  it("explains what an idle conversation is beside the idle days, on click", () => {
     const { container } = mount();
-    const help = container.querySelector<HTMLElement>("[aria-label^='Idle means']");
+    const help = container.querySelector<HTMLButtonElement>("[aria-label='About idle days']");
 
     expect(help).not.toBeNull();
-    // Focusable so the explanation also reaches keyboard users.
-    expect(help!.getAttribute("tabindex")).toBe("0");
-    expect(help!.getAttribute("title")).toContain("no new message or run activity");
-    expect(help!.getAttribute("title")).toContain("restoring an archived conversation starts a fresh idle period");
+    // A button rather than a hover-only icon: the explanation is two sentences
+    // about the term the number depends on, so it has to survive the pointer
+    // leaving it, and it has to be reachable from the keyboard and from touch.
+    expect(help!.getAttribute("aria-expanded")).toBe("false");
+    // `title` would put the native hover popup back on top of the click panel.
+    expect(help!.getAttribute("title")).toBeNull();
+    expect(document.body.textContent).not.toContain("no new message or run activity");
+
+    act(() => help!.click());
+
+    expect(help!.getAttribute("aria-expanded")).toBe("true");
+    // Portalled out of the card (which is `overflow-hidden`), so the panel is
+    // asserted on the document rather than inside `container`.
+    expect(document.body.textContent).toContain("no new message or run activity");
+    expect(document.body.textContent).toContain("restoring an archived conversation starts a fresh idle period");
   });
 
   it("only accepts a whole number of idle days in range", () => {

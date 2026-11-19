@@ -17,6 +17,14 @@ const FUTURE_BALANCE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const FUTURE_MODELS_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const AUTO_ARCHIVE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const AUTO_ARCHIVE_STARTUP_DELAY: Duration = Duration::from_secs(60);
+/// How often the window asks whether another process changed the conversation
+/// catalogue.
+///
+/// This bounds only how *late* a window can be: writes from another process
+/// arrive minutes apart in practice, and a burst is folded into one re-list.
+/// Ten seconds is invisible to a person reading the list and costs two counting
+/// scans of the store.
+const STORE_WATCH_INTERVAL: Duration = Duration::from_secs(10);
 
 pub const APP_UPDATE_EVENT: &str = "scheduler-app-update";
 pub const FUTURE_BALANCE_EVENT: &str = "scheduler-future-balance";
@@ -36,6 +44,12 @@ pub static FUTURE_MODELS_JOB: LazyLock<FixedIntervalJob> =
     LazyLock::new(|| FixedIntervalJob::new(FUTURE_MODELS_INTERVAL));
 pub static AUTO_ARCHIVE_JOB: LazyLock<FixedIntervalJob> =
     LazyLock::new(|| FixedIntervalJob::new(AUTO_ARCHIVE_INTERVAL));
+pub static STORE_WATCH_JOB: LazyLock<FixedIntervalJob> =
+    LazyLock::new(|| FixedIntervalJob::new(STORE_WATCH_INTERVAL));
+
+/// What [`store_watch_pass`] saw last time. `None` until the first poll, which
+/// primes it without reporting anything.
+static STORE_WATCH_BASELINE: Mutex<Option<crate::store::CatalogueFingerprint>> = Mutex::new(None);
 
 pub struct FixedIntervalJob {
     schedule: Mutex<FixedIntervalSchedule>,
@@ -226,6 +240,47 @@ async fn auto_archive_pass() {
     if let Err(error) = crate::application::auto_archive::auto_archive_now().await {
         tracing::warn!(event = "auto_archive_pass_failed", %error,
             "scheduled idle-conversation archive failed");
+    }
+}
+
+/// Notice conversation-list writes made by another process and tell the window
+/// to re-list.
+///
+/// Every event this host publishes comes from its own code paths, so a write
+/// nobody published here — `future session archive` in a terminal, a monitor
+/// script, another client sharing this home — is invisible to an open window
+/// until something unrelated refreshes it. That is how conversations archived
+/// days earlier stayed in the recent list. This loop is the only path that can
+/// notice such a write, which is why it runs in the window entry only: a
+/// headless host has no presentation to refresh. See
+/// [`crate::store::poll_catalogue_change`] for what counts as a change, and
+/// what deliberately does not.
+pub fn start_store_watch() {
+    spawn_fixed_interval(&STORE_WATCH_JOB, store_watch_pass);
+}
+
+async fn store_watch_pass() {
+    // The lock is released before publishing: a listener that writes back to
+    // the store (an archive the notification triggers) must not meet it held.
+    let polled = {
+        let mut baseline = STORE_WATCH_BASELINE
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        crate::store::poll_catalogue_change(&mut baseline)
+    };
+    match polled {
+        Ok(true) => {
+            crate::events::emit_threads_updated();
+            // The shelf is a separate stream that `threads-updated` does not
+            // re-read: a conversation archived or restored by another process
+            // moves an `archived` page (or a `workspace-archived:<id>` one)
+            // while the live list may not change at all. See
+            // `Event::ArchiveChanged`.
+            crate::events::emit_archive_changed();
+        }
+        Ok(false) => {}
+        Err(error) => tracing::warn!(event = "store_watch_pass_failed", %error,
+            "conversation-catalogue poll failed"),
     }
 }
 

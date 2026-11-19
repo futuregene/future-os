@@ -1430,9 +1430,13 @@ test("hands a changed queued answer up as a whole object, not as ids", () => {
     title: "接下来做哪一件？",
   };
   const onQueueUpdateChoice = jest.fn();
+  // The other answer surface in this box: the draft the next send carries. A row's
+  // chip must never reach it, or the same pick would be sent twice.
+  const onChangeChoice = jest.fn();
   const { tree, unmount } = mountDock({
     message: "",
     queueItems: [{ choice: picked, content: "[接下来做哪一件？ → 重画森林图]", id: "run_a" }],
+    onChangeChoice,
     onQueueUpdateChoice,
   });
   try {
@@ -1467,6 +1471,9 @@ test("hands a changed queued answer up as a whole object, not as ids", () => {
       selectedIds: ["flow"],
       title: "接下来做哪一件？",
     });
+    // The pick went to the row behind the panel; the box's own draft was not
+    // touched (both surfaces take the same answer shape, one tap apart).
+    expect(onChangeChoice).not.toHaveBeenCalled();
   }
   finally {
     unmount();

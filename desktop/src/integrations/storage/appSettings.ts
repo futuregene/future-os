@@ -69,6 +69,13 @@ export interface AppSettings {
    * Settings toggle opts in.
    */
   skillRecommend: boolean;
+  /**
+   * Draw `futureos-choice` cards and teach the model the fence. **Off by
+   * default**: while off the card is not drawn at all (not even the raw fenced
+   * block) and the system prompt leaves out the section that tells the model the
+   * fence exists.
+   */
+  choiceCards: boolean;
 }
 
 /** Fallback used before the persisted settings load. */
@@ -89,6 +96,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   titleLanguage: "en",
   communityEdition: false,
   skillRecommend: false,
+  choiceCards: false,
 };
 
 export async function getAppSettings() {
@@ -112,6 +120,7 @@ export async function updateAppSettings(input: {
   titleLanguage?: "en" | "zh";
   communityEdition?: boolean;
   skillRecommend?: boolean;
+  choiceCards?: boolean;
 }) {
   return invokeCommand<AppSettings>("update_app_settings", { input });
 }

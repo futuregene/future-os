@@ -47,7 +47,10 @@ pub use self::headless::{
     prepare_prompt_persisted_with_trigger, run_prepared_prompt_with_acceptance, PreparedPrompt,
 };
 pub(crate) use self::import::{list_agent_session_ids, session_has_messages};
-pub use self::models::{list_agent_models, list_builtin_providers, AgentModelOption};
+pub use self::models::{
+    list_agent_models, list_builtin_providers, normalize_model_reference,
+    normalize_model_reference_against_catalog, AgentModelOption,
+};
 #[cfg(any(test, feature = "test-support"))]
 pub use self::observer::has_observer;
 pub(crate) use self::observer::reconcile_deleted_session;
@@ -144,8 +147,8 @@ use self::replica::AGENT_REPLICAS;
 use self::run_control::{mark_run_completed_if_active, mark_run_failed_if_active};
 pub use self::session::workspace_path_for_thread;
 use self::session::{
-    ensure_agent_session, ensure_named_agent_session, set_agent_permission_level,
-    set_agent_sandbox_policy,
+    ensure_agent_session, ensure_named_agent_session, set_agent_choice_cards,
+    set_agent_permission_level, set_agent_sandbox_policy,
 };
 
 #[cfg(any(test, feature = "test-support"))]

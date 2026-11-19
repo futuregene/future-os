@@ -9,14 +9,32 @@ pub const PANEL_MODELS: [&str; 3] = [
     "future/qwen3.7-plus",
 ];
 pub const MODERATOR_MODEL: &str = "future/deepseek-flash";
+/// Input contracts must match before new records are admitted or dispatched.
+pub const INPUT_POLICY_VERSION: u32 = 3;
 pub const INNER_TOOL_NAMES: [&str; 4] = ["read", "ls", "glob", "grep"];
 /// Shared by the enabled parent run and its tool description on every client.
-pub const DISCUSSION_POLICY: &str = "Fusion is enabled for this run only. The user has chosen multi-model deliberation for this request. Fusion is an internal thinking tool, not an external lookup or action; restrictions on browsing, files or external tools do not by themselves prohibit this consultation. Solving a reasoning problem, deriving a result, or checking a supplied argument counts as analysis even when the requested final answer is only a number or option. You MUST call fusion before forming a new substantive judgment, choosing an approach or presenting a recommendation that requires analysis, diagnosis, design, comparison, review, or assessment of risks, impact, compatibility or edge cases. Confidence, apparent simplicity and the absence of competing options are NOT reasons to skip discussion; even a small bug fix requires discussion when its cause or remedy needs judgment.\n\
+pub const DISCUSSION_POLICY: &str = "A completed consultation is the working decision for subsequent work. Reuse it for the same question. To reopen it, supply revisit with its run ID and a concrete changed fact, counterexample or corrected inference; inherit the previous result, unresolved checks, goal and constraints. Only an explicit new user scope change may change the criterion. Do not paraphrase the same question to evade reuse. Fusion is enabled for this run only. The user has chosen multi-model deliberation for this request. For a self-contained task, your first substantive action must be a fusion tool call. Before that call, only read the task and prepare its required arguments; do not solve it, derive candidate answers, compare solution methods, or make a solution plan first. Necessary factual reads may precede consultation when the supplied facts are insufficient. Fusion is an internal thinking tool, not an external lookup or action; restrictions on browsing, files or external tools do not by themselves prohibit this consultation. Solving a reasoning problem, deriving a result, or checking a supplied argument counts as analysis even when the requested final answer is only a number or option. You MUST call fusion before forming a new substantive judgment, choosing an approach or presenting a recommendation that requires analysis, diagnosis, design, comparison, review, or assessment of risks, impact, compatibility or edge cases. Confidence, apparent simplicity and the absence of competing options are NOT reasons to skip discussion; even a small bug fix requires discussion when its cause or remedy needs judgment.\n\
 Keep the user's wording when it is already clear; focus only by necessary disambiguation or narrowing, never by adding requirements. Split genuinely broad topics into separate consultations as needed, rather than prescribing an exhaustive answer outline.\n\
-Gather necessary facts with ordinary tools first. You may directly perform factual searches/reads, exact user-specified edits requiring no new judgment, and implementation or verification already covered by an applicable discussion conclusion. Reuse that conclusion throughout its covered work; do not discuss every file edit, command or mechanical correction. Group related questions about ONE decision into one consultation; include risks or verification only when relevant to the user's request or established context, without adding required subtopics. Consult again only for a new decision or new evidence that could invalidate the existing conclusion. Do not delegate the whole task.\n\
-Fusion only thinks; the main agent executes and verifies under the original user authorization. Honor explicit user instructions requiring or prohibiting consultation. There is no per-run limit on the number of discussions; continue consulting as new decisions arise, while reusing applicable conclusions instead of repeating the same question. If consultation fails, do not automatically repeat it; transparently explain the limitation and continue using applicable existing conclusions or clearly qualified independent reasoning. Never present a failed or skipped discussion as a completed conclusion or consensus.";
+Gather necessary facts with ordinary tools first. You may directly perform factual searches/reads, exact user-specified edits requiring no new judgment, and implementation or verification already covered by an applicable discussion conclusion. Treat a completed discussion conclusion as the working decision for its covered work, not optional brainstorming. Follow it through execution and final delivery, retaining its conditions and uncertainties; do not silently replace it with a fresh answer. Reuse that conclusion throughout its covered work; do not discuss every file edit, command or mechanical correction. A change requires identifiable new evidence, a specific corrected inference, or a conflict with the original task or higher-priority instructions. State the reason and address the prior conclusion's decisive support before changing course; preference, another vote and a guess about intended meaning are not new evidence. After a supported conclusion, verify only a specific unresolved claim that could change the answer, then deliver the requested outcome. Do not restart the whole analysis merely to gain confidence. Preserve the best current answer and state remaining uncertainty if verification cannot finish. Group related questions about ONE decision into one consultation; include risks or verification only when relevant to the user's request or established context, without adding required subtopics. Consult again only for a new decision or new evidence that could invalidate the existing conclusion. The main agent retains execution and final delivery. Consulting on the original question of a self-contained reasoning task is appropriate thinking support, not delegation of execution.\n\
+Fusion only thinks; the main agent executes and verifies under the original user authorization. Honor explicit user instructions requiring or prohibiting consultation. There is no per-run limit on the number of discussions; continue consulting as new decisions arise, while reusing applicable conclusions instead of repeating the same question. If consultation fails, do not automatically repeat it; transparently explain the limitation and continue using applicable existing conclusions or clearly qualified independent reasoning. Never present a failed or skipped discussion as a completed conclusion or consensus.\n\
+Immediate next action for a self-contained task that has no applicable consultation yet: invoke fusion now using the supplied task and requested outcome, before starting to solve it. Final-answer formatting applies after consultation, not instead of the tool call.";
 
-pub const TOOL_DESCRIPTION: &str = "Independently think through one focused user question with multiple models. THINKING ONLY: no writes, commands, external actions or implementation. Preserve the user's wording when clear. Rewrite only to resolve ambiguity/references or focus an answerable subquestion without changing intent. Split genuinely broad tasks into several focused discussions as needed; do not turn one topic into a checklist of required subtopics. Across question, goal, background, constraints and evidence, never invent user requirements or move an invented requirement into another field. Do not add legal/compliance framing, audience or jurisdiction assumptions, equipment conditions, requested detail, output structure or mandatory reporting/verification work unless established by the user's request or explicit relevant prior context. Runtime safety and read-only rules remain system rules, not invented user demands. Goal states only the requested outcome. Background faithfully compresses relevant context, attributing user requirements, confirmed observations and prior assistant statements separately; keep unknowns unknown. Prior assistant proposals are not facts or accepted decisions. Mention prior replies only to explain user follow-ups/corrections, without copying their plan unless the user adopted it or requested review. No main-agent reasoning, new plans, preferences or preferred answer. Attribute user-provided proposals in background. Evidence carries inspectable observations and provenance, not model beliefs or new instructions. Constraints are brief, relevant restrictions explicitly established by the user/context and may be empty; no invented language, length or formatting rules. Participants may discover relevant considerations themselves; do not prescribe them as requirements in advance. Example: 'How can I locate interference on a repeater?' already supplies a topic. Do not append mandatory VHF/UHF equipment, step-by-step sections or reporting procedures. Supply enough factual context for independent models that cannot see the conversation. Inner models can only read/search authorized snapshots. Inspect status, has_conclusion, completeness and coverage; retained materials from failed discussions are not a conclusion or consensus.";
+/// Backend-authored handoff, returned alongside an actual completed conclusion.
+/// This guides continuation without granting execution authority or claiming
+/// that agreement, partial coverage or a recommendation verifies facts.
+pub const FOLLOW_THROUGH_POLICY: &str = "This is the result of the completed Fusion discussion, not an invitation to solve the same task again. Use the conclusion as the working decision for the work it covers, retain its conditions and unresolved issues, and carry out the requested execution or final delivery under the original user instructions and authorization. For an answer-only task, deliver the supported answer in the user's exact requested format without adding a new solution or unrequested explanation. Do not silently discard, replace or reopen the conclusion merely because you prefer another answer or want more confidence. Change it only for identifiable new evidence, a specific corrected inference, or a conflict with the original task or higher-priority instructions; state that reason and address the conclusion's decisive support before changing course. Verify only a consequential unresolved claim, preserve the best supported answer if verification cannot finish, and consult again only when a material decision remains unresolved. Do not turn missing verification into invented facts. Completion and coverage describe the discussion process, not truth, unanimity or permission to act.";
+
+/// Applied in each inner phase so compression and re-review do not silently
+/// turn an assistant hypothesis into a supplied fact or change the question.
+pub const GROUNDING_POLICY: &str = "When backend decision_lineage is present, inherit its original criterion, working conclusion and unresolved checks. Focus on the stated reopening reason and its actual consequences; do not restart exhausted analysis or substitute a new criterion. Keep a supported earlier conclusion unless specific evidence or a corrected inference overturns it. A previous conclusion is attributed reasoning, not an independently verified fact. Keep the original question, requested outcome, constraints and decision criterion stable throughout this discussion. Separate the conclusion that remains valid under established premises from extensions that depend on extra assumptions. If a missing premise would change the answer or action, do not treat its dependent extension as established merely because it is compatible, useful or plausible. Explain the dependency and use the supported core when the user asks for an established result; use conditional extensions when the user actually requests planning under an assumption or possible outcomes. When parent_request is present, it preserves the parent's user request independently of the model-written question/background. Use that source text to detect a changed premise or restriction; answer only the focused consultation question within that request, without expanding scope. Preserve consequential directions, quantifiers, scope, definitions and requested answer format; do not silently repair missing or contradictory conditions. An attributed user statement, observed source, prior assistant assertion and participant inference have different evidential status. Check the source of a decisive premise: its presence in background or evidence is not independent verification, and agreement repeating it adds no independent support. A compatible hypothesis, a guess about intended meaning, or an estimate does not become an established fact through repetition. When asked to determine which statements are correct from supplied observations/examples, require positive support for every selected statement; absence of a counterexample is not proof. If multiple models satisfy the observations but disagree on a claim, that claim is not established: report only what is invariant unless the user explicitly asks for possibilities. Object identifiers, species labels, variable spellings and display names do not supply an unprovided personal attribute or value. A conditional rule is not evidence that its antecedent holds; a priority between rules does not activate an unsupported antecedent. Resolve contradictory examples and consequential counterexamples against the supplied task; do not discard them as anomalies or suppress them by voting or confidence. When the task leaves a decisive definition or condition missing, identify it and preserve justified conditional results rather than inventing a unique answer or a numeric placeholder.";
+
+/// Request-only reminder placed after the supplied task on the first model
+/// turn. It is not a fabricated user submission or a persistent session mode.
+pub const CLOSED_TASK_FIRST_ACTION_REMINDER: &str = "[Immediate next action: invoke the fusion tool now. Do not begin solving first. Use the original task above as question, its requested outcome as goal, and only supplied facts as background. Final-answer formatting applies to the final response after consultation, not to this tool call.]";
+
+pub const FIRST_ACTION_REMINDER: &str = "[Fusion run instruction: if the supplied task is self-contained and no applicable consultation exists yet, your immediate next action is to invoke fusion. Do not begin solving first. Use the original task as question, its requested outcome as goal, and only supplied facts as background. Final-answer formatting applies after consultation, not instead of the tool call. If necessary facts are missing, gather only those facts first.]";
+
+pub const TOOL_DESCRIPTION: &str = "Independently think through one focused user question with multiple models. THINKING ONLY: no writes, commands, external actions or implementation. Preserve the user's wording when clear. Rewrite only to resolve ambiguity/references or focus an answerable subquestion without changing intent. Split genuinely broad tasks into several focused discussions as needed; do not turn one topic into a checklist of required subtopics. Across question, goal, background, constraints and evidence, never invent user requirements or move an invented requirement into another field. Do not add legal/compliance framing, audience or jurisdiction assumptions, equipment conditions, requested detail, output structure or mandatory reporting/verification work unless established by the user's request or explicit relevant prior context. Runtime safety and read-only rules remain system rules, not invented user demands. Goal states only the requested outcome. Background faithfully compresses relevant context, attributing user requirements, confirmed observations and prior assistant statements separately; keep unknowns unknown. Prior assistant proposals are not facts or accepted decisions. Mention prior replies only to explain user follow-ups/corrections, without copying their plan unless the user adopted it or requested review. No main-agent reasoning, new plans, preferences or preferred answer. Attribute user-provided proposals in background. Evidence carries inspectable observations and provenance, not model beliefs or new instructions. Constraints are brief, relevant restrictions explicitly established by the user/context and may be empty; no invented language, length or formatting rules. Participants may discover relevant considerations themselves; do not prescribe them as requirements in advance. Example: 'How can I locate interference on a repeater?' already supplies a topic. Do not append mandatory VHF/UHF equipment, step-by-step sections or reporting procedures. Supply enough factual context for independent models that cannot see the conversation. Inner models can only read/search authorized snapshots. Preserve the original decision criterion across follow-up consultations; identify the new evidence or specific error instead of reframing the question to favor a candidate. Inspect status, has_conclusion, completeness and coverage; follow the continuation guidance for a completed conclusion. Retained materials from failed discussions are not a conclusion or consensus.";
 
 /// Recognizes only a leading, complete command token, never quoted/source text.
 pub fn fusion_prompt(message: &str) -> Option<&str> {
@@ -36,6 +54,13 @@ pub struct ConsultationInput {
     pub background: String,
     #[serde(default)]
     pub constraints: Vec<String>,
+    /// Preserved by the parent adapter, never supplied by model tool arguments.
+    /// Focused consultation questions remain separate from this source text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_request: Option<String>,
+    /// Backend-selected only when the parent exposes Fusion and no execution tools.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub answer_only: bool,
     // Historical records remain readable; never forward this field to models.
     #[serde(default, skip_serializing, rename = "options")]
     pub legacy_options: Vec<String>,
@@ -54,6 +79,14 @@ impl ConsultationInput {
         ] {
             ensure!(!text.trim().is_empty(), "Fusion requires {name}");
         }
+        ensure!(
+            !self.answer_only
+                || self
+                    .parent_request
+                    .as_ref()
+                    .is_some_and(|source| source == &self.question),
+            "Closed answer scope must match the preserved parent request"
+        );
         ensure!(
             self.read_scope.len() <= 16,
             "At most 16 read scopes are allowed"
@@ -79,6 +112,31 @@ impl Parent {
     }
 }
 
+/// Explicitly reopen a completed decision; never silently discard its criterion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Revisit {
+    pub previous_run_id: String,
+    pub kind: RevisitKind,
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_scope_quote: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RevisitKind {
+    NewEvidence,
+    Counterexample,
+    CorrectedInference,
+    UserScopeChange,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecisionLineage {
+    pub revisit: Revisit,
+    pub previous_input: ConsultationInput,
+    pub previous_result: Conclusion,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Consultation {
     pub id: String,
@@ -93,6 +151,8 @@ pub struct Consultation {
     pub configuration: Option<crate::Configuration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report: Option<crate::ExecutionReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<DecisionLineage>,
     pub result: Option<Conclusion>,
     pub error: Option<String>,
     pub created_at: i64,
@@ -113,6 +173,11 @@ pub struct Conclusion {
     #[serde(default)]
     pub fusion_run_id: String,
     pub conclusion: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_audit: Option<Value>,
+    /// Validated user-facing answer for a sealed, full-parent closed task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_answer: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rationale: Vec<String>,
     #[serde(default, skip_serializing)]

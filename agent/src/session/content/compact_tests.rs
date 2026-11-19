@@ -322,7 +322,7 @@ fn query_plans_use_short_context_cursor_and_reverse_body_indices() {
         ("SELECT c.id FROM stream_contexts x INDEXED BY stream_contexts_tool JOIN stream_changes c INDEXED BY stream_changes_context ON c.context_id=x.id WHERE x.stream_id=1 AND x.entry_id='m' AND x.tool_id='t' AND x.event_kind IN (11,12,13) AND c.event_kind=13 ORDER BY c.last_cursor DESC LIMIT 1", "stream_changes_context"),
         ("SELECT c.id FROM stream_changes c WHERE c.stream_id=1 AND c.last_cursor>3 ORDER BY c.last_cursor LIMIT 128", "sqlite_autoindex_stream_changes_1"),
         ("SELECT 1 FROM stream_content_ranges WHERE content_id=1", "stream_changes_body"),
-        ("SELECT id FROM stream_changes WHERE stream_id=1 AND event_type IN ('usage','model_changed') ORDER BY id", "stream_changes_pricing"),
+        ("SELECT c.id,length(CAST(c.metadata_json AS BLOB))+length(CAST(x.descriptor_json AS BLOB))+x.symbol_bytes FROM stream_changes c LEFT JOIN stream_contexts x ON x.id=c.context_id AND x.stream_id=c.stream_id AND x.event_kind=c.event_kind WHERE c.stream_id=1 AND c.id>256 AND c.event_type IN ('usage','model_changed') ORDER BY c.id LIMIT 256", "stream_changes_pricing"),
     ] {
         let mut query=db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
         let plan=query.query_map([],|r|r.get::<_,String>(3)).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap().join("; ");

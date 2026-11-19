@@ -49,6 +49,25 @@ describe("futureos-choice fence", () => {
   });
 
   /**
+   * `context:` is the card's own account of the situation (§3): what the reply
+   * found, where it stopped. It is what lets a reader answer from the card
+   * instead of scrolling back up, so it has to survive parsing intact.
+   */
+  it("reads the context paragraph, and joins repeated lines into paragraphs", () => {
+    const node = first(fence(`${threeOptions}\ncontext: 森林图已按新样本量重画，图注还挂着旧的 42。`));
+    expect(node).toMatchObject({ context: "森林图已按新样本量重画，图注还挂着旧的 42。" });
+
+    const paragraphs = first(fence(`${threeOptions}\ncontext: 第一段。\ncontext: 第二段。`));
+    expect(paragraphs).toMatchObject({ context: "第一段。\n第二段。" });
+  });
+
+  it("omits a context that is present but empty", () => {
+    const node = first(fence(`${threeOptions}\ncontext:   `));
+    expect(node?.type).toBe("choiceCard");
+    expect(node).not.toHaveProperty("context");
+  });
+
+  /**
    * Every spelling of "several" the model has been seen (or could plausibly be)
    * to write for `multi`. Reading only the exact word turned the rest into a
    * silent `single` — a card that lets one tick where the reply asked for

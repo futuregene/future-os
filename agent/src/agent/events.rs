@@ -25,15 +25,10 @@ pub enum RunEvent {
     /// The model's output budget ran out and this run is writing the rest of
     /// the answer instead of ending at the cut.
     ///
-    /// Distinct from [`RunEvent::StreamRetry`]: nothing is being reconnected,
-    /// and the reply keeps growing. `thinking_level` is the level the
-    /// continuation will run at when the cut produced no visible output at all
-    /// (the entire budget went to reasoning) and the loop therefore stepped
-    /// down; `None` means the level was left alone.
+    /// The same model and thinking level continue the reply without a reconnect.
     OutputStreamContinuing {
         attempt: usize,
         max_continuations: usize,
-        thinking_level: Option<String>,
     },
     CompactionStarted {
         operation_id: String,

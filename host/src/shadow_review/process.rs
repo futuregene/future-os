@@ -9,7 +9,11 @@ use std::time::{Duration, Instant};
 
 use crate::Error;
 
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+/// The longest blocking job the Host starts on purpose: a shadow Git command,
+/// or the wait for the review lock around it. Cleanup that has to outlive a
+/// blocking job derives its budget from this rather than from a number of its
+/// own (`runtime::TEST_TASKS_STOP_BUDGET`).
+pub(crate) const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const OUTPUT_LIMIT: u64 = 64 * 1024 * 1024;
 
 struct ReapedChild(Child);

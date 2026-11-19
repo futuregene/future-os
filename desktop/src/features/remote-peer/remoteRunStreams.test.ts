@@ -265,7 +265,9 @@ describe("remoteRunStreams", () => {
       ["agent_end", { duration_ms: 42_000 }],
     ]));
 
-    streams.settle("r1");
+    // A copy rebuilt from the log survives its terminal frame: it is what the
+    // record is read back against.
+    expect(streams.settle("r1")).toBe("kept");
 
     const [reply] = streams.replies();
     expect(reply!.message.status).toBe("complete");
@@ -298,7 +300,9 @@ describe("remoteRunStreams", () => {
     streams.apply(event("r1", "text_chunk", { text: "the tail of it" }));
     expect(streams.replies()).toHaveLength(1);
 
-    streams.settle("r1");
+    // The verdict is what lets the caller say so (see `warnRemoteLane`): a
+    // dropped fragment is the one ending that takes words off the screen.
+    expect(streams.settle("r1")).toBe("dropped");
 
     expect(streams.replies()).toEqual([]);
     expect(streams.replayedRuns().size).toBe(0);

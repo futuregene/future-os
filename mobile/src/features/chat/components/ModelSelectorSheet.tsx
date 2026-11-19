@@ -2,7 +2,7 @@ import type { TFunction } from "i18next";
 import { SelectionSheet } from "../../../components/SelectionSheet";
 import { thinkingLevelLabel } from "../../../i18n/thinkingLevelLabel";
 import type { useRemote } from "../../../remote/RemoteContext";
-import { modelReference, modelThinkingLevels, resolveModelThinkingLevel } from "../../../remote/types";
+import { modelReference, modelThinkingLevels, resolveModelReference, resolveModelThinkingLevel } from "../../../remote/types";
 
 type Remote = ReturnType<typeof useRemote>;
 
@@ -13,7 +13,7 @@ export function ModelSelectorSheet({ selector, setSelector, remote, t }: {
   remote: Remote;
   t: TFunction;
 }) {
-  const selectedModel = remote.models.find(model => modelReference(model) === remote.modelId);
+  const selectedModel = resolveModelReference(remote.modelId ?? "", remote.models);
   const thinkingLevels = modelThinkingLevels(selectedModel);
   const thinkingLevel = resolveModelThinkingLevel(remote.thinkingLevel, selectedModel);
   return <SelectionSheet
@@ -22,7 +22,7 @@ export function ModelSelectorSheet({ selector, setSelector, remote, t }: {
     closeLabel={t("common.close")}
     emptyLabel={t("connection.noModels")}
     options={selector === "model" ? remote.models.map(model => ({ value: modelReference(model), label: model.label || model.id, description: model.provider })) : thinkingLevels.map(level => ({ value: level, label: thinkingLevelLabel(t, level) }))}
-    selectedValue={selector === "model" ? remote.modelId : thinkingLevel ?? null}
+    selectedValue={selector === "model" ? (selectedModel ? modelReference(selectedModel) : remote.modelId) : thinkingLevel ?? null}
     onClose={() => setSelector(null)}
     onSelect={value => {
       if (selector === "model") void remote.setModel(value);

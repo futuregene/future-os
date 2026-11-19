@@ -1,3 +1,4 @@
+import { CHOICE_CONTEXT_VISIBLE_LINES } from "@future-os/markdown";
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { StyleSheet } from "react-native";
@@ -7,7 +8,12 @@ import { ChoiceCardAnswerProvider, type ChoiceCardAnswer } from "../ChoiceCard";
 // The icon set ships as an ES module, and these suites load the real
 // `MarkdownText` (which a choice card pulls it into). Node 24+ can require it
 // directly; older runtimes cannot, so the shapes are stubbed here.
-jest.mock("lucide-react-native", () => ({ ListChecks: () => null }));
+jest.mock("lucide-react-native", () => ({
+  Check: () => null,
+  ChevronDown: () => null,
+  ChevronUp: () => null,
+  ListChecks: () => null,
+}));
 
 jest.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key, i18n: { language: "zh-CN" } }),
@@ -18,6 +24,16 @@ const CARD = [
   "title: 接下来做哪一件？",
   "mode: single",
   "option: forest | 重画森林图 | 按 Dreher 2025 的样本量重算置信区间",
+  "option: flow | 补一张实验流程图",
+  "```",
+].join("\n");
+
+/** A card whose fence carries `context:`, which is what folds. */
+const withContextFence = (context: string) => [
+  "```futureos-choice",
+  "title: 接下来做哪一件？",
+  `context: ${context}`,
+  "option: forest | 重画森林图",
   "option: flow | 补一张实验流程图",
   "```",
 ].join("\n");
@@ -62,9 +78,9 @@ describe("a futureos-choice card on the phone", () => {
     });
   }
   /**
-   * The card's subtitle text(s). `t()` is stubbed to echo its key, so a card that
-   * prints an answering hint reads `choice.hint.single` / `choice.hint.multi` and
-   * a card that cannot answer reads `choice.hint.readonly`.
+   * The card's subtitle text(s). `t()` is stubbed to echo its key, so the only
+   * key that can appear is `choice.hint.readonly`; the default single/multi
+   * instructions were removed on 2026-11-18 and a model hint is literal text.
    *
    * Filtered to host nodes: a rendered `<Text>` also shows up as its composite
    * element with the same children, which would double every entry.
@@ -100,6 +116,25 @@ describe("a futureos-choice card on the phone", () => {
     expect(texts).toContain("补一张实验流程图");
   });
 
+  test("draws the context above the subtitle, and nothing when the fence omitted it", () => {
+    const withContext = [
+      "```futureos-choice",
+      "title: 接下来做哪一件？",
+      "context: 森林图已按新样本量重画，图注还挂着旧的 42。",
+      "option: forest | 重画森林图",
+      "option: flow | 补一张实验流程图",
+      "```",
+    ].join("\n");
+    const root = render(withContext);
+    expect(root.findAllByProps({ testID: "choice-card-context" }).length).toBeGreaterThan(0);
+    const texts = root.findAll(node => typeof node.props.children === "string")
+      .map(node => node.props.children);
+    expect(texts).toContain("森林图已按新样本量重画，图注还挂着旧的 42。");
+    // A card without one draws no empty paragraph.
+    act(() => renderer.unmount());
+    expect(render(CARD).findAllByProps({ testID: "choice-card-context" })).toHaveLength(0);
+  });
+
   test("answers the last card only: the thread's earlier card is read-only", () => {
     const onPick = jest.fn();
     const answer: ChoiceCardAnswer = { onPick, selectedIds: [], title: "接下来做哪一件？" };
@@ -124,20 +159,98 @@ describe("a futureos-choice card on the phone", () => {
   });
 
   /**
-   * The subtitle is the one place a card promises an action, so the earlier card
-   * must not print the answering one: a card whose rows cannot be tapped must not
-   * say "pick one and it lands in the input". Two cards in one body, one
-   * answering hint, one that says it cannot be picked.
+   * A card that cannot be tapped says so; the live card says nothing extra about
+   * how to answer any more — the mode label and the mark already say it.
    */
-  test("the earlier card says it cannot be picked instead of promising a pick", () => {
+  test("only the earlier card carries a line, and it is the notice", () => {
     const answer: ChoiceCardAnswer = { onPick: jest.fn(), selectedIds: [], title: "接下来做哪一件？" };
     const root = render(`${CARD}\n\n还有一件事：\n\n${SECOND_CARD}`, answer);
-    expect(hintKeys(root)).toEqual(["choice.hint.readonly", "choice.hint.single"]);
+    expect(hintKeys(root)).toEqual(["choice.hint.readonly"]);
   });
 
   test("a card read-only for lack of an answer surface says so too", () => {
     const root = render(CARD);
     expect(hintKeys(root)).toEqual(["choice.hint.readonly"]);
+  });
+
+  /**
+   * History keeps what the reply said. The model's own `hint` is part of it, so a
+   * past card prints it and then the notice — replacing it with "cannot be
+   * picked" threw away the only line the reply wrote about how to choose (§2,
+   * revised 2026-11-18).
+   */
+  test("a past card keeps the model's own hint and adds the notice after it", () => {
+    const withHint = [
+      "```futureos-choice",
+      "title: 这三项都要？",
+      "mode: multi",
+      "hint: 点几个都行",
+      "option: a | 接新浪",
+      "option: b | 接 Nasdaq",
+      "```",
+    ].join("\n");
+    const root = render(withHint);
+    const texts = root.findAll(node => typeof node.props.children === "string")
+      .map(node => node.props.children as string);
+    expect(texts).toContain("点几个都行");
+    expect(texts).toContain("choice.hint.readonly");
+    // What was said at the time comes first; the fact that it is inert follows.
+    expect(texts.indexOf("点几个都行")).toBeLessThan(texts.indexOf("choice.hint.readonly"));
+  });
+
+  test("a live card with no hint from the reply shows no subtitle at all", () => {
+    const answer: ChoiceCardAnswer = { onPick: jest.fn(), selectedIds: [], title: "接下来做哪一件？" };
+    const root = render(CARD, answer);
+    expect(root.findAllByProps({ testID: "choice-card-hint" })).toHaveLength(0);
+    expect(hintKeys(root)).toEqual([]);
+  });
+
+  /**
+   * A context that outgrows the card folds down to four lines behind a button;
+   * one that fits is left alone with no button at all (same rule as the desktop,
+   * `packages/markdown/src/choiceContext.ts`).
+   */
+  test("leaves a context that fits unfolded and offers no button", () => {
+    const root = render(withContextFence("森林图已重画完了。图例仍压在曲线上。"));
+    const drawn = root.findAllByProps({ testID: "choice-card-context" })[0]!;
+    expect(drawn.props.numberOfLines).toBeUndefined();
+    expect(root.findAllByProps({ testID: "choice-card-context-toggle" })).toHaveLength(0);
+  });
+
+  test("folds a long context and opens it on one tap", () => {
+    const long = Array.from({ length: 12 }, (_, index) => `第 ${index + 1} 条：图注还挂着旧的 42。`).join(" ");
+    const root = render(withContextFence(long));
+    const folded = root.findAllByProps({ testID: "choice-card-context" })[0]!;
+    // The phone's column is narrower, so the same text folds where the desktop
+    // still shows it whole — the estimate gets the card's own units per line.
+    expect(folded.props.numberOfLines).toBe(CHOICE_CONTEXT_VISIBLE_LINES);
+    // The whole text is still what the card carries, not a truncated prefix.
+    expect(folded.props.children).toBe(long);
+
+    const toggle = root.findAllByProps({ testID: "choice-card-context-toggle" })[0]!;
+    expect(toggle.props["aria-expanded"]).toBe(false);
+    expect(toggle.props.accessibilityState).toBeUndefined();
+    expect(toggle.props.accessibilityRole).toBe("button");
+
+    act(() => toggle.props.onPress());
+    const opened = root.findAllByProps({ testID: "choice-card-context" })[0]!;
+    expect(opened.props.numberOfLines).toBeUndefined();
+    const after = root.findAllByProps({ testID: "choice-card-context-toggle" })[0]!;
+    expect(after.props["aria-expanded"]).toBe(true);
+
+    act(() => after.props.onPress());
+    expect(root.findAllByProps({ testID: "choice-card-context" })[0]!.props.numberOfLines).toBe(CHOICE_CONTEXT_VISIBLE_LINES);
+  });
+
+  test("folds the context on a read-only card too", () => {
+    // Reading is what a past card is for, so the fold works there; the toggle
+    // answers nothing and does not unlock the rows.
+    const long = Array.from({ length: 16 }, () => "图注还挂着旧的 42。").join(" ");
+    const root = render(withContextFence(long));
+    const toggle = root.findAllByProps({ testID: "choice-card-context-toggle" })[0]!;
+    act(() => toggle.props.onPress());
+    expect(root.findAllByProps({ testID: "choice-card-context" })[0]!.props.numberOfLines).toBeUndefined();
+    for (const row of rows(root)) expect(row.props.disabled).toBe(true);
   });
 
   test("without an answer surface every card is read-only", () => {

@@ -70,6 +70,7 @@ pub struct RemoteState {
     pub drop_counters: Arc<DropCounters>,
     pub event_task: TaskHandle,
     pub cmd_task: TaskHandle,
+    pub command_retire: Option<tokio::sync::oneshot::Sender<()>>,
     pub transfer_task: TaskHandle,
     pub heartbeat_task: TaskHandle,
     pub refresh_task: TaskHandle,
@@ -333,7 +334,7 @@ impl Supervisor {
             .store(lane, Ordering::Release);
     }
 
-    /// Record one catalogue packet and its sealed size, *before* it is handed to
+    /// Record one catalogue packet and its plain size, *before* it is handed to
     /// the endpoint, and take it back with
     /// [`Supervisor::retract_catalogue_packet`] if the endpoint did not take it.
     ///
@@ -356,6 +357,51 @@ impl Supervisor {
             .fetch_add(bytes as u64, Ordering::AcqRel);
     }
 
+    /// Record what one packet cost after the endpoint took it: the gzip result,
+    /// the sealed record on the wire, and — for the connection's first packet —
+    /// how long it took to get there.
+    ///
+    /// Separate from [`Supervisor::note_catalogue_packet`] because these numbers
+    /// do not exist until the payload has been compressed and sealed, and the
+    /// count above deliberately precedes that. A reader comparing the two must
+    /// know which one is allowed to trail: the count never does, these do, by at
+    /// most the one packet in flight.
+    ///
+    /// `activated` is when this connection's secure channel went live. The first
+    /// packet's distance from it is the host-side half of "how long until the
+    /// phone could have a directory at all" — the client's own unpack and render
+    /// are not part of it, and neither is the relay's transit time.
+    pub fn note_catalogue_delivery(
+        &self,
+        pair_id: &str,
+        pushed: secure::Pushed,
+        activated: Option<std::time::Instant>,
+    ) {
+        if !pushed.delivered {
+            return;
+        }
+        let shared = self.shared_or_insert(pair_id);
+        shared
+            .catalogue_compressed_bytes
+            .fetch_add(pushed.compressed_bytes as u64, Ordering::AcqRel);
+        shared
+            .catalogue_wire_bytes
+            .fetch_add(pushed.wire_bytes as u64, Ordering::AcqRel);
+        let mut first = shared.catalogue_first.lock().unwrap();
+        if first.is_none() {
+            *first = Some(crate::types::CatalogueFirstPacket {
+                since_activation_ms: activated
+                    .map(|at| at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64),
+                plain_bytes: pushed.plain_bytes as u64,
+                compressed_bytes: pushed.compressed_bytes as u64,
+                wire_bytes: pushed.wire_bytes as u64,
+                // Everything offered before this one was retracted, so this is
+                // exactly the pre-handshake drops that preceded it.
+                dropped_before_first: shared.catalogue_retracted.load(Ordering::Acquire),
+            });
+        }
+    }
+
     /// Take back a packet [`Supervisor::note_catalogue_packet`] counted whose
     /// bytes the endpoint never took: the secure channel had no key yet, or the
     /// transport failed. Paired with a note that strictly precedes it, so the
@@ -364,6 +410,7 @@ impl Supervisor {
     /// count.
     pub fn retract_catalogue_packet(&self, pair_id: &str, bytes: usize) {
         let shared = self.shared_or_insert(pair_id);
+        shared.catalogue_retracted.fetch_add(1, Ordering::AcqRel);
         let _ =
             shared
                 .catalogue_packets
@@ -385,6 +432,23 @@ impl Supervisor {
             shared.catalogue_packets.load(Ordering::Acquire),
             shared.catalogue_bytes.load(Ordering::Acquire),
         )
+    }
+
+    /// The compression and first-packet half of [`Supervisor::catalogue_traffic`].
+    ///
+    /// Answers the question the traffic counters cannot: how much of the
+    /// catalogue's cost is the host building JSON, how much is gzip, and how long
+    /// after the channel went live the first packet actually left.
+    pub fn catalogue_measurement(&self, pair_id: &str) -> crate::types::CatalogueMeasurement {
+        let shared = self.shared_or_insert(pair_id);
+        let compressed_bytes = shared.catalogue_compressed_bytes.load(Ordering::Acquire);
+        let wire_bytes = shared.catalogue_wire_bytes.load(Ordering::Acquire);
+        let first = shared.catalogue_first.lock().unwrap().clone();
+        crate::types::CatalogueMeasurement {
+            compressed_bytes,
+            wire_bytes,
+            first,
+        }
     }
 
     /// Whether the connection on `pair_id` declared the lean feed.
@@ -438,6 +502,10 @@ impl Supervisor {
                 catalogue_lane: Arc::new(std::sync::atomic::AtomicU8::new(0)),
                 catalogue_packets: Arc::new(AtomicU64::new(0)),
                 catalogue_bytes: Arc::new(AtomicU64::new(0)),
+                catalogue_compressed_bytes: Arc::new(AtomicU64::new(0)),
+                catalogue_wire_bytes: Arc::new(AtomicU64::new(0)),
+                catalogue_retracted: Arc::new(AtomicU64::new(0)),
+                catalogue_first: Arc::new(Mutex::new(None)),
                 lean_events: Arc::new(AtomicBool::new(false)),
                 segmented_content: Arc::new(AtomicBool::new(false)),
                 content_refusals: Default::default(),
@@ -756,6 +824,18 @@ pub struct BridgeRuntimeShared {
     pub catalogue_lane: Arc<std::sync::atomic::AtomicU8>,
     pub catalogue_packets: Arc<AtomicU64>,
     pub catalogue_bytes: Arc<AtomicU64>,
+    /// The same traffic after compression and sealing, and the first packet's
+    /// arrival relative to the channel coming live. Read by `future remote
+    /// status` so "the catalogue is slow" can be broken into the host building
+    /// JSON, gzip, and the wait before the channel could carry anything at all.
+    pub catalogue_compressed_bytes: Arc<AtomicU64>,
+    pub catalogue_wire_bytes: Arc<AtomicU64>,
+    /// How many packets were offered and retracted before any was delivered —
+    /// the pre-handshake drops. A first packet that arrives late because the
+    /// publisher offered the catalogue several times into an unsealed channel is
+    /// a different problem from one that was simply big.
+    pub catalogue_retracted: Arc<AtomicU64>,
+    pub catalogue_first: Arc<Mutex<Option<crate::types::CatalogueFirstPacket>>>,
     pub catalog_delta: Arc<AtomicBool>,
     /// Whether this client reads the catalogue as a window of the newest
     /// conversations. Declared like the two lanes above, and for the same
@@ -870,6 +950,10 @@ impl Supervisor {
             catalogue_lane: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             catalogue_packets: Arc::new(AtomicU64::new(0)),
             catalogue_bytes: Arc::new(AtomicU64::new(0)),
+            catalogue_compressed_bytes: Arc::new(AtomicU64::new(0)),
+            catalogue_wire_bytes: Arc::new(AtomicU64::new(0)),
+            catalogue_retracted: Arc::new(AtomicU64::new(0)),
+            catalogue_first: Arc::new(Mutex::new(None)),
             lean_events: Arc::new(AtomicBool::new(false)),
             segmented_content: Arc::new(AtomicBool::new(false)),
             content_refusals: Default::default(),

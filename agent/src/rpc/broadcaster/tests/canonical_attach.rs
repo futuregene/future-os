@@ -65,6 +65,9 @@ async fn canonical_barrier_yields_and_has_capacity_when_the_body_lane_is_full() 
     let (_root, manager, store) = canonical_store();
     let broadcaster = SseBroadcaster::new();
     broadcaster.configure_journal("s", &manager).unwrap();
+    // The writer starts on the first append, not when a reader binds history.
+    broadcaster.broadcast_session(SseEvent::new("model_changed", json!({"model":"mock"})));
+    broadcaster.flush_journal().unwrap();
     broadcaster.start_run("r".into(), 1);
     let gate = broadcaster
         .journal
@@ -99,6 +102,9 @@ async fn dropping_an_async_fence_does_not_drop_an_admitted_body() {
     let (_root, manager, store) = canonical_store();
     let broadcaster = SseBroadcaster::new();
     broadcaster.configure_journal("s", &manager).unwrap();
+    // The writer starts on the first append, not when a reader binds history.
+    broadcaster.broadcast_session(SseEvent::new("model_changed", json!({"model":"mock"})));
+    broadcaster.flush_journal().unwrap();
     broadcaster.start_run("r".into(), 1);
     let gate = broadcaster
         .journal
