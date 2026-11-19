@@ -539,7 +539,12 @@ impl Supervisor {
                             // Same rule as the other lanes: what this connection
                             // believes it has been told only advances for what
                             // actually left the endpoint.
-                            Ok(true) => {
+                            Ok(pushed) if pushed.delivered => {
+                                self.note_catalogue_delivery(
+                                    &pair_id,
+                                    pushed,
+                                    security.activated_at(),
+                                );
                                 delivered_rows = next_rows;
                                 if dictionary_moved {
                                     delivered_dictionary = Some(dictionary_sig);
@@ -548,7 +553,7 @@ impl Supervisor {
                                     delivered_window = Some(window_sig);
                                 }
                             }
-                            Ok(false) => self.retract_catalogue_packet(&pair_id, sealed),
+                            Ok(_) => self.retract_catalogue_packet(&pair_id, sealed),
                             Err(e) => {
                                 self.retract_catalogue_packet(&pair_id, sealed);
                                 if let Some(line) =
@@ -585,17 +590,22 @@ impl Supervisor {
                             .await
                             {
                                 // Record the signature only once the snapshot actually
-                                // left the endpoint. `Ok(false)` means the secure
+                                // left the endpoint. `Ok(_) => retract` means the secure
                                 // channel had no key yet, so the payload was dropped —
                                 // the next tick retries, which is what makes this a
                                 // "retry until delivered" publisher instead of a
                                 // "send once and hope" one.
-                                Ok(true) => {
+                                Ok(pushed) if pushed.delivered => {
+                                    self.note_catalogue_delivery(
+                                        &pair_id,
+                                        pushed,
+                                        security.activated_at(),
+                                    );
                                     last_sessions_sig = catalog.signature.clone();
                                     last_structural_sig = catalog.structural.clone();
                                     delivered_activity = catalog.activity.iter().cloned().collect();
                                 }
-                                Ok(false) => self.retract_catalogue_packet(&pair_id, sealed),
+                                Ok(_) => self.retract_catalogue_packet(&pair_id, sealed),
                                 Err(e) => {
                                     self.retract_catalogue_packet(&pair_id, sealed);
                                     if let Some(line) =
@@ -640,10 +650,10 @@ impl Supervisor {
                                 // only for what the endpoint actually sent, so a
                                 // packet the secure channel could not seal is rebuilt
                                 // on the next tick.
-                                Ok(true) => {
+                                Ok(pushed) if pushed.delivered => {
                                     delivered_activity = catalog.activity.iter().cloned().collect()
                                 }
-                                Ok(false) => {}
+                                Ok(_) => {}
                                 Err(e) => {
                                     if let Some(line) =
                                         self.publisher_failures.record("state_publish", e)
@@ -673,8 +683,8 @@ impl Supervisor {
                 )
                 .await
                 {
-                    Ok(true) => last_workspaces_sig = workspaces_sig,
-                    Ok(false) => {}
+                    Ok(pushed) if pushed.delivered => last_workspaces_sig = workspaces_sig,
+                    Ok(_) => {}
                     Err(e) => {
                         if let Some(line) = self.publisher_failures.record("state_publish", e) {
                             future_remote_protocol::remote_log!("{line}");

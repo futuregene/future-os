@@ -1162,6 +1162,18 @@ impl Observed {
                 "endpoint": if device.is_relay() { "relay" } else { "platform" },
                 "relayUrl": device.control_url,
                 "client": row.and_then(|row| row.get("client")).cloned().unwrap_or(Value::Null),
+                // Absent when the running Desktop answered with a build from
+                // before the measurement existed, or when it did not answer at
+                // all — the renderer treats null as "not measured", never "zero".
+                "catalogue": row.and_then(|row| row.get("catalogue")).cloned().unwrap_or(Value::Null),
+                // The lane and its running totals. These were read by the
+                // renderer but never copied into this row, so the traffic column
+                // could not print for any device: the book is authoritative for
+                // *which* devices exist, and everything the Desktop knows about
+                // one has to be carried across by hand.
+                "catalogueLane": row.and_then(|row| row.get("catalogueLane")).cloned().unwrap_or(Value::Null),
+                "cataloguePackets": row.and_then(|row| row.get("cataloguePackets")).cloned().unwrap_or(Value::Null),
+                "catalogueBytes": row.and_then(|row| row.get("catalogueBytes")).cloned().unwrap_or(Value::Null),
             }));
         }
         for row in &reported {
@@ -1188,6 +1200,10 @@ impl Observed {
                 "endpoint": Value::Null,
                 "relayUrl": Value::Null,
                 "client": row.get("client").cloned().unwrap_or(Value::Null),
+                "catalogue": row.get("catalogue").cloned().unwrap_or(Value::Null),
+                "catalogueLane": row.get("catalogueLane").cloned().unwrap_or(Value::Null),
+                "cataloguePackets": row.get("cataloguePackets").cloned().unwrap_or(Value::Null),
+                "catalogueBytes": row.get("catalogueBytes").cloned().unwrap_or(Value::Null),
             }));
         }
         rows
@@ -1460,9 +1476,14 @@ impl Observed {
             // The two lanes are indistinguishable from outside otherwise: same
             // commands, same silence when nothing changes — so "did the delta
             // capability take effect" had no answer a terminal could read.
+            //
+            // The size here is the JSON the host built, *before* gzip — the
+            // counter predates the compression split and is still the number it
+            // measures. The sealed size is on the first-packet line below, where
+            // the three stages are labelled, so the two are never confused.
             let catalogue = match row.get("catalogueLane").and_then(Value::as_str) {
                 Some(lane) => format!(
-                    " · catalogue {lane} {} pkt / {} KiB",
+                    " · catalogue {lane} {} pkt / {} KiB plain",
                     row.get("cataloguePackets")
                         .and_then(Value::as_u64)
                         .unwrap_or(0),
@@ -1473,6 +1494,41 @@ impl Observed {
                 ),
                 None => String::new(),
             };
+            // The first packet's own bill: how long after the channel went live
+            // it left, and what it cost at each stage. Without the staged sizes
+            // "the list took a second to arrive" has no breakdown — serialisation,
+            // gzip and transit all collapse into one unexplained delay.
+            let first = row.get("catalogue").and_then(|m| m.get("first"));
+            let first_packet = match first {
+                Some(first) => {
+                    let late = first
+                        .get("sinceActivationMs")
+                        .and_then(Value::as_u64)
+                        .map(|ms| format!("{:.3}s after activation", ms as f64 / 1000.0))
+                        .unwrap_or_else(|| "activation time unknown".to_string());
+                    let dropped = first
+                        .get("droppedBeforeFirst")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    format!(
+                        " · first packet {late}: {} B -> {} B gzip -> {} B wire, {} dropped before it",
+                        first.get("plainBytes").and_then(Value::as_u64).unwrap_or(0),
+                        first
+                            .get("compressedBytes")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0),
+                        first
+                            .get("wireBytes")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0),
+                        dropped
+                    )
+                }
+                // A device whose Desktop build predates the field, or one that has
+                // not been sent a packet at all yet. Both render as nothing rather
+                // than as a zero-second first packet.
+                None => String::new(),
+            };
             lines.push(format!(
                 "  {:>2}  {:<id_width$}  {:<8}  {:<10}  {:<32}  {}",
                 index + 1,
@@ -1480,7 +1536,7 @@ impl Observed {
                 control,
                 connected,
                 client,
-                format!("{}{catalogue}", endpoint.trim_end()).as_str()
+                format!("{}{catalogue}{first_packet}", endpoint.trim_end()).as_str()
             ));
         }
         lines
@@ -3025,6 +3081,102 @@ mod tests {
         // The credential material is never printed.
         assert!(!stdout.contains("SUAAAA"), "{stdout}");
         assert!(!stdout.contains("jwt-a"), "{stdout}");
+    }
+
+    /// The first-packet line a reader gets, from a Desktop's own answer.
+    ///
+    /// The numbers here are the ones `measure_catalog_first_packet_over_real_crypto`
+    /// really measured over the encrypted lane at 1154 rows — they are fed
+    /// through the shipping renderer rather than asserted in the abstract, so the
+    /// wording, the unit conversion and the "unknown" arm are all the ones a
+    /// terminal prints.
+    #[tokio::test]
+    async fn a_device_row_reports_the_first_catalogue_packet_in_three_sizes() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let observed = Observed {
+            running: true,
+            reported: Some(json!({
+                "phase": "ready",
+                "devices": [{
+                    "pairId": "pair_BBBB",
+                    "control": "active",
+                    "connected": true,
+                    "present": true,
+                    "catalogueLane": "delta",
+                    "cataloguePackets": 3,
+                    "catalogueBytes": 52_099,
+                    "client": { "name": "PJZ110", "kind": "mobile" },
+                    "catalogue": {
+                        "compressedBytes": 52_055,
+                        "wireBytes": 52_099,
+                        "first": {
+                            "sinceActivationMs": 26,
+                            "plainBytes": 620_013,
+                            "compressedBytes": 52_055,
+                            "wireBytes": 52_099,
+                            "droppedBeforeFirst": 0,
+                        },
+                    },
+                }],
+            })),
+            silence: None,
+            book: Book::load().unwrap(),
+            switch: true,
+            signed_in: true,
+        };
+        let lines = observed.device_lines().join("\n");
+        assert!(
+            lines.contains("first packet 0.026s after activation"),
+            "the latency is rendered in seconds from the measured ms: {lines}"
+        );
+        assert!(
+            lines.contains("620013 B -> 52055 B gzip -> 52099 B wire"),
+            "the three staged sizes, in the order they happen: {lines}"
+        );
+        assert!(
+            lines.contains("0 dropped before it"),
+            "a first packet with no pre-handshake drops says so: {lines}"
+        );
+    }
+
+    /// A Desktop that has not sent a packet yet, or one built before this
+    /// measurement existed, reports nothing rather than a zero-second packet.
+    #[tokio::test]
+    async fn a_catalogue_packet_that_was_never_sent_renders_nothing() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let observed = Observed {
+            running: true,
+            reported: Some(json!({
+                "phase": "ready",
+                "devices": [{
+                    "pairId": "pair_BBBB",
+                    "control": "active",
+                    "connected": true,
+                    "present": true,
+                    "catalogueLane": "snapshot",
+                    "cataloguePackets": 0,
+                    "catalogueBytes": 0,
+                    "client": { "name": "PJZ110", "kind": "mobile" },
+                }],
+            })),
+            silence: None,
+            book: Book::load().unwrap(),
+            switch: true,
+            signed_in: true,
+        };
+        let lines = observed.device_lines().join("\n");
+        assert!(
+            !lines.contains("first packet"),
+            "an absent measurement must not render as a 0 s packet: {lines}"
+        );
+        assert!(
+            lines.contains("catalogue snapshot 0 pkt / 0 KiB plain"),
+            "the traffic counters still render: {lines}"
+        );
     }
 
     #[tokio::test]
