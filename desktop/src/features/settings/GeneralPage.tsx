@@ -3,8 +3,8 @@ import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { FontSizePreference } from "../../lib/fontSize";
 import type { ReplyDetail } from "../../lib/replyDisplay";
 import type { ThemeMode } from "../../lib/theme";
-import { CircleHelp } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { HelpTip } from "../../components/ui/HelpTip";
 import { Select } from "../../components/ui/Select";
 import { TextInput } from "../../components/ui/TextInput";
 import { getLanguagePreference, LANGUAGE_LABELS, LANGUAGE_PREFERENCES, setLanguage } from "../../i18n";
@@ -243,14 +243,7 @@ export function GeneralPage({
             title={(
               <span className="inline-flex items-center gap-1.5">
                 {t("archive.idleDays")}
-                <span
-                  aria-label={t("archive.idleDaysHelp")}
-                  className="inline-flex text-ink-muted"
-                  tabIndex={0}
-                  title={t("archive.idleDaysHelp")}
-                >
-                  <CircleHelp className="size-3.5" />
-                </span>
+                <HelpTip label={t("archive.idleDaysHelpLabel")}>{t("archive.idleDaysHelp")}</HelpTip>
               </span>
             )}
             description={t("archive.idleDaysDescription")}
