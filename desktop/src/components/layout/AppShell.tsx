@@ -13,7 +13,7 @@ import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../..
 import type { ActivitySection } from "./ActivityRail";
 import type { ArchiveWorkspaceDialogState } from "./AppShellDialogs";
 import type { ContextTab } from "./ContextPanel";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AgentThread } from "../../features/agent/AgentThread";
 import { saveComposerDraft } from "../../features/agent/composerDraft";
@@ -52,10 +52,6 @@ import { useRemoteTimeline } from "../../features/remote-peer/useRemoteTimeline"
 import { useRemoteWorkspaceRows } from "../../features/remote-peer/useRemoteWorkspaces";
 import { WorkspaceDeviceDialog } from "../../features/remote-peer/WorkspaceDeviceDialog";
 import { startRemote, stopRemote } from "../../features/remote/remoteClient";
-import { RemoteHubView } from "../../features/remote/RemoteHubView";
-import { SettingsDialog } from "../../features/settings/SettingsDialog";
-import { SkillsView } from "../../features/skills/SkillsView";
-import { TasksView } from "../../features/tasks/TasksView";
 import { remoteTerminalUnsupported, terminalScope } from "../../features/terminal/panelTarget";
 import { RemoteTerminalPanel, TerminalPanel } from "../../features/terminal/TerminalPanel";
 import { TerminalToggleButton } from "../../features/terminal/TerminalToggleButton";
@@ -123,6 +119,19 @@ import { WorkspaceBadge } from "./WorkspaceBadge";
 import { WorkspaceDialogs } from "./WorkspaceDialogs";
 
 export type { AgentConnectionState } from "./hooks/useAgentConnection";
+
+/**
+ * Views the app never opens *on* — the shell starts in a conversation — load as
+ * their own chunks, on first visit. Each is fetched from disk when the rail (or
+ * the settings button) asks for it, so a feature's growth no longer adds to the
+ * entry chunk every launch has to parse. The entry chunk had reached 2.06 MB
+ * with these inlined; the chat, the rail and the composer stay eager because
+ * they are on screen before the first frame can be drawn.
+ */
+const SkillsView = lazy(async () => ({ default: (await import("../../features/skills/SkillsView")).SkillsView }));
+const TasksView = lazy(async () => ({ default: (await import("../../features/tasks/TasksView")).TasksView }));
+const RemoteHubView = lazy(async () => ({ default: (await import("../../features/remote/RemoteHubView")).RemoteHubView }));
+const SettingsDialog = lazy(async () => ({ default: (await import("../../features/settings/SettingsDialog")).SettingsDialog }));
 
 interface WorkspaceCreateRequest {
   name?: string | null;
@@ -2215,32 +2224,38 @@ function ReadyAppShell({
                           )
                         : section === "skill"
                           ? (
-                              <SkillsView leftPanelExpanded={showLeftPanel} onToggleLeftPanel={handleToggleLeftPanel} onStartCoachConversation={handleStartCoachConversation} onTrySkill={handleTrySkill} />
+                              <Suspense fallback={null}>
+                                <SkillsView leftPanelExpanded={showLeftPanel} onToggleLeftPanel={handleToggleLeftPanel} onStartCoachConversation={handleStartCoachConversation} onTrySkill={handleTrySkill} />
+                              </Suspense>
                             )
                           : section === "tasks"
                             ? (
-                                <TasksView
-                                  leftPanelExpanded={showLeftPanel}
-                                  modelOptions={visibleModelOptions}
-                                  onOpenThread={handleOpenTaskThread}
-                                  onToggleLeftPanel={handleToggleLeftPanel}
-                                />
+                                <Suspense fallback={null}>
+                                  <TasksView
+                                    leftPanelExpanded={showLeftPanel}
+                                    modelOptions={visibleModelOptions}
+                                    onOpenThread={handleOpenTaskThread}
+                                    onToggleLeftPanel={handleToggleLeftPanel}
+                                  />
+                                </Suspense>
                               )
                             : section === "remote"
                               ? (
-                                  <RemoteHubView
-                                    leftPanelExpanded={showLeftPanel}
-                                    onOpenRemoteSession={openRemoteSession}
-                                    onReconnectRemoteAll={reconnectRemotePeers}
-                                    onRefreshLabels={refreshRemotePeerLabels}
-                                    onRefreshPeers={refreshRemotePeers}
-                                    onRefreshRemote={refreshRemote}
-                                    onToggleLeftPanel={handleToggleLeftPanel}
-                                    peers={remotePeers}
-                                    peersError={remotePeersError}
-                                    peersLoading={remotePeersLoading}
-                                    remoteStatus={remoteStatus}
-                                  />
+                                  <Suspense fallback={null}>
+                                    <RemoteHubView
+                                      leftPanelExpanded={showLeftPanel}
+                                      onOpenRemoteSession={openRemoteSession}
+                                      onReconnectRemoteAll={reconnectRemotePeers}
+                                      onRefreshLabels={refreshRemotePeerLabels}
+                                      onRefreshPeers={refreshRemotePeers}
+                                      onRefreshRemote={refreshRemote}
+                                      onToggleLeftPanel={handleToggleLeftPanel}
+                                      peers={remotePeers}
+                                      peersError={remotePeersError}
+                                      peersLoading={remotePeersLoading}
+                                      remoteStatus={remoteStatus}
+                                    />
+                                  </Suspense>
                                 )
                               : section === "chat" && activeRemote
                                 ? (
@@ -2617,25 +2632,27 @@ function ReadyAppShell({
           onClose={() => setCheatSheetOpen(false)}
           open={cheatSheetOpen}
         />
-        <SettingsDialog
-          appSettings={appSettings}
-          cachedUpdateStatus={cachedStatus}
-          cachedUpdateCheckedAt={cachedCheckedAt}
-          futureBalance={futureBalance}
-          futureBalanceStatus={futureBalanceStatus}
-          futureEmail={futureEmail}
-          futureSessionStatus={futureSessionStatus}
-          onRefreshFutureAuth={refreshFutureAuth}
-          onRefreshFutureBalance={refreshFutureBalance}
-          hasUpdate={hasUpdate}
-          initialTab={settingsTab}
-          modelOptions={modelOptions}
-          onChangeSettings={changeSettings}
-          onClose={() => setSettingsOpen(false)}
-          onProvidersChanged={() => void refreshAgentModels()}
-          onUpdateSeen={markUpdateSeen}
-          open={settingsOpen}
-        />
+        <Suspense fallback={null}>
+          <SettingsDialog
+            appSettings={appSettings}
+            cachedUpdateStatus={cachedStatus}
+            cachedUpdateCheckedAt={cachedCheckedAt}
+            futureBalance={futureBalance}
+            futureBalanceStatus={futureBalanceStatus}
+            futureEmail={futureEmail}
+            futureSessionStatus={futureSessionStatus}
+            onRefreshFutureAuth={refreshFutureAuth}
+            onRefreshFutureBalance={refreshFutureBalance}
+            hasUpdate={hasUpdate}
+            initialTab={settingsTab}
+            modelOptions={modelOptions}
+            onChangeSettings={changeSettings}
+            onClose={() => setSettingsOpen(false)}
+            onProvidersChanged={() => void refreshAgentModels()}
+            onUpdateSeen={markUpdateSeen}
+            open={settingsOpen}
+          />
+        </Suspense>
         <ToastHost />
       </div>
     </ChoiceCardsProvider>
