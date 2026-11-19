@@ -2383,6 +2383,14 @@ function ReadyAppShell({
                                         onOpenProviders={handleOpenProviders}
                                         onToggleLeftPanel={handleToggleLeftPanel}
                                         skillRecommend={appSettings.skillRecommend}
+                                        // The store's map names only the threads the
+                                        // Agent reports as streaming, so "no entry" is
+                                        // this conversation's answer: `=== true` turns
+                                        // it into the `false` the transcript settles
+                                        // a finished reply on.
+                                        streaming={activeThread
+                                          ? threadStreamingStatuses[activeThread.id] === true
+                                          : undefined}
                                         futureSessionStatus={futureSessionStatus}
                                         futureBalance={futureBalance}
                                         headerAction={terminalHeaderAction}

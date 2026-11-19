@@ -886,7 +886,7 @@ async fn handle_command_inner(
     if !handshake.access_current() {
         return;
     }
-    let cmd: IncomingCmd = match serde_json::from_slice(&msg.payload) {
+    let mut cmd: IncomingCmd = match serde_json::from_slice(&msg.payload) {
         Ok(cmd) => cmd,
         Err(e) => {
             reply(
@@ -1136,6 +1136,18 @@ async fn handle_command_inner(
             runtime.spawn(Box::pin(finish_phone_unpair(handshake, pair_id)));
         }
         _ => {
+            // Stamp the authenticated pairing onto the command before it reaches
+            // the host. The client does not send `pairId` on business commands
+            // (it is implied by the sealed channel it arrived on), but the
+            // request path uses it as the catalogue snapshot's cache key — and
+            // the publisher writes that cache under the real pairing. Without
+            // this stamp the two keys never matched, so every pull paid for a
+            // whole store read the tick had just done.
+            //
+            // Done here and not earlier: `pair_handshake` compares this field
+            // against the pairing to validate identity, so overwriting it before
+            // that check would erase the very thing being checked.
+            cmd.pair_id = handshake.creds.pair_id.clone();
             handshake
                 .host
                 .execute(

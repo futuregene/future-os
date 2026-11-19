@@ -502,9 +502,33 @@ pub(super) fn invitation(creds: &PairingCreds) -> String {
 
 impl E2e {
     async fn on_broker(broker: Broker, label: &str) -> Self {
+        Self::on_broker_seeded(broker, label, 0).await
+    }
+
+    /// [`E2e::on_broker`] with the directory seeded *before* the bridge starts.
+    ///
+    /// The catalogue publisher's first packet is the whole list, published on its
+    /// first tick — so a fixture that creates conversations after the bridge is
+    /// up measures an empty directory. A machine that has been used for a while
+    /// has a full one at start-up, and that is the case the first packet's size
+    /// is about.
+    async fn on_broker_seeded(broker: Broker, label: &str, seed_rows: usize) -> Self {
         let home = HomeGuard::new(label);
         init_store();
         ensure_mock_agent();
+        for index in 0..seed_rows {
+            crate::store::create_thread(crate::store::CreateThreadInput {
+                mode: "chat".to_string(),
+                title: Some(format!(
+                    "Conversation {index} titled the way a real one is, with some words in it"
+                )),
+                workspace_id: None,
+                workspace_path: None,
+                workspace_name: None,
+                agent_session_id: Some(unique(&format!("sess-seed-{index}"))),
+            })
+            .expect("seed a conversation");
+        }
         let creds = v2_creds(&broker);
         let pair_id = creds.pair_id.clone();
         // Install the per-pairing shared runtime the way the supervisor does
@@ -1337,6 +1361,127 @@ async fn measure_catalog_activity_lane() {
 
 /// One mode of the measurement: seed `rows` conversations, then put `writes`
 /// activity writes through the real publisher, counting what it published.
+/// The first catalogue packet, measured end to end over the **real** encrypted
+/// lane — the number `future remote status` reports.
+///
+/// The fixture-runtime tests report the same three sizes, but their transport is
+/// `Transport::legacy_fixture()`, whose `seal` is a passthrough: `wire == gzip`
+/// there by construction and proves nothing about the record the relay carries.
+/// Here the phone runs the real Noise handshake, allocates the subscription it
+/// would really use, and every byte counted is `payload.len()` off the broker —
+/// so `wire` is the sealed record, and it must exceed the gzip body by exactly
+/// the AEAD header and tag.
+///
+/// What this does NOT measure: the relay's transit and the phone's unpack and
+/// first render. Those are outside this process. `sinceActivationMs` is the
+/// host's half only, which is why it is reported beside the sizes rather than as
+/// "how long the list takes to appear".
+#[tokio::test]
+async fn measure_catalog_first_packet_over_real_crypto() {
+    // Same lock order as the other command-family tests: mock agent first, then
+    // the HOME lock `E2e::on_broker` takes.
+    let _agent_lock = mock_agent_lock();
+    let rows: usize = std::env::var("CATALOG_MEASURE_ROWS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(200);
+    let mut e2e = E2e::on_broker_seeded(
+        Broker::Fake(FakeNats::start().await),
+        "catalog-first-packet",
+        rows,
+    )
+    .await;
+
+    // Rows were seeded before the bridge came up, so the publisher's first tick
+    // already had a directory to build. Blackholed here for clarity.
+    let _ = rows;
+
+    // The phone declares the delta lane (what the mobile client declares), then
+    // subscribes to the catalogue subject it will read the packet from, exactly
+    // as `useSessionCatalog` does.
+    e2e.declare(&[future_remote_protocol::CATALOG_DELTA_FEATURE])
+        .await;
+    let subject = format!("p.{}.state.sessions", e2e.pair_id);
+    let mut subscription = e2e
+        .phone
+        .subscribe(subject.clone())
+        .await
+        .expect("subscribe to the catalogue lane");
+    e2e.probe_bytes += e2e.broker.await_subscription(&e2e.phone, &subject).await;
+
+    // Wait for the first packet on the real lane and count what arrived.
+    let published = tokio::time::timeout(Duration::from_secs(10), subscription.next())
+        .await
+        .expect("the first catalogue packet arrives")
+        .expect("the subscription is live");
+    assert_eq!(published.subject.as_str(), subject);
+    // A NATS header would ride outside `payload` and outside this count, which is
+    // what makes received payload bytes the whole wire cost of the message.
+    assert!(published.headers.is_none(), "the lane carries no headers");
+    let wire_bytes = published.payload.len();
+    // A pushed packet is sealed with its own subject as the AAD context
+    // (`Transport::seal(&subject, …)`), unlike a reply which binds the request
+    // record. Same subject here, so the phone's normal open path works.
+    let plaintext = e2e
+        .channel
+        .open(&subject, &published.payload)
+        .expect("the catalogue packet decrypts");
+    let compressed_bytes = plaintext.len();
+    assert!(
+        published.payload.starts_with(b"FRE2"),
+        "the packet is a sealed v2 record, not plaintext"
+    );
+
+    // The publisher's own accounting for the same packet: it built this JSON.
+    let measurement = SUPERVISOR.catalogue_measurement(&e2e.pair_id);
+    let first = measurement
+        .first
+        .clone()
+        .expect("a delivered first packet is measured");
+    console::println!(
+        "CATALOG_FIRST {}",
+        json!({
+            "rows": rows,
+            "sinceActivationMs": first.since_activation_ms,
+            "plainBytes": first.plain_bytes,
+            "compressedBytes": first.compressed_bytes,
+            "wireBytes": first.wire_bytes,
+            "observedWireBytes": wire_bytes,
+            "observedGzipBytes": compressed_bytes,
+            "droppedBeforeFirst": first.dropped_before_first,
+        })
+    );
+
+    // The three sizes are staged: the host built something bigger than gzip, and
+    // gzip is smaller than the record the relay carried.
+    assert!(
+        first.plain_bytes > first.compressed_bytes,
+        "gzip must have shrunk the draft: {} -> {}",
+        first.plain_bytes,
+        first.compressed_bytes
+    );
+    // The record the endpoint received is the gzip body plus the AEAD header and
+    // tag — the assertion a passthrough seal cannot satisfy.
+    assert_eq!(
+        wire_bytes,
+        compressed_bytes + future_remote_crypto::HEADER_LEN + future_remote_crypto::TAG_LEN,
+        "the wire record is the sealed gzip body: {compressed_bytes} + header + tag"
+    );
+    assert_eq!(
+        first.wire_bytes as usize, wire_bytes,
+        "the counter must report the same record the broker carried"
+    );
+    assert_eq!(
+        first.compressed_bytes as usize, compressed_bytes,
+        "and the same gzip body the phone decrypted"
+    );
+    assert!(
+        first.since_activation_ms.is_some(),
+        "the real transport dates its activation"
+    );
+}
+
+/// Driven by `scripts/measure/measure-catalog-first-packet.py`.
 async fn measure_catalog_writes(
     rows: usize,
     writes: usize,

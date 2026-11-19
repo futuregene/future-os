@@ -24,6 +24,17 @@ interface UseAgentThreadStateInput {
   loadingStore: boolean;
   modelId: string;
   thinkingLevel: string;
+  /**
+   * Whether the Agent reports a run in flight for this conversation — the
+   * shell's one-second answer (`thread-streaming-updated`), which is the same
+   * signal the rail files rows by.
+   *
+   * `false` is the one value that does anything: it says "nothing is streaming
+   * here", which is an invitation to check the run row, not a verdict (see
+   * `settleStaleReply`). `undefined` means the shell did not say, and nothing
+   * is reconciled on that signal alone.
+   */
+  streaming?: boolean;
   pendingPrompt: {
     attachments?: MessageAttachment[];
     id: string;
@@ -56,6 +67,7 @@ export function useAgentThreadState({
   loadingStore,
   modelId,
   thinkingLevel,
+  streaming,
   pendingPrompt,
   onPromptConsumed,
   onThreadActivity,
@@ -155,55 +167,104 @@ export function useAgentThreadState({
     reloadThreadHistory,
   });
 
-  // ── Settle watchdog ────────────────────────────────────────────────────
-  // While a local send owns the view, its pipeline is the only path that
-  // finalizes the run. If that pipeline's invoke never resolves (window
-  // hidden → macOS suspends the webview and the response is never applied),
-  // the pipeline hangs forever: the composer locked on `sendingRef`, the
-  // bubble frozen mid-stream. The backend settles the run row itself the
-  // instant the stream ends, so the row is the truth: once it is terminal,
-  // abandon the hung send (release the lock, disconnect the late pipeline
-  // from this view) and force-reload the persisted reply. Runs periodically
-  // and immediately when the window becomes visible/focused again, so a run
-  // that finished while hidden unsticks the moment the user returns.
-  const reconcileHungSend = useCallback(async () => {
-    const localSend = localSendRef.current;
-    if (!threadId || !sendingRef.current || !localSend?.runId)
+  // ── Settle reconciliation ──────────────────────────────────────────────
+  // A reply is drawn live — timer ticking, stop button, "thinking" — while
+  // this view owns its send (`sendingRef`) or is re-attached to the run
+  // (`activeRunId`). Only the terminal push takes it out of that state, and a
+  // push can be lost: the invoke never resolves (window hidden → macOS
+  // suspends the webview and the response is never applied), a coalesce drop,
+  // a backend restart. The bubble then stays "streaming" with nobody driving
+  // it, and the composer stays locked.
+  //
+  // The run row is the truth in every one of those cases: the backend settles
+  // it itself the instant the stream ends. So this re-reads it and, when it is
+  // terminal, abandons the send (releasing the lock and disconnecting the late
+  // pipeline) and force-reloads the persisted reply.
+  //
+  // The read, not the trigger, decides — and the trigger is deliberately cheap:
+  // `false` from the shell's one-second streaming answer only says "worth
+  // asking". An empty answer is not evidence (`reconcile_streaming_observers`
+  // returns an empty set on any Agent RPC error), and settling a live run on it
+  // would freeze the reply as complete with no stop button while the run keeps
+  // billing (`applyRunMetadata` has the same warning).
+  const settleStaleReply = useCallback(async () => {
+    if (!threadId || writerRef.current !== setMessages)
       return;
-    const latest = await getRun(localSend.runId).catch(() => null);
-    // Re-check after the await: the send may have settled or been abandoned
-    // while the read was in flight.
+    // While a send owns the view it is the only path allowed to finalize its own
+    // run, so that run is the one to read — never a bubble an earlier run left.
+    const localSend = sendingRef.current ? localSendRef.current : null;
+    const runId = sendingRef.current ? localSend?.runId ?? null : activeRunId;
+    if (!runId)
+      return;
+    const latest = await getRun(runId).catch(() => null);
+    // Re-check after the await: the send may have settled, been abandoned, or
+    // been replaced while the read was in flight.
     if (
       !latest
-      || localSendRef.current !== localSend
-      || latest.id !== localSend.runId
-      || writerRef.current !== setMessages
+      || latest.id !== runId
       || latest.threadId !== threadId
-      || !sendingRef.current
+      || writerRef.current !== setMessages
       || !matchesSettledRun(latest.status)
+      || (sendingRef.current
+        ? localSendRef.current !== localSend
+        : activeRunId !== runId)
     ) {
       return;
     }
-    abandonSend();
+    if (localSend)
+      abandonSend();
     setRecentRun(latest);
-    void reloadThreadHistory(threadId, true);
-  }, [abandonSend, localSendRef, reloadThreadHistory, sendingRef, setRecentRun, setMessages, threadId]);
+    // A re-attached run has its own settle effect: clearing `activeRunId`
+    // reloads the persisted reply (`useRunReattach`). An abandoned send has no
+    // such effect, so its reload is issued here.
+    if (localSend)
+      void reloadThreadHistory(threadId, true);
+  }, [
+    abandonSend,
+    activeRunId,
+    localSendRef,
+    reloadThreadHistory,
+    sendingRef,
+    setMessages,
+    setRecentRun,
+    threadId,
+  ]);
 
+  // The shell's one-second answer: is a run in flight for this conversation?
+  //
+  // This is the same signal the rail files rows by, and reading it is what keeps
+  // the two from disagreeing. The rail moved a conversation to "Earlier" the
+  // second its run ended (the agent's streaming set drops it within a second),
+  // while this view held a live timer, "thinking" and a stop button on that same
+  // reply until a 15–30 second fallback noticed: measured 2026-11-19, the
+  // transcript was still ticking 47 seconds after its run had settled, next to a
+  // sidebar that already said the conversation was done. A false answer here
+  // closes that window to about a second.
+  useEffect(() => {
+    if (streaming !== false)
+      return;
+    void settleStaleReply();
+  }, [settleStaleReply, streaming]);
+
+  // Backstops for the same read, for the signals a push can also lose: a
+  // low-frequency pass while the view is open, and an immediate pass when the
+  // window becomes visible/focused again (a run that finished while hidden
+  // unsticks the moment the user returns).
   usePolling(
     () => {
-      void reconcileHungSend();
+      void settleStaleReply();
     },
     15_000,
     {
       enabled: Boolean(threadId),
-      deps: [reconcileHungSend],
+      deps: [settleStaleReply],
     },
   );
 
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState === "visible")
-        void reconcileHungSend();
+        void settleStaleReply();
     };
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("focus", onVisible);
@@ -211,7 +272,7 @@ export function useAgentThreadState({
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onVisible);
     };
-  }, [reconcileHungSend]);
+  }, [settleStaleReply]);
 
   // Interrupt the in-flight run for this thread. Best-effort: the backend stops
   // the agent and marks the run `cancelled`; the in-flight send then settles the
