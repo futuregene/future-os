@@ -87,6 +87,16 @@ export interface AgentThreadProps {
   onModelChange: (modelId: string) => void;
   thinkingLevel: string;
   onThinkingLevelChange: (thinkingLevel: string) => void;
+  /**
+   * Whether the Agent reports a run in flight for this conversation — the
+   * shell's one-second answer (the same signal the rail files rows by).
+   *
+   * Undefined means the shell did not say, and the transcript then settles a
+   * finished run only on its own push or its 15–30 second fallback. `false` lets
+   * it settle within about a second, so the transcript and the conversation
+   * list cannot disagree for long about whether a reply is still arriving.
+   */
+  streaming?: boolean;
   approvalTier: ApprovalChipTier;
   onChangeApprovalTier: (value: ApprovalTier) => void;
   pendingPrompt: {
@@ -197,6 +207,7 @@ export function AgentThread({
   onModelChange,
   thinkingLevel,
   onThinkingLevelChange,
+  streaming,
   approvalTier,
   onChangeApprovalTier,
   pendingPrompt,
@@ -249,6 +260,7 @@ export function AgentThread({
     loadingStore,
     modelId,
     thinkingLevel,
+    streaming,
     pendingPrompt,
     onPromptConsumed,
     onThreadActivity,
