@@ -42,6 +42,10 @@
     "show": "Show process",
     "hide": "Hide process"
   },
+  "choice": {
+    "dismissed": "Dismissed — nothing was sent to the model",
+    "dismissFailed": "Could not close this choice — try again"
+  },
   "thread": {
     "loading": "Loading FutureOS thread...",
     "noActiveThread": "No active thread.",

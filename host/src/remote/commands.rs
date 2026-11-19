@@ -3000,6 +3000,43 @@ mod bridge_tests {
             .await;
         assert_eq!(reply["success"], json!(false));
 
+        // dismiss_choice: a card declined without a prompt. The phone addresses
+        // the conversation by its session id; the mark a list draws goes with the
+        // run's row and nothing else moves.
+        let settled = crate::store::create_run(crate::store::CreateRunInput {
+            id: None,
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .unwrap();
+        crate::store::mark_run_offers_choice(&settled.id);
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "dismiss_choice", "sessionId": session }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["dismissed"], json!(true));
+        let infos = crate::store::latest_run_infos(std::slice::from_ref(&thread.id)).unwrap();
+        assert!(
+            !infos[0].offers_choice,
+            "the mark is cleared for every list"
+        );
+        // A second dismissal is a no-op that still succeeds: the reader asked the
+        // list to stop asking, and it has.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "dismiss_choice", "threadId": thread.id }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["dismissed"], json!(false));
+        // A session this host does not know is refused rather than answered with
+        // a success that cleared nothing.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "dismiss_choice", "sessionId": "no-such-session" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        assert_eq!(reply["error"], json!("session_not_found"));
+
         // set_workspace_pinned: missing id, success, and unknown-workspace failure.
         let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "set_workspace_pinned", "pinned": true }))

@@ -36,7 +36,7 @@ import { RemoteConversationSettings } from "../../features/remote-peer/RemoteCon
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
 import { RemoteDraftTargetChooser } from "../../features/remote-peer/RemoteDraftTargetChooser";
 import { RemoteFilesPanel } from "../../features/remote-peer/RemoteFilesPanel";
-import { compactRemoteConversation, deleteRemoteConversation, forkRemoteConversation, installRemoteSkill, pinRemoteConversation, takeoverRemotePeer } from "../../features/remote-peer/remotePeerClient";
+import { compactRemoteConversation, deleteRemoteConversation, dismissRemoteChoice, forkRemoteConversation, installRemoteSkill, pinRemoteConversation, takeoverRemotePeer } from "../../features/remote-peer/remotePeerClient";
 import { sendRemoteContinuation } from "../../features/remote-peer/remotePromptOutbox";
 import { RemoteRenameDialog } from "../../features/remote-peer/RemoteRenameDialog";
 import { remoteSkillRecoSource } from "../../features/remote-peer/remoteSkillRecoSource";
@@ -367,6 +367,27 @@ function ReadyAppShell({
     sessionsRemaining: remoteSessionsRemaining,
     loadMoreSessions: loadMoreRemoteSessions,
   } = useRemotePeers(true);
+  /**
+   * Close the open remote conversation's card without answering it (§5.9.4).
+   *
+   * The mirror of `handleRemoteChoiceSelect`: the chip goes first (the reader
+   * dismissed the question, so an answer sitting in the box would claim a reply
+   * they never sent), then the host clears its own mark — no prompt, nothing for
+   * its agent to read. The merged list is re-read afterwards because that flag
+   * rides on the host's catalogue rows, which this window draws beside its own.
+   */
+  const handleRemoteChoiceDismiss = useCallback(() => {
+    const remote = activeRemote;
+    if (!remote || !remote.sessionId)
+      return;
+    remoteComposerRef.current?.clearChoice();
+    void dismissRemoteChoice(remote.desktopId, remote.sessionId)
+      .then(() => {
+        emitFutureEvent("toast", { message: tRemotePeer("choiceDismissed") });
+        void refreshRemotePeers();
+      })
+      .catch(() => emitFutureEvent("toast", { message: tRemotePeer("choiceDismissFailed"), tone: "error" }));
+  }, [activeRemote, refreshRemotePeers, tRemotePeer]);
   useAutoUpgradeSkills(appSettings.autoUpgradeSkills);
   useAgentDoneBell(appSettings.bellOnComplete);
   useRemoteDoneBell(appSettings.bellOnComplete);
@@ -2230,6 +2251,7 @@ function ReadyAppShell({
                                       choiceCards={remoteChoiceCards}
                                       choiceSelectedIds={remoteChoice?.selectedIds}
                                       desktopId={activeRemote.desktopId}
+                                      onChoiceDismiss={handleRemoteChoiceDismiss}
                                       onChoiceSelect={handleRemoteChoiceSelect}
                                       composer={(
                                       // The composer and, for a draft, the row that

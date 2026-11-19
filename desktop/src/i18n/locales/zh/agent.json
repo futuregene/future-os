@@ -38,6 +38,10 @@
     "show": "查看过程",
     "hide": "收起过程"
   },
+  "choice": {
+    "dismissed": "已关闭这次选择，没有回复模型",
+    "dismissFailed": "没能关闭这次选择，请再试一次"
+  },
   "thread": {
     "loading": "正在加载 FutureOS 对话…",
     "noActiveThread": "没有活动对话。",
