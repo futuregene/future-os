@@ -134,6 +134,8 @@
   "conversationActions": "More actions",
   "pendingApproval": "This conversation is waiting for approval",
   "pendingChoice": "This reply is waiting on your choice",
+  "choiceDismissed": "Dismissed — nothing was sent to that model",
+  "choiceDismissFailed": "Could not close this choice — try again",
   "renameTitle": "Rename conversation",
   "renameHint": "The new name is saved on the remote desktop.",
   "saving": "Saving…",

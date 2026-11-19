@@ -134,6 +134,8 @@
   "conversationActions": "更多操作",
   "pendingApproval": "这条会话在等审批",
   "pendingChoice": "这条回复在等你选一项",
+  "choiceDismissed": "已关闭这次选择，没有回复那台电脑的模型",
+  "choiceDismissFailed": "没能关闭这次选择，请再试一次",
   "renameTitle": "重命名会话",
   "renameHint": "新名称会保存在那台远程桌面上。",
   "saving": "保存中…",

@@ -39,6 +39,15 @@ export async function listLatestRunInfos(threadIds: string[]) {
   );
 }
 
+/**
+ * Close a choice card without answering it (§5.9.4): clears the conversation's
+ * "waiting on your choice" mark and sends the model nothing. Resolves `false`
+ * when there was no mark to clear, which is not an error.
+ */
+export async function dismissThreadChoice(threadId: string) {
+  return invokeCommand<boolean>("dismiss_thread_choice", { threadId });
+}
+
 export async function updateRunStatus(input: {
   runId: string;
   status: StoredRun["status"];

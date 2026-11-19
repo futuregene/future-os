@@ -38,6 +38,27 @@ pub fn list_latest_run_infos(
     store::latest_run_infos(&thread_ids)
 }
 
+/// The reader declined a choice card: clear the conversation's "waiting on your
+/// choice" mark without sending the model anything.
+///
+/// This is the one way a card is closed without an answer. A follow-up turn
+/// clears the mark by itself (its own row is the newer one), and an answer
+/// clears it by being a turn — but "I read this and I am not picking anything"
+/// has no message in it, so the flag is cleared here instead and every list
+/// that reads this machine's conversations draws the row unmarked from then on.
+///
+/// The peer notification is the same one other out-of-band session writes raise
+/// (`emit_remote_activity`): the local rail re-reads the run row behind it, and
+/// a paired desktop or a phone learns the row moved because the catalogue's
+/// revision does.
+pub fn dismiss_thread_choice(thread_id: String) -> Result<bool, crate::Error> {
+    let changed = store::dismiss_run_choice(&thread_id)?;
+    if changed {
+        crate::emit_remote_activity(&thread_id);
+    }
+    Ok(changed)
+}
+
 /// Update a run's status from the frontend's completion/failure paths. Guarded:
 /// a run that is already terminal (e.g. a concurrent `abort_run` set `cancelled`)
 /// is not clobbered. Returns the run's real current state so the caller

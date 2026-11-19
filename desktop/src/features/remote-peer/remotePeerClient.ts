@@ -436,6 +436,23 @@ export async function deleteRemoteConversation(
 }
 
 /**
+ * Close the host's closing choice card without answering it (§5.9.4).
+ *
+ * Nothing is sent to that host's agent: the host clears the "waiting on your
+ * choice" flag on the conversation's latest run, so every list that draws the
+ * mark — this one, the phone's, the host's own rail — stops asking. Addressed by
+ * the session id alone, which is how the host resolves the conversation for this
+ * and the other session-scoped mutations; a host that predates the command
+ * answers "Unsupported command" and the caller reports it.
+ *
+ * Resolves even when the host had nothing to clear (`dismissed: false`): the
+ * reader's intent was "stop asking", and it holds.
+ */
+export function dismissRemoteChoice(desktopId: string, sessionId: string): Promise<unknown> {
+  return requestRemotePeer(desktopId, { type: "dismiss_choice", sessionId }, sessionId);
+}
+
+/**
  * Shelve a conversation (and the forks archived with it) on its host.
  *
  * The host refuses while any member is still running, and that refusal is the

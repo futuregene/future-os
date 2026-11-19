@@ -5,14 +5,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { flushAsync, renderHook } from "../../test/renderHook";
 
 /**
- * `useCodeHighlighter` keeps its whole state at module scope — the highlighter
- * promise, the cached instance, the in-flight grammar set, the store version
- * and the highlight LRU. That state is one-per-process by design (one Shiki
- * instance for the app), so a test that asserts *how* it gets warm ("unloaded
- * before the first mount resolves") is only meaningful on a fresh module. Each
- * test therefore re-imports the hook through `vi.resetModules()`, the same way
- * `lib/fontSize.test.ts` and `lib/doneBell.context.test.ts` do, instead of
- * inheriting whatever an earlier test in the file happened to leave warm.
+ * Warming the engine is a module fetch plus the instance's own promise, which
+ * is exactly the path these tests describe. `useCodeHighlighter` keeps its
+ * whole state at module scope — the engine promise, the cached engine, the
+ * store version — and so does the fake below: that state is one-per-process by
+ * design (one Shiki instance for the app), so a test that asserts *how* it gets
+ * warm ("unloaded before the first mount resolves") is only meaningful on a
+ * fresh module. Each test therefore re-imports the hook through
+ * `vi.resetModules()`, the same way `lib/fontSize.test.ts` and
+ * `lib/doneBell.context.test.ts` do, instead of inheriting whatever an earlier
+ * test in the file happened to leave warm.
  *
  * `../../lib/theme` is re-imported in the same graph: the hook reads the theme
  * module's state, so a test that mutates it has to call the *same* instance.
@@ -50,6 +52,25 @@ vi.mock("shiki", async importOriginal => ({
   ...await importOriginal<typeof import("shiki")>(),
   createHighlighter: () => createHighlighterMock(),
 }));
+
+/**
+ * The engine is a lazily imported chunk (`useCodeHighlighter` no longer pulls
+ * Shiki in), and a dynamic import resolves over a macrotask rather than a
+ * microtask — so `flushAsync` alone lands before the engine exists. This waits
+ * for the fake instance to be requested, inside the same `act` scope so the
+ * store bump that follows is applied and can be asserted on without an act
+ * warning.
+ */
+async function settle() {
+  await act(async () => {
+    for (let attempt = 0; attempt < 400 && createHighlighterMock.mock.calls.length === 0; attempt++)
+      await new Promise(resolve => setTimeout(resolve, 5));
+    // Let the instance promise, the engine's `cachedEngine` assignment and the
+    // store bump that re-renders the probe run inside this scope.
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+  await flushAsync();
+}
 
 type ThemeModule = typeof import("../../lib/theme");
 type HookModule = typeof import("./useCodeHighlighter");
@@ -89,7 +110,7 @@ describe("useCodeHighlighter", () => {
     const h = renderHook(() => useCodeHighlighter());
     expect(h.current.isLoaded).toBe(false);
     expect(h.current.highlight("code", "ts")).toBeNull();
-    await flushAsync();
+    await settle();
     expect(h.current.isLoaded).toBe(true);
     h.unmount();
   });
@@ -97,7 +118,7 @@ describe("useCodeHighlighter", () => {
   it("returns null for missing or unmapped languages", async () => {
     const { useCodeHighlighter } = await loadFreshGraph();
     const h = renderHook(() => useCodeHighlighter());
-    await flushAsync();
+    await settle();
     expect(h.current.highlight("code", undefined)).toBeNull();
     expect(h.current.highlight("code", "not-a-lang")).toBeNull();
     h.unmount();
@@ -106,11 +127,11 @@ describe("useCodeHighlighter", () => {
   it("kicks off a lazy grammar load and highlights once loaded", async () => {
     const { useCodeHighlighter } = await loadFreshGraph();
     const h = renderHook(() => useCodeHighlighter());
-    await flushAsync();
+    await settle();
     // Not loaded yet → null, but the grammar load starts.
     expect(h.current.highlight("const a = 1", "TypeScript")).toBeNull();
     expect(fakeHighlighter.loadLanguage).toHaveBeenCalledWith("typescript");
-    await flushAsync();
+    await settle();
     const result = h.current.highlight("const a = 1", "ts");
     expect(result).not.toBeNull();
     expect(result!.lines[0]!.tokens[0]).toEqual({ content: "const a = 1", color: "#111", fontStyle: 1 });
@@ -131,10 +152,10 @@ describe("useCodeHighlighter", () => {
   ])("loads the registered grammar for %s", async (alias, canonical) => {
     const { useCodeHighlighter } = await loadFreshGraph();
     const h = renderHook(() => useCodeHighlighter());
-    await flushAsync();
+    await settle();
     expect(h.current.highlight("registry test", alias)).toBeNull();
     expect(fakeHighlighter.loadLanguage).toHaveBeenCalledWith(canonical);
-    await flushAsync();
+    await settle();
     expect(h.current.highlight("registry test", alias)).not.toBeNull();
     const calls = fakeHighlighter.codeToTokens.mock.calls.length;
     expect(h.current.highlight("registry test", canonical)).not.toBeNull();
@@ -149,12 +170,12 @@ describe("useCodeHighlighter", () => {
       resolveLoad = resolve;
     });
     const h = renderHook(() => useCodeHighlighter());
-    await flushAsync();
+    await settle();
     expect(h.current.highlight("a", "rust")).toBeNull();
     expect(h.current.highlight("b", "rust")).toBeNull();
     expect(fakeHighlighter.loadLanguage).toHaveBeenCalledTimes(1);
     resolveLoad();
-    await flushAsync();
+    await settle();
     loadLanguageImpl = async (lang) => {
       loadedLanguages.push(lang);
     };
@@ -165,9 +186,9 @@ describe("useCodeHighlighter", () => {
     const { useCodeHighlighter } = await loadFreshGraph();
     loadLanguageImpl = () => Promise.reject(new Error("no grammar"));
     const h = renderHook(() => useCodeHighlighter());
-    await flushAsync();
+    await settle();
     expect(h.current.highlight("a", "go")).toBeNull();
-    await flushAsync();
+    await settle();
     // In-flight marker cleared: a second attempt re-issues the load.
     expect(h.current.highlight("a", "go")).toBeNull();
     expect(fakeHighlighter.loadLanguage).toHaveBeenCalledTimes(2);
@@ -181,7 +202,7 @@ describe("useCodeHighlighter", () => {
     const { useCodeHighlighter, theme } = await loadFreshGraph();
     loadedLanguages.push("json");
     const h = renderHook(() => useCodeHighlighter());
-    await flushAsync();
+    await settle();
     h.current.highlight("{}", "json");
     expect(fakeHighlighter.codeToTokens).toHaveBeenLastCalledWith("{}", { lang: "json", theme: "github-light" });
 
@@ -198,7 +219,7 @@ describe("useCodeHighlighter", () => {
     const { useCodeHighlighter, theme } = await loadFreshGraph();
     loadedLanguages.push("json");
     const h = renderHook(() => useCodeHighlighter());
-    await flushAsync();
+    await settle();
 
     // Distinct sources per step: a repeated (theme, language, code) triple is
     // served from the highlight cache without tokenizing again, which would
@@ -239,7 +260,7 @@ describe("useCodeHighlighter", () => {
     const { useCodeHighlighter } = await loadFreshGraph();
     loadedLanguages.push("java");
     const h = renderHook(() => useCodeHighlighter());
-    await flushAsync();
+    await settle();
     expect(h.current.highlight("class A {}", "java")).not.toBeNull();
     const calls = fakeHighlighter.codeToTokens.mock.calls.length;
     expect(h.current.highlight("class A {}", "java")).not.toBeNull();
@@ -251,7 +272,7 @@ describe("useCodeHighlighter", () => {
     const { useCodeHighlighter } = await loadFreshGraph();
     loadedLanguages.push("python");
     const h = renderHook(() => useCodeHighlighter());
-    await flushAsync();
+    await settle();
     const huge = "x".repeat(100_001);
     expect(h.current.highlight(huge, "python")).not.toBeNull();
     const calls = fakeHighlighter.codeToTokens.mock.calls.length;
@@ -267,7 +288,7 @@ describe("useCodeHighlighter", () => {
       throw new Error("bad grammar");
     };
     const h = renderHook(() => useCodeHighlighter());
-    await flushAsync();
+    await settle();
     expect(h.current.highlight("select 1", "sql")).toBeNull();
     codeToTokensImpl = defaultCodeToTokens;
     h.unmount();
@@ -277,7 +298,7 @@ describe("useCodeHighlighter", () => {
     const { useCodeHighlighter } = await loadFreshGraph();
     loadedLanguages.push("xml");
     const h = renderHook(() => useCodeHighlighter());
-    await flushAsync();
+    await settle();
     for (let i = 0; i < 401; i += 1) {
       h.current.highlight(`<a>${i}</a>`, "xml");
     }
@@ -292,7 +313,7 @@ describe("useCodeHighlighter", () => {
     const { useCodeHighlighter } = await loadFreshGraph();
     // Warm the module the way the app does: one mount, one createHighlighter.
     const first = renderHook(() => useCodeHighlighter());
-    await flushAsync();
+    await settle();
     expect(first.current.isLoaded).toBe(true);
     first.unmount();
     expect(createHighlighterMock).toHaveBeenCalledTimes(1);

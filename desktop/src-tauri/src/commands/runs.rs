@@ -45,6 +45,13 @@ pub fn list_latest_run_infos(
     future_host::application::runs::list_latest_run_infos(thread_ids)
 }
 
+/// Clear a conversation's "waiting on your choice" mark without sending
+/// anything to the model (`docs/design/choice-cards.zh-CN.md` §5.9.4).
+#[tauri::command]
+pub fn dismiss_thread_choice(thread_id: String) -> Result<bool, crate::AppError> {
+    future_host::application::runs::dismiss_thread_choice(thread_id)
+}
+
 #[tauri::command]
 pub fn update_run_status(
     input: store::UpdateRunStatusInput,

@@ -36,7 +36,14 @@ vi.mock("../../../integrations/agent/agentStateCache", () => ({
   prefetchAgentState: (...args: unknown[]) => prefetchAgentState(...args),
 }));
 
-type Listener = (event: { payload: Record<string, unknown> }) => void;
+/**
+ * One `listen` handler as this mock stores it. The map is keyed by event name,
+ * so a single alias has to hold handlers for events whose payloads differ in
+ * kind: `thread-activity-updated` carries an object, `remote-activity` carries a
+ * bare thread id (`lib.rs` emits `thread_id.to_string()`). `unknown` is the only
+ * honest payload type here — the tests below know each event's shape themselves.
+ */
+type Listener = (event: { payload: unknown }) => void;
 const listeners = new Map<string, Listener>();
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -785,6 +792,47 @@ describe("useThreadStore", () => {
     });
     await flushAsync();
     expect(h.current.threadRunStatuses.t1).toMatchObject({ offersChoice: false, runId: "r3" });
+    h.unmount();
+  });
+
+  /**
+   * A mark that moves with no status moving. Declining a choice card (§5.9.4)
+   * clears `offers_choice` on the run row while the run stays `completed`, so no
+   * runtime push announces it and the 30 s pass is the only other reader. The
+   * host raises `remote-activity` for that write; the rows are re-read here, so
+   * the rail's badge goes when the card is declined rather than up to half a
+   * minute later.
+   */
+  it("re-reads run rows on remote activity so a declined choice's mark goes", async () => {
+    const h = await mountStore();
+    listLatestRunInfos.mockResolvedValue([
+      { threadId: "t1", runId: "r2", status: "completed", endedAt: 5, offersChoice: true },
+    ]);
+    act(() => {
+      listeners.get("thread-runtime-updated")?.({
+        payload: {
+          updates: [{ threadId: "t1", revision: 2, runId: "r2", status: "completed", resetProjection: false }],
+        },
+      });
+    });
+    await flushAsync();
+    expect(h.current.threadRunStatuses.t1).toMatchObject({ offersChoice: true, status: "completed" });
+
+    // The row changed and its status did not: nothing but a re-read reports it.
+    listLatestRunInfos.mockClear();
+    listLatestRunInfos.mockResolvedValue([
+      { threadId: "t1", runId: "r2", status: "completed", endedAt: 5, offersChoice: false },
+    ]);
+    act(() => {
+      listeners.get("remote-activity")?.({ payload: "t1" });
+    });
+    await flushAsync();
+    expect(listLatestRunInfos).toHaveBeenCalled();
+    expect(h.current.threadRunStatuses.t1).toMatchObject({
+      offersChoice: false,
+      runId: "r2",
+      status: "completed",
+    });
     h.unmount();
   });
 
