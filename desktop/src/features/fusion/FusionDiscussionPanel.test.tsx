@@ -154,7 +154,11 @@ it("renders own revisions and separates proposals from reported facts", async ()
     responses: [{ participant: "P2", quote: "Use files", decision: "insufficient_information", reason: "Missing rationale" }],
     self_review: [{ original_quote: "Prefer SQLite", decision: "revise", updated_position: "Investigate storage requirements first", reason: "Need workload evidence" }],
     mapping_corrections: [{ summary_quote: "Always SQLite", source_quote: "Prefer SQLite", correction: "Preference is conditional", reason: "The map overstated certainty" }],
-    additions: [{ kind: "proposal", content: "Measure the workload", evidence: [] }, { kind: "unverified_claim", content: "Latency may differ", evidence: [] }],
+    additions: [
+      { kind: "proposal", content: "Measure the workload", evidence: [] },
+      { kind: "unverified_claim", content: "Latency may differ", evidence: ["Legacy source label"] },
+      { kind: "verified_fact", content: "Observed source line", evidence: [{ source_id: "snapshot:src/main.rs", sha256: "a".repeat(64), quote: "let count = 7;", start_line: 12, end_line: 14 }] },
+    ],
   }) };
   const transcript = JSON.stringify([{ role: "assistant", content: [{ type: "text", text: step.output }] }]);
   const split = Math.floor(transcript.length / 2);
@@ -170,4 +174,42 @@ it("renders own revisions and separates proposals from reported facts", async ()
   expect(output).toContain("Preference is conditional");
   expect(output).toContain("New proposal");
   expect(output).toContain("Unverified claim");
+  expect(output).toContain("Legacy source label");
+  expect(output).toContain("snapshot:src/main.rs:12-14");
+  expect(output).toContain("let count = 7;");
+  expect(output).toContain(`SHA-256: ${"a".repeat(64)}`);
+  expect(output).not.toContain("[object Object]");
+});
+
+it("renders the sealed answer separately from its public support", async () => {
+  const step = { ...discussion().steps![0]!, output: JSON.stringify({ answer: "FINAL_ANSWER: value", support: "Derived from the request", unresolved: [], checks: [{ claim: "A premise", quote: "Given premise", assessment: "supports", effect: "Establishes the answer" }] }) };
+  mocks.invoke.mockResolvedValue({ ...step, transcript: "", next_offset: 0, total_bytes: 0 });
+  await act(async () => root.render(<FusionStepBody step={step} runId="r1" toolCallId="t1" />));
+  const output = container.querySelector("[data-fusion-public-output]")?.textContent;
+  expect(output).toContain("FINAL_ANSWER: value");
+  expect(output).toContain("Derived from the request");
+  expect(output).toContain("Given premise");
+  expect(output).not.toContain("\"checks\"");
+});
+
+it("renders critical dispositions and inherited decision reasons", async () => {
+  const step = { ...discussion().steps![0]!, phase: "synthesizing", output: JSON.stringify({
+    conclusion: "Use SQLite conditionally",
+    unresolved: [],
+    decision_audit: {
+      resolution: "conditional",
+      dispositions: [{ id: "I1", decision: "accepted", reason: "Missing concurrency evidence", effect: "Keep the recommendation conditional", basis: [{ source_id: "request", quote: "Preserve records" }] }],
+      decision_update: { decision: "revise", reason: "New evidence corrected the earlier premise" },
+    },
+  }) };
+  mocks.invoke.mockResolvedValue({ ...step, transcript: "", next_offset: 0, total_bytes: 0 });
+  await act(async () => root.render(<FusionStepBody step={step} runId="r1" toolCallId="t1" />));
+  const output = container.querySelector("[data-fusion-public-output]")?.textContent;
+  expect(output).toContain("Use SQLite conditionally");
+  expect(output).toContain("Critical objection dispositions");
+  expect(output).toContain("I1 · Accepted");
+  expect(output).toContain("Preserve records");
+  expect(output).toContain("Revised");
+  expect(output).toContain("New evidence corrected the earlier premise");
+  expect(output).not.toContain("\"decision_audit\"");
 });

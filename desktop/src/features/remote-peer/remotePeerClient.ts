@@ -1016,6 +1016,22 @@ export interface RemoteDesktopSettings {
    * is offered for a conversation that lives there.
    */
   skillRecommend: boolean;
+  /**
+   * Whether that machine draws `futureos-choice` cards.
+   *
+   * Also a *host* setting, and the one that decides both ends: that machine's
+   * agent is told the fence only while this is on, and every client of it draws
+   * what it allows — this app's remote transcript, the phone, and that machine
+   * itself. It is read here rather than taken from this machine's own switch for
+   * the reason the skill row is: the value belongs to the machine whose replies
+   * carry the cards.
+   *
+   * A host that has no answer (a build older than the switch) reads as **on**:
+   * such a build teaches the fence to its agent unconditionally, so hiding the
+   * card there would drop a question its replies legitimately ask. Only an
+   * explicit `false` — the shipped default — hides anything.
+   */
+  choiceCards: boolean;
 }
 
 /**
@@ -1031,7 +1047,10 @@ export async function getRemoteDesktopSettings(desktopId: string): Promise<Remot
     { type: "get_desktop_settings" },
     "list",
   );
-  return { skillRecommend: raw?.skillRecommend === true };
+  return {
+    skillRecommend: raw?.skillRecommend === true,
+    choiceCards: raw?.choiceCards !== false,
+  };
 }
 
 /**

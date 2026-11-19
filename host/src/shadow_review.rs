@@ -9,7 +9,7 @@ mod last_run;
 mod load;
 mod maintenance;
 mod policy;
-mod process;
+pub(crate) mod process;
 mod projection;
 mod repository;
 mod snapshot;

@@ -271,6 +271,18 @@ export function RemotePeerSettings({
               onChange={value => void update({ skillRecommend: value })}
             />
           </SettingsRow>
+          {/* Its own switch, on that machine's row like the phone's: the value
+              decides both that machine's prompt (whether its agent is told the
+              fence) and whether its replies draw a card — so it has to be
+              settable on a machine with no screen of its own. */}
+          <SettingsRow description={t("settingChoiceCardsHint")} title={t("settingChoiceCards")}>
+            <Switch
+              checked={setting("choiceCards", false)}
+              disabled={!available || busy}
+              label={t("settingChoiceCards")}
+              onChange={value => void update({ choiceCards: value })}
+            />
+          </SettingsRow>
           <SettingsRow description={t("settingAutoConnectHint")} title={t("settingAutoConnect")}>
             <Switch
               checked={setting("autoConnectRemote", false)}

@@ -14,7 +14,7 @@ import type { SyncEngine } from "@future-os/remote-client/syncEngine";
 import { requestReadPage } from "@future-os/remote-client/readPages";
 import { loadLastModel, loadLastThinking, saveLastModel, saveLastThinking } from "./storage";
 import { markApprovalDecision } from "@future-os/remote-client/timeline";
-import { DEFAULT_THINKING_LEVEL, modelProviderFromReference, modelReference, resolveModelThinkingLevel } from "./types";
+import { DEFAULT_THINKING_LEVEL, modelProviderFromReference, modelReference, resolveModelReference, resolveModelThinkingLevel } from "./types";
 import type {
   AvailableSkill,
   DownloadInfo,
@@ -190,7 +190,11 @@ export function useConversationController({
           : (await client.requestRetry<RemoteSessionState>({ type: "get_state", sessionId }, sessionId)).data;
         if (!isCurrent() || settingsRevision.current !== revision) return;
         const currentModel = state.model ?? "";
-        const matchingModel = models.find(model => modelReference(model) === currentModel);
+        // A stored reference the catalogue names can be upgraded to the exact
+        // catalogue key (which keeps the right provider when two expose one id);
+        // one it does not name stays as the session reported it, since a guess
+        // here would change the endpoint behind the conversation.
+        const matchingModel = resolveModelReference(currentModel, models);
         setModelId(matchingModel ? modelReference(matchingModel) : currentModel);
         setThinkingLevelState(state.thinkingLevel ?? DEFAULT_THINKING_LEVEL);
         // A conversation opened from the list shows its running amount right

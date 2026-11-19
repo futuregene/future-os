@@ -24,8 +24,14 @@ the actual transcripts, rather than trusting a prompt that says tools are disabl
 The same DeepSeek Flash max model handles the ordinary Fusion-enabled request
 and the single-model request. Both use the product's default system prompt with
 project-context files disabled for this closed-text task. Enable Fusion with the
-normal `/fusion` prefix. Keep automatic tool selection; do not force a tool call,
-require an exact consultation count, or add benchmark-only routing instructions.
+normal `/fusion` prefix. The harness adds no forced tool choice, exact consultation
+count or benchmark-only routing instruction. Tool routing follows the tested product
+version: closed-task parent policy v2 requires an initial named Fusion call while
+preserving user-configured model, thinking level and output limit. Successful sealed
+answers are delivered directly; failed closed discussions cannot automatically restart.
+Record the binary and policy version; older experimental policies changed request
+settings and must be labeled separately. Output exhaustion recovery is best effort,
+limited to one same-session report request without changing generation settings.
 
 The daily profile's primary endpoint is the ordinary final answer. Report Fusion
 invocation count, completed consultations and correctness with a completed

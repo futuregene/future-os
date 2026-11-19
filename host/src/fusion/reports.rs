@@ -49,6 +49,8 @@ pub(super) async fn collect(
         ensure!(errors.is_empty(), "{}", errors.join("\n"));
         Ok(())
     };
+    // Agent owns output continuation inside the accepted child run. An
+    // output-limit terminal here has already used its available allowance.
     let original = session.generate(message, false).await?;
     let first_error = match check(&original) {
         Ok(()) => {
@@ -61,7 +63,7 @@ pub(super) async fn collect(
         Err(error) => error.to_string(),
     };
     let message = format!(
-        "You have ONE report repair opportunity. Revise ONLY your last final report using the existing work in this conversation. Do not repeat the task, investigate again, call tools or add new facts. Fix the reported fields; preserve the current answer and other valid content. Return a complete replacement report in the same required format. Quotes must copy visible source wording and belong to the named participant; typography differences are allowed, paraphrases are not quotes. No commentary about the revision. Validation feedback: {first_error}. Final report capacity: {capacity} UTF-8 bytes in its downstream representation; this is not a thinking-token budget."
+        "You have ONE report repair opportunity. Revise ONLY your last final report using the existing work in this conversation. Do not repeat the task, investigate again, call tools or add new facts. Fix ALL listed fields, not only the first error. For disposition citation errors, copy the matching excerpt from the provided original source hints into ONLY the failing basis.quote fields; do not paraphrase or rewrite unaffected dispositions. Preserve valid content and the current answer unless the reported source error changes its support; then correct the inference and resulting answer explicitly. Return a complete replacement report in the same required format. Participant quotations must copy the named participant’s visible wording; typography differences are allowed, paraphrases are not quotes. Evidence citations must identify a supplied source, its version and a matching original excerpt. If a verified_fact cannot cite a source, qualify it as an unverified_claim rather than inventing a reference. No commentary about the revision. Validation feedback: {first_error}. Final report capacity: {capacity} UTF-8 bytes in its downstream representation; this is not a thinking-token budget."
     );
     let repaired = match session.generate(message, true).await {
         Ok(text) => text,
@@ -172,6 +174,26 @@ mod tests {
         async fn generate(&mut self, message: String, report_only: bool) -> Result<String> {
             self.requests.push((message, report_only));
             Ok(self.responses.pop_front().expect("unexpected regeneration"))
+        }
+    }
+    struct ExhaustedSession {
+        requests: usize,
+    }
+    impl ReportSession for ExhaustedSession {
+        async fn generate(&mut self, _message: String, _report_only: bool) -> Result<String> {
+            self.requests += 1;
+            Err(failure(FailureKind::OutputLimit, "exhausted"))
+        }
+    }
+    #[tokio::test]
+    async fn output_limit_ends_step_without_a_second_host_submission() {
+        for phase in ["analyzing", "issue_mapping", "reviewing", "synthesizing"] {
+            let mut session = ExhaustedSession { requests: 0 };
+            let error = collect(&mut session, "task".into(), phase, 100, |_| Ok(()))
+                .await
+                .unwrap_err();
+            assert_eq!(failure_kind(&error), FailureKind::OutputLimit);
+            assert_eq!(session.requests, 1);
         }
     }
     #[tokio::test]

@@ -215,6 +215,12 @@ export function MentionEditor({
   // labels rather than a second copy of them.
   const { t: tChoice } = useTranslation("markdown");
   const editorRef = useRef<HTMLDivElement | null>(null);
+  // The caret the reader last left inside the box. A choice card's row lives in
+  // the transcript, not in the composer, so clicking one moves focus away and
+  // the browser drops the selection — by the time the answer arrives there is no
+  // live caret to insert at. The box remembers the last one instead, which is
+  // what puts the pill where the reader was typing rather than at the end.
+  const lastCaretRef = useRef<Range | null>(null);
   const ime = useImeEnterGuard();
   const { isComposingRef } = ime;
   // null → no active mention; "" → `@` with empty query (recents).
@@ -379,6 +385,25 @@ export function MentionEditor({
     setSelectedSlashItem(0);
   }, [slashQuery]);
 
+  // Remember where the reader's caret is while it is in the box (see
+  // `lastCaretRef`). `selectionchange` is the one event that covers every way a
+  // caret lands in a contenteditable — clicking, typing, arrow keys, a programmatic
+  // move — without the editor having to re-implement them.
+  useEffect(() => {
+    const remember = () => {
+      const editor = editorRef.current;
+      const selection = window.getSelection();
+      if (!editor || !selection || selection.rangeCount === 0)
+        return;
+      const range = selection.getRangeAt(0);
+      if (!editor.contains(range.commonAncestorContainer))
+        return;
+      lastCaretRef.current = range.cloneRange();
+    };
+    document.addEventListener("selectionchange", remember);
+    return () => document.removeEventListener("selectionchange", remember);
+  }, []);
+
   // Same for the `#` menu: a new query means a new (shorter) result list.
   useEffect(() => {
     setSelectedSession(0);
@@ -516,7 +541,37 @@ export function MentionEditor({
     closeMenu();
   }
 
-  /** Write the answer into the editor (append) or drop it; at most one pill. */
+  /**
+   * Where a new answer goes: the caret the reader left in the box, or the end
+   * when they never put one there (an untouched composer, a restored draft).
+   *
+   * The live selection wins when it is inside the editor — that is a caret the
+   * editor still owns. Otherwise the remembered one is used, which is the case a
+   * card row click produces: the transcript's button has focus by then and the
+   * browser's selection is gone. A *selection* collapses to its end rather than
+   * being replaced, so clicking a row never deletes the words the reader had
+   * highlighted.
+   */
+  function choiceInsertionRange(editor: HTMLDivElement): Range {
+    const live = window.getSelection();
+    const candidates = [
+      live && live.rangeCount > 0 ? live.getRangeAt(0) : null,
+      lastCaretRef.current,
+    ];
+    const range = document.createRange();
+    for (const candidate of candidates) {
+      if (!candidate || !editor.contains(candidate.endContainer))
+        continue;
+      range.setStart(candidate.endContainer, candidate.endOffset);
+      range.collapse(true);
+      return range;
+    }
+    range.selectNodeContents(editor);
+    range.collapse(false);
+    return range;
+  }
+
+  /** Write the answer into the editor at the reader's caret, or drop it; one pill. */
   function writeChoicePill(rawAnswer: ChoiceAnswer | null) {
     const editor = editorRef.current;
     if (!editor)
@@ -527,6 +582,14 @@ export function MentionEditor({
     // answer.
     const answer = answerOrNull(rawAnswer);
     const existing = choicePill();
+    // Changing the answer keeps the pill where the reader put it: the box's
+    // order is theirs, and re-picking a row is not a reason to move the answer
+    // behind the words they typed after it.
+    if (answer && existing) {
+      existing.replaceWith(buildChoicePill(answer));
+      syncEmpty();
+      return;
+    }
     // The pill owns the single space after it, so dropping the answer must not
     // leave a blank line behind.
     const trailing = existing?.nextSibling ?? null;
@@ -534,8 +597,14 @@ export function MentionEditor({
     if (trailing && trailing.nodeType === Node.TEXT_NODE && (trailing.textContent ?? "") === " ")
       trailing.remove();
     if (answer) {
-      editor.appendChild(buildChoicePill(answer));
-      editor.appendChild(document.createTextNode(" "));
+      // One node sequence — the pill and its editable space — inserted in one
+      // `insertNode`, so the split of the text under the caret happens once and
+      // the pill is left directly followed by the space it owns (the removal
+      // above, and `caretAfterChoice`, both read that neighbour).
+      const range = choiceInsertionRange(editor);
+      const fragment = document.createDocumentFragment();
+      fragment.append(buildChoicePill(answer), document.createTextNode(" "));
+      range.insertNode(fragment);
     }
     syncEmpty();
   }

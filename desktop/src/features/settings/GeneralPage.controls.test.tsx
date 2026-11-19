@@ -70,6 +70,8 @@ function mount(overrides: Partial<React.ComponentProps<typeof GeneralPage>> = {}
     onToggleAutoUpgradeSkills: vi.fn(),
     skillRecommend: true,
     onToggleSkillRecommend: vi.fn(),
+    choiceCards: false,
+    onToggleChoiceCards: vi.fn(),
     bellOnComplete: true,
     onToggleBellOnComplete: vi.fn(),
     autoTitleFirstTurn: true,
@@ -474,24 +476,29 @@ describe("generalPage switches", () => {
     expect(switches.map(item => item.getAttribute("aria-label"))).toEqual([
       "Auto-upgrade skills",
       "Skill recommendations",
+      "Choice cards",
       "Generate a title after the first answer",
       "Completion bell",
       "Clear run logs when archiving",
       "Archive idle conversations automatically",
     ]);
-    expect(switches.map(item => item.getAttribute("aria-checked"))).toEqual(["true", "false", "true", "false", "true", "false"]);
+    expect(switches.map(item => item.getAttribute("aria-checked"))).toEqual(["true", "false", "false", "true", "false", "true", "false"]);
   });
 
   it("reports each toggle to its own callback, inverted", () => {
-    const { container, props } = mount({ autoUpgradeSkills: true, bellOnComplete: true });
+    const { container, props } = mount({ autoUpgradeSkills: true, bellOnComplete: true, choiceCards: false });
 
     const toggle = (label: string) => container.querySelector<HTMLButtonElement>(`[role=switch][aria-label='${label}']`)!;
 
     act(() => toggle("Auto-upgrade skills").click());
     act(() => toggle("Completion bell").click());
+    act(() => toggle("Choice cards").click());
 
     expect(props.onToggleAutoUpgradeSkills).toHaveBeenCalledExactlyOnceWith(false);
     expect(props.onToggleBellOnComplete).toHaveBeenCalledExactlyOnceWith(false);
+    // The choice-card switch reaches its own writer, and the default it starts
+    // from is off — the shipped value.
+    expect(props.onToggleChoiceCards).toHaveBeenCalledExactlyOnceWith(true);
   });
 
   it("reports the archive toggles and leaves the run-log cleanup wording on the row", () => {

@@ -45,6 +45,47 @@ export function stripRunCopies(
 }
 
 /**
+ * Draw a run the host says is still executing as the unfinished reply it is.
+ *
+ * The record cannot say this by itself. A history page projects an exchange into
+ * a reply whose status is `complete` or `failed` and nothing else — the projector
+ * reads entries, and "still being written" is not a fact of any entry — so the
+ * page's copy of a running reply arrives looking settled, and everything the view
+ * derives from that status follows: the work folds behind "查看过程" and the row
+ * offers copy and fork as if the answer were finished.
+ *
+ * The run's identity is what closes the gap. `get_state.activeRun` names the run
+ * the host is executing, and the rows it projects carry that same `runId`, so the
+ * row that is in flight can be marked as such. The stamp does not invent content:
+ * it takes nothing away and adds no text — it says the one thing the record cannot
+ * express about this row, which the host has answered separately.
+ *
+ * Rows that are not this run's are left alone: another run in the same window may
+ * have settled while this one writes.
+ */
+export function markInFlightReply(
+  transcript: readonly AgentMessage[],
+  runId: string | null,
+): AgentMessage[] {
+  if (!runId)
+    return [...transcript];
+  let found = false;
+  for (const message of transcript) {
+    if (message.role === "assistant" && message.runId === runId) {
+      found = true;
+      break;
+    }
+  }
+  if (!found)
+    return [...transcript];
+  return transcript.map((message) => {
+    if (message.role !== "assistant" || message.runId !== runId || message.status === "streaming")
+      return message;
+    return { ...message, status: "streaming" as const };
+  });
+}
+
+/**
  * The reply a host is writing, drawn once — folded into the transcript's copy of
  * it when the transcript already has one.
  *

@@ -43,6 +43,8 @@ const running = { id: "lifecycle-run", threadId: "lifecycle-thread", status: "ru
 const success = { content: "final", complete: true, sessionId: "session-a" };
 let latest: StoredRun | null;
 let sessionId: string | null;
+/** The shell's one-second streaming answer handed to the hook. */
+let streaming: boolean | undefined;
 let reply: ReturnType<typeof deferred<typeof success>>;
 let hook: ReturnType<typeof renderHook<ReturnType<typeof useAgentThreadState>>> | undefined;
 
@@ -53,6 +55,7 @@ beforeEach(() => {
   clearThreadMessageSnapshots();
   latest = null;
   sessionId = "session-a";
+  streaming = undefined;
   reply = deferred();
   storage.getLatestRun.mockImplementation(async () => latest);
   storage.getRun.mockImplementation(async () => latest);
@@ -86,6 +89,7 @@ async function mount(options: {
     loadingStore: false,
     modelId: "p/m",
     thinkingLevel: "off",
+    streaming,
     pendingPrompt: options.pendingPrompt ?? null,
     onPromptConsumed: options.onPromptConsumed ?? noop,
     onThreadActivity: noop,
@@ -446,6 +450,114 @@ describe("local send lifecycle", () => {
     expect(options.onPromptConsumed).not.toHaveBeenCalled();
     // The prompt is not consumed, so a later visit to its own thread can still
     // deliver it: the guard waits rather than discarding.
+    view.unmount();
+  });
+});
+
+describe("the shell's one-second streaming answer", () => {
+  it("settles a re-attached reply as soon as that answer turns false", async () => {
+    // The transcript's live bubble (timer, "thinking", stop button) used to be
+    // finalised only by the terminal push or its own 15-30 second fallback, while
+    // the rail - reading this very signal - had already filed the conversation
+    // under "Earlier". Measured 2026-11-19 on a real conversation: the reply kept
+    // ticking 47 seconds after its run had settled, next to a sidebar that
+    // already said it was done.
+    latest = running;
+    streaming = true;
+    const view = await mount();
+    expect(view.current.recentRun?.status).toBe("running");
+    const loads = storage.getSessionEntriesPage.mock.calls.length;
+    const reads = storage.getRun.mock.calls.length;
+
+    latest = { ...running, status: "completed", endedAt: time + 1000 };
+    streaming = false;
+    await act(async () => {
+      view.rerender();
+    });
+    await act(async () => {});
+
+    // No timer advanced: one second of the shell's answer is the whole budget.
+    expect(storage.getRun.mock.calls.length).toBeGreaterThan(reads);
+    expect(storage.getRun).toHaveBeenCalledWith(running.id);
+    expect(view.current.recentRun?.status).toBe("completed");
+    expect(storage.getSessionEntriesPage.mock.calls.length).toBeGreaterThan(loads);
+    view.unmount();
+  });
+
+  it("does not finalize a live run on an empty streaming answer alone", async () => {
+    // `reconcile_streaming_observers` answers with an empty set on any Agent RPC
+    // error, so "nothing is streaming" is an invitation to read the run row, not a
+    // verdict. Settling on it would freeze the reply as complete with no stop
+    // button while the Agent kept working - the harm `applyRunMetadata` warns
+    // about for a mid-run reload.
+    latest = running;
+    const view = await mount();
+    const loads = storage.getSessionEntriesPage.mock.calls.length;
+    const reads = storage.getRun.mock.calls.length;
+
+    streaming = false;
+    await act(async () => {
+      view.rerender();
+    });
+    await act(async () => {});
+
+    expect(storage.getRun.mock.calls.length).toBeGreaterThan(reads);
+    expect(storage.getRun).toHaveBeenCalledWith(running.id);
+    expect(view.current.recentRun?.status).toBe("running");
+    expect(storage.getSessionEntriesPage.mock.calls.length).toBe(loads);
+    view.unmount();
+  });
+
+  it("closes a lost terminal push on the next answer, one second later", async () => {
+    // What the 47-second disagreement actually was. The push that finalises a
+    // reply is the one signal this harness never delivers - the `listen` mock
+    // registers no handler - so a run that ends while the view is attached
+    // leaves the bubble live, which is exactly the state measured on a real
+    // conversation at 11:36:13 on 2026-11-19. Nothing else can close it here,
+    // so the shell's next one-second sample is the whole recovery.
+    latest = running;
+    streaming = true;
+    const view = await mount();
+    expect(view.current.recentRun?.status).toBe("running");
+    const loads = storage.getSessionEntriesPage.mock.calls.length;
+
+    // The run settles in storage while no push ever arrives.
+    latest = { ...running, status: "completed", endedAt: time + 1000 };
+    await act(async () => {
+      view.rerender();
+    });
+    await act(async () => {});
+
+    // The lost push is not papered over: the bubble is still live, and no
+    // timer was advanced to make it so.
+    expect(view.current.recentRun?.status).toBe("running");
+    expect(storage.getSessionEntriesPage.mock.calls.length).toBe(loads);
+
+    // The next sample says nothing is streaming here.
+    streaming = false;
+    await act(async () => {
+      view.rerender();
+    });
+    await act(async () => {});
+
+    expect(view.current.recentRun?.status).toBe("completed");
+    expect(storage.getSessionEntriesPage.mock.calls.length).toBeGreaterThan(loads);
+    view.unmount();
+  });
+
+  it("stays quiet when the shell did not answer", async () => {
+    // `undefined` is "the shell does not say" (a surface with no rail, an older
+    // shell). The hook must not spend a run-row read on a signal it never got.
+    latest = running;
+    const view = await mount();
+    storage.getRun.mockClear();
+
+    await act(async () => {
+      view.rerender();
+    });
+    await act(async () => {});
+
+    expect(storage.getRun).not.toHaveBeenCalled();
     view.unmount();
   });
 });

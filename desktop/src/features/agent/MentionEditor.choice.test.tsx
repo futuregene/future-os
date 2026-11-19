@@ -239,6 +239,43 @@ describe("the choice answer in the composer editor", () => {
     expect(serialize(editor).trim()).toBe("[接下来做哪一件？ → 重画森林图]");
   });
 
+  it("puts the answer at the caret the reader left, not behind their words", async () => {
+    // The state the composer is in when a card row is clicked *after* typing: a
+    // sentence in the box and the caret inside it. The row lives in the
+    // transcript, so a real click moves focus and the browser drops the
+    // selection — the box remembers the caret instead, which is the whole point
+    // of `lastCaretRef`. jsdom keeps a selection where a browser would clear it,
+    // so the test clears it explicitly after telling the editor where it was.
+    const { editor, click } = await mount();
+    const text = document.createTextNode("另外 asrbench 可以删除");
+    act(() => editor.appendChild(text));
+
+    const placeCaret = (node: Text, offset: number) => act(() => {
+      const range = document.createRange();
+      range.setStart(node, offset);
+      range.collapse(true);
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+      // `selectionchange` is what a real browser fires; jsdom does not.
+      document.dispatchEvent(new Event("selectionchange"));
+      selection.removeAllRanges();
+    });
+
+    placeCaret(text, 0);
+    await click("set-answer");
+    // In front of the sentence, with the words after it untouched.
+    expect(serialize(editor)).toBe("[接下来做哪一件？ → 重画森林图] 另外 asrbench 可以删除");
+
+    await click("clear-answer");
+    const after = editor.lastChild as Text;
+    placeCaret(after, "另外 asrbench ".length);
+    await click("set-answer");
+    // Mid-sentence: both halves survive, in their own order.
+    expect(serialize(editor)).toBe("另外 asrbench [接下来做哪一件？ → 重画森林图] 可以删除");
+    expect(editor.textContent).toBe("另外 asrbench 重画森林图 可以删除");
+  });
+
   it("re-opens the question from the pill's pencil and rewrites it on a new pick", async () => {
     const changed: Array<ChoiceAnswer | null> = [];
     const { editor, sendButton, click } = await mount(answer => changed.push(answer));

@@ -130,6 +130,40 @@ describe("getRemoteQueue", () => {
   });
 
   /**
+   * The answer a waiting row carries (design §5.8.2).
+   *
+   * Without this the host's field was dropped on arrival, so a remote row could
+   * never draw the chip — the same row on a local conversation could. It is read
+   * with the local queue's parser, so "malformed" cannot mean two things on one
+   * screen.
+   */
+  it("reads the answer on a waiting row, and drops an unusable one", async () => {
+    const answer = {
+      mode: "single",
+      options: [{ id: "forest", label: "重画森林图" }, { id: "flow", label: "补一张实验流程图" }],
+      selectedIds: ["forest"],
+      title: "接下来做哪一件？",
+    };
+    request.mockResolvedValue({
+      queued: [
+        { runId: "run_1", text: "[接下来做哪一件？ → 重画森林图]", choice: answer },
+        { runId: "run_2", text: "held", choice: null },
+        // No option to switch to: a chip opening onto nothing is worse than none.
+        { runId: "run_3", text: "held", choice: { options: [], title: "q" } },
+        { runId: "run_4", text: "held" },
+      ],
+    });
+
+    const { rows } = await getRemoteQueue("desktop_a", "sess_1");
+
+    expect(rows[0]!.choice).toEqual(answer);
+    // Absent, null and unusable all read as "no answer", never as an empty one.
+    expect(rows[1]!.choice).toBeUndefined();
+    expect(rows[2]!.choice).toBeUndefined();
+    expect(rows[3]!.choice).toBeUndefined();
+  });
+
+  /**
    * The other half of the answer: rows that left the queue without running.
    * Reading only `queued` is what let a cancelled or merged message disappear
    * with nobody told.
@@ -189,6 +223,29 @@ describe("the queue's commands", () => {
     expect(request).toHaveBeenLastCalledWith(
       "desktop_a",
       { message: "fixed", runId: "run_7", sessionId: "sess_1", type: "edit_queued_run" },
+      "sess_1",
+    );
+
+    // A changed pick rides the same command, because the words and the answer are
+    // one statement: the text is what the run sends, so the old sentence beside a
+    // new pick would send the old pick. No `choice` key at all for a words-only
+    // edit, where the accepted answer has to stay as it is.
+    const answer = {
+      mode: "single" as const,
+      options: [{ id: "forest", label: "重画森林图" }],
+      selectedIds: ["forest"],
+      title: "接下来做哪一件？",
+    };
+    await editRemoteQueuedRun("desktop_a", "sess_1", "run_7", "[接下来做哪一件？ → 重画森林图]", answer);
+    expect(request).toHaveBeenLastCalledWith(
+      "desktop_a",
+      {
+        choice: answer,
+        message: "[接下来做哪一件？ → 重画森林图]",
+        runId: "run_7",
+        sessionId: "sess_1",
+        type: "edit_queued_run",
+      },
       "sess_1",
     );
   });

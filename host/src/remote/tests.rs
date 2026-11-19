@@ -964,10 +964,57 @@ mod runtime_tests {
             "the desktop must display the invitation it just minted: {shown}"
         );
 
+        // Ready includes retirement of the old queue subscriber: routing the
+        // first handshake to that generation would silently lose the request.
+        assert_eq!(nats.subscription_count(&format!("p.{pair_id}.cmd.>")), 1);
+        assert!(
+            nats.retirement_receipt_subject()
+                .unwrap()
+                .starts_with(&format!("p.{pair_id}.rep.{}._retired.", first.desktop_id)),
+            "the retirement receipt must stay inside the bridge's relay permissions"
+        );
+
         // The phone scans exactly what the desktop is showing.
         let mobile = nats_connect(&nats).await;
         let _channel = super::test_support::secure_pair(&mobile, &shown, &second.pair_id).await;
 
+        stop();
+    }
+
+    #[tokio::test]
+    async fn an_unconfirmed_retirement_removes_the_candidate_and_can_restart() {
+        let _home = HomeGuard::new("remote-retirement-failure");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        let pair_id = format!("pair_{}", unique("retirement"));
+        platform.respond_pair_code_for(&pair_id, nats.url());
+        assert_eq!(
+            start(RemoteStartInput {}).await.unwrap().phase,
+            RemotePhase::Ready
+        );
+
+        platform.respond_pair_code_for(&pair_id, nats.url());
+        SUPERVISOR
+            .hooks
+            .inject_retirement_failure
+            .store(1, Ordering::SeqCst);
+        let failed = super::start_once(true).await.unwrap();
+        assert_eq!(failed.phase, RemotePhase::Reconnecting);
+        assert!(
+            SUPERVISOR.state.lock().unwrap().is_empty(),
+            "a failed retirement must not leave its replacement installed"
+        );
+        assert_ne!(super::status().phase, RemotePhase::Ready);
+
+        platform.respond_pair_code_for(&pair_id, nats.url());
+        let recovered = super::start_once(true).await.unwrap();
+        assert_eq!(recovered.phase, RemotePhase::Ready);
+        let mobile = nats_connect(&nats).await;
+        let _channel =
+            super::test_support::secure_pair(&mobile, &recovered.pairing_code.unwrap(), &pair_id)
+                .await;
         stop();
     }
 
@@ -2989,12 +3036,24 @@ mod runtime_tests {
         init_store();
 
         // Empty store → empty but well-formed snapshots.
-        let (payload, signature) = build_presence_snapshot("pair_x", "bridge_x");
+        let (mut payload, signature) = build_presence_snapshot("pair_x", "bridge_x");
         assert_eq!(payload["online"], json!(true));
         assert_eq!(payload["sessions"], json!([]));
         assert_eq!(payload["workspaces"], json!([]));
         assert_eq!(signature, "[][]");
-        assert_eq!(payload, build_presence_payload("pair_x", "bridge_x"));
+
+        let mut handshake = build_presence_payload("pair_x", "bridge_x");
+        // Each payload samples the clock independently and can cross a second boundary.
+        for presence in [&mut payload, &mut handshake] {
+            let heartbeat = presence
+                .as_object_mut()
+                .unwrap()
+                .remove("lastHeartbeatTs")
+                .and_then(|value| value.as_u64())
+                .expect("presence includes a Unix heartbeat timestamp");
+            assert!(heartbeat > 0);
+        }
+        assert_eq!(payload, handshake);
 
         let light = light_presence_payload("pair_x", "bridge_x");
         assert_eq!(light["online"], json!(true));
@@ -3948,6 +4007,107 @@ mod runtime_tests {
             removed.json()["removed"],
             json!([doomed]),
             "a deleted conversation is named, not left to be inferred"
+        );
+
+        handle.abort();
+    }
+
+    /// The first catalogue packet's own bill, end to end, from the real
+    /// publisher against a real store.
+    ///
+    /// What `future remote status` shows comes from these three numbers, and
+    /// until this test existed nothing produced them: the counters were written
+    /// and nothing filled them. The assertion that matters is not that they are
+    /// plausible but that they are *staged* — plain > gzip > 0, and the wire
+    /// record slightly larger than the gzip body because it carries the AEAD
+    /// header and tag. A build that reported the same number twice (the shape
+    /// this measurement was added to rule out) fails here.
+    #[tokio::test]
+    async fn the_first_catalogue_packet_reports_its_staged_sizes_and_its_latency() {
+        let _home = HomeGuard::new("remote-catalog-measure");
+        init_store();
+        let nats = FakeNats::start().await;
+        let client = nats_connect_once(&nats).await;
+        let pair = unique("pairmeasure");
+        SUPERVISOR.restore_active(Some(pair.clone()));
+
+        // Enough rows that the payload is worth compressing at all: the push
+        // path only gzips above `PUSH_FLOOR_BYTES`, so a two-row fixture would
+        // legitimately report gzip == plain and prove nothing.
+        for index in 0..40 {
+            crate::store::create_thread(crate::store::CreateThreadInput {
+                mode: "chat".to_string(),
+                title: Some(format!(
+                    "Measured conversation {index} with a title long enough to compress"
+                )),
+                workspace_id: None,
+                workspace_path: None,
+                workspace_name: None,
+                agent_session_id: Some(unique(&format!("sessmeasure{index}"))),
+            })
+            .unwrap();
+        }
+
+        let creds = pairing_creds(&pair);
+        let _shared = shared_runtime(&creds, true, false);
+        // The delta lane is the one the phone is on, and the one that publishes
+        // a full first packet.
+        declare_features(
+            &creds,
+            &pair,
+            &[future_remote_protocol::CATALOG_DELTA_FEATURE],
+        );
+        let handle =
+            spawn_presence_heartbeat(client.clone(), pair.clone(), "bridge_measure".into());
+        let subject = format!("p.{pair}.state.sessions");
+        let producer = || handle.is_finished();
+        nats.await_publish(
+            &subject,
+            |published| published.json()["full"] == json!(true),
+            producer,
+            Duration::from_secs(5),
+        )
+        .await;
+
+        let measurement = SUPERVISOR.catalogue_measurement(&pair);
+        let first = measurement
+            .first
+            .clone()
+            .expect("a delivered catalogue packet must be measured");
+        println!(
+            "catalogue first packet: {:?} ms after activation, {} B plain -> {} B gzip -> {} B wire, {} dropped before it",
+            first.since_activation_ms,
+            first.plain_bytes,
+            first.compressed_bytes,
+            first.wire_bytes,
+            first.dropped_before_first,
+        );
+
+        // Staged, not repeated: this is the assertion the whole measurement
+        // exists for.
+        assert!(
+            first.plain_bytes > first.compressed_bytes,
+            "gzip must have shrunk the draft ({} -> {} B)",
+            first.plain_bytes,
+            first.compressed_bytes
+        );
+        assert!(
+            first.wire_bytes >= first.compressed_bytes,
+            "the sealed record carries the gzip body plus the AEAD header and tag \
+             ({} wire vs {} gzip B)",
+            first.wire_bytes,
+            first.compressed_bytes
+        );
+        // The totals agree with the first packet plus whatever followed: nothing
+        // is double counted and nothing is dropped on the floor between them.
+        assert!(measurement.compressed_bytes >= first.compressed_bytes);
+        assert!(measurement.wire_bytes >= first.wire_bytes);
+        // Latency is present when the transport could date its activation, which
+        // the test transport can: a fixture that never activated would leave this
+        // `None`, and reporting that as "0 ms" is the failure mode to avoid.
+        assert!(
+            first.since_activation_ms.is_some(),
+            "the fixture activates the channel, so the first packet must be dated"
         );
 
         handle.abort();

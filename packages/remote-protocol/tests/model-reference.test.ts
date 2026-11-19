@@ -3,9 +3,12 @@ import {
   LEGACY_DEFAULT_THINKING_LEVEL,
   THINKING_LEVELS,
   defaultThinkingLevelForModel,
+  modelIdFromReference,
+  modelLabelForReference,
   modelProviderFromReference,
   modelReference,
   modelThinkingLevels,
+  resolveModelReference,
   resolveModelThinkingLevel,
   type RemoteModel,
 } from "../src/types";
@@ -42,6 +45,83 @@ describe("model reference helpers", () => {
   test("modelProviderFromReference is undefined without a separator", () => {
     expect(modelProviderFromReference("gpt-5")).toBeUndefined();
     expect(modelProviderFromReference("/gpt-5")).toBeUndefined();
+  });
+});
+
+describe("resolveModelReference", () => {
+  const catalog: RemoteModel[] = [
+    { id: "Qwen3.8-27B-oQ4e-mtp", provider: "omlx", label: "Qwen 3.8" },
+    { id: "openrouter/auto", provider: "openrouter", label: "auto" },
+    { id: "gpt-5", provider: "openai", label: "GPT-5" },
+    { id: "shared", provider: "one", label: "One" },
+    { id: "shared", provider: "two", label: "Two" },
+  ];
+
+  test("an exact reference wins", () => {
+    expect(resolveModelReference("omlx/Qwen3.8-27B-oQ4e-mtp", catalog)).toBe(catalog[0]);
+    expect(resolveModelReference("openai/gpt-5", catalog)).toBe(catalog[2]);
+  });
+
+  test("a redundant provider prefix resolves to the catalogue entry", () => {
+    // The bug this exists for: a client prefixed an id that already began with
+    // its provider, so nothing could resolve it and the raw string was shown.
+    expect(resolveModelReference("omlx/omlx/Qwen3.8-27B-oQ4e-mtp", catalog)).toBe(catalog[0]);
+    expect(resolveModelReference("omlx/omlx/omlx/Qwen3.8-27B-oQ4e-mtp", catalog)).toBe(catalog[0]);
+  });
+
+  test("a model whose own id repeats its provider is not collapsed", () => {
+    // openrouter's model really is called `openrouter/auto`; its correct
+    // reference looks doubled and must resolve to itself, not to some other row.
+    expect(resolveModelReference("openrouter/openrouter/auto", catalog)).toBe(catalog[1]);
+  });
+
+  test("two providers sharing one raw id still resolve through the reference", () => {
+    expect(resolveModelReference("one/shared", catalog)).toBe(catalog[3]);
+    expect(resolveModelReference("two/shared", catalog)).toBe(catalog[4]);
+    // A bare shared id is ambiguous, so it is not guessed at.
+    expect(resolveModelReference("shared", catalog)).toBeUndefined();
+  });
+
+  test("a reference the catalogue does not name resolves to nothing", () => {
+    expect(resolveModelReference("ghost/model", catalog)).toBeUndefined();
+    expect(resolveModelReference("", catalog)).toBeUndefined();
+    // No catalogue (an older host or a failed read) resolves nothing rather
+    // than inventing an entry.
+    expect(resolveModelReference("omlx/omlx/Qwen3.8-27B-oQ4e-mtp", [])).toBeUndefined();
+  });
+});
+
+describe("modelIdFromReference", () => {
+  test("strips exactly the provider segment", () => {
+    expect(modelIdFromReference("omlx/Qwen3.8-27B-oQ4e-mtp")).toBe("Qwen3.8-27B-oQ4e-mtp");
+    expect(modelIdFromReference("p/missing")).toBe("missing");
+    expect(modelIdFromReference("p/family/model")).toBe("family/model");
+    expect(modelIdFromReference("gpt-5")).toBe("gpt-5");
+    // The provider's own id keeps its slash: only one segment is the provider.
+    expect(modelIdFromReference("openrouter/openrouter/auto")).toBe("openrouter/auto");
+  });
+});
+
+describe("modelLabelForReference", () => {
+  const catalog: RemoteModel[] = [
+    { id: "Qwen3.8-27B-oQ4e-mtp", provider: "omlx", label: "Qwen 3.8" },
+    { id: "unlabelled", provider: "p" },
+  ];
+
+  test("a catalogue model shows its label, or its id when unlabelled", () => {
+    expect(modelLabelForReference("omlx/omlx/Qwen3.8-27B-oQ4e-mtp", catalog)).toBe("Qwen 3.8");
+    expect(modelLabelForReference("p/unlabelled", catalog)).toBe("unlabelled");
+  });
+
+  test("a reference the catalogue does not name shows the bare model id", () => {
+    // Not the whole `provider/id` string, which is what put a doubled
+    // `omlx/omlx/...` on screen verbatim. (One provider segment goes; deciding
+    // whether the next one is a stray prefix is the catalogue's call, which is
+    // why this case asserts a reference the catalogue cannot place.)
+    expect(modelLabelForReference("p/missing", catalog)).toBe("missing");
+    expect(modelLabelForReference("omlx/gone", catalog)).toBe("gone");
+    // A conversation with no model at all has nothing to name.
+    expect(modelLabelForReference("", catalog)).toBe("");
   });
 });
 

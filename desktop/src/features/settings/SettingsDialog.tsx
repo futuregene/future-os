@@ -207,6 +207,8 @@ export function SettingsDialog({
                     onToggleAutoUpgradeSkills={value => onChangeSettings({ autoUpgradeSkills: value })}
                     skillRecommend={appSettings.skillRecommend}
                     onToggleSkillRecommend={value => onChangeSettings({ skillRecommend: value })}
+                    choiceCards={appSettings.choiceCards}
+                    onToggleChoiceCards={value => onChangeSettings({ choiceCards: value })}
                     autoTitleFirstTurn={appSettings.autoTitleFirstTurn}
                     onToggleAutoTitleFirstTurn={value => onChangeSettings({ autoTitleFirstTurn: value })}
                     bellOnComplete={appSettings.bellOnComplete}

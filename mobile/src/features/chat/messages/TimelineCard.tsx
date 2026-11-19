@@ -322,11 +322,13 @@ function TimelineCardView({
     // asked rather than when this phone read it.
     const sentAt = item.createdAt ? formatSentAt(item.createdAt, i18n.language) : "";
     // A prompt that answered a choice card carries the card's printed sentence
-    // at its head (§7), where a bracket sandwich among the reader's own words
-    // reads as prose they typed rather than as a pick they made. The bubble
-    // draws that sentence as a tag and the words after it as the prompt; only
-    // the drawing changes, and the long-prompt preview above still measures the
-    // whole prompt, so a collapsed one keeps its cap.
+    // (§7), where a bracket sandwich among the reader's own words reads as prose
+    // they typed rather than as a pick they made. It need not be at the head —
+    // the desktop writes its pill at the caret, so an answer picked mid-sentence
+    // lands inside the reader's own sentence — and the bubble draws it as a tag
+    // wherever it sits. The words keep their order around it; only the drawing
+    // changes, and the long-prompt preview above still measures the whole
+    // prompt, so a collapsed one keeps its cap.
     const echo = item.text.trim().length > 0 ? splitChoiceAnswerEcho(preview.head) : null;
     const answers = echo && echo.echoes.length > 0 ? echo.echoes : null;
     const promptText = answers && echo ? echo.rest : preview.head;

@@ -41,7 +41,7 @@ Three hard rules follow:
 
 | Rule | Why |
 |---|---|
-| Only the **last card in the thread** is interactive; earlier cards are read-only (`aria-disabled`, out of the tab order, subtitle says it cannot be picked) | An old card answers a question that is over; letting it change makes "which pick did I just change" unanswerable |
+| Only the **last card in the thread** is interactive; earlier cards are read-only (`aria-disabled`, out of the tab order, with a line saying it cannot be picked) | An old card answers a question that is over; letting it change makes "which pick did I just change" unanswerable |
 | The card never stores "chosen" itself | It derives from the draft. After sending, the draft empties and **the card does not stay highlighted** — the answer is shown by the tag on the user's message, not by the card |
 | Changing the answer means changing the draft | Clicking a row, the pill/chip's pencil, the phone's bottom sheet, and the choice chip on a queue row all write the same value |
 
@@ -77,7 +77,8 @@ Fields:
 | `mode` | no | `multi` (**first choice**) / `single` (the fallback when the rows compete; an omitted line means this). `multiple`, `multi-select`, `多选` read as `multi` — see below |
 | `option` | yes (2–4) | One per line: `id \| label \| one-line note`; the note may be omitted |
 | `id` | — | Stable identifier to send back: ASCII, `[a-z0-9-]`, ≤ 24 chars, unique within the card |
-| `hint` | no | Overrides the default subtitle ("pick one and it lands in the input…") |
+| `hint` | no | One line the model writes itself, drawn under `context`. There is **no default subtitle** any more (removed 2026-11-18, §5.1) |
+| `context` | no | One to three sentences of situation, around 100 characters — what four lines of a phone card hold (tightened from 200 on 2026-11-18) — so the card can be answered without scrolling back up. Repeated `context:` lines become separate paragraphs; an empty one disappears |
 
 **How `mode` is decided** (anyone rewriting the prompt has to follow this; it is a rule, not a style preference):
 
@@ -105,7 +106,14 @@ In the AST the card is its own node type (not a `futureEmbed` reference), becaus
 | Fence mid-reply (not the last block) | Renders normally but read-only (the "last card" rule in §2) |
 | Unknown field | Ignored |
 
-**A read-only card must say so** (2026-11-16): when one reply holds two or more cards, only the last is interactive. That criterion depends solely on the **number of parsed cards**, not on anything the model was asked to write, so it lives in the parse/render layer rather than in the prompt. A card judged read-only is not just `aria-readonly` and out of the tab order — its **subtitle must also switch to "this card can no longer be picked"** (`choice.hint.readonly`). The subtitle is the one place a card can promise an action, and printing "pick one and it lands in the input" over inert rows is a button that looks pressable and is not. The model's own `hint` describes picking too, so it is replaced as well. Pinned in `ChoiceCard.test.tsx` and `MarkdownContent.test.tsx` on text, `aria-disabled` and focus — **never on colour**.
+**A read-only card must say so** (2026-11-16): when one reply holds two or more cards, only the last is interactive. That criterion depends solely on the **number of parsed cards**, not on anything the model was asked to write, so it lives in the parse/render layer rather than in the prompt. A card judged read-only is not just `aria-readonly` and out of the tab order — it **must also say "an earlier question — this card can no longer be picked"** (`choice.hint.readonly`). Leaving that unsaid over inert rows is a button that looks pressable and is not. Pinned in `ChoiceCard.test.tsx` and `MarkdownContent.test.tsx` on text, `aria-disabled` and focus — **never on colour**.
+
+**Not printing a default subtitle is not the same as dropping the reply's own hint** (revised 2026-11-18). An earlier version of the rule above also dropped the model's `hint`, on the grounds that it too describes picking; in history that loses information — a reader who comes back is often looking for exactly that line. So the two are separate:
+
+- the **default** instruction never appears on a card that cannot answer — that promise is still a lie;
+- the model's **`hint` stays**, followed by a `choice.hint.readonly` line saying this is an earlier question that can no longer be picked. Both are the group's `aria-describedby`, in visual order; a card that carried no hint gets only the notice.
+
+What changed is the copy, not the promise: `hint` is part of the history, and the notice remains the only place that says the rows are inert. The Chinese string moves from "只作展示：这张卡不能选" to "早先的提问，这张卡不能再选", i.e. the same statement the English copy already made.
 
 ## 4. What goes into the system prompt
 
@@ -140,12 +148,15 @@ There is no third mode.
 
 Write each option as the instruction you would follow if chosen — the user's words,
 not a menu label ("重画森林图", not "选项 A"). The third field says what changes or
-what it costs, one line, no marketing.
+what it costs, one line, no marketing. Put the option you recommend **first**, in
+both modes: row order is the recommendation, and nothing downstream re-sorts it.
 
 The block goes last, alone. Never two cards in one reply, never one mid-reply.
 ```
 
 The point: **an option's label must be the sentence the user would say**, because on send it becomes part of the message. Not "option A/B/C".
+
+**Row order is a recommendation, so the best option goes first** (2026-11-18). The parser, the desktop card and the phone all draw `options` in the order the fence lists them and nothing sorts them afterwards, so the first row is what a reader takes as the model's pick — in `multi` too, where it is the row the others build on. A card whose best option sits last makes the reader re-rank a question the model already answered for them, which is the same waste as a prose list. The rule lives in `choice.md` (and is pinned by `prompt_teaches_the_choice_card_fence`), not in the renderers: reordering rows in a client would silently disagree with the reply's own wording ("先做这个" pointing at a row that moved).
 
 **Why §4 was revised three times, 2026-11-15 and 11-16.** The first wording described `multi` as a
 last resort ("omit `mode: multi` unless several can be done in one go") and put it in
@@ -173,21 +184,82 @@ running an older build keeps the old wording no matter what the repository says
 after two rewrites had landed). A prompt change only ships with a rebuild **and** a
 restart.
 
+### 4.1 The switch: off by default (2026-11-17)
+
+The card is a **preference**, not a default, and it ships **off**. One switch owns both halves of it — the drawing and this section — because teaching a fence to a client that will not draw it is worse than either half alone: the model spends prompt on a format the reader never sees, and writes markdown that renders as nothing.
+
+| | `choice_cards` on | off (the default) |
+|---|---|---|
+| Desktop / phone | the card, pickable | nothing at all — not the card, not a code block |
+| System prompt | §4's section | absent — `grep futureos-choice` finds nothing |
+| List mark "this one is waiting on your choice" (§5.9) | shown | not shown |
+
+Why off rather than on: the fence costs prompt on every turn of every session, and a card asks the reader to pick from a list the model wrote — welcome when they already want to move on, an interruption otherwise.
+
+Rules kept while gating it:
+
+- **The format does not change.** Same fence, same fields, same single/multi semantics; only whether it is drawn and taught.
+- **Stored history is not rewritten.** A reply that already carries a card renders according to the current switch; nothing migrates, nothing is edited.
+- **No residue when off.** Not drawing the card is not enough: the fence must not resurface as its own source, the malformed-fence fallback included. A reader who turned cards off never sees `futureos-choice` or the option rows in the middle of a reply. The prose around the block survives — only the block goes.
+
+Where the value lives, and how it travels:
+
+- one stored value: `app.db` → `packages/app-settings` (`choice_cards`, default `false`), read as `appSettings.choiceCards`;
+- desktop: Settings → General, a switch; the value reaches the markdown renderer through `ChoiceCardsContext` (the renderer's own default stays `true`, so only a real "off" hides anything);
+- the agent is told **before every run**: the host pushes `set_choice_cards` (best-effort — an agent that predates the command still accepts the message, and an unreadable store counts as off), the session keeps it, and `PromptOptions.choice_cards` decides whether this section is in the prompt. A fresh install therefore has no fence in the prompt *and* no card on screen;
+- the phone mirrors the desktop rather than holding its own setting: `get_desktop_settings` carries `choiceCards`, and `SettingsPatch` writes it back to the same row.
+- the same value is settable **on that machine's own row**: a paired desktop's page (Remote → that computer → Automation) has the switch, because a headless host has no window of its own and would otherwise be stuck off forever. It writes the host's `app.db` through `update_desktop_settings`;
+- every client of that machine draws what *it* allows, not what the client's own switch says: the phone and this app's remote transcript both read `choiceCards` from the host (`useRemoteChoiceCards`). Drawing a card the host's own agent was never taught to write, or hiding one it did write — source and all — are both wrong, and only the host's answer avoids them;
+- a host that has **no answer** (a build older than this switch) counts as **on** for drawing: such a build teaches the fence unconditionally, so hiding its cards would delete a question it legitimately asks. Only an explicit `false` hides. A *client* that has not read the setting yet falls back to its own value rather than to "off", so nothing flashes in.
+
+Pinned by `desktop/src/features/markdown/ChoiceCardsToggle.test.tsx` (off: zero card nodes **and** no `futureos-choice` in the extracted text; on: rows, pick, answer), `mobile/src/components/__tests__/ChoiceCardsToggle.test.ts`, and `agent/src/prompt/mod.rs::prompt_omits_the_choice_card_fence_when_cards_are_off`. Falsified on purpose: forcing the renderer to `true`, always pushing the section, and shipping the default as `true` each turns exactly those assertions red.
+
 ## 5. The interface
 
 ### 5.1 Desktop · nothing chosen
 
 ![Desktop: a choice card at the end of a reply, nothing chosen](assets/choice-cards/desktop-1-empty.png)
 
+*A real-component capture*, scenario `choice-card-implemented` (1440×900 at 2×, taken from `56462a7da`): the card is not an injected prototype — `packages/markdown` parses the `futureos-choice` fence and `desktop/src/features/markdown/renderers/ChoiceCard.tsx` draws it. This card's context is one line, so it has **no** “show more” button. **Fold threshold: four lines visible, folds from six** (`choiceContextFolds` — four visible plus a two-line margin, so hiding a single line never buys a control).
+
+**Expanded** (the same card and the same paragraph, with that button pressed):
+
+![Desktop: the context expanded — the button reads "Show less", nothing is hidden](assets/choice-cards/desktop-10-expanded.png)
+
+*A real-component capture*, scenario `choice-context-expanded-desktop` (1440×900 at 2×, taken from `0d4bf428b`): the fixture's `?longContext=1` writes a context that estimates at **more than six lines** (four visible, folds from six) and then presses “show more”. Measured: folded, the paragraph is `72px` tall (4×18); expanded it is `126px`, and the card goes `310→364px` while a full gap to the composer remains. The button's `aria-expanded` turns `false`→`true` and its text turns to “show less”, with `aria-controls` still pointing at the same node — so what a screen reader reads is the same complete paragraph throughout; only the number of lines drawn changes.
+
 - 768px wide, the same as the text column (`max-w-3xl`), left-aligned, 4px below the last block;
 - Header: 12px semibold title plus an 11px mode label on the right (`单选` / `多选`);
-- Subtitle at 11px says "pick one and it lands in the input; you can type something else instead" — this line replaces the in-card "write your own" row (§5.6 says why);
+- **No default subtitle** (removed 2026-11-18): the old line ("pick one and it lands in the input; you can type something else instead") explained the mechanism, which the answer pill already demonstrates (§5.2), and `单选` / `多选` is already in the header. A sentence that has to be read on every card and is useful once is a tax on every card. A `hint` the reply wrote itself is still drawn here at 11px `ink-muted`; a read-only card gains the `choice.hint.readonly` line (§3);
+- `context`, when present, sits between the header and that line: 12px / 18px, `ink-soft` — one weight heavier than `hint` because it is content, not chrome. A card without it takes no height from it; a read-only card keeps it;
+- **A context that outgrows four lines folds**: `line-clamp-4` cuts it with an ellipsis and an 11px “show more / show less” button (chevron, `aria-expanded`, `aria-controls` pointing at the paragraph) sits under it. It folds from an estimate of **six lines** — four visible plus a two-line margin (`choiceContextFolds`) — because hiding a single line behind a control is trading one control for one line; four lines or fewer get no control at all, since a “show more” over text that is already fully visible is another button that does nothing. The full text never leaves the DOM, so a screen reader reads all of it and expanding only draws it. The phone follows the same rule with `numberOfLines={4}`, which lets the platform draw the ellipsis. The prompt asks for ~100 characters for the same reason: that is four or five lines in this column, so a card written to its budget is read whole on the narrowest surface.
 - Each option is a row: a 16px radio, a 13px label, a 12px one-line note (`ink-muted`); unselected rows have no border and no fill and are separated by spacing alone;
 - Card shell: `1px line` / `radius 10px` / `surface` / a very light shadow — the approval card's material, but a **different position**: the approval card floats above the composer, a choice card grows inside the reply.
+
+### 5.1.1 An earlier question: a read-only card keeps everything it said
+
+![Desktop: two cards in one reply, the upper one an earlier question — read-only, its context folded](assets/choice-cards/desktop-9-history-fold.png)
+
+*A real-component capture*, scenario `choice-history-fold-desktop` (1440×900 at 2×, taken from `56462a7da`): one reply holds two cards, the upper one an earlier question and the lower one the thread's latest. The upper card's context estimates **past six lines** (fold threshold: four visible, folds from six), so it is folded to four lines plus “show more”. The rule depends only on **how many cards were parsed** (§2), not on anything the reply wrote, so both cards come from one fixture and one renderer.
+
+- The upper card: `data-choice-state="readonly"`, `aria-disabled="true"`, rows out of the tab order, a press does nothing;
+- It **keeps the `hint` it was written with** — “点几个都行” here, 11px `ink-muted` — followed by the read-only notice (“早先的提问，这张卡不能再选”). A past card exists to be re-read, and deleting the reply's own line would delete the only hint it had at the time; the default subtitle still does not come back, because that one promises an action;
+- Its context is taller than four lines, so it folds: the third line ends in an ellipsis and the “show more” button sits under it. **A read-only card can expand too** — folding exists for reading, and the button takes no part in any choice, so it does not touch the read-only rule;
+- The lower card is `data-choice-state="active"`: one line of context, no button, rows in the tab order and pressable.
+
+Those four facts — the read-only state, the original `hint`, the notice and the fold button — are **asserted** by the capture scenario rather than eyeballed; a failed assertion makes `capture.py` report `n/m captured` instead of handing back a picture that looks fine.
+
+**Folding only proves the text can be hidden; opening it is the other half**:
+
+![Desktop: the earlier card's "show more" pressed — the whole paragraph drawn, the button reading "Show less"](assets/choice-cards/desktop-11-history-expanded.png)
+
+*A real-component capture*, scenario `choice-history-expanded-desktop` (1440×900 at 2×, taken from `67b168e89`): the **same fixture and the same reply** as the capture above, with one extra click. The context goes `72px → 126px` (four lines → seven); the button turns into “show less”, `aria-expanded` goes `false → true`, `aria-controls` names that paragraph's `id`, and `-webkit-line-clamp` is `none`. The card's bottom is at `452` and the composer at `774`, so opening it still leaves a whole blank band — expanding reveals the context, not a permission: the read-only notice and the original `hint` are both still there.
 
 ### 5.2 Desktop · one chosen
 
 ![Desktop: one option chosen, the answer as a pill inside the field](assets/choice-cards/desktop-2-chosen.png)
+
+*A real-component capture*, scenario `choice-pill-implemented` (1440×900 at 2×, taken from `0d4bf428b`): the chosen row and the pill in the field are two results of the same click, not two separate set-ups. Fold threshold as in §5.1 (four visible, folds from six) — this card's context estimates at four lines or under, so no “show more” here.
 
 - Chosen row: `accent-soft` fill and label at weight 500 (no border on top of the fill — two cues for one state was v1's mistake, and §5.7.1 has the same fix);
 - The card gains an 8px footer (`line-soft` top border, `surface-subtle` fill). **v2 shortened this sentence**: v1 said "in the input" next to a chip that sat outside the field, so it was patching the layout with words. Now the answer really is in the editor and the sentence no longer has to lie;
@@ -215,6 +287,8 @@ Moved into the editor, all four requirements follow from machinery that already 
 - (d) only a pill ⇒ `isEditorEmpty` false ⇒ button live;
 - (b) the pencil and × ride on the pill itself and write the same value.
 
+**The answer lands at the caret** (fixed 2026-11-18): the pill used to be `appendChild`-ed to the end of the editor, so typing first and picking a row after put the answer *behind* the reader's sentence instead of where they were typing. A card's rows live in the transcript, so clicking one takes focus and the browser drops the selection; the editor therefore remembers the last range that landed inside it (`lastCaretRef`, kept on `selectionchange`) and inserts there. A *selection* collapses to its end rather than being replaced, so clicking a row never deletes words the reader had highlighted. Changing the answer (the pencil, or another row) still rewrites the pill in place — it does not move. `insertNode` splits the text at the caret, so the words on both sides survive.
+
 **Zero ticks is not an answer, so there is no pill at all.** A pill exists to answer *what was picked* (§5.2); a question with nothing ticked cannot answer that, and a pill built from it would print the card's question as if the reader had answered it. So the rule sits at the one place the answer is **written** (`answerOrNull`, `composer/choiceAnswer.ts`), not at "draw an empty pill but emit no text": zero ticks ⇒ the answer is dropped ⇒ no pill, (a)'s grey button holds again, and (d) stops claiming content. §7's "zero ticks emits no `[…] → ]`" is the other end of the same rule, and both layers exist: dropped on write, and caught again on send (`withChoiceAnswer`). Unticking a multi-choice card's last row is the ✕ path of §5.3, and the pill goes along with its own trailing space.
 
 **Measured** (1440×900, pill injected into the real contenteditable and the DOM read back; no product code changed):
@@ -231,14 +305,18 @@ The pill measured `bg rgb(232,240,255)` (`accent-soft`), `color rgb(37,99,235)` 
 
 ![Desktop: typing after the pill](assets/choice-cards/desktop-6-chosen-text.png)
 
-Requirement (c) on screen. The pill and the words share one editor flow, so the order on screen is the order that ships: `serialize()` writes the pill's `[question → answer]` first, then the text. What the user's bubble shows is what was actually sent — no second rendering that could drift. After sending, that sentence is drawn in the bubble as a tag rather than as brackets (§5.2.3): the same sentence, no longer mixed into the words the reader typed themselves.
+*A real-component capture*, scenario `choice-card-chosen-text-implemented` (1440×900 at 2×, taken from `0d4bf428b`): the sentence after the pill is what the reader typed, in the same `contenteditable` flow — the order on screen is the order that ships.
+
+Requirement (c) on screen. The pill and the words share one editor flow, so the order on screen is the order that ships: `serialize()` writes them in that order (the pill as `[question → answer]`, then the words). What the user's bubble shows is what was actually sent — no second rendering that could drift. The pill lands **at the caret** (§5.2.1), so whether the answer sits ahead of, inside or behind the reader's words is decided by where they left the caret when they picked a row (§7 has an in-sentence row); wherever it lands, the bubble draws it as a tag rather than as brackets (§5.2.3): the same sentence, no longer mixed into the words the reader typed themselves.
 
 ### 5.2.3 The user's bubble after sending
 
-One treatment on all three clients: the run of `[question → answer]` at the **head** of a prompt is drawn as a tag — a `ListChecks` glyph, the question in a lighter ink, `→`, the answer in a heavier one — and the text after it goes through markdown as before. Picked a row and typed nothing else, and the bubble is just the tag.
+One treatment on all three clients: a `[question → answer]` printed in a prompt is drawn as a tag — a `ListChecks` glyph, the question in a lighter ink, `→`, the answer in a heavier one — and the text around it goes through markdown as before. Picked a row and typed nothing else, and the bubble is just the tag.
 
 - **The text is unchanged.** The tag is a *drawing* of the sentence `choiceAnswerText` writes, not a second copy of it: the copy button, the agent and a paste elsewhere all still see `[question → answer]`. That is exactly why §7 sends plain text — how the display layer draws it cannot change how readable the sentence is;
-- **The test is conservative** (`packages/markdown/src/choiceAnswerEcho.ts`): only the head of the message, only with an `→`, never when the closing bracket is followed by `(` or `[` (that is a link, or another bracket run), at most four answers (a card's own bound). A false negative costs the styling, never a character;
+- **The test is conservative** (`packages/markdown/src/choiceAnswerEcho.ts`): it needs the `→`, never reads a closing bracket followed by `(` or `[` (that is a link, or another bracket run), reads at most four answers (a card's own bound), and leaves a run inside a fenced block or an inline code span alone — that is an example the reader pasted, and cutting it out would unbalance the fence or the backticks. A false negative costs the styling, never a character;
+- **An answer need not be at the head** (2026-11-18). The pill lands at the caret (§5.2.1), so a reader who leaves the caret mid-sentence sends the answer inside their own sentence (and text typed *after* the answer lands behind it); being a pick is not a matter of position, so the tag is drawn there too, and the words on either side are joined back in their own order (`先说 [question → answer] 再说` → the tag plus `先说 再说`, the doubled whitespace at the seam closed). It is lifted above the prose rather than drawn inline because a React Native `View` cannot sit inside a `Text` flow — one shape on all three clients beats two;
+- **A path inside an answer cannot turn the sentence into a link** (fixed 2026-11-18): before, an answer naming a path (`删未在用的 ~/omlx 副本`) made the whole bracket run look like a bare relative path, so the bubble drew the reader's sentence as a file link that opened "file not found". That rule now lives in the parser (`bracketMentionPath` in `packages/markdown/src/parseFutureMarkdown.ts`): whitespace or `→` inside the brackets means prose, never a file reference. A path that really holds spaces is spelled as a link — `[name](<with space.md>)` — which is unambiguous;
 - **The material follows the bubble.** The desktop bubble is `accent-soft`, so the tag is `accent/10` on `accent/25`; the phone's bubble is solid `accent`, so the tag mixes the bubble's own ink at 12% with a 20% border — the same colours `MarkdownText`'s `onAccent` tone uses, readable in both appearances.
 
 All four states (desktop light/dark, phone light/dark) are reproducible in the screenshot harness: the scenarios live in `scripts/screenshots/scenarios.d/choice-answer-echo.json` (`capture-desktop choice-answer-echo{,-dark}`, `capture-mobile choice-answer-echo-phone{,-dark}`), and the demo data comes from the fixture's `?choiceAnswer=1` — the card that produced the answer is still `choiceCard=1`'s.
@@ -246,6 +324,8 @@ All four states (desktop light/dark, phone light/dark) are reproducible in the s
 ### 5.3 Desktop · changing it
 
 ![Desktop: the pencil re-opens the same card above the pill](assets/choice-cards/desktop-3-change.png)
+
+*A real-component capture*, scenario `choice-card-change-implemented` (1440×900 at 2×, taken from `0d4bf428b`): the popover really is open — the scenario asserts `[data-choice-popover]` and the three rows inside it, not a shell drawn by hand.
 
 - The pill's pencil re-opens the question **in place** (a 360px popover 10px above the pill) — no scrolling back, no jumping to the reply;
 - The popover holds the same options (compact rows, notes dropped), still with the chosen one marked;
@@ -256,6 +336,8 @@ All four states (desktop light/dark, phone light/dark) are reproducible in the s
 
 ![A remote conversation: the same card, the chip above the remote field](assets/choice-cards/desktop-4-remote.png)
 
+*A real-component capture*, scenario `choice-card-remote-implemented` (1440×900 at 2×, taken from `0d4bf428b`): the card is rendered locally, the chip in the field is remote's own (`RemoteChoiceChip`). Fold threshold is still four visible, folds from six.
+
 A remote conversation's transcript is markdown from the host, rendered **locally**, so the card is automatically the same component with the same tokens — remote needs no separate implementation. Measured: the card is 768 wide, matching the remote composer.
 
 The one difference is the field: `RemoteComposer` is a plain `textarea` (no `contenteditable`, no pill machinery), so a chosen answer goes in the **chip row above the field** — the attachments' slot.
@@ -265,6 +347,8 @@ Remote's send test measures as `disabled={(!text.trim() && uploads.length === 0)
 ### 5.5 Dark
 
 ![The same card in the dark appearance](assets/choice-cards/desktop-5-dark.png)
+
+*A real-component capture*, scenario `choice-card-implemented-dark` (1440×900 at 2×, taken from `0d4bf428b`).
 
 Everything is a semantic token (`surface` / `line` / `line-soft` / `surface-subtle` / `accent` / `accent-soft` / `ink*`), no literal colours. Measured dark card background `rgb(22,27,34)` (`--color-surface` in dark), chosen row `accent-soft` dark value `#16243c`.
 
@@ -283,11 +367,11 @@ Two explored and **rejected** approaches, recorded so they are not redone:
 ![The two rejected approaches](assets/choice-cards/rejected-variants.png)
 
 - **Row numbers 1/2/3** (type a digit to choose). It looks like a keyboard accelerator and in fact collides with free text in the composer: when the user types "2 篇论文", is that `2` a choice? Choosing must be a click (or a keyboard action on the chip), never a hijack of the field's digits.
-- **An in-card "write your own…" row.** It says what the subtitle already says, and a dashed box that looks like an input but does not accept focus is worse than nothing. The free-form entry point is the composer; pointing at it is enough.
+- **An in-card "write your own…" row.** It says what the input already does, and a dashed box that looks like an input but does not accept focus is worse than nothing. The free-form entry point is the composer.
 
 ### 5.7 Mobile
 
-390×844, three frames: nothing chosen, one chosen, changing it.
+390×844, three frames: nothing chosen, one chosen, changing it. All three are **real-component captures** (scenarios `choice-card-phone-card` / `choice-card-phone-picked` / `choice-card-phone-change`, 780×1688 at 2×, taken from `0d4bf428b`) — `mobile/src/components/ChoiceCard.tsx` drew them, not an injected prototype. The fold threshold is **the same pair of numbers** as the desktop's (four visible, folds from six), but a 350pt column holds 24 units per line against the desktop's 120, so the same paragraph folds earlier here.
 
 | Nothing chosen | One chosen | Changing it |
 |---|---|---|
@@ -297,6 +381,12 @@ Two explored and **rejected** approaches, recorded so they are not redone:
 - The chosen chip sits inside the dock above the textarea (measured: chip `y 702..736`, field `y 737..783`);
 - **With zero ticks the chip is not drawn and does not count as content.** The phone has no in-editor pill, so "does an answer exist" rests entirely on three decisions in `ComposerDock` (`canSend`, `hasDraft`, whether to draw the chip), and they share one `hasAnswer` — the same rule as desktop's `answerOrNull`: untick everything ⇒ no chip, send button grey, and no §7 sentence. The rule lives upstream where the draft is written (`useComposerDraft.setChoice`), and `ComposerDock` asks it again for itself rather than relying on that;
 - **Changing it uses a bottom sheet**: at 390pt there is no room for an in-place popover. The sheet's top lands at 559pt, rows stay 44pt, a pick writes straight back to the chip and the draft is untouched.
+
+**The context expanded** (same card, the button now reads "show less"):
+
+![Phone: the context expanded — the four-line limit lifted, the whole paragraph and all three options on screen](assets/choice-cards/phone-6-expanded.png)
+
+*A real-component capture*, scenario `choice-context-expanded-phone` (780×1688 at 2×, taken from `0d4bf428b`): the **same paragraph** as the desktop's (the fixture's `?longContext=1`), only a 350pt column ⇒ expanded the paragraph is `253pt` (folded it is `82pt`) and the card runs `99..616`, still inside the transcript frame `60..732`, with all three options still on screen. Same `aria-expanded`, same "show less" — the two ends draw the fold themselves but there is one rule (`packages/markdown/src/choiceContext.ts`).
 
 ### 5.7.1 Why v1's chosen state looked wrong, and what v2 changes
 
@@ -312,13 +402,31 @@ v1's chosen row announced itself in three places at once: `accent-soft` fill, `a
 
 **Why the phone does not copy desktop's in-field pill:** RN's field is a `TextInput` (a native textarea) with no atomic contenteditable element and no `isEditorEmpty` equivalent. The phone's honest equivalent is to make the answer count as one of the draft items `canSend`/`hasDraft` already read — `ComposerDock.tsx:180-181` and `:233` are both `!!message.trim() || attachments.length > 0` — so the answer must be counted like an attachment, not drawn as a chip that takes no part in the decision.
 
+### 5.7.2 An earlier question, on the phone
+
+![Phone: two cards in one reply, the upper one read-only with its context folded](assets/choice-cards/phone-5-history-fold.png)
+
+*A real-component capture*, scenario `choice-history-fold-phone` (780×1688 at 2×, taken from `56462a7da`), from the **same fixture** as the desktop one (`?choiceHistory=1`): the same two cards, the same `hint`, the same notice. That context fits four lines on the desktop and runs past six here, so it folds to four lines plus “show more” — same threshold, a column 2.5× narrower.
+
+- The same context folds far earlier here than on the desktop: a 350pt column with `CONTEXT_UNITS_PER_LINE = 48` (a bit over a quarter of the desktop's 120) means a paragraph the desktop shows whole is already “four lines + show more” on the phone;
+- The button's state is spelled `aria-expanded`, not `accessibilityState` — react-native-web forwards `aria-*` and drops the other entirely, the same reason the rows spell `aria-checked`;
+- Both cards sit wholly inside the transcript frame (`y 60..393` and `401..667`, frame `60..732`), including the folded card's last row. The phone transcript is an inverted list whose scroller carries its own `scaleY(-1)`, so parking it at the frame's top edge is a **subtraction** — the opposite sign of the desktop's plain scroller. That is written into the scenario so the next person does not have to rediscover it.
+
+**Opened on a phone, one card eats the screen**:
+
+![Phone: the earlier card's context opened, filling the transcript frame, with the next card only just starting below](assets/choice-cards/phone-7-history-expanded.png)
+
+*A real-component capture*, scenario `choice-history-expanded-phone` (780×1688 at 2×, taken from `67b168e89`), the same fixture as the capture above plus one click. `82pt → 253pt`; the card spans `60..564` wholly inside the frame `60..732` with no text cut off (`scrollHeight == clientHeight`), the button reads “收起” with `aria-expanded=true`, and the answerable card below starts at `572` — only its opening is in frame. That is not a crop, it is the point: **opening costs a screen**, which is why folding is the default reading on the phone and why the ~100-character budget (§4) is measured against this column.
+
 ### 5.8 A chosen answer in the send queue
 
-Three captures, because the queue panel is **not one component**:
+Three captures: desktop (local session), remote desktop and phone. The remote cell was **filled in on 2026-11-18** — its rows could not draw the chip before (this client dropped the `choice` the host reported), and both ends now share one parser and one `edit_queued_run`.
 
 | Desktop (local session) | Remote desktop | Phone |
 |---|---|---|
 | ![Desktop: a choice on a queued row](assets/choice-cards/desktop-7-queue.png) | ![Remote desktop: a choice on a queued row](assets/choice-cards/desktop-8-queue-remote.png) | ![Phone: a choice on a queued row](assets/choice-cards/phone-4-queue.png) |
+
+All three are *real-component captures* (scenarios `send-queue-choice-implemented` and `send-queue-choice-remote-implemented`, 1440×900 and 780×1688 at 2×, the desktop ones from `0d4bf428b` and the remote one from this change); the desktop and remote rows come from the fixture's `?queue=1&queueChoice=1` (the remote one through the host's `get_queue`), the phone's from `demoQueueRows`. The row's text is the sentence the answer sends; its `choice` field is what the chip is drawn from.
 
 First, what **happens today** (read from the code, not guessed):
 
@@ -332,8 +440,11 @@ So the gap is not "can it be deleted" but "can the *choice* be changed": today t
 
 This decides the size of the work, so it goes first:
 
-- **Remote desktop reuses the desktop `SendQueuePanel`**: `RemoteComposer.tsx:23` imports `{ SendQueuePanel } from "../agent/SendQueuePanel"` and renders it at `:1244`. Remote has its own *composer* (a plain textarea, no pills), but the queue *panel* is the same component. So remote queue styling **is** desktop queue styling — nothing needs designing twice, only confirming the remote stylesheet does not drag it out of shape. Measured on both: chip `136×22`, pencil at `x=1181`, row width `746`.
-- **The phone has its own** `mobile/src/features/chat/components/SendQueuePanel.tsx`: a one-line `Pressable` header (`accessibilityState.expanded`, copy `展开队列中的消息` / `收起队列中的消息`) that always starts collapsed — the header already carries the count, the hint and a parked row's warning, and every row it would draw is a row of the conversation it is covering. When open the list is bounded by `sendQueueListHeight(vh, kb) = max(96, min(240, round((vh-kb)*0.3)))` and scrolls inside that. So the phone needs its own pass on chip size and placement.
+- **Remote desktop reuses the desktop `SendQueuePanel`**: `RemoteComposer.tsx` imports `{ SendQueuePanel } from "../agent/SendQueuePanel"` and draws it above its own queue rows. Remote has its own *composer* (a plain textarea, no pills), but the queue *panel* is the same component, so the styling **is** the desktop's — nothing needs designing twice.
+- **Remote rows draw the chip too, by the same rules** (filled in 2026-11-18). The host was always sending `choice` (`host/src/agent_bridge/queue.rs` writes it into `get_queue`); this client dropped it while parsing. `remoteQueue.ts` now reads it with the **same** `parseQueueChoice` the local queue uses (exported from `agentQueue.ts`), and `RemoteComposer` passes it to the panel together with `onUpdateChoice`. Changing the pick goes through `edit_queued_run` — **the answer and the sentence it states travel together**, rewritten in place by the host — so the row keeps its place, its files and its frozen settings, exactly like a local conversation.
+  - **No cancel-and-resend fallback, deliberately**: the chip is drawn only for a row whose host *reports* its answer, and reporting it and accepting the change landed in the same host change (`e8eb0d1ec`), so a host that can draw the chip can change it. An older host reports nothing ⇒ no chip ⇒ no button to fail. A failure is said, and the row is left as it was.
+  - **The earlier claim here — "measured on both: chip `136×22`" — was wrong**, and so was the missing figure; both were corrected in this change (measurements in §5.8.4, figure in §5.8).
+- **The phone has its own** `mobile/src/features/chat/components/SendQueuePanel.tsx`: a one-line `Pressable` header (`aria-expanded` — not `accessibilityState`, which react-native-web drops; copy `展开队列中的消息` / `收起队列中的消息`) that always starts collapsed — the header already carries the count, the hint and a parked row's warning, and every row it would draw is a row of the conversation it is covering. When open the list is bounded by `sendQueueListHeight(vh, kb) = max(96, min(240, round((vh-kb)*0.3)))` and scrolls inside that. So the phone needs its own pass on chip size and placement.
 
 #### 5.8.2 The row draws a chip that **is itself the button**
 
@@ -366,13 +477,14 @@ The write path **stays out of the plain-text edit**. On the desktop the queue pa
 
 | | Desktop | Remote | Phone |
 |---|---|---|---|
-| chip | `136×22` | `136×22` | `129×23` |
-| chip right edge / pencil left | `659` / `1181` | `659` / `1181` | `180` / `297` |
+| chip | fills the row's content width, `22` tall | `182×22` | `185×21` |
 | row | `746×60` | `746×52` | `348×52` |
 | icons on the chip | 1 (chevron) | 1 (chevron) | 1 (chevron) |
-| row text | `1 接下来 · 重画森林图 顺便把图注也改成中文` | same | same |
+| row text | `[接下来做哪一件？ → 重画森林图]` | same | same |
 
-All three rows keep their own pencil and bin: the assertions check that the chip's right edge is left of the pencil's left edge, and that `[data-queue-edit]` / `[data-testid=send-queue-edit]` still exist. The chip is **inserted into** the row, not a replacement for the row's controls.
+All three rows keep their own pencil and bin: the assertions check the chip's `aria-label` and the row text at once, and that `[aria-label="修改队列中的消息"]` / `[aria-label="从队列中删除"]` (the phone's `send-queue-edit` / `send-queue-remove`) are still in the row. The chip is **inserted into** the row, not a replacement for the row's controls.
+
+The remote column was measured on 2026-11-18, in a scenario that also asserts the frame really is a remote conversation (`[data-testid="remote-thread-usage"]`) — otherwise a local screenshot would be standing in as evidence for the remote one.
 
 ## 5.9 The list mark: this one is waiting on your choice
 
@@ -454,6 +566,7 @@ The answer must be readable by the agent **and** on the degraded paths (TUI, IM 
 |---|---|
 | Picked, nothing typed | `[接下来做哪一件？ → 重画森林图]` |
 | Picked and added a note | `[接下来做哪一件？ → 重画森林图] 顺便把图例挪到右下` |
+| Typed first, picked with the caret mid-sentence | `另外 asrbench 可以删除[删哪些？ → 删 A 类全部]` |
 | Multiple picks | `[这三项都要 → 重画森林图、补一张实验流程图]` |
 | Only typed (nothing picked / chip removed) | Just what the user wrote |
 | Picked then all unticked (multi card) | Just what the user wrote — zero ticks is not an answer, and neither end emits `[…] → ]` |
@@ -474,6 +587,8 @@ The answer must be readable by the agent **and** on the degraded paths (TUI, IM 
 
 The fence syntax makes "unknown" mean "renders normally", which is the main reason it was chosen (§3). The parser never throws: any malformed input falls back to a code block.
 
+The table describes a client that knows cards. A client whose reader turned the switch **off** is not in the "degrades to a code block" row: off means the block does not appear at all, source included, and the agent is not taught the fence either (§4.1).
+
 ## 9. Copy / icons / accessibility
 
 Fixed copy (the model neither provides nor should provide it) — keys needed on all three surfaces:
@@ -482,9 +597,9 @@ Fixed copy (the model neither provides nor should provide it) — keys needed on
 |---|---|---|
 | `choice.mode.single` | 单选 | Single choice |
 | `choice.mode.multi` | 多选 | Multiple choice |
-| `choice.hint.single` | 选一个就放进输入框；也可以直接在输入框里写别的 | Pick one and it lands in the input; you can type something else instead |
-| `choice.hint.multi` | 可以多选，点几个都行 | Pick as many as apply |
-| `choice.hint.readonly` | 只作展示：这张卡不能选 | An earlier question — this card can no longer be picked |
+| `choice.context.expand` | 展开 | Show more |
+| `choice.context.collapse` | 收起 | Show less |
+| `choice.hint.readonly` | 早先的提问，这张卡不能再选 | An earlier question — this card can no longer be picked |
 | `choice.foot.queued` | 已放进输入框，可以继续补充，也可以直接发送 | In the input — add a note if you want, or send as is |
 | `choice.chip.change` | 修改「{{title}}」的选择 | Change the answer to "{{title}}" |
 | `choice.chip.remove` | 移除「{{title}}」的选择 | Remove the answer to "{{title}}" |
@@ -493,6 +608,7 @@ Fixed copy (the model neither provides nor should provide it) — keys needed on
 
 - Icons: `list-checks` in the card header (pick one of several items), the existing `lucide` pencil and ✕ elsewhere, a chevron on the queue chip;
 - Semantics: the card is `role="group"` with `aria-labelledby` pointing at its title; option rows are `role="radio"` (single) / `role="checkbox"` (multi) with `aria-checked`; the composer chip is a `role="group"` whose two buttons carry the `aria-label`s above; **the queue chip is the opposite — the whole chip is one `role="button"`** labelled with `choice.queue.change`, because it means one thing only (change the choice) while the row's pencil and bin stand on their own;
+- The fold button is `role="button"` + `aria-expanded` + `aria-controls` (pointing at the paragraph); **the phone spells `aria-expanded` too**, because react-native-web forwards `aria-*` and drops `accessibilityState` wholesale — the same reason the rows spell `aria-checked`, so all three surfaces read the same thing.
 - Keyboard: Tab into the card → arrows move between options → Enter/Space picks → focus moves to the composer. `Esc` closes a popover;
 - The chosen state never relies on colour alone: filled check + border + fill (still legible in greyscale or with colour-vision deficiency).
 
@@ -504,7 +620,7 @@ Fixed copy (the model neither provides nor should provide it) — keys needed on
 | A free-text field inside the card | The composer is the free-text field (§5.6) |
 | Digit shortcuts on rows | They would hijack the composer's digits (§5.6) |
 | Nested cards / a card mid-reply | "Which pick did I change" becomes unanswerable |
-| Editing historical cards | Same; read-only, and the subtitle says it cannot be picked (§3) |
+| Editing historical cards | Same; read-only, with a line saying it cannot be picked (§3) |
 | An interactive TUI / IM version | This pass only guarantees readable degradation; the TUI already has its own local choice UI (`SendChoiceSheet`), which is app UI, not transcript content |
 | Pill-ifying the answer in the user's bubble | Needs a new reference type plus server understanding, and the gain is purely visual; version two |
 | Structured choice records on the model side | Reading the text is enough for v1; add it when something actually needs the counts |
@@ -524,7 +640,7 @@ In dependency order; each step merges on its own:
    - 7b. **Remote desktop**: `RemoteComposer.tsx:1244` reuses the same `SendQueuePanel`, so this surface needs **no new code** — only one verification run inside a remote session (the remote stylesheet could drag the row width or type scale out of shape).
    - 7c. **Phone**: `mobile/src/features/chat/components/SendQueuePanel.tsx` is a separate implementation (folding header + `sendQueueListHeight` bound); the chip is 11px type, sits above the row's words, and reports which row to change (`onRequestChoiceChange`) — `ComposerDock` owns the `ChoiceSheet`, because a sheet is a `Modal` and does not belong inside a list of rows.
 8. **Prompt**: `agent/src/prompt/choice.md` plus the `include_str!` in `mod.rs`; update the prompt-assembly tests in `agent/src/prompt/mod.rs` that assert section order.
-9. **Regression**: `scripts/screenshots/scenarios.d/choice-cards.json` already turns every frame in this document into a re-runnable scenario (ten on desktop, four on the phone, including `chosen-text`, `queue`, `queue-remote` and `phone-queue`) — use it for visual regression once implemented (swap the injections for the real component).
+9. **Regression**: `scripts/screenshots/scenarios.d/choice-cards.json` already turns every frame in this document into a re-runnable scenario (twenty-one on desktop, eleven on the phone, including `chosen-text`, `queue`, `queue-remote`, `expanded` and `history-fold`).
 
 ## 12. Test points
 
@@ -533,13 +649,16 @@ In dependency order; each step merges on its own:
 - **Desktop**: card renders; read-only ↔ interactive switching; clicking a row puts a pill in; the pencil changes it; ✕ removes it and the send button goes grey; sent content for all four cases in §7, asserted one by one; after sending the pill is gone and the card does **not** keep a highlighted row (the answer is the tag on the user message; see §2 for why backfilling it is not done).
 - **Remote**: as above, plus asserting the chip is above the textarea rather than inside it, **that the send button is live with only a chip** (also missed by v1), and that switching conversations does not leak an answer.
 - **Mobile**: 44pt rows; the chosen row carries **exactly one cue** (no border); the pencil and × use the same ink; a sheet pick updates the chip; **`canSend` is true with only a chip**; the keyboard does not cover the chip row.
+- **Folding (2026-11-18)**: the line estimate (wide characters count two, explicit line breaks start a paragraph, a zero-width column does not blow up); four lines or fewer **draw no button and are not clipped at all**; it folds from six lines, `aria-expanded` going `false` → `true` drops the clamp while the full text stays in the DOM; a read-only card's button works and unlocks no row; `line-clamp-4` and `CHOICE_CONTEXT_VISIBLE_LINES` are tied together by a test that reads the constant; **the prompt's 100-character budget matches the phone column**: 100 Chinese characters (48 units per line) do not fold while 144 do (`choiceContext.test.ts`), and every example `context:` in `choice.md` is ≤ 100 characters (`prompt_teaches_the_choice_card_fence`) — teach exactly what you demonstrate. (`choiceContext.test.ts`, both `ChoiceCard.test` files.)
+- **A past card (read-only)**: with two cards in one reply, the upper one is `readonly` / `aria-disabled` / out of the tab order, **keeps the `hint` it was written with**, and draws `choice.hint.readonly` after it; its own `context` stays and the fold button still works. The capture scenarios pin two more things: both cards and the folded card's last row sit inside the transcript frame, and the clamped paragraph measures 72px on the desktop and 82pt on the phone.
 - **Queue (all three surfaces)**: after enqueueing, the answer is a `choice` rather than flattened text; changing it updates both the row's chip and the text that eventually sends; removing the whole row and removing only the choice are distinct paths; an older Agent that omits `choice` degrades without error.
   - **The chip never takes over the row's pencil** (v3's hard constraint): the chip is `role=button` with **exactly one** icon (a chevron); the chip's right edge is left of the pencil's left edge; the row's own pencil and bin still exist and are hittable. Three assertions, and losing one brings back the two-pencil ambiguity.
-  - **Remote**: since remote reuses the desktop panel, assert that `[data-send-queue]` draws the chip inside the remote frame at the same size as desktop (`136×22`).
-  - **Phone**: the folding header opens and closes; the chip does not overflow its row (`129×23` in a `348`-wide row); the row keeps `send-queue-edit` and `send-queue-remove`.
+  - **Remote**: remote reuses the same panel, and a row's `choice` is now parsed (`parseQueueChoice`, shared with the local queue). Assert: the chip draws inside the remote frame, its `aria-label` and the row text agree, the pencil and bin are still there, and a pick sends exactly one `edit_queued_run` (`message` and `choice` together, not a cancel and a re-send). A host that reports no field (an older one) draws no chip — `remoteQueue.test.ts` pins that “missing / null / unusable” all read as no answer.
+  - **Phone**: the folding header opens and closes and spells `aria-expanded` (not `accessibilityState`, which web drops); the chip does not overflow its row (measured `185×21` in a `348`-wide row); the row keeps `send-queue-edit` and `send-queue-remove`.
+  - **A changed answer on the phone stays on that row, not in the draft**: `queueChoiceWiring.test.ts` mounts the screen with the panel **unmocked** and presses `send-queue-toggle` → `send-queue-choice` → `choice-sheet-option-flow`, then asserts the host received `editQueuedRun(session, row, rewritten sentence, {mode,options,selectedIds,title})` and that the real dock’s `choice` prop is `null` before and after — the answer stays on the row and never fills the box. Three falsifications: deleting the fourth argument goes red; wiring `onQueueUpdateChoice` to `undefined` (panel detached from the handler) goes red; deleting both zero-pick refusals — the dock’s and the screen’s — turns the second test red, while deleting either alone leaves it green, so that test pins the outcome rather than which layer refused (said so in its comment). The other two halves live in the mocked files: `ComposerDock.test.ts` drives the real panel and asserts `onChangeChoice` is not called (the draft path, with an identically shaped answer), and `ChatScreen.test.ts` enters at the seam the panel calls and asserts payload plus untouched draft.
 - **Degradation**: the TUI prints the block's content; unknown clients likewise.
 - **Accessibility**: `role` / `aria-checked` / `aria-label` assertions; arrow keys and Enter.
-- **Visual regression**: the fourteen scenarios in `choice-cards.json` (including both comparison sheets and the two rejected approaches).
+- **Visual regression**: the 34 scenarios in `choice-cards.json` (22 desktop + 12 phone, including both comparison sheets and the two rejected approaches).
 
 ## 13. Re-running the screenshots
 
@@ -549,7 +668,6 @@ python3 scripts/screenshots/capture.py serve-mobile         # phone harness (809
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   capture-desktop choice-card-empty choice-card-chosen choice-card-change \
                   choice-card-chosen-text choice-card-queue \
-                  choice-card-queue-remote \
                   choice-card-remote choice-card-dark
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   variants-desktop choice-card-styles --columns 3
@@ -558,7 +676,22 @@ python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
 python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
   capture-mobile choice-card-phone choice-card-phone-chosen \
                  choice-card-phone-change choice-card-phone-queue
+# the real-component captures (§5.1 / §5.1.1 / §5.2 / §5.3 / §5.4 / §5.5 / §5.7 / §5.7.2 / §5.8 link these)
+python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
+  capture-desktop choice-card-implemented choice-history-fold-desktop \
+                  choice-history-expanded-desktop choice-context-expanded-desktop \
+                  choice-pill-implemented \
+                  choice-card-chosen-text-implemented choice-card-change-implemented \
+                  choice-card-implemented-dark choice-card-remote-implemented \
+                  send-queue-choice-implemented send-queue-choice-remote-implemented
+python3 scripts/screenshots/capture.py --out .screenshots/choice-design \
+  capture-mobile choice-card-phone-card choice-history-fold-phone \
+                 choice-history-expanded-phone choice-context-expanded-phone \
+                 choice-card-phone-picked \
+                 choice-card-phone-change send-queue-choice-implemented
 ```
+
+Order matters: `serve-mobile` installs harness-only packages (`react-native-web` and friends) into the `mobile` workspace with `--no-save`, which moves a few dependencies around. To run `mobile`'s jest after a capture, `npm ci` once to put `@react-native/jest-preset` back — without it jest-expo stops with “The React Native Jest preset … has moved to a separate package”.
 
 Every scenario asserts, it does not merely capture: `choice-card-chosen` checks the pill is **inside** the editor and that `window.__choiceSendButton().disabled === false`; the phone scenarios check the chosen row has **no border** and that the pencil and × share one ink. A failed assertion makes `capture.py` report `n/m captured` rather than quietly handing back a picture that "looks fine".
 

@@ -266,8 +266,9 @@ test("reloads a desktop-originated change", async () => {
 test("does not offer the remote desktop switch", async () => {  await openPreferences();
   expect(toggle("desktopSettings.autoConnectRemote")).toBeUndefined();
   expect(strings()).not.toContain("desktopSettings.autoConnectRemote");
-  // Three automation switches plus the two archiving ones.
-  expect(tree.root.findAllByType(SettingsSwitch)).toHaveLength(5);
+  // Three automation switches plus the two archiving ones, plus the choice-card
+  // switch. The desktop's own remote switch is missing, which is the point here.
+  expect(tree.root.findAllByType(SettingsSwitch)).toHaveLength(6);
 });
 
 test("offline and old desktops cannot write new preferences", async () => {  mockRemote.desktopOnline = false;
@@ -545,9 +546,9 @@ test("preferences auto-load without a persistent refresh button", async () => {
   await openPreferences();
   expect(mockRemote.getDesktopSettings).toHaveBeenCalledTimes(1);
   // auto-upgrade, auto-title, skill recommendation, run-log cleanup and
-  // automatic archiving. The remote desktop switch is the desktop's own (its
-  // Remote page), so the phone does not offer it.
-  expect(tree.root.findAllByType(SettingsSwitch)).toHaveLength(5);
+  // automatic archiving, plus the choice-card switch. The remote desktop switch
+  // is the desktop's own (its Remote page), so the phone does not offer it.
+  expect(tree.root.findAllByType(SettingsSwitch)).toHaveLength(6);
   expect(tree.root.findAllByType(Button)).toHaveLength(0);
 });
 

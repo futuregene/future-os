@@ -397,6 +397,19 @@ async fn relay_credentials_are_accepted_and_scoped_by_the_broker() {
         b"FRE2"
     );
 
+    // Retiring a queue subscriber uses the bridge's own reply namespace
+    // for a broker receipt; publishing commands would violate its JWT.
+    commands.unsubscribe().await.unwrap();
+    let retirement_subject = format!("p.{PAIR_A}.rep.{}._retired.test", host.device_id);
+    let mut receipt = bridge.subscribe(retirement_subject.clone()).await.unwrap();
+    bridge
+        .publish(retirement_subject.clone(), Vec::new().into())
+        .await
+        .unwrap();
+    assert!(expect_delivery(&mut receipt, &retirement_subject)
+        .await
+        .is_empty());
+
     // ── The client may not publish as the bridge ──
     let observer = connect(&broker.url, &phone.key, &client_jwt, "client-a-observer").await;
     let mut presence_observer = observer

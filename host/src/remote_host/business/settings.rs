@@ -235,6 +235,7 @@ struct SettingsPatch {
     auto_title_first_turn: Option<bool>,
     auto_connect_remote: Option<bool>,
     skill_recommend: Option<bool>,
+    choice_cards: Option<bool>,
     hidden_models: Option<Vec<String>>,
     archive_run_log_cleanup: Option<bool>,
     archive_run_log_notice_seen: Option<bool>,
@@ -264,6 +265,7 @@ fn parse_settings_patch(
         auto_title_first_turn: patch.auto_title_first_turn,
         auto_connect_remote: patch.auto_connect_remote,
         skill_recommend: patch.skill_recommend,
+        choice_cards: patch.choice_cards,
         hidden_models: patch.hidden_models,
         archive_run_log_cleanup: patch.archive_run_log_cleanup,
         archive_run_log_notice_seen: patch.archive_run_log_notice_seen,
@@ -322,6 +324,7 @@ async fn reply_settings(
                     "autoTitleFirstTurn": settings.auto_title_first_turn,
                     "autoConnectRemote": settings.auto_connect_remote,
                     "skillRecommend": settings.skill_recommend,
+                    "choiceCards": settings.choice_cards,
                     "hiddenModels": settings.hidden_models,
                     "archiveRunLogCleanup": settings.archive_run_log_cleanup,
                     "archiveRunLogNoticeSeen": settings.archive_run_log_notice_seen,
@@ -437,6 +440,19 @@ mod tests {
         // Absent means "leave it alone", not "set it to false".
         let untouched = parse_settings_patch(json!({})).expect("parses");
         assert_eq!(untouched.skill_recommend, None);
+    }
+
+    /// The choice-card switch is the same setting on both surfaces: the phone can
+    /// turn it off for the desktop it is driving, because the cards and their
+    /// prompt section are one value in one store.
+    #[test]
+    fn settings_patch_accepts_the_choice_card_toggle() {
+        let patch = parse_settings_patch(json!({ "choiceCards": true })).expect("parses");
+        assert_eq!(patch.choice_cards, Some(true));
+        let off = parse_settings_patch(json!({ "choiceCards": false })).expect("parses");
+        assert_eq!(off.choice_cards, Some(false));
+        let untouched = parse_settings_patch(json!({})).expect("parses");
+        assert_eq!(untouched.choice_cards, None);
     }
 
     /// The archiving settings a phone now offers must round-trip: the patch

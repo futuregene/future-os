@@ -299,6 +299,10 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
                 predates the toggle), matching the desktop's own default. */}
             <SettingsSwitch label={t("desktopSettings.skillRecommend")} description={t("desktopSettings.skillRecommendHint")}
               value={resource.data?.skillRecommend ?? false} disabled={disabled} onChange={skillRecommend => void changeSettings({ skillRecommend })} />
+            {/* Same value the desktop's General page writes: off draws no card on
+                either surface, and the desktop's agent is not taught the fence. */}
+            <SettingsSwitch label={t("desktopSettings.choiceCards")} description={t("desktopSettings.choiceCardsHint")}
+              value={resource.data?.choiceCards ?? false} disabled={disabled} onChange={choiceCards => void changeSettings({ choiceCards })} />
             {/* The remote desktop switch is deliberately absent: on that machine
                 the Remote page's switch *is* the whole preference, and this row
                 would write the value the host reads at launch, so a second

@@ -1,6 +1,7 @@
 import type { ChoiceCardMode, ChoiceCardNode, ChoiceCardOption } from "@future-os/markdown";
-import { ListChecks } from "lucide-react-native";
-import { createContext, useContext } from "react";
+import { CHOICE_CONTEXT_VISIBLE_LINES, choiceContextFolds } from "@future-os/markdown";
+import { Check, ChevronDown, ChevronUp, ListChecks } from "lucide-react-native";
+import { createContext, useContext, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { layout, radius, spacing } from "../theme/tokens";
@@ -41,6 +42,32 @@ export const ChoiceCardAnswerContext = createContext<ChoiceCardAnswer | undefine
 export const ChoiceCardAnswerProvider = ChoiceCardAnswerContext.Provider;
 
 /**
+ * Whether the paired desktop draws `futureos-choice` cards.
+ *
+ * The phone mirrors the desktop's setting rather than holding its own: a card is
+ * drawn by whichever surface the reader is on, and the desktop's switch is the
+ * one that also decides whether the agent is taught the fence (`ChatScreen`
+ * passes `desktopSettings.choiceCards` down here). The renderer's own default
+ * stays `true` so a card is only hidden on a real "off": the switch ships off in
+ * the persisted settings, and a surface that reads them gets `false` from there.
+ */
+export const ChoiceCardsEnabledContext = createContext(true);
+
+export const ChoiceCardsEnabledProvider = ChoiceCardsEnabledContext.Provider;
+
+/**
+ * Width units one line of a phone card's context holds: 350pt less the card's
+ * 16pt padding, at 13px, is about 24 CJK characters — 48 units by
+ * `estimateContextLines`'s accounting. The phone's column is 2.5x narrower than
+ * the desktop's, so the same context that fits a desktop card in four lines
+ * already folds here, which is the point of passing it in.
+ *
+ * The visible line count is the shared `CHOICE_CONTEXT_VISIBLE_LINES`, so
+ * `numberOfLines` and the fold rule cannot drift apart.
+ */
+const CONTEXT_UNITS_PER_LINE = 48;
+
+/**
  * A `futureos-choice` block: the reply's closing question, drawn as a card.
  *
  * The phone's card (design `docs/design/choice-cards.zh-CN.md` §5.7) is the
@@ -64,6 +91,17 @@ export function ChoiceCard({ live, node }: { live: boolean; node: ChoiceCardNode
   const picked = live && answer?.title === node.title ? answer.selectedIds : [];
   const multi = node.mode === "multi";
   const onPick = live ? answer?.onPick : undefined;
+  // No subtitle of its own any more (§5.1): the mode label and the mark shape
+  // already say single or multi, and "the answer lands in the input" described
+  // something the composer shows by itself. The model's own line still shows;
+  // a past card adds the notice underneath.
+  const guidance = node.hint;
+  // Nothing bounds what a model writes, and a card carrying twenty lines of
+  // context has become the reply it was meant to replace. Above the visible
+  // lines the tail folds behind a button. Below it, no control at all.
+  const [contextExpanded, setContextExpanded] = useState(false);
+  const contextFolds = node.context ? choiceContextFolds(node.context, CONTEXT_UNITS_PER_LINE) : false;
+  const contextFolded = contextFolds && !contextExpanded;
   return (
     <View style={styles.card} testID="choice-card">
       <View style={styles.head}>
@@ -73,11 +111,54 @@ export function ChoiceCard({ live, node }: { live: boolean; node: ChoiceCardNode
           {multi ? t("choice.mode.multi") : t("choice.mode.single")}
         </Text>
       </View>
-      <Text style={styles.hint}>
-        {live
-          ? node.hint || (multi ? t("choice.hint.multi") : t("choice.hint.single"))
-          : t("choice.hint.readonly")}
-      </Text>
+      {node.context
+        ? (
+            <>
+              <Text
+                numberOfLines={contextFolded ? CHOICE_CONTEXT_VISIBLE_LINES : undefined}
+                style={styles.context}
+                testID="choice-card-context"
+              >
+                {node.context}
+              </Text>
+              {contextFolds
+                ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      /**
+                       * `aria-expanded` for the same reason the rows spell
+                       * `aria-checked`: react-native-web forwards `aria-*` and
+                       * drops `accessibilityState`, so the button's state would
+                       * vanish on the web build while the native tree kept it.
+                       */
+                      aria-expanded={contextExpanded}
+                      hitSlop={8}
+                      onPress={() => setContextExpanded(expanded => !expanded)}
+                      style={styles.contextToggle}
+                      testID="choice-card-context-toggle"
+                    >
+                      {contextExpanded
+                        ? <ChevronUp color={colors.inkMuted} size={13} />
+                        : <ChevronDown color={colors.inkMuted} size={13} />}
+                      <Text style={styles.contextToggleText}>
+                        {contextExpanded ? t("choice.context.collapse") : t("choice.context.expand")}
+                      </Text>
+                    </Pressable>
+                  )
+                : null}
+            </>
+          )
+        : null}
+      {guidance
+        ? <Text style={styles.hint} testID="choice-card-hint">{guidance}</Text>
+        : null}
+      {live
+        ? null
+        : (
+            <Text style={styles.readonly} testID="choice-card-readonly">
+              {t("choice.hint.readonly")}
+            </Text>
+          )}
       <View
         accessibilityLabel={multi ? undefined : node.title}
         accessibilityRole={multi ? undefined : "radiogroup"}
@@ -132,6 +213,8 @@ export function ChoiceOptionRow({
   testID?: string;
 }) {
   const styles = useStyles();
+  const { colors } = useTheme();
+  const multi = mode === "multi";
   return (
     <Pressable
       accessibilityLabel={option.description ? `${option.label}，${option.description}` : option.label}
@@ -153,8 +236,17 @@ export function ChoiceOptionRow({
       ]}
       testID={testID}
     >
-      <View style={[styles.ring, picked ? styles.ringPicked : null]}>
-        {picked ? <View style={styles.dot} /> : null}
+      {/*
+        Shape carries the mode: a radio ring for a mutually exclusive pick, a
+        square checkbox for rows that may be picked together. The mark keeps its
+        size either way, so a row does not jump as it becomes the answer.
+      */}
+      <View style={[styles.mark, multi ? styles.box : styles.ring, picked ? styles.markPicked : null]}>
+        {picked
+          ? multi
+            ? <Check color={colors.accent} size={12} strokeWidth={3} />
+            : <View style={styles.dot} />
+          : null}
       </View>
       <View style={styles.rowCopy}>
         <Text style={[styles.rowLabel, picked ? styles.rowLabelPicked : null]}>
@@ -203,12 +295,49 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     fontWeight: "600",
   },
   mode: { color: theme.colors.inkMuted, fontSize: theme.font(11) },
-  hint: {
+  // The situation, above the instruction: the reader answers from the card, not
+  // from a scroll back up the reply. A step louder than `hint` — it is content,
+  // the line below it is chrome — and pre-line so repeated `context:` lines keep
+  // their breaks.
+  context: {
     paddingHorizontal: spacing.md,
-    paddingBottom: spacing.sm,
+    paddingBottom: 6,
+    color: theme.colors.inkSoft,
+    fontSize: theme.font(13),
+    lineHeight: theme.leading(19),
+  },
+  // "展开"/"收起": a row of its own under the context, 44pt tall like every other
+  // touch target on this card (hitSlop covers the rest), quiet enough to read as
+  // chrome rather than a fifth option.
+  contextToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    marginTop: -2,
+    paddingHorizontal: spacing.md,
+    paddingBottom: 6,
+    minHeight: layout.touchTarget,
+  },
+  contextToggleText: {
     color: theme.colors.inkMuted,
     fontSize: theme.font(12),
     lineHeight: theme.leading(17),
+  },
+  hint: {
+    paddingHorizontal: spacing.md,
+    paddingBottom: 6,
+    color: theme.colors.inkMuted,
+    fontSize: theme.font(12),
+    lineHeight: theme.leading(17),
+  },
+  // A past card says why it cannot be picked, after the model's own hint rather
+  // than in place of it (§2, revised 2026-11-18).
+  readonly: {
+    paddingHorizontal: spacing.md,
+    paddingBottom: spacing.sm,
+    color: theme.colors.inkMuted,
+    fontSize: theme.font(11),
+    lineHeight: theme.leading(16),
   },
   rows: { gap: 2, paddingHorizontal: 6, paddingBottom: spacing.sm },
   row: {
@@ -222,20 +351,21 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   },
   rowPicked: { backgroundColor: theme.colors.accentSoft },
   rowPressed: { opacity: 0.72 },
-  ring: {
+  mark: {
     width: 18,
     height: 18,
     marginTop: 1,
     flexShrink: 0,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: radius.pill,
     borderWidth: 1.5,
     borderColor: theme.colors.line,
   },
-  // Only the stroke thickens and turns: the box keeps its size, so the row does
+  ring: { borderRadius: radius.pill },
+  box: { borderRadius: 4 },
+  // Only the stroke thickens and turns: the mark keeps its size, so the row does
   // not shift as it becomes the answer.
-  ringPicked: { borderWidth: 2, borderColor: theme.colors.accent },
+  markPicked: { borderWidth: 2, borderColor: theme.colors.accent },
   dot: {
     width: 8,
     height: 8,

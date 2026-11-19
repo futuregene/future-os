@@ -432,7 +432,7 @@ impl SseBroadcaster {
         let receipt = if !persist {
             None
         } else {
-            match Self::append_journal(&mut journal, &event, source, bytes) {
+            match Self::append_journal(&mut journal, &self.journal_health, &event, source, bytes) {
                 Ok(receipt) => receipt,
                 Err(failure) => {
                     match failure {
