@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "purpose": "development regression set: 374 challenge cases plus 126 fixed sampled all-correct controls",
+  "purpose": "development regression set: 354 challenge cases after excluding shared output limits plus 146 fixed sampled all-correct controls",
   "seed": "future-fusion-regression-500-20261118-v1",
   "sampling": "retain source suite order; membership frozen in fusion-regression-500.selection.json",
   "sources_lock_sha256": "7cacf4a2d56b34da931c63cc2ab50d89a739d644cee480b989dd0b6310f98f71",
@@ -251,18 +251,18 @@
       "answer_sha256": "955cca1ceba45052d85984d3a2565f4ce25b7488602c60a165598bf80b26e472"
     },
     {
+      "id": "bbeh:284",
+      "dataset": "bbeh",
+      "stratum": "mini",
+      "question_sha256": "d5f67c4a51aeccd6433e489912084974dab5e47cd6d928a2d53b7a14e39c9b7f",
+      "answer_sha256": "391552c099c101b131feaf24c5795a6a15bc8ec82015424e0d2b4274a369a0bf"
+    },
+    {
       "id": "bbeh:302",
       "dataset": "bbeh",
       "stratum": "mini",
       "question_sha256": "b81cd0c3ba64806a973765827bcdd1ffd568c4975989edfe6e7174842b7056ac",
       "answer_sha256": "936d2f126456cbc58d22fefc8ceb2d616999bf9d77689365fe468b5289f2b1ca"
-    },
-    {
-      "id": "bbeh:419",
-      "dataset": "bbeh",
-      "stratum": "mini",
-      "question_sha256": "04acdcd4d396f9c3deaf4194bb9f8466ae0231854ce9a5ed9ff29a0983d6c2ff",
-      "answer_sha256": "4933daa991dd1fe2ed8aa7f872a721f729003cfcc7e1c46d930119231ecdd211"
     },
     {
       "id": "bbeh:38",
@@ -468,13 +468,6 @@
       "answer_sha256": "b4976829e8c7b620ed661e5e6ec38e9171f1653263b41bae4cf5adcff55e9d80"
     },
     {
-      "id": "bbeh:121",
-      "dataset": "bbeh",
-      "stratum": "mini",
-      "question_sha256": "1b339aaae82ad7668ec1590bf51c221573d6493b7d86b0b8e0282e82becaeed5",
-      "answer_sha256": "5f0a96847bc3f1398811e612a931a72333487b625e4cf9d58e2b01b42e7f1b65"
-    },
-    {
       "id": "bbeh:221",
       "dataset": "bbeh",
       "stratum": "mini",
@@ -578,6 +571,13 @@
       "stratum": "mini",
       "question_sha256": "9a7829149ad022e79da9f8805628ffb59a50fcf4f7b23b3bebfc00331aa21272",
       "answer_sha256": "b31c0683e6f80fb2ad4ce100e1ddd25857e31bbfed3c22714ef023102a4f1247"
+    },
+    {
+      "id": "bbeh:383",
+      "dataset": "bbeh",
+      "stratum": "mini",
+      "question_sha256": "dbcfa67fc97eadb0bf9ac62a98ea2353b6e9e23c43abb31de00f67b3ea13f09a",
+      "answer_sha256": "3a1459634fa5b4c98dd18c48d402cdf66d183523251d21cc38ba09c09500b369"
     },
     {
       "id": "bbeh:370",
@@ -755,6 +755,13 @@
       "answer_sha256": "6b597f331905f5cd634674b11cbd26afbbcd87278cb17c4d73c586d70ceed229"
     },
     {
+      "id": "bbeh:320",
+      "dataset": "bbeh",
+      "stratum": "mini",
+      "question_sha256": "5a17f8bf9d265bc9d20d0ddc73b39f7ae0a93b89995ee8aa7ccb84eb37f285db",
+      "answer_sha256": "1c815c0b748ceec6f927dd8a12e4dd2bf818047894040d0c1b870247820d2821"
+    },
+    {
       "id": "bbeh:161",
       "dataset": "bbeh",
       "stratum": "mini",
@@ -895,25 +902,11 @@
       "answer_sha256": "cdbd88882765fce35159d5d5e6cffbb4626ef6250284f600a3ea04b333f1789b"
     },
     {
-      "id": "bbeh:88",
-      "dataset": "bbeh",
-      "stratum": "mini",
-      "question_sha256": "09d584b758a0278832470edf767ad2eee974eaf6ed583132a3cd62b7248fb985",
-      "answer_sha256": "657deefc446897a0c22a79c355867734390208126db2b984ac9cb24a6184660a"
-    },
-    {
       "id": "bbeh:114",
       "dataset": "bbeh",
       "stratum": "mini",
       "question_sha256": "7bbce2ffc28619bc2b7ac6df452b8d253f30142ea77bc988ef47c6a5af2b388d",
       "answer_sha256": "192638207ea3139eeb3d558121745b3b88afdec4103a655ad93f241ba9e2d084"
-    },
-    {
-      "id": "bbeh:131",
-      "dataset": "bbeh",
-      "stratum": "mini",
-      "question_sha256": "e60193022f207a52063220c95cdbe00c7285cfc473b9fac1682c5015691cc5e5",
-      "answer_sha256": "6b597f331905f5cd634674b11cbd26afbbcd87278cb17c4d73c586d70ceed229"
     },
     {
       "id": "bbeh:389",
@@ -928,6 +921,13 @@
       "stratum": "mini",
       "question_sha256": "a426c6ebf02a044c1b2db50d9f30b6221be36eb6c5e41d0a9b978620047496ca",
       "answer_sha256": "fd247be11944ef36b3f5683b649159dda92984dfee001c7572d24f73ec6ad8ac"
+    },
+    {
+      "id": "bbeh:170",
+      "dataset": "bbeh",
+      "stratum": "mini",
+      "question_sha256": "1ffa320468b168c6f0b03f4d5ebc065ffaa154901871dfc902b43d340eb3194b",
+      "answer_sha256": "5e3aec27e9921e0fa5243dc75a927ff87f67a90a1f2b63e864260d14370f2170"
     },
     {
       "id": "bbeh:219",
@@ -1131,6 +1131,13 @@
       "stratum": "mini",
       "question_sha256": "2c449a9ea8601404475680050d45731bdc527acfe71cfaff20fe17c915408cca",
       "answer_sha256": "fd247be11944ef36b3f5683b649159dda92984dfee001c7572d24f73ec6ad8ac"
+    },
+    {
+      "id": "bbeh:362",
+      "dataset": "bbeh",
+      "stratum": "mini",
+      "question_sha256": "1d4c617391453a2e19525842395f75bab8d5123598e277417ba51cf8efbb3265",
+      "answer_sha256": "af37a39f9689b0e1274628fc198b5e13160c707b25d95b35eb11b0cae8e2fc12"
     },
     {
       "id": "bbeh:93",
@@ -1756,13 +1763,6 @@
       "answer_sha256": "37f814755782fd4f1a7fa0488f006b5731012562c45d2ce5ca2280034aee12d7"
     },
     {
-      "id": "bbeh:14",
-      "dataset": "bbeh",
-      "stratum": "mini",
-      "question_sha256": "8606cfc1ee0d89f9e35f0e6149dbb9d4d3043d87b598c0560a96c0300fb88623",
-      "answer_sha256": "a0bca9d1fe2c6fd2e863175acc6bd08da1afa2056268696db8fa2a48df3059d7"
-    },
-    {
       "id": "bbeh:133",
       "dataset": "bbeh",
       "stratum": "mini",
@@ -1810,13 +1810,6 @@
       "stratum": "mini",
       "question_sha256": "0d1c7d50779c04391919f3f3ff0e8cfd5cc3783ab8398e61529ffb9fc482619e",
       "answer_sha256": "4eca5b3f6f5d46e348a9fbbbfecf4ae73462b07e0d2fbf3841eb549155dee469"
-    },
-    {
-      "id": "bbeh:258",
-      "dataset": "bbeh",
-      "stratum": "mini",
-      "question_sha256": "8606cfc1ee0d89f9e35f0e6149dbb9d4d3043d87b598c0560a96c0300fb88623",
-      "answer_sha256": "8d980435eaab1087b725bac78200e3606f37cae8c2e0ccc719ed8848d300b57b"
     },
     {
       "id": "bbeh:244",
@@ -2029,13 +2022,6 @@
       "answer_sha256": "184fda5c980b9d9cb375f42a528817c6235fbd4f79775a8018fae5afcbdf2a63"
     },
     {
-      "id": "bbeh:397",
-      "dataset": "bbeh",
-      "stratum": "mini",
-      "question_sha256": "4f90770d4c76d01c5b26a0a898665bdb5c9ab3d3115e11dca837d49ee99351a7",
-      "answer_sha256": "0cea20007a0e0bfa882c5f1ccf2eb9e79dd448b7f20a4850a5efc135b4c79a04"
-    },
-    {
       "id": "bbeh:365",
       "dataset": "bbeh",
       "stratum": "mini",
@@ -2075,6 +2061,13 @@
       "dataset": "bbeh",
       "stratum": "mini",
       "question_sha256": "8b3e821c56530a30b067467e0a6445f6d4885f42c631122ecc03e5f5d826d259",
+      "answer_sha256": "0e4bf8aa7acc25b1fc387c16d216b64fead7967c6b3da01e0faf1dc286463fb8"
+    },
+    {
+      "id": "bbeh:59",
+      "dataset": "bbeh",
+      "stratum": "mini",
+      "question_sha256": "5457548f60722e6c4bfe127dbbf1c31ffbe041b0dd22a2dc6ec04cbb0b669fba",
       "answer_sha256": "0e4bf8aa7acc25b1fc387c16d216b64fead7967c6b3da01e0faf1dc286463fb8"
     },
     {
@@ -2288,13 +2281,6 @@
       "answer_sha256": "1f7319610a3937de65dafb8c7a7301bcedcf93f982d62091bf562e25a1e97798"
     },
     {
-      "id": "omni:3793",
-      "dataset": "omni",
-      "stratum": "9.0",
-      "question_sha256": "a4f42a2bb86ff0b77dd9605a508af1ee230f31517d81123e937ba0417d6b014d",
-      "answer_sha256": "31d0a3d99d36879351a1360897b9d0c71b059100f34080e0f30f5966d362048e"
-    },
-    {
       "id": "omni:1639",
       "dataset": "omni",
       "stratum": "6.0",
@@ -2307,20 +2293,6 @@
       "stratum": "6.0",
       "question_sha256": "d2ba834daf7f1d07d43c9834453b9117cd4d6c2b823637d3182ff304da64d228",
       "answer_sha256": "2a1d615c21cc3e24971c4bd877dcb2ec17635ccb77a401cd874e71e227351823"
-    },
-    {
-      "id": "omni:1537",
-      "dataset": "omni",
-      "stratum": "5.0",
-      "question_sha256": "e41dab2054b38fda161efce56554147f17333ba62b79dd9c52a9885b8bef2a12",
-      "answer_sha256": "7c2586e826922f4f6471d85428aac0c0515f83fc47283a58f0dbb36e65f582d8"
-    },
-    {
-      "id": "omni:1029",
-      "dataset": "omni",
-      "stratum": "5.0",
-      "question_sha256": "bcc928af0cf792e0f4c724a1c9153e2735feb48133234b6c8624b1fdb6ce37df",
-      "answer_sha256": "d9013b3ac73b75f465113bd31318fcc1e6cdc69f4e5f09ac7c178700b6df7fd4"
     },
     {
       "id": "omni:3822",
@@ -2456,25 +2428,11 @@
       "answer_sha256": "dd50e58293d3aae9cd3d5efbdb2f7b725b6065b09ea8fa1af5a32134bcc6ad9f"
     },
     {
-      "id": "omni:1557",
-      "dataset": "omni",
-      "stratum": "5.0",
-      "question_sha256": "dbbd6aa9adbf27aa1461952dcca7da3bf33f147423530e67461abd6574050c84",
-      "answer_sha256": "bc938fb49a680bdb5ccb0be40efb2aab30bc36dc37125aba2d48713749c55e0b"
-    },
-    {
       "id": "omni:519",
       "dataset": "omni",
       "stratum": "5.0",
       "question_sha256": "7fc47e11e93b967f3a898e0002d5dcdc1502f956f90c4f78573a2572571a1b10",
       "answer_sha256": "8ce14d3cc4dcf978d9ca139bcbbc8527a9ddd0816f20ad5719d9afff9fc33515"
-    },
-    {
-      "id": "omni:3844",
-      "dataset": "omni",
-      "stratum": "6.5",
-      "question_sha256": "ff6dead1ed21b727068082725edf53607e75ac8c119697355d092eff47ff47a6",
-      "answer_sha256": "1d6e509a333bfff97b4c7488ff049a89badadf8f8cddf58c25b1efc7673849fc"
     },
     {
       "id": "omni:4291",
@@ -2561,6 +2519,13 @@
       "answer_sha256": "d77ccb69e3f915ed75b4a2db3ff5893fdd0f433e02fdff100441fb843aae585b"
     },
     {
+      "id": "omni:2347",
+      "dataset": "omni",
+      "stratum": "5.0",
+      "question_sha256": "257b1637a7e98835d1683c00df92dee38df73525bf34f6b9525b82d20f8e11d8",
+      "answer_sha256": "8be13c81ac497232a96221a069b568f26f5f6b771a360a76fcfef0fe1de4becd"
+    },
+    {
       "id": "omni:1382",
       "dataset": "omni",
       "stratum": "6.0",
@@ -2580,6 +2545,13 @@
       "stratum": "5.0",
       "question_sha256": "7990b1b7d40f54b49d7888001433a58257d95b4cec1d672dc410fdd80feea595",
       "answer_sha256": "cc11310c456c3690d5a74c23aa31cc25b4e74cdae146c71e54ad9dbc1d109fde"
+    },
+    {
+      "id": "omni:2899",
+      "dataset": "omni",
+      "stratum": "1.0",
+      "question_sha256": "d62ff5839f60fbb44f7704312632ca87f6c076797e42aba622843f758b6b4b9c",
+      "answer_sha256": "2ffb7a9a29408ac4a18dffe9ce91383b5a6b6529ecb18a198516bdcc27f2b8b9"
     },
     {
       "id": "omni:565",
@@ -2701,6 +2673,13 @@
       "answer_sha256": "cc11310c456c3690d5a74c23aa31cc25b4e74cdae146c71e54ad9dbc1d109fde"
     },
     {
+      "id": "omni:2398",
+      "dataset": "omni",
+      "stratum": "4.5",
+      "question_sha256": "5f56485ce103bfa738181f6802e68bbc4d7812dafe209c3b0eeb7f6bd50be159",
+      "answer_sha256": "c03fb6ce25a4ec9b60d41458d07da4d261e7f72388c6c2ee8389eac27d21c320"
+    },
+    {
       "id": "omni:2968",
       "dataset": "omni",
       "stratum": "1.5",
@@ -2715,18 +2694,18 @@
       "answer_sha256": "a5009944cc0deb7463d9f0040b6ca1f1685dee27016ab51c86adfd07492c3494"
     },
     {
-      "id": "omni:2312",
-      "dataset": "omni",
-      "stratum": "4.5",
-      "question_sha256": "721709da38c3ec86fb52ba5f1d55620a184ed517c54a07e2a47e7be539161c53",
-      "answer_sha256": "c82332fe580332019afc38ca20d5e388102aa7a1442e9d9837bd51eeef0fd6de"
-    },
-    {
       "id": "omni:3603",
       "dataset": "omni",
       "stratum": "5.0",
       "question_sha256": "a953b31e132d201eb5223072d74603478ae81ce3cf75798dafbe55932311a98a",
       "answer_sha256": "94d16fa9d29e8ce22b2c001db1d587cae77f291f83cc8efee008ab3fcfb0bb0d"
+    },
+    {
+      "id": "omni:1127",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "1d999425448e9ad47fe060a1c8cb61dfc6ac7f2c70fd3ad9799ef7b57f87e210",
+      "answer_sha256": "79f649bcd303918cb14dc1d5238a74abf288f8ccf29fd89f422023d885cf5d47"
     },
     {
       "id": "omni:408",
@@ -2762,6 +2741,13 @@
       "stratum": "4.0",
       "question_sha256": "7b98935e8262b0e5edc7c710a4e899b3a0c9a264b8b878f6f956b715fcf05a63",
       "answer_sha256": "06024be3089840dc57375f951f67e195b31c37b7e819c63a15dcba31e894aa50"
+    },
+    {
+      "id": "omni:2736",
+      "dataset": "omni",
+      "stratum": "1.5",
+      "question_sha256": "52c6800e5fdf58752c2340f4c0264afc8102a59446318554d7d5a92ca6987f08",
+      "answer_sha256": "046419ca5ecebeb34fdfe9dde8106ccee5ce39f8e4dd115e8ef20b869f8bed82"
     },
     {
       "id": "omni:1060",
@@ -2876,18 +2862,25 @@
       "answer_sha256": "d10a4bc9e0c1fa4e8f3d7ce2512b8756e47ca5fa451f373c39a1431bb88db49f"
     },
     {
+      "id": "omni:2584",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "ed785974324617d5e043523e8b9468871b110522fe5f05b0fb1bea50fc967447",
+      "answer_sha256": "cf2aeeb62e548283233c2be134d1082e3afbb7d5110ebcdb1016e82156aa8358"
+    },
+    {
+      "id": "omni:756",
+      "dataset": "omni",
+      "stratum": "3.5",
+      "question_sha256": "b367fb45627cef90c986fef62f8dbcc0cd3091757f1cb87a1c4ec9d028877008",
+      "answer_sha256": "cc11310c456c3690d5a74c23aa31cc25b4e74cdae146c71e54ad9dbc1d109fde"
+    },
+    {
       "id": "omni:2959",
       "dataset": "omni",
       "stratum": "2.0",
       "question_sha256": "c7d68968665037290dcc12cbde1d6eb2020ae108654cd2bf30cab9772e768dc0",
       "answer_sha256": "bc855b713402120bf0c74426aea399eac2fd6ab1c3d9b8670993e0df4f607f72"
-    },
-    {
-      "id": "omni:3872",
-      "dataset": "omni",
-      "stratum": "9.0",
-      "question_sha256": "f5b310ac27bf17329f2d28cf42c4ba7891cfb4156ccea4d97cc670dfff9f8204",
-      "answer_sha256": "266aa5886067fbbc1a3a39fe432fc5bbf561abc90e4b8a322215ac17df6ce012"
     },
     {
       "id": "omni:1647",
@@ -2897,11 +2890,11 @@
       "answer_sha256": "92e9e7e5922d26e17e48f0869ab25cc99499fdab722c065de8e0965c96c68e86"
     },
     {
-      "id": "omni:295",
+      "id": "omni:844",
       "dataset": "omni",
-      "stratum": "7.0",
-      "question_sha256": "bcc4a55de5d2d9182d8f54ffc2cb3622d977a9b08972e8e3a6fc9dd102542894",
-      "answer_sha256": "92e9e7e5922d26e17e48f0869ab25cc99499fdab722c065de8e0965c96c68e86"
+      "stratum": "5.0",
+      "question_sha256": "e315eaf6fffb8796911894f2be78e47bcc0a100676503aea3e2cc157adf84ecb",
+      "answer_sha256": "1219a2d1506857774ef8cb05ce3afa2de4591cde59d51accb9b93618835f8044"
     },
     {
       "id": "omni:1439",
@@ -2981,6 +2974,13 @@
       "answer_sha256": "7684c9ff6a1688ca4055a27ec5c32e6f59c1ea4e18732808a5d7986c5bf7f03f"
     },
     {
+      "id": "omni:2087",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "277bd1796fc2e20b25bf78d69777791d3449b75b388c281a78c66ec346d496fe",
+      "answer_sha256": "266aa5886067fbbc1a3a39fe432fc5bbf561abc90e4b8a322215ac17df6ce012"
+    },
+    {
       "id": "omni:2516",
       "dataset": "omni",
       "stratum": "5.0",
@@ -3030,6 +3030,13 @@
       "answer_sha256": "4019f166852fe1c896b24beb13ba3dab94ab7be580d70f027c1d74b791e0588f"
     },
     {
+      "id": "omni:2929",
+      "dataset": "omni",
+      "stratum": "1.5",
+      "question_sha256": "fc8b2e314bd6bdcdf85c06581f273a16cd448c7cb6831a7c7edea7be16c56245",
+      "answer_sha256": "536549599ec6c3b859cd3970025779a13d061783c73e663fea7f963e98379aa8"
+    },
+    {
       "id": "omni:3351",
       "dataset": "omni",
       "stratum": "4.5",
@@ -3063,6 +3070,13 @@
       "stratum": "5.0",
       "question_sha256": "74214a47f03c24e2ccbe028234c510d84ded68506154c50b36b0c7a7dff6a2fa",
       "answer_sha256": "0b8e460ae0aa36197c3e5ea35be8bb7e2d66cc41a5041d3add1d35281dd6f9f2"
+    },
+    {
+      "id": "omni:436",
+      "dataset": "omni",
+      "stratum": "4.5",
+      "question_sha256": "a8a870f574df544ce666be9ead1c43a04be615397d8e33b6bad13b2deec2e792",
+      "answer_sha256": "c7e05c3805ca65af412b1d8ad0d096d94f09b176766c132dfc102b20f30f794b"
     },
     {
       "id": "omni:3104",
@@ -3112,13 +3126,6 @@
       "stratum": "2.0",
       "question_sha256": "519e6e4677324342e755dfcac79ea5c0d1361d48e836416cdce7e23fc335fad2",
       "answer_sha256": "d06074cc1e1fef695019c1bfe724f98a79bc8d7965845f3a5573d4b53ff3c8a7"
-    },
-    {
-      "id": "omni:71",
-      "dataset": "omni",
-      "stratum": "7.5",
-      "question_sha256": "780882458b15c15ba9447fc50017ff2f1be672d57ef7a435aad119a505af2f1c",
-      "answer_sha256": "14bdbc2e197fd8d11d8e414f64917758daa2fe8f28661fba2282335458370ed4"
     },
     {
       "id": "omni:1851",
@@ -3212,13 +3219,6 @@
       "answer_sha256": "f9cacf3cb91a12e03bc4546834f95a50a4c5fe02276ac260148ea9296c442d39"
     },
     {
-      "id": "omni:232",
-      "dataset": "omni",
-      "stratum": "8.0",
-      "question_sha256": "487c86669f795151b82d33f3ce1c11262a7ad444191c2ec3a3f2916b782184f6",
-      "answer_sha256": "ade1a1c2a61af0f279a4978dfddcdb6acd33f5a8b61e62c5fd881e8a88a387bc"
-    },
-    {
       "id": "omni:2797",
       "dataset": "omni",
       "stratum": "2.0",
@@ -3238,13 +3238,6 @@
       "stratum": "2.5",
       "question_sha256": "ee9b18b20a51eba2335f6f306558629d659c8ac023423a2df0bc020f2a3400e7",
       "answer_sha256": "6ccb2a4ee2a2606e2e19263238c9b2f2be1232d0d3680a4e52b26fc63c6063dc"
-    },
-    {
-      "id": "omni:1474",
-      "dataset": "omni",
-      "stratum": "5.0",
-      "question_sha256": "682b25e135f433cb3d70752a4c10d095c852998febdb8295b3f827e4c01096f1",
-      "answer_sha256": "7632b5e1bed8859cf678a1f4ce309306d40ba6c263e5383eec478a2cb848b829"
     },
     {
       "id": "omni:2311",
@@ -3310,6 +3303,13 @@
       "answer_sha256": "2bf175f9655e7bb7357b9f0a7c6051465a5ae701104ffe741b98e852c0e4d460"
     },
     {
+      "id": "omni:1895",
+      "dataset": "omni",
+      "stratum": "5.25",
+      "question_sha256": "a2e0ec978123d7c7e82ffcc9400f08b7815a4315aa692e79df3815ddbb6c2c9a",
+      "answer_sha256": "f36a66ac3e9bb80acf6678849764f4b67f8241e26db436974cb5557c402ffe39"
+    },
+    {
       "id": "omni:1092",
       "dataset": "omni",
       "stratum": "4.5",
@@ -3329,6 +3329,13 @@
       "stratum": "8.0",
       "question_sha256": "141a31b808ecd819455b297b3407bf55993d93025b38ec8b50d315703a8ebd30",
       "answer_sha256": "d3a53ed24c73250d85eddd0a5ea96db3abaee85d6cd3b77f6e25c9d322a176f0"
+    },
+    {
+      "id": "omni:3022",
+      "dataset": "omni",
+      "stratum": "1.5",
+      "question_sha256": "0daa53eca7f0d79645bb19b52b30055facb7981e159f80053d4f688291322512",
+      "answer_sha256": "21f101951d583e2d2fb9908abdacc71a014c2b9f9d22d24139842c50202d0701"
     },
     {
       "id": "omni:2524",
@@ -3352,25 +3359,11 @@
       "answer_sha256": "56013aa4fedc9724c7852096fe879d0d378d81c0e56ecfadb1c4c6b0ba9f613d"
     },
     {
-      "id": "omni:3871",
-      "dataset": "omni",
-      "stratum": "9.0",
-      "question_sha256": "4b7635acf9853761560309b9c3e83594c442e0ca59d42747180e674a1e8dfaf9",
-      "answer_sha256": "d77ccb69e3f915ed75b4a2db3ff5893fdd0f433e02fdff100441fb843aae585b"
-    },
-    {
       "id": "omni:529",
       "dataset": "omni",
       "stratum": "5.0",
       "question_sha256": "bba56f759c8bfc8b43ada81f3e2f4cd70f28124c9f89fe9d3417711b9393bf4e",
       "answer_sha256": "de180e8a7a413c07d013ef439902b0df9e87069c2c9ae140d620b0402de1a63e"
-    },
-    {
-      "id": "omni:2404",
-      "dataset": "omni",
-      "stratum": "4.5",
-      "question_sha256": "7bf35f68aa08b8728e730ea07463f3b695fa2957e416093d4206d5bf0f1ca475",
-      "answer_sha256": "6ce1ced1ac1f56f8cd7ee5c55d117fe99c805b89a603e36c41852fea49853068"
     },
     {
       "id": "omni:3855",
@@ -3490,6 +3483,13 @@
       "stratum": "5.25",
       "question_sha256": "5850a8a23270f4de3da794484adc2a8bfbcb1bd90dcc27497853889b4695b8c9",
       "answer_sha256": "f326bd84707ed76597becb832280595d1a5aaceb0905dc40e3553ebb861bde80"
+    },
+    {
+      "id": "omni:2496",
+      "dataset": "omni",
+      "stratum": "4.0",
+      "question_sha256": "61737480358e095e2c97c8873f2ff38b6d6772959596c91019253a310dd9a762",
+      "answer_sha256": "266aa5886067fbbc1a3a39fe432fc5bbf561abc90e4b8a322215ac17df6ce012"
     },
     {
       "id": "omni:2406",
