@@ -36,7 +36,14 @@ vi.mock("../../../integrations/agent/agentStateCache", () => ({
   prefetchAgentState: (...args: unknown[]) => prefetchAgentState(...args),
 }));
 
-type Listener = (event: { payload: Record<string, unknown> }) => void;
+/**
+ * One `listen` handler as this mock stores it. The map is keyed by event name,
+ * so a single alias has to hold handlers for events whose payloads differ in
+ * kind: `thread-activity-updated` carries an object, `remote-activity` carries a
+ * bare thread id (`lib.rs` emits `thread_id.to_string()`). `unknown` is the only
+ * honest payload type here — the tests below know each event's shape themselves.
+ */
+type Listener = (event: { payload: unknown }) => void;
 const listeners = new Map<string, Listener>();
 
 vi.mock("@tauri-apps/api/event", () => ({
