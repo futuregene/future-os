@@ -3036,12 +3036,24 @@ mod runtime_tests {
         init_store();
 
         // Empty store → empty but well-formed snapshots.
-        let (payload, signature) = build_presence_snapshot("pair_x", "bridge_x");
+        let (mut payload, signature) = build_presence_snapshot("pair_x", "bridge_x");
         assert_eq!(payload["online"], json!(true));
         assert_eq!(payload["sessions"], json!([]));
         assert_eq!(payload["workspaces"], json!([]));
         assert_eq!(signature, "[][]");
-        assert_eq!(payload, build_presence_payload("pair_x", "bridge_x"));
+
+        let mut handshake = build_presence_payload("pair_x", "bridge_x");
+        // Each payload samples the clock independently and can cross a second boundary.
+        for presence in [&mut payload, &mut handshake] {
+            let heartbeat = presence
+                .as_object_mut()
+                .unwrap()
+                .remove("lastHeartbeatTs")
+                .and_then(|value| value.as_u64())
+                .expect("presence includes a Unix heartbeat timestamp");
+            assert!(heartbeat > 0);
+        }
+        assert_eq!(payload, handshake);
 
         let light = light_presence_payload("pair_x", "bridge_x");
         assert_eq!(light["online"], json!(true));
