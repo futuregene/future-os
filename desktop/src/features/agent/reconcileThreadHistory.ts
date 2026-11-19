@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@future-os/thread-projection";
+import { upsertUserMessage } from "@future-os/thread-projection";
 
 /** UI ids can be optimistic; a run binds the persisted and live exchange. */
 export function historyMessageKey(message: AgentMessage): string {
@@ -39,7 +40,34 @@ export function reconcileThreadHistory(
       && (message !== baseline.get(key) || message.status === "streaming"
         || message.id.startsWith("pending") || message.id.startsWith("local_assistant"));
   });
-  const messages = mergeLocalOnly([...prefix, ...tail], pending);
+  const placed = [...prefix, ...tail];
+  // A prompt the page does not hold goes above the reply that answers it, and
+  // the clock cannot say where that is: a live bubble is stamped with its run's
+  // start, which precedes the prompt's own entry time by a few milliseconds, so
+  // a prompt that arrived while this reload was in flight landed BELOW the empty
+  // answer being written for it (prompt sent from the phone, read on the
+  // desktop). The run id can — it is the same pairing `upsertUserMessage` uses
+  // when the prompt arrives as an event instead.
+  const pendingPrompts: AgentMessage[] = [];
+  const pendingRest: AgentMessage[] = [];
+  for (const message of pending) {
+    if (message.role === "user" && message.runId)
+      pendingPrompts.push(message);
+    else
+      pendingRest.push(message);
+  }
+  // Prompts go in first: a reply the page already carries is what places them,
+  // and an optimistic bubble of the same local exchange must stay *below* its
+  // prompt (a reply above a nameless reply reads as that reply's snapshot).
+  let messages = placed;
+  for (const prompt of pendingPrompts) {
+    // Only a prompt whose reply is already on screen can be placed by identity;
+    // one whose run never reached the agent still belongs at its own time.
+    const answered = messages.some(existing => existing.role === "assistant"
+      && (existing.runId === prompt.runId || existing.inFlightRunId === prompt.runId));
+    messages = answered ? upsertUserMessage(messages, prompt) : mergeLocalOnly(messages, [prompt]);
+  }
+  messages = mergeLocalOnly(messages, pendingRest);
   return {
     messages: messages.length === current.length && messages.every((message, index) => message === current[index]) ? current : messages,
     keptOlder: prefix.length > 0,
