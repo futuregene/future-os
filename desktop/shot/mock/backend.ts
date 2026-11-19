@@ -1078,6 +1078,24 @@ const handlers: Record<string, (args: any) => unknown> = {
           : null;
       })
       .filter(Boolean),
+  /**
+   * The reader declined a choice card (§5.9.4): clear the mark and say so.
+   *
+   * A capture is about the badge going away, so the fixture's static list has to
+   * move here: the thread leaves `harnessOffersChoiceThreadIds`, and
+   * `remote-activity` is raised — the same signal the host emits for that write,
+   * which is what makes the rail re-read the run row instead of waiting for the
+   * reconciliation pass.
+   */
+  dismiss_thread_choice: (args) => {
+    const threadId = String(args?.threadId ?? "");
+    const before = harnessOffersChoiceThreadIds.length;
+    harnessOffersChoiceThreadIds = harnessOffersChoiceThreadIds.filter(id => id !== threadId);
+    const changed = harnessOffersChoiceThreadIds.length !== before;
+    if (changed)
+      void emit("remote-activity", threadId);
+    return changed;
+  },
   create_run: (args) => {
     const run = {
       id: `run_shot_${++shotRunSeq}`,
