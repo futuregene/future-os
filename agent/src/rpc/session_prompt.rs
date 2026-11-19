@@ -1208,8 +1208,9 @@ impl ServerSession {
                 Vec::new()
             };
             run_loop.fusion_context = Some(crate::fusion::ContextScope::Inner(Arc::new(snapshot)));
-            run_loop.config.max_turns = 0; // Phase deadline owns multi-turn work, not report size.
-                                           // Fusion Host owns the bounded retry policy; do not multiply it here.
+            // Phase deadline owns multi-turn work, not report size.
+            run_loop.config.max_turns = 0;
+            // Host owns transport retries. Agent independently controls output continuation.
             run_loop.config.max_retries = 0;
             // Enforce capacity on every request, including accumulated tool turns.
             let provider = if execution.settings.idle_timeout_ms.is_some() {

@@ -1,7 +1,7 @@
 //! Versioned, host-independent failure and degradation policy.
 use serde::{Deserialize, Serialize};
 
-pub const RESILIENCE_POLICY_VERSION: u32 = 2;
+pub const RESILIENCE_POLICY_VERSION: u32 = 3;
 pub const MAX_MATERIAL_BYTES: usize = 1400;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
