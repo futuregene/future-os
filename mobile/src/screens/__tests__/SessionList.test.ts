@@ -3,6 +3,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 import {
   Animated,
   BackHandler,
+  Dimensions,
   FlatList,
   Modal,
   PanResponder,
@@ -19,6 +20,7 @@ import { PeerIconGlyph } from "../../remote/PeerIconGlyph";
 import type { RemoteSession, RemoteWorkspace } from "../../remote/types";
 import { SessionList, type SessionListHandle } from "../SessionList";
 import { RECENT_PAGE_SIZE } from "../recentRows";
+import { layout } from "../../theme/tokens";
 import { currentAppAlert, finishAppAlert } from "../../components/appAlerts";
 import { ActionMenu } from "../../components/ActionMenu";
 import type { DesktopCommands } from "../../remote/desktopCommands";
@@ -355,6 +357,60 @@ test("the list holds the reader's row in place when the rows above it change", (
     minIndexForVisible: 0,
     autoscrollToTopThreshold: 0,
   });
+});
+
+/**
+ * How many rows a page mounts before its first frame, and where it is placed.
+ *
+ * The screen keys the list by tab, so switching pages is a fresh mount, and the
+ * saved offset has to be reachable from that mount's first layout — otherwise
+ * the page can only be scrolled to the reader's place, one measured batch at a
+ * time, which is the reported "it scrolls itself back to the end".
+ */
+test("a page the reader comes back to is placed in their spot, not scrolled there", async () => {
+  // Deep enough that the offset below is past a single batch of rows, and that
+  // the page holds more rows than the batch needs, so the count is the batch's
+  // own answer rather than the page's length.
+  mockRemote.sessions = Array.from({ length: 80 }, (_, index) => ({
+    sessionId: `s${index}`,
+    threadId: `t${index}`,
+    title: `Chat ${index}`,
+    streaming: false,
+  }));
+  const mountPage = async () => {
+    await act(async () => {
+      tree = create(createElement(SessionList, {
+        tab: "chat",
+        empty: null,
+        onMenu,
+        onTabChange,
+        onExitArchived: onExitArchived,
+        commandsFor: testCommandsFor,
+        ref: listRef,
+      }));
+      // The persisted-folds read lands inside act(), as in the setup above.
+      await Promise.resolve();
+    });
+  };
+  const scrollPageTo = (y: number) => act(() => {
+    const list = tree.root.findByType(FlatList);
+    list.props.onScrollBeginDrag();
+    list.props.onScroll({ nativeEvent: { contentOffset: { y } } });
+  });
+  await mountPage();
+  scrollPageTo(900);
+  // Leaving the page unmounts the list; coming back has to put the place back.
+  await act(async () => { tree.unmount(); });
+  await mountPage();
+  const page = tree.root.findByType(FlatList).props;
+  expect(page.contentOffset).toEqual({ x: 0, y: 900 });
+  // Rows are at least a touch target tall, so a batch that reaches the offset
+  // plus a screen holds the reader's place on the list's very first layout —
+  // the difference between being placed and being scrolled there.
+  expect(page.initialNumToRender * layout.touchTarget)
+    .toBeGreaterThanOrEqual(900 + Dimensions.get("window").height);
+  // Leave the page where the rest of this file expects a fresh list to start.
+  scrollPageTo(0);
 });
 
 test("explicit row action opens rename/pin/delete menu; offline management is disabled", () => {
