@@ -778,6 +778,58 @@ describe("app shell readiness gate", () => {
   });
 });
 
+/**
+ * The rail and the transcript must agree about whether a reply is still
+ * arriving. The rail reads the Host's one-second `thread-streaming-updated`
+ * sample; the transcript is only as current as what the shell hands it, so this
+ * wiring is what keeps a finished run from being drawn live for another 15-30
+ * seconds (measured 2026-11-19: 47 seconds beside a rail that already filed the
+ * conversation under "Earlier"; see docs/guide/desktop-agent.md).
+ */
+describe("the active thread's streaming answer", () => {
+  const transcript = () => children.agentThread as { streaming?: boolean };
+  function withStreamingStatuses(statuses: Record<string, boolean>) {
+    mocks.store.threadStore = { ...(mocks.store.threadStore as Record<string, unknown>), threadStreamingStatuses: statuses };
+  }
+
+  it("hands the store's per-thread answer to the transcript", () => {
+    withStreamingStatuses({ t1: false });
+    const view = mount(<AppShell />);
+    expect(transcript().streaming).toBe(false);
+    view.unmount();
+  });
+
+  it("hands a run in flight over as true rather than as an answer", () => {
+    withStreamingStatuses({ t1: true });
+    const view = mount(<AppShell />);
+    expect(transcript().streaming).toBe(true);
+    view.unmount();
+  });
+
+  it("answers false for a thread the streaming set does not name", () => {
+    // The store's map holds *only* the threads the Agent reports as streaming
+    // (`streamingStatuses` records a `true` per id and rebuilds the map from the
+    // new set), so "no entry" is this thread's answer, not a gap: a run that
+    // ended leaves the set, and the pane has to hear that. Another thread's
+    // entry must not be mistaken for this one's.
+    withStreamingStatuses({ t2: true });
+    const view = mount(<AppShell />);
+    expect(transcript().streaming).toBe(false);
+    view.unmount();
+  });
+
+  it("says nothing when there is no active thread at all", () => {
+    // `undefined` is "nobody told me": with no conversation selected the
+    // transcript settles only on its own push and the 15-30 second backstops,
+    // which is what the surfaces that do not have a rail (the panel cells)
+    // rely on.
+    mocks.store.threadStore = { ...(mocks.store.threadStore as Record<string, unknown>), activeThread: null, activeThreadId: null };
+    const view = mount(<AppShell />);
+    expect(transcript().streaming).toBeUndefined();
+    view.unmount();
+  });
+});
+
 describe("app shell layout", () => {
   it("renders the thread view with rail, context panel and dialogs", () => {
     const view = mount(<AppShell />);

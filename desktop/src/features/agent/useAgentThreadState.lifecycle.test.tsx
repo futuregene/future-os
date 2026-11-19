@@ -508,6 +508,43 @@ describe("the shell's one-second streaming answer", () => {
     view.unmount();
   });
 
+  it("closes a lost terminal push on the next answer, one second later", async () => {
+    // What the 47-second disagreement actually was. The push that finalises a
+    // reply is the one signal this harness never delivers - the `listen` mock
+    // registers no handler - so a run that ends while the view is attached
+    // leaves the bubble live, which is exactly the state measured on a real
+    // conversation at 11:36:13 on 2026-11-19. Nothing else can close it here,
+    // so the shell's next one-second sample is the whole recovery.
+    latest = running;
+    streaming = true;
+    const view = await mount();
+    expect(view.current.recentRun?.status).toBe("running");
+    const loads = storage.getSessionEntriesPage.mock.calls.length;
+
+    // The run settles in storage while no push ever arrives.
+    latest = { ...running, status: "completed", endedAt: time + 1000 };
+    await act(async () => {
+      view.rerender();
+    });
+    await act(async () => {});
+
+    // The lost push is not papered over: the bubble is still live, and no
+    // timer was advanced to make it so.
+    expect(view.current.recentRun?.status).toBe("running");
+    expect(storage.getSessionEntriesPage.mock.calls.length).toBe(loads);
+
+    // The next sample says nothing is streaming here.
+    streaming = false;
+    await act(async () => {
+      view.rerender();
+    });
+    await act(async () => {});
+
+    expect(view.current.recentRun?.status).toBe("completed");
+    expect(storage.getSessionEntriesPage.mock.calls.length).toBeGreaterThan(loads);
+    view.unmount();
+  });
+
   it("stays quiet when the shell did not answer", async () => {
     // `undefined` is "the shell does not say" (a surface with no rail, an older
     // shell). The hook must not spend a run-row read on a signal it never got.
