@@ -1170,14 +1170,6 @@ async fn step_inner(
         Ok(())
     };
     let report = reports::collect(&mut child, input, &phase, capacity, validate_report).await?;
-    if report.recovered_output_limit {
-        ctx.note(
-            "output_limit_report_recovered",
-            &phase,
-            Some(&participant),
-            Some(FailureKind::OutputLimit),
-        )?;
-    }
     if !report.validation_errors.is_empty() {
         let step = &mut *child.step;
         if report.generation == 0 {

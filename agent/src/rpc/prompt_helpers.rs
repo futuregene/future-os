@@ -117,7 +117,6 @@ pub(super) fn run_event_to_sse(event: crate::agent::RunEvent) -> Option<super::S
         RunEvent::OutputStreamContinuing {
             attempt,
             max_continuations,
-            thinking_level,
         } => {
             let mut data = serde_json::Map::new();
             data.insert("type".into(), serde_json::json!("output_stream_continuing"));
@@ -126,9 +125,6 @@ pub(super) fn run_event_to_sse(event: crate::agent::RunEvent) -> Option<super::S
                 "maxContinuations".into(),
                 serde_json::json!(max_continuations),
             );
-            if let Some(level) = thinking_level {
-                data.insert("thinkingLevel".into(), serde_json::json!(level));
-            }
             ("output_stream_continuing", serde_json::Value::Object(data))
         }
         RunEvent::CompactionStarted {
@@ -573,18 +569,8 @@ mod tests {
             ),
             (
                 RunEvent::OutputStreamContinuing {
-                    attempt: 1,
-                    max_continuations: 2,
-                    thinking_level: Some("low".into()),
-                },
-                "output_stream_continuing",
-                r#"{"type":"output_stream_continuing","attempt":1,"maxContinuations":2,"thinkingLevel":"low"}"#,
-            ),
-            (
-                RunEvent::OutputStreamContinuing {
                     attempt: 2,
                     max_continuations: 2,
-                    thinking_level: None,
                 },
                 "output_stream_continuing",
                 r#"{"type":"output_stream_continuing","attempt":2,"maxContinuations":2}"#,

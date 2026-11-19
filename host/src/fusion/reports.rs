@@ -23,7 +23,6 @@ pub(super) struct Report {
     pub text: String,
     pub validation_errors: Vec<String>,
     pub generation: u32,
-    pub recovered_output_limit: bool,
 }
 
 /// One repair in the original session, shared by format, citations and capacity.
@@ -50,43 +49,15 @@ pub(super) async fn collect(
         ensure!(errors.is_empty(), "{}", errors.join("\n"));
         Ok(())
     };
-    let original = match session.generate(message, false).await {
-        Ok(text) => text,
-        Err(error)
-            if failure_kind(&error) == FailureKind::OutputLimit
-                && matches!(phase, "analyzing" | "reviewing" | "synthesizing") =>
-        {
-            let text = session.generate("The working response exhausted its output budget before completing a public report. Use the existing work in this session. Do not restart the investigation or repeat the reasoning. Return your best supported answer in the original required report format now, qualify unresolved premises explicitly, and stop after the report.".into(), true).await?;
-            let validation_errors = match check(&text) {
-                Ok(()) => vec![],
-                Err(error)
-                    if matches!(phase, "analyzing" | "reviewing") && !text.trim().is_empty() =>
-                {
-                    vec![future_fusion::bounded_text(&error.to_string(), 2048)]
-                }
-                Err(error) => {
-                    return Err(failure(
-                        FailureKind::InvalidOutput,
-                        format!("Output-limit report recovery is invalid: {error}"),
-                    ))
-                }
-            };
-            return Ok(Report {
-                text,
-                validation_errors,
-                generation: 1,
-                recovered_output_limit: true,
-            });
-        }
-        Err(error) => return Err(error),
-    };
+    // Agent owns output continuation inside the accepted child run. An
+    // output-limit terminal here has already used its available allowance.
+    let original = session.generate(message, false).await?;
     let first_error = match check(&original) {
         Ok(()) => {
             return Ok(Report {
                 text: original,
                 validation_errors: vec![],
                 generation: 0,
-                recovered_output_limit: false,
             })
         }
         Err(error) => error.to_string(),
@@ -109,7 +80,6 @@ pub(super) async fn collect(
             return Ok(Report {
                 text: original,
                 generation: 0,
-                recovered_output_limit: false,
                 validation_errors: vec![future_fusion::bounded_text(
                     &format!("{first_error}\nReport repair did not complete: {error}"),
                     2048,
@@ -123,7 +93,6 @@ pub(super) async fn collect(
             text: repaired,
             validation_errors: vec![],
             generation: 1,
-            recovered_output_limit: false,
         }),
         Err(error) if matches!(phase, "analyzing" | "reviewing") => {
             // Prefer the repaired answer; an empty repair must not discard an
@@ -141,7 +110,6 @@ pub(super) async fn collect(
                 text,
                 validation_errors: vec![future_fusion::bounded_text(&error.to_string(), 2048)],
                 generation,
-                recovered_output_limit: false,
             })
         }
         Err(error) => Err(failure(
@@ -210,82 +178,23 @@ mod tests {
     }
     struct ExhaustedSession {
         requests: usize,
-        recovery_fails: bool,
     }
     impl ReportSession for ExhaustedSession {
-        async fn generate(&mut self, _message: String, report_only: bool) -> Result<String> {
+        async fn generate(&mut self, _message: String, _report_only: bool) -> Result<String> {
             self.requests += 1;
-            if !report_only || self.recovery_fails {
-                return Err(failure(FailureKind::OutputLimit, "exhausted"));
-            }
-            Ok("supported report".into())
+            Err(failure(FailureKind::OutputLimit, "exhausted"))
         }
     }
     #[tokio::test]
-    async fn exhaustion_has_one_bounded_same_session_report_attempt() {
-        for recovery_fails in [false, true] {
-            let mut session = ExhaustedSession {
-                requests: 0,
-                recovery_fails,
-            };
-            let result = collect(&mut session, "investigate".into(), "analyzing", 100, |_| {
-                Ok(())
-            })
-            .await;
-            assert_eq!(session.requests, 2);
-            if recovery_fails {
-                assert_eq!(failure_kind(&result.unwrap_err()), FailureKind::OutputLimit);
-            } else {
-                assert!(result.unwrap().recovered_output_limit);
-            }
+    async fn output_limit_ends_step_without_a_second_host_submission() {
+        for phase in ["analyzing", "issue_mapping", "reviewing", "synthesizing"] {
+            let mut session = ExhaustedSession { requests: 0 };
+            let error = collect(&mut session, "task".into(), phase, 100, |_| Ok(()))
+                .await
+                .unwrap_err();
+            assert_eq!(failure_kind(&error), FailureKind::OutputLimit);
+            assert_eq!(session.requests, 1);
         }
-        let mut session = ExhaustedSession {
-            requests: 0,
-            recovery_fails: false,
-        };
-        assert!(
-            collect(
-                &mut session,
-                "synthesize".into(),
-                "synthesizing",
-                100,
-                |_| Ok(())
-            )
-            .await
-            .unwrap()
-            .recovered_output_limit
-        );
-        assert_eq!(session.requests, 2);
-    }
-    #[tokio::test]
-    async fn invalid_recovery_remains_attributed_material_and_never_a_final_conclusion() {
-        let mut session = ExhaustedSession {
-            requests: 0,
-            recovery_fails: false,
-        };
-        let report = collect(&mut session, "investigate".into(), "analyzing", 100, |_| {
-            anyhow::bail!("invalid JSON")
-        })
-        .await
-        .unwrap();
-        assert!(report.recovered_output_limit);
-        assert_eq!(report.validation_errors.len(), 1);
-        assert_eq!(report.generation, 1);
-        let mut session = ExhaustedSession {
-            requests: 0,
-            recovery_fails: false,
-        };
-        let error = collect(
-            &mut session,
-            "synthesize".into(),
-            "synthesizing",
-            100,
-            |_| anyhow::bail!("invalid JSON"),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(failure_kind(&error), FailureKind::InvalidOutput);
-        assert_eq!(session.requests, 2);
     }
     #[tokio::test]
     async fn oversized_report_is_revised_without_repeating_investigation() {
