@@ -22,7 +22,7 @@
 | [Channel providers](guide/channels-providers.md) ([中文](guide/channels-providers.zh-CN.md)) | Shared-bridge channels: capability matrix, per-channel config, maturity, diagnostics, proactive send |
 | [Channel provider contract](guide/channels-provider-contract.md) ([中文](guide/channels-provider-contract.zh-CN.md)) | Adding a channel: the provider traits, the inbound/outbound boundary, config, errors, tests and coverage |
 | [Rust diagnostics](guide/logging.md) ([中文](guide/logging.zh-CN.md)) | Component log files, distribution profiles, storage/history events and retention |
-| [Desktop Agent](guide/desktop-agent.md) ([zh](guide/desktop-agent.zh-CN.md)) | Embedded/external hosting, exit scope, CLI clients, development launchers, logs and update recovery |
+| [Desktop Agent](guide/desktop-agent.md) ([zh](guide/desktop-agent.zh-CN.md)) | Embedded/external hosting, exit scope, CLI clients, run status across the rail and the transcript, development launchers, logs and update recovery |
 | [Host mode](guide/desktop-host.md) ([中文](guide/desktop-host.zh-CN.md)) | Foreground `future host` startup, platform login QR, pairing from `future remote devices add`, Ctrl+C, GUI-free server builds and troubleshooting |
 | [Self-hosted relay](guide/self-hosted-relay.md) ([中文](guide/self-hosted-relay.zh-CN.md)) | `future relay`: an account-free NATS relay for remote control, its threat model, coexistence with the official relay, and operator notes |
 | [Hostname resolution](guide/dns-resolution.md) ([中文](guide/dns-resolution.zh-CN.md)) | How a static musl build resolves names when `/etc/resolv.conf` is absent — which clients attach the resolver, the candidate paths, `FUTURE_DNS_SERVER` / `FUTURE_RESOLV_CONF`, the NSS limits, and what is not covered (the NATS relay) |
