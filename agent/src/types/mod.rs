@@ -505,6 +505,7 @@ impl AgentMessage {
     /// serialized, so it never becomes user/provider-visible data.
     pub const STREAM_BLOCKS_KEY: &'static str = "_future_stream_blocks";
     pub const STREAM_EPOCH_KEY: &'static str = "_future_stream_epoch";
+    pub(crate) const FUSION_REPORT_PREFIX_KEY: &'static str = "fusion_report_prefix_entry_id";
     pub const JOURNAL_ENTRY_ID_KEY: &'static str = "_future_journal_entry_id";
 
     pub fn journal_entry_id(&self) -> Option<&str> {
@@ -1059,17 +1060,6 @@ pub trait LLMProvider: Send + Sync {
 
     /// Update thinking level and budget at runtime (after set_thinking_level / cycle_thinking_level).
     fn update_thinking(&self, _level: &str, _budget: i32) {}
-
-    /// The thinking level this provider will send on its next request.
-    ///
-    /// Read by the run loop when a reply was cut off with no visible output at
-    /// all — the budget went entirely to reasoning — so the continuation can be
-    /// attempted one level shallower instead of repeating the identical request
-    /// that just ran out. Immutable providers keep the default: they have no
-    /// level to deepen, so there is nothing to step down from.
-    fn thinking_level(&self) -> Option<String> {
-        None
-    }
 
     /// Snapshot mutable generation settings for an accepted run. Immutable
     /// providers can keep the default; providers implementing update_thinking
