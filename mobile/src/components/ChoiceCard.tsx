@@ -1,6 +1,6 @@
 import type { ChoiceCardMode, ChoiceCardNode, ChoiceCardOption } from "@future-os/markdown";
 import { CHOICE_CONTEXT_VISIBLE_LINES, choiceContextFolds } from "@future-os/markdown";
-import { Check, ChevronDown, ChevronUp, ListChecks } from "lucide-react-native";
+import { Check, ChevronDown, ChevronUp, ListChecks, X } from "lucide-react-native";
 import { createContext, useContext, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, StyleSheet, Text, View } from "react-native";
@@ -19,6 +19,12 @@ import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 export interface ChoiceCardAnswer {
   /** A row of `card` was picked. The reply turns it into the draft's answer. */
   onPick: (card: ChoiceCardNode, optionId: string) => void;
+  /**
+   * Close the question without answering it (§5.9.4): nothing is sent to the
+   * model, the draft's answer is dropped, and the desktop stops flagging this
+   * conversation as waiting on a pick. Absent where nothing owns that mark.
+   */
+  onDismiss?: () => void;
   /** The draft answer's picked option ids. */
   selectedIds: string[];
   /**
@@ -91,6 +97,7 @@ export function ChoiceCard({ live, node }: { live: boolean; node: ChoiceCardNode
   const picked = live && answer?.title === node.title ? answer.selectedIds : [];
   const multi = node.mode === "multi";
   const onPick = live ? answer?.onPick : undefined;
+  const onDismiss = live ? answer?.onDismiss : undefined;
   // No subtitle of its own any more (§5.1): the mode label and the mark shape
   // already say single or multi, and "the answer lands in the input" described
   // something the composer shows by itself. The model's own line still shows;
@@ -180,6 +187,29 @@ export function ChoiceCard({ live, node }: { live: boolean; node: ChoiceCardNode
             <Text style={styles.foot} testID="choice-card-footer">
               {t("choice.foot.queued")}
             </Text>
+          )
+        : null}
+      {/*
+        The third answer: none. Drawn only on the answerable card (a past
+        question's exit is long gone) and only where something owns the mark it
+        clears — see §5.9.4. It sits outside the option group, because it is not
+        a choice and a radiogroup must not contain an action that answers nothing.
+      */}
+      {live && onDismiss
+        ? (
+            <Pressable
+              accessibilityRole="button"
+              hitSlop={8}
+              onPress={onDismiss}
+              style={({ pressed }) => [styles.dismiss, pressed ? styles.rowPressed : null]}
+              testID="choice-card-dismiss"
+            >
+              <X color={colors.inkMuted} size={16} />
+              <View style={styles.dismissCopy}>
+                <Text style={styles.dismissLabel}>{t("choice.dismiss")}</Text>
+                <Text style={styles.dismissNote}>{t("choice.dismissNote")}</Text>
+              </View>
+            </Pressable>
           )
         : null}
     </View>
@@ -394,5 +424,29 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     color: theme.colors.inkSoft,
     fontSize: theme.font(11),
     lineHeight: theme.leading(16),
+  },
+  // "都不做": a row of its own below the options, 44pt like every other touch
+  // target here (hitSlop covers the rest), quiet enough to read as chrome rather
+  // than as a fifth option.
+  dismiss: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    minHeight: layout.touchTarget,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.lineSoft,
+  },
+  dismissCopy: { flex: 1, minWidth: 0, gap: 1 },
+  dismissLabel: {
+    color: theme.colors.inkSoft,
+    fontSize: theme.font(14),
+    lineHeight: theme.leading(20),
+  },
+  dismissNote: {
+    color: theme.colors.inkMuted,
+    fontSize: theme.font(12),
+    lineHeight: theme.leading(17),
   },
 }));

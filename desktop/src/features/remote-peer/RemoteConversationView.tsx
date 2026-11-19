@@ -95,6 +95,7 @@ export function RemoteConversationView({
   messages,
   onContinueRun,
   onChoiceSelect,
+  onChoiceDismiss,
   choiceSelectedIds,
   onDecideApproval,
   onFork,
@@ -244,6 +245,15 @@ export function RemoteConversationView({
    * nothing, exactly as this app's own transcript does (`AgentThread`).
    */
   onChoiceSelect?: (optionId: string, card: ChoiceCardQuestion) => void;
+  /**
+   * Close the closing reply's card without answering it (§5.9.4): the host
+   * clears its "waiting on your choice" flag and nothing is sent to its agent.
+   *
+   * Same gating as `onChoiceSelect` — offered only where the row is writable —
+   * because it is a write on the host too, and one it refuses for a device that
+   * does not hold control.
+   */
+  onChoiceDismiss?: () => void;
   /** The draft's picked ids, so the card marks the row the answer names. */
   choiceSelectedIds?: readonly string[];
 }) {
@@ -597,7 +607,11 @@ The same two layers this app's own conversation uses (`AgentThread`):
                     && index === rendered.length - 1
                     && message.role === "assistant"
                     && message.status !== "streaming"
-                    ? { onSelect: onChoiceSelect, selectedIds: [...(choiceSelectedIds ?? [])] }
+                    ? {
+                        onDismiss: onChoiceDismiss,
+                        onSelect: onChoiceSelect,
+                        selectedIds: [...(choiceSelectedIds ?? [])],
+                      }
                     : undefined;
                 return (
                   <RemoteAttachmentProvider key={message.id} value={{ desktopId, sessionId }}>

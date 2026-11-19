@@ -1163,6 +1163,7 @@ mod gui {
                 get_run,
                 list_runs,
                 list_latest_run_infos,
+                dismiss_thread_choice,
                 update_run_status,
                 abort_run,
                 stop_threads,

@@ -227,6 +227,8 @@ export interface RemoteSkillRecommendation {
 export interface RemoteComposerHandle {
   /** Pick one row of a choice card in the transcript: the chip's own pencil write. */
   selectChoice: (optionId: string, card: ChoiceCardQuestion) => void;
+  /** The card was closed without an answer (§5.9.4): the chip goes with it. */
+  clearChoice: () => void;
 }
 
 export function RemoteComposer({
@@ -441,7 +443,17 @@ export function RemoteComposer({
     });
   }, [archived, locked]);
 
-  useImperativeHandle(ref, () => ({ selectChoice }), [selectChoice]);
+  /**
+   * The card was closed without an answer (§5.9.4). Same write as unticking the
+   * last row: the chip goes, and the draft's own effect persists the empty
+   * answer. Nothing is sent to the host.
+   */
+  const clearChoice = useCallback(() => {
+    writeChoice(null);
+  }, [writeChoice]);
+
+  useImperativeHandle(ref, () => ({ clearChoice, selectChoice }), [clearChoice, selectChoice]);
+
   /**
    * The conversations this draft points at, keyed by the token standing in for
    * each one (`remoteSessionReference`). The draft shows `#title`; this is the

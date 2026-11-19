@@ -45,16 +45,30 @@ const REPLY = [
  * and the pick written back through its handle. Nothing is stubbed, so a click
  * here travels the same path a click in the app does.
  */
-function Harness({ onSend }: { onSend: (payload: ComposerSendPayload) => void | Promise<void> }) {
+function Harness({ onDismiss, onSend }: {
+  /**
+   * What the card's "都不做" click hands back to the caller — in the app,
+   * `AgentThread`'s store write.
+   */
+  onDismiss?: () => void;
+  onSend: (payload: ComposerSendPayload) => void | Promise<void>;
+}) {
   const composerRef = useRef<ComposerHandle | null>(null);
   const [answer, setAnswer] = useState<ChoiceAnswer | null>(null);
   const handleSelect = useCallback((optionId: string, card: ChoiceCardQuestion) => {
     composerRef.current?.selectChoice(optionId, card);
   }, []);
+  // The two halves of a dismissal, exactly as `AgentThread` splits them: the draft
+  // is this side's to clear, the mark is the store's.
+  const handleDismiss = useCallback(() => {
+    composerRef.current?.clearChoice();
+    onDismiss?.();
+  }, [onDismiss]);
   const surface = useMemo<ChoiceCardAnswer>(() => ({
+    onDismiss: onDismiss ? handleDismiss : undefined,
     onSelect: handleSelect,
     selectedIds: answer?.selectedIds ?? [],
-  }), [answer, handleSelect]);
+  }), [answer, handleDismiss, handleSelect, onDismiss]);
   return (
     <>
       <MarkdownContent choiceAnswer={surface} content={REPLY} />
@@ -89,10 +103,14 @@ describe("the choice card's answer, from the card to the draft", () => {
     sessionStorage.clear();
   });
 
-  async function mount(onSend: (payload: ComposerSendPayload) => void | Promise<void> = () => {}) {
-    await act(async () => root.render(<Harness onSend={onSend} />));
+  async function mount(
+    onSend: (payload: ComposerSendPayload) => void | Promise<void> = () => {},
+    onDismiss?: () => void,
+  ) {
+    await act(async () => root.render(<Harness onDismiss={onDismiss} onSend={onSend} />));
     return {
       card: () => container.querySelector<HTMLElement>("[data-choice-card]")!,
+      dismiss: () => container.querySelector<HTMLElement>("[data-choice-dismiss]"),
       editor: () => container.querySelector<HTMLDivElement>("[role=\"textbox\"]")!,
       pill: () => container.querySelector<HTMLElement>("[data-mention=\"choice\"]"),
       row: (id: string) => container.querySelector<HTMLElement>(`[data-choice-option="${id}"]`)!,
@@ -262,6 +280,42 @@ describe("the choice card's answer, from the card to the draft", () => {
     expect(loadComposerDraft(DRAFT_KEY)?.choice?.selectedIds).toEqual(["table"]);
     // Changing the answer never arms or disarms the send path behind the reader.
     expect(view.sendButton().disabled).toBe(false);
+  });
+
+  /**
+   * "都不做" (§5.9.4): the way out of a question the reader does not want to
+   * answer. It sends nothing — that is the whole point — and it must not leave the
+   * draft claiming an answer to a question that was just dismissed, so a pick made
+   * before the dismissal goes with it.
+   */
+  it("closes the card without answering: the draft's pick goes and nothing is sent", async () => {
+    const onSend = vi.fn();
+    const onDismiss = vi.fn();
+    const view = await mount(onSend, onDismiss);
+    await view.click(view.row("forest"));
+    expect(view.pill()).not.toBeNull();
+    expect(view.dismiss()).not.toBeNull();
+
+    await view.click(view.dismiss()!);
+
+    // The pill, the marked row and the stored draft all let go of the answer.
+    expect(view.pill()).toBeNull();
+    expect(markedRow(view.card())).toEqual([]);
+    expect(loadComposerDraft(DRAFT_KEY)).toBeNull();
+    // Nothing to send any more: the button the pill had armed goes grey again.
+    expect(view.sendButton().disabled).toBe(true);
+    // The click travels to the caller (the store write that clears the mark), and
+    // the agent hears nothing at all.
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("offers no way out where no mark owner is wired", async () => {
+    // A surface without a dismiss handler (a preview, a reading cell) must not
+    // draw a button whose click would go nowhere.
+    const view = await mount();
+    expect(view.card()).not.toBeNull();
+    expect(view.dismiss()).toBeNull();
   });
 
   it("drops the answer from the card and the draft when the pill's cross removes it", async () => {

@@ -149,6 +149,29 @@ describe("choice card rendering", () => {
     expect(rows.map(row => row.tabIndex)).toEqual([0, -1, -1]);
   });
 
+  it("offers the way out of the question: an interactive card closes without answering", () => {
+    // Not an option: it sits outside the option group (a radiogroup must not
+    // contain an action that answers nothing) and sends nothing when pressed.
+    const onDismiss = vi.fn();
+    const card = mount({ onDismiss, onSelect: vi.fn() });
+    const dismiss = card.querySelector<HTMLElement>("[data-choice-dismiss]")!;
+    expect(dismiss).toBeTruthy();
+    expect(dismiss.closest("[role='radiogroup'], [role='group']")?.hasAttribute("data-choice-option")).toBe(false);
+    expect(dismiss.getAttribute("role")).toBeNull(); // a real <button>, not a row
+    expect(dismiss.textContent).toContain("Not now");
+    expect(dismiss.textContent).toContain("No reply is sent");
+    act(() => dismiss.click());
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("draws no way out on a card that cannot be picked, or where nothing owns the mark", () => {
+    // A past question's exit is long gone, and a surface with no list mark to
+    // clear (a preview, a reading cell) must not offer a write it cannot do.
+    expect(render({ onSelect: vi.fn() })).not.toContain("Not now");
+    expect(render({ onDismiss: vi.fn() })).not.toContain("Not now");
+    expect(render({ onDismiss: vi.fn(), onSelect: vi.fn() })).toContain("Not now");
+  });
+
   it("dims the other rows on a past card that has a marked answer", () => {
     const card = mount({ selectedIds: ["forest"] });
     const rows = [...card.querySelectorAll("[data-choice-option]")];

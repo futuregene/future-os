@@ -114,6 +114,8 @@ const mockRemote = {
   })),
   cachedAttachment: jest.fn(() => null),
   downloadAttachment: jest.fn(async () => ({ uri: "file:///cache/shot.png", size: 2048 })),
+  // "都不做": clearing the desktop's choice mark without answering it (§5.9.4).
+  dismissSessionChoice: jest.fn<Promise<void>, [string, string]>(async () => {}),
 };
 jest.mock("../../../remote/RemoteContext", () => ({
   useRemote: () => mockRemote,
@@ -312,6 +314,7 @@ beforeEach(async () => {
   mockRemote.releaseQueuedRun.mockReset().mockResolvedValue(undefined);
   mockRemote.editQueuedRun.mockReset().mockResolvedValue(undefined);
   mockRemote.loadOlderTimeline.mockReset().mockResolvedValue([]);
+  mockRemote.dismissSessionChoice.mockReset().mockResolvedValue(undefined);
   mockDraft.message = "";
   mockDraft.attachments = [];
   mockDraft.choice = null;
@@ -2060,4 +2063,81 @@ test("unticking a multi-choice card's last row leaves no answer, and the send ca
   expect(mockSendApi.send.mock.calls.length).toBe(before);
   // And the draft holds no answer at all, so the chip is gone too.
   expect(mockDraft.choice).toBeNull();
+});
+
+/**
+ * "都不做" (§5.9.4): the way out of a question the reader does not want to
+ * answer.
+ *
+ * The whole point is the negative — declining sends the model nothing — so that
+ * is what these assert: no message, no edit to a waiting row, while the draft's
+ * answer goes and the desktop is told to drop the list's reminder (the mark is
+ * the desktop's, and a phone-only dismissal would leave the row badged on every
+ * other surface).
+ */
+test("declining a card clears the draft and the desktop's mark, and sends nothing", async () => {
+  const toast = jest.spyOn(chatUtils, "showToast").mockImplementation(() => {});
+  try {
+    mockRemote.sessions = [{
+      sessionId: "history",
+      threadId: "thread",
+      title: "History",
+      streaming: false,
+    }];
+    mockDraft.choice = {
+      mode: "single",
+      options: [{ id: "forest", label: "重画森林图" }],
+      selectedIds: ["forest"],
+      title: "接下来做哪一件？",
+    };
+    // The real `setChoice` is a `useState` setter; this mirror writes the value
+    // back and re-renders, so a cleared answer is visible to the next assertion.
+    mockDraft.setChoice.mockImplementation((update: ChoiceAnswer | null | ((current: ChoiceAnswer | null) => ChoiceAnswer | null)) => {
+      mockDraft.choice = typeof update === "function" ? update(mockDraft.choice) : update;
+      act(() => tree.update(createElement(ChatScreen)));
+    });
+    act(() => tree.update(createElement(ChatScreen)));
+
+    const onDismiss = () => tree.root.findAllByType("TimelineCard" as never)
+      .map(card => card.props.choiceAnswer?.onDismiss)
+      .find(fn => typeof fn === "function") as () => void;
+
+    await act(async () => { onDismiss()(); });
+
+    // The answer the card had is gone: a declined question must not leave a
+    // claim of an answer in the draft (or a chip over a field with nothing to say).
+    expect(mockDraft.choice).toBeNull();
+    // Addressed to the conversation's own row, so the mark that clears is this
+    // conversation's and no other.
+    expect(mockRemote.dismissSessionChoice).toHaveBeenCalledWith("history", "thread");
+    expect(toast).toHaveBeenCalledWith("chat.choiceDismissed");
+    // Declining answers nothing: no prompt, no queue row rewritten.
+    expect(mockRemote.sendMessage).not.toHaveBeenCalled();
+    expect(mockRemote.editQueuedRun).not.toHaveBeenCalled();
+  } finally {
+    toast.mockRestore();
+  }
+});
+
+test("a dismissal the desktop refuses is reported instead of looking done", async () => {
+  const toast = jest.spyOn(chatUtils, "showToast").mockImplementation(() => {});
+  try {
+    mockRemote.sessions = [{
+      sessionId: "history",
+      threadId: "thread",
+      title: "History",
+      streaming: false,
+    }];
+    mockRemote.dismissSessionChoice.mockRejectedValueOnce(new Error("offline"));
+    act(() => tree.update(createElement(ChatScreen)));
+
+    const onDismiss = () => tree.root.findAllByType("TimelineCard" as never)
+      .map(card => card.props.choiceAnswer?.onDismiss)
+      .find(fn => typeof fn === "function") as () => void;
+    await act(async () => { onDismiss()(); });
+
+    expect(toast).toHaveBeenCalledWith("chat.choiceDismissFailed");
+  } finally {
+    toast.mockRestore();
+  }
 });

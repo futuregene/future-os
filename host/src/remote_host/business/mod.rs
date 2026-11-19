@@ -88,6 +88,7 @@ pub(crate) fn route(cmd_type: &str) -> Option<Route> {
         "generate_session_title"
         | "set_session_name"
         | "set_session_pinned"
+        | "dismiss_choice"
         | "delete_session"
         | "archive_session"
         | "restore_session"
@@ -303,6 +304,7 @@ mod tests {
         "delete_workspace",
         "download_cancel",
         "download_prepare",
+        "dismiss_choice",
         "edit_queued_run",
         "fork_session",
         "generate_session_title",

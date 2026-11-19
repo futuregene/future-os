@@ -964,6 +964,21 @@ export function useThreadStore(): ThreadStore {
       void unlisten.then(stop => stop());
     };
   }, [refreshThreadRunStatuses]);
+  // A mark that moves without any status moving. Declining a choice card
+  // (§5.9.4) clears a flag on the run row while the run itself stays
+  // `completed`, so no runtime push announces it; the host raises
+  // `remote-activity` for that write — the signal the other out-of-band session
+  // writes use — and the rows are re-read here rather than waiting up to the
+  // reconciliation pass for a badge to go. A phone/remote write that lands on
+  // this machine arrives the same way.
+  useEffect(() => {
+    const unlisten = listen<string>("remote-activity", () => {
+      void refreshThreadRunStatuses(loadedThreadsRef.current);
+    });
+    return () => {
+      void unlisten.then(stop => stop());
+    };
+  }, [refreshThreadRunStatuses]);
   // A conversation's activity stamp moved. Externally-driven runs (the CLI, a
   // scheduler, another machine) arrive this way and nowhere else: their row's
   // age label and its place in the list are read from `lastMessageAt`, which
