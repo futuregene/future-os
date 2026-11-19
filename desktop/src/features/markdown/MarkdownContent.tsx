@@ -67,6 +67,13 @@ export interface ChoiceCardAnswer {
    * the only moment they are known.
    */
   onSelect: (optionId: string, picked: ChoiceCardPick) => void;
+  /**
+   * Close the question without answering it: send the model nothing, drop any
+   * pick in the draft, and stop flagging the conversation as waiting on a pick
+   * (`docs/design/choice-cards.zh-CN.md` §5.9.4). Absent where the surface has no
+   * list mark to clear.
+   */
+  onDismiss?: () => void;
   selectedIds: string[];
 }
 
@@ -227,6 +234,7 @@ function renderBlock(
           hint={node.hint}
           key={key}
           mode={node.mode}
+          onDismiss={live ? choice.answer.onDismiss : undefined}
           onSelect={live
             ? (optionId: string) => choice.answer.onSelect(optionId, {
                 mode: node.mode,

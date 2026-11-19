@@ -273,6 +273,23 @@ export function ChatScreen() {
   }, [setChoice]);
   const clearChoice = useCallback(() => setChoice(null), [setChoice]);
   /**
+   * Close the card without answering it (§5.9.4): the draft's answer goes, and
+   * the desktop clears its "waiting on your choice" flag — no prompt is sent, so
+   * the model never learns the question was declined.
+   *
+   * The mark lives on the paired desktop (its session list and its window's rail
+   * both read it from there), which is why this is a host write and not local
+   * state: a phone-only dismissal would leave the row badged everywhere else.
+   */
+  const dismissChoice = useCallback(() => {
+    const session = selectedSession;
+    if (!session?.threadId) return;
+    clearChoice();
+    void remote.dismissSessionChoice(session.sessionId, session.threadId)
+      .then(() => showToast(t("chat.choiceDismissed")))
+      .catch(() => showToast(t("chat.choiceDismissFailed")));
+  }, [clearChoice, remote, selectedSession, t]);
+  /**
    * What the transcript may do with the draft's answer.
    *
    * Handed to every reply (`TimelineCard` gives it to the thread's last settled
@@ -287,11 +304,12 @@ export function ChatScreen() {
    */
   const choiceCardAnswer = useMemo<ChoiceCardAnswer>(
     () => ({
+      onDismiss: dismissChoice,
       onPick: pickChoice,
       selectedIds: choice?.selectedIds ?? [],
       title: choice?.title ?? "",
     }),
-    [choice, pickChoice],
+    [choice, dismissChoice, pickChoice],
   );
   const { openAttachmentMenu, attachmentMenu, albumPicker } = useAttachmentPicker(
     attachments,

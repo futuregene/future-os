@@ -55,6 +55,13 @@ export interface ComposerSendPayload {
 export interface ComposerHandle {
   /** Pick one row of a choice card: the same write the pill's own pencil makes. */
   selectChoice: (optionId: string, card: ChoiceCardQuestion) => void;
+  /**
+   * The card was closed without an answer (§5.9.4): the pill it may have left in
+   * the editor goes with it, and so does the draft's copy — leaving a pill that
+   * states an answer to a question the reader just dismissed would claim a reply
+   * they never sent.
+   */
+  clearChoice: () => void;
 }
 
 /** Drag-over verdict for the drop zone. */
@@ -423,7 +430,17 @@ function ComposerImpl({
     saveDraft(next);
   }, [saveDraft, writeChoice]);
 
-  useImperativeHandle(ref, () => ({ selectChoice }), [selectChoice]);
+  /**
+   * The card was closed without an answer (§5.9.4). Same two consumers as a pick
+   * — the pill and the draft — written to "no answer", which is the state the
+   * card's rows read to stop marking anything.
+   */
+  const clearChoice = useCallback(() => {
+    writeChoice(null);
+    saveDraft(null);
+  }, [saveDraft, writeChoice]);
+
+  useImperativeHandle(ref, () => ({ clearChoice, selectChoice }), [clearChoice, selectChoice]);
 
   const handleContextToolSelect = useCallback((toolId: string) => {
     if (toolId === "fusion") {

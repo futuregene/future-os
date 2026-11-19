@@ -13,6 +13,7 @@ jest.mock("lucide-react-native", () => ({
   ChevronDown: () => null,
   ChevronUp: () => null,
   ListChecks: () => null,
+  X: () => null,
 }));
 
 jest.mock("react-i18next", () => ({
@@ -300,5 +301,49 @@ describe("a futureos-choice card on the phone", () => {
       expect(row.props.accessibilityRole).toBe("checkbox");
       expect(row.props["aria-checked"]).toBe(true);
     }
+  });
+
+  /**
+   * The "都不做" controls, found the way `rows()` finds a row: a rendered
+   * `Pressable` carries its `testID` on the composite element and on the views it
+   * draws, so only the node that owns the press handler is the control itself.
+   */
+  function dismissButtons(root: ReactTestRenderer["root"]) {
+    return root.findAll(node =>
+      node.props.testID === "choice-card-dismiss" && typeof node.props.onPress === "function");
+  }
+
+  /**
+   * "都不做" (§5.9.4): the way out of a question the reader does not want to
+   * answer. It answers nothing — the callback clears the list's reminder and the
+   * draft, and sends no message — so it is a button outside the option rows, and
+   * only the live card carries one.
+   */
+  test("a live card offers 都不做 as a button of its own, and pressing it answers nothing", () => {
+    const onPick = jest.fn();
+    const onDismiss = jest.fn();
+    const root = render(CARD, { onDismiss, onPick, selectedIds: [], title: "接下来做哪一件？" });
+    const [button] = dismissButtons(root);
+    expect(button).toBeTruthy();
+    expect(button!.props.accessibilityRole).toBe("button");
+    // Not one of the options: the option rows stay exactly the ones the fence
+    // declared, so the card cannot be read as offering a fourth choice.
+    expect(rows(root)).toHaveLength(2);
+    act(() => button!.props.onPress());
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+    expect(onPick).not.toHaveBeenCalled();
+  });
+
+  test("the earlier card of a thread carries no 都不做: the question is over", () => {
+    const answer: ChoiceCardAnswer = { onDismiss: jest.fn(), onPick: jest.fn(), selectedIds: [], title: "接下来做哪一件？" };
+    const root = render(`${CARD}\n\n还有一件事：\n\n${SECOND_CARD}`, answer);
+    // Two cards in the body, one way out — the live one's.
+    expect(dismissButtons(root)).toHaveLength(1);
+  });
+
+  test("no 都不做 where nothing owns the list's reminder", () => {
+    // A preview cell with an answer surface but no owner to clear the mark for.
+    const root = render(CARD, { onPick: jest.fn(), selectedIds: [], title: "接下来做哪一件？" });
+    expect(dismissButtons(root)).toHaveLength(0);
   });
 });

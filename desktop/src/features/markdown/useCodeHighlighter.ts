@@ -1,25 +1,11 @@
-import type { BundledLanguage, BundledTheme, HighlighterGeneric } from "shiki";
+import type { BundledTheme } from "shiki";
+import type { CodeHighlighterEngine, HighlightResult } from "./codeHighlighterEngine";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
-import { bundledLanguagesInfo, createHighlighter } from "shiki";
 import { THEME_PALETTES, useResolvedTheme, useThemePalette } from "../../lib/theme";
 import { paletteShiki } from "../../theme/palettes";
 
-type CodeHighlighter = HighlighterGeneric<BundledLanguage, BundledTheme>;
-
-export interface HighlightedToken {
-  content: string;
-  color: string;
-  fontStyle?: number;
-}
-
-export interface HighlightedLine {
-  tokens: HighlightedToken[];
-}
-
-export interface HighlightResult {
-  lines: HighlightedLine[];
-  fgColor: string;
-}
+export type { HighlightedLine, HighlightedToken, HighlightResult } from "./codeHighlighterEngine";
+export { MAX_HIGHLIGHTABLE_CODE_LENGTH } from "./codeHighlightLimits";
 
 /**
  * Code block colors come from the theme's own data (`src/theme/palettes.json`),
@@ -38,8 +24,13 @@ export interface HighlightResult {
  * Rosé Pine Dawn, Nightfox → Nord, Vesper/Tokyo Night → One Light); the
  * mapping is visible in the JSON and listed in `COLOR.md`.
  *
- * Every bundled theme is loaded up front (a few KB of JSON each) so switching
- * the app theme never leaves code blocks on the old palette.
+ * Every bundled theme is loaded with the instance (a few KB of JSON each) so
+ * switching the app theme never leaves code blocks on the old palette.
+ *
+ * The instance itself, its grammars and the tokenizer live in
+ * `codeHighlighterEngine`, which is imported on the first code block to mount:
+ * this module is in every message's import graph, so it must not carry Shiki.
+ * It only names the themes and delegates.
  */
 const BUNDLED_THEMES: BundledTheme[] = [
   ...new Set(THEME_PALETTES.flatMap(palette => [
@@ -48,14 +39,11 @@ const BUNDLED_THEMES: BundledTheme[] = [
   ])),
 ];
 
-let highlighterPromise: Promise<CodeHighlighter> | null = null;
-let cachedHighlighter: CodeHighlighter | null = null;
-// Languages whose grammar is currently being fetched, so concurrent code blocks
-// asking for the same language don't each kick off a load.
-const inFlightLanguages = new Set<BundledLanguage>();
+let enginePromise: Promise<CodeHighlighterEngine> | null = null;
+let cachedEngine: CodeHighlighterEngine | null = null;
 
 // External store backing `useSyncExternalStore`: `storeVersion` bumps whenever
-// the shared highlighter becomes ready or a grammar finishes loading. Subscribing
+// the shared engine becomes ready or a grammar finishes loading. Subscribing
 // components re-read the snapshot right after subscribing, so a load that
 // completes between a block's first render and its subscription is never missed
 // (the bug the old one-shot broadcast had).
@@ -87,87 +75,40 @@ function getServerSnapshot(): number {
   return 0;
 }
 
-function getHighlighter(): Promise<CodeHighlighter> {
+function getEngine(): Promise<CodeHighlighterEngine> {
   /* v8 ignore start -- the only caller (the mount effect) guards on
-     !cachedHighlighter, so this fast path is unreachable defense */
-  if (cachedHighlighter) {
-    return Promise.resolve(cachedHighlighter);
+     !cachedEngine, so this fast path is unreachable defense */
+  if (cachedEngine) {
+    return Promise.resolve(cachedEngine);
   }
   /* v8 ignore stop */
 
-  if (!highlighterPromise) {
-    // Start with no grammars — each language's grammar is loaded on first use
-    // (see ensureLanguageLoaded) instead of paying to parse all of them upfront
-    // when the first code block appears.
-    highlighterPromise = createHighlighter({
-      themes: BUNDLED_THEMES,
-      langs: [],
-    }).then((highlighter) => {
-      cachedHighlighter = highlighter;
-      emitChange();
-      return highlighter;
-    }) as Promise<CodeHighlighter>;
+  if (!enginePromise) {
+    // The chunk, then the instance: both start at the first code block, so a
+    // launch that never shows source never pays for the tokenizer.
+    enginePromise = import("./codeHighlighterEngine")
+      .then(({ createCodeHighlighterEngine }) =>
+        createCodeHighlighterEngine({ themes: BUNDLED_THEMES, onGrammarLoaded: emitChange }),
+      )
+      .then((engine) => {
+        cachedEngine = engine;
+        emitChange();
+        return engine;
+      })
+      .catch((error: unknown) => {
+        // A failed chunk fetch (or a broken grammar set) must not wedge the
+        // hook on a rejected promise: forget it so the next mount retries, and
+        // leave every block on its plain-text fallback meanwhile.
+        enginePromise = null;
+        throw error;
+      });
   }
 
-  return highlighterPromise;
+  return enginePromise;
 }
-
-function ensureLanguageLoaded(highlighter: CodeHighlighter, lang: BundledLanguage) {
-  if (highlighter.getLoadedLanguages().includes(lang) || inFlightLanguages.has(lang)) {
-    return;
-  }
-  inFlightLanguages.add(lang);
-  highlighter
-    .loadLanguage(lang)
-    .then(() => {
-      inFlightLanguages.delete(lang);
-      emitChange();
-    })
-    .catch(() => {
-      // Grammar failed to load — leave it unloaded so the block stays plain text.
-      inFlightLanguages.delete(lang);
-    });
-}
-
-// Use Shiki's registry rather than a partial whitelist: e.g. PowerShell,
-// Dockerfile and Vue should highlight too. Aliases share one grammar/cache key.
-const languageNames = new Map<string, BundledLanguage>();
-for (const language of bundledLanguagesInfo) {
-  const id = language.id as BundledLanguage;
-  languageNames.set(id, id);
-  for (const alias of language.aliases ?? []) languageNames.set(alias, id);
-}
-for (const [alias, language] of Object.entries({
-  "c++": "cpp",
-  "c#": "csharp",
-  "golang": "go",
-  "shell": "shellscript",
-  "zsh": "shellscript",
-} satisfies Record<string, BundledLanguage>)) languageNames.set(alias, language);
-
-function normalizeLanguage(language: string | undefined): BundledLanguage | null {
-  return languageNames.get(language?.toLowerCase().trim() ?? "") ?? null;
-}
-
-// Cross-instance highlight cache: `CodeBlock` memoizes its own tokenization,
-// but a thread switch unmounts every block and re-tokenizes from scratch.
-// Caching by (language, code) makes a re-mount of a previously-rendered block
-// a map lookup instead of a full Shiki tokenize. Results are plain
-// read-only token arrays, so sharing is safe. LRU-bounded; huge blocks are
-// skipped (tokenizing them once is cheaper than pinning the cache).
-const highlightCache = new Map<string, HighlightResult>();
-const HIGHLIGHT_CACHE_MAX = 400;
-
-/**
- * The largest source worth tokenizing: past this, `highlight` still works but
- * the result is not cached. That single bound is why full-screen previews gate
- * on it too — above it a 200KB source costs ~200ms of tokenizing plus tens of
- * thousands of spans, and the preview shows plain monospace instead.
- */
-export const MAX_HIGHLIGHTABLE_CODE_LENGTH = 100_000;
 
 export function useCodeHighlighter() {
-  // `version` bumps when the highlighter becomes ready or a grammar loads.
+  // `version` bumps when the engine becomes ready or a grammar loads.
   // useSyncExternalStore re-reads the snapshot immediately after subscribing, so
   // a load that finishes between this block's first render and its subscription
   // still triggers a re-render — no missed notification.
@@ -178,81 +119,29 @@ export function useCodeHighlighter() {
   const palette = useThemePalette();
 
   useEffect(() => {
-    // Kick off the shared highlighter lazily on first mount; getHighlighter is
-    // idempotent and emits a store change once it resolves.
-    if (!cachedHighlighter) {
-      void getHighlighter();
+    // Kick off the shared engine lazily on first mount; getEngine is idempotent
+    // and emits a store change once it resolves.
+    if (!cachedEngine) {
+      void getEngine().catch(() => {
+        // Reported through the fallback: every block keeps rendering plain text.
+      });
     }
   }, []);
 
   const highlight = useCallback(
     (code: string, language: string | undefined): HighlightResult | null => {
-      const highlighter = cachedHighlighter;
-      if (!highlighter) {
+      const engine = cachedEngine;
+      if (!engine) {
         return null;
       }
-
-      const normalizedLang = normalizeLanguage(language);
-      if (!normalizedLang) {
-        return null;
-      }
-
-      const shikiTheme = paletteShiki(palette, resolvedTheme);
-      const cacheKey = `${shikiTheme}\u0000${normalizedLang}\u0000${code}`;
-      const cached = highlightCache.get(cacheKey);
-      if (cached) {
-        // LRU touch.
-        highlightCache.delete(cacheKey);
-        highlightCache.set(cacheKey, cached);
-        return cached;
-      }
-
-      try {
-        const loadedLanguages = highlighter.getLoadedLanguages();
-        if (!loadedLanguages.includes(normalizedLang)) {
-          // Not loaded yet — start the on-demand load and fall back to plain
-          // text; the store change re-arms `highlight` once the grammar lands.
-          ensureLanguageLoaded(highlighter, normalizedLang);
-          return null;
-        }
-
-        const tokens = highlighter.codeToTokens(code, {
-          lang: normalizedLang,
-          theme: shikiTheme,
-        });
-
-        const theme = highlighter.getTheme(shikiTheme);
-        const fgColor = typeof theme.fg === "string" ? theme.fg : "#000000";
-
-        const lines: HighlightedLine[] = tokens.tokens.map(line => ({
-          tokens: line.map(token => ({
-            content: token.content,
-            color: typeof token.color === "string" ? token.color : fgColor,
-            fontStyle: typeof token.fontStyle === "number" ? token.fontStyle : undefined,
-          })),
-        }));
-
-        const result: HighlightResult = { lines, fgColor };
-        if (code.length <= MAX_HIGHLIGHTABLE_CODE_LENGTH) {
-          if (highlightCache.size >= HIGHLIGHT_CACHE_MAX) {
-            const oldest = highlightCache.keys().next().value;
-            if (oldest !== undefined)
-              highlightCache.delete(oldest);
-          }
-          highlightCache.set(cacheKey, result);
-        }
-        return result;
-      }
-      catch {
-        return null;
-      }
+      return engine.highlight(code, language, paletteShiki(palette, resolvedTheme));
     },
     // `version` isn't read in the body but is an intentional dep: bumping it when
-    // the highlighter/grammar loads gives `highlight` a new identity so memoized
-    // consumers re-run against the now-ready highlighter or language.
+    // the engine/grammar loads gives `highlight` a new identity so memoized
+    // consumers re-run against the now-ready engine or language.
     // eslint-disable-next-line react/exhaustive-deps
     [version, palette, resolvedTheme],
   );
 
-  return { highlight, isLoaded: cachedHighlighter !== null };
+  return { highlight, isLoaded: cachedEngine !== null };
 }

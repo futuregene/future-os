@@ -482,6 +482,8 @@ export const resources = {
         foot: {
           queued: "Chosen — the answer is above the input. Send it as is, or add a note first.",
         },
+        dismiss: "Not now",
+        dismissNote: "No reply is sent — this only clears the list's reminder",
         chip: {
           change: "Change the answer to \"{{title}}\"",
           remove: "Remove the answer to \"{{title}}\"",
@@ -492,6 +494,8 @@ export const resources = {
         },
       },
       chat: {
+        "choiceDismissed": "Dismissed — nothing was sent to the model",
+        "choiceDismissFailed": "Couldn't close this choice. Reconnect and try again.",
         "fusionTitle": "Fusion · Discussion",
         "fusionModeratorRole": "Moderator",
         "fusionParticipantRole": "Participant {{number}}",
@@ -1746,6 +1750,8 @@ export const resources = {
         foot: {
           queued: "已选，答案在下面的输入框上方；可以直接发送，也可以补充文字",
         },
+        dismiss: "都不做",
+        dismissNote: "不回复模型，只清掉会话列表的提醒",
         chip: {
           change: "修改「{{title}}」的选择",
           remove: "移除「{{title}}」的选择",
@@ -1756,6 +1762,8 @@ export const resources = {
         },
       },
       chat: {
+        "choiceDismissed": "已关闭这次选择，没有回复模型",
+        "choiceDismissFailed": "没能关闭这次选择，请恢复连接后重试。",
         "fusionTitle": "Fusion · 讨论",
         "fusionModeratorRole": "主持人",
         "fusionParticipantRole": "参与者 {{number}}",

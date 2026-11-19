@@ -21,6 +21,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
+import { dismissThreadChoice } from "../../integrations/storage/runs";
 import { forkThread, openPath } from "../../integrations/storage/threadStore";
 import { copyText } from "../../lib/clipboard";
 import { cn } from "../../lib/cn";
@@ -288,6 +289,29 @@ export function AgentThread({
   const handleChoiceSelect = useCallback((optionId: string, card: ChoiceCardQuestion) => {
     composerApiRef.current?.selectChoice(optionId, card);
   }, []);
+  /**
+   * Close the card without answering it (§5.9.4): no message, no draft answer,
+   * and the conversation stops being flagged as waiting on a pick.
+   *
+   * The two halves are deliberately separate. The draft is cleared first and
+   * unconditionally — a pill that still states an answer to a question the
+   * reader just dismissed claims a reply they never sent — while the mark is the
+   * store's to clear, and it is the store's row every list draws from (the rail
+   * here, a paired desktop's merged list, the phone). Not a send: nothing about
+   * this reaches the agent.
+   */
+  const handleChoiceDismiss = useCallback(() => {
+    composerApiRef.current?.clearChoice();
+    const threadId = thread?.id;
+    if (!threadId)
+      return;
+    // The toast is the only feedback a click gets: the effect is a badge in
+    // another panel, which may not even be on screen while the conversation is
+    // open. Silence would read as a dead row.
+    void dismissThreadChoice(threadId)
+      .then(() => emitFutureEvent("toast", { message: t("choice.dismissed") }))
+      .catch(() => emitFutureEvent("toast", { message: t("choice.dismissFailed"), tone: "error" }));
+  }, [t, thread?.id]);
 
   const {
     scrollRef,
@@ -689,8 +713,12 @@ export function AgentThread({
   const choiceSurface = useMemo<ChoiceCardAnswer | undefined>(
     () => (isRead || composerDisabled
       ? undefined
-      : { onSelect: handleChoiceSelect, selectedIds: choiceAnswer?.selectedIds ?? NO_ANSWER_PICKS }),
-    [choiceAnswer, composerDisabled, handleChoiceSelect, isRead],
+      : {
+          onDismiss: thread ? handleChoiceDismiss : undefined,
+          onSelect: handleChoiceSelect,
+          selectedIds: choiceAnswer?.selectedIds ?? NO_ANSWER_PICKS,
+        }),
+    [choiceAnswer, composerDisabled, handleChoiceDismiss, handleChoiceSelect, isRead, thread],
   );
 
   const approvalCard = activeApproval

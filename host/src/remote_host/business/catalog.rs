@@ -75,6 +75,37 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
             }
         }
+        // The reader declined a choice card: clear the conversation's "waiting on
+        // your choice" mark and send the model nothing
+        // (`docs/design/choice-cards.zh-CN.md` §5.9.4). Addressed by the thread id
+        // where the caller has one — this machine's own list, and a paired
+        // desktop's merged list — and by the session id from a phone, exactly like
+        // the other session-scoped mutations above.
+        //
+        // `dismissed: false` is a success: a conversation whose reply offered no
+        // card (or whose question is already answered) has nothing to clear, and
+        // the reader's intent — stop asking — holds either way.
+        "dismiss_choice" => {
+            let thread_id = if !cmd.thread_id.trim().is_empty() {
+                Some(cmd.thread_id.clone())
+            } else {
+                match crate::store::find_thread_by_agent_session(cmd.session_id.trim()) {
+                    Ok(found) => found.map(|thread| thread.id),
+                    Err(error) => {
+                        reply(sink, false, Value::Null, Some(&error.to_string())).await;
+                        return;
+                    }
+                }
+            };
+            let Some(thread_id) = thread_id else {
+                reply(sink, false, Value::Null, Some("session_not_found")).await;
+                return;
+            };
+            match crate::application::runs::dismiss_thread_choice(thread_id) {
+                Ok(dismissed) => reply(sink, true, json!({ "dismissed": dismissed }), None).await,
+                Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+            }
+        }
         "fork_session" => {
             let parent_session_id = cmd.session_id.trim();
             let source_entry_id = cmd.source_entry_id.trim();

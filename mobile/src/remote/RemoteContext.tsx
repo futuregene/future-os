@@ -301,6 +301,12 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   createWorkspace(path: string, name: string): Promise<import("./types").RemoteWorkspace>;
   setSessionPinned(sessionId: string, threadId: string, pinned: boolean): Promise<void>;
   /**
+   * Close a choice card on the connected desktop without answering it: nothing
+   * is sent to its model, and the conversation stops being badged as waiting on
+   * a pick (`docs/design/choice-cards.zh-CN.md` §5.9.4).
+   */
+  dismissSessionChoice(sessionId: string, threadId: string): Promise<void>;
+  /**
    * Shelve a conversation on the connected desktop. The host refuses while the
    * tree still has a running member, and that refusal is the rejection.
    */
@@ -676,6 +682,7 @@ function machineSurface(
       throw new Error("not_connected");
     }),
     setSessionPinned: runtime?.catalog.setSessionPinned ?? noop,
+    dismissSessionChoice: runtime?.catalog.dismissSessionChoice ?? noop,
     setWorkspacePinned: runtime?.catalog.setWorkspacePinned ?? noop,
     archiveSession: runtime?.catalog.archiveSession ?? noop,
     restoreSession: runtime?.catalog.restoreSession ?? noop,

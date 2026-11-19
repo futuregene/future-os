@@ -81,6 +81,8 @@
     "foot": {
       "queued": "In the input — add a note if you want, or send as is"
     },
+    "dismiss": "Not now",
+    "dismissNote": "No reply is sent — this only clears the list's reminder",
     "chip": {
       "change": "Change the answer to \"{{title}}\"",
       "remove": "Remove the answer to \"{{title}}\""

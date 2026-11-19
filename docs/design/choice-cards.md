@@ -547,6 +547,59 @@ Agent commits the run ──┬─> terminal entry `content.offers_choice`
   both say "this finished while you were away", and only the card says something
   is owed; unread is still carried by the bolder title.
 
+### 5.9.4 "Not now": closing the card without answering it (2026-11-19)
+
+Requirement (a) says a card may be left unpicked and the composer left empty, but
+**silence on screen means two things**: not decided yet, or seen it and not doing
+it. They look identical, and they end identically — the row keeps §5.9's mark and
+the conversation stays "waiting on your choice" for as long as the reader
+refuses to answer. The only way to say the second thing was to type a message and
+send it, which is exactly the move that wakes the model.
+
+So the card carries a second exit: **Not now**.
+
+| | |
+|---|---|
+| Where | The **last row** of the answerable card (the trailing, settled reply), **outside** the option group |
+| Why outside it | It is not an option. A button inside `role="radiogroup"` that produces no answer gets counted as a row by a screen reader |
+| How it looks | A hairline above it, an `X`, one primary line (Not now) and one note (no reply is sent — this only clears the list's reminder), both in 12–13px secondary ink. It is a way out, not a fifth option, so it must weigh less than a row |
+| What a press does | (1) drop the draft's answer to this card (pill/chip with it); (2) have the end that wrote the reply clear `offers_choice` on its run row; (3) raise a toast. **No message is sent** |
+| Why the draft goes too | After a pick, keeping the pill would claim an answer the reader just declined (§7's rule from the other side: a question with no pick is not an answer either) |
+
+**Why the write happens on that end and not as a local "ignored" list** (a
+continuation of §5.9.2): the mark is one boolean on the run row, and the local
+rail, the phone and the merged remote rows all read it. A local id list would
+clear one machine's copy while the phone and the other desktop kept asking. So
+"Not now" is a command, not local state:
+
+```
+desktop, local session   dismiss_thread_choice(threadId)        → store: UPDATE runs SET offers_choice = 0
+phone / remote desktop   { type: "dismiss_choice", sessionId }   → the same store write (host resolves thread from session)
+```
+
+- Routed through `Route::Catalog` and listed in `PHONE_COMMANDS` (the phone really
+  sends it); `threadId` and `sessionId` are existing fields, so no wire-schema
+  change;
+- `updated_at` is **left alone**: declining is not activity, and touching it would
+  lift the conversation in a recency-ordered list;
+- Nothing to clear (the reply offered no card, the question is answered, the
+  conversation has no run) ⇒ `dismissed:false` with `success:true`. The reader's
+  intent — stop asking — already holds, so that is not a failure;
+- An unknown session ⇒ `success:false` with `session_not_found`, the same refusal
+  as the other session-scoped commands;
+- The write ends with `mark_catalog_dirty()` + `emit_remote_activity(thread_id)`:
+  the first moves a peer's catalogue revision, the second makes the local rail
+  re-read that row at once (`useThreadStore`'s `remote-activity` listener) instead
+  of waiting for the 30 s pass. The phone optimistically clears `offersChoice` on
+  its own row in `useSessionCatalog`, because the whole effect is *one badge
+  disappearing* and a press that visibly did nothing reads as a failed action.
+
+**Drawn only on the answerable card, and only where something owns the mark**: an
+earlier question is already over (§5.9.1's first row), and a preview surface with
+no store write would be offering a button whose click goes nowhere — worse than no
+button. The two conditions are `interactive` (an `onSelect` exists) and an
+`onDismiss` handed in.
+
 ## 6. Composer behaviour (requirements a–d)
 
 | Requirement | Behaviour | Implementation constraint |
@@ -604,6 +657,14 @@ Fixed copy (the model neither provides nor should provide it) — keys needed on
 | `choice.chip.change` | 修改「{{title}}」的选择 | Change the answer to "{{title}}" |
 | `choice.chip.remove` | 移除「{{title}}」的选择 | Remove the answer to "{{title}}" |
 | `choice.mobile.change` | 修改「{{title}}」 | Change "{{title}}" |
+| `choice.dismiss` | 都不做 | Not now |
+| `choice.dismissNote` | 不回复模型，只清掉会话列表的提醒 | No reply is sent — this only clears the list's reminder |
+
+The toast after "Not now" is a different set of keys (behaviour feedback, not card
+copy): desktop-local `agent.json` `choice.dismissed` / `choice.dismissFailed`,
+remote `remotePeer.json` `choiceDismissed` / `choiceDismissFailed`, phone
+`chat.choiceDismissed` / `chat.choiceDismissFailed`. A failure always says "try
+again", because the mark is still there and the command can be re-sent.
 | `choice.queue.change` | 更换这条消息里的选择：{{title}} · {{label}} | Change the choice in this message: {{title}} · {{label}} |
 
 - Icons: `list-checks` in the card header (pick one of several items), the existing `lucide` pencil and ✕ elsewhere, a chevron on the queue chip;
@@ -651,6 +712,10 @@ In dependency order; each step merges on its own:
 - **Mobile**: 44pt rows; the chosen row carries **exactly one cue** (no border); the pencil and × use the same ink; a sheet pick updates the chip; **`canSend` is true with only a chip**; the keyboard does not cover the chip row.
 - **Folding (2026-11-18)**: the line estimate (wide characters count two, explicit line breaks start a paragraph, a zero-width column does not blow up); four lines or fewer **draw no button and are not clipped at all**; it folds from six lines, `aria-expanded` going `false` → `true` drops the clamp while the full text stays in the DOM; a read-only card's button works and unlocks no row; `line-clamp-4` and `CHOICE_CONTEXT_VISIBLE_LINES` are tied together by a test that reads the constant; **the prompt's 100-character budget matches the phone column**: 100 Chinese characters (48 units per line) do not fold while 144 do (`choiceContext.test.ts`), and every example `context:` in `choice.md` is ≤ 100 characters (`prompt_teaches_the_choice_card_fence`) — teach exactly what you demonstrate. (`choiceContext.test.ts`, both `ChoiceCard.test` files.)
 - **A past card (read-only)**: with two cards in one reply, the upper one is `readonly` / `aria-disabled` / out of the tab order, **keeps the `hint` it was written with**, and draws `choice.hint.readonly` after it; its own `context` stays and the fold button still works. The capture scenarios pin two more things: both cards and the folded card's last row sit inside the transcript frame, and the clamped paragraph measures 72px on the desktop and 82pt on the phone.
+- **Not now (§5.9.4)**: the answerable card draws `[data-choice-dismiss]` (desktop) / `choice-card-dismiss` (phone), **outside the option group**, with the row count unchanged (it must not read as one more option); a press calls `onDismiss` only and never `onSelect`; a card without `onDismiss` and an earlier read-only card draw **none**; two cards in one reply produce exactly one exit — the live card's.
+  - Draft side: pick a row, then press Not now ⇒ the pill/chip goes, `loadComposerDraft` is `null`, the send button the pill had armed goes grey again, and **nothing was sent** (the phone's `ChatScreen` case asserts `sendMessage` / `editQueuedRun` were never called).
+  - Host side: `dismiss_run_choice` clears only the newest row's mark (an older run of the same conversation is untouched, `updated_at` unchanged); a second press ⇒ `dismissed:false` with `success:true`; an unknown session ⇒ `session_not_found`; `latest_run_infos` reads back `offers_choice = false` — the same row the desktop rail and the phone's catalogue draw.
+  - Rail refresh: no `thread-runtime-updated` is emitted (no status moved), so `remote-activity` has to trigger one re-read — `useThreadStore.hook.test.ts` flips that row from `offersChoice:true` to `false`, sends only `remote-activity`, and asserts the mark is gone while `runId`/`status` are unchanged.
 - **Queue (all three surfaces)**: after enqueueing, the answer is a `choice` rather than flattened text; changing it updates both the row's chip and the text that eventually sends; removing the whole row and removing only the choice are distinct paths; an older Agent that omits `choice` degrades without error.
   - **The chip never takes over the row's pencil** (v3's hard constraint): the chip is `role=button` with **exactly one** icon (a chevron); the chip's right edge is left of the pencil's left edge; the row's own pencil and bin still exist and are hittable. Three assertions, and losing one brings back the two-pencil ambiguity.
   - **Remote**: remote reuses the same panel, and a row's `choice` is now parsed (`parseQueueChoice`, shared with the local queue). Assert: the chip draws inside the remote frame, its `aria-label` and the row text agree, the pencil and bin are still there, and a pick sends exactly one `edit_queued_run` (`message` and `choice` together, not a cancel and a re-send). A host that reports no field (an older one) draws no chip — `remoteQueue.test.ts` pins that “missing / null / unusable” all read as no answer.
