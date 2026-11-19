@@ -3,7 +3,7 @@ import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import type { TFunction } from "i18next";
 import { thinkingLevelLabel } from "../../../i18n/thinkingLevelLabel";
 import type { RemoteControls } from "../../../remote/RemoteContext";
-import { modelReference, resolveModelThinkingLevel } from "../../../remote/types";
+import { resolveModelReference, resolveModelThinkingLevel } from "../../../remote/types";
 import { useTheme } from "../../../theme/ThemeContext";
 import { useComposerCompletion } from "../useComposerCompletion";
 import { useStopRequest } from "../useStopRequest";
@@ -38,7 +38,7 @@ export function ComposerToolbar({ remote, t, compactToolbar, compacting, activeM
   // shown as the model's own starting level instead of as if it were running.
   const thinkingLevel = resolveModelThinkingLevel(
     remote.thinkingLevel,
-    remote.models.find(model => modelReference(model) === remote.modelId),
+    resolveModelReference(remote.modelId ?? "", remote.models),
   ) ?? remote.thinkingLevel;
   // The declared list carries values this build has no translation for (`max`,
   // a provider's own token), so the label falls back to the wire value itself.

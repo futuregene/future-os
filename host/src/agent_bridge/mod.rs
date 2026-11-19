@@ -47,7 +47,10 @@ pub use self::headless::{
     prepare_prompt_persisted_with_trigger, run_prepared_prompt_with_acceptance, PreparedPrompt,
 };
 pub(crate) use self::import::{list_agent_session_ids, session_has_messages};
-pub use self::models::{list_agent_models, list_builtin_providers, AgentModelOption};
+pub use self::models::{
+    list_agent_models, list_builtin_providers, normalize_model_reference,
+    normalize_model_reference_against_catalog, AgentModelOption,
+};
 #[cfg(any(test, feature = "test-support"))]
 pub use self::observer::has_observer;
 pub(crate) use self::observer::reconcile_deleted_session;

@@ -1,5 +1,6 @@
 import type { ChoiceCardProps } from "./ChoiceCard";
 // @vitest-environment jsdom
+import { CHOICE_CONTEXT_VISIBLE_LINES } from "@future-os/markdown";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -42,15 +43,19 @@ describe("choice card rendering", () => {
     return container;
   }
 
-  it("draws the title, the mode label, the hint and one row per option", () => {
+  it("draws the title, the mode label and one row per option — and no subtitle of its own", () => {
     const html = render({ onSelect: vi.fn() });
     expect(html).toContain("接下来做哪一件？");
     expect(html).toContain("Single choice");
-    expect(html).toContain("Pick one and it lands in the input; you can type something else instead");
     for (const option of options) {
       expect(html).toContain(option.label);
       expect(html).toContain(option.description ?? "");
     }
+    // 2026-11-18: the default subtitle is gone. "单选" plus the radio rings say
+    // one-or-several already, and the old line explained a mechanism (the answer
+    // lands in the input) that the composer shows by itself.
+    expect(html).not.toContain("lands in the input");
+    expect(html).not.toContain("Pick as many as apply");
   });
 
   it("carries the accessible structure from §9: named group, radio rows, aria-checked", () => {
@@ -68,21 +73,44 @@ describe("choice card rendering", () => {
     expect([...card.querySelectorAll("[data-choice-mark]")].every(mark => mark.getAttribute("data-choice-mark") === "ring")).toBe(true);
   });
 
-  it("uses checkbox rows for a multi-choice card and its own hint", () => {
+  it("draws the context under the title, and nothing when the fence omitted it", () => {
+    const html = render({
+      context: "森林图已按新样本量重画，图注还挂着旧的 42。\n图例仍压在曲线上。",
+      onSelect: vi.fn(),
+    });
+    expect(html).toContain("data-choice-context");
+    // Repeated `context:` lines are paragraphs, so the break is kept.
+    expect(html).toContain("图注还挂着旧的 42。\n图例仍压在曲线上。");
+    // Order: title, then the situation, then the rows.
+    expect(html.indexOf("接下来做哪一件？")).toBeLessThan(html.indexOf("森林图已按新样本量重画"));
+    expect(html.indexOf("森林图已按新样本量重画")).toBeLessThan(html.indexOf("重画森林图"));
+
+    expect(render({ onSelect: vi.fn() })).not.toContain("data-choice-context");
+  });
+
+  it("keeps the context on a card that cannot be picked", () => {
+    // The subtitle turns into "this card cannot be picked" (§2), but the
+    // situation is information: a past card still says what it was asking about.
+    const html = render({ context: "森林图已重画完了。" });
+    expect(html).toContain("森林图已重画完了。");
+  });
+
+  it("uses checkbox rows for a multi-choice card", () => {
     const html = render({ mode: "multi", onSelect: vi.fn() });
     expect(html).toContain("Multiple choice");
-    expect(html).toContain("Pick as many as apply");
-    expect(html).not.toContain("Pick one and it lands in the input");
+    // The label and the box shape carry it; there is no "pick several" line.
+    expect(html).not.toContain("Pick as many as apply");
     const card = mount({ mode: "multi", onSelect: vi.fn() });
     expect([...card.querySelectorAll("[data-choice-option]")].every(row => row.getAttribute("role") === "checkbox")).toBe(true);
     // Shape, not just the corner label, says the rows can be picked together.
     expect([...card.querySelectorAll("[data-choice-mark]")].every(mark => mark.getAttribute("data-choice-mark") === "box")).toBe(true);
   });
 
-  it("prefers the model's own hint over the default subtitle", () => {
+  it("prints the model's own hint, and only when it wrote one", () => {
     const html = render({ hint: "点几个都行", onSelect: vi.fn() });
     expect(html).toContain("点几个都行");
-    expect(html).not.toContain("Pick one and it lands in the input");
+    // Nothing is invented when the fence carried no hint.
+    expect(render({ onSelect: vi.fn() })).not.toContain("data-choice-hint");
   });
 
   it("is read-only without an answer surface: rows out of the tab order, no hover, nothing dimmed", () => {
@@ -149,23 +177,29 @@ describe("choice card rendering", () => {
   });
 
   /**
-   * The subtitle is the only place a card can promise an action. A card that
-   * cannot answer must not print the answering one: "pick one and it lands in
-   * the input" over rows that do nothing is a button that looks pressable and
-   * isn't — the whole point of the read-only state (§3's tolerance table).
+   * A past card owes the reader one fact the live card does not: the rows are
+   * inert. It says so underneath whatever the reply itself wrote, and the model's
+   * own line stays — history is re-read, not answered.
    */
-  it("does not promise a pick on a read-only card, in visible text or to a screen reader", () => {
+  it("keeps what the reply itself said on a read-only card, and adds that it is inert", () => {
     const card = mount({ hint: "点几个都行" }).querySelector<HTMLElement>("[data-choice-card]")!;
     expect(card.textContent).toContain("An earlier question — this card can no longer be picked");
-    expect(card.textContent).not.toContain("Pick one and it lands in the input");
-    // The model's own hint describes picking too, so it goes the same way.
-    expect(card.textContent).not.toContain("点几个都行");
-    // And the same sentence is what a screen reader reads for the group.
+    expect(card.textContent).toContain("点几个都行");
+    // Order matters: what was said at the time, then the fact that it is inert.
+    expect(card.textContent!.indexOf("点几个都行"))
+      .toBeLessThan(card.textContent!.indexOf("An earlier question"));
     expect(card.getAttribute("aria-disabled")).toBe("true");
-    const describedBy = card.getAttribute("aria-describedby");
-    expect(describedBy).toBeTruthy();
-    expect(document.getElementById(describedBy!)?.textContent)
-      .toBe("An earlier question — this card can no longer be picked");
+    // Both sentences describe the group to a screen reader, in the same order.
+    const describedBy = card.getAttribute("aria-describedby")!;
+    expect(describedBy.split(" ").map(id => document.getElementById(id)?.textContent))
+      .toEqual(["点几个都行", "An earlier question — this card can no longer be picked"]);
+  });
+
+  it("says only that a past card is inert when the reply carried no hint of its own", () => {
+    const card = mount().querySelector<HTMLElement>("[data-choice-card]")!;
+    const describedBy = card.getAttribute("aria-describedby")!;
+    expect(describedBy.split(" ").map(id => document.getElementById(id)?.textContent))
+      .toEqual(["An earlier question — this card can no longer be picked"]);
   });
 
   it("keeps a read-only card out of the tab order and refuses focus", () => {
@@ -181,10 +215,68 @@ describe("choice card rendering", () => {
     expect(document.activeElement).not.toBe(rows[0]);
   });
 
-  it("prints the answering hint again as soon as it has an answer surface", () => {
+  it("drops the inert notice as soon as the card has an answer surface", () => {
     const card = mount({ onSelect: vi.fn() }).querySelector<HTMLElement>("[data-choice-card]")!;
-    expect(card.textContent).toContain("Pick one and it lands in the input");
-    expect(card.textContent).not.toContain("An earlier question");
     expect(card.getAttribute("aria-disabled")).toBeNull();
+    expect(card.textContent).not.toContain("An earlier question");
+    // With no model hint there is nothing to describe the group with at all.
+    expect(card.getAttribute("aria-describedby")).toBeNull();
+  });
+
+  /**
+   * A context that outgrows the card folds down to `CHOICE_CONTEXT_VISIBLE_LINES`
+   * lines behind a button; one that fits is left alone, with no button at all — a
+   * "show more" over text that is already fully visible is a control that does
+   * nothing (the same reason the default subtitle went, §5.1).
+   */
+  it("leaves a context that fits in the visible lines unclamped and without a button", () => {
+    const card = mount({ context: "森林图已重画完了。图例仍压在曲线上。" });
+    const context = card.querySelector<HTMLElement>("[data-choice-context]")!;
+    expect(context.className).not.toContain("line-clamp");
+    expect(context.getAttribute("data-choice-context-folded")).toBeNull();
+    expect(card.querySelector("[data-choice-context-toggle]")).toBeNull();
+  });
+
+  it("folds a long context and expands it on one click", () => {
+    const card = mount({
+      context: Array.from({ length: 8 }, (_, index) => `第 ${index + 1} 条：图注还挂着旧的 42。`).join("\n"),
+      onSelect: vi.fn(),
+    });
+    const context = card.querySelector<HTMLElement>("[data-choice-context]")!;
+    // The clamp follows the estimate (choiceContext.ts) and mirrors the shared
+    // line count: if the constant moves, this reads the new number and fails.
+    expect(context.className).toContain(`line-clamp-${CHOICE_CONTEXT_VISIBLE_LINES}`);
+    expect(context.getAttribute("data-choice-context-folded")).toBe("true");
+    // The whole text stays in the DOM, so the reader and the accessibility tree
+    // never lose a word of it — only the first lines are drawn.
+    expect(context.textContent).toContain("第 8 条");
+
+    const toggle = card.querySelector<HTMLButtonElement>("[data-choice-context-toggle]")!;
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.getAttribute("aria-controls")).toBe(context.id);
+    expect(toggle.textContent).toContain("Show more");
+
+    act(() => toggle.click());
+
+    const expanded = card.querySelector<HTMLElement>("[data-choice-context]")!;
+    expect(expanded.className).not.toContain("line-clamp");
+    expect(expanded.getAttribute("data-choice-context-folded")).toBeNull();
+    const after = card.querySelector<HTMLButtonElement>("[data-choice-context-toggle]")!;
+    expect(after.getAttribute("aria-expanded")).toBe("true");
+    expect(after.textContent).toContain("Show less");
+
+    act(() => after.click());
+    expect(card.querySelector("[data-choice-context]")!.getAttribute("data-choice-context-folded")).toBe("true");
+  });
+
+  it("folds the context on a card that cannot be picked too", () => {
+    // Reading is exactly what a past card is for, so the fold must work there:
+    // the toggle answers nothing and therefore is not part of the answer surface.
+    const card = mount({ context: Array.from({ length: 8 }).fill("图注还挂着旧的 42。").join("\n") });
+    const toggle = card.querySelector<HTMLButtonElement>("[data-choice-context-toggle]")!;
+    act(() => toggle.click());
+    expect(card.querySelector("[data-choice-context]")!.getAttribute("data-choice-context-folded")).toBeNull();
+    // No answer surface appeared alongside it.
+    expect(card.querySelector("[data-choice-card]")!.getAttribute("aria-disabled")).toBe("true");
   });
 });

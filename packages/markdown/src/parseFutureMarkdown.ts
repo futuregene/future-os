@@ -420,9 +420,33 @@ function strongToInline(node: Strong, context: ParseContext): InlineNode {
 /**
  * A bare `[<local path>]` mention inside plain text (remark keeps it literal
  * since there's no link definition). Only pure paths qualify — see
- * `localFilePath` — so ordinary `[text]` in prose stays untouched.
+ * `bracketMentionPath` — so ordinary `[text]` in prose stays untouched.
  */
 const BRACKET_PATH = /\[([^\]\n]+)\]/g;
+
+/**
+ * `→` is the one fixed mark of a choice card's answer, which is sent as plain
+ * text — `[接下来做哪一件？ → 重画森林图]` (`choiceAnswerText`, design
+ * `docs/design/choice-cards.zh-CN.md` §7).
+ */
+const CHOICE_ANSWER_ARROW = "→";
+
+/**
+ * The path a bracketed mention names, or `null` when the run is prose.
+ *
+ * `localFilePath` reads any bare relative destination with a `/` in it as a
+ * path, which is right for a link destination but wrong for a bracket sandwich
+ * in a sentence: `[删哪些？ → 删未在用的 ~/omlx 副本]` is an answered choice, not
+ * a file, and promoting it drew the reader's own words as a link that opened a
+ * path nothing is at. So a bracket run has to be **one path token**: whitespace
+ * or the answer arrow makes it prose. A real path with spaces is unambiguous as
+ * a markdown link (`[notes](<notes 2026.md>)`), which is the form to write.
+ */
+function bracketMentionPath(inner: string): string | null {
+  if (/\s/u.test(inner) || inner.includes(CHOICE_ANSWER_ARROW))
+    return null;
+  return localFilePath(inner);
+}
 
 function textToInlineNodes(node: Text): InlineNode[] {
   const value = node.value;
@@ -435,7 +459,7 @@ function textToInlineNodes(node: Text): InlineNode[] {
     match = BRACKET_PATH.exec(value)
   ) {
     const inner = match[1] ?? "";
-    const path = localFilePath(inner);
+    const path = bracketMentionPath(inner);
     if (!path) continue;
     if (match.index > last)
       nodes.push({ text: value.slice(last, match.index), type: "text" });
@@ -611,9 +635,20 @@ function parseChoiceCard(node: Code): ChoiceCardNode | null {
   // degrades through the option count (§3) rather than through an empty title.
   const title = first("title").trim() || options[0]!.label.trim();
 
+  // `context` is the card's own account of the situation (§3): the reply's
+  // conclusion, not a copy of the reply. Repeated lines are paragraphs, so a
+  // writer can break it where the reader would; the field is optional and an
+  // empty one is simply absent.
+  const context = entries
+    .filter(([key]) => key === "context")
+    .map(([, value]) => value.trim())
+    .filter(Boolean)
+    .join("\n");
+
   const hint = first("hint").trim();
   const mode = parseChoiceMode(first("mode"));
   return {
+    ...(context ? { context } : {}),
     ...(hint ? { hint } : {}),
     mode,
     options,

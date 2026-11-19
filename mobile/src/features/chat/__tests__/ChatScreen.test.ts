@@ -992,6 +992,7 @@ test("the model selector receives the model the reference resolves to", () => {
   mockRemote.models = [
     { id: "a", provider: "p", label: "Model A" },
     { id: "b", provider: "p", label: "Model B" },
+    { id: "Qwen3.8-27B-oQ4e-mtp", provider: "omlx", label: "Qwen 3.8" },
   ];
   mockRemote.modelId = "p/b";
   act(() => tree.update(createElement(ChatScreen)));
@@ -1000,11 +1001,19 @@ test("the model selector receives the model the reference resolves to", () => {
   // provider-qualified reference is matched against the catalogue.
   expect(tree.root.findByType(ComposerDock).props.activeModelLabel).toBe("Model B");
 
-  // A reference the catalogue does not list falls back to the raw id, never to
-  // a blank label the user cannot act on.
+  // A reference the catalogue does not list falls back to the model's own id —
+  // never to the whole `provider/id` string, and never to a blank label the user
+  // cannot act on. (`p/missing` used to print verbatim; that is the string a
+  // doubled `omlx/omlx/...` reference also used to put on screen.)
   mockRemote.modelId = "p/missing";
   act(() => tree.update(createElement(ChatScreen)));
-  expect(tree.root.findByType(ComposerDock).props.activeModelLabel).toBe("p/missing");
+  expect(tree.root.findByType(ComposerDock).props.activeModelLabel).toBe("missing");
+
+  // And the bug itself: a stored reference with the provider written twice
+  // resolves to the catalogue model instead of being printed raw.
+  mockRemote.modelId = "omlx/omlx/Qwen3.8-27B-oQ4e-mtp";
+  act(() => tree.update(createElement(ChatScreen)));
+  expect(tree.root.findByType(ComposerDock).props.activeModelLabel).toBe("Qwen 3.8");
 });
 
 /**
@@ -1650,6 +1659,47 @@ test("changing a waiting message's answer rewrites its sentence and carries the 
   );
   expect(mockRemote.cancelQueuedRun).not.toHaveBeenCalled();
   expect(mockRemote.sendMessage).not.toHaveBeenCalled();
+});
+
+/**
+ * A waiting row's chip changes *that row*, never this box.
+ *
+ * Both surfaces are an answer to a card with the same shape, so the two screens
+ * one tap apart: the panel's chip (`onQueueUpdateChoice`) fixes a message already
+ * held by the session, while `onChangeChoice` fills the draft that the next send
+ * will carry. Nothing here may move the pick between them — an answer put in the
+ * draft would be sent a second time, and the row it came from would keep the old
+ * one.
+ */
+test("a queued row's chip edits that row and leaves this box's draft alone", async () => {
+  await mountWithQueue([
+    queueRow({ choice: queuedAnswer, runId: "run_a", text: "[接下来做哪一件？ → 重画森林图]" }),
+  ]);
+  const draft = () => tree.root.findByType(ComposerDock).props;
+  expect(draft().choice).toBeNull();
+
+  // The seam the dock's chip calls once the sheet closes (the press-to-sheet
+  // link itself is pinned in ComposerDock.test.ts, which mounts the real panel).
+  await act(async () => {
+    draft().onQueueUpdateChoice("run_a", { ...queuedAnswer, selectedIds: ["flow"] });
+  });
+  await settleQueue();
+
+  expect(mockRemote.editQueuedRun).toHaveBeenCalledWith(
+    "history",
+    "run_a",
+    "[接下来做哪一件？ → 补一张流程图]",
+    {
+      mode: "single",
+      options: queuedAnswer.options,
+      selectedIds: ["flow"],
+      title: "接下来做哪一件？",
+    },
+  );
+  // The draft is still empty: the pick went to the row, not to this box.
+  expect(draft().choice).toBeNull();
+  expect(mockRemote.sendMessage).not.toHaveBeenCalled();
+  expect(mockRemote.cancelQueuedRun).not.toHaveBeenCalled();
 });
 
 test("a note typed after the answer survives a change to the answer", async () => {
