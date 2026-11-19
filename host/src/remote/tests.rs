@@ -4012,6 +4012,107 @@ mod runtime_tests {
         handle.abort();
     }
 
+    /// The first catalogue packet's own bill, end to end, from the real
+    /// publisher against a real store.
+    ///
+    /// What `future remote status` shows comes from these three numbers, and
+    /// until this test existed nothing produced them: the counters were written
+    /// and nothing filled them. The assertion that matters is not that they are
+    /// plausible but that they are *staged* — plain > gzip > 0, and the wire
+    /// record slightly larger than the gzip body because it carries the AEAD
+    /// header and tag. A build that reported the same number twice (the shape
+    /// this measurement was added to rule out) fails here.
+    #[tokio::test]
+    async fn the_first_catalogue_packet_reports_its_staged_sizes_and_its_latency() {
+        let _home = HomeGuard::new("remote-catalog-measure");
+        init_store();
+        let nats = FakeNats::start().await;
+        let client = nats_connect_once(&nats).await;
+        let pair = unique("pairmeasure");
+        SUPERVISOR.restore_active(Some(pair.clone()));
+
+        // Enough rows that the payload is worth compressing at all: the push
+        // path only gzips above `PUSH_FLOOR_BYTES`, so a two-row fixture would
+        // legitimately report gzip == plain and prove nothing.
+        for index in 0..40 {
+            crate::store::create_thread(crate::store::CreateThreadInput {
+                mode: "chat".to_string(),
+                title: Some(format!(
+                    "Measured conversation {index} with a title long enough to compress"
+                )),
+                workspace_id: None,
+                workspace_path: None,
+                workspace_name: None,
+                agent_session_id: Some(unique(&format!("sessmeasure{index}"))),
+            })
+            .unwrap();
+        }
+
+        let creds = pairing_creds(&pair);
+        let _shared = shared_runtime(&creds, true, false);
+        // The delta lane is the one the phone is on, and the one that publishes
+        // a full first packet.
+        declare_features(
+            &creds,
+            &pair,
+            &[future_remote_protocol::CATALOG_DELTA_FEATURE],
+        );
+        let handle =
+            spawn_presence_heartbeat(client.clone(), pair.clone(), "bridge_measure".into());
+        let subject = format!("p.{pair}.state.sessions");
+        let producer = || handle.is_finished();
+        nats.await_publish(
+            &subject,
+            |published| published.json()["full"] == json!(true),
+            producer,
+            Duration::from_secs(5),
+        )
+        .await;
+
+        let measurement = SUPERVISOR.catalogue_measurement(&pair);
+        let first = measurement
+            .first
+            .clone()
+            .expect("a delivered catalogue packet must be measured");
+        println!(
+            "catalogue first packet: {:?} ms after activation, {} B plain -> {} B gzip -> {} B wire, {} dropped before it",
+            first.since_activation_ms,
+            first.plain_bytes,
+            first.compressed_bytes,
+            first.wire_bytes,
+            first.dropped_before_first,
+        );
+
+        // Staged, not repeated: this is the assertion the whole measurement
+        // exists for.
+        assert!(
+            first.plain_bytes > first.compressed_bytes,
+            "gzip must have shrunk the draft ({} -> {} B)",
+            first.plain_bytes,
+            first.compressed_bytes
+        );
+        assert!(
+            first.wire_bytes >= first.compressed_bytes,
+            "the sealed record carries the gzip body plus the AEAD header and tag \
+             ({} wire vs {} gzip B)",
+            first.wire_bytes,
+            first.compressed_bytes
+        );
+        // The totals agree with the first packet plus whatever followed: nothing
+        // is double counted and nothing is dropped on the floor between them.
+        assert!(measurement.compressed_bytes >= first.compressed_bytes);
+        assert!(measurement.wire_bytes >= first.wire_bytes);
+        // Latency is present when the transport could date its activation, which
+        // the test transport can: a fixture that never activated would leave this
+        // `None`, and reporting that as "0 ms" is the failure mode to avoid.
+        assert!(
+            first.since_activation_ms.is_some(),
+            "the fixture activates the channel, so the first packet must be dated"
+        );
+
+        handle.abort();
+    }
+
     #[tokio::test]
     async fn heartbeat_workspaces_publish_failure_exits() {
         let _home = HomeGuard::new("remote-hb-workspaces-fail");

@@ -13,14 +13,20 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
         // for when it wants the rest of the list.
         "list_sessions" => {
             let cursor = cmd.cursor.trim();
+            // The pairing this command arrived on, stamped by the server at
+            // dispatch. It is the catalogue snapshot's cache key, and the
+            // publisher writes that cache under the same pairing — a key that is
+            // always empty here can never match it, so this read would be a
+            // whole store read every time the tick had just done one.
+            let pair_id = cmd.pair_id.as_str();
             let read = if cmd.limit > 0 {
                 crate::remote_host::catalog::sessions_catalog_window(
-                    "",
+                    pair_id,
                     (!cursor.is_empty()).then_some(cursor),
                     cmd.limit,
                 )
             } else {
-                crate::remote_host::catalog::sessions_catalog_cached("")
+                crate::remote_host::catalog::sessions_catalog_cached(pair_id)
             };
             match read.map(|catalog| (catalog.payload, catalog.signature)) {
                 Some((payload, _)) => reply(sink, true, payload, None).await,
@@ -1243,5 +1249,101 @@ mod dispatch_tests {
             ..Default::default()
         };
         execute(&cmd, &sink).await;
+    }
+
+    /// The pull path must ask the cache the question the publisher answered it
+    /// under.
+    ///
+    /// `sessions_catalog_cached` matches on the pairing, and the publisher's
+    /// tick writes that snapshot under the real `pairId` — so a request path
+    /// that passes `""` can never hit, and every pull re-reads the whole store
+    /// the tick had just read. Nothing about that failure is visible in the
+    /// answer: the reply is correct either way, only the work behind it differs.
+    /// These counters are that difference.
+    ///
+    /// Falsifiable by construction: revert `business/catalog.rs` to `""` and the
+    /// same sequence reports hits=0, misses=3.
+    #[tokio::test]
+    async fn a_list_sessions_pull_reuses_the_snapshot_the_tick_already_computed() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-pull-key");
+        crate::remote::test_support::init_store();
+        crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("A conversation the pull must see".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some("sess-pull-key".to_string()),
+        })
+        .expect("seed a conversation");
+
+        crate::remote_host::catalog::reset_pull_cache_counts();
+        // Three rounds of the live rhythm: the publisher's 1 s tick computes and
+        // caches, then a client pulls. Modelled round by round rather than as one
+        // tick and two pulls, because the failure being pinned is per-*tick*: the
+        // tick rewrites the cache under the real pairing each second, so a pull
+        // that asks under another key misses again every second — not once ever.
+        for round in 0..3 {
+            // What `catalog_snapshot` does on every tick, under the real pairing.
+            let _ = crate::remote_host::catalog::sessions_catalog_window("pair_pull_key", None, 0)
+                .expect("store readable");
+            crate::store::take_catalog_dirty();
+
+            let sink = crate::remote::test_support::RecordingSink::default();
+            execute(
+                &IncomingCmd {
+                    cmd_type: "list_sessions".into(),
+                    // What the server stamps on every business command: the
+                    // pairing it arrived on.
+                    pair_id: "pair_pull_key".into(),
+                    ..Default::default()
+                },
+                &sink,
+            )
+            .await;
+            let (success, data, error) = sink.last();
+            assert!(success, "pull {round} must succeed: {error:?}");
+            assert_eq!(data["pairId"], "pair_pull_key");
+        }
+        let (hits, misses) = crate::remote_host::catalog::pull_cache_counts();
+        assert_eq!(
+            (hits, misses),
+            (3, 0),
+            "every pull must be answered from the tick's snapshot; a miss here \
+             means the request path asked under a different key than the \
+             publisher wrote ({hits} hits, {misses} store reads)"
+        );
+    }
+
+    /// The same three rounds under the key this path used to pass.
+    ///
+    /// This is the control for the test above, not a behaviour to keep: it pins
+    /// the shape the bug actually had. An empty key cannot match the publisher's
+    /// snapshot, so the pull after each tick missed and re-read the whole store —
+    /// once per tick, because the next tick overwrote the entry again. Measured
+    /// here as `(0, 3)`: three ticks, three extra full reads.
+    ///
+    /// (A second pull inside the *same* tick would hit, since the miss cached
+    /// itself under `""`. Modelling one pull per tick, which is the live rhythm,
+    /// is what makes the per-tick cost the number this shows.)
+    #[tokio::test]
+    async fn an_empty_cache_key_misses_the_publishers_snapshot_once_per_tick() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-pull-key-control");
+        crate::remote::test_support::init_store();
+
+        crate::remote_host::catalog::reset_pull_cache_counts();
+        for _ in 0..3 {
+            let _ = crate::remote_host::catalog::sessions_catalog_window("pair_pull_key", None, 0)
+                .expect("store readable");
+            crate::store::take_catalog_dirty();
+            let _ = crate::remote_host::catalog::sessions_catalog_cached("");
+        }
+        let (hits, misses) = crate::remote_host::catalog::pull_cache_counts();
+        assert_eq!(
+            (hits, misses),
+            (0, 3),
+            "an empty key cannot match a snapshot written under a real pairing, so \
+             the pull after every tick re-reads the store the tick just read"
+        );
     }
 }

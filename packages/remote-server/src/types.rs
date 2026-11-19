@@ -166,8 +166,13 @@ pub struct RemoteDevice {
     /// actually take" had no answer anywhere before this field.
     pub catalogue_lane: CatalogueLane,
     /// Packets and bytes this connection has been sent on that lane since its
-    /// bridge came up. Bytes are the sealed payload, which is what the relay
-    /// carries; the compression in front of it is already applied.
+    /// bridge came up.
+    ///
+    /// `catalogue_bytes` is the **JSON the host built**, before gzip — not what
+    /// the relay carries. It has been that since it was added; the sealed size
+    /// and the gzip size are the two newer counters beside it
+    /// ([`Supervisor::catalogue_measurement`]), which is why a reader comparing
+    /// them must not expect this one to be the smaller number.
     ///
     /// A packet is counted as it is handed to the endpoint rather than after the
     /// send returns, so this number never trails what the client can already have
@@ -181,6 +186,51 @@ pub struct RemoteDevice {
     /// can be unreachable for minutes without anything on screen saying so.
     pub relay: RelayHealth,
     pub catalogue_bytes: u64,
+    /// The same lane measured where the cost actually is: after gzip and after
+    /// sealing, plus the first packet's distance from the channel going live.
+    ///
+    /// Broken out rather than folded into [`RemoteDevice::catalogue_bytes`]
+    /// because the three numbers answer different questions — the host's JSON,
+    /// what gzip made of it, what the relay carried — and because the first
+    /// packet is the only one whose delay a user experiences as "the list took a
+    /// while to appear".
+    pub catalogue: CatalogueMeasurement,
+}
+
+/// One connection's catalogue cost, in the sizes and the one duration a reader
+/// can act on.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogueMeasurement {
+    /// Sum of every delivered packet *after* gzip.
+    pub compressed_bytes: u64,
+    /// Sum of every delivered packet as the relay carried it: the compressed
+    /// body plus the AEAD header and tag of the sealed record.
+    pub wire_bytes: u64,
+    /// The first delivered packet, or `None` while this connection has not been
+    /// sent one yet.
+    pub first: Option<CatalogueFirstPacket>,
+}
+
+/// What the first catalogue packet of a connection cost and how long it took.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogueFirstPacket {
+    /// Milliseconds from the secure channel going live to this packet leaving
+    /// the endpoint. `None` when the transport could not say (a fixture that
+    /// never activates a channel).
+    ///
+    /// This is the host's half only: it does not include the relay's transit or
+    /// the client's unpack and first render.
+    pub since_activation_ms: Option<u64>,
+    /// The JSON the host built, before compression.
+    pub plain_bytes: u64,
+    /// That JSON after gzip — what the relay's payload actually is.
+    pub compressed_bytes: u64,
+    /// That payload as the sealed record on the wire.
+    pub wire_bytes: u64,
+    /// Packets offered and retracted before this one: the pre-handshake drops.
+    pub dropped_before_first: u64,
 }
 
 /// The catalogue lane a connection is served on.
@@ -358,6 +408,7 @@ mod tests {
             catalogue_lane: CatalogueLane::Snapshot,
             catalogue_packets: 0,
             catalogue_bytes: 0,
+            catalogue: CatalogueMeasurement::default(),
             relay: RelayHealth::default(),
         });
         let debug = format!("{status:?}");

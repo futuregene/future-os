@@ -89,6 +89,35 @@ const SNAPSHOT_REUSE: std::time::Duration = std::time::Duration::from_secs(1);
 static SESSIONS_SNAPSHOT: LazyLock<Mutex<Option<(std::time::Instant, String, SessionsCatalog)>>> =
     LazyLock::new(|| Mutex::new(None));
 
+/// How many pulls were answered from the snapshot, and how many had to read the
+/// store.
+///
+/// The cache's whole value is that the second number stays near zero while the
+/// first climbs; a cache that never matches its key looks exactly like a healthy
+/// one from the outside, since both answer correctly. These two counters are the
+/// only place that difference is visible, which is why they exist.
+#[cfg(test)]
+static PULL_CACHE_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+static PULL_CACHE_MISSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// `(hits, misses)` since the last [`reset_pull_cache_counts`].
+#[cfg(test)]
+pub(crate) fn pull_cache_counts() -> (u64, u64) {
+    use std::sync::atomic::Ordering;
+    (
+        PULL_CACHE_HITS.load(Ordering::Acquire),
+        PULL_CACHE_MISSES.load(Ordering::Acquire),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn reset_pull_cache_counts() {
+    use std::sync::atomic::Ordering;
+    PULL_CACHE_HITS.store(0, Ordering::Release);
+    PULL_CACHE_MISSES.store(0, Ordering::Release);
+}
+
 /// A cached workspace list and when it was computed.
 type WorkspaceSnapshot = (std::time::Instant, (Value, String));
 
@@ -109,10 +138,14 @@ pub(crate) fn sessions_catalog_cached(pair_id: &str) -> Option<SessionsCatalog> 
         let cached = SESSIONS_SNAPSHOT.lock().unwrap();
         if let Some((at, key, value)) = cached.as_ref() {
             if key == pair_id && at.elapsed() < SNAPSHOT_REUSE {
+                #[cfg(test)]
+                PULL_CACHE_HITS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                 return Some(value.clone());
             }
         }
     }
+    #[cfg(test)]
+    PULL_CACHE_MISSES.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     sessions_catalog(pair_id)
 }
 
