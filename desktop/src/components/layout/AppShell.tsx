@@ -2383,6 +2383,9 @@ function ReadyAppShell({
                                         onOpenProviders={handleOpenProviders}
                                         onToggleLeftPanel={handleToggleLeftPanel}
                                         skillRecommend={appSettings.skillRecommend}
+                                        streaming={activeThread
+                                          ? threadStreamingStatuses[activeThread.id] === true
+                                          : undefined}
                                         futureSessionStatus={futureSessionStatus}
                                         futureBalance={futureBalance}
                                         headerAction={terminalHeaderAction}
