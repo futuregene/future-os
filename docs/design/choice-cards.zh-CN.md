@@ -202,7 +202,7 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 - 那台机器的每一个客户端都按**它**的值渲染，而不是按客户端自己的开关：手机和桌面上的远程会话都从宿主读 `choiceCards`（`useRemoteChoiceCards`）。画出宿主智能体根本没被教过的卡片、或者把宿主写出来的卡片整块藏掉（连源码一起），两头都错，只有宿主的答案能同时避开；
 - 宿主**没有答案**时（比这个开关更旧的构建）按**开**处理：那种构建无条件教围栏，藏掉它的卡片等于删掉它合法问出的问题。只有明确的 `false` 才隐藏。客户端还没读到设置时，先按自己的值渲染，不会先闪一下再消失。
 
-钉住它的测试：`desktop/src/features/markdown/ChoiceCardsToggle.test.tsx`（关：卡片节点数为 0，**且**取出的正文里没有 `futureos-choice`；开：有行、能点、能答）、`mobile/src/components/__tests__/ChoiceCardsToggle.test.ts`、`agent/src/prompt/mod.rs::prompt_omits_the_choice_card_fence_when_cards_are_off`。反向验证过：把渲染层恒等于 `true`、让这一节无条件进 prompt、把默认值改成 `true`，这三处的断言分别变红。
+钉住它的测试：`desktop/src/features/markdown/ChoiceCardsToggle.test.tsx`（关：卡片节点数为 0，**且**取出的正文里没有 `futureos-choice`；开：有行、能点、能答）、`mobile/src/components/__tests__/ChoiceCardsToggle.test.ts`、`agent/src/prompt/mod.rs::prompt_omits_the_choice_card_fence_when_cards_are_off`。反向验证过：把渲染层恒等于 `true`、让这一节无条件进 prompt、把存储默认值改成 `false`，这三处的断言分别变红。
 
 ## 5. 界面
 
