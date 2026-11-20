@@ -205,7 +205,7 @@ Rules kept while gating it:
 Where the value lives, and how it travels:
 
 - one stored value: `app.db` → `packages/app-settings` (`choice_cards`, default `false`), read as `appSettings.choiceCards`;
-- desktop: Settings → General, a switch; the value reaches the markdown renderer through `ChoiceCardsContext` (the renderer's own default stays `true`, so only a real "off" hides anything);
+- desktop: Settings → Conversation → Replies, a switch; the value reaches the markdown renderer through `ChoiceCardsContext` (the renderer's own default stays `true`, so only a real "off" hides anything);
 - the agent is told **before every run**: the host pushes `set_choice_cards` (best-effort — an agent that predates the command still accepts the message, and an unreadable store counts as off), the session keeps it, and `PromptOptions.choice_cards` decides whether this section is in the prompt. A fresh install therefore has no fence in the prompt *and* no card on screen;
 - the phone mirrors the desktop rather than holding its own setting: `get_desktop_settings` carries `choiceCards`, and `SettingsPatch` writes it back to the same row.
 - the same value is settable **on that machine's own row**: a paired desktop's page (Remote → that computer → Automation) has the switch, because a headless host has no window of its own and would otherwise be stuck off forever. It writes the host's `app.db` through `update_desktop_settings`;

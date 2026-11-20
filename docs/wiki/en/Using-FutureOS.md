@@ -54,7 +54,7 @@ The card tells you exactly what's being requested — the command to run, the fi
 
 ### Approval modes
 
-You can set how much the agent asks in **Settings → General**, or from the shield control in the input box:
+You can set how much the agent asks in **Settings → Permissions → Approval mode**, or from the shield control in the input box:
 
 - **Manual** — file access follows Allow/Ask/Deny path rules; shell commands ask except for the read-only allowlist.
 - **Sandboxed** — commands use macOS Seatbelt, Linux system Bubblewrap, or Windows restricted-token write protection when available. File tools still follow path rules; not all calls prompt. Platform guarantees differ.

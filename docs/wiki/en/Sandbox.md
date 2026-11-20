@@ -1,7 +1,7 @@
 # Approvals and sandboxing
 
 FutureOS can ask before file access and restrict shell commands, but **the desktop
-starts in Full access (`off`) mode**. Choose **Settings → General → Approval
+starts in Full access (`off`) mode**. Choose **Settings → Permissions → Approval
 mode**, or the shield in the message composer, before giving an untrusted task
 access to your files. Availability is checked on the machine running the agent.
 
