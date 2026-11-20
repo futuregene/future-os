@@ -56,9 +56,18 @@ export function RailRow({
     <div
       ref={rowRef}
       className={cn(
-        "group/thread relative flex w-full items-center gap-1 rounded-md pr-2 text-left transition-colors hover:bg-surface-subtle",
+        "group/thread relative flex w-full items-center gap-1 rounded-md pr-2 text-left transition-colors",
         compact ? "h-7" : "h-8",
-        active && "bg-surface-subtle text-ink",
+        // Selection is its own surface, never the hover one: while the pointer
+        // is over a second row, `surface-subtle` on both left the reader unable
+        // to tell which conversation they were hovering from which they were
+        // in — and in the dark rendition the two were 1.07:1 apart to begin
+        // with. See `--color-surface-selected`.
+        //
+        // The hover stays off the selected row rather than being overridden by
+        // it: a `hover:` variant outranks the plain class, so keeping both would
+        // make pointing at the open conversation paint it as an ordinary hover.
+        active ? "bg-surface-selected text-ink" : "hover:bg-surface-subtle",
       )}
       // Row start = the title column of a leaf (chat/pinned 16, workspace 28,
       // unchanged); each level adds 16px of toggle + 4px of gap, so a child's
