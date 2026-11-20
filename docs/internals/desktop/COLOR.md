@@ -11,7 +11,7 @@
 
 ## Appearance and color theme (two axes)
 
-The look has **two independent choices**, both in Settings → General, both
+The look has **two independent choices**, both in Settings → Appearance, both
 persisted in `localStorage` before the first paint:
 
 | axis | values | applied as | picks |

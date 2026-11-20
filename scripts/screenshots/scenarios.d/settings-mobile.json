@@ -1,0 +1,348 @@
+{
+  "_comment": [
+    "手机端「一台配对桌面的设置」读起来要和桌面一样：设备页列出 权限 / 回复 / 存储 / 模型 / …，",
+    "三页各自只装桌面同名页里那几项。原先只有一页「自动化与审批」，三处内容混在一起。"
+  ],
+  "mobile": {
+    "settings-phone-search": {
+    "note": "手机本机设置的搜索：只搜本机的那几页（外观 / 语言 / 公众号），结果同样注明所属页。",
+    "query": "?single=1",
+    "lang": "zh-CN",
+    "steps": [
+      {
+        "wait": 2000
+      },
+      {
+        "tap": "稍后再说"
+      },
+      {
+        "wait": 1500
+      },
+      {
+        "tap": "设置"
+      },
+      {
+        "wait": 1500
+      },
+      {
+        "tap": "搜索设置"
+      },
+      {
+        "wait": 600
+      },
+      {
+        "type": "字体"
+      },
+      {
+        "wait": 900
+      },
+      {
+        "eval": "(() => { const text = document.body.innerText; if (!text.includes('字体大小')) throw new Error('the phone font row was not found by search'); if (!text.includes('外观')) throw new Error('the result does not name its page'); if (text.includes('微信公众号')) throw new Error('the phone home rows are still printed behind the results'); return text.replace(/\\n+/g, ' | ').slice(0, 160); })()"
+      },
+      {
+        "shot": "m-settings-phone-search.png"
+      },
+      {
+        "tap": "字体大小"
+      },
+      {
+        "wait": 1200
+      },
+      {
+        "eval": "(() => { const text = document.body.innerText; if (!text.includes('主题')) throw new Error('the appearance page did not open'); return 'opened appearance'; })()"
+      },
+      {
+        "shot": "m-settings-phone-search-target.png"
+      }
+    ]
+  },
+    "settings-search": {
+    "note": "手机端设置搜索：输入一个页面里的行名，结果列出该行并注明它所在的页；点开就是那一页，搜索框随之清空。",
+    "query": "?fusionSettings=1&single=1",
+    "lang": "zh-CN",
+    "steps": [
+      {
+        "wait": 2000
+      },
+      {
+        "tap": "稍后再说"
+      },
+      {
+        "wait": 1200
+      },
+      {
+        "tap": "桌面选择"
+      },
+      {
+        "wait": 1500
+      },
+      {
+        "tap": "管理已配对的桌面…"
+      },
+      {
+        "wait": 2000
+      },
+      {
+        "tap": "桌面端设置"
+      },
+      {
+        "wait": 1800
+      },
+      {
+        "tap": "搜索设置"
+      },
+      {
+        "wait": 600
+      },
+      {
+        "type": "闲置"
+      },
+      {
+        "wait": 900
+      },
+      {
+        "eval": "(() => { const text = document.body.innerText; if (text.includes('提供商')) throw new Error('the home rows are still printed behind the results'); if (!text.includes('闲置天数')) throw new Error('the idle-days row was not found by search'); if (!text.includes('存储')) throw new Error('the result does not name its page'); return text.replace(/\\n+/g, ' | ').slice(0, 160); })()"
+      },
+      {
+        "shot": "m-settings-search.png"
+      },
+      {
+        "tap": "闲置天数"
+      },
+      {
+        "wait": 1200
+      },
+      {
+        "eval": "(() => { const text = document.body.innerText; if (!text.includes('归档')) throw new Error('the storage page did not open'); if (!text.includes('闲置天数')) throw new Error('the storage page lost its idle row'); const box = document.querySelector('input[aria-label=\\\"搜索设置\\\"]'); if (box) throw new Error('the search box is still on screen after opening a page'); return 'opened storage'; })()"
+      },
+      {
+        "shot": "m-settings-search-target.png"
+      }
+    ]
+  },
+    "settings-device-home": {
+      "note": "设备设置首页：权限、回复、存储与模型/提供商/技能/任务并列。",
+      "query": "?fusionSettings=1&single=1",
+      "lang": "zh-CN",
+      "steps": [
+        {
+          "wait": 2000
+        },
+        {
+          "tap": "稍后再说"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tap": "桌面选择"
+        },
+        {
+          "wait": 1500
+        },
+        {
+          "tap": "管理已配对的桌面…"
+        },
+        {
+          "wait": 2000
+        },
+        {
+          "tap": "桌面端设置"
+        },
+        {
+          "wait": 1800
+        },
+        {
+          "eval": "(() => { const text = document.body.innerText; for (const label of ['权限', '回复', '存储', '模型', '提供商', '技能']) if (!text.includes(label)) throw new Error('missing row ' + label); if (text.includes('自动化与审批')) throw new Error('the old combined page is still offered'); return 'device home lists the desktop names'; })()"
+        },
+        {
+          "shot": "m-settings-device-home.png"
+        }
+      ]
+    },
+    "settings-mobile-permission": {
+      "note": "手机端「权限」页：只装桌面同名页的那几项。",
+      "query": "?fusionSettings=1&single=1",
+      "lang": "zh-CN",
+      "steps": [
+        {
+          "wait": 2000
+        },
+        {
+          "tap": "稍后再说"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tap": "桌面选择"
+        },
+        {
+          "wait": 1500
+        },
+        {
+          "tap": "管理已配对的桌面…"
+        },
+        {
+          "wait": 2000
+        },
+        {
+          "tap": "桌面端设置"
+        },
+        {
+          "wait": 1800
+        },
+        {
+          "tap": "权限"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "eval": "(() => { const text = document.body.innerText; if (!text.includes('审批模式')) throw new Error('权限 page is missing its rows'); if (text.includes('选项卡')) throw new Error('权限 page carries another page\\'s rows'); if (text.includes('归档')) throw new Error('权限 page carries another page\\'s rows'); })()"
+        },
+        {
+          "shot": "m-settings-permission.png"
+        }
+      ]
+    },
+    "settings-mobile-reply": {
+      "note": "手机端「回复」页：只装桌面同名页的那几项。",
+      "query": "?fusionSettings=1&single=1",
+      "lang": "zh-CN",
+      "steps": [
+        {
+          "wait": 2000
+        },
+        {
+          "tap": "稍后再说"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tap": "桌面选择"
+        },
+        {
+          "wait": 1500
+        },
+        {
+          "tap": "管理已配对的桌面…"
+        },
+        {
+          "wait": 2000
+        },
+        {
+          "tap": "桌面端设置"
+        },
+        {
+          "wait": 1800
+        },
+        {
+          "tap": "回复"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "eval": "(() => { const text = document.body.innerText; if (!text.includes('选项卡')) throw new Error('回复 page is missing its rows'); if (text.includes('归档')) throw new Error('回复 page carries another page\\'s rows'); if (text.includes('闲置天数')) throw new Error('回复 page carries another page\\'s rows'); })()"
+        },
+        {
+          "shot": "m-settings-reply.png"
+        }
+      ]
+    },
+    "settings-mobile-storage": {
+      "note": "手机端「存储」页：只装桌面同名页的那几项。",
+      "query": "?fusionSettings=1&single=1",
+      "lang": "zh-CN",
+      "steps": [
+        {
+          "wait": 2000
+        },
+        {
+          "tap": "稍后再说"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tap": "桌面选择"
+        },
+        {
+          "wait": 1500
+        },
+        {
+          "tap": "管理已配对的桌面…"
+        },
+        {
+          "wait": 2000
+        },
+        {
+          "tap": "桌面端设置"
+        },
+        {
+          "wait": 1800
+        },
+        {
+          "tap": "存储"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "eval": "(() => { const text = document.body.innerText; if (!text.includes('闲置天数')) throw new Error('存储 page is missing its rows'); if (text.includes('选项卡')) throw new Error('存储 page carries another page\\'s rows'); })()"
+        },
+        {
+          "shot": "m-settings-storage.png"
+        }
+      ]
+    },
+    "settings-mobile-skills": {
+      "note": "手机端「技能」页顶部承接桌面技能页的两个开关：自动升级技能、智能技能推荐。",
+      "query": "?fusionSettings=1&single=1",
+      "lang": "zh-CN",
+      "steps": [
+        {
+          "wait": 2000
+        },
+        {
+          "tap": "稍后再说"
+        },
+        {
+          "wait": 1200
+        },
+        {
+          "tap": "桌面选择"
+        },
+        {
+          "wait": 1500
+        },
+        {
+          "tap": "管理已配对的桌面…"
+        },
+        {
+          "wait": 2000
+        },
+        {
+          "tap": "桌面端设置"
+        },
+        {
+          "wait": 1800
+        },
+        {
+          "tap": "技能"
+        },
+        {
+          "wait": 1500
+        },
+        {
+          "eval": "(() => { const text = document.body.innerText; for (const label of ['自动升级技能', '智能技能推荐']) if (!text.includes(label)) throw new Error('skills page lost ' + label); if (text.includes('自动归档')) throw new Error('skills page carries the storage rows'); })()"
+        },
+        {
+          "shot": "m-settings-skills.png"
+        }
+      ]
+    }
+  }
+}

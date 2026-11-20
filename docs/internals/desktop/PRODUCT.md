@@ -930,7 +930,7 @@ message area. Mixed-result ordering and divider rules in 4.8.
 
 Besides the model and thinking-level pickers, the input area offers an
 **approval mode** quick-switch dropdown; it is the same global selection as the
-settings "General" page's approval mode. macOS shows "Manual approval / Sandbox
+settings "Permissions" page's approval mode. macOS shows "Manual approval / Sandbox
 protection / Automatic review / Fully open"; Windows shows "Manual approval / Write protection /
 Automatic review / Fully open" after the host probe passes; Linux shows "Manual approval / Sandbox
 protection / Automatic review / Fully open" after the Bubblewrap host probe passes.
@@ -1016,7 +1016,7 @@ must not pollute the daily background-program list.
 GUI colors uniformly use the **semantic tokens** defined in
 `desktop/src/styles/globals.css` (neutral/surface, accent/interaction, the
 status triple, diff, shadows) — no raw Tailwind named colors written in
-components. The look has two independent Settings → General choices:
+components. The look has two independent Settings → Appearance choices:
 **appearance** (Light / Dark / Follow system) and **color theme** (FutureOS by
 default, plus Ayu, Catppuccin, Dracula, Everforest, Gruvbox, Kanagawa, Nightfox,
 Nord, One Dark, Rosé Pine, Solarized, Tokyo Night and Vesper — fourteen in all,
@@ -1034,16 +1034,25 @@ changed components.
 ### 5.7 Settings: providers and models
 
 The settings panel (gear at the bottom of the left nav; the "Models" shortcut
-below New Chat jumps straight to the models page) has three pages:
+below New Chat jumps straight to the models page) groups its pages into five
+sections — **App** (Appearance, Keyboard shortcuts), **Conversation** (Permissions,
+Replies, Storage), **Models and skills** (Providers, Models, Skills), **Account**
+(Account, Check for updates, About) and **Debug** (Reset, plus Fusion and
+Environment in test builds). The pages this section covers are:
 
-- **General**: UI language switch (Follow system / 中文 / English — it tracks
-  the OS locale until the user picks one, and the choice is saved locally); **approval mode** by platform (macOS: Manual approval / Sandbox
+- **Appearance**: UI language switch (Follow system / 中文 / English — it tracks
+  the OS locale until the user picks one, and the choice is saved locally);
+  **appearance** (Light / Dark / Follow system) and **color theme** (14 palettes,
+  §5.6); font size; and how much of a settled reply the transcript shows
+  (Default / Detailed).
+- **Permissions**: **approval mode** by platform (macOS: Manual approval / Sandbox
   protection / Automatic review / Fully open; Windows with host probe passed: Manual approval /
   Write protection / Automatic review / Fully open; Linux with Bubblewrap host probe passed:
   Manual approval / Sandbox protection / Automatic review / Fully open — on failure show the
   stable diagnostic code and apt/dnf install hints and keep Manual approval;
   default Fully open `off`, falling back to Manual approval only when sandbox
-  is clearly unavailable); **Generate a title after the first answer**
+  is clearly unavailable).
+- **Replies**: **Generate a title after the first answer**
   (on by default; an explicitly saved off choice is preserved). This generates and saves a title in the background using the
   same title-suggestion API as the rename dialog, once after a new conversation's
   first successful run. It never compacts or changes conversation context. Later

@@ -4069,6 +4069,19 @@ mod runtime_tests {
         )
         .await;
 
+        // The delivery note is written after the endpoint has taken the packet,
+        // and the fixture records a packet on the broker's own thread: the
+        // publisher is still inside its socket write when `await_publish`
+        // returns, so a single read here raced that resume and found nothing
+        // measured on a loaded runner (2026-11-20) with the packet plainly
+        // delivered. Wait for the note instead of assuming it already ran.
+        crate::remote::test_support::wait_until(
+            "a delivered catalogue packet must be measured",
+            Duration::from_secs(5),
+            || SUPERVISOR.catalogue_measurement(&pair).first.is_some(),
+        )
+        .await;
+
         let measurement = SUPERVISOR.catalogue_measurement(&pair);
         let first = measurement
             .first

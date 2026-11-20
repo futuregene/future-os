@@ -601,6 +601,15 @@ export const resources = {
           previewAttachment: "Open {{name}}",
           removeAttachment: "Remove {{name}}",
           addAttachment: "Add photos or files",
+          /**
+           * Changing a waiting message's files is a cancel and a re-send, and the
+           * row can leave the queue first (it starts at the turn boundary, or a
+           * burst folds into the turn ahead). The sentence says what happened and
+           * nothing more: it also covers deleting and editing such a row, where
+           * the reader picked nothing. Nothing is lost either way — the files a
+           * reader picked for this row are in the message box.
+           */
+          rowGone: "That message already left the queue, so it can't be changed now.",
           save: "Save",
           cancel: "Cancel",
           remove: "Remove from the queue",
@@ -690,6 +699,14 @@ export const resources = {
           "That conversation is not on the connected desktop. Open it from the machine that owns it.",
         promptTooLarge:
           "That message is too long to send. Please shorten it to under 512 KB.",
+        /**
+         * The connected desktop takes no files at all (`file_transfer_v1`).
+         * Its own paperclip is disabled for the same reason, so this is the
+         * sentence for every path that still tried: a waiting message's "+",
+         * a draft restored from a different machine.
+         */
+        attachmentsUnsupported:
+          "This desktop can't receive files. Attach them in the conversation on the desktop itself.",
         noHistory: "No messages yet.",
         loadingHistory: "Loading messages…",
         syncingLatest: "Syncing…",
@@ -1003,8 +1020,9 @@ export const resources = {
 
         boundDesktop: "Paired desktop: {{name}}",
         sharedHint: "Desktop settings apply only to this paired device and sync across both clients.",
-        preferences: "Automation and approvals",
-        automation: "Automation",
+        permission: "Permissions",
+        reply: "Replies",
+        storage: "Storage",
         language: "Language",
         appearance: "Appearance",
         modelsAndSkills: "Models and skills",
@@ -1037,13 +1055,17 @@ export const resources = {
         followAccountCopyName: "Copy account name",
         followAccountCopied: "Copied",
         followAccountReadArticle: "Read an article",
-        models: "Model visibility",
+        search: "Search settings",
+        searchPlaceholder: "Search settings",
+        searchResults: "Matching settings",
+        searchEmpty: "No setting matches that.",
+        models: "Models",
         modelsHint: "Show or hide models in both clients' model selectors. Hidden models can be enabled here again.",
         searchModels: "Search models or providers",
         toggleProvider: "Show or hide the {{name}} models",
         hiddenModelCount: "{{count}} hidden",
         noModels: "No matching models.",
-        skills: "Skill management",
+        skills: "Skills",
         skillsHint: "Install, upgrade or remove skills on the connected desktop. Removal also affects desktop conversations.",
         installed: "Installed",
         available: "Catalogue",
@@ -1062,7 +1084,7 @@ export const resources = {
         saveFailed: "Could not confirm the save. The desktop's latest settings have been requested; check them before retrying.",
         skillFailed: "The skill operation could not be confirmed. The list has been reloaded; check it before retrying. Earlier upgrades in a batch may have completed.",
         tasks: "Scheduled task settings",
-        providers: "Providers and models",
+        providers: "Providers",
         providerKey: "Provider",
         providerForm: "Custom provider",
         providersHint: "Set up the providers and models this desktop uses. The phone keeps no copy: every change is written to the desktop.",
@@ -1869,6 +1891,7 @@ export const resources = {
           previewAttachment: "打开 {{name}}",
           removeAttachment: "移除 {{name}}",
           addAttachment: "添加图片或文件",
+          rowGone: "这条消息已经离开队列，没法再改了。",
           save: "保存",
           cancel: "取消",
           remove: "从队列中删除",
@@ -1940,6 +1963,7 @@ export const resources = {
         standbyCannotSendUnknown: "已被另一台设备接管，现在发不出去。",
         sessionNotOnDesktop: "该会话不在当前连接的设备上。请到拥有它的那台设备上打开。",
         promptTooLarge: "这条消息太长了，无法发送。请将其缩短到 512 KB 以内。",
+        attachmentsUnsupported: "这台电脑无法接收文件。请在桌面端的对话里添加附件。",
         noHistory: "还没有消息。",
         loadingHistory: "正在加载消息…",
         syncingLatest: "正在同步…",
@@ -2215,8 +2239,9 @@ export const resources = {
 
         boundDesktop: "已配对的桌面端：{{name}}",
         sharedHint: "桌面端设置仅作用于此桌面端，两端同步生效。",
-        preferences: "自动化与审批",
-        automation: "自动化",
+        permission: "权限",
+        reply: "回复",
+        storage: "存储",
         language: "语言",
         appearance: "外观",
         modelsAndSkills: "模型与技能",
@@ -2249,13 +2274,17 @@ export const resources = {
         followAccountCopyName: "复制公众号名",
         followAccountCopied: "已复制",
         followAccountReadArticle: "阅读文章",
-        models: "模型可见性",
+        search: "搜索设置",
+        searchPlaceholder: "搜索设置",
+        searchResults: "匹配的设置",
+        searchEmpty: "没有匹配的设置。",
+        models: "模型",
         modelsHint: "统一控制两端模型选择器中的显示与隐藏。已隐藏的模型可在这里重新开启。",
         searchModels: "搜索模型或提供商",
         toggleProvider: "显示或隐藏 {{name}} 的模型",
         hiddenModelCount: "已隐藏 {{count}} 个",
         noModels: "没有匹配的模型。",
-        skills: "技能管理",
+        skills: "技能",
         skillsHint: "在当前桌面端安装、升级或卸载技能。卸载同样影响桌面端会话。",
         installed: "已安装",
         available: "技能目录",
@@ -2274,7 +2303,7 @@ export const resources = {
         saveFailed: "未能确认保存结果。已重新请求桌面端最新设置，请核对后重试。",
         skillFailed: "未能确认技能操作结果。已重新请求列表，请核对后重试；批量升级中先前的项目可能已完成。",
         tasks: "定时任务设置",
-        providers: "提供商与模型",
+        providers: "提供商",
         providerKey: "提供商设置",
         providerForm: "自定义提供商",
         providersHint: "配置该桌面端使用的提供商与模型。手机不保留副本，每次修改都写入桌面端。",

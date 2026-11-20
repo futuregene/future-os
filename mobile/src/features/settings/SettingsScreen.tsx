@@ -21,28 +21,22 @@ import { FusionSettingsPage } from "./FusionSettingsPage";
 import { ModelsSettingsPage } from "./ModelsSettingsPage";
 import { ProviderKeyPage } from "./ProviderKeyPage";
 import { ProvidersSettingsPage } from "./ProvidersSettingsPage";
+import { SettingsSearchField, SettingsSearchResults } from "./SettingsSearch";
+import { DEVICE_SETTINGS_ENTRIES, PHONE_SETTINGS_ENTRIES, searchMobileSettings } from "./settingsIndex";
 import { SkillsSettingsPage } from "./SkillsSettingsPage";
 import { TasksSettingsPage } from "./TasksSettingsPage";
 import type { SettingsPageBack } from "./pageBack";
 import { ResourceStatus, SettingsField, SettingsLink, SettingsSection, SettingsSwitch, createSettingsStyles, useSettingsStyles } from "./SettingsPrimitives";
+import { TITLED_SETTINGS_PAGES, type TitledSettingsPage } from "./settingsPages";
 import { ThisDeviceIdRow } from "./ThisDeviceIdRow";
 import { useDesktopResource } from "./useDesktopResource";
 import { useKeyboardHeight } from "../../lib/useKeyboardHeight";
 
+// Declared in `settingsPages` so the search index can read the list without
+// loading this module; re-exported here, where every caller expects it.
+export { TITLED_SETTINGS_PAGES, type TitledSettingsPage };
+
 export type SettingsScreenHandle = { goBack(): void };
-
-/**
- * Every settings level whose header names itself through `desktopSettings.<name>`.
- *
- * A value and not only a type, because a level whose title key is missing does
- * not fail loudly — it renders the key itself in the header, which is how
- * `appearance` first shipped. A test holds the two translations to this list.
- */
-export const TITLED_SETTINGS_PAGES = [
-  "preferences", "models", "fusion", "skills", "tasks", "language", "appearance", "providers", "followAccount",
-] as const;
-
-type TitledSettingsPage = (typeof TITLED_SETTINGS_PAGES)[number];
 
 /**
  * One screen level. Nested provider editors are levels too, so the system back
@@ -61,7 +55,7 @@ type SettingsRoute =
  * what is being configured and no longer which device: the levels below the
  * device home are the only place the two are separated.
  */
-const DEVICE_LEVELS = new Set(["preferences", "models", "fusion", "skills", "tasks", "providers"]);
+const DEVICE_LEVELS = new Set(["permission", "reply", "storage", "models", "fusion", "skills", "tasks", "providers"]);
 
 /** A refused write, as the key of what failed. Held rather than a boolean
  * because the two surfaces fail differently and say so on screen. */
@@ -139,6 +133,9 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
   useImperativeHandle(ref, () => ({ goBack }), [goBack]);
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState<SettingsNotice | null>(null);
+  // The home's search box. One string for both homes: only one of them is ever
+  // mounted, and opening a page clears it, so coming back shows the list again.
+  const [query, setQuery] = useState("");
   const active = useRef(true);
   const writing = useRef(false);
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
@@ -189,6 +186,39 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
     setRoutes(current => current.slice(0, -1));
   }, []);
 
+  /**
+   * A search result opens its page and clears the box, so the back arrow shows
+   * the list the reader started from rather than the filter they finished with.
+   */
+  const openPage = useCallback((page: TitledSettingsPage) => {
+    setQuery("");
+    setRoutes(current => [...current, { name: page }]);
+  }, []);
+
+  /**
+   * Whether this device page is reachable from the home right now.
+   *
+   * The same question its home row answers: a page whose row is missing or
+   * disabled must not come back as a search result, or the result opens a page
+   * that renders nothing.
+   */
+  function searchableDevicePage(page: TitledSettingsPage): boolean {
+    switch (page) {
+      case "models":
+        return enabled;
+      case "providers":
+        return providersSupported;
+      case "skills":
+        return skillsSupported;
+      case "tasks":
+        return tasksSupported;
+      case "fusion":
+        return !IS_RELEASE && remote.capabilities?.has("fusion_settings_v1") === true;
+      default:
+        return true;
+    }
+  }
+
   const changeSettings = async (patch: Partial<DesktopSettings>) => {
     if (disabled || writing.current || !active.current) return;
     writing.current = true;
@@ -238,6 +268,17 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
     }
   };
 
+  // Every page of a machine's settings reads the same snapshot, so the "this
+  // desktop is too old" notice and the load status belong to whichever of them
+  // is on screen. They used to live inside one page's automation section, which
+  // is also why they left with it.
+  const devicePageStatus = enabled
+    ? <ResourceStatus loading={resource.loading || saving} failed={resource.failed} onReload={() => void resource.reload()} />
+    : null;
+  const oldDesktopNotice = remote.desktopOnline && !supported
+    ? <Text style={settingsStyles.description}>{t("desktopSettings.updateDesktop")}</Text>
+    : null;
+
   // Each level renders on its own; the stack keeps only the visible one mounted,
   // so returning to the provider list always re-reads the desktop's snapshot.
   function renderLevel() {
@@ -265,7 +306,13 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
           ? <ModelsSettingsPage settings={resource.data} disabled={disabled} onChange={patch => void changeSettings(patch)} />
           : null;
       case "skills":
-        return remote.desktopOnline && skillsSupported ? <SkillsSettingsPage /> : null;
+        return remote.desktopOnline && skillsSupported
+          ? <SkillsSettingsPage
+              disabled={disabled}
+              onChange={patch => void changeSettings(patch)}
+              settings={resource.data}
+            />
+          : null;
       case "tasks":
         return remote.desktopOnline && tasksSupported
           ? <TasksSettingsPage
@@ -287,30 +334,40 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
       // connection, so this level stays usable while the desktop is offline.
       case "followAccount":
         return <FollowAccountPage />;
-      case "preferences":
+      case "permission":
         return <ScrollView contentContainerStyle={settingsStyles.content} keyboardShouldPersistTaps="handled">
-          <SettingsSection title={t("desktopSettings.automation")}>
-            {remote.desktopOnline && !supported ? <Text style={settingsStyles.description}>{t("desktopSettings.updateDesktop")}</Text> : null}
-            <SettingsSwitch label={t("desktopSettings.autoUpgradeSkills")} description={t("desktopSettings.autoUpgradeSkillsHint")}
-              value={resource.data?.autoUpgradeSkills ?? false} disabled={disabled} onChange={autoUpgradeSkills => void changeSettings({ autoUpgradeSkills })} />
-            <SettingsSwitch label={t("desktopSettings.autoTitleFirstTurn")} description={t("desktopSettings.autoTitleFirstTurnHint")}
-              value={resource.data?.autoTitleFirstTurn ?? false} disabled={disabled} onChange={autoTitleFirstTurn => void changeSettings({ autoTitleFirstTurn })} />
-            {/* Default off when the desktop does not report it (an older desktop
-                predates the toggle), matching the desktop's own default. */}
-            <SettingsSwitch label={t("desktopSettings.skillRecommend")} description={t("desktopSettings.skillRecommendHint")}
-              value={resource.data?.skillRecommend ?? false} disabled={disabled} onChange={skillRecommend => void changeSettings({ skillRecommend })} />
-            {/* Same value the desktop's General page writes: off draws no card on
-                either surface, and the desktop's agent is not taught the fence. */}
+          <SettingsSection title={t("approvalTier.title")}>
+            <View accessibilityRole="radiogroup" style={settingsStyles.actions}>
+              {(["manual", "sandbox", "auto", "off"] as const).filter(tier => (tier !== "sandbox" && tier !== "auto" || remote.sandboxAvailable) && (tier !== "auto" || remote.capabilities?.has("auto_approval_v1"))).map(tier =>
+                <Pressable key={tier} accessibilityRole="radio" accessibilityLabel={t(`approvalTier.${tier}`)}
+                  accessibilityState={{ checked: remote.approvalTier === tier, disabled: !remote.desktopOnline || saving }}
+                  disabled={!remote.desktopOnline || saving} onPress={() => void selectApproval(tier)}
+                  style={[styles.approval, remote.approvalTier === tier && styles.approvalSelected]}>
+                  <Text style={settingsStyles.label}>{t(`approvalTier.${tier}`)}</Text>
+                </Pressable>)}
+            </View>
+            {remote.sandboxAvailable && remote.sandboxCode === "available_write_only"
+              ? <Text style={settingsStyles.description}>{t("approvalTier.upgrade")}</Text>
+              : null}
+          </SettingsSection>
+          {oldDesktopNotice}
+          {devicePageStatus}
+        </ScrollView>;
+      case "reply":
+        return <ScrollView contentContainerStyle={settingsStyles.content} keyboardShouldPersistTaps="handled">
+          <SettingsSection>
+            {/* Same value the desktop's own reply page writes: off draws no card
+                on either surface, and the desktop's agent is not taught the fence. */}
             <SettingsSwitch label={t("desktopSettings.choiceCards")} description={t("desktopSettings.choiceCardsHint")}
               value={resource.data?.choiceCards ?? false} disabled={disabled} onChange={choiceCards => void changeSettings({ choiceCards })} />
-            {/* The remote desktop switch is deliberately absent: on that machine
-                the Remote page's switch *is* the whole preference, and this row
-                would write the value the host reads at launch, so a second
-                control here would describe one state two ways (that switch keeps
-                showing the old answer until a restart). It is changed on the
-                desktop only. */}
-            {enabled ? <ResourceStatus loading={resource.loading || saving} failed={resource.failed} onReload={() => void resource.reload()} /> : null}
+            <SettingsSwitch label={t("desktopSettings.autoTitleFirstTurn")} description={t("desktopSettings.autoTitleFirstTurnHint")}
+              value={resource.data?.autoTitleFirstTurn ?? false} disabled={disabled} onChange={autoTitleFirstTurn => void changeSettings({ autoTitleFirstTurn })} />
           </SettingsSection>
+          {oldDesktopNotice}
+          {devicePageStatus}
+        </ScrollView>;
+      case "storage":
+        return <ScrollView contentContainerStyle={settingsStyles.content} keyboardShouldPersistTaps="handled">
           <SettingsSection title={t("desktopSettings.archiveSection")}>
             {/* Both switches sit together because archiving follows them as one
                 behaviour: what is cleared, and when a conversation is shelved at
@@ -342,20 +399,8 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
               />
             </SettingsField>
           </SettingsSection>
-          <SettingsSection title={t("approvalTier.title")}>
-            <View accessibilityRole="radiogroup" style={settingsStyles.actions}>
-              {(["manual", "sandbox", "auto", "off"] as const).filter(tier => (tier !== "sandbox" && tier !== "auto" || remote.sandboxAvailable) && (tier !== "auto" || remote.capabilities?.has("auto_approval_v1"))).map(tier =>
-                <Pressable key={tier} accessibilityRole="radio" accessibilityLabel={t(`approvalTier.${tier}`)}
-                  accessibilityState={{ checked: remote.approvalTier === tier, disabled: !remote.desktopOnline || saving }}
-                  disabled={!remote.desktopOnline || saving} onPress={() => void selectApproval(tier)}
-                  style={[styles.approval, remote.approvalTier === tier && styles.approvalSelected]}>
-                  <Text style={settingsStyles.label}>{t(`approvalTier.${tier}`)}</Text>
-                </Pressable>)}
-            </View>
-            {remote.sandboxAvailable && remote.sandboxCode === "available_write_only"
-              ? <Text style={settingsStyles.description}>{t("approvalTier.upgrade")}</Text>
-              : null}
-          </SettingsSection>
+          {oldDesktopNotice}
+          {devicePageStatus}
         </ScrollView>;
       default:
         return deviceMode ? renderDeviceHome() : renderPhoneHome();
@@ -369,46 +414,52 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
    * page, so this screen works with no desktop paired, offline, or asleep.
    */
   function renderPhoneHome() {
+    const searching = query.trim().length > 0;
     return <ScrollView contentContainerStyle={settingsStyles.content} keyboardShouldPersistTaps="handled">
-      <SettingsSection title={t("desktopSettings.thisPhone")}>
-        <SettingsLink label={t("appearance.title")} onPress={() => push({ name: "appearance" })} />
-        <SettingsLink label={t("language.title")} onPress={() => push({ name: "language" })} />
-        {/* Deliberately never disabled: following the official account needs no
-            desktop connection, unlike every other row that used to be here. */}
-        <SettingsLink label={t("desktopSettings.followAccount")} onPress={() => push({ name: "followAccount" })} />
-        {/* Identity of this phone, not of a paired machine: the id a machine
-            records when it pairs here, so the two screens can be matched. */}
-        <ThisDeviceIdRow />
-        {onCheckUpdate
-          ? <SettingsLink label={t("update.check")} disabled={checkingUpdate} loading={checkingUpdate} onPress={onCheckUpdate} />
-          : null}
-      </SettingsSection>
-      {/* The reminder is drawn by this phone, so it is set here and not on the
-          paired machine that ran the task: one choice covers every desktop the
-          phone is paired with. */}
-      <SettingsSection title={t("notifications.title")}>
-        <SettingsSwitch
-          description={t("notifications.taskFinishedHint")}
-          label={t("notifications.taskFinished")}
-          onChange={enabled => void changeTaskFinishedReminders(enabled)}
-          value={taskFinishedReminders}
-        />
-        {reminderSaveFailed
-          ? <Text accessibilityRole="alert" style={settingsStyles.error}>{t("notifications.saveFailed")}</Text>
-          : null}
-      </SettingsSection>
-      <View style={styles.versionRow}>
-        <Text style={styles.version}>{t("common.version", { version: VERSION })}</Text>
-        <Text style={styles.version}>·</Text>
-        <Pressable
-          accessibilityRole="link"
-          accessibilityLabel={t("common.privacyPolicy")}
-          onPress={() => void openPrivacyPolicy(i18n.language)}
-          hitSlop={8}
-        >
-          <Text style={styles.privacyLink}>{t("common.privacyPolicy")}</Text>
-        </Pressable>
-      </View>
+      <SettingsSearchField onChange={setQuery} value={query} />
+      {searching
+        ? <SettingsSearchResults matches={searchMobileSettings(t, query, PHONE_SETTINGS_ENTRIES)} onOpen={openPage} />
+        : <>
+            <SettingsSection title={t("desktopSettings.thisPhone")}>
+              <SettingsLink label={t("appearance.title")} onPress={() => push({ name: "appearance" })} />
+              <SettingsLink label={t("language.title")} onPress={() => push({ name: "language" })} />
+              {/* Deliberately never disabled: following the official account needs no
+                  desktop connection, unlike every other row that used to be here. */}
+              <SettingsLink label={t("desktopSettings.followAccount")} onPress={() => push({ name: "followAccount" })} />
+              {/* Identity of this phone, not of a paired machine: the id a machine
+                  records when it pairs here, so the two screens can be matched. */}
+              <ThisDeviceIdRow />
+              {onCheckUpdate
+                ? <SettingsLink label={t("update.check")} disabled={checkingUpdate} loading={checkingUpdate} onPress={onCheckUpdate} />
+                : null}
+            </SettingsSection>
+            {/* The reminder is drawn by this phone, so it is set here and not on the
+                paired machine that ran the task: one choice covers every desktop the
+                phone is paired with. */}
+            <SettingsSection title={t("notifications.title")}>
+              <SettingsSwitch
+                description={t("notifications.taskFinishedHint")}
+                label={t("notifications.taskFinished")}
+                onChange={enabled => void changeTaskFinishedReminders(enabled)}
+                value={taskFinishedReminders}
+              />
+              {reminderSaveFailed
+                ? <Text accessibilityRole="alert" style={settingsStyles.error}>{t("notifications.saveFailed")}</Text>
+                : null}
+            </SettingsSection>
+            <View style={styles.versionRow}>
+              <Text style={styles.version}>{t("common.version", { version: VERSION })}</Text>
+              <Text style={styles.version}>·</Text>
+              <Pressable
+                accessibilityRole="link"
+                accessibilityLabel={t("common.privacyPolicy")}
+                onPress={() => void openPrivacyPolicy(i18n.language)}
+                hitSlop={8}
+              >
+                <Text style={styles.privacyLink}>{t("common.privacyPolicy")}</Text>
+              </Pressable>
+            </View>
+          </>}
     </ScrollView>;
   }
 
@@ -423,13 +474,22 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
    */
   function renderDeviceHome() {
     const capable = supported && skillsSupported && providersSupported && tasksSupported;
+    // Nothing on this level is openable while the machine is offline or driven
+    // by another device, so the box is not offered: an empty result list would
+    // say the settings do not exist.
+    const searchable = remote.desktopOnline && !standby;
+    const searching = searchable && query.trim().length > 0;
     return <ScrollView contentContainerStyle={settingsStyles.content} keyboardShouldPersistTaps="handled">
+      {searchable ? <SettingsSearchField onChange={setQuery} value={query} /> : null}
+      {searching
+        ? <SettingsSearchResults matches={searchMobileSettings(t, query, DEVICE_SETTINGS_ENTRIES.filter(entry => searchableDevicePage(entry.page)))} onOpen={openPage} />
+        : null}
       {/* A machine somebody else drives has no settings to show here: every row
           below it opens a page the desktop would refuse to answer, which is how
           this phone used to offer a stack of dead ends. The banner above names
           the holder and carries the takeover, so the page keeps the one action
           that changes the state instead of a list that pretends otherwise. */}
-      {standby
+      {standby || searching
         ? null
         : (
             <SettingsSection title={t("desktops.deviceSettings")}>
@@ -439,7 +499,9 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
                   step to perform first, and nothing here edits another machine. A
                   machine that is not answering says so below, in the notice, and the
                   rows that need it are disabled. */}
-              <SettingsLink disabled={!remote.desktopOnline} label={t("desktopSettings.preferences")} onPress={() => push({ name: "preferences" })} />
+              <SettingsLink disabled={!remote.desktopOnline} label={t("desktopSettings.permission")} onPress={() => push({ name: "permission" })} />
+              <SettingsLink disabled={!remote.desktopOnline} label={t("desktopSettings.reply")} onPress={() => push({ name: "reply" })} />
+              <SettingsLink disabled={!remote.desktopOnline} label={t("desktopSettings.storage")} onPress={() => push({ name: "storage" })} />
               <SettingsLink disabled={!enabled} label={t("desktopSettings.models")} onPress={() => push({ name: "models" })} />
               {!IS_RELEASE ? <SettingsLink disabled={!remote.desktopOnline || !remote.capabilities.has("fusion_settings_v1")} label={t("desktopSettings.fusion")} description={!remote.capabilities.has("fusion_settings_v1") ? t("desktopSettings.updateDesktop") : undefined} onPress={() => push({ name: "fusion" })} /> : null}
               <SettingsLink disabled={!remote.desktopOnline || !providersSupported} label={t("desktopSettings.providers")} onPress={() => push({ name: "providers" })} />

@@ -8,7 +8,6 @@ import { syncFutureModels } from "../../integrations/agent/agentClient";
 import {
   deleteCustomProvider,
   listAgentProviders,
-  logoutFutureProvider,
   peekAgentProviders,
   probeThinkingLevel,
   updateBuiltinProvider,
@@ -37,12 +36,19 @@ export function ProvidersPage({
   communityEdition = false,
   futureSessionStatus,
   onRefreshFutureAuth,
+  onOpenAccount,
   onProvidersChanged,
 }: {
   /** Future uses the regular built-in-provider key flow in community edition. */
   communityEdition?: boolean;
   futureSessionStatus: FutureSessionStatus;
   onRefreshFutureAuth: () => void;
+  /**
+   * Opens the Account tab. Signing in and out is the Account page's job, so the
+   * Future row only reports its state and links there instead of repeating a
+   * second pair of buttons that write the same credential.
+   */
+  onOpenAccount?: () => void;
   /**
    * Called after any mutation that changes the available model set, so the
    * Models tab (fed by the agent's `list_models`) refreshes immediately.
@@ -62,7 +68,6 @@ export function ProvidersPage({
   const [editing, setEditing] = useState<CustomProvider | null>(null);
   const [editingBuiltinKey, setEditingBuiltinKey] = useState<BuiltinProvider | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
-  const [confirmingLogout, setConfirmingLogout] = useState(false);
   const [syncingFutureModels, setSyncingFutureModels] = useState(false);
   const [showMoreBuiltin, setShowMoreBuiltin] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
@@ -81,20 +86,6 @@ export function ProvidersPage({
       const view = await deleteCustomProvider(id);
       setProviders(view);
       setConfirmingDelete(null);
-      onProvidersChanged?.();
-    }
-    catch (error) {
-      setActionError(errorMessage(error));
-    }
-  }
-
-  async function handleLogout() {
-    setActionError(null);
-    try {
-      const view = await logoutFutureProvider();
-      setProviders(view);
-      setConfirmingLogout(false);
-      setHint(null);
       onProvidersChanged?.();
     }
     catch (error) {
@@ -191,64 +182,32 @@ export function ProvidersPage({
               {provider.id === "future" && !communityEdition
                 ? (
                     <div className="flex items-center gap-2">
-                      {confirmingLogout && futureHasCredential
-                        ? (
-                            <>
-                              <span className="text-xs text-ink-muted">{t("providers.confirmLogout")}</span>
-                              <Button onClick={() => void handleLogout()} size="sm" variant="danger">{t("providers.logoutConfirm")}</Button>
-                              <Button onClick={() => setConfirmingLogout(false)} size="sm" variant="secondary">{t("providers.cancel")}</Button>
-                            </>
-                          )
+                      <Badge tone={futureAuthenticated ? "success" : "neutral"}>
+                        {futureStatusLabel}
+                      </Badge>
+                      {futureHasCredential
+                        ? futureSessionStatus === "unavailable"
+                          ? (
+                              <Button onClick={onRefreshFutureAuth} size="sm" variant="secondary">
+                                {t("account.retry")}
+                              </Button>
+                            )
+                          : (
+                              <Button
+                                disabled={!futureAuthenticated || syncingFutureModels}
+                                onClick={() => void handleSyncFutureModels()}
+                                size="sm"
+                                variant="secondary"
+                              >
+                                {syncingFutureModels
+                                  ? t("providers.updatingModels")
+                                  : t("providers.updateModels")}
+                              </Button>
+                            )
                         : (
-                            <>
-                              <Badge tone={futureAuthenticated ? "success" : "neutral"}>
-                                {futureStatusLabel}
-                              </Badge>
-                              {futureHasCredential
-                                ? (
-                                    <>
-                                      {futureSessionStatus === "unavailable"
-                                        ? (
-                                            <Button onClick={onRefreshFutureAuth} size="sm" variant="secondary">
-                                              {t("account.retry")}
-                                            </Button>
-                                          )
-                                        : (
-                                            <Button
-                                              disabled={!futureAuthenticated || syncingFutureModels}
-                                              onClick={() => void handleSyncFutureModels()}
-                                              size="sm"
-                                              variant="secondary"
-                                            >
-                                              {syncingFutureModels
-                                                ? t("providers.updatingModels")
-                                                : t("providers.updateModels")}
-                                            </Button>
-                                          )}
-                                      <Button
-                                        className="text-ink-soft hover:text-danger"
-                                        disabled={syncingFutureModels}
-                                        onClick={() => setConfirmingLogout(true)}
-                                        size="sm"
-                                        variant="secondary"
-                                      >
-                                        {t("providers.logout")}
-                                      </Button>
-                                    </>
-                                  )
-                                : (
-                                    <Button
-                                      onClick={() => {
-                                        setHint(null);
-                                        emitFutureEvent("show-onboarding", undefined);
-                                      }}
-                                      size="sm"
-                                      variant="secondary"
-                                    >
-                                      {t(futureSessionStatus === "invalid" ? "account.loginAgain" : "providers.connect")}
-                                    </Button>
-                                  )}
-                            </>
+                            <Button disabled={!onOpenAccount} onClick={onOpenAccount} size="sm" variant="secondary">
+                              {t("providers.openAccount")}
+                            </Button>
                           )}
                     </div>
                   )

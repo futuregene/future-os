@@ -229,7 +229,7 @@ No notification is emitted when nothing was archived. Cleanup failure does not u
 
 ## 5. Suggested settings information architecture
 
-Archive settings live on **Settings → General**, alongside language and appearance, instead of occupying a settings module of their own. In order:
+Archive settings live on **Settings → Conversation → Storage**, on the same page as the database pass, instead of occupying a settings module of their own. In order:
 
 1. **Automatically clear run logs when archiving** — on by default.
 2. **Automatic conversation archiving** (block heading, no description line).

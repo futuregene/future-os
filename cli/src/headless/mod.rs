@@ -16,7 +16,11 @@ use future_host::{future_login, remote, Error as AppError};
 /// workers parked the runtime cannot poll the probe's deadline, and a healthy
 /// Agent is then reported as "handshake timed out". Five keeps the loop and the
 /// probe running while several blocking operations are in flight.
-const RUNTIME_WORKER_THREADS: usize = 5;
+///
+/// The width itself lives in `future_host::agent_host`, because the desktop's
+/// embedded service serves the same Agent on a runtime it builds for itself: two
+/// copies of this number is how that one came to be built with two workers.
+const RUNTIME_WORKER_THREADS: usize = future_host::agent_host::AGENT_RUNTIME_WORKER_THREADS;
 
 pub const HELP: &str =
     "Usage: future host [--storage-mode wal|nfs] [--agent-grpc-addr ADDR] [--relay URL [--relay-ca PEM]] [--help]

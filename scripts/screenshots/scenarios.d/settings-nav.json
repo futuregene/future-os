@@ -1,0 +1,192 @@
+{
+  "_comment": [
+    "设置对话框重整后的导航与每一页。一次打开设置，用导航点过全部页面，每页一张图，",
+    "断言读的是标题 h2 与导航分组文本，所以页面被挪走、改标题或分组被改名都会让这里红。",
+    "?fusionSettings=1 让构建报告 isRelease=false，Fusion 与环境两个 devOnly 页才在导航里出现。"
+  ],
+  "desktop": {
+    "settings-search": {
+      "note": "导航里的搜索：输入「归档」后分组标题消失、结果按行列出并注明所在页；回车或点击直接翻到那一页，字段随之清空。",
+      "query": "?fusionSettings=1",
+      "lang": "zh-CN",
+      "steps": [
+        { "wait": 900 },
+        { "tapText": "lixin" },
+        { "wait": 1500 },
+        { "tapText": "设置" },
+        { "wait": 2000 },
+        {
+          "eval": "(() => { const input = document.querySelector('[role=dialog] nav input[type=search]'); if (!input) throw new Error('no search field in the rail'); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; set.call(input, '归档'); input.dispatchEvent(new Event('input', { bubbles: true })); })()"
+        },
+        { "wait": 400 },
+        {
+          "eval": "(() => { const nav = document.querySelector('[role=dialog] nav'); if (nav.querySelector('[class*=uppercase]')) throw new Error('the groups are still printed behind the results'); const rows = [...nav.querySelectorAll('[data-settings-results] button')]; if (rows.length < 2) throw new Error('results: ' + rows.length); for (const row of rows) if (row.children.length !== 2) throw new Error('a result does not name its page'); if (!rows.every(row => row.lastElementChild.textContent === '存储')) throw new Error('a result points at the wrong page: ' + rows.map(r => r.lastElementChild.textContent).join('|')); return JSON.stringify(rows.map(row => row.textContent)); })()"
+        },
+        { "shot": "d-settings-search.png" },
+        {
+          "eval": "(() => { const row = document.querySelector('[role=dialog] nav [data-settings-results] button'); row.click(); })()"
+        },
+        { "wait": 400 },
+        {
+          "eval": "(() => { const h = document.querySelector('[role=dialog] h2'); if (h.textContent !== '存储') throw new Error('result opened ' + h.textContent); const input = document.querySelector('[role=dialog] nav input[type=search]'); if (input.value !== '') throw new Error('the field kept its query'); if (document.querySelector('[data-settings-results]')) throw new Error('the results outlived the jump'); return 'jumped to storage and cleared the rail'; })()"
+        },
+        { "shot": "d-settings-search-target.png" }
+      ]
+    },
+    "settings-nav-app": {
+      "note": "应用组：外观页（语言、外观、调色板、字号、模型输出展示 + 提示小节里的完成提示音）。原来这 14 项全在「通用」一页。",
+      "query": "?fusionSettings=1",
+      "lang": "zh-CN",
+      "steps": [
+        { "wait": 900 },
+        { "tapText": "lixin" },
+        { "wait": 1500 },
+        { "tapText": "设置" },
+        { "wait": 2000 },
+        {
+          "eval": "(() => { const nav = document.querySelector('[role=dialog] nav').textContent; const want = ['应用', '会话', '模型与技能', '账号', '调试']; const at = want.map(label => nav.indexOf(label)); if (at.some(i => i < 0)) throw new Error('missing a group: ' + JSON.stringify(want.map((l, i) => [l, at[i]]))); if (at.some((v, i) => i > 0 && v <= at[i - 1])) throw new Error('groups out of order: ' + JSON.stringify(at)); const tabs = [...document.querySelectorAll('[role=dialog] nav button')].map(b => (b.textContent || '').trim()).filter(Boolean); return JSON.stringify({ order: at, tabs }); })()"
+        },
+        {
+          "eval": "(() => { const h = document.querySelector('[role=dialog] h2'); if (!h || h.textContent !== '外观') throw new Error('opens on: ' + (h && h.textContent)); const body = document.querySelector('[role=dialog]').textContent; for (const label of ['界面语言', '界面外观', '配色主题', '字体大小', '模型输出展示', '完成提示音']) if (!body.includes(label)) throw new Error('missing ' + label); return 'appearance is the landing tab'; })()"
+        },
+        { "shot": "d-settings-appearance.png" }
+      ]
+    },
+    "settings-nav-conversation": {
+      "note": "会话组：权限、回复、存储三页。审批模式从通用页独立出来，选项卡与首轮标题移到回复，归档与整理数据库移到存储。",
+      "query": "?fusionSettings=1",
+      "lang": "zh-CN",
+      "steps": [
+        { "wait": 900 },
+        { "tapText": "lixin" },
+        { "wait": 1500 },
+        { "tapText": "设置" },
+        { "wait": 2000 },
+        {
+          "eval": "(() => { const open = (label) => { const b = [...document.querySelectorAll('[role=dialog] nav button')].find(x => (x.textContent || '').trim() === label); if (!b) throw new Error('no nav item ' + label); b.click(); }; const check = (label) => { const h = document.querySelector('[role=dialog] h2'); if (!h || h.textContent !== label) throw new Error('title is ' + (h && h.textContent) + ', expected ' + label); }; open('权限'); check('权限'); return 'permission'; })()"
+        },
+        { "wait": 350 },
+        { "shot": "d-settings-permission.png" },
+        {
+          "eval": "(() => { const b = [...document.querySelectorAll('[role=dialog] nav button')].find(x => (x.textContent || '').trim() === '回复'); b.click(); })()"
+        },
+        { "wait": 350 },
+        {
+          "eval": "(() => { const h = document.querySelector('[role=dialog] h2'); if (h.textContent !== '回复') throw new Error('title is ' + h.textContent); const body = document.querySelector('[role=dialog]').textContent; if (!body.includes('选项卡') || !body.includes('首轮')) throw new Error('replies page lost its two rows'); if (body.includes('完成提示音')) throw new Error('the completion bell is back on replies; it is a local preference and lives on 外观'); return 'reply has its two rows and no bell'; })()"
+        },
+        { "shot": "d-settings-reply.png" },
+        {
+          "eval": "(() => { const b = [...document.querySelectorAll('[role=dialog] nav button')].find(x => (x.textContent || '').trim() === '存储'); b.click(); })()"
+        },
+        { "wait": 350 },
+        {
+          "eval": "(() => { const h = document.querySelector('[role=dialog] h2'); if (h.textContent !== '存储') throw new Error('title is ' + h.textContent); const body = document.querySelector('[role=dialog]').textContent; if (!body.includes('整理数据库')) throw new Error('the batch pass did not follow the archive rows'); return 'storage'; })()"
+        },
+        { "shot": "d-settings-storage.png" }
+      ]
+    },
+    "settings-nav-models": {
+      "note": "模型与技能组：提供商、模型、技能。Future 行只剩状态与「更新模型列表」，登录与退出只在账号页。",
+      "query": "?fusionSettings=1",
+      "lang": "zh-CN",
+      "steps": [
+        { "wait": 900 },
+        { "tapText": "lixin" },
+        { "wait": 1500 },
+        { "tapText": "设置" },
+        { "wait": 2000 },
+        {
+          "eval": "(() => { const b = [...document.querySelectorAll('[role=dialog] nav button')].find(x => (x.textContent || '').trim() === '提供商'); b.click(); })()"
+        },
+        { "wait": 700 },
+        {
+          "eval": "(() => { const dialog = document.querySelector('[role=dialog]'); const buttons = [...dialog.querySelectorAll('button')].map(b => (b.textContent || '').trim()); if (buttons.includes('退出登录')) throw new Error('the providers page still signs out'); return JSON.stringify(buttons.filter(Boolean).slice(0, 8)); })()"
+        },
+        { "shot": "d-settings-providers.png" },
+        {
+          "eval": "(() => { const b = [...document.querySelectorAll('[role=dialog] nav button')].find(x => (x.textContent || '').trim() === '模型'); b.click(); })()"
+        },
+        { "wait": 700 },
+        {
+          "eval": "(() => { const h = document.querySelector('[role=dialog] h2'); if (h.textContent !== '模型') throw new Error('title is ' + h.textContent); return 'models'; })()"
+        },
+        { "shot": "d-settings-models.png" },
+        {
+          "eval": "(() => { const b = [...document.querySelectorAll('[role=dialog] nav button')].find(x => (x.textContent || '').trim() === '技能'); b.click(); })()"
+        },
+        { "wait": 350 },
+        {
+          "eval": "(() => { const h = document.querySelector('[role=dialog] h2'); if (h.textContent !== '技能') throw new Error('title is ' + h.textContent); const body = document.querySelector('[role=dialog]').textContent; if (!body.includes('自动升级') || !body.includes('推荐')) throw new Error('skills page lost a row'); return 'skills'; })()"
+        },
+        { "shot": "d-settings-skills.png" }
+      ]
+    },
+    "settings-nav-account": {
+      "note": "账号组：账号、检查更新、关于。登录/退出现在只在这里；版本号只印在关于页。",
+      "query": "?fusionSettings=1",
+      "lang": "zh-CN",
+      "steps": [
+        { "wait": 900 },
+        { "tapText": "lixin" },
+        { "wait": 1500 },
+        { "tapText": "设置" },
+        { "wait": 2000 },
+        {
+          "eval": "(() => { const b = [...document.querySelectorAll('[role=dialog] nav button')].find(x => (x.textContent || '').trim() === '账号'); b.click(); })()"
+        },
+        { "wait": 700 },
+        {
+          "eval": "(() => { const h = document.querySelector('[role=dialog] h2'); if (h.textContent !== '账号') throw new Error('title is ' + h.textContent); return 'account'; })()"
+        },
+        { "shot": "d-settings-account.png" },
+        {
+          "eval": "(() => { const b = [...document.querySelectorAll('[role=dialog] nav button')].find(x => (x.textContent || '').trim() === '检查更新'); b.click(); })()"
+        },
+        { "wait": 400 },
+        {
+          "eval": "(() => { const body = document.querySelector('[role=dialog]').textContent; if (body.includes('当前版本')) throw new Error('the update page repeats the installed version'); if (!body.includes('检查更新')) throw new Error('update page renders nothing recognisable'); return 'no version on the update page'; })()"
+        },
+        { "shot": "d-settings-update.png" },
+        {
+          "eval": "(() => { const b = [...document.querySelectorAll('[role=dialog] nav button')].find(x => (x.textContent || '').trim() === '关于'); b.click(); })()"
+        },
+        { "wait": 400 },
+        {
+          "eval": "(() => { const h = document.querySelector('[role=dialog] h2'); if (h.textContent !== '关于') throw new Error('title is ' + h.textContent); return 'about'; })()"
+        },
+        { "shot": "d-settings-about.png" }
+      ]
+    },
+    "settings-nav-debug": {
+      "note": "调试组：重置、Fusion、环境。后两项 devOnly，正式构建里整组只剩「重置」；这里用测试构建让三项同时出现，证明分组与顺序。",
+      "query": "?fusionSettings=1",
+      "lang": "zh-CN",
+      "steps": [
+        { "wait": 900 },
+        { "tapText": "lixin" },
+        { "wait": 1500 },
+        { "tapText": "设置" },
+        { "wait": 2000 },
+        {
+          "eval": "(() => { const list = document.querySelector('[role=dialog] nav').firstElementChild; if (list.scrollHeight > list.clientHeight + 1) throw new Error('the nav scrolls: ' + list.scrollHeight + ' of ' + list.clientHeight + ' — a group is below the fold'); const tabs = [...document.querySelectorAll('[role=dialog] nav button')].map(b => (b.textContent || '').trim()).filter(Boolean); const tail = tabs.slice(-3); if (JSON.stringify(tail) !== JSON.stringify(['重置', 'Fusion', '环境'])) throw new Error('debug group is ' + tail.join(' | ')); return JSON.stringify({ tabCount: tabs.length, navClient: list.clientHeight, navScroll: list.scrollHeight }); })()"
+        },
+        {
+          "eval": "(() => { const b = [...document.querySelectorAll('[role=dialog] nav button')].find(x => (x.textContent || '').trim() === '重置'); b.click(); })()"
+        },
+        { "wait": 400 },
+        {
+          "eval": "(() => { const h = document.querySelector('[role=dialog] h2'); if (h.textContent !== '重置') throw new Error('title is ' + h.textContent); const body = document.querySelector('[role=dialog]').textContent; if (body.includes('整理数据库')) throw new Error('the batch pass still sits in reset'); return 'reset'; })()"
+        },
+        { "shot": "d-settings-reset.png" },
+        {
+          "eval": "(() => { const b = [...document.querySelectorAll('[role=dialog] nav button')].find(x => (x.textContent || '').trim() === '环境'); b.click(); })()"
+        },
+        { "wait": 400 },
+        {
+          "eval": "(() => { const h = document.querySelector('[role=dialog] h2'); if (h.textContent !== '环境') throw new Error('title is ' + h.textContent); return 'environment'; })()"
+        },
+        { "shot": "d-settings-environment.png" }
+      ]
+    }
+  }
+}

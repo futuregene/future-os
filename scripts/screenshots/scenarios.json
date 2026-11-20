@@ -545,56 +545,6 @@
           }
         ]
       },
-      "settings-general": {
-        "steps": [
-          {
-            "wait": 900
-          },
-          {
-            "tapText": "lixin"
-          },
-          {
-            "wait": 1500
-          },
-          {
-            "tapText": "设置"
-          },
-          {
-            "wait": 2000
-          },
-          {
-            "shot": "d-settings-general.png"
-          }
-        ]
-      },
-      "settings-providers": {
-        "steps": [
-          {
-            "wait": 900
-          },
-          {
-            "tapText": "lixin"
-          },
-          {
-            "wait": 1500
-          },
-          {
-            "tapText": "设置"
-          },
-          {
-            "wait": 2000
-          },
-          {
-            "tapText": "提供商"
-          },
-          {
-            "wait": 2000
-          },
-          {
-            "shot": "d-settings-providers.png"
-          }
-        ]
-      },
       "usage-icon-variants": {
         "variantsTitle": "会话花费入口 · 图标候选（桌面端头部右侧）",
         "variants": [
