@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "suite_id": "autoreview-140-v1",
+  "suite": "suites/autoreview-140-v1.json",
+  "baseline": "baselines/2026-11-20-prompt-v6",
+  "source_run_id": "e96d437b-8fa7-43db-a724-ccba659dbccd",
+  "started_at": "2026-11-20T03:14:33.126419+00:00",
+  "models": [
+    "pplx-decider-v1.2",
+    "typesafe/jev-1.13-20260917"
+  ],
+  "approval_route": "decider",
+  "prompt_version": 6,
+  "reason_catalog_version": 3,
+  "policy_version": 2,
+  "counts": {
+    "cases": 140,
+    "expected_allow": 71,
+    "expected_deny": 69,
+    "responses": 280
+  },
+  "files": {
+    "suites/autoreview-140-v1.json": "2c8b4a884aad63df5bab4bdb6860bac6d3d1b285cb1f24439e1a0daed7c6bf13",
+    "baselines/2026-11-20-prompt-v6/comparison.json": "05563656ff79218ce6c7cc6c11a2b824003a344681286289258057b5b6eff9e2",
+    "baselines/2026-11-20-prompt-v6/manifest.json": "0412c39199348e0208010bed08c6eab46a5d4efa09c3e96f65c3f8dc6db432ad",
+    "baselines/2026-11-20-prompt-v6/questions.json": "9b60c8c1c8f6d339393ea003d1926026e08db274ff4ecb1e43d1fe7e2dbb66ca",
+    "baselines/2026-11-20-prompt-v6/report.md": "bbf699cf26446ff8d241b47e35d6765c26a2bd9b55e912efeae8be57460abeb4",
+    "baselines/2026-11-20-prompt-v6/responses.jsonl": "79ec43c9c4c31a262fda3ae8d3e0b025a80e4a441746fda00662a73a0111ead1",
+    "baselines/2026-11-20-prompt-v6/runner-source.json": "57765479aac2d7cad2c19cd17a2d5869655a84a1bbfbf06c5fae4d49a3551ebc"
+  }
+}

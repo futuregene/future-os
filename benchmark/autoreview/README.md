@@ -3,6 +3,32 @@
 用同一批冻结输入比较 `pplx-decider-v1.2` 和
 `typesafe/jev-1.13-20260917` 对 FutureOS 自动审批请求的判断。
 
+## 固定评测集与选定结果基线
+
+当前固定评测集为 `suites/autoreview-140-v1.json`，共 140 题，通过 71 题、拒绝 69 题。
+它合并已采用 gold-v2 答案的原始 100 题和新增 40 题，并完整保存每题输入、标准答案、备选标签及依据。
+`experiment.py run` 缺省使用 `--dataset frozen`。旧的 100 题和 40 题可分别通过 `reviewed`、`holdout` 选择。
+
+用户指定保存的最后一轮双模型结果位于 `baselines/2026-11-20-prompt-v6/`，纳入 Git。
+该轮运行 ID 为 `e96d437b-8fa7-43db-a724-ccba659dbccd`，开始时间为北京时间 2026-11-20 11:14:33。
+
+| 模型 | 最终决定正确 | 应通过题放行 | 误放行 | 误拒绝 |
+| --- | --- | --- | --- | --- |
+| pplx-decider-v1.2 | 140/140 | 71/71 | 0 | 0 |
+| typesafe/jev-1.13-20260917 | 103/140 | 35/71 | 1 | 36 |
+
+基线包含可读报告、完整统计、实际问题、原始运行清单、合并为 JSONL 的 280 条逐题原始响应，以及原运行器源码快照。
+`baseline-lock.json` 记录固定题集和全部基线文件的 SHA-256。校验命令同时核对题数、模型版本、请求身份和汇总结果。
+
+```bash
+python3 benchmark/autoreview/archive.py
+python3 benchmark/autoreview/experiment.py validate
+python3 benchmark/autoreview/experiment.py run --name decider-frozen-next --profile decider-taxonomy-v1
+```
+
+自动审批使用 `decider` 路由和生产 prompt-v6 / reason-catalog-v3，采用 policy-v2 的 0.75 门槛。
+当前问题与 `prompts/decider-taxonomy-v1.json` 逐字一致。
+
 ## 数据与标准答案
 
 `cases.json` 保存 100 个合成场景，每题包含以下字段。
@@ -108,7 +134,7 @@ python3 benchmark/autoreview/benchmark.py report --name my-comparison-v1
 请求别名、目标版本和实际返回版本均写入运行记录。
 场景中的命令和文件路径仅作为分类文本，运行器不会执行场景操作。
 
-所有模型输出保存在被 Git 忽略的 `runs/<name>/`。
+常规模型输出保存在被 Git 忽略的 `runs/<name>/`。上方选定基线已复制为版本化档案。
 
 - `manifest.json` 保存网关、模型、协议与运行器哈希、并发、顺序和重试设置。
 - `model-0/<id>.json`、`model-1/<id>.json` 保存逐题响应、概率、模型身份、用量、耗时、错误与决策。
@@ -146,7 +172,7 @@ Policy-v2 提供实际审批门槛与概率求和逻辑。
 python3 benchmark/autoreview/experiment.py validate
 
 # 100 个原始输入，以复核版标准答案评分
-python3 benchmark/autoreview/experiment.py run --name decider-reviewed-new --profile decider-taxonomy-v1
+python3 benchmark/autoreview/experiment.py run --name decider-reviewed-new --profile decider-taxonomy-v1 --dataset reviewed
 
 # 40 个新增场景，旧问题与新问题分别运行
 python3 benchmark/autoreview/experiment.py run --name decider-extra-old --profile baseline-v5 --dataset holdout

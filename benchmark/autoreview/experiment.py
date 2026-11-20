@@ -88,6 +88,12 @@ def load_cases(dataset):
         return reviewed_cases()
     if dataset == 'holdout':
         return bench.read(bench.HERE / 'holdout.json')['cases']
+    if dataset == 'frozen':
+        lock = bench.read(bench.HERE / 'baseline-lock.json')
+        path = bench.HERE / lock['suite']
+        if bench.digest(path.read_bytes()) != lock['files'][lock['suite']]:
+            raise ValueError('Frozen 140-case suite hash differs')
+        return bench.read(path)['cases']
     raise ValueError('Unknown dataset')
 
 
@@ -154,7 +160,7 @@ def compare(args):
     output = bench.HERE / 'runs' / args.output
     bench.write(output / 'comparison.json', metrics)
     lines = ['# Decider prompt evaluation', '',
-             'Baseline and reviewed runs use the same 100 original inputs with gold-v2. Holdout runs use the additional 40 frozen inputs. The initial gold and responses remain archived.', '',
+             'Baseline and reviewed runs use the same 100 original inputs with gold-v2. Holdout runs use the additional 40 inputs. Frozen runs use the locked 140-case suite. The initial gold and responses remain archived.', '',
              '| Run | Correct | False allow | False deny | Allowed / expected allow | Risk / auth / reason exact | Accepted labels |',
              '| --- | --- | --- | --- | --- | --- | --- |']
     for name, row in metrics.items():
@@ -184,7 +190,7 @@ def main():
     runner = commands.add_parser('run')
     runner.add_argument('--name', required=True)
     runner.add_argument('--profile', required=True)
-    runner.add_argument('--dataset', choices=['reviewed','holdout'], default='reviewed')
+    runner.add_argument('--dataset', choices=['frozen','reviewed','holdout'], default='frozen')
     validation = commands.add_parser('validate')
     validation.add_argument('--profile', default='decider-taxonomy-v1')
     comparison = commands.add_parser('compare')
@@ -198,7 +204,7 @@ def main():
         run(args)
     elif args.command == 'validate':
         questions = bench.read(bench.HERE / 'prompts' / (args.profile + '.json'))['questions']
-        for dataset in ['reviewed', 'holdout']:
+        for dataset in ['reviewed', 'holdout', 'frozen']:
             cases = load_cases(dataset)
             validate(cases, questions)
             print('Validated', len(cases), dataset, 'cases')
