@@ -207,17 +207,24 @@ def freeze():
     questions = production_questions()
     cases = read(HERE / 'cases.json')['cases']
     coverage = validate_cases(cases, questions)
-    write(HERE / 'protocol.json', dict(schema_version=1, prompt_version=5, policy_version=2,
-          reason_catalog_version=2, threshold=THRESHOLD, probability_sum_tolerance=TOLERANCE,
+    source = (REPO / 'agent/src/approval_review/mod.rs').read_text()
+    versions = {}
+    for name in ['PROMPT_VERSION', 'POLICY_VERSION', 'REASON_CATALOG_VERSION']:
+        match = re.search(r'const ' + name + r': u32 = (\d+);', source)
+        if match is None:
+            raise ValueError('Approval version constant is missing')
+        versions[name.lower()] = int(match[1])
+    write(HERE / 'protocol.json', dict(schema_version=1, **versions,
+          threshold=THRESHOLD, probability_sum_tolerance=TOLERANCE,
           models=MODELS, sources=source_hashes(), cases_sha256=digest((HERE / 'cases.json').read_bytes()),
           questions=questions, scorer_invariants=validate_policy(questions), coverage=coverage))
     print(json.dumps(coverage, ensure_ascii=False, indent=2))
 
 
-def load():
+def load(verify_production=True):
     protocol = read(HERE / 'protocol.json')
-    if protocol['sources'] != source_hashes() or protocol['questions'] != production_questions():
-        raise ValueError('Production approval code changed. Review and freeze a new benchmark revision.')
+    if verify_production and (protocol['sources'] != source_hashes() or protocol['questions'] != production_questions()):
+        raise ValueError('Production approval code changed. Use --frozen for the archived baseline or experiment.py for a versioned prompt.')
     if protocol['cases_sha256'] != digest((HERE / 'cases.json').read_bytes()):
         raise ValueError('Frozen cases changed. Freeze a new revision before making requests.')
     cases = read(HERE / 'cases.json')['cases']
@@ -306,7 +313,7 @@ def run_case(case, model, index, key, endpoint, protocol, directory, manifest_ha
 
 
 def run(args):
-    protocol, cases = load()
+    protocol, cases = load(verify_production=not args.frozen)
     key, endpoint = credentials(args.base)
     directory = HERE / 'runs' / args.name
     manifest = dict(schema_version=1, models=MODELS, model_routes=MODEL_ROUTES, endpoint=endpoint,
@@ -394,7 +401,7 @@ def summarize(cases, records):
 
 
 def report(name):
-    protocol, cases = load()
+    protocol, cases = load(verify_production=False)
     directory = HERE / 'runs' / name
     manifest = read(directory / 'manifest.json')
     if manifest['protocol_sha256'] != digest((HERE / 'protocol.json').read_bytes()):
@@ -486,7 +493,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('freeze')
-    commands.add_parser('validate')
+    validation = commands.add_parser('validate')
+    validation.add_argument('--frozen', action='store_true', help='Validate the archived prompt independently of current production source')
     show_parser = commands.add_parser('show')
     show_parser.add_argument('--id', required=True)
     show_parser.add_argument('--model', choices=MODELS, default=MODELS[0])
@@ -495,6 +503,7 @@ def main():
     run_parser.add_argument('--limit', type=int)
     run_parser.add_argument('--concurrency', type=int, choices=range(1, 5), default=4)
     run_parser.add_argument('--base')
+    run_parser.add_argument('--frozen', action='store_true', help='Explicitly run the archived prompt after production changes')
     report_parser = commands.add_parser('report')
     report_parser.add_argument('--name', required=True)
     args = parser.parse_args()
@@ -505,10 +514,10 @@ def main():
     if args.command == 'freeze':
         freeze()
     elif args.command == 'validate':
-        protocol, cases = load()
+        protocol, cases = load(verify_production=not args.frozen)
         print(f'Validated {len(cases)} scenarios and {validate_policy(protocol["questions"])} scorer invariants')
     elif args.command == 'show':
-        protocol, cases = load()
+        protocol, cases = load(verify_production=False)
         case = next((case for case in cases if case['id'] == args.id), None)
         if case is None:
             parser.error('Unknown case ID')

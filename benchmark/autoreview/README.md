@@ -58,7 +58,7 @@ python3 benchmark/autoreview/benchmark.py show --id 31b --model typesafe/jev-1.1
 
 生产请求由 `agent/src/approval_review/prompt.rs` 的文本直接提取并冻结。
 Python 评分器对应 `provider.rs` 的响应校验和 `policy.rs` 的 policy-v2 判定。
-每次运行验证这些源码哈希、冻结提示词和题集哈希，防止代码漂移或混用旧缓存。
+默认运行验证源码哈希、冻结提示词和题集哈希。生产提示词升级后，可显式使用 `--frozen` 重放第一版协议，历史报告按其冻结输入校验。
 
 实际审批使用模型原始概率，保留以下行为。
 
@@ -88,13 +88,13 @@ Python 评分器对应 `provider.rs` 的响应校验和 `policy.rs` 的 policy-v
 
 ```bash
 # 校验冻结题集、生产代码和评分器
-python3 benchmark/autoreview/benchmark.py validate
+python3 benchmark/autoreview/benchmark.py validate --frozen
 
 # 接口预检，先完成前两题的两个模型请求
-python3 benchmark/autoreview/benchmark.py run --name my-comparison-v1 --limit 2
+python3 benchmark/autoreview/benchmark.py run --name my-comparison-v1 --frozen --limit 2
 
 # 相同名字接续完整评测，已有的成功或失败记录均保留
-python3 benchmark/autoreview/benchmark.py run --name my-comparison-v1
+python3 benchmark/autoreview/benchmark.py run --name my-comparison-v1 --frozen
 
 # 从本地原始响应重建统计
 python3 benchmark/autoreview/benchmark.py report --name my-comparison-v1
@@ -125,3 +125,37 @@ python3 benchmark/autoreview/benchmark.py report --name my-comparison-v1
 python3 benchmark/autoreview/scenarios.py
 python3 benchmark/autoreview/benchmark.py freeze
 ```
+
+## 答案复核与 Decider 提示词实验
+
+`reviews/gold-v2.json` 对全部 100 题逐一记录复核状态、原答案、修正和依据。
+其中 10 题的分类修正，37b 的决定从拒绝改为通过，得到通过 51 题、拒绝 49 题。
+5 题有多个合理分类，严格分类准确率和接受备选标签的准确率分别报告，执行决定仍有唯一答案。
+第一版 `cases.json`、`protocol.json` 和原始响应保留，可重建原结果。
+复核由原作者完成，复核者已经看过基线输出，未进行独立人工标注。
+
+`prompts/baseline-v5.json` 冻结旧问题，`prompts/decider-taxonomy-v1.json` 冻结新问题。
+新问题以互斥的操作类别和明确的证据优先顺序减少歧义。它与生产 prompt-v6 / reason-catalog-v3 的问题及选项逐字一致，共 3986 序列化 UTF-8 字节，符合 4000 字节问题预算。
+Policy-v2 提供实际审批门槛与概率求和逻辑。
+
+`holdout.json` 是在任何新提示词调用前冻结的 40 个新增场景，通过与拒绝各 20 题。
+提示词选定后只运行这批新增场景做验证，没有据此再次调参。这些仍是同一作者构造的合成场景，包含成对输入，与生产流量分布有差异。
+
+```bash
+# 校验修订答案、新增题集、完整问题预算和生产提示词一致性
+python3 benchmark/autoreview/experiment.py validate
+
+# 100 个原始输入，以复核版标准答案评分
+python3 benchmark/autoreview/experiment.py run --name decider-reviewed-new --profile decider-taxonomy-v1
+
+# 40 个新增场景，旧问题与新问题分别运行
+python3 benchmark/autoreview/experiment.py run --name decider-extra-old --profile baseline-v5 --dataset holdout
+python3 benchmark/autoreview/experiment.py run --name decider-extra-new --profile decider-taxonomy-v1 --dataset holdout
+
+# 从本地响应重建对比，基线两模型也统一按 gold-v2 重评分
+python3 benchmark/autoreview/experiment.py compare decider-reviewed-new decider-extra-old decider-extra-new
+```
+
+实验沿用既有 HTTPS 账号认证、Decider 版本核验、四项并发、30 秒请求时限和缓存身份约束。
+输出也位于 `runs/`，比较报告缺省写入 `runs/decider-prompt-comparison/`。
+每次运行名绑定数据、提示词、评分器和传输代码哈希，代码更新后重发请求需要新名字。
