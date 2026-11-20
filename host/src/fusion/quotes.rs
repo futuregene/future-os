@@ -51,13 +51,36 @@ pub(super) fn contains_report(source: &str, excerpt: &str) -> bool {
 }
 
 pub(super) fn contains(source: &str, excerpt: &str) -> bool {
+    /// Rendering markers a participant's answer carries and a quote drops while
+    /// copying its wording: emphasis and code spans (`**一定**`, `*一定*`,
+    /// `__一定__`, `` `一定` ``). Quoting the words behind such markers is the
+    /// same excerpt, so the markers never decide a match.
+    ///
+    /// Single `_` and `~` stay: they delimit identifiers (`max_tokens`) and
+    /// ranges (`3~5 年`), where dropping them would conflate different text.
+    fn is_markup(c: char, previous: Option<char>, next: Option<char>) -> bool {
+        match c {
+            '*' | '`' => true,
+            '_' | '~' => previous == Some(c) || next == Some(c),
+            _ => false,
+        }
+    }
     fn normalize(text: &str) -> String {
+        let chars: Vec<char> = text.chars().collect();
         let mut result = String::new();
         let mut whitespace = false;
         let chinese = |c: char| matches!(c, '\u{2e80}'..='\u{9fff}' | '\u{f900}'..='\u{faff}');
-        for c in text.chars() {
+        for (index, &c) in chars.iter().enumerate() {
             if c.is_whitespace() {
                 whitespace = true;
+                continue;
+            }
+            let markup = is_markup(
+                c,
+                index.checked_sub(1).map(|previous| chars[previous]),
+                chars.get(index + 1).copied(),
+            );
+            if markup {
                 continue;
             }
             let c = match c {
@@ -103,5 +126,46 @@ mod tests {
         assert!(!contains("Use SQLite.", "Use files."));
         assert!(!contains("now here", "nowhere"));
         assert!(!contains("anything", " \n\u{3000}"));
+    }
+
+    /// The live failure this guards: a moderator quoted
+    /// `存在性风险论：概率太低，…` from a bullet that reads
+    /// `- **存在性风险论**：概率太低，…` and the exact-excerpt check rejected it.
+    #[test]
+    fn tolerates_emphasis_and_code_markers_without_changing_words() {
+        assert!(contains(
+            "- **存在性风险论**：概率太低，且依赖于认知冲击已经发生（人类失去控制）",
+            "存在性风险论：概率太低，且依赖于认知冲击已经发生（人类失去控制）"
+        ));
+        assert!(contains("**重点**：不可逆", "*重点*：不可逆"));
+        assert!(contains("__bold__ text", "bold text"));
+        assert!(contains(
+            "这是 `max_tokens` 的上限",
+            "这是 max_tokens 的上限"
+        ));
+        assert!(contains("~~struck~~ out", "struck out"));
+        assert!(contains(
+            "**「保留数据」** 是他的话",
+            "「保留数据」 是他的话"
+        ));
+    }
+
+    /// Markers are typography, not a licence to paraphrase.
+    #[test]
+    fn markers_never_make_different_words_match() {
+        assert!(!contains(
+            "**存在性风险论**：概率太低",
+            "存在性风险论：概率很高"
+        ));
+        assert!(!contains("**Use SQLite.**", "Use files."));
+    }
+
+    /// A single underscore or tilde is content: identifiers and ranges keep
+    /// their exact spelling.
+    #[test]
+    fn a_single_underscore_or_tilde_is_content() {
+        assert!(contains("`max_tokens` 默认 4096", "max_tokens 默认 4096"));
+        assert!(!contains("max_tokens", "maxtokens"));
+        assert!(!contains("约 3~5 年", "约 35 年"));
     }
 }
