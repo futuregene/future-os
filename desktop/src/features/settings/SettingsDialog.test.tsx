@@ -19,23 +19,47 @@ vi.mock("../../integrations/tauri/useBuildInfo", () => ({
 // under test: every page is a probe that reports the props the dialog handed it,
 // so routing, the dev-only gate and the settings-patch mapping are what fail if
 // they regress.
-vi.mock("./GeneralPage", () => ({
-  GeneralPage: (props: Record<string, unknown>) => (
-    <div
-      data-page="general"
-      data-approval={String(props.approvalTier)}
-      data-auto-title={String(props.autoTitleFirstTurn)}
-      data-bell={String(props.bellOnComplete)}
-      data-auto-upgrade={String(props.autoUpgradeSkills)}
-      data-skill-recommend={String(props.skillRecommend)}
-      data-choice-cards={String(props.choiceCards)}
-    >
-      <button data-approval-manual onClick={() => (props.onChangeApprovalTier as (v: string) => void)("manual")}>approval</button>
-      <button data-toggle-title onClick={() => (props.onToggleAutoTitleFirstTurn as (v: boolean) => void)(false)}>title</button>
+vi.mock("./AppearancePage", () => ({
+  AppearancePage: (props: Record<string, unknown>) => (
+    <div data-page="appearance" data-bell={String(props.bellOnComplete)}>
       <button data-toggle-bell onClick={() => (props.onToggleBellOnComplete as (v: boolean) => void)(false)}>bell</button>
+    </div>
+  ),
+}));
+vi.mock("./PermissionPage", () => ({
+  PermissionPage: (props: Record<string, unknown>) => (
+    <div data-page="permission" data-approval={String(props.approvalTier)}>
+      <button data-approval-manual onClick={() => (props.onChangeApprovalTier as (v: string) => void)("manual")}>approval</button>
+    </div>
+  ),
+}));
+vi.mock("./ReplyPage", () => ({
+  ReplyPage: (props: Record<string, unknown>) => (
+    <div data-page="reply" data-auto-title={String(props.autoTitleFirstTurn)} data-choice-cards={String(props.choiceCards)}>
+      <button data-toggle-title onClick={() => (props.onToggleAutoTitleFirstTurn as (v: boolean) => void)(false)}>title</button>
+      <button data-toggle-choice-cards onClick={() => (props.onToggleChoiceCards as (v: boolean) => void)(true)}>choice-cards</button>
+    </div>
+  ),
+}));
+vi.mock("./SkillsPage", () => ({
+  SkillsPage: (props: Record<string, unknown>) => (
+    <div data-page="skills" data-auto-upgrade={String(props.autoUpgradeSkills)} data-skill-recommend={String(props.skillRecommend)}>
       <button data-toggle-upgrade onClick={() => (props.onToggleAutoUpgradeSkills as (v: boolean) => void)(true)}>upgrade</button>
       <button data-toggle-recommend onClick={() => (props.onToggleSkillRecommend as (v: boolean) => void)(false)}>recommend</button>
-      <button data-toggle-choice-cards onClick={() => (props.onToggleChoiceCards as (v: boolean) => void)(true)}>choice-cards</button>
+    </div>
+  ),
+}));
+vi.mock("./StoragePage", () => ({
+  StoragePage: (props: Record<string, unknown>) => (
+    <div
+      data-page="storage"
+      data-cleanup={String(props.archiveRunLogCleanup)}
+      data-auto-archive={String(props.autoArchiveEnabled)}
+      data-idle-days={String(props.autoArchiveIdleDays)}
+    >
+      <button data-toggle-cleanup onClick={() => (props.onToggleArchiveRunLogCleanup as (v: boolean) => void)(false)}>cleanup</button>
+      <button data-toggle-auto-archive onClick={() => (props.onToggleAutoArchive as (v: boolean) => void)(true)}>archive</button>
+      <button data-change-idle-days onClick={() => (props.onChangeAutoArchiveIdleDays as (v: number) => void)(45)}>days</button>
     </div>
   ),
 }));
@@ -202,11 +226,17 @@ describe("settingsDialog shell", () => {
     expect(dialog.getAttribute("aria-label")).toBe("Settings");
   });
 
-  it("groups the navigation into desktop / server / debug sections", () => {
+  it("groups the navigation into app / conversation / models / account / debug sections", () => {
     const { container } = mount();
 
     const labels = container.querySelectorAll("nav [class*=uppercase]");
-    expect([...labels].map(node => node.textContent)).toEqual(["Desktop", "Server", "Debug"]);
+    expect([...labels].map(node => node.textContent)).toEqual([
+      "App",
+      "Conversation",
+      "Models and skills",
+      "Account",
+      "Debug",
+    ]);
   });
 
   it("closes on Escape and on the backdrop", () => {
@@ -233,14 +263,18 @@ describe("settingsDialog shell", () => {
 });
 
 describe("settingsDialog tab routing", () => {
-  it("opens on General by default", () => {
+  it("opens on Appearance by default", () => {
     const { container } = mount();
 
-    expect(page(container)).toBe("general");
-    expect(header(container)).toBe("General");
+    expect(page(container)).toBe("appearance");
+    expect(header(container)).toBe("Appearance");
   });
 
   it.each([
+    ["Permissions", "permission", "Permissions"],
+    ["Replies", "reply", "Replies"],
+    ["Storage", "storage", "Storage"],
+    ["Skills", "skills", "Skills"],
     ["Account", "account", "Account"],
     ["Check for updates", "update", "Check for updates"],
     ["About", "about", "About"],
@@ -261,13 +295,13 @@ describe("settingsDialog tab routing", () => {
   it("marks the active tab and moves the marker with the selection", () => {
     const { container } = mount();
 
-    expect(navButton(container, "General").className).toContain("shadow-xs");
+    expect(navButton(container, "Appearance").className).toContain("shadow-xs");
     expect(navButton(container, "Reset").className).not.toContain("shadow-xs");
 
     act(() => navButton(container, "Reset").click());
 
     expect(navButton(container, "Reset").className).toContain("shadow-xs");
-    expect(navButton(container, "General").className).not.toContain("shadow-xs");
+    expect(navButton(container, "Appearance").className).not.toContain("shadow-xs");
   });
 
   it("names the shown page as the current one, and only that one", () => {
@@ -275,7 +309,7 @@ describe("settingsDialog tab routing", () => {
     const current = () => [...container.querySelectorAll<HTMLButtonElement>("nav button[aria-current=page]")]
       .map(item => item.textContent);
 
-    expect(current()).toEqual(["General"]);
+    expect(current()).toEqual(["Appearance"]);
 
     act(() => navButton(container, "Check for updates").click());
     expect(current()).toEqual(["Check for updates"]);
@@ -288,7 +322,7 @@ describe("settingsDialog tab routing", () => {
     // second selected tab while the pane shows another page (#1530). The state
     // is one value; the *styles* must keep the two states apart.
     const { container } = mount();
-    const selected = navButton(container, "General").className.split(" ");
+    const selected = navButton(container, "Appearance").className.split(" ");
     const idle = navButton(container, "Reset").className.split(" ");
 
     expect(selected).toContain("bg-surface");
@@ -329,7 +363,20 @@ describe("settingsDialog dev-only environment tab", () => {
     const { container } = mount();
 
     expect(navLabels(container)).not.toContain("Environment");
-    expect(navLabels(container)).toEqual(["General", "Keyboard shortcuts", "Account", "Check for updates", "About", "Providers", "Models", "Reset"]);
+    expect(navLabels(container)).toEqual([
+      "Appearance",
+      "Keyboard shortcuts",
+      "Permissions",
+      "Replies",
+      "Storage",
+      "Providers",
+      "Models",
+      "Skills",
+      "Account",
+      "Check for updates",
+      "About",
+      "Reset",
+    ]);
   });
 
   it("shows the environment tab (and its community-edition section) on a dev build", () => {
@@ -344,7 +391,7 @@ describe("settingsDialog dev-only environment tab", () => {
     expect(container.querySelectorAll("[data-page]")).toHaveLength(2);
   });
 
-  it("falls back to General when the build turns out to be a release while the environment tab is open", () => {
+  it("falls back to Appearance when the build turns out to be a release while the environment tab is open", () => {
     const { container, render } = mount();
 
     act(() => navButton(container, "Environment").click());
@@ -354,7 +401,7 @@ describe("settingsDialog dev-only environment tab", () => {
     mocks.buildInfo = { version: "1.0.0", isRelease: true };
     render({});
 
-    expect(page(container)).toBe("general");
+    expect(page(container)).toBe("appearance");
     expect(navLabels(container)).not.toContain("Environment");
   });
 
@@ -379,7 +426,7 @@ describe("settingsDialog Fusion entry", () => {
     mocks.buildInfo = buildInfo;
     const { container } = mount({ initialTab: "fusion" });
     expect(navLabels(container)).not.toContain("Fusion");
-    expect(page(container)).toBe("general");
+    expect(page(container)).toBe("appearance");
     expect(container.querySelector("[data-page=fusion]")).toBeNull();
   });
 });
@@ -437,18 +484,26 @@ describe("settingsDialog update tab", () => {
 });
 
 describe("settingsDialog settings wiring", () => {
-  it("maps every General toggle to its settings patch", async () => {
+  it("maps every settings control to its settings patch", async () => {
     const onChangeSettings = vi.fn().mockResolvedValue(undefined);
     const { container } = mount({ onChangeSettings });
 
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>("[data-approval-manual]")!.click();
-      container.querySelector<HTMLButtonElement>("[data-toggle-title]")!.click();
-      container.querySelector<HTMLButtonElement>("[data-toggle-bell]")!.click();
-      container.querySelector<HTMLButtonElement>("[data-toggle-upgrade]")!.click();
-      container.querySelector<HTMLButtonElement>("[data-toggle-recommend]")!.click();
-      container.querySelector<HTMLButtonElement>("[data-toggle-choice-cards]")!.click();
-    });
+    const clickOn = async (nav: string, selector: string) => {
+      act(() => navButton(container, nav).click());
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>(selector)!.click();
+      });
+    };
+
+    await clickOn("Permissions", "[data-approval-manual]");
+    await clickOn("Replies", "[data-toggle-title]");
+    await clickOn("Appearance", "[data-toggle-bell]");
+    await clickOn("Skills", "[data-toggle-upgrade]");
+    await clickOn("Skills", "[data-toggle-recommend]");
+    await clickOn("Replies", "[data-toggle-choice-cards]");
+    await clickOn("Storage", "[data-toggle-cleanup]");
+    await clickOn("Storage", "[data-toggle-auto-archive]");
+    await clickOn("Storage", "[data-change-idle-days]");
 
     expect(onChangeSettings.mock.calls.map(([patch]) => patch)).toEqual([
       { approvalTier: "manual" },
@@ -457,19 +512,37 @@ describe("settingsDialog settings wiring", () => {
       { autoUpgradeSkills: true },
       { skillRecommend: false },
       { choiceCards: true },
+      { archiveRunLogCleanup: false },
+      { autoArchiveEnabled: true },
+      { autoArchiveIdleDays: 45 },
     ]);
   });
 
   it("forwards the stored settings into the page that shows them", () => {
     const { container } = mount();
 
-    const general = container.querySelector("[data-page=general]")!;
-    expect(general.getAttribute("data-approval")).toBe("manual");
-    expect(general.getAttribute("data-auto-title")).toBe("false");
-    expect(general.getAttribute("data-bell")).toBe("false");
-    expect(general.getAttribute("data-auto-upgrade")).toBe("true");
-    expect(general.getAttribute("data-skill-recommend")).toBe("false");
-    expect(general.getAttribute("data-choice-cards")).toBe("false");
+    act(() => navButton(container, "Permissions").click());
+    expect(page(container)).toBe("permission");
+    expect(container.querySelector("[data-page=permission]")!.getAttribute("data-approval")).toBe("manual");
+
+    act(() => navButton(container, "Replies").click());
+    const reply = container.querySelector("[data-page=reply]")!;
+    expect(reply.getAttribute("data-auto-title")).toBe("false");
+    expect(reply.getAttribute("data-choice-cards")).toBe("false");
+
+    act(() => navButton(container, "Appearance").click());
+    expect(container.querySelector("[data-page=appearance]")!.getAttribute("data-bell")).toBe("false");
+
+    act(() => navButton(container, "Skills").click());
+    const skills = container.querySelector("[data-page=skills]")!;
+    expect(skills.getAttribute("data-auto-upgrade")).toBe("true");
+    expect(skills.getAttribute("data-skill-recommend")).toBe("false");
+
+    act(() => navButton(container, "Storage").click());
+    const storage = container.querySelector("[data-page=storage]")!;
+    expect(storage.getAttribute("data-cleanup")).toBe("true");
+    expect(storage.getAttribute("data-auto-archive")).toBe("false");
+    expect(storage.getAttribute("data-idle-days")).toBe("30");
   });
 
   it("wires the account page to the shared account state and both refresh callbacks", () => {

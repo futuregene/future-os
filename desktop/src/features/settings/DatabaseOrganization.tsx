@@ -42,7 +42,7 @@ function step<T,>(phase: "plan" | "session" | "finish", sessionId?: string) {
   return invokeCommand<T>("organize_agent_database", { phase, sessionId: sessionId ?? null });
 }
 
-export function DatabaseOrganization({ disabled, onBusyChange }: { disabled: boolean; onBusyChange: (busy: boolean) => void }) {
+export function DatabaseOrganization({ disabled = false, onBusyChange = () => {} }: { disabled?: boolean; onBusyChange?: (busy: boolean) => void }) {
   const { t } = useTranslation("settings");
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
