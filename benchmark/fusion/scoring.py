@@ -8,9 +8,26 @@ from datasets import ROOT, digest, read_json
 
 def extract(text):
     matches = list(re.finditer(r"(?im)^\s*(?:\*\*)?FINAL_ANSWER\s*:\s*(?:\*\*)?", text))
-    if not matches:
-        return None
-    answer = text[matches[-1].end() :].strip()
+    if matches:
+        answer = text[matches[-1].end() :].strip()
+    else:
+        # Accept a final inline label at a sentence boundary.
+        lines = text.rstrip().splitlines()
+        if not lines or any(
+            token in text for token in ("<｜｜DSML｜｜", "<|tool_calls")
+        ):
+            return None
+        if text.count("```") % 2:
+            return None
+        inline = list(
+            re.finditer(
+                r"(?<=[.!?。！？])[ 	]+(?:\*\*)?FINAL_ANSWER[ 	]*:[ 	]*(?:\*\*)?",
+                lines[-1],
+            )
+        )
+        if not inline:
+            return None
+        answer = lines[-1][inline[-1].end() :].strip()
     if answer.startswith("```"):
         answer = re.sub(r"^```(?:json)?\s*", "", answer)
         answer = answer.split("```")[0].strip()

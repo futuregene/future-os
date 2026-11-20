@@ -1136,7 +1136,13 @@ async fn step_inner(
     } else {
         None
     };
-    let validate_report = |text: &str| {
+    let prepare_report = |text: &str| -> Result<String> {
+        let prepared = match phase.as_str() {
+            "issue_mapping" => mapping::expand_citations(text, source_prompt)?,
+            "reviewing" => review::expand_citations(text, source_prompt)?,
+            _ => text.to_owned(),
+        };
+        let text = prepared.as_str();
         validate_step_output(&phase, text, ctx.config.panel.len())?;
         if ctx.run.input.answer_only && matches!(phase.as_str(), "analyzing" | "synthesizing") {
             let task = ctx
@@ -1167,9 +1173,9 @@ async fn step_inner(
         } else if phase == "reviewing" {
             review::validate(text, source_prompt, &participant, review_snapshot.as_ref())?;
         }
-        Ok(())
+        Ok(prepared)
     };
-    let report = reports::collect(&mut child, input, &phase, capacity, validate_report).await?;
+    let report = reports::collect(&mut child, input, &phase, capacity, prepare_report).await?;
     if !report.validation_errors.is_empty() {
         let step = &mut *child.step;
         if report.generation == 0 {

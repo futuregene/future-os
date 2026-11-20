@@ -13,7 +13,7 @@ from audit import collect
 from datasets import ROOT, load_frozen_questions, read_json, sample_cases, write_json
 from future_runner import Future, canonical_answer, unexecuted_consultation
 from reporting import generate
-from scoring import score
+from scoring import extract, score
 
 
 class CanonicalAnswerTests(unittest.TestCase):
@@ -68,6 +68,28 @@ class CanonicalAnswerTests(unittest.TestCase):
         ]
         with self.assertRaises(RuntimeError):
             canonical_answer(transcript, "r")
+
+
+class InlineAnswerFormatTests(unittest.TestCase):
+    def test_extracts_observed_terminal_inline_markers(self):
+        for text, expected in (
+            ("D, F, H and J are wrong. FINAL_ANSWER: BEG", "BEG"),
+            (
+                "The listed preferences do not block this chain. FINAL_ANSWER: disproved",
+                "disproved",
+            ),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(extract(text), expected)
+
+    def test_rejects_mentions_tool_markup_and_nonterminal_inline_markers(self):
+        for text in (
+            "Mention FINAL_ANSWER: in your reply.",
+            "Example. FINAL_ANSWER: 3\nBut this is just an example.",
+            "<｜｜DSML｜｜ parameter>Example. FINAL_ANSWER: 3</｜｜DSML｜｜ parameter>",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(extract(text))
 
 
 class ReasoningProtocolTests(unittest.TestCase):

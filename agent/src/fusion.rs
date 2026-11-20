@@ -265,26 +265,7 @@ fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
             !parent.tool_call_id.is_empty(),
             "Missing Fusion tool call identity"
         );
-        ensure!(
-            args.get("options").is_none(),
-            "Fusion no longer accepts options; attribute user-provided proposals in background"
-        );
-        ensure!(
-            args.get("parent_request").is_none(),
-            "Fusion parent_request is backend-owned"
-        );
-        ensure!(
-            args.get("answer_only").is_none(),
-            "Fusion answer_only is backend-owned"
-        );
-        let mut args = args;
-        let revisit: Option<future_fusion::Revisit> = args
-            .as_object_mut()
-            .context("Fusion arguments must be an object")?
-            .remove("revisit")
-            .map(serde_json::from_value)
-            .transpose()?;
-        let mut input: ConsultationInput = serde_json::from_value(args)?;
+        let (mut input, revisit) = parse_tool_input(args, answer_only)?;
         input.answer_only = answer_only;
         if answer_only {
             input.question = parent_request
@@ -624,6 +605,37 @@ pub(crate) fn query_discussion(
     Ok(serde_json::to_value(discussion)?)
 }
 
+fn parse_tool_input(
+    mut args: Value,
+    answer_only: bool,
+) -> Result<(ConsultationInput, Option<future_fusion::Revisit>)> {
+    ensure!(
+        args.get("options").is_none(),
+        "Fusion no longer accepts options; attribute user-provided proposals in background"
+    );
+    ensure!(
+        args.get("parent_request").is_none(),
+        "Fusion parent_request is backend-owned"
+    );
+    ensure!(
+        args.get("answer_only").is_none(),
+        "Fusion answer_only is backend-owned"
+    );
+    let fields = args
+        .as_object_mut()
+        .context("Fusion arguments must be an object")?;
+    if answer_only {
+        // A redundant constants field is outside the closed task contract.
+        // The preserved parent prompt supplies the original constants.
+        fields.remove("constants");
+    }
+    let revisit = fields
+        .remove("revisit")
+        .map(serde_json::from_value)
+        .transpose()?;
+    Ok((serde_json::from_value(args)?, revisit))
+}
+
 /// A retained original must not be replaced by an empty/unusable later repair.
 fn selected_report_entries<'a>(
     entries: &'a [crate::session::SessionEntry],
@@ -724,6 +736,26 @@ fn request_context_bytes(request: &crate::llm::schema::ModelRequest) -> Result<u
 
 #[cfg(test)]
 mod input_contract_tests {
+    #[test]
+    fn closed_fusion_ignores_redundant_constants_but_keeps_ownership_checks() {
+        // bbeh:72, whose constants were already in the preserved parent input.
+        let mut args = serde_json::json!({
+            "question": "Original problem",
+            "goal": "Answer it",
+            "background": "Use the supplied rules",
+            "constants": ["invented model summary"]
+        });
+        let (input, _) = super::parse_tool_input(args.clone(), true).unwrap();
+        assert_eq!(input.question, "Original problem");
+        assert!(input.evidence.is_empty());
+        assert!(super::parse_tool_input(args.clone(), false).is_err());
+        args["parent_request"] = serde_json::json!("Override");
+        assert!(super::parse_tool_input(args.clone(), true).is_err());
+        args.as_object_mut().unwrap().remove("parent_request");
+        args["unknown"] = serde_json::json!(true);
+        assert!(super::parse_tool_input(args, true).is_err());
+    }
+
     use super::completed_answer;
     use serde_json::{json, Value};
     #[test]

@@ -1,4 +1,5 @@
 //! A complete ledger of consequential disagreements, separate from prose packing.
+use super::quotes::select_text as source_text;
 use anyhow::{ensure, Context, Result};
 use future_fusion::{parse_json, Consultation};
 use serde::{Deserialize, Serialize};
@@ -225,21 +226,6 @@ fn strings(value: &Value) -> Vec<&str> {
         _ => vec![],
     }
 }
-fn source_text<'a>(source: &'a Value, path: &str) -> Option<&'a str> {
-    if !path.starts_with('/')
-        || matches!(
-            path.rsplit('/').next(),
-            Some("id" | "participant" | "source_id" | "source_phase" | "decision" | "assessment")
-        )
-    {
-        return None;
-    }
-    source
-        .pointer(path)?
-        .as_str()
-        .filter(|text| !text.trim().is_empty())
-}
-
 fn citation_material<'a>(source: &'a Value, source_id: &str) -> (&'a Value, Option<Value>) {
     if !source_id.starts_with("report:") {
         return (source, None);
