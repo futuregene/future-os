@@ -91,19 +91,21 @@ Python 评分器对应 `provider.rs` 的响应校验和 `policy.rs` 的 policy-v
 python3 benchmark/autoreview/benchmark.py validate
 
 # 接口预检，先完成前两题的两个模型请求
-python3 benchmark/autoreview/benchmark.py run --name baseline-20261120 --limit 2
+python3 benchmark/autoreview/benchmark.py run --name my-comparison-v1 --limit 2
 
 # 相同名字接续完整评测，已有的成功或失败记录均保留
-python3 benchmark/autoreview/benchmark.py run --name baseline-20261120
+python3 benchmark/autoreview/benchmark.py run --name my-comparison-v1
 
 # 从本地原始响应重建统计
-python3 benchmark/autoreview/benchmark.py report --name baseline-20261120
+python3 benchmark/autoreview/benchmark.py report --name my-comparison-v1
 ```
 
 全局并发缺省为 4，两个模型交错排队并使用固定随机顺序。
 每次请求总时限 30 秒，429 和 5xx 最多重试一次并复用幂等标识。
 只重试传输失败会改变实验协议，需用新运行名明确记录，原始运行仍保留。
-每条响应都核对服务端返回的实际模型标识，防止网关静默回退。
+当前测试网关只接受 `decider` 与 `jev` 路由别名，分别对应所比较的两个模型。
+每条响应都严格核对返回的版本标识，防止网关静默回退或别名升级后混用版本。
+请求别名、目标版本和实际返回版本均写入运行记录。
 场景中的命令和文件路径仅作为分类文本，运行器不会执行场景操作。
 
 所有模型输出保存在被 Git 忽略的 `runs/<name>/`。
@@ -113,6 +115,8 @@ python3 benchmark/autoreview/benchmark.py report --name baseline-20261120
 - `summary.json` 保存完整机器可读指标，`report.md` 保存可读报告和逐题结果。
 
 运行器、提示词、数据或网关发生变化时使用新的运行名，避免混用记录。
+只更新报告逻辑后，可通过 `report` 对原始响应重新评分，摘要同时记录当前评分器哈希。
+网关未返回 cost 时汇总值为 null，并记录提供费用字段的调用数。
 成功运行的 `complete` 为 true 且 `errors` 为 0，才表示两模型全部请求均完成有效评分。
 
 重新编制下一版题集时才使用以下命令，并在再次请求模型前冻结所有答案。
