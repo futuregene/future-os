@@ -32,7 +32,9 @@ export function RailRow({
   onContextMenu,
   onSelect,
   rowRef,
+  subline,
   title,
+  trailing,
 }: {
   active: boolean;
   /** Row content, laid out left to right after the click target. */
@@ -49,15 +51,44 @@ export function RailRow({
   onContextMenu?: () => void;
   onSelect: () => void;
   rowRef?: Ref<HTMLDivElement>;
+  /**
+   * What the row says *under* its title: where the conversation lives.
+   *
+   * The phone's own shape, for the phone's own reason. Its list is flat — every
+   * row is a conversation on some desktop, in some workspace — so the second
+   * line is where a reader finds that out, and the desktop's flat list (最近 /
+   * 归档) had nothing to say where a row's workspace *was*, because it said it
+   * with headings instead. A list with no headings has no headings to say it.
+   *
+   * Absent wherever a heading already names the workspace (the tree view, a
+   * group's contents): a second line repeating the heading above it is the same
+   * fact twice, and it costs the row's density for nothing.
+   *
+   * No glyph belongs to this line on its own account — on the phone a folder
+   * heads a *workspace group*, never a conversation row. A machine's mark is
+   * the caller's, and it rides here because that is where the phone puts it.
+   */
+  subline?: ReactNode;
   /** Also the frame's `aria-label` and tooltip via the click target. */
   title: string;
+  /**
+   * The row's right-hand control: its actions trigger, or the batch checkbox
+   * that replaces it.
+   *
+   * A sibling of the row's text rather than one more element inside it, so a
+   * two-line row keeps the control vertically centred on the whole row instead
+   * of riding the first line. In a one-line row the two are the same thing.
+   */
+  trailing?: ReactNode;
 }) {
   return (
     <div
       ref={rowRef}
       className={cn(
         "group/thread relative flex w-full items-center gap-1 rounded-md pr-2 text-left transition-colors",
-        compact ? "h-7" : "h-8",
+        // A two-line row is set by its own content — a fixed height is what
+        // would clip the second line — with the phone's own breathing room.
+        subline ? "py-1" : compact ? "h-7" : "h-8",
         // Selection is its own surface, never the hover one: while the pointer
         // is over a second row, `surface-subtle` on both left the reader unable
         // to tell which conversation they were hovering from which they were
@@ -91,7 +122,24 @@ export function RailRow({
         title={title}
         type="button"
       />
-      {children}
+      {subline
+        ? (
+            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <div className="flex min-w-0 items-center gap-1">{children}</div>
+              {/* Muted and one size down, the phone's own treatment: a
+                  qualifier of the title above it, never a second column. */}
+              <div
+                className="pointer-events-none flex min-w-0 items-center gap-1 text-2xs text-ink-muted"
+                data-row-subline="true"
+              >
+                {typeof subline === "string" || typeof subline === "number"
+                  ? <span className="truncate">{subline}</span>
+                  : subline}
+              </div>
+            </div>
+          )
+        : children}
+      {trailing}
     </div>
   );
 }

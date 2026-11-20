@@ -373,6 +373,13 @@ export function MergedRows({
         peer={peer}
         selected={remoteSelection?.selected(conversation) === true}
         selectionMode={selectable}
+        // The recent view has no headings, so its rows say where they live; the
+        // tree view's rows sit under the heading that already says it.
+        whereLabel={view === "recent"
+          ? conversation.mode === "chat"
+            ? t("activityRail.chat")
+            : conversation.workspaceName ?? t("activityRail.workspace")
+          : undefined}
       />
     );
   }

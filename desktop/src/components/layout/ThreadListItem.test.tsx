@@ -347,3 +347,68 @@ describe("the open conversation's age label", () => {
     expect(ageClass(false)).toContain("text-ink-muted");
   });
 });
+
+describe("the workspace a flat row lives in", () => {
+  // The phone's flat list says where a conversation lives on its second line;
+  // the desktop's flat lists (最近 / 归档) had no headings to say it, so they say
+  // nothing at all. Both now carry the same line — and the tree keeps its own
+  // headings, which is why the second line is opt-in rather than automatic.
+  function mount(extra: Partial<ComponentProps<typeof ThreadListItem>> = {}) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const p = { ...props(), ...extra };
+    act(() => root.render(<ThreadListItem {...p} />));
+    return {
+      dispose: () => {
+        act(() => root.unmount());
+        container.remove();
+      },
+      row: () => container.firstElementChild as HTMLElement,
+      subline: () => container.querySelector<HTMLElement>("[data-row-subline]"),
+    };
+  }
+
+  it("draws the name under the title and lets the row grow to hold it", () => {
+    const view = mount({ whereLabel: "多巴胺与决策", ageLabel: "2 分钟前" });
+    try {
+      expect(view.subline()?.textContent).toBe("多巴胺与决策");
+      // The line truncates rather than taking width from the age beside it.
+      expect(view.subline()?.querySelector("span.truncate")?.textContent).toBe("多巴胺与决策");
+      // A fixed height is what would clip the second line.
+      expect(view.row().className).toContain("py-1");
+      expect(view.row().className).not.toContain("h-8");
+      // The age stays on the title's line, where a column of them reads as one
+      // ranking.
+      expect(view.subline()!.textContent).not.toContain("2 分钟前");
+    }
+    finally {
+      view.dispose();
+    }
+  });
+
+  it("keeps a one-line row when the list has a heading that says it", () => {
+    const view = mount();
+    try {
+      expect(view.subline()).toBeNull();
+      expect(view.row().className).toContain("h-8");
+    }
+    finally {
+      view.dispose();
+    }
+  });
+
+  it("keeps the actions trigger on the row, not inside the title's line", () => {
+    // It is a sibling of the text so a two-line row centres it on the whole row
+    // instead of riding the first line.
+    const view = mount({ whereLabel: "多巴胺与决策" });
+    try {
+      const trigger = view.row().querySelector("button[aria-haspopup='menu']")!;
+      expect(trigger.parentElement).toBe(view.row());
+      expect(view.subline()?.contains(trigger)).toBe(false);
+    }
+    finally {
+      view.dispose();
+    }
+  });
+});
