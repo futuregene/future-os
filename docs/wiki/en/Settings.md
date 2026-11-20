@@ -72,6 +72,9 @@ Both rows on this page are the same on every client, because they describe the r
 - **Choice cards** (on by default) — let a reply close with a card of options you can tick. While off, the card is not drawn at all **and** the agent is never told the format exists, so no reply offers one; a conversation from before you turned it off shows its cards again once it is on. Design: [choice cards](../../design/choice-cards.md).
 - **Generate a title after the first answer** (on by default) — title a new conversation from its first successful answer only; later answers do not trigger it, and it does not compact the conversation.
 
+> **Who changes when you upgrade to this version.** The default for choice cards went from off to on (2026-11-20). So: **a machine where you never touched this switch will start showing choice cards** after the upgrade, and **a machine where you did turn them off stays off** — that machine's settings hold an explicit `false`, which the new default does not overwrite. Seeing no change there is correct, not a setting that failed to apply.
+> To turn them off: desktop **Settings → Conversation → Replies → Choice cards**; phone **Settings → the paired desktop → Replies → Choice cards**; a headless remote host **Remote → that computer → Automation (on that desktop) → Choice cards**. While off, new replies carry no card and the agent is no longer told the format exists.
+
 ### Storage
 
 Under **Automatic conversation archiving**:
