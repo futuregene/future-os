@@ -15,6 +15,31 @@ pub(super) async fn before_first_serve_poll(host: &AgentHost, handle: &AgentHand
 }
 
 #[test]
+fn owned_work_separates_absence_a_load_and_an_unknown() {
+    use future_agent::service::AgentActivity;
+    // Nothing owned: an attached external Agent, or none at all. A stop is not
+    // this host's to make.
+    assert_eq!(classify_owned_work(Ok(None)), OwnedWork::NotOwned);
+    // Owned and quiet: this is the silence a supervisor may act on.
+    assert_eq!(
+        classify_owned_work(Ok(Some(AgentActivity::default()))),
+        OwnedWork::Idle
+    );
+    // Owned and working: the Agent a deadline-killed stop cannot drain, so a
+    // watchdog must wait for it instead of stopping it.
+    let running = AgentActivity {
+        running: 1,
+        ..Default::default()
+    };
+    assert_eq!(classify_owned_work(Ok(Some(running))), OwnedWork::Busy);
+    // An unreadable snapshot is not an idle Agent.
+    assert_eq!(
+        classify_owned_work(Err("activity unavailable".into())),
+        OwnedWork::Unknown
+    );
+}
+
+#[test]
 fn clean_shutdown_before_first_serve_poll_is_not_a_sticky_startup_failure() {
     run_case("cancel-before-serve");
 }

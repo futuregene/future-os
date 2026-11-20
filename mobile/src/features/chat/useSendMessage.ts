@@ -85,6 +85,19 @@ export function sendFailureText(error: unknown, holder: string | undefined): Fai
   if (code === "send_compacting") return { key: "chat.compacting" };
   if (code === "prompt_too_large") return { key: "chat.promptTooLarge" };
   if (code === "send_busy") return { key: "chat.sendInFlight" };
+  // A desktop that takes no files at all. The composer's paperclip is disabled
+  // for this, so the path that reaches here is a file sent anyway (a waiting
+  // row's "+", or a draft that outlived the connection it was written on), and
+  // "message failed to send" names neither the cause nor the fix.
+  if (code === "attachment_unsupported_desktop")
+    return { key: "chat.attachmentsUnsupported" };
+  // A waiting message that left the queue while the reader was changing it: it
+  // started at the turn boundary, or a burst of them folded into the turn ahead.
+  // Changing a waiting row's files is a cancel and a re-send, so the cancel is
+  // what says this — the desktop's own words, or the Agent's code on a host that
+  // forwards it.
+  if (code.includes("run_not_queued") || code.includes("is not queued"))
+    return { key: "chat.queue.rowGone" };
   // Nothing leaves this device without the pairing: that is a connection
   // problem, not something wrong with what the user typed — and a request that
   // timed out or lost its socket is the same story.
