@@ -97,3 +97,36 @@ it("live mobile user arriving during history refresh keeps canonical position", 
   const result = reconcileThreadHistory([previous, liveUser], [previous, storedUser, reply], [previous], false, true);
   expect(result.messages.map(m => m.content)).toEqual(["previous", "from phone", "reply"]);
 });
+
+it("puts a prompt that arrived mid-reload above the reply its run is writing", () => {
+  // The other half of the same read: the page this reload resolved does not hold
+  // the prompt yet (it was read a few milliseconds after the run started), so the
+  // row has to be put back by the run it belongs to. Ordering by `createdAt`
+  // cannot do that — a live bubble is stamped with its run's start (…:00.000Z),
+  // which precedes the prompt's own entry time (…:00.020Z), so the question was
+  // drawn BELOW the empty answer being written for it.
+  const previousPrompt = message("u_prev", { role: "user", runId: "run-prev", createdAt: "2026-01-01T00:00:05Z" });
+  const previousReply = message("m_prev", { status: "complete", runId: "run-prev", createdAt: "2026-01-01T00:00:10Z" });
+  const liveReply = message("stream_run-new", {
+    status: "streaming",
+    runId: "run-new",
+    content: "",
+    createdAt: "2026-01-01T00:10:00.000Z",
+  });
+  const livePrompt = message("user_new", {
+    role: "user",
+    runId: "run-new",
+    content: "帮我查找济南的天气",
+    createdAt: "2026-01-01T00:10:00.020Z",
+  });
+
+  const result = reconcileThreadHistory(
+    [previousPrompt, previousReply, livePrompt],
+    [previousPrompt, previousReply, liveReply],
+    [previousPrompt, previousReply],
+    false,
+    false,
+  );
+
+  expect(result.messages.map(m => m.id)).toEqual(["u_prev", "m_prev", "user_new", "stream_run-new"]);
+});

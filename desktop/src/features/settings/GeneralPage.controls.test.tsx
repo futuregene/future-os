@@ -530,15 +530,26 @@ describe("generalPage archive settings", () => {
     expect(container.textContent).not.toContain("Workspaces themselves");
   });
 
-  it("explains what an idle conversation is beside the idle days", () => {
+  it("explains what an idle conversation is beside the idle days, on click", () => {
     const { container } = mount();
-    const help = container.querySelector<HTMLElement>("[aria-label^='Idle means']");
+    const help = container.querySelector<HTMLButtonElement>("[aria-label='About idle days']");
 
     expect(help).not.toBeNull();
-    // Focusable so the explanation also reaches keyboard users.
-    expect(help!.getAttribute("tabindex")).toBe("0");
-    expect(help!.getAttribute("title")).toContain("no new message or run activity");
-    expect(help!.getAttribute("title")).toContain("restoring an archived conversation starts a fresh idle period");
+    // A button rather than a hover-only icon: the explanation is two sentences
+    // about the term the number depends on, so it has to survive the pointer
+    // leaving it, and it has to be reachable from the keyboard and from touch.
+    expect(help!.getAttribute("aria-expanded")).toBe("false");
+    // `title` would put the native hover popup back on top of the click panel.
+    expect(help!.getAttribute("title")).toBeNull();
+    expect(document.body.textContent).not.toContain("no new message or run activity");
+
+    act(() => help!.click());
+
+    expect(help!.getAttribute("aria-expanded")).toBe("true");
+    // Portalled out of the card (which is `overflow-hidden`), so the panel is
+    // asserted on the document rather than inside `container`.
+    expect(document.body.textContent).toContain("no new message or run activity");
+    expect(document.body.textContent).toContain("restoring an archived conversation starts a fresh idle period");
   });
 
   it("only accepts a whole number of idle days in range", () => {

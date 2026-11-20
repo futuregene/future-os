@@ -3,6 +3,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 import {
   Animated,
   BackHandler,
+  Dimensions,
   FlatList,
   Modal,
   PanResponder,
@@ -19,6 +20,7 @@ import { PeerIconGlyph } from "../../remote/PeerIconGlyph";
 import type { RemoteSession, RemoteWorkspace } from "../../remote/types";
 import { SessionList, type SessionListHandle } from "../SessionList";
 import { RECENT_PAGE_SIZE } from "../recentRows";
+import { layout } from "../../theme/tokens";
 import { currentAppAlert, finishAppAlert } from "../../components/appAlerts";
 import { ActionMenu } from "../../components/ActionMenu";
 import type { DesktopCommands } from "../../remote/desktopCommands";
@@ -355,6 +357,60 @@ test("the list holds the reader's row in place when the rows above it change", (
     minIndexForVisible: 0,
     autoscrollToTopThreshold: 0,
   });
+});
+
+/**
+ * How many rows a page mounts before its first frame, and where it is placed.
+ *
+ * The screen keys the list by tab, so switching pages is a fresh mount, and the
+ * saved offset has to be reachable from that mount's first layout — otherwise
+ * the page can only be scrolled to the reader's place, one measured batch at a
+ * time, which is the reported "it scrolls itself back to the end".
+ */
+test("a page the reader comes back to is placed in their spot, not scrolled there", async () => {
+  // Deep enough that the offset below is past a single batch of rows, and that
+  // the page holds more rows than the batch needs, so the count is the batch's
+  // own answer rather than the page's length.
+  mockRemote.sessions = Array.from({ length: 80 }, (_, index) => ({
+    sessionId: `s${index}`,
+    threadId: `t${index}`,
+    title: `Chat ${index}`,
+    streaming: false,
+  }));
+  const mountPage = async () => {
+    await act(async () => {
+      tree = create(createElement(SessionList, {
+        tab: "chat",
+        empty: null,
+        onMenu,
+        onTabChange,
+        onExitArchived: onExitArchived,
+        commandsFor: testCommandsFor,
+        ref: listRef,
+      }));
+      // The persisted-folds read lands inside act(), as in the setup above.
+      await Promise.resolve();
+    });
+  };
+  const scrollPageTo = (y: number) => act(() => {
+    const list = tree.root.findByType(FlatList);
+    list.props.onScrollBeginDrag();
+    list.props.onScroll({ nativeEvent: { contentOffset: { y } } });
+  });
+  await mountPage();
+  scrollPageTo(900);
+  // Leaving the page unmounts the list; coming back has to put the place back.
+  await act(async () => { tree.unmount(); });
+  await mountPage();
+  const page = tree.root.findByType(FlatList).props;
+  expect(page.contentOffset).toEqual({ x: 0, y: 900 });
+  // Rows are at least a touch target tall, so a batch that reaches the offset
+  // plus a screen holds the reader's place on the list's very first layout —
+  // the difference between being placed and being scrolled there.
+  expect(page.initialNumToRender * layout.touchTarget)
+    .toBeGreaterThanOrEqual(900 + Dimensions.get("window").height);
+  // Leave the page where the rest of this file expects a fresh list to start.
+  scrollPageTo(0);
 });
 
 test("explicit row action opens rename/pin/delete menu; offline management is disabled", () => {
@@ -3132,6 +3188,58 @@ test("the shelf holds ten conversations until the footer is asked for more", () 
   expect(mergedTitles()).toHaveLength(10);
   act(() => button("sessions.showMore").props.onPress());
   expect(mergedTitles()).toHaveLength(12);
+});
+
+/**
+ * A shelved fork opens under the conversation it came from.
+ *
+ * Reported from the phone (2026-11-19): fork a conversation, archive the parent,
+ * follow the archive entry, tap the parent — the `+`/`−` flipped and the fork
+ * never appeared. The screen draws the shelf from `archivedCatalogs` (one
+ * catalogue per answering machine), so every row carries a machine-stamped key
+ * and its `foldId` is that key; the tree looked the fold up by the bare session
+ * id instead, so the toggle and the shelf never agreed on what "open" meant.
+ * `renderArchived` alone cannot catch this — it draws the single-machine
+ * fallback, whose keys have no machine in them.
+ */
+test("a shelved fork opens under its parent on the shelf the screen draws", () => {
+  act(() => tree.update(createElement(SessionList, {
+    tab: "chat",
+    archived: true,
+    empty: null,
+    onMenu,
+    onTabChange,
+    onExitArchived: onExitArchived,
+    commandsFor: testCommandsFor,
+    ref: listRef,
+    activeDesktopId: "desk-a",
+    archivedCatalogs: [{
+      desktopId: "desk-a",
+      sessions: [
+        {
+          sessionId: "shelf-parent",
+          threadId: "tp",
+          title: "Shelved parent",
+          streaming: false,
+          archived: true,
+        },
+        {
+          sessionId: "shelf-fork",
+          threadId: "tf",
+          title: "Shelved fork",
+          streaming: false,
+          archived: true,
+          parentSessionId: "shelf-parent",
+        },
+      ],
+      workspaces: [],
+    }],
+  })));
+
+  // The fold starts closed: the parent is drawn, its fork is not.
+  expect(mergedTitles()).toEqual(["Shelved parent"]);
+  act(() => button("sessions.expandChildren").props.onPress());
+  expect(mergedTitles()).toEqual(["Shelved parent", "Shelved fork"]);
 });
 
 /**

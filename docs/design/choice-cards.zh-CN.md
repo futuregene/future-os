@@ -516,6 +516,35 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
 - 三端同一个 key：`pendingChoice` = "这条回复在等你选一项" / "This reply is waiting on your choice"。
 - 手机端它**占用**未读圆点的位置（已完成的会话）：两者说的都是"你不在时它结束了"，而只有卡说的那件事有欠账；未读仍由标题加粗表达。
 
+### 5.9.4 「都不做」：关掉这张卡，什么也不发（2026-11-19）
+
+需求 (a) 说"可以不选，保持为空"，但**页面上的沉默有两种意思**：一种是还没想好，另一种是我看见了、这件事我不做。两者在界面上完全一样，结果也一样——那一行一直带着 §5.9 的标记，会话永远停在"在等你选一项"。读者唯一的说法是打一句话发出去，而那会真的惊动模型。
+
+所以卡上多一个出口：**都不做**。
+
+| | |
+|---|---|
+| 画在哪 | 可交互那张卡（最后一条、已落定的回复）的**最后一行**，选项组**之外** |
+| 为什么在组外 | 它不是选项。`role="radiogroup"` 里放一个不产生答案的按钮，读屏会把它数成一个选项 |
+| 长什么样 | 顶部一条 hairline 分隔，`X` 图标，一行主文案（都不做）+ 一行说明（不回复模型，只清掉会话列表的提醒）；两行都是 12–13px 的次要墨色。它是出路，不是第五个选项，重量必须低于选项行 |
+| 按下之后 | ① 清掉草稿里这张卡的答案（pill / chip 一起走）；② 让产生这条回复的那一端清掉 run 行上的 `offers_choice`；③ 弹一条 toast。**不发任何消息** |
+| 为什么草稿也要清 | 已经选了一项再按"都不做"，留下 pill 就是在替读者声称一个他们刚否掉的回答（§7 同理：有标题没有选项的答案形同作答） |
+
+**为什么写入发生在那一端，而不是本机记一个"已忽略"**（§5.9.2 的延续）：标记是 run 行上的一个布尔，本机左栏、手机、合并后的远程行全都读它。本机记一份 id 列表只清得掉本机那一份，手机和另一台桌面照样问。所以"都不做"是一个命令，不是本地状态：
+
+```
+桌面本机会话    dismiss_thread_choice(threadId)            → store: UPDATE runs SET offers_choice = 0
+手机 / 远程桌面  { type: "dismiss_choice", sessionId }      → 同一处 store 写入（host 用 session 解析 thread）
+```
+
+- 路由落在 `Route::Catalog`，并进 `PHONE_COMMANDS`（手机真的会发它），`threadId` 与 `sessionId` 都是既有字段，不需要改 wire schema；
+- `updated_at` **不动**：拒绝不是活跃，动它会把会话在按时间排序的列表里顶上去；
+- 没有可清的东西（回复没带卡、问题已经答过、这条会话没有 run）⇒ `dismissed:false` 且 `success:true`。读者的意图是"别再问了"，而它已经不问了，这不是失败；
+- 未知 session ⇒ `success:false` + `session_not_found`（与其他会话级命令同一个拒绝）；
+- 写完 `mark_catalog_dirty()` + `emit_remote_activity(thread_id)`：前者让对端的 catalog 版本往前走，后者让本机左栏立刻重读那一行（`useThreadStore` 的 `remote-activity` 监听，不等 30 秒的巡检）。手机在同一份 `useSessionCatalog` 里乐观地把那一行的 `offersChoice` 置 false——整个效果就是"一个标记消失"，否则按下去像没反应。
+
+**只画在可交互的卡上，且只在有人能清标记时才画**：早先的提问早就没有"在等你"这回事（§5.9.1 第一条）；一个只有预览、没有 store 写的表面画一个按下去没有去处的按钮，比不画更糟。两个条件分别是 `interactive`（有 `onSelect`）与 `onDismiss` 存在。
+
 ## 6. 输入框行为（需求的 a–d）
 
 | 需求 | 行为 | 实现约束 |
@@ -574,6 +603,10 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
 | `choice.chip.remove` | 移除「{{title}}」的选择 | Remove the answer to "{{title}}" |
 | `choice.queue.change` | 更换这条消息里的选择：{{title}} · {{label}} | Change the choice in this message: {{title}} · {{label}} |
 | `choice.mobile.change` | 修改「{{title}}」 | Change "{{title}}" |
+| `choice.dismiss` | 都不做 | Not now |
+| `choice.dismissNote` | 不回复模型，只清掉会话列表的提醒 | No reply is sent — this only clears the list's reminder |
+
+按下"都不做"之后的 toast 是另一组 key（它是行为反馈，不是卡面文案）：桌面本机 `agent.json` 的 `choice.dismissed` / `choice.dismissFailed`、远程 `remotePeer.json` 的 `choiceDismissed` / `choiceDismissFailed`、手机 `chat.choiceDismissed` / `chat.choiceDismissFailed`。失败文案一律"再试一次"，因为标记还在、命令可以重发。
 
 - 图标：卡头 `list-checks`（一批待办里挑一件），铅笔、叉沿用现有 `lucide` 图标集；
 - 语义：卡片是 `role="group"` + `aria-labelledby` 指向标题；选项行是 `role="radio"`（单选）/ `role="checkbox"`（多选），带 `aria-checked`；输入框里的 chip 是 `role="group"`，两个按钮各有 `aria-label`（上表）；**队列行里的 chip 反过来——整个 chip 是一个 `role="button"`**，`aria-label` 用 `choice.queue.change`，因为它只表示一件事（换选择），而行的铅笔、垃圾桶各自独立。
@@ -617,6 +650,10 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
 - **`context`（2026-11-18）**：单行原样保留；重复行拼成多段；写了但空掉的不出现；桌面与手机都画在标题下；只读卡仍保留；没写时不占高度。（`choiceCard.test.ts`、`ChoiceCard.test.tsx`、`MarkdownContent.test.tsx`、手机 `ChoiceCard.test.ts`）
 - **折叠（2026-11-18）**：行数估算（宽字符算两格、显式换行算新段、零宽列不炸）；四行及以下**不画按钮也不裁**；六行起折叠，`aria-expanded` 从 `false` 变 `true` 后 clamp 消失、全文仍在 DOM；只读卡上按钮同样可用且不解锁任何行；`line-clamp-4` 与 `CHOICE_CONTEXT_VISIBLE_LINES` 由测试读常量对齐；**prompt 的 100 字预算与手机列对齐**：100 个中文字（48 units/行）不折、144 字开始折（`choiceContext.test.ts`），且 `choice.md` 里每个示例的 `context:` 字数≤ 100（`prompt_teaches_the_choice_card_fence`）——教什么就得示范什么。（`choiceContext.test.ts`、桌面与手机的 `ChoiceCard.test`）
 - **历史卡（只读）**：一条回复两张卡时，上面那张 `readonly`/`aria-disabled`/不进程 tab 序，**保留它当年写的 `hint`**，并在其后画 `choice.hint.readonly`；卡片自己的 `context` 仍在，且折叠按钮可用。截图场景额外钉住两件事：两张卡与只读卡最后一行都落在转写区的可视框内，以及折叠段的实测高度（桌面 72px、手机 82pt）。
+- **都不做（§5.9.4）**：可交互的卡上画出 `[data-choice-dismiss]`（桌面）/ `choice-card-dismiss`（手机），**在选项组之外**且选项行数不变（不允许读成多一个选项）；按下只调 `onDismiss`，`onSelect` 一次都不调；没接 `onDismiss` 的卡、以及早先的只读卡都**不画**；一条回复两张卡时只有一个出口（当前那张的）。
+  - 草稿一侧：先选一行再按"都不做" ⇒ pill/chip 消失、`loadComposerDraft` 为 `null`、只有 pill 时才会亮的发送键变灰，且**没有发出任何消息**（手机端 `ChatScreen` 那条断言同样钉住 `sendMessage` / `editQueuedRun` 一次都没被调用）。
+  - 宿主一侧：`dismiss_run_choice` 只清最新那一行的标记（同一会话更早的 run 不动、`updated_at` 不变）；第二次按 ⇒ `dismissed:false` 且 `success:true`；未知 session ⇒ `session_not_found`；写完 `latest_run_infos` 读回 `offers_choice = false`（桌面左栏、手机 catalog 读的是同一行）。
+  - 左栏刷新：不发 `thread-runtime-updated`（状态没动），所以 `remote-activity` 必须触发一次行重读——`useThreadStore.hook.test.ts` 里把那一行从 `offersChoice:true` 改成 `false` 后只发 `remote-activity`，断言标记消失而 `runId`/`status` 不变。
 - **桌面（三态回归，必测）**：空编辑器 ⇒ `disabled:true`；只有 pill ⇒ **`disabled:false`**；移除 pill ⇒ `disabled:true`。这是 v1 错误的那一条，必须钉死。
 - **桌面**：卡片渲染与只读/可交互切换；点行 → pill 出现；铅笔改 pill；叉移除 pill 且发送键变灰；pill + 文字一起发送的内容（§7 四种情况逐条断言）；发送后 pill 消失，**卡面不保留高亮**（答案在用户消息的标签上，为什么不做回填见 §2）。
 - **远程**：同上，且断言 chip 在 textarea 之上而不是里面；**只有 chip 时发送键可用**（v1 同样漏掉的那一条）；远程草稿切换不串答案。

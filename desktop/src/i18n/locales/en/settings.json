@@ -202,7 +202,8 @@
     "autoDescription": "Only unpinned conversations past the idle threshold are archived. Active, approval-waiting, and foreground conversations are skipped.",
     "idleDays": "Idle days",
     "idleDaysDescription": "Between 1 and 365 days, defaulting to 30. Restore starts a fresh idle period.",
-    "idleDaysHelp": "Idle means no new message or run activity since the conversation's last exchange. Opening or renaming it does not reset the timer; restoring an archived conversation starts a fresh idle period."
+    "idleDaysHelp": "Idle means no new message or run activity since the conversation's last exchange. Opening or renaming it does not reset the timer; restoring an archived conversation starts a fresh idle period.",
+    "idleDaysHelpLabel": "About idle days"
   },
   "dialog": {
     "ariaLabel": "Settings",

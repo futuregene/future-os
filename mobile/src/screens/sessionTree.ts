@@ -271,7 +271,8 @@ export function archivedRows(
    */
   desktopId?: string,
   /**
-   * Which conversations have their forks on screen, by session id.
+   * Which conversations have their forks on screen, keyed exactly as the rows
+   * report them (`foldId`).
    *
    * The same fold state the default pages use, and for the same reason: it is
    * the same fork. Archiving shelves a conversation *with every fork under it*,
@@ -280,10 +281,30 @@ export function archivedRows(
    * shelved at the same time.
    */
   expanded: ReadonlySet<string> = new Set(),
+  /**
+   * Which machine the phone is talking to, for the fold key.
+   *
+   * Its conversations fold by the bare session id — the key the default pages
+   * already fold this same fork by — so one conversation opens and closes
+   * together whichever list draws it. A peer's carries its machine, because a
+   * session id is that machine's, not global.
+   */
+  activeDesktopId: string | null = null,
 ): CatalogRow[] {
   const rows: CatalogRow[] = [];
   const stamp = desktopId ? { desktopId } : {};
   const rowKey = (sessionId: string) => (desktopId ? sessionKey(desktopId, sessionId) : sessionId);
+  /**
+   * What a row's fold is keyed by — and therefore what `expanded` is read with.
+   *
+   * The row *is* the answer: the list toggles the `foldId` it drew on the row. A
+   * fold looked up under any other key flips the `+`/`−` and leaves the forks
+   * hidden, which is what a shelved parent did on the phone (reported
+   * 2026-11-19: the row folded by a machine-stamped key while the tree looked
+   * the fold up by the bare session id).
+   */
+  const foldIdOf = (sessionId: string): string =>
+    desktopId && desktopId !== activeDesktopId ? rowKey(sessionId) : sessionId;
   const byWorkspace = new Map<string, RemoteSession[]>();
   const loose: RemoteSession[] = [];
   for (const session of sessions) {
@@ -322,7 +343,7 @@ export function archivedRows(
         out.push({ session: node.session, depth, hasChildren: node.children.length > 0 });
         // A fork is drawn only inside its ancestor's fold, so an unopened row
         // hides its own children.
-        if (expanded.has(node.session.sessionId))
+        if (expanded.has(foldIdOf(node.session.sessionId)))
           walk(node.children, depth + 1);
       }
     };
@@ -361,7 +382,7 @@ export function archivedRows(
         session: row.session,
         depth: row.depth,
         hasChildren: row.hasChildren,
-        foldId: rowKey(row.session.sessionId),
+        foldId: foldIdOf(row.session.sessionId),
         ...stamp,
       });
     }
@@ -373,7 +394,7 @@ export function archivedRows(
       session: row.session,
       depth: row.depth,
       hasChildren: row.hasChildren,
-      foldId: rowKey(row.session.sessionId),
+      foldId: foldIdOf(row.session.sessionId),
       ...stamp,
     });
   }

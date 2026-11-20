@@ -36,6 +36,16 @@ Windows 自动更新使用独立观察进程等待 Desktop 退出，再运行安
 
 启动时可在旧会话导入期间请求退出。取消会保留已经提交的会话，不把未读完的源记成损坏或提前标记全部导入完成；未提交事务回滚，下次启动继续导入。无法立即打断的系统 I/O 仍受安全门禁约束，不应手动删除 WAL 或锁来催促退出。
 
+## 运行状态：会话列表与正文页
+
+“回复是否还在到达”由两个时钟分别供给，而同一个窗口同时显示两者。
+
+会话列表跟随宿主的 `thread-streaming-updated` 通知：`thread_streaming_monitor_loop` **每秒**采样一次 Agent 的 `list_streaming_sessions`，只在集合变化时发通知（`desktop/src-tauri/src/lib.rs`）。所以一个运行结束后，最多约一秒该会话就落到「更早」。
+
+正文页原先只靠这次运行的 `thread-runtime-updated` 终态推送收掉自己的实时气泡（计时、思考中、停止按钮），另有两个兜底：本地发送的看门狗每 **15 秒**重读一次运行行（`useAgentThreadState.ts`），重新附着的运行每 **30 秒**重读一次（`useRunReattach.ts`）。终态推送一旦丢失，正文页就会把一个已经结束的运行继续画成进行中 15–30 秒，而侧边栏已经说这个会话结束了；2026-11-19 实测：某条回复的运行结束后，正文页的计时仍跳了 **47 秒**。现在外壳把同一条每秒答案作为 `streaming` 传给正文页，它变成 `false` 时正文页重读运行行。没有会话列表可读的界面（面板格）不传这个属性，仍只用推送加那两个兜底。
+
+**权威是运行行，不是 streaming 集合。** `reconcile_streaming_observers`（`host/src/agent_bridge/observer.rs`）在 Agent RPC 失败时返回空集，`sample_thread_streaming_with` 对取集合失败也一视同仁（`unwrap_or_default`）。空答案的意思是“我们看不到有运行在 streaming”，不是“没有运行在 streaming”：据此收掉一条真的还在跑的回复，会把文本定稿、拿掉停止按钮，而运行仍在计费。所以这条答案只用来触发一次运行行读取，由行里的状态决定。
+
 ## 排障与日志
 
 默认数据根是 `~/.future`；有效绝对 `FUTURE_HOME` 替换整个根。Desktop 写入 `<数据根>/app/logs/desktop.log`，前台 Host 写入 `app/logs/host.log`，内嵌与独立 Agent 都写入 `agent/logs/agent.log`。文件统一为有界 JSONL，测试版详细、正式版精简；路径、保留与启动过滤见 [Rust 诊断日志](logging.zh-CN.md)。宿主每次启动另存上次尾部到 `*.prev.log`。启动过程 panic 时会追加写入 `<数据根>/app/logs/crash.log`（UTC 时间、进程、线程、`file:line`、payload、启动阶段、尽力而为的 backtrace），该文件不裁剪——GUI 没有控制台，panic 的退出码 101 也不是 Windows 错误报告会记录的东西。Windows 更新恢复日志在 `<数据根>/app/logs/update-recovery.log`。

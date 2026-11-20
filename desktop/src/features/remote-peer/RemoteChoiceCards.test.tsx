@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import type { SessionEntry } from "@future-os/thread-projection";
+import type { ChoiceCardQuestion } from "../agent/composer/choiceAnswer";
 import type { RemotePeer } from "./remotePeerClient";
 import { entriesToMessages } from "@future-os/thread-projection";
 import { act, createElement } from "react";
@@ -64,7 +65,12 @@ const PEER: RemotePeer = {
   pairId: "pair_1",
 };
 
-async function mount({ choiceCards, local = true }: { choiceCards?: boolean; local?: boolean }) {
+async function mount({ choiceCards, local = true, onChoiceDismiss, onChoiceSelect }: {
+  choiceCards?: boolean;
+  local?: boolean;
+  onChoiceDismiss?: () => void;
+  onChoiceSelect?: (optionId: string, card: ChoiceCardQuestion) => void;
+}) {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -89,6 +95,8 @@ async function mount({ choiceCards, local = true }: { choiceCards?: boolean; loc
           loadingOlder: false,
           messages: entriesToMessages([entry("u1", "user", "先看看今天的结果"), entry("e1", "assistant", REPLY)]),
           onContinueRun: vi.fn(),
+          onChoiceDismiss,
+          onChoiceSelect,
           onDecideApproval: vi.fn(),
           onFork: vi.fn(),
           onLoadOlder: () => {},
@@ -161,5 +169,41 @@ it("falls back to this machine's switch when the caller passes no answer", async
   }
   finally {
     await off.unmount();
+  }
+});
+
+/**
+ * "都不做" on a *remote* conversation (§5.9.4): the card is drawn by that machine,
+ * and so is its mark — the reminder lives in its own rails and lists — so
+ * declining goes back to that machine as a command, while the draft on this side
+ * keeps nothing. This view only routes the click; the command, its address and
+ * the toast are the caller's (`AppShell`).
+ */
+it("routes a decline back to the machine that drew the card", async () => {
+  const onChoiceDismiss = vi.fn();
+  const view = await mount({ choiceCards: true, onChoiceDismiss, onChoiceSelect: vi.fn() });
+  try {
+    const button = view.container.querySelector<HTMLElement>("[data-choice-dismiss]");
+    expect(button).toBeTruthy();
+    // The row sits outside the option group: it is not a third choice.
+    expect([...view.container.querySelectorAll<HTMLElement>("[data-choice-option]")]).toHaveLength(2);
+    act(() => button!.click());
+    expect(onChoiceDismiss).toHaveBeenCalledTimes(1);
+  }
+  finally {
+    await view.unmount();
+  }
+});
+
+it("draws no way out when this side has nothing to clear the mark with", async () => {
+  // A view mounted without a dismiss handler is a preview: it must not offer a
+  // button whose click would go nowhere.
+  const view = await mount({ choiceCards: true, onChoiceSelect: vi.fn() });
+  try {
+    expect(view.cards().length).toBeGreaterThan(0);
+    expect(view.container.querySelector("[data-choice-dismiss]")).toBeNull();
+  }
+  finally {
+    await view.unmount();
   }
 });

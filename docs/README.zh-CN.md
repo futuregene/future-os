@@ -18,7 +18,7 @@
 | [渠道配置](guide/channels-config.zh-CN.md)（[en](guide/channels-config.md)） | `~/.future/channels/config.json` 统一参考（agent / providers / Feishu / DingTalk 块、默认值） |
 | [通道 provider 参考](guide/channels-providers.zh-CN.md)（[en](guide/channels-providers.md)） | 共享桥上的通道：能力矩阵、逐通道配置、成熟度、诊断、主动外发 |
 | [通道 provider 契约](guide/channels-provider-contract.zh-CN.md)（[en](guide/channels-provider-contract.md)） | 新增通道：provider 契约、入站/出站边界、配置、错误、测试与覆盖率要求 |
-| [Desktop Agent](guide/desktop-agent.zh-CN.md)（[en](guide/desktop-agent.md)） | 默认内置/外部服务、退出中断范围、CLI 接入、开发启动、日志与升级恢复 |
+| [Desktop Agent](guide/desktop-agent.zh-CN.md)（[en](guide/desktop-agent.md)） | 默认内置/外部服务、退出中断范围、CLI 接入、会话列表与正文页的运行状态口径、开发启动、日志与升级恢复 |
 | [主机模式](guide/desktop-host.zh-CN.md)（[en](guide/desktop-host.md)） | 前台 `future host` 启动、平台登录二维码、用 `future remote devices add` 配对、Ctrl+C、无 GUI 服务器构建与排障 |
 | [域名解析](guide/dns-resolution.zh-CN.md)（[en](guide/dns-resolution.md)） | 静态 musl 构建在没有 `/etc/resolv.conf` 时如何解析名字——哪些客户端会挂上解析器、候选路径、`FUTURE_DNS_SERVER` / `FUTURE_RESOLV_CONF`、NSS 限制，以及不覆盖的是什么（NATS 中继） |
 | [Headless 发布验收](testing/headless-release-acceptance.zh-CN.md)（[en](testing/headless-release-acceptance.md)） | 最终成功 CI、打包签名、真实安装升级、性能与同候选验收遗留清单 |

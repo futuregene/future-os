@@ -4,7 +4,7 @@ import type { StoredThread, StoredWorkspace } from "../../integrations/storage/t
 import type { ActivityRail } from "./ActivityRail";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { hasCommandHandler, runCommand } from "../../features/keyboard/commands";
 import { resetAllCommandBindings, setCommandBinding } from "../../features/keyboard/shortcuts";
 import { forgetHostCatalogue, warmHostCatalogue } from "../../features/remote-peer/remoteHostCatalog";
@@ -679,7 +679,12 @@ function labeledButton(container: HTMLElement, label: string) {
     .find(button => button.getAttribute("aria-label") === label)!;
 }
 
-beforeEach(() => {
+/**
+ * The per-test baseline: cleared child-prop captures, fresh module spies, an
+ * empty store. Named so the lazy-section warm-up can install the same baseline
+ * before it renders the shell.
+ */
+function installPerTestState() {
   // The child-prop captures are module-level, so a test that reads one without
   // first rendering that child would silently borrow whatever a *previous* test
   // left there. Clearing them turns that defect into an immediate failure
@@ -737,7 +742,60 @@ beforeEach(() => {
   // this one test's created workspace would be the next one's default.
   localStorage.clear();
   resetStore();
+}
+
+// AppShell loads the sections it never opens *on* (skills, tasks, remote hub,
+// settings) as lazy chunks, and this file drives them with a click followed by a
+// synchronous assertion. `react.lazy` caches a resolved component for the rest
+// of the run, so one warm-up mount — the second visit's path — makes every one
+// of them synchronous for the tests below, including whichever test a shuffled
+// order happens to run first.
+beforeAll(async () => {
+  installPerTestState();
+  const view = mount(<AppShell />);
+  await openSection(view.container, "rail:skill", "[data-child=\"skills-view\"]");
+  await openSection(view.container, "rail:tasks", "[data-child=\"tasks-view\"]");
+  await openSection(view.container, "rail:remote", "[data-child=\"remote-hub\"]");
+  act(() => railButton(view.container, "rail:settings").click());
+  await waitForView(view.container, "[data-child=\"settings-dialog\"]");
+  view.unmount();
+  // The warm-up ran the shell's own startup effects; none of their calls belong
+  // to a test.
+  vi.clearAllMocks();
 });
+
+beforeEach(installPerTestState);
+
+// AppShell loads the sections it never opens *on* (skills, tasks, remote hub,
+// settings) as lazy chunks, and this file drives them with a click followed by
+// a synchronous assertion. `react.lazy` caches a resolved component for the
+// rest of the run, so one warm-up mount — the second visit's path in the app —
+// makes every one of them synchronous for the tests below, including whichever
+// test a shuffled order happens to run first. `openSection`/`waitForView` below
+// are how that warm-up waits.
+async function openSection(container: HTMLElement, label: string, selector: string) {
+  await act(async () => {
+    railButton(container, label).click();
+  });
+  await waitForView(container, selector);
+}
+
+/**
+ * Waits for a lazily imported section to mount.
+ *
+ * The chunk resolves outside the click's scope, and React retries the Suspense
+ * boundary during a scope that is open when it lands — so the wait is a scope
+ * with an inner timer, not a poll on the container (a commit lands when its
+ * scope closes, so a poll inside would never see the view it is waiting for).
+ * Capped, so a view that never arrives fails on the test's own assertion.
+ */
+async function waitForView(container: HTMLElement, selector: string) {
+  for (let attempt = 0; attempt < 20 && container.querySelector(selector) === null; attempt++) {
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    });
+  }
+}
 
 describe("app shell readiness gate", () => {
   it("shows the agent status page until the agent is ready", () => {
@@ -774,6 +832,58 @@ describe("app shell readiness gate", () => {
     expect(view.container.querySelector("[data-child=\"onboarding-gate\"]")).not.toBeNull();
     expect(view.container.querySelector("[data-child=\"activity-rail\"]")).toBeNull();
     expect(children.onboardingGate).toMatchObject({ autoLogin: true, hasAnyProvider: false, initPending: true });
+    view.unmount();
+  });
+});
+
+/**
+ * The rail and the transcript must agree about whether a reply is still
+ * arriving. The rail reads the Host's one-second `thread-streaming-updated`
+ * sample; the transcript is only as current as what the shell hands it, so this
+ * wiring is what keeps a finished run from being drawn live for another 15-30
+ * seconds (measured 2026-11-19: 47 seconds beside a rail that already filed the
+ * conversation under "Earlier"; see docs/guide/desktop-agent.md).
+ */
+describe("the active thread's streaming answer", () => {
+  const transcript = () => children.agentThread as { streaming?: boolean };
+  function withStreamingStatuses(statuses: Record<string, boolean>) {
+    mocks.store.threadStore = { ...(mocks.store.threadStore as Record<string, unknown>), threadStreamingStatuses: statuses };
+  }
+
+  it("hands the store's per-thread answer to the transcript", () => {
+    withStreamingStatuses({ t1: false });
+    const view = mount(<AppShell />);
+    expect(transcript().streaming).toBe(false);
+    view.unmount();
+  });
+
+  it("hands a run in flight over as true rather than as an answer", () => {
+    withStreamingStatuses({ t1: true });
+    const view = mount(<AppShell />);
+    expect(transcript().streaming).toBe(true);
+    view.unmount();
+  });
+
+  it("answers false for a thread the streaming set does not name", () => {
+    // The store's map holds *only* the threads the Agent reports as streaming
+    // (`streamingStatuses` records a `true` per id and rebuilds the map from the
+    // new set), so "no entry" is this thread's answer, not a gap: a run that
+    // ended leaves the set, and the pane has to hear that. Another thread's
+    // entry must not be mistaken for this one's.
+    withStreamingStatuses({ t2: true });
+    const view = mount(<AppShell />);
+    expect(transcript().streaming).toBe(false);
+    view.unmount();
+  });
+
+  it("says nothing when there is no active thread at all", () => {
+    // `undefined` is "nobody told me": with no conversation selected the
+    // transcript settles only on its own push and the 15-30 second backstops,
+    // which is what the surfaces that do not have a rail (the panel cells)
+    // rely on.
+    mocks.store.threadStore = { ...(mocks.store.threadStore as Record<string, unknown>), activeThread: null, activeThreadId: null };
+    const view = mount(<AppShell />);
+    expect(transcript().streaming).toBeUndefined();
     view.unmount();
   });
 });

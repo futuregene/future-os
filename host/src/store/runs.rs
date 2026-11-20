@@ -416,6 +416,39 @@ pub fn mark_run_offers_choice(run_id: &str) {
     }
 }
 
+/// Clear the "waiting on your choice" mark of a conversation's current run.
+///
+/// The mark is written once when a finished reply closes with a choice card
+/// ([`mark_run_offers_choice`]) and normally cleared by the next turn, whose own
+/// row is the newest one a list reads. But a reader may also **decline** the
+/// question: they pick nothing, send nothing, and only want the list to stop
+/// asking. Nothing about the run changes in that case — it stays `completed`,
+/// no status moves — so the mark is cleared here, on the same row every list
+/// reads (`latest_run_infos`, a peer's catalogue, a phone's session list).
+///
+/// `updated_at` is deliberately left alone: declining is not activity, and
+/// touching it would move the conversation in a list ordered by recency.
+///
+/// Returns whether a row changed. A conversation with nothing to dismiss — no
+/// runs, a reply that offered no card, or a question already answered — is a
+/// successful no-op, not an error: the reader's intent ("stop asking") holds.
+pub fn dismiss_run_choice(thread_id: &str) -> Result<bool, crate::Error> {
+    let conn = connect()?;
+    let changed = conn.execute(
+        &format!(
+            "UPDATE runs SET offers_choice = 0
+               WHERE id = (SELECT id FROM runs WHERE thread_id = ?1 ORDER BY {} LIMIT 1)
+                 AND offers_choice = 1",
+            latest_run_ordering()
+        ),
+        params![thread_id],
+    )?;
+    if changed > 0 {
+        mark_catalog_dirty();
+    }
+    Ok(changed > 0)
+}
+
 /// Cancel the still-open approvals of a single run, stamping them with `note`.
 /// Called from [`update_run_status_if_active`] when a run transitions to
 /// `cancelled`, so a pending approval never outlives its owning run on the
@@ -1469,6 +1502,67 @@ mod tests {
         assert!(
             !super::has_active_run("t-unknown").expect("read"),
             "a conversation with no run rows is settled"
+        );
+    }
+
+    /// Declining a card: the conversation's current run keeps its status and its
+    /// timestamps, and only the mark a list reads goes. A second dismissal, a
+    /// reply that never offered a card, and a conversation with no runs are all
+    /// successful no-ops — the reader asked the list to stop asking, and it has.
+    #[test]
+    fn dismissing_a_choice_clears_only_the_latest_runs_mark() {
+        let (_home, conn) = guarded_conn("runs-dismiss-choice");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                 VALUES ('ws-a', 'W', 'user', '/tmp/ws-a', 1, 1);
+             INSERT INTO threads (id, workspace_id, mode, title, created_at, updated_at)
+                 VALUES ('t-marked', 'ws-a', 'chat', 'Marked', 1, 1),
+                        ('t-other', 'ws-a', 'chat', 'Other', 1, 1),
+                        ('t-plain', 'ws-a', 'chat', 'Plain', 1, 1);
+             INSERT INTO runs (id, thread_id, status, offers_choice, created_at, updated_at)
+                 VALUES ('r-old', 't-marked', 'completed', 1, 1, 1),
+                        ('r-new', 't-marked', 'completed', 1, 2, 2),
+                        ('r-other', 't-other', 'completed', 1, 1, 1),
+                        ('r-plain', 't-plain', 'completed', 0, 1, 1);",
+        )
+        .expect("seed runs");
+        drop(conn);
+
+        assert!(super::dismiss_run_choice("t-marked").expect("dismiss"));
+        let infos = super::latest_run_infos(&["t-marked".to_string(), "t-other".to_string()])
+            .expect("infos");
+        let marked = infos
+            .iter()
+            .find(|info| info.thread_id == "t-marked")
+            .expect("row");
+        assert_eq!(marked.run_id, "r-new", "the newest row is the one read");
+        assert!(!marked.offers_choice, "the mark the list draws is gone");
+        assert_eq!(marked.status, "completed", "the run itself is untouched");
+        let other = infos
+            .iter()
+            .find(|info| info.thread_id == "t-other")
+            .expect("row");
+        assert!(
+            other.offers_choice,
+            "another conversation's mark is not touched"
+        );
+        let cleared = super::get_run("r-new").expect("read").expect("row");
+        assert_eq!(
+            cleared.updated_at, 2,
+            "declining is not activity: recency must not move"
+        );
+
+        assert!(
+            !super::dismiss_run_choice("t-marked").expect("dismiss"),
+            "a second dismissal changes nothing"
+        );
+        assert!(
+            !super::dismiss_run_choice("t-plain").expect("dismiss"),
+            "a reply that offered no card has no mark to clear"
+        );
+        assert!(
+            !super::dismiss_run_choice("t-unknown").expect("dismiss"),
+            "a conversation with no run is a no-op, not an error"
         );
     }
 

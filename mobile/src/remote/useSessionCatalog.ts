@@ -768,6 +768,35 @@ export function useSessionCatalog(
    * too, but a tap that visibly did nothing until the next push reads as a
    * failed action.
    */
+  /**
+   * Close a choice card on the desktop without answering it (§5.9.4).
+   *
+   * No prompt is sent, so nothing reaches that machine's agent: the desktop
+   * clears the "waiting on your choice" flag on the conversation's latest run,
+   * which is the row every list reads — this phone's list and the desktop's own
+   * rail. The row is patched here too, because the whole effect is a badge
+   * disappearing: a tap that visibly did nothing until the next push reads as a
+   * failed action.
+   *
+   * `threadId` is required here (unlike on the host, which can resolve it from
+   * the session id) for the same reason `setSessionPinned` requires it: a row
+   * this client cannot address is refused rather than resolved by guesswork.
+   */
+  const dismissSessionChoice = useCallback(
+    async (sessionId: string, threadId: string) => {
+      const client = clientRef.current;
+      if (!client || !sessionId || !threadId) throw new Error("Session unavailable");
+      const epoch = catalogEpoch.current;
+      await client.request({ type: "dismiss_choice", sessionId, threadId }, sessionId);
+      if (clientRef.current !== client || catalogEpoch.current !== epoch) return;
+      revisions.current.sessions += 1;
+      setSessions(current => current.map(session => (session.sessionId === sessionId
+        ? { ...session, offersChoice: false }
+        : session)));
+    },
+    [clientRef, setSessions],
+  );
+
   const archiveSession = useCallback(
     async (sessionId: string, threadId: string) => {
       const client = clientRef.current;
@@ -943,6 +972,7 @@ export function useSessionCatalog(
     deleteWorkspace,
     createWorkspace,
     setSessionPinned,
+    dismissSessionChoice,
     setWorkspacePinned,
     archiveSession,
     restoreSession,

@@ -1,7 +1,7 @@
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { ChoiceCardMode, ChoiceCardOption } from "../futureMarkdownTypes";
 import { choiceContextFolds } from "@future-os/markdown";
-import { Check, ChevronDown, ChevronUp, ListChecks } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, ListChecks, X } from "lucide-react";
 import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../../lib/cn";
@@ -32,6 +32,15 @@ export interface ChoiceCardProps {
    * clickable but answers nothing is worse than an inert one.
    */
   onSelect?: (optionId: string) => void;
+  /**
+   * Closing the question without answering it (§5.9.4): nothing is sent to the
+   * model, and the conversation stops being flagged as waiting on a pick.
+   *
+   * Omitted wherever the card is read-only, and wherever nothing owns the list
+   * mark the action clears — the row is a real write, and a button whose only
+   * effect is something this surface cannot do is worse than no button.
+   */
+  onDismiss?: () => void;
   options: ChoiceCardOption[];
   /** Option ids the draft's answer holds; the card derives, it never stores. */
   selectedIds?: string[];
@@ -50,6 +59,7 @@ export function ChoiceCard({
   context,
   hint,
   mode,
+  onDismiss,
   onSelect,
   options,
   selectedIds = [],
@@ -210,6 +220,35 @@ export function ChoiceCard({
             >
               {t("choice.foot.queued")}
             </p>
+          )
+        : null}
+      {/*
+        The third answer to a question: none. A reader who does not want any of
+        the rows has no way to say so by typing nothing — the conversation keeps
+        flagging itself as waiting on a pick — so the card offers the sentence
+        they would otherwise have to write ("都不做，别问了") as one press that
+        sends nothing at all. It sits outside the option group: it is not a
+        choice, and a radio group must not contain an action that answers nothing.
+
+        Drawn only on the answerable card (a past question's exit is long gone)
+        and only where something owns the mark it clears.
+      */}
+      {interactive && onDismiss
+        ? (
+            <div className="border-t border-line-soft px-1.5 py-1.5">
+              <button
+                className="flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors hover:bg-surface-subtle"
+                data-choice-dismiss
+                onClick={onDismiss}
+                type="button"
+              >
+                <X aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-ink-muted" />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[13px] leading-5 text-ink-soft">{t("choice.dismiss")}</span>
+                  <span className="mt-0.5 block text-[12px] leading-4 text-ink-muted">{t("choice.dismissNote")}</span>
+                </span>
+              </button>
+            </div>
           )
         : null}
     </div>

@@ -81,6 +81,8 @@
     "foot": {
       "queued": "已放进输入框，可以继续补充，也可以直接发送"
     },
+    "dismiss": "都不做",
+    "dismissNote": "不回复模型，只清掉会话列表的提醒",
     "chip": {
       "change": "修改「{{title}}」的选择",
       "remove": "移除「{{title}}」的选择"

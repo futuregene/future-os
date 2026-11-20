@@ -104,6 +104,38 @@ corrupt sources or a completed import batch. The next start resumes import.
 Uninterruptible system I/O remains subject to the safety barrier; never delete
 WAL or lock files to accelerate exit.
 
+## Run status: the rail and the transcript
+
+Whether a reply is still arriving is supplied by two clocks, and one window
+shows both at once.
+
+The conversation list follows the Host's `thread-streaming-updated`
+notification: `thread_streaming_monitor_loop` samples the Agent's
+`list_streaming_sessions` **once a second** and emits the set only when it
+changes (`desktop/src-tauri/src/lib.rs`). A run that ends is therefore filed
+under "Earlier" within about a second.
+
+The transcript settled its own live reply — elapsed timer, "thinking", stop
+button — only on the `thread-runtime-updated` push for that run, with two
+backstops: the send watchdog re-reads the run row every **15 seconds**
+(`useAgentThreadState.ts`), and a re-attached run re-reads it every **30
+seconds** (`useRunReattach.ts`). A terminal push that never arrived therefore
+left the pane drawing a finished run live for 15–30 seconds while the rail
+already said the conversation was done; measured 2026-11-19, one such pane was
+still ticking **47 seconds** after its run had settled. The shell now hands the
+transcript the same one-second answer as `streaming`, and the pane re-reads the
+run row when that answer turns `false`. A surface with no rail to read (the
+panel cells) passes nothing, and keeps the push plus its two backstops.
+
+**The run row is the authority, never the streaming set.**
+`reconcile_streaming_observers` (`host/src/agent_bridge/observer.rs`) returns an
+empty set when the Agent RPC fails, and `sample_thread_streaming_with` treats a
+failed fetch the same way (`unwrap_or_default`). An empty answer means "no run
+is streaming that we could see", not "no run is streaming": settling a live
+reply on it would freeze the text as complete, take the stop button away and
+leave the run billing. So the answer only triggers a run-row read; the status in
+that row decides.
+
 ## Troubleshooting and logs
 
 The default data root is `~/.future`; a valid absolute FUTURE_HOME replaces the

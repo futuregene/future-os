@@ -1,0 +1,76 @@
+{
+  "_comment": "§5.9.4 「都不做」：关掉选项卡而不回答（docs/design/choice-cards.zh-CN.md）。桌面两帧（卡片上的出口、按下去之后）与手机一帧，都是真实组件、真实点击。",
+  "desktop": {
+    "choice-dismiss-desktop": {
+      "note": "真实组件 · 桌面 · 都不做（§5.9.4）。可交互那张卡的最后一行：一条 hairline 之上是「都不做」+ 一行说明（不回复模型，只清掉会话列表的提醒）。它在选项组之外——三个选项仍是三个，读屏不会把它数成第四个。按下不发任何消息：草稿里的答案先清掉，宿主再清掉 run 行上的标记，然后弹一条 toast 说明刚刚发生了什么。",
+      "url": "http://localhost:5299/shot/?lang=zh&thread=th_choice",
+      "width": 1440,
+      "height": 900,
+      "steps": [
+        {
+          "wait": 2600
+        },
+        {
+          "eval": "(() => { const card = document.querySelector('[data-choice-card]'); if (!card) throw new Error('the choice card did not render'); card.scrollIntoView({ block: 'center' }); return 'ok'; })()"
+        },
+        {
+          "wait": 600
+        },
+        {
+          "eval": "(() => { const card = document.querySelector('[data-choice-card]'); if (!card) throw new Error('no card'); const rows = [...card.querySelectorAll('[data-choice-option]')]; if (rows.length !== 3) throw new Error('the card draws ' + rows.length + ' options'); const dismiss = card.querySelector('[data-choice-dismiss]'); if (!dismiss) throw new Error('the answerable card has no way out'); if (dismiss.tagName !== 'BUTTON') throw new Error('the way out is a ' + dismiss.tagName + ', not a button'); if (dismiss.closest('[role=\"radiogroup\"]')) throw new Error('the way out sits inside the option group — a screen reader would count it as an option'); if (!dismiss.textContent.includes('都不做')) throw new Error('the row lost its label'); if (!dismiss.textContent.includes('只清掉会话列表的提醒')) throw new Error('the row lost its note'); if (!dismiss.textContent.includes('不回复模型')) throw new Error('the note must say nothing is sent to the model'); const words = card.innerText || ''; if (rows.some(row => (row.innerText || '').includes('都不做'))) throw new Error('the way out was drawn as an option'); if (card.querySelector('[data-choice-footer]')) throw new Error('nothing is picked, so there is no footer'); const cr = card.getBoundingClientRect(); const form = document.querySelector('form').getBoundingClientRect(); if (cr.bottom > form.top - 8) throw new Error('the card runs under the composer'); const submit = document.querySelector('form button[type=\"submit\"]'); if (!submit.disabled) throw new Error('nothing is typed and nothing is picked'); return JSON.stringify({ rows: rows.length, dismiss: Math.round(dismiss.getBoundingClientRect().height), card: [Math.round(cr.top), Math.round(cr.bottom)] }); })()"
+        },
+        {
+          "shot": "choice-dismiss-desktop.png"
+        },
+        {
+          "tapText": "都不做"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "eval": "(() => { const card = document.querySelector('[data-choice-card]'); if (!card) throw new Error('the card disappeared instead of just losing its mark'); const text = document.body.innerText || ''; if (!text.includes('已关闭这次选择，没有回复模型')) throw new Error('no toast told the reader what just happened'); const picked = [...card.querySelectorAll('[data-choice-option]')].filter(row => row.getAttribute('aria-checked') === 'true'); if (picked.length) throw new Error(picked.length + ' rows read as picked after a dismissal'); if (document.querySelector('[data-mention=\"choice\"]')) throw new Error('the composer still holds an answer'); if (document.querySelector('[data-choice-footer]')) throw new Error('the footer survived the dismissal'); if (/\\[\\S+ → /.test(text)) throw new Error('a message carrying an answer was sent: ' + text.slice(0, 200)); const submit = document.querySelector('form button[type=\"submit\"]'); if (!submit.disabled) throw new Error('the send button is live after a dismissal — something is still in the draft'); return 'ok'; })()"
+        },
+        {
+          "shot": "choice-dismiss-toast.png"
+        }
+      ]
+    }
+  },
+  "mobile": {
+    "choice-dismiss-phone": {
+      "note": "真实组件 · 手机 · 都不做（§5.9.4）。窄屏上出口同样在选项之下、选项组之外，44pt 触控高度，主文案与说明分两行：按下去不回复模型，只把这一行的「在等你选」清掉。",
+      "query": "?session=sess_dopamine_review&choiceCard=1",
+      "lang": "zh-CN",
+      "steps": [
+        {
+          "wait": 1200
+        },
+        {
+          "eval": "(() => { const label = ['稍后再说', 'Not now'].map(text => document.querySelector(`[aria-label=\"${text}\"]`)).find(Boolean); if (label) label.click(); return label ? 'dismissed the update prompt' : 'no update prompt'; })()"
+        },
+        {
+          "wait": 1400
+        },
+        {
+          "eval": "(() => { if ((document.body.innerText || '').includes('软件更新')) throw new Error('the update prompt is still covering the screen'); const card = document.querySelector('[data-testid=\"choice-card\"]'); if (!card) throw new Error('the phone drew no card'); card.scrollIntoView({ block: 'center' }); return 'scrolled to the card'; })()"
+        },
+        {
+          "wait": 700
+        },
+        {
+          "eval": "(() => { const card = document.querySelector('[data-testid=\"choice-card\"]'); if (!card) throw new Error('the phone drew no card'); const cb = card.getBoundingClientRect(); if (cb.top < 0 || cb.bottom > window.innerHeight) throw new Error('the card is not on screen: ' + Math.round(cb.top) + '..' + Math.round(cb.bottom) + ' of ' + window.innerHeight); const onTop = document.elementFromPoint(cb.left + cb.width / 2, cb.top + 20); if (!onTop || !card.contains(onTop)) throw new Error('something is covering the card'); const dismiss = card.querySelector('[data-testid=\"choice-card-dismiss\"]'); if (!dismiss) throw new Error('the answerable card has no way out'); const words = (dismiss.innerText || ''); if (!words.includes('都不做')) throw new Error('the row lost its label: ' + JSON.stringify(words)); if (!words.includes('只清掉会话列表的提醒')) throw new Error('the row lost its note'); if (dismiss.getAttribute('role') !== 'button') throw new Error('the way out is a ' + dismiss.getAttribute('role') + ', not a button'); const box = dismiss.getBoundingClientRect(); if (box.height < 44) throw new Error('the way out is ' + Math.round(box.height) + 'pt tall, under the 44pt target'); if (box.bottom > window.innerHeight) throw new Error('the way out is below the fold: ' + Math.round(box.bottom) + ' > ' + window.innerHeight); const rows = [...card.querySelectorAll('[data-testid^=\"choice-option-\"]')]; if (rows.length !== 3) throw new Error('the card draws ' + rows.length + ' option rows'); const last = rows[rows.length - 1].getBoundingClientRect(); if (box.top < last.bottom - 1) throw new Error('the way out was drawn among the options'); return JSON.stringify({ rows: rows.length, dismiss: Math.round(box.height), card: [Math.round(cb.left), Math.round(cb.top), Math.round(cb.width), Math.round(cb.height)] }); })()"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "shot": "choice-dismiss-phone.png"
+        },
+        {
+          "eval": "(() => { try { localStorage.clear(); } catch (error) { return 'no storage to clear'; } return 'storage cleared for the next scenario'; })()"
+        }
+      ]
+    }
+  }
+}

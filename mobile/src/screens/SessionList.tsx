@@ -29,6 +29,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { ActionMenu } from "../components/ActionMenu";
@@ -59,7 +60,7 @@ import {
 import { listTargets, selectableTargets, type SessionTarget } from "./sessionSelection";
 import { swipeTarget, TAB_LABEL, TABS, type Tab } from "./sessionTabs";
 import { useCollapsedWorkspaces } from "./useCollapsedWorkspaces";
-import { useSessionListScroll } from "./useSessionListScroll";
+import { initialBatchForRestore, useSessionListScroll } from "./useSessionListScroll";
 import { useTabSwipe } from "./useTabSwipe";
 
 // Keep navigation state when the screen unmounts to open a conversation.
@@ -295,6 +296,12 @@ export function SessionList({
     onScrollBeginDrag,
     onScroll,
   } = useSessionListScroll<CatalogRow>(query.trim() ? null : listKey);
+  // How tall this phone's screen is, not how tall the list is: the list's own
+  // height is measured after its first layout, and the batch below is a prop of
+  // that first render. A screen is more than the list's viewport (the header
+  // and the tab row take their share), which only over-counts rows — see
+  // `initialBatchForRestore`.
+  const screen = useWindowDimensions();
   const [menuWorkspace, setMenuWorkspace] = useState<WorkspaceRow | null>(null);
   /** The group whose name the rename dialog is editing, and its draft. */
   const [renamingWorkspace, setRenamingWorkspace] = useState<WorkspaceRow | null>(null);
@@ -440,6 +447,9 @@ export function SessionList({
           // A search opens every row: a match hidden inside a closed fork is a
           // match the reader cannot see.
           query.trim() ? new Set<string>() : expanded,
+          // Which machine folds by its bare session ids — the keys its own
+          // conversations already carry on the pages this shelf replaced.
+          activeDesktopId,
         )
         : archivedRows(
           remote.sessions,
@@ -450,9 +460,10 @@ export function SessionList({
           // A search opens every row: a match hidden inside a closed fork is a
           // match the reader cannot see.
           query.trim() ? new Set<string>() : expanded,
+          activeDesktopId,
         )
       : []),
-    [archived, archivedCatalogs, remote.sessions, remote.workspaces, collapsed, expanded, query],
+    [archived, archivedCatalogs, remote.sessions, remote.workspaces, collapsed, expanded, query, activeDesktopId],
   );
   /**
    * How many archived conversations the shelf draws.
@@ -1648,6 +1659,11 @@ export function SessionList({
           keyExtractor={row => row.key}
           ref={listRef}
           contentOffset={initialOffset}
+          // A page the reader is coming back to mounts enough rows for their
+          // saved offset to be a legal position from the first frame, so the
+          // list is *placed* there instead of being scrolled there — see
+          // `initialBatchForRestore`. A page at the top keeps the default batch.
+          initialNumToRender={initialBatchForRestore(initialOffset.y, screen.height, rows.length)}
           maintainVisibleContentPosition={maintainVisibleContentPosition}
           onLayout={onLayout}
           onContentSizeChange={onContentSizeChange}

@@ -1227,6 +1227,44 @@ describe("ensureLiveReply", () => {
     expect(result[3]).toMatchObject({ id: "stream_r1", status: "streaming", runId: "r1" });
   });
 
+  it("never hands the running timer to the previous answer when this run's prompt is not loaded yet", () => {
+    // Reported from the phone: send a prompt from the mobile client while the
+    // desktop shows the same conversation, and the previous exchange's reply
+    // wears the new run's elapsed time and token count ("1s · 35 tokens" over an
+    // answer that had already ended) with the new prompt drawn below it.
+    // What makes the array look like this is a reload taken the instant the run
+    // started, before the agent published the user entry: the trailing reply is
+    // AFTER the last user message, but it belongs to run `r0`.
+    const settled = assistant("a1", { runId: "r0", durationMs: 2_253, outputTokens: 35 });
+    const previousPrompt = user("u1", { runId: "r0" });
+
+    const result = ensureLiveReply([previousPrompt, settled], "r1", 1_000);
+
+    // The answer to the previous prompt is not this run's reply: it keeps its
+    // completion state, its owner and its own stats.
+    expect(result[1]).toBe(settled);
+    expect(result[1]).toMatchObject({ status: "complete", runId: "r0", durationMs: 2_253 });
+    // …and this run gets the bubble it would have opened with instead.
+    expect(result[2]).toMatchObject({
+      id: "stream_r1",
+      status: "streaming",
+      runId: "r1",
+      runStartedAt: 1_000,
+      content: "",
+    });
+  });
+
+  it("adopts the snapshot whose withheld stamp still names this run", () => {
+    // `applyRunMetadata` hides an in-flight run's id from the live-bubble guards
+    // and keeps it in `inFlightRunId`: that snapshot IS this run's reply.
+    const snapshot = assistant("a1", { inFlightRunId: "r1", content: "streamed so far" });
+
+    const result = ensureLiveReply([user("u1"), snapshot], "r1", 1_000);
+
+    expect(result).toHaveLength(2);
+    expect(result[1]).toMatchObject({ id: "a1", status: "streaming", runId: "r1" });
+  });
+
   it("opens an empty streaming bubble when no entry has landed yet", () => {
     const result = ensureLiveReply([user("u1")], "r1", null);
 
