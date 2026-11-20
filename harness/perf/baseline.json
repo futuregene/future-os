@@ -124,5 +124,13 @@
       "unit": "MB",
       "signed": true
     }
+  },
+  "$invalidated": {
+    "date": "2026-11-20",
+    "note": "`metrics` 里的 `perf-thread-switch:measure:switch:*` 作废，勿与修好点击后的读数比较（2026-11-20）。`harness/lib/cdp.mjs` 的 `click` 当时在按下与释放之间 睡 60ms、释放后再睡 120ms，所以 `measure` 记下的是「点击动作完成」，其中约 180ms 是驱动开销：同一次会话切换，页面内计时（pointerdown→正文可见）在 dev 构建是 ~200ms / 生产构建 ~68ms。修好后 `measure` 只测「释放→两帧」，数值会掉到几十毫秒，这里的 294 仍然保留只是为了不改写历史；要重新用它做门禁，先用 `node harness/cli.mjs perf-baseline --from <新 run>` 重新取样。真正守「点击→正文可见」的是 `perf-open-latency`（cases/perf/08-open-latency.json）。",
+    "keys": {
+      "perf-thread-switch:measure:switch:avg": "含 ~180ms 驱动睡眠；修好后 measure 口径已变（释放→两帧）",
+      "perf-thread-switch:measure:switch:max": "同上（该键此前由 assertPerf 的绝对上限兜底，未入表）"
+    }
   }
 }
