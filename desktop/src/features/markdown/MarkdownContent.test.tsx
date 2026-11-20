@@ -145,6 +145,48 @@ describe("choice cards in a reply", () => {
     expect(html).not.toContain("futureos-choice");
   });
 
+  /**
+   * The prompt asks for 2–4 rows; a model that slipped by one still wrote a
+   * card, and the client draws up to six (`CHOICE_MAX_OPTIONS`). At four this
+   * reply — five directions offered at the end of a live run, 2026-11-20 — fell
+   * back to fenced source, which is a whole card lost to a row count.
+   */
+  it("draws a five-row card instead of falling back to its source", () => {
+    const fiveRows = [
+      "```futureos-choice",
+      "title: 接下来想让我做哪件？",
+      "option: stats | 深挖统计实现",
+      "option: veto | 看否决层怎么工作",
+      "option: sources | 看数据源 fallback",
+      "option: watchlist | 跑一遍 screener",
+      "option: test | 跑完整测试套件",
+      "```",
+    ].join("\n");
+    const html = renderToStaticMarkup(<MarkdownContent content={fiveRows} />);
+    expect(html).toContain("data-choice-card");
+    expect(html.match(/data-choice-option=/g)).toHaveLength(5);
+    expect(html).not.toContain("futureos-choice");
+  });
+
+  /**
+   * What is left of the tolerance table (one row, seven rows, an id the parser
+   * drops) still degrades to the fenced source — but folded, so the option lines
+   * are readable in a narrow window instead of hidden behind a sideways scroll.
+   */
+  it("wraps a fence it cannot draw, and hides the language label", () => {
+    const oneRow = [
+      "```futureos-choice",
+      "title: 只有一行",
+      "option: only | 唯一的选项 | 这一行才会被画出来",
+      "```",
+    ].join("\n");
+    const html = renderToStaticMarkup(<MarkdownContent content={oneRow} />);
+    expect(html).not.toContain("data-choice-card");
+    expect(html).toContain("whitespace-pre-wrap");
+    expect(html).toContain("唯一的选项");
+    expect(html).not.toContain("futureos-choice");
+  });
+
   it("carries the fence's context into the card", () => {
     // §3: the card is answerable from itself — the reply above it stays where it
     // is; the situation paragraph is what `context:` puts inside the card.

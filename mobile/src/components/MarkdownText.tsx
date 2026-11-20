@@ -235,9 +235,32 @@ function CodeSource({ code, language }: { code: string; language?: string }) {
   // the same reason). The pan is horizontal, which — unlike a nested *vertical*
   // viewport — is not contended for by the surrounding message list; the tables
   // below rely on that too. Long-block reachability is the explicit toggle.
+  //
+  // The one exception is a `futureos-choice` fence the parser could not draw
+  // (§3 tolerance table): its lines are `option: id | label | note` prose, and
+  // the only column that matters is the first. Left unwrapped, a phone shows
+  // those rows clipped at the right edge and reachable only by panning — the
+  // card the reader was meant to answer arrives as half-visible source
+  // (2026-11-20). Wrapping costs this block nothing and keeps §3's promise that
+  // a degraded card still reads. The fence's own language label goes with it:
+  // `futureos-choice` is chrome for the parser, not something to show a reader
+  // who has never seen the design.
+  const wraps = language?.trim().toLowerCase() === "futureos-choice";
   const collapsed = large && !expanded;
+  const body = large ? rows.slice(0, collapsed ? 1 : rows.length).map((row, index) => (
+    <Text key={index} selectable style={wraps ? [styles.code, styles.codeWrapped] : styles.code}
+      numberOfLines={collapsed ? collapsedCodeLines : undefined}
+      ellipsizeMode={collapsed ? "tail" : undefined}>
+      {row.continuation ? "↪ " : ""}
+      <CodeTokens fallback={codeRowText(row.text)} tokens={rowTokens[index] ?? null} />
+    </Text>
+  )) : (
+    <Text selectable style={wraps ? [styles.code, styles.codeWrapped] : styles.code}>
+      <CodeTokens fallback={code} tokens={tokens} />
+    </Text>
+  );
   return (
-    <View style={styles.codeContainer}>
+    <View style={styles.codeContainer} testID={wraps ? "choice-card-degraded" : undefined}>
       {large ? (
         <View style={styles.codeToolbar}>
           <Text style={styles.codeLanguage}>{language ?? ""}</Text>
@@ -247,18 +270,14 @@ function CodeSource({ code, language }: { code: string; language?: string }) {
             <Text>{t("chat.copy")}</Text>
           </Pressable>
         </View>
-      ) : language ? <Text style={styles.codeLanguage}>{language}</Text> : null}
-      <ScrollView horizontal nestedScrollEnabled contentContainerStyle={styles.codeContent}>
-        {large ? rows.slice(0, collapsed ? 1 : rows.length).map((row, index) => (
-          <Text key={index} selectable style={styles.code} numberOfLines={collapsed ? collapsedCodeLines : undefined}
-            ellipsizeMode={collapsed ? "tail" : undefined}>
-            {row.continuation ? "↪ " : ""}
-            <CodeTokens fallback={codeRowText(row.text)} tokens={rowTokens[index] ?? null} />
-          </Text>
-        )) : (
-          <Text selectable style={styles.code}><CodeTokens fallback={code} tokens={tokens} /></Text>
-        )}
-      </ScrollView>
+      ) : language && !wraps ? <Text style={styles.codeLanguage}>{language}</Text> : null}
+      {wraps ? (
+        <View style={styles.codeContent}>{body}</View>
+      ) : (
+        <ScrollView horizontal nestedScrollEnabled contentContainerStyle={styles.codeContent}>
+          {body}
+        </ScrollView>
+      )}
       {large ? (
         <Pressable accessibilityRole="button"
           accessibilityLabel={t(collapsed ? "chat.expandCode" : "chat.collapseCode")}
@@ -719,6 +738,8 @@ function buildStyles(theme: Theme, tone: MarkdownTone) {
   // content is laid out as a row, which would put a long block's rows side by
   // side; the column direction stacks them.
   codeContent: { padding: spacing.md, flexDirection: "column" },
+  /** The one wrapping code block: a choice fence the parser could not draw. */
+  codeWrapped: { flexShrink: 1 },
   quote: {
     marginBottom: spacing.md,
     paddingLeft: spacing.md,

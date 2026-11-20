@@ -65,6 +65,7 @@ async function mount(props: {
   selected?: boolean;
   selectionMode?: boolean;
   unread?: boolean;
+  whereLabel?: string;
 } = {}) {
   const onChanged = vi.fn();
   const onDeletedRemote = vi.fn();
@@ -92,6 +93,7 @@ async function mount(props: {
         selected={props.selected}
         selectionMode={props.selectionMode}
         unread={props.unread}
+        whereLabel={props.whereLabel}
       />,
     );
   });
@@ -392,5 +394,37 @@ it("draws an approval badge and a choice mark as two different marks", async () 
   });
   expect(view.container.querySelector("[data-thread-choice]")).not.toBeNull();
   expect(view.container.querySelector("[data-thread-approval]")).toBeNull();
+  await view.unmount();
+});
+
+/**
+ * The flat lists' second line, drawn the way the phone draws it: the machine's
+ * mark opens the line and the workspace's name continues it.
+ */
+it("says which workspace it lives in, with the machine's mark in front of it", async () => {
+  const view = await mount({
+    conversation: conversation({ mode: "workspace", workspaceId: "ws_figures", workspaceName: "Figure Scripts" }),
+    whereLabel: "Figure Scripts",
+  });
+  const line = view.container.querySelector("[data-row-subline]")!;
+  expect(line.textContent).toBe("Figure Scripts");
+  const mark = line.querySelector("[data-testid='remote-source-icon']");
+  expect(mark).not.toBeNull();
+  // One machine, one place to say it: the title's own line no longer carries the
+  // mark, so a two-line row does not say "whose" twice.
+  const title = view.container.querySelector("[data-row-title]")!;
+  expect(title.parentElement!.querySelector("[data-testid='remote-source-icon']")).toBeNull();
+  await view.unmount();
+});
+
+/**
+ * A list with headings leaves that to the heading, and the mark goes back beside
+ * the title it qualifies.
+ */
+it("keeps the machine's mark beside the title in a list that has headings", async () => {
+  const view = await mount();
+  expect(view.container.querySelector("[data-row-subline]")).toBeNull();
+  const title = view.container.querySelector("[data-row-title]")!;
+  expect(title.nextElementSibling?.getAttribute("data-testid")).toBe("remote-source-icon");
   await view.unmount();
 });

@@ -1280,9 +1280,14 @@ mod tests {
         assert!(flat.contains("Repeat the line if a second paragraph"));
 
         // The parser's tolerances, stated where the model writes them: a card
-        // outside 2–4 rows is dropped whole, so the reply loses its question.
+        // outside 2–6 rows is dropped whole, so the reply loses its question.
+        // Guidance and tolerance are two numbers on purpose — the prompt asks for
+        // 2–4 (`CHOICE_MAX_OPTIONS` draws up to six so a one-row slip still
+        // lands), and the sentence has to name the bound the reader actually
+        // sees rather than the one the model was asked to stay inside.
         assert!(prompt.contains("choices are 2–4"));
-        assert!(prompt.contains("fewer than 2 or more than 4 is not drawn as a card"));
+        assert!(prompt.contains("fewer than 2 or more than 6 is not drawn as a card"));
+        assert!(prompt.contains("Count the `option:` rows"));
         // An id the parser rejects (`CHOICE_OPTION_ID`) takes its row with it.
         assert!(prompt.contains("[a-z0-9-]` only (no spaces)"));
         // Row order is a recommendation the reader acts on, in both modes. The
@@ -1340,8 +1345,12 @@ mod tests {
         // the rest of §4's prose. Raised to 51 when `context:` did the same:
         // every card now carries a situation paragraph, and the examples had to
         // show one. The fold clause (2026-11-18) fit by reflowing this section
-        // instead of raising the budget a third time.
-        assert!(include_str!("choice.md").lines().count() <= 51);
+        // instead of raising the budget a third time. Raised to 53 (2026-11-20)
+        // for the row-count bound: a card the client refuses costs the reply its
+        // whole question, so the sentence had to name the bound the *reader*
+        // sees (six, not the four the model is asked for) and say what a wrong
+        // count looks like — fenced source in the middle of the answer.
+        assert!(include_str!("choice.md").lines().count() <= 53);
     }
 
     /// The switch's second half: with cards off the section is not in the

@@ -532,7 +532,7 @@ pub fn defaults() -> AppSettings {
         title_language: "en".to_string(),
         community_edition: true,
         skill_recommend: false,
-        choice_cards: false,
+        choice_cards: true,
         auto_resume_interrupted: true,
     }
 }
@@ -608,7 +608,9 @@ pub fn read(conn: &Connection) -> Result<AppSettings, Error> {
         .unwrap_or(false); // Off by default (PRD v1.6 §3, integration plan rule 1); the Settings toggle opts in.
     let choice_cards = read_value(conn, KEY_CHOICE_CARDS)?
         .map(|value| value == "true")
-        .unwrap_or(false); // Off by default — a reply's card is opt-in, and its prompt section is paired with it.
+        .unwrap_or(true); // On by default since 2026-11-20: a reply may close with a card, and the prompt
+                          // section that makes one possible is paired with the same value.
+                          // Rows written while the switch shipped off keep their stored "false".
     let auto_resume_interrupted = read_value(conn, KEY_AUTO_RESUME_INTERRUPTED)?
         .map(|value| value == "true")
         .unwrap_or(true); // Reserved: read back for old rows only; nothing consumes it.
@@ -848,13 +850,14 @@ mod tests {
         }
     }
 
-    /// The switch ships off: a fresh install draws no card, and the agent's
-    /// prompt section that makes one possible is paired with the same value.
+    /// The switch ships on: a fresh install may close a reply with a card, and
+    /// the agent's prompt section that makes one possible is paired with the
+    /// same value. A row stored while the default was off keeps its `false`.
     #[test]
-    fn choice_cards_default_off_and_round_trip() {
+    fn choice_cards_default_on_and_round_trip() {
         let conn = conn();
-        assert!(!read(&conn).expect("defaults").choice_cards);
-        assert!(!defaults().choice_cards);
+        assert!(read(&conn).expect("defaults").choice_cards);
+        assert!(defaults().choice_cards);
         for enabled in [true, false] {
             let settings = apply(
                 &conn,

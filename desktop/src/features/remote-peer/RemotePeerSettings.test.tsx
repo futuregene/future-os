@@ -618,8 +618,10 @@ it("offers the choice-card switch, and shows that host's own value", async () =>
 
 it("writes the choice-card switch's own key", async () => {
   const view = await mount();
-  // Off on a host that has never turned it on: the shipped default.
-  expect(view.switchFor("Choice cards")!.getAttribute("aria-checked")).toBe("false");
+  // On for a host that has not answered yet: a build older than this switch
+  // teaches the fence unconditionally, and a card is drawn — so the switch shows
+  // what a reader would actually see there rather than the fallback of "off".
+  expect(view.switchFor("Choice cards")!.getAttribute("aria-checked")).toBe("true");
 
   await act(async () => view.switchFor("Choice cards")!.click());
   await settle();
@@ -627,7 +629,7 @@ it("writes the choice-card switch's own key", async () => {
   const calls = request.mock.calls;
   const settings = (calls[calls.length - 1]![1] as { settings: Record<string, unknown> }).settings;
   expect(Object.keys(settings)).toEqual(["choiceCards"]);
-  expect(settings.choiceCards).toBe(true);
+  expect(settings.choiceCards).toBe(false);
   await view.unmount();
 });
 

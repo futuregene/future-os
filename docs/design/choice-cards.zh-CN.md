@@ -11,6 +11,8 @@
 > **v3 补上了队列在三端的样子**，并改掉 v2 的一处新歧义：v2 给队列行里的 chip 配了铅笔，而那一行本身已经有一支"改文字"的铅笔，两支相距几像素表示不同的事。v3 让 **chip 自己就是按钮**（带 chevron），行原有的铅笔与垃圾桶一个不动（§5.8.2）。三种面板关系也讲清了：远程复用桌面的 `SendQueuePanel`，手机是另一份实现（§5.8.1）。
 >
 > **v4（2026-11-18）给卡片加了 `context:`。** 此前卡里只有标题 + 选项 + 一行副标题，要判断"接下来做哪件"仍得往上翻几百字复盘，卡片只消灭了"复述"、没消灭"回读"。现在卡片自带 1–3 句情境，目标是**只看卡片就能选**（§3 字段溯源、§4 prompt、§5.1 几何）。
+>
+> **v5（2026-11-20）修一条真实的降级事故。** 一条给了五个方向的回复到了手机上不是卡，而是被右边缘裁掉、要横向拖动的 `option:` 源码：提示要 2–4 行，而客户端曾用**同一个 4** 当硬上限，整张卡输给一个只有提示才在意的行数。现在客户端画到 6 行（提示仍要 2–4），并且降级的围栏也**折行**、不再打出 `futureos-choice` 这个记法（§3 容错表、§8）。
 
 ## 1. 要解决的问题
 
@@ -72,7 +74,7 @@ option: table | 表里加一列样本量 | Frank 42 / Dreher 186，标出测量�
 | `title` | 是 | 问题本身，一句话，≤ 60 字。它就是卡片标题 |
 | `context` | 否 | 卡片自己的**情境**：刚才查到了什么、停在哪、每行的代价取决于什么。1–3 句，≤ 100 字左右（手机卡片四行的量，2026-11-18 收紧）。写了这个字段，读者就该能只看卡片作答，不必往上翻正文；重复写多行会是多段（2026-11-18 新增，见下） |
 | `mode` | 否 | `multi`（**首选**）/ `single`（行互斥时的退化，省略即此）。也接受 `multiple`、`multi-select`、`多选`，见下 |
-| `option` | 是（2–4 个） | 每行一个，`id \| 显示文案 \| 一行说明`；说明可以省略 |
+| `option` | 是（2–4 个，客户端最多画 6 行） | 每行一个，`id \| 显示文案 \| 一行说明`；说明可以省略 |
 | `id` | — | 选项 id：ASCII、`[a-z0-9-]`、≤ 24 字符、卡内唯一。它是要回传的稳定标识 |
 | `hint` | 否 | 模型自己的一句话（可选），渲染在 `context` 下方。**没有默认副标题了**（2026-11-18 删掉，见 §5.1） |
 
@@ -108,11 +110,15 @@ option: table | 表里加一列样本量 | Frank 42 / Dreher 186，标出测量�
 
 | 情况 | 处理 |
 |---|---|
-| 选项少于 2 个或多于 4 个 | 整块降级为代码块 |
+| 选项少于 2 个或多于 6 个 | 整块降级为**折行**的代码块 |
 | `id` 重复、非法字符、超长 | 该行丢弃；剩不足 2 个则整块降级 |
 | 缺 `title` | 用第一个选项的文案兜底；仍为空则降级 |
 | 围栏出现在回复中间（不在最后一块） | 照常渲染，但只读（§2 的"最后一张"规则） |
 | 未知字段 | 忽略 |
+
+**「提示要几行」和「客户端认几行」是两个数**（2026-11-20）。prompt 仍然只让写 2–4 行——那是"这该不该是一张卡"的判据；`CHOICE_MAX_OPTIONS` 却是 6，因为它回答的是另一个问题：已经写出来的这一块能不能画。两者曾是同一个 4，代价在 2026-11-20 兑现：一条真实回复给了五个方向，手机拿到的不是卡，而是 `option:` 源码——等宽、右边缘被裁、要横向拖动才读得到。整张卡输给了一个只有提示才在意的行数。
+
+放宽到 6 只给"多写一行"留余量：7 行以上是计划，不是选择题，仍走降级那条路。**但降级本身也得让人读**：降级的围栏在两端都**折行**，并且不再显示围栏自己的语言标签（`futureos-choice` 是解析器的记法，不是给读者看的东西）。这不是样式偏好——§3 承诺"降级后用户看到的就是选项清单，信息不丢"，而在 390pt 的手机上一条被横向裁掉的等宽行并不满足这句话。判据在 `CodeBlock.test.tsx`、`MarkdownContent.test.tsx` 与手机 `MarkdownText.test.ts`（`choice-card-degraded` + 没有横向滚动器）。
 
 **只读卡必须自己说出来**（2026-11-16）：一条回复里有 2 张及以上卡时，只有最后一张可交互——这个判据只依赖**已解析出的卡片数量**，与模型写了什么措辞无关，所以放在解析/渲染层，不放进 prompt。被判为只读的卡不只是 `aria-readonly` + 不进 Tab 序，它还**必须自己说一句"早先的提问，这张卡不能再选"**（`choice.hint.readonly`）：在一张点不动的卡上不说明这件事，等于画一个看起来能按、按了没反应的按钮。判据在 `ChoiceCard.test.tsx` 与 `MarkdownContent.test.tsx` 里断言（文字 + `aria-disabled` + 不可聚焦），**不断言颜色**。
 
@@ -139,7 +145,6 @@ click instead of restating your own wording.
 Use it only when all of these hold:
 - The reply genuinely ends with a question about the next step, and you can carry
   out every option yourself right after they pick.
-- There are 2–4 real alternatives. One option, or five, is a paragraph — not a card.
 - The options are 2–4 genuine alternatives you would act on next — one of them, or
   several that do not compete for the same step.
 
@@ -174,17 +179,17 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 
 另有一个**部署坑**：这条 prompt 是 `include_str!` 编进二进制的，所以本机装的是旧构建时，改完仓库也不会立即生效（实测 `futureos.exe` 里还是 "the default, so usually omit it" 那一句，而仓库已经改了两轮）。改 prompt 的改动必须跟一次重装 + 重启才算上线。
 
-### 4.1 开关：默认关（2026-11-17）
+### 4.1 开关：默认开（2026-11-20，此前默认关）
 
-卡片是**偏好**，不是默认行为，出厂**关**。同一个开关管住它的两半——画不画，和这一节进不进 prompt——因为把围栏教给一个不会画卡片的客户端，比只做一半更糟：模型每轮都在为读者看不到的格式花 prompt，还会写出渲染成空白的东西。
+卡片是**偏好**，出厂**开**。同一个开关管住它的两半——画不画，和这一节进不进 prompt——因为把围栏教给一个不会画卡片的客户端，比只做一半更糟：模型每轮都在为读者看不到的格式花 prompt，还会写出渲染成空白的东西。
 
-| | `choice_cards` 开 | 关（默认） |
+| | `choice_cards` 开（默认） | 关 |
 |---|---|---|
 | 桌面 / 手机 | 卡片，可点选 | 什么都不出现——没有卡片，也没有代码块 |
 | system prompt | §4 这一节 | 不存在——`grep futureos-choice` 搜不到 |
 | 列表里「这张卡在等你选」（§5.9） | 显示 | 不显示 |
 
-为什么默认关：围栏在每个会话的每一轮都占 prompt；而卡片是在请读者从模型写的清单里挑一件——想往下走时受欢迎，否则是打断。
+为什么默认开：卡片让读者用一次点击就往下走，不必再把下一步打一遍——这正是回复被写出来的常见用途。代价是每轮占一点 prompt，以及读者已经知道要什么时的一次打断；两者都只需一个开关就能关掉，而且不需要读卡时，回复本来就不必带卡片。它在 2026-11-17 至 2026-11-20 之间出厂是关的，那个窗口里写下的设置行仍保留 `false`。
 
 开关只动「画不画 + 教不教」，其余不变：
 
@@ -194,15 +199,15 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 
 值放在哪、怎么走：
 
-- 只有一个真源：`app.db` → `packages/app-settings`（`choice_cards`，默认 `false`），读出来是 `appSettings.choiceCards`；
+- 只有一个真源：`app.db` → `packages/app-settings`（`choice_cards`，默认 `true`），读出来是 `appSettings.choiceCards`；
 - 桌面：设置 → 会话 → 回复里的一个开关；值经 `ChoiceCardsContext` 到 markdown 渲染层（渲染层自身默认仍是 `true`，所以只有真正的「关」才隐藏）；
-- **每次 run 之前**告诉 agent：宿主推 `set_choice_cards`（尽力而为——不认识这条命令的旧 agent 也不影响发消息，读设置失败一律按关处理），会话记住它，由 `PromptOptions.choice_cards` 决定这一节进不进 prompt。所以全新安装的机器：prompt 里没有围栏，界面上也没有卡片；
+- **每次 run 之前**告诉 agent：宿主推 `set_choice_cards`（尽力而为——不认识这条命令的旧 agent 也不影响发消息，读设置失败一律按关处理），会话记住它，由 `PromptOptions.choice_cards` 决定这一节进不进 prompt。所以全新安装的机器：prompt 里有围栏，界面上也有卡片；而从不推送这个值的客户端（TUI、CLI、直接调用的 agent）仍然拿到 `false`，因为没有别的东西告诉 agent 卡片会被画出来。
 - 手机镜像桌面、不另存一份：`get_desktop_settings` 带上 `choiceCards`，`SettingsPatch` 写回同一行。
 - 同一个值也能**在那台机器自己的页面上**改：配对的桌面点进去（远程 → 那台电脑 → 自动化）就有这个开关，否则没有屏幕的无头宿主永远打不开它。它通过 `update_desktop_settings` 写那台机器的 `app.db`；
 - 那台机器的每一个客户端都按**它**的值渲染，而不是按客户端自己的开关：手机和桌面上的远程会话都从宿主读 `choiceCards`（`useRemoteChoiceCards`）。画出宿主智能体根本没被教过的卡片、或者把宿主写出来的卡片整块藏掉（连源码一起），两头都错，只有宿主的答案能同时避开；
 - 宿主**没有答案**时（比这个开关更旧的构建）按**开**处理：那种构建无条件教围栏，藏掉它的卡片等于删掉它合法问出的问题。只有明确的 `false` 才隐藏。客户端还没读到设置时，先按自己的值渲染，不会先闪一下再消失。
 
-钉住它的测试：`desktop/src/features/markdown/ChoiceCardsToggle.test.tsx`（关：卡片节点数为 0，**且**取出的正文里没有 `futureos-choice`；开：有行、能点、能答）、`mobile/src/components/__tests__/ChoiceCardsToggle.test.ts`、`agent/src/prompt/mod.rs::prompt_omits_the_choice_card_fence_when_cards_are_off`。反向验证过：把渲染层恒等于 `true`、让这一节无条件进 prompt、把默认值改成 `true`，这三处的断言分别变红。
+钉住它的测试：`desktop/src/features/markdown/ChoiceCardsToggle.test.tsx`（关：卡片节点数为 0，**且**取出的正文里没有 `futureos-choice`；开：有行、能点、能答）、`mobile/src/components/__tests__/ChoiceCardsToggle.test.ts`、`agent/src/prompt/mod.rs::prompt_omits_the_choice_card_fence_when_cards_are_off`。反向验证过：把渲染层恒等于 `true`、让这一节无条件进 prompt、把存储默认值改成 `false`，这三处的断言分别变红。
 
 ## 5. 界面
 
@@ -305,7 +310,7 @@ pill 实测 `bg rgb(232,240,255)`（`accent-soft`）、`color rgb(37,99,235)`（
 三端同一个处理：正文里的 `[问题 → 答案]` 画成一个标签（`ListChecks` 图标 + 淡色的问题 + `→` + 强调的答案），标签上方的文字仍走 markdown。什么都不写、只选了一行，气泡就只剩那个标签。
 
 - **文本不变。** 标签是 `choiceAnswerText` 写出的那一句的**画法**，不是第二份内容：复制按钮复制的、agent 收到的、粘贴到别处看到的，都还是 `[问题 → 答案]`。这也正是 §7 选纯文本的理由——显示层怎么画，都不影响那句话的可读性；
-- **判据保守**（`packages/markdown/src/choiceAnswerEcho.ts`）：必须带 `→`、方括号后面紧跟 `(` 或 `[` 的不认（那是链接或另一组方括号）、最多认四条（一张卡的上限）、围栏代码块与行内代码里的不算（那是读者粘贴的示例，剪掉会让围栏或反引号失去配对）。判成"不是答案"只损失样式，不会丢字；
+- **判据保守**（`packages/markdown/src/choiceAnswerEcho.ts`）：必须带 `→`、方括号后面紧跟 `(` 或 `[` 的不认（那是链接或另一组方括号）、最多认四条（不是卡的行数上限：勾六行也只打印一条答案，四条是「一条草稿里有几个回答」的界）、围栏代码块与行内代码里的不算（那是读者粘贴的示例，剪掉会让围栏或反引号失去配对）。判成"不是答案"只损失样式，不会丢字；
 - **答案不在抬头也算**（2026-11-18）：pill 追加在编辑器末尾（`writeChoicePill`），读者先打字、后点行时，答案就落在自己那句话的中间。标签是"这是一次选择"的画法，位置并不改变这一点，所以句子中间的答案同样被提成标签，它前后的文字保持原有顺序被接回去（`先说 [问题 → 答案] 再说` → 标签 + `先说 再说`，接缝上的重复空白收掉）。不是内联在句子里、而是提到上方：手机端的 `View` 放不进 `Text` 的排版流，两边各画一种形状反而更乱；
 - **答案里的路径不会把整句画成链接**（2026-11-18 修）：同一条链路上更早的一处错误——答案里一旦出现路径（如 `删未在用的 ~/omlx 副本`），整段方括号会被裸相对路径判据吃下，气泡于是把这句话画成文件链接，点开报「文件找不到了」。判据落在解析器（`packages/markdown/src/parseFutureMarkdown.ts` 的 `bracketMentionPath`）：方括号里带空白或 `→` 就不再提升为文件引用；真带空格的路径写成 `[名字](<带 空格.md>)` 这种链接形式才无歧义；
 - **材质跟着气泡走。** 桌面气泡是 `accent-soft`，标签用 `accent/10` 底 + `accent/25` 描边；手机气泡是 `accent` 实底，标签用气泡自身墨色的 12% 铺一层、20% 描边（和 `MarkdownText` 的 `onAccent` 同一套取色），深色浅色都读得清。
@@ -505,7 +510,7 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
                                           └─> sessions catalog → 手机 / 远程行
 ```
 
-- **判定在 Agent 里做一次**（`agent/src/prompt/choice_card.rs`），规则与渲染器 `parseChoiceCard` 对齐：围栏语言 `futureos-choice`、2–4 行 `option:`、id 为 `[a-z0-9-]`（≤24）、必须有非空 label；被引号包在文档围栏里的卡不算，卡后面还有正文的也不算（"卡收尾，且只有卡"）。
+- **判定在 Agent 里做一次**（`agent/src/prompt/choice_card.rs`），规则与渲染器 `parseChoiceCard` 对齐：围栏语言 `futureos-choice`、2–6 行 `option:`、id 为 `[a-z0-9-]`（≤24）、必须有非空 label；被引号包在文档围栏里的卡不算，卡后面还有正文的也不算（"卡收尾，且只有卡"）。行数上限必须与 `CHOICE_MAX_OPTIONS` 同值：徽标只能承诺客户端真会画的那种卡。
 - **只有干净收尾的 run 才带这个字段**：取消/失败/截断的回复不是"等你回答"。
 - **标记跟着 run 行**：用户下一次发送是新的一行，标记自然清零，不需要第二步清理。
 - 列表侧只读一个布尔：桌面 `ThreadRunInfo.offersChoice`（推送落在 terminal 状态时补读一次行），对端 catalog 行 `offersChoice`（手机与桌面远程行共用）。
@@ -583,7 +588,7 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
 | IM 机器人（飞书 / 钉钉） | 同上 | 同上（卡片式交互另立项） |
 | 第三方 Markdown 阅读器 | 代码块 | 代码块 |
 
-围栏语法让"不认识"变成"照正常渲染"，这是选它的首要理由（§3）。同时解析器永不抛错：任何畸形输入都退回代码块。
+围栏语法让"不认识"变成"照正常渲染"，这是选它的首要理由（§3）。同时解析器永不抛错：任何畸形输入都退回代码块。**退回的代码块要能读**（2026-11-20）：`futureos-choice` 这一种围栏单独**折行**，且不画围栏自己的语言标签——在 390pt 的手机上，一条不折的等宽行只能横向拖到右边缘外，而这张表承诺的恰恰是"用户看到的就是选项清单"。
 
 这张表说的是「认识卡片」的客户端。读者把开关**关掉**时不属于「退回代码块」那一行：关掉就是整块不出现、连源码也不出现，agent 那边也不会被教这个围栏（§4.1）。
 
@@ -646,7 +651,7 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
 
 ## 12. 测试点
 
-- **解析**：合法单/多选；2 与 4 的边界；3 个以下/5 个以上降级；重复 id、非法 id、缺 title 的降级；围栏在中途；未知字段忽略。
+- **解析**：合法单/多选；2 与 6 的边界；1 个以下/7 个以上降级；5 与 6 行仍画出可点的卡（2026-11-20）；重复 id、非法 id、缺 title 的降级；围栏在中途；未知字段忽略。
 - **`context`（2026-11-18）**：单行原样保留；重复行拼成多段；写了但空掉的不出现；桌面与手机都画在标题下；只读卡仍保留；没写时不占高度。（`choiceCard.test.ts`、`ChoiceCard.test.tsx`、`MarkdownContent.test.tsx`、手机 `ChoiceCard.test.ts`）
 - **折叠（2026-11-18）**：行数估算（宽字符算两格、显式换行算新段、零宽列不炸）；四行及以下**不画按钮也不裁**；六行起折叠，`aria-expanded` 从 `false` 变 `true` 后 clamp 消失、全文仍在 DOM；只读卡上按钮同样可用且不解锁任何行；`line-clamp-4` 与 `CHOICE_CONTEXT_VISIBLE_LINES` 由测试读常量对齐；**prompt 的 100 字预算与手机列对齐**：100 个中文字（48 units/行）不折、144 字开始折（`choiceContext.test.ts`），且 `choice.md` 里每个示例的 `context:` 字数≤ 100（`prompt_teaches_the_choice_card_fence`）——教什么就得示范什么。（`choiceContext.test.ts`、桌面与手机的 `ChoiceCard.test`）
 - **历史卡（只读）**：一条回复两张卡时，上面那张 `readonly`/`aria-disabled`/不进程 tab 序，**保留它当年写的 `hint`**，并在其后画 `choice.hint.readonly`；卡片自己的 `context` 仍在，且折叠按钮可用。截图场景额外钉住两件事：两张卡与只读卡最后一行都落在转写区的可视框内，以及折叠段的实测高度（桌面 72px、手机 82pt）。
@@ -663,7 +668,7 @@ Agent 提交 run ──┬─> terminal entry `content.offers_choice`
   - **远程**：远程复用同一个面板，且行的 `choice` 现在会被解析（`parseQueueChoice`，与本地共用一个）；断言：chip 在远程帧里画出、`aria-label` 与行文字同时成立、铅笔与垃圾桶仍在、按下只会发一条 `edit_queued_run`（`message` 与 `choice` 同行，不是 cancel+重发）。宿主不报该字段时（旧宿主）不画 chip——`remoteQueue.test.ts` 单独钉了“缺/空/不可用三种都读作没有答案”。
   - **手机**：折叠表头能展开/收起，且报 `aria-expanded`（不是 `accessibilityState`，web 上会被整块丢掉）；chip 在行内不溢出（实测 `185×21`，行宽 `348`）；行仍保留 `send-queue-edit` 与 `send-queue-remove`。
   - **手机换答案落到宿主队列，不落到本机草稿**：`queueChoiceWiring.test.ts` 把整屏**不 mock 面板**地挂起来，按 `send-queue-toggle` → `send-queue-choice` → `choice-sheet-option-flow` 真正点下去，断言宿主收到的是 `editQueuedRun(会话, 行, 重写后的句子, {mode,options,selectedIds,title})`，并读真实 dock 的 `choice` 证明这一屏的草稿前后都是 `null`（答案留在那一行，没有进输入框）。反向断证三条：删掉第四个参数 → 红；把 `onQueueUpdateChoice` 接成 `undefined`（面板不再连到处理函数）→ 红；把 dock 与屏幕里"零勾不是答案"的两道拒绝一起删掉 → 第二条测试红（只删一道仍然绿，所以那条测试钉的是结果而不是哪一层拒绝，注释里写明了）。同一件事在两个 mock 掉面板的文件里各有半边：`ComposerDock.test.ts` 驱动真实面板并断言**没有**碰 `onChangeChoice`（草稿那条路，两者答案形状一模一样，串了会把同一个答案发两次），`ChatScreen.test.ts` 从面板递上来的入口断言载荷与草稿。
-- **降级**：TUI 打印代码块内容；未知客户端同。
+- **降级**：TUI 打印代码块内容；未知客户端同；**卡片的降级源码在桌面与手机都折行**且不显示 `futureos-choice`（`CodeBlock.test.tsx`、`MarkdownContent.test.tsx`、手机 `MarkdownText.test.ts` 断言 `choice-card-degraded` 存在且没有横向滚动器）。
 - **无障碍**：`role`/`aria-checked`/`aria-label` 三条断言；方向键与 Enter 的键路径。
 - **视觉回归**：`choice-cards.json` 的 34 个场景（桌面 22 + 手机 12，含两种样式对比表与两个被否方案）。
 
