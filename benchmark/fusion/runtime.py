@@ -203,6 +203,14 @@ def main():
                 destination.chmod(0o600)
                 if filename != "settings.json":
                     private.append(destination)
+        # A fresh benchmark must end on the first output limit. Agent-level
+        # continuation can silently change the thinking level on a later request.
+        settings_path = agent / "settings.json"
+        agent_settings = read_json(settings_path) if settings_path.exists() else {}
+        if args.resume_home is None:
+            agent_settings["outputContinuation"] = False
+            write_json(settings_path, agent_settings)
+            settings_path.chmod(0o600)
         # Seed only settings, never source history, tasks, or pending discussions.
         if settings is not None and args.resume_home is None:
             fusion = home / "fusion"
@@ -223,6 +231,8 @@ def main():
             "home": str(home),
             "endpoint": endpoint,
             "stored_local_fusion_settings": settings,
+            "agent_output_continuation": agent_settings.get("outputContinuation")
+            is not False,
         }
         env = dict(os.environ, FUTURE_HOME=str(home), FUTURE_AGENT_GRPC_ADDR=endpoint)
         env.pop("FUTURE_AGENT_SOCKET", None)

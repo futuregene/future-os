@@ -3,7 +3,7 @@
 use super::tool_evidence::result_summary;
 use super::{
     budget::{self, estimate, validate_request, STATE_LIMIT, STATE_TARGET},
-    prompt::build_jev_request,
+    prompt::build_review_request,
     redaction::redact,
 };
 use crate::types::{AgentMessage, ContentBlock};
@@ -285,7 +285,7 @@ impl EvidenceContext {
         // Mandatory action/current request/host facts are never truncated.
         self.validate_state(&state)?;
         self.select_evidence(&mut state, action, requested_action);
-        let req = build_jev_request(state.clone(), "jev");
+        let req = build_review_request(state.clone(), crate::system_one::APPROVAL_REVIEW_MODEL);
         self.validate_state(&state)?;
         let audit = input_audit(&state, &req);
         Ok(PreparedInput { state, audit })
@@ -421,7 +421,7 @@ impl EvidenceContext {
     }
 
     fn validate_state(&self, state: &Value) -> Result<(), PreparationError> {
-        let req = build_jev_request(state.clone(), "jev");
+        let req = build_review_request(state.clone(), crate::system_one::APPROVAL_REVIEW_MODEL);
         validate_request(&req).map_err(|code| PreparationError {
             code,
             audit: input_audit(state, &req),

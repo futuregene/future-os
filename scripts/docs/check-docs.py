@@ -134,6 +134,8 @@ WHITELIST = {
     # datasets at the user's requested location. Keep this exception explicit.
     "benchmark/README.md",
     "benchmark/fusion/README.md",
+    "benchmark/autoreview/README.md",
+    "benchmark/autoreview/baselines/2026-11-20-prompt-v6/report.md",
     "benchmark/fusion/PROTOCOL.md",
     # UI harness guide: it sits beside the case library it documents, so a
     # reader editing a case has the schema and the fidelity boundary at hand.

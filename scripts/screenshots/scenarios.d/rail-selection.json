@@ -1,0 +1,43 @@
+{
+  "_comment": "选中行的底色不是悬停色：会话栏的当前会话行用 `surface-selected`（accent 混进 surface 的衍生色），普通行仍是「悬停才有底色」。深色下旧做法（两处都用 surface-subtle）只有 1.07:1，读者要去找哪个会话是打开的，而且鼠标划过第二行时两行看起来一模一样。这里的断言不是看图的印象：它量出当前行底色与栏底色、悬停色的对比度，并断言这三者不是同一个颜色。第二张图把同一帧换成旧的悬停色，用来对照（页面里注入，产品代码没动）。",
+  "desktop": {
+    "rail-selection": {
+      "note": "真实组件 · 桌面深色 · 会话栏。量当前行底色 vs 栏底色 vs 悬停色，然后拍两张：现在（surface-selected）与旧做法（surface-subtle）。",
+      "url": "http://localhost:5299/shot/?lang=zh&theme=dark",
+      "width": 1280,
+      "height": 860,
+      "steps": [
+        {
+          "wait": 2400
+        },
+        {
+          "tap": "最近"
+        },
+        {
+          "wait": 900
+        },
+        {
+          "eval": "(() => { const rows=[...document.querySelectorAll('[data-row-title]')].map(t => t.parentElement).filter(Boolean); if (!rows.length) throw new Error('no rail rows'); rows.forEach((r, i) => r.setAttribute('data-rail-row', String(i))); const open=rows.filter(r => { const bg=getComputedStyle(r).backgroundColor; return bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent'; }); if (open.length !== 1) throw new Error('rows painted as open: ' + open.length + ' (want exactly the conversation the window is showing)'); open[0].setAttribute('data-rail-open', 'true'); const label=open[0].querySelector('span.tabular-nums'); if (!label) throw new Error('the open row has no age label — is the rail in the Recent view?'); if (!label.className.includes('text-ink-soft')) throw new Error('the open row\\'s age label is not lifted off the muted tone: ' + label.className); const boxes=rows.map(r => r.getBoundingClientRect()); const left=Math.min(...boxes.map(b => b.left)); const right=Math.max(...boxes.map(b => b.right)); return JSON.stringify({ rows: rows.length, open: (open[0].innerText || '').replace(/\\\\s+/g, ' ').slice(0, 24), age: label.textContent, railBox: [left, right] }); })()"
+        },
+        {
+          "eval": "(() => { // Chrome serialises a `color-mix` result as `oklab(...)`, so the colour is read back through a canvas: one painted pixel is the sRGB triple the reader actually sees.\nconst px = c => { const cv=document.createElement('canvas'); cv.width=cv.height=1; const x=cv.getContext('2d'); x.fillStyle=c; x.fillRect(0,0,1,1); const d=x.getImageData(0,0,1,1).data; return [d[0],d[1],d[2]]; }; const lin=v => { v/=255; return v <= 0.04045 ? v/12.92 : ((v+0.055)/1.055)**2.4; }; const lum=rgb => { const [r,g,b]=rgb.map(lin); return 0.2126*r + 0.7152*g + 0.0722*b; }; const ratio=(a,b) => { const [x,y]=[lum(a),lum(b)].sort((p,q) => q-p); return (x+0.05)/(y+0.05); }; const probe=cls => { const d=document.createElement('div'); d.className=cls; d.style.display='none'; document.body.appendChild(d); const c=getComputedStyle(d).backgroundColor; d.remove(); return c; }; const surface=px(probe('bg-surface')); const hover=px(probe('bg-surface-subtle')); const selected=px(getComputedStyle(document.querySelector('[data-rail-open]')).backgroundColor); const same=(a,b) => a.every((v,i) => Math.abs(v-b[i]) <= 1); if (same(selected, hover)) throw new Error('selection and hover are the same colour: ' + selected); const vsSurface=ratio(selected, surface); if (vsSurface < 1.3) throw new Error('the open row is only ' + vsSurface.toFixed(2) + ':1 from the rail surface — the thing this scenario exists to prevent'); return JSON.stringify({ surface, hover, selected, vsSurface: Number(vsSurface.toFixed(2)), vsHover: Number(ratio(selected, hover).toFixed(2)) }); })()"
+        },
+        {
+          "shot": "d-rail-selection.png"
+        },
+        {
+          "eval": "(() => { // The same frame with the colour this row used before selection had a surface of its own.\nconst d=document.createElement('div'); d.className='bg-surface-subtle'; d.style.display='none'; document.body.appendChild(d); const hover=getComputedStyle(d).backgroundColor; d.remove(); const open=document.querySelector('[data-rail-open]'); open.setAttribute('data-rail-expect', hover); open.classList.remove('bg-surface-selected'); open.style.backgroundColor=hover; return 'repainted with the old hover colour: ' + hover; })()"
+        },
+        {
+          "wait": 500
+        },
+        {
+          "eval": "(() => { // Asserted after the row's `transition-colors` has settled: a computed colour read mid-transition is an interpolation, not the paint.\nconst px = c => { const cv=document.createElement('canvas'); cv.width=cv.height=1; const x=cv.getContext('2d'); x.fillStyle=c; x.fillRect(0,0,1,1); const d=x.getImageData(0,0,1,1).data; return [d[0],d[1],d[2]]; }; const open=document.querySelector('[data-rail-open]'); const want=open.getAttribute('data-rail-expect'); const now=px(getComputedStyle(open).backgroundColor); const target=px(want); if (!now.every((v,i) => Math.abs(v - target[i]) <= 1)) throw new Error('the row is not painted with the old hover colour ' + want + ': ' + now); return 'old hover colour confirmed: ' + now; })()"
+        },
+        {
+          "shot": "d-rail-selection-before.png"
+        }
+      ]
+    }
+  }
+}

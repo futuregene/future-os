@@ -178,6 +178,7 @@ Checked when a color theme is added, and pinned for the terminal palettes by
 | `surface`        | `#ffffff` | `#161b22` | card / panel / popup surface         |
 | `surface-panel`  | `#f8faff` | `#11161d` | right context panel base             |
 | `surface-subtle` | `#f1f4f8` | `#1d232c` | secondary surface (hover, segmented) |
+| `surface-selected` | accent 14% in `surface` | accent 20% in `surface` | a list's current row (rail selection) |
 | `code-surface`   | `#f6f8fa` | `#0f141a` | code block background                |
 | `line`           | `#d9dee7` | `#2b333d` | standard border                      |
 | `line-soft`      | `#e8edf4` | `#222a34` | soft border / divider                |
@@ -185,6 +186,12 @@ Checked when a color theme is added, and pinned for the terminal palettes by
 | `ink-soft`       | `#5d687a` | `#a3adbb` | secondary text                       |
 | `ink-muted`      | `#8a94a6` | `#78828f` | muted text / placeholder / icon      |
 | `ink-strong`     | `#0f172a` | `#f4f7fb` | emphasized headings                  |
+
+`surface-selected` is the one surface that is **not** a palette value: it is
+`color-mix(in oklab, accent N%, surface)` in `globals.css`, so it follows each
+palette's own accent and surface instead of needing thirty hand-mixed entries.
+`src/styles/globals.test.ts` keeps it out of `palettes.json` on purpose — a hex
+value there would freeze one theme's answer into every other one.
 
 ### Accent / interaction
 
@@ -294,6 +301,8 @@ can be forgotten when a theme is added.
 
 - Text → `ink` / `ink-soft` / `ink-muted` / `ink-strong`
 - Background → `canvas` / `surface` / `surface-panel` / `surface-subtle` / `code-surface`
+- A list's *current* row → `surface-selected` (`surface-subtle` is hover: never
+  paint selection with it, or hovering a second row makes the two identical)
 - Border → `line` / `line-soft`
 - Primary action / active → `accent` for text, border and icons; `accent-fill`
   (+ `accent-fill-hover` / `accent-fill-disabled`) for solid buttons; focus ring → `focus`
