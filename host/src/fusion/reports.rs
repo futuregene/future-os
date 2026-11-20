@@ -33,29 +33,24 @@ pub(super) async fn collect(
     message: String,
     phase: &str,
     capacity: usize,
-    validate: impl Fn(&str) -> Result<()>,
+    prepare: impl Fn(&str) -> Result<String>,
 ) -> Result<Report> {
-    let check = |text: &str| -> Result<()> {
-        let mut errors = vec![];
-        match forwarded_bytes(phase, text) {
-            Ok(size) if capacity > 0 && size > capacity => errors.push(format!(
-                "Final report occupies {size} UTF-8 bytes in downstream input; capacity is {capacity}")),
-            Err(error) => errors.push(error.to_string()),
-            _ => {},
-        }
-        if let Err(error) = validate(text) {
-            errors.push(error.to_string());
-        }
-        ensure!(errors.is_empty(), "{}", errors.join("\n"));
-        Ok(())
+    let check = |text: &str| -> Result<String> {
+        let text = prepare(text)?;
+        let size = forwarded_bytes(phase, &text)?;
+        ensure!(
+            capacity == 0 || size <= capacity,
+            "Final report occupies {size} UTF-8 bytes in downstream input; capacity is {capacity}"
+        );
+        Ok(text)
     };
     // Agent owns output continuation inside the accepted child run. An
     // output-limit terminal here has already used its available allowance.
     let original = session.generate(message, false).await?;
     let first_error = match check(&original) {
-        Ok(()) => {
+        Ok(text) => {
             return Ok(Report {
-                text: original,
+                text,
                 validation_errors: vec![],
                 generation: 0,
             })
@@ -63,7 +58,7 @@ pub(super) async fn collect(
         Err(error) => error.to_string(),
     };
     let message = format!(
-        "You have ONE report repair opportunity. Revise ONLY your last final report using the existing work in this conversation. Do not repeat the task, investigate again, call tools or add new facts. Fix ALL listed fields, not only the first error. For disposition citation errors, fix only the failing basis entry. Prefer a source_path to a relevant text field of the named source. Otherwise copy an exact quote from that source. Preserve unaffected dispositions. Preserve valid content and the current answer unless the reported source error changes its support; then correct the inference and resulting answer explicitly. Return a complete replacement report in the same required format. Participant quotations must copy the named participant’s visible wording; typography differences are allowed, paraphrases are not quotes. Evidence citations must identify a supplied source, its version and a matching original excerpt. If a verified_fact cannot cite a source, qualify it as an unverified_claim rather than inventing a reference. No commentary about the revision. Validation feedback: {first_error}. Final report capacity: {capacity} UTF-8 bytes in its downstream representation; this is not a thinking-token budget."
+        "You have ONE report repair opportunity. Revise ONLY your last final report using the existing work in this conversation. Do not repeat the task, investigate again, call tools or add new facts. Fix ALL listed fields, not only the first error. For formatting errors, return one JSON object with escaped string values. For disposition citation errors, fix only the failing basis entry. Prefer a source_path to a relevant text field of the named source. Otherwise copy an exact quote from that source. Preserve unaffected dispositions. Preserve valid content and the current answer unless the reported source error changes its support; then correct the inference and resulting answer explicitly. Return a complete replacement report in the same required format. Participant quotations must copy the named participant’s visible wording; typography differences are allowed, paraphrases are not quotes. Evidence citations must identify a supplied source, its version and a matching original excerpt. If a verified_fact cannot cite a source, qualify it as an unverified_claim rather than inventing a reference. No commentary about the revision. Validation feedback: {first_error}. Final report capacity: {capacity} UTF-8 bytes in its downstream representation; this is not a thinking-token budget."
     );
     let repaired = match session.generate(message, true).await {
         Ok(text) => text,
@@ -89,8 +84,8 @@ pub(super) async fn collect(
         Err(error) => return Err(error),
     };
     match check(&repaired) {
-        Ok(()) => Ok(Report {
-            text: repaired,
+        Ok(text) => Ok(Report {
+            text,
             validation_errors: vec![],
             generation: 1,
         }),
@@ -189,9 +184,11 @@ mod tests {
     async fn output_limit_ends_step_without_a_second_host_submission() {
         for phase in ["analyzing", "issue_mapping", "reviewing", "synthesizing"] {
             let mut session = ExhaustedSession { requests: 0 };
-            let error = collect(&mut session, "task".into(), phase, 100, |_| Ok(()))
-                .await
-                .unwrap_err();
+            let error = collect(&mut session, "task".into(), phase, 100, |text| {
+                Ok(text.to_owned())
+            })
+            .await
+            .unwrap_err();
             assert_eq!(failure_kind(&error), FailureKind::OutputLimit);
             assert_eq!(session.requests, 1);
         }
@@ -209,7 +206,7 @@ mod tests {
             100,
             |text| {
                 ensure!(text.contains("结论"), "Missing answer");
-                Ok(())
+                Ok(text.to_owned())
             },
         )
         .await
@@ -238,7 +235,7 @@ mod tests {
             100,
             |text| {
                 let _: Value = serde_json::from_str(text)?;
-                Ok(())
+                Ok(text.to_owned())
             },
         )
         .await
