@@ -10,7 +10,7 @@
 
 首版默认：参与放行决策的 confidence ≥ 0.75、总预算 30 秒、瞬时失败重试一次、全进程最多四项评估，
 medium + medium 允许，critical 始终拒绝。同一 Run 内按工具、操作类别、cwd 和确切目标（目标未知时使用执行参数指纹）累计三次模型拒绝后
-停止调用模型；基础设施错误不计数。Prompt 版本 5 / state schema 3 将输入改为四类有来源的证据：待执行请求
+停止调用模型；基础设施错误不计数。Prompt 版本 6 / state schema 3 将输入改为四类有来源的证据：待执行请求
 `action`、原始用户指令 `trusted_context`、宿主事实 `host_facts`、助手及工具证据
 `untrusted_context`。用户历史仅保留完整消息组成的最近连续后缀；来源、顺序和工具调用
 关联由宿主赋值。不引入 `evidence_status`，信息不足仍由模型选择 `unknown` /
@@ -18,15 +18,19 @@ medium + medium 允许，critical 始终拒绝。同一 Run 内按工具、操�
 当前沙箱不拦截网络请求，明确标记 `network_enforcement=unrestricted`。
 普通新文件名和无害示例内容仍可视为委托细节；明确内容、名称和限制须遵守，敏感数据、
 接收方和破坏性目标仍须精确授权。宿主省略文件正文不单独构成授权缺失。
-Reason catalog 版本 2 区分普通本地用户文件操作与远程写入。Policy 版本 2 保留矩阵和
+Reason catalog 版本 3 区分普通本地文件、远程写入和各类高风险操作，并明确原因优先顺序。Policy 版本 2 保留矩阵和
 0.75 阈值，risk/reason_code 仍使用分类置信度，授权改为允许集合的概率之和：low 为
 P(high)+P(medium)+P(low)，medium 为 P(high)+P(medium)，high 为 P(high)。Unknown 不计入。
 
-生产路由沿用已跑通的 `jev` 别名，记录网关返回的模型版本；网关未返回时记录请求别名，
+当前自动审批请求 `decider` 别名，测试网关返回 `pplx-decider-v1.2`。记录网关返回的模型版本；网关未返回时记录请求别名，
 不伪造服务端版本。三项完整概率分布必须有效，网关仅返回 probabilities
 时本地提取选择及 confidence；提供 choice/confidence 时继续校验一致性，取更保守置信度。
 允许舍入概率造成的最大值并列，提供的 choice 仍须属于最大值；risk/reason 并列无法
 达到各自阈值，authorization 并列则仍可能通过允许集合概率之和。网关返回的 `id` 作为 provider request ID 保存。
+
+2026-11-20 的 Decider 提示词采用有优先顺序的风险与原因分类。凭据使用、批量删除和特权安装按操作性质分类，用户同意、数据可丢弃或 staging 环境不会降低其类别。明确委托的测试、临时文件、上传和常规数据库升级，操作与目标范围匹配时可归 high 授权；只给出目标、未委托该操作的必要步骤归 medium。缺少原始权限或指代时，原因优先归 insufficient_information。普通维护通知归远程写入。Policy 版本 2 提供 0.75 门槛、原因风险下限、授权概率求和与 critical 拒绝。
+
+[自动审批评测](../../../benchmark/autoreview/README.md) 保留第一版 100 题和答案，并另存全量复核后的答案及新提示词调用前冻结的 40 个新增场景。
 
 审查日期：2026-09-22，源码基线为 `2af42f71`。本文以该基线的审批、沙箱、事件和 Desktop
 持久化实现为基线，定义 FutureOS Desktop 的自动审批方案。现有公共审批规则和各平台

@@ -33,7 +33,7 @@ If the sandbox is unavailable after that downgrade, the existing Manual fallback
 
 Deterministic Allow/Deny rules run first. Only Ask requests invoke the classifier.
 The classifier uses the existing Future System One endpoint, account credential and
-`jev` route shared with skill recommendation. It answers three bounded Choices: risk,
+`decider` approval route, evaluated as `pplx-decider-v1.2`. It answers three bounded Choices: risk,
 authorization and reason code. The Agent validates the probabilities, derives the
 maximum when only probabilities are returned, and checks any supplied choice/confidence.
 Rounded ties are valid distributions; risk/reason ties cannot meet their confidence threshold.
@@ -49,7 +49,7 @@ Provider text never grants execution permission.
 | high | P(high) | risk and reason |
 | critical | never approved | — |
 
-The reason catalog has 12 entries. Specific reasons impose minimum risk; scope mismatch
+Reason catalog version 3 has 12 entries. Specific reasons impose minimum risk; scope mismatch
 caps authorization at low. Insufficient information produces an uncertain denial.
 Policy version 2 measures authorization support by summing the permitted outcomes of
 the validated probability distribution; Unknown is excluded for every risk level.
@@ -74,7 +74,7 @@ and retry within the same tool call. Permission summaries share the diagnostic
 recognizer; diagnostic paths remain untrusted. The shell schema advertises
 `additional_permissions` only on Windows, while unsupported inputs remain rejected.
 
-Prompt version 5 uses four source-attributed evidence sections (state schema 3):
+Prompt version 6 uses four source-attributed evidence sections (state schema 3):
 
 - `action`: the pending tool request, identified by its tool-call ID. Commands stay whole;
   file bodies and environment values are omitted, and credentials are redacted.
@@ -123,6 +123,29 @@ sensitive data, recipients and destructive targets require exact authorization. 
 file bodies alone do not prove an authorization gap. Reason catalog version 2 distinguishes
 ordinary local user-file actions outside the workspace from remote writes. Whole-command
 sandbox escape retains the existing sandbox implementation and is improved separately.
+
+## Decider classification prompt
+
+Automatic approval requests the gateway's `decider` route. Diagnostics retain the
+actual returned model ID, with the request alias as the fallback when the response
+omits it. Prompt version 6 and reason catalog version 3 define ordered impact
+classes and reason precedence within the existing three-Choice contract.
+
+Intrinsic risk is classified independently of user permission. Credential use,
+bulk deletion of disposable data and privileged installation retain their
+operation-specific high classification. Explicitly delegated uploads, tests,
+temporary files and routine database upgrades can have high authorization when
+the operation and scope match the original user grant. A goal alone supports
+medium authorization for a necessary step. Missing original permission or
+referents take the insufficient-information reason before specific non-critical
+impact. Ordinary maintenance notices are bounded remote writes.
+
+The prompt and reviewed labels are versioned in the
+[automatic-review benchmark](../../../benchmark/autoreview/README.md). It retains
+the original 100 inputs and first gold revision, a separate reviewed answer
+revision, and 40 additional scenarios frozen before candidate-prompt calls.
+Policy version 2 supplies the 0.75 confidence gates, reason floors, authorization
+probability sums and critical denials.
 
 ## Feedback and audit
 

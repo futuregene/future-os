@@ -119,7 +119,7 @@ function mount(overrides: Partial<PageProps> = {}) {
   act(() => {
     root.render(
       <>
-        <AppearancePage bellOnComplete={props.bellOnComplete} onToggleBellOnComplete={props.onToggleBellOnComplete} />
+        <AppearancePage />
         <PermissionPage
           approvalTier={props.approvalTier}
           futureSessionStatus={props.futureSessionStatus}
@@ -127,8 +127,10 @@ function mount(overrides: Partial<PageProps> = {}) {
         />
         <ReplyPage
           autoTitleFirstTurn={props.autoTitleFirstTurn}
+          bellOnComplete={props.bellOnComplete}
           choiceCards={props.choiceCards}
           onToggleAutoTitleFirstTurn={props.onToggleAutoTitleFirstTurn}
+          onToggleBellOnComplete={props.onToggleBellOnComplete}
           onToggleChoiceCards={props.onToggleChoiceCards}
         />
         <SkillsPage
@@ -535,15 +537,15 @@ describe("settings page switches", () => {
 
     const switches = [...container.querySelectorAll<HTMLButtonElement>("[role=switch]")];
     expect(switches.map(item => item.getAttribute("aria-label"))).toEqual([
-      "Completion bell",
       "Choice cards",
       "Generate a title after the first answer",
+      "Completion bell",
       "Auto-upgrade skills",
       "Skill recommendations",
       "Clear run logs when archiving",
       "Archive idle conversations automatically",
     ]);
-    expect(switches.map(item => item.getAttribute("aria-checked"))).toEqual(["false", "false", "true", "true", "false", "true", "false"]);
+    expect(switches.map(item => item.getAttribute("aria-checked"))).toEqual(["false", "true", "false", "true", "false", "true", "false"]);
   });
 
   it("reports each toggle to its own callback, inverted", () => {

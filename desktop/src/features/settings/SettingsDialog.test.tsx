@@ -20,11 +20,7 @@ vi.mock("../../integrations/tauri/useBuildInfo", () => ({
 // so routing, the dev-only gate and the settings-patch mapping are what fail if
 // they regress.
 vi.mock("./AppearancePage", () => ({
-  AppearancePage: (props: Record<string, unknown>) => (
-    <div data-page="appearance" data-bell={String(props.bellOnComplete)}>
-      <button data-toggle-bell onClick={() => (props.onToggleBellOnComplete as (v: boolean) => void)(false)}>bell</button>
-    </div>
-  ),
+  AppearancePage: () => <div data-page="appearance" />,
 }));
 vi.mock("./PermissionPage", () => ({
   PermissionPage: (props: Record<string, unknown>) => (
@@ -35,7 +31,8 @@ vi.mock("./PermissionPage", () => ({
 }));
 vi.mock("./ReplyPage", () => ({
   ReplyPage: (props: Record<string, unknown>) => (
-    <div data-page="reply" data-auto-title={String(props.autoTitleFirstTurn)} data-choice-cards={String(props.choiceCards)}>
+    <div data-page="reply" data-auto-title={String(props.autoTitleFirstTurn)} data-bell={String(props.bellOnComplete)} data-choice-cards={String(props.choiceCards)}>
+      <button data-toggle-bell onClick={() => (props.onToggleBellOnComplete as (v: boolean) => void)(false)}>bell</button>
       <button data-toggle-title onClick={() => (props.onToggleAutoTitleFirstTurn as (v: boolean) => void)(false)}>title</button>
       <button data-toggle-choice-cards onClick={() => (props.onToggleChoiceCards as (v: boolean) => void)(true)}>choice-cards</button>
     </div>
@@ -483,6 +480,84 @@ describe("settingsDialog update tab", () => {
   });
 });
 
+describe("settingsDialog search", () => {
+  function searchField(container: HTMLElement) {
+    return container.querySelector<HTMLInputElement>("nav input[type=search]")!;
+  }
+
+  function type(container: HTMLElement, value: string) {
+    const field = searchField(container);
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    // A plain `field.value = …` is invisible to React, which tracks the last
+    // value it wrote; the prototype setter makes the change look like typing.
+    act(() => {
+      setter.call(field, value);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  function results(container: HTMLElement) {
+    return [...container.querySelectorAll("[data-settings-results] button")].map(item => item.textContent);
+  }
+
+  it("replaces the groups with matches while the field has text", () => {
+    const { container } = mount();
+    expect(container.querySelector("nav [class*=uppercase]")).not.toBeNull();
+
+    type(container, "archive");
+
+    // Group headings are gone: a filtered rail still printing all five reads as
+    // a list with holes in it.
+    expect(container.querySelector("nav [class*=uppercase]")).toBeNull();
+    expect(results(container).join("|")).toContain("Archive idle conversations automaticallyStorage");
+  });
+
+  it("opens the page a result belongs to and clears the field", () => {
+    const { container } = mount();
+
+    type(container, "Completion bell");
+    act(() => container.querySelector<HTMLButtonElement>("[data-settings-results] button")!.click());
+
+    expect(page(container)).toBe("reply");
+    expect(header(container)).toBe("Replies");
+    expect(searchField(container).value).toBe("");
+    expect(container.querySelector("[data-settings-results]")).toBeNull();
+  });
+
+  it("opens the first match on Enter", () => {
+    const { container } = mount();
+
+    type(container, "Approval mode");
+    act(() => {
+      searchField(container).dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    });
+
+    expect(page(container)).toBe("permission");
+  });
+
+  it("clears the field on Escape without closing the dialog", () => {
+    const onClose = vi.fn();
+    const { container } = mount({ onClose });
+
+    type(container, "archive");
+    act(() => {
+      searchField(container).dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
+    });
+
+    expect(searchField(container).value).toBe("");
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("says so when nothing matches", () => {
+    const { container } = mount();
+
+    type(container, "zzz-not-a-setting");
+
+    expect(results(container)).toEqual([]);
+    expect(container.textContent).toContain("No matching settings");
+  });
+});
+
 describe("settingsDialog settings wiring", () => {
   it("maps every settings control to its settings patch", async () => {
     const onChangeSettings = vi.fn().mockResolvedValue(undefined);
@@ -497,7 +572,7 @@ describe("settingsDialog settings wiring", () => {
 
     await clickOn("Permissions", "[data-approval-manual]");
     await clickOn("Replies", "[data-toggle-title]");
-    await clickOn("Appearance", "[data-toggle-bell]");
+    await clickOn("Replies", "[data-toggle-bell]");
     await clickOn("Skills", "[data-toggle-upgrade]");
     await clickOn("Skills", "[data-toggle-recommend]");
     await clickOn("Replies", "[data-toggle-choice-cards]");
@@ -529,9 +604,12 @@ describe("settingsDialog settings wiring", () => {
     const reply = container.querySelector("[data-page=reply]")!;
     expect(reply.getAttribute("data-auto-title")).toBe("false");
     expect(reply.getAttribute("data-choice-cards")).toBe("false");
+    // The completion bell describes what a reply does as it lands, so it is
+    // handed to this page and not to the display preferences.
+    expect(reply.getAttribute("data-bell")).toBe("false");
 
     act(() => navButton(container, "Appearance").click());
-    expect(container.querySelector("[data-page=appearance]")!.getAttribute("data-bell")).toBe("false");
+    expect(page(container)).toBe("appearance");
 
     act(() => navButton(container, "Skills").click());
     const skills = container.querySelector("[data-page=skills]")!;

@@ -8,6 +8,36 @@ DeepSeek Flash 的本机目录没有 `xhigh`，经用户确认使用最高可用
 这是无外部工具的推理评测。模型不能浏览、读文件、运行代码或查询标准答案。
 评分程序在生成结束后读取标准答案，不向模型反馈正确性。
 
+## 精简回归题库（2026-11-19 更新）
+
+后续日常回归使用 `suites/fusion-regression-500.json`；原始 `max-1000` 题包和历史运行记录继续保留。
+新题库根据同一轮 1,000 题的四组基础模型与 Fusion 正式长测筛选，包含 8 题技术故障补测，
+不混入后续优化时挑题重跑的结果。四组基础模型是 DeepSeek Flash max / high、GLM Flash high、
+Qwen 3.7 Plus high；Fusion 是 DeepSeek Flash max 主模型、DeepSeek Flash high 主持模型。
+
+| 题包 / 分组 | BBEH mini | Omni-MATH | 合计 |
+| --- | --- | --- | --- |
+| `suites/fusion-challenge-374.json`：原始未通过题包 | 262 | 112 | 374 |
+| 纳入 500 题的未通过题 | 255 | 99 | 354 |
+| 从五组均答对的 626 题中抽取的回归对照题 | 49 | 97 | 146 |
+| `suites/fusion-regression-500.json`：354 道未通过题加 146 道对照题 | 304 | 196 | 500 |
+
+“未通过”包括答错、解析失败、输出超限及技术故障，不代表这些题全部属于能力难题。
+从原始 374 道未通过题中移出 20 道至少两组最终状态为 `output_limit` 的题。
+最终状态以正式长测和 8 题技术补测为准。原始 374 题仍可单独运行。
+对照题在 626 题池中无放回抽取，不按数据集分层。继续使用固定种子
+`future-fusion-regression-500-20261118-v1` 和 `datasets.digest([seed, case_id])` 哈希顺序，
+保留原来的前 126 题，再取第 127 至 146 题。
+两个可运行题包均沿用原 1,000 题顺序，题面、参考答案、评分器及内容哈希不变。
+`suites/fusion-regression-500.selection.json` 冻结两个分组的完整 ID 清单、随机抽样方法、
+来源结果文件哈希、移出与新增的题目 ID 及题包摘要。对应 `.cases.json` 保存完整题面与参考答案，可直接供现有 runner 使用。
+选择记录不包含模型回答或逐题成绩，原始评测数据仍只保存在本地。
+
+该题库是基于既有成绩选择的开发回归集。后续比较应分别统计 354 题组和 146 题对照组，
+500 题整体准确率不能直接与原始 1,000 题准确率比较。
+运行时将已有命令的 `--suite` 改为 `benchmark/fusion/suites/fusion-regression-500.json`，
+并指定新的 `--out` 目录；本次整理未启动模型评测。
+
 ## 当前题库与执行顺序（2026-11-04）
 
 用户已暂停此前的基线采集，取消未完成请求，固定以下两个独立题包。
@@ -58,6 +88,12 @@ python3 benchmark/fusion/bench.py run --suite benchmark/fusion/suites/max-1000.j
 
 每次 `--out` 使用新目录；中断后用原参数与原输出目录加 `--resume`，不重跑已完成题目。
 默认题包是 Fusion 10，默认 arm 是 `fusion`；运行单模型基线应显式传 `--arms single`。
+
+新建隔离 Host 时，`runtime.py` 在隔离副本的 `agent/settings.json` 中设置
+`outputContinuation: false`。Agent 请求首次触及输出上限即记录 `OUTPUT_LIMIT`，
+避免自动续写改变该请求的思考档位。实际值写入 `runtime.json` 的 `agent_output_continuation`。
+网络重试策略沿用来源配置。用 `--resume-home` 恢复旧评测时沿用其原始配置，
+所以旧记录仍按当时的策略解释。
 
 **502 重试策略**：仅当已接受 run 的终态账本确认上游 HTTP 502 时，才在新会话中
 重新提交同一道原题。默认最多追加 3 次，等待 2、4、8 秒；可通过 `--http-502-retries`

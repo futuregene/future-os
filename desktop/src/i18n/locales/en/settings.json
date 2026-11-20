@@ -230,7 +230,10 @@
       "reply": "Replies",
       "storage": "Storage",
       "skills": "Skills"
-    }
+    },
+    "search": "Search settings",
+    "searchPlaceholder": "Search settings",
+    "searchNoResults": "No matching settings"
   },
   "account": {
     "loading": "Loading account…",

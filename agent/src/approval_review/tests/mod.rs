@@ -1,5 +1,5 @@
 use super::budget::{estimate, validate_request, STATE_LIMIT, STATE_TARGET};
-use super::prompt::{build_jev_request as request, AUTHORIZATIONS, REASONS, RISKS};
+use super::prompt::{build_review_request as request, AUTHORIZATIONS, REASONS, RISKS};
 use super::provider::{assess_at, decode};
 use super::*;
 use parking_lot::Mutex;

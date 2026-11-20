@@ -7,10 +7,10 @@ import { layout, radius, spacing } from "../../theme/tokens";
 import type { Theme } from "../../theme/theme";
 import { createThemedStyles, useTheme } from "../../theme/ThemeContext";
 
-export function SettingsSection({ title, children }: { title: string; children: ReactNode }) {
+export function SettingsSection({ title, children }: { title?: string; children: ReactNode }) {
   const settingsStyles = useSettingsStyles();
   return <View style={settingsStyles.section}>
-    <Text accessibilityRole="header" style={settingsStyles.sectionTitle}>{title}</Text>
+    {title ? <Text accessibilityRole="header" style={settingsStyles.sectionTitle}>{title}</Text> : null}
     {children}
   </View>;
 }

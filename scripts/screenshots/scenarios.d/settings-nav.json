@@ -5,6 +5,34 @@
     "?fusionSettings=1 让构建报告 isRelease=false，Fusion 与环境两个 devOnly 页才在导航里出现。"
   ],
   "desktop": {
+    "settings-search": {
+      "note": "导航里的搜索：输入「归档」后分组标题消失、结果按行列出并注明所在页；回车或点击直接翻到那一页，字段随之清空。",
+      "query": "?fusionSettings=1",
+      "lang": "zh-CN",
+      "steps": [
+        { "wait": 900 },
+        { "tapText": "lixin" },
+        { "wait": 1500 },
+        { "tapText": "设置" },
+        { "wait": 2000 },
+        {
+          "eval": "(() => { const input = document.querySelector('[role=dialog] nav input[type=search]'); if (!input) throw new Error('no search field in the rail'); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; set.call(input, '归档'); input.dispatchEvent(new Event('input', { bubbles: true })); })()"
+        },
+        { "wait": 400 },
+        {
+          "eval": "(() => { const nav = document.querySelector('[role=dialog] nav'); if (nav.querySelector('[class*=uppercase]')) throw new Error('the groups are still printed behind the results'); const rows = [...nav.querySelectorAll('[data-settings-results] button')]; if (rows.length < 2) throw new Error('results: ' + rows.length); for (const row of rows) if (row.children.length !== 2) throw new Error('a result does not name its page'); if (!rows.every(row => row.lastElementChild.textContent === '存储')) throw new Error('a result points at the wrong page: ' + rows.map(r => r.lastElementChild.textContent).join('|')); return JSON.stringify(rows.map(row => row.textContent)); })()"
+        },
+        { "shot": "d-settings-search.png" },
+        {
+          "eval": "(() => { const row = document.querySelector('[role=dialog] nav [data-settings-results] button'); row.click(); })()"
+        },
+        { "wait": 400 },
+        {
+          "eval": "(() => { const h = document.querySelector('[role=dialog] h2'); if (h.textContent !== '存储') throw new Error('result opened ' + h.textContent); const input = document.querySelector('[role=dialog] nav input[type=search]'); if (input.value !== '') throw new Error('the field kept its query'); if (document.querySelector('[data-settings-results]')) throw new Error('the results outlived the jump'); return 'jumped to storage and cleared the rail'; })()"
+        },
+        { "shot": "d-settings-search-target.png" }
+      ]
+    },
     "settings-nav-app": {
       "note": "应用组：外观页（语言、外观、调色板、字号、模型输出展示 + 提示小节里的完成提示音）。原来这 14 项全在「通用」一页。",
       "query": "?fusionSettings=1",

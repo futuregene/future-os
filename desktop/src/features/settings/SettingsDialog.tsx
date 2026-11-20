@@ -2,10 +2,12 @@ import type { FutureBalanceStatus, FutureSessionStatus } from "../../components/
 import type { UpdateStatus } from "../../components/layout/hooks/useUpdateChecker";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { AppSettings } from "../../integrations/storage/appSettings";
+import type { SettingsEntry } from "./settingsIndex";
 import { Boxes, FlaskConical, HardDrive, Info, Keyboard, MessageSquareText, Palette, Puzzle, RefreshCw, RotateCcw, ShieldCheck, Sparkles, UserRound, UserRoundGroup } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Overlay } from "../../components/ui/Overlay";
+import { TextInput } from "../../components/ui/TextInput";
 import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { cn } from "../../lib/cn";
 import { AboutPage } from "./AboutPage";
@@ -19,6 +21,7 @@ import { PermissionPage } from "./PermissionPage";
 import { ProvidersPage } from "./ProvidersPage";
 import { ReplyPage } from "./ReplyPage";
 import { ResetPage } from "./ResetPage";
+import { searchSettings, settingsTabTitleKey } from "./settingsIndex";
 import { ShortcutsPage } from "./ShortcutsPage";
 import { SkillsPage } from "./SkillsPage";
 import { StoragePage } from "./StoragePage";
@@ -134,13 +137,25 @@ export function SettingsDialog({
 }) {
   const { t } = useTranslation("settings");
   const [tab, setTab] = useState<SettingsTab>(initialTab);
+  // What the rail's search field holds. Kept beside the tab rather than inside
+  // the field so that choosing a result can clear it in the same update.
+  const [query, setQuery] = useState("");
+  const results = searchSettings(t, query);
+  const openResult = (entry: SettingsEntry) => {
+    setTab(entry.tab);
+    setQuery("");
+    if (entry.tab === "update")
+      onUpdateSeen?.();
+  };
   const build = useBuildInfo();
   const isTestBuild = build.data?.isRelease === false;
 
-  // Reset to the requested tab each time the dialog opens.
+  // Reset to the requested tab each time the dialog opens, and drop any search
+  // the reader left behind in it.
   useEffect(() => {
     if (open) {
       setTab(initialTab);
+      setQuery("");
     }
   }, [open, initialTab]);
 
@@ -160,47 +175,93 @@ export function SettingsDialog({
         role="dialog"
       >
         <nav className="flex w-52 shrink-0 flex-col border-r border-line-soft bg-surface-subtle p-3">
-          <div className="flex-1 space-y-3 overflow-y-auto">
-            {NAV_GROUPS.map(group => (
-              <div key={group.labelKey} className="space-y-1">
-                <div className="px-2 pb-1 text-xs font-medium uppercase tracking-wide text-ink-muted">{t(group.labelKey)}</div>
-                {group.items
-                  .filter(item => isTestBuild || !("devOnly" in item && item.devOnly))
-                  .map((item) => {
-                    const Icon = item.icon;
-                    const showDot = item.value === "update" && hasUpdate;
-                    // The selected item paints the rail's own `surface`; the
-                    // hover tint must stay a *different* fill (`line-soft`) —
-                    // an item that hovers to the same block as the selected one
-                    // reads as a second selected tab while the pane shows
-                    // another page. `aria-current` names the one that counts,
-                    // for screen readers and for anything reading the DOM.
-                    return (
-                      <button
-                        aria-current={tab === item.value ? "page" : undefined}
-                        key={item.value}
-                        className={cn(
-                          "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-line-soft hover:text-ink",
-                          tab === item.value && "border-line-soft bg-surface text-ink shadow-xs",
-                        )}
-                        onClick={() => {
-                          setTab(item.value);
-                          if (item.value === "update")
-                            onUpdateSeen?.();
-                        }}
-                        type="button"
-                      >
-                        <span className="relative inline-flex shrink-0">
-                          <Icon className="size-4" />
-                          {showDot ? <span className="absolute -right-1 -top-1 size-2 rounded-full bg-accent" /> : null}
-                        </span>
-                        <span className="truncate">{t(item.labelKey)}</span>
-                      </button>
-                    );
-                  })}
-              </div>
-            ))}
+          {/* Fourteen pages no longer fit one glance, so the column carries its own
+              way to reach one by name. The field replaces the groups while it has
+              text: a filtered rail that still printed all five group headings read
+              as a list with holes in it. */}
+          <div className="pb-2">
+            <TextInput
+              aria-label={t("dialog.search")}
+              className="h-8 px-2 text-xs"
+              onChange={event => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape" && query) {
+                  // The overlay closes the dialog on Escape from the window, so a
+                  // field that is merely being cleared has to stop the report here.
+                  event.stopPropagation();
+                  setQuery("");
+                }
+                else if (event.key === "Enter" && results[0]) {
+                  event.preventDefault();
+                  openResult(results[0]);
+                }
+              }}
+              placeholder={t("dialog.searchPlaceholder")}
+              type="search"
+              value={query}
+            />
           </div>
+          {query
+            ? (
+                <div className="flex-1 space-y-1 overflow-y-auto" data-settings-results>
+                  {results.length === 0
+                    ? <p className="px-2 py-1 text-xs text-ink-muted">{t("dialog.searchNoResults")}</p>
+                    : results.map(entry => (
+                        <button
+                          className="flex w-full flex-col items-start gap-0.5 rounded-md border border-transparent px-2 py-1.5 text-left transition-colors hover:bg-line-soft focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-inset focus-visible:outline-none"
+                          key={`${entry.tab}:${entry.labelKey}`}
+                          onClick={() => openResult(entry)}
+                          type="button"
+                        >
+                          <span className="truncate text-sm font-medium text-ink">{t(entry.labelKey)}</span>
+                          <span className="truncate text-xs text-ink-muted">{t(settingsTabTitleKey(entry.tab))}</span>
+                        </button>
+                      ))}
+                </div>
+              )
+            : (
+                <div className="flex-1 space-y-3 overflow-y-auto">
+                  {NAV_GROUPS.map(group => (
+                    <div key={group.labelKey} className="space-y-1">
+                      <div className="px-2 pb-1 text-xs font-medium uppercase tracking-wide text-ink-muted">{t(group.labelKey)}</div>
+                      {group.items
+                        .filter(item => isTestBuild || !("devOnly" in item && item.devOnly))
+                        .map((item) => {
+                          const Icon = item.icon;
+                          const showDot = item.value === "update" && hasUpdate;
+                          // The selected item paints the rail's own `surface`; the
+                          // hover tint must stay a *different* fill (`line-soft`) —
+                          // an item that hovers to the same block as the selected one
+                          // reads as a second selected tab while the pane shows
+                          // another page. `aria-current` names the one that counts,
+                          // for screen readers and for anything reading the DOM.
+                          return (
+                            <button
+                              aria-current={tab === item.value ? "page" : undefined}
+                              key={item.value}
+                              className={cn(
+                                "flex h-8 w-full items-center gap-2 rounded-md border border-transparent px-2 text-sm font-medium text-ink-soft transition-colors hover:bg-line-soft hover:text-ink",
+                                tab === item.value && "border-line-soft bg-surface text-ink shadow-xs",
+                              )}
+                              onClick={() => {
+                                setTab(item.value);
+                                if (item.value === "update")
+                                  onUpdateSeen?.();
+                              }}
+                              type="button"
+                            >
+                              <span className="relative inline-flex shrink-0">
+                                <Icon className="size-4" />
+                                {showDot ? <span className="absolute -right-1 -top-1 size-2 rounded-full bg-accent" /> : null}
+                              </span>
+                              <span className="truncate">{t(item.labelKey)}</span>
+                            </button>
+                          );
+                        })}
+                    </div>
+                  ))}
+                </div>
+              )}
           {/* The app name + version now live on the About page; only the
               test-build hint stays here (release builds show nothing). The hint
               carries its own soft fill: the nav behind it is `surface-subtle`,
@@ -222,12 +283,7 @@ export function SettingsDialog({
           </header>
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
             {tab === "appearance"
-              ? (
-                  <AppearancePage
-                    bellOnComplete={appSettings.bellOnComplete}
-                    onToggleBellOnComplete={value => onChangeSettings({ bellOnComplete: value })}
-                  />
-                )
+              ? <AppearancePage />
               : null}
             {tab === "permission"
               ? (
@@ -241,10 +297,12 @@ export function SettingsDialog({
             {tab === "reply"
               ? (
                   <ReplyPage
-                    choiceCards={appSettings.choiceCards}
-                    onToggleChoiceCards={value => onChangeSettings({ choiceCards: value })}
                     autoTitleFirstTurn={appSettings.autoTitleFirstTurn}
+                    bellOnComplete={appSettings.bellOnComplete}
+                    choiceCards={appSettings.choiceCards}
                     onToggleAutoTitleFirstTurn={value => onChangeSettings({ autoTitleFirstTurn: value })}
+                    onToggleBellOnComplete={value => onChangeSettings({ bellOnComplete: value })}
+                    onToggleChoiceCards={value => onChangeSettings({ choiceCards: value })}
                   />
                 )
               : null}

@@ -15,14 +15,17 @@ it("enables title generation by default and allows opting out without context co
   try {
     await act(async () => root.render(
       <ReplyPage
-        choiceCards={DEFAULT_APP_SETTINGS.choiceCards}
-        onToggleChoiceCards={() => {}}
         autoTitleFirstTurn={DEFAULT_APP_SETTINGS.autoTitleFirstTurn}
+        bellOnComplete={DEFAULT_APP_SETTINGS.bellOnComplete}
+        choiceCards={DEFAULT_APP_SETTINGS.choiceCards}
         onToggleAutoTitleFirstTurn={onToggle}
+        onToggleBellOnComplete={() => {}}
+        onToggleChoiceCards={() => {}}
       />,
     ));
-    // The reply page carries exactly its two reply-level switches.
-    expect(container.querySelectorAll("[role=switch]")).toHaveLength(2);
+    // The reply page carries its two reply-level switches plus the completion
+    // bell, and nothing about thinking output.
+    expect(container.querySelectorAll("[role=switch]")).toHaveLength(3);
     expect(container.textContent).not.toContain("Show thinking process");
     expect(DEFAULT_APP_SETTINGS).not.toHaveProperty("showThinking");
     const toggle = container.querySelector<HTMLButtonElement>("[role=switch][aria-label='Generate a title after the first answer']");
