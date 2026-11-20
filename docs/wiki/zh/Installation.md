@@ -93,7 +93,7 @@ portable 用户可能需要 `sudo apt install libwebkit2gtk-4.1-0` 或
 ## 配置与使用
 
 使用 FutureOS 托管模型可在应用内登录，也可以配置自己的 provider/key，见
-[[快速开始|Quick-Start]]。桌面默认**完全访问**；执行任务前按需选择手动或沙箱模式。
+[[快速开始|Quick-Start]]。桌面默认**完全访问**；执行任务前按需选择手动审批或沙箱保护。
 
 ## 数据、更新与卸载
 
