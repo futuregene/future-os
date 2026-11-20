@@ -11,3 +11,6 @@ No evaluation results belong in a normal source-code PR.
 
 - [Fusion](fusion/README.md): reasoning without external tools, for improving the
   discussion protocol and producing reproducible comparisons.
+
+- [Automatic review](autoreview/README.md): 100 frozen approval scenarios with risk,
+  authorization and reason labels, comparing System One decision models.
