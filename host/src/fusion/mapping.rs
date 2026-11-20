@@ -1,5 +1,5 @@
 //! Stage two organizes existing statements; it does not contribute an analysis.
-use super::quotes::contains;
+use super::quotes::{contains, contains_report, expand, select_text};
 use anyhow::{ensure, Context, Result};
 use future_fusion::parse_json;
 use serde::Deserialize;
@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) const INSTRUCTIONS: &str = r#"You are the moderator organizing the supplied analyses and deciding what is worth checking. Return ONLY JSON with these four arrays:
 {"consensus":[{"point":"existing shared view","sources":[{"participant":"P1","quote":"exact excerpt"}]}],"issues":[{"topic":"existing disagreement","stances":[{"participant":"P1","status":"stated","position":"faithful summary","quote":"exact excerpt"},{"participant":"P2","status":"not_mentioned","position":"","quote":""}]}],"excluded":[{"participant":"P1","quote":"exact excerpt of existing statement","reason":"why it is outside an existing boundary or unsuitable for continued discussion","basis":"exact excerpt of an existing task boundary from Decision input"}],"review_focus":["question whose resolution could change the conclusion or next action"]}
+For a participant citation you may replace quote with quote_path (for example /answer or /support within that participant’s decoded response). Select a relevant text field. For a short excerpt use quote.
 1. Consensus is ONLY the intersection explicitly stated by EVERY supplied participant. Cite an exact excerpt from each participant. Agreement does not establish truth. Do not upgrade shared assumptions to verified facts.
 2. Issues contain ONLY materially different existing claims, with at least two explicitly stated positions. Include every supplied participant once; mark an unmentioned position as not_mentioned with empty position and quote. Silence is not opposition. Preserve qualifications; do not invent a conflict from complementary details or omissions.
 3. Excluded contains ONLY existing statements that exceed explicit task constraints/scope or are otherwise unsuitable under an existing boundary in Decision input. Quote both the statement and that boundary. Do not exclude a minority view, an unfamiliar approach or a statement merely because you think it is wrong. With no applicable existing boundary, do not invent one.
@@ -143,6 +144,53 @@ pub(super) fn can_synthesize_directly(mapping: &Value) -> bool {
         .is_some_and(Vec::is_empty)
 }
 
+pub(super) fn expand_citations(text: &str, prompt: &str) -> Result<String> {
+    let mut report: Value = parse_json(text)?;
+    ensure!(report.is_object(), "Mapping must be a JSON object");
+    let (_, analyses) = prompt
+        .rsplit_once("\nIndependent analyses:\n")
+        .context("Missing mapping source answers")?;
+    let analyses: Vec<Value> = serde_json::from_str(analyses)?;
+    let sources: BTreeMap<_, _> = analyses
+        .iter()
+        .filter_map(|row| {
+            let id = row["participant"].as_str()?;
+            Some((id, parse_json::<Value>(row["response"].as_str()?).ok()?))
+        })
+        .collect();
+    let expand_rows = |rows: &mut Value| -> Result<()> {
+        for row in rows
+            .as_array_mut()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_object_mut)
+        {
+            let source = row
+                .get("participant")
+                .and_then(Value::as_str)
+                .and_then(|id| sources.get(id));
+            expand(row, "quote_path", "quote", |path| {
+                source.and_then(|value| select_text(value, path))
+            })?;
+        }
+        Ok(())
+    };
+    for agreement in report["consensus"].as_array_mut().into_iter().flatten() {
+        if let Some(rows) = agreement.get_mut("sources") {
+            expand_rows(rows)?;
+        }
+    }
+    for issue in report["issues"].as_array_mut().into_iter().flatten() {
+        if let Some(rows) = issue.get_mut("stances") {
+            expand_rows(rows)?;
+        }
+    }
+    if let Some(rows) = report.get_mut("excluded") {
+        expand_rows(rows)?;
+    }
+    Ok(report.to_string())
+}
+
 pub(super) fn validate_sources(text: &str, prompt: &str) -> Result<()> {
     let mapping: Mapping = parse_json(text)?;
     let (prefix, analyses) = prompt
@@ -180,7 +228,7 @@ pub(super) fn validate_sources(text: &str, prompt: &str) -> Result<()> {
             !excerpt.trim().is_empty()
                 && answers
                     .get(participant)
-                    .is_some_and(|answer| contains(answer, excerpt)),
+                    .is_some_and(|answer| contains_report(answer, excerpt)),
             "Moderator quote does not match the participant's answer"
         );
         Ok(())
@@ -261,6 +309,30 @@ mod tests {
             format!("Instructions\nDecision input:\n{input}\nIndependent analyses:\n{analyses}"),
         )
     }
+    #[test]
+    fn resolves_quotes_only_from_the_named_participants_frozen_report() {
+        // The original bbeh:408 mapping could not carry its hand-copied quote.
+        let input = serde_json::json!({"question":"Decide","goal":"Choose","background":"Context"});
+        let analyses = serde_json::json!([
+            {"participant":"P1","response":serde_json::json!({"answer":r#"Keep "existing data"."#}).to_string()},
+            {"participant":"P2","response":"{\"answer\":\"Keep data.\"}"}
+        ]);
+        let prompt = format!("\nDecision input:\n{input}\nIndependent analyses:\n{analyses}");
+        let mut map = serde_json::json!({"consensus":[{"point":"Keep data","sources":[
+            {"participant":"P1","quote_path":"/answer"},{"participant":"P2","quote_path":"/answer"}
+        ]}],"issues":[],"excluded":[]});
+        let expanded = expand_citations(&map.to_string(), &prompt).unwrap();
+        validate_shape(&expanded, 2).unwrap();
+        validate_sources(&expanded, &prompt).unwrap();
+        let expanded: Value = parse_json(&expanded).unwrap();
+        assert_eq!(
+            expanded["consensus"][0]["sources"][0]["quote"],
+            "Keep \"existing data\"."
+        );
+        map["consensus"][0]["sources"][0]["participant"] = serde_json::json!("P3");
+        assert!(expand_citations(&map.to_string(), &prompt).is_err());
+    }
+
     #[test]
     fn sourced_mapping_supports_nonconsecutive_actual_participants_and_explicit_silence() {
         let (mapping, prompt) = fixture();

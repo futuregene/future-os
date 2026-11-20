@@ -63,6 +63,12 @@ impl<'a> Sources<'a> {
             "snapshot":snapshot})
     }
 
+    pub fn inline_version(&self, id: &str) -> Option<String> {
+        self.inline(id)
+            .filter(|text| !text.trim().is_empty())
+            .map(digest)
+    }
+
     pub fn validate(&self, reference: &Reference) -> Result<()> {
         let citation = match reference {
             Reference::Citation(citation) => citation,
