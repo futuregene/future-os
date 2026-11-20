@@ -1,5 +1,5 @@
 //! Each reviewer revisits its own first answer using the frozen moderator map.
-use super::quotes::contains;
+use super::quotes::{contains, contains_report, expand, select_text};
 use anyhow::{ensure, Context, Result};
 use future_fusion::{parse_json, ConsultationInput, Snapshot};
 use serde::Deserialize;
@@ -11,7 +11,7 @@ For each consequential own position, quote your original answer and state whethe
 Keep the original evidential standard: a claim that is not contradicted is not thereby established. Use a countermodel or missing premise to challenge an unsupported selection. Entity labels do not supply unknown attributes. Return ONLY JSON. current_answer must directly answer the original question with your current, self-contained position, including any material uncertainty; the remaining fields explain only consequential changes, not a full meeting transcript:
 {"participant":"your ID","current_answer":"your current answer to the original question","responses":[{"participant":"other ID","quote":"exact excerpt from their source quote in moderator_map","decision":"agree|disagree|qualify|insufficient_information","reason":"reason"}],"self_review":[{"original_quote":"exact excerpt from your original_analysis","decision":"maintain|revise|withdraw","updated_position":"your current position","reason":"why"}],"mapping_corrections":[{"summary_quote":"exact excerpt from moderator_map","source_quote":"exact visible original excerpt supporting your correction","correction":"what the map got wrong","reason":"why"}],"additions":[{"kind":"proposal|unverified_claim|verified_fact","content":"new material","evidence":[{"source_id":"request or evidence:N or snapshot:<path>","sha256":"version from the source manifest or read tool","quote":"exact source excerpt"}]}]}
 Optionally add objections:[{"participant":"source participant ID","quote":"exact excerpt from your original_analysis, current_answer, or the named participant source quote in moderator_map","reason":"decisive counterexample or missing premise","effect":"how it could change the answer"}]. Include only decision-critical objections that still need explicit disposition, not stylistic differences. A new counterexample may quote your own current_answer. These remain attributed arguments, not verified facts.
-For snapshot references also include start_line and end_line (one-based, at most 400 lines) matching the read tool result. Inline sources do not use line fields. Never cite a moderator/participant statement, background summary or a fabricated label as source-verified evidence. An unavailable source must remain an unverified_claim. All four arrays must exist and may be empty except self_review, which must address your own answer. Do not repeat the entire original plan. A verified_fact label is not a claim that the whole proposal was tested."#;
+For a mapping correction, you can use summary_path within moderator_map and source_path starting with /original_analysis/ or /moderator_map/ instead of copying those quotes. Paths under /moderator_map/ used as original sources must point to a participant quote. Inline request and evidence references can omit sha256; the host fills it from the frozen source. A proposal or unverified_claim may omit evidence. For snapshot references also include start_line and end_line (one-based, at most 400 lines) matching the read tool result. Inline sources do not use line fields. Never cite a moderator/participant statement, background summary or a fabricated label as source-verified evidence. An unavailable source must remain an unverified_claim. All four arrays must exist and may be empty except self_review, which must address your own answer. Do not repeat the entire original plan. A verified_fact label is not a claim that the whole proposal was tested."#;
 
 pub(super) fn prompt(
     participant: &str,
@@ -98,6 +98,7 @@ struct Correction {
 struct Addition {
     kind: AdditionKind,
     content: String,
+    #[serde(default)]
     evidence: Vec<super::evidence::Reference>,
 }
 #[derive(Deserialize, PartialEq)]
@@ -133,6 +134,67 @@ fn quoted_sources(mapping: &Value) -> Vec<(&str, &str)> {
         .chain(excluded)
         .filter_map(|source| Some((source["participant"].as_str()?, source["quote"].as_str()?)))
         .collect()
+}
+
+pub(super) fn expand_citations(text: &str, prompt: &str) -> Result<String> {
+    let mut review: Value = parse_json(text)?;
+    ensure!(review.is_object(), "Review must be a JSON object");
+    let (_, packet) = prompt
+        .rsplit_once("\nReview packet:\n")
+        .context("Missing review packet")?;
+    let packet: Value = serde_json::from_str(packet)?;
+    let mapping = &packet["moderator_map"];
+    let own = packet["original_analysis"]
+        .as_str()
+        .and_then(|text| parse_json::<Value>(text).ok());
+    let task: ConsultationInput = serde_json::from_value(packet["task"].clone())?;
+    let evidence = super::evidence::Sources::new(&task, None);
+    if let Some(corrections) = review
+        .get_mut("mapping_corrections")
+        .and_then(Value::as_array_mut)
+    {
+        for row in corrections.iter_mut().filter_map(Value::as_object_mut) {
+            expand(row, "summary_path", "summary_quote", |path| {
+                select_text(mapping, path)
+            })?;
+            expand(row, "source_path", "source_quote", |path| {
+                if let Some(path) = path.strip_prefix("/original_analysis") {
+                    return own.as_ref().and_then(|value| select_text(value, path));
+                }
+                let path = path.strip_prefix("/moderator_map")?;
+                let (parent, field) = path.rsplit_once('/')?;
+                if field != "quote"
+                    || mapping
+                        .pointer(parent)?
+                        .get("participant")?
+                        .as_str()
+                        .is_none()
+                {
+                    return None;
+                }
+                select_text(mapping, path)
+            })?;
+        }
+    }
+    if let Some(additions) = review.get_mut("additions").and_then(Value::as_array_mut) {
+        for addition in additions {
+            let Some(citations) = addition.get_mut("evidence").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for citation in citations.iter_mut().filter_map(Value::as_object_mut) {
+                if !citation.contains_key("sha256") {
+                    if let Some(version) = citation
+                        .get("source_id")
+                        .and_then(Value::as_str)
+                        .and_then(|id| evidence.inline_version(id))
+                    {
+                        citation.insert("sha256".into(), json!(version));
+                    }
+                }
+            }
+        }
+    }
+    Ok(review.to_string())
 }
 
 pub(super) fn validate(
@@ -184,7 +246,8 @@ pub(super) fn validate(
     }
     for (index, objection) in review.objections.iter().enumerate() {
         let visible = if objection.participant == participant {
-            contains(own, &objection.quote) || contains(&review.current_answer, &objection.quote)
+            contains_report(own, &objection.quote)
+                || contains(&review.current_answer, &objection.quote)
         } else {
             sources.iter().any(|(id, quote)| {
                 *id == objection.participant && contains(quote, &objection.quote)
@@ -200,7 +263,7 @@ pub(super) fn validate(
         errors.push("self_review must address your own answer".into());
     }
     for (index, revision) in review.self_review.iter().enumerate() {
-        if !contains(own, &revision.original_quote) {
+        if !contains_report(own, &revision.original_quote) {
             errors.push(format!("self_review[{index}].original_quote does not match your original_analysis: {:?}. Copy a contiguous excerpt from original_analysis; do not invent an earlier position.", revision.original_quote));
         }
         if revision.updated_position.trim().is_empty() || revision.reason.trim().is_empty() {
@@ -218,7 +281,7 @@ pub(super) fn validate(
         {
             errors.push(format!("mapping_corrections[{index}].summary_quote must identify a visible moderator statement"));
         }
-        if !contains(own, &correction.source_quote)
+        if !contains_report(own, &correction.source_quote)
             && !sources
                 .iter()
                 .any(|(_, q)| contains(q, &correction.source_quote))
@@ -281,6 +344,39 @@ mod tests {
             "mapping_corrections":[], "additions":[]});
         (review, prompt)
     }
+    #[test]
+    fn frozen_review_supplies_correction_text_and_inline_version() {
+        let input = serde_json::json!({
+            "question":"Observed count: 7.", "goal":"Choose", "background":"Context"
+        });
+        let packet = serde_json::json!({
+            "participant":"P1", "task":input,
+            "original_analysis":"{\"answer\":\"Use seven.\"}",
+            "moderator_map":{"issues":[{"topic":"Incorrect estimate"}]}
+        });
+        let prompt = format!("\nReview packet:\n{packet}");
+        let mut review = serde_json::json!({
+            "participant":"P1", "current_answer":"Use seven.",
+            "responses":[],
+            "self_review":[{"original_quote":"Use seven.","decision":"maintain","updated_position":"Seven","reason":"Original data"}],
+            "mapping_corrections":[{"summary_path":"/issues/0/topic","source_path":"/original_analysis/answer","correction":"Use seven","reason":"Original data"}],
+            "additions":[{"kind":"unverified_claim","content":"Check the result"},
+                         {"kind":"verified_fact","content":"Seven is observed","evidence":[{"source_id":"request","quote":"Observed count: 7."}]}]
+        });
+        let expanded = expand_citations(&review.to_string(), &prompt).unwrap();
+        validate(&expanded, &prompt, "P1", None).unwrap();
+        let expanded: Value = parse_json(&expanded).unwrap();
+        assert!(expanded["additions"][1]["evidence"][0]["sha256"]
+            .as_str()
+            .is_some());
+        review["additions"][1]["evidence"] = serde_json::json!([]);
+        let expanded = expand_citations(&review.to_string(), &prompt).unwrap();
+        assert!(validate(&expanded, &prompt, "P1", None).is_err());
+        review["mapping_corrections"][0]["source_path"] =
+            serde_json::json!("/moderator_map/issues/0/topic");
+        assert!(expand_citations(&review.to_string(), &prompt).is_err());
+    }
+
     #[test]
     fn review_packet_excludes_other_full_answers_and_accepts_sourced_self_review() {
         let (review, prompt) = fixture();
