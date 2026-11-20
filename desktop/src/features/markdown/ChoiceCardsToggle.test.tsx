@@ -41,10 +41,10 @@ function mount(ui: ReactElement) {
 }
 
 describe("the choice-card switch", () => {
-  it("ships off", () => {
+  it("ships on", () => {
     // The persisted default, before any database row exists: the renderer's own
-    // default is not the product's answer.
-    expect(DEFAULT_APP_SETTINGS.choiceCards).toBe(false);
+    // default is not the product's answer, so pin the stored one.
+    expect(DEFAULT_APP_SETTINGS.choiceCards).toBe(true);
   });
 
   it("draws neither the card nor its source when off", () => {

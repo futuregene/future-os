@@ -184,17 +184,17 @@ running an older build keeps the old wording no matter what the repository says
 after two rewrites had landed). A prompt change only ships with a rebuild **and** a
 restart.
 
-### 4.1 The switch: off by default (2026-11-17)
+### 4.1 The switch: on by default (2026-11-20, previously off)
 
-The card is a **preference**, not a default, and it ships **off**. One switch owns both halves of it — the drawing and this section — because teaching a fence to a client that will not draw it is worse than either half alone: the model spends prompt on a format the reader never sees, and writes markdown that renders as nothing.
+The card is a **preference**, and it ships **on**. One switch owns both halves of it — the drawing and this section — because teaching a fence to a client that will not draw it is worse than either half alone: the model spends prompt on a format the reader never sees, and writes markdown that renders as nothing.
 
-| | `choice_cards` on | off (the default) |
+| | `choice_cards` on (the default) | off |
 |---|---|---|
 | Desktop / phone | the card, pickable | nothing at all — not the card, not a code block |
 | System prompt | §4's section | absent — `grep futureos-choice` finds nothing |
 | List mark "this one is waiting on your choice" (§5.9) | shown | not shown |
 
-Why off rather than on: the fence costs prompt on every turn of every session, and a card asks the reader to pick from a list the model wrote — welcome when they already want to move on, an interruption otherwise.
+Why on rather than off: a card lets a reader move on with one tap instead of typing the next request, which is the common case the reply was written for. The cost is prompt on every turn and an interruption when the reader already knows what they want; both are recoverable in one switch, and a reply that ends without asking anything is not obliged to carry a card. It shipped off between 2026-11-17 and 2026-11-20, so a store written in that window keeps its `false`.
 
 Rules kept while gating it:
 
@@ -204,9 +204,9 @@ Rules kept while gating it:
 
 Where the value lives, and how it travels:
 
-- one stored value: `app.db` → `packages/app-settings` (`choice_cards`, default `false`), read as `appSettings.choiceCards`;
+- one stored value: `app.db` → `packages/app-settings` (`choice_cards`, default `true`), read as `appSettings.choiceCards`;
 - desktop: Settings → Conversation → Replies, a switch; the value reaches the markdown renderer through `ChoiceCardsContext` (the renderer's own default stays `true`, so only a real "off" hides anything);
-- the agent is told **before every run**: the host pushes `set_choice_cards` (best-effort — an agent that predates the command still accepts the message, and an unreadable store counts as off), the session keeps it, and `PromptOptions.choice_cards` decides whether this section is in the prompt. A fresh install therefore has no fence in the prompt *and* no card on screen;
+- the agent is told **before every run**: the host pushes `set_choice_cards` (best-effort — an agent that predates the command still accepts the message, and an unreadable store counts as off), the session keeps it, and `PromptOptions.choice_cards` decides whether this section is in the prompt. A fresh install therefore has the fence in the prompt *and* cards on screen; a client that never pushes the value (TUI, CLI, an agent called directly) still gets `false`, because nothing else tells the agent a card will be drawn;
 - the phone mirrors the desktop rather than holding its own setting: `get_desktop_settings` carries `choiceCards`, and `SettingsPatch` writes it back to the same row.
 - the same value is settable **on that machine's own row**: a paired desktop's page (Remote → that computer → Automation) has the switch, because a headless host has no window of its own and would otherwise be stuck off forever. It writes the host's `app.db` through `update_desktop_settings`;
 - every client of that machine draws what *it* allows, not what the client's own switch says: the phone and this app's remote transcript both read `choiceCards` from the host (`useRemoteChoiceCards`). Drawing a card the host's own agent was never taught to write, or hiding one it did write — source and all — are both wrong, and only the host's answer avoids them;

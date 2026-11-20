@@ -280,8 +280,8 @@ pub(super) async fn set_agent_choice_cards(
         Ok(settings) => settings.choice_cards,
         Err(error) => {
             // Never invent "on" from a failed read: the request would then teach
-            // the fence to a reader who turned cards off. Off is the shipping
-            // default, and the next successful read applies the saved value.
+            // the fence to a reader who turned cards off. Sending `false` once only
+            // lasts until the next successful read, which applies the saved value.
             tracing::warn!(event = "set_agent_choice_cards", error = %error,
                 "FutureOS: choice-card settings unavailable; leaving cards off: {error}"
             );

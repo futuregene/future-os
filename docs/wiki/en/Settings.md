@@ -69,7 +69,7 @@ When the sandbox is unavailable, or Linux only offers write protection, this pag
 
 Both rows on this page are the same on every client, because they describe the reply itself:
 
-- **Choice cards** (off by default) — let a reply close with a card of options you can tick. While off, the card is not drawn at all **and** the agent is never told the format exists, so no reply offers one; a conversation from before you turned it off shows its cards again once it is on. Design: [choice cards](../../design/choice-cards.md).
+- **Choice cards** (on by default) — let a reply close with a card of options you can tick. While off, the card is not drawn at all **and** the agent is never told the format exists, so no reply offers one; a conversation from before you turned it off shows its cards again once it is on. Design: [choice cards](../../design/choice-cards.md).
 - **Generate a title after the first answer** (on by default) — title a new conversation from its first successful answer only; later answers do not trigger it, and it does not compact the conversation.
 
 ### Storage

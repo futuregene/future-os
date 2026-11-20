@@ -142,7 +142,7 @@
   },
   "choiceCards": {
     "title": "Choice cards",
-    "description": "Let a reply close with a card of options you can tick. Off by default: while off the card is not drawn at all, and the agent is not told the card format exists."
+    "description": "Let a reply close with a card of options you can tick. On by default: while off the card is not drawn at all, and the agent is not told the card format exists."
   },
   "autoTitleFirstTurn": {
     "title": "Generate a title after the first answer",
