@@ -9,6 +9,8 @@
 > 3. once the answer joined the send queue it was flattened to plain text and the choice could no longer be changed (§5.8).
 >
 > **v3 adds what the queue looks like on all three surfaces**, and fixes one ambiguity v2 introduced: v2 gave the queue row's chip a pencil, while that row already carries a pencil meaning "edit the words" — two pencils a few pixels apart meaning different things. v3 makes **the chip itself the button** (with a chevron) and leaves the row's own pencil and bin untouched (§5.8.2). It also states the three panels' relationship: remote reuses the desktop `SendQueuePanel`, the phone is a second implementation (§5.8.1).
+>
+> **v5 (2026-11-20) fixes a real degradation defect.** A reply offering five directions reached a phone not as a card but as `option:` source clipped at the right edge and panning to read: the prompt asks for 2–4 rows, and the client had used **the same 4** as a hard ceiling, so a whole card was lost to a row count only the guidance cared about. Clients now draw up to six rows (the prompt still asks for 2–4), and a degraded fence **wraps** instead of printing `futureos-choice` over a sideways scroll (§3 tolerance table, §8).
 
 ## 1. What this solves
 
@@ -75,7 +77,7 @@ Fields:
 |---|---|---|
 | `title` | yes | The question itself, one line, ≤ 60 chars. It is the card's heading |
 | `mode` | no | `multi` (**first choice**) / `single` (the fallback when the rows compete; an omitted line means this). `multiple`, `multi-select`, `多选` read as `multi` — see below |
-| `option` | yes (2–4) | One per line: `id \| label \| one-line note`; the note may be omitted |
+| `option` | yes (2–4, drawn up to 6) | One per line: `id \| label \| one-line note`; the note may be omitted |
 | `id` | — | Stable identifier to send back: ASCII, `[a-z0-9-]`, ≤ 24 chars, unique within the card |
 | `hint` | no | One line the model writes itself, drawn under `context`. There is **no default subtitle** any more (removed 2026-11-18, §5.1) |
 | `context` | no | One to three sentences of situation, around 100 characters — what four lines of a phone card hold (tightened from 200 on 2026-11-18) — so the card can be answered without scrolling back up. Repeated `context:` lines become separate paragraphs; an empty one disappears |
@@ -100,11 +102,15 @@ In the AST the card is its own node type (not a `futureEmbed` reference), becaus
 
 | Case | Handling |
 |---|---|
-| Fewer than 2 or more than 4 options | The whole block degrades to a code block |
+| Fewer than 2 or more than 6 options | The whole block degrades to a **wrapped** code block |
 | Duplicate, malformed or over-long `id` | Drop that line; if fewer than 2 remain, degrade the block |
 | Missing `title` | Fall back to the first option's label; still empty ⇒ degrade |
 | Fence mid-reply (not the last block) | Renders normally but read-only (the "last card" rule in §2) |
 | Unknown field | Ignored |
+
+**"How many rows the prompt asks for" and "how many the client draws" are two numbers** (2026-11-20). The prompt still asks for 2–4: that is the test of *whether* a block should be a card. `CHOICE_MAX_OPTIONS` is 6, because it answers a different question — whether a block that already exists can be drawn at all. The two used to be the same 4, and the difference was paid for on 2026-11-20: a live reply offered five directions and the phone received not a card but `option:` source — monospace, clipped at the right edge, readable only by panning. A whole card lost to a row count only the guidance cared about.
+
+Six leaves room for "wrote a row too many": seven or more rows is a plan, not a pick, and still takes the degradation path. **But the degraded block has to be readable**: on both surfaces it **wraps**, and it stops printing the fence's own language label (`futureos-choice` is the parser's notation, not something a reader is shown). That is not a taste preference — §3 promises that a degraded block shows the reader the option list and loses nothing, and a monospace line clipped sideways at 390pt does not keep that promise. Pinned in `CodeBlock.test.tsx`, `MarkdownContent.test.tsx` and the phone's `MarkdownText.test.ts` (`choice-card-degraded`, and no horizontal scroller).
 
 **A read-only card must say so** (2026-11-16): when one reply holds two or more cards, only the last is interactive. That criterion depends solely on the **number of parsed cards**, not on anything the model was asked to write, so it lives in the parse/render layer rather than in the prompt. A card judged read-only is not just `aria-readonly` and out of the tab order — it **must also say "an earlier question — this card can no longer be picked"** (`choice.hint.readonly`). Leaving that unsaid over inert rows is a button that looks pressable and is not. Pinned in `ChoiceCard.test.tsx` and `MarkdownContent.test.tsx` on text, `aria-disabled` and focus — **never on colour**.
 
@@ -131,7 +137,6 @@ click instead of restating your own wording.
 Use it only when all of these hold:
 - The reply genuinely ends with a question about the next step, and you can carry
   out every option yourself right after they pick.
-- There are 2–4 real alternatives. One option, or five, is a paragraph — not a card.
 - The options are 2–4 genuine alternatives you would act on next — one of them, or
   several that do not compete for the same step.
 
@@ -314,7 +319,7 @@ Requirement (c) on screen. The pill and the words share one editor flow, so the 
 One treatment on all three clients: a `[question → answer]` printed in a prompt is drawn as a tag — a `ListChecks` glyph, the question in a lighter ink, `→`, the answer in a heavier one — and the text around it goes through markdown as before. Picked a row and typed nothing else, and the bubble is just the tag.
 
 - **The text is unchanged.** The tag is a *drawing* of the sentence `choiceAnswerText` writes, not a second copy of it: the copy button, the agent and a paste elsewhere all still see `[question → answer]`. That is exactly why §7 sends plain text — how the display layer draws it cannot change how readable the sentence is;
-- **The test is conservative** (`packages/markdown/src/choiceAnswerEcho.ts`): it needs the `→`, never reads a closing bracket followed by `(` or `[` (that is a link, or another bracket run), reads at most four answers (a card's own bound), and leaves a run inside a fenced block or an inline code span alone — that is an example the reader pasted, and cutting it out would unbalance the fence or the backticks. A false negative costs the styling, never a character;
+- **The test is conservative** (`packages/markdown/src/choiceAnswerEcho.ts`): it needs the `→`, never reads a closing bracket followed by `(` or `[` (that is a link, or another bracket run), reads at most four answers (not the card's row count: six ticks still print one answer — four bounds how many answers one draft holds), and leaves a run inside a fenced block or an inline code span alone — that is an example the reader pasted, and cutting it out would unbalance the fence or the backticks. A false negative costs the styling, never a character;
 - **An answer need not be at the head** (2026-11-18). The pill lands at the caret (§5.2.1), so a reader who leaves the caret mid-sentence sends the answer inside their own sentence (and text typed *after* the answer lands behind it); being a pick is not a matter of position, so the tag is drawn there too, and the words on either side are joined back in their own order (`先说 [question → answer] 再说` → the tag plus `先说 再说`, the doubled whitespace at the seam closed). It is lifted above the prose rather than drawn inline because a React Native `View` cannot sit inside a `Text` flow — one shape on all three clients beats two;
 - **A path inside an answer cannot turn the sentence into a link** (fixed 2026-11-18): before, an answer naming a path (`删未在用的 ~/omlx 副本`) made the whole bracket run look like a bare relative path, so the bubble drew the reader's sentence as a file link that opened "file not found". That rule now lives in the parser (`bracketMentionPath` in `packages/markdown/src/parseFutureMarkdown.ts`): whitespace or `→` inside the brackets means prose, never a file reference. A path that really holds spaces is spelled as a link — `[name](<with space.md>)` — which is unambiguous;
 - **The material follows the bubble.** The desktop bubble is `accent-soft`, so the tag is `accent/10` on `accent/25`; the phone's bubble is solid `accent`, so the tag mixes the bubble's own ink at 12% with a 20% border — the same colours `MarkdownText`'s `onAccent` tone uses, readable in both appearances.
@@ -522,10 +527,11 @@ Agent commits the run ──┬─> terminal entry `content.offers_choice`
 ```
 
 - **The Agent decides once** (`agent/src/prompt/choice_card.rs`), with the
-  renderer's own rules (`parseChoiceCard`): the `futureos-choice` fence, 2–4
+  renderer's own rules (`parseChoiceCard`): the `futureos-choice` fence, 2–6
   `option:` rows, ids in `[a-z0-9-]` (≤ 24), a non-empty label; a card quoted
   inside a document fence is not one, and neither is a card followed by more
-  prose (the card closes the reply, alone).
+  prose (the card closes the reply, alone). The row bound has to equal
+  `CHOICE_MAX_OPTIONS`: the badge may only promise a card the client will draw.
 - **Only a clean finish carries it**: a cancelled, failed or truncated reply is
   not something to answer.
 - **The mark travels with the run row**: the next send is a new row, so the mark
@@ -638,7 +644,7 @@ The answer must be readable by the agent **and** on the degraded paths (TUI, IM 
 | IM bots (Feishu / DingTalk) | Same | Same (interactive cards are a separate job) |
 | Third-party Markdown readers | A code block | A code block |
 
-The fence syntax makes "unknown" mean "renders normally", which is the main reason it was chosen (§3). The parser never throws: any malformed input falls back to a code block.
+The fence syntax makes "unknown" mean "renders normally", which is the main reason it was chosen (§3). The parser never throws: any malformed input falls back to a code block. **That block has to be readable** (2026-11-20): a `futureos-choice` fence wraps, and stops printing its own language label — at 390pt an unwrapped monospace line is reachable only by dragging past the right edge, and what this table promises is exactly that "the reader sees the option list".
 
 The table describes a client that knows cards. A client whose reader turned the switch **off** is not in the "degrades to a code block" row: off means the block does not appear at all, source included, and the agent is not taught the fence either (§4.1).
 
@@ -690,7 +696,7 @@ again", because the mark is still there and the command can be re-sent.
 
 In dependency order; each step merges on its own:
 
-1. **Syntax and parsing** (`packages/markdown`): a `ChoiceCardNode` type; a branch for the `futureos-choice` fence next to `parseFutureEmbed` in `parseFutureMarkdown.ts`, with `parseDirectiveFields` gathering repeated keys into an array; unit tests for the whole tolerance table in §3.
+1. **Syntax and parsing** (`packages/markdown`): a `ChoiceCardNode` type; a branch for the `futureos-choice` fence next to `parseFutureEmbed` in `parseFutureMarkdown.ts`, with `parseDirectiveFields` gathering repeated keys into an array; unit tests for the whole tolerance table in §3 — 2 and 6 as the bounds, 5 and 6 still drawn and pickable, 1 and 7 degrading.
 2. **Desktop rendering**: `desktop/src/features/markdown/renderers/ChoiceCard.tsx` (both read-only and interactive states), wired into the node switch in `MarkdownContent.tsx` (from :119, beside the `futureEmbed` branch); copy keys go into `desktop/src/i18n/locales/{zh,en}/markdown.json` (they belong to the rendering layer, not to the `packages/markdown` types).
 3. **Desktop answer pill (the key v2 step)**: a fourth pill kind in `MentionEditor` — `buildChoicePill()` modelled on `buildSessionPill`, with `data-mention="choice"` and `data-choice` — plus a `serialize()` branch emitting `[title → label]`. Once this lands, (a)(c)(d) hold **by themselves**; the `disabled` expression in `ComposerControls` needs no edit (§5.2.1, measured). The change popover is its own `ChoicePopover.tsx`.
 4. **Answer state**: an optional `choice` field on the existing per-conversation draft — desktop's `ComposerDraft` (`desktop/src/features/agent/composerDraft.ts`; the shape deliberately allows growth, so an optional field needs no `DRAFT_VERSION` bump) and remote's `RemoteComposerDraft` (`desktop/src/features/remote-peer/remoteComposerDraft.ts`). The card's chosen row and the pill both read it.

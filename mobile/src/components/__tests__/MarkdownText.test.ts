@@ -892,4 +892,35 @@ describe("a futureos-choice fence on the phone", () => {
     expect(rendered).not.toContain("futureos-choice");
     expect(rendered).not.toContain("option:");
   });
+
+  /**
+   * §3's tolerance table still has failures in it (one row, seven rows, an id
+   * the parser drops), and their fallback is the fenced source. On a phone that
+   * used to mean monospace rows clipped at the right edge behind a sideways
+   * pan — the options were there and could not be read (2026-11-20). The
+   * degraded block now wraps, so what it promises — the reader still sees the
+   * list they were offered — holds at 390pt.
+   */
+  test("keeps a fence it cannot draw readable: wrapped, without the language label", () => {
+    const text = [
+      "```futureos-choice",
+      "title: 只有一行",
+      "option: only | 唯一的选项 | 这一行才会被画出来",
+      "```",
+    ].join("\n");
+    act(() => { renderer = create(createElement(MarkdownText, { text })); });
+    const root = renderer.root;
+    expect(root.findAll(node => node.props.testID === "choice-card")).toHaveLength(0);
+    const degraded = root.findAll(
+      node => node.props.testID === "choice-card-degraded" && node.type === View,
+    );
+    expect(degraded).toHaveLength(1);
+    const painted = root.findAllByType(Text).map(node => paintedText(node));
+    expect(painted.join("\n")).toContain("唯一的选项");
+    expect(painted.join("\n")).toContain("这一行才会被画出来");
+    // The fence's own language is parser chrome, not something a reader is shown.
+    expect(painted).not.toContain("futureos-choice");
+    // Wrapping is structural: no horizontal scroller means no hidden right edge.
+    expect(degraded[0]!.findAllByType(ScrollView)).toHaveLength(0);
+  });
 });
