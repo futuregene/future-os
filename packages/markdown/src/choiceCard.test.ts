@@ -37,6 +37,22 @@ describe("futureos-choice fence", () => {
     expect(four?.type === "choiceCard" && four.options.map(option => option.id)).toEqual(["a", "b", "c", "d"]);
   });
 
+  /**
+   * The prompt asks for 2–4 rows, and a model that counts wrong by one still
+   * wrote a card: the client's ceiling is six, so five and six rows draw and
+   * stay pickable (2026-11-20, a five-row reply fell back to fenced source on a
+   * phone). Above six the block is a plan, and the tolerance table takes over.
+   */
+  it("draws a five- or six-row card instead of falling back to its source", () => {
+    const rows = (count: number) =>
+      Array.from({ length: count }, (_, index) => `option: id${index} | 选项 ${index}`).join("\n");
+    for (const count of [5, 6]) {
+      const node = first(fence(`title: T\n${rows(count)}`));
+      expect(node?.type).toBe("choiceCard");
+      expect(node?.type === "choiceCard" && node.options).toHaveLength(count);
+    }
+  });
+
   it("reads mode: multi and an explicit hint", () => {
     const node = first(fence("title: 这三项都要？\nmode: multi\nhint: 点几个都行\noption: a | A\noption: b | B"));
     expect(node).toMatchObject({ hint: "点几个都行", mode: "multi", type: "choiceCard" });
@@ -116,8 +132,12 @@ describe("futureos-choice fence", () => {
       expect(node.code).toContain("option: a | A");
     });
 
-    it("more than four options", () => {
-      expectCode(fence("title: T\noption: a | A\noption: b | B\noption: c | C\noption: d | D\noption: e | E"));
+    it("more than six options", () => {
+      expectCode(
+        fence(
+          "title: T\noption: a | A\noption: b | B\noption: c | C\noption: d | D\noption: e | E\noption: f | F\noption: g | G",
+        ),
+      );
     });
 
     it("no option lines at all", () => {

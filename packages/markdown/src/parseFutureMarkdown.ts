@@ -594,7 +594,24 @@ const CHOICE_FENCE = "futureos-choice";
 /** §3: an option id is ASCII `[a-z0-9-]`, at most 24 characters. */
 const CHOICE_OPTION_ID = /^[a-z0-9-]{1,24}$/;
 const CHOICE_MIN_OPTIONS = 2;
-const CHOICE_MAX_OPTIONS = 4;
+/**
+ * The client's own ceiling on rows, deliberately above what the prompt asks for
+ * (2–4, `agent/src/prompt/choice.md`).
+ *
+ * The prompt's 2–4 answers a different question — *when* is a block a card: a
+ * list that long has stopped being "pick a few things". This constant answers
+ * whether an already-written block can be drawn at all, and a card whose writer
+ * slipped by a row is still a card. At four the two questions were the same
+ * number, so a live reply (2026-11-20) offering five directions reached a phone
+ * as `option:` source in a monospace block, panned sideways to read — the whole
+ * card lost to a row count only the guidance cared about. Six leaves room for
+ * that slip; seven or more is a plan rather than a pick.
+ *
+ * `agent/src/prompt/choice_card.rs` carries the same bound for the "this
+ * conversation is waiting on you" badge, so the badge cannot promise a card the
+ * client refuses to draw.
+ */
+const CHOICE_MAX_OPTIONS = 6;
 
 /**
  * `futureos-choice` → a card, or `null` for "draw it as the code block it is".
@@ -611,8 +628,9 @@ function parseChoiceCard(node: Code): ChoiceCardNode | null {
   const rawOptions = entries
     .filter(([key]) => key === "option")
     .map(([, value]) => value);
-  // The count is checked before the ids on purpose: a five-row card degrades as
-  // a whole instead of silently showing four, and that is what §3 promises.
+  // The count is checked before the ids on purpose: a block above the ceiling
+  // degrades as a whole instead of silently showing its first six rows, and
+  // that is what §3 promises.
   if (rawOptions.length < CHOICE_MIN_OPTIONS || rawOptions.length > CHOICE_MAX_OPTIONS)
     return null;
 
