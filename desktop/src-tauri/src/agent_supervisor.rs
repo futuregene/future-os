@@ -2,6 +2,7 @@
 //! their ownership; successful full cleanup is required before relaunch.
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::time::{Duration, Instant};
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -21,6 +22,48 @@ static GAVE_UP_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
 /// The status text names it, so the two cannot drift apart in the UI.
 pub fn recovery_attempt_limit() -> u32 {
     future_rpc::supervision::RestartBudget::new().limit()
+}
+
+/// How long an owned Agent that reports work in flight may stay unreachable
+/// before the watchdog stops it anyway.
+///
+/// A loaded Agent answers a probe late; a wedged one never answers, and its runs
+/// keep the service reporting work forever. Waiting has to end somewhere, so this
+/// bounds the wait and then falls back to the stop the watchdog always made — the
+/// same verdict, two minutes later, never silence.
+const BUSY_STOP_DEFERRAL: Duration = Duration::from_secs(120);
+
+/// Whether this probe failure is a *loaded* Agent rather than an absent one.
+///
+/// Stopping is the one thing a supervisor must not do on a guess, because a stop
+/// that cannot drain its runs is terminal for the process: measured 2026-11-19,
+/// the Agent was serving three concurrent runs with 0.2–3.2 MB request bodies,
+/// its endpoint timed out for tens of seconds, and the watchdog's stop then read
+/// "Agent shutdown deadline exceeded during runs and native background work" and
+/// latched the window into "restart FutureOS" — six times in one afternoon. An
+/// Agent that says it is working is not one to kill.
+///
+/// `since` is the first moment of the current busy spell: a readable Agent, an
+/// idle one, or the end of the deferral clears it. Kept free of the loop so the
+/// policy is testable without threads or a real service.
+fn busy_defers_stop(
+    work: future_host::agent_host::OwnedWork,
+    since: &mut Option<Instant>,
+    now: Instant,
+) -> bool {
+    use future_host::agent_host::OwnedWork;
+    match work {
+        OwnedWork::NotOwned | OwnedWork::Idle => {
+            *since = None;
+            false
+        }
+        // Unknown is not idle: an unanswerable snapshot must not be the evidence
+        // that kills a service which may be busy.
+        OwnedWork::Busy | OwnedWork::Unknown => {
+            let first = *since.get_or_insert(now);
+            now.saturating_duration_since(first) < BUSY_STOP_DEFERRAL
+        }
+    }
 }
 
 /// The reason automatic recovery stopped, when it has.
@@ -81,7 +124,6 @@ fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
         use future_rpc::supervision::{
             probe_local_agent, Attached, LocalAgentState, ReadinessLoss, RestartBudget,
         };
-        use std::time::{Duration, Instant};
         let _app = app;
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -96,6 +138,7 @@ fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
         let mut budget = RestartBudget::new();
         let mut loss = ReadinessLoss::default();
         let mut reachable_since = None;
+        let mut busy_since: Option<Instant> = None;
         let mut last_notice: Option<Instant> = None;
         loop {
             std::thread::sleep(Duration::from_secs(3));
@@ -111,6 +154,7 @@ fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
             let now = Instant::now();
             if observed == LocalAgentState::Attached {
                 loss.reset();
+                busy_since = None;
                 let since = *reachable_since.get_or_insert(now);
                 if Attached::of(since, now) == Attached::Stable {
                     budget.reset();
@@ -122,6 +166,7 @@ fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
             reachable_since = None;
             if let LocalAgentState::Blocked(reason) = &observed {
                 loss.reset();
+                busy_since = None;
                 if last_notice.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(30)) {
                     tracing::warn!(event = "spawn_agent_watchdog", %reason, "Agent recovery blocked: {reason}");
                     last_notice = Some(now);
@@ -150,12 +195,36 @@ fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
             }
             if !loss.confirmed(now)
                 || !(matches!(observed, LocalAgentState::Startable) || host.owns_agent())
-                || !budget.allow(now)
             {
                 // A spent budget ends the loop instead of waiting out another
                 // cooldown: the escalation used to have a ceiling but no
                 // terminal state, so an Agent that died on every start was
                 // restarted 84 times over thirteen hours and nobody was told.
+                if budget.exhausted() {
+                    give_up(&_app, &recovery_cause(), budget.failures(), budget.limit());
+                    return;
+                }
+                continue;
+            }
+            // A loaded Agent is not an absent one, and this is asked *before* a
+            // restart attempt is counted: stopping is the one thing a supervisor
+            // must not do on a guess, because a stop that cannot drain the runs it
+            // did not interrupt is terminal for the process — it latches "restart
+            // FutureOS" and refuses every later attempt. `busy_defers_stop` also
+            // bounds the wait, so a truly wedged Agent still reaches the stop.
+            let work = host.owned_work();
+            if busy_defers_stop(work, &mut busy_since, now) {
+                if last_notice.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(30)) {
+                    tracing::warn!(
+                        event = "spawn_agent_watchdog",
+                        activity = ?work,
+                        "Agent is not answering but reports work in flight; waiting instead of stopping it",
+                    );
+                    last_notice = Some(now);
+                }
+                continue;
+            }
+            if !budget.allow(now) {
                 if budget.exhausted() {
                     give_up(&_app, &recovery_cause(), budget.failures(), budget.limit());
                     return;
@@ -569,6 +638,77 @@ pub(crate) fn exit_authorized() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The incident this policy exists for: the probe timed out while the Agent
+    /// was serving three runs, and the stop that followed could not drain them,
+    /// so the window latched into "restart FutureOS". A loaded Agent must be
+    /// waited for, and only an idle (or unowned) one may be stopped.
+    #[test]
+    fn a_loaded_agent_is_waited_for_instead_of_stopped() {
+        use future_host::agent_host::OwnedWork;
+        let start = Instant::now();
+        let mut since = None;
+        assert!(
+            busy_defers_stop(OwnedWork::Busy, &mut since, start),
+            "runs in flight: waiting is the recovery"
+        );
+        assert_eq!(since, Some(start), "the spell starts with the first look");
+        assert!(busy_defers_stop(
+            OwnedWork::Busy,
+            &mut since,
+            start + Duration::from_secs(60)
+        ));
+        // Unknown is not idle: an unreadable snapshot is not evidence for a kill.
+        let mut unknown = None;
+        assert!(busy_defers_stop(OwnedWork::Unknown, &mut unknown, start));
+        // Nothing owned, or an idle service, is the fault the watchdog stops for.
+        assert!(!busy_defers_stop(OwnedWork::Idle, &mut since, start));
+        assert_eq!(since, None, "an idle answer ends the spell");
+        let mut fresh = Some(start);
+        assert!(!busy_defers_stop(OwnedWork::NotOwned, &mut fresh, start));
+        assert_eq!(fresh, None);
+    }
+
+    /// The deferral is bounded: a run that is wedged forever keeps the service
+    /// reporting work, so the watchdog must eventually reach the stop it always
+    /// made rather than wait in silence for the life of the process.
+    #[test]
+    fn a_deferral_ends_and_the_stop_is_still_reached() {
+        use future_host::agent_host::OwnedWork;
+        let start = Instant::now();
+        let mut since = None;
+        assert!(busy_defers_stop(OwnedWork::Busy, &mut since, start));
+        assert!(busy_defers_stop(
+            OwnedWork::Busy,
+            &mut since,
+            start + BUSY_STOP_DEFERRAL - Duration::from_secs(1)
+        ));
+        assert!(
+            !busy_defers_stop(OwnedWork::Busy, &mut since, start + BUSY_STOP_DEFERRAL),
+            "the wait ends here: the stop is the fallback, not silence"
+        );
+    }
+
+    /// A spell is measured from its own first failure: an Agent that answers and
+    /// is then lost again gets the whole deferral, not the remainder of the old
+    /// one. Otherwise a busy spell from an hour ago would licence a stop now.
+    #[test]
+    fn answering_again_starts_a_fresh_deferral() {
+        use future_host::agent_host::OwnedWork;
+        let start = Instant::now();
+        let mut since = None;
+        assert!(busy_defers_stop(OwnedWork::Busy, &mut since, start));
+        assert!(!busy_defers_stop(
+            OwnedWork::Idle,
+            &mut since,
+            start + Duration::from_secs(119)
+        ));
+        assert!(busy_defers_stop(
+            OwnedWork::Busy,
+            &mut since,
+            start + Duration::from_secs(120)
+        ));
+    }
 
     #[test]
     fn forced_exit_deadline_does_not_depend_on_agent_cleanup_or_the_ui_loop() {

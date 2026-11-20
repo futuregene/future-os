@@ -55,6 +55,10 @@ const mockRemote = {
   // The approval decision the composer's card submits.
   decideApproval: jest.fn<Promise<void>, [string, string]>(),
   capabilities: new Set(),
+  // The desktop takes files (`file_transfer_v1`). A waiting row's "+" follows the
+  // same rule as the composer's paperclip, so a machine without it is a case of
+  // its own below.
+  fileTransferSupported: true,
   timeline: {
     items: [
       { id: "u-last", kind: "message", role: "user", text: "Question" },
@@ -297,6 +301,7 @@ beforeEach(async () => {
   mockRemote.retryTimeline = jest.fn();
   mockRemote.listSessionFiles = jest.fn(async () => null);
   mockRemote.capabilities = new Set();
+  mockRemote.fileTransferSupported = true;
   mockRemote.listGitCommits = jest.fn(async () => ({
     isRepo: false, repoName: "", path: "", commits: [], truncated: false,
   }));
@@ -1858,6 +1863,100 @@ test("adding a photo to a waiting message sends the kept files with it", async (
   expect(sent[0]).toBe("look");
   expect(sent[1]!.map(item => (item as { name: string }).name)).toEqual(["shot.png", "new.png"]);
   expect(sent[3]).toEqual({ busyPolicy: QUEUED_SEND_POLICY });
+});
+
+/** What the message box holds after every update the screen made to it. */
+const attachmentsInBox = () =>
+  mockDraft.setAttachments.mock.calls
+    .map(call => call[0] as unknown)
+    .reduce<unknown[]>(
+      (current, update) => (typeof update === "function"
+        ? (update as (value: unknown[]) => unknown[])(current)
+        : (update as unknown[])),
+      [],
+    )
+    .map(item => (item as { name: string }).name);
+
+/**
+ * The row can leave the queue while the picker is open — it starts at the turn
+ * boundary, or a burst of them folds into the turn ahead — and changing a waiting
+ * message's files is a cancel and a re-send, so the cancel is what gets refused.
+ * The words are the desktop's business by then; the files the reader picked are
+ * the one thing that must survive, and "message failed to send" left them gone.
+ */
+test("a photo added to a row that already left the queue stays in the message box", async () => {
+  const toast = jest.spyOn(chatUtils, "showToast").mockImplementation(() => {});
+  const remoteFiles = jest.requireMock("../../../remote/files") as { pickAttachments: jest.Mock };
+  remoteFiles.pickAttachments.mockResolvedValueOnce([{
+    kind: "image",
+    localUri: "file:///cache/new.png",
+    mimeType: "image/png",
+    name: "new.png",
+    originalSize: 100,
+    transferSize: 100,
+  }]);
+  await mountWithQueue([queueRow({ attachments: [], runId: "run_a", text: "look" })]);
+  mockRemote.cancelQueuedRun.mockRejectedValueOnce(
+    new Error("Future Agent did not cancel the queued message: run `run_a` is not queued"),
+  );
+
+  await act(async () => {
+    tree.root.findByType(ComposerDock).props.onQueueAddAttachments("run_a");
+  });
+  const menu = tree.root.findByType(AttachmentSourceMenu);
+  await act(async () => { menu.props.onPick("files"); });
+  await settleQueue();
+
+  expect(mockRemote.sendMessage).not.toHaveBeenCalled();
+  expect(toast).toHaveBeenCalled();
+  expect(attachmentsInBox()).toEqual(["new.png"]);
+});
+
+/** The other half: the cancel went through and the desktop then refused the send. */
+test("a photo whose re-send is refused lands in the message box exactly once", async () => {
+  const remoteFiles = jest.requireMock("../../../remote/files") as { pickAttachments: jest.Mock };
+  remoteFiles.pickAttachments.mockResolvedValueOnce([{
+    kind: "image",
+    localUri: "file:///cache/new.png",
+    mimeType: "image/png",
+    name: "new.png",
+    originalSize: 100,
+    transferSize: 100,
+  }]);
+  await mountWithQueue([queueRow({ attachments: [], runId: "run_a", text: "look" })]);
+  mockRemote.sendMessage.mockRejectedValueOnce(new Error("session_busy: still running"));
+
+  await act(async () => {
+    tree.root.findByType(ComposerDock).props.onQueueAddAttachments("run_a");
+  });
+  const menu = tree.root.findByType(AttachmentSourceMenu);
+  await act(async () => { menu.props.onPick("files"); });
+  await settleQueue();
+
+  // The screen's own restore already put the picture back; the queue's "keep what
+  // was picked" must not add a second copy of it.
+  expect(attachmentsInBox()).toEqual(["new.png"]);
+});
+
+/**
+ * A desktop that takes no files at all. Its composer disables the paperclip for
+ * the same reason, but a waiting row's "+" is the control a reader reaches for
+ * while messages wait, and it used to open a picker whose files could only come
+ * back as "message failed to send".
+ */
+test("a desktop that takes no files refuses the row's '+' instead of opening a picker", async () => {
+  const toast = jest.spyOn(chatUtils, "showToast").mockImplementation(() => {});
+  const remoteFiles = jest.requireMock("../../../remote/files") as { pickAttachments: jest.Mock };
+  mockRemote.fileTransferSupported = false;
+  await mountWithQueue([queueRow({ attachments: [], runId: "run_a", text: "look" })]);
+
+  await act(async () => {
+    tree.root.findByType(ComposerDock).props.onQueueAddAttachments("run_a");
+  });
+
+  expect(tree.root.findAllByType(AttachmentSourceMenu).every(node => !node.props.visible)).toBe(true);
+  expect(remoteFiles.pickAttachments).not.toHaveBeenCalled();
+  expect(toast).toHaveBeenCalledWith("chat.attachmentsUnsupported");
 });
 
 test("a parked row offers 'send now', and pressing it releases that run", async () => {
