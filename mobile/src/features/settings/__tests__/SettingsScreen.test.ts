@@ -84,7 +84,8 @@ const props = { onClose: jest.fn(), onCheckUpdate: jest.fn(), checkingUpdate: fa
 /**
  * The same stack opened for one paired desktop.
  *
- * Every desktop-scoped level (preferences, models, providers, skills, tasks)
+ * Every desktop-scoped level (permission, reply, storage, models, providers,
+ * skills, tasks)
  * now lives under a device page, so this is the surface most of this file
  * drives; `props` without a `deviceId` is the phone's own screen.
  */
@@ -102,7 +103,10 @@ const headings = () => [...new Set(tree.root
 /** A provider heading: the pressable that folds its models. */
 const group = (title: string) => tree.root.findAll(node => node.props.accessibilityLabel === title && node.props.accessibilityRole === "button")[0]!;
 const modelSwitches = () => tree.root.findAllByType(SettingsSwitch).filter(node => node.props.description === "same");
-async function openPreferences() { await act(async () => link("desktopSettings.preferences").props.onPress()); }
+async function openPermission() { await act(async () => link("desktopSettings.permission").props.onPress()); }
+async function openReply() { await act(async () => link("desktopSettings.reply").props.onPress()); }
+async function openStorage() { await act(async () => link("desktopSettings.storage").props.onPress()); }
+async function openSkills() { await act(async () => link("desktopSettings.skills").props.onPress()); }
 async function flush() { await act(async () => { await Promise.resolve(); }); }
 
 beforeEach(async () => {
@@ -199,7 +203,7 @@ test("a taken-over desktop offers no way into its settings", async () => {
   await mountDevice("other-desktop");
 
   const labels = tree.root.findAllByType(SettingsLink).map(node => node.props.label);
-  for (const page of ["preferences", "models", "providers", "skills", "tasks"])
+  for (const page of ["permission", "reply", "storage", "models", "providers", "skills", "tasks"])
     expect(labels).not.toContain(`desktopSettings.${page}`);
 
   // The machine's settings are not offered while somebody else is driving it,
@@ -214,7 +218,7 @@ test("a taken-over desktop offers no way into its settings", async () => {
 // the machine.
 test("a settings page gives way to the banner when the machine is taken over", async () => {
   await mountDevice("other-desktop");
-  await act(async () => link("desktopSettings.preferences").props.onPress());
+  await openPermission();
   expect(tree.root.findAllByProps({ accessibilityLabel: "approvalTier.manual" }).length).toBeGreaterThan(0);
 
   mockRemote.presence = { control: "standby", holder: { name: "Studio laptop" } };
@@ -238,7 +242,7 @@ test("the device page configures the desktop, and keeps the phone's own rows out
   expect(link("update.check")).toBeUndefined();
   expect(tree.root.findAllByType(SettingsSwitch)).toHaveLength(0);
   expect(tree.root.findAllByType(Button)).toHaveLength(0);
-  await openPreferences();
+  await openReply();
   expect(toggle("desktopSettings.autoTitleFirstTurn").props.value).toBe(true);
   await act(async () => toggle("desktopSettings.autoTitleFirstTurn").props.onChange(false));
   expect(mockRemote.updateDesktopSettings).toHaveBeenCalledWith({ autoTitleFirstTurn: false });
@@ -247,7 +251,7 @@ test("the device page configures the desktop, and keeps the phone's own rows out
 });
 
 test("reloads a desktop-originated change", async () => {
-  await openPreferences();
+  await openSkills();
   stored.autoUpgradeSkills = false;
   mockRemote.desktopSettingsRevision++;
   await act(async () => tree.update(createElement(SettingsScreen, deviceProps)));
@@ -263,18 +267,18 @@ test("reloads a desktop-originated change", async () => {
  * The preference stays entirely on the desktop; the phone only shows the
  * preferences that take effect at once.
  */
-test("does not offer the remote desktop switch", async () => {  await openPreferences();
+test("does not offer the remote desktop switch", async () => {  await openReply();
   expect(toggle("desktopSettings.autoConnectRemote")).toBeUndefined();
   expect(strings()).not.toContain("desktopSettings.autoConnectRemote");
-  // Three automation switches plus the two archiving ones, plus the choice-card
-  // switch. The desktop's own remote switch is missing, which is the point here.
-  expect(tree.root.findAllByType(SettingsSwitch)).toHaveLength(6);
+  // The reply page holds what a reply does: a choice card, and a title after the
+  // first answer. The desktop's own remote switch is missing, which is the point.
+  expect(tree.root.findAllByType(SettingsSwitch)).toHaveLength(2);
 });
 
 test("offline and old desktops cannot write new preferences", async () => {  mockRemote.desktopOnline = false;
   await act(async () => tree.update(createElement(SettingsScreen, deviceProps)));
   expect(link("desktopSettings.models").props.disabled).toBe(true);
-  await openPreferences();
+  await openReply();
   expect(toggle("desktopSettings.autoTitleFirstTurn").props.disabled).toBe(true);
   mockRemote.desktopOnline = true;
   mockRemote.capabilities.clear();
@@ -383,7 +387,7 @@ test("skill text follows the system language, borrowing the catalogue's translat
 });
 
 test("failed reads leave mutations disabled instead of inventing mobile defaults", async () => {
-  await openPreferences();
+  await openReply();
   mockRemote.getDesktopSettings.mockRejectedValueOnce(new Error("offline"));
   mockRemote.desktopSettingsRevision++;
   await act(async () => tree.update(createElement(SettingsScreen, deviceProps)));
@@ -406,7 +410,7 @@ test("the device page names the machine it configures, and offers no unpair acti
   expect(heading()!.props.numberOfLines).toBe(1);
   // One level down the header names the level instead, so the machine comes
   // back as the banner above it.
-  await openPreferences();
+  await openReply();
   expect(heading()).toBeUndefined();
   expect(strings()).toContain("desktopSettings.boundDesktop: Work computer");
 });
@@ -417,7 +421,7 @@ test("the device page names the machine it configures, and offers no unpair acti
  * where picking an icon had no visible effect anywhere.
  */
 test("the scoped banner wears the bound desktop's own icon", async () => {
-  await openPreferences();
+  await openReply();
   expect(glyphIds()).toEqual([PEER_ICONS[0]!.id]);
   mockRemote.desktops = [
     { pairId: "other", desktopId: "other-desktop", name: "Other computer" },
@@ -431,7 +435,9 @@ test("the phone's own screen holds no device settings", async () => {
   await remountPhone();
   // Every machine-scoped row moved to that machine's page: this screen must
   // stay usable with nothing paired.
-  expect(link("desktopSettings.preferences")).toBeUndefined();
+  expect(link("desktopSettings.permission")).toBeUndefined();
+  expect(link("desktopSettings.reply")).toBeUndefined();
+  expect(link("desktopSettings.storage")).toBeUndefined();
   expect(link("desktopSettings.models")).toBeUndefined();
   expect(link("desktopSettings.providers")).toBeUndefined();
   expect(link("desktopSettings.skills")).toBeUndefined();
@@ -542,19 +548,19 @@ test("subpages use the shared back control and rounded card styling", async () =
   expect(props.onClose).toHaveBeenCalledTimes(1);
 });
 
-test("preferences auto-load without a persistent refresh button", async () => {
-  await openPreferences();
+test("a settings page auto-loads without a persistent refresh button", async () => {
+  await openStorage();
   expect(mockRemote.getDesktopSettings).toHaveBeenCalledTimes(1);
-  // auto-upgrade, auto-title, skill recommendation, run-log cleanup and
-  // automatic archiving, plus the choice-card switch. The remote desktop switch
-  // is the desktop's own (its Remote page), so the phone does not offer it.
-  expect(tree.root.findAllByType(SettingsSwitch)).toHaveLength(6);
+  // Run-log cleanup and automatic archiving; the idle-days input is a field, not
+  // a switch, and the remote desktop switch is the desktop's own (its Remote
+  // page), so the phone does not offer it.
+  expect(tree.root.findAllByType(SettingsSwitch)).toHaveLength(2);
   expect(tree.root.findAllByType(Button)).toHaveLength(0);
 });
 
 test("offers the archiving settings and writes each one to the paired desktop", async () => {
   stored = { ...stored, archiveRunLogCleanup: true, autoArchiveEnabled: false, autoArchiveIdleDays: 30 };
-  await openPreferences();
+  await openStorage();
 
   await act(async () => toggle("desktopSettings.archiveRunLogCleanup").props.onChange(false));
   expect(mockRemote.updateDesktopSettings).toHaveBeenLastCalledWith({ archiveRunLogCleanup: false });
@@ -569,7 +575,7 @@ test("offers the archiving settings and writes each one to the paired desktop", 
 test("reads an omitted cleanup switch as on, matching the desktop's default", async () => {
   // An older desktop omits the key entirely; it still clears logs on archive.
   stored = { autoTitleFirstTurn: true, autoUpgradeSkills: true, autoConnectRemote: false, hiddenModels: [] };
-  await openPreferences();
+  await openStorage();
 
   expect(toggle("desktopSettings.archiveRunLogCleanup").props.value).toBe(true);
   expect(toggle("desktopSettings.autoArchive").props.value).toBe(false);
@@ -578,7 +584,7 @@ test("reads an omitted cleanup switch as on, matching the desktop's default", as
 
 test("the idle period is only editable once automatic archiving is on", async () => {
   stored = { ...stored, autoArchiveEnabled: false };
-  await openPreferences();
+  await openStorage();
   expect(input("desktopSettings.autoArchiveIdleDays").props.editable).toBe(false);
 
   await act(async () => toggle("desktopSettings.autoArchive").props.onChange(true));
@@ -587,7 +593,7 @@ test("the idle period is only editable once automatic archiving is on", async ()
 
 test("an out-of-range idle period is not written", async () => {
   stored = { ...stored, autoArchiveEnabled: true, autoArchiveIdleDays: 30 };
-  await openPreferences();
+  await openStorage();
 
   await type("desktopSettings.autoArchiveIdleDays", "0");
   await type("desktopSettings.autoArchiveIdleDays", "400");
@@ -678,7 +684,7 @@ function deferred<T>() {
 }
 
 test("each preference switch writes its own field and nothing else", async () => {
-  await openPreferences();
+  await openSkills();
   await act(async () => toggle("desktopSettings.autoUpgradeSkills").props.onChange(false));
   expect(mockRemote.updateDesktopSettings).toHaveBeenLastCalledWith({ autoUpgradeSkills: false });
   await act(async () => toggle("desktopSettings.skillRecommend").props.onChange(false));
@@ -689,7 +695,7 @@ test("each preference switch writes its own field and nothing else", async () =>
 });
 
 test("a refused preference write is reported, and the page still re-reads the desktop", async () => {
-  await openPreferences();
+  await openReply();
   mockRemote.updateDesktopSettings.mockRejectedValueOnce(new Error("desktop busy"));
   await act(async () => toggle("desktopSettings.autoTitleFirstTurn").props.onChange(false));
   expect(texts()).toContain("desktopSettings.saveFailed");
@@ -702,7 +708,7 @@ test("a refused preference write is reported, and the page still re-reads the de
 });
 
 test("a preference switch cannot write while the desktop is unreachable", async () => {
-  await openPreferences();
+  await openReply();
   expect(toggle("desktopSettings.autoTitleFirstTurn").props.disabled).toBe(false);
   mockRemote.desktopOnline = false;
   // The page is already mounted; a disconnect re-renders it rather than
@@ -716,7 +722,7 @@ test("a preference switch cannot write while the desktop is unreachable", async 
 });
 
 test("an approval tier cannot be written while the desktop is unreachable", async () => {
-  await openPreferences();
+  await openPermission();
   mockRemote.desktopOnline = false;
   await act(async () => { tree.update(createElement(SettingsScreen, deviceProps)); });
   // The tier radios stay tappable (the page explains the offline state), so
@@ -726,7 +732,7 @@ test("an approval tier cannot be written while the desktop is unreachable", asyn
 });
 
 test("a second tier tap while the first write is in flight writes once", async () => {
-  await openPreferences();
+  await openPermission();
   const pending = deferred<void>();
   mockRemote.setApprovalTier.mockReturnValueOnce(pending.promise);
   await act(async () => { void radio("approvalTier.sandbox").props.onPress(); });
@@ -741,7 +747,7 @@ test("a second tier tap while the first write is in flight writes once", async (
 });
 
 test("choosing an approval tier writes it and reports a refusal", async () => {
-  await openPreferences();
+  await openPermission();
   expect(radio("approvalTier.manual").props.accessibilityState.checked).toBe(true);
   await act(async () => radio("approvalTier.sandbox").props.onPress());
   expect(mockRemote.setApprovalTier).toHaveBeenCalledWith("sandbox");
@@ -981,7 +987,7 @@ async function mountDevice(deviceId: string) {
  */
 test("a device page reads the machine it names, with no connection step", async () => {
   await mountDevice("other-desktop");
-  expect(link("desktopSettings.preferences")).toBeDefined();
+  expect(link("desktopSettings.permission")).toBeDefined();
   expect(link("desktopSettings.models")).toBeDefined();
   expect(link("desktops.connect")).toBeUndefined();
   expect(texts()).not.toContain("desktops.connectHint");
@@ -1007,7 +1013,7 @@ test("a machine that is not answering disables its rows and says so", async () =
 });
 
 test("automatic review is offered only by capable desktops with a working sandbox", async () => {
-  await openPreferences();
+  await openPermission();
   expect(tree.root.findAllByProps({ accessibilityLabel: "approvalTier.auto" })).toHaveLength(0);
   mockRemote.capabilities.add("auto_approval_v1");
   await act(async () => { tree.update(createElement(SettingsScreen, deviceProps)); });
@@ -1021,7 +1027,7 @@ test("automatic review is offered only by capable desktops with a working sandbo
 test("limited protection keeps the usual approval choices and only adds the upgrade hint", async () => {
   mockRemote.sandboxCode = "available_write_only";
   mockRemote.capabilities.add("auto_approval_v1");
-  await openPreferences();
+  await openPermission();
   expect(texts()).toContain("approvalTier.upgrade");
   // React Native forwards these props through multiple wrapper nodes. Select
   // the actual radio control, then verify that limited protection stays usable.

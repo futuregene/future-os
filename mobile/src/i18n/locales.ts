@@ -1003,8 +1003,9 @@ export const resources = {
 
         boundDesktop: "Paired desktop: {{name}}",
         sharedHint: "Desktop settings apply only to this paired device and sync across both clients.",
-        preferences: "Automation and approvals",
-        automation: "Automation",
+        permission: "Permissions",
+        reply: "Replies",
+        storage: "Storage",
         language: "Language",
         appearance: "Appearance",
         modelsAndSkills: "Models and skills",
@@ -2215,8 +2216,9 @@ export const resources = {
 
         boundDesktop: "已配对的桌面端：{{name}}",
         sharedHint: "桌面端设置仅作用于此桌面端，两端同步生效。",
-        preferences: "自动化与审批",
-        automation: "自动化",
+        permission: "权限",
+        reply: "回复",
+        storage: "存储",
         language: "语言",
         appearance: "外观",
         modelsAndSkills: "模型与技能",
