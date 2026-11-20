@@ -144,9 +144,10 @@ mod tests {
         // PRD v1.6 §3 / integration-plan rule 1: recommendation is off unless
         // the user opts in.
         assert!(!settings.skill_recommend);
-        // Choice cards are opt-in too: a fresh install draws none, and the
-        // prompt section that produces one is gated on the same value.
-        assert!(!settings.choice_cards);
+        // Choice cards ship on: a fresh install may close a reply with a card,
+        // and the prompt section that makes one possible is gated on the same
+        // value. A row stored while the default was off keeps its `false`.
+        assert!(settings.choice_cards);
     }
 
     #[test]
