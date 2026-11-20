@@ -9,17 +9,22 @@ pub(super) fn contains(source: &str, excerpt: &str) -> bool {
                 whitespace = true;
                 continue;
             }
+            let c = match c {
+                '\'' | '"' | '‘' | '’' | '“' | '”' | '＇' | '＂' | '「' | '」' | '『' | '』' => {
+                    '"'
+                }
+                _ => c,
+            };
             if whitespace
-                && !result.is_empty()
-                && !(result.chars().last().is_some_and(chinese) && chinese(c))
+                && result.chars().next_back().is_some_and(|previous| {
+                    !(chinese(previous) && (chinese(c) || c == '"')
+                        || previous == '"' && chinese(c))
+                })
             {
                 result.push(' ');
             }
             whitespace = false;
-            result.push(match c {
-                '\'' | '"' | '‘' | '’' | '“' | '”' | '＇' | '＂' => '"',
-                _ => c,
-            });
+            result.push(c);
         }
         result.trim().to_owned()
     }
@@ -37,6 +42,12 @@ mod tests {
             "Keep\r\n existing\u{3000}data.",
             "Keep existing data."
         ));
+        assert!(contains(
+            "它说\"本质仍是工具\"是断言而非论证",
+            "「本质仍是工具」 是断言而非论证"
+        ));
+        assert!(contains("他说『保留数据』。", "他说 \"保留数据\"。"));
+        assert!(!contains("「不执行」是决定", "\"执行\"是决定"));
         assert!(!contains("Do not delete data.", "Do delete data."));
         assert!(!contains("Use SQLite.", "Use files."));
         assert!(!contains("now here", "nowhere"));

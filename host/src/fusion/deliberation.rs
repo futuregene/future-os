@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 const MARKER: &str = "\nDecision audit packet:\n";
-pub(super) const INSTRUCTIONS: &str = r#"Decision audit protocol: the packet lists consequential objections, not every difference. Address EVERY listed ID exactly once in decision_audit.dispositions. Each disposition has id, decision (accepted|rejected|unresolved), reason, effect, and basis (array of {source_id,quote}, exact excerpts from packet.sources). Accepted/rejected require at least one source excerpt AND a reason explaining why it answers the objection; quotation or majority alone is not a refutation. Accepted means its impact is incorporated; rejected means it does not overturn the conclusion; unresolved means the decisive check remains open. Never mark resolution settled with an unresolved objection. An accepted missing-premise objection remains an open dependency until that premise is established or its dependent claim is excluded. Do not accept the gap and then use the same assumption to select an unconditional answer. Option construction, inferred author intent and absence of contradiction do not discharge it. Use resolution conditional or insufficient_information and explain applicability in the answer and unresolved list. Source matches verify provenance, not truth or entailment. A missing premise cannot be disposed of merely by demanding disproof of the conclusion that depends on it. Distinguish the conclusion that is usable under established premises from an optional extension that needs an extra assumption. If an unresolved premise changes which answer or action is justified, identify exactly that dependency; do not merely label the metadata conditional while presenting the extension as established. A user-requested conditional plan or possible outcome may remain conditional; do not suppress useful supported results.
+pub(super) const INSTRUCTIONS: &str = r#"Decision audit protocol: the packet lists consequential objections, not every difference. Address EVERY listed ID exactly once in decision_audit.dispositions. Each disposition has id, decision (accepted|rejected|unresolved), reason, effect, and basis (array of {source_id,source_path} or {source_id,quote}). Prefer source_path, a JSON Pointer to an existing text field in that source, such as /reason for an objection or /current_answer for a participant report. Read report paths inside the decoded response. The host copies that field verbatim. Use quote for an exact excerpt when you need part of a longer source or the source is plain text. Supply only one of source_path and quote. Accepted/rejected require at least one source citation AND a reason explaining why it answers the objection; quotation or majority alone is not a refutation. Accepted means its impact is incorporated; rejected means it does not overturn the conclusion; unresolved means the decisive check remains open. Never mark resolution settled with an unresolved objection. An accepted missing-premise objection remains an open dependency until that premise is established or its dependent claim is excluded. Do not accept the gap and then use the same assumption to select an unconditional answer. Option construction, inferred author intent and absence of contradiction do not discharge it. Use resolution conditional or insufficient_information and explain applicability in the answer and unresolved list. Source matches verify provenance, not truth or entailment. A missing premise cannot be disposed of merely by demanding disproof of the conclusion that depends on it. Distinguish the conclusion that is usable under established premises from an optional extension that needs an extra assumption. If an unresolved premise changes which answer or action is justified, identify exactly that dependency; do not merely label the metadata conditional while presenting the extension as established. A user-requested conditional plan or possible outcome may remain conditional; do not suppress useful supported results.
 Apply accepted objections and unresolved dependencies to the actual user-facing answer before returning it; this report is delivered directly, with no later model reconciliation. Return JSON with decision_audit:{resolution:"settled|conditional|insufficient_information",dispositions:[],decision_update:null}. For a reopened decision, decision_update must be {decision:"maintain|revise",reason:"specific evidence/counterexample/corrected inference and its impact under the inherited criterion"}. Maintaining means preserving the previous user-facing answer verbatim. Revising needs a concrete justification; another vote or confidence is not enough. Inherit unresolved checks until explicitly disposed of. The previous conclusion is the working result; do not restart the whole problem. For closed tasks add decision_audit to the closed answer protocol. For general tasks use {conclusion:"self-contained answer in the requested format",unresolved:[],decision_audit:{...}}; only conclusion is delivered as prose."#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,7 +69,10 @@ enum Decision {
 #[serde(deny_unknown_fields)]
 struct Basis {
     source_id: String,
-    quote: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    quote: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_path: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -222,6 +225,32 @@ fn strings(value: &Value) -> Vec<&str> {
         _ => vec![],
     }
 }
+fn source_text<'a>(source: &'a Value, path: &str) -> Option<&'a str> {
+    if !path.starts_with('/')
+        || matches!(
+            path.rsplit('/').next(),
+            Some("id" | "participant" | "source_id" | "source_phase" | "decision" | "assessment")
+        )
+    {
+        return None;
+    }
+    source
+        .pointer(path)?
+        .as_str()
+        .filter(|text| !text.trim().is_empty())
+}
+
+fn citation_material<'a>(source: &'a Value, source_id: &str) -> (&'a Value, Option<Value>) {
+    if !source_id.starts_with("report:") {
+        return (source, None);
+    }
+    let response = &source["response"];
+    (
+        response,
+        response.as_str().and_then(|text| parse_json(text).ok()),
+    )
+}
+
 // Validate against backend-owned state, never a ledger parsed out of participant
 // prose; an untrusted report may itself contain prompt-like delimiters.
 pub(super) fn validate(text: &str, packet: &Value, closed: bool) -> Result<()> {
@@ -256,34 +285,34 @@ pub(super) fn validate(text: &str, packet: &Value, closed: bool) -> Result<()> {
                 errors.push(format!("{field}: unknown source {:?}", basis.source_id));
                 continue;
             };
-            let material = if basis.source_id.starts_with("report:") {
-                &source["response"]
-            } else {
-                source
-            };
-            // Reports are JSON-encoded strings in the packet. Their decoded
-            // string fields are the original wording too, not paraphrases.
-            let decoded = if basis.source_id.starts_with("report:") {
-                material
-                    .as_str()
-                    .and_then(|text| parse_json::<Value>(text).ok())
-            } else {
-                None
-            };
-            let mut candidates = decoded.as_ref().map(strings).unwrap_or_default();
-            candidates.extend(strings(material));
-            if !candidates
-                .iter()
-                .any(|s| super::quotes::contains(s, &basis.quote))
-            {
-                errors.push(format!("{field}.quote is absent from source {:?}; supplied: {:?}. Copy an exact source excerpt, without adding words.",
-                    basis.source_id, future_fusion::bounded_text(&basis.quote, 240)));
-                if hints.len() < 8 {
-                    hints.insert(
-                        basis.source_id.clone(),
-                        future_fusion::bounded_text(&serde_json::to_string(&candidates)?, 1600),
-                    );
+            let (material, decoded) = citation_material(source, &basis.source_id);
+            match (&basis.source_path, &basis.quote) {
+                (Some(path), None) => {
+                    if source_text(decoded.as_ref().unwrap_or(material), path).is_none() {
+                        errors.push(format!(
+                            "{field}.source_path {path:?} is not a text field in source {:?}",
+                            basis.source_id
+                        ));
+                    }
                 }
+                (None, Some(quote)) => {
+                    let mut candidates = decoded.as_ref().map(strings).unwrap_or_default();
+                    candidates.extend(strings(material));
+                    if !candidates.iter().any(|s| super::quotes::contains(s, quote)) {
+                        errors.push(format!("{field}.quote is absent from source {:?}; supplied: {:?}. Copy an exact source excerpt, without adding words, or select a source_path.",
+                            basis.source_id, future_fusion::bounded_text(quote, 240)));
+                        if hints.len() < 8 {
+                            hints.insert(
+                                basis.source_id.clone(),
+                                future_fusion::bounded_text(
+                                    &serde_json::to_string(&candidates)?,
+                                    1600,
+                                ),
+                            );
+                        }
+                    }
+                }
+                _ => errors.push(format!("{field}: supply one of source_path and quote")),
             }
         }
         if d.decision == Decision::Unresolved && audit.resolution == Resolution::Settled {
@@ -342,10 +371,25 @@ pub(super) fn validate(text: &str, packet: &Value, closed: bool) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn attach(result: &mut future_fusion::Conclusion, text: &str) -> Result<()> {
+pub(super) fn attach(
+    result: &mut future_fusion::Conclusion,
+    text: &str,
+    packet: &Value,
+) -> Result<()> {
     let value: Value = parse_json(text)?;
     if let Some(raw) = value.get("decision_audit") {
-        let audit: Audit = serde_json::from_value(raw.clone())?;
+        let mut audit: Audit = serde_json::from_value(raw.clone())?;
+        for basis in audit.dispositions.iter_mut().flat_map(|d| &mut d.basis) {
+            if let Some(path) = basis.source_path.take() {
+                let source = &packet["sources"][&basis.source_id];
+                let (material, decoded) = citation_material(source, &basis.source_id);
+                basis.quote = Some(
+                    source_text(decoded.as_ref().unwrap_or(material), &path)
+                        .context("Decision audit source changed after validation")?
+                        .to_owned(),
+                );
+            }
+        }
         for d in audit
             .dispositions
             .iter()
@@ -355,7 +399,7 @@ pub(super) fn attach(result: &mut future_fusion::Conclusion, text: &str) -> Resu
                 .unresolved
                 .push(format!("{}: {} — {}", d.id, d.reason, d.effect));
         }
-        result.decision_audit = Some(raw.clone());
+        result.decision_audit = Some(serde_json::to_value(audit)?);
     }
     Ok(())
 }
@@ -463,7 +507,7 @@ mod tests {
         value["decision_audit"]["dispositions"][0]["basis"] = json!([]);
         validate(&value.to_string(), &prompt, false).unwrap();
         let mut result = future_fusion::Conclusion::default();
-        attach(&mut result, &value.to_string()).unwrap();
+        attach(&mut result, &value.to_string(), &prompt).unwrap();
         assert!(result.unresolved[0].starts_with("I1:"));
         value["decision_audit"]["resolution"] = json!("settled");
         assert!(validate(&value.to_string(), &prompt, false).is_err());
@@ -492,6 +536,84 @@ mod tests {
         validate(&value.to_string(), &packet, false).unwrap();
         value["decision_audit"]["dispositions"][0]["basis"][0]["quote"] =
             json!("Keep all existing records.");
+        assert!(validate(&value.to_string(), &packet, false).is_err());
+    }
+
+    #[test]
+    fn recorded_citation_failures_support_verified_source_selection() {
+        // One retained failing citation per benchmark case. Full reports are
+        // left to the live replay because a source path does not prove a claim.
+        let cases: Vec<Value> =
+            serde_json::from_str(include_str!("fixtures/citation-failures.json")).unwrap();
+        assert_eq!(cases.len(), 7);
+        for case in cases {
+            let (mut value, mut packet) = fixture();
+            let case_id = case["case"].as_str().unwrap();
+            let source_id = case["source_id"].as_str().unwrap();
+            let quote = case["quote"].as_str().unwrap();
+            if case_id == "bbeh-130" {
+                let task = case["source"].as_str().unwrap();
+                let answer = json!({
+                    "answer":"Example answer", "support":"Example support", "unresolved":[],
+                    "checks":[{"claim":"Image detail", "quote":quote, "assessment":"supports",
+                               "effect":"Affects the proposed answer"}]
+                });
+                let error =
+                    super::super::answer::validate_sources(&answer.to_string(), &[task], true)
+                        .unwrap_err();
+                assert!(error
+                    .to_string()
+                    .contains("not present in the preserved request"));
+                continue;
+            }
+            packet["sources"][source_id] = case["source"].clone();
+            value["decision_audit"]["dispositions"][0]["basis"] =
+                json!([{"source_id":source_id,"quote":quote}]);
+            let error = validate(&value.to_string(), &packet, false).unwrap_err();
+            assert!(
+                error.to_string().contains("quote is absent from source"),
+                "{case_id}: {error}"
+            );
+
+            value["decision_audit"]["dispositions"][0]["basis"] =
+                json!([{"source_id":source_id,"source_path":case["source_path"]}]);
+            let report = value.to_string();
+            validate(&report, &packet, false).unwrap();
+            let mut conclusion = future_fusion::Conclusion::default();
+            attach(&mut conclusion, &report, &packet).unwrap();
+            let stored = conclusion.decision_audit.unwrap();
+            let recorded = &stored["dispositions"][0]["basis"][0];
+            let (source, decoded) = citation_material(&case["source"], source_id);
+            let path = case["source_path"].as_str().unwrap();
+            assert_eq!(
+                recorded["quote"],
+                source_text(decoded.as_ref().unwrap_or(source), path).unwrap()
+            );
+            assert!(recorded.get("source_path").is_none());
+        }
+    }
+
+    #[test]
+    fn source_paths_reject_invalid_fields_and_ambiguous_citations() {
+        let (mut value, mut packet) = fixture();
+        packet["sources"]["report:P1"] = json!({"response":"{\"participant\":\"P1\",\"reason\":\" \",\"count\":5,\"text\":\"Original evidence\"}"});
+        for path in [
+            "/missing",
+            "/participant",
+            "/reason",
+            "/count",
+            "/response",
+            "",
+        ] {
+            value["decision_audit"]["dispositions"][0]["basis"] =
+                json!([{"source_id":"report:P1","source_path":path}]);
+            assert!(
+                validate(&value.to_string(), &packet, false).is_err(),
+                "{path}"
+            );
+        }
+        value["decision_audit"]["dispositions"][0]["basis"] =
+            json!([{"source_id":"report:P1","source_path":"/text","quote":"Original evidence"}]);
         assert!(validate(&value.to_string(), &packet, false).is_err());
     }
 

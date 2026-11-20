@@ -612,8 +612,8 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
             ..Default::default()
         }
     };
-    if audit_required {
-        deliberation::attach(&mut result, &text)?;
+    if let Some(packet) = ctx.synthesis_audit.lock().unwrap().as_ref() {
+        deliberation::attach(&mut result, &text, packet)?;
     }
     ctx.update(|report| report.complete("synthesizing"))?;
     let report = ctx.report();
