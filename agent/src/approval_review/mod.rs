@@ -19,8 +19,8 @@ pub use types::{Assessment, ProviderAssessment, ReviewStatus, Verdict};
 
 const THRESHOLD: f64 = 0.75;
 const PROBABILITY_SUM_TOLERANCE: f64 = 0.01 + 1e-9;
-const PROMPT_VERSION: u32 = 5;
-const REASON_CATALOG_VERSION: u32 = 2;
+const PROMPT_VERSION: u32 = 6;
+const REASON_CATALOG_VERSION: u32 = 3;
 const POLICY_VERSION: u32 = 2;
 const REVIEW_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const ACTION_RAW_BYTES_LIMIT: usize = 32 * 1024;

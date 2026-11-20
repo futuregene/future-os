@@ -540,11 +540,13 @@ test-screenshot-harness:
 
 # Regression tests for the UI harness's own judgement: the performance thresholds
 # (both directions — real noise passes, a claimed regression fails), which quoted
-# values may be demoted as fixture data, and the clip clock the analysis labels its
-# screenshots with. Offline, no browser, no model — a few hundred milliseconds.
+# values may be demoted as fixture data, the clip clock the analysis labels its
+# screenshots with, and that a click carries no driver latency (a timer inside
+# `click` moves every latency measured through it). Offline, no browser, no
+# model — about a second.
 test-ui-harness:
 	node --test harness/lib/perf.test.mjs harness/lib/provenance.test.mjs harness/lib/video.test.mjs \
-		harness/scripts/video-judge.test.mjs
+		harness/lib/cdp-click.test.mjs harness/scripts/video-judge.test.mjs
 
 # Wire codegen owners: packages/rpc (future.proto) + channels (feishu_ws pbbp2).
 #

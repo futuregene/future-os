@@ -1,0 +1,268 @@
+{
+  "id": "perf-open-latency",
+  "title": "性能：打开会话（点击 → 正文可见）",
+  "area": "perf",
+  "priority": "P1",
+  "tags": [
+    "perf",
+    "latency"
+  ],
+  "description": "点开会话到正文可见的延迟，全部在页面内计时：起点是 `pointerdown` 捕获监听，中间记录 `click`事件到达时刻，终点是 `main` 里出现该会话的正文标记；冷开（本进程第一次打开）与热开（内存快照）各 4 次取中位数，并统计采样窗口内最长的 long-animation-frame。驱动只负责按下行点击，`page.click` 不在按下与释放之间睡眠，所以数字里没有驱动开销。",
+  "preconditions": "首屏至少 4 行当前没有显示的会话（冷开要真的切换，不能点已打开的那一行）。",
+  "expectations": [
+    "按下到 `click` 事件 ≤5ms：这一条直接守住「驱动不在按下与释放之间睡眠」——2026-11-20 之前的 60ms 睡眠会让它变成 ~60ms",
+    "冷开中位：dev 构建 ≤320ms，生产构建 ≤90ms",
+    "热开中位：dev 构建 ≤200ms，生产构建 ≤40ms",
+    "采样窗口内最长帧：dev ≤250ms，生产 ≤50ms"
+  ],
+  "notes": "阈值分两套，由页面自己判断构建类型（入口脚本是 `/shot/*.ts` 即 dev）后选择。harness 只起 vite dev server，React 是开发构建，所以本用例默认跑的是 dev 口径：同一台机器上生产构建快一倍左右（真身 442KB 一页、页面内计时：dev 冷开 ~190ms，生产 ~68ms；热开 dev ~140ms，生产 ~25ms）。生产那套数字留着，等 harness 能跑生产构建时自动收紧。中位数用 4 次采样，dev 构建的抖动（同一份数据在 95–210ms 之间成双峰，取决于该会话有没有 tool call / run 需要额外取一遍）只在阈值里留余量，不靠单次读数判定。",
+  "steps": [
+    {
+      "wait": 900
+    },
+    {
+      "eval": "(() => {\n  const shown = () => document.querySelector('main')?.innerText ?? '';\n  window.__openRows = [...document.querySelectorAll('[aria-label$=\" 的操作\"]')]\n    .map(el => el.getAttribute('aria-label').replace(/ 的操作$/, ''))\n    .filter(title => title.length <= 16 && !shown().includes(title));\n  return window.__openRows.length;\n})()",
+      "as": "rowCount"
+    },
+    {
+      "assert": {
+        "expr": "window.__openRows.length >= 4",
+        "message": "至少 4 行当前没有显示的会话（冷开要真的切换）"
+      }
+    },
+    {
+      "eval": "window.__openRows[0]",
+      "as": "c0",
+      "capture": false
+    },
+    {
+      "eval": "window.__openRows[1]",
+      "as": "c1",
+      "capture": false
+    },
+    {
+      "eval": "window.__openRows[2]",
+      "as": "c2",
+      "capture": false
+    },
+    {
+      "eval": "window.__openRows[3]",
+      "as": "c3",
+      "capture": false
+    },
+    {
+      "eval": "(() => {\n  window.__openSamples = { cold: [], warm: [] };\n  window.__lafMs = [];\n  window.__openBuild = [...document.querySelectorAll('script[type=\"module\"]')]\n    .some(script => /\\/shot\\//.test(script.src)) ? \"dev\" : \"production\";\n  try {\n    new PerformanceObserver((list) => {\n      for (const entry of list.getEntries()) window.__lafMs.push(Math.round(entry.duration));\n    }).observe({ type: \"long-animation-frame\" });\n  } catch {}\n  const mainText = () => document.querySelector(\"main\")?.innerText ?? \"\";\n  window.__armOpen = (phase, label, marker) => {\n    window.__openPromise = new Promise((resolve) => {\n      let start = -1;\n      let clickMs = -1;\n      let titleMs = -1;\n      const finish = (timedOut) => {\n        observer.disconnect();\n        const sample = {\n          phase,\n          label,\n          pressToClickMs: clickMs,\n          titleMs,\n          contentMs: timedOut ? -1 : Math.round(performance.now() - start),\n          timedOut,\n        };\n        (window.__openSamples[phase] ??= []).push(sample);\n        resolve(sample);\n      };\n      const check = () => {\n        if (start < 0) return false;\n        const text = mainText();\n        if (titleMs < 0 && text.includes(label)) titleMs = Math.round(performance.now() - start);\n        if (text.includes(marker)) { finish(false); return true; }\n        return false;\n      };\n      const observer = new MutationObserver(() => { check(); });\n      window.addEventListener(\"click\", () => {\n        if (start >= 0 && clickMs < 0) clickMs = Math.round((performance.now() - start) * 10) / 10;\n      }, { capture: true, once: true });\n      window.addEventListener(\"pointerdown\", () => {\n        start = performance.now();\n        observer.observe(document.body, { subtree: true, childList: true, characterData: true });\n        check();\n        setTimeout(() => { if (start >= 0) finish(true); }, 20000);\n      }, { capture: true, once: true });\n    });\n    return true;\n  };\n  return true;\n})()",
+      "as": "probeInstalled",
+      "capture": false
+    },
+    {
+      "eval": "window.__lafMs.length = 0; true",
+      "as": "probeReset",
+      "capture": false
+    },
+    {
+      "eval": "window.__armOpen('cold', '{{c0}}', '继续处理「{{c0}}」')",
+      "capture": false
+    },
+    {
+      "click": {
+        "text": "{{c0}}"
+      },
+      "capture": false
+    },
+    {
+      "eval": "window.__openPromise",
+      "as": "cold1",
+      "capture": false
+    },
+    {
+      "wait": 900,
+      "capture": false
+    },
+    {
+      "eval": "window.__armOpen('cold', '{{c1}}', '继续处理「{{c1}}」')",
+      "capture": false
+    },
+    {
+      "click": {
+        "text": "{{c1}}"
+      },
+      "capture": false
+    },
+    {
+      "eval": "window.__openPromise",
+      "as": "cold2",
+      "capture": false
+    },
+    {
+      "wait": 900,
+      "capture": false
+    },
+    {
+      "eval": "window.__armOpen('cold', '{{c2}}', '继续处理「{{c2}}」')",
+      "capture": false
+    },
+    {
+      "click": {
+        "text": "{{c2}}"
+      },
+      "capture": false
+    },
+    {
+      "eval": "window.__openPromise",
+      "as": "cold3",
+      "capture": false
+    },
+    {
+      "wait": 900,
+      "capture": false
+    },
+    {
+      "eval": "window.__armOpen('cold', '{{c3}}', '继续处理「{{c3}}」')",
+      "capture": false
+    },
+    {
+      "click": {
+        "text": "{{c3}}"
+      },
+      "capture": false
+    },
+    {
+      "eval": "window.__openPromise",
+      "as": "cold4",
+      "capture": false
+    },
+    {
+      "wait": 900,
+      "capture": false
+    },
+    {
+      "eval": "window.__armOpen('warm', '{{c0}}', '继续处理「{{c0}}」')",
+      "capture": false
+    },
+    {
+      "click": {
+        "text": "{{c0}}"
+      },
+      "capture": false
+    },
+    {
+      "eval": "window.__openPromise",
+      "as": "warm1",
+      "capture": false
+    },
+    {
+      "wait": 900,
+      "capture": false
+    },
+    {
+      "eval": "window.__armOpen('warm', '{{c1}}', '继续处理「{{c1}}」')",
+      "capture": false
+    },
+    {
+      "click": {
+        "text": "{{c1}}"
+      },
+      "capture": false
+    },
+    {
+      "eval": "window.__openPromise",
+      "as": "warm2",
+      "capture": false
+    },
+    {
+      "wait": 900,
+      "capture": false
+    },
+    {
+      "eval": "window.__armOpen('warm', '{{c2}}', '继续处理「{{c2}}」')",
+      "capture": false
+    },
+    {
+      "click": {
+        "text": "{{c2}}"
+      },
+      "capture": false
+    },
+    {
+      "eval": "window.__openPromise",
+      "as": "warm3",
+      "capture": false
+    },
+    {
+      "wait": 900,
+      "capture": false
+    },
+    {
+      "eval": "window.__armOpen('warm', '{{c3}}', '继续处理「{{c3}}」')",
+      "capture": false
+    },
+    {
+      "click": {
+        "text": "{{c3}}"
+      },
+      "capture": false
+    },
+    {
+      "eval": "window.__openPromise",
+      "as": "warm4",
+      "capture": false
+    },
+    {
+      "wait": 900,
+      "capture": false
+    },
+    {
+      "eval": "(() => {\n  const median = (values) => {\n    if (!values.length) return null;\n    const sorted = [...values].sort((a, b) => a - b);\n    const middle = Math.floor(sorted.length / 2);\n    return Math.round(sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2);\n  };\n  const pure = (samples) => samples.filter(sample => !sample.timedOut);\n  const cold = pure(window.__openSamples.cold);\n  const warm = pure(window.__openSamples.warm);\n  const build = window.__openBuild;\n  window.__openSummary = {\n    build,\n    coldSamples: cold.length,\n    warmSamples: warm.length,\n    coldMs: cold.map(s => s.contentMs),\n    warmMs: warm.map(s => s.contentMs),\n    coldTitleMs: cold.map(s => s.titleMs),\n    pressToClickMs: [...cold, ...warm].map(s => s.pressToClickMs),\n    coldMedian: median(cold.map(s => s.contentMs)),\n    warmMedian: median(warm.map(s => s.contentMs)),\n    coldTitleMedian: median(cold.map(s => s.titleMs)),\n    coldMax: cold.length ? Math.max(...cold.map(s => s.contentMs)) : null,\n    warmMax: warm.length ? Math.max(...warm.map(s => s.contentMs)) : null,\n    pressToClickMax: Math.max(...[...cold, ...warm].map(s => s.pressToClickMs ?? 0)),\n    timedOut: window.__openSamples.cold.length + window.__openSamples.warm.length - cold.length - warm.length,\n    lafMax: window.__lafMs.length ? Math.max(...window.__lafMs) : 0,\n    lafCount: window.__lafMs.length,\n    limits: {\n      cold: build === \"dev\" ? 320 : 90,\n      warm: build === \"dev\" ? 200 : 40,\n      laf: build === \"dev\" ? 250 : 50,\n    },\n  };\n  return window.__openSummary;\n})()",
+      "as": "openLatency",
+      "capture": false
+    },
+    {
+      "assert": {
+        "expr": "window.__openSummary.coldSamples === 4 && window.__openSummary.warmSamples === 4",
+        "message": "冷/热各 4 次采样都完成"
+      }
+    },
+    {
+      "assert": {
+        "expr": "window.__openSummary.timedOut === 0",
+        "message": "没有采样超时（每次点击都真的换到了正文）"
+      }
+    },
+    {
+      "assert": {
+        "expr": "window.__openSummary.pressToClickMax <= 5",
+        "message": "按下到 click 事件 ≤5ms（驱动不在按下与释放之间睡眠）"
+      }
+    },
+    {
+      "assert": {
+        "expr": "window.__openSummary.coldMedian <= window.__openSummary.limits.cold",
+        "message": "冷开中位在阈值内（dev ≤320ms，生产 ≤90ms）"
+      }
+    },
+    {
+      "assert": {
+        "expr": "window.__openSummary.warmMedian <= window.__openSummary.limits.warm",
+        "message": "热开中位在阈值内（dev ≤200ms，生产 ≤40ms）"
+      }
+    },
+    {
+      "assert": {
+        "expr": "window.__openSummary.lafMax <= window.__openSummary.limits.laf",
+        "message": "采样窗口内无超限长帧（dev ≤250ms，生产 ≤50ms）"
+      }
+    },
+    {
+      "shot": "open-latency"
+    }
+  ],
+  "judge": {
+    "criteria": [
+      "冷开与热开中位都在阈值内，且热开明显快于冷开",
+      "没有采样超时：每次都真的换到了该会话的正文，而不是还显示着上一个会话",
+      "读数表里若某次明显偏大，判断是该会话额外取的 tool call / run 所致还是真的回归"
+    ],
+    "maxImages": 1
+  }
+}
