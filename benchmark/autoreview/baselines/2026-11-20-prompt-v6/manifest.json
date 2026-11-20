@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "models": [
+    "pplx-decider-v1.2",
+    "typesafe/jev-1.13-20260917"
+  ],
+  "model_routes": {
+    "pplx-decider-v1.2": "decider",
+    "typesafe/jev-1.13-20260917": "jev"
+  },
+  "endpoint": "https://test.future-os.cn/api/v1/systemone",
+  "profile": "decider-taxonomy-v1",
+  "profile_sha256": "58e4d5b436dd7ecef8d14112e49e69a42ad3a48ec7b845c377bebaef1302b1a9",
+  "cases_sha256": "2b1ccb079cc9095b9ebb2180e5fed8a54cf65475bae820d733f95f77115447c1",
+  "runner_sha256": "20acdfef21c3e13de6666a48aafd62d0db843567efc7f298610bc40b0b1d3b92",
+  "scorer_sha256": "10adb5c58f0785c42779f5a7d59ff516f5a2302bdb316d1e244d5741825dac7e",
+  "transport_sha256": "6b2e3140cc54cb710219f3e4ef9fea7f12101882173bba67cfdd6d585199aff8",
+  "order_seed": 20261120,
+  "concurrency": 4,
+  "deadline_seconds_total": 30,
+  "transient_http_retries": 1,
+  "run_id": "e96d437b-8fa7-43db-a724-ccba659dbccd",
+  "started_at": "2026-11-20T03:14:33.126419+00:00"
+}
