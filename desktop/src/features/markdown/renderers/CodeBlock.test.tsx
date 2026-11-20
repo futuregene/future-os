@@ -62,6 +62,28 @@ describe("codeBlock", () => {
     expect(html).not.toContain("mb-2");
   });
 
+  /**
+   * The one wrapping block: a `futureos-choice` fence the parser could not draw
+   * (§3 tolerance table). Its lines are option prose, so folding them is how the
+   * reader still gets the list; the fence's own language is parser chrome and
+   * goes with it.
+   */
+  it("wraps, and drops the language label, when asked to", () => {
+    const html = renderToStaticMarkup(
+      createElement(CodeBlock, { code: "option: only | 唯一的选项", language: "futureos-choice", wrap: true }),
+    );
+    expect(html).toContain("whitespace-pre-wrap");
+    expect(html).not.toContain("overflow-auto");
+    expect(html).not.toContain("futureos-choice");
+    expect(html).toContain("唯一的选项");
+  });
+
+  it("scrolls a plain block sideways instead", () => {
+    const html = renderToStaticMarkup(createElement(CodeBlock, { code: "x = 1", language: "python" }));
+    expect(html).toContain("overflow-auto");
+    expect(html).not.toContain("whitespace-pre-wrap");
+  });
+
   it("renders plain text for the live streaming tail even when loaded", () => {
     highlighterState = { highlight: () => highlighted, isLoaded: true };
     const html = renderToStaticMarkup(createElement(

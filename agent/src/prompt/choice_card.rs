@@ -10,10 +10,12 @@
 //! So this is the Agent's reading of its own reply, applied once at run commit
 //! and carried on `agent_end`. The rules are the renderer's
 //! (`parseChoiceCard` in `packages/markdown/src/parseFutureMarkdown.ts`): a
-//! closing `futureos-choice` fence with 2–4 option rows, each an id in
+//! closing `futureos-choice` fence with 2–6 option rows, each an id in
 //! `[a-z0-9-]` (≤ 24 characters) and a non-empty label. A block that fails them
 //! is drawn as the code block it is, so a reply carrying one must not badge a
-//! conversation as "needs your answer".
+//! conversation as "needs your answer". The bounds are the renderer's, not the
+//! prompt's: the prompt asks for 2–4, the client draws up to six so a writer that
+//! slipped by a row still gets a card (see `CHOICE_MAX_OPTIONS`).
 //!
 //! Kept small on purpose: the reply text is already in memory at commit time and
 //! a wrong `false` only omits a badge, so this reads the tail of the message and
@@ -21,9 +23,11 @@
 
 /// Fence language of a choice card; every other fence keeps its old meaning.
 const CHOICE_FENCE: &str = "futureos-choice";
-/// §3: fewer than two rows is not a card, and five rows are a paragraph.
+/// §3: fewer than two rows is not a card, and seven rows are a plan. The upper
+/// bound matches `CHOICE_MAX_OPTIONS` in `packages/markdown/src/parseFutureMarkdown.ts`:
+/// the badge may only promise a card the client will actually draw.
 const MIN_OPTIONS: usize = 2;
-const MAX_OPTIONS: usize = 4;
+const MAX_OPTIONS: usize = 6;
 /// §3: an option id is ASCII `[a-z0-9-]`, at most 24 characters.
 const MAX_OPTION_ID: usize = 24;
 
@@ -200,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn four_rows_are_a_card_and_five_are_a_paragraph() {
+    fn six_rows_are_a_card_and_seven_are_a_plan() {
         let rows = |count: usize| {
             (0..count)
                 .map(|index| format!("option: id{index} | label {index}"))
@@ -209,7 +213,10 @@ mod tests {
         };
         assert!(reply_offers_choice(&card(&rows(2))));
         assert!(reply_offers_choice(&card(&rows(4))));
-        assert!(!reply_offers_choice(&card(&rows(5))));
+        // A one-row slip still draws as a card on every client (2–6 rows).
+        assert!(reply_offers_choice(&card(&rows(5))));
+        assert!(reply_offers_choice(&card(&rows(6))));
+        assert!(!reply_offers_choice(&card(&rows(7))));
         assert!(!reply_offers_choice(&card(&rows(1))));
     }
 
