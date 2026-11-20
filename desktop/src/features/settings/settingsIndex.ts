@@ -27,12 +27,14 @@ export const SETTINGS_ENTRIES: readonly SettingsEntry[] = [
   { labelKey: "theme.title", tab: "appearance" },
   { labelKey: "fontSize.title", tab: "appearance" },
   { labelKey: "replyDetail.title", tab: "appearance" },
+  // This machine's own notification, not something a reply does on every
+  // client: the bell plays here and a paired phone never sees the row.
+  { labelKey: "bellOnComplete.title", tab: "appearance" },
   { labelKey: "dialog.tabs.shortcuts", tab: "shortcuts" },
   // 会话
   { labelKey: "approvalTier.title", tab: "permission" },
   { labelKey: "choiceCards.title", tab: "reply" },
   { labelKey: "autoTitleFirstTurn.title", tab: "reply" },
-  { labelKey: "bellOnComplete.title", tab: "reply" },
   { labelKey: "archive.cleanupEnabled", tab: "storage" },
   { labelKey: "archive.autoEnabled", tab: "storage" },
   { labelKey: "archive.idleDays", tab: "storage" },

@@ -72,7 +72,7 @@
         },
         { "wait": 350 },
         {
-          "eval": "(() => { const h = document.querySelector('[role=dialog] h2'); if (h.textContent !== '回复') throw new Error('title is ' + h.textContent); const body = document.querySelector('[role=dialog]').textContent; if (!body.includes('选项卡') || !body.includes('首轮')) throw new Error('replies page lost its two rows'); return 'reply'; })()"
+          "eval": "(() => { const h = document.querySelector('[role=dialog] h2'); if (h.textContent !== '回复') throw new Error('title is ' + h.textContent); const body = document.querySelector('[role=dialog]').textContent; if (!body.includes('选项卡') || !body.includes('首轮')) throw new Error('replies page lost its two rows'); if (body.includes('完成提示音')) throw new Error('the completion bell is back on replies; it is a local preference and lives on 外观'); return 'reply has its two rows and no bell'; })()"
         },
         { "shot": "d-settings-reply.png" },
         {

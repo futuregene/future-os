@@ -2,25 +2,23 @@ import { useTranslation } from "react-i18next";
 import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPrimitives";
 
 /**
- * What a reply itself does: whether it may close with a choice card, whether a
- * new conversation's first answer also produces its title, and whether finishing
- * one is announced. All four rows describe something the reply does as it lands,
- * which is why the bell sits here rather than with the display preferences.
+ * What a reply itself does on every client: whether it may close with a choice
+ * card, and whether a new conversation's first answer also produces its title.
+ *
+ * The completion bell used to sit here and does not: it is this machine's own
+ * notification, played by this client and invisible to a paired phone, so it
+ * lives with the other local preferences on the appearance page.
  */
 export function ReplyPage({
   choiceCards,
   onToggleChoiceCards,
   autoTitleFirstTurn,
   onToggleAutoTitleFirstTurn,
-  bellOnComplete,
-  onToggleBellOnComplete,
 }: {
   choiceCards: boolean;
   onToggleChoiceCards: (value: boolean) => void;
   autoTitleFirstTurn: boolean;
   onToggleAutoTitleFirstTurn: (value: boolean) => void;
-  bellOnComplete: boolean;
-  onToggleBellOnComplete: (value: boolean) => void;
 }) {
   const { t } = useTranslation("settings");
 
@@ -42,17 +40,6 @@ export function ReplyPage({
             description={t("autoTitleFirstTurn.description")}
           >
             <Switch checked={autoTitleFirstTurn} label={t("autoTitleFirstTurn.title")} onChange={onToggleAutoTitleFirstTurn} />
-          </SettingsRow>
-        </SettingsList>
-      </SettingsSection>
-
-      <SettingsSection title={t("alerts.section")}>
-        <SettingsList>
-          <SettingsRow
-            title={t("bellOnComplete.title")}
-            description={t("bellOnComplete.description")}
-          >
-            <Switch checked={bellOnComplete} label={t("bellOnComplete.title")} onChange={onToggleBellOnComplete} />
           </SettingsRow>
         </SettingsList>
       </SettingsSection>
