@@ -130,6 +130,7 @@ function testId(container: HTMLElement, id: string) {
 interface PageProps {
   communityEdition?: boolean;
   futureSessionStatus?: "signed_out" | "authenticated" | "invalid" | "unavailable" | "checking";
+  onOpenAccount?: () => void;
   onProvidersChanged?: () => void;
   onRefreshFutureAuth?: () => void;
 }
@@ -143,6 +144,7 @@ async function renderPage(props: PageProps = {}) {
     root.render(
       <ProvidersPage
         futureSessionStatus={props.futureSessionStatus ?? "signed_out"}
+        onOpenAccount={props.onOpenAccount}
         onProvidersChanged={props.onProvidersChanged}
         onRefreshFutureAuth={props.onRefreshFutureAuth ?? (() => {})}
         communityEdition={props.communityEdition}
@@ -246,25 +248,22 @@ describe("providersPage Future account row", () => {
     expect(container.textContent).toContain(label);
   });
 
-  it("offers connect for a signed-out account and asks for onboarding", async () => {
-    const events: unknown[] = [];
-    const off = onFutureEvent("show-onboarding", () => events.push("onboarding"));
-    try {
-      const container = await renderPage({ futureSessionStatus: "signed_out" });
-      expect(button(container, "Update model list")).toBeUndefined();
+  it("offers the account page instead of a second sign-in button for a signed-out account", async () => {
+    const onOpenAccount = vi.fn();
+    const container = await renderPage({ futureSessionStatus: "signed_out", onOpenAccount });
+    expect(button(container, "Update model list")).toBeUndefined();
 
-      act(() => button(container, "Sign in")!.click());
-      expect(events).toEqual(["onboarding"]);
-    }
-    finally {
-      off();
-    }
+    act(() => button(container, "Sign in on the Account page")!.click());
+    expect(onOpenAccount).toHaveBeenCalledTimes(1);
   });
 
-  it("offers sign-in-again for an invalid session", async () => {
-    const container = await renderPage({ futureSessionStatus: "invalid" });
+  it("points an invalid session at the account page too, and never signs out from here", async () => {
+    const onOpenAccount = vi.fn();
+    const container = await renderPage({ futureSessionStatus: "invalid", onOpenAccount });
 
-    expect(button(container, "Sign in again")).toBeTruthy();
+    expect(container.textContent).toContain("Sign-in expired");
+    expect(button(container, "Sign in on the Account page")).toBeTruthy();
+    expect(button(container, "Sign out")).toBeUndefined();
     expect(button(container, "Update model list")).toBeUndefined();
   });
 
@@ -359,44 +358,24 @@ describe("providersPage model sync", () => {
   });
 });
 
-describe("providersPage sign-out", () => {
-  it("asks for confirmation and applies the returned view", async () => {
-    const onProvidersChanged = vi.fn();
-    const signedOut: ProvidersView = { builtin: [{ ...FUTURE, hasApiKey: false, modelCount: 0 }], custom: [] };
-    mocks.logoutFutureProvider.mockResolvedValue(signedOut);
-    const container = await renderPage({ futureSessionStatus: "authenticated", onProvidersChanged });
-
-    act(() => button(container, "Sign out")!.click());
-    expect(container.textContent).toContain("Sign out?");
-
-    act(() => button(container, "Cancel")!.click());
-    expect(mocks.logoutFutureProvider).not.toHaveBeenCalled();
-    expect(container.textContent).not.toContain("Sign out?");
-
-    act(() => button(container, "Sign out")!.click());
-    await act(async () => {
-      button(container, "Sign out")!.click();
-    });
-
-    // The confirm button is the last "Sign out" in the row; the click above hit
-    // the confirm one because the plain button was replaced by the confirm row.
-    expect(mocks.logoutFutureProvider).toHaveBeenCalledTimes(1);
-    expect(onProvidersChanged).toHaveBeenCalledTimes(1);
-    expect(container.textContent).not.toContain("Sign out?");
-    expect(container.textContent).toContain("0 models");
-  });
-
-  it("keeps the confirmation row and shows the failure when sign-out throws", async () => {
-    mocks.logoutFutureProvider.mockRejectedValue(new Error("platform unreachable"));
+describe("providersPage account controls", () => {
+  it("keeps only the model-list action on a signed-in account, leaving sign-out to the account page", async () => {
     const container = await renderPage({ futureSessionStatus: "authenticated" });
 
-    act(() => button(container, "Sign out")!.click());
-    await act(async () => {
-      button(container, "Sign out")!.click();
-    });
+    expect(button(container, "Update model list")).toBeTruthy();
+    // One credential, one pair of buttons: the account page owns signing in and
+    // out, so this page never grows a second copy of them.
+    expect(button(container, "Sign out")).toBeUndefined();
+    expect(button(container, "Sign in on the Account page")).toBeUndefined();
+  });
 
-    expect(container.textContent).toContain("platform unreachable");
-    expect(container.textContent).toContain("Sign out?");
+  it("shows retry instead of the model-list action while the account is unreachable", async () => {
+    const onRefreshFutureAuth = vi.fn();
+    const container = await renderPage({ futureSessionStatus: "unavailable", onRefreshFutureAuth });
+
+    expect(button(container, "Update model list")).toBeUndefined();
+    act(() => button(container, "Retry")!.click());
+    expect(onRefreshFutureAuth).toHaveBeenCalledTimes(1);
   });
 });
 

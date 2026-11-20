@@ -3,13 +3,22 @@ import { FlatList, Text, TextInput, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/Button";
 import { useRemoteControls } from "../../remote/RemoteContext";
-import type { AvailableSkill, InstalledSkill } from "../../remote/types";
+import type { AvailableSkill, DesktopSettings, InstalledSkill } from "../../remote/types";
 import { useTheme } from "../../theme/ThemeContext";
-import { ResourceStatus, useSettingsStyles } from "./SettingsPrimitives";
+import { ResourceStatus, SettingsSwitch, useSettingsStyles } from "./SettingsPrimitives";
 import { isSkillUpgrade } from "./skillVersion";
 import { useDesktopResource } from "./useDesktopResource";
 
-export function SkillsSettingsPage() {
+export function SkillsSettingsPage({
+  settings,
+  disabled: settingsDisabled = false,
+  onChange,
+}: {
+  /** The desktop's settings snapshot, for the two automation switches above the list. */
+  settings?: DesktopSettings | null;
+  disabled?: boolean;
+  onChange?: (patch: Partial<DesktopSettings>) => void;
+} = {}) {
   const settingsStyles = useSettingsStyles();
   const { colors } = useTheme();
   const { t, i18n } = useTranslation();
@@ -75,6 +84,15 @@ export function SkillsSettingsPage() {
     data={rows} keyExtractor={skill => skill.id} contentContainerStyle={settingsStyles.content}
     keyboardShouldPersistTaps="handled"
     ListHeaderComponent={<View style={settingsStyles.section}>
+      {/* A skill's own lifecycle: upgrading it without being asked, and having
+          one recommended. The desktop keeps these two on its skills page, so
+          they are named here the same way rather than sitting under automation. */}
+      <SettingsSwitch label={t("desktopSettings.autoUpgradeSkills")} description={t("desktopSettings.autoUpgradeSkillsHint")}
+        value={settings?.autoUpgradeSkills ?? false} disabled={settingsDisabled}
+        onChange={autoUpgradeSkills => onChange?.({ autoUpgradeSkills })} />
+      <SettingsSwitch label={t("desktopSettings.skillRecommend")} description={t("desktopSettings.skillRecommendHint")}
+        value={settings?.skillRecommend ?? false} disabled={settingsDisabled}
+        onChange={skillRecommend => onChange?.({ skillRecommend })} />
       <Text style={settingsStyles.description}>{t("desktopSettings.skillsHint")}</Text>
       <View style={settingsStyles.actions}>
         <Button compact label={t("desktopSettings.installed")} onPress={() => setTab("installed")} variant={tab === "installed" ? "primary" : "secondary"} />

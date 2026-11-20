@@ -3,12 +3,8 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import { DEFAULT_APP_SETTINGS } from "../../integrations/storage/appSettings";
-import { GeneralPage } from "./GeneralPage";
+import { ReplyPage } from "./ReplyPage";
 
-vi.mock("../../integrations/agent/useSandboxAvailability", async importOriginal => ({
-  ...await importOriginal<typeof import("../../integrations/agent/useSandboxAvailability")>(),
-  useSandboxAvailability: () => ({ available: true, resolved: true }),
-}));
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 it("enables title generation by default and allows opting out without context compaction", async () => {
@@ -18,30 +14,18 @@ it("enables title generation by default and allows opting out without context co
   const onToggle = vi.fn();
   try {
     await act(async () => root.render(
-      <GeneralPage
-        approvalTier="off"
-        onChangeApprovalTier={() => {}}
-        autoUpgradeSkills={false}
-        onToggleAutoUpgradeSkills={() => {}}
-        skillRecommend={false}
-        onToggleSkillRecommend={() => {}}
-        choiceCards={false}
-        onToggleChoiceCards={() => {}}
-        bellOnComplete
-        onToggleBellOnComplete={() => {}}
+      <ReplyPage
         autoTitleFirstTurn={DEFAULT_APP_SETTINGS.autoTitleFirstTurn}
+        bellOnComplete={DEFAULT_APP_SETTINGS.bellOnComplete}
+        choiceCards={DEFAULT_APP_SETTINGS.choiceCards}
         onToggleAutoTitleFirstTurn={onToggle}
-        archiveRunLogCleanup={DEFAULT_APP_SETTINGS.archiveRunLogCleanup}
-        onToggleArchiveRunLogCleanup={() => {}}
-        autoArchiveEnabled={DEFAULT_APP_SETTINGS.autoArchiveEnabled}
-        onToggleAutoArchive={() => {}}
-        autoArchiveIdleDays={DEFAULT_APP_SETTINGS.autoArchiveIdleDays}
-        onChangeAutoArchiveIdleDays={() => {}}
+        onToggleBellOnComplete={() => {}}
+        onToggleChoiceCards={() => {}}
       />,
     ));
-    // Five general toggles (auto-upgrade, skill recommendation, choice cards,
-    // first-turn title, completion bell) plus the two archive toggles below them.
-    expect(container.querySelectorAll("[role=switch]")).toHaveLength(7);
+    // The reply page carries its two reply-level switches plus the completion
+    // bell, and nothing about thinking output.
+    expect(container.querySelectorAll("[role=switch]")).toHaveLength(3);
     expect(container.textContent).not.toContain("Show thinking process");
     expect(DEFAULT_APP_SETTINGS).not.toHaveProperty("showThinking");
     const toggle = container.querySelector<HTMLButtonElement>("[role=switch][aria-label='Generate a title after the first answer']");
