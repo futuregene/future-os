@@ -119,7 +119,7 @@
   "settingSkillRecommend": "Skill suggestions",
   "settingSkillRecommendHint": "Let that desktop suggest a skill while you type.",
   "settingChoiceCards": "Choice cards",
-  "settingChoiceCardsHint": "Let that desktop close a reply with a card of options you can tick. Off by default: while off no card is drawn anywhere, and its agent is not told the card format exists.",
+  "settingChoiceCardsHint": "Let that desktop close a reply with a card of options you can tick. On by default: while off no card is drawn anywhere, and its agent is not told the card format exists.",
   "settingAutoConnect": "Keep the remote desktop on after a restart",
   "settingAutoConnectHint": "Whether that computer serves its paired devices again at its next launch — its own Remote switch changes then, not now. Off means the switch is off when it restarts and has to be turned on there.",
   "settingsHostContent": "On that desktop",
