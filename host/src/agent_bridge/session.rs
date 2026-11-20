@@ -280,8 +280,8 @@ pub(super) async fn set_agent_choice_cards(
         Ok(settings) => settings.choice_cards,
         Err(error) => {
             // Never invent "on" from a failed read: the request would then teach
-            // the fence to a reader who turned cards off. Off is the shipping
-            // default, and the next successful read applies the saved value.
+            // the fence to a reader who turned cards off. Sending `false` once only
+            // lasts until the next successful read, which applies the saved value.
             tracing::warn!(event = "set_agent_choice_cards", error = %error,
                 "FutureOS: choice-card settings unavailable; leaving cards off: {error}"
             );
@@ -1011,10 +1011,10 @@ mod tests {
         drop(home);
     }
 
-    /// The reader's saved choice reaches the agent before each run: off on a
-    /// fresh store, the stored value afterwards. This is the wire half of "off
-    /// means the prompt does not teach the fence" — the agent decides that from
-    /// the flag this pushes.
+    /// The reader's saved choice reaches the agent before each run: the shipped
+    /// default on a fresh store, the stored value afterwards. This is the wire
+    /// half of "off means the prompt does not teach the fence" — the agent
+    /// decides that from the flag this pushes.
     #[tokio::test]
     async fn choice_card_switch_is_pushed_from_the_store() {
         let home = TestHome::new("session-choice-cards");
@@ -1023,19 +1023,22 @@ mod tests {
         mock.push("set_choice_cards", Reply::Data("{}".to_string()));
         set_agent_choice_cards(&mut client, "sess-1").await;
         assert!(
-            !mock.requests_of("set_choice_cards")[0].enabled,
-            "a store with no row is off"
+            mock.requests_of("set_choice_cards")[0].enabled,
+            "a store with no row follows the shipped default: on"
         );
 
         crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
-            choice_cards: Some(true),
+            choice_cards: Some(false),
             ..Default::default()
         })
-        .expect("enable choice cards");
+        .expect("turn choice cards off");
         mock.push("set_choice_cards", Reply::Data("{}".to_string()));
         set_agent_choice_cards(&mut client, "sess-1").await;
         let requests = mock.requests_of("set_choice_cards");
-        assert!(requests[1].enabled, "the stored value is pushed verbatim");
+        assert!(
+            !requests[1].enabled,
+            "an explicit false outranks the on default and is pushed verbatim"
+        );
         assert_eq!(requests[1].session_id, "sess-1");
 
         // Display-only, so every failure is swallowed: an agent that predates the

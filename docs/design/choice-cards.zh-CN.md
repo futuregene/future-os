@@ -174,17 +174,17 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 
 另有一个**部署坑**：这条 prompt 是 `include_str!` 编进二进制的，所以本机装的是旧构建时，改完仓库也不会立即生效（实测 `futureos.exe` 里还是 "the default, so usually omit it" 那一句，而仓库已经改了两轮）。改 prompt 的改动必须跟一次重装 + 重启才算上线。
 
-### 4.1 开关：默认关（2026-11-17）
+### 4.1 开关：默认开（2026-11-20，此前默认关）
 
-卡片是**偏好**，不是默认行为，出厂**关**。同一个开关管住它的两半——画不画，和这一节进不进 prompt——因为把围栏教给一个不会画卡片的客户端，比只做一半更糟：模型每轮都在为读者看不到的格式花 prompt，还会写出渲染成空白的东西。
+卡片是**偏好**，出厂**开**。同一个开关管住它的两半——画不画，和这一节进不进 prompt——因为把围栏教给一个不会画卡片的客户端，比只做一半更糟：模型每轮都在为读者看不到的格式花 prompt，还会写出渲染成空白的东西。
 
-| | `choice_cards` 开 | 关（默认） |
+| | `choice_cards` 开（默认） | 关 |
 |---|---|---|
 | 桌面 / 手机 | 卡片，可点选 | 什么都不出现——没有卡片，也没有代码块 |
 | system prompt | §4 这一节 | 不存在——`grep futureos-choice` 搜不到 |
 | 列表里「这张卡在等你选」（§5.9） | 显示 | 不显示 |
 
-为什么默认关：围栏在每个会话的每一轮都占 prompt；而卡片是在请读者从模型写的清单里挑一件——想往下走时受欢迎，否则是打断。
+为什么默认开：卡片让读者用一次点击就往下走，不必再把下一步打一遍——这正是回复被写出来的常见用途。代价是每轮占一点 prompt，以及读者已经知道要什么时的一次打断；两者都只需一个开关就能关掉，而且不需要读卡时，回复本来就不必带卡片。它在 2026-11-17 至 2026-11-20 之间出厂是关的，那个窗口里写下的设置行仍保留 `false`。
 
 开关只动「画不画 + 教不教」，其余不变：
 
@@ -194,15 +194,15 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 
 值放在哪、怎么走：
 
-- 只有一个真源：`app.db` → `packages/app-settings`（`choice_cards`，默认 `false`），读出来是 `appSettings.choiceCards`；
+- 只有一个真源：`app.db` → `packages/app-settings`（`choice_cards`，默认 `true`），读出来是 `appSettings.choiceCards`；
 - 桌面：设置 → 会话 → 回复里的一个开关；值经 `ChoiceCardsContext` 到 markdown 渲染层（渲染层自身默认仍是 `true`，所以只有真正的「关」才隐藏）；
-- **每次 run 之前**告诉 agent：宿主推 `set_choice_cards`（尽力而为——不认识这条命令的旧 agent 也不影响发消息，读设置失败一律按关处理），会话记住它，由 `PromptOptions.choice_cards` 决定这一节进不进 prompt。所以全新安装的机器：prompt 里没有围栏，界面上也没有卡片；
+- **每次 run 之前**告诉 agent：宿主推 `set_choice_cards`（尽力而为——不认识这条命令的旧 agent 也不影响发消息，读设置失败一律按关处理），会话记住它，由 `PromptOptions.choice_cards` 决定这一节进不进 prompt。所以全新安装的机器：prompt 里有围栏，界面上也有卡片；而从不推送这个值的客户端（TUI、CLI、直接调用的 agent）仍然拿到 `false`，因为没有别的东西告诉 agent 卡片会被画出来。
 - 手机镜像桌面、不另存一份：`get_desktop_settings` 带上 `choiceCards`，`SettingsPatch` 写回同一行。
 - 同一个值也能**在那台机器自己的页面上**改：配对的桌面点进去（远程 → 那台电脑 → 自动化）就有这个开关，否则没有屏幕的无头宿主永远打不开它。它通过 `update_desktop_settings` 写那台机器的 `app.db`；
 - 那台机器的每一个客户端都按**它**的值渲染，而不是按客户端自己的开关：手机和桌面上的远程会话都从宿主读 `choiceCards`（`useRemoteChoiceCards`）。画出宿主智能体根本没被教过的卡片、或者把宿主写出来的卡片整块藏掉（连源码一起），两头都错，只有宿主的答案能同时避开；
 - 宿主**没有答案**时（比这个开关更旧的构建）按**开**处理：那种构建无条件教围栏，藏掉它的卡片等于删掉它合法问出的问题。只有明确的 `false` 才隐藏。客户端还没读到设置时，先按自己的值渲染，不会先闪一下再消失。
 
-钉住它的测试：`desktop/src/features/markdown/ChoiceCardsToggle.test.tsx`（关：卡片节点数为 0，**且**取出的正文里没有 `futureos-choice`；开：有行、能点、能答）、`mobile/src/components/__tests__/ChoiceCardsToggle.test.ts`、`agent/src/prompt/mod.rs::prompt_omits_the_choice_card_fence_when_cards_are_off`。反向验证过：把渲染层恒等于 `true`、让这一节无条件进 prompt、把默认值改成 `true`，这三处的断言分别变红。
+钉住它的测试：`desktop/src/features/markdown/ChoiceCardsToggle.test.tsx`（关：卡片节点数为 0，**且**取出的正文里没有 `futureos-choice`；开：有行、能点、能答）、`mobile/src/components/__tests__/ChoiceCardsToggle.test.ts`、`agent/src/prompt/mod.rs::prompt_omits_the_choice_card_fence_when_cards_are_off`。反向验证过：把渲染层恒等于 `true`、让这一节无条件进 prompt、把存储默认值改成 `false`，这三处的断言分别变红。
 
 ## 5. 界面
 
