@@ -865,6 +865,10 @@ The content file's schema is visible in that example: a cover, an intro, a table
 of contents, and sections whose items each carry prose plus one figure or a pair
 of figures. Captions should say what to look at, not restate the prose.
 
+Pagination belongs to `document.css`: an item may break across pages, but a
+heading never ends a page without its prose, and a figure or a pair never splits
+in two — there is no need to pad an item to make it line up with a page.
+
 For command-line output, capture the real stdout and render it in a terminal
 frame:
 
