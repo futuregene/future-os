@@ -5,6 +5,7 @@ import { memo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useChoiceCardsEnabled } from "../../features/markdown/ChoiceCardsContext";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
+import { cn } from "../../lib/cn";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { ThreadItemMenu } from "./ActivityRailMenus";
 import { RailRow, RailRowIndicator, RailRowMenuButton, RailRowSpacer, RailRowTitle, RailRowTreeToggle } from "./RailRow";
@@ -146,7 +147,13 @@ function ThreadListItemImpl({
         ? (
             <>
               <RailRowSpacer />
-              <span className="pointer-events-none shrink-0 text-2xs tabular-nums text-ink-muted">{ageLabel}</span>
+              {/* One step of ink while the row is the open one: `ink-muted` is
+                  the floor-level tone (3:1 on `surface`), and the selection
+                  surface is a tint of the accent, so the timestamp loses about
+                  a third of a step on it — the second column of the one row the
+                  reader is most likely to scan. `ink-soft` keeps it legible in
+                  both renditions. */}
+              <span className={cn("pointer-events-none shrink-0 text-2xs tabular-nums", active ? "text-ink-soft" : "text-ink-muted")}>{ageLabel}</span>
             </>
           )
         : null}

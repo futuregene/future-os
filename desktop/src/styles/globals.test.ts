@@ -79,10 +79,15 @@ const lightTheme = colorTokens(blockAt("@theme {").body);
 const darkTheme = colorTokens(blockAt(":root.dark {").body);
 
 /**
- * Tokens a palette must not restate: a search hit is a bright mark with dark
- * text in every theme, so it keeps the shared values on purpose.
+ * Tokens a palette must not restate, for two different reasons.
+ *
+ * The search marks are fixed: a hit is a bright mark with dark text in every
+ * theme, so they keep the shared values on purpose. `surface-selected` is
+ * derived instead — a `color-mix` of the palette's own `accent` and `surface`,
+ * so a palette that restated it as a hex value would freeze one theme's answer
+ * into all thirty and lose the mark's hue with the theme.
  */
-const PALETTE_EXEMPT = ["--color-search-match", "--color-search-current", "--color-search-ink"];
+const PALETTE_EXEMPT = ["--color-surface-selected", "--color-search-match", "--color-search-current", "--color-search-ink"];
 
 const expectedTokens = [...lightTheme.keys()].filter(name => !PALETTE_EXEMPT.includes(name)).sort();
 
