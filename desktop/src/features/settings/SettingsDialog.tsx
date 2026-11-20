@@ -222,12 +222,7 @@ export function SettingsDialog({
           </header>
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
             {tab === "appearance"
-              ? (
-                  <AppearancePage
-                    bellOnComplete={appSettings.bellOnComplete}
-                    onToggleBellOnComplete={value => onChangeSettings({ bellOnComplete: value })}
-                  />
-                )
+              ? <AppearancePage />
               : null}
             {tab === "permission"
               ? (
@@ -241,10 +236,12 @@ export function SettingsDialog({
             {tab === "reply"
               ? (
                   <ReplyPage
-                    choiceCards={appSettings.choiceCards}
-                    onToggleChoiceCards={value => onChangeSettings({ choiceCards: value })}
                     autoTitleFirstTurn={appSettings.autoTitleFirstTurn}
+                    bellOnComplete={appSettings.bellOnComplete}
+                    choiceCards={appSettings.choiceCards}
                     onToggleAutoTitleFirstTurn={value => onChangeSettings({ autoTitleFirstTurn: value })}
+                    onToggleBellOnComplete={value => onChangeSettings({ bellOnComplete: value })}
+                    onToggleChoiceCards={value => onChangeSettings({ choiceCards: value })}
                   />
                 )
               : null}

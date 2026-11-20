@@ -8,22 +8,16 @@ import { getLanguagePreference, LANGUAGE_LABELS, LANGUAGE_PREFERENCES, setLangua
 import { FONT_SIZES, setFontSize, useFontSize } from "../../lib/fontSize";
 import { REPLY_DETAIL_LEVELS, setReplyDetail, useReplyDetail } from "../../lib/replyDisplay";
 import { setThemeMode, THEME_MODES, useThemeMode } from "../../lib/theme";
-import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPrimitives";
+import { SettingsList, SettingsRow, SettingsSection } from "./SettingsPrimitives";
 import { ThemePalettePicker } from "./ThemePalettePicker";
 
 /**
  * This app's own display preferences: language, light/dark, palette, text size,
- * how a finished reply is shown, and the completion bell. None of them reach
- * the agent — they are read and stored by the client, which is why they live
- * apart from the conversation and model pages.
+ * and how a finished reply is shown. None of them reach the agent — they are read
+ * and stored by the client, which is why they live apart from the conversation
+ * and model pages.
  */
-export function AppearancePage({
-  bellOnComplete,
-  onToggleBellOnComplete,
-}: {
-  bellOnComplete: boolean;
-  onToggleBellOnComplete: (value: boolean) => void;
-}) {
+export function AppearancePage() {
   const { t } = useTranslation("settings");
   const themeMode = useThemeMode();
   const fontSize = useFontSize();
@@ -106,17 +100,6 @@ export function AppearancePage({
                 </option>
               ))}
             </Select>
-          </SettingsRow>
-        </SettingsList>
-      </SettingsSection>
-
-      <SettingsSection title={t("alerts.section")}>
-        <SettingsList>
-          <SettingsRow
-            title={t("bellOnComplete.title")}
-            description={t("bellOnComplete.description")}
-          >
-            <Switch checked={bellOnComplete} label={t("bellOnComplete.title")} onChange={onToggleBellOnComplete} />
           </SettingsRow>
         </SettingsList>
       </SettingsSection>
