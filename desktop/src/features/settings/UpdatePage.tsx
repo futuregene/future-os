@@ -7,7 +7,6 @@ import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { openExternalUrl } from "../../integrations/storage/files";
 import { invokeCommand } from "../../integrations/tauri/invoke";
-import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { useMaintenanceStatus } from "../../integrations/tauri/useMaintenanceStatus";
 import { errorMessage } from "../../lib/errors";
 import { SettingsSection } from "./SettingsPrimitives";
@@ -27,7 +26,6 @@ interface DownloadProgress {
  */
 export function UpdatePage({ cachedStatus, cachedStatusCheckedAt }: { cachedStatus?: UpdateStatus | null; cachedStatusCheckedAt?: number | null }) {
   const { t, i18n } = useTranslation("settings");
-  const build = useBuildInfo();
   const [status, setStatus] = useState<UpdateStatus | null>(cachedStatus ?? null);
   // When `status` was produced. Null when nothing has answered yet: an unchecked
   // state must never be presented as an up-to-date result.
@@ -183,10 +181,12 @@ export function UpdatePage({ cachedStatus, cachedStatusCheckedAt }: { cachedStat
         <div className="space-y-3 rounded-lg border border-line-soft p-4">
           <div className="flex items-center gap-4">
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium text-ink">
-                {build.data
-                  ? t("update.currentVersion", { version: build.data.version })
-                  : t("update.title")}
+              {/* The installed version lives on 关于, the one page that answers
+                  "what am I running". Here the row says *when* the answer beside
+                  it was produced, which is what keeps a cached result from being
+                  read as a check that just ran. */}
+              <div className="text-xs text-ink-muted">
+                {checkedAt != null ? t("update.lastChecked", { time: formatCheckedAt(checkedAt) }) : t("update.description")}
               </div>
             </div>
             <Button
@@ -297,9 +297,6 @@ export function UpdatePage({ cachedStatus, cachedStatusCheckedAt }: { cachedStat
                         </>
                       )
                     : <p className="text-sm text-ink-soft">{t(noUpdateLabel)}</p>}
-                  {checkedAt != null
-                    ? <p className="text-xs text-ink-muted">{t("update.lastChecked", { time: formatCheckedAt(checkedAt) })}</p>
-                    : null}
                 </div>
               )
             : null}

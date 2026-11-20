@@ -159,7 +159,6 @@
     "sectionTitle": "Software update",
     "title": "Check for updates",
     "description": "Keep FutureOS up to date",
-    "currentVersion": "Current version v{{version}}",
     "check": "Check for updates",
     "checking": "Checking…",
     "upToDate": "You're on the latest version",
