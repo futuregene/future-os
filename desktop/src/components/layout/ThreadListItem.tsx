@@ -36,6 +36,7 @@ function ThreadListItemImpl({
   selectionMode,
   thread,
   unread,
+  whereLabel,
   onDeleteThread,
   onMenuOpenChange,
   onRenameThread,
@@ -76,6 +77,14 @@ function ThreadListItemImpl({
   selectionMode?: boolean;
   thread: StoredThread;
   unread?: boolean;
+  /**
+   * The workspace this conversation lives in, drawn under its title.
+   *
+   * Only the flat lists pass it (see `RailRow`'s `subline`): the tree view and a
+   * group's contents already sit under a heading that says it, and the phone —
+   * whose list has no headings at all — is where this line comes from.
+   */
+  whereLabel?: string;
   onDeleteThread: (thread: StoredThread) => void;
   /** Receives the row's thread so the rail can pass one stable callback to every row. */
   onMenuOpenChange: (thread: StoredThread, open: boolean) => void;
@@ -123,13 +132,86 @@ function ThreadListItemImpl({
   const choiceWaiting = choiceCards && runStatus?.offersChoice === true
     && effectiveRunStatus === "completed";
 
+  // The row's right-hand control, in the slot `trailing` reserves: while a batch
+  // is being assembled the checkbox replaces the trigger *and* the run
+  // indicator, so the two kinds of row keep one right edge.
+  const trailing = selectionMode
+    ? (
+        <input
+          aria-label={t("activityRail.selectThread", { title: displayTitle })}
+          checked={selected}
+          className="relative z-10 size-5 shrink-0 rounded border-line accent-accent"
+          onChange={(event) => {
+            event.stopPropagation();
+            onToggleSelection?.(thread);
+          }}
+          type="checkbox"
+        />
+      )
+    : (
+        <>
+          {!active && pendingApprovalCount && pendingApprovalCount > 0
+            ? (
+                <span
+                  aria-label={t("activityRail.pendingApproval", { count: pendingApprovalCount })}
+                  className="pointer-events-none inline-flex size-5 shrink-0 items-center justify-center text-warning"
+                  title={t("activityRail.pendingApproval", { count: pendingApprovalCount })}
+                >
+                  <CircleAlert className="size-3.5" />
+                </span>
+              )
+            : null}
+          {!active && choiceWaiting
+            ? (
+                <span
+                  aria-label={t("activityRail.pendingChoice")}
+                  // The approval badge's ink, not the accent: both marks say
+                  // the same thing to a reader scanning the list — this
+                  // conversation cannot move without you — and a blue one read
+                  // as a quieter, informational state next to it. The *shape*
+                  // still tells the two apart (a card waits for the next send;
+                  // an approval blocks the agent).
+                  className="pointer-events-none inline-flex size-5 shrink-0 items-center justify-center text-warning"
+                  data-thread-choice="true"
+                  title={t("activityRail.pendingChoice")}
+                >
+                  <ListChecks className="size-3.5" />
+                </span>
+              )
+            : null}
+          <RailRowIndicator status={effectiveRunStatus} unread={unread} />
+          <RailRowMenuButton
+            buttonRef={menuButtonRef}
+            label={t("activityRail.threadActions", { title: displayTitle })}
+            menuOpen={menuOpen}
+            onToggle={() => onMenuOpenChange(thread, !menuOpen)}
+          />
+          {menuOpen
+            ? (
+                <ThreadItemMenu
+                  archived={archived}
+                  onArchive={onArchiveThread ? () => onArchiveThread(thread) : undefined}
+                  pinned={thread.pinned}
+                  onClose={() => onMenuOpenChange(thread, false)}
+                  onDelete={() => onDeleteThread(thread)}
+                  onRename={() => onRenameThread(thread)}
+                  onRestore={() => onRestoreThread(thread)}
+                  onTogglePin={() => onTogglePinThread(thread)}
+                />
+              )
+            : null}
+        </>
+      );
+
   return (
     <RailRow
       active={active}
       compact={compact}
       depth={depth}
       rowRef={menuRef}
+      subline={whereLabel}
       title={displayTitle}
+      trailing={trailing}
       onContextMenu={() => onMenuOpenChange(thread, true)}
       onSelect={() => onSelectThread(thread)}
     >
@@ -158,73 +240,6 @@ function ThreadListItemImpl({
           )
         : null}
       {archived ? <span className="pointer-events-none shrink-0 text-2xs text-ink-muted group-hover/thread:hidden">{t("activityRail.archived")}</span> : null}
-      {selectionMode
-        ? (
-            <input
-              aria-label={t("activityRail.selectThread", { title: displayTitle })}
-              checked={selected}
-              className="relative z-10 size-5 shrink-0 rounded border-line accent-accent"
-              onChange={(event) => {
-                event.stopPropagation();
-                onToggleSelection?.(thread);
-              }}
-              type="checkbox"
-            />
-          )
-        : (
-            <>
-              {!active && pendingApprovalCount && pendingApprovalCount > 0
-                ? (
-                    <span
-                      aria-label={t("activityRail.pendingApproval", { count: pendingApprovalCount })}
-                      className="pointer-events-none inline-flex size-5 shrink-0 items-center justify-center text-warning"
-                      title={t("activityRail.pendingApproval", { count: pendingApprovalCount })}
-                    >
-                      <CircleAlert className="size-3.5" />
-                    </span>
-                  )
-                : null}
-              {!active && choiceWaiting
-                ? (
-                    <span
-                      aria-label={t("activityRail.pendingChoice")}
-                      // The approval badge's ink, not the accent: both marks say
-                      // the same thing to a reader scanning the list — this
-                      // conversation cannot move without you — and a blue one read
-                      // as a quieter, informational state next to it. The *shape*
-                      // still tells the two apart (a card waits for the next send;
-                      // an approval blocks the agent).
-                      className="pointer-events-none inline-flex size-5 shrink-0 items-center justify-center text-warning"
-                      data-thread-choice="true"
-                      title={t("activityRail.pendingChoice")}
-                    >
-                      <ListChecks className="size-3.5" />
-                    </span>
-                  )
-                : null}
-              <RailRowIndicator status={effectiveRunStatus} unread={unread} />
-              <RailRowMenuButton
-                buttonRef={menuButtonRef}
-                label={t("activityRail.threadActions", { title: displayTitle })}
-                menuOpen={menuOpen}
-                onToggle={() => onMenuOpenChange(thread, !menuOpen)}
-              />
-            </>
-          )}
-      {menuOpen
-        ? (
-            <ThreadItemMenu
-              archived={archived}
-              onArchive={onArchiveThread ? () => onArchiveThread(thread) : undefined}
-              pinned={thread.pinned}
-              onClose={() => onMenuOpenChange(thread, false)}
-              onDelete={() => onDeleteThread(thread)}
-              onRename={() => onRenameThread(thread)}
-              onRestore={() => onRestoreThread(thread)}
-              onTogglePin={() => onTogglePinThread(thread)}
-            />
-          )
-        : null}
     </RailRow>
   );
 }

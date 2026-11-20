@@ -46,6 +46,7 @@ export function RemoteConversationRow({
   selected,
   selectionMode,
   unread,
+  whereLabel,
 }: {
   active: boolean;
   /** Whether the row sits in the archived view (its menu offers Restore). */
@@ -89,6 +90,15 @@ export function RemoteConversationRow({
    */
   selectionMode?: boolean;
   unread?: boolean;
+  /**
+   * The workspace this conversation lives in, drawn under its title — the flat
+   * lists' second line (see `RailRow`'s `subline`).
+   *
+   * With it, the machine's mark moves down beside the name, which is the phone's
+   * own order: the row's first line is the conversation, the second is where it
+   * lives, and the mark that opens it is the machine it lives on.
+   */
+  whereLabel?: string;
 }) {
   const { t } = useTranslation("remotePeer");
   // The tree toggle is the local row's control, so it is named with the local
@@ -113,13 +123,113 @@ export function RemoteConversationRow({
     onDismiss: () => setMenuOpen(false),
   });
 
+  // The machine's mark, drawn once and placed in whichever line this row has:
+  // beside the title in a one-line row (the tree view), and at the start of the
+  // second line when the row says where it lives — the phone's order, where the
+  // machine opens the line the workspace's name continues.
+  const sourceIcon = (
+    <span aria-hidden className="pointer-events-none shrink-0" data-testid="remote-source-icon">
+      <PeerIconGlyph className="size-3" id={peer?.icon} />
+    </span>
+  );
+
+  // The row's right-hand control, in the slot `trailing` reserves — the same
+  // one the local row keeps, so the two kinds of row share a right edge while a
+  // batch is being assembled and while it is not.
+  const trailing = selectionMode
+    ? (
+        // The same control, in the same slot, as the local row's: the
+        // checkbox replaces the run indicator *and* the actions trigger
+        // rather than joining them, so the two kinds of row line up while a
+        // batch is being assembled.
+        <input
+          aria-label={t("selectConversation", { title: conversation.title })}
+          checked={selected === true}
+          className="relative z-10 size-5 shrink-0 rounded border-line accent-accent"
+          onChange={(event) => {
+            event.stopPropagation();
+            onToggleSelection?.(conversation);
+          }}
+          type="checkbox"
+        />
+      )
+    : (
+        <>
+          {!active && approvalWaiting
+            ? (
+                <span
+                  aria-label={t("pendingApproval")}
+                  className="pointer-events-none inline-flex size-5 shrink-0 items-center justify-center text-warning"
+                  data-thread-approval="true"
+                  title={t("pendingApproval")}
+                >
+                  <CircleAlert className="size-3.5" />
+                </span>
+              )
+            : null}
+          {!active && choiceWaiting
+            ? (
+                <span
+                  aria-label={t("pendingChoice")}
+                  // The approval badge's ink, like the local row's: two marks
+                  // that both mean "this one needs you" must not differ in
+                  // how loudly they shout.
+                  className="pointer-events-none inline-flex size-5 shrink-0 items-center justify-center text-warning"
+                  data-thread-choice="true"
+                  title={t("pendingChoice")}
+                >
+                  <ListChecks className="size-3.5" />
+                </span>
+              )
+            : null}
+          <RailRowIndicator status={conversation.streaming ? "running" : unread ? "completed" : undefined} unread={unread} />
+          {/* The actions trigger is part of what the checkbox replaces, as
+              it is on the local row: while a batch is being assembled the
+              pointer is over the list ticking rows, and a `…` that appears
+              under it offers rename/delete/fork for the one row the user is
+              about to tick — the same menu, meaning a different thing, in
+              the one state where the row is answering "in or out of the
+              batch". */}
+          <RailRowMenuButton
+            label={t("conversationActions")}
+            menuOpen={menuOpen}
+            onToggle={() => setMenuOpen(open => !open)}
+          />
+          {menuOpen
+            ? (
+                <RemoteConversationMenu
+                  archived={archived}
+                  canArchive={canArchive}
+                  conversation={conversation}
+                  onChanged={onChanged}
+                  onClose={() => setMenuOpen(false)}
+                  onDeleted={() => onDeletedRemote(conversation)}
+                  onOpenRename={() => {
+                    setMenuOpen(false);
+                    onOpenRename(conversation);
+                  }}
+                />
+              )
+            : null}
+        </>
+      );
+
   return (
     <RailRow
       active={active}
       compact={compact}
       depth={depth}
       rowRef={itemRef}
+      subline={whereLabel
+        ? (
+            <>
+              {sourceIcon}
+              <span className="truncate">{whereLabel}</span>
+            </>
+          )
+        : undefined}
       title={`${conversation.title} · ${peer?.name ?? conversation.desktopId ?? ""}`}
+      trailing={trailing}
       onContextMenu={() => setMenuOpen(true)}
       onSelect={() => onOpen(conversation)}
     >
@@ -147,92 +257,16 @@ export function RemoteConversationRow({
           Always drawn. It used to be withheld when the list held one machine or
           the selector above already named it, which left a row of a remote
           desktop looking exactly like a local one — the selector says what the
-          *list* is filtered to, not where the line being read lives. */}
-      <span aria-hidden className="pointer-events-none shrink-0" data-testid="remote-source-icon">
-        <PeerIconGlyph className="size-3" id={peer?.icon} />
-      </span>
+          *list* is filtered to, not where the line being read lives.
+
+          Only in a one-line row: a row that says where it lives draws the mark
+          on its second line instead, in front of the workspace's name. */}
+      {whereLabel ? null : sourceIcon}
       <RailRowSpacer />
       {/* The age, before the run indicator: the same column the local row puts
           it in, so a list holding both machines' rows keeps one right edge. */}
       {ageLabel
         ? <span className="pointer-events-none shrink-0 text-2xs tabular-nums text-ink-muted">{ageLabel}</span>
-        : null}
-      {selectionMode
-        ? (
-            // The same control, in the same slot, as the local row's: the
-            // checkbox replaces the run indicator *and* the actions trigger
-            // rather than joining them, so the two kinds of row line up while a
-            // batch is being assembled.
-            <input
-              aria-label={t("selectConversation", { title: conversation.title })}
-              checked={selected === true}
-              className="relative z-10 size-5 shrink-0 rounded border-line accent-accent"
-              onChange={(event) => {
-                event.stopPropagation();
-                onToggleSelection?.(conversation);
-              }}
-              type="checkbox"
-            />
-          )
-        : (
-            <>
-              {!active && approvalWaiting
-                ? (
-                    <span
-                      aria-label={t("pendingApproval")}
-                      className="pointer-events-none inline-flex size-5 shrink-0 items-center justify-center text-warning"
-                      data-thread-approval="true"
-                      title={t("pendingApproval")}
-                    >
-                      <CircleAlert className="size-3.5" />
-                    </span>
-                  )
-                : null}
-              {!active && choiceWaiting
-                ? (
-                    <span
-                      aria-label={t("pendingChoice")}
-                      // The approval badge's ink, like the local row's: two marks
-                      // that both mean "this one needs you" must not differ in
-                      // how loudly they shout.
-                      className="pointer-events-none inline-flex size-5 shrink-0 items-center justify-center text-warning"
-                      data-thread-choice="true"
-                      title={t("pendingChoice")}
-                    >
-                      <ListChecks className="size-3.5" />
-                    </span>
-                  )
-                : null}
-              <RailRowIndicator status={conversation.streaming ? "running" : unread ? "completed" : undefined} unread={unread} />
-              {/* The actions trigger is part of what the checkbox replaces, as
-                  it is on the local row: while a batch is being assembled the
-                  pointer is over the list ticking rows, and a `…` that appears
-                  under it offers rename/delete/fork for the one row the user is
-                  about to tick — the same menu, meaning a different thing, in
-                  the one state where the row is answering "in or out of the
-                  batch". */}
-              <RailRowMenuButton
-                label={t("conversationActions")}
-                menuOpen={menuOpen}
-                onToggle={() => setMenuOpen(open => !open)}
-              />
-            </>
-          )}
-      {menuOpen
-        ? (
-            <RemoteConversationMenu
-              archived={archived}
-              canArchive={canArchive}
-              conversation={conversation}
-              onChanged={onChanged}
-              onClose={() => setMenuOpen(false)}
-              onDeleted={() => onDeletedRemote(conversation)}
-              onOpenRename={() => {
-                setMenuOpen(false);
-                onOpenRename(conversation);
-              }}
-            />
-          )
         : null}
     </RailRow>
   );

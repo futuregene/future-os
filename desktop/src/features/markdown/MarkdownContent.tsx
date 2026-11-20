@@ -213,13 +213,20 @@ function renderBlock(
         </Tag>
       );
     }
-    case "code":
+    case "code": {
       // A malformed `futureos-choice` block degrades to the fenced source it
       // is. With the cards off that source must not surface either: the reader
       // asked for no card, not for a card's markdown in the middle of a reply.
-      if (!choiceCards && node.language?.trim().toLowerCase() === "futureos-choice")
+      const choiceFence = node.language?.trim().toLowerCase() === "futureos-choice";
+      if (!choiceCards && choiceFence)
         return null;
-      return <CodeBlock code={node.code} key={key} language={node.language} />;
+      // That source is the only code block that wraps (§3 tolerance table): its
+      // lines are `option:` prose, so a narrow window should fold them rather
+      // than hide them behind a sideways scroll.
+      return (
+        <CodeBlock code={node.code} key={key} language={node.language} wrap={choiceFence} />
+      );
+    }
     case "mathBlock":
       return <MathBlock code={node.code} key={key} />;
     case "futureEmbed":

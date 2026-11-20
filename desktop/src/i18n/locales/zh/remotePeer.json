@@ -119,7 +119,7 @@
   "settingSkillRecommend": "技能推荐",
   "settingSkillRecommendHint": "输入时允许那台电脑推荐技能。",
   "settingChoiceCards": "选项卡",
-  "settingChoiceCardsHint": "允许那台电脑在回复末尾带一张可勾选的选项卡。默认关闭：关闭时任何一端都不显示卡片，也不会告诉它的智能体有这种格式。",
+  "settingChoiceCardsHint": "允许那台电脑在回复末尾带一张可勾选的选项卡。默认开启：关闭时任何一端都不显示卡片，也不会告诉它的智能体有这种格式。",
   "settingAutoConnect": "启动后继续提供远程连接",
   "settingAutoConnectHint": "那台电脑下次启动后是否继续提供远程连接——它的「远程桌面」开关也是在那时变化，不是现在。关闭后需在那台电脑上手动打开开关。",
   "settingsHostContent": "那台电脑上的",

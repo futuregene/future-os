@@ -669,6 +669,7 @@ def unexecuted_consultation(discussion, tool_id, transcript):
             )
             or block.get("text")
             in {
+                "Error: Fusion arguments must be an object",
                 "Error: Fusion requires question",
                 "Error: Fusion requires goal",
                 "Error: Fusion requires background",

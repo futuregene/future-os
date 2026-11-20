@@ -1147,3 +1147,52 @@ describe("the rail's two views from the keyboard", () => {
     view.unmount();
   });
 });
+
+describe("where a flat row's conversation lives", () => {
+  // The phone's flat list says it under each title. The rail's recent view is
+  // the same list with the same gap — no heading above a row — so it says it the
+  // same way; the tree view keeps saying it with headings.
+  it("names the workspace under each recent row, and says Chat for a chat", () => {
+    const view = mount(
+      <ActivityRail {...props(
+        [
+          thread("in-workspace", { mode: "workspace", workspaceId: "ws-research", title: "In a workspace" }),
+          thread("a-chat", { mode: "chat", title: "A chat" }),
+        ],
+        { workspaces: [workspace("ws-research", "Research")] },
+      )}
+      />,
+    );
+    try {
+      showRecent(view.container);
+      const subline = (key: string) =>
+        view.container.querySelector(`[data-recent-row="local::${key}"] [data-row-subline]`)?.textContent;
+      expect(subline("in-workspace")).toBe("Research");
+      // A conversation with no workspace still says where it is, as the phone's
+      // rows do: "Chat", not an empty line.
+      expect(subline("a-chat")).toBe("Chat");
+    }
+    finally {
+      view.unmount();
+    }
+  });
+
+  it("leaves it to the tree view's headings", () => {
+    const view = mount(
+      <ActivityRail {...props(
+        [thread("in-workspace", { mode: "workspace", workspaceId: "ws-research", title: "In a workspace" })],
+        { workspaces: [workspace("ws-research", "Research")] },
+      )}
+      />,
+    );
+    try {
+      // The tree draws this conversation under a heading named "Research", so
+      // the row itself carries no second line.
+      expect(view.container.textContent).toContain("Research");
+      expect(view.container.querySelector("[data-row-subline]")).toBeNull();
+    }
+    finally {
+      view.unmount();
+    }
+  });
+});

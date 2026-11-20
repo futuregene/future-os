@@ -38,6 +38,7 @@ export function ArchivedThreadRow({
   selected,
   selectionMode,
   thread,
+  whereLabel,
 }: {
   active: boolean;
   /** How far in this row sits under the archived tree's root. */
@@ -58,6 +59,15 @@ export function ArchivedThreadRow({
   selected?: boolean;
   selectionMode?: boolean;
   thread: StoredThread;
+  /**
+   * The workspace this conversation lives in, drawn under its title.
+   *
+   * The loose shelf is a flat list — no workspace heading above its rows — so it
+   * says where a shelved conversation lived the way the recent view does. A
+   * shelved workspace's own contents do not pass it: their heading is right
+   * there, still naming it.
+   */
+  whereLabel?: string;
 }) {
   const { t } = useTranslation("layout");
   const [menuOpen, setMenuOpen] = useState(false);
@@ -79,19 +89,9 @@ export function ArchivedThreadRow({
       onContextMenu={() => setMenuOpen(true)}
       onSelect={() => onOpen(thread)}
       rowRef={menuRef}
+      subline={whereLabel}
       title={thread.title}
-    >
-      {hasChildren
-        ? (
-            <RailRowTreeToggle
-              expanded={expanded}
-              label={t(expanded ? "activityRail.collapseThread" : "activityRail.expandThread", { title: thread.title })}
-              onToggle={() => onToggleExpanded?.(thread)}
-            />
-          )
-        : null}
-      <RailRowTitle>{thread.title}</RailRowTitle>
-      {selectionMode
+      trailing={selectionMode
         ? (
             <input
               aria-label={t("activityRail.selectThread", { title: thread.title })}
@@ -131,6 +131,17 @@ export function ArchivedThreadRow({
                 : null}
             </>
           )}
+    >
+      {hasChildren
+        ? (
+            <RailRowTreeToggle
+              expanded={expanded}
+              label={t(expanded ? "activityRail.collapseThread" : "activityRail.expandThread", { title: thread.title })}
+              onToggle={() => onToggleExpanded?.(thread)}
+            />
+          )
+        : null}
+      <RailRowTitle>{thread.title}</RailRowTitle>
     </RailRow>
   );
 }

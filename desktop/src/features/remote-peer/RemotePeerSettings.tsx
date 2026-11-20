@@ -277,7 +277,7 @@ export function RemotePeerSettings({
               settable on a machine with no screen of its own. */}
           <SettingsRow description={t("settingChoiceCardsHint")} title={t("settingChoiceCards")}>
             <Switch
-              checked={setting("choiceCards", false)}
+              checked={setting("choiceCards", true)}
               disabled={!available || busy}
               label={t("settingChoiceCards")}
               onChange={value => void update({ choiceCards: value })}

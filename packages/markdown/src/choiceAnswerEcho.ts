@@ -49,10 +49,12 @@ export interface ChoiceAnswerEchoSplit {
 const ANSWER = /\[(\S[^[\]\n]{0,199}?)[ \t]*→[ \t]*(\S[^[\]\n]{0,299}?)\]/gu;
 
 /**
- * A card holds at most four options (design §3), so a longer run of bracketed
- * arrows is prose that happens to look like an answer. Reading four is already
- * more than a draft can hold; the bound only stops a weird message from being
- * walked to its end.
+ * A prompt carries a handful of answers at most — one per card its writer
+ * answered, since a card is one `[question → answer]` however many rows were
+ * ticked (`choiceAnswerText` joins the picks). A longer run of bracketed arrows
+ * is prose that happens to look like an answer; the bound only stops a weird
+ * message from being walked to its end. It is not the card's option count
+ * (2–6, design §3): six ticks still print one answer.
  */
 const MAX_ECHOES = 4;
 
