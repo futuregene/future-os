@@ -8,16 +8,21 @@ import { getLanguagePreference, LANGUAGE_LABELS, LANGUAGE_PREFERENCES, setLangua
 import { FONT_SIZES, setFontSize, useFontSize } from "../../lib/fontSize";
 import { REPLY_DETAIL_LEVELS, setReplyDetail, useReplyDetail } from "../../lib/replyDisplay";
 import { setThemeMode, THEME_MODES, useThemeMode } from "../../lib/theme";
-import { SettingsList, SettingsRow, SettingsSection } from "./SettingsPrimitives";
+import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPrimitives";
 import { ThemePalettePicker } from "./ThemePalettePicker";
 
 /**
- * This app's own display preferences: language, light/dark, palette, text size,
- * and how a finished reply is shown. None of them reach the agent — they are read
- * and stored by the client, which is why they live apart from the conversation
- * and model pages.
+ * This app's own preferences: language, light/dark, palette, text size, how a
+ * finished reply is shown, and whether finishing one rings the bell.
+ *
+ * None of them reach the agent, and none are visible from a paired phone — the
+ * bell is played by this machine, and a phone carries its own reminder switch.
+ * That is the line this page keeps: what this client does, not what a reply does.
  */
-export function AppearancePage() {
+export function AppearancePage({ bellOnComplete, onToggleBellOnComplete }: {
+  bellOnComplete: boolean;
+  onToggleBellOnComplete: (value: boolean) => void;
+}) {
   const { t } = useTranslation("settings");
   const themeMode = useThemeMode();
   const fontSize = useFontSize();
@@ -100,6 +105,22 @@ export function AppearancePage() {
                 </option>
               ))}
             </Select>
+          </SettingsRow>
+        </SettingsList>
+      </SettingsSection>
+
+      {/* The completion bell is this machine's own notification: the sound plays
+          here, a paired phone never sees the row (it has its own reminder
+          switch), and the agent does not know it exists. It sat on the replies
+          page for a while, which read as something a reply does — but a reply is
+          the same on every client, and this is not. */}
+      <SettingsSection title={t("alerts.section")}>
+        <SettingsList>
+          <SettingsRow
+            title={t("bellOnComplete.title")}
+            description={t("bellOnComplete.description")}
+          >
+            <Switch checked={bellOnComplete} label={t("bellOnComplete.title")} onChange={onToggleBellOnComplete} />
           </SettingsRow>
         </SettingsList>
       </SettingsSection>

@@ -20,7 +20,11 @@ vi.mock("../../integrations/tauri/useBuildInfo", () => ({
 // so routing, the dev-only gate and the settings-patch mapping are what fail if
 // they regress.
 vi.mock("./AppearancePage", () => ({
-  AppearancePage: () => <div data-page="appearance" />,
+  AppearancePage: (props: Record<string, unknown>) => (
+    <div data-page="appearance" data-bell={String(props.bellOnComplete)}>
+      <button data-toggle-bell onClick={() => (props.onToggleBellOnComplete as (v: boolean) => void)(false)}>bell</button>
+    </div>
+  ),
 }));
 vi.mock("./PermissionPage", () => ({
   PermissionPage: (props: Record<string, unknown>) => (
@@ -31,8 +35,7 @@ vi.mock("./PermissionPage", () => ({
 }));
 vi.mock("./ReplyPage", () => ({
   ReplyPage: (props: Record<string, unknown>) => (
-    <div data-page="reply" data-auto-title={String(props.autoTitleFirstTurn)} data-bell={String(props.bellOnComplete)} data-choice-cards={String(props.choiceCards)}>
-      <button data-toggle-bell onClick={() => (props.onToggleBellOnComplete as (v: boolean) => void)(false)}>bell</button>
+    <div data-page="reply" data-auto-title={String(props.autoTitleFirstTurn)} data-choice-cards={String(props.choiceCards)}>
       <button data-toggle-title onClick={() => (props.onToggleAutoTitleFirstTurn as (v: boolean) => void)(false)}>title</button>
       <button data-toggle-choice-cards onClick={() => (props.onToggleChoiceCards as (v: boolean) => void)(true)}>choice-cards</button>
     </div>
@@ -518,8 +521,10 @@ describe("settingsDialog search", () => {
     type(container, "Completion bell");
     act(() => container.querySelector<HTMLButtonElement>("[data-settings-results] button")!.click());
 
-    expect(page(container)).toBe("reply");
-    expect(header(container)).toBe("Replies");
+    // The bell is this machine's own notification, so its row lives on the
+    // appearance page — searching for it must land there, not on replies.
+    expect(page(container)).toBe("appearance");
+    expect(header(container)).toBe("Appearance");
     expect(searchField(container).value).toBe("");
     expect(container.querySelector("[data-settings-results]")).toBeNull();
   });
@@ -572,7 +577,7 @@ describe("settingsDialog settings wiring", () => {
 
     await clickOn("Permissions", "[data-approval-manual]");
     await clickOn("Replies", "[data-toggle-title]");
-    await clickOn("Replies", "[data-toggle-bell]");
+    await clickOn("Appearance", "[data-toggle-bell]");
     await clickOn("Skills", "[data-toggle-upgrade]");
     await clickOn("Skills", "[data-toggle-recommend]");
     await clickOn("Replies", "[data-toggle-choice-cards]");
@@ -604,12 +609,13 @@ describe("settingsDialog settings wiring", () => {
     const reply = container.querySelector("[data-page=reply]")!;
     expect(reply.getAttribute("data-auto-title")).toBe("false");
     expect(reply.getAttribute("data-choice-cards")).toBe("false");
-    // The completion bell describes what a reply does as it lands, so it is
-    // handed to this page and not to the display preferences.
-    expect(reply.getAttribute("data-bell")).toBe("false");
+    // The reply page no longer carries the bell: it is this machine's own
+    // notification, so it is handed to the appearance page.
+    expect(container.querySelector("[data-page=reply] [data-bell]")).toBeNull();
 
     act(() => navButton(container, "Appearance").click());
     expect(page(container)).toBe("appearance");
+    expect(container.querySelector("[data-page=appearance]")!.getAttribute("data-bell")).toBe("false");
 
     act(() => navButton(container, "Skills").click());
     const skills = container.querySelector("[data-page=skills]")!;
