@@ -96,7 +96,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   titleLanguage: "en",
   communityEdition: false,
   skillRecommend: false,
-  choiceCards: false,
+  choiceCards: true,
 };
 
 export async function getAppSettings() {
