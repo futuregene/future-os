@@ -195,7 +195,7 @@ The block goes last, alone. Never two cards in one reply, never one mid-reply.
 值放在哪、怎么走：
 
 - 只有一个真源：`app.db` → `packages/app-settings`（`choice_cards`，默认 `false`），读出来是 `appSettings.choiceCards`；
-- 桌面：设置 → 通用里的一个开关；值经 `ChoiceCardsContext` 到 markdown 渲染层（渲染层自身默认仍是 `true`，所以只有真正的「关」才隐藏）；
+- 桌面：设置 → 会话 → 回复里的一个开关；值经 `ChoiceCardsContext` 到 markdown 渲染层（渲染层自身默认仍是 `true`，所以只有真正的「关」才隐藏）；
 - **每次 run 之前**告诉 agent：宿主推 `set_choice_cards`（尽力而为——不认识这条命令的旧 agent 也不影响发消息，读设置失败一律按关处理），会话记住它，由 `PromptOptions.choice_cards` 决定这一节进不进 prompt。所以全新安装的机器：prompt 里没有围栏，界面上也没有卡片；
 - 手机镜像桌面、不另存一份：`get_desktop_settings` 带上 `choiceCards`，`SettingsPatch` 写回同一行。
 - 同一个值也能**在那台机器自己的页面上**改：配对的桌面点进去（远程 → 那台电脑 → 自动化）就有这个开关，否则没有屏幕的无头宿主永远打不开它。它通过 `update_desktop_settings` 写那台机器的 `app.db`；

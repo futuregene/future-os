@@ -333,7 +333,7 @@ assistant 的**思考过程**（模型 reasoning）与工具调用按发生顺�
 
 输入 `/` 打开统一的上下文工具与 Skill 菜单。当前上下文工具提供「压缩 / Compact」；它只操作当前对话，不创建用户消息，压缩生命周期在消息区以三态分割线反馈。菜单的混合结果排序与分隔规则见 4.8。
 
-输入框区域除模型、思考等级选择外，还提供**审批模式**的快速切换下拉；它与设置「通用」页里的审批模式是同一个全局选择。macOS 显示“手动审批 / 沙箱保护 / 自动审批 / 完全放开”；Windows host probe 通过后显示“手动审批 / 写保护 / 自动审批 / 完全放开”；Linux Bubblewrap host probe 通过后显示“手动审批 / 沙箱保护 / 自动审批 / 完全放开”。
+输入框区域除模型、思考等级选择外，还提供**审批模式**的快速切换下拉；它与设置「会话 → 权限」页里的审批模式是同一个全局选择。macOS 显示“手动审批 / 沙箱保护 / 自动审批 / 完全放开”；Windows host probe 通过后显示“手动审批 / 写保护 / 自动审批 / 完全放开”；Linux Bubblewrap host probe 通过后显示“手动审批 / 沙箱保护 / 自动审批 / 完全放开”。
 
 每条消息下方提供**复制按钮**，复制消息的纯文本内容。用户消息的复制按钮在 hover 时显示；assistant 回答结束后，复制按钮与**用时·输出 token**靠右常驻显示。assistant **流式生成期间**，琥珀色的**生成中动态圆点**替代复制按钮，与实时计时器一起显示；模型正在思考但尚未产生内联思考段时，还会显示**「正在思考中…」**提示。
 
@@ -369,7 +369,7 @@ Runs 面板明确不做以下事情：
 
 ### 5.6 配色与设计 token
 
-GUI 的颜色统一走 `desktop/src/styles/globals.css` 里定义的**语义 token**（中性/表面、强调/交互、状态三件套、diff、阴影），组件里不直接写 Tailwind 原生具名色。观感有两个独立维度，都在 设置 → 通用 里选：**外观**（浅色 / 深色 / 跟随系统）与**配色主题**（FutureOS 默认，另有 Ayu、Catppuccin、Dracula、Everforest、Gruvbox、Kanagawa、Nightfox、Nord、One Dark、Rosé Pine、Solarized、Tokyo Night、Vesper，共 14 套，每套是 `desktop/src/theme/palettes.json` 里的一个数据对象）。每个 token、每个主题都有浅色与深色两套值，所以选定的主题仍然跟随系统外观，切换配色主题也不必重选明暗。状态徽章统一用 `<Badge tone>` 组件；用颜色区分**并列种类**（运行错误子类型）的地方是有意的例外。
+GUI 的颜色统一走 `desktop/src/styles/globals.css` 里定义的**语义 token**（中性/表面、强调/交互、状态三件套、diff、阴影），组件里不直接写 Tailwind 原生具名色。观感有两个独立维度，都在 设置 → 应用 → 外观 里选：**外观**（浅色 / 深色 / 跟随系统）与**配色主题**（FutureOS 默认，另有 Ayu、Catppuccin、Dracula、Everforest、Gruvbox、Kanagawa、Nightfox、Nord、One Dark、Rosé Pine、Solarized、Tokyo Night、Vesper，共 14 套，每套是 `desktop/src/theme/palettes.json` 里的一个数据对象）。每个 token、每个主题都有浅色与深色两套值，所以选定的主题仍然跟随系统外观，切换配色主题也不必重选明暗。状态徽章统一用 `<Badge tone>` 组件；用颜色区分**并列种类**（运行错误子类型）的地方是有意的例外。
 
 配色清单、用法速查与反模式见 [`desktop/COLOR.zh-CN.md`](COLOR.zh-CN.md)——新写或改组件选色时以它为准。
 

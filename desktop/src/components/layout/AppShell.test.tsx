@@ -1185,7 +1185,7 @@ describe("app shell layout", () => {
   it("opens Settings on its own tab from the rail's settings entry", () => {
     const view = mount(<AppShell />);
     act(() => railButton(view.container, "rail:settings").click());
-    expect(children.settingsDialog).toMatchObject({ initialTab: "general", open: true });
+    expect(children.settingsDialog).toMatchObject({ initialTab: "appearance", open: true });
     act(() => (children.settingsDialog as { onClose: () => void }).onClose());
     expect((children.settingsDialog as { open: boolean }).open).toBe(false);
     view.unmount();
@@ -4088,7 +4088,7 @@ describe("app shell keyboard commands", () => {
     press({ ctrlKey: true, code: "Comma", key: "," });
     expect((children.settingsDialog as { open: boolean; initialTab: string }).open).toBe(true);
     // The first page, unchanged: `⌘⇧,` is the one that goes to the shortcuts page.
-    expect((children.settingsDialog as { initialTab: string }).initialTab).toBe("general");
+    expect((children.settingsDialog as { initialTab: string }).initialTab).toBe("appearance");
     view.unmount();
   });
 

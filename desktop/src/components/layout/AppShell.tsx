@@ -340,7 +340,7 @@ function ReadyAppShell({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [cheatSheetOpen, setCheatSheetOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("appearance");
 
   const { hasUpdate, cachedStatus, cachedCheckedAt, markSeen: markUpdateSeen } = useUpdateChecker();
   // Drives the onboarding gate below. Kept with the other top-level hooks so
@@ -972,7 +972,7 @@ function ReadyAppShell({
 
   function handleSectionChange(nextSection: ActivitySection) {
     if (nextSection === "settings") {
-      setSettingsTab("general");
+      setSettingsTab("appearance");
       setSettingsOpen(true);
       return;
     }
@@ -1342,9 +1342,10 @@ function ReadyAppShell({
   }
 
   function handleOpenArchiveSettings() {
-    // Archive settings live on the General page now, so the "view archive
-    // settings" affordance opens that page rather than a dedicated tab.
-    setSettingsTab("general");
+    // Archiving and the storage pass share one page, so the "view archive
+    // settings" affordance lands on it directly instead of on a page whose
+    // other rows have nothing to do with archiving.
+    setSettingsTab("storage");
     setSettingsOpen(true);
   }
 
@@ -1807,7 +1808,7 @@ function ReadyAppShell({
   useCommand("panel.left", handleToggleLeftPanel, shortcutsLive);
   useCommand("panel.right", handleToggleRightPanel, shortcutsLive && !hideRightPanel);
   useCommand("settings.open", () => {
-    setSettingsTab("general");
+    setSettingsTab("appearance");
     setSettingsOpen(true);
   }, shortcutsLive);
   // The same dialog on the page that edits the binds — what `⌘/` points at. A
