@@ -230,7 +230,10 @@
       "reply": "回复",
       "storage": "存储",
       "skills": "技能"
-    }
+    },
+    "search": "搜索设置",
+    "searchPlaceholder": "搜索设置",
+    "searchNoResults": "没有匹配的设置"
   },
   "account": {
     "loading": "加载账号信息…",

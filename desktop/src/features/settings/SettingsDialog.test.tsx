@@ -480,6 +480,84 @@ describe("settingsDialog update tab", () => {
   });
 });
 
+describe("settingsDialog search", () => {
+  function searchField(container: HTMLElement) {
+    return container.querySelector<HTMLInputElement>("nav input[type=search]")!;
+  }
+
+  function type(container: HTMLElement, value: string) {
+    const field = searchField(container);
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    // A plain `field.value = …` is invisible to React, which tracks the last
+    // value it wrote; the prototype setter makes the change look like typing.
+    act(() => {
+      setter.call(field, value);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  function results(container: HTMLElement) {
+    return [...container.querySelectorAll("[data-settings-results] button")].map(item => item.textContent);
+  }
+
+  it("replaces the groups with matches while the field has text", () => {
+    const { container } = mount();
+    expect(container.querySelector("nav [class*=uppercase]")).not.toBeNull();
+
+    type(container, "archive");
+
+    // Group headings are gone: a filtered rail still printing all five reads as
+    // a list with holes in it.
+    expect(container.querySelector("nav [class*=uppercase]")).toBeNull();
+    expect(results(container).join("|")).toContain("Archive idle conversations automaticallyStorage");
+  });
+
+  it("opens the page a result belongs to and clears the field", () => {
+    const { container } = mount();
+
+    type(container, "Completion bell");
+    act(() => container.querySelector<HTMLButtonElement>("[data-settings-results] button")!.click());
+
+    expect(page(container)).toBe("reply");
+    expect(header(container)).toBe("Replies");
+    expect(searchField(container).value).toBe("");
+    expect(container.querySelector("[data-settings-results]")).toBeNull();
+  });
+
+  it("opens the first match on Enter", () => {
+    const { container } = mount();
+
+    type(container, "Approval mode");
+    act(() => {
+      searchField(container).dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    });
+
+    expect(page(container)).toBe("permission");
+  });
+
+  it("clears the field on Escape without closing the dialog", () => {
+    const onClose = vi.fn();
+    const { container } = mount({ onClose });
+
+    type(container, "archive");
+    act(() => {
+      searchField(container).dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
+    });
+
+    expect(searchField(container).value).toBe("");
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("says so when nothing matches", () => {
+    const { container } = mount();
+
+    type(container, "zzz-not-a-setting");
+
+    expect(results(container)).toEqual([]);
+    expect(container.textContent).toContain("No matching settings");
+  });
+});
+
 describe("settingsDialog settings wiring", () => {
   it("maps every settings control to its settings patch", async () => {
     const onChangeSettings = vi.fn().mockResolvedValue(undefined);
