@@ -30,21 +30,62 @@ impl Cooldown {
     }
 }
 
+/// Silence a phase tolerates from its still-pending participants before it
+/// stops waiting for them.
+const PANEL_WINDOW: Duration = Duration::from_secs(10 * 60);
+/// Same, once only one participant is still pending.
+const PANEL_LAST_WINDOW: Duration = Duration::from_secs(5 * 60);
+/// Hard bound on that wait, however long the pending participants keep talking.
+const PANEL_CEILING: Duration = Duration::from_secs(30 * 60);
+/// How often a waiting phase re-reads content progress to recompute its cutoff.
+pub(super) const PANEL_POLL: Duration = Duration::from_secs(15);
+
+/// Content progress shared by the participants of one panel. A model that is
+/// still producing reasoning or text is working, not hung, so the wait is
+/// anchored to the latest progress instead of to the fastest answer.
+#[derive(Clone, Default)]
+pub(super) struct ProgressClock(Arc<Mutex<Option<tokio::time::Instant>>>);
+
+impl ProgressClock {
+    pub fn reset(&self) {
+        *self.lock() = None;
+    }
+    pub fn touch(&self) {
+        *self.lock() = Some(tokio::time::Instant::now());
+    }
+    pub fn last(&self) -> Option<tokio::time::Instant> {
+        *self.lock()
+    }
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<tokio::time::Instant>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 #[derive(Default)]
 pub(super) struct PanelDeadline(Option<tokio::time::Instant>);
 
 impl PanelDeadline {
-    pub fn participant_finished(&mut self, now: tokio::time::Instant, remaining: usize) {
-        if self.0.is_none() {
-            self.0 = Some(now + Duration::from_secs(10 * 60));
-        }
-        if let Some(deadline) = self.0.as_mut().filter(|_| remaining == 1) {
-            *deadline = (*deadline).min(now + Duration::from_secs(5 * 60));
-        }
+    /// The first terminal result (an answer or a failure) starts the wait.
+    pub fn participant_finished(&mut self, now: tokio::time::Instant) {
+        self.0.get_or_insert(now);
     }
 
-    pub fn cutoff(&self) -> Option<tokio::time::Instant> {
-        self.0
+    /// `None` until a participant has finished. Afterwards the earlier of the
+    /// silence window (measured from the latest content progress, so an active
+    /// participant keeps its own slot open) and the hard ceiling.
+    pub fn cutoff(
+        &self,
+        pending: usize,
+        progress: Option<tokio::time::Instant>,
+    ) -> Option<tokio::time::Instant> {
+        let first = self.0?;
+        let window = if pending <= 1 {
+            PANEL_LAST_WINDOW
+        } else {
+            PANEL_WINDOW
+        };
+        let anchor = progress.map_or(first, |at| at.max(first));
+        Some((anchor + window).min(first + PANEL_CEILING))
     }
 }
 
@@ -67,16 +108,19 @@ pub(super) async fn wait_for_panel_timeout(stop: Option<&mut tokio::sync::watch:
 pub(super) struct IdleProgress {
     last_content: Mutex<tokio::time::Instant>,
     duration: Duration,
+    panel: ProgressClock,
 }
 impl IdleProgress {
-    pub fn new(milliseconds: u64) -> Arc<Self> {
+    pub fn new(milliseconds: u64, panel: ProgressClock) -> Arc<Self> {
         Arc::new(Self {
             last_content: Mutex::new(tokio::time::Instant::now()),
             duration: Duration::from_millis(milliseconds),
+            panel,
         })
     }
     pub fn content_received(&self) {
         *self.last_content.lock().unwrap_or_else(|e| e.into_inner()) = tokio::time::Instant::now();
+        self.panel.touch();
     }
     pub async fn guard<T>(
         &self,
@@ -105,6 +149,8 @@ pub(super) struct Runtime<'a> {
     pub config: &'a Configuration,
     pub scope: String,
     pub budget: Mutex<Option<super::budget::Budget>>,
+    /// Content progress of the panel currently waiting, reset per phase.
+    pub progress: ProgressClock,
     pub synthesis_audit: Mutex<Option<serde_json::Value>>,
     pub health_key: String,
     report: Mutex<ExecutionReport>,
@@ -129,6 +175,7 @@ impl<'a> Runtime<'a> {
             config,
             scope,
             budget: Mutex::new(None),
+            progress: ProgressClock::default(),
             synthesis_audit: Mutex::new(None),
             health_key,
             report: Mutex::new(run.report.clone().unwrap_or_default()),
@@ -325,33 +372,71 @@ mod tests {
         let minutes = |count: u64| Duration::from_secs(count * 60);
         let mut deadline = PanelDeadline::default();
 
-        deadline.participant_finished(now, 3);
-        assert_eq!(deadline.cutoff(), Some(now + minutes(10)));
-        deadline.participant_finished(now + minutes(1), 2);
-        assert_eq!(deadline.cutoff(), Some(now + minutes(10)));
-        deadline.participant_finished(now + minutes(8), 1);
-        assert_eq!(deadline.cutoff(), Some(now + minutes(10)));
+        assert_eq!(deadline.cutoff(3, None), None);
+        deadline.participant_finished(now);
+        assert_eq!(deadline.cutoff(3, None), Some(now + minutes(10)));
+        deadline.participant_finished(now + minutes(1));
+        assert_eq!(deadline.cutoff(3, None), Some(now + minutes(10)));
+    }
+
+    #[test]
+    fn content_progress_keeps_a_working_panel_alive_up_to_the_ceiling() {
+        let now = tokio::time::Instant::now();
+        let minutes = |count: u64| Duration::from_secs(count * 60);
+        let mut deadline = PanelDeadline::default();
+        deadline.participant_finished(now);
+
+        // The run that exposed this: two panelists were still reasoning ten
+        // minutes after the fastest answer and were cut mid-work.
+        assert_eq!(
+            deadline.cutoff(2, Some(now + minutes(8))),
+            Some(now + minutes(18))
+        );
+        // Progress that stopped long ago does not buy more time.
+        assert_eq!(
+            deadline.cutoff(2, Some(now + minutes(2))),
+            Some(now + minutes(12))
+        );
+        assert_eq!(deadline.cutoff(2, None), Some(now + minutes(10)));
+        // A panel that never stops producing is still bounded.
+        assert_eq!(
+            deadline.cutoff(2, Some(now + minutes(29))),
+            Some(now + minutes(30))
+        );
     }
 
     #[test]
     fn the_last_pending_participant_tightens_the_deadline_even_after_a_failure() {
         let now = tokio::time::Instant::now();
         let mut deadline = PanelDeadline::default();
-        deadline.participant_finished(now, 2);
-        deadline.participant_finished(now + Duration::from_secs(120), 1);
-        assert_eq!(deadline.cutoff(), Some(now + Duration::from_secs(420)));
-
-        let mut two_participants = PanelDeadline::default();
-        two_participants.participant_finished(now, 1);
+        deadline.participant_finished(now);
+        deadline.participant_finished(now + Duration::from_secs(120));
         assert_eq!(
-            two_participants.cutoff(),
+            deadline.cutoff(1, None),
             Some(now + Duration::from_secs(300))
         );
+
+        let mut two_participants = PanelDeadline::default();
+        two_participants.participant_finished(now);
+        assert_eq!(
+            two_participants.cutoff(2, None),
+            Some(now + Duration::from_secs(600))
+        );
+    }
+
+    #[test]
+    fn panel_progress_is_shared_by_the_participants_of_one_phase() {
+        let clock = ProgressClock::default();
+        assert_eq!(clock.last(), None);
+        IdleProgress::new(300_000, clock.clone()).content_received();
+        assert!(clock.last().is_some());
+        clock.reset();
+        assert_eq!(clock.last(), None);
     }
 
     #[tokio::test(start_paused = true)]
     async fn reasoning_can_continue_far_past_the_inactivity_interval() {
-        let progress = IdleProgress::new(300_000);
+        let progress = IdleProgress::new(300_000, ProgressClock::default());
         let producer = progress.clone();
         let started = tokio::time::Instant::now();
         progress
@@ -369,7 +454,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn status_notifications_do_not_keep_a_silent_request_alive() {
-        let progress = IdleProgress::new(300_000);
+        let progress = IdleProgress::new(300_000, ProgressClock::default());
         let notices = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let sender = notices.clone();
         let result: Result<()> = progress

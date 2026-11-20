@@ -686,25 +686,35 @@ async fn panel(
     let mut good = vec![];
     let mut persistence_error = None;
     let mut deadline = PanelDeadline::default();
+    // Only this phase's participants may extend this phase's wait.
+    ctx.progress.reset();
     loop {
-        let next = if let Some(cutoff) = deadline.cutoff().filter(|_| !*stop.borrow()) {
-            tokio::select! {
-                biased;
-                _ = tokio::time::sleep_until(cutoff) => {
-                    // Keep polling the workers so they can abort their own Agent
-                    // requests and persist the outcome before we synthesize.
-                    stop.send_replace(true);
-                    continue;
+        let next = match deadline
+            .cutoff(pending.len(), ctx.progress.last())
+            .filter(|_| !*stop.borrow())
+        {
+            Some(cutoff) => {
+                let wake = cutoff.min(tokio::time::Instant::now() + resilience::PANEL_POLL);
+                match tokio::time::timeout_at(wake, pending.next()).await {
+                    Ok(next) => next,
+                    // Re-read progress so a participant that is still working
+                    // keeps its slot instead of being cut mid-answer.
+                    Err(_) => {
+                        if tokio::time::Instant::now() >= cutoff {
+                            // Keep polling the workers so they can abort their own
+                            // Agent requests and persist the outcome before we synthesize.
+                            stop.send_replace(true);
+                        }
+                        continue;
+                    }
                 }
-                next = pending.next() => next,
             }
-        } else {
-            pending.next().await
+            None => pending.next().await,
         };
         let Some((participant, model, result)) = next else {
             break;
         };
-        deadline.participant_finished(tokio::time::Instant::now(), pending.len());
+        deadline.participant_finished(tokio::time::Instant::now());
         match result {
             Ok(report) => good.push(json!({"participant": participant, "model": model.model, "response": report.text, "validation_errors":report.validation_errors})),
             Err(error) => {
@@ -877,7 +887,9 @@ async fn with_retry(
             .as_ref()
             .context("Missing Fusion context budget")?
             .apply(&model.model, phase, &input, &mut settings)?;
-        let idle_progress = settings.idle_timeout_ms.map(IdleProgress::new);
+        let idle_progress = settings
+            .idle_timeout_ms
+            .map(|milliseconds| IdleProgress::new(milliseconds, ctx.progress.clone()));
         let mut step = Step {
             id: format!("{}-{phase}-{participant}-{attempt}", ctx.run.id),
             fusion_run_id: ctx.run.id.clone(),
