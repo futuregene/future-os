@@ -617,9 +617,17 @@ export function ChatScreen() {
     // be sent and the ones this phone cannot see would be lost.
     if (!row || row.attachments === undefined)
       return;
+    // The composer's paperclip is disabled for the same reason, and says nothing
+    // about it. This control is the one a reader reaches for while messages wait,
+    // so it explains itself instead of opening a picker whose files could only
+    // come back as "message failed to send".
+    if (!remote.fileTransferSupported) {
+      showToast(t("chat.attachmentsUnsupported"));
+      return;
+    }
     Keyboard.dismiss();
     setQueueAttachRow(row);
-  }, [queuedRows]);
+  }, [queuedRows, remote.fileTransferSupported, t]);
 
   const chooseQueueAttachments = useCallback((source: AttachmentSource) => {
     const row = queueAttachRow;
@@ -659,12 +667,36 @@ export function ChatScreen() {
       // backed out, and the row is left exactly as it was.
       if (added.length === 0)
         return;
-      replaceQueuedMessage(row, row.text, async () => [
-        ...(await Promise.all(kept.map(materializeQueuedAttachment))),
-        ...added,
-      ]);
+      // Adding files is a cancel and a re-send (no desktop edits a waiting
+      // message's files in place), and either half can be refused — most often
+      // because the row left the queue while the picker was open: it started at
+      // the turn boundary, or a burst folded into the turn ahead. The words are
+      // the desktop's business by then, but the files are this phone's, and the
+      // one outcome the reader cannot undo is losing what they picked. So they
+      // survive in the message box, exactly once.
+      const keepPicked = () => {
+        setAttachments(current => {
+          const known = new Set(current.map(item => item.localUri));
+          const missing = added.filter(item => !known.has(item.localUri));
+          return missing.length === 0 ? current : [...missing, ...current];
+        });
+      };
+      changeQueue(async () => {
+        try {
+          await resendQueuedMessage(row, row.text, async () => [
+            ...(await Promise.all(kept.map(materializeQueuedAttachment))),
+            ...added,
+          ]);
+        }
+        catch (error) {
+          // A refused re-send puts its own text and files back; this only fills
+          // in what is still missing, so nothing is added twice.
+          keepPicked();
+          throw error;
+        }
+      });
     })();
-  }, [materializeQueuedAttachment, queueAttachRow, replaceQueuedMessage, t]);
+  }, [changeQueue, materializeQueuedAttachment, queueAttachRow, resendQueuedMessage, setAttachments, t]);
 
   /** Send, then read the queue: the row that send may have made is now real. */
   const sendAndReadQueue = useCallback(async (

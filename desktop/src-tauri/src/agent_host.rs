@@ -24,7 +24,10 @@ fn drive(
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .thread_name("agent-runtime")
-            .worker_threads(2)
+            // Not a small number: this pool serves the Agent's RPC *and* every
+            // run's model stream, so an undersized one turns a loaded Agent into
+            // an unresponsive one. See `AGENT_RUNTIME_WORKER_THREADS`.
+            .worker_threads(future_host::agent_host::AGENT_RUNTIME_WORKER_THREADS)
             .max_blocking_threads(32)
             .thread_stack_size(2 * 1024 * 1024)
             .build()?;

@@ -1062,3 +1062,70 @@ test("opens the privacy policy from the phone's own page", async () => {
     open.mockRestore();
   }
 });
+
+// The home's search: a filter over the level it sits on. Typing narrows the
+// list in place, and a result is the row the reader would have tapped anyway —
+// so it must open the page *and* name it, and it must never reach past its own
+// level (a phone query cannot offer a paired machine's page).
+const searchBox = () => input("desktopSettings.search");
+const search = async (text: string) => act(async () => searchBox().props.onChangeText(text));
+const back = () => tree.root.findAll(node => node.props.accessibilityLabel === "common.back" && typeof node.props.onPress === "function")[0]!;
+
+test("a device search finds a row inside a page and opens that page", async () => {
+  await search("desktopSettings.archiveRunLogCleanup");
+
+  // The result carries the page it lives on, so two rows with the same wording
+  // stay apart.
+  const result = link("desktopSettings.archiveRunLogCleanup");
+  expect(result.props.description).toBe("desktopSettings.storage");
+  // The sections give way to the results while a query is live.
+  expect(link("desktopSettings.permission")).toBeUndefined();
+
+  await act(async () => result.props.onPress());
+  // On the page itself: its switches, and its header.
+  expect(toggle("desktopSettings.archiveRunLogCleanup")).toBeDefined();
+  expect(strings()).toContain("desktopSettings.storage");
+
+  // Coming back shows the home again, not the filter it was left with.
+  act(() => back().props.onPress());
+  expect(searchBox().props.value).toBe("");
+  expect(link("desktopSettings.permission")).toBeDefined();
+});
+
+test("a page name is answered with the page, once", async () => {
+  await search("desktopSettings.storage");
+  // One row, and no page name repeated under it.
+  expect(link("desktopSettings.storage").props.description).toBeUndefined();
+  expect(link("desktopSettings.archiveRunLogCleanup")).toBeUndefined();
+  await act(async () => link("desktopSettings.storage").props.onPress());
+  expect(toggle("desktopSettings.autoArchive")).toBeDefined();
+});
+
+test("a query with no match says so instead of showing an empty list", async () => {
+  await search("desktopSettings.nothingLikeThis");
+  expect(strings()).toContain("desktopSettings.searchEmpty");
+  expect(link("desktopSettings.permission")).toBeUndefined();
+});
+
+test("the phone's own search offers only the phone's own pages", async () => {
+  await remountPhone();
+  await search("approvalTier.title");
+  expect(strings()).toContain("desktopSettings.searchEmpty");
+
+  await search("appearance.theme");
+  expect(link("appearance.theme").props.description).toBe("desktopSettings.appearance");
+  await act(async () => link("appearance.theme").props.onPress());
+  expect(strings()).toContain("appearance.theme");
+});
+
+test("a machine with nothing openable offers no search box at all", async () => {
+  mockRemote.desktopOnline = false;
+  await act(async () => { tree.update(createElement(SettingsScreen, deviceProps)); });
+  expect(searchBox()).toBeUndefined();
+
+  // Another device driving it: the home keeps the takeover and nothing else.
+  mockRemote.desktopOnline = true;
+  mockRemote.presence = { control: "standby", holder: { name: "Studio laptop" } };
+  await act(async () => { tree.update(createElement(SettingsScreen, deviceProps)); });
+  expect(searchBox()).toBeUndefined();
+});

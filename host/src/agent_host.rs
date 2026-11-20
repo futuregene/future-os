@@ -10,6 +10,53 @@ use std::time::{Duration, Instant};
 pub const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const START_TIMEOUT: Duration = Duration::from_secs(180);
 
+/// Worker threads an entry gives the runtime that serves the Agent.
+///
+/// The Agent's RPC, every run's model stream and the history, persistence and
+/// compaction work all share this pool. It must therefore be wider than the work
+/// that can arrive at once, not just wide enough for one run: measured
+/// 2026-11-19, an embedded service built with two workers had three concurrent
+/// runs whose request bodies were 70 KB–3.2 MB, stopped answering the
+/// supervisor's probe for tens of seconds, and was read as a dead Agent — six
+/// times in one afternoon, each time ending in "restart FutureOS". The headless
+/// host has always used this width; the desktop's embedded service now matches
+/// it, from this one constant, so the two cannot drift apart again.
+pub const AGENT_RUNTIME_WORKER_THREADS: usize = 5;
+
+/// Whether an owned Agent is loaded, as a supervisor must tell it from absence.
+///
+/// A busy Agent and an absent one look the same to a probe that already timed
+/// out; only this answer separates "loaded, will answer again" from "gone".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnedWork {
+    /// Nothing is owned here: an external Agent is attached, or none is up.
+    NotOwned,
+    /// The owned Agent reports no work in flight: its silence is a fault.
+    Idle,
+    /// The owned Agent reports runs, commands or background work in flight.
+    Busy,
+    /// The control handle could not answer. Unknown is not idle.
+    Unknown,
+}
+
+/// The one mapping from an activity snapshot to [`OwnedWork`].
+///
+/// Separate from [`AgentHost::owned_work`] so the reading itself is testable
+/// without a live service: a supervisor's next move depends entirely on which of
+/// these four answers it gets.
+fn classify_owned_work(
+    activity: Result<Option<future_agent::service::AgentActivity>, crate::Error>,
+) -> OwnedWork {
+    match activity {
+        Ok(None) => OwnedWork::NotOwned,
+        Ok(Some(activity)) if activity.is_idle() => OwnedWork::Idle,
+        Ok(Some(_)) => OwnedWork::Busy,
+        // `AgentActivity` documents this itself: a failed snapshot is Unknown,
+        // never evidence of an idle Agent.
+        Err(_) => OwnedWork::Unknown,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Phase {
     Idle,
@@ -318,6 +365,12 @@ impl AgentHost {
             .activity_snapshot()
             .map(Some)
             .map_err(|e| e.to_string().into())
+    }
+
+    /// What this host's *own* Agent reports about its work, read from the
+    /// service control handle instead of the RPC a broken Agent cannot answer.
+    pub fn owned_work(&self) -> OwnedWork {
+        classify_owned_work(self.activity())
     }
 
     pub fn start(&self, configured: String) -> Result<(), crate::Error> {

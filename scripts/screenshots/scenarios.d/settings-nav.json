@@ -122,7 +122,7 @@
       ]
     },
     "settings-nav-account": {
-      "note": "账号组：账号、检查更新、关于。登录/退出现在只在这里。",
+      "note": "账号组：账号、检查更新、关于。登录/退出现在只在这里；版本号只印在关于页。",
       "query": "?fusionSettings=1",
       "lang": "zh-CN",
       "steps": [
@@ -143,6 +143,9 @@
           "eval": "(() => { const b = [...document.querySelectorAll('[role=dialog] nav button')].find(x => (x.textContent || '').trim() === '检查更新'); b.click(); })()"
         },
         { "wait": 400 },
+        {
+          "eval": "(() => { const body = document.querySelector('[role=dialog]').textContent; if (body.includes('当前版本')) throw new Error('the update page repeats the installed version'); if (!body.includes('检查更新')) throw new Error('update page renders nothing recognisable'); return 'no version on the update page'; })()"
+        },
         { "shot": "d-settings-update.png" },
         {
           "eval": "(() => { const b = [...document.querySelectorAll('[role=dialog] nav button')].find(x => (x.textContent || '').trim() === '关于'); b.click(); })()"

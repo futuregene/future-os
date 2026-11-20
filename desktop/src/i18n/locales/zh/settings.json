@@ -159,7 +159,6 @@
     "sectionTitle": "软件更新",
     "title": "检查更新",
     "description": "让 FutureOS 保持最新",
-    "currentVersion": "当前版本 v{{version}}",
     "check": "检查更新",
     "checking": "检查中…",
     "upToDate": "已是最新版本",

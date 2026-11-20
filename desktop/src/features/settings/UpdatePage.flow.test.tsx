@@ -111,14 +111,20 @@ function emitProgress(downloaded: number, total: number) {
 }
 
 describe("updatePage version and check", () => {
-  it("shows the injected build version, falling back to the section title", async () => {
+  // The installed version has one home — 关于, the page that answers "what am I
+  // running" — so this page does not print it a second time. What it prints in
+  // that slot is when the answer below was produced, which is what keeps a
+  // cached result from being read as a check that just ran (asserted above).
+  it("does not repeat the installed version", async () => {
     const container = await renderPage();
-    expect(container.textContent).toContain("Current version v2.0.0");
+    expect(container.textContent).not.toContain("Current version");
+    expect(container.textContent).not.toContain("v2.0.0");
 
+    // Nothing on the page depends on build info any more: a missing answer from
+    // the build command leaves it rendering as it always does.
     mocks.buildVersion = null;
     const withoutBuild = await renderPage();
-    expect(withoutBuild.textContent).toContain("Check for updates");
-    expect(withoutBuild.textContent).not.toContain("Current version");
+    expect(withoutBuild.textContent).toBe(container.textContent);
   });
 
   it("keeps the check button enabled until a check starts, then reports progress", async () => {

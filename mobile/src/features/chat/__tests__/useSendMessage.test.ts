@@ -230,6 +230,15 @@ describe("sending", () => {
     ["not_connected", "t:chat.sendOffline"],
     ["pairing_changed", "t:chat.sendOffline"],
     ["send_busy", "t:chat.sendInFlight"],
+    // The desktop's own words when a waiting row left the queue before its cancel
+    // reached it, and the Agent's code on a host that forwards it.
+    [
+      "Future Agent did not cancel the queued message: run `run_a` is not queued",
+      "t:chat.queue.rowGone",
+    ],
+    ["run_not_queued: run `run_a` is not queued", "t:chat.queue.rowGone"],
+    // A machine that takes no files at all: the sentence says what to do instead.
+    ["attachment_unsupported_desktop", "t:chat.attachmentsUnsupported"],
   ])("a failed send reports %s and hands the draft back", async (error, expectedToast) => {
     const remote = remoteFor({ sendMessage: jest.fn(async () => { throw new Error(error); }) });
     const { setAttachments, setMessage, setTransferProgress } = mount({ remote, message: "keep me", attachments: [attachment] });
