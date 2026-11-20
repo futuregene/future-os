@@ -54,7 +54,7 @@ FutureOS 分为三栏:
 
 ### 批准模式
 
-你可以在**设置 → General** 里、或输入框里的盾牌控件上设置 agent 询问的程度:
+你可以在**设置 → 权限 → 审批模式**里、或输入框里的盾牌控件上设置 agent 询问的程度:
 
 - **Manual(手动)** —— 文件访问遵循 Allow/Ask/Deny 路径规则；shell 除只读白名单外先询问。
 - **Sandboxed(沙箱)** —— 可用时使用 macOS Seatbelt、Linux 系统 Bubblewrap 或 Windows 受限令牌写保护。文件工具仍遵循路径规则，不是每次都弹审批；各平台保护范围不同。
