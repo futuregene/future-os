@@ -122,7 +122,8 @@ lands in the desktop's `app.db`.
 | Metric | Case | Current baseline (this machine) |
 |---|---|---|
 | Desktop boot to interactive | `perf-desktop-boot` | ~2.1 s |
-| Thread switch (click → 2×rAF) | `perf-thread-switch` | 290–380 ms |
+| Thread switch (release → 2×rAF, no driver wait) | `perf-thread-switch` | 40–230 ms |
+| Open a conversation (click → transcript visible, page-internal clock) | `perf-open-latency` | dev 190–200 ms cold / 124–129 ms warm; production build 68 ms cold / 25 ms warm |
 | 10 switches: JS heap / RSS growth | `perf-memory-switching` | ~ -6 MB / +5 MB |
 | 20 repeated switches: latency drift / slope / heap | `perf-switch-scaling` | drift ~1.0 / ~0 ms per step / +3–34 MB |
 | IPC p95 / max | `perf-ipc` | 2–8 ms / 7–110 ms |
@@ -147,6 +148,15 @@ assertion, so a threshold that has drifted loose is visible instead of hidden.
 `node --test harness/lib/perf.test.mjs` proves both directions: observed noise
 passes, a 30% regression fails, and a missing baseline degrades to the ceiling
 instead of turning a fresh clone red.
+
+**Latency is measured in the page, never through the driver.** `page.click`
+dispatches press and release back to back and then waits for the page to settle
+(painted frames without a DOM change, capped) — it used to sleep 60ms between
+press and release and 120ms after, which put every latency taken through it
+~180ms above the product's own time and turned a 68ms conversation open into
+137ms (measured 2026-11-20). `node --test harness/lib/cdp-click.test.mjs` pins
+that property down, and `perf-open-latency` asserts it in the page
+(`pressToClickMs ≤ 5`) so a timer cannot come back unnoticed.
 
 `perf-switch-scaling` is the complexity probe: it repeats the same interaction
 20 times and asserts on **drift** (last third ÷ first third) and **slope**
