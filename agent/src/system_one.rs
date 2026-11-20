@@ -34,11 +34,11 @@ pub(crate) fn choice(instructions: &str, options: &[(&str, &str)]) -> Value {
             .collect::<serde_json::Map<String, Value>>()})
 }
 
-/// Model id the approval reviewer asks the gateway for (`jev` →
-/// `typesafe/jev-1.13-…`).
-pub(crate) const JEV_MODEL: &str = "jev";
+/// Gateway route used by automatic approval (`decider` resolves to
+/// `pplx-decider-v1.2` on the evaluated deployment).
+pub(crate) const APPROVAL_REVIEW_MODEL: &str = "decider";
 /// Model id the skill recommender asks for. The endpoint, request shape and
-/// response shape are the same as [`JEV_MODEL`]'s, which is why the two callers
+/// response shape are the same as [`APPROVAL_REVIEW_MODEL`]'s, which is why the two callers
 /// only differ in this id — and why the approval reviewer keeps its own.
 pub(crate) const SKILL_RECO_MODEL: &str = "pplx-decider-v1.2";
 /// Fallback origin when the Future provider has no `base_url` configured.
@@ -54,7 +54,7 @@ pub(crate) struct Endpoint {
 }
 
 /// Resolve the endpoint from the Future account: its credential authenticates
-/// the call and its base URL hosts the gateway. Jev is served by the Future
+/// the call and its base URL hosts the gateway. System One is served by the Future
 /// provider and nowhere else, so there is deliberately no separate credential
 /// to configure.
 ///
@@ -75,7 +75,7 @@ pub(crate) fn resolve(auth: &crate::auth::AuthStore) -> Option<Endpoint> {
     Some(Endpoint {
         url: systemone_url(&base),
         key,
-        model: JEV_MODEL.to_string(),
+        model: APPROVAL_REVIEW_MODEL.to_string(),
     })
 }
 
@@ -132,7 +132,7 @@ mod tests {
     fn without_a_credential_the_feature_is_off() {
         assert!(
             resolve(&store("{}")).is_none(),
-            "an install with no Future entry has no Jev endpoint"
+            "an install with no Future entry has no System One endpoint"
         );
         // Another provider's key must not be borrowed for this one.
         assert!(resolve(&store(r#"{"openai":{"type":"api_key","key":"sk-x"}}"#)).is_none());
@@ -141,7 +141,7 @@ mod tests {
     }
 
     /// A call goes to the Future account's gateway, authenticated by that
-    /// account's credential — Jev has no separate key to configure. The base URL
+    /// account's credential — System One has no separate key to configure. The base URL
     /// follows the provider entry, with the documented origin as the fallback.
     #[test]
     fn the_endpoint_is_the_future_accounts_gateway() {
@@ -151,7 +151,7 @@ mod tests {
         .expect("the account credential is used");
         assert_eq!(with_base.key, "acct-key");
         assert_eq!(with_base.url, "https://future-os.cn/api/v1/systemone");
-        assert_eq!(with_base.model, "jev");
+        assert_eq!(with_base.model, "decider");
 
         // No base URL configured: still usable, at the default origin.
         let no_base =
