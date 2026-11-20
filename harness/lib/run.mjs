@@ -434,8 +434,13 @@ export async function runCase({ page, testCase, runDir, modelsPath, viewport, re
           const spec = step.measure;
           const inner = Object.keys(spec).find(key => key !== "label");
           await page.evaluate("window.__harnessMeasureStart = performance.now()");
+          // `settle: false`: the measurement ends on its own two frames, so a
+          // wait for the page to go quiet would be counted as product time.
+          // This makes `measure` "the click completed and painted", not "the
+          // result is on screen" — content-visible latency needs the page's own
+          // probe (see `cases/perf/08-open-latency.json`).
           if (inner === "click")
-            await page.click(spec.click, { label: spec.label });
+            await page.click(spec.click, { label: spec.label, settle: false });
           else if (inner === "press")
             await page.press(spec.press);
           else if (inner === "type")

@@ -406,7 +406,19 @@ export class CdpPage {
     return this.evaluate(LOCATE(query, byText, selector));
   }
 
-  async click(target, { label = null } = {}) {
+  /**
+   * Click an element.
+   *
+   * Press and release are dispatched back to back, and what follows the release
+   * is a *condition* (the page painted and stopped mutating), not a timer. Both
+   * used to be sleeps — 60ms between press and release, 120ms after it — and any
+   * latency measured through this method moved by them: on 2026-11-20 that put
+   * `perf-thread-switch`'s 294ms baseline ~180ms above the product's own time and
+   * reported a 68ms conversation open as 137ms. A timer here is a measurement
+   * bug, not a convenience, so do not add one back; wait for a condition, or
+   * pass `settle: false` where the caller does its own waiting.
+   */
+  async click(target, { label = null, settle = true, quietFrames = 2, maxFrames = 10, timeoutMs = 1200 } = {}) {
     const spot = await this.locate(target);
     if (!spot)
       throw new Error(`target not found: ${label ?? JSON.stringify(target)}`);
@@ -415,16 +427,57 @@ export class CdpPage {
     await this.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: spot.x, y: spot.y, button: "none", buttons: 0 });
     if (this.touch) {
       await this.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: spot.x, y: spot.y, id: 1 }] });
-      await sleep(70);
+      // One painted frame of press duration: a tap the platform can attribute to
+      // an element, and still a condition rather than a timer.
+      await this.nextFrame();
       await this.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
     }
     else {
       await this.send("Input.dispatchMouseEvent", { type: "mousePressed", x: spot.x, y: spot.y, button: "left", buttons: 1, clickCount: 1 });
-      await sleep(60);
       await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: spot.x, y: spot.y, button: "left", buttons: 0, clickCount: 1 });
     }
-    await sleep(120);
+    if (settle)
+      await this.settleAfterInteraction({ quietFrames, maxFrames, timeoutMs });
     return spot;
+  }
+
+  /**
+   * Resolve once the page has painted its next frame.
+   */
+  async nextFrame() {
+    await this.evaluate("new Promise((resolve) => requestAnimationFrame(() => resolve(true)))")
+      .catch(() => false);
+  }
+
+  /**
+   * Resolve once the page has painted `quietFrames` frames without a DOM change,
+   * capped by `maxFrames` and `timeoutMs`.
+   *
+   * Replaces the fixed post-click sleep: an app that answered synchronously is
+   * done in ~2 frames instead of a flat 120ms, and one that is still loading
+   * (opening a conversation, awaiting IPC) is waited for up to the cap instead
+   * of being raced by a timer.
+   */
+  async settleAfterInteraction({ quietFrames = 2, maxFrames = 10, timeoutMs = 1200 } = {}) {
+    await this.evaluate(`new Promise((resolve) => {
+      const quietTarget = ${Number(quietFrames)};
+      const frameCap = ${Number(maxFrames)};
+      const deadline = performance.now() + ${Number(timeoutMs)};
+      let quiet = 0;
+      let frames = 0;
+      const done = (reason) => { observer.disconnect(); resolve(reason); };
+      const observer = new MutationObserver(() => { quiet = 0; });
+      observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
+      const tick = () => {
+        frames += 1;
+        quiet += 1;
+        if (quiet >= quietTarget) return done("quiet");
+        if (frames >= frameCap) return done("frames");
+        if (performance.now() > deadline) return done("timeout");
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    })`).catch(() => "unsettled");
   }
 
   async hover(target) {

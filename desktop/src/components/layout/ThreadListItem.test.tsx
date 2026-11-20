@@ -272,3 +272,78 @@ describe("the choice mark", () => {
     }
   });
 });
+
+describe("the open conversation's row surface", () => {
+  // The rail's rows are one colour family: an ordinary row is transparent until
+  // the pointer lands on it, and the row of the conversation the window is
+  // showing is painted for as long as it is open. The two must not be the same
+  // colour — `surface-subtle` for both made hovering a second conversation look
+  // like the open one, and against `surface` it was 1.07:1 in the dark
+  // rendition, i.e. a selection a reader had to hunt for.
+  function mount(active: boolean): { row: HTMLElement; dispose: () => void } {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() => root.render(<ThreadListItem {...props()} active={active} />));
+    return {
+      row: container.firstElementChild as HTMLElement,
+      dispose: () => {
+        act(() => root.unmount());
+        container.remove();
+      },
+    };
+  }
+
+  it("paints the open row with the selection surface, not the hover one", () => {
+    const open = mount(true);
+    try {
+      expect(open.row.className).toContain("bg-surface-selected");
+      expect(open.row.className).not.toContain("hover:bg-surface-subtle");
+    }
+    finally {
+      open.dispose();
+    }
+  });
+
+  it("leaves an ordinary row transparent until it is hovered", () => {
+    const idle = mount(false);
+    try {
+      expect(idle.row.className).not.toContain("bg-surface-selected");
+      expect(idle.row.className).toContain("hover:bg-surface-subtle");
+    }
+    finally {
+      idle.dispose();
+    }
+  });
+});
+
+describe("the open conversation's age label", () => {
+  // The recent view's second column is `ink-muted` — the floor-level tone, 3:1
+  // on `surface`. The selection surface is a tint of the accent, which costs
+  // that tone about a third of a step, so the open row's own timestamp takes
+  // one step of ink instead. Measured on the default palette: 2.41:1 muted vs
+  // 4.69:1 soft (light) and 3.29:1 vs 5.64:1 (dark).
+  function ageClass(active: boolean): string {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() => root.render(<ThreadListItem {...props()} active={active} ageLabel="3 分钟前" />));
+    try {
+      const label = container.querySelector<HTMLElement>("span.tabular-nums");
+      expect(label?.textContent).toBe("3 分钟前");
+      return label!.className;
+    }
+    finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  }
+
+  it("lifts the timestamp of the open row off the muted tone", () => {
+    expect(ageClass(true)).toContain("text-ink-soft");
+  });
+
+  it("leaves an ordinary row's timestamp muted", () => {
+    expect(ageClass(false)).toContain("text-ink-muted");
+  });
+});
