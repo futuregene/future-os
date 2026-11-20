@@ -3,7 +3,7 @@ use super::{
     action::PreparedReviewAction,
     evidence::EvidenceContext,
     policy::decide,
-    provider::{ApprovalReviewerClient, JevReviewer},
+    provider::{ApprovalReviewerClient, SystemOneReviewer},
     types::{ReviewStatus, Verdict},
     POLICY_VERSION, PROMPT_VERSION, REASON_CATALOG_VERSION, REVIEW_TIMEOUT,
 };
@@ -54,7 +54,7 @@ impl RunApprovalReviewer {
             expected_generation,
             annotations,
             denials: Arc::new(Mutex::new(HashMap::new())),
-            provider: Arc::new(JevReviewer),
+            provider: Arc::new(SystemOneReviewer),
         }
     }
 

@@ -1,6 +1,6 @@
 use super::{
     budget,
-    prompt::{build_jev_request, AUTHORIZATIONS, REASONS, RISKS},
+    prompt::{build_review_request, AUTHORIZATIONS, REASONS, RISKS},
     types::{Assessment, ProviderAssessment},
     PROBABILITY_SUM_TOLERANCE, REVIEW_TIMEOUT,
 };
@@ -110,7 +110,9 @@ pub(super) fn decode(value: Value) -> Result<ProviderAssessment, &'static str> {
         },
         confidence,
         probabilities: Value::Object(probabilities),
-        model: response.model.unwrap_or_else(|| "jev".into()),
+        model: response
+            .model
+            .unwrap_or_else(|| crate::system_one::APPROVAL_REVIEW_MODEL.into()),
         request_id: response.request_id,
     })
 }
@@ -125,9 +127,9 @@ pub trait ApprovalReviewerClient: Send + Sync {
         request_id: &str,
     ) -> Result<ProviderAssessment, &'static str>;
 }
-pub(super) struct JevReviewer;
+pub(super) struct SystemOneReviewer;
 #[async_trait::async_trait]
-impl ApprovalReviewerClient for JevReviewer {
+impl ApprovalReviewerClient for SystemOneReviewer {
     async fn assess(
         &self,
         state: Value,
@@ -143,7 +145,7 @@ pub(super) async fn assess_at(
     state: Value,
     request_id: &str,
 ) -> Result<ProviderAssessment, &'static str> {
-    let request = build_jev_request(state, &endpoint.model);
+    let request = build_review_request(state, &endpoint.model);
     budget::validate_request(&request)?;
     for attempt in 0..=1 {
         let response = crate::system_one::post(&CLIENT, endpoint, &request, request_id).await;
