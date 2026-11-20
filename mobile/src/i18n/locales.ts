@@ -601,6 +601,15 @@ export const resources = {
           previewAttachment: "Open {{name}}",
           removeAttachment: "Remove {{name}}",
           addAttachment: "Add photos or files",
+          /**
+           * Changing a waiting message's files is a cancel and a re-send, and the
+           * row can leave the queue first (it starts at the turn boundary, or a
+           * burst folds into the turn ahead). The sentence says what happened and
+           * nothing more: it also covers deleting and editing such a row, where
+           * the reader picked nothing. Nothing is lost either way — the files a
+           * reader picked for this row are in the message box.
+           */
+          rowGone: "That message already left the queue, so it can't be changed now.",
           save: "Save",
           cancel: "Cancel",
           remove: "Remove from the queue",
@@ -690,6 +699,14 @@ export const resources = {
           "That conversation is not on the connected desktop. Open it from the machine that owns it.",
         promptTooLarge:
           "That message is too long to send. Please shorten it to under 512 KB.",
+        /**
+         * The connected desktop takes no files at all (`file_transfer_v1`).
+         * Its own paperclip is disabled for the same reason, so this is the
+         * sentence for every path that still tried: a waiting message's "+",
+         * a draft restored from a different machine.
+         */
+        attachmentsUnsupported:
+          "This desktop can't receive files. Attach them in the conversation on the desktop itself.",
         noHistory: "No messages yet.",
         loadingHistory: "Loading messages…",
         syncingLatest: "Syncing…",
@@ -1869,6 +1886,7 @@ export const resources = {
           previewAttachment: "打开 {{name}}",
           removeAttachment: "移除 {{name}}",
           addAttachment: "添加图片或文件",
+          rowGone: "这条消息已经离开队列，没法再改了。",
           save: "保存",
           cancel: "取消",
           remove: "从队列中删除",
@@ -1940,6 +1958,7 @@ export const resources = {
         standbyCannotSendUnknown: "已被另一台设备接管，现在发不出去。",
         sessionNotOnDesktop: "该会话不在当前连接的设备上。请到拥有它的那台设备上打开。",
         promptTooLarge: "这条消息太长了，无法发送。请将其缩短到 512 KB 以内。",
+        attachmentsUnsupported: "这台电脑无法接收文件。请在桌面端的对话里添加附件。",
         noHistory: "还没有消息。",
         loadingHistory: "正在加载消息…",
         syncingLatest: "正在同步…",
