@@ -642,6 +642,25 @@ export function ActivityRail({
   );
 
   /**
+   * What a flat list's row says under its title: where the conversation lives.
+   *
+   * The same two facts the phone's rows give — its workspace, or "对话" for a
+   * conversation with none — because a list with no headings has to say it per
+   * row or not at all. Read through a function rather than precomputed per list:
+   * both row factories ask it, and a row built by either must answer the same.
+   */
+  const workspaceNames = useMemo(
+    () => new Map(workspaces.map(workspace => [workspace.id, workspace.name])),
+    [workspaces],
+  );
+  const whereLabelFor = useCallback(
+    (thread: StoredThread) => thread.mode === "chat"
+      ? t("activityRail.chat")
+      : workspaceNames.get(thread.workspaceId) ?? t("activityRail.workspace"),
+    [t, workspaceNames],
+  );
+
+  /**
    * This machine's workspaces, by when *they* were last touched.
    *
    * The same key `list_workspaces` orders its own rows by
@@ -1567,6 +1586,7 @@ export function ActivityRail({
         selected={selectedThreadIds.has(thread.id)}
         selectionMode={threadSelectionMode(thread)}
         thread={thread}
+        whereLabel={whereLabelFor(thread)}
       />
     );
   }
@@ -1597,6 +1617,10 @@ export function ActivityRail({
         selected={selectedThreadIds.has(thread.id)}
         selectionMode={threadSelectionMode(thread)}
         thread={thread}
+        // The flat view says where a conversation lives on its own row; the
+        // tree view leaves that to the heading above it. One row component, one
+        // decision, taken where the list shape is known.
+        whereLabel={railView === "recent" ? whereLabelFor(thread) : undefined}
         depth={depth}
         hasChildren={hasChildren}
         expanded={expandedThreads.has(thread.id)}
@@ -2408,6 +2432,12 @@ export function ActivityRail({
                                                   onOpen={conversation => onOpenRemoteConversation?.(conversation)}
                                                   onOpenRename={conversation => onRenameRemoteConversation?.(conversation)}
                                                   peer={peer}
+                                                  // The shelf is flat too: a shelved
+                                                  // conversation says where it lived,
+                                                  // as the recent view's rows do.
+                                                  whereLabel={row.mode === "chat"
+                                                    ? t("activityRail.chat")
+                                                    : row.workspaceName ?? t("activityRail.workspace")}
                                                 />
                                               );
                                             })}

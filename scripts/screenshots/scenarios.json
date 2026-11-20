@@ -2960,6 +2960,7 @@
         ]
       },
       "rail-recent": {
+        "note": "The recency page: every conversation in one list, split by whether it is still running. Its rows say where a conversation lives on a second line — there are no headings here to say it — and a row on another machine opens that line with the machine mark.",
         "steps": [
           {
             "wait": 900
@@ -2993,6 +2994,9 @@
           },
           {
             "eval": "var rows=[...document.querySelectorAll('[data-recent-row]')].map(r=>r.getAttribute('data-recent-row'));var at=rows.indexOf('local::th_review_b');if(rows[at+1]!=='local::th_review_b1') throw new Error('the grandchild is not under its parent: '+JSON.stringify(rows.slice(at,at+3)));var deep=document.querySelector('[data-recent-row=\"local::th_review_b1\"] div[style]');if(!deep||deep.style.paddingLeft!=='56px') throw new Error('the grandchild is not indented twice: '+(deep&&deep.style.paddingLeft));'a11y: two levels of children, each inside its own fold'"
+          },
+          {
+            "eval": "(() => { var rows=[...document.querySelectorAll('[data-recent-row]')]; if(!rows.length) throw new Error('no rows'); var missing=rows.filter(r=>{var l=r.querySelector('[data-row-subline]');return !l||!(l.textContent||'').trim();}); if(missing.length) throw new Error('a recent row does not say where it lives: '+missing.map(r=>r.getAttribute('data-recent-row')).join(', ')); var chat=document.querySelector('[data-recent-row=\"local::th_chat1\"] [data-row-subline]'); if(!chat||chat.textContent.trim()!=='对话') throw new Error('a chat row does not say 对话: '+(chat?chat.textContent:'none')); var ws=document.querySelector('[data-recent-row=\"local::th_review\"] [data-row-subline]'); if(!ws||ws.textContent.trim()!=='多巴胺与决策') throw new Error('a workspace row does not name its workspace: '+(ws?ws.textContent:'none')); var hosted=rows.filter(r=>r.querySelector('[data-row-subline] [data-testid=remote-source-icon]')); if(hosted.length!==3) throw new Error('the machine mark is not on the second line of every host row: '+hosted.length); var stray=rows.filter(r=>{var t=r.querySelector('[data-row-title]');return t&&t.parentElement.querySelector('[data-testid=remote-source-icon]');}); if(stray.length) throw new Error('a two-line row still carries the machine mark beside its title'); return 'a11y: every row says where it lives, host rows carry the machine mark on that line'; })()"
           },
           {
             "shot": "d-rail-recent.png"
