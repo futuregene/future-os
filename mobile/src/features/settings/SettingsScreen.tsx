@@ -39,7 +39,7 @@ export type SettingsScreenHandle = { goBack(): void };
  * `appearance` first shipped. A test holds the two translations to this list.
  */
 export const TITLED_SETTINGS_PAGES = [
-  "preferences", "models", "fusion", "skills", "tasks", "language", "appearance", "providers", "followAccount",
+  "permission", "reply", "storage", "models", "fusion", "skills", "tasks", "language", "appearance", "providers", "followAccount",
 ] as const;
 
 type TitledSettingsPage = (typeof TITLED_SETTINGS_PAGES)[number];
@@ -61,7 +61,7 @@ type SettingsRoute =
  * what is being configured and no longer which device: the levels below the
  * device home are the only place the two are separated.
  */
-const DEVICE_LEVELS = new Set(["preferences", "models", "fusion", "skills", "tasks", "providers"]);
+const DEVICE_LEVELS = new Set(["permission", "reply", "storage", "models", "fusion", "skills", "tasks", "providers"]);
 
 /** A refused write, as the key of what failed. Held rather than a boolean
  * because the two surfaces fail differently and say so on screen. */
@@ -238,6 +238,17 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
     }
   };
 
+  // Every page of a machine's settings reads the same snapshot, so the "this
+  // desktop is too old" notice and the load status belong to whichever of them
+  // is on screen. They used to live inside one page's automation section, which
+  // is also why they left with it.
+  const devicePageStatus = enabled
+    ? <ResourceStatus loading={resource.loading || saving} failed={resource.failed} onReload={() => void resource.reload()} />
+    : null;
+  const oldDesktopNotice = remote.desktopOnline && !supported
+    ? <Text style={settingsStyles.description}>{t("desktopSettings.updateDesktop")}</Text>
+    : null;
+
   // Each level renders on its own; the stack keeps only the visible one mounted,
   // so returning to the provider list always re-reads the desktop's snapshot.
   function renderLevel() {
@@ -265,7 +276,13 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
           ? <ModelsSettingsPage settings={resource.data} disabled={disabled} onChange={patch => void changeSettings(patch)} />
           : null;
       case "skills":
-        return remote.desktopOnline && skillsSupported ? <SkillsSettingsPage /> : null;
+        return remote.desktopOnline && skillsSupported
+          ? <SkillsSettingsPage
+              disabled={disabled}
+              onChange={patch => void changeSettings(patch)}
+              settings={resource.data}
+            />
+          : null;
       case "tasks":
         return remote.desktopOnline && tasksSupported
           ? <TasksSettingsPage
@@ -287,30 +304,40 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
       // connection, so this level stays usable while the desktop is offline.
       case "followAccount":
         return <FollowAccountPage />;
-      case "preferences":
+      case "permission":
         return <ScrollView contentContainerStyle={settingsStyles.content} keyboardShouldPersistTaps="handled">
-          <SettingsSection title={t("desktopSettings.automation")}>
-            {remote.desktopOnline && !supported ? <Text style={settingsStyles.description}>{t("desktopSettings.updateDesktop")}</Text> : null}
-            <SettingsSwitch label={t("desktopSettings.autoUpgradeSkills")} description={t("desktopSettings.autoUpgradeSkillsHint")}
-              value={resource.data?.autoUpgradeSkills ?? false} disabled={disabled} onChange={autoUpgradeSkills => void changeSettings({ autoUpgradeSkills })} />
-            <SettingsSwitch label={t("desktopSettings.autoTitleFirstTurn")} description={t("desktopSettings.autoTitleFirstTurnHint")}
-              value={resource.data?.autoTitleFirstTurn ?? false} disabled={disabled} onChange={autoTitleFirstTurn => void changeSettings({ autoTitleFirstTurn })} />
-            {/* Default off when the desktop does not report it (an older desktop
-                predates the toggle), matching the desktop's own default. */}
-            <SettingsSwitch label={t("desktopSettings.skillRecommend")} description={t("desktopSettings.skillRecommendHint")}
-              value={resource.data?.skillRecommend ?? false} disabled={disabled} onChange={skillRecommend => void changeSettings({ skillRecommend })} />
-            {/* Same value the desktop's General page writes: off draws no card on
-                either surface, and the desktop's agent is not taught the fence. */}
+          <SettingsSection title={t("approvalTier.title")}>
+            <View accessibilityRole="radiogroup" style={settingsStyles.actions}>
+              {(["manual", "sandbox", "auto", "off"] as const).filter(tier => (tier !== "sandbox" && tier !== "auto" || remote.sandboxAvailable) && (tier !== "auto" || remote.capabilities?.has("auto_approval_v1"))).map(tier =>
+                <Pressable key={tier} accessibilityRole="radio" accessibilityLabel={t(`approvalTier.${tier}`)}
+                  accessibilityState={{ checked: remote.approvalTier === tier, disabled: !remote.desktopOnline || saving }}
+                  disabled={!remote.desktopOnline || saving} onPress={() => void selectApproval(tier)}
+                  style={[styles.approval, remote.approvalTier === tier && styles.approvalSelected]}>
+                  <Text style={settingsStyles.label}>{t(`approvalTier.${tier}`)}</Text>
+                </Pressable>)}
+            </View>
+            {remote.sandboxAvailable && remote.sandboxCode === "available_write_only"
+              ? <Text style={settingsStyles.description}>{t("approvalTier.upgrade")}</Text>
+              : null}
+          </SettingsSection>
+          {oldDesktopNotice}
+          {devicePageStatus}
+        </ScrollView>;
+      case "reply":
+        return <ScrollView contentContainerStyle={settingsStyles.content} keyboardShouldPersistTaps="handled">
+          <SettingsSection>
+            {/* Same value the desktop's own reply page writes: off draws no card
+                on either surface, and the desktop's agent is not taught the fence. */}
             <SettingsSwitch label={t("desktopSettings.choiceCards")} description={t("desktopSettings.choiceCardsHint")}
               value={resource.data?.choiceCards ?? false} disabled={disabled} onChange={choiceCards => void changeSettings({ choiceCards })} />
-            {/* The remote desktop switch is deliberately absent: on that machine
-                the Remote page's switch *is* the whole preference, and this row
-                would write the value the host reads at launch, so a second
-                control here would describe one state two ways (that switch keeps
-                showing the old answer until a restart). It is changed on the
-                desktop only. */}
-            {enabled ? <ResourceStatus loading={resource.loading || saving} failed={resource.failed} onReload={() => void resource.reload()} /> : null}
+            <SettingsSwitch label={t("desktopSettings.autoTitleFirstTurn")} description={t("desktopSettings.autoTitleFirstTurnHint")}
+              value={resource.data?.autoTitleFirstTurn ?? false} disabled={disabled} onChange={autoTitleFirstTurn => void changeSettings({ autoTitleFirstTurn })} />
           </SettingsSection>
+          {oldDesktopNotice}
+          {devicePageStatus}
+        </ScrollView>;
+      case "storage":
+        return <ScrollView contentContainerStyle={settingsStyles.content} keyboardShouldPersistTaps="handled">
           <SettingsSection title={t("desktopSettings.archiveSection")}>
             {/* Both switches sit together because archiving follows them as one
                 behaviour: what is cleared, and when a conversation is shelved at
@@ -342,20 +369,8 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
               />
             </SettingsField>
           </SettingsSection>
-          <SettingsSection title={t("approvalTier.title")}>
-            <View accessibilityRole="radiogroup" style={settingsStyles.actions}>
-              {(["manual", "sandbox", "auto", "off"] as const).filter(tier => (tier !== "sandbox" && tier !== "auto" || remote.sandboxAvailable) && (tier !== "auto" || remote.capabilities?.has("auto_approval_v1"))).map(tier =>
-                <Pressable key={tier} accessibilityRole="radio" accessibilityLabel={t(`approvalTier.${tier}`)}
-                  accessibilityState={{ checked: remote.approvalTier === tier, disabled: !remote.desktopOnline || saving }}
-                  disabled={!remote.desktopOnline || saving} onPress={() => void selectApproval(tier)}
-                  style={[styles.approval, remote.approvalTier === tier && styles.approvalSelected]}>
-                  <Text style={settingsStyles.label}>{t(`approvalTier.${tier}`)}</Text>
-                </Pressable>)}
-            </View>
-            {remote.sandboxAvailable && remote.sandboxCode === "available_write_only"
-              ? <Text style={settingsStyles.description}>{t("approvalTier.upgrade")}</Text>
-              : null}
-          </SettingsSection>
+          {oldDesktopNotice}
+          {devicePageStatus}
         </ScrollView>;
       default:
         return deviceMode ? renderDeviceHome() : renderPhoneHome();
@@ -439,7 +454,9 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
                   step to perform first, and nothing here edits another machine. A
                   machine that is not answering says so below, in the notice, and the
                   rows that need it are disabled. */}
-              <SettingsLink disabled={!remote.desktopOnline} label={t("desktopSettings.preferences")} onPress={() => push({ name: "preferences" })} />
+              <SettingsLink disabled={!remote.desktopOnline} label={t("desktopSettings.permission")} onPress={() => push({ name: "permission" })} />
+              <SettingsLink disabled={!remote.desktopOnline} label={t("desktopSettings.reply")} onPress={() => push({ name: "reply" })} />
+              <SettingsLink disabled={!remote.desktopOnline} label={t("desktopSettings.storage")} onPress={() => push({ name: "storage" })} />
               <SettingsLink disabled={!enabled} label={t("desktopSettings.models")} onPress={() => push({ name: "models" })} />
               {!IS_RELEASE ? <SettingsLink disabled={!remote.desktopOnline || !remote.capabilities.has("fusion_settings_v1")} label={t("desktopSettings.fusion")} description={!remote.capabilities.has("fusion_settings_v1") ? t("desktopSettings.updateDesktop") : undefined} onPress={() => push({ name: "fusion" })} /> : null}
               <SettingsLink disabled={!remote.desktopOnline || !providersSupported} label={t("desktopSettings.providers")} onPress={() => push({ name: "providers" })} />

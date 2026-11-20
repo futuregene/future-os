@@ -209,12 +209,13 @@
     "ariaLabel": "Settings",
     "testBuild": "Test build",
     "nav": {
-      "desktop": "Desktop",
-      "server": "Server",
+      "app": "App",
+      "conversation": "Conversation",
+      "models": "Models and skills",
+      "account": "Account",
       "debug": "Debug"
     },
     "tabs": {
-      "general": "General",
       "shortcuts": "Keyboard shortcuts",
       "account": "Account",
       "update": "Check for updates",
@@ -223,8 +224,16 @@
       "models": "Models",
       "environment": "Environment",
       "reset": "Reset",
-      "fusion": "Fusion"
-    }
+      "fusion": "Fusion",
+      "appearance": "Appearance",
+      "permission": "Permissions",
+      "reply": "Replies",
+      "storage": "Storage",
+      "skills": "Skills"
+    },
+    "search": "Search settings",
+    "searchPlaceholder": "Search settings",
+    "searchNoResults": "No matching settings"
   },
   "account": {
     "loading": "Loading account…",
@@ -303,7 +312,8 @@
     "baseUrlDialogDescription": "This provider's Base URL is a placeholder — replace it with your own (e.g. your Azure resource name).",
     "apiKeyOptionalLabel": "API key (optional)",
     "apiKeyKeepPlaceholder": "Leave blank to keep the current key",
-    "set": "Configure"
+    "set": "Configure",
+    "openAccount": "Sign in on the Account page"
   },
   "customProvider": {
     "editTitle": "Edit custom provider",
@@ -470,5 +480,8 @@
     "participantCount": "Choose 2–5 participants.",
     "participantRequired": "Choose a model for every participant.",
     "thinkingRequired": "Choose a thinking level for every role."
+  },
+  "alerts": {
+    "section": "Alerts"
   }
 }

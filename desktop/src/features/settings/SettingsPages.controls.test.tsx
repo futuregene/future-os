@@ -6,7 +6,11 @@ import i18n, { setLanguage } from "../../i18n";
 import { setFontSize } from "../../lib/fontSize";
 import { DEFAULT_REPLY_DETAIL, getReplyDetail, setReplyDetail } from "../../lib/replyDisplay";
 import { setThemeMode, setThemePalette } from "../../lib/theme";
-import { GeneralPage } from "./GeneralPage";
+import { AppearancePage } from "./AppearancePage";
+import { PermissionPage } from "./PermissionPage";
+import { ReplyPage } from "./ReplyPage";
+import { SkillsPage } from "./SkillsPage";
+import { StoragePage } from "./StoragePage";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -57,13 +61,41 @@ afterEach(() => {
   setLanguage("system");
 });
 
-function mount(overrides: Partial<React.ComponentProps<typeof GeneralPage>> = {}) {
+interface PageProps {
+  approvalTier: "off" | "manual" | "sandbox" | "auto";
+  futureSessionStatus: string;
+  onChangeApprovalTier: (value: "off" | "manual" | "sandbox" | "auto") => void;
+  autoUpgradeSkills: boolean;
+  onToggleAutoUpgradeSkills: (value: boolean) => void;
+  skillRecommend: boolean;
+  onToggleSkillRecommend: (value: boolean) => void;
+  choiceCards: boolean;
+  onToggleChoiceCards: (value: boolean) => void;
+  bellOnComplete: boolean;
+  onToggleBellOnComplete: (value: boolean) => void;
+  autoTitleFirstTurn: boolean;
+  onToggleAutoTitleFirstTurn: (value: boolean) => void;
+  archiveRunLogCleanup: boolean;
+  onToggleArchiveRunLogCleanup: (value: boolean) => void;
+  autoArchiveEnabled: boolean;
+  onToggleAutoArchive: (value: boolean) => void;
+  autoArchiveIdleDays: number;
+  onChangeAutoArchiveIdleDays: (value: number) => void;
+}
+
+/**
+ * The five settings pages are mounted in the order the old General page held
+ * their rows, so the controls keep their relative order: the appearance page's
+ * rings first, then permission, replies, skills and storage. Each page owns its
+ * own props; this harness only feeds them the whole settings object.
+ */
+function mount(overrides: Partial<PageProps> = {}) {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
   roots.push({ container, root });
-  const props = {
-    approvalTier: "off" as const,
+  const props: PageProps = {
+    approvalTier: "off",
     futureSessionStatus: "authenticated",
     onChangeApprovalTier: vi.fn(),
     autoUpgradeSkills: false,
@@ -85,7 +117,38 @@ function mount(overrides: Partial<React.ComponentProps<typeof GeneralPage>> = {}
     ...overrides,
   };
   act(() => {
-    root.render(<GeneralPage {...props} />);
+    root.render(
+      <>
+        <AppearancePage />
+        <PermissionPage
+          approvalTier={props.approvalTier}
+          futureSessionStatus={props.futureSessionStatus}
+          onChangeApprovalTier={props.onChangeApprovalTier}
+        />
+        <ReplyPage
+          autoTitleFirstTurn={props.autoTitleFirstTurn}
+          bellOnComplete={props.bellOnComplete}
+          choiceCards={props.choiceCards}
+          onToggleAutoTitleFirstTurn={props.onToggleAutoTitleFirstTurn}
+          onToggleBellOnComplete={props.onToggleBellOnComplete}
+          onToggleChoiceCards={props.onToggleChoiceCards}
+        />
+        <SkillsPage
+          autoUpgradeSkills={props.autoUpgradeSkills}
+          onToggleAutoUpgradeSkills={props.onToggleAutoUpgradeSkills}
+          onToggleSkillRecommend={props.onToggleSkillRecommend}
+          skillRecommend={props.skillRecommend}
+        />
+        <StoragePage
+          archiveRunLogCleanup={props.archiveRunLogCleanup}
+          autoArchiveEnabled={props.autoArchiveEnabled}
+          autoArchiveIdleDays={props.autoArchiveIdleDays}
+          onChangeAutoArchiveIdleDays={props.onChangeAutoArchiveIdleDays}
+          onToggleArchiveRunLogCleanup={props.onToggleArchiveRunLogCleanup}
+          onToggleAutoArchive={props.onToggleAutoArchive}
+        />
+      </>,
+    );
   });
   return { container, props };
 }
@@ -101,7 +164,7 @@ function choose(input: HTMLSelectElement, value: string) {
   });
 }
 
-describe("generalPage language picker", () => {
+describe("appearancePage language picker", () => {
   it("reflects the active language and switches it", () => {
     const { container } = mount();
     const language = select(container, 0);
@@ -141,7 +204,7 @@ describe("generalPage language picker", () => {
   });
 });
 
-describe("generalPage appearance picker", () => {
+describe("appearancePage appearance picker", () => {
   it("reflects the active theme and switches the document palette", () => {
     const { container } = mount();
     const theme = select(container, 1);
@@ -162,7 +225,7 @@ describe("generalPage appearance picker", () => {
   });
 });
 
-describe("generalPage color theme picker", () => {
+describe("appearancePage color theme picker", () => {
   const cards = (container: HTMLElement) =>
     [...container.querySelectorAll<HTMLButtonElement>("[role=radiogroup][aria-label='Color theme'] [role=radio]")];
 
@@ -286,7 +349,7 @@ describe("generalPage color theme picker", () => {
   });
 });
 
-describe("generalPage font size picker", () => {
+describe("appearancePage font size picker", () => {
   it("reflects the active text size and scales the document", () => {
     const { container } = mount();
     const fontSize = select(container, 2);
@@ -308,7 +371,7 @@ describe("generalPage font size picker", () => {
   });
 });
 
-describe("generalPage model output level", () => {
+describe("appearancePage model output level", () => {
   it("offers default and detailed, opens on default, and remembers the choice", () => {
     const { container } = mount();
     // The fifth picker: language, theme, text size, model output, approval.
@@ -332,7 +395,7 @@ describe("generalPage model output level", () => {
   });
 });
 
-describe("generalPage approval tier picker", () => {
+describe("permissionPage approval tier picker", () => {
   it("reports every tier change to the settings owner", () => {
     const onChangeApprovalTier = vi.fn();
     const { container } = mount({ approvalTier: "off", onChangeApprovalTier });
@@ -468,21 +531,21 @@ describe("generalPage approval tier picker", () => {
   });
 });
 
-describe("generalPage switches", () => {
+describe("settings page switches", () => {
   it("exposes every toggle as an accessible switch with its current value", () => {
     const { container } = mount({ autoUpgradeSkills: true, skillRecommend: false, bellOnComplete: false, autoTitleFirstTurn: true });
 
     const switches = [...container.querySelectorAll<HTMLButtonElement>("[role=switch]")];
     expect(switches.map(item => item.getAttribute("aria-label"))).toEqual([
-      "Auto-upgrade skills",
-      "Skill recommendations",
       "Choice cards",
       "Generate a title after the first answer",
       "Completion bell",
+      "Auto-upgrade skills",
+      "Skill recommendations",
       "Clear run logs when archiving",
       "Archive idle conversations automatically",
     ]);
-    expect(switches.map(item => item.getAttribute("aria-checked"))).toEqual(["true", "false", "false", "true", "false", "true", "false"]);
+    expect(switches.map(item => item.getAttribute("aria-checked"))).toEqual(["false", "true", "false", "true", "false", "true", "false"]);
   });
 
   it("reports each toggle to its own callback, inverted", () => {
@@ -516,13 +579,16 @@ describe("generalPage switches", () => {
   });
 });
 
-describe("generalPage archive settings", () => {
-  it("lives on the general page without its own settings tab", () => {
+describe("storage page archive settings", () => {
+  it("keeps the archive block on the storage page beside the database pass", () => {
     const { container } = mount();
 
     // One heading for the archive block, and no separate cleanup section.
     expect(container.textContent).toContain("Automatic conversation archiving");
     expect(container.textContent).toContain("Clear run logs when archiving");
+    // The batch pass that reclaims storage lives on the same page: archiving
+    // and organizing both decide what a conversation keeps.
+    expect(container.textContent).toContain("Organize database");
     // Nothing explains how auto archiving interacts with the cleanup switch.
     expect(container.textContent).not.toContain("Run logs are cleared");
     // The heading carries no sub-line about the schedule or workspace scope.
