@@ -212,7 +212,7 @@ Where the value lives, and how it travels:
 - every client of that machine draws what *it* allows, not what the client's own switch says: the phone and this app's remote transcript both read `choiceCards` from the host (`useRemoteChoiceCards`). Drawing a card the host's own agent was never taught to write, or hiding one it did write — source and all — are both wrong, and only the host's answer avoids them;
 - a host that has **no answer** (a build older than this switch) counts as **on** for drawing: such a build teaches the fence unconditionally, so hiding its cards would delete a question it legitimately asks. Only an explicit `false` hides. A *client* that has not read the setting yet falls back to its own value rather than to "off", so nothing flashes in.
 
-Pinned by `desktop/src/features/markdown/ChoiceCardsToggle.test.tsx` (off: zero card nodes **and** no `futureos-choice` in the extracted text; on: rows, pick, answer), `mobile/src/components/__tests__/ChoiceCardsToggle.test.ts`, and `agent/src/prompt/mod.rs::prompt_omits_the_choice_card_fence_when_cards_are_off`. Falsified on purpose: forcing the renderer to `true`, always pushing the section, and shipping the default as `true` each turns exactly those assertions red.
+Pinned by `desktop/src/features/markdown/ChoiceCardsToggle.test.tsx` (off: zero card nodes **and** no `futureos-choice` in the extracted text; on: rows, pick, answer), `mobile/src/components/__tests__/ChoiceCardsToggle.test.ts`, and `agent/src/prompt/mod.rs::prompt_omits_the_choice_card_fence_when_cards_are_off`. Falsified on purpose: forcing the renderer to `true`, always pushing the section, and shipping the stored default as `false` each turns exactly those assertions red.
 
 ## 5. The interface
 
