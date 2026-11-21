@@ -5,12 +5,33 @@ use std::process::Command;
 /// picture is a property of the fixture rather than of this checkout.
 struct Repo {
     dir: tempfile::TempDir,
+    /// The instant the next `git` command commits at, in seconds since the epoch.
+    ///
+    /// The read is `git log --date-order`, and a date order is only *total* when
+    /// the instants are distinct: `--date-order` has to break a tie between two
+    /// commits committed in the same second itself, and it breaks it from the rev
+    /// set the walk started at rather than from the commits alone. A fixture that
+    /// let every commit land in the same second therefore read its eight commits
+    /// in one order as one page and in another order as two — `8ad8075` and
+    /// `ebd6258` swapped — which passed on Git for macOS and Linux and failed on
+    /// Git for Windows (`Rust Windows test / host-core`, run 44937037098).
+    ///
+    /// So every command commits at a distinct second, and the order the pages are
+    /// compared in is a property of the history instead of of the tie-break.
+    clock: std::cell::Cell<i64>,
 }
+
+/// The first instant the fixture commits at: 2020-09-13T12:26:40Z, far enough
+/// from any test's `now` that nothing reads as "just now".
+const FIRST_INSTANT: i64 = 1_600_000_000;
 
 impl Repo {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let repo = Self { dir };
+        let repo = Self {
+            dir,
+            clock: std::cell::Cell::new(FIRST_INSTANT),
+        };
         repo.git(&["init", "--initial-branch=main"]);
         repo.git(&["config", "user.email", "reader@example.com"]);
         repo.git(&["config", "user.name", "Reader"]);
@@ -21,11 +42,24 @@ impl Repo {
         self.dir.path()
     }
 
+    /// The instant one command commits at, one second after the command before
+    /// it. Applied to *every* command, so `commit`, `commit -m` and the merge
+    /// `git merge` makes itself all advance the clock, and no two commits in the
+    /// fixture can share a second.
+    fn instant(&self) -> String {
+        let at = self.clock.get();
+        self.clock.set(at + 1);
+        format!("@{at} +0000")
+    }
+
     fn git(&self, args: &[&str]) -> String {
+        let instant = self.instant();
         let output = Command::new("git")
             .arg("-C")
             .arg(self.path())
             .args(args)
+            .env("GIT_AUTHOR_DATE", &instant)
+            .env("GIT_COMMITTER_DATE", &instant)
             .output()
             .unwrap();
         assert!(
@@ -82,10 +116,13 @@ impl Repo {
         )
         .unwrap();
         self.git(&["add", "."]);
+        let instant = self.instant();
         let output = Command::new("git")
             .arg("-C")
             .arg(self.path())
             .args(["commit", "-m", subject])
+            .env("GIT_AUTHOR_DATE", &instant)
+            .env("GIT_COMMITTER_DATE", &instant)
             .env("GIT_AUTHOR_NAME", author)
             .env("GIT_AUTHOR_EMAIL", author_email)
             .env("GIT_COMMITTER_NAME", committer)
@@ -98,6 +135,38 @@ impl Repo {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+/// The fixture's history is totally ordered: every commit has an instant of its
+/// own.
+///
+/// [`the_second_page_is_the_tail_of_one_bigger_read`] compares two orders, and
+/// `--date-order` can only reproduce one across a seam when no two commits share
+/// a second — the tie-break is the walk's, not the commits' (see `Repo::clock`).
+/// That disagreement showed up on Git for Windows and on neither other platform,
+/// so the property the paging assertion rests on is asserted here, where every
+/// platform runs it and a fixture that stopped pinning its dates would fail at
+/// home rather than in one CI job.
+#[test]
+fn the_fixture_gives_every_commit_an_instant_of_its_own() {
+    let repo = Repo::new();
+    repo.commit("base");
+    repo.git(&["checkout", "-b", "side"]);
+    repo.commit("side work");
+    repo.git(&["checkout", "main"]);
+    repo.commit("main work");
+    // A merge commits too, and it is git making the commit rather than the
+    // fixture, so it is the one a pinned `commit` would miss.
+    repo.git(&["merge", "--no-ff", "-m", "merge side", "side"]);
+    let stamps = repo.git(&["log", "--all", "--format=%ct"]);
+    let mut instants: Vec<&str> = stamps.lines().map(str::trim).collect();
+    instants.sort_unstable();
+    instants.dedup();
+    assert_eq!(
+        instants.len(),
+        4,
+        "two commits share a committer second, so the date order has a tie: {stamps:?}"
+    );
 }
 
 /// A directory that is not a repository, with a `.git`-less parent chain: the
