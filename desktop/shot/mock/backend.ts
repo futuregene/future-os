@@ -1268,6 +1268,7 @@ const handlers: Record<string, (args: any) => unknown> = {
           ? gitHistoryWindowCommits
           : gitHistoryCommits,
     truncated: false,
+    cursor: "",
   }),
   get_git_commit: () => ({
     short: "9f2c1a7",

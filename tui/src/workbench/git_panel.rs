@@ -31,7 +31,7 @@
 //! subject is free text and may contain anything a line can contain, so splitting
 //! on a tab or a `|` would corrupt it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::Duration;
 
@@ -56,13 +56,77 @@ pub const COMMIT_LIMIT: usize = 200;
 /// own, and the six colours are the six columns.
 pub const LANE_WINDOW: usize = 6;
 
-/// How far a page may start into the log.
+/// Where a page of the log resumes: the open lanes, and the refs still unshown.
 ///
-/// The log is laid out from the top of the repository (see [`commits`]), so the
-/// cost of one page grows with the offset. This bounds it: at a page of 200,
-/// twenty thousand commits is a hundred pages of scrolling, far past what a
-/// reader reaches by hand and still a read git does in well under a second.
-const SKIP_CEILING: usize = 20_000;
+/// Both halves are needed. The lanes alone lose a branch tip the pages above have
+/// not reached yet — a tip is not an ancestor of anything above it — and the page
+/// after would be missing exactly that branch's commits. The tips alone cannot
+/// continue the drawing, because they say nothing about which column a line was
+/// in.
+///
+/// The same shape the host keeps (`future_host::git_history`), because the phone,
+/// the desktop and this panel read one repository's history: a page read here
+/// must be the page they would read.
+#[derive(Default)]
+struct PageCursor {
+    /// One entry per lane column: the sha that column waits for, `""` when the
+    /// column is free.
+    lanes: Vec<String>,
+    /// Ref tips the pages above have not shown yet.
+    tips: Vec<String>,
+}
+
+/// The cursor's spelling. Plain text rather than JSON because it only ever travels
+/// through this module and the host's copy: shas are hex, so `,` and `|` cannot
+/// occur inside one, and a version tag leads it so a future shape can be told
+/// apart from this one.
+const CURSOR_VERSION: &str = "1";
+
+impl PageCursor {
+    fn decode(text: &str) -> Self {
+        let mut parts = text.splitn(3, '|');
+        if parts.next() != Some(CURSOR_VERSION) {
+            return Self::default();
+        }
+        let lanes = parts
+            .next()
+            .map(|raw| raw.split(',').map(str::to_string).collect())
+            .unwrap_or_default();
+        let tips = parts
+            .next()
+            .map(|raw| {
+                raw.split(',')
+                    .filter(|sha| !sha.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self { lanes, tips }
+    }
+
+    fn encode(&self) -> String {
+        format!(
+            "{CURSOR_VERSION}|{}|{}",
+            self.lanes.join(","),
+            self.tips.join(",")
+        )
+    }
+
+    /// Whether this is the first page: nothing read yet.
+    fn is_start(&self) -> bool {
+        self.lanes.iter().all(String::is_empty) && self.tips.is_empty()
+    }
+
+    /// The revs git should walk from: every lane's target and every unshown tip.
+    fn revs(&self) -> Vec<&str> {
+        self.lanes
+            .iter()
+            .chain(self.tips.iter())
+            .map(String::as_str)
+            .filter(|sha| !sha.is_empty())
+            .collect()
+    }
+}
 
 /// Budget for one read-only query (`log`, `for-each-ref`, `stash list`).
 pub const QUERY_TIMEOUT: Duration = Duration::from_secs(3);
@@ -135,32 +199,35 @@ pub fn rows(
     cwd: &Path,
     section: GitSection,
     filter: Option<&str>,
-) -> Result<(Vec<GitRow>, bool), String> {
+) -> Result<(Vec<GitRow>, bool, String), String> {
     match section {
-        GitSection::Commits => commits(cwd, filter, 0, COMMIT_LIMIT),
-        GitSection::Refs => refs(cwd).map(|rows| (rows, false)),
-        GitSection::Status => status(cwd).map(|rows| (rows, false)),
-        GitSection::Stash => stashes(cwd).map(|rows| (rows, false)),
-        GitSection::Worktrees => worktrees(cwd).map(|rows| (rows, false)),
-        GitSection::Branches => branches(cwd).map(|rows| (rows, false)),
+        GitSection::Commits => commits(cwd, filter, &PageCursor::default(), COMMIT_LIMIT),
+        GitSection::Refs => refs(cwd).map(|rows| (rows, false, String::new())),
+        GitSection::Status => status(cwd).map(|rows| (rows, false, String::new())),
+        GitSection::Stash => stashes(cwd).map(|rows| (rows, false, String::new())),
+        GitSection::Worktrees => worktrees(cwd).map(|rows| (rows, false, String::new())),
+        GitSection::Branches => branches(cwd).map(|rows| (rows, false, String::new())),
     }
 }
 
-/// The next page of the log: `skip` commits in, and whether another follows.
+/// The next page of the log: the rows from `cursor` on, whether another page
+/// follows, and the cursor that page is read with.
 ///
-/// The same read opening the panel makes, so the page is laid out from the top of
-/// the history and its rows continue the lanes the rows above it opened.
-pub fn page(cwd: &Path, filter: Option<&str>, skip: usize) -> Result<(Vec<GitRow>, bool), String> {
-    // Past the ceiling there is no page to read: the read would be clamped back
-    // to it and answer rows the panel already holds, leaving `↓` a key that does
-    // nothing forever. Say the log ends where the panel stops reading instead.
-    if skip >= SKIP_CEILING {
-        return Ok((Vec::new(), false));
-    }
-    commits(cwd, filter, skip, COMMIT_LIMIT)
+/// The read starts *at* the cursor rather than at the top of the history, so a
+/// page costs one page however deep the reader has scrolled — `--skip` (or
+/// reading a prefix and cutting it) would make every page cost what everything
+/// above it cost. The cursor's lanes are also what keeps the drawing continuous:
+/// the page opens the lines the page above left running, in the columns it left
+/// them in.
+pub fn page(
+    cwd: &Path,
+    filter: Option<&str>,
+    cursor: &str,
+) -> Result<(Vec<GitRow>, bool, String), String> {
+    commits(cwd, filter, &PageCursor::decode(cursor), COMMIT_LIMIT)
 }
 
-/// `git log` in topological order, drawn into rows.
+/// `git log` from the cursor, drawn into rows.
 ///
 /// With no filter this is every branch, remote branch and tag as one timeline
 /// — the graph is the panel's point, and a graph of one branch is a straight
@@ -177,9 +244,9 @@ pub fn page(cwd: &Path, filter: Option<&str>, skip: usize) -> Result<(Vec<GitRow
 fn commits(
     cwd: &Path,
     filter: Option<&str>,
-    skip: usize,
+    cursor: &PageCursor,
     take: usize,
-) -> Result<(Vec<GitRow>, bool), String> {
+) -> Result<(Vec<GitRow>, bool, String), String> {
     // `%x1e` / `%x1f` are git's own escapes for RS and US: a subject is free
     // text, so the field separator has to be a byte a subject cannot contain.
     // `%H`/`%P` (full ids) rather than `%h`/`%p` are what the lanes are matched
@@ -188,25 +255,17 @@ fn commits(
     // and name — the commit's own stamp, which is what the columns beside the
     // graph are for; the author is the detail pane's.
     let pretty = "--pretty=format:%x1e%h%x1f%H%x1f%P%x1f%cd%x1f%cn%x1f%D%x1f%s";
-    let skip = skip.min(SKIP_CEILING);
-    // The log is read from the top of the history and cut to the page afterwards,
-    // rather than asked for with `--skip`: a row's lanes are what the rows above
-    // it left behind, so a page laid out on its own would start every line of
-    // work at column 0 and the drawing would break at the seam. Reading the
-    // prefix costs one `git log` — bounded by `SKIP_CEILING` — and keeps the
-    // picture continuous with the rows the reader already has.
-    //
     // One entry past the page is what says whether the history goes on: without
     // it a log that ends exactly on a page boundary would answer the next `↓`
     // with nothing, i.e. a keypress that does nothing.
-    let want = skip + take + 1;
-    let limit = format!("--max-count={want}");
-    // Topological order, in both reads: a parent never comes before a child,
-    // and a line of work is read as one stretch rather than interleaved with
-    // every other branch's dated commits. That is what lets a lane stay in one
-    // column from the tip of a branch to where it joins — the property the
-    // columns are read by. Date order is still newest-first at the tips, which
-    // is where the reader starts.
+    let limit = format!("--max-count={}", take + 1);
+    // `--date-order`, not `--topo-order`: both never show a parent before its
+    // children, but only the date walk can be cut and continued. A topological
+    // order is computed for the whole graph, so asking for it again from below a
+    // cut can order two live branches differently from the way the walk above had
+    // them queued, and the page after a seam would then hold the right commits in
+    // an order one uninterrupted read never produces. The date walk's order is a
+    // property of the commits it is given.
     let mut args = vec![
         "log",
         "--decorate=short",
@@ -214,12 +273,16 @@ fn commits(
         // whom", and a `+0800` in every one of 200 rows is six cells that only
         // ever repeat what the local clock already says.
         "--date=format:%Y-%m-%d %H:%M",
-        "--topo-order",
+        "--date-order",
         limit.as_str(),
         pretty,
     ];
     match filter {
         Some(reference) => args.push(reference),
+        // A continuation names its own revs — the lanes' targets plus the tips the
+        // pages above have not shown. Naming the refs again would restart the walk
+        // at every tip and answer with the first page over and over.
+        None if !cursor.is_start() => args.extend(cursor.revs()),
         // Every branch, tag and remote-tracking branch — the three groups the
         // refs tab lists, so the log and that tab describe the same repository.
         // `--all` would also pull in `refs/stash` (a stash is a commit tree), and
@@ -234,11 +297,13 @@ fn commits(
     // as the path and log nothing.
     args.push("--");
     match git(cwd, &args, QUERY_TIMEOUT) {
-        Ok(text) => Ok(log_rows(&text, skip, take)),
+        Ok(text) => Ok(log_rows(&text, cursor, take, cwd)),
         // A repository with no commit is not an error the reader can act on; it
         // is an empty log, and every other panel in this surface says "nothing
         // here" rather than showing git's fatal message.
-        Err(error) if error.contains("does not have any commits") => Ok((Vec::new(), false)), // i18n: matches git's own stderr, never drawn
+        Err(error) if error.contains("does not have any commits") => {
+            Ok((Vec::new(), false, String::new()))
+        } // i18n: matches git's own stderr, never drawn
         Err(error) => Err(error),
     }
 }
@@ -281,18 +346,14 @@ fn parse_entries(text: &str) -> Vec<Entry> {
         .collect()
 }
 
-/// A parent that lies past the page the log asked for. Its lane is kept — a
-/// line running off the bottom says the history continues, which is true — but
-/// it can never be claimed by a commit, so the line is never handed to another
-/// branch.
-const GHOST: usize = usize::MAX;
-
 /// One line of work being drawn: the commit it is waiting for and what opened
 /// it.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Lane {
-    /// The entry this line waits for, or [`GHOST`] past the page.
-    target: usize,
+    /// The commit this line waits for — a sha, not a position in the page, so a
+    /// line that runs off the bottom is an ordinary open lane and the next page's
+    /// cursor can pick it up.
+    target: String,
     /// The commit and the index of the parent in its list that opened this line,
     /// when a merge's *extra* parent did. `None` for a line that starts at the
     /// top of the page or carries a commit's first parent: those are the line
@@ -309,7 +370,11 @@ struct Lane {
 const PASSES: usize = 4;
 
 /// The graph gutter for each entry, one string per row and every string the
-/// same width so the subjects line up in one column.
+/// same width so the subjects line up in one column — and the lanes the page ends
+/// with, which the next page resumes from.
+///
+/// `seed` is that same lane row from the page above: one entry per column, the sha
+/// it waits for or `""` where the column is free. A first page seeds nothing.
 ///
 /// The model is tig's: a *lane* is a column waiting for a commit, a commit
 /// claims the leftmost lane waiting for it, its first parent inherits that
@@ -333,17 +398,27 @@ const PASSES: usize = 4;
 ///   the page with no commit of its own and closes at the commit that other lane
 ///   lands on. That link is dropped and the page laid out again: the covered
 ///   line keeps its commits, they are simply drawn where they already were.
-fn graph(entries: &[Entry]) -> Vec<String> {
-    let position: HashMap<&str, usize> = entries
+fn graph(entries: &[Entry], seed: &[String]) -> (Vec<String>, Vec<String>) {
+    let seeded: Vec<Option<Lane>> = seed
         .iter()
-        .enumerate()
-        .map(|(at, entry)| (entry.id.as_str(), at))
+        .map(|sha| {
+            (!sha.is_empty()).then(|| Lane {
+                target: sha.clone(),
+                opened_by: None,
+                // A seeded lane has already drawn its commit — the page above —
+                // so a second line joining it here is not a lane that carried
+                // nothing.
+                hosted: true,
+            })
+        })
         .collect();
     let mut covered: HashSet<(usize, usize)> = HashSet::new();
     let mut rows = Vec::new();
+    let mut lanes: Vec<Option<Lane>> = seeded.clone();
     for pass in 1..=PASSES {
-        let (drawn, discovered) = draw(entries, &position, &covered);
+        let (drawn, discovered, ended) = draw(entries, &covered, seeded.clone());
         rows = drawn;
+        lanes = ended;
         let mut fresh: Vec<(usize, usize)> = Vec::new();
         for edge in discovered {
             if !covered.contains(&edge) && !fresh.contains(&edge) {
@@ -356,23 +431,36 @@ fn graph(entries: &[Entry]) -> Vec<String> {
         covered.extend(fresh);
     }
     let width = rows.iter().map(Vec::len).max().unwrap_or(0);
-    rows.into_iter()
+    let gutters = rows
+        .into_iter()
         .map(|mut cells| {
             cells.resize(width, ' ');
             cells.into_iter().collect()
         })
-        .collect()
+        .collect();
+    let mut ended: Vec<String> = lanes
+        .into_iter()
+        .map(|lane| lane.map(|lane| lane.target).unwrap_or_default())
+        .collect();
+    while ended.last().is_some_and(String::is_empty) {
+        ended.pop();
+    }
+    (gutters, ended)
 }
 
-/// One pass over the log: the rows, and the parent links whose lane turned out
-/// to carry no commit of its own.
+/// One pass over the layout: the drawn rows, the parent links whose lane turned
+/// out to carry no commit of its own, and the lanes still open at the bottom.
+type Pass = (Vec<Vec<char>>, Vec<(usize, usize)>, Vec<Option<Lane>>);
+
+/// One pass over the log: the rows, the parent links whose lane turned out to
+/// carry no commit of its own, and the lanes still open at the bottom.
 fn draw(
     entries: &[Entry],
-    position: &HashMap<&str, usize>,
     covered: &HashSet<(usize, usize)>,
-) -> (Vec<Vec<char>>, Vec<(usize, usize)>) {
+    seeded: Vec<Option<Lane>>,
+) -> Pass {
     // Column -> the line it holds, `None` while the column is free.
-    let mut lanes: Vec<Option<Lane>> = Vec::new();
+    let mut lanes: Vec<Option<Lane>> = seeded;
     let mut rows: Vec<Vec<char>> = Vec::with_capacity(entries.len());
     let mut empty: Vec<(usize, usize)> = Vec::new();
     for (at, entry) in entries.iter().enumerate() {
@@ -381,7 +469,7 @@ fn draw(
         let waiting: Vec<usize> = lanes
             .iter()
             .enumerate()
-            .filter(|(_, lane)| lane.is_some_and(|lane| lane.target == at))
+            .filter(|(_, lane)| lane.as_ref().is_some_and(|lane| lane.target == entry.id))
             .map(|(column, _)| column)
             .collect();
         let (mine, closed) = match waiting.split_first() {
@@ -397,7 +485,7 @@ fn draw(
                     }
                 };
                 lanes[column] = Some(Lane {
-                    target: at,
+                    target: entry.id.clone(),
                     opened_by: None,
                     hosted: false,
                 });
@@ -407,7 +495,7 @@ fn draw(
         // A line closing here that never drew a commit was opened for a parent
         // another line also reaches: its history is already on the page.
         for &column in &closed {
-            if let Some(lane) = lanes[column] {
+            if let Some(lane) = &lanes[column] {
                 if !lane.hosted {
                     if let Some(edge) = lane.opened_by {
                         empty.push(edge);
@@ -419,11 +507,6 @@ fn draw(
         if let Some(lane) = lanes[mine].as_mut() {
             lane.hosted = true;
         }
-        let parents: Vec<usize> = entry
-            .parents
-            .iter()
-            .map(|parent| position.get(parent.as_str()).copied().unwrap_or(GHOST))
-            .collect();
         // The extra parents, each in a column right of this one: the leftmost
         // one that is free, and — this is what keeps the page narrow — a column
         // a lane is giving up on *this* row. A branch that ends where the next
@@ -433,8 +516,8 @@ fn draw(
         // by another lane, or by an earlier parent of this same commit, is
         // passed over, so two live lines never share one. One whose lane was
         // found to carry nothing is not opened at all.
-        let mut opened: Vec<(usize, usize, usize)> = Vec::new();
-        for (index, &parent) in parents.iter().enumerate().skip(1) {
+        let mut opened: Vec<(usize, String, usize)> = Vec::new();
+        for (index, parent) in entry.parents.iter().enumerate().skip(1) {
             if covered.contains(&(at, index)) {
                 continue;
             }
@@ -449,7 +532,7 @@ fn draw(
                     lanes.len() - 1
                 }
             };
-            opened.push((column, parent, index));
+            opened.push((column, parent.clone(), index));
         }
         let rightmost = opened
             .iter()
@@ -497,7 +580,7 @@ fn draw(
             left[fold] |= column > mine && column <= rightmost;
             if column == mine {
                 marks[fold] = true;
-                joins[fold] = parents.len() > 1;
+                joins[fold] = entry.parents.len() > 1;
             }
         }
         // The bundle closes at the window's edge: a connector in its last cell
@@ -526,12 +609,12 @@ fn draw(
         for &column in &closed {
             lanes[column] = None;
         }
-        lanes[mine] = parents.first().map(|&target| Lane {
-            target,
+        lanes[mine] = entry.parents.first().map(|target| Lane {
+            target: target.clone(),
             opened_by: None,
             hosted: false,
         });
-        for &(column, target, index) in &opened {
+        for (column, target, index) in opened {
             if column >= lanes.len() {
                 lanes.resize(column + 1, None);
             }
@@ -545,7 +628,7 @@ fn draw(
             lanes.pop();
         }
     }
-    (rows, empty)
+    (rows, empty, lanes)
 }
 
 /// The glyph where a lane meets the row's horizontal: which of the four
@@ -592,38 +675,96 @@ const WHO_LIMIT: usize = 10;
 /// list already prints the whole hash, so repeating eight cells of it in every
 /// row spends the width the subject needs.
 pub fn parse_log(text: &str) -> Vec<GitRow> {
-    layout(parse_entries(text), 0, usize::MAX)
+    layout(parse_entries(text), &[]).0
 }
 
-/// One page of a log read: the rows from `skip` on, and whether the history
-/// continues past them — which is what a `↓` at the last row acts on.
-fn log_rows(text: &str, skip: usize, take: usize) -> (Vec<GitRow>, bool) {
-    let entries = parse_entries(text);
-    // The read asked for one entry past the page, so a full result is the only
+/// One page of a log read: the rows, whether the history continues past them —
+/// which is what a `↓` at the last row acts on — and the cursor the next page is
+/// read with (empty when there is none).
+fn log_rows(
+    text: &str,
+    cursor: &PageCursor,
+    take: usize,
+    cwd: &Path,
+) -> (Vec<GitRow>, bool, String) {
+    let mut entries = parse_entries(text);
+    // The read asked for one entry past the page, so a longer result is the only
     // thing that says there is more.
-    let more = entries.len() > skip + take;
-    (layout(entries, skip, take), more)
+    let more = entries.len() > take;
+    entries.truncate(take);
+    // The full ids, not the abbreviations the rows are keyed on: the tips this
+    // compares them with are `for-each-ref`'s object names.
+    let shown: HashSet<String> = entries.iter().map(|entry| entry.id.clone()).collect();
+    let (rows, lanes) = layout(entries, &cursor.lanes);
+    let next = if more {
+        // The lanes the page ended with, plus the refs still unshown. A tip the
+        // pages above have not reached is not an ancestor of anything above the
+        // seam, so leaving it out would drop a whole branch from the page after.
+        let tips = if cursor.is_start() {
+            ref_tips(cwd)
+        } else {
+            cursor.tips.clone()
+        };
+        PageCursor {
+            lanes,
+            tips: tips
+                .into_iter()
+                .filter(|tip| !shown.contains(tip))
+                .collect(),
+        }
+        .encode()
+    } else {
+        String::new()
+    };
+    (rows, more, next)
 }
 
-/// Entries to painted rows: `take` of them, from `skip` on.
+/// The shas the log walks from: every branch, tag and remote-tracking branch.
 ///
-/// The layout is over *every* entry the read returned, not over the page: a row's
-/// lanes are the columns the rows above it left behind, so cutting before the
-/// layout would start every line of work again at column 0.
-fn layout(entries: Vec<Entry>, skip: usize, take: usize) -> Vec<GitRow> {
+/// The same set the first page's `--branches --remotes --tags` names, read as
+/// shas so a continuation can carry the ones it has not shown yet.
+fn ref_tips(cwd: &Path) -> Vec<String> {
+    let output = match git(
+        cwd,
+        &[
+            "for-each-ref",
+            "--format=%(objectname)",
+            "refs/heads",
+            "refs/remotes",
+            "refs/tags",
+        ],
+        QUERY_TIMEOUT,
+    ) {
+        Ok(text) => text,
+        // A cursor without tips still pages; it can only lose a branch tip that
+        // had not been reached. Better a page than a failure to read history.
+        Err(_) => return Vec::new(),
+    };
+    let mut seen: Vec<String> = Vec::new();
+    for sha in output.lines().map(str::trim).filter(|sha| !sha.is_empty()) {
+        if !seen.iter().any(|already| already == sha) {
+            seen.push(sha.to_string());
+        }
+    }
+    seen
+}
+
+/// Entries to painted rows, and the lanes the page ends with.
+///
+/// `seed` is the lane row the page above ended with, so a line of work that runs
+/// off the bottom of one page opens the next in the same column.
+fn layout(entries: Vec<Entry>, seed: &[String]) -> (Vec<GitRow>, Vec<String>) {
     use GitKind::{Decoration, Plain};
-    let prefixes = graph(&entries);
+    let (prefixes, lanes) = graph(&entries, seed);
     let who_width = entries
         .iter()
         .map(|entry| ansi::width(&entry.who))
         .max()
         .unwrap_or(0)
         .clamp(0, WHO_LIMIT);
-    entries
+    let rows = entries
         .into_iter()
         .zip(prefixes)
-        .skip(skip)
-        .take(take)
         .map(|(entry, prefix)| {
             // `fit` pads to the width and clips a long name with an ellipsis, so
             // every column ends on the same cell in every row.
@@ -658,7 +799,8 @@ fn layout(entries: Vec<Entry>, skip: usize, take: usize) -> Vec<GitRow> {
                 kinds,
             }
         })
-        .collect()
+        .collect();
+    (rows, lanes)
 }
 
 /// Branches, remote-tracking branches and tags, most recently committed first.
@@ -1160,9 +1302,10 @@ pub fn read(
         }
     }
     match rows(cwd, section, view.filter.as_deref()) {
-        Ok((rows, more)) => {
+        Ok((rows, more, cursor)) => {
             view.rows = rows;
             view.more = more;
+            view.cursor = cursor;
         }
         Err(error) => {
             view.error = Some(spoken(lang, error));
@@ -1500,61 +1643,159 @@ mod tests {
     }
 
     /// The log is read a page at a time, and the pages join: two commits at a
-    /// time must draw exactly what one read of the whole history draws. The
-    /// layout is over the read's whole prefix, so the second page's rows continue
-    /// the lanes the first page opened instead of starting every line of work
-    /// again at the left edge.
+    /// time must draw exactly what one read of the whole history draws. Each page
+    /// is read *from* the cursor the one above it answered with, so the second
+    /// page's rows continue the lanes the first page opened instead of starting
+    /// every line of work again at the left edge.
     #[test]
     fn pages_of_the_log_join_the_rows_above_them() {
         let dir = repo();
-        let (whole, more) = commits(dir.path(), None, 0, 50).unwrap();
+        let (whole, more, cursor) = commits(dir.path(), None, &PageCursor::default(), 50).unwrap();
         assert!(!more, "four commits are one page");
+        assert!(cursor.is_empty(), "the whole history is one page");
         assert_eq!(whole.len(), 4);
 
         let mut paged = Vec::new();
-        let mut skip = 0;
+        let mut cursor = String::new();
+        let mut reads = 0;
         loop {
-            let (rows, more) = commits(dir.path(), None, skip, 2).unwrap();
-            skip += rows.len();
+            let (rows, more, next) =
+                commits(dir.path(), None, &PageCursor::decode(&cursor), 2).unwrap();
+            reads += 1;
             paged.extend(rows);
+            cursor = next;
             if !more {
                 break;
             }
             // A page that answered with nothing while claiming more would spin
-            // forever: the read asks one entry past the page for exactly this.
-            assert!(skip <= whole.len(), "the page said more after the root");
+            // forever: the read asks one entry past the page for exactly this,
+            // and the cursor changes when the page advances.
+            assert!(!cursor.is_empty(), "a page that says more must say where");
+            assert!(reads <= whole.len(), "the page said more after the root");
         }
-        assert_eq!(skip, whole.len());
+        assert!(cursor.is_empty(), "the last page has nothing after it");
+        assert_eq!(paged.len(), whole.len());
         let shape = |rows: Vec<GitRow>| -> Vec<(Option<String>, String)> {
             rows.into_iter().map(|row| (row.key, row.prefix)).collect()
         };
         assert_eq!(shape(paged), shape(whole));
     }
 
-    /// The page a reader asks for past the root is empty and says so, rather than
-    /// being an error or claiming another page.
+    /// One page read from the cursor is exactly the tail of one read that
+    /// covered both — same commits, in the same order, drawn in the same
+    /// columns. This is the assertion the cursor exists for: read the second page
+    /// from the top of the log again (what `--skip` does) and the two branches it
+    /// crosses come back in a different order, so the comparison fails.
+    #[test]
+    fn the_second_page_is_the_tail_of_one_bigger_read() {
+        let dir = branchy_repo();
+        let (first, more, cursor) = commits(dir.path(), None, &PageCursor::default(), 3).unwrap();
+        assert!(more);
+        assert!(!cursor.is_empty());
+        let (second, _, _) = commits(dir.path(), None, &PageCursor::decode(&cursor), 50).unwrap();
+        let (whole, _, _) = commits(dir.path(), None, &PageCursor::default(), 50).unwrap();
+
+        let shape = |rows: &[GitRow]| -> Vec<(Option<String>, String)> {
+            rows.iter()
+                .map(|row| (row.key.clone(), row.prefix.clone()))
+                .collect()
+        };
+        let mut joined = shape(&first);
+        joined.extend(shape(&second));
+        // No commit twice and none missing: the two pages are a partition of the
+        // one read, in its order.
+        assert_eq!(joined, shape(&whole));
+
+        // The same cursor read twice is the same page: where a page starts is a
+        // property of the log, not of when it was asked.
+        let (again, _, _) = commits(dir.path(), None, &PageCursor::decode(&cursor), 50).unwrap();
+        assert_eq!(shape(&again), shape(&second));
+    }
+
+    /// A history with two branches running in parallel and joined at the end, so
+    /// the page boundary falls where a single walk and a continued one could
+    /// disagree.
+    ///
+    /// Each commit gets its own committer date: a log orders by that stamp, and a
+    /// fixture whose commits share one second is ordered by git's walk rather than
+    /// by the history — which would make the assertion below a coin toss instead
+    /// of a fact about the cursor.
+    fn branchy_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new(git_bin())
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        // `at` is minutes past a fixed base, so every commit has a distinct
+        // committer *and* author date in the order the branches are written.
+        let commit = |message: &str, at: u32| {
+            let date = format!("2026-01-01T{:02}:{:02}:00", at / 60, at % 60);
+            let output = Command::new(git_bin())
+                .arg("-C")
+                .arg(dir.path())
+                .args(["commit", "-qm", message])
+                .env("GIT_AUTHOR_DATE", &date)
+                .env("GIT_COMMITTER_DATE", &date)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "tui@example.invalid"]);
+        git(&["config", "user.name", "TUI test"]);
+        std::fs::write(dir.path().join("base.txt"), "base\n").unwrap();
+        git(&["add", "."]);
+        commit("base", 0);
+        // Two branches, written alternately in time: at a cut, both are still
+        // open and a continuation must keep their interleaving.
+        git(&["checkout", "-q", "-b", "left"]);
+        git(&["checkout", "-q", "-b", "right"]);
+        for step in 0..3 {
+            for (branch, file) in [("right", "right.txt"), ("left", "left.txt")] {
+                git(&["checkout", "-q", branch]);
+                std::fs::write(dir.path().join(file), format!("{step}\n")).unwrap();
+                git(&["add", "."]);
+                commit(
+                    &format!("{branch} {step}"),
+                    10 + step * 2 + u32::from(branch == "left"),
+                );
+            }
+        }
+        git(&["checkout", "-q", "main"]);
+        git(&["merge", "-q", "--no-ff", "-m", "join left", "left"]);
+        git(&["merge", "-q", "--no-ff", "-m", "join right", "right"]);
+        dir
+    }
+
+    /// The read that opens the panel says where the next page starts, and a page
+    /// read from there is the rest of the log — the panel's own `↓` therefore
+    /// never repeats a row or skips one.
     #[test]
     fn a_page_past_the_root_is_empty_and_ends_the_log() {
         let dir = repo();
-        let (rows, more) = commits(dir.path(), None, 4, 2).unwrap();
-        assert!(rows.is_empty());
+        let (rows, more, cursor) = commits(dir.path(), None, &PageCursor::default(), 50).unwrap();
+        assert!(!rows.is_empty());
         assert!(!more);
+        assert!(cursor.is_empty(), "nothing follows the root");
 
         // The whole read says whether it is the whole read, and the panel's
         // first page carries it into the view.
         let view = read(dir.path(), GitSection::Commits, None, 0, Language::En);
         assert!(!view.more, "a view of four commits has nothing below it");
-    }
-
-    /// The page the panel reads stops at the ceiling: asked past it, the read is
-    /// the end of the log rather than the same rows again — a `↓` that answers
-    /// with nothing while the title claims more would be a dead key.
-    #[test]
-    fn a_page_past_the_ceiling_ends_the_log() {
-        let dir = repo();
-        let (rows, more) = page(dir.path(), None, SKIP_CEILING).unwrap();
-        assert!(rows.is_empty(), "the ceiling answered with a page");
-        assert!(!more, "the ceiling claimed another page");
+        assert!(view.cursor.is_empty(), "the view's log is read to the root");
     }
 
     #[test]
@@ -1627,7 +1868,7 @@ mod tests {
     #[ignore]
     fn dump_real_log() {
         let dir = std::path::Path::new("/Users/geilige/future-os");
-        let (rows, _) = rows(dir, GitSection::Commits, None).unwrap();
+        let (rows, _, _) = rows(dir, GitSection::Commits, None).unwrap();
         let width = rows
             .iter()
             .map(|r| r.prefix.chars().count())
@@ -1647,7 +1888,7 @@ mod tests {
         let name = repo_name(dir.path(), Language::En).unwrap();
         assert!(!name.is_empty());
 
-        let (log, more) = rows(dir.path(), GitSection::Commits, None).unwrap();
+        let (log, more, _) = rows(dir.path(), GitSection::Commits, None).unwrap();
         assert!(!more, "four commits are one page");
         assert_eq!(
             log.len(),
@@ -1698,7 +1939,7 @@ mod tests {
             "the merge's stat is there: {patch}"
         );
 
-        let (refs, _) = rows(dir.path(), GitSection::Refs, None).unwrap();
+        let (refs, _, _) = rows(dir.path(), GitSection::Refs, None).unwrap();
         let names: Vec<&str> = refs.iter().map(|row| row.pieces[0].as_str()).collect();
         assert!(names.contains(&"main"), "{names:?}");
         assert!(names.contains(&"feature"), "{names:?}");
@@ -1716,7 +1957,7 @@ mod tests {
         .unwrap();
         assert!(tip.join("\n").contains("refs/heads/main"), "{tip:?}");
 
-        let (status_rows, _) = rows(dir.path(), GitSection::Status, None).unwrap();
+        let (status_rows, _, _) = rows(dir.path(), GitSection::Status, None).unwrap();
         let dirty = status_rows
             .iter()
             .find(|row| row.pieces[0] == "a.txt")
@@ -1731,7 +1972,7 @@ mod tests {
         .join("\n");
         assert!(patch.contains("+dirty"), "{patch}");
 
-        let (stashes, _) = rows(dir.path(), GitSection::Stash, None).unwrap();
+        let (stashes, _, _) = rows(dir.path(), GitSection::Stash, None).unwrap();
         assert_eq!(stashes.len(), 1);
         assert!(
             stashes[0].pieces[0].contains("a stashed change"),
@@ -1744,7 +1985,7 @@ mod tests {
         assert!(patch.contains("+dirty"), "{patch}");
 
         // A ref filter narrows the log to that line of work.
-        let (feature, _) = rows(dir.path(), GitSection::Commits, Some("feature")).unwrap();
+        let (feature, _, _) = rows(dir.path(), GitSection::Commits, Some("feature")).unwrap();
         assert!(feature
             .iter()
             .flat_map(|row| row.pieces.iter())
@@ -1830,7 +2071,7 @@ mod tests {
         };
         git(&["worktree", "add", "-q", "second", "feature"]);
 
-        let (worktrees, _) = rows(dir.path(), GitSection::Worktrees, None).unwrap();
+        let (worktrees, _, _) = rows(dir.path(), GitSection::Worktrees, None).unwrap();
         assert_eq!(worktrees.len(), 2);
         let here = worktrees
             .iter()
@@ -1851,7 +2092,7 @@ mod tests {
         .join("\n");
         assert!(text.contains("feature"), "its own status is read: {text}");
 
-        let (branches, _) = rows(dir.path(), GitSection::Branches, None).unwrap();
+        let (branches, _, _) = rows(dir.path(), GitSection::Branches, None).unwrap();
         let names: Vec<&str> = branches.iter().map(|row| row.pieces[0].as_str()).collect();
         assert!(names.contains(&"main"), "{names:?}");
         assert!(names.contains(&"feature"), "{names:?}");
@@ -1864,7 +2105,7 @@ mod tests {
             "main"
         );
         // A branch is a revision the log can be filtered to.
-        let (log, _) = rows(dir.path(), GitSection::Commits, Some("feature")).unwrap();
+        let (log, _, _) = rows(dir.path(), GitSection::Commits, Some("feature")).unwrap();
         assert!(log
             .iter()
             .flat_map(|row| row.pieces.iter())
@@ -1898,6 +2139,7 @@ mod tests {
             detail: Vec::new(),
             filter: None,
             more: false,
+            cursor: String::new(),
             error: None,
         };
         focus(gone, &mut view, 0, Language::En);
@@ -1941,7 +2183,7 @@ mod tests {
             assert!(output.status.success());
         };
         git(&["init", "-q"]);
-        let (commits, more) = rows(dir.path(), GitSection::Commits, None).unwrap();
+        let (commits, more, _) = rows(dir.path(), GitSection::Commits, None).unwrap();
         assert!(commits.is_empty());
         assert!(!more, "an empty log has nothing below it either");
         assert!(rows(dir.path(), GitSection::Stash, None)
