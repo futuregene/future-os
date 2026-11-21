@@ -2506,6 +2506,12 @@ fn git_box(
     if let Some(filter) = &git.filter {
         list_title.push_str(&format!(" · {filter}"));
     }
+    // The log is one page of many: say so where the section's own name is, so
+    // the reader knows the `↓` that does nothing at the bottom is in fact the key
+    // that reads on.
+    if git.more {
+        list_title.push_str(&format!(" · {}", t(lang, Key::GitMore)));
+    }
     let split = columns >= GIT_SPLIT_COLUMNS;
     // The page keys belong to the detail pane whenever it is on screen beside
     // the list, so the surface has to know which layout is painted.

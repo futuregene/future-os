@@ -5328,7 +5328,7 @@
             "wait": 1800
           },
           {
-            "eval": "(() => {\n  const text = document.body.innerText;\n  // The machine's own page names it and lists the settings that live on it.\n  // Every one of these used to be on the phone's settings screen; none of them\n  // may come back there.\n  for (const wanted of ['实验室的 MacBook Pro', '该桌面端的设置', '自动化与审批', '模型可见性', '提供商与模型', '技能管理', '定时任务设置']) {\n    if (!text.includes(wanted)) throw new Error('the device page is missing ' + wanted + ': ' + text.slice(0, 300));\n  }\n  // The phone's own label for the machine is not a machine setting: it is\n  // edited on the row of the paired list, even while the machine is off.\n  if (text.includes('设备标识')) throw new Error('the device page still carries the identity section: ' + text.slice(0, 300));\n  if ([...document.querySelectorAll('[role=radio]')].length > 0)\n    throw new Error('the icon grid is still on the device page');\n  // And no connection step: every paired machine keeps its own live runtime,\n  // so its settings are read over that machine's own connection. The row that\n  // used to ask to \"connect to this desktop\" first is gone.\n  if (text.includes('连接该桌面端')) throw new Error('the page still asks to connect first: ' + text.slice(0, 300));\n  return 'settings only, no label fields, no connection step';\n})()"
+            "eval": "(() => {\n  const text = document.body.innerText;\n  // The machine's own page names it and lists the settings that live on it.\n  // Every one of these used to be on the phone's settings screen; none of them\n  // may come back there.\n  for (const wanted of ['实验室的 MacBook Pro', '该桌面端的设置', '自动化与审批', '模型可见性', '提供商与模型', '技能管理', '定时任务']) {\n    if (!text.includes(wanted)) throw new Error('the device page is missing ' + wanted + ': ' + text.slice(0, 300));\n  }\n  // The phone's own label for the machine is not a machine setting: it is\n  // edited on the row of the paired list, even while the machine is off.\n  if (text.includes('设备标识')) throw new Error('the device page still carries the identity section: ' + text.slice(0, 300));\n  if ([...document.querySelectorAll('[role=radio]')].length > 0)\n    throw new Error('the icon grid is still on the device page');\n  // And no connection step: every paired machine keeps its own live runtime,\n  // so its settings are read over that machine's own connection. The row that\n  // used to ask to \"connect to this desktop\" first is gone.\n  if (text.includes('连接该桌面端')) throw new Error('the page still asks to connect first: ' + text.slice(0, 300));\n  return 'settings only, no label fields, no connection step';\n})()"
           },
           {
             "shot": "m-device-settings.png"
@@ -5354,7 +5354,7 @@
             "wait": 2200
           },
           {
-            "eval": "(() => {\n  const text = document.body.innerText;\n  for (const wanted of ['手机本机', '语言', '微信公众号', '检查更新']) {\n    if (!text.includes(wanted)) throw new Error('the phone settings are missing ' + wanted);\n  }\n  for (const gone of ['当前桌面端', '模型可见性', '定时任务设置', '技能管理']) {\n    if (text.includes(gone)) throw new Error('a device setting is still on the phone screen: ' + gone);\n  }\n  return 'phone-only settings';\n})()"
+            "eval": "(() => {\n  const text = document.body.innerText;\n  for (const wanted of ['手机本机', '语言', '微信公众号', '检查更新']) {\n    if (!text.includes(wanted)) throw new Error('the phone settings are missing ' + wanted);\n  }\n  for (const gone of ['当前桌面端', '模型可见性', '定时任务', '技能管理']) {\n    if (text.includes(gone)) throw new Error('a device setting is still on the phone screen: ' + gone);\n  }\n  return 'phone-only settings';\n})()"
           },
           {
             "shot": "m-settings.png"
@@ -5754,7 +5754,7 @@
             "wait": 1800
           },
           {
-            "tap": "定时任务设置"
+            "tap": "定时任务"
           },
           {
             "wait": 1200
@@ -5797,7 +5797,7 @@
             "wait": 1800
           },
           {
-            "tap": "定时任务设置"
+            "tap": "定时任务"
           },
           {
             "wait": 1200
@@ -5852,7 +5852,7 @@
             "wait": 1800
           },
           {
-            "tap": "定时任务设置"
+            "tap": "定时任务"
           },
           {
             "wait": 1200
@@ -5911,7 +5911,7 @@
             "wait": 1800
           },
           {
-            "tap": "定时任务设置"
+            "tap": "定时任务"
           },
           {
             "wait": 1200
@@ -5967,7 +5967,7 @@
             "wait": 1800
           },
           {
-            "tap": "定时任务设置"
+            "tap": "定时任务"
           },
           {
             "wait": 1200
@@ -6017,7 +6017,7 @@
             "wait": 1800
           },
           {
-            "tap": "定时任务设置"
+            "tap": "定时任务"
           },
           {
             "wait": 1200
@@ -6073,7 +6073,7 @@
             "wait": 1800
           },
           {
-            "eval": "(() => {\n  const text = document.body.innerText;\n  // The machine the phone is not reading is the page that used to open\n  // with \"Connect to this desktop\" and no rows at all.\n  for (const wanted of ['办公室主机', '该桌面端的设置', '自动化与审批', '模型可见性', '提供商与模型', '技能管理', '定时任务设置']) {\n    if (!text.includes(wanted)) throw new Error('the other machine page is missing ' + wanted + ': ' + text.slice(0, 300));\n  }\n  if (text.includes('设备标识')) throw new Error('the device page still carries the identity section: ' + text.slice(0, 300));\n  if (text.includes('连接该桌面端')) throw new Error('the page still asks to connect first: ' + text.slice(0, 300));\n  return 'its own settings, with no connection step';\n})()"
+            "eval": "(() => {\n  const text = document.body.innerText;\n  // The machine the phone is not reading is the page that used to open\n  // with \"Connect to this desktop\" and no rows at all.\n  for (const wanted of ['办公室主机', '该桌面端的设置', '自动化与审批', '模型可见性', '提供商与模型', '技能管理', '定时任务']) {\n    if (!text.includes(wanted)) throw new Error('the other machine page is missing ' + wanted + ': ' + text.slice(0, 300));\n  }\n  if (text.includes('设备标识')) throw new Error('the device page still carries the identity section: ' + text.slice(0, 300));\n  if (text.includes('连接该桌面端')) throw new Error('the page still asks to connect first: ' + text.slice(0, 300));\n  return 'its own settings, with no connection step';\n})()"
           },
           {
             "shot": "m-device-settings-other.png"

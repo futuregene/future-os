@@ -44,17 +44,20 @@ const machines = (...statuses: [string, MachineSummary["status"]][]): MachineSum
     status,
   }));
 
-test("a healthy connection says so and still offers the manual reconnect", () => {
+test("a healthy connection says so, and asks the reader for nothing", () => {
   render();
   expect(text()).toContain("connection.connected");
   expect(text()).toContain("connection.statusDetails.connected.reason");
-  const action = tree!.root.findByType(Button);
-  expect(action.props.label).toBe("connection.reconnect");
-  // Secondary: a healthy connection must not push the escape hatch forward.
-  expect(action.props.variant).toBe("secondary");
-  act(() => action.props.onPress());
-  expect(onReconnect).toHaveBeenCalledTimes(1);
-  expect(onUnpair).not.toHaveBeenCalled();
+  // Nothing to press: the transport retries on its own and the presence
+  // watchdog revives a silent socket, so a "reconnect" under "connected" only
+  // read as a fault report about a connection that had none.
+  expect(tree!.root.findAllByType(Button)).toHaveLength(0);
+});
+
+test("a set that is green end to end offers no action either", () => {
+  render(ready, machines(["a", "connected"], ["b", "connected"]));
+  expect(text()).toContain("connection.connected");
+  expect(tree!.root.findAllByType(Button)).toHaveLength(0);
 });
 
 test.each([
