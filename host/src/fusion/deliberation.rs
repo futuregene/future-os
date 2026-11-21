@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 const MARKER: &str = "\nDecision audit packet:\n";
-pub(super) const INSTRUCTIONS: &str = r#"Decision audit protocol: the packet lists consequential objections, not every difference. Address EVERY listed ID exactly once in decision_audit.dispositions. Each disposition has id, decision (accepted|rejected|unresolved), reason, effect, and basis (array of {source_id,source_path} or {source_id,quote}). Prefer source_path, a JSON Pointer to an existing text field in that source, such as /reason for an objection or /current_answer for a participant report. For participant reports use /response for the source report itself, or a path such as /current_answer for a text field inside its decoded JSON. Cite substantive report text; validation_errors and forwarded_truncated describe processing and cannot serve as evidence. The host copies the selected text verbatim. Use quote for an exact excerpt when you need part of a longer source or the source is plain text. Supply only one of source_path and quote. Accepted/rejected require at least one source citation AND a reason explaining why it answers the objection; quotation or majority alone is not a refutation. Accepted means its impact is incorporated; rejected means it does not overturn the conclusion; unresolved means the decisive check remains open. Never mark resolution settled with an unresolved objection. An accepted missing-premise objection remains an open dependency until that premise is established or its dependent claim is excluded. Do not accept the gap and then use the same assumption to select an unconditional answer. Option construction, inferred author intent and absence of contradiction do not discharge it. Set resolution according to whether the original task is resolved. Use settled only when unresolved is empty and no disposition is unresolved. If you can establish that the supplied information is insufficient to answer the task, use insufficient_information and list what is missing, even if you are certain that it is missing. If you can answer only under an unverified assumption, use conditional and identify that assumption in the answer and unresolved list. Source matches verify provenance, not truth or entailment. A missing premise cannot be disposed of merely by demanding disproof of the conclusion that depends on it. Distinguish the conclusion that is usable under established premises from an optional extension that needs an extra assumption. If an unresolved premise changes which answer or action is justified, identify exactly that dependency; do not merely label the metadata conditional while presenting the extension as established. A user-requested conditional plan or possible outcome may remain conditional; do not suppress useful supported results.
+pub(super) const INSTRUCTIONS: &str = r#"Decision audit protocol: the packet lists consequential objections, not every difference. Address EVERY listed ID exactly once in decision_audit.dispositions. Each disposition has id, decision (accepted|rejected|unresolved), reason, effect, and basis (array of {source_id,source_path} or {source_id,quote}). Prefer source_path, a JSON Pointer to an existing text field in that source, such as /reason for an objection or /current_answer for a participant report. For participant reports use /response for the source report itself, or a path such as /current_answer for a text field inside its decoded JSON. Cite substantive report text; validation_errors and forwarded_truncated describe processing and cannot serve as evidence. The host copies the selected text verbatim. Use quote for an exact excerpt when you need part of a longer source or the source is plain text. Supply only one of source_path and quote. Accepted/rejected require at least one source citation AND a reason explaining why it answers the objection; quotation or majority alone is not a refutation. Accepted means its impact is incorporated; rejected means it does not overturn the conclusion; unresolved means the decisive check remains open. Never mark resolution settled with an unresolved objection. Each support disposition identifies the initial candidate and the current report for that advisor. Evaluate the original recommendation and its key support alongside any later revision. If the answer departs from a supported initial candidate, name the exact premise or inference that fails or cite the supplied evidence that defeats it, and explain the effect on the delivered answer. Cite the relevant candidate passage or the rebutting evidence in basis. If the decisive comparison remains open, use unresolved. Do not treat a changed vote as a refutation. An accepted missing-premise objection remains an open dependency until that premise is established or its dependent claim is excluded. Do not accept the gap and then use the same assumption to select an unconditional answer. Option construction, inferred author intent and absence of contradiction do not discharge it. Set resolution according to whether the original task is resolved. Use settled only when unresolved is empty and no disposition is unresolved. If you can establish that the supplied information is insufficient to answer the task, use insufficient_information and list what is missing, even if you are certain that it is missing. If you can answer only under an unverified assumption, use conditional and identify that assumption in the answer and unresolved list. Source matches verify provenance, not truth or entailment. A missing premise cannot be disposed of merely by demanding disproof of the conclusion that depends on it. Distinguish the conclusion that is usable under established premises from an optional extension that needs an extra assumption. If an unresolved premise changes which answer or action is justified, identify exactly that dependency; do not merely label the metadata conditional while presenting the extension as established. A user-requested conditional plan or possible outcome may remain conditional; do not suppress useful supported results.
 Apply accepted objections and unresolved dependencies to the actual user-facing answer before returning it; this report is delivered directly, with no later model reconciliation. Return JSON with decision_audit:{resolution:"settled|conditional|insufficient_information",dispositions:[],decision_update:null}. For a reopened decision, decision_update must be {decision:"maintain|revise",reason:"specific evidence/counterexample/corrected inference and its impact under the inherited criterion"}. Maintaining means preserving the previous user-facing answer verbatim. Revising needs a concrete justification; another vote or confidence is not enough. Inherit unresolved checks until explicitly disposed of. The previous conclusion is the working result; do not restart the whole problem. For closed tasks add decision_audit to the closed answer protocol. For general tasks use {conclusion:"self-contained answer in the requested format",unresolved:[],decision_audit:{...}}; only conclusion is delivered as prose."#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,21 +111,34 @@ pub(super) fn packet(
         if let (Some(id), Some(text)) =
             (report["participant"].as_str(), report["response"].as_str())
         {
-            // All convergence paths have this obligation, including a single
-            // advisor, direct consensus, and an invalid/missing disagreement map.
-            // This is a backend request to check support, not an invented stance.
-            objections.insert(format!("support:{id}"), json!({
-                "topic":"Check consequential premises and limitations in this advisor's recommendation against the original task. Identify any unsupported dependency and its effect on the delivered answer; agreement or compatibility alone does not establish it.",
-                "report_source":format!("report:{id}"),
-            }));
+            let initial = report["source_phase"] == "initial_analysis";
+            let source_id = if initial {
+                format!("initial:{id}")
+            } else {
+                format!("report:{id}")
+            };
             sources.insert(
-                format!("report:{id}"),
+                source_id.clone(),
                 json!({
                     "response":text, "source_phase":report["source_phase"],
                     "validation_errors":report["validation_errors"],
                     "forwarded_truncated":report["forwarded_truncated"],
                 }),
             );
+            if !initial {
+                let initial_source = if report["source_phase"] == "reviewing" {
+                    format!("initial:{id}")
+                } else {
+                    source_id.clone()
+                };
+                // Reuse the existing per-advisor support disposition on every
+                // path. It now connects the first analysis and the current view.
+                objections.insert(format!("support:{id}"), json!({
+                    "topic":"Determine whether the original recommendation and its key reasoning survive the review and the original task. If the recommendation is superseded, explain the decisive error or contrary evidence and how it changes the answer.",
+                    "initial_source":initial_source,
+                    "report_source":source_id,
+                }));
+            }
         }
     }
     for issue in mapping["issues"].as_array().into_iter().flatten() {
@@ -226,8 +239,12 @@ fn strings(value: &Value) -> Vec<&str> {
         _ => vec![],
     }
 }
+fn participant_source(source_id: &str) -> bool {
+    source_id.starts_with("report:") || source_id.starts_with("initial:")
+}
+
 fn citation_material<'a>(source: &'a Value, source_id: &str) -> (&'a Value, Option<Value>) {
-    if !source_id.starts_with("report:") {
+    if !participant_source(source_id) {
         return (source, None);
     }
     let response = &source["response"];
@@ -243,7 +260,7 @@ fn citation_text<'a>(
     decoded: Option<&'a Value>,
     path: &str,
 ) -> Option<&'a str> {
-    if source_id.starts_with("report:") {
+    if participant_source(source_id) {
         return if path == "/response" {
             source_text(source, path)
         } else {
@@ -471,6 +488,35 @@ mod tests {
         let consensus = packet(&run, &json!({"issues":[]}), &[], &[report, second]);
         assert!(required(&consensus));
         assert_eq!(consensus["objections"].as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_revision_keeps_the_initial_candidate_and_a_single_support_disposition() {
+        let run: Consultation = serde_json::from_value(json!({
+            "id":"run","parent":{"database_id":"db","session_id":"s","run_id":"r","tool_call_id":"t"},
+            "input":{"question":"Choose a plan","goal":"Use supplied facts","background":"","constraints":[],"evidence":[]},
+            "workspace":"/workspace","snapshot_root":"/snapshot","status":"running","phase":"synthesizing",
+            "completeness":"full","created_at":0,"updated_at":0
+        })).unwrap();
+        let initial = json!({"participant":"P1","source_phase":"initial_analysis","response":"Choose X because it meets both limits."});
+        let current = json!({"participant":"P1","source_phase":"reviewing","response":"Choose Y."});
+        let packet = packet(&run, &json!({"issues":[]}), &[], &[initial, current]);
+        assert_eq!(packet["objections"].as_object().unwrap().len(), 1);
+        assert_eq!(
+            packet["objections"]["support:P1"]["initial_source"],
+            "initial:P1"
+        );
+        assert_eq!(
+            packet["objections"]["support:P1"]["report_source"],
+            "report:P1"
+        );
+        for (id, expected) in [
+            ("initial:P1", "Choose X because it meets both limits."),
+            ("report:P1", "Choose Y."),
+        ] {
+            let source = &packet["sources"][id];
+            assert_eq!(citation_text(source, id, None, "/response"), Some(expected));
+        }
     }
 
     #[test]
