@@ -4440,7 +4440,18 @@ pub(crate) mod tests {
         // client goes down, and the poll starts probing an address nothing
         // listens on any more. Losing the stream grows the backoff once; the
         // poll's *own* growth (a probe that finds no agent) is the second one.
+        //
+        // The end is staged explicitly. `serve_with_incoming` spawns every
+        // accepted connection in a task of its own, so aborting the accept loop
+        // closes the listener but leaves the established HTTP/2 stream open: the
+        // client would only notice through its heartbeat's readiness probe, and
+        // how quickly that probe classifies the closed port is the host's
+        // business, not this test's — on Windows CI both callers here sat out
+        // their whole window (4.10 s, 2026-11-21, three heads running) while the
+        // growth was still inside the first probe. `close_streams` ends the
+        // stream the way a real drop does (same idiom as `subscribe_failure_modes`).
         server.abort();
+        source.close_streams();
         let first = wait_for_backoff_above(&client, base).await;
         assert!(
             first.is_some(),
@@ -4457,8 +4468,31 @@ pub(crate) mod tests {
     }
 
     /// Wait (bounded) for the reconnect backoff to grow past `above`.
+    ///
+    /// A growth past `above` produced by the reconnect poll cannot arrive before
+    /// the poll has finished the sleep it entered with — the current backoff,
+    /// which is `above` right after it grew — and then probed the agent, and
+    /// [`probe_agent`] is bounded by [`TRY_CONNECT_TIMEOUT_SEC`] for the connect
+    /// *and* again for the readiness handshake. The window is that sum plus a
+    /// second of slack: a flat window shorter than one probe reports a slow host
+    /// as a missing growth, which is what Windows CI did here (both callers timed
+    /// out at 4.10 s on three consecutive heads, 2026-11-21). It still fails a
+    /// poll that never grows — it just stops asserting the host's latency.
+    ///
+    /// `above` at or past [`RECONNECT_BACKOFF_MAX_MS`] is the other case: the
+    /// ladder is capped there, so no growth can ever satisfy it and there is no
+    /// poll sleep to wait out. Those callers get the fixed window this helper
+    /// always had.
     async fn wait_for_backoff_above(client: &GrpcClient, above: u64) -> Option<u64> {
-        for _ in 0..40 {
+        let budget = if above >= RECONNECT_BACKOFF_MAX_MS {
+            Duration::from_secs(4)
+        } else {
+            Duration::from_millis(above)
+                + Duration::from_secs(2 * TRY_CONNECT_TIMEOUT_SEC)
+                + Duration::from_secs(1)
+        };
+        let deadline = tokio::time::Instant::now() + budget;
+        while tokio::time::Instant::now() < deadline {
             let current = client.inner.backoff_ms.load(Ordering::SeqCst);
             if current > above {
                 return Some(current);
@@ -5062,7 +5096,11 @@ pub(crate) mod tests {
 
         // The agent dies while the subscription is live: the stream is lost, the
         // backoff grows once, and the poll settles into its first backoff sleep.
+        // The loss is staged with `close_streams` rather than left to the
+        // heartbeat's readiness probe, for the reason spelled out in
+        // `the_reconnect_poll_grows_the_backoff_while_the_agent_stays_down`.
         server.abort();
+        source.close_streams();
         let first = wait_for_backoff_above(&client, base).await;
         assert!(
             first.is_some(),
