@@ -8,13 +8,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const MARKER: &str = "\nDecision audit packet:\n";
 pub(super) const INSTRUCTIONS: &str = r#"Decision audit protocol: the packet lists consequential objections, not every difference. Address EVERY listed ID exactly once in decision_audit.dispositions. Each disposition has id, decision (accepted|rejected|unresolved), reason, effect, and basis (array of {source_id,source_path} or {source_id,quote}). Prefer source_path, a JSON Pointer to an existing text field in that source, such as /reason for an objection or /current_answer for a participant report. For participant reports use /response for the source report itself, or a path such as /current_answer for a text field inside its decoded JSON. Cite substantive report text; validation_errors and forwarded_truncated describe processing and cannot serve as evidence. The host copies the selected text verbatim. Use quote for an exact excerpt when you need part of a longer source or the source is plain text. Supply only one of source_path and quote. Accepted/rejected require at least one source citation AND a reason explaining why it answers the objection; quotation or majority alone is not a refutation. Accepted means its impact is incorporated; rejected means it does not overturn the conclusion; unresolved means the decisive check remains open. Never mark resolution settled with an unresolved objection. Each support disposition identifies the initial candidate and the current report for that advisor. Evaluate the original recommendation and its key support alongside any later revision. For support dispositions, accepted means the initial recommendation is incorporated, rejected means a materially different recommendation replaces it, and unresolved means its decisive comparison remains open. If replacing the recommendation, identify the premise, inference, or comparison that fails, explain how that changes the answer under the user’s criterion, and cite the particular original passage or rebutting material. A source showing that someone changed their answer proves only the revision; quote the reasoning or evidence behind it. A competing interpretation can limit certainty without invalidating the original interpretation. When the task asks for a judgment or estimate, use its stated criterion to choose the best-supported answer and retain material uncertainty; evidence for a related question does not decide the requested judgment. An accepted missing-premise objection remains an open dependency until that premise is established or its dependent claim is excluded. Do not accept the gap and then use the same assumption to select an unconditional answer. Option construction, inferred author intent and absence of contradiction do not discharge it. Set resolution according to whether the original task is resolved. Use settled only when unresolved is empty and no disposition is unresolved. If you can establish that the supplied information is insufficient to answer the task, use insufficient_information and list what is missing, even if you are certain that it is missing. If you can answer only under an unverified assumption, use conditional and identify that assumption in the answer and unresolved list. Source matches verify provenance, not truth or entailment. A missing premise cannot be disposed of merely by demanding disproof of the conclusion that depends on it. Distinguish the conclusion that is usable under established premises from an optional extension that needs an extra assumption. If an unresolved premise changes which answer or action is justified, identify exactly that dependency; do not merely label the metadata conditional while presenting the extension as established. A user-requested conditional plan or possible outcome may remain conditional; do not suppress useful supported results.
-Apply accepted objections and unresolved dependencies to the actual user-facing answer before returning it; this report is delivered directly, with no later model reconciliation. Return JSON with decision_audit:{resolution:"settled|conditional|insufficient_information",dispositions:[],decision_update:null}. For a reopened decision, decision_update must be {decision:"maintain|revise",reason:"specific evidence/counterexample/corrected inference and its impact under the inherited criterion"}. Maintaining means preserving the previous user-facing answer verbatim. Revising needs a concrete justification; another vote or confidence is not enough. Inherit unresolved checks until explicitly disposed of. The previous conclusion is the working result; do not restart the whole problem. For closed tasks add decision_audit to the closed answer protocol. For general tasks use {conclusion:"self-contained answer in the requested format",unresolved:[],decision_audit:{...}}; only conclusion is delivered as prose."#;
+Apply accepted objections and unresolved dependencies to the actual user-facing answer before returning it; this report is delivered directly, with no later model reconciliation. Return JSON with decision_audit:{resolution:"settled|conditional|insufficient_information",dispositions:[],decision_update:null}. Only fill decision_update when the packet has a backend-provided lineage object. If lineage is null, omit decision_update or use null. An initial candidate or a review in this discussion is not a previous decision; record its treatment in dispositions. For a reopened decision, decision_update must be {decision:"maintain|revise",reason:"specific evidence/counterexample/corrected inference and its impact under the inherited criterion"}. Maintaining means preserving the previous user-facing answer verbatim. Revising needs a concrete justification; another vote or confidence is not enough. Inherit unresolved checks until explicitly disposed of. The previous conclusion is the working result; do not restart the whole problem. For closed tasks add decision_audit to the closed answer protocol. For general tasks use {conclusion:"self-contained answer in the requested format",unresolved:[],decision_audit:{...}}; only conclusion is delivered as prose."#;
 
 /// Bind the original request as the decision criterion for every candidate.
 /// The model must read the exact request; advisor conclusions cannot rewrite it.
 pub(super) fn bind_criterion(packet: &mut Value) {
     packet["decision_criterion"] = json!({
         "request_source": "request",
+        "decision_update": if packet["lineage"].is_object() {
+            "Use the backend-provided previous decision in lineage."
+        } else {
+            "Omit decision_update. Initial candidates and reviews belong to the current discussion; use dispositions."
+        },
         "instructions": "Before comparing answers, identify the exact judgment the user asks for, the standard or quantifier that governs it, and any explicit threshold, fallback or output constraint. Keep that criterion fixed for the initial and revised candidates. Cite the relevant request wording and explain how the rebutting premise, inference or evidence changes the answer under that same criterion in the existing disposition reason and basis. If it only supports a different judgment or a possible alternative, do not treat it as a refutation. For a requested prediction, rank the competing predictions on their merits; lack of a measurement does not establish that a specified tie or ambiguity threshold is met. Keep any material limitation visible."
     });
 }
@@ -24,6 +29,7 @@ pub(super) fn bind_criterion(packet: &mut Value) {
 pub(super) struct Audit {
     pub resolution: Resolution,
     pub dispositions: Vec<Disposition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision_update: Option<Update>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consistency: Option<Consistency>,
@@ -279,6 +285,28 @@ fn citation_text<'a>(
         };
     }
     source_text(source, path)
+}
+
+/// Fresh discussions have no inherited decision to update. Drop a stray
+/// update before validation; the original generation remains in its session.
+pub(super) fn prepare_report(text: &str, packet: &Value) -> Result<String> {
+    if packet["lineage"].is_object() {
+        return Ok(text.to_owned());
+    }
+    let mut report = parse_json::<Value>(text)?;
+    if let Some(audit) = report
+        .get_mut("decision_audit")
+        .and_then(Value::as_object_mut)
+    {
+        if audit
+            .get("decision_update")
+            .is_some_and(|update| !update.is_null())
+        {
+            audit.remove("decision_update");
+            return Ok(serde_json::to_string(&report)?);
+        }
+    }
+    Ok(text.to_owned())
 }
 
 // Validate against backend-owned state, never a ledger parsed out of participant
@@ -695,6 +723,27 @@ mod tests {
         value["decision_audit"]["dispositions"][0]["basis"] =
             json!([{"source_id":"report:P1","source_path":"/text","quote":"Original evidence"}]);
         assert!(validate(&value.to_string(), &packet, false).is_err());
+    }
+
+    #[test]
+    fn fresh_report_drops_a_stray_update_while_a_reopen_keeps_it() {
+        let (mut report, mut packet) = fixture();
+        report["decision_audit"]["decision_update"] =
+            json!({"decision":"maintain","reason":"Keep this discussion's candidate"});
+        let raw = report.to_string();
+        assert!(validate(&raw, &packet, false).is_err());
+        let prepared = prepare_report(&raw, &packet).unwrap();
+        validate(&prepared, &packet, false).unwrap();
+        let mut conclusion = future_fusion::Conclusion::default();
+        attach(&mut conclusion, &prepared, &packet).unwrap();
+        assert!(conclusion
+            .decision_audit
+            .unwrap()
+            .get("decision_update")
+            .is_none());
+        packet["lineage"] = json!({"previous_result":{"conclusion":"Earlier answer"}});
+        assert_eq!(prepare_report(&raw, &packet).unwrap(), raw);
+        assert!(validate(&raw, &packet, false).is_err());
     }
 
     #[test]
