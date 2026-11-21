@@ -44,6 +44,18 @@ use super::state::{GitKind, GitRow, GitSection, GitView};
 /// commits is exactly the read that should not happen on a keypress.
 pub const COMMIT_LIMIT: usize = 200;
 
+/// How many lanes the picture draws before it stops widening.
+///
+/// A lane is two cells, and the subject starts after the gutter, so twelve lines
+/// of work open at once would push every subject 24 cells right — past what a
+/// phone has to spare and past what a split terminal's list pane has. Six lanes
+/// is where a phone runs out of room (the same six the palette cycles at), so the
+/// picture is capped there: a line past the sixth is drawn *in* the sixth column,
+/// sharing it with the other lines that run past the window. It keeps its commits
+/// — each one is a dot on its own row — it just no longer has a column of its
+/// own, and the six colours are the six columns.
+pub const LANE_WINDOW: usize = 6;
+
 /// How far a page may start into the log.
 ///
 /// The log is laid out from the top of the repository (see [`commits`]), so the
@@ -451,34 +463,62 @@ fn draw(
             .rposition(Option::is_some)
             .unwrap_or(0)
             .max(rightmost);
-        let mut cells = vec![' '; 2 * (width + 1)];
+        // Every lane past the window is drawn in the window's last column: the
+        // picture stops widening there, and the lines beyond it stay on the page
+        // as one bundle instead of disappearing. A commit on one of them still
+        // gets its dot, in that same column, so its row says where the work
+        // landed even though the line it sits on is shared.
+        let visible = width.min(LANE_WINDOW - 1);
+        let mut up = vec![false; visible + 1];
+        let mut down = vec![false; visible + 1];
+        let mut left = vec![false; visible + 1];
+        let mut right = vec![false; visible + 1];
+        // Where the commit itself landed, and whether it joins lines. Several
+        // lanes can fold into one column, but only one of them is this row's.
+        let mut marks = vec![false; visible + 1];
+        let mut joins = vec![false; visible + 1];
         for column in 0..=width {
-            let up = lanes.get(column).is_some_and(|lane| lane.is_some()) && column != mine;
+            let fold = column.min(visible);
+            let column_up = lanes.get(column).is_some_and(|lane| lane.is_some()) && column != mine;
             // A column a line gives up on and another takes over in the same row
             // continues below: the vertical passes through it.
-            let down = if opened.iter().any(|(taken, _, _)| *taken == column) {
+            let column_down = if opened.iter().any(|(taken, _, _)| *taken == column) {
                 true
             } else if closed.contains(&column) {
                 false
             } else {
-                up
+                column_up
             };
-            let right = column >= mine && column < rightmost;
-            let left = column > mine && column <= rightmost;
-            cells[2 * column] = if column == mine {
+            // The bundle carries the directions of every lane inside it, so a
+            // thread that runs through it is still drawn.
+            up[fold] |= column_up;
+            down[fold] |= column_down;
+            right[fold] |= column >= mine && column < rightmost;
+            left[fold] |= column > mine && column <= rightmost;
+            if column == mine {
+                marks[fold] = true;
+                joins[fold] = parents.len() > 1;
+            }
+        }
+        // The bundle closes at the window's edge: a connector in its last cell
+        // would run the horizontal out of the picture and into the fields.
+        right[visible] = false;
+        let mut cells = vec![' '; 2 * (visible + 1)];
+        for column in 0..=visible {
+            cells[2 * column] = if marks[column] {
                 // Two glyphs, as tig has them: `M` is a commit that joins lines,
                 // `o` one that only continues its own. The elbow a merge draws is
                 // already on the row, but the letter says it before the eye
                 // follows the line out to a column and back.
-                if parents.len() > 1 {
+                if joins[column] {
                     'M'
                 } else {
                     'o'
                 }
             } else {
-                junction(up, down, left, right)
+                junction(up[column], down[column], left[column], right[column])
             };
-            if column >= mine && column < rightmost {
+            if right[column] {
                 cells[2 * column + 1] = '─';
             }
         }
@@ -1292,6 +1332,54 @@ mod tests {
             .into_iter()
             .map(|row| row.prefix)
             .collect()
+    }
+
+    /// A page with more lines of work open than the window draws: the picture
+    /// stops at six columns and the lines past the sixth share the last one. The
+    /// work is not dropped — the commit on the tenth lane still gets its dot — and
+    /// every row is padded to the same width, so the subjects stay in one column.
+    #[test]
+    fn the_gutter_stops_widening_past_the_window() {
+        // A merge of ten branches: ten lanes are open at once after its row.
+        let tips: Vec<String> = (0..10).map(|n| format!("p{n}")).collect();
+        let mut text = format!(
+            "\u{1e}m\u{1f}m\u{1f}{}\u{1f}2026-10-27 09:15\u{1f}Ada\u{1f}\u{1f}merge ten\n",
+            tips.join(" ")
+        );
+        for tip in &tips {
+            text.push_str(&format!(
+                "\u{1e}{tip}\u{1f}{tip}\u{1f}\u{1f}2026-10-27 09:14\u{1f}Ada\u{1f}\u{1f}{tip}\n"
+            ));
+        }
+        let rows = parse_log(&text);
+        let window = 2 * LANE_WINDOW;
+        assert!(
+            rows.iter().all(|row| row.prefix.chars().count() <= window),
+            "a ten-lane page drew wider than the window: {:?}",
+            rows.iter().map(|row| &row.prefix).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            rows[0].prefix.chars().count(),
+            window,
+            "the merge row fills the window: {:?}",
+            rows[0].prefix
+        );
+        assert!(
+            rows.iter().all(|row| row.prefix.chars().count() == window),
+            "the subjects no longer start in one column: {:?}",
+            rows.iter().map(|row| &row.prefix).collect::<Vec<_>>()
+        );
+
+        // The tenth lane's own commit is drawn in the window's last column: the
+        // bundle keeps the work, not only the line.
+        let tenth = &rows[10];
+        assert_eq!(tenth.key.as_deref(), Some("p9"), "{:?}", tenth.key);
+        assert_eq!(
+            tenth.prefix.chars().nth(window - 2),
+            Some('o'),
+            "the commit past the window lost its dot: {:?}",
+            tenth.prefix
+        );
     }
 
     /// A straight history is one column; a merge opens a column to its right
