@@ -46,6 +46,17 @@ Fusion 子模型沿用续写开关，传输重试由 Host 管理，独立分析�
 续写关闭或次数用尽时，run 以 `incomplete` 和 `[OUTPUT_LIMIT]` 结束。
 Goal worker 可对终态执行自己的有限恢复策略。
 
+## 重复守卫掐流（`repetition`）
+
+自建重复检测的网关可能用非标准 `finish_reason`（`repetition`）停下陷入循环的模型，正文与工具调用都为空。
+适配器把它保留为独立原因（`FinishReason::Repetition`），不再塌缩进 unknown；`run_loop.rs` 把这种截断记为
+`provider_repetition`。
+
+这类掐流什么都没产出，所以同一请求在 run 内直接重发——最多两次，且仅限「无正文、无工具调用」。
+每次重试都带 `detected_by` 与尝试序号写日志；重试不消耗 turn，并沿用已被用户关掉的自动重试开关（`max_retries`）。
+已经产生正文或工具调用的掐流一律不重试：run 以 `incomplete`、`[RESPONSE_UNCONFIRMED] provider_repetition` 收尾，
+与其它截断同一个判定。
+
 ## goal worker 的 incomplete 重试 ≠ 续写
 
 对话里的「继续」和 goal worker 的「重试」是两件事。前者是字面续写，后者是重发同一个任务；两者共用同一个截断判定，但携带的上下文完全不同。
