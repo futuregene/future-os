@@ -2226,6 +2226,60 @@ export const gitHistoryCommits = [
 ];
 
 /**
+ * The same picture on a month when ten branches were open at once.
+ *
+ * The gutters are what the host's layout function prints for such a repository,
+ * read off a real one: lanes 6..10 fold into column 5, so the last four rows are
+ * four different lines of work drawn in one column and the gutter is twelve
+ * cells wide instead of twenty. Every row is padded to twelve, which is what
+ * keeps the subjects on one left edge.
+ *
+ * `?manylanes=1` selects it; the ordinary history above is the default.
+ */
+export const gitHistoryWindowCommits = [
+  { short: "5c9e104", when: "4 minutes ago", who: "Rin", decorations: "", subject: "Drop the practice trials from the comparison", graph: "o           " },
+  { short: "7d21af8", when: "26 minutes ago", who: "Kai", decorations: "origin/mixture", subject: "Fit the latent-mixture model over both cohorts", graph: "│ o         " },
+  { short: "e48c3b6", when: "1 hour ago", who: "Rin", decorations: "HEAD -> main, origin/main", subject: "Merge the latent-mixture fits onto main", graph: "o─┘         " },
+  { short: "91be7d2", when: "2 hours ago", who: "Kai", decorations: "origin/reversal", subject: "Report the reversal coefficients per condition", graph: "│ o         " },
+  { short: "3fa80c1", when: "3 hours ago", who: "Jun", decorations: "origin/tolerance", subject: "Tighten the tolerance so subject 12 converges", graph: "│ │ o       " },
+  { short: "b68204e", when: "4 hours ago", who: "Kai", decorations: "origin/figures", subject: "Regenerate the supplement figures", graph: "│ │ │ o     " },
+  { short: "2d4f7a9", when: "5 hours ago", who: "Jun", decorations: "origin/qc", subject: "Flag the trials that fail the time screen", graph: "│ │ │ │ o   " },
+  { short: "c05e93b", when: "6 hours ago", who: "Dee", decorations: "origin/comparison", subject: "Compare the model-free and model-based learners", graph: "│ │ │ │ │ o " },
+  { short: "8a1d6f3", when: "7 hours ago", who: "Kai", decorations: "origin/hierarchical", subject: "Fit the hierarchical prior over both cohorts", graph: "│ │ │ │ │ o " },
+  { short: "4e79b28", when: "9 hours ago", who: "Dee", decorations: "origin/text", subject: "Draft the model-selection paragraph", graph: "│ │ │ │ │ o " },
+  { short: "f30c8d5", when: "11 hours ago", who: "Jun", decorations: "tag: draft-v3", subject: "Freeze the analysis for the third draft", graph: "│ │ │ │ │ o " },
+  { short: "0a6e1c7", when: "4 hours ago", who: "Rin", decorations: "", subject: "Initial repository layout", graph: "o─┴─┴─┴─┴─┘ " },
+];
+
+/**
+ * The same month drawn the way the host drew it *before* the lane window
+ * existed: every line of work keeps its own column, so nine lanes are open at
+ * once and the picture is eighteen cells wide.
+ *
+ * No host can print this any more, and that is why it is here: the screenshot
+ * pair has to show what the window fixed, and a "before" re-invented by hand
+ * would show a different picture from the one readers complained about. These
+ * gutters are what `host/src/git_history.rs::draw` printed at `091b19e94`, read
+ * off the same ten-branch repository as the array above.
+ *
+ * `?gitlanes=widening` selects it; `?gitlanes=window` the capped one.
+ */
+export const gitHistoryWideningCommits = [
+  { short: "5c9e104", when: "4 minutes ago", who: "Rin", decorations: "", subject: "Drop the practice trials from the comparison", graph: "o                 " },
+  { short: "7d21af8", when: "26 minutes ago", who: "Kai", decorations: "origin/mixture", subject: "Fit the latent-mixture model over both cohorts", graph: "│ o               " },
+  { short: "e48c3b6", when: "1 hour ago", who: "Rin", decorations: "HEAD -> main, origin/main", subject: "Merge the latent-mixture fits onto main", graph: "o─┘               " },
+  { short: "91be7d2", when: "2 hours ago", who: "Kai", decorations: "origin/reversal", subject: "Report the reversal coefficients per condition", graph: "│ o               " },
+  { short: "3fa80c1", when: "3 hours ago", who: "Jun", decorations: "origin/tolerance", subject: "Tighten the tolerance so subject 12 converges", graph: "│ │ o             " },
+  { short: "b68204e", when: "4 hours ago", who: "Kai", decorations: "origin/figures", subject: "Regenerate the supplement figures", graph: "│ │ │ o           " },
+  { short: "2d4f7a9", when: "5 hours ago", who: "Jun", decorations: "origin/qc", subject: "Flag the trials that fail the time screen", graph: "│ │ │ │ o         " },
+  { short: "c05e93b", when: "6 hours ago", who: "Dee", decorations: "origin/comparison", subject: "Compare the model-free and model-based learners", graph: "│ │ │ │ │ o       " },
+  { short: "8a1d6f3", when: "7 hours ago", who: "Kai", decorations: "origin/hierarchical", subject: "Fit the hierarchical prior over both cohorts", graph: "│ │ │ │ │ │ o     " },
+  { short: "4e79b28", when: "9 hours ago", who: "Dee", decorations: "origin/text", subject: "Draft the model-selection paragraph", graph: "│ │ │ │ │ │ │ o   " },
+  { short: "f30c8d5", when: "11 hours ago", who: "Jun", decorations: "tag: draft-v3", subject: "Freeze the analysis for the third draft", graph: "│ │ │ │ │ │ │ │ o " },
+  { short: "0a6e1c7", when: "yesterday", who: "Rin", decorations: "", subject: "Initial repository layout", graph: "o─┴─┴─┴─┴─┴─┴─┴─┘ " },
+];
+
+/**
  * The patch a demo commit opens onto: a stat summary, then a diff with every
  * kind of line the pane colours (added, removed, a hunk header, context). Real
  * `git show` output, so the role split is exercised against its actual shape.

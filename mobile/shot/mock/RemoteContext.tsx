@@ -50,6 +50,8 @@ import {
   demoFiles,
   demoGitCommitDetail,
   demoGitListing,
+  demoWindowGitListing,
+  demoWideningGitListing,
   demoInstalledSkills,
   demoAvailableSkills,
   demoModels,
@@ -203,6 +205,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // A workspace that is a plain directory: the conversation menu then has no Git
   // row at all, which is the case worth a capture of its own.
   const noRepo = new URLSearchParams(window.location.search).get("norepo") === "1";
+  // Which history the sheet opens onto. `?gitlanes=window` is ten branches of
+  // work drawn inside the six-column lane window; `?gitlanes=widening` the same
+  // month drawn the way the host drew it before that window existed, so a pair
+  // of captures can show what the window fixed.
+  const gitLanes = new URLSearchParams(window.location.search).get("gitlanes");
   // `?fleet=1` pairs the phone with five desktops and merges their conversations
   // into the home screen's recency page (`shot/mock/fleet.ts`). The product
   // already draws a merged list — the picker's "all desktops", a machine glyph per
@@ -746,7 +753,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     // show the menu *without* the Git row.
     listGitCommits: async (): Promise<GitGraphListing> => (noRepo
       ? { isRepo: false, repoName: "", path: "", commits: [], truncated: false }
-      : demoGitListing),
+      : gitLanes === "widening" ? demoWideningGitListing
+        : gitLanes === "window" ? demoWindowGitListing
+          : demoGitListing),
     getGitCommit: async (gitRef: string): Promise<GitCommitDetail> => ({
       ...demoGitCommitDetail,
       short: gitRef,
