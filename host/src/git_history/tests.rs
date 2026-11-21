@@ -54,7 +54,12 @@ impl Repo {
     }
 
     fn listing(&self) -> GraphListing {
-        list(&self.path().display().to_string()).unwrap()
+        list(&self.path().display().to_string(), 0).unwrap()
+    }
+
+    /// One page of the history, as a reader asking for more would get it.
+    fn page(&self, skip: usize, take: usize) -> GraphListing {
+        page(&self.path().display().to_string(), skip, take).unwrap()
     }
 
     /// Commit one file with the author and committer named separately, the way a
@@ -100,7 +105,7 @@ impl Repo {
 #[test]
 fn a_plain_directory_is_not_a_repository() {
     let dir = tempfile::tempdir().unwrap();
-    let listing = list(&dir.path().display().to_string()).unwrap();
+    let listing = list(&dir.path().display().to_string(), 0).unwrap();
     assert!(!listing.is_repo);
     assert!(listing.repo_name.is_empty());
     assert!(listing.commits.is_empty());
@@ -138,7 +143,7 @@ fn a_subdirectory_of_a_repository_reports_the_repository() {
     repo.commit("first");
     let nested = repo.path().join("nested/deeper");
     std::fs::create_dir_all(&nested).unwrap();
-    let listing = list(&nested.display().to_string()).unwrap();
+    let listing = list(&nested.display().to_string(), 0).unwrap();
     assert!(listing.is_repo);
     // Spelled the way the file system spells it: `fs::canonicalize` produces the
     // extended-length form (`\\?\C:\…`) on Windows, and a phone given that string
@@ -268,6 +273,129 @@ fn a_lane_keeps_its_column_across_the_page() {
     // The gutter never grows wider than the lanes that exist, and a commit's own
     // column is even (lane `n` sits at `2n`).
     assert!(columns.iter().all(|at| at % 2 == 0));
+}
+
+/// A lane keeps its column, ten tips are ten lanes, and the picture still stops
+/// at the window: the phone draws every row's gutter at one width, so a history
+/// that keeps opening lanes would squeeze every subject on the page.
+#[test]
+fn the_picture_stops_widening_past_the_window() {
+    let repo = Repo::new();
+    repo.commit("base");
+    for n in 0..10 {
+        repo.git(&["checkout", "-q", "-b", &format!("lane-{n}"), "main"]);
+        repo.commit(&format!("lane {n} work"));
+    }
+    let listing = repo.listing();
+    let window = 2 * LANE_WINDOW;
+    assert!(
+        listing.commits.len() >= 11,
+        "the ten tips and their base: {}",
+        listing.commits.len()
+    );
+    for row in &listing.commits {
+        assert!(
+            row.graph.chars().count() <= window,
+            "a ten-lane history drew a {}-cell gutter, past the window: {:?}",
+            row.graph.chars().count(),
+            row.graph
+        );
+        // A commit sits on an even cell, and past the window it is still drawn —
+        // in the bundle's column, at the window's edge.
+        if let Some(at) = row
+            .graph
+            .chars()
+            .position(|cell| cell == 'o' || cell == 'M')
+        {
+            assert_eq!(at % 2, 0, "{:?}", row.graph);
+            assert!(at <= window - 2, "a dot past the window: {:?}", row.graph);
+        }
+    }
+    // The window is used, not merely respected: ten lanes fill all six columns.
+    assert!(
+        listing
+            .commits
+            .iter()
+            .any(|row| row.graph.chars().count() == window),
+        "no row filled the window: {:?}",
+        listing
+            .commits
+            .iter()
+            .map(|row| &row.graph)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Pages join into one picture: reading the log two commits at a time must draw
+/// exactly what reading it whole draws. The layout of a page is a fold over the
+/// rows above it, so a page cut out and laid out on its own would start every
+/// lane at column 0 and break the drawing at the seam.
+#[test]
+fn pages_concatenate_into_the_single_page_drawing() {
+    let repo = Repo::new();
+    repo.commit("base");
+    repo.git(&["checkout", "-b", "side"]);
+    repo.commit("side work");
+    repo.git(&["checkout", "main"]);
+    repo.commit("main work");
+    repo.git(&["merge", "--no-ff", "-m", "merge side", "side"]);
+
+    let whole = repo.listing();
+    let mut paged = Vec::new();
+    let mut skip = 0;
+    loop {
+        let page = repo.page(skip, 2);
+        skip += page.commits.len();
+        let last = !page.truncated;
+        paged.extend(page.commits.into_iter().map(|row| (row.short, row.graph)));
+        if last {
+            break;
+        }
+    }
+    let whole: Vec<(String, String)> = whole
+        .commits
+        .into_iter()
+        .map(|row| (row.short, row.graph))
+        .collect();
+    assert_eq!(paged.len(), whole.len());
+    assert_eq!(paged, whole);
+}
+
+/// Paging a linear history: each page says whether another one follows, and the
+/// one past the root is empty rather than an error — an offset a client asks for
+/// after the history moved is not a failure the reader can act on.
+#[test]
+fn every_page_says_whether_another_one_follows() {
+    let repo = Repo::new();
+    for subject in ["one", "two", "three", "four", "five"] {
+        repo.commit(subject);
+    }
+    let first = repo.page(0, 3);
+    assert_eq!(first.commits.len(), 3);
+    assert!(first.truncated);
+    assert_eq!(first.commits[0].subject, "five");
+
+    let second = repo.page(3, 3);
+    assert_eq!(second.commits.len(), 2);
+    assert!(!second.truncated);
+    assert_eq!(second.commits[1].subject, "one");
+    // The header of a page is the repository's, not the page's, so the second
+    // page carries it too: the client says what it is reading once, and the
+    // answer does not get thinner as it pages.
+    assert_eq!(second.repo_name, first.repo_name);
+
+    let past = repo.page(5, 3);
+    assert!(past.commits.is_empty());
+    assert!(!past.truncated);
+    // A skipped row never shifts the page's own width: every row of the history
+    // is padded the same, whichever page carries it.
+    let widths: Vec<usize> = first
+        .commits
+        .iter()
+        .chain(second.commits.iter())
+        .map(|row| row.graph.chars().count())
+        .collect();
+    assert!(widths.iter().all(|width| *width == widths[0]));
 }
 
 /// A commit's detail is its stat and patch; a request that is not a sha is

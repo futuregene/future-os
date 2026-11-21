@@ -454,7 +454,9 @@ answers. The status block at the top of the device sheet says the same: with som
 machines answering and some not, it reports the set ("Some desktops are not
 connected", the connected count, Reconnect all) rather than the open machine's
 state, and only when every machine answers — or none does — does that one
-machine's own copy stand. The rows under it are where "which machine" is read:
+machine's own copy stand. A set that is green end to end carries no action at
+all: the transport retries on its own, so "Reconnect all" is there only when a
+machine actually needs reaching. The rows under it are where "which machine" is read:
 each carries its own dot and state, and a machine that answers while another
 device holds it wears the same yellow as the trigger, with the takeover on that
 row. With a single machine the block is already its answer and the row keeps

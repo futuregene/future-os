@@ -31,10 +31,30 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// How many commits one log read asks for. A page, not the history: a phone
-/// scrolls a screen at a time and a repository with 10⁵ commits is exactly the
-/// read that should not happen when a sheet opens.
+/// How many commits one page of the history asks for. A page, not the history: a
+/// phone scrolls a screen at a time and a repository with 10⁵ commits is exactly
+/// the read that should not happen when a sheet opens.
 const COMMIT_LIMIT: usize = 200;
+
+/// How many lanes the picture draws before it stops widening.
+///
+/// A lane is two cells, and the subject starts after the gutter, so twelve lines
+/// of work open at once would push every subject 24 cells right — past what a
+/// phone has to spare. Six is where a phone runs out of room (the same six the
+/// lane palette cycles at), so the picture is capped there: a line past the sixth
+/// is drawn *in* the sixth column, sharing it with the other lines that run past
+/// the window. It keeps its commits — each one is a dot on its own row — it just
+/// no longer has a column of its own, and the six colours are the six columns.
+pub const LANE_WINDOW: usize = 6;
+
+/// How far a page may start into the log.
+///
+/// A page is laid out from the top of the history, not from its own first commit
+/// (see [`page`]), so the cost of one read grows with the offset. This bounds it:
+/// at a page of 200, twenty thousand commits is a hundred pages of scrolling,
+/// far past anything a reader reaches on a phone and still a read git does in
+/// well under a second.
+const SKIP_CEILING: usize = 20_000;
 
 /// Budget for one read-only query (`rev-parse`, `log`).
 const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -43,9 +63,10 @@ const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 /// read gets room for a large commit on a slow disk.
 const SHOW_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Ceiling for a single read's stdout. `log --max-count=200` is a few hundred
-/// kilobytes; a patch can be far larger, and it is bounded here rather than in
-/// memory after the fact.
+/// Ceiling for a single read's stdout. A page is a few hundred kilobytes (a
+/// deeper page more, since the log is read from the top: see [`SKIP_CEILING`]); a
+/// patch can be far larger, and it is bounded here rather than in memory after
+/// the fact.
 const OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 
 /// How long a killed child gets to actually die before the read gives up on
@@ -125,7 +146,8 @@ pub struct GraphListing {
     /// several checkouts.
     pub path: String,
     pub commits: Vec<GraphRow>,
-    /// The log was cut at [`COMMIT_LIMIT`]; the oldest row is not the root.
+    /// More commits exist past this page: the next page starts at
+    /// `skip + commits.len()`. The last page is the one where this is `false`.
     pub truncated: bool,
 }
 
@@ -395,9 +417,20 @@ fn repository(cwd: &Path) -> Option<(std::path::PathBuf, String)> {
 
 /// The session workspace's history: the log as a lane graph.
 ///
-/// A workspace that is not a repository answers [`GraphListing::is_repo`]
-/// `false` with nothing in it, which is what the phone draws nothing for.
-pub fn list(workspace: &str) -> Result<GraphListing, crate::Error> {
+/// `skip` is how many commits the caller already has — a page is a window into
+/// the log, and the phone reads it a page at a time rather than opening a sheet
+/// on 10⁵ commits. A workspace that is not a repository answers
+/// [`GraphListing::is_repo`] `false` with nothing in it, which is what the phone
+/// draws nothing for.
+pub fn list(workspace: &str, skip: usize) -> Result<GraphListing, crate::Error> {
+    page(workspace, skip, COMMIT_LIMIT)
+}
+
+/// One page of the history, `take` commits from `skip` on.
+///
+/// Split from [`list`] so a test can page a five-commit fixture instead of
+/// building two hundred commits to see a second page.
+fn page(workspace: &str, skip: usize, take: usize) -> Result<GraphListing, crate::Error> {
     let root = Path::new(workspace);
     let empty = |path: String| GraphListing {
         is_repo: false,
@@ -409,6 +442,14 @@ pub fn list(workspace: &str) -> Result<GraphListing, crate::Error> {
     let Some((toplevel, repo_name)) = repository(root) else {
         return Ok(empty(workspace.to_string()));
     };
+    let skip = skip.min(SKIP_CEILING);
+    // The log is read from the top of the history and cut to the page afterwards,
+    // rather than asked for with `--skip`: a row's lanes are what the rows above
+    // it left behind, so a page laid out on its own would start every line of
+    // work at column 0 and the picture would break at the seam. Reading the
+    // prefix costs one `git log` — bounded by `SKIP_CEILING` — and keeps the
+    // drawing continuous with the page the caller already has.
+    let want = skip + take;
     // Every branch, tag and remote-tracking branch: the log describes the whole
     // repository, not just the checkout. `--all` would also pull in `refs/stash`
     // (a stash is a commit tree) as if it were a line of work, and naming `HEAD`
@@ -420,7 +461,7 @@ pub fn list(workspace: &str) -> Result<GraphListing, crate::Error> {
     // the person the row is about. Reading the committer there made a page of
     // real work look like it was all done by GitHub.
     let pretty = "--pretty=format:%x1e%h%x1f%H%x1f%P%x1f%cd%x1f%an%x1f%D%x1f%s";
-    let limit = format!("--max-count={COMMIT_LIMIT}");
+    let limit = format!("--max-count={want}");
     let output = git(
         &toplevel,
         &[
@@ -451,11 +492,12 @@ pub fn list(workspace: &str) -> Result<GraphListing, crate::Error> {
         return Err(failure(&output).into());
     };
     let entries = parse_entries(&text);
-    let truncated = entries.len() >= COMMIT_LIMIT;
+    let truncated = entries.len() >= want;
     let gutters = graph(&entries);
     let commits = entries
         .into_iter()
         .zip(gutters)
+        .skip(skip)
         .map(|(entry, graph)| GraphRow {
             short: entry.short,
             when: entry.when,
@@ -703,32 +745,60 @@ fn draw(
             .rposition(Option::is_some)
             .unwrap_or(0)
             .max(rightmost);
-        let mut cells = vec![' '; 2 * (width + 1)];
+        // Every lane past the window is drawn in the window's last column: the
+        // picture stops widening there, and the lines beyond it stay on the page
+        // as one bundle instead of disappearing. A commit on one of them still
+        // gets its dot, in that same column, so its row says where the work
+        // landed even though the line it sits on is shared.
+        let visible = width.min(LANE_WINDOW - 1);
+        let mut up = vec![false; visible + 1];
+        let mut down = vec![false; visible + 1];
+        let mut left = vec![false; visible + 1];
+        let mut right = vec![false; visible + 1];
+        // Where the commit itself landed, and whether it joins lines. Several
+        // lanes can fold into one column, but only one of them is this row's.
+        let mut marks = vec![false; visible + 1];
+        let mut joins = vec![false; visible + 1];
         for column in 0..=width {
-            let up = lanes.get(column).is_some_and(|lane| lane.is_some()) && column != mine;
+            let fold = column.min(visible);
+            let column_up = lanes.get(column).is_some_and(|lane| lane.is_some()) && column != mine;
             // A column a line gives up on and another takes over in the same row
             // continues below: the vertical passes through it.
-            let down = if opened.iter().any(|(taken, _, _)| *taken == column) {
+            let column_down = if opened.iter().any(|(taken, _, _)| *taken == column) {
                 true
             } else if closed.contains(&column) {
                 false
             } else {
-                up
+                column_up
             };
-            let right = column >= mine && column < rightmost;
-            let left = column > mine && column <= rightmost;
-            cells[2 * column] = if column == mine {
+            // The bundle carries the directions of every lane inside it, so a
+            // thread that runs through it is still drawn.
+            up[fold] |= column_up;
+            down[fold] |= column_down;
+            right[fold] |= column >= mine && column < rightmost;
+            left[fold] |= column > mine && column <= rightmost;
+            if column == mine {
+                marks[fold] = true;
+                joins[fold] = parents.len() > 1;
+            }
+        }
+        // The bundle closes at the window's edge: a connector in its last cell
+        // would run the horizontal out of the picture and into the fields.
+        right[visible] = false;
+        let mut cells = vec![' '; 2 * (visible + 1)];
+        for column in 0..=visible {
+            cells[2 * column] = if marks[column] {
                 // `M` is a commit that joins lines, `o` one that only continues
                 // its own — tig's two glyphs.
-                if parents.len() > 1 {
+                if joins[column] {
                     'M'
                 } else {
                     'o'
                 }
             } else {
-                junction(up, down, left, right)
+                junction(up[column], down[column], left[column], right[column])
             };
-            if column >= mine && column < rightmost {
+            if right[column] {
                 cells[2 * column + 1] = '─';
             }
         }

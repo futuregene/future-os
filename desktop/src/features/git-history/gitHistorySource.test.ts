@@ -15,7 +15,7 @@ vi.mock("../../integrations/tauri/invoke", () => ({
   invokeCommand: (...args: Parameters<typeof invoke>) => invoke(...args),
 }));
 
-const listRemote = vi.fn<(desktopId: string, sessionId: string) => Promise<unknown>>();
+const listRemote = vi.fn<(desktopId: string, sessionId: string, offset?: number) => Promise<unknown>>();
 const getRemote = vi.fn<(desktopId: string, sessionId: string, sha: string) => Promise<unknown>>();
 vi.mock("../remote-peer/remotePeerClient", () => ({
   listRemoteGitCommits: (...args: Parameters<typeof listRemote>) => listRemote(...args),
@@ -33,13 +33,13 @@ beforeEach(() => {
 
 it("asks this machine for a local workspace", async () => {
   await listGitHistory({ kind: "local", path: "/Users/reader/repo" });
-  expect(invoke).toHaveBeenCalledWith("get_git_history", { path: "/Users/reader/repo" });
+  expect(invoke).toHaveBeenCalledWith("get_git_history", { path: "/Users/reader/repo", offset: 0 });
   expect(listRemote).not.toHaveBeenCalled();
 });
 
 it("asks the peer for a remote conversation", async () => {
   await listGitHistory({ desktopId: "desktop_a", kind: "remote", sessionId: "sess_1" });
-  expect(listRemote).toHaveBeenCalledWith("desktop_a", "sess_1");
+  expect(listRemote).toHaveBeenCalledWith("desktop_a", "sess_1", 0);
   expect(invoke).not.toHaveBeenCalled();
 });
 

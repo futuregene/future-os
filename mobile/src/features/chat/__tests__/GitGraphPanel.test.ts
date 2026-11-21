@@ -88,7 +88,7 @@ const detail: GitCommitDetail = {
 };
 
 let tree: ReactTestRenderer;
-const listCommits = jest.fn<Promise<GitGraphListing>, []>(async () => listing);
+const listCommits = jest.fn<Promise<GitGraphListing>, [number?]>(async () => listing);
 const getCommit = jest.fn<Promise<GitCommitDetail>, [string]>(async () => detail);
 const onClose = jest.fn();
 const removeBack = jest.fn();
@@ -148,6 +148,12 @@ const hasButton = (label: string) =>
     node.props.accessibilityRole === "button"
     && node.props.accessibilityLabel === label
     && node.props.onPress).length > 0;
+/** The control carrying a label, for pressing it. */
+const button = (label: string) =>
+  tree.root.findAll(node =>
+    node.props.accessibilityRole === "button"
+    && node.props.accessibilityLabel === label
+    && node.props.onPress)[0]!;
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -462,8 +468,85 @@ test("a pull-down re-reads the history, since there is no refresh button", async
   expect(listCommits).toHaveBeenCalledTimes(2);
 });
 
-test("a cut log says the oldest commits are not shown", async () => {
+/** The history is longer than one reply: the next page is `listing`'s older
+ * half, drawn with the lanes the page above it opened. */
+const olderPage: GitGraphListing = {
+  ...listing,
+  commits: [
+    { short: "8f1c002", when: "2026-11-10 21:14", who: "Mei Tan", decorations: "", subject: "early plot", graph: "│ o │ " },
+    { short: "0d4b7a9", when: "2026-11-09 10:02", who: "Lixin Zhou", decorations: "tag: v1", subject: "first data", graph: "o─┴─┘ " },
+  ],
+  truncated: false,
+};
+
+test("reaching the end appends the next page instead of stopping there", async () => {
+  listCommits.mockResolvedValueOnce({ ...listing, truncated: true });
+  listCommits.mockResolvedValueOnce(olderPage);
+  await mount();
+  expect(commits().props.data).toHaveLength(5);
+  // The first page says the log goes on, so the footer offers the rest.
+  expect(hasButton("git.loadMore")).toBe(true);
+
+  await act(async () => { await commits().props.onEndReached!(); });
+
+  // The offset is what the sheet already holds: the pages are one window into
+  // one log rather than a cursor of their own.
+  expect(listCommits).toHaveBeenLastCalledWith(5);
+  expect(commits().props.data).toHaveLength(7);
+  expect(commits().props.data.at(-1)!.short).toBe("0d4b7a9");
+  // The appended rows are drawn with the lanes of the rows above them: a page
+  // laid out on its own would start every line again at the left edge.
+  expect(rowPress("0d4b7a9").findAllByType(Circle)[0]!.props.fill).not.toBe("none");
+  // Nothing is left past this page, and the list says so rather than pretending
+  // there is more.
+  expect(texts()).toContain("git.historyEnd");
+  expect(hasButton("git.loadMore")).toBe(false);
+});
+
+test("one scroll asks for one page, however often the list reports its end", async () => {
+  listCommits.mockResolvedValueOnce({ ...listing, truncated: true });
+  let settle: (page: GitGraphListing) => void = () => {};
+  listCommits.mockImplementationOnce(() => new Promise<GitGraphListing>((resolve) => {
+    settle = resolve;
+  }));
+  await mount();
+  // `onEndReached` fires again on every re-render near the end of a list; the
+  // rows must not be appended twice for one scroll.
+  act(() => { void commits().props.onEndReached!(); void commits().props.onEndReached!(); });
+  expect(listCommits).toHaveBeenCalledTimes(2);
+
+  await act(async () => { settle(olderPage); });
+  expect(commits().props.data).toHaveLength(7);
+});
+
+test("a page that fails keeps what was read and offers the retry", async () => {
+  listCommits.mockResolvedValueOnce({ ...listing, truncated: true });
+  listCommits.mockRejectedValueOnce(new Error("nope"));
+  await mount();
+  await act(async () => { await commits().props.onEndReached!(); });
+
+  // The rows already on screen stay: a failed page is not a failed history.
+  expect(commits().props.data).toHaveLength(5);
+  expect(texts()).toContain("git.loadMoreFailed");
+
+  listCommits.mockResolvedValueOnce(olderPage);
+  await act(async () => { await button("git.loadMoreFailed").props.onPress(); });
+  expect(listCommits).toHaveBeenLastCalledWith(5);
+  expect(commits().props.data).toHaveLength(7);
+});
+
+test("a desktop too old to page stops at the page it has, and says so", async () => {
+  // An older host answers the second request with the first page again: nothing
+  // new arrives, and it still reports that more exists.
+  listCommits.mockResolvedValueOnce({ ...listing, truncated: true });
   listCommits.mockResolvedValueOnce({ ...listing, truncated: true });
   await mount();
+  await act(async () => { await commits().props.onEndReached!(); });
+
+  expect(listCommits).toHaveBeenCalledTimes(2);
+  // No row is drawn twice…
+  expect(commits().props.data).toHaveLength(5);
+  // …and the button is gone, because pressing it again could not do anything.
+  expect(hasButton("git.loadMore")).toBe(false);
   expect(texts()).toContain("git.truncated");
 });

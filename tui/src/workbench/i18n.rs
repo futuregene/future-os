@@ -440,6 +440,8 @@ pub enum Key {
     CmdGit,
     CmdFiles,
     GitHint,
+    /// The log is one page of many (the list title's tail).
+    GitMore,
     GitTabCommits,
     GitTabRefs,
     GitTabStatus,
@@ -961,9 +963,10 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "Open this conversation's workspace files",
         ),
         GitHint => (
-            "1-6 视图 · ↑↓ 选择 · tab 列表/详情 · ←→ 横向滚动 · PgUp/PgDn 详情翻页 · ⏎ 打开 · y 复制 · r 刷新 · esc 关闭",
-            "1-6 views · ↑↓ select · tab list/detail · ←→ scrolls horizontally · PgUp/PgDn pages the detail · enter opens · y copies · r refreshes · esc closes",
+            "1-6 视图 · ↑↓ 选择（到底再按读取更早）· tab 列表/详情 · ←→ 横向滚动 · PgUp/PgDn 详情翻页 · ⏎ 打开 · y 复制 · r 刷新 · esc 关闭",
+            "1-6 views · ↑↓ select (down at the bottom reads the older page) · tab list/detail · ←→ scrolls horizontally · PgUp/PgDn pages the detail · enter opens · y copies · r refreshes · esc closes",
         ),
+        GitMore => ("↓ 还有更早的提交", "↓ older commits"),
         GitTabCommits => ("提交", "commits"),
         GitTabRefs => ("引用", "refs"),
         GitTabStatus => ("改动", "changes"),
@@ -1541,7 +1544,7 @@ mod tests {
     /// Every key, in the order [`pair`] lists them. Kept beside the match so a
     /// new key is an obvious addition in two places rather than a silent gap in
     /// the tests above.
-    const ALL_KEYS: [Key; 383] = {
+    const ALL_KEYS: [Key; 384] = {
         use Key::*;
         [
             TabTodo,
@@ -1710,6 +1713,7 @@ mod tests {
             CmdGit,
             CmdFiles,
             GitHint,
+            GitMore,
             GitTabCommits,
             GitTabRefs,
             GitTabStatus,

@@ -124,7 +124,12 @@ export interface ConnectionSummary {
   solution: string;
   /** More than one machine is paired, so the action reaches all of them. */
   severalMachines: boolean;
-  /** Whether a manual reconnect is the offer. */
+  /**
+   * Whether a manual reconnect is the offer.
+   *
+   * Never for a set that is green end to end: there is nothing to reach, and
+   * the block under the title is a status line rather than a fault report.
+   */
   reconnectable: boolean;
   /** Whether the pairing is gone and pairing again is the only way back. */
   unpairable: boolean;
@@ -157,8 +162,14 @@ export function useConnectionSummary({
   const state = connectionState({ machines, presentation, standby });
   // A connection the app still reports as healthy (or still trying) is where a
   // silently dead transport hides: those states keep the same manual reconnect
-  // the failure states get, so recovering never requires unpairing first.
-  const reconnectable = (
+  // the failure states get, so recovering never requires unpairing first — with
+  // one exception, the set that is green end to end. A green set owes the reader
+  // nothing to press: the transport retries on its own and the presence watchdog
+  // revives a socket that went quiet without saying so, so a "reconnect" printed
+  // under "connected" only reads as a fault report about a connection that does
+  // not have one. A single machine another device holds is not green (see
+  // `connectionState`), so taking it back keeps its action.
+  const reconnectable = state !== "up" && (
     presentation.action === "reconnect" ||
     presentation.action === "retry" ||
     presentation.action === "checkNetwork" ||
@@ -248,6 +259,11 @@ export function useConnectionSummary({
  * with. It carries no per-machine rows any more: those are the trigger's own
  * rows below it, each with its own dot and state, rather than a second list of
  * the same machines a few lines apart.
+ *
+ * It draws the action only when the connection is not green end to end (see
+ * `ConnectionSummary.reconnectable`). "Connected, connected, connected" with a
+ * "Reconnect all" under it reads as a fault the reader has to deal with, and
+ * the sheet is opened just as often to switch machines as to repair one.
  */
 export function ConnectionStatusBlock({
   machines,

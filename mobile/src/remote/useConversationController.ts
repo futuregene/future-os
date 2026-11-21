@@ -374,15 +374,18 @@ export function useConversationController({
    * where the checkout is. A workspace that is not a repository answers
    * `isRepo: false` with an empty list rather than an error, which is what lets
    * the sheet decide to offer Nothing.
+   *
+   * `offset` is how many commits the sheet already holds: the history is read a
+   * page at a time, so a repository with 10⁵ commits is never one reply.
    */
-  const listGitCommits = useCallback(async () => {
+  const listGitCommits = useCallback(async (offset = 0) => {
     const client = clientRef.current;
     const sessionId = selectedRef.current;
     const epoch = conversationEpochRef.current;
     if (!client || !sessionId) throw new Error("git_no_session");
     const response = await requestReadPage<GitGraphListing>(
       client,
-      { type: "list_git_commits", sessionId },
+      { type: "list_git_commits", sessionId, offset },
       sessionId,
       () => clientRef.current === client && selectedRef.current === sessionId
         && conversationEpochRef.current === epoch,

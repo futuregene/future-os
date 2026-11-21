@@ -168,7 +168,7 @@ Configures `/fusion` discussions: once enabled, `/fusion` starts a discussion be
 
 ## On the phone
 
-A paired phone has pages of the same name — **Permissions / Replies / Storage / Models / Providers / Skills / Scheduled task settings** — and they show that desktop's settings. The phone's own preferences (appearance, language, WeChat official account) live one level up. The phone's settings also have a search box at the top, with the same rules as the desktop.
+A paired phone has pages of the same name — **Permissions / Replies / Storage / Models / Providers / Skills / Scheduled tasks** — and they show that desktop's settings. The phone's own preferences (appearance, language, WeChat official account) live one level up. The phone's settings also have a search box at the top, with the same rules as the desktop.
 
 ---
 
