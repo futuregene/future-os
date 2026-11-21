@@ -444,6 +444,14 @@ async fn event_loop(
                             paint = true;
                         }
                     }
+                    super::live::Loaded::GitPage(page) => {
+                        // The cursor stays where the reader left it: the rows were
+                        // asked for from the bottom of the list, and moving the
+                        // selection would undo the `↓` that asked.
+                        if live.install_git_page(page) {
+                            paint = true;
+                        }
+                    }
                 }
             }
             Some(event) = agent_events.recv() => {
@@ -1321,6 +1329,38 @@ async fn quit(
         // `/git`: the panel's data is the driver's to read (the surface owns no
         // I/O), so every git verb lands here — the key, the palette entry, a tab
         // switch, a cursor move and `r`.
+        //
+        // The log's next page has its own arm: it appends to the view on screen
+        // instead of replacing it, and keeps the cursor where the reader left it.
+        if let WbAction::GitMore = action {
+            let cwd = live.data(frame).session.cwd;
+            if let Some(git) = live.git().cloned() {
+                let skip = git.rows.len();
+                let started = !cwd.trim().is_empty()
+                    && live.begin_git_page(
+                        std::path::PathBuf::from(&cwd),
+                        git.section,
+                        git.filter.clone(),
+                        skip,
+                    );
+                if !started && !cwd.trim().is_empty() {
+                    // No driver behind this surface (never in the running app):
+                    // read it here and append the same way the driver would.
+                    let page = super::git_panel::page(
+                        std::path::Path::new(&cwd),
+                        git.filter.as_deref(),
+                        skip,
+                    );
+                    live.install_git_page(super::live::GitPage {
+                        section: git.section,
+                        filter: git.filter.clone(),
+                        skip,
+                        page,
+                    });
+                }
+            }
+            continue;
+        }
         if matches!(
             action,
             WbAction::OpenGit
@@ -5737,6 +5777,7 @@ mod driver_tests {
                 selected: 0,
                 detail: Vec::new(),
                 filter: None,
+                more: false,
                 error: None,
             }));
             driver.workbench.overlay = Some(Overlay::Git);
@@ -7154,6 +7195,7 @@ mod driver_tests {
                 selected: 0,
                 detail: Vec::new(),
                 filter: None,
+                more: false,
                 error: None,
             }));
             driver.workbench.overlay = Some(Overlay::Git);

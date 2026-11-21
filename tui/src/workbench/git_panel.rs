@@ -39,10 +39,18 @@ use super::ansi;
 use super::i18n::{t, Key, Language};
 use super::state::{GitKind, GitRow, GitSection, GitView};
 
-/// How many commits one log read asks for. A page, not the history: the reader
-/// scrolls a screen at a time, and `--graph` on a repository with 10⁵ commits is
-/// exactly the read that should not happen on a keypress.
+/// How many commits one page of the log asks for. A page, not the history: the
+/// reader scrolls a screen at a time, and `--graph` on a repository with 10⁵
+/// commits is exactly the read that should not happen on a keypress.
 pub const COMMIT_LIMIT: usize = 200;
+
+/// How far a page may start into the log.
+///
+/// The log is laid out from the top of the repository (see [`commits`]), so the
+/// cost of one page grows with the offset. This bounds it: at a page of 200,
+/// twenty thousand commits is a hundred pages of scrolling, far past what a
+/// reader reaches by hand and still a read git does in well under a second.
+const SKIP_CEILING: usize = 20_000;
 
 /// Budget for one read-only query (`log`, `for-each-ref`, `stash list`).
 pub const QUERY_TIMEOUT: Duration = Duration::from_secs(3);
@@ -105,19 +113,39 @@ pub fn repo_name(cwd: &Path, lang: Language) -> Result<String, String> {
         .unwrap_or_else(|| toplevel.to_string()))
 }
 
-/// The rows of `section`, one [`GitRow`] per painted line.
+/// The rows of `section`, and whether the log continues past them.
 ///
 /// `filter` narrows the log to a revision (a branch, a tag, a sha) and is
-/// ignored by every other section.
-pub fn rows(cwd: &Path, section: GitSection, filter: Option<&str>) -> Result<Vec<GitRow>, String> {
+/// ignored by every other section. Only the log has more than one page: a ref
+/// list, a working tree, a stash list and a list of branches are bounded by the
+/// repository itself.
+pub fn rows(
+    cwd: &Path,
+    section: GitSection,
+    filter: Option<&str>,
+) -> Result<(Vec<GitRow>, bool), String> {
     match section {
-        GitSection::Commits => commits(cwd, filter),
-        GitSection::Refs => refs(cwd),
-        GitSection::Status => status(cwd),
-        GitSection::Stash => stashes(cwd),
-        GitSection::Worktrees => worktrees(cwd),
-        GitSection::Branches => branches(cwd),
+        GitSection::Commits => commits(cwd, filter, 0, COMMIT_LIMIT),
+        GitSection::Refs => refs(cwd).map(|rows| (rows, false)),
+        GitSection::Status => status(cwd).map(|rows| (rows, false)),
+        GitSection::Stash => stashes(cwd).map(|rows| (rows, false)),
+        GitSection::Worktrees => worktrees(cwd).map(|rows| (rows, false)),
+        GitSection::Branches => branches(cwd).map(|rows| (rows, false)),
     }
+}
+
+/// The next page of the log: `skip` commits in, and whether another follows.
+///
+/// The same read opening the panel makes, so the page is laid out from the top of
+/// the history and its rows continue the lanes the rows above it opened.
+pub fn page(cwd: &Path, filter: Option<&str>, skip: usize) -> Result<(Vec<GitRow>, bool), String> {
+    // Past the ceiling there is no page to read: the read would be clamped back
+    // to it and answer rows the panel already holds, leaving `↓` a key that does
+    // nothing forever. Say the log ends where the panel stops reading instead.
+    if skip >= SKIP_CEILING {
+        return Ok((Vec::new(), false));
+    }
+    commits(cwd, filter, skip, COMMIT_LIMIT)
 }
 
 /// `git log` in topological order, drawn into rows.
@@ -134,7 +162,12 @@ pub fn rows(cwd: &Path, section: GitSection, filter: Option<&str>) -> Result<Vec
 /// 42 of them bare drawing, and the diagonals make two lines of work read as
 /// one. Here every row is a commit, connections are verticals and elbows only,
 /// and a lane is a fixed column for as long as it exists.
-fn commits(cwd: &Path, filter: Option<&str>) -> Result<Vec<GitRow>, String> {
+fn commits(
+    cwd: &Path,
+    filter: Option<&str>,
+    skip: usize,
+    take: usize,
+) -> Result<(Vec<GitRow>, bool), String> {
     // `%x1e` / `%x1f` are git's own escapes for RS and US: a subject is free
     // text, so the field separator has to be a byte a subject cannot contain.
     // `%H`/`%P` (full ids) rather than `%h`/`%p` are what the lanes are matched
@@ -143,7 +176,19 @@ fn commits(cwd: &Path, filter: Option<&str>) -> Result<Vec<GitRow>, String> {
     // and name — the commit's own stamp, which is what the columns beside the
     // graph are for; the author is the detail pane's.
     let pretty = "--pretty=format:%x1e%h%x1f%H%x1f%P%x1f%cd%x1f%cn%x1f%D%x1f%s";
-    let limit = format!("--max-count={COMMIT_LIMIT}");
+    let skip = skip.min(SKIP_CEILING);
+    // The log is read from the top of the history and cut to the page afterwards,
+    // rather than asked for with `--skip`: a row's lanes are what the rows above
+    // it left behind, so a page laid out on its own would start every line of
+    // work at column 0 and the drawing would break at the seam. Reading the
+    // prefix costs one `git log` — bounded by `SKIP_CEILING` — and keeps the
+    // picture continuous with the rows the reader already has.
+    //
+    // One entry past the page is what says whether the history goes on: without
+    // it a log that ends exactly on a page boundary would answer the next `↓`
+    // with nothing, i.e. a keypress that does nothing.
+    let want = skip + take + 1;
+    let limit = format!("--max-count={want}");
     // Topological order, in both reads: a parent never comes before a child,
     // and a line of work is read as one stretch rather than interleaved with
     // every other branch's dated commits. That is what lets a lane stay in one
@@ -177,11 +222,11 @@ fn commits(cwd: &Path, filter: Option<&str>) -> Result<Vec<GitRow>, String> {
     // as the path and log nothing.
     args.push("--");
     match git(cwd, &args, QUERY_TIMEOUT) {
-        Ok(text) => Ok(parse_log(&text)),
+        Ok(text) => Ok(log_rows(&text, skip, take)),
         // A repository with no commit is not an error the reader can act on; it
         // is an empty log, and every other panel in this surface says "nothing
         // here" rather than showing git's fatal message.
-        Err(error) if error.contains("does not have any commits") => Ok(Vec::new()), // i18n: matches git's own stderr, never drawn
+        Err(error) if error.contains("does not have any commits") => Ok((Vec::new(), false)), // i18n: matches git's own stderr, never drawn
         Err(error) => Err(error),
     }
 }
@@ -507,8 +552,26 @@ const WHO_LIMIT: usize = 10;
 /// list already prints the whole hash, so repeating eight cells of it in every
 /// row spends the width the subject needs.
 pub fn parse_log(text: &str) -> Vec<GitRow> {
-    use GitKind::{Decoration, Plain};
+    layout(parse_entries(text), 0, usize::MAX)
+}
+
+/// One page of a log read: the rows from `skip` on, and whether the history
+/// continues past them — which is what a `↓` at the last row acts on.
+fn log_rows(text: &str, skip: usize, take: usize) -> (Vec<GitRow>, bool) {
     let entries = parse_entries(text);
+    // The read asked for one entry past the page, so a full result is the only
+    // thing that says there is more.
+    let more = entries.len() > skip + take;
+    (layout(entries, skip, take), more)
+}
+
+/// Entries to painted rows: `take` of them, from `skip` on.
+///
+/// The layout is over *every* entry the read returned, not over the page: a row's
+/// lanes are the columns the rows above it left behind, so cutting before the
+/// layout would start every line of work again at column 0.
+fn layout(entries: Vec<Entry>, skip: usize, take: usize) -> Vec<GitRow> {
+    use GitKind::{Decoration, Plain};
     let prefixes = graph(&entries);
     let who_width = entries
         .iter()
@@ -519,6 +582,8 @@ pub fn parse_log(text: &str) -> Vec<GitRow> {
     entries
         .into_iter()
         .zip(prefixes)
+        .skip(skip)
+        .take(take)
         .map(|(entry, prefix)| {
             // `fit` pads to the width and clips a long name with an ellipsis, so
             // every column ends on the same cell in every row.
@@ -1055,7 +1120,10 @@ pub fn read(
         }
     }
     match rows(cwd, section, view.filter.as_deref()) {
-        Ok(rows) => view.rows = rows,
+        Ok((rows, more)) => {
+            view.rows = rows;
+            view.more = more;
+        }
         Err(error) => {
             view.error = Some(spoken(lang, error));
             return view;
@@ -1343,6 +1411,64 @@ mod tests {
         assert_eq!(rows[2].key.as_deref(), Some("refs/tags/main"));
     }
 
+    /// The log is read a page at a time, and the pages join: two commits at a
+    /// time must draw exactly what one read of the whole history draws. The
+    /// layout is over the read's whole prefix, so the second page's rows continue
+    /// the lanes the first page opened instead of starting every line of work
+    /// again at the left edge.
+    #[test]
+    fn pages_of_the_log_join_the_rows_above_them() {
+        let dir = repo();
+        let (whole, more) = commits(dir.path(), None, 0, 50).unwrap();
+        assert!(!more, "four commits are one page");
+        assert_eq!(whole.len(), 4);
+
+        let mut paged = Vec::new();
+        let mut skip = 0;
+        loop {
+            let (rows, more) = commits(dir.path(), None, skip, 2).unwrap();
+            skip += rows.len();
+            paged.extend(rows);
+            if !more {
+                break;
+            }
+            // A page that answered with nothing while claiming more would spin
+            // forever: the read asks one entry past the page for exactly this.
+            assert!(skip <= whole.len(), "the page said more after the root");
+        }
+        assert_eq!(skip, whole.len());
+        let shape = |rows: Vec<GitRow>| -> Vec<(Option<String>, String)> {
+            rows.into_iter().map(|row| (row.key, row.prefix)).collect()
+        };
+        assert_eq!(shape(paged), shape(whole));
+    }
+
+    /// The page a reader asks for past the root is empty and says so, rather than
+    /// being an error or claiming another page.
+    #[test]
+    fn a_page_past_the_root_is_empty_and_ends_the_log() {
+        let dir = repo();
+        let (rows, more) = commits(dir.path(), None, 4, 2).unwrap();
+        assert!(rows.is_empty());
+        assert!(!more);
+
+        // The whole read says whether it is the whole read, and the panel's
+        // first page carries it into the view.
+        let view = read(dir.path(), GitSection::Commits, None, 0, Language::En);
+        assert!(!view.more, "a view of four commits has nothing below it");
+    }
+
+    /// The page the panel reads stops at the ceiling: asked past it, the read is
+    /// the end of the log rather than the same rows again — a `↓` that answers
+    /// with nothing while the title claims more would be a dead key.
+    #[test]
+    fn a_page_past_the_ceiling_ends_the_log() {
+        let dir = repo();
+        let (rows, more) = page(dir.path(), None, SKIP_CEILING).unwrap();
+        assert!(rows.is_empty(), "the ceiling answered with a page");
+        assert!(!more, "the ceiling claimed another page");
+    }
+
     #[test]
     fn read_lands_on_a_selectable_row_and_loads_its_detail() {
         let dir = repo();
@@ -1413,7 +1539,7 @@ mod tests {
     #[ignore]
     fn dump_real_log() {
         let dir = std::path::Path::new("/Users/geilige/future-os");
-        let rows = rows(dir, GitSection::Commits, None).unwrap();
+        let (rows, _) = rows(dir, GitSection::Commits, None).unwrap();
         let width = rows
             .iter()
             .map(|r| r.prefix.chars().count())
@@ -1433,7 +1559,8 @@ mod tests {
         let name = repo_name(dir.path(), Language::En).unwrap();
         assert!(!name.is_empty());
 
-        let log = rows(dir.path(), GitSection::Commits, None).unwrap();
+        let (log, more) = rows(dir.path(), GitSection::Commits, None).unwrap();
+        assert!(!more, "four commits are one page");
         assert_eq!(
             log.len(),
             4,
@@ -1483,7 +1610,7 @@ mod tests {
             "the merge's stat is there: {patch}"
         );
 
-        let refs = rows(dir.path(), GitSection::Refs, None).unwrap();
+        let (refs, _) = rows(dir.path(), GitSection::Refs, None).unwrap();
         let names: Vec<&str> = refs.iter().map(|row| row.pieces[0].as_str()).collect();
         assert!(names.contains(&"main"), "{names:?}");
         assert!(names.contains(&"feature"), "{names:?}");
@@ -1501,7 +1628,7 @@ mod tests {
         .unwrap();
         assert!(tip.join("\n").contains("refs/heads/main"), "{tip:?}");
 
-        let status_rows = rows(dir.path(), GitSection::Status, None).unwrap();
+        let (status_rows, _) = rows(dir.path(), GitSection::Status, None).unwrap();
         let dirty = status_rows
             .iter()
             .find(|row| row.pieces[0] == "a.txt")
@@ -1516,7 +1643,7 @@ mod tests {
         .join("\n");
         assert!(patch.contains("+dirty"), "{patch}");
 
-        let stashes = rows(dir.path(), GitSection::Stash, None).unwrap();
+        let (stashes, _) = rows(dir.path(), GitSection::Stash, None).unwrap();
         assert_eq!(stashes.len(), 1);
         assert!(
             stashes[0].pieces[0].contains("a stashed change"),
@@ -1529,7 +1656,7 @@ mod tests {
         assert!(patch.contains("+dirty"), "{patch}");
 
         // A ref filter narrows the log to that line of work.
-        let feature = rows(dir.path(), GitSection::Commits, Some("feature")).unwrap();
+        let (feature, _) = rows(dir.path(), GitSection::Commits, Some("feature")).unwrap();
         assert!(feature
             .iter()
             .flat_map(|row| row.pieces.iter())
@@ -1615,7 +1742,7 @@ mod tests {
         };
         git(&["worktree", "add", "-q", "second", "feature"]);
 
-        let worktrees = rows(dir.path(), GitSection::Worktrees, None).unwrap();
+        let (worktrees, _) = rows(dir.path(), GitSection::Worktrees, None).unwrap();
         assert_eq!(worktrees.len(), 2);
         let here = worktrees
             .iter()
@@ -1636,7 +1763,7 @@ mod tests {
         .join("\n");
         assert!(text.contains("feature"), "its own status is read: {text}");
 
-        let branches = rows(dir.path(), GitSection::Branches, None).unwrap();
+        let (branches, _) = rows(dir.path(), GitSection::Branches, None).unwrap();
         let names: Vec<&str> = branches.iter().map(|row| row.pieces[0].as_str()).collect();
         assert!(names.contains(&"main"), "{names:?}");
         assert!(names.contains(&"feature"), "{names:?}");
@@ -1649,7 +1776,7 @@ mod tests {
             "main"
         );
         // A branch is a revision the log can be filtered to.
-        let log = rows(dir.path(), GitSection::Commits, Some("feature")).unwrap();
+        let (log, _) = rows(dir.path(), GitSection::Commits, Some("feature")).unwrap();
         assert!(log
             .iter()
             .flat_map(|row| row.pieces.iter())
@@ -1682,6 +1809,7 @@ mod tests {
             selected: 0,
             detail: Vec::new(),
             filter: None,
+            more: false,
             error: None,
         };
         focus(gone, &mut view, 0, Language::En);
@@ -1725,11 +1853,12 @@ mod tests {
             assert!(output.status.success());
         };
         git(&["init", "-q"]);
-        assert!(rows(dir.path(), GitSection::Commits, None)
-            .unwrap()
-            .is_empty());
+        let (commits, more) = rows(dir.path(), GitSection::Commits, None).unwrap();
+        assert!(commits.is_empty());
+        assert!(!more, "an empty log has nothing below it either");
         assert!(rows(dir.path(), GitSection::Stash, None)
             .unwrap()
+            .0
             .is_empty());
     }
 }
