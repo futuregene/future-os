@@ -31,18 +31,19 @@ export function gitSourceReady(source: GitHistorySource | null): boolean {
 /**
  * One page of a history.
  *
- * `offset` is how many commits the caller already has: both paths read the log a
- * page at a time, so a repository with 10⁵ commits is never one reply and the
- * view appends what it lacks.
+ * `cursor` is where the caller's last page stopped ("" for the first page):
+ * both paths read the log a page at a time, so a repository with 10⁵ commits is
+ * never one reply and the view appends what it lacks. The host reads the next
+ * page from that cursor, so page 500 costs what page 1 did.
  */
 export async function listGitHistory(
   source: GitHistorySource,
-  offset = 0,
+  cursor = "",
 ): Promise<GitGraphListing> {
   if (source.kind === "local") {
-    return invokeCommand<GitGraphListing>("get_git_history", { path: source.path, offset });
+    return invokeCommand<GitGraphListing>("get_git_history", { path: source.path, cursor });
   }
-  return listRemoteGitCommits(source.desktopId, source.sessionId, offset);
+  return listRemoteGitCommits(source.desktopId, source.sessionId, cursor);
 }
 
 export async function getGitCommit(

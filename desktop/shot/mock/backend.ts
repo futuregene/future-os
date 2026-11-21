@@ -22,6 +22,8 @@ import {
   entriesByThread,
   gitHistoryCommits,
   gitHistoryPatch,
+  gitHistoryWideningCommits,
+  gitHistoryWindowCommits,
   HOME,
   installedSkills,
   models,
@@ -58,6 +60,18 @@ import { quotedPrompt } from "./replyQuote";
  * absence is something the harness captures rather than merely claims.
  */
 const noRepo = new URLSearchParams(window.location.search).get("norepo") === "1";
+// Which history the panel opens onto. `?gitlanes=window` is ten branches of
+// work drawn inside the six-column lane window; `?gitlanes=widening` the same
+// month drawn the way the host drew it before that window existed, so a pair of
+// captures can show what the window fixed.
+const gitLanes = new URLSearchParams(window.location.search).get("gitlanes");
+// `?gitpaged=1` answers the history in two pages: the last three rows of the
+// demo log are the second one, so the panel opens with its "load older" entry on
+// screen and a click appends real rows rather than nothing. The cut is at a row
+// boundary of one real read, which is what keeps the second page's lanes
+// continuing the first one's.
+const gitPaged = new URLSearchParams(window.location.search).get("gitpaged") === "1";
+const PAGED_CURSOR = "1|demo-page-2|";
 
 // The console output doubles as the "what is missing" list while iterating on
 // the harness, which is why this one log call is intentional.
@@ -1249,13 +1263,31 @@ const handlers: Record<string, (args: any) => unknown> = {
    * reads glyphs, so an invented grid would decode into a picture nobody asked
    * for.
    */
-  get_git_history: () => ({
-    isRepo: !noRepo,
-    repoName: noRepo ? "" : "dopamine-decision",
-    path: noRepo ? `${HOME}/Research/notes` : `${HOME}/Research/dopamine-decision`,
-    commits: noRepo ? [] : gitHistoryCommits,
-    truncated: false,
-  }),
+  get_git_history: (args?: { cursor?: string }) => {
+    const table = noRepo
+      ? []
+      : gitLanes === "widening"
+        ? gitHistoryWideningCommits
+        : gitLanes === "window"
+          ? gitHistoryWindowCommits
+          : gitHistoryCommits;
+    // Two pages, cut at a row boundary (see `gitPaged`): the cursor is what says
+    // which half is being asked for.
+    const second = gitPaged && args?.cursor === PAGED_CURSOR;
+    const commits = !gitPaged
+      ? table
+      : second
+        ? table.slice(-3)
+        : table.slice(0, -3);
+    return {
+      isRepo: !noRepo,
+      repoName: noRepo ? "" : "dopamine-decision",
+      path: noRepo ? `${HOME}/Research/notes` : `${HOME}/Research/dopamine-decision`,
+      commits,
+      truncated: gitPaged && !second,
+      cursor: gitPaged && !second ? PAGED_CURSOR : "",
+    };
+  },
   get_git_commit: () => ({
     short: "9f2c1a7",
     patch: gitHistoryPatch,

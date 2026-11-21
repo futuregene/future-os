@@ -15,15 +15,15 @@ import { GitHistoryPanel } from "./GitHistoryPanel";
  * `@future-os/git-graph`'s, tested there.
  */
 
-const listLocal = vi.fn<(path: string, offset?: number) => Promise<GitGraphListing>>();
+const listLocal = vi.fn<(path: string, cursor?: string) => Promise<GitGraphListing>>();
 const getLocal = vi.fn<(path: string, sha: string) => Promise<GitCommitDetail>>();
-const listRemote = vi.fn<(desktopId: string, sessionId: string, offset?: number) => Promise<GitGraphListing>>();
+const listRemote = vi.fn<(desktopId: string, sessionId: string, cursor?: string) => Promise<GitGraphListing>>();
 const getRemote = vi.fn<(desktopId: string, sessionId: string, sha: string) => Promise<GitCommitDetail>>();
 
 vi.mock("../../integrations/tauri/invoke", () => ({
   invokeCommand: (command: string, args: Record<string, unknown>) => {
     if (command === "get_git_history") {
-      return listLocal(args.path as string, args.offset as number | undefined);
+      return listLocal(args.path as string, args.cursor as string | undefined);
     }
     return getLocal(args.path as string, args.sha as string);
   },
@@ -108,7 +108,7 @@ const rows = () => [...container.querySelectorAll<HTMLButtonElement>("[data-git-
 
 it("reads a local workspace's history through the local command", async () => {
   await mount({ kind: "local", path: "/Users/reader/repo" });
-  expect(listLocal).toHaveBeenCalledWith("/Users/reader/repo", 0);
+  expect(listLocal).toHaveBeenCalledWith("/Users/reader/repo", "");
   expect(listRemote).not.toHaveBeenCalled();
   expect(rows()).toHaveLength(COMMITS.length);
   expect(container.textContent).toContain("trunk tip");
@@ -117,7 +117,7 @@ it("reads a local workspace's history through the local command", async () => {
 
 it("reads a remote conversation's history from the peer it belongs to", async () => {
   await mount({ desktopId: "desktop_a", kind: "remote", sessionId: "sess_1" });
-  expect(listRemote).toHaveBeenCalledWith("desktop_a", "sess_1", 0);
+  expect(listRemote).toHaveBeenCalledWith("desktop_a", "sess_1", "");
   expect(listLocal).not.toHaveBeenCalled();
   expect(rows()).toHaveLength(COMMITS.length);
 });
@@ -288,7 +288,7 @@ it("shows a failure rather than an empty history", async () => {
 });
 
 it("appends the next page instead of stopping at the first one", async () => {
-  listLocal.mockResolvedValueOnce(listing(COMMITS, { truncated: true }));
+  listLocal.mockResolvedValueOnce(listing(COMMITS, { truncated: true, cursor: "at:eee555" }));
   listLocal.mockResolvedValueOnce(listing([
     { decorations: "", graph: "│ o  ", short: "fff666", subject: "older work", when: "7 hours ago", who: "Jun" },
   ]));
@@ -302,8 +302,8 @@ it("appends the next page instead of stopping at the first one", async () => {
   });
   await flush();
 
-  // The offset is what the view already holds: one log, read a page at a time.
-  expect(listLocal).toHaveBeenLastCalledWith("/Users/reader/repo", COMMITS.length);
+  // The cursor is where the page on screen stopped: one log, read from there.
+  expect(listLocal).toHaveBeenLastCalledWith("/Users/reader/repo", "at:eee555");
   expect(rows()).toHaveLength(COMMITS.length + 1);
   expect(rows()[COMMITS.length]!.textContent).toContain("older work");
   // Nothing is left past this page, and the panel says so rather than leaving
@@ -313,7 +313,7 @@ it("appends the next page instead of stopping at the first one", async () => {
 });
 
 it("keeps the rows already read when a page fails, and offers the retry", async () => {
-  listLocal.mockResolvedValueOnce(listing(COMMITS, { truncated: true }));
+  listLocal.mockResolvedValueOnce(listing(COMMITS, { truncated: true, cursor: "at:eee555" }));
   listLocal.mockRejectedValueOnce(new Error("git timed out"));
   await mount({ kind: "local", path: "/Users/reader/repo" });
 
@@ -333,7 +333,9 @@ it("keeps the rows already read when a page fails, and offers the retry", async 
     more.click();
   });
   await flush();
-  expect(listLocal).toHaveBeenLastCalledWith("/Users/reader/repo", COMMITS.length);
+  // The retry asks from the same place: the page that failed left the cursor
+  // where it was, so nothing is skipped and nothing repeats.
+  expect(listLocal).toHaveBeenLastCalledWith("/Users/reader/repo", "at:eee555");
   expect(rows()).toHaveLength(COMMITS.length + 1);
 });
 

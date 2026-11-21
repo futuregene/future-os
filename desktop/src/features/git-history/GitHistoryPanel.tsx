@@ -78,6 +78,8 @@ export function GitHistoryPanel({
     rows: GitGraphRow[];
     /** Whether the page read last said another one follows. */
     truncated: boolean;
+    /** Where that page stopped; "" once the last one answered. */
+    cursor: string;
     /**
      * A peer that predates paging answered with the first page again: nothing new
      * arrived but it still claims more. The panel stops offering a button that
@@ -130,9 +132,10 @@ export function GitHistoryPanel({
   /**
    * Append the next page.
    *
-   * The offset is what this view already holds: the host lays each page out from
-   * the top of the history, so the appended rows continue the lanes above them
-   * rather than starting every line again at the left edge.
+   * The cursor is where the page already on screen stopped: the host reads the
+   * next page *from* it, so the appended rows continue the lanes above them
+   * rather than starting every line again at the left edge — and the read costs
+   * one page however far the reader has scrolled.
    */
   const loadMore = async () => {
     if (!listing || askingRef.current || !more) {
@@ -140,17 +143,18 @@ export function GitHistoryPanel({
     }
     askingRef.current = true;
     const asked = key;
-    const offset = commits.length;
+    const cursor = appended?.cursor ?? listing.cursor ?? "";
     setPages(prev => ({
       key: asked,
       rows: prev?.key === asked ? prev.rows : [],
       truncated: prev?.key === asked ? prev.truncated : more,
+      cursor: prev?.key === asked ? prev.cursor : cursor,
       stale: prev?.key === asked ? prev.stale : false,
       loading: true,
       failed: false,
     }));
     try {
-      const next = await listGitHistory(source, offset);
+      const next = await listGitHistory(source, cursor);
       setPages((prev) => {
         const rows = prev?.key === asked ? prev.rows : [];
         // A commit that landed between the two reads shifts the page's start and
@@ -159,12 +163,14 @@ export function GitHistoryPanel({
         const fresh = next.commits.filter(row => !seen.has(row.short));
         // A peer that cannot page answers every request with the first page:
         // nothing new arrives, yet it still reports more. Stopping is what keeps
-        // the button from doing nothing forever.
-        const stale = fresh.length === 0 && next.truncated && offset > 0;
+        // the button from doing nothing forever. Read off the rows rather than
+        // the cursor, so it holds for a peer that sends no cursor at all.
+        const stale = fresh.length === 0 && next.truncated;
         return {
           key: asked,
           rows: [...rows, ...fresh],
           truncated: stale ? false : next.truncated,
+          cursor: next.cursor ?? "",
           stale,
           loading: false,
           failed: false,
@@ -176,6 +182,7 @@ export function GitHistoryPanel({
         key: asked,
         rows: prev?.key === asked ? prev.rows : [],
         truncated: prev?.key === asked ? prev.truncated : more,
+        cursor: prev?.key === asked ? prev.cursor : cursor,
         stale: prev?.key === asked ? prev.stale : false,
         loading: false,
         failed: true,

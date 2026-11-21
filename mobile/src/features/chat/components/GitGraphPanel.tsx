@@ -84,8 +84,8 @@ export function GitGraphPanel({
 }: {
   online: boolean;
   supported: boolean;
-  /** One page of the log, `offset` commits in: the sheet appends what it lacks. */
-  listCommits: (offset?: number) => Promise<GitGraphListing>;
+  /** One page of the log, read from `cursor`: the sheet appends what it lacks. */
+  listCommits: (cursor?: string) => Promise<GitGraphListing>;
   getCommit: (gitRef: string) => Promise<GitCommitDetail>;
   onClose: () => void;
   /**
@@ -117,6 +117,8 @@ export function GitGraphPanel({
     rows: GitGraphRow[];
     /** Whether the page read last said another one follows. */
     truncated: boolean;
+    /** Where that page stopped; "" once the last one answered. */
+    cursor: string;
     /**
      * A host that predates paging answered with the first page again: nothing
      * new arrived but it still claims more. The list stops offering a button
@@ -130,6 +132,12 @@ export function GitGraphPanel({
   // near the end of a list, and without this one scroll would append the same
   // page three times.
   const askingRef = useRef(false);
+  // Whether the reader has scrolled this list at all. React Native's list calls
+  // `onEndReached` on mount, before it has measured the content, so without this
+  // the sheet reads a second page every time it opens — a page nobody asked for,
+  // and on a history shorter than the screen the one thing that would have hidden
+  // the "load older" button. Reaching the end means scrolling to it.
+  const scrolledRef = useRef(false);
 
   // One identity object per read, so an answer that arrives after the sheet was
   // refreshed (or after the reader opened another commit) is discarded rather
@@ -146,6 +154,8 @@ export function GitGraphPanel({
 
   useEffect(() => {
     let current = true;
+    // A new read starts at the top of a list that has not been scrolled yet.
+    scrolledRef.current = false;
     if (request.online && request.supported) {
       void request.listCommits().then(
         next => { if (current) setResult({ request, listing: next, failed: false }); },
@@ -198,27 +208,28 @@ export function GitGraphPanel({
   /**
    * Append the next page.
    *
-   * The offset is what this sheet already holds, because the pages are one
-   * window into one log rather than a cursor of their own: the host lays the
-   * page out from the top of the history, so a row's lanes continue from the
-   * rows above it even when those rows arrived minutes ago.
+   * The cursor is where the page on screen stopped: the host reads the next page
+   * from it, so the appended rows continue the lanes above them even when those
+   * rows arrived minutes ago — and the read costs one page however far the reader
+   * has scrolled.
    */
   const loadOlder = async () => {
     const asked = request;
     if (!asked.online || !asked.supported || !settled || !listing) return;
     if (askingRef.current || !more) return;
     askingRef.current = true;
-    const offset = commits.length;
+    const cursor = appended?.cursor ?? listing.cursor ?? "";
     setOlder(prev => ({
       request: asked,
       rows: prev?.request === asked ? prev.rows : [],
       truncated: prev?.request === asked ? prev.truncated : more,
+      cursor: prev?.request === asked ? prev.cursor : cursor,
       stale: prev?.request === asked ? prev.stale : false,
       loading: true,
       failed: false,
     }));
     try {
-      const next = await asked.listCommits(offset);
+      const next = await asked.listCommits(cursor);
       setOlder(prev => {
         const rows = prev?.request === asked ? prev.rows : [];
         // A commit that landed between the two reads shifts the page's start and
@@ -227,12 +238,14 @@ export function GitGraphPanel({
         const fresh = next.commits.filter(row => !seen.has(row.short));
         // A host that cannot page answers every request with the first page:
         // nothing new arrives, yet it still reports more. Stopping is what keeps
-        // the button from doing nothing forever.
-        const stale = fresh.length === 0 && next.truncated && offset > 0;
+        // the button from doing nothing forever. Read off the rows rather than
+        // the cursor, so it holds for a host that sends no cursor at all.
+        const stale = fresh.length === 0 && next.truncated;
         return {
           request: asked,
           rows: [...rows, ...fresh],
           truncated: stale ? false : next.truncated,
+          cursor: next.cursor ?? "",
           stale,
           loading: false,
           failed: false,
@@ -243,6 +256,7 @@ export function GitGraphPanel({
         request: asked,
         rows: prev?.request === asked ? prev.rows : [],
         truncated: prev?.request === asked ? prev.truncated : more,
+        cursor: prev?.request === asked ? prev.cursor : cursor,
         stale: prev?.request === asked ? prev.stale : false,
         loading: false,
         failed: true,
@@ -342,10 +356,15 @@ export function GitGraphPanel({
                     : undefined
           }
           // Reaching the end appends the next page: on a phone, the log is
-          // scrolled and rarely paged by hand. The footer above stays a button as
-          // well, so the same page can be asked for by a press that a screen
-          // reader can find.
-          onEndReached={commits.length === 0 ? undefined : () => { void loadOlder(); }}
+          // scrolled and rarely paged by hand. Only a scroll counts as reaching
+          // it — see `scrolledRef`. The footer above stays a button as well, so
+          // the same page can be asked for by a press that a screen reader can
+          // find.
+          onScroll={() => { scrolledRef.current = true; }}
+          scrollEventThrottle={16}
+          onEndReached={commits.length === 0
+            ? undefined
+            : () => { if (scrolledRef.current) void loadOlder(); }}
           onEndReachedThreshold={0.6}
           renderItem={({ item, index }) => (
             <CommitRow

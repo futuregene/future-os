@@ -88,7 +88,7 @@ const detail: GitCommitDetail = {
 };
 
 let tree: ReactTestRenderer;
-const listCommits = jest.fn<Promise<GitGraphListing>, [number?]>(async () => listing);
+const listCommits = jest.fn<Promise<GitGraphListing>, [string?]>(async () => listing);
 const getCommit = jest.fn<Promise<GitCommitDetail>, [string]>(async () => detail);
 const onClose = jest.fn();
 const removeBack = jest.fn();
@@ -106,6 +106,13 @@ const mount = async (overrides: Partial<Parameters<typeof GitGraphPanel>[0]> = {
   await act(async () => { await Promise.resolve(); });
 };
 const commits = () => tree.root.findByType(FlatList);
+/** A finger's way to the end: scroll the list, and only then let it report that
+ * the end has been reached. Both happen in that order for a reader, and a list
+ * nobody has scrolled is still at its top as far as the panel is concerned. */
+const reachEnd = async () => {
+  act(() => { commits().props.onScroll!(); });
+  await act(async () => { await commits().props.onEndReached!(); });
+};
 
 test("the first commit is not flush against the surface above it", async () => {
   await mount();
@@ -479,19 +486,36 @@ const olderPage: GitGraphListing = {
   truncated: false,
 };
 
+test("opening the sheet reads one page, and the next one waits for a scroll", async () => {
+  listCommits.mockResolvedValueOnce({ ...listing, truncated: true, cursor: "at:5" });
+  listCommits.mockResolvedValue(olderPage);
+  await mount();
+  // React Native's list reports the end as soon as it mounts, before anything is
+  // measured. A sheet that read the next page then would cost a read every time
+  // it opened, and on a history shorter than the screen it would paint the
+  // second page under the reader without a gesture.
+  await act(async () => { await commits().props.onEndReached!(); });
+  expect(listCommits).toHaveBeenCalledTimes(1);
+  expect(commits().props.data).toHaveLength(5);
+  // The same report, after a scroll, is a reader reaching the end.
+  await reachEnd();
+  expect(listCommits).toHaveBeenCalledTimes(2);
+  expect(commits().props.data).toHaveLength(7);
+});
+
 test("reaching the end appends the next page instead of stopping there", async () => {
-  listCommits.mockResolvedValueOnce({ ...listing, truncated: true });
+  listCommits.mockResolvedValueOnce({ ...listing, truncated: true, cursor: "at:5" });
   listCommits.mockResolvedValueOnce(olderPage);
   await mount();
   expect(commits().props.data).toHaveLength(5);
   // The first page says the log goes on, so the footer offers the rest.
   expect(hasButton("git.loadMore")).toBe(true);
 
-  await act(async () => { await commits().props.onEndReached!(); });
+  await reachEnd();
 
-  // The offset is what the sheet already holds: the pages are one window into
-  // one log rather than a cursor of their own.
-  expect(listCommits).toHaveBeenLastCalledWith(5);
+  // The cursor is where the page on screen stopped: the host reads the next page
+  // from it, rather than counting rows the sheet happens to hold.
+  expect(listCommits).toHaveBeenLastCalledWith("at:5");
   expect(commits().props.data).toHaveLength(7);
   expect(commits().props.data.at(-1)!.short).toBe("0d4b7a9");
   // The appended rows are drawn with the lanes of the rows above them: a page
@@ -512,7 +536,11 @@ test("one scroll asks for one page, however often the list reports its end", asy
   await mount();
   // `onEndReached` fires again on every re-render near the end of a list; the
   // rows must not be appended twice for one scroll.
-  act(() => { void commits().props.onEndReached!(); void commits().props.onEndReached!(); });
+  act(() => {
+    commits().props.onScroll!();
+    void commits().props.onEndReached!();
+    void commits().props.onEndReached!();
+  });
   expect(listCommits).toHaveBeenCalledTimes(2);
 
   await act(async () => { settle(olderPage); });
@@ -520,10 +548,10 @@ test("one scroll asks for one page, however often the list reports its end", asy
 });
 
 test("a page that fails keeps what was read and offers the retry", async () => {
-  listCommits.mockResolvedValueOnce({ ...listing, truncated: true });
+  listCommits.mockResolvedValueOnce({ ...listing, truncated: true, cursor: "at:5" });
   listCommits.mockRejectedValueOnce(new Error("nope"));
   await mount();
-  await act(async () => { await commits().props.onEndReached!(); });
+  await reachEnd();
 
   // The rows already on screen stay: a failed page is not a failed history.
   expect(commits().props.data).toHaveLength(5);
@@ -531,7 +559,9 @@ test("a page that fails keeps what was read and offers the retry", async () => {
 
   listCommits.mockResolvedValueOnce(olderPage);
   await act(async () => { await button("git.loadMoreFailed").props.onPress(); });
-  expect(listCommits).toHaveBeenLastCalledWith(5);
+  // The retry asks from the same place: the page that failed left the cursor
+  // where it was, so nothing is skipped and nothing repeats.
+  expect(listCommits).toHaveBeenLastCalledWith("at:5");
   expect(commits().props.data).toHaveLength(7);
 });
 
@@ -541,7 +571,7 @@ test("a desktop too old to page stops at the page it has, and says so", async ()
   listCommits.mockResolvedValueOnce({ ...listing, truncated: true });
   listCommits.mockResolvedValueOnce({ ...listing, truncated: true });
   await mount();
-  await act(async () => { await commits().props.onEndReached!(); });
+  await reachEnd();
 
   expect(listCommits).toHaveBeenCalledTimes(2);
   // No row is drawn twice…
