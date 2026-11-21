@@ -709,6 +709,10 @@ def prompt_for(case):
         fmt = "one integer"
     elif case["scorer"] == "choice":
         fmt = "one option letter"
+    elif case["scorer"] == "bbeh" and re.search(
+        r"(?m)^Options:\s*\n\s*\([A-Z]\)", case["question"]
+    ):
+        fmt = "the option identifier alone when selecting a listed option, following any explicit format in the problem"
     else:
         fmt = "the answer in the format requested by the problem"
     return (
