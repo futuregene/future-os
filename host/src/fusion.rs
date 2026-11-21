@@ -1159,6 +1159,10 @@ async fn step_inner(
         let prepared = match phase.as_str() {
             "issue_mapping" => mapping::expand_citations(text, source_prompt)?,
             "reviewing" => review::expand_citations(text, source_prompt)?,
+            "synthesizing" => match ctx.synthesis_audit.lock().unwrap().as_ref() {
+                Some(packet) => deliberation::prepare_report(text, packet)?,
+                None => text.to_owned(),
+            },
             _ => text.to_owned(),
         };
         let text = prepared.as_str();
