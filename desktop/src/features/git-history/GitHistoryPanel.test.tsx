@@ -15,15 +15,15 @@ import { GitHistoryPanel } from "./GitHistoryPanel";
  * `@future-os/git-graph`'s, tested there.
  */
 
-const listLocal = vi.fn<(path: string) => Promise<GitGraphListing>>();
+const listLocal = vi.fn<(path: string, offset?: number) => Promise<GitGraphListing>>();
 const getLocal = vi.fn<(path: string, sha: string) => Promise<GitCommitDetail>>();
-const listRemote = vi.fn<(desktopId: string, sessionId: string) => Promise<GitGraphListing>>();
+const listRemote = vi.fn<(desktopId: string, sessionId: string, offset?: number) => Promise<GitGraphListing>>();
 const getRemote = vi.fn<(desktopId: string, sessionId: string, sha: string) => Promise<GitCommitDetail>>();
 
 vi.mock("../../integrations/tauri/invoke", () => ({
   invokeCommand: (command: string, args: Record<string, unknown>) => {
     if (command === "get_git_history") {
-      return listLocal(args.path as string);
+      return listLocal(args.path as string, args.offset as number | undefined);
     }
     return getLocal(args.path as string, args.sha as string);
   },
@@ -108,7 +108,7 @@ const rows = () => [...container.querySelectorAll<HTMLButtonElement>("[data-git-
 
 it("reads a local workspace's history through the local command", async () => {
   await mount({ kind: "local", path: "/Users/reader/repo" });
-  expect(listLocal).toHaveBeenCalledWith("/Users/reader/repo");
+  expect(listLocal).toHaveBeenCalledWith("/Users/reader/repo", 0);
   expect(listRemote).not.toHaveBeenCalled();
   expect(rows()).toHaveLength(COMMITS.length);
   expect(container.textContent).toContain("trunk tip");
@@ -117,7 +117,7 @@ it("reads a local workspace's history through the local command", async () => {
 
 it("reads a remote conversation's history from the peer it belongs to", async () => {
   await mount({ desktopId: "desktop_a", kind: "remote", sessionId: "sess_1" });
-  expect(listRemote).toHaveBeenCalledWith("desktop_a", "sess_1");
+  expect(listRemote).toHaveBeenCalledWith("desktop_a", "sess_1", 0);
   expect(listLocal).not.toHaveBeenCalled();
   expect(rows()).toHaveLength(COMMITS.length);
 });
@@ -285,4 +285,74 @@ it("shows a failure rather than an empty history", async () => {
   await mount({ kind: "local", path: "/Users/reader/repo" });
   expect(container.textContent).toContain("git not found");
   expect(rows()).toHaveLength(0);
+});
+
+it("appends the next page instead of stopping at the first one", async () => {
+  listLocal.mockResolvedValueOnce(listing(COMMITS, { truncated: true }));
+  listLocal.mockResolvedValueOnce(listing([
+    { decorations: "", graph: "│ o  ", short: "fff666", subject: "older work", when: "7 hours ago", who: "Jun" },
+  ]));
+  await mount({ kind: "local", path: "/Users/reader/repo" });
+  expect(rows()).toHaveLength(COMMITS.length);
+
+  const more = container.querySelector<HTMLButtonElement>("[data-git-load-more]")!;
+  expect(more.textContent).toContain("Load older commits");
+  await act(async () => {
+    more.click();
+  });
+  await flush();
+
+  // The offset is what the view already holds: one log, read a page at a time.
+  expect(listLocal).toHaveBeenLastCalledWith("/Users/reader/repo", COMMITS.length);
+  expect(rows()).toHaveLength(COMMITS.length + 1);
+  expect(rows()[COMMITS.length]!.textContent).toContain("older work");
+  // Nothing is left past this page, and the panel says so rather than leaving
+  // the reader looking at a button that would return nothing.
+  expect(container.querySelector("[data-git-load-more]")).toBeNull();
+  expect(container.textContent).toContain("This is the oldest commit.");
+});
+
+it("keeps the rows already read when a page fails, and offers the retry", async () => {
+  listLocal.mockResolvedValueOnce(listing(COMMITS, { truncated: true }));
+  listLocal.mockRejectedValueOnce(new Error("git timed out"));
+  await mount({ kind: "local", path: "/Users/reader/repo" });
+
+  await act(async () => {
+    container.querySelector<HTMLButtonElement>("[data-git-load-more]")!.click();
+  });
+  await flush();
+
+  expect(rows()).toHaveLength(COMMITS.length);
+  const more = container.querySelector<HTMLButtonElement>("[data-git-load-more]")!;
+  expect(more.textContent).toContain("Could not read older commits");
+
+  listLocal.mockResolvedValueOnce(listing([
+    { decorations: "", graph: "│ o  ", short: "fff666", subject: "older work", when: "7 hours ago", who: "Jun" },
+  ]));
+  await act(async () => {
+    more.click();
+  });
+  await flush();
+  expect(listLocal).toHaveBeenLastCalledWith("/Users/reader/repo", COMMITS.length);
+  expect(rows()).toHaveLength(COMMITS.length + 1);
+});
+
+it("stops at the page it has when the peer cannot page, and says so", async () => {
+  // A peer that predates paging answers the second request with the first page
+  // again: nothing new arrives, and it still reports that more exists.
+  listRemote.mockResolvedValueOnce(listing(COMMITS, { truncated: true }));
+  listRemote.mockResolvedValueOnce(listing(COMMITS, { truncated: true }));
+  await mount({ desktopId: "desktop_a", kind: "remote", sessionId: "sess_1" });
+
+  await act(async () => {
+    container.querySelector<HTMLButtonElement>("[data-git-load-more]")!.click();
+  });
+  await flush();
+
+  expect(listRemote).toHaveBeenCalledTimes(2);
+  // No row is drawn twice…
+  expect(rows()).toHaveLength(COMMITS.length);
+  // …and the button is gone, because pressing it again could not do anything.
+  expect(container.querySelector("[data-git-load-more]")).toBeNull();
+  expect(container.textContent).toContain("The oldest commits are not shown.");
 });

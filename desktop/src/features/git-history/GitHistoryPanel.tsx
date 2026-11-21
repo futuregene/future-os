@@ -9,7 +9,7 @@ import {
   patchLines,
 } from "@future-os/git-graph";
 import { ChevronLeft, GitBranch, Loader2, RefreshCw } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { IconButton } from "../../components/ui/IconButton";
 import { errorMessage } from "../../lib/errors";
@@ -70,6 +70,26 @@ export function GitHistoryPanel({
     failed: string | null;
   } | null>(null);
   const [selected, setSelected] = useState<GitGraphRow | null>(null);
+  // The pages past the first. Keyed by the same read as the first page, so a
+  // refresh (or another source) drops them rather than stitching two different
+  // reads into one list.
+  const [pages, setPages] = useState<{
+    key: string;
+    rows: GitGraphRow[];
+    /** Whether the page read last said another one follows. */
+    truncated: boolean;
+    /**
+     * A peer that predates paging answered with the first page again: nothing new
+     * arrived but it still claims more. The panel stops offering a button that
+     * cannot advance, and says the rest is not shown.
+     */
+    stale: boolean;
+    loading: boolean;
+    failed: boolean;
+  } | null>(null);
+  // One page in flight at a time: the button is disabled while a read is open,
+  // but a second click can land before the state it set has been painted.
+  const askingRef = useRef(false);
 
   const key = useMemo(() => `${gitSourceKey(source)}#${revision}`, [source, revision]);
   const settled = state?.key === key;
@@ -96,7 +116,76 @@ export function GitHistoryPanel({
     };
   }, [source, key]);
 
-  const commits = useMemo(() => listing?.commits ?? [], [listing]);
+  const commits = useMemo(() => {
+    const first = listing?.commits ?? [];
+    const appended = pages?.key === key ? pages : null;
+    return appended && appended.rows.length > 0 ? [...first, ...appended.rows] : first;
+  }, [listing, pages, key]);
+  // The pages past the first, when they belong to the read on screen.
+  const appended = pages?.key === key ? pages : null;
+  // Whether the log goes on: the page read last is the authority once there is
+  // one, and the first page's own flag says so before that.
+  const more = appended ? appended.truncated : listing?.truncated === true;
+
+  /**
+   * Append the next page.
+   *
+   * The offset is what this view already holds: the host lays each page out from
+   * the top of the history, so the appended rows continue the lanes above them
+   * rather than starting every line again at the left edge.
+   */
+  const loadMore = async () => {
+    if (!listing || askingRef.current || !more) {
+      return;
+    }
+    askingRef.current = true;
+    const asked = key;
+    const offset = commits.length;
+    setPages(prev => ({
+      key: asked,
+      rows: prev?.key === asked ? prev.rows : [],
+      truncated: prev?.key === asked ? prev.truncated : more,
+      stale: prev?.key === asked ? prev.stale : false,
+      loading: true,
+      failed: false,
+    }));
+    try {
+      const next = await listGitHistory(source, offset);
+      setPages((prev) => {
+        const rows = prev?.key === asked ? prev.rows : [];
+        // A commit that landed between the two reads shifts the page's start and
+        // its row arrives twice; the sha is what says it is the same commit.
+        const seen = new Set([...(listing.commits), ...rows].map(row => row.short));
+        const fresh = next.commits.filter(row => !seen.has(row.short));
+        // A peer that cannot page answers every request with the first page:
+        // nothing new arrives, yet it still reports more. Stopping is what keeps
+        // the button from doing nothing forever.
+        const stale = fresh.length === 0 && next.truncated && offset > 0;
+        return {
+          key: asked,
+          rows: [...rows, ...fresh],
+          truncated: stale ? false : next.truncated,
+          stale,
+          loading: false,
+          failed: false,
+        };
+      });
+    }
+    catch {
+      setPages(prev => ({
+        key: asked,
+        rows: prev?.key === asked ? prev.rows : [],
+        truncated: prev?.key === asked ? prev.truncated : more,
+        stale: prev?.key === asked ? prev.stale : false,
+        loading: false,
+        failed: true,
+      }));
+    }
+    finally {
+      askingRef.current = false;
+    }
+  };
+
   const lanes = useMemo(() => Math.max(1, laneCount(commits)), [commits]);
   // Decoded once for the page, not once per row: a row cannot be decoded alone
   // anyway — whether a thread reaches above a dot depends on the row before it.
@@ -159,13 +248,40 @@ export function GitHistoryPanel({
                         onOpen={() => setSelected(commit)}
                       />
                     ))}
-                    {listing?.truncated
+                    {more
                       ? (
-                          <div className="px-4 py-3 text-center text-[11px] text-ink-muted">
-                            {t("truncated")}
+                          <div className="px-3 py-2">
+                            <button
+                              type="button"
+                              data-git-load-more
+                              onClick={() => { void loadMore(); }}
+                              disabled={appended?.loading}
+                              className="flex w-full items-center justify-center gap-1.5 rounded px-3 py-2 text-[11px] text-accent hover:bg-surface-subtle disabled:opacity-70"
+                            >
+                              {appended?.loading
+                                ? <Loader2 size={12} className="animate-spin" />
+                                : null}
+                              {appended?.failed
+                                ? t("loadMoreFailed")
+                                : appended?.loading ? t("loadingMore") : t("loadMore")}
+                            </button>
                           </div>
                         )
-                      : null}
+                      // Only once the reader has paged: a history that fit in one
+                      // page has nothing to explain.
+                      : appended?.stale
+                        ? (
+                            <div className="px-4 py-3 text-center text-[11px] text-ink-muted">
+                              {t("truncated")}
+                            </div>
+                          )
+                        : appended
+                          ? (
+                              <div className="px-4 py-3 text-center text-[11px] text-ink-muted">
+                                {t("historyEnd")}
+                              </div>
+                            )
+                          : null}
                   </>
                 )}
       </div>

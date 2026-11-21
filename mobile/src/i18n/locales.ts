@@ -84,6 +84,11 @@ export const resources = {
         updateDesktop: "Update FutureOS Desktop to read its Git history.",
         loadFailed: "Could not read this repository's history. Pull to try again.",
         empty: "This repository has no commits yet.",
+        loadMore: "Load older commits",
+        loadingMore: "Reading older commits…",
+        loadMoreFailed: "Could not read older commits. Tap to try again.",
+        historyEnd: "This is the oldest commit.",
+        /** The paired desktop is too old to read past the first page. */
         truncated: "The oldest commits are not shown.",
         back: "Back to commits",
         commitFailed: "Could not read this commit. Try again.",
@@ -1435,6 +1440,11 @@ export const resources = {
         updateDesktop: "请更新 FutureOS 桌面端，以使用 Git 历史。",
         loadFailed: "无法读取该仓库的历史，请下拉重试。",
         empty: "该仓库还没有任何提交。",
+        loadMore: "加载更早的提交",
+        loadingMore: "正在读取更早的提交…",
+        loadMoreFailed: "无法读取更早的提交，点击重试。",
+        historyEnd: "已经是最早的提交。",
+        /** 配对的桌面端版本过旧，只读得到第一页。 */
         truncated: "更早的提交未显示。",
         back: "返回提交列表",
         commitFailed: "无法读取该提交，请重试。",
