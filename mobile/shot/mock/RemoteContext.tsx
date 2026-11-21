@@ -210,6 +210,13 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // month drawn the way the host drew it before that window existed, so a pair
   // of captures can show what the window fixed.
   const gitLanes = new URLSearchParams(window.location.search).get("gitlanes");
+  // `?gitpaged=1` answers the history in two pages: the last three rows of the
+  // demo log are the second one, so the sheet opens with its "load older" entry
+  // on screen and a swipe appends real rows rather than nothing. The cut is at a
+  // row boundary of one real read, which keeps the second page's lanes
+  // continuing the first one's.
+  const gitPaged = new URLSearchParams(window.location.search).get("gitpaged") === "1";
+  const PAGED_CURSOR = "1|demo-page-2|";
   // `?fleet=1` pairs the phone with five desktops and merges their conversations
   // into the home screen's recency page (`shot/mock/fleet.ts`). The product
   // already draws a merged list — the picker's "all desktops", a machine glyph per
@@ -751,11 +758,22 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     // top bar's menu reads before it offers the entry at all. `?norepo=1`
     // answers as a plain directory would, which is the case a capture has to
     // show the menu *without* the Git row.
-    listGitCommits: async (): Promise<GitGraphListing> => (noRepo
-      ? { isRepo: false, repoName: "", path: "", commits: [], truncated: false }
-      : gitLanes === "widening" ? demoWideningGitListing
+    listGitCommits: async (cursor?: string): Promise<GitGraphListing> => {
+      if (noRepo) return { isRepo: false, repoName: "", path: "", commits: [], truncated: false };
+      const listing = gitLanes === "widening" ? demoWideningGitListing
         : gitLanes === "window" ? demoWindowGitListing
-          : demoGitListing),
+          : demoGitListing;
+      if (!gitPaged) return listing;
+      // Two pages, cut at a row boundary (see `gitPaged`): the cursor says which
+      // half is being asked for.
+      const second = cursor === PAGED_CURSOR;
+      return {
+        ...listing,
+        commits: second ? listing.commits.slice(-3) : listing.commits.slice(0, -3),
+        truncated: !second,
+        cursor: second ? "" : PAGED_CURSOR,
+      };
+    },
     getGitCommit: async (gitRef: string): Promise<GitCommitDetail> => ({
       ...demoGitCommitDetail,
       short: gitRef,
