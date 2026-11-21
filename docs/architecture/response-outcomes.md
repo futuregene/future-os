@@ -71,6 +71,22 @@ entries so Host reads the full answer in order. An exhausted or disabled
 continuation ends with `incomplete` and `[OUTPUT_LIMIT]`. The Goal worker can
 then apply its separate bounded recovery policy.
 
+## A repetition guard's cut
+
+A gateway that runs its own repetition detector can stop a looping model with a
+non-standard `finish_reason` (`repetition`), returning no text and no tool call.
+The adapter keeps that reason as its own (`FinishReason::Repetition`) instead of
+collapsing it into an unknown one, and `run_loop.rs` classifies the cut as
+`provider_repetition`.
+
+Because such a cut produced nothing, the same request is sent again inside the
+run — at most twice, and only when the cut left no text and no tool call. Every
+retry is logged with `detected_by` and the attempt number; retries do not
+consume a turn and share the automatic-retry switch (`max_retries`). A cut that
+produced text or a tool call is never retried: the run ends `incomplete` with
+`[RESPONSE_UNCONFIRMED] provider_repetition`, the same verdict as any other
+truncation.
+
 ## A goal worker's incomplete retry is not a continuation
 
 "Continue" in a conversation and "retry" in a goal worker are different
