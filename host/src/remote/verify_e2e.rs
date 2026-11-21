@@ -7,7 +7,7 @@
 //! encryption, so their byte counts are a model of the wire, not the wire. This
 //! module instead wires the production path: one `secure::Transport` shared by
 //! the command loop and the event drain (`build_transport`), a phone-side
-//! `Channel` obtained through the real `secure_pair` handshake, and a phone
+//! `Channel` obtained through the real pairing handshake, and a phone
 //! subscription whose every message is counted on receipt and again after
 //! `Channel::open`. Each decrypted record is asserted to be exactly a sealed
 //! record (`wire == plaintext + HEADER + TAG`), so a plaintext passthrough
@@ -53,8 +53,8 @@ use serde_json::{json, Value};
 use super::commands::new_reply_slots;
 use super::publisher::{CATALOG_ACTIVITY_FEATURE, EVENT_COALESCING_FEATURE, MAX_EVENT_BYTES};
 use super::test_support::{
-    declare_features, ensure_mock_agent, init_store, jwt, mock_agent_lock, now_secs, pairing_creds,
-    secure_pair, unique, FakeNats, HomeGuard,
+    declare_features, ensure_mock_agent, init_store, jwt, mock_agent_lock, now_secs,
+    open_secure_channel, pairing_creds, unique, FakeNats, HomeGuard,
 };
 use super::transport::build_transport;
 use super::{publish_event, secure, stop, DropCounters, NatsHealth, RemoteState, SUPERVISOR};
@@ -513,6 +513,26 @@ impl E2e {
     /// has a full one at start-up, and that is the case the first packet's size
     /// is about.
     async fn on_broker_seeded(broker: Broker, label: &str, seed_rows: usize) -> Self {
+        let mut e2e = Self::on_broker_seeded_before_ready(broker, label, seed_rows).await;
+        // The sealed `secure_ready` is what the real client sends first: it
+        // declares this connection's capabilities and activates the desktop's
+        // channel for sealed traffic. Nothing is pushed before it.
+        e2e.ready(&[]).await;
+        e2e
+    }
+
+    /// [`E2e::on_broker_seeded`] stopping before the phone's `secure_ready`:
+    /// the two proving legs of the handshake are done, and the desktop holds a
+    /// candidate channel it has not activated yet.
+    ///
+    /// That state exists for a test whose first observation is a packet the
+    /// publisher sends the moment the channel goes live. The subscription has
+    /// to be registered *before* the `secure_ready` that activates it, because
+    /// the publisher's first packet is published on the first tick after
+    /// activation and a broker never retries a packet published to a subject
+    /// with no subscriber — a test that subscribes afterwards measures the
+    /// second packet while `catalogue_measurement` reports the first.
+    async fn on_broker_seeded_before_ready(broker: Broker, label: &str, seed_rows: usize) -> Self {
         let home = HomeGuard::new(label);
         init_store();
         ensure_mock_agent();
@@ -593,7 +613,7 @@ impl E2e {
 
         // The phone: a separate broker connection running the real handshake.
         let phone = connect(broker.url(), &format!("verify-phone-{pair_id}")).await;
-        let channel = secure_pair(&phone, &invitation(&creds), &pair_id).await;
+        let channel = open_secure_channel(&phone, &invitation(&creds), &pair_id).await;
         E2e {
             _home: home,
             broker,
@@ -634,8 +654,22 @@ impl E2e {
     }
 
     /// Send one sealed command on the real command lane and decrypt the sealed
-    /// reply the bridge publishes to the request inbox.
+    /// reply the bridge publishes to the request inbox, counting the exchange as
+    /// the harness's own phone traffic.
     async fn sealed_command(&mut self, subject: &str, command: &Value) -> ReplyCapture {
+        let capture = self.sealed_command_exchange(subject, command).await;
+        self.phone_rx_bytes += capture.wire_bytes;
+        self.phone_rx_messages += 1;
+        capture
+    }
+
+    /// The exchange half of [`E2e::sealed_command`], counting nothing.
+    ///
+    /// Readiness uses it: `phone_rx_*` is the harness's side of the *lane*
+    /// accounting, and the `secure_ready` that finishes pairing is sent before
+    /// any lane exists — the same message `secure_pair` sends on a fixture that
+    /// never counted it.
+    async fn sealed_command_exchange(&mut self, subject: &str, command: &Value) -> ReplyCapture {
         let wire = self
             .channel
             .seal(
@@ -669,8 +703,6 @@ impl E2e {
             .open(&context, &reply.payload)
             .expect("reply decrypts");
         let body = serde_json::from_slice(&plaintext).expect("reply is JSON");
-        self.phone_rx_bytes += reply.payload.len();
-        self.phone_rx_messages += 1;
         ReplyCapture {
             wire_bytes: reply.payload.len(),
             plaintext_bytes: plaintext.len(),
@@ -694,6 +726,19 @@ impl E2e {
         let subject = format!("p.{}.cmd.ready", self.pair_id);
         let body = json!({ "type": "secure_ready", "features": features });
         let reply = self.sealed_command(&subject, &body).await;
+        assert_eq!(reply.body["success"], json!(true), "{:?}", reply.body);
+    }
+
+    /// The `secure_ready` that finishes pairing: it declares this connection's
+    /// capabilities and activates the desktop's channel for sealed traffic.
+    ///
+    /// Uncounted, like the readiness `secure_pair` sends before a fixture
+    /// exists: `phone_rx_*` describes the lane under measurement, and the
+    /// readiness exchange is not part of it.
+    async fn ready(&mut self, features: &[&str]) {
+        let subject = format!("p.{}.cmd.ready", self.pair_id);
+        let body = json!({ "type": "secure_ready", "features": features });
+        let reply = self.sealed_command_exchange(&subject, &body).await;
         assert_eq!(reply.body["success"], json!(true), "{:?}", reply.body);
     }
 
@@ -1385,7 +1430,7 @@ async fn measure_catalog_first_packet_over_real_crypto() {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(200);
-    let mut e2e = E2e::on_broker_seeded(
+    let mut e2e = E2e::on_broker_seeded_before_ready(
         Broker::Fake(FakeNats::start().await),
         "catalog-first-packet",
         rows,
@@ -1396,11 +1441,21 @@ async fn measure_catalog_first_packet_over_real_crypto() {
     // already had a directory to build. Blackholed here for clarity.
     let _ = rows;
 
-    // The phone declares the delta lane (what the mobile client declares), then
-    // subscribes to the catalogue subject it will read the packet from, exactly
-    // as `useSessionCatalog` does.
-    e2e.declare(&[future_remote_protocol::CATALOG_DELTA_FEATURE])
-        .await;
+    // Subscribe *before* the channel can deliver anything. The publisher sends
+    // its first packet on the first tick after the channel activates, and NATS
+    // drops a packet published to a subject nobody has subscribed to yet — it
+    // is never retried. Subscribing after activation therefore races that first
+    // packet: CI run 44942696681 lost it, received the delta lane's full packet
+    // published after the declaration instead, and its size did not match the
+    // record the counter had kept for the first one (10747 vs 11636 on the
+    // wire).
+    //
+    // So the subscription goes first, and the delta declaration is the
+    // `secure_ready` that activates the channel — the one command a mobile
+    // client sends after its handshake. Every push before it is dropped by the
+    // sealed channel and retracted from the count, and every push after it has
+    // a live subscriber, so the first packet the publisher hands the broker is
+    // also the first one the phone can receive.
     let subject = format!("p.{}.state.sessions", e2e.pair_id);
     let mut subscription = e2e
         .phone
@@ -1408,6 +1463,8 @@ async fn measure_catalog_first_packet_over_real_crypto() {
         .await
         .expect("subscribe to the catalogue lane");
     e2e.probe_bytes += e2e.broker.await_subscription(&e2e.phone, &subject).await;
+    e2e.ready(&[future_remote_protocol::CATALOG_DELTA_FEATURE])
+        .await;
 
     // Wait for the first packet on the real lane and count what arrived.
     let published = tokio::time::timeout(Duration::from_secs(10), subscription.next())
