@@ -42,6 +42,16 @@ export interface GitGraphListing {
   commits: GitGraphRow[];
   /** The log was cut at the host's page size; the oldest row is not the root. */
   truncated: boolean;
+  /**
+   * What to ask for the next page with; "" on the last page. Opaque — the host
+   * reads it back, and a view only ever hands it straight back.
+   *
+   * It is a position in the log rather than a count, which is what keeps a deep
+   * page as cheap as the first one and lets the appended rows continue the lanes
+   * above them. Absent from a host that predates paging, which then answers every
+   * request with its first page.
+   */
+  cursor?: string;
 }
 
 export interface GitCommitDetail {

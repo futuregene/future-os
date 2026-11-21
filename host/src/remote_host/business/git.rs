@@ -15,12 +15,13 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
     match cmd.cmd_type.as_str() {
         "list_git_commits" => {
             let session_id = cmd.session_id.clone();
-            // How many commits the caller already has: the sheet appends a page
-            // at a time, and the page size is the host's to keep.
-            let skip = cmd.offset.max(0) as usize;
+            // Where the caller's last page stopped: the cursor it answered with,
+            // empty on the first page. The sheet appends a page at a time, and
+            // the page size is the host's to keep.
+            let cursor = cmd.cursor.clone();
             let result = crate::runtime::run_blocking(move || {
                 let workspace = workspace_of(&session_id)?;
-                crate::remote_host::git_graph::list(&workspace, skip)
+                crate::remote_host::git_graph::list(&workspace, &cursor)
                     .map_err(|error| error.to_string())
             })
             .await;

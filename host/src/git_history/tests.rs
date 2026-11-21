@@ -54,12 +54,12 @@ impl Repo {
     }
 
     fn listing(&self) -> GraphListing {
-        list(&self.path().display().to_string(), 0).unwrap()
+        list(&self.path().display().to_string(), "").unwrap()
     }
 
     /// One page of the history, as a reader asking for more would get it.
-    fn page(&self, skip: usize, take: usize) -> GraphListing {
-        page(&self.path().display().to_string(), skip, take).unwrap()
+    fn page(&self, cursor: &str, take: usize) -> GraphListing {
+        page(&self.path().display().to_string(), cursor, take).unwrap()
     }
 
     /// Commit one file with the author and committer named separately, the way a
@@ -105,7 +105,7 @@ impl Repo {
 #[test]
 fn a_plain_directory_is_not_a_repository() {
     let dir = tempfile::tempdir().unwrap();
-    let listing = list(&dir.path().display().to_string(), 0).unwrap();
+    let listing = list(&dir.path().display().to_string(), "").unwrap();
     assert!(!listing.is_repo);
     assert!(listing.repo_name.is_empty());
     assert!(listing.commits.is_empty());
@@ -143,7 +143,7 @@ fn a_subdirectory_of_a_repository_reports_the_repository() {
     repo.commit("first");
     let nested = repo.path().join("nested/deeper");
     std::fs::create_dir_all(&nested).unwrap();
-    let listing = list(&nested.display().to_string(), 0).unwrap();
+    let listing = list(&nested.display().to_string(), "").unwrap();
     assert!(listing.is_repo);
     // Spelled the way the file system spells it: `fs::canonicalize` produces the
     // extended-length form (`\\?\C:\…`) on Windows, and a phone given that string
@@ -330,6 +330,17 @@ fn the_picture_stops_widening_past_the_window() {
 /// exactly what reading it whole draws. The layout of a page is a fold over the
 /// rows above it, so a page cut out and laid out on its own would start every
 /// lane at column 0 and break the drawing at the seam.
+/// A page continues where the last one stopped: the cursor is a position in the
+/// log, so walking it must reproduce one uninterrupted read exactly — the same
+/// commits, in the same order, with the same lanes, and the pages must not
+/// overlap or skip.
+///
+/// This is the property the cursor exists for. Reading the log from the top on
+/// every page (with `--skip`, or by asking for `skip + take` and dropping the
+/// first `skip`) also happens to produce these rows; what it cannot do is keep
+/// doing it at the hundredth page without reading the whole history each time.
+/// The assertion is on the sequence, so a cursor that is ignored — every page
+/// answering with the first one — fails it on the duplicate rows.
 #[test]
 fn pages_concatenate_into_the_single_page_drawing() {
     let repo = Repo::new();
@@ -342,15 +353,17 @@ fn pages_concatenate_into_the_single_page_drawing() {
 
     let whole = repo.listing();
     let mut paged = Vec::new();
-    let mut skip = 0;
+    let mut cursor = String::new();
     loop {
-        let page = repo.page(skip, 2);
-        skip += page.commits.len();
+        let page = repo.page(&cursor, 2);
+        assert!(page.commits.len() <= 2, "a page overran its size");
         let last = !page.truncated;
+        cursor = page.cursor.clone();
         paged.extend(page.commits.into_iter().map(|row| (row.short, row.graph)));
         if last {
             break;
         }
+        assert!(!cursor.is_empty(), "a truncated page must carry a cursor");
     }
     let whole: Vec<(String, String)> = whole
         .commits
@@ -361,34 +374,87 @@ fn pages_concatenate_into_the_single_page_drawing() {
     assert_eq!(paged, whole);
 }
 
+/// A page read from a cursor is exactly the tail of the read above it: page two
+/// holds the commits one bigger read lists after page one's last row, in that
+/// order.
+///
+/// This is the assertion a rewritten cursor has to keep: if the continuation
+/// ignores the cursor (answers with the first page again) the rows repeat, and
+/// if it walks from a narrower set than the page above left it (dropping the
+/// branches the log had not reached yet) commits go missing. Both show up here
+/// as a sequence that is not the tail.
+#[test]
+fn the_second_page_is_the_tail_of_one_bigger_read() {
+    let repo = Repo::new();
+    repo.commit("base");
+    // Two long branches that do not merge, one opening after the other: at a cut
+    // this leaves a branch tip the pages above have never shown, which is the
+    // case a cursor made only of the open lanes loses.
+    for (branch, count) in [("alpha", 3), ("beta", 3)] {
+        repo.git(&["checkout", "-b", branch, "main"]);
+        for at in 0..count {
+            repo.commit(&format!("{branch} {at}"));
+        }
+    }
+    repo.git(&["checkout", "main"]);
+    repo.commit("main head");
+
+    let whole: Vec<String> = repo
+        .page("", 20)
+        .commits
+        .into_iter()
+        .map(|row| row.short)
+        .collect();
+    assert_eq!(whole.len(), 8, "base, three, three and the head: {whole:?}");
+
+    let first = repo.page("", 3);
+    assert_eq!(first.commits.len(), 3);
+    let second = repo.page(&first.cursor, 3);
+    assert_eq!(second.commits.len(), 3);
+    let got: Vec<String> = first
+        .commits
+        .iter()
+        .chain(second.commits.iter())
+        .map(|row| row.short.clone())
+        .collect();
+    assert_eq!(got, whole[..6], "page two is not the tail of one read");
+
+    // The same cursor twice is the same page: a client retries a page that
+    // failed, and a retry must not advance the reader's position.
+    let again = repo.page(&first.cursor, 3);
+    let once: Vec<String> = second.commits.iter().map(|row| row.short.clone()).collect();
+    let twice: Vec<String> = again.commits.iter().map(|row| row.short.clone()).collect();
+    assert_eq!(once, twice);
+}
+
 /// Paging a linear history: each page says whether another one follows, and the
-/// one past the root is empty rather than an error — an offset a client asks for
-/// after the history moved is not a failure the reader can act on.
+/// last one answers with no cursor at all.
 #[test]
 fn every_page_says_whether_another_one_follows() {
     let repo = Repo::new();
     for subject in ["one", "two", "three", "four", "five"] {
         repo.commit(subject);
     }
-    let first = repo.page(0, 3);
+    let first = repo.page("", 3);
     assert_eq!(first.commits.len(), 3);
     assert!(first.truncated);
+    assert!(!first.cursor.is_empty());
     assert_eq!(first.commits[0].subject, "five");
 
-    let second = repo.page(3, 3);
+    let second = repo.page(&first.cursor, 3);
     assert_eq!(second.commits.len(), 2);
     assert!(!second.truncated);
+    assert!(
+        second.cursor.is_empty(),
+        "the last page has nothing to continue to"
+    );
     assert_eq!(second.commits[1].subject, "one");
     // The header of a page is the repository's, not the page's, so the second
     // page carries it too: the client says what it is reading once, and the
     // answer does not get thinner as it pages.
     assert_eq!(second.repo_name, first.repo_name);
 
-    let past = repo.page(5, 3);
-    assert!(past.commits.is_empty());
-    assert!(!past.truncated);
-    // A skipped row never shifts the page's own width: every row of the history
-    // is padded the same, whichever page carries it.
+    // Every row of the history is padded the same, whichever page carries it.
     let widths: Vec<usize> = first
         .commits
         .iter()
