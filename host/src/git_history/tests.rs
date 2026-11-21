@@ -275,6 +275,57 @@ fn a_lane_keeps_its_column_across_the_page() {
     assert!(columns.iter().all(|at| at % 2 == 0));
 }
 
+/// A lane keeps its column, ten tips are ten lanes, and the picture still stops
+/// at the window: the phone draws every row's gutter at one width, so a history
+/// that keeps opening lanes would squeeze every subject on the page.
+#[test]
+fn the_picture_stops_widening_past_the_window() {
+    let repo = Repo::new();
+    repo.commit("base");
+    for n in 0..10 {
+        repo.git(&["checkout", "-q", "-b", &format!("lane-{n}"), "main"]);
+        repo.commit(&format!("lane {n} work"));
+    }
+    let listing = repo.listing();
+    let window = 2 * LANE_WINDOW;
+    assert!(
+        listing.commits.len() >= 11,
+        "the ten tips and their base: {}",
+        listing.commits.len()
+    );
+    for row in &listing.commits {
+        assert!(
+            row.graph.chars().count() <= window,
+            "a ten-lane history drew a {}-cell gutter, past the window: {:?}",
+            row.graph.chars().count(),
+            row.graph
+        );
+        // A commit sits on an even cell, and past the window it is still drawn —
+        // in the bundle's column, at the window's edge.
+        if let Some(at) = row
+            .graph
+            .chars()
+            .position(|cell| cell == 'o' || cell == 'M')
+        {
+            assert_eq!(at % 2, 0, "{:?}", row.graph);
+            assert!(at <= window - 2, "a dot past the window: {:?}", row.graph);
+        }
+    }
+    // The window is used, not merely respected: ten lanes fill all six columns.
+    assert!(
+        listing
+            .commits
+            .iter()
+            .any(|row| row.graph.chars().count() == window),
+        "no row filled the window: {:?}",
+        listing
+            .commits
+            .iter()
+            .map(|row| &row.graph)
+            .collect::<Vec<_>>()
+    );
+}
+
 /// Pages join into one picture: reading the log two commits at a time must draw
 /// exactly what reading it whole draws. The layout of a page is a fold over the
 /// rows above it, so a page cut out and laid out on its own would start every

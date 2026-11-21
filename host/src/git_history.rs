@@ -36,6 +36,17 @@ use std::time::{Duration, Instant};
 /// the read that should not happen when a sheet opens.
 const COMMIT_LIMIT: usize = 200;
 
+/// How many lanes the picture draws before it stops widening.
+///
+/// A lane is two cells, and the subject starts after the gutter, so twelve lines
+/// of work open at once would push every subject 24 cells right — past what a
+/// phone has to spare. Six is where a phone runs out of room (the same six the
+/// lane palette cycles at), so the picture is capped there: a line past the sixth
+/// is drawn *in* the sixth column, sharing it with the other lines that run past
+/// the window. It keeps its commits — each one is a dot on its own row — it just
+/// no longer has a column of its own, and the six colours are the six columns.
+pub const LANE_WINDOW: usize = 6;
+
 /// How far a page may start into the log.
 ///
 /// A page is laid out from the top of the history, not from its own first commit
@@ -734,32 +745,60 @@ fn draw(
             .rposition(Option::is_some)
             .unwrap_or(0)
             .max(rightmost);
-        let mut cells = vec![' '; 2 * (width + 1)];
+        // Every lane past the window is drawn in the window's last column: the
+        // picture stops widening there, and the lines beyond it stay on the page
+        // as one bundle instead of disappearing. A commit on one of them still
+        // gets its dot, in that same column, so its row says where the work
+        // landed even though the line it sits on is shared.
+        let visible = width.min(LANE_WINDOW - 1);
+        let mut up = vec![false; visible + 1];
+        let mut down = vec![false; visible + 1];
+        let mut left = vec![false; visible + 1];
+        let mut right = vec![false; visible + 1];
+        // Where the commit itself landed, and whether it joins lines. Several
+        // lanes can fold into one column, but only one of them is this row's.
+        let mut marks = vec![false; visible + 1];
+        let mut joins = vec![false; visible + 1];
         for column in 0..=width {
-            let up = lanes.get(column).is_some_and(|lane| lane.is_some()) && column != mine;
+            let fold = column.min(visible);
+            let column_up = lanes.get(column).is_some_and(|lane| lane.is_some()) && column != mine;
             // A column a line gives up on and another takes over in the same row
             // continues below: the vertical passes through it.
-            let down = if opened.iter().any(|(taken, _, _)| *taken == column) {
+            let column_down = if opened.iter().any(|(taken, _, _)| *taken == column) {
                 true
             } else if closed.contains(&column) {
                 false
             } else {
-                up
+                column_up
             };
-            let right = column >= mine && column < rightmost;
-            let left = column > mine && column <= rightmost;
-            cells[2 * column] = if column == mine {
+            // The bundle carries the directions of every lane inside it, so a
+            // thread that runs through it is still drawn.
+            up[fold] |= column_up;
+            down[fold] |= column_down;
+            right[fold] |= column >= mine && column < rightmost;
+            left[fold] |= column > mine && column <= rightmost;
+            if column == mine {
+                marks[fold] = true;
+                joins[fold] = parents.len() > 1;
+            }
+        }
+        // The bundle closes at the window's edge: a connector in its last cell
+        // would run the horizontal out of the picture and into the fields.
+        right[visible] = false;
+        let mut cells = vec![' '; 2 * (visible + 1)];
+        for column in 0..=visible {
+            cells[2 * column] = if marks[column] {
                 // `M` is a commit that joins lines, `o` one that only continues
                 // its own — tig's two glyphs.
-                if parents.len() > 1 {
+                if joins[column] {
                     'M'
                 } else {
                     'o'
                 }
             } else {
-                junction(up, down, left, right)
+                junction(up[column], down[column], left[column], right[column])
             };
-            if column >= mine && column < rightmost {
+            if right[column] {
                 cells[2 * column + 1] = '─';
             }
         }

@@ -11,9 +11,11 @@
 export type GraphPalette = readonly string[];
 
 /**
- * Six, because a phone screen holds about six lanes before the subjects run out
- * of room, and because two lanes that share a colour are then six columns apart
- * — far enough to read as two columns rather than as one line skipping a row.
+ * Six, because the picture stops at six lanes: the producers (the host's
+ * `git_history` and the TUI's `git_panel`, one window for all three surfaces)
+ * draw every line past the sixth *in* the sixth column, so a reader never sees
+ * more than six — and two lanes that share a colour are then six columns apart,
+ * far enough to read as two columns rather than as one line skipping a row.
  */
 export const LIGHT_GRAPH_COLORS: GraphPalette = [
   "#2563eb", // accent
