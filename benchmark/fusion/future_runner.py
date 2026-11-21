@@ -700,6 +700,24 @@ def unexecuted_consultation(discussion, tool_id, transcript):
     }
 
 
+def bbeh_answer_format(question):
+    # Derive the contract from the question, before accessing any reference.
+    if re.search(
+        r"(?i)list of (?:two|three|four|five|\d+) words separated by commas",
+        question,
+    ):
+        return "only the comma-separated words on one line, without angle brackets or explanation"
+    if re.search(
+        r"(?m)^(?:Options:[ \t]*\n[ \t]*\(A\)|[ \t]*\(A\)[^\n]*\n[ \t]*\(B\))",
+        question,
+    ):
+        return (
+            "the option identifier alone when selecting a listed option, such as (A); "
+            "follow any explicit multiple-answer or other format in the problem"
+        )
+    return "the answer in the format requested by the problem"
+
+
 def prompt_for(case):
     if case["scorer"] == "grid":
         # Output schema only: header names contain no solution assignments.
@@ -709,10 +727,8 @@ def prompt_for(case):
         fmt = "one integer"
     elif case["scorer"] == "choice":
         fmt = "one option letter"
-    elif case["scorer"] == "bbeh" and re.search(
-        r"(?m)^Options:\s*\n\s*\([A-Z]\)", case["question"]
-    ):
-        fmt = "the option identifier alone when selecting a listed option, following any explicit format in the problem"
+    elif case["scorer"] == "bbeh":
+        fmt = bbeh_answer_format(case["question"])
     else:
         fmt = "the answer in the format requested by the problem"
     return (

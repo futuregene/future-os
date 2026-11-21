@@ -552,7 +552,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         Judge consequential claims by their support in the original task and participant material. \
         Apply the user's decision rule as written, including explicit defaults and thresholds. \
         Give a concrete derivation or exact source passage priority over a competing assertion. \
-        Before changing an answer supported by such a derivation, identify the specific step that fails. \
+        Before changing an answer supported by such a derivation, identify the specific step that fails or the contrary evidence and its effect under the original criterion. \
         Before declaring insufficient information, check whether the claimed gap actually changes the decision under the user's rule. \
         Distinguish supplied observations and derivations from assumptions, inferred intentions, and preferences. \
         Count independent support separately from agreement that repeats a premise. \
