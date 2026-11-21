@@ -834,6 +834,12 @@ pub enum FinishReason {
     Cancelled,
     Paused,
     Incomplete,
+    /// A provider-side repetition guard ended the stream: the model had fallen
+    /// into a loop, so the gateway stopped it instead of returning text. It is
+    /// not a transport failure and has nothing to do with the output budget —
+    /// the reason is kept on its own so a caller can act on the cut rather than
+    /// bucket it with an unknown one.
+    Repetition,
     Error,
     Unknown(String),
 }
@@ -851,6 +857,7 @@ impl FinishReason {
             // Existing UI/RPC consumers use `truncated` for a stream that
             // ended without a complete model response.
             Self::Incomplete => "truncated",
+            Self::Repetition => "repetition",
             Self::Error => "error",
             Self::Unknown(value) => value,
         }
@@ -1288,6 +1295,7 @@ mod tests {
         assert_eq!(FinishReason::Refusal.as_str(), "refusal");
         assert_eq!(FinishReason::Cancelled.as_str(), "cancelled");
         assert_eq!(FinishReason::Incomplete.as_str(), "truncated");
+        assert_eq!(FinishReason::Repetition.as_str(), "repetition");
         assert_eq!(FinishReason::Error.as_str(), "error");
         assert_eq!(FinishReason::Unknown("custom".into()).as_str(), "custom");
     }
@@ -1424,6 +1432,7 @@ mod tests {
             (FinishReason::Cancelled, "cancelled"),
             (FinishReason::Paused, "pause_turn"),
             (FinishReason::Incomplete, "truncated"),
+            (FinishReason::Repetition, "repetition"),
             (FinishReason::Error, "error"),
         ];
         let mut seen = std::collections::HashSet::new();

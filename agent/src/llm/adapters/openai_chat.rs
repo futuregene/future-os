@@ -469,6 +469,11 @@ fn map_finish_reason(reason: &str) -> FinishReason {
         "length" | "max_tokens" => FinishReason::Length,
         "content_filter" => FinishReason::ContentFilter,
         "refusal" => FinishReason::Refusal,
+        // Not one of the OpenAI names: a gateway that runs its own repetition
+        // guard stops a looping model and reports the cut like this. Kept apart
+        // from `Unknown` so the run loop can distinguish "the provider decided
+        // the model was looping" from "we do not know what happened".
+        "repetition" => FinishReason::Repetition,
         other => FinishReason::Unknown(other.to_string()),
     }
 }
@@ -1452,6 +1457,11 @@ mod tests {
             map_finish_reason("weird"),
             FinishReason::Unknown("weird".into())
         );
+    }
+
+    #[test]
+    fn map_finish_reason_keeps_a_gateway_repetition_guard_distinct() {
+        assert_eq!(map_finish_reason("repetition"), FinishReason::Repetition);
     }
 
     #[test]
