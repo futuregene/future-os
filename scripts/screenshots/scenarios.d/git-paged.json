@@ -29,7 +29,7 @@
   },
   "mobile": {
     "git-paged": {
-      "note": "手机的历史页：演示日志只有十四行，一打开就短于一屏，列表于是在挂载时就把第二页续读了——这张拍的是那之后：两页拼成的十四行、页脚说已经读到根提交。手机上「上滑到底自动续读」和页脚的「加载更早的提交」是同一个动作的两条路，入口本身由 GitGraphPanel 的单测按着按钮验。",
+      "note": "手机的历史页，三张。演示日志三十七行，切成三十一行 + 六行：第一页就长过一屏，所以刚打开时列表里只有第一页（第一张）；滑到底，页脚露出「加载更早的提交」（第二张）——这就是入口；按下它，第二页接上，再滑到底就是日志的末尾（第三张）。",
       "query": "?gitpaged=1",
       "lang": "zh-CN",
       "steps": [
@@ -43,9 +43,23 @@
         { "tap": "查看 Git 历史" },
         { "wait": 2500 },
         {
-          "eval": "(() => { const rows = [...document.querySelectorAll('[aria-label^=\"打开提交\"]')]; if (rows.length !== 14) throw new Error('the second page did not join the first: ' + rows.length + ' rows, expected 14'); const text = document.body.textContent || ''; if (!text.includes('已经是最早的提交')) throw new Error('the sheet did not say the log ends here'); const shas = [...new Set(rows.map(r => (r.getAttribute('aria-label') || '').slice(0, 40)))]; if (shas.length !== rows.length) throw new Error('a commit is drawn twice: ' + shas.length + ' of ' + rows.length); return rows.length + ' rows, no duplicate, footer says the log ends'; })()"
+          "eval": "(() => { const rows = [...document.querySelectorAll('[aria-label^=\"打开提交\"]')]; if (rows.length === 0) throw new Error('the sheet drew no history'); const text = document.body.textContent || ''; for (const sha of ['413d442', '1fb3967', '5ae4ba3', '186ad5c', '1725026', '0a96b9e']) { if (text.includes(sha)) throw new Error('the second page arrived without being asked for: ' + sha + ' is already on screen'); } if (text.includes('已经是最早的提交')) throw new Error('the sheet claims the log ends while page two is unread'); return rows.length + ' rows of the first page, nothing older'; })()"
         },
-        { "shot": "m-git-paged.png" }
+        { "shot": "m-git-paged.png" },
+        { "eval": "(() => { const rows=[...document.querySelectorAll('[aria-label^=\"打开提交\"]')]; let node=rows[0], scroller=null; while(node){ if(node.scrollHeight>node.clientHeight+1 && getComputedStyle(node).overflowY!=='visible'){scroller=node;break;} node=node.parentElement;} if(!scroller) throw new Error('the history list does not scroll'); scroller.scrollTop = scroller.scrollHeight; return 'scrolled to ' + Math.round(scroller.scrollTop); })()" },
+        { "wait": 900 },
+        {
+          "eval": "(() => { const more = [...document.querySelectorAll('[aria-label]')].find(n => (n.getAttribute('aria-label') || '').trim() === '加载更早的提交'); if (!more) throw new Error('the foot of the list offers no way to read older commits'); const text = document.body.textContent || ''; if (text.includes('413d442')) throw new Error('the next page arrived by itself: the entry was never used'); return 'entry: ' + more.getAttribute('aria-label'); })()"
+        },
+        { "shot": "m-git-paged-entry.png" },
+        { "tap": "加载更早的提交" },
+        { "wait": 1500 },
+        { "eval": "(() => { const rows=[...document.querySelectorAll('[aria-label^=\"打开提交\"]')]; let node=rows[0], scroller=null; while(node){ if(node.scrollHeight>node.clientHeight+1 && getComputedStyle(node).overflowY!=='visible'){scroller=node;break;} node=node.parentElement;} scroller.scrollTop = scroller.scrollHeight; return 'scrolled to ' + Math.round(scroller.scrollTop); })()" },
+        { "wait": 1000 },
+        {
+          "eval": "(() => { const text = document.body.textContent || ''; if (!text.includes('已经是最早的提交')) throw new Error('the second page did not reach the end of the log'); if (!text.includes('Start the analysis notebook for cohort A')) throw new Error('the oldest commit of the second page never arrived'); const rows = [...document.querySelectorAll('[aria-label^=\"打开提交\"]')]; const labels = rows.map(r => (r.getAttribute('aria-label') || '').slice(0, 40)); if (new Set(labels).size !== labels.length) throw new Error('a commit is drawn twice across the seam'); return 'second page joined: ' + rows.length + ' rows on screen, oldest commit present, no duplicate'; })()"
+        },
+        { "shot": "m-git-paged-older.png" }
       ]
     }
   }

@@ -50,6 +50,7 @@ import {
   demoFiles,
   demoGitCommitDetail,
   demoGitListing,
+  demoPagedGitListing,
   demoWindowGitListing,
   demoWideningGitListing,
   demoInstalledSkills,
@@ -210,9 +211,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // month drawn the way the host drew it before that window existed, so a pair
   // of captures can show what the window fixed.
   const gitLanes = new URLSearchParams(window.location.search).get("gitlanes");
-  // `?gitpaged=1` answers the history in two pages: the last three rows of the
-  // demo log are the second one, so the sheet opens with its "load older" entry
-  // on screen and a swipe appends real rows rather than nothing. The cut is at a
+  // `?gitpaged=1` answers the history in two pages: the last six rows of the
+  // demo log are the second one. The first page is longer than a phone screen, so
+  // the sheet opens on it alone and the second page is reached by scrolling — the
+  // entry is the swipe, not a mount that finds nothing to scroll. The cut is at a
   // row boundary of one real read, which keeps the second page's lanes
   // continuing the first one's.
   const gitPaged = new URLSearchParams(window.location.search).get("gitpaged") === "1";
@@ -762,14 +764,17 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       if (noRepo) return { isRepo: false, repoName: "", path: "", commits: [], truncated: false };
       const listing = gitLanes === "widening" ? demoWideningGitListing
         : gitLanes === "window" ? demoWindowGitListing
-          : demoGitListing;
+          : gitPaged ? demoPagedGitListing
+            : demoGitListing;
       if (!gitPaged) return listing;
       // Two pages, cut at a row boundary (see `gitPaged`): the cursor says which
-      // half is being asked for.
+      // half is being asked for. The first page is thirty-one rows, three screens
+      // of them, so the sheet opens on part of the history only — the second page
+      // is reached by the reader, not by a mount that finds nothing to scroll.
       const second = cursor === PAGED_CURSOR;
       return {
         ...listing,
-        commits: second ? listing.commits.slice(-3) : listing.commits.slice(0, -3),
+        commits: second ? listing.commits.slice(-6) : listing.commits.slice(0, -6),
         truncated: !second,
         cursor: second ? "" : PAGED_CURSOR,
       };
