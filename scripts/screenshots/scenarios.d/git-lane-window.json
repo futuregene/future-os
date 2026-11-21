@@ -1,0 +1,93 @@
+{
+  "_comment": [
+    "泳道窗口：同一个月的十路并行历史，改前每一条线各占一列（9 条线 = 18 格），改后第 7 条及以后并进第 6 列（固定 12 格）。",
+    "两个平台各拍一对，图形宽度由同一份 grid 决定，所以「改前」就是封顶前的 host 真正打印出来的那份网格（fixture 注释里记了取样的 commit）。",
+    "断言不靠像素：量的是 svg 的实际矩形、点的 x 与标题左缘。回退到按条数加宽时，window 那一半的 91/77 断言立刻红。"
+  ],
+  "desktop": {
+    "git-lane-window": {
+      "note": "十路并行的历史在桌面侧栏里：图形固定六列（91px），点最右落在第 6 条线（x=77），十二行标题同一个左缘。第 7 条及以后的提交仍各自落在第 6 列上，一个没少。",
+      "url": "http://localhost:5299/shot/?lang=zh&gitlanes=window",
+      "steps": [
+        { "wait": 2500 },
+        { "tap": "展开上下文面板" },
+        { "wait": 1200 },
+        {
+          "eval": "(() => { const sel = document.querySelector('#context-panel-view'); if (!sel) throw new Error('the context panel has no view selector'); const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set; setter.call(sel, 'review'); sel.dispatchEvent(new Event('change', { bubbles: true })); return 'switched to ' + sel.value; })()"
+        },
+        { "wait": 2000 },
+        {
+          "eval": "(() => { const tab = [...document.querySelectorAll('button')].find(b => b.textContent === '历史'); if (!tab) throw new Error('no History tab for a Git workspace'); tab.click(); return 'opened history'; })()"
+        },
+        { "wait": 1500 },
+        {
+          "eval": "(() => { const rows = [...document.querySelectorAll('[data-git-commit]')]; const pics = [...document.querySelectorAll('[data-lane-graph]')]; if (rows.length !== 12) throw new Error('expected the ten-branch demo history, saw ' + rows.length + ' rows'); if (pics.length !== rows.length) throw new Error('a row has no lane picture: ' + pics.length + ' of ' + rows.length); const widths = [...new Set(pics.map(s => Math.round(s.getBoundingClientRect().width)))]; if (widths.length !== 1) throw new Error('the gutters are not one width, so the subjects do not line up: ' + widths.join(',')); if (widths[0] > 92) throw new Error('the gutter widened with the lane count: ' + widths[0] + 'px (six lanes are 91px; nine would be 133px)'); const xs = [...new Set(pics.flatMap(s => [...s.querySelectorAll('circle')]).map(c => Math.round(Number(c.getAttribute('cx')))))]; if (Math.max(...xs) !== 77) throw new Error('the rightmost dot is not on the sixth lane (x=77): ' + xs.join(',')); const lefts = [...new Set(rows.map(r => Math.round(r.children[1].getBoundingClientRect().left)))]; if (lefts.length !== 1) throw new Error('the subjects start at different edges: ' + lefts.join(',')); const text = document.body.textContent || ''; for (const glyph of ['│', '─', '└', '┘', '┐', '┤', '┴']) { if (text.includes(glyph)) throw new Error('a box-drawing glyph reached the DOM: ' + glyph); } const strokes = pics.flatMap(s => [...s.querySelectorAll('line, path, circle')]); const colours = new Set(strokes.map(n => n.getAttribute('stroke') || n.getAttribute('fill')).filter(Boolean)); return rows.length + ' rows, gutter ' + widths[0] + 'px, dots on ' + xs.join('/') + ', ' + colours.size + ' colours'; })()"
+        },
+        { "shot": "d-git-lane-window.png" }
+      ]
+    },
+    "git-lane-widening": {
+      "note": "同一份历史在泳道窗口之前的样子：九条线各占一列，图形十八格 = 133px，标题被推到右边、可用的字数少了 42px。这张只用来对照，host 已经画不出它了。",
+      "url": "http://localhost:5299/shot/?lang=zh&gitlanes=widening",
+      "steps": [
+        { "wait": 2500 },
+        { "tap": "展开上下文面板" },
+        { "wait": 1200 },
+        {
+          "eval": "(() => { const sel = document.querySelector('#context-panel-view'); if (!sel) throw new Error('the context panel has no view selector'); const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set; setter.call(sel, 'review'); sel.dispatchEvent(new Event('change', { bubbles: true })); return 'switched to ' + sel.value; })()"
+        },
+        { "wait": 2000 },
+        {
+          "eval": "(() => { const tab = [...document.querySelectorAll('button')].find(b => b.textContent === '历史'); if (!tab) throw new Error('no History tab for a Git workspace'); tab.click(); return 'opened history'; })()"
+        },
+        { "wait": 1500 },
+        {
+          "eval": "(() => { const rows = [...document.querySelectorAll('[data-git-commit]')]; const pics = [...document.querySelectorAll('[data-lane-graph]')]; if (rows.length !== 12) throw new Error('expected the widening demo history, saw ' + rows.length + ' rows'); const widths = [...new Set(pics.map(s => Math.round(s.getBoundingClientRect().width)))]; if (widths.length !== 1) throw new Error('the gutters are not one width: ' + widths.join(',')); if (widths[0] !== 133) throw new Error('this listing is meant to be the pre-window drawing (nine lanes = 133px), saw ' + widths[0]); const xs = [...new Set(pics.flatMap(s => [...s.querySelectorAll('circle')]).map(c => Math.round(Number(c.getAttribute('cx')))))]; if (Math.max(...xs) !== 119) throw new Error('the rightmost dot is not on the ninth lane (x=119): ' + xs.join(',')); const bodies = rows.map(r => Math.round(r.children[1].getBoundingClientRect().width)); return 'gutter ' + widths[0] + 'px, dots on ' + xs.join('/') + ', subject column ' + Math.min(...bodies) + 'px'; })()"
+        },
+        { "shot": "d-git-lane-widening.png" }
+      ]
+    }
+  },
+  "mobile": {
+    "git-lane-window": {
+      "note": "同一份十路并行历史在手机上：图形固定六列（91pt），点最右落在第 6 条线，标题因此还剩 267pt；第 7 条及以后的提交仍落在第 6 列上。回退到按条数加宽时图形会变 133pt，第一条断言就红。",
+      "query": "?gitlanes=window",
+      "lang": "zh-CN",
+      "steps": [
+        { "wait": 2000 },
+        { "tap": "稍后再说" },
+        { "wait": 2000 },
+        { "tap": "整理两篇文献的结论对比表" },
+        { "wait": 2500 },
+        { "tap": "会话操作" },
+        { "wait": 1500 },
+        { "tap": "查看 Git 历史" },
+        { "wait": 2500 },
+        {
+          "eval": "(() => { const rows = [...document.querySelectorAll('[aria-label^=\"打开提交\"]')]; if (rows.length !== 12) throw new Error('expected the ten-branch demo history, saw ' + rows.length + ' rows'); const pics = rows.map(r => r.querySelector('svg')); const widths = [...new Set(pics.map(s => Math.round(s.getBoundingClientRect().width)))]; if (widths.length !== 1) throw new Error('the gutters are not one width, so the subjects do not line up: ' + widths.join(',')); if (widths[0] > 92) throw new Error('the gutter widened with the lane count: ' + widths[0] + 'pt (six lanes are 91pt; nine would be 133pt)'); const xs = [...new Set(pics.flatMap(s => [...s.querySelectorAll('circle')]).map(c => Math.round(Number(c.getAttribute('cx')))))]; if (Math.max(...xs) !== 77) throw new Error('the rightmost dot is not on the sixth lane (x=77): ' + xs.join(',')); const bodies = rows.map(r => r.children[1].getBoundingClientRect()); const lefts = [...new Set(bodies.map(b => Math.round(b.left)))]; if (lefts.length !== 1) throw new Error('the subjects start at different edges: ' + lefts.join(',')); const room = Math.round(Math.min(...bodies.map(b => b.width))); if (room < 200) throw new Error('the subjects were squeezed into ' + room + 'pt'); const text = document.body.textContent || ''; for (const glyph of ['│', '─', '└', '┘', '┐', '┤', '┴']) { if (text.includes(glyph)) throw new Error('a box-drawing glyph reached the DOM: ' + glyph); } const strokes = pics.flatMap(s => [...s.querySelectorAll('line, path, circle')]); const colours = new Set(strokes.map(n => n.getAttribute('stroke') || n.getAttribute('fill')).filter(Boolean)); return rows.length + ' rows, gutter ' + widths[0] + 'pt, subject ' + room + 'pt, dots on ' + xs.join('/') + ', ' + colours.size + ' colours'; })()"
+        },
+        { "shot": "m-git-lane-window.png" }
+      ]
+    },
+    "git-lane-widening": {
+      "note": "同一份历史在手机上的改前样子：九条线各占一列，图形 133pt，标题只剩 225pt。只作对照。",
+      "query": "?gitlanes=widening",
+      "lang": "zh-CN",
+      "steps": [
+        { "wait": 2000 },
+        { "tap": "稍后再说" },
+        { "wait": 2000 },
+        { "tap": "整理两篇文献的结论对比表" },
+        { "wait": 2500 },
+        { "tap": "会话操作" },
+        { "wait": 1500 },
+        { "tap": "查看 Git 历史" },
+        { "wait": 2500 },
+        {
+          "eval": "(() => { const rows = [...document.querySelectorAll('[aria-label^=\"打开提交\"]')]; if (rows.length !== 12) throw new Error('expected the widening demo history, saw ' + rows.length + ' rows'); const pics = rows.map(r => r.querySelector('svg')); const widths = [...new Set(pics.map(s => Math.round(s.getBoundingClientRect().width)))]; if (widths[0] !== 133) throw new Error('this listing is meant to be the pre-window drawing (nine lanes = 133pt), saw ' + widths[0]); const xs = [...new Set(pics.flatMap(s => [...s.querySelectorAll('circle')]).map(c => Math.round(Number(c.getAttribute('cx')))))]; if (Math.max(...xs) !== 119) throw new Error('the rightmost dot is not on the ninth lane (x=119): ' + xs.join(',')); const bodies = rows.map(r => Math.round(r.children[1].getBoundingClientRect().width)); return 'gutter ' + widths[0] + 'pt, dots on ' + xs.join('/') + ', subject column ' + Math.min(...bodies) + 'pt'; })()"
+        },
+        { "shot": "m-git-lane-widening.png" }
+      ]
+    }
+  }
+}

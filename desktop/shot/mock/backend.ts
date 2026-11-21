@@ -22,6 +22,8 @@ import {
   entriesByThread,
   gitHistoryCommits,
   gitHistoryPatch,
+  gitHistoryWindowCommits,
+  gitHistoryWideningCommits,
   HOME,
   installedSkills,
   models,
@@ -58,6 +60,11 @@ import { quotedPrompt } from "./replyQuote";
  * absence is something the harness captures rather than merely claims.
  */
 const noRepo = new URLSearchParams(window.location.search).get("norepo") === "1";
+// Which history the panel opens onto. `?gitlanes=window` is ten branches of
+// work drawn inside the six-column lane window; `?gitlanes=widening` the same
+// month drawn the way the host drew it before that window existed, so a pair of
+// captures can show what the window fixed.
+const gitLanes = new URLSearchParams(window.location.search).get("gitlanes");
 
 // The console output doubles as the "what is missing" list while iterating on
 // the harness, which is why this one log call is intentional.
@@ -1253,7 +1260,13 @@ const handlers: Record<string, (args: any) => unknown> = {
     isRepo: !noRepo,
     repoName: noRepo ? "" : "dopamine-decision",
     path: noRepo ? `${HOME}/Research/notes` : `${HOME}/Research/dopamine-decision`,
-    commits: noRepo ? [] : gitHistoryCommits,
+    commits: noRepo
+      ? []
+      : gitLanes === "widening"
+        ? gitHistoryWideningCommits
+        : gitLanes === "window"
+          ? gitHistoryWindowCommits
+          : gitHistoryCommits,
     truncated: false,
   }),
   get_git_commit: () => ({
