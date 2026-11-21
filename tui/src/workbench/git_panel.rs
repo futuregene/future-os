@@ -303,7 +303,7 @@ fn commits(
         // here" rather than showing git's fatal message.
         Err(error) if error.contains("does not have any commits") => {
             Ok((Vec::new(), false, String::new()))
-        } // i18n: matches git's own stderr, never drawn
+        }
         Err(error) => Err(error),
     }
 }
