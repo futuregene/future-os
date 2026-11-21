@@ -132,6 +132,12 @@ export function GitGraphPanel({
   // near the end of a list, and without this one scroll would append the same
   // page three times.
   const askingRef = useRef(false);
+  // Whether the reader has scrolled this list at all. React Native's list calls
+  // `onEndReached` on mount, before it has measured the content, so without this
+  // the sheet reads a second page every time it opens — a page nobody asked for,
+  // and on a history shorter than the screen the one thing that would have hidden
+  // the "load older" button. Reaching the end means scrolling to it.
+  const scrolledRef = useRef(false);
 
   // One identity object per read, so an answer that arrives after the sheet was
   // refreshed (or after the reader opened another commit) is discarded rather
@@ -148,6 +154,8 @@ export function GitGraphPanel({
 
   useEffect(() => {
     let current = true;
+    // A new read starts at the top of a list that has not been scrolled yet.
+    scrolledRef.current = false;
     if (request.online && request.supported) {
       void request.listCommits().then(
         next => { if (current) setResult({ request, listing: next, failed: false }); },
@@ -348,10 +356,15 @@ export function GitGraphPanel({
                     : undefined
           }
           // Reaching the end appends the next page: on a phone, the log is
-          // scrolled and rarely paged by hand. The footer above stays a button as
-          // well, so the same page can be asked for by a press that a screen
-          // reader can find.
-          onEndReached={commits.length === 0 ? undefined : () => { void loadOlder(); }}
+          // scrolled and rarely paged by hand. Only a scroll counts as reaching
+          // it — see `scrolledRef`. The footer above stays a button as well, so
+          // the same page can be asked for by a press that a screen reader can
+          // find.
+          onScroll={() => { scrolledRef.current = true; }}
+          scrollEventThrottle={16}
+          onEndReached={commits.length === 0
+            ? undefined
+            : () => { if (scrolledRef.current) void loadOlder(); }}
           onEndReachedThreshold={0.6}
           renderItem={({ item, index }) => (
             <CommitRow
