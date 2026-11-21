@@ -31,10 +31,19 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// How many commits one log read asks for. A page, not the history: a phone
-/// scrolls a screen at a time and a repository with 10⁵ commits is exactly the
-/// read that should not happen when a sheet opens.
+/// How many commits one page of the history asks for. A page, not the history: a
+/// phone scrolls a screen at a time and a repository with 10⁵ commits is exactly
+/// the read that should not happen when a sheet opens.
 const COMMIT_LIMIT: usize = 200;
+
+/// How far a page may start into the log.
+///
+/// A page is laid out from the top of the history, not from its own first commit
+/// (see [`page`]), so the cost of one read grows with the offset. This bounds it:
+/// at a page of 200, twenty thousand commits is a hundred pages of scrolling,
+/// far past anything a reader reaches on a phone and still a read git does in
+/// well under a second.
+const SKIP_CEILING: usize = 20_000;
 
 /// Budget for one read-only query (`rev-parse`, `log`).
 const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -43,9 +52,10 @@ const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 /// read gets room for a large commit on a slow disk.
 const SHOW_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Ceiling for a single read's stdout. `log --max-count=200` is a few hundred
-/// kilobytes; a patch can be far larger, and it is bounded here rather than in
-/// memory after the fact.
+/// Ceiling for a single read's stdout. A page is a few hundred kilobytes (a
+/// deeper page more, since the log is read from the top: see [`SKIP_CEILING`]); a
+/// patch can be far larger, and it is bounded here rather than in memory after
+/// the fact.
 const OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 
 /// How long a killed child gets to actually die before the read gives up on
@@ -125,7 +135,8 @@ pub struct GraphListing {
     /// several checkouts.
     pub path: String,
     pub commits: Vec<GraphRow>,
-    /// The log was cut at [`COMMIT_LIMIT`]; the oldest row is not the root.
+    /// More commits exist past this page: the next page starts at
+    /// `skip + commits.len()`. The last page is the one where this is `false`.
     pub truncated: bool,
 }
 
@@ -395,9 +406,20 @@ fn repository(cwd: &Path) -> Option<(std::path::PathBuf, String)> {
 
 /// The session workspace's history: the log as a lane graph.
 ///
-/// A workspace that is not a repository answers [`GraphListing::is_repo`]
-/// `false` with nothing in it, which is what the phone draws nothing for.
-pub fn list(workspace: &str) -> Result<GraphListing, crate::Error> {
+/// `skip` is how many commits the caller already has — a page is a window into
+/// the log, and the phone reads it a page at a time rather than opening a sheet
+/// on 10⁵ commits. A workspace that is not a repository answers
+/// [`GraphListing::is_repo`] `false` with nothing in it, which is what the phone
+/// draws nothing for.
+pub fn list(workspace: &str, skip: usize) -> Result<GraphListing, crate::Error> {
+    page(workspace, skip, COMMIT_LIMIT)
+}
+
+/// One page of the history, `take` commits from `skip` on.
+///
+/// Split from [`list`] so a test can page a five-commit fixture instead of
+/// building two hundred commits to see a second page.
+fn page(workspace: &str, skip: usize, take: usize) -> Result<GraphListing, crate::Error> {
     let root = Path::new(workspace);
     let empty = |path: String| GraphListing {
         is_repo: false,
@@ -409,6 +431,14 @@ pub fn list(workspace: &str) -> Result<GraphListing, crate::Error> {
     let Some((toplevel, repo_name)) = repository(root) else {
         return Ok(empty(workspace.to_string()));
     };
+    let skip = skip.min(SKIP_CEILING);
+    // The log is read from the top of the history and cut to the page afterwards,
+    // rather than asked for with `--skip`: a row's lanes are what the rows above
+    // it left behind, so a page laid out on its own would start every line of
+    // work at column 0 and the picture would break at the seam. Reading the
+    // prefix costs one `git log` — bounded by `SKIP_CEILING` — and keeps the
+    // drawing continuous with the page the caller already has.
+    let want = skip + take;
     // Every branch, tag and remote-tracking branch: the log describes the whole
     // repository, not just the checkout. `--all` would also pull in `refs/stash`
     // (a stash is a commit tree) as if it were a line of work, and naming `HEAD`
@@ -420,7 +450,7 @@ pub fn list(workspace: &str) -> Result<GraphListing, crate::Error> {
     // the person the row is about. Reading the committer there made a page of
     // real work look like it was all done by GitHub.
     let pretty = "--pretty=format:%x1e%h%x1f%H%x1f%P%x1f%cd%x1f%an%x1f%D%x1f%s";
-    let limit = format!("--max-count={COMMIT_LIMIT}");
+    let limit = format!("--max-count={want}");
     let output = git(
         &toplevel,
         &[
@@ -451,11 +481,12 @@ pub fn list(workspace: &str) -> Result<GraphListing, crate::Error> {
         return Err(failure(&output).into());
     };
     let entries = parse_entries(&text);
-    let truncated = entries.len() >= COMMIT_LIMIT;
+    let truncated = entries.len() >= want;
     let gutters = graph(&entries);
     let commits = entries
         .into_iter()
         .zip(gutters)
+        .skip(skip)
         .map(|(entry, graph)| GraphRow {
             short: entry.short,
             when: entry.when,

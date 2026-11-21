@@ -23,7 +23,7 @@
     { "wait": 1300 },
     { "click": { "aria": "桌面端设置" }, "note": "第一台机器的设置入口" },
     { "wait": 1300 },
-    { "click": { "text": "定时任务设置" } },
+    { "click": { "text": "定时任务" } },
     { "wait": 1600 },
     { "expectText": "定时任务" },
     { "expectText": "每周进展周报" },

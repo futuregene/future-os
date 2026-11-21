@@ -28,11 +28,21 @@ export function gitSourceReady(source: GitHistorySource | null): boolean {
   return source.kind === "local" ? source.path.length > 0 : true;
 }
 
-export async function listGitHistory(source: GitHistorySource): Promise<GitGraphListing> {
+/**
+ * One page of a history.
+ *
+ * `offset` is how many commits the caller already has: both paths read the log a
+ * page at a time, so a repository with 10⁵ commits is never one reply and the
+ * view appends what it lacks.
+ */
+export async function listGitHistory(
+  source: GitHistorySource,
+  offset = 0,
+): Promise<GitGraphListing> {
   if (source.kind === "local") {
-    return invokeCommand<GitGraphListing>("get_git_history", { path: source.path });
+    return invokeCommand<GitGraphListing>("get_git_history", { path: source.path, offset });
   }
-  return listRemoteGitCommits(source.desktopId, source.sessionId);
+  return listRemoteGitCommits(source.desktopId, source.sessionId, offset);
 }
 
 export async function getGitCommit(
