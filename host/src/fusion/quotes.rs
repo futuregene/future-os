@@ -65,6 +65,16 @@ pub(super) fn contains(source: &str, excerpt: &str) -> bool {
             _ => false,
         }
     }
+    // A copied quotation can render an inline variable as A instead of $A$.
+    // Keep currency, escaped dollar signs, and display math delimiters literal.
+    fn inline_variable(chars: &[char], start: usize) -> bool {
+        matches!(chars.get(start..start + 3), Some(['$', name, '$']) if name.is_alphabetic())
+            && !matches!(
+                start.checked_sub(1).and_then(|index| chars.get(index)),
+                Some('\\' | '$')
+            )
+            && chars.get(start + 3) != Some(&'$')
+    }
     fn normalize(text: &str) -> String {
         let chars: Vec<char> = text.chars().collect();
         let mut result = String::new();
@@ -80,7 +90,13 @@ pub(super) fn contains(source: &str, excerpt: &str) -> bool {
                 index.checked_sub(1).map(|previous| chars[previous]),
                 chars.get(index + 1).copied(),
             );
-            if markup {
+            if markup
+                || c == '$'
+                    && (inline_variable(&chars, index)
+                        || index
+                            .checked_sub(2)
+                            .is_some_and(|start| inline_variable(&chars, start)))
+            {
                 continue;
             }
             let c = match c {
@@ -109,6 +125,20 @@ pub(super) fn contains(source: &str, excerpt: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_rendered_math_variable_matches_its_source_without_losing_meaning() {
+        assert!(contains(
+            "and $A$ replies by giving $B$ the number",
+            "A replies by giving B the number"
+        ));
+        assert!(!contains(
+            "and $A$ replies by giving $B$ the number",
+            "B replies by giving A the number"
+        ));
+        assert!(!contains("Pay $5 and keep $6", "Pay 5 and keep 6"));
+        assert!(!contains(r"Write \$A$ literally", "Write A literally"));
+        assert!(!contains("Figure $$A$$", "Figure A"));
+    }
     #[test]
     fn tolerates_quotes_and_whitespace_without_changing_words() {
         assert!(contains("不要在电台上“钓鱼”", "不要在电台上'钓鱼'"));
