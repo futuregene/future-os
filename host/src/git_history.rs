@@ -832,11 +832,7 @@ type Pass = (Vec<Vec<char>>, Vec<(usize, usize)>, Vec<Option<Lane>>);
 
 /// One pass over the log: the rows, the parent links whose lane turned out to
 /// carry no commit of its own, and the lanes still open at the bottom.
-fn draw(
-    entries: &[Entry],
-    covered: &HashSet<(usize, usize)>,
-    seeded: Vec<Option<Lane>>,
-) -> Pass {
+fn draw(entries: &[Entry], covered: &HashSet<(usize, usize)>, seeded: Vec<Option<Lane>>) -> Pass {
     let mut lanes: Vec<Option<Lane>> = seeded;
     let mut rows: Vec<Vec<char>> = Vec::with_capacity(entries.len());
     let mut empty: Vec<(usize, usize)> = Vec::new();
