@@ -745,14 +745,18 @@ export async function listRemoteSessionFiles(
  *
  * `isRepo` is the same read rather than a separate probe, which is what lets a
  * view hide the whole feature for a plain directory without costing a round trip.
+ *
+ * `offset` is how many commits the view already has: the host answers one page
+ * per request, so the log is appended rather than read whole.
  */
 export function listRemoteGitCommits(
   desktopId: string,
   sessionId: string,
+  offset = 0,
 ): Promise<GitGraphListing> {
   return invokeCommand<GitGraphListing>("remote_peer_request", {
     desktopId,
-    command: { type: "list_git_commits", sessionId },
+    command: { type: "list_git_commits", sessionId, offset },
     lane: sessionId,
   });
 }
