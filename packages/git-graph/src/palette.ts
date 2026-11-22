@@ -17,12 +17,13 @@ export type GraphPalette = readonly string[];
  * the narrowest place the picture has to fit.
  *
  * Colour follows the column a row prints, not the line of work behind it: the
- * decoder paints `column * length`, so the six colours are the six columns. A
- * line keeps its colour for as long as it keeps its column, and every line folded
- * into the bundle shares the bundle's colour — there is one cell to paint, so the
- * palette cannot tell those lines apart. What does is the row itself: the refs
- * name the branch the commit sits on, which is the only place a reader can see
- * that five dots in one column are five different lines rather than one.
+ * decoder paints `palette[column % palette.length]`, so the six colours are the
+ * six columns. A line keeps its colour for as long as it keeps its column, and
+ * every line folded into the bundle shares the bundle's colour — there is one
+ * cell to paint, so the palette cannot tell those lines apart. What does is the
+ * row itself: the refs name the branch the commit sits on, which is the only
+ * place a reader can see that five dots in one column are five different lines
+ * rather than one.
  */
 export const LIGHT_GRAPH_COLORS: GraphPalette = [
   "#2563eb", // accent
