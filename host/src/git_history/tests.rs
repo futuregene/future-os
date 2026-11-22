@@ -785,3 +785,105 @@ fn a_branch_reaching_an_already_drawn_commit_draws_no_empty_lane() {
         );
     }
 }
+
+/// `tips` branches off one base commit, all merged at once, so the merge row
+/// opens every lane and each tip's row has lanes still running to its right.
+fn merged_branches(tips: usize) -> GraphListing {
+    let repo = Repo::new();
+    repo.commit("base");
+    let mut names: Vec<String> = Vec::new();
+    for n in 0..tips {
+        let branch = format!("lane-{n}");
+        repo.git(&["checkout", "-q", "-b", &branch, "main"]);
+        repo.commit(&format!("lane {n} work"));
+        names.push(branch);
+    }
+    repo.git(&["checkout", "-q", "main"]);
+    let mut merge = vec!["merge", "--no-ff", "-m", "merge every lane"];
+    merge.extend(names.iter().map(String::as_str));
+    repo.git(&merge);
+    repo.listing()
+}
+
+/// The bundle's thread is broken, and only the bundle's: a `│` in the window's
+/// last column claimed a lane of this row's own, so several lines past the
+/// window read as one branch running down the page. `┊` keeps the column, its
+/// width and its colour, and says the work merely continues out there.
+#[test]
+fn the_bundle_thread_is_drawn_broken() {
+    let window = 2 * LANE_WINDOW;
+    // Nine branches and the trunk fill the window exactly: ten lanes, nothing
+    // folded, and the last column is an ordinary lane that must keep its `│`.
+    let inside = merged_branches(LANE_WINDOW - 1);
+    for row in &inside.commits {
+        assert!(
+            !row.graph.contains('┊') && !row.graph.contains('*'),
+            "ten lanes is inside the window, so there is no bundle: {:?}",
+            row.graph
+        );
+    }
+    let solid = inside
+        .commits
+        .iter()
+        .find(|row| row.graph.chars().nth(window - 2) == Some('│'))
+        .expect("no row runs its last lane past a commit in another column");
+    assert!(
+        solid.graph.chars().position(|cell| cell == 'o').unwrap() < window - 2,
+        "the commit of that row is not in the last column: {:?}",
+        solid.graph
+    );
+
+    // Twelve branches open thirteen lanes (the trunk plus a dozen tips), so
+    // three lines fold into the window's last column, and every row whose own
+    // commit is inside the window now carries the bundle alone.
+    let tips = LANE_WINDOW + 2;
+    let folded = merged_branches(tips);
+    let lanes = tips + 1;
+    let broken: Vec<&GraphRow> = folded
+        .commits
+        .iter()
+        .filter(|row| row.graph.chars().nth(window - 2) == Some('┊'))
+        .collect();
+    // Lanes 1..8 have their commit inside the window while the folded lines run;
+    // lane 9's own commit stands in that column, and lane 0 is the base row.
+    assert_eq!(
+        broken.len(),
+        LANE_WINDOW - 2,
+        "the bundle's thread is broken on every row it passes: {} of {:?}",
+        broken.len(),
+        folded
+            .commits
+            .iter()
+            .map(|row| &row.graph)
+            .collect::<Vec<_>>()
+    );
+    for row in broken {
+        // No commit of this row's own sits in the bundle: a commit keeps its own
+        // glyph (`*` for a folded line, `o`/`M` inside the window).
+        assert!(
+            row.graph
+                .chars()
+                .position(|cell| matches!(cell, 'o' | 'M' | '*'))
+                .unwrap()
+                < window - 2,
+            "a commit kept its `┊`: {:?}",
+            row.graph
+        );
+    }
+    // And the folded lines' own rows still say `*`, not `┊`.
+    let stars = folded
+        .commits
+        .iter()
+        .filter(|row| row.graph.contains('*'))
+        .count();
+    assert_eq!(
+        stars,
+        lanes - LANE_WINDOW,
+        "three folded lines: {:?}",
+        folded
+            .commits
+            .iter()
+            .map(|row| &row.graph)
+            .collect::<Vec<_>>()
+    );
+}

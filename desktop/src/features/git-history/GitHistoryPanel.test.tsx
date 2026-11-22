@@ -140,6 +140,27 @@ it("draws lanes as strokes rather than glyphs", async () => {
   }
 });
 
+it("draws the bundle's thread dashed, and a lane's solid", async () => {
+  // `┊` is the host's thread in the window's last column on a row that has no
+  // commit of its own there: the lines past the window still run, but nothing
+  // landed in that column, so the stroke may not claim a lane.
+  listLocal.mockResolvedValue(listing([
+    { graph: "o ", subject: "trunk tip", short: "aaa111", decorations: "HEAD -> main", when: "2 hours ago", who: "Rin" },
+    { graph: "│ ┊ ", subject: "inside the window", short: "bbb222", decorations: "", when: "3 hours ago", who: "Kai" },
+    { graph: "│ │ ", subject: "a plain lane", short: "ccc333", decorations: "", when: "4 hours ago", who: "Kai" },
+  ]));
+  await mount({ kind: "local", path: "/Users/reader/repo" });
+  const strokes = (sha: string) => [...rows().find(row => row.textContent!.includes(sha))!.querySelectorAll("[data-lane-graph] line")]
+    .map(line => line.getAttribute("stroke-dasharray"));
+  // Only the bundle's own thread in that row is dashed; its neighbour is a lane.
+  expect(strokes("bbb222")).toEqual([null, "2 4"]);
+  expect(strokes("ccc333")).toEqual([null, null]);
+  // A dashed thread is still a lane: the two rows lay their columns out alike.
+  const xs = (sha: string) => [...rows().find(row => row.textContent!.includes(sha))!.querySelectorAll("[data-lane-graph] line")]
+    .map(line => line.getAttribute("x1"));
+  expect(xs("bbb222")).toEqual(xs("ccc333"));
+});
+
 it("draws a commit past the lane window as a diamond, not as the column's dot", async () => {
   // `*` is the host's mark for a commit whose line is folded into the sixth
   // column: the column is not that line's own, so the mark may not be the disc
