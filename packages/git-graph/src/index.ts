@@ -90,10 +90,15 @@ export interface GraphGeometry {
  *   read as a different branch at every lane it crosses.
  */
 export function graphGeometry(rows: { graph: string }[], palette: GraphPalette): GraphGeometry[] {
+  // A lane is *occupied* when the row carries something that carries the lane
+  // on. A folded mark does not: it is drawn in the bundle's column but stands
+  // for a line somewhere past the window, so nothing above it is waiting on
+  // that column and nothing below it continues one.
   const occupied = rows.map((row) => {
     const lanes: boolean[] = [];
     for (let lane = 0; lane * 2 < row.graph.length; lane++) {
-      lanes[lane] = (row.graph[lane * 2] ?? " ") !== " ";
+      const glyph = row.graph[lane * 2] ?? " ";
+      lanes[lane] = glyph !== " " && glyph !== "*";
     }
     return lanes;
   });
@@ -111,6 +116,14 @@ export function graphGeometry(rows: { graph: string }[], palette: GraphPalette):
       }
       const color = laneColor(palette, lane);
       if (COMMIT.has(glyph)) {
+        // A folded mark is the one commit that carries no thread. It is drawn in
+        // the bundle's column, and a thread through it would join it to the
+        // diamonds on either side into one unbroken line — turning several
+        // unrelated tips into what reads as a single branch with commits on it,
+        // which is the reading the mark exists to prevent.
+        if (glyph === "*") {
+          continue;
+        }
         // A commit's thread reaches up only when something was already waiting
         // on its column, and down only when another row still carries that
         // lane: otherwise this commit is the lane's tip and a thread past its

@@ -61,6 +61,27 @@ describe("graphGeometry", () => {
     expect(draw("│ │ │ │ │ * ")[0]!.dots[0]!.folded).toBe(true);
   });
 
+  it("a folded mark carries no thread, so the diamonds never join up", () => {
+    // Two tips from past the window, drawn one row after the other in the
+    // bundle's column, then the baseline commit that ends every lane. A thread
+    // through the marks would draw one unbroken line with dots on it: several
+    // unrelated tips reading as a single branch, which is what the mark exists
+    // to say they are not.
+    const folded = geometry("│ │ │ │ │ o ", "│ │ │ │ │ * ", "│ │ │ │ │ * ", "o─┴─┴─┴─┴─┘ ");
+    expect(folded[1]!.threads.some(entry => entry.lane === 5)).toBe(false);
+    expect(folded[2]!.threads.some(entry => entry.lane === 5)).toBe(false);
+    // And the line above must not reach down into them: lane 5's own commit is
+    // its tip, so there is nothing below for it to continue into.
+    expect(thread(folded[0]!, 5).toBottom).toBe(false);
+    // In pixels, which is what the panels paint: no stroke at the bundle's
+    // column on a folded row, while the marks themselves are still there.
+    const drawn = draw("│ │ │ │ │ o ", "│ │ │ │ │ * ", "│ │ │ │ │ * ", "o─┴─┴─┴─┴─┘ ");
+    const bundleX = 5 * metrics.pitch + metrics.pitch / 2;
+    expect(drawn[1]!.threads.some(stroke => stroke.x === bundleX)).toBe(false);
+    expect(drawn[2]!.threads.some(stroke => stroke.x === bundleX)).toBe(false);
+    expect(drawn[1]!.dots).toEqual([{ x: bundleX, y: CENTER, color: "L1", merged: false, folded: true }]);
+  });
+
   it("a merge is marked as one, so the row can draw a ring instead of a disc", () => {
     expect(geometry(...MERGED)[1]!.marker).toEqual({ lane: 1, color: "L1", merged: true, folded: false });
   });
