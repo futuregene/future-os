@@ -35,6 +35,10 @@ const CROSSING_GAP = 3;
 const THREAD_WIDTH = 2;
 /** The commit's dot. A merge's is a ring, so `o` and `M` stay telling apart. */
 const DOT_RADIUS = 3.75;
+// Half-diagonal of the diamond drawn for a commit whose line is past the lane
+// window: a little larger than the disc so the two read as different marks at
+// the same 14pt pitch, not as a disc that came out small.
+const FOLD_RADIUS = DOT_RADIUS + 1;
 const DOT_STROKE = 1.75;
 /** Room left and right of the picture, so a dot on lane 0 is not clipped. */
 const GUTTER_PAD = LANE_PITCH / 2;
@@ -459,16 +463,26 @@ function CommitRow({
           {drawing?.dots.map((dot, index) => (
             // A merge is a ring, a plain commit a disc — the same distinction the
             // TUI's `M` and `o` make, drawn the same way so a reader who knows
-            // one reads the other.
-            <Circle
-              key={`d${index}`}
-              cx={dot.x}
-              cy={dot.y}
-              r={dot.merged ? DOT_RADIUS + DOT_STROKE / 2 : DOT_RADIUS}
-              fill={dot.merged ? "none" : dot.color}
-              stroke={dot.color}
-              strokeWidth={dot.merged ? DOT_STROKE : 0}
-            />
+            // one reads the other. A commit whose line is folded into the bundle
+            // is a diamond, the TUI's `*`: a disc there would claim it sat on the
+            // line that column draws, and that column is shared by several.
+            dot.folded ? (
+              <Path
+                key={`d${index}`}
+                d={`M ${dot.x} ${dot.y - FOLD_RADIUS} L ${dot.x + FOLD_RADIUS} ${dot.y} L ${dot.x} ${dot.y + FOLD_RADIUS} L ${dot.x - FOLD_RADIUS} ${dot.y} Z`}
+                fill={dot.color}
+              />
+            ) : (
+              <Circle
+                key={`d${index}`}
+                cx={dot.x}
+                cy={dot.y}
+                r={dot.merged ? DOT_RADIUS + DOT_STROKE / 2 : DOT_RADIUS}
+                fill={dot.merged ? "none" : dot.color}
+                stroke={dot.color}
+                strokeWidth={dot.merged ? DOT_STROKE : 0}
+              />
+            )
           ))}
         </Svg>
       </View>

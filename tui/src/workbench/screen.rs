@@ -2750,7 +2750,7 @@ fn lane_colour(palette: &Palette, lane: usize) -> u8 {
 /// join.
 ///
 /// Counting *characters* is counting cells here because the gutter is this
-/// file's own vocabulary (`o M ● │ ─ ┐ ┘ ┤ ┬ ┴` and spaces): the subject
+/// file's own vocabulary (`o M * ● │ ─ ┐ ┘ ┤ ┬ ┴` and spaces): the subject
 /// travels after the record separator in `parse_log`, so no free text ever
 /// reaches this string.
 fn paint_graph(palette: &Palette, prefix: &str) -> String {
@@ -2759,16 +2759,19 @@ fn paint_graph(palette: &Palette, prefix: &str) -> String {
     // elbow it passes.
     let mine = prefix
         .chars()
-        .position(|glyph| glyph == 'o' || glyph == 'M')
+        .position(|glyph| glyph == 'o' || glyph == 'M' || glyph == '*')
         .map(|at| at / 2);
     let mut out = String::new();
     for (column, glyph) in prefix.chars().enumerate() {
         let lane = column / 2;
         let colour = lane_colour(palette, lane);
         let painted = match glyph {
-            // A commit, and a commit that joins lines: tig's two, in the lane's
-            // own colour so a branch keeps one colour from tip to junction.
-            'o' | 'M' => palette.strong(colour, &glyph.to_string()),
+            // A commit, a commit that joins lines, and a commit whose line is
+            // folded into the bundle: tig's two plus the window's one, in the
+            // lane's own colour so a branch keeps one colour from tip to
+            // junction. Folded work must still read as a commit and not as a
+            // junction, so it gets the strong weight too.
+            'o' | 'M' | '*' => palette.strong(colour, &glyph.to_string()),
             // The badge other sections put in the gutter ("this is the one you
             // are on"), which is not a graph node.
             '●' => palette.strong(colour, "●"),
@@ -5271,6 +5274,39 @@ mod tests {
         assert!(
             elbow.contains(&format!("\x1b[38;5;{}m┐", lane_colour(&palette, 1))),
             "the lane it opens keeps its own: {elbow:?}"
+        );
+    }
+
+    /// A commit whose line is folded into the bundle (`*`) is a commit, not a
+    /// junction: it is painted exactly like a tip — strong weight, the lane's
+    /// colour — so work that has no column of its own still reads as work
+    /// rather than as punctuation.
+    #[test]
+    fn the_folded_commit_is_painted_like_a_commit() {
+        let palette = FUTURE_DARK;
+        let folded = paint_graph(&palette, "│ │ │ │ │ * ");
+        let tip = paint_graph(&palette, "│ │ │ │ │ o ");
+        assert_eq!(
+            plain(&folded),
+            "│ │ │ │ │ * ",
+            "the drawing is already cells"
+        );
+        assert_eq!(
+            folded,
+            tip.replace('o', "*"),
+            "the fold marker is painted exactly like a tip: {folded:?} vs {tip:?}"
+        );
+        // And it is still the commit of its row for the horizontal's colour: a
+        // `*` left out of that search would paint a connection from the wrong
+        // lane, which is visible only once the horizontal spans a column.
+        let spanning = paint_graph(&palette, "*─┴─┐ ");
+        assert!(
+            spanning.contains(&format!("\x1b[38;5;{}m─", lane_colour(&palette, 0))),
+            "the far horizontal wears the commit's colour: {spanning:?}"
+        );
+        assert!(
+            !spanning.contains(&format!("\x1b[38;5;{}m─┴", lane_colour(&palette, 1))),
+            "and not the lane it passes: {spanning:?}"
         );
     }
 

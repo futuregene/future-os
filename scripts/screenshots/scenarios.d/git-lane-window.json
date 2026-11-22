@@ -2,11 +2,12 @@
   "_comment": [
     "泳道窗口：同一个月的十路并行历史，改前每一条线各占一列（9 条线 = 18 格），改后第 7 条及以后并进第 6 列（固定 12 格）。",
     "两个平台各拍一对，图形宽度由同一份 grid 决定，所以「改前」就是封顶前的 host 真正打印出来的那份网格（fixture 注释里记了取样的 commit）。",
-    "断言不靠像素：量的是 svg 的实际矩形、点的 x 与标题左缘。回退到按条数加宽时，window 那一半的 91/77 断言立刻红。"
+    "断言不靠像素：量的是 svg 的实际矩形、点的 x 与标题左缘。回退到按条数加宽时，window 那一半的 91/77 断言立刻红。",
+    "还有一条断的是折叠标记：第 7 条及以后的提交画菱形（宿主里是 `*`）而不是圆点，正好 3 个、落在第 6 列（x=77），并且这些行里没有圆点。"
   ],
   "desktop": {
     "git-lane-window": {
-      "note": "十路并行的历史在桌面侧栏里：图形固定六列（91px），点最右落在第 6 条线（x=77），十二行标题同一个左缘。第 7 条及以后的提交仍各自落在第 6 列上，一个没少。",
+      "note": "十路并行的历史在桌面侧栏里：图形固定六列（91px），点最右落在第 6 条线（x=77），十二行标题同一个左缘。第 7 条及以后的 3 个提交没有自己的列，画成菱形（宿主里的 `*`），其余仍是圆点。",
       "url": "http://localhost:5299/shot/?lang=zh&gitlanes=window",
       "steps": [
         { "wait": 2500 },
@@ -23,6 +24,7 @@
         {
           "eval": "(() => { const rows = [...document.querySelectorAll('[data-git-commit]')]; const pics = [...document.querySelectorAll('[data-lane-graph]')]; if (rows.length !== 12) throw new Error('expected the ten-branch demo history, saw ' + rows.length + ' rows'); if (pics.length !== rows.length) throw new Error('a row has no lane picture: ' + pics.length + ' of ' + rows.length); const widths = [...new Set(pics.map(s => Math.round(s.getBoundingClientRect().width)))]; if (widths.length !== 1) throw new Error('the gutters are not one width, so the subjects do not line up: ' + widths.join(',')); if (widths[0] > 92) throw new Error('the gutter widened with the lane count: ' + widths[0] + 'px (six lanes are 91px; nine would be 133px)'); const xs = [...new Set(pics.flatMap(s => [...s.querySelectorAll('circle')]).map(c => Math.round(Number(c.getAttribute('cx')))))]; if (Math.max(...xs) !== 77) throw new Error('the rightmost dot is not on the sixth lane (x=77): ' + xs.join(',')); const lefts = [...new Set(rows.map(r => Math.round(r.children[1].getBoundingClientRect().left)))]; if (lefts.length !== 1) throw new Error('the subjects start at different edges: ' + lefts.join(',')); const text = document.body.textContent || ''; for (const glyph of ['│', '─', '└', '┘', '┐', '┤', '┴']) { if (text.includes(glyph)) throw new Error('a box-drawing glyph reached the DOM: ' + glyph); } const strokes = pics.flatMap(s => [...s.querySelectorAll('line, path, circle')]); const colours = new Set(strokes.map(n => n.getAttribute('stroke') || n.getAttribute('fill')).filter(Boolean)); return rows.length + ' rows, gutter ' + widths[0] + 'px, dots on ' + xs.join('/') + ', ' + colours.size + ' colours'; })()"
         },
+        { "eval": "(() => { const rows = [...document.querySelectorAll('[data-lane-graph]')]; const folded = rows.map(r => [...r.querySelectorAll('path')]   .find(p => p.getAttribute('fill') && p.getAttribute('fill') !== 'none'))   .filter(Boolean); if (folded.length !== 3) throw new Error('expected three folded tips marked with a diamond, saw ' + folded.length); const xs = [...new Set(folded.map(p => Math.round(Number((p.getAttribute('d') || '').split(' ')[1]))))]; if (xs.length !== 1 || xs[0] !== 77) throw new Error('a fold mark is not on the sixth lane (x=77): ' + xs.join(',')); const discs = folded.filter(p => p.parentElement.querySelectorAll('circle').length); if (discs.length) throw new Error('a folded commit was also drawn as a disc'); return 'three folded tips drawn as diamonds on x=' + xs[0]; })()" },
         { "shot": "d-git-lane-window.png" }
       ]
     },
@@ -50,7 +52,7 @@
   },
   "mobile": {
     "git-lane-window": {
-      "note": "同一份十路并行历史在手机上：图形固定六列（91pt），点最右落在第 6 条线，标题因此还剩 267pt；第 7 条及以后的提交仍落在第 6 列上。回退到按条数加宽时图形会变 133pt，第一条断言就红。",
+      "note": "同一份十路并行历史在手机上：图形固定六列（91pt），点最右落在第 6 条线，标题因此还剩 267pt；第 7 条及以后的 3 个提交画成菱形（宿主里的 `*`），其余仍是圆点。回退到按条数加宽时图形会变 133pt，第一条断言就红。",
       "query": "?gitlanes=window",
       "lang": "zh-CN",
       "steps": [
@@ -66,6 +68,7 @@
         {
           "eval": "(() => { const rows = [...document.querySelectorAll('[aria-label^=\"打开提交\"]')]; if (rows.length !== 12) throw new Error('expected the ten-branch demo history, saw ' + rows.length + ' rows'); const pics = rows.map(r => r.querySelector('svg')); const widths = [...new Set(pics.map(s => Math.round(s.getBoundingClientRect().width)))]; if (widths.length !== 1) throw new Error('the gutters are not one width, so the subjects do not line up: ' + widths.join(',')); if (widths[0] > 92) throw new Error('the gutter widened with the lane count: ' + widths[0] + 'pt (six lanes are 91pt; nine would be 133pt)'); const xs = [...new Set(pics.flatMap(s => [...s.querySelectorAll('circle')]).map(c => Math.round(Number(c.getAttribute('cx')))))]; if (Math.max(...xs) !== 77) throw new Error('the rightmost dot is not on the sixth lane (x=77): ' + xs.join(',')); const bodies = rows.map(r => r.children[1].getBoundingClientRect()); const lefts = [...new Set(bodies.map(b => Math.round(b.left)))]; if (lefts.length !== 1) throw new Error('the subjects start at different edges: ' + lefts.join(',')); const room = Math.round(Math.min(...bodies.map(b => b.width))); if (room < 200) throw new Error('the subjects were squeezed into ' + room + 'pt'); const text = document.body.textContent || ''; for (const glyph of ['│', '─', '└', '┘', '┐', '┤', '┴']) { if (text.includes(glyph)) throw new Error('a box-drawing glyph reached the DOM: ' + glyph); } const strokes = pics.flatMap(s => [...s.querySelectorAll('line, path, circle')]); const colours = new Set(strokes.map(n => n.getAttribute('stroke') || n.getAttribute('fill')).filter(Boolean)); return rows.length + ' rows, gutter ' + widths[0] + 'pt, subject ' + room + 'pt, dots on ' + xs.join('/') + ', ' + colours.size + ' colours'; })()"
         },
+        { "eval": "(() => { const rows = [...document.querySelectorAll('[aria-label^=\"打开提交\"]')]; const folded = rows.map(r => [...r.querySelectorAll('path')]   .find(p => p.getAttribute('fill') && p.getAttribute('fill') !== 'none'))   .filter(Boolean); if (folded.length !== 3) throw new Error('expected three folded tips marked with a diamond, saw ' + folded.length); const xs = [...new Set(folded.map(p => Math.round(Number((p.getAttribute('d') || '').split(' ')[1]))))]; if (xs.length !== 1 || xs[0] !== 77) throw new Error('a fold mark is not on the sixth lane (x=77): ' + xs.join(',')); const discs = folded.filter(p => p.parentElement.querySelectorAll('circle').length); if (discs.length) throw new Error('a folded commit was also drawn as a disc'); return 'three folded tips drawn as diamonds on x=' + xs[0]; })()" },
         { "shot": "m-git-lane-window.png" }
       ]
     },

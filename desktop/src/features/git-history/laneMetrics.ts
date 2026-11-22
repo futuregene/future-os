@@ -19,6 +19,12 @@ export const CROSSING_GAP = 3;
  */
 export const DOT_RADIUS = 3.75;
 export const DOT_STROKE = 1.75;
+/**
+ * Half-diagonal of the diamond drawn for a commit whose line is folded into the
+ * lane window's last column. A little larger than the disc so the two read as
+ * different marks at the same 14 px pitch, not as a disc that came out small.
+ */
+export const FOLD_RADIUS = DOT_RADIUS + 1;
 /** Room left and right of the picture, so a dot on lane 0 is not clipped. */
 export const GUTTER_PAD = LANE_PITCH / 2;
 /** Stroke width of a thread or a connection. */
