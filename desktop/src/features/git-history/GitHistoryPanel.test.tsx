@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, expect, it, vi } from "vitest";
 import { GitHistoryPanel } from "./GitHistoryPanel";
+import { FOLD_RADIUS, GUTTER_PAD, LANE_PITCH } from "./laneMetrics";
 
 /**
  * The desktop's Git history page, for one conversation's workspace.
@@ -137,6 +138,40 @@ it("draws lanes as strokes rather than glyphs", async () => {
   for (const glyph of ["│", "─", "┴", "┘", "┐", "├", "┤", "┬"]) {
     expect(container.textContent).not.toContain(glyph);
   }
+});
+
+it("draws a commit past the lane window as a diamond, not as the column's dot", async () => {
+  // `*` is the host's mark for a commit whose line is folded into the sixth
+  // column: the column is not that line's own, so the mark may not be the disc
+  // that says "this column's commit".
+  listLocal.mockResolvedValue(listing([
+    { graph: "o           ", subject: "trunk tip", short: "aaa111", decorations: "HEAD -> main", when: "2 hours ago", who: "Rin" },
+    { graph: "│ │ │ │ │ * ", subject: "folded branch tip", short: "bbb222", decorations: "origin/seventh", when: "3 hours ago", who: "Kai" },
+  ]));
+  await mount({ kind: "local", path: "/Users/reader/repo" });
+  const folded = rows()[1]!.querySelector("[data-lane-graph]")!;
+  expect(folded.querySelector("circle")).toBeNull();
+  // The diamond is the only filled path in the row: threads are `<line>`s and a
+  // connection is a path with `fill="none"`.
+  const diamond = folded.querySelector("path:not([fill='none'])");
+  expect(diamond).not.toBeNull();
+  // `M <x> <top> L <right> <axis> L <x> <bottom> L <left> <axis> Z`: a square
+  // turned 45°, whose four points sit on the dot's axis and column — not the
+  // elbow a connection draws.
+  const [x, top, right, axis, xAgain, bottom, left, axisAgain] = (diamond!.getAttribute("d") ?? "")
+    .match(/-?\d+(\.\d+)?/g)!
+    .map(Number) as [number, number, number, number, number, number, number, number];
+  expect(xAgain).toBe(x);
+  expect(axisAgain).toBe(axis);
+  expect(right - x).toBe(FOLD_RADIUS);
+  expect(x - left).toBe(FOLD_RADIUS);
+  expect(axis - top).toBe(FOLD_RADIUS);
+  expect(bottom - axis).toBe(FOLD_RADIUS);
+  // It is drawn on the sixth column, and the window stops there: no seventh.
+  expect(x).toBe(LANE_PITCH * 5 + GUTTER_PAD);
+  // The row has no disc at all: the folded commit is marked, not drawn as the
+  // column's own commit.
+  expect(folded.querySelectorAll("circle")).toHaveLength(0);
 });
 
 it("puts the commit's dot on the subject's line, not in the gap between the lines", async () => {

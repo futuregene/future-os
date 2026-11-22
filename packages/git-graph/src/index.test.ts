@@ -40,7 +40,7 @@ const MERGED = ["o     ", "│ M─┐ ", "│ │ o ", "│ o │ ", "o─┴�
 describe("graphGeometry", () => {
   it("a commit's thread wears its own lane's colour", () => {
     const [commit] = geometry("o │ ");
-    expect(commit!.marker).toEqual({ lane: 0, color: "L0", merged: false });
+    expect(commit!.marker).toEqual({ lane: 0, color: "L0", merged: false, folded: false });
     expect(commit!.threads.map(entry => [entry.lane, entry.color])).toEqual([
       [0, "L0"],
       [1, "L1"],
@@ -48,11 +48,21 @@ describe("graphGeometry", () => {
   });
 
   it("a commit on the right lane wears that lane, not the leftmost", () => {
-    expect(geometry("│ o ")[0]!.marker).toEqual({ lane: 1, color: "L1", merged: false });
+    expect(geometry("│ o ")[0]!.marker).toEqual({ lane: 1, color: "L1", merged: false, folded: false });
+  });
+
+  it("a commit past the window is marked as folded, not as the column's own", () => {
+    // The host draws a line past the sixth *in* the sixth column, and gives that
+    // commit `*` instead of a dot: the dot would claim it sits on the line the
+    // column draws, and it does not. Six lanes, so the last one is lane 5 — which
+    // is L1 here, the test palette having four entries.
+    const [row] = geometry("│ │ │ │ │ * ");
+    expect(row!.marker).toEqual({ lane: 5, color: "L1", merged: false, folded: true });
+    expect(draw("│ │ │ │ │ * ")[0]!.dots[0]!.folded).toBe(true);
   });
 
   it("a merge is marked as one, so the row can draw a ring instead of a disc", () => {
-    expect(geometry(...MERGED)[1]!.marker).toEqual({ lane: 1, color: "L1", merged: true });
+    expect(geometry(...MERGED)[1]!.marker).toEqual({ lane: 1, color: "L1", merged: true, folded: false });
   });
 
   it("a connection wears the commit's colour, not the colour of the lane it enters", () => {
@@ -151,7 +161,7 @@ describe("laneDrawing", () => {
 
   it("a commit is a disc at the tip of its lane, with no thread over its dot", () => {
     const tip = draw(...MERGED)[0]!;
-    expect(tip.dots).toEqual([{ x: 7, y: CENTER, color: "L0", merged: false }]);
+    expect(tip.dots).toEqual([{ x: 7, y: CENTER, color: "L0", merged: false, folded: false }]);
     // Nothing above the newest commit, so its thread starts at the dot and runs
     // down to meet the next row.
     expect(tip.threads).toEqual([{ x: 7, y1: CENTER, y2: HEIGHT, color: "L0" }]);
@@ -164,13 +174,13 @@ describe("laneDrawing", () => {
       {
         threads: [{ lane: 0, fromTop: false, toBottom: false, color: "L0" }],
         runs: [],
-        marker: { lane: 0, color: "L0", merged: false },
+        marker: { lane: 0, color: "L0", merged: false, folded: false },
       },
       metrics,
       HEIGHT,
     );
     expect(lone.threads).toEqual([]);
-    expect(lone.dots).toEqual([{ x: 7, y: CENTER, color: "L0", merged: false }]);
+    expect(lone.dots).toEqual([{ x: 7, y: CENTER, color: "L0", merged: false, folded: false }]);
   });
 
   it("an explicit centre moves the dot and the horizontals, never the threads", () => {
@@ -181,7 +191,7 @@ describe("laneDrawing", () => {
     // joined whatever axis their dots are on.
     const decoded = geometry(...MERGED);
     const offset = laneDrawing(decoded[0]!, metrics, HEIGHT, 10);
-    expect(offset.dots).toEqual([{ x: 7, y: 10, color: "L0", merged: false }]);
+    expect(offset.dots).toEqual([{ x: 7, y: 10, color: "L0", merged: false, folded: false }]);
     expect(offset.threads).toEqual([{ x: 7, y1: 10, y2: HEIGHT, color: "L0" }]);
 
     const merge = laneDrawing(decoded[1]!, metrics, HEIGHT, 10);

@@ -374,10 +374,21 @@ fn the_picture_stops_widening_past_the_window() {
         if let Some(at) = row
             .graph
             .chars()
-            .position(|cell| cell == 'o' || cell == 'M')
+            .position(|cell| cell == 'o' || cell == 'M' || cell == '*')
         {
             assert_eq!(at % 2, 0, "{:?}", row.graph);
             assert!(at <= window - 2, "a dot past the window: {:?}", row.graph);
+        }
+        if let Some(at) = row.graph.chars().position(|cell| cell == '*') {
+            // A commit on a folded line is not drawn as a dot: inside the window
+            // a dot means "this line", and in the bundle it would read as the
+            // bundle's own commit.
+            assert_eq!(
+                at,
+                window - 2,
+                "a fold marker inside the window: {:?}",
+                row.graph
+            );
         }
     }
     // The window is used, not merely respected: ten lanes fill all six columns.
@@ -392,6 +403,28 @@ fn the_picture_stops_widening_past_the_window() {
             .iter()
             .map(|row| &row.graph)
             .collect::<Vec<_>>()
+    );
+    // Two kinds of commit share that column, and only the folded ones carry the
+    // fold marker: the ten tips live in lanes 0–9, so lanes 6–9 (four of them)
+    // are the ones without a column of their own.
+    let stars = listing
+        .commits
+        .iter()
+        .filter(|row| row.graph.contains('*'))
+        .count();
+    assert_eq!(
+        stars,
+        10 - LANE_WINDOW,
+        "ten tips, six columns: {:?}",
+        listing.commits
+    );
+    assert!(
+        listing
+            .commits
+            .iter()
+            .any(|row| row.graph.chars().nth(window - 2) == Some('o')),
+        "the sixth lane's own commit is not a fold marker: {:?}",
+        listing.commits
     );
 }
 

@@ -2229,12 +2229,17 @@ export const gitHistoryCommits = [
  * The same picture on a month when ten branches were open at once.
  *
  * The gutters are what the host's layout function prints for such a repository,
- * read off a real one: lanes 6..10 fold into column 5, so the last four rows are
- * four different lines of work drawn in one column and the gutter is twelve
- * cells wide instead of twenty. Every row is padded to twelve, which is what
- * keeps the subjects on one left edge.
+ * read off a real one: lanes past the sixth fold into column 5, so the last four
+ * rows are four different lines of work drawn in one column and the gutter is
+ * twelve cells wide instead of eighteen. Every row is padded to twelve, which is
+ * what keeps the subjects on one left edge.
  *
- * `?manylanes=1` selects it; the ordinary history above is the default.
+ * Three of those four carry `*`, not `o`: their lines are the folded ones, so
+ * they are marked as folded rather than drawn as the column's own commit. The
+ * fourth (`c05e93b`) is the sixth lane, which still has a column here, and it
+ * keeps its `o` — the pair is what shows the distinction the mark makes.
+ *
+ * `?gitlanes=window` selects it; the ordinary history above is the default.
  */
 export const gitHistoryWindowCommits = [
   { short: "5c9e104", when: "4 minutes ago", who: "Rin", decorations: "", subject: "Drop the practice trials from the comparison", graph: "o           " },
@@ -2245,9 +2250,9 @@ export const gitHistoryWindowCommits = [
   { short: "b68204e", when: "4 hours ago", who: "Kai", decorations: "origin/figures", subject: "Regenerate the supplement figures", graph: "│ │ │ o     " },
   { short: "2d4f7a9", when: "5 hours ago", who: "Jun", decorations: "origin/qc", subject: "Flag the trials that fail the time screen", graph: "│ │ │ │ o   " },
   { short: "c05e93b", when: "6 hours ago", who: "Dee", decorations: "origin/comparison", subject: "Compare the model-free and model-based learners", graph: "│ │ │ │ │ o " },
-  { short: "8a1d6f3", when: "7 hours ago", who: "Kai", decorations: "origin/hierarchical", subject: "Fit the hierarchical prior over both cohorts", graph: "│ │ │ │ │ o " },
-  { short: "4e79b28", when: "9 hours ago", who: "Dee", decorations: "origin/text", subject: "Draft the model-selection paragraph", graph: "│ │ │ │ │ o " },
-  { short: "f30c8d5", when: "11 hours ago", who: "Jun", decorations: "tag: draft-v3", subject: "Freeze the analysis for the third draft", graph: "│ │ │ │ │ o " },
+  { short: "8a1d6f3", when: "7 hours ago", who: "Kai", decorations: "origin/hierarchical", subject: "Fit the hierarchical prior over both cohorts", graph: "│ │ │ │ │ * " },
+  { short: "4e79b28", when: "9 hours ago", who: "Dee", decorations: "origin/text", subject: "Draft the model-selection paragraph", graph: "│ │ │ │ │ * " },
+  { short: "f30c8d5", when: "11 hours ago", who: "Jun", decorations: "tag: draft-v3", subject: "Freeze the analysis for the third draft", graph: "│ │ │ │ │ * " },
   { short: "0a6e1c7", when: "4 hours ago", who: "Rin", decorations: "", subject: "Initial repository layout", graph: "o─┴─┴─┴─┴─┘ " },
 ];
 

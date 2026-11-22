@@ -52,8 +52,10 @@ pub const COMMIT_LIMIT: usize = 200;
 /// is where a phone runs out of room (the same six the palette cycles at), so the
 /// picture is capped there: a line past the sixth is drawn *in* the sixth column,
 /// sharing it with the other lines that run past the window. It keeps its commits
-/// — each one is a dot on its own row — it just no longer has a column of its
-/// own, and the six colours are the six columns.
+/// — each one still gets its own row and a mark — but it no longer has a column of
+/// its own: those commits are drawn with `*` instead of `o`, so the sixth column's
+/// own line and the folded ones do not read as one line. The six colours are the
+/// six columns.
 pub const LANE_WINDOW: usize = 6;
 
 /// Where a page of the log resumes: the open lanes, and the refs still unshown.
@@ -582,14 +584,24 @@ fn draw(entries: &[Entry], covered: &HashSet<(usize, usize)>, seeded: Vec<Option
         // The bundle closes at the window's edge: a connector in its last cell
         // would run the horizontal out of the picture and into the fields.
         right[visible] = false;
+        // A commit whose own line is folded into the bundle carries its own glyph:
+        // inside the window a dot means "this line", and in the bundle it would
+        // otherwise mean "one of several lines that are not drawn".
+        let folded = mine > visible;
         let mut cells = vec![' '; 2 * (visible + 1)];
         for column in 0..=visible {
             cells[2 * column] = if marks[column] {
                 // Two glyphs, as tig has them: `M` is a commit that joins lines,
                 // `o` one that only continues its own. The elbow a merge draws is
                 // already on the row, but the letter says it before the eye
-                // follows the line out to a column and back.
-                if joins[column] {
+                // follows the line out to a column and back. `*` is the third case
+                // the window creates: a commit whose line has no column. A folded
+                // commit that joins lines is `*` too — the elbow a merge needs
+                // cannot be drawn past the window's edge, so the ring would promise
+                // a shape the row cannot show.
+                if folded && column == visible {
+                    '*'
+                } else if joins[column] {
                     'M'
                 } else {
                     'o'
@@ -1509,15 +1521,26 @@ mod tests {
             rows.iter().map(|row| &row.prefix).collect::<Vec<_>>()
         );
 
-        // The tenth lane's own commit is drawn in the window's last column: the
-        // bundle keeps the work, not only the line.
+        // The tenth lane's own commit is drawn in the window's last column, but
+        // not as a dot: the bundle keeps the work and drops the claim that the
+        // commit sits on the line drawn there.
         let tenth = &rows[10];
         assert_eq!(tenth.key.as_deref(), Some("p9"), "{:?}", tenth.key);
         assert_eq!(
             tenth.prefix.chars().nth(window - 2),
-            Some('o'),
-            "the commit past the window lost its dot: {:?}",
+            Some('*'),
+            "the commit past the window is not marked as folded: {:?}",
             tenth.prefix
+        );
+        // The sixth lane (p5) still has a column of its own, so it keeps its dot
+        // in the window's last column; p6 onwards are the folded ones.
+        let sixth = &rows[6];
+        assert_eq!(sixth.key.as_deref(), Some("p5"), "{:?}", sixth.key);
+        assert_eq!(
+            sixth.prefix.chars().nth(window - 2),
+            Some('o'),
+            "the sixth lane's commit was marked as folded: {:?}",
+            sixth.prefix
         );
     }
 
@@ -1613,9 +1636,19 @@ mod tests {
         let width = rows[0].prefix.chars().count();
         assert!(rows.iter().all(|row| row.prefix.chars().count() == width));
         for row in &rows {
+            // `*` is the gutter's own (a commit folded into the bundle, see
+            // `LANE_WINDOW`), so it is not in the list below: what must never
+            // appear is the ASCII `git log --graph` draws with, which would mean
+            // the raw picture leaked through instead of being redrawn in
+            // box-drawing glyphs.
             assert!(
-                !row.prefix.contains(['/', '\\', '*', '|', '_']),
+                !row.prefix.contains(['/', '\\', '|', '_']),
                 "git's own vocabulary is gone: {:?}",
+                row.prefix
+            );
+            assert!(
+                row.prefix.chars().all(|cell| "oM*│─┐┘┤┬┴ ".contains(cell)),
+                "a glyph outside the gutter's vocabulary: {:?}",
                 row.prefix
             );
         }

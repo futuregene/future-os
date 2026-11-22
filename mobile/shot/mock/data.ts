@@ -1161,9 +1161,13 @@ export const demoPagedGitListing = {
  * prints for such a repository (`host/src/git_history.rs::draw`, read off a
  * real one with ten `feat/*` branches), because the sheet decodes glyphs: an
  * invented grid draws a picture nobody has. Their point is the window — the
- * last four rows are four *different* branches whose lanes 6..10 fold into
- * column 5, so the gutter is twelve cells wide and stops there. Every row is
- * padded to twelve, which is what keeps the subjects on one left edge.
+ * last four rows are four *different* branches drawn in column 5, so the gutter
+ * is twelve cells wide and stops there. Every row is padded to twelve, which is
+ * what keeps the subjects on one left edge.
+ *
+ * Three of those four carry `*`: lanes 6–8 are the folded ones, marked as folded
+ * rather than drawn as the column's own commit. The fourth (`c05e93b`) is lane 5
+ * — the sixth column, which the window still draws — and keeps its `o`.
  *
  * `?gitlanes=window` selects this listing; without it the sheet keeps the ordinary
  * three-lane history above.
@@ -1181,9 +1185,9 @@ export const demoWindowGitListing = {
     { short: "b68204e", when: "2026-11-14 11:30", who: "Mei Tan", decorations: "origin/figures", subject: "Regenerate the supplement figures", graph: "│ │ │ o     " },
     { short: "2d4f7a9", when: "2026-11-14 10:12", who: "Lixin Zhou", decorations: "origin/qc", subject: "Flag the trials that fail the time screen", graph: "│ │ │ │ o   " },
     { short: "c05e93b", when: "2026-11-13 19:05", who: "Mei Tan", decorations: "origin/comparison", subject: "Compare the model-free and model-based learners", graph: "│ │ │ │ │ o " },
-    { short: "8a1d6f3", when: "2026-11-13 17:40", who: "Lixin Zhou", decorations: "origin/hierarchical", subject: "Fit the hierarchical prior over both cohorts", graph: "│ │ │ │ │ o " },
-    { short: "4e79b28", when: "2026-11-13 16:02", who: "Mei Tan", decorations: "origin/text", subject: "Draft the model-selection paragraph", graph: "│ │ │ │ │ o " },
-    { short: "f30c8d5", when: "2026-11-13 14:25", who: "Lixin Zhou", decorations: "tag: draft-v3", subject: "Freeze the analysis for the third draft", graph: "│ │ │ │ │ o " },
+    { short: "8a1d6f3", when: "2026-11-13 17:40", who: "Lixin Zhou", decorations: "origin/hierarchical", subject: "Fit the hierarchical prior over both cohorts", graph: "│ │ │ │ │ * " },
+    { short: "4e79b28", when: "2026-11-13 16:02", who: "Mei Tan", decorations: "origin/text", subject: "Draft the model-selection paragraph", graph: "│ │ │ │ │ * " },
+    { short: "f30c8d5", when: "2026-11-13 14:25", who: "Lixin Zhou", decorations: "tag: draft-v3", subject: "Freeze the analysis for the third draft", graph: "│ │ │ │ │ * " },
     { short: "0a6e1c7", when: "2026-11-11 10:00", who: "Lixin Zhou", decorations: "", subject: "Initial repository layout", graph: "o─┴─┴─┴─┴─┘ " },
   ],
   truncated: false,

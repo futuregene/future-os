@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { BackHandler, FlatList } from "react-native";
-import Svg, { Circle, Line as SvgLine } from "react-native-svg";
+import Svg, { Circle, Line as SvgLine, Path } from "react-native-svg";
 import { GitGraphPanel } from "../components/GitGraphPanel";
 import type { GitCommitDetail, GitGraphListing } from "../../../remote/types";
 
@@ -219,6 +219,49 @@ test("a merge is drawn as a ring and a plain commit as a disc", async () => {
   const rings = rowPress("9b30d18").findAllByType(Circle);
   expect(rings).toHaveLength(1);
   expect(rings[0]!.props.fill).toBe("none");
+});
+
+/**
+ * The lane window's own mark. `*` is what the host writes for a commit whose
+ * line is folded into the sixth column: that column is not the commit's own, so
+ * a disc there would claim it is the column's commit — which is exactly what the
+ * user saw as "they are joined into one line".
+ */
+test("a commit past the lane window is a diamond, not the column's disc", async () => {
+  const folded: GitGraphListing = {
+    ...listing,
+    commits: [
+      { short: "aaa111", when: "2026-11-11 18:42", who: "Lixin Zhou", decorations: "", subject: "trunk tip", graph: "o           " },
+      { short: "bbb222", when: "2026-11-11 16:05", who: "Mei Tan", decorations: "origin/seventh", subject: "folded branch tip", graph: "│ │ │ │ │ * " },
+    ],
+  };
+  await mount({ listCommits: jest.fn(async () => folded) });
+
+  const row = rowPress("bbb222");
+  expect(row.findAllByType(Circle)).toHaveLength(0);
+  const [diamond] = row.findAllByType(Path);
+  expect(diamond).toBeDefined();
+  // `M <x> <top> L <right> <axis> L <x> <bottom> L <left> <axis> Z`: a square
+  // turned 45°, four points on the dot's column and axis.
+  const [x, top, right, axis, xAgain, bottom, left, axisAgain] = (diamond!.props.d as string)
+    .match(/-?\d+(\.\d+)?/g)!
+    .map(Number) as [number, number, number, number, number, number, number, number];
+  expect(xAgain).toBe(x);
+  expect(axisAgain).toBe(axis);
+  // A square, not a lozenge: the two half-diagonals agree.
+  expect(right - x).toBe(x - left);
+  expect(axis - top).toBe(bottom - axis);
+  // It sits one lane past the last thread the row draws — the bundle's own
+  // column — read off the row rather than pinned, so a pitch change does not
+  // come back here.
+  const xs = [...new Set(row.findAllByType(SvgLine).map(node => node.props.x1 as number))]
+    .sort((a, b) => a - b);
+  expect(x).toBe(xs.at(-1)! + (xs[1]! - xs[0]!));
+  const disc = rowPress("aaa111").findAllByType(Circle)[0]!;
+  expect(right - x).toBeGreaterThan(disc.props.r as number);
+  // The bundling column keeps the lane colour the decoder assigned it: lane 5
+  // in this file's three-colour palette (5 % 3 = 2).
+  expect(diamond!.props.fill).toBe("#a16207");
 });
 
 /** Neither page has a header bar, and the list has no control of its own. */
