@@ -975,7 +975,17 @@ fn draw(entries: &[Entry], covered: &HashSet<(usize, usize)>, seeded: Vec<Option
                     'o'
                 }
             } else {
-                junction(up[column], down[column], left[column], right[column])
+                let thread = junction(up[column], down[column], left[column], right[column]);
+                // The bundle's thread is not this column's own line: a `│` here
+                // reads exactly like a lane, and nothing on the row says the work
+                // continues past the window rather than in this column. `┊` keeps
+                // the column, its width and its colour and says which one it is.
+                // A connector keeps its shape — a `┬` is a shape, not a thread.
+                if column == visible && width > visible && thread == '│' {
+                    '┊'
+                } else {
+                    thread
+                }
             };
             if right[column] {
                 cells[2 * column + 1] = '─';

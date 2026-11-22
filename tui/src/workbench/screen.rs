@@ -2784,6 +2784,10 @@ fn paint_graph(palette: &Palette, prefix: &str) -> String {
             // are on"), which is not a graph node.
             '●' => palette.strong(colour, "●"),
             '│' => palette.text(colour, "│"),
+            // The bundle's thread, when this row has no commit in that column:
+            // the same lane colour in a broken stroke, so it reads as "the lines
+            // past the window run on" rather than as a lane of its own.
+            '┊' => palette.text(colour, "┊"),
             '─' => palette.text(lane_colour(palette, mine.unwrap_or(lane)), "─"),
             '┐' | '┘' | '┤' | '┬' | '┴' => palette.text(colour, &glyph.to_string()),
             // The lane separator and anything a later glyph adds: left as it
@@ -5322,6 +5326,29 @@ mod tests {
         assert!(
             !spanning.contains(&format!("\x1b[38;5;{}m─┴", lane_colour(&palette, 1))),
             "and not the lane it passes: {spanning:?}"
+        );
+    }
+
+    /// The bundle's thread wears its lane's colour, like the solid one it
+    /// replaces: it is the same line of work seen through the window's edge, not
+    /// a different thing that happens to be in the same column.
+    #[test]
+    fn the_bundle_thread_keeps_its_lanes_colour() {
+        let palette = FUTURE_DARK;
+        let dotted = paint_graph(&palette, "│ ┊ ");
+        assert_eq!(plain(&dotted), "│ ┊ ", "the drawing is already cells");
+        assert_eq!(width(&dotted), 4, "a bundle column is still one lane wide");
+        assert!(
+            dotted.contains(&format!("\x1b[38;5;{}m┊", lane_colour(&palette, 1))),
+            "the bundle keeps its column's colour: {dotted:?}"
+        );
+        // Not the commit weight: it is a thread, and the commit glyphs are the
+        // only bold cells in a gutter.
+        let solid = paint_graph(&palette, "│ ┊ ");
+        assert_eq!(
+            solid.matches("\x1b[1m").count(),
+            0,
+            "a thread is not drawn as a commit: {solid:?}"
         );
     }
 

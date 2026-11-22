@@ -34,13 +34,17 @@ const COMMIT = new Set(["o", "M", "*"]);
  * which of the two it is, because a lane with `─` on both sides has the
  * horizontal running through it.
  */
-const VERTICAL: Record<string, { up: boolean; down: boolean }> = {
+const VERTICAL: Record<string, { up: boolean; down: boolean; dashed?: boolean }> = {
   "│": { up: true, down: true },
   "┤": { up: true, down: true },
   "┴": { up: true, down: false },
   "┘": { up: true, down: false },
   "┬": { up: false, down: true },
   "┐": { up: false, down: true },
+  // The bundle's thread on a row that has no commit of its own in that column:
+  // the lines past the window still run there, but nothing on this row landed
+  // in that column. Drawn dashed, so it cannot be read as a lane of its own.
+  "┊": { up: true, down: true, dashed: true },
 };
 
 /**
@@ -57,7 +61,18 @@ export interface GraphGeometry {
    * row's own edges, which is what makes it continuous with the rows on either
    * side.
    */
-  threads: { lane: number; fromTop: boolean; toBottom: boolean; color: string }[];
+  threads: {
+    lane: number;
+    fromTop: boolean;
+    toBottom: boolean;
+    color: string;
+    /**
+     * A thread the host drew broken (`┊`), which is the bundle's line on a row
+     * that has no commit of its own in that column. The stroke is dashed so the
+     * bundle cannot be read as a lane with work of its own on this row.
+     */
+    dashed: boolean;
+  }[];
   /**
    * A horizontal connection, merged across its lanes: `from < to`, and the
    * two are lane indices rather than the cells between them.
@@ -133,12 +148,19 @@ export function graphGeometry(rows: { graph: string }[], palette: GraphPalette):
           fromTop: occupied[index - 1]?.[lane] === true,
           toBottom: occupied[index + 1]?.[lane] === true,
           color,
+          dashed: false,
         });
         continue;
       }
       const vertical = VERTICAL[glyph];
       if (vertical) {
-        threads.push({ lane, fromTop: vertical.up, toBottom: vertical.down, color });
+        threads.push({
+          lane,
+          fromTop: vertical.up,
+          toBottom: vertical.down,
+          color,
+          dashed: vertical.dashed === true,
+        });
       }
     }
 
@@ -226,7 +248,7 @@ export interface LaneDrawing {
    * Straight verticals, across the row's full height so they meet the rows on
    * either side exactly.
    */
-  threads: { x: number; y1: number; y2: number; color: string }[];
+  threads: { x: number; y1: number; y2: number; color: string; dashed: boolean }[];
   /**
    * Horizontals as SVG path data, turns included: one path per unbroken
    * stretch of a connection.
@@ -318,6 +340,7 @@ export function laneDrawing(
       y1: thread.fromTop ? 0 : turn === "down" ? center + radius : center,
       y2: thread.toBottom ? height : turn === "up" ? center - radius : center,
       color: thread.color,
+      dashed: thread.dashed,
     };
   }).filter(thread => thread.y2 > thread.y1);
   // The filter above drops a thread that starts and ends on the centre line: it

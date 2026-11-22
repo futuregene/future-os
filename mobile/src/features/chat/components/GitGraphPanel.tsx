@@ -450,6 +450,10 @@ function CommitRow({
               stroke={thread.color}
               strokeWidth={THREAD_WIDTH}
               strokeLinecap="round"
+              // The bundle's thread on a row with no commit in that column:
+              // dashed, so the work continuing past the window is not read as a
+              // lane of this row's own.
+              strokeDasharray={thread.dashed ? `${THREAD_WIDTH} ${THREAD_WIDTH * 2}` : undefined}
             />
           ))}
           {drawing?.runs.map((run, index) => (

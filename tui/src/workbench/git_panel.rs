@@ -606,7 +606,17 @@ fn draw(entries: &[Entry], covered: &HashSet<(usize, usize)>, seeded: Vec<Option
                     'o'
                 }
             } else {
-                junction(up[column], down[column], left[column], right[column])
+                let thread = junction(up[column], down[column], left[column], right[column]);
+                // The bundle's thread is not this column's own line: a `│` here
+                // reads exactly like a lane, and nothing on the row says the work
+                // continues past the window rather than in this column. `┊` keeps
+                // the column, its width and its colour and says which one it is.
+                // A connector keeps its shape — a `┬` is a shape, not a thread.
+                if column == visible && width > visible && thread == '│' {
+                    '┊'
+                } else {
+                    thread
+                }
             };
             if right[column] {
                 cells[2 * column + 1] = '─';
@@ -1538,6 +1548,85 @@ mod tests {
         );
     }
 
+    /// A merge of `tips` branches, then each branch's tip, in the log's own
+    /// text form: after the merge row every lane it opened is running.
+    fn merged_tips(tips: usize) -> Vec<GitRow> {
+        let names: Vec<String> = (0..tips).map(|n| format!("p{n}")).collect();
+        let mut text = format!(
+            "\u{1e}m\u{1f}m\u{1f}{}\u{1f}2026-10-27 09:15\u{1f}Ada\u{1f}\u{1f}merge every lane\n",
+            names.join(" ")
+        );
+        for name in &names {
+            text.push_str(&format!(
+                "\u{1e}{name}\u{1f}{name}\u{1f}\u{1f}2026-10-27 09:14\u{1f}Ada\u{1f}\u{1f}{name}\n"
+            ));
+        }
+        parse_log(&text)
+    }
+
+    /// The bundle's thread is broken, and only the bundle's: a `│` in the
+    /// window's last column claimed a lane of this row's own, so several lines
+    /// past the window read as one branch running down the page. `┊` keeps the
+    /// column, its width and its colour, and says the work merely continues out
+    /// there — inside the window the last column stays a lane and keeps `│`.
+    #[test]
+    fn the_bundle_thread_is_drawn_broken() {
+        let window = 2 * LANE_WINDOW;
+        // Ten branches open ten lanes: the window is exactly full, nothing
+        // folds, and the last column is an ordinary lane.
+        let inside = merged_tips(LANE_WINDOW);
+        for row in &inside {
+            assert!(
+                !row.prefix.contains('┊') && !row.prefix.contains('*'),
+                "ten lanes is inside the window, so there is no bundle: {:?}",
+                row.prefix
+            );
+        }
+        let solid = inside
+            .iter()
+            .find(|row| row.prefix.chars().nth(window - 2) == Some('│'))
+            .expect("no row runs its last lane past a commit in another column");
+        assert!(
+            solid.prefix.chars().position(|cell| cell == 'o').unwrap() < window - 2,
+            "the commit of that row is not in the last column: {:?}",
+            solid.prefix
+        );
+
+        // Twelve branches open twelve lanes, so two lines fold into the last
+        // column and every row whose own commit is inside the window carries the
+        // bundle alone.
+        let folded = merged_tips(LANE_WINDOW + 2);
+        let broken: Vec<&GitRow> = folded
+            .iter()
+            .filter(|row| row.prefix.chars().nth(window - 2) == Some('┊'))
+            .collect();
+        assert_eq!(
+            broken.len(),
+            LANE_WINDOW - 1,
+            "the bundle's thread is broken on every row it passes: {:?}",
+            folded.iter().map(|row| &row.prefix).collect::<Vec<_>>()
+        );
+        for row in broken {
+            // A commit keeps its own glyph and never a `┊`.
+            assert!(
+                row.prefix
+                    .chars()
+                    .position(|cell| matches!(cell, 'o' | 'M' | '*'))
+                    .unwrap()
+                    < window - 2,
+                "a commit kept its `┊`: {:?}",
+                row.prefix
+            );
+        }
+        let stars = folded.iter().filter(|row| row.prefix.contains('*')).count();
+        assert_eq!(
+            stars,
+            LANE_WINDOW + 2 - LANE_WINDOW,
+            "two folded lines: {:?}",
+            folded.iter().map(|row| &row.prefix).collect::<Vec<_>>()
+        );
+    }
+
     /// A straight history is one column; a merge opens a column to its right
     /// and the fork that closes the branch turns back into the commit's own
     /// column — with verticals, horizontals and elbows, never a diagonal.
@@ -1644,7 +1733,7 @@ mod tests {
                 row.prefix
             );
             assert!(
-                row.prefix.chars().all(|cell| "oM*│─┐┘┤┬┴ ".contains(cell)),
+                row.prefix.chars().all(|cell| "oM*│┊─┐┘┤┬┴ ".contains(cell)),
                 "a glyph outside the gutter's vocabulary: {:?}",
                 row.prefix
             );
