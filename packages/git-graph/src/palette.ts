@@ -13,9 +13,16 @@ export type GraphPalette = readonly string[];
 /**
  * Six, because the picture stops at six lanes: the producers (the host's
  * `git_history` and the TUI's `git_panel`, one window for all three surfaces)
- * draw every line past the sixth *in* the sixth column, so a reader never sees
- * more than six — and two lanes that share a colour are then six columns apart,
- * far enough to read as two columns rather than as one line skipping a row.
+ * draw every line past the sixth *in* the sixth column, and the phone's gutter is
+ * the narrowest place the picture has to fit.
+ *
+ * Colour follows the column a row prints, not the line of work behind it: the
+ * decoder paints `column * length`, so the six colours are the six columns. A
+ * line keeps its colour for as long as it keeps its column, and every line folded
+ * into the bundle shares the bundle's colour — there is one cell to paint, so the
+ * palette cannot tell those lines apart. What does is the row itself: the refs
+ * name the branch the commit sits on, which is the only place a reader can see
+ * that five dots in one column are five different lines rather than one.
  */
 export const LIGHT_GRAPH_COLORS: GraphPalette = [
   "#2563eb", // accent
