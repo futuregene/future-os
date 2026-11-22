@@ -43,8 +43,10 @@ const COMMIT_LIMIT: usize = 200;
 /// phone has to spare. Six is where a phone runs out of room (the same six the
 /// lane palette cycles at), so the picture is capped there: a line past the sixth
 /// is drawn *in* the sixth column, sharing it with the other lines that run past
-/// the window. It keeps its commits — each one is a dot on its own row — it just
-/// no longer has a column of its own, and the six colours are the six columns.
+/// the window. It keeps its commits — each one still gets its own row and a mark
+/// — but it no longer has a column of its own: those commits are drawn with `*`
+/// instead of `o`, so the sixth column's own line and the folded ones do not read
+/// as one line. The six colours are the six columns.
 pub const LANE_WINDOW: usize = 6;
 
 /// Budget for one read-only query (`rev-parse`, `log`).
@@ -924,6 +926,11 @@ fn draw(entries: &[Entry], covered: &HashSet<(usize, usize)>, seeded: Vec<Option
         // lanes can fold into one column, but only one of them is this row's.
         let mut marks = vec![false; visible + 1];
         let mut joins = vec![false; visible + 1];
+        // Whether this commit's own line is one of the folded ones. It is drawn
+        // in the bundle column like the others, but with its own glyph: inside
+        // the window a dot says "this line", here it would have to say "one of
+        // several lines that are not drawn", and the two would then read alike.
+        let folded = mine > visible;
         for column in 0..=width {
             let fold = column.min(visible);
             let column_up = lanes.get(column).is_some_and(|lane| lane.is_some()) && column != mine;
@@ -954,8 +961,14 @@ fn draw(entries: &[Entry], covered: &HashSet<(usize, usize)>, seeded: Vec<Option
         for column in 0..=visible {
             cells[2 * column] = if marks[column] {
                 // `M` is a commit that joins lines, `o` one that only continues
-                // its own — tig's two glyphs.
-                if joins[column] {
+                // its own — tig's two glyphs — and `*` one whose line has no
+                // column of its own because the picture stopped widening. A
+                // folded commit that joins lines is `*` too: the elbow a merge
+                // needs cannot be drawn past the window's edge, so the ring would
+                // promise a shape the row cannot show.
+                if folded && column == visible {
+                    '*'
+                } else if joins[column] {
                     'M'
                 } else {
                     'o'

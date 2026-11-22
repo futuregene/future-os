@@ -21,7 +21,7 @@ export type { GraphPalette };
  * drawing: each glyph says which directions have a line at that cell, and the
  * panel turns that into strokes. Nothing here paints characters.
  */
-const COMMIT = new Set(["o", "M"]);
+const COMMIT = new Set(["o", "M", "*"]);
 
 /**
  * Which directions each lane glyph carries a *vertical* in.
@@ -63,8 +63,12 @@ export interface GraphGeometry {
    * two are lane indices rather than the cells between them.
    */
   runs: { from: number; to: number; color: string }[];
-  /** The commit itself, where its dot is drawn. */
-  marker: { lane: number; color: string; merged: boolean } | null;
+  /**
+   * The commit itself, where its dot is drawn. `folded` marks a commit whose own
+   * line is past the six-lane window and is therefore drawn in the bundle's
+   * column: the dot is there, but it is not that column's commit.
+   */
+  marker: { lane: number; color: string; merged: boolean; folded: boolean } | null;
 }
 
 /**
@@ -154,7 +158,12 @@ export function graphGeometry(rows: { graph: string }[], palette: GraphPalette):
       runs,
       marker: mineLane === null
         ? null
-        : { lane: mineLane, color: laneColor(palette, mineLane), merged: gutter[mine!] === "M" },
+        : {
+            lane: mineLane,
+            color: laneColor(palette, mineLane),
+            merged: gutter[mine!] === "M",
+            folded: gutter[mine!] === "*",
+          },
     };
   });
 }
@@ -214,8 +223,11 @@ export interface LaneDrawing {
    * The commit's dot. `y` is the axis the row's horizontals were drawn on, not
    * necessarily the row's middle — a row of two text lines puts it on the first
    * one (see `laneDrawing`'s `center`).
+   *
+   * `folded` is carried through so a surface can draw the dot differently: a
+   * commit whose line has no column of its own is not the line the column shows.
    */
-  dots: { x: number; y: number; color: string; merged: boolean }[];
+  dots: { x: number; y: number; color: string; merged: boolean; folded: boolean }[];
 }
 
 /**
@@ -335,6 +347,7 @@ export function laneDrawing(
           y: center,
           color: geometry.marker.color,
           merged: geometry.marker.merged,
+          folded: geometry.marker.folded,
         }]
       : [],
   };

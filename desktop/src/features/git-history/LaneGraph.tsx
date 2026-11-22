@@ -3,6 +3,7 @@ import { laneDrawing } from "@future-os/git-graph";
 import {
   DOT_RADIUS,
   DOT_STROKE,
+  FOLD_RADIUS,
   LANE_METRICS,
   THREAD_WIDTH,
 } from "./laneMetrics";
@@ -77,20 +78,34 @@ export function LaneGraph({
           fill="none"
         />
       ))}
-      {drawing.dots.map(dot => (
+      {drawing.dots.map((dot) => {
         // A merge is a ring, a plain commit a disc — the same distinction the
-        // TUI's `M` and `o` make, so a reader who knows one reads the other.
-        <circle
+        // TUI's `M` and `o` make, so a reader who knows one reads the other. A
+        // commit whose line is folded into the bundle is a diamond, the TUI's
+        // `*`: the column it is drawn in belongs to another line.
+        if (dot.folded) {
           // A row has at most one commit, so there is nothing to tell apart.
-          key="dot"
-          cx={dot.x}
-          cy={dot.y}
-          r={dot.merged ? DOT_RADIUS + DOT_STROKE / 2 : DOT_RADIUS}
-          fill={dot.merged ? "none" : dot.color}
-          stroke={dot.color}
-          strokeWidth={dot.merged ? DOT_STROKE : 0}
-        />
-      ))}
+          return (
+            <path
+              key="dot"
+              d={`M ${dot.x} ${dot.y - FOLD_RADIUS} L ${dot.x + FOLD_RADIUS} ${dot.y} L ${dot.x} ${dot.y + FOLD_RADIUS} L ${dot.x - FOLD_RADIUS} ${dot.y} Z`}
+              fill={dot.color}
+            />
+          );
+        }
+        return (
+          <circle
+            // A row has at most one commit, so there is nothing to tell apart.
+            key="dot"
+            cx={dot.x}
+            cy={dot.y}
+            r={dot.merged ? DOT_RADIUS + DOT_STROKE / 2 : DOT_RADIUS}
+            fill={dot.merged ? "none" : dot.color}
+            stroke={dot.color}
+            strokeWidth={dot.merged ? DOT_STROKE : 0}
+          />
+        );
+      })}
     </svg>
   );
 }
