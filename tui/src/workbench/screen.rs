@@ -2481,11 +2481,19 @@ fn git_box(
     // One painted row of the list at a given width. The width is the pane's, so
     // a narrow box drops the tail of a field instead of letting `fit` cut a
     // field in the middle (which reads as a different value).
+    // The columns are one block down the page, so what fits is decided once,
+    // against the widest gutter in the page, rather than row by row.
+    let widest = git
+        .rows
+        .iter()
+        .map(|row| ansi::width(&row.prefix))
+        .max()
+        .unwrap_or(0);
     let row_text = |index: usize, offset: usize, width: usize| -> String {
         let Some(row) = git.rows.get(index) else {
             return String::new();
         };
-        git_row_line(palette, row, offset, width, index == cursor)
+        git_row_line(palette, row, offset, width, widest, index == cursor)
     };
     if git.rows.is_empty() {
         rows.push(widgets::box_row(
@@ -2898,20 +2906,27 @@ fn log_columns(palette: &Palette, columns: &[String], graph_width: usize, pane: 
 /// for being too wide, so `→` reaches the tail of a subject that runs past the
 /// divider instead of finding it cut off — except the columns, which are dropped
 /// whole when the pane cannot hold them *and* a readable subject.
+///
+/// `gutter` is the page's *widest* gutter, not this row's: each gutter is only
+/// as wide as the row's own lanes, so rows differ in width, but the columns are
+/// a block the eye reads down. A row that dropped the committer while its
+/// neighbour kept it would break that with a ragged edge no reader can explain,
+/// so the budget is measured against the widest gutter in the page: every row
+/// keeps the same columns, and only the graph itself varies in width.
 fn git_row_line(
     palette: &Palette,
     row: &GitRow,
     offset: usize,
     columns: usize,
+    gutter: usize,
     selected: bool,
 ) -> String {
     let columns = columns.max(1);
-    // The gutter is padded to the widest lane in the page, so whatever follows
-    // it — the refs, then the subject — starts in the same cell on every row.
     // Each lane already owns two cells (a glyph and the air beside it), so the
-    // padding ends in the one cell that separates the drawing from the fields.
+    // drawing ends in the one cell that separates it from the fields: the
+    // refs, then the subject, start right after this row's own gutter.
     let graph = paint_graph(palette, &row.prefix);
-    let side = log_columns(palette, &row.columns, ansi::width(&row.prefix), columns);
+    let side = log_columns(palette, &row.columns, gutter, columns);
     let full = if row.key.is_none() {
         // The graph continuing through a column: painted in the gutter, never
         // selectable, so it gets no arrow.
@@ -5324,7 +5339,7 @@ mod tests {
             pieces: vec!["HEAD -> main, tag: v1".into(), "fix(tui): one row".into()],
             kinds: vec![state::GitKind::Decoration, state::GitKind::Plain],
         };
-        let selected = git_row_line(&palette, &row, 0, 100, true);
+        let selected = git_row_line(&palette, &row, 0, 100, 4, true);
         assert_eq!(width(&selected), 100, "the band fills the pane");
         // The band is *derived* from the panel (`selection_band` steps away from
         // it), not taken from `border`: pinning it to a literal or to another
@@ -5348,7 +5363,7 @@ mod tests {
                 "{what} keep their colour inside the band: {selected:?}"
             );
         }
-        let idle = git_row_line(&palette, &row, 0, 100, false);
+        let idle = git_row_line(&palette, &row, 0, 100, 4, false);
         assert!(
             !idle.contains("\x1b[48;5;"),
             "an unselected row paints no background: {idle:?}"
@@ -5374,7 +5389,7 @@ mod tests {
             pieces: vec!["fix(tui): one row per record".into()],
             kinds: vec![state::GitKind::Plain],
         };
-        let narrow = plain(&git_row_line(&palette, &row, 0, 30, false));
+        let narrow = plain(&git_row_line(&palette, &row, 0, 30, 4, false));
         assert_eq!(width(&narrow), 30, "the pane is filled: {narrow:?}");
         assert!(
             narrow.starts_with("  ● fix(tui): one row"),
@@ -5383,18 +5398,18 @@ mod tests {
         assert!(!narrow.contains("2026"), "{narrow:?}");
         // One step wider and the committer comes back only if it also leaves
         // room for the subject; in between, the date-time stands alone.
-        let middle = plain(&git_row_line(&palette, &row, 0, 34, false));
+        let middle = plain(&git_row_line(&palette, &row, 0, 34, 4, false));
         assert!(middle.starts_with("  2026-10-27 09:15 ● fix"), "{middle:?}");
         assert!(!middle.contains("Ada"), "{middle:?}");
-        let wide = plain(&git_row_line(&palette, &row, 0, 80, false));
+        let wide = plain(&git_row_line(&palette, &row, 0, 80, 4, false));
         assert!(wide.starts_with("  2026-10-27 09:15 Ada ● "), "{wide:?}");
     }
 
-    /// The refs column is one cell in every row: the gutter is kept at the page's
-    /// widest drawing, so a commit whose own lanes end early still starts its
-    /// refs — and its subject — where the row above it does.
+    /// A row's refs and subject start right after *its own* lanes: a commit that
+    /// has the page to itself is one lane wide, not the widest lane in the page,
+    /// so nothing is reserved for drawings that row does not have.
     #[test]
-    fn the_row_starts_its_refs_in_one_cell() {
+    fn a_row_starts_its_refs_right_after_its_own_lanes() {
         let palette = FUTURE_DARK;
         let row = |prefix: &str| GitRow {
             key: Some("abc1234".into()),
@@ -5403,16 +5418,50 @@ mod tests {
             pieces: vec!["origin/main · Merge branch 'x'".into()],
             kinds: vec![state::GitKind::Plain],
         };
-        let wide = plain(&git_row_line(&palette, &row("● │ │       "), 0, 60, false));
-        let narrow = plain(&git_row_line(&palette, &row("●           "), 0, 60, false));
+        let wide = plain(&git_row_line(&palette, &row("● │ │ "), 0, 60, 8, false));
+        let narrow = plain(&git_row_line(&palette, &row("● "), 0, 60, 4, false));
         // Columns, not bytes: the box glyphs are three bytes wide and one cell.
         let start = |line: &str| ansi::width(line.split("origin/main").next().unwrap());
-        assert_eq!(
-            start(&wide),
-            start(&narrow),
-            "two rows, two drawings, one refs column: {wide:?} / {narrow:?}"
+        assert_eq!(start(&wide), 8, "marker, three lanes and one cell of air");
+        assert_eq!(start(&narrow), 4, "marker, one lane and one cell of air");
+        assert!(
+            narrow.starts_with("  ● origin/main"),
+            "the subject follows straight on: {narrow:?}"
         );
-        assert_eq!(start(&wide), 14, "marker, gutter and one cell of air");
+    }
+
+    /// The columns are a block read down the page, so they are dropped as one
+    /// decision taken against the page's widest gutter — not row by row, which
+    /// with ragged gutters would leave the date on the narrow rows and not on
+    /// their neighbours.
+    #[test]
+    fn the_columns_are_dropped_for_the_page_not_for_the_row() {
+        let palette = FUTURE_DARK;
+        let row = |prefix: &str| GitRow {
+            key: Some("abc1234".into()),
+            columns: vec!["2026-10-27 09:15".into(), "Ada".into()],
+            prefix: prefix.into(),
+            pieces: vec!["fix(tui): one row per record".into()],
+            kinds: vec![state::GitKind::Plain],
+        };
+        let narrow = row("● ");
+        let wide = row("● │ │ │ │ ");
+        // 32 cells: the widest row cannot hold the date *and* a subject (37),
+        // so no row shows it — including the narrow one, which could (31).
+        let page = 32;
+        let widest = ansi::width(&wide.prefix);
+        for one in [&narrow, &wide] {
+            let line = plain(&git_row_line(&palette, one, 0, page, widest, false));
+            assert!(!line.contains("2026"), "{line:?}");
+            assert!(!line.contains("Ada"), "{line:?}");
+        }
+        // And the same call with the row's own width as the budget is the bug
+        // this guards: the narrow row would keep the date its neighbour lost.
+        let per_row = plain(&git_row_line(&palette, &narrow, 0, page, 2, false));
+        assert!(
+            per_row.contains("2026"),
+            "the row-by-row budget is what looks ragged: {per_row:?}"
+        );
     }
 
     /// The band has to exist in every palette: it is a member of the one ordered

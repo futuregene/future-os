@@ -344,28 +344,28 @@ fn a_lane_keeps_its_column_across_the_page() {
     assert!(columns.iter().all(|at| at % 2 == 0));
 }
 
-/// A lane keeps its column, ten tips are ten lanes, and the picture still stops
-/// at the window: the phone draws every row's gutter at one width, so a history
-/// that keeps opening lanes would squeeze every subject on the page.
+/// Ten tips fill the window exactly, a twelfth folds, and no row grows past the
+/// window: the gutter stops widening there, and a line past it keeps its commits
+/// in the window's last column.
 #[test]
 fn the_picture_stops_widening_past_the_window() {
     let repo = Repo::new();
     repo.commit("base");
-    for n in 0..10 {
+    for n in 0..12 {
         repo.git(&["checkout", "-q", "-b", &format!("lane-{n}"), "main"]);
         repo.commit(&format!("lane {n} work"));
     }
     let listing = repo.listing();
     let window = 2 * LANE_WINDOW;
     assert!(
-        listing.commits.len() >= 11,
-        "the ten tips and their base: {}",
+        listing.commits.len() >= 13,
+        "the twelve tips and their base: {}",
         listing.commits.len()
     );
     for row in &listing.commits {
         assert!(
             row.graph.chars().count() <= window,
-            "a ten-lane history drew a {}-cell gutter, past the window: {:?}",
+            "a twelve-lane history drew a {}-cell gutter, past the window: {:?}",
             row.graph.chars().count(),
             row.graph
         );
@@ -391,7 +391,7 @@ fn the_picture_stops_widening_past_the_window() {
             );
         }
     }
-    // The window is used, not merely respected: ten lanes fill all six columns.
+    // The window is used, not merely respected: ten lanes fill all ten columns.
     assert!(
         listing
             .commits
@@ -405,8 +405,8 @@ fn the_picture_stops_widening_past_the_window() {
             .collect::<Vec<_>>()
     );
     // Two kinds of commit share that column, and only the folded ones carry the
-    // fold marker: the ten tips live in lanes 0–9, so lanes 6–9 (four of them)
-    // are the ones without a column of their own.
+    // fold marker: the twelve tips live in lanes 0–11, so lanes 10 and 11 are the
+    // ones without a column of their own.
     let stars = listing
         .commits
         .iter()
@@ -414,8 +414,8 @@ fn the_picture_stops_widening_past_the_window() {
         .count();
     assert_eq!(
         stars,
-        10 - LANE_WINDOW,
-        "ten tips, six columns: {:?}",
+        12 - LANE_WINDOW,
+        "twelve tips, ten columns: {:?}",
         listing.commits
     );
     assert!(
@@ -423,8 +423,60 @@ fn the_picture_stops_widening_past_the_window() {
             .commits
             .iter()
             .any(|row| row.graph.chars().nth(window - 2) == Some('o')),
-        "the sixth lane's own commit is not a fold marker: {:?}",
+        "the tenth lane's own commit is not a fold marker: {:?}",
         listing.commits
+    );
+}
+
+/// A row's gutter is its own width, not the page's: a row with one lane puts its
+/// subject straight after that lane, so a busy page does not push every subject
+/// right.
+#[test]
+fn a_rows_gutter_is_only_as_wide_as_its_own_lanes() {
+    let repo = Repo::new();
+    repo.commit("base");
+    for n in 0..10 {
+        repo.git(&["checkout", "-q", "-b", &format!("lane-{n}"), "main"]);
+        repo.commit(&format!("lane {n} work"));
+    }
+    repo.git(&["checkout", "-q", "main"]);
+    for branch in 0..10 {
+        repo.git(&[
+            "merge",
+            "-q",
+            "--no-ff",
+            "-m",
+            &format!("merge lane-{branch}"),
+            &format!("lane-{branch}"),
+        ]);
+    }
+    repo.commit("after the merges");
+    let listing = repo.listing();
+    let widths: Vec<usize> = listing
+        .commits
+        .iter()
+        .map(|row| row.graph.chars().count())
+        .collect();
+    // The newest row is one lane on main, drawn two cells wide: its subject
+    // starts immediately rather than after the busiest row of the page.
+    assert_eq!(
+        listing.commits[0].subject, "after the merges",
+        "the newest commit is first: {:?}",
+        listing.commits[0]
+    );
+    assert_eq!(
+        widths[0], 2,
+        "a one-lane row was padded out to the page's width: {:?}",
+        listing.commits[0].graph
+    );
+    assert!(
+        widths.iter().any(|width| *width > 2),
+        "no row carries more than one lane, so this page proves nothing: {:?}",
+        listing
+            .commits
+            .iter()
+            .map(|row| &row.graph)
+            .collect::<Vec<_>>()
     );
 }
 

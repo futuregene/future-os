@@ -22,7 +22,6 @@ import {
   entriesByThread,
   gitHistoryCommits,
   gitHistoryPatch,
-  gitHistoryWideningCommits,
   gitHistoryWindowCommits,
   HOME,
   installedSkills,
@@ -60,10 +59,9 @@ import { quotedPrompt } from "./replyQuote";
  * absence is something the harness captures rather than merely claims.
  */
 const noRepo = new URLSearchParams(window.location.search).get("norepo") === "1";
-// Which history the panel opens onto. `?gitlanes=window` is ten branches of
-// work drawn inside the six-column lane window; `?gitlanes=widening` the same
-// month drawn the way the host drew it before that window existed, so a pair of
-// captures can show what the window fixed.
+// Which history the panel opens onto. `?gitlanes=window` is eleven branches of
+// work: rows only as wide as their own lanes, and the lines past the ten-column
+// window folded into its last column.
 const gitLanes = new URLSearchParams(window.location.search).get("gitlanes");
 // `?gitpaged=1` answers the history in two pages: the last three rows of the
 // demo log are the second one, so the panel opens with its "load older" entry on
@@ -1266,11 +1264,9 @@ const handlers: Record<string, (args: any) => unknown> = {
   get_git_history: (args?: { cursor?: string }) => {
     const table = noRepo
       ? []
-      : gitLanes === "widening"
-        ? gitHistoryWideningCommits
-        : gitLanes === "window"
-          ? gitHistoryWindowCommits
-          : gitHistoryCommits;
+      : gitLanes === "window"
+        ? gitHistoryWindowCommits
+        : gitHistoryCommits;
     // Two pages, cut at a row boundary (see `gitPaged`): the cursor is what says
     // which half is being asked for.
     const second = gitPaged && args?.cursor === PAGED_CURSOR;
