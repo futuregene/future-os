@@ -46,17 +46,16 @@ pub const COMMIT_LIMIT: usize = 200;
 
 /// How many lanes the picture draws before it stops widening.
 ///
-/// A lane is two cells, and the subject starts after the gutter, so twelve lines
-/// of work open at once would push every subject 24 cells right — past what a
-/// phone has to spare and past what a split terminal's list pane has. Six lanes
-/// is where a phone runs out of room (the same six the palette cycles at), so the
-/// picture is capped there: a line past the sixth is drawn *in* the sixth column,
-/// sharing it with the other lines that run past the window. It keeps its commits
-/// — each one still gets its own row and a mark — but it no longer has a column of
-/// its own: those commits are drawn with `*` instead of `o`, so the sixth column's
-/// own line and the folded ones do not read as one line. The six colours are the
-/// six columns.
-pub const LANE_WINDOW: usize = 6;
+/// A gutter is only as wide as the row that carries it — a row with one lane is
+/// two cells and its subject starts immediately — so the width a page costs is the
+/// width of its busiest row, and a wider window is affordable: ten lanes is twenty
+/// cells beside the subject in the one row that needs them, not in every row. A
+/// line past the tenth is drawn *in* the tenth column, sharing it with the other
+/// lines that run past the window. It keeps its commits — each one still gets its
+/// own row and a mark — but it no longer has a column of its own: those commits
+/// are drawn with `*` instead of `o`, so the tenth column's own line and the folded
+/// ones do not read as one line.
+pub const LANE_WINDOW: usize = 10;
 
 /// Where a page of the log resumes: the open lanes, and the refs still unshown.
 ///
@@ -371,9 +370,9 @@ struct Lane {
 /// looping rather than a budget anything real gets near.
 const PASSES: usize = 4;
 
-/// The graph gutter for each entry, one string per row and every string the
-/// same width so the subjects line up in one column — and the lanes the page ends
-/// with, which the next page resumes from.
+/// The graph gutter for each entry, one string per row — each as wide as that
+/// row's own lanes, so a one-lane row starts its subject immediately — and the
+/// lanes the page ends with, which the next page resumes from.
 ///
 /// `seed` is that same lane row from the page above: one entry per column, the sha
 /// it waits for or `""` where the column is free. A first page seeds nothing.
@@ -432,13 +431,13 @@ fn graph(entries: &[Entry], seed: &[String]) -> (Vec<String>, Vec<String>) {
         }
         covered.extend(fresh);
     }
-    let width = rows.iter().map(Vec::len).max().unwrap_or(0);
+    // Each gutter keeps the width of its own row: a row with one lane is two
+    // cells, so its subject starts right after that lane instead of after the
+    // page's busiest row. That is what makes a ten-lane window affordable — the
+    // page pays for its busiest row, not for its busiest row in every row.
     let gutters = rows
         .into_iter()
-        .map(|mut cells| {
-            cells.resize(width, ' ');
-            cells.into_iter().collect()
-        })
+        .map(|cells| cells.into_iter().collect())
         .collect();
     let mut ended: Vec<String> = lanes
         .into_iter()
@@ -1486,15 +1485,15 @@ mod tests {
     }
 
     /// A page with more lines of work open than the window draws: the picture
-    /// stops at six columns and the lines past the sixth share the last one. The
-    /// work is not dropped — the commit on the tenth lane still gets its dot — and
-    /// every row is padded to the same width, so the subjects stay in one column.
+    /// stops at ten columns and the lines past the tenth share the last one. The
+    /// work is not dropped — the commit past the window still gets a mark — and
+    /// no row is drawn wider than the window.
     #[test]
     fn the_gutter_stops_widening_past_the_window() {
-        // A merge of ten branches: ten lanes are open at once after its row.
-        let tips: Vec<String> = (0..10).map(|n| format!("p{n}")).collect();
+        // A merge of twelve branches: twelve lanes are open at once after its row.
+        let tips: Vec<String> = (0..12).map(|n| format!("p{n}")).collect();
         let mut text = format!(
-            "\u{1e}m\u{1f}m\u{1f}{}\u{1f}2026-10-27 09:15\u{1f}Ada\u{1f}\u{1f}merge ten\n",
+            "\u{1e}m\u{1f}m\u{1f}{}\u{1f}2026-10-27 09:15\u{1f}Ada\u{1f}\u{1f}merge twelve\n",
             tips.join(" ")
         );
         for tip in &tips {
@@ -1506,7 +1505,7 @@ mod tests {
         let window = 2 * LANE_WINDOW;
         assert!(
             rows.iter().all(|row| row.prefix.chars().count() <= window),
-            "a ten-lane page drew wider than the window: {:?}",
+            "a twelve-lane page drew wider than the window: {:?}",
             rows.iter().map(|row| &row.prefix).collect::<Vec<_>>()
         );
         assert_eq!(
@@ -1515,32 +1514,27 @@ mod tests {
             "the merge row fills the window: {:?}",
             rows[0].prefix
         );
-        assert!(
-            rows.iter().all(|row| row.prefix.chars().count() == window),
-            "the subjects no longer start in one column: {:?}",
-            rows.iter().map(|row| &row.prefix).collect::<Vec<_>>()
-        );
 
-        // The tenth lane's own commit is drawn in the window's last column, but
+        // The eleventh lane's commit is drawn in the window's last column, but
         // not as a dot: the bundle keeps the work and drops the claim that the
         // commit sits on the line drawn there.
+        let eleventh = &rows[11];
+        assert_eq!(eleventh.key.as_deref(), Some("p10"), "{:?}", eleventh.key);
+        assert_eq!(
+            eleventh.prefix.chars().nth(window - 2),
+            Some('*'),
+            "the commit past the window is not marked as folded: {:?}",
+            eleventh.prefix
+        );
+        // The tenth lane (p9) still has a column of its own, so it keeps its dot
+        // in the window's last column; p10 onwards are the folded ones.
         let tenth = &rows[10];
         assert_eq!(tenth.key.as_deref(), Some("p9"), "{:?}", tenth.key);
         assert_eq!(
             tenth.prefix.chars().nth(window - 2),
-            Some('*'),
-            "the commit past the window is not marked as folded: {:?}",
-            tenth.prefix
-        );
-        // The sixth lane (p5) still has a column of its own, so it keeps its dot
-        // in the window's last column; p6 onwards are the folded ones.
-        let sixth = &rows[6];
-        assert_eq!(sixth.key.as_deref(), Some("p5"), "{:?}", sixth.key);
-        assert_eq!(
-            sixth.prefix.chars().nth(window - 2),
             Some('o'),
-            "the sixth lane's commit was marked as folded: {:?}",
-            sixth.prefix
+            "the tenth lane's commit was marked as folded: {:?}",
+            tenth.prefix
         );
     }
 
@@ -1566,7 +1560,7 @@ mod tests {
     fn a_connection_crosses_a_lane_without_moving_it() {
         assert_eq!(
             gutters(&[("m", "x y"), ("x", "p q"), ("y", ""), ("p", ""), ("q", ""),]),
-            vec!["M─┐   ", "M─│─┐ ", "│ o │ ", "o   │ ", "    o "]
+            vec!["M─┐ ", "M─│─┐ ", "│ o │ ", "o   │ ", "    o "]
         );
         // Two lanes joining one commit turn into it side by side.
         assert_eq!(
@@ -1625,16 +1619,19 @@ mod tests {
     }
 
     /// A lane that is handed a commit keeps its column, so a branch is one
-    /// colour from its tip to where it joins, and every row is as wide as the
-    /// whole log so the subjects share one column.
+    /// colour from its tip to where it joins; and a row's gutter is only as wide
+    /// as its own lanes, so a one-lane row starts its subject immediately instead
+    /// of after the page's busiest row.
     #[test]
-    fn every_row_is_a_commit_and_every_gutter_is_as_wide() {
+    fn every_row_is_a_commit_and_every_gutter_is_its_own_width() {
         let commits = [("m", "x y"), ("x", "a"), ("y", "a"), ("a", "b"), ("b", "")];
         let rows = parse_log(&log(&commits));
         assert_eq!(rows.len(), commits.len());
         assert!(rows.iter().all(|row| row.key.is_some()), "{rows:?}");
-        let width = rows[0].prefix.chars().count();
-        assert!(rows.iter().all(|row| row.prefix.chars().count() == width));
+        // The merge and the two branch tips carry two lanes; below them the page
+        // is one lane, drawn two cells wide.
+        let widths: Vec<usize> = rows.iter().map(|row| row.prefix.chars().count()).collect();
+        assert_eq!(widths, vec![4, 4, 4, 4, 2], "{rows:?}");
         for row in &rows {
             // `*` is the gutter's own (a commit folded into the bundle, see
             // `LANE_WINDOW`), so it is not in the list below: what must never
@@ -1944,16 +1941,22 @@ mod tests {
             "no zone: {columns:?}"
         );
         // The graph is drawn: the merge's row opens a lane beside its own, and
-        // the gutter is one width for every row so the subjects line up.
+        // each gutter is as wide as its own row — the merge is four cells, the
+        // rows below it two.
         assert!(
             commits[0].prefix.starts_with("M─"),
             "{:?}",
             commits[0].prefix
         );
-        let width = commits[0].prefix.chars().count();
+        let widest = commits
+            .iter()
+            .map(|row| row.prefix.chars().count())
+            .max()
+            .unwrap_or(0);
+        assert_eq!(commits[0].prefix.chars().count(), widest);
         assert!(commits
             .iter()
-            .all(|row| row.prefix.chars().count() == width));
+            .all(|row| row.prefix.chars().count() <= widest));
         let patch = detail(
             dir.path(),
             GitSection::Commits,

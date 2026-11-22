@@ -193,11 +193,14 @@ export function GitHistoryPanel({
     }
   };
 
-  const lanes = useMemo(() => Math.max(1, laneCount(commits)), [commits]);
   // Decoded once for the page, not once per row: a row cannot be decoded alone
   // anyway — whether a thread reaches above a dot depends on the row before it.
   const geometry = useMemo(() => graphGeometry(commits, palette), [commits, palette]);
-  const pictureWidth = lanes * LANE_PITCH + GUTTER_PAD;
+  // One gutter width per row, not one for the page: a row with a single lane
+  // paints two lanes' width, so its subject starts right after the line instead
+  // of after the busiest row of the page.
+  const widthOf = (commit: { graph: string }) =>
+    Math.max(1, laneCount([commit])) * LANE_PITCH + GUTTER_PAD;
 
   if (selected) {
     return <CommitPatchPane commit={selected} source={source} onBack={() => setSelected(null)} />;
@@ -251,7 +254,7 @@ export function GitHistoryPanel({
                         key={commit.short}
                         commit={commit}
                         geometry={geometry[index] ?? null}
-                        width={pictureWidth}
+                        width={widthOf(commit)}
                         onOpen={() => setSelected(commit)}
                       />
                     ))}
