@@ -38,16 +38,16 @@ const COMMIT_LIMIT: usize = 200;
 
 /// How many lanes the picture draws before it stops widening.
 ///
-/// A lane is two cells, and the subject starts after the gutter, so twelve lines
-/// of work open at once would push every subject 24 cells right — past what a
-/// phone has to spare. Six is where a phone runs out of room (the same six the
-/// lane palette cycles at), so the picture is capped there: a line past the sixth
-/// is drawn *in* the sixth column, sharing it with the other lines that run past
-/// the window. It keeps its commits — each one still gets its own row and a mark
-/// — but it no longer has a column of its own: those commits are drawn with `*`
-/// instead of `o`, so the sixth column's own line and the folded ones do not read
-/// as one line. The six colours are the six columns.
-pub const LANE_WINDOW: usize = 6;
+/// A gutter is only as wide as the row that carries it — a row with one lane is
+/// two cells and its subject starts immediately — so the width a page costs is
+/// the width of its busiest row, and a wider window is affordable: ten lanes is
+/// twenty cells beside the subject in the one row that needs them, not in every
+/// row. A line past the tenth is drawn *in* the tenth column, sharing it with the
+/// other lines that run past the window. It keeps its commits — each one still
+/// gets its own row and a mark — but it no longer has a column of its own: those
+/// commits are drawn with `*` instead of `o`, so the tenth column's own line and
+/// the folded ones do not read as one line.
+pub const LANE_WINDOW: usize = 10;
 
 /// Budget for one read-only query (`rev-parse`, `log`).
 const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -810,13 +810,14 @@ fn graph(entries: &[Entry], seed: &[String]) -> (Vec<String>, Vec<String>) {
         }
         covered.extend(fresh);
     }
-    let width = rows.iter().map(Vec::len).max().unwrap_or(0);
+    // Each gutter keeps the width of its own row: a row with one lane is two
+    // cells, so its subject starts right after that lane instead of after the
+    // page's busiest row. Nothing pads a row to the widest one, which is what
+    // makes a ten-lane window affordable — the page pays for its busiest row,
+    // not for its busiest row in every row.
     let gutters = rows
         .into_iter()
-        .map(|mut cells| {
-            cells.resize(width, ' ');
-            cells.into_iter().collect()
-        })
+        .map(|cells| cells.into_iter().collect())
         .collect();
     let mut ended: Vec<String> = lanes
         .into_iter()
@@ -974,7 +975,17 @@ fn draw(entries: &[Entry], covered: &HashSet<(usize, usize)>, seeded: Vec<Option
                     'o'
                 }
             } else {
-                junction(up[column], down[column], left[column], right[column])
+                let thread = junction(up[column], down[column], left[column], right[column]);
+                // The bundle's thread is not this column's own line: a `│` here
+                // reads exactly like a lane, and nothing on the row says the work
+                // continues past the window rather than in this column. `┊` keeps
+                // the column, its width and its colour and says which one it is.
+                // A connector keeps its shape — a `┬` is a shape, not a thread.
+                if column == visible && width > visible && thread == '│' {
+                    '┊'
+                } else {
+                    thread
+                }
             };
             if right[column] {
                 cells[2 * column + 1] = '─';

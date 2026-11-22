@@ -52,7 +52,6 @@ import {
   demoGitListing,
   demoPagedGitListing,
   demoWindowGitListing,
-  demoWideningGitListing,
   demoInstalledSkills,
   demoAvailableSkills,
   demoModels,
@@ -206,10 +205,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // A workspace that is a plain directory: the conversation menu then has no Git
   // row at all, which is the case worth a capture of its own.
   const noRepo = new URLSearchParams(window.location.search).get("norepo") === "1";
-  // Which history the sheet opens onto. `?gitlanes=window` is ten branches of
-  // work drawn inside the six-column lane window; `?gitlanes=widening` the same
-  // month drawn the way the host drew it before that window existed, so a pair
-  // of captures can show what the window fixed.
+  // Which history the sheet opens onto. `?gitlanes=window` is eleven branches of
+  // work: rows only as wide as their own lanes, and the lines past the ten-column
+  // window folded into its last column.
   const gitLanes = new URLSearchParams(window.location.search).get("gitlanes");
   // `?gitpaged=1` answers the history in two pages: the last six rows of the
   // demo log are the second one. The first page is longer than a phone screen, so
@@ -762,10 +760,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     // show the menu *without* the Git row.
     listGitCommits: async (cursor?: string): Promise<GitGraphListing> => {
       if (noRepo) return { isRepo: false, repoName: "", path: "", commits: [], truncated: false };
-      const listing = gitLanes === "widening" ? demoWideningGitListing
-        : gitLanes === "window" ? demoWindowGitListing
-          : gitPaged ? demoPagedGitListing
-            : demoGitListing;
+      const listing = gitLanes === "window" ? demoWindowGitListing
+        : gitPaged ? demoPagedGitListing
+          : demoGitListing;
       if (!gitPaged) return listing;
       // Two pages, cut at a row boundary (see `gitPaged`): the cursor says which
       // half is being asked for. The first page is thirty-one rows, three screens

@@ -264,6 +264,36 @@ test("a commit past the lane window is a diamond, not the column's disc", async 
   expect(diamond!.props.fill).toBe("#a16207");
 });
 
+/**
+ * The bundle's thread, on a row that has no commit in that column. `┊` is what
+ * the host writes there: the lines past the window still run, but nothing
+ * landed in that column, so the stroke is dashed rather than claiming a lane of
+ * this row's own.
+ */
+test("the bundle's thread is drawn dashed, and a lane's is solid", async () => {
+  const bundled: GitGraphListing = {
+    ...listing,
+    commits: [
+      { short: "aaa111", when: "2026-11-11 18:42", who: "Lixin Zhou", decorations: "", subject: "trunk tip", graph: "o " },
+      { short: "bbb222", when: "2026-11-11 16:05", who: "Mei Tan", decorations: "", subject: "inside the window", graph: "│ ┊ " },
+      { short: "ccc333", when: "2026-11-11 14:20", who: "Mei Tan", decorations: "", subject: "a plain lane", graph: "│ │ " },
+    ],
+  };
+  await mount({ listCommits: jest.fn(async () => bundled) });
+
+  const dashedOf = (sha: string) =>
+    rowPress(sha).findAllByType(SvgLine).map(node => node.props.strokeDasharray);
+  // The bundle's thread is the second line of its row, and only that one is
+  // dashed: its neighbour in the same row is an ordinary lane.
+  expect(dashedOf("bbb222")).toEqual([undefined, "2 4"]);
+  expect(dashedOf("ccc333")).toEqual([undefined, undefined]);
+  // Whatever the stroke, the column keeps its width: a dashed thread is still a
+  // lane, so the row is laid out exactly as its solid neighbour is.
+  const lane = (sha: string) =>
+    [...new Set(rowPress(sha).findAllByType(SvgLine).map(node => node.props.x1 as number))];
+  expect(lane("bbb222")).toEqual(lane("ccc333"));
+});
+
 /** Neither page has a header bar, and the list has no control of its own. */
 test("the list has no header and no second way out", async () => {
   await mount();

@@ -270,7 +270,6 @@ export function GitGraphPanel({
     }
   };
 
-  const lanes = useMemo(() => Math.max(1, laneCount(commits)), [commits]);
   // Decoded once per page rather than once per row: it is one linear pass, and
   // a row cannot be decoded alone anyway — whether a thread exists above a dot
   // depends on the row before it.
@@ -287,7 +286,10 @@ export function GitGraphPanel({
     () => ({ pitch: LANE_PITCH, radius: TURN_RADIUS, gap: CROSSING_GAP }),
     [],
   );
-  const pictureWidth = lanes * LANE_PITCH + GUTTER_PAD;
+  // One gutter width per row, not one for the page: a row with a single lane
+  // paints two lanes' width, so its subject starts right after the line instead
+  // of after the busiest row of the page.
+  const widthOf = (row: { graph: string }) => Math.max(1, laneCount([row])) * LANE_PITCH + GUTTER_PAD;
 
   return (
     <View style={styles.panel}>
@@ -377,7 +379,7 @@ export function GitGraphPanel({
               row={geometry[index] ?? null}
               height={rowHeight}
               center={dotCenter}
-              width={pictureWidth}
+              width={widthOf(item)}
               metrics={metrics}
               onPress={() => setSelected(item)}
             />
@@ -448,6 +450,10 @@ function CommitRow({
               stroke={thread.color}
               strokeWidth={THREAD_WIDTH}
               strokeLinecap="round"
+              // The bundle's thread on a row with no commit in that column:
+              // dashed, so the work continuing past the window is not read as a
+              // lane of this row's own.
+              strokeDasharray={thread.dashed ? `${THREAD_WIDTH} ${THREAD_WIDTH * 2}` : undefined}
             />
           ))}
           {drawing?.runs.map((run, index) => (
