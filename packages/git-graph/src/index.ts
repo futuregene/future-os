@@ -21,7 +21,7 @@ export type { GraphPalette };
  * drawing: each glyph says which directions have a line at that cell, and the
  * panel turns that into strokes. Nothing here paints characters.
  */
-const COMMIT = new Set(["o", "M"]);
+const COMMIT = new Set(["o", "M", "*"]);
 
 /**
  * Which directions each lane glyph carries a *vertical* in.
@@ -34,13 +34,17 @@ const COMMIT = new Set(["o", "M"]);
  * which of the two it is, because a lane with `─` on both sides has the
  * horizontal running through it.
  */
-const VERTICAL: Record<string, { up: boolean; down: boolean }> = {
+const VERTICAL: Record<string, { up: boolean; down: boolean; dashed?: boolean }> = {
   "│": { up: true, down: true },
   "┤": { up: true, down: true },
   "┴": { up: true, down: false },
   "┘": { up: true, down: false },
   "┬": { up: false, down: true },
   "┐": { up: false, down: true },
+  // The bundle's thread on a row that has no commit of its own in that column:
+  // the lines past the window still run there, but nothing on this row landed
+  // in that column. Drawn dashed, so it cannot be read as a lane of its own.
+  "┊": { up: true, down: true, dashed: true },
 };
 
 /**
@@ -57,14 +61,29 @@ export interface GraphGeometry {
    * row's own edges, which is what makes it continuous with the rows on either
    * side.
    */
-  threads: { lane: number; fromTop: boolean; toBottom: boolean; color: string }[];
+  threads: {
+    lane: number;
+    fromTop: boolean;
+    toBottom: boolean;
+    color: string;
+    /**
+     * A thread the host drew broken (`┊`), which is the bundle's line on a row
+     * that has no commit of its own in that column. The stroke is dashed so the
+     * bundle cannot be read as a lane with work of its own on this row.
+     */
+    dashed: boolean;
+  }[];
   /**
    * A horizontal connection, merged across its lanes: `from < to`, and the
    * two are lane indices rather than the cells between them.
    */
   runs: { from: number; to: number; color: string }[];
-  /** The commit itself, where its dot is drawn. */
-  marker: { lane: number; color: string; merged: boolean } | null;
+  /**
+   * The commit itself, where its dot is drawn. `folded` marks a commit whose own
+   * line is past the six-lane window and is therefore drawn in the bundle's
+   * column: the dot is there, but it is not that column's commit.
+   */
+  marker: { lane: number; color: string; merged: boolean; folded: boolean } | null;
 }
 
 /**
@@ -86,10 +105,15 @@ export interface GraphGeometry {
  *   read as a different branch at every lane it crosses.
  */
 export function graphGeometry(rows: { graph: string }[], palette: GraphPalette): GraphGeometry[] {
+  // A lane is *occupied* when the row carries something that carries the lane
+  // on. A folded mark does not: it is drawn in the bundle's column but stands
+  // for a line somewhere past the window, so nothing above it is waiting on
+  // that column and nothing below it continues one.
   const occupied = rows.map((row) => {
     const lanes: boolean[] = [];
     for (let lane = 0; lane * 2 < row.graph.length; lane++) {
-      lanes[lane] = (row.graph[lane * 2] ?? " ") !== " ";
+      const glyph = row.graph[lane * 2] ?? " ";
+      lanes[lane] = glyph !== " " && glyph !== "*";
     }
     return lanes;
   });
@@ -107,6 +131,14 @@ export function graphGeometry(rows: { graph: string }[], palette: GraphPalette):
       }
       const color = laneColor(palette, lane);
       if (COMMIT.has(glyph)) {
+        // A folded mark is the one commit that carries no thread. It is drawn in
+        // the bundle's column, and a thread through it would join it to the
+        // diamonds on either side into one unbroken line — turning several
+        // unrelated tips into what reads as a single branch with commits on it,
+        // which is the reading the mark exists to prevent.
+        if (glyph === "*") {
+          continue;
+        }
         // A commit's thread reaches up only when something was already waiting
         // on its column, and down only when another row still carries that
         // lane: otherwise this commit is the lane's tip and a thread past its
@@ -116,12 +148,19 @@ export function graphGeometry(rows: { graph: string }[], palette: GraphPalette):
           fromTop: occupied[index - 1]?.[lane] === true,
           toBottom: occupied[index + 1]?.[lane] === true,
           color,
+          dashed: false,
         });
         continue;
       }
       const vertical = VERTICAL[glyph];
       if (vertical) {
-        threads.push({ lane, fromTop: vertical.up, toBottom: vertical.down, color });
+        threads.push({
+          lane,
+          fromTop: vertical.up,
+          toBottom: vertical.down,
+          color,
+          dashed: vertical.dashed === true,
+        });
       }
     }
 
@@ -154,7 +193,12 @@ export function graphGeometry(rows: { graph: string }[], palette: GraphPalette):
       runs,
       marker: mineLane === null
         ? null
-        : { lane: mineLane, color: laneColor(palette, mineLane), merged: gutter[mine!] === "M" },
+        : {
+            lane: mineLane,
+            color: laneColor(palette, mineLane),
+            merged: gutter[mine!] === "M",
+            folded: gutter[mine!] === "*",
+          },
     };
   });
 }
@@ -204,7 +248,7 @@ export interface LaneDrawing {
    * Straight verticals, across the row's full height so they meet the rows on
    * either side exactly.
    */
-  threads: { x: number; y1: number; y2: number; color: string }[];
+  threads: { x: number; y1: number; y2: number; color: string; dashed: boolean }[];
   /**
    * Horizontals as SVG path data, turns included: one path per unbroken
    * stretch of a connection.
@@ -214,8 +258,11 @@ export interface LaneDrawing {
    * The commit's dot. `y` is the axis the row's horizontals were drawn on, not
    * necessarily the row's middle — a row of two text lines puts it on the first
    * one (see `laneDrawing`'s `center`).
+   *
+   * `folded` is carried through so a surface can draw the dot differently: a
+   * commit whose line has no column of its own is not the line the column shows.
    */
-  dots: { x: number; y: number; color: string; merged: boolean }[];
+  dots: { x: number; y: number; color: string; merged: boolean; folded: boolean }[];
 }
 
 /**
@@ -293,6 +340,7 @@ export function laneDrawing(
       y1: thread.fromTop ? 0 : turn === "down" ? center + radius : center,
       y2: thread.toBottom ? height : turn === "up" ? center - radius : center,
       color: thread.color,
+      dashed: thread.dashed,
     };
   }).filter(thread => thread.y2 > thread.y1);
   // The filter above drops a thread that starts and ends on the centre line: it
@@ -335,6 +383,7 @@ export function laneDrawing(
           y: center,
           color: geometry.marker.color,
           merged: geometry.marker.merged,
+          folded: geometry.marker.folded,
         }]
       : [],
   };

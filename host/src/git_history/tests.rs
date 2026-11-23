@@ -5,12 +5,33 @@ use std::process::Command;
 /// picture is a property of the fixture rather than of this checkout.
 struct Repo {
     dir: tempfile::TempDir,
+    /// The instant the next `git` command commits at, in seconds since the epoch.
+    ///
+    /// The read is `git log --date-order`, and a date order is only *total* when
+    /// the instants are distinct: `--date-order` has to break a tie between two
+    /// commits committed in the same second itself, and it breaks it from the rev
+    /// set the walk started at rather than from the commits alone. A fixture that
+    /// let every commit land in the same second therefore read its eight commits
+    /// in one order as one page and in another order as two — `8ad8075` and
+    /// `ebd6258` swapped — which passed on Git for macOS and Linux and failed on
+    /// Git for Windows (`Rust Windows test / host-core`, run 44937037098).
+    ///
+    /// So every command commits at a distinct second, and the order the pages are
+    /// compared in is a property of the history instead of of the tie-break.
+    clock: std::cell::Cell<i64>,
 }
+
+/// The first instant the fixture commits at: 2020-09-13T12:26:40Z, far enough
+/// from any test's `now` that nothing reads as "just now".
+const FIRST_INSTANT: i64 = 1_600_000_000;
 
 impl Repo {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let repo = Self { dir };
+        let repo = Self {
+            dir,
+            clock: std::cell::Cell::new(FIRST_INSTANT),
+        };
         repo.git(&["init", "--initial-branch=main"]);
         repo.git(&["config", "user.email", "reader@example.com"]);
         repo.git(&["config", "user.name", "Reader"]);
@@ -21,11 +42,24 @@ impl Repo {
         self.dir.path()
     }
 
+    /// The instant one command commits at, one second after the command before
+    /// it. Applied to *every* command, so `commit`, `commit -m` and the merge
+    /// `git merge` makes itself all advance the clock, and no two commits in the
+    /// fixture can share a second.
+    fn instant(&self) -> String {
+        let at = self.clock.get();
+        self.clock.set(at + 1);
+        format!("@{at} +0000")
+    }
+
     fn git(&self, args: &[&str]) -> String {
+        let instant = self.instant();
         let output = Command::new("git")
             .arg("-C")
             .arg(self.path())
             .args(args)
+            .env("GIT_AUTHOR_DATE", &instant)
+            .env("GIT_COMMITTER_DATE", &instant)
             .output()
             .unwrap();
         assert!(
@@ -54,12 +88,12 @@ impl Repo {
     }
 
     fn listing(&self) -> GraphListing {
-        list(&self.path().display().to_string(), 0).unwrap()
+        list(&self.path().display().to_string(), "").unwrap()
     }
 
     /// One page of the history, as a reader asking for more would get it.
-    fn page(&self, skip: usize, take: usize) -> GraphListing {
-        page(&self.path().display().to_string(), skip, take).unwrap()
+    fn page(&self, cursor: &str, take: usize) -> GraphListing {
+        page(&self.path().display().to_string(), cursor, take).unwrap()
     }
 
     /// Commit one file with the author and committer named separately, the way a
@@ -82,10 +116,13 @@ impl Repo {
         )
         .unwrap();
         self.git(&["add", "."]);
+        let instant = self.instant();
         let output = Command::new("git")
             .arg("-C")
             .arg(self.path())
             .args(["commit", "-m", subject])
+            .env("GIT_AUTHOR_DATE", &instant)
+            .env("GIT_COMMITTER_DATE", &instant)
             .env("GIT_AUTHOR_NAME", author)
             .env("GIT_AUTHOR_EMAIL", author_email)
             .env("GIT_COMMITTER_NAME", committer)
@@ -100,12 +137,44 @@ impl Repo {
     }
 }
 
+/// The fixture's history is totally ordered: every commit has an instant of its
+/// own.
+///
+/// [`the_second_page_is_the_tail_of_one_bigger_read`] compares two orders, and
+/// `--date-order` can only reproduce one across a seam when no two commits share
+/// a second — the tie-break is the walk's, not the commits' (see `Repo::clock`).
+/// That disagreement showed up on Git for Windows and on neither other platform,
+/// so the property the paging assertion rests on is asserted here, where every
+/// platform runs it and a fixture that stopped pinning its dates would fail at
+/// home rather than in one CI job.
+#[test]
+fn the_fixture_gives_every_commit_an_instant_of_its_own() {
+    let repo = Repo::new();
+    repo.commit("base");
+    repo.git(&["checkout", "-b", "side"]);
+    repo.commit("side work");
+    repo.git(&["checkout", "main"]);
+    repo.commit("main work");
+    // A merge commits too, and it is git making the commit rather than the
+    // fixture, so it is the one a pinned `commit` would miss.
+    repo.git(&["merge", "--no-ff", "-m", "merge side", "side"]);
+    let stamps = repo.git(&["log", "--all", "--format=%ct"]);
+    let mut instants: Vec<&str> = stamps.lines().map(str::trim).collect();
+    instants.sort_unstable();
+    instants.dedup();
+    assert_eq!(
+        instants.len(),
+        4,
+        "two commits share a committer second, so the date order has a tie: {stamps:?}"
+    );
+}
+
 /// A directory that is not a repository, with a `.git`-less parent chain: the
 /// one answer the phone draws nothing for.
 #[test]
 fn a_plain_directory_is_not_a_repository() {
     let dir = tempfile::tempdir().unwrap();
-    let listing = list(&dir.path().display().to_string(), 0).unwrap();
+    let listing = list(&dir.path().display().to_string(), "").unwrap();
     assert!(!listing.is_repo);
     assert!(listing.repo_name.is_empty());
     assert!(listing.commits.is_empty());
@@ -143,7 +212,7 @@ fn a_subdirectory_of_a_repository_reports_the_repository() {
     repo.commit("first");
     let nested = repo.path().join("nested/deeper");
     std::fs::create_dir_all(&nested).unwrap();
-    let listing = list(&nested.display().to_string(), 0).unwrap();
+    let listing = list(&nested.display().to_string(), "").unwrap();
     assert!(listing.is_repo);
     // Spelled the way the file system spells it: `fs::canonicalize` produces the
     // extended-length form (`\\?\C:\…`) on Windows, and a phone given that string
@@ -275,28 +344,28 @@ fn a_lane_keeps_its_column_across_the_page() {
     assert!(columns.iter().all(|at| at % 2 == 0));
 }
 
-/// A lane keeps its column, ten tips are ten lanes, and the picture still stops
-/// at the window: the phone draws every row's gutter at one width, so a history
-/// that keeps opening lanes would squeeze every subject on the page.
+/// Ten tips fill the window exactly, a twelfth folds, and no row grows past the
+/// window: the gutter stops widening there, and a line past it keeps its commits
+/// in the window's last column.
 #[test]
 fn the_picture_stops_widening_past_the_window() {
     let repo = Repo::new();
     repo.commit("base");
-    for n in 0..10 {
+    for n in 0..12 {
         repo.git(&["checkout", "-q", "-b", &format!("lane-{n}"), "main"]);
         repo.commit(&format!("lane {n} work"));
     }
     let listing = repo.listing();
     let window = 2 * LANE_WINDOW;
     assert!(
-        listing.commits.len() >= 11,
-        "the ten tips and their base: {}",
+        listing.commits.len() >= 13,
+        "the twelve tips and their base: {}",
         listing.commits.len()
     );
     for row in &listing.commits {
         assert!(
             row.graph.chars().count() <= window,
-            "a ten-lane history drew a {}-cell gutter, past the window: {:?}",
+            "a twelve-lane history drew a {}-cell gutter, past the window: {:?}",
             row.graph.chars().count(),
             row.graph
         );
@@ -305,13 +374,24 @@ fn the_picture_stops_widening_past_the_window() {
         if let Some(at) = row
             .graph
             .chars()
-            .position(|cell| cell == 'o' || cell == 'M')
+            .position(|cell| cell == 'o' || cell == 'M' || cell == '*')
         {
             assert_eq!(at % 2, 0, "{:?}", row.graph);
             assert!(at <= window - 2, "a dot past the window: {:?}", row.graph);
         }
+        if let Some(at) = row.graph.chars().position(|cell| cell == '*') {
+            // A commit on a folded line is not drawn as a dot: inside the window
+            // a dot means "this line", and in the bundle it would read as the
+            // bundle's own commit.
+            assert_eq!(
+                at,
+                window - 2,
+                "a fold marker inside the window: {:?}",
+                row.graph
+            );
+        }
     }
-    // The window is used, not merely respected: ten lanes fill all six columns.
+    // The window is used, not merely respected: ten lanes fill all ten columns.
     assert!(
         listing
             .commits
@@ -324,12 +404,97 @@ fn the_picture_stops_widening_past_the_window() {
             .map(|row| &row.graph)
             .collect::<Vec<_>>()
     );
+    // Two kinds of commit share that column, and only the folded ones carry the
+    // fold marker: the twelve tips live in lanes 0–11, so lanes 10 and 11 are the
+    // ones without a column of their own.
+    let stars = listing
+        .commits
+        .iter()
+        .filter(|row| row.graph.contains('*'))
+        .count();
+    assert_eq!(
+        stars,
+        12 - LANE_WINDOW,
+        "twelve tips, ten columns: {:?}",
+        listing.commits
+    );
+    assert!(
+        listing
+            .commits
+            .iter()
+            .any(|row| row.graph.chars().nth(window - 2) == Some('o')),
+        "the tenth lane's own commit is not a fold marker: {:?}",
+        listing.commits
+    );
+}
+
+/// A row's gutter is its own width, not the page's: a row with one lane puts its
+/// subject straight after that lane, so a busy page does not push every subject
+/// right.
+#[test]
+fn a_rows_gutter_is_only_as_wide_as_its_own_lanes() {
+    let repo = Repo::new();
+    repo.commit("base");
+    for n in 0..10 {
+        repo.git(&["checkout", "-q", "-b", &format!("lane-{n}"), "main"]);
+        repo.commit(&format!("lane {n} work"));
+    }
+    repo.git(&["checkout", "-q", "main"]);
+    for branch in 0..10 {
+        repo.git(&[
+            "merge",
+            "-q",
+            "--no-ff",
+            "-m",
+            &format!("merge lane-{branch}"),
+            &format!("lane-{branch}"),
+        ]);
+    }
+    repo.commit("after the merges");
+    let listing = repo.listing();
+    let widths: Vec<usize> = listing
+        .commits
+        .iter()
+        .map(|row| row.graph.chars().count())
+        .collect();
+    // The newest row is one lane on main, drawn two cells wide: its subject
+    // starts immediately rather than after the busiest row of the page.
+    assert_eq!(
+        listing.commits[0].subject, "after the merges",
+        "the newest commit is first: {:?}",
+        listing.commits[0]
+    );
+    assert_eq!(
+        widths[0], 2,
+        "a one-lane row was padded out to the page's width: {:?}",
+        listing.commits[0].graph
+    );
+    assert!(
+        widths.iter().any(|width| *width > 2),
+        "no row carries more than one lane, so this page proves nothing: {:?}",
+        listing
+            .commits
+            .iter()
+            .map(|row| &row.graph)
+            .collect::<Vec<_>>()
+    );
 }
 
 /// Pages join into one picture: reading the log two commits at a time must draw
 /// exactly what reading it whole draws. The layout of a page is a fold over the
 /// rows above it, so a page cut out and laid out on its own would start every
 /// lane at column 0 and break the drawing at the seam.
+/// A page continues where the last one stopped: the cursor is a position in the
+/// log, so walking it must reproduce one uninterrupted read exactly — the same
+/// commits, in the same order, with the same lanes, and the pages must not
+/// overlap or skip.
+///
+/// This is the property the cursor exists for. Reading the log from the top on
+/// every page (with `--skip`, or by asking for `skip + take` and dropping the
+/// first `skip`) also happens to produce these rows; what it cannot do is keep
+/// doing it at the hundredth page without reading the whole history each time.
+/// The assertion is on the sequence, so a cursor that is ignored — every page
+/// answering with the first one — fails it on the duplicate rows.
 #[test]
 fn pages_concatenate_into_the_single_page_drawing() {
     let repo = Repo::new();
@@ -342,15 +507,17 @@ fn pages_concatenate_into_the_single_page_drawing() {
 
     let whole = repo.listing();
     let mut paged = Vec::new();
-    let mut skip = 0;
+    let mut cursor = String::new();
     loop {
-        let page = repo.page(skip, 2);
-        skip += page.commits.len();
+        let page = repo.page(&cursor, 2);
+        assert!(page.commits.len() <= 2, "a page overran its size");
         let last = !page.truncated;
+        cursor = page.cursor.clone();
         paged.extend(page.commits.into_iter().map(|row| (row.short, row.graph)));
         if last {
             break;
         }
+        assert!(!cursor.is_empty(), "a truncated page must carry a cursor");
     }
     let whole: Vec<(String, String)> = whole
         .commits
@@ -361,34 +528,87 @@ fn pages_concatenate_into_the_single_page_drawing() {
     assert_eq!(paged, whole);
 }
 
+/// A page read from a cursor is exactly the tail of the read above it: page two
+/// holds the commits one bigger read lists after page one's last row, in that
+/// order.
+///
+/// This is the assertion a rewritten cursor has to keep: if the continuation
+/// ignores the cursor (answers with the first page again) the rows repeat, and
+/// if it walks from a narrower set than the page above left it (dropping the
+/// branches the log had not reached yet) commits go missing. Both show up here
+/// as a sequence that is not the tail.
+#[test]
+fn the_second_page_is_the_tail_of_one_bigger_read() {
+    let repo = Repo::new();
+    repo.commit("base");
+    // Two long branches that do not merge, one opening after the other: at a cut
+    // this leaves a branch tip the pages above have never shown, which is the
+    // case a cursor made only of the open lanes loses.
+    for (branch, count) in [("alpha", 3), ("beta", 3)] {
+        repo.git(&["checkout", "-b", branch, "main"]);
+        for at in 0..count {
+            repo.commit(&format!("{branch} {at}"));
+        }
+    }
+    repo.git(&["checkout", "main"]);
+    repo.commit("main head");
+
+    let whole: Vec<String> = repo
+        .page("", 20)
+        .commits
+        .into_iter()
+        .map(|row| row.short)
+        .collect();
+    assert_eq!(whole.len(), 8, "base, three, three and the head: {whole:?}");
+
+    let first = repo.page("", 3);
+    assert_eq!(first.commits.len(), 3);
+    let second = repo.page(&first.cursor, 3);
+    assert_eq!(second.commits.len(), 3);
+    let got: Vec<String> = first
+        .commits
+        .iter()
+        .chain(second.commits.iter())
+        .map(|row| row.short.clone())
+        .collect();
+    assert_eq!(got, whole[..6], "page two is not the tail of one read");
+
+    // The same cursor twice is the same page: a client retries a page that
+    // failed, and a retry must not advance the reader's position.
+    let again = repo.page(&first.cursor, 3);
+    let once: Vec<String> = second.commits.iter().map(|row| row.short.clone()).collect();
+    let twice: Vec<String> = again.commits.iter().map(|row| row.short.clone()).collect();
+    assert_eq!(once, twice);
+}
+
 /// Paging a linear history: each page says whether another one follows, and the
-/// one past the root is empty rather than an error — an offset a client asks for
-/// after the history moved is not a failure the reader can act on.
+/// last one answers with no cursor at all.
 #[test]
 fn every_page_says_whether_another_one_follows() {
     let repo = Repo::new();
     for subject in ["one", "two", "three", "four", "five"] {
         repo.commit(subject);
     }
-    let first = repo.page(0, 3);
+    let first = repo.page("", 3);
     assert_eq!(first.commits.len(), 3);
     assert!(first.truncated);
+    assert!(!first.cursor.is_empty());
     assert_eq!(first.commits[0].subject, "five");
 
-    let second = repo.page(3, 3);
+    let second = repo.page(&first.cursor, 3);
     assert_eq!(second.commits.len(), 2);
     assert!(!second.truncated);
+    assert!(
+        second.cursor.is_empty(),
+        "the last page has nothing to continue to"
+    );
     assert_eq!(second.commits[1].subject, "one");
     // The header of a page is the repository's, not the page's, so the second
     // page carries it too: the client says what it is reading once, and the
     // answer does not get thinner as it pages.
     assert_eq!(second.repo_name, first.repo_name);
 
-    let past = repo.page(5, 3);
-    assert!(past.commits.is_empty());
-    assert!(!past.truncated);
-    // A skipped row never shifts the page's own width: every row of the history
-    // is padded the same, whichever page carries it.
+    // Every row of the history is padded the same, whichever page carries it.
     let widths: Vec<usize> = first
         .commits
         .iter()
@@ -564,4 +784,106 @@ fn a_branch_reaching_an_already_drawn_commit_draws_no_empty_lane() {
             row.graph
         );
     }
+}
+
+/// `tips` branches off one base commit, all merged at once, so the merge row
+/// opens every lane and each tip's row has lanes still running to its right.
+fn merged_branches(tips: usize) -> GraphListing {
+    let repo = Repo::new();
+    repo.commit("base");
+    let mut names: Vec<String> = Vec::new();
+    for n in 0..tips {
+        let branch = format!("lane-{n}");
+        repo.git(&["checkout", "-q", "-b", &branch, "main"]);
+        repo.commit(&format!("lane {n} work"));
+        names.push(branch);
+    }
+    repo.git(&["checkout", "-q", "main"]);
+    let mut merge = vec!["merge", "--no-ff", "-m", "merge every lane"];
+    merge.extend(names.iter().map(String::as_str));
+    repo.git(&merge);
+    repo.listing()
+}
+
+/// The bundle's thread is broken, and only the bundle's: a `│` in the window's
+/// last column claimed a lane of this row's own, so several lines past the
+/// window read as one branch running down the page. `┊` keeps the column, its
+/// width and its colour, and says the work merely continues out there.
+#[test]
+fn the_bundle_thread_is_drawn_broken() {
+    let window = 2 * LANE_WINDOW;
+    // Nine branches and the trunk fill the window exactly: ten lanes, nothing
+    // folded, and the last column is an ordinary lane that must keep its `│`.
+    let inside = merged_branches(LANE_WINDOW - 1);
+    for row in &inside.commits {
+        assert!(
+            !row.graph.contains('┊') && !row.graph.contains('*'),
+            "ten lanes is inside the window, so there is no bundle: {:?}",
+            row.graph
+        );
+    }
+    let solid = inside
+        .commits
+        .iter()
+        .find(|row| row.graph.chars().nth(window - 2) == Some('│'))
+        .expect("no row runs its last lane past a commit in another column");
+    assert!(
+        solid.graph.chars().position(|cell| cell == 'o').unwrap() < window - 2,
+        "the commit of that row is not in the last column: {:?}",
+        solid.graph
+    );
+
+    // Twelve branches open thirteen lanes (the trunk plus a dozen tips), so
+    // three lines fold into the window's last column, and every row whose own
+    // commit is inside the window now carries the bundle alone.
+    let tips = LANE_WINDOW + 2;
+    let folded = merged_branches(tips);
+    let lanes = tips + 1;
+    let broken: Vec<&GraphRow> = folded
+        .commits
+        .iter()
+        .filter(|row| row.graph.chars().nth(window - 2) == Some('┊'))
+        .collect();
+    // Lanes 1..8 have their commit inside the window while the folded lines run;
+    // lane 9's own commit stands in that column, and lane 0 is the base row.
+    assert_eq!(
+        broken.len(),
+        LANE_WINDOW - 2,
+        "the bundle's thread is broken on every row it passes: {} of {:?}",
+        broken.len(),
+        folded
+            .commits
+            .iter()
+            .map(|row| &row.graph)
+            .collect::<Vec<_>>()
+    );
+    for row in broken {
+        // No commit of this row's own sits in the bundle: a commit keeps its own
+        // glyph (`*` for a folded line, `o`/`M` inside the window).
+        assert!(
+            row.graph
+                .chars()
+                .position(|cell| matches!(cell, 'o' | 'M' | '*'))
+                .unwrap()
+                < window - 2,
+            "a commit kept its `┊`: {:?}",
+            row.graph
+        );
+    }
+    // And the folded lines' own rows still say `*`, not `┊`.
+    let stars = folded
+        .commits
+        .iter()
+        .filter(|row| row.graph.contains('*'))
+        .count();
+    assert_eq!(
+        stars,
+        lanes - LANE_WINDOW,
+        "three folded lines: {:?}",
+        folded
+            .commits
+            .iter()
+            .map(|row| &row.graph)
+            .collect::<Vec<_>>()
+    );
 }

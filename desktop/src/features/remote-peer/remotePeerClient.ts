@@ -752,11 +752,11 @@ export async function listRemoteSessionFiles(
 export function listRemoteGitCommits(
   desktopId: string,
   sessionId: string,
-  offset = 0,
+  cursor = "",
 ): Promise<GitGraphListing> {
   return invokeCommand<GitGraphListing>("remote_peer_request", {
     desktopId,
-    command: { type: "list_git_commits", sessionId, offset },
+    command: { type: "list_git_commits", sessionId, cursor },
     lane: sessionId,
   });
 }

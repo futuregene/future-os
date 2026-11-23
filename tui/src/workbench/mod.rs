@@ -7409,6 +7409,7 @@ mod tests {
                 detail: Vec::new(),
                 filter: None,
                 more: false,
+                cursor: String::new(),
                 error: None,
             });
             let (mut workbench, _rows) = frame(&data, 120, 38);

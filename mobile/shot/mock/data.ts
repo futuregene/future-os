@@ -1059,7 +1059,6 @@ export function demoQueueRows(count: number, withFiles = false) {
   }));
 }
 
-
 /**
  * A three-lane history for the chat top bar's Git sheet.
  *
@@ -1078,20 +1077,122 @@ export const demoGitListing = {
   repoName: "dopamine-decision",
   path: "/Users/lixin/Research/dopamine-decision",
   commits: [
-    { short: "4c1a7e2", when: "2026-11-11 18:42", who: "Lixin Zhou", decorations: "HEAD -> main, origin/main", subject: "Add reversal-learning model comparison to the supplement", graph: "M─┐   " },
-    { short: "9b30d18", when: "2026-11-11 16:05", who: "Lixin Zhou", decorations: "", subject: "Tighten the fit tolerance so the subject 12 restart converges", graph: "o │   " },
+    { short: "4c1a7e2", when: "2026-11-11 18:42", who: "Lixin Zhou", decorations: "HEAD -> main, origin/main", subject: "Add reversal-learning model comparison to the supplement", graph: "M─┐ " },
+    { short: "9b30d18", when: "2026-11-11 16:05", who: "Lixin Zhou", decorations: "", subject: "Tighten the fit tolerance so the subject 12 restart converges", graph: "o │ " },
     { short: "e27f5a0", when: "2026-11-11 14:20", who: "Mei Tan", decorations: "origin/analysis/latent-mixture", subject: "Fit the latent-mixture model over both cohorts", graph: "│ M─┐ " },
     { short: "1d84b63", when: "2026-11-11 11:58", who: "Mei Tan", decorations: "", subject: "Cache the per-subject likelihood tables", graph: "│ o │ " },
     { short: "c53e907", when: "2026-11-10 20:31", who: "Mei Tan", decorations: "", subject: "Report the coefficient of variation per condition", graph: "│ │ o " },
     { short: "7a16bc4", when: "2026-11-10 17:12", who: "Lixin Zhou", decorations: "", subject: "Merge the tolerance fix into the analysis branch", graph: "o─┘ │ " },
     { short: "0f92dda", when: "2026-11-10 15:47", who: "Lixin Zhou", decorations: "", subject: "Merge latent-mixture fits back onto main", graph: "o───┘ " },
-    { short: "b80113c", when: "2026-11-09 19:03", who: "Lixin Zhou", decorations: "tag: draft-v3", subject: "Freeze the analysis for the first draft", graph: "M─┐   " },
-    { short: "62ed4f9", when: "2026-11-09 16:22", who: "Lixin Zhou", decorations: "", subject: "Drop the reaction-time covariate from model 3", graph: "o │   " },
-    { short: "d4c77ab", when: "2026-11-09 11:40", who: "Mei Tan", decorations: "", subject: "Add the exploratory figure for the model-free learner", graph: "│ o   " },
-    { short: "8e5b201", when: "2026-11-08 18:15", who: "Mei Tan", decorations: "", subject: "Merge the covariate discussion", graph: "o─┘   " },
-    { short: "31af6c8", when: "2026-11-08 14:02", who: "Lixin Zhou", decorations: "", subject: "Regenerate figures from the cleaned trial table", graph: "o     " },
-    { short: "aa4e9d1", when: "2026-11-08 09:37", who: "Lixin Zhou", decorations: "", subject: "Keep the practice trials out of the fit", graph: "o     " },
-    { short: "d07b119", when: "2026-11-07 17:50", who: "Lixin Zhou", decorations: "", subject: "Initial repository layout", graph: "o     " },
+    { short: "b80113c", when: "2026-11-09 19:03", who: "Lixin Zhou", decorations: "tag: draft-v3", subject: "Freeze the analysis for the first draft", graph: "M─┐ " },
+    { short: "62ed4f9", when: "2026-11-09 16:22", who: "Lixin Zhou", decorations: "", subject: "Drop the reaction-time covariate from model 3", graph: "o │ " },
+    { short: "d4c77ab", when: "2026-11-09 11:40", who: "Mei Tan", decorations: "", subject: "Add the exploratory figure for the model-free learner", graph: "│ o " },
+    { short: "8e5b201", when: "2026-11-08 18:15", who: "Mei Tan", decorations: "", subject: "Merge the covariate discussion", graph: "o─┘ " },
+    { short: "31af6c8", when: "2026-11-08 14:02", who: "Lixin Zhou", decorations: "", subject: "Regenerate figures from the cleaned trial table", graph: "o " },
+    { short: "aa4e9d1", when: "2026-11-08 09:37", who: "Lixin Zhou", decorations: "", subject: "Keep the practice trials out of the fit", graph: "o " },
+    { short: "d07b119", when: "2026-11-07 17:50", who: "Lixin Zhou", decorations: "", subject: "Initial repository layout", graph: "o " },
+  ],
+  truncated: false,
+};
+
+/**
+ * A history long enough that its first page does not fit a phone screen: 37
+ * commits over five branches, so reaching the second page takes a swipe instead
+ * of happening on mount.
+ *
+ * Every row is a real read: the subjects, dates, refs and gutters are what
+ * `host/src/git_history.rs::list` printed for the repository, dumped verbatim
+ * rather than typed by hand — the sheet decodes glyphs (`│`, `o─┘`), so an
+ * invented row draws a picture nobody has. `?gitpaged=1` serves it in two pages,
+ * cut at a row boundary of this one read.
+ */
+export const demoPagedGitListing = {
+  isRepo: true,
+  repoName: "dopamine-decision",
+  path: "/Users/lixin/Research/dopamine-decision",
+  commits: [
+    { short: "e2ac7f5", when: "2026-10-07 09:00", who: "Lixin Zhou", decorations: "HEAD -> main", subject: "Merge the revision round into main", graph: "M─┐ " },
+    { short: "72babd7", when: "2026-09-06 09:00", who: "Mei Tan", decorations: "revision", subject: "Rerun everything from the frozen environment", graph: "│ o " },
+    { short: "248deef", when: "2026-09-05 10:00", who: "Lixin Zhou", decorations: "", subject: "Bump the supplement's figure numbers", graph: "o │ " },
+    { short: "ddea0c1", when: "2026-09-04 14:00", who: "Mei Tan", decorations: "", subject: "Add the robustness check reviewer 2 asked for", graph: "│ o " },
+    { short: "5c17daa", when: "2026-09-03 09:00", who: "Mei Tan", decorations: "", subject: "Answer reviewer 1 on the exclusion criteria", graph: "│ o " },
+    { short: "067ea7a", when: "2026-09-02 10:00", who: "Lixin Zhou", decorations: "tag: v1.0", subject: "Tag the submission snapshot", graph: "o─┘ " },
+    { short: "9db21d2", when: "2026-10-01 09:00", who: "Lixin Zhou", decorations: "", subject: "Merge the analysis work back into main", graph: "M─┐ " },
+    { short: "9c075a6", when: "2026-09-30 09:00", who: "Mei Tan", decorations: "analysis", subject: "Final pass over the supplement tables", graph: "│ o " },
+    { short: "aca6de6", when: "2026-09-29 10:00", who: "Lixin Zhou", decorations: "", subject: "Proofread the discussion", graph: "o │ " },
+    { short: "0f0e9b1", when: "2026-09-28 09:00", who: "Mei Tan", decorations: "", subject: "Write the results paragraph for the model comparison", graph: "│ o " },
+    { short: "07ff916", when: "2026-09-27 10:00", who: "Lixin Zhou", decorations: "", subject: "Summarise the model comparison in one table", graph: "o │ " },
+    { short: "9ede6a9", when: "2026-09-26 09:00", who: "Mei Tan", decorations: "", subject: "Refit the second cohort with the final settings", graph: "│ o " },
+    { short: "20774e6", when: "2026-09-25 09:00", who: "Lixin Zhou", decorations: "", subject: "Merge the figure work into the analysis branch", graph: "│ M─┐ " },
+    { short: "eff0382", when: "2026-09-24 10:00", who: "Lixin Zhou", decorations: "", subject: "Add the data availability statement", graph: "o │ │ " },
+    { short: "3601743", when: "2026-09-23 09:00", who: "Ana Ruiz", decorations: "figures", subject: "Export the figures at the journal's resolution", graph: "│ │ o " },
+    { short: "8b90638", when: "2026-09-22 10:00", who: "Lixin Zhou", decorations: "", subject: "Fix the citation keys the build flagged", graph: "o │ │ " },
+    { short: "c086c3e", when: "2026-09-21 09:00", who: "Mei Tan", decorations: "", subject: "Sensitivity check without the second cohort", graph: "│ o │ " },
+    { short: "f0c424c", when: "2026-09-20 14:00", who: "Ana Ruiz", decorations: "", subject: "Label the conditions consistently across figures", graph: "│ │ o " },
+    { short: "e3681cf", when: "2026-09-19 09:00", who: "Ana Ruiz", decorations: "", subject: "Draw the fitted curves over the observed means", graph: "│ │ o " },
+    { short: "122535c", when: "2026-09-18 10:00", who: "Lixin Zhou", decorations: "", subject: "Rewrite the limitations paragraph", graph: "o─│─┘ " },
+    { short: "41dcdfe", when: "2026-09-17 09:00", who: "Mei Tan", decorations: "", subject: "Check the trial-level outliers against the criteria", graph: "│ o " },
+    { short: "1ccf7fc", when: "2026-09-16 10:00", who: "Lixin Zhou", decorations: "", subject: "Note the software versions in the supplement", graph: "o │ " },
+    { short: "ae576f5", when: "2026-09-15 09:00", who: "Lixin Zhou", decorations: "", subject: "Merge the hierarchical fit into the analysis branch", graph: "│ M─┐ " },
+    { short: "3d6ea80", when: "2026-09-14 10:00", who: "Lixin Zhou", decorations: "", subject: "Add the RT distribution figure to the results", graph: "o │ │ " },
+    { short: "beccdeb", when: "2026-09-13 09:00", who: "Mei Tan", decorations: "fitting", subject: "Cache the per-subject likelihood tables", graph: "│ │ o " },
+    { short: "77b4296", when: "2026-09-12 10:00", who: "Lixin Zhou", decorations: "", subject: "Tighten the abstract's first sentence", graph: "o │ │ " },
+    { short: "1d7c4c7", when: "2026-09-11 09:00", who: "Mei Tan", decorations: "", subject: "Report the posterior predictive check per condition", graph: "│ o │ " },
+    { short: "8a8b36f", when: "2026-09-10 15:00", who: "Mei Tan", decorations: "", subject: "Compare the hierarchical and per-subject fits", graph: "│ │ o " },
+    { short: "3ef5fcf", when: "2026-09-09 09:00", who: "Mei Tan", decorations: "", subject: "Try a hierarchical prior over the drift rate", graph: "│ │ o " },
+    { short: "f9c1274", when: "2026-09-08 10:00", who: "Lixin Zhou", decorations: "", subject: "Add the exclusion flow diagram to the supplement", graph: "o─│─┘ " },
+    { short: "9d2af94", when: "2026-09-07 09:00", who: "Mei Tan", decorations: "", subject: "Refit with the corrected boundary condition", graph: "│ o " },
+    { short: "413d442", when: "2026-09-06 10:00", who: "Lixin Zhou", decorations: "", subject: "Write the preprocessing steps into the methods draft", graph: "o │ " },
+    { short: "1fb3967", when: "2026-09-05 14:00", who: "Mei Tan", decorations: "", subject: "Fix the boundary condition in the evidence accumulation", graph: "│ o " },
+    { short: "5ae4ba3", when: "2026-09-04 09:00", who: "Mei Tan", decorations: "", subject: "Fit the drift-diffusion model per subject", graph: "│ o " },
+    { short: "186ad5c", when: "2026-09-03 11:00", who: "Lixin Zhou", decorations: "", subject: "Drop the two subjects that never finished the task", graph: "o─┘ " },
+    { short: "1725026", when: "2026-09-02 10:00", who: "Lixin Zhou", decorations: "", subject: "Load the raw subject tables into the notebook", graph: "o " },
+    { short: "0a96b9e", when: "2026-09-01 09:00", who: "Lixin Zhou", decorations: "", subject: "Start the analysis notebook for cohort A", graph: "o " },
+  ],
+  truncated: false,
+};
+
+/**
+ * A busier month: eleven branches of work open at once.
+ *
+ * The gutters are copied cell for cell from what the host's layout function
+ * prints for such a repository (a real one with eleven branches, merged in one
+ * octopus merge), because the sheet decodes glyphs: an invented grid draws a
+ * picture nobody has. Two things are visible in it at once.
+ *
+ * A row is only as wide as its own lanes. The three newest rows are main's own
+ * commits — one lane, two cells wide — so their subjects start right after the
+ * line instead of after the busiest row of the page; the merge and the branch
+ * rows below it carry ten lanes and are twenty cells wide.
+ *
+ * The window still stops the picture at ten columns, and the two lines past it
+ * (`stimuli`, `robustness`) are drawn *in* the tenth column with `*`: the work is
+ * kept, and the mark says the commit is not that column's own. No thread runs
+ * through those marks, so they stay separate points rather than one line.
+ *
+ * `?gitlanes=window` selects it; the ordinary history above is the default.
+ */
+export const demoWindowGitListing = {
+  isRepo: true,
+  repoName: "dopamine-decision",
+  path: "/Users/lixin/Research/dopamine-decision",
+  commits: [
+    { short: "dcbbe63", when: "2026-11-15 14:00", who: "Lixin Zhou", decorations: "tag: draft-v3", subject: "Freeze the analysis for the fourth draft", graph: "o " },
+    { short: "cb7281c", when: "2026-11-15 11:00", who: "Lixin Zhou", decorations: "", subject: "Reword the model-selection paragraph", graph: "o " },
+    { short: "f91c61a", when: "2026-11-15 09:00", who: "Lixin Zhou", decorations: "", subject: "Drop the practice trials from the comparison", graph: "o " },
+    { short: "d4c1a74", when: "2026-11-14 20:00", who: "Lixin Zhou", decorations: "HEAD -> main, origin/main", subject: "Merge every analysis branch onto main", graph: "M─┬─┬─┬─┬─┬─┬─┬─┬─┐ " },
+    { short: "1372dc5", when: "2026-11-12 19:00", who: "Mei Tan", decorations: "origin/stimuli", subject: "Draft the stimuli table for the supplement", graph: "│ │ │ │ │ │ │ │ │ * " },
+    { short: "ca9c198", when: "2026-11-11 18:00", who: "Mei Tan", decorations: "origin/robustness", subject: "Re-run the fits under the robustness prior", graph: "│ │ │ │ │ │ │ │ │ * " },
+    { short: "e44045a", when: "2026-11-10 17:00", who: "Mei Tan", decorations: "origin/models", subject: "Compare the model-free and model-based learners", graph: "│ │ │ │ │ │ │ │ │ o " },
+    { short: "3371042", when: "2026-11-09 16:00", who: "Mei Tan", decorations: "origin/text", subject: "Draft the model-selection paragraph", graph: "│ │ │ │ │ │ │ │ o ┊ " },
+    { short: "92a98d2", when: "2026-11-08 15:00", who: "Lixin Zhou", decorations: "origin/hierarchical", subject: "Fit the hierarchical prior over both cohorts", graph: "│ │ │ │ │ │ │ o │ ┊ " },
+    { short: "d2b6b2a", when: "2026-11-07 14:00", who: "Mei Tan", decorations: "origin/comparison", subject: "Compare the hierarchical and per-subject fits", graph: "│ │ │ │ │ │ o │ │ ┊ " },
+    { short: "531172e", when: "2026-11-06 13:00", who: "Mei Tan", decorations: "origin/qc", subject: "Flag the trials that fail the time screen", graph: "│ │ │ │ │ o │ │ │ ┊ " },
+    { short: "b2e8733", when: "2026-11-05 12:00", who: "Lixin Zhou", decorations: "origin/figures", subject: "Regenerate the supplement figures", graph: "│ │ │ │ o │ │ │ │ ┊ " },
+    { short: "929cc97", when: "2026-11-04 11:00", who: "Mei Tan", decorations: "origin/tolerance", subject: "Tighten the tolerance so subject 12 converges", graph: "│ │ │ o │ │ │ │ │ ┊ " },
+    { short: "c34b8a5", when: "2026-11-03 10:00", who: "Mei Tan", decorations: "origin/reversal", subject: "Report the reversal coefficients per condition", graph: "│ │ o │ │ │ │ │ │ ┊ " },
+    { short: "f2693da", when: "2026-11-02 09:00", who: "Lixin Zhou", decorations: "origin/mixture", subject: "Fit the latent-mixture model over both cohorts", graph: "│ o │ │ │ │ │ │ │ ┊ " },
+    { short: "cace15d", when: "2026-11-01 09:00", who: "Lixin Zhou", decorations: "", subject: "Initial repository layout", graph: "o─┴─┴─┴─┴─┴─┴─┴─┴─┘ " },
   ],
   truncated: false,
 };

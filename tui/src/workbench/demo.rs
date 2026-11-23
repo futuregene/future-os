@@ -286,6 +286,7 @@ huichen\u{1f}{decoration}\u{1f}{subject}\n"
         filter: None,
         // The demo log is the whole of its small history: nothing below it.
         more: false,
+        cursor: String::new(),
         error: None,
     }
 }

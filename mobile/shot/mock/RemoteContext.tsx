@@ -50,6 +50,8 @@ import {
   demoFiles,
   demoGitCommitDetail,
   demoGitListing,
+  demoPagedGitListing,
+  demoWindowGitListing,
   demoInstalledSkills,
   demoAvailableSkills,
   demoModels,
@@ -203,6 +205,18 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // A workspace that is a plain directory: the conversation menu then has no Git
   // row at all, which is the case worth a capture of its own.
   const noRepo = new URLSearchParams(window.location.search).get("norepo") === "1";
+  // Which history the sheet opens onto. `?gitlanes=window` is eleven branches of
+  // work: rows only as wide as their own lanes, and the lines past the ten-column
+  // window folded into its last column.
+  const gitLanes = new URLSearchParams(window.location.search).get("gitlanes");
+  // `?gitpaged=1` answers the history in two pages: the last six rows of the
+  // demo log are the second one. The first page is longer than a phone screen, so
+  // the sheet opens on it alone and the second page is reached by scrolling — the
+  // entry is the swipe, not a mount that finds nothing to scroll. The cut is at a
+  // row boundary of one real read, which keeps the second page's lanes
+  // continuing the first one's.
+  const gitPaged = new URLSearchParams(window.location.search).get("gitpaged") === "1";
+  const PAGED_CURSOR = "1|demo-page-2|";
   // `?fleet=1` pairs the phone with five desktops and merges their conversations
   // into the home screen's recency page (`shot/mock/fleet.ts`). The product
   // already draws a merged list — the picker's "all desktops", a machine glyph per
@@ -744,9 +758,24 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     // top bar's menu reads before it offers the entry at all. `?norepo=1`
     // answers as a plain directory would, which is the case a capture has to
     // show the menu *without* the Git row.
-    listGitCommits: async (): Promise<GitGraphListing> => (noRepo
-      ? { isRepo: false, repoName: "", path: "", commits: [], truncated: false }
-      : demoGitListing),
+    listGitCommits: async (cursor?: string): Promise<GitGraphListing> => {
+      if (noRepo) return { isRepo: false, repoName: "", path: "", commits: [], truncated: false };
+      const listing = gitLanes === "window" ? demoWindowGitListing
+        : gitPaged ? demoPagedGitListing
+          : demoGitListing;
+      if (!gitPaged) return listing;
+      // Two pages, cut at a row boundary (see `gitPaged`): the cursor says which
+      // half is being asked for. The first page is thirty-one rows, three screens
+      // of them, so the sheet opens on part of the history only — the second page
+      // is reached by the reader, not by a mount that finds nothing to scroll.
+      const second = cursor === PAGED_CURSOR;
+      return {
+        ...listing,
+        commits: second ? listing.commits.slice(-6) : listing.commits.slice(0, -6),
+        truncated: !second,
+        cursor: second ? "" : PAGED_CURSOR,
+      };
+    },
     getGitCommit: async (gitRef: string): Promise<GitCommitDetail> => ({
       ...demoGitCommitDetail,
       short: gitRef,

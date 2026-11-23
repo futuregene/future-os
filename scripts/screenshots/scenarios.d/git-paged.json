@@ -1,0 +1,66 @@
+{
+  "_comment": [
+    "翻页入口：日志按游标分页读，第一页脚下写「加载更早的提交」，点/滑过去就接着读下一页。",
+    "两个平台各一张，拍的都是「还有更早」这一状态：mock 用 ?gitpaged=1 把同一份演示历史切成两页（切在一次真实读取的行边界上，所以第二页的泳道接着第一页继续），断言量的是那个入口真的在 DOM 里、且它的文案说得出还有更早。",
+    "翻页本身（不重不漏、第二页等于一次大读的后半段）由 host 与 TUI 的单测守住，这张图只证明入口存在。"
+  ],
+  "desktop": {
+    "git-paged": {
+      "note": "桌面的历史面板滑到底：页脚是「加载更早的提交」按钮，说明这条日志在两百个提交处没读完。",
+      "url": "http://localhost:5299/shot/?lang=zh&gitpaged=1",
+      "steps": [
+        { "wait": 2500 },
+        { "tap": "展开上下文面板" },
+        { "wait": 1200 },
+        {
+          "eval": "(() => { const sel = document.querySelector('#context-panel-view'); if (!sel) throw new Error('the context panel has no view selector'); const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set; setter.call(sel, 'review'); sel.dispatchEvent(new Event('change', { bubbles: true })); return 'switched to ' + sel.value; })()"
+        },
+        { "wait": 2000 },
+        {
+          "eval": "(() => { const tab = [...document.querySelectorAll('button')].find(b => b.textContent === '历史'); if (!tab) throw new Error('no History tab for a Git workspace'); tab.click(); return 'opened history'; })()"
+        },
+        { "wait": 1500 },
+        {
+          "eval": "(() => { const more = document.querySelector('[data-git-load-more]'); if (!more) throw new Error('the panel offers no way to read older commits'); const label = (more.textContent || '').trim(); if (!label.includes('加载更早')) throw new Error('the button does not say what it reads: ' + label); const text = document.body.textContent || ''; if (text.includes('已是最早的提交')) throw new Error('the panel claims this is the oldest commit while it also offers more'); const rows = [...document.querySelectorAll('[data-git-commit]')]; return rows.length + ' rows, entry: ' + label; })()"
+        },
+        { "shot": "d-git-paged.png" }
+      ]
+    }
+  },
+  "mobile": {
+    "git-paged": {
+      "note": "手机的历史页，三张。演示日志三十七行，切成三十一行 + 六行：第一页就长过一屏，所以刚打开时列表里只有第一页（第一张）；滑到底，页脚露出「加载更早的提交」（第二张）——这就是入口；按下它，第二页接上，再滑到底就是日志的末尾（第三张）。",
+      "query": "?gitpaged=1",
+      "lang": "zh-CN",
+      "steps": [
+        { "wait": 2000 },
+        { "tap": "稍后再说" },
+        { "wait": 2000 },
+        { "tap": "整理两篇文献的结论对比表" },
+        { "wait": 2500 },
+        { "tap": "会话操作" },
+        { "wait": 1500 },
+        { "tap": "查看 Git 历史" },
+        { "wait": 2500 },
+        {
+          "eval": "(() => { const rows = [...document.querySelectorAll('[aria-label^=\"打开提交\"]')]; if (rows.length === 0) throw new Error('the sheet drew no history'); const text = document.body.textContent || ''; for (const sha of ['413d442', '1fb3967', '5ae4ba3', '186ad5c', '1725026', '0a96b9e']) { if (text.includes(sha)) throw new Error('the second page arrived without being asked for: ' + sha + ' is already on screen'); } if (text.includes('已经是最早的提交')) throw new Error('the sheet claims the log ends while page two is unread'); return rows.length + ' rows of the first page, nothing older'; })()"
+        },
+        { "shot": "m-git-paged.png" },
+        { "eval": "(() => { const rows=[...document.querySelectorAll('[aria-label^=\"打开提交\"]')]; let node=rows[0], scroller=null; while(node){ if(node.scrollHeight>node.clientHeight+1 && getComputedStyle(node).overflowY!=='visible'){scroller=node;break;} node=node.parentElement;} if(!scroller) throw new Error('the history list does not scroll'); scroller.scrollTop = scroller.scrollHeight; return 'scrolled to ' + Math.round(scroller.scrollTop); })()" },
+        { "wait": 900 },
+        {
+          "eval": "(() => { const more = [...document.querySelectorAll('[aria-label]')].find(n => (n.getAttribute('aria-label') || '').trim() === '加载更早的提交'); if (!more) throw new Error('the foot of the list offers no way to read older commits'); const text = document.body.textContent || ''; if (text.includes('413d442')) throw new Error('the next page arrived by itself: the entry was never used'); return 'entry: ' + more.getAttribute('aria-label'); })()"
+        },
+        { "shot": "m-git-paged-entry.png" },
+        { "tap": "加载更早的提交" },
+        { "wait": 1500 },
+        { "eval": "(() => { const rows=[...document.querySelectorAll('[aria-label^=\"打开提交\"]')]; let node=rows[0], scroller=null; while(node){ if(node.scrollHeight>node.clientHeight+1 && getComputedStyle(node).overflowY!=='visible'){scroller=node;break;} node=node.parentElement;} scroller.scrollTop = scroller.scrollHeight; return 'scrolled to ' + Math.round(scroller.scrollTop); })()" },
+        { "wait": 1000 },
+        {
+          "eval": "(() => { const text = document.body.textContent || ''; if (!text.includes('已经是最早的提交')) throw new Error('the second page did not reach the end of the log'); if (!text.includes('Start the analysis notebook for cohort A')) throw new Error('the oldest commit of the second page never arrived'); const rows = [...document.querySelectorAll('[aria-label^=\"打开提交\"]')]; const labels = rows.map(r => (r.getAttribute('aria-label') || '').slice(0, 40)); if (new Set(labels).size !== labels.length) throw new Error('a commit is drawn twice across the seam'); return 'second page joined: ' + rows.length + ' rows on screen, oldest commit present, no duplicate'; })()"
+        },
+        { "shot": "m-git-paged-older.png" }
+      ]
+    }
+  }
+}

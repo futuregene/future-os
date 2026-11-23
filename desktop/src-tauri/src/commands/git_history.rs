@@ -17,22 +17,22 @@
 
 /// The commit log of a workspace, as a lane graph.
 ///
-/// `offset` is how many commits the caller already has: the panel appends a page
-/// at a time, the same way the phone's sheet does, and both read the one page
-/// size the host keeps.
+/// `cursor` is what the panel's last page answered with, empty for the first
+/// page: the panel appends a page at a time, the same way the phone's sheet does,
+/// and both read the one page size the host keeps.
 #[tauri::command]
 pub async fn get_git_history(
     path: String,
-    offset: Option<i64>,
+    cursor: Option<String>,
 ) -> Result<future_host::git_history::GraphListing, crate::AppError> {
-    let skip = offset.unwrap_or(0).max(0) as usize;
+    let cursor = cursor.unwrap_or_default();
     future_host::runtime::run_blocking(move || {
         let _request =
             future_host::request_scope::admit().map_err(|e| crate::AppError::from(e.message()))?;
         // The read answers with `future_host::Error`, which `AppError` carries
         // through `From`: the closure's return type converts it, so there is
         // nothing to map and nothing to wrap.
-        future_host::git_history::list(&path, skip)
+        future_host::git_history::list(&path, &cursor)
     })
     .await?
 }

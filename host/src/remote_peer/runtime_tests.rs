@@ -1778,6 +1778,13 @@ async fn a_supervisor_reconnect_keeps_delivering_to_the_registered_emitter() {
         1,
         "the recovered connection must be watched"
     );
+    // The recovered connection's `SUB` has left the client (`stream_count` is
+    // client-side); `connect_with_emitter` flushes without awaiting an
+    // acknowledgement, so the broker may not have applied it yet and NATS Core
+    // does not replay. Same race as the 2026-10-29 macOS red ("the burst never
+    // fully arrived"), so wait for the lane like the siblings that assert on a
+    // delivered event do.
+    wait_for_the_events_lane(&fx).await;
     crate::remote::publish_event(
         "sess_rt_after_reconnect",
         "agent_text",
