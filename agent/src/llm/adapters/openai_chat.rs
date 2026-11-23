@@ -128,15 +128,24 @@ impl ProtocolAdapter for OpenAiChatAdapter {
             .cloned()
             .unwrap_or(Value::Null);
 
+        // The reasoning field has no single spelling. `reasoning_content` is
+        // DeepSeek's, `reasoning` is what vLLM and OpenRouter send (vLLM 0.33
+        // marks `reasoning_content` deprecated in favour of it), and some
+        // gateways use `thinking`. Reading only the first spelling silently
+        // dropped every thought on a `reasoning` stream, which is how a
+        // reasoning-only answer arrived as "no content at all".
         // Some compatible providers put the final reasoning tail and the first
         // answer token in one delta. Reasoning semantically precedes content,
         // regardless of JSON field order, so emit it first and avoid rendering
         // a thought block in the middle of the answer.
-        if let Some(text) = delta
-            .get("reasoning_content")
-            .or_else(|| delta.get("thinking"))
-            .and_then(Value::as_str)
-            .filter(|text| !text.is_empty())
+        if let Some(text) = ["reasoning", "reasoning_content", "thinking"]
+            .iter()
+            .find_map(|field| {
+                delta
+                    .get(*field)
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty())
+            })
         {
             if !state.reasoning_open {
                 state.reasoning_open = true;
@@ -1217,6 +1226,62 @@ mod tests {
         assert!(
             matches!(events.as_slice(), [ModelStreamEvent::Error { message }] if message == "provider boom")
         );
+    }
+
+    #[test]
+    fn decodes_every_spelling_of_the_reasoning_field() {
+        let adapter = OpenAiChatAdapter;
+        // `reasoning` is the vLLM/OpenRouter spelling; a stream that only used
+        // it used to decode as "no reasoning at all".
+        for field in ["reasoning", "reasoning_content", "thinking"] {
+            let mut state = adapter.new_stream_state();
+            let events = adapter
+                .decode_frame(
+                    &frame(json!({"choices": [{"delta": {field: "deliberation"}}]})),
+                    state.as_mut(),
+                )
+                .unwrap();
+            assert!(
+                matches!(events.as_slice(), [
+                    ModelStreamEvent::ReasoningStart { .. },
+                    ModelStreamEvent::ReasoningDelta { text, .. },
+                ] if text == "deliberation"),
+                "field {field} must decode as reasoning, got {events:?}"
+            );
+        }
+
+        // A provider that sends two spellings in one delta is still one
+        // thought: the first non-empty one wins, and nothing is emitted twice.
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(json!({"choices": [{"delta": {
+                    "reasoning": "preferred",
+                    "reasoning_content": "duplicate"
+                }}]})),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(events.as_slice(), [
+                ModelStreamEvent::ReasoningStart { .. },
+                ModelStreamEvent::ReasoningDelta { text, .. },
+            ] if text == "preferred"));
+
+        // An empty `reasoning` must not mask the fallback spelling.
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(json!({"choices": [{"delta": {
+                    "reasoning": "",
+                    "reasoning_content": "fallback"
+                }}]})),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(events.as_slice(), [
+                ModelStreamEvent::ReasoningStart { .. },
+                ModelStreamEvent::ReasoningDelta { text, .. },
+            ] if text == "fallback"));
     }
 
     #[test]

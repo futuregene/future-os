@@ -43,8 +43,9 @@ pub struct StreamTruncation {
     /// Tool calls the model had emitted (executed or not) before cut-off.
     pub tool_calls_so_far: usize,
     /// Stable reason code such as `upstream_disconnected`,
-    /// `model_response_error`, `finish_incomplete`, `finish_length`, or
-    /// `eof_no_terminal`. Historical records may also contain `idle_timeout`.
+    /// `model_response_error`, `finish_incomplete`, `finish_length`,
+    /// `empty_answer`, or `eof_no_terminal`. Historical records may also
+    /// contain `idle_timeout`.
     pub detected_by: String,
 }
 
@@ -769,6 +770,9 @@ mod tests {
             ("model_response_error", "MODEL_RESPONSE_ERROR"),
             ("model_paused", "MODEL_PAUSED"),
             ("provider_cancelled", "PROVIDER_CANCELLED"),
+            // The model ended a turn without an answer: an unconfirmed
+            // response, not a completed one.
+            ("empty_answer", "RESPONSE_UNCONFIRMED"),
             // `eof_no_terminal` is documented in the doc comment and produced by
             // the stream layer; it must not be mistaken for a known finish reason
             // and must still be classified as unconfirmed.
