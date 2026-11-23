@@ -5,7 +5,27 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-pub(super) const POLICY: &str = "Source manifest is backend-generated availability metadata, not an additional user requirement. request identifies the preserved request (or the consultation question when unavailable); evidence:N identifies a zero-based supplied evidence item. The supplied_evidence status describes only the optional evidence array; data may already be present in request. Background, prior assistant statements and participant reports are attributed context, not source-verified observations. File metadata means captured, not read; use the authorized snapshot tools before citing file contents. not_supplied and excluded content do not mean an empty dataset or a query with no matches. Do not apply a business empty-result default to unavailable input. If the task depends on missing material, identify that gap and preserve useful conditional results. Tasks that do not need external evidence may proceed normally. Source validation checks location, version and quotation only: it does not establish truth, independence, exhaustive coverage or entailment. A verified_fact remains a participant's source-checked claim; evaluate its support and counterexamples before adopting it.";
+pub(super) const POLICY: &str = "Source manifest is backend-generated availability metadata, not an additional user requirement. request identifies the preserved request (or the consultation question when unavailable); evidence:N identifies a zero-based supplied evidence item. The supplied_evidence status describes only the optional evidence array; data may already be present in request. The history_summary, prior assistant statements and participant reports are attributed context, not source-verified observations. File metadata means captured, not read; use the authorized snapshot tools before citing file contents. not_supplied and excluded content do not mean an empty dataset or a query with no matches. Do not apply a business empty-result default to unavailable input. If the task depends on missing material, identify that gap and preserve useful conditional results. Tasks that do not need external evidence may proceed normally. Source validation checks location, version and quotation only: it does not establish truth, independence, exhaustive coverage or entailment. A verified_fact remains a participant's source-checked claim; evaluate its support and counterexamples before adopting it.";
+
+/// Project the durable input into the roles visible to the panel. In a closed
+/// task the preserved request already supplies the entire discussion question.
+pub(super) fn prompt_input(input: &ConsultationInput) -> Value {
+    let mut discussion_task = json!({
+        "scope": if input.answer_only { "full_user_request" } else { "focused_task" },
+        "goal": input.goal,
+        "constraints": input.constraints,
+    });
+    if !input.answer_only {
+        discussion_task["question"] = json!(input.question);
+    }
+    json!({
+        "parent_request": input.parent_request,
+        "discussion_task": discussion_task,
+        "history_summary": input.background,
+        "evidence": input.evidence,
+        "read_scope": input.read_scope,
+    })
+}
 
 pub(super) fn digest(text: &str) -> String {
     format!("{:x}", Sha256::digest(text.as_bytes()))
@@ -186,6 +206,26 @@ mod tests {
         serde_json::from_value(json!({"source_id":source,"sha256":digest(text),"quote":quote}))
             .unwrap()
     }
+    #[test]
+    fn panel_prompt_keeps_the_focused_task_separate_from_the_user_request() {
+        let mut input = input();
+        let focused = prompt_input(&input);
+        assert_eq!(focused["parent_request"], "Use the records, if supplied.");
+        assert_eq!(focused["discussion_task"]["scope"], "focused_task");
+        assert_eq!(
+            focused["discussion_task"]["question"],
+            "Summarize the supplied records"
+        );
+        assert_eq!(focused["history_summary"], input.background);
+
+        input.answer_only = true;
+        input.question = input.parent_request.clone().unwrap();
+        let closed = prompt_input(&input);
+        assert_eq!(closed["parent_request"], focused["parent_request"]);
+        assert_eq!(closed["discussion_task"]["scope"], "full_user_request");
+        assert!(closed["discussion_task"].get("question").is_none());
+    }
+
     #[test]
     fn inline_references_bind_identity_version_and_original_text() {
         let input = input();

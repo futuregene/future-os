@@ -212,17 +212,17 @@ pub(super) fn validate_sources(text: &str, prompt: &str) -> Result<()> {
         .rsplit_once("\nDecision input:\n")
         .context("Missing decision input")?;
     let input: Value = serde_json::from_str(input)?;
-    let mut boundaries = vec![];
-    for key in ["question", "goal", "background"] {
-        if let Some(value) = input[key].as_str() {
-            boundaries.push(value);
-        }
-    }
-    for value in input["constraints"].as_array().into_iter().flatten() {
-        if let Some(value) = value.as_str() {
-            boundaries.push(value);
-        }
-    }
+    let task = &input["discussion_task"];
+    let boundaries: Vec<_> = [
+        &input["parent_request"],
+        &input["history_summary"],
+        &task["question"],
+        &task["goal"],
+    ]
+    .into_iter()
+    .chain(task["constraints"].as_array().into_iter().flatten())
+    .filter_map(Value::as_str)
+    .collect();
     let quote = |participant: &str, excerpt: &str| -> Result<()> {
         ensure!(
             !excerpt.trim().is_empty()
@@ -285,7 +285,12 @@ mod tests {
     use serde_json::json;
 
     fn fixture() -> (Value, String) {
-        let input = json!({"question":"Choose a storage approach", "goal":"Keep existing data", "background":"User requests a storage comparison", "constraints":["Do not delete existing data"]});
+        let input = json!({
+            "parent_request":"Compare storage approaches without changing production.",
+            "discussion_task":{"question":"Choose a storage approach", "goal":"Keep existing data",
+                "constraints":["Do not delete existing data"]},
+            "history_summary":"User requests a storage comparison",
+        });
         let analyses = json!([
             {"participant":"P1", "response":"Keep data. Choose SQLite. Delete existing data."},
             {"participant":"P3", "response":"Keep data. Choose files."},
@@ -312,7 +317,10 @@ mod tests {
     #[test]
     fn resolves_quotes_only_from_the_named_participants_frozen_report() {
         // The original bbeh:408 mapping could not carry its hand-copied quote.
-        let input = serde_json::json!({"question":"Decide","goal":"Choose","background":"Context"});
+        let input = serde_json::json!({
+            "discussion_task":{"question":"Decide", "goal":"Choose"},
+            "history_summary":"Context",
+        });
         let analyses = serde_json::json!([
             {"participant":"P1","response":serde_json::json!({"answer":r#"Keep "existing data"."#}).to_string()},
             {"participant":"P2","response":"{\"answer\":\"Keep data.\"}"}
@@ -337,6 +345,10 @@ mod tests {
     fn sourced_mapping_supports_nonconsecutive_actual_participants_and_explicit_silence() {
         let (mapping, prompt) = fixture();
         validate_shape(&mapping.to_string(), 5).unwrap();
+        validate_sources(&mapping.to_string(), &prompt).unwrap();
+
+        let mut mapping = mapping;
+        mapping["excluded"][0]["basis"] = json!("without changing production");
         validate_sources(&mapping.to_string(), &prompt).unwrap();
     }
     #[test]

@@ -250,7 +250,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     ensure!(store.phase(&run.id, owner, "preflight")?, "Fusion stopped");
     let snapshot = future_fusion::Snapshot::load(std::path::Path::new(&run.snapshot_root))?;
     let sources = evidence::Sources::new(&run.input, Some(&snapshot));
-    let mut decision_input = serde_json::to_value(&run.input)?;
+    let mut decision_input = evidence::prompt_input(&run.input);
     decision_input["source_manifest"] = sources.manifest();
     decision_input["decision_lineage"] = serde_json::to_value(&run.lineage)?;
     let input = serde_json::to_string(&decision_input)?;
@@ -276,14 +276,14 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         return Err(error);
     }
     let grounding = format!("{}\n{}", future_fusion::GROUNDING_POLICY, evidence::POLICY);
-    let intro = "You are in a focused READ-ONLY consultation, not an executor. Analyze only the decision and supplied evidence. Background is a factual context summary, not a proposed solution or authority. Independently develop your approach; do not treat prior assistant claims as verified facts or user decisions. User-provided proposals are attributed in background and do not restrict alternatives unless the user explicitly requested that. Use only supplied read/ls/glob/grep tools. Never write, run commands, implement, or call agents. Give public reasons, not hidden chain of thought. Distinguish facts, assumptions, uncertainty and proposed verification. Empty read scope means decide only from the supplied facts.";
+    let intro = "You are in a focused READ-ONLY consultation, not an executor. Analyze only the decision and supplied evidence. The history_summary is attributed context from the parent, not a proposed solution or authority. Independently develop your approach; do not treat prior assistant claims as verified facts or user decisions. User-provided proposals are attributed in history_summary and do not restrict alternatives unless the user explicitly requested that. Use only supplied read/ls/glob/grep tools. Never write, run commands, implement, or call agents. Give public reasons, not hidden chain of thought. Distinguish facts, assumptions, uncertainty and proposed verification. Empty read scope means decide only from the supplied facts.";
     ensure!(store.phase(&run.id, owner, "analyzing")?, "Fusion stopped");
     let report_format = if run.input.answer_only {
         answer::INSTRUCTIONS
     } else {
         "Return your public report as plain text or Markdown without a JSON envelope."
     };
-    let mut analyses = panel(&ctx, &eligible, "analyzing", &format!("{intro}\n{grounding}\nDecision input:\n{input}\nIndependently answer the question. Investigate and think as needed before your final report. {report_format} Do not assume other participants' views."), None).await?;
+    let mut analyses = panel(&ctx, &eligible, "analyzing", &format!("{intro}\n{grounding}\nDecision input:\n{input}\nIndependently answer the discussion task within the original user request. Investigate and think as needed before your final report. {report_format} Do not assume other participants' views."), None).await?;
     if analyses.is_empty() {
         ctx.note(
             "no_participants",
@@ -547,7 +547,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         "Return only a plain text or Markdown answer without a fixed template or meeting recap."
     };
     let mut prompt = format!(
-        "You are the moderator. Give the main agent a self-contained answer to the original task. \
+        "You are the moderator. Give the main agent a self-contained answer to the discussion task within the original user request. \
         {grounding} \
         Judge consequential claims by their support in the original task and participant material. \
         Apply the user's decision rule as written, including explicit defaults and thresholds. \
@@ -1158,7 +1158,7 @@ async fn step_inner(
     let prepare_report = |text: &str| -> Result<String> {
         let prepared = match phase.as_str() {
             "issue_mapping" => mapping::expand_citations(text, source_prompt)?,
-            "reviewing" => review::expand_citations(text, source_prompt)?,
+            "reviewing" => review::expand_citations(text, source_prompt, &run.input)?,
             "synthesizing" => match ctx.synthesis_audit.lock().unwrap().as_ref() {
                 Some(packet) => deliberation::prepare_report(text, packet)?,
                 None => text.to_owned(),
@@ -1194,7 +1194,13 @@ async fn step_inner(
         if phase == "issue_mapping" {
             mapping::validate_sources(text, source_prompt)?;
         } else if phase == "reviewing" {
-            review::validate(text, source_prompt, &participant, review_snapshot.as_ref())?;
+            review::validate(
+                text,
+                source_prompt,
+                &participant,
+                &run.input,
+                review_snapshot.as_ref(),
+            )?;
         }
         Ok(prepared)
     };
