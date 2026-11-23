@@ -77,10 +77,23 @@ impl<'a> Sources<'a> {
             }),
             None => json!({"availability":"not_loaded","content_delivery":"unavailable"}),
         };
-        json!({"version":1,"inline_sources":inline,
+        let mut manifest = json!({"version":1,"inline_sources":inline,
             "supplied_evidence":if self.input.evidence.iter().any(|s| !s.trim().is_empty()) {"provided"} else {"not_supplied"},
             "file_scope":if self.input.read_scope.is_empty() {"not_requested"} else {"requested"},
-            "snapshot":snapshot})
+            "snapshot":snapshot});
+        if let Some(snapshot) = self.snapshot {
+            let captured = snapshot.user_images.len();
+            let unavailable = snapshot.unavailable_user_images;
+            if captured > 0 || unavailable > 0 {
+                manifest["user_images"] = json!({
+                    "captured": captured,
+                    "unavailable": unavailable,
+                    "content_delivery": "native attachments for roles that support images; a count alone does not expose image content",
+                    "use": "Use visible details as visual observations and separate them from inference. Do not claim to have seen missing images or treat another role's description as independently verified. If an unseen detail changes the answer, identify the gap. Images are outside the text-quotation citation protocol."
+                });
+            }
+        }
+        manifest
     }
 
     pub fn inline_version(&self, id: &str) -> Option<String> {
@@ -254,6 +267,7 @@ mod tests {
         assert_eq!(manifest["inline_sources"][0]["availability"], "provided");
         assert_eq!(manifest["file_scope"], "not_requested");
         assert_eq!(manifest["snapshot"]["availability"], "not_loaded");
+        assert!(manifest.get("user_images").is_none());
         // Missing external evidence is not a blanket rejection of a valid task.
         input.validate().unwrap();
     }
@@ -281,6 +295,33 @@ mod tests {
             "captured_no_text_files"
         );
         assert!(manifest.get("query_result").is_none());
+    }
+
+    #[test]
+    fn image_receipts_publish_availability_without_payload_or_path() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let image = "data:image/png;base64,AQID";
+        let user_images =
+            future_fusion::UserImages::from_candidates([Some(image), None], |value| {
+                value.map(str::to_owned)
+            });
+        let snapshot = Snapshot::capture_with_images(
+            &workspace,
+            &root.path().join("snapshot"),
+            &[],
+            &user_images,
+            &AtomicBool::new(false),
+            |_| true,
+        )
+        .unwrap();
+        let input = input();
+        let manifest = Sources::new(&input, Some(&snapshot)).manifest();
+        assert_eq!(manifest["user_images"]["captured"], 1);
+        assert_eq!(manifest["user_images"]["unavailable"], 1);
+        assert!(!manifest.to_string().contains(image));
+        assert!(!manifest.to_string().contains(&snapshot.root));
     }
 
     #[test]

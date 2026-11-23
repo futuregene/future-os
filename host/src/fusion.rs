@@ -254,7 +254,12 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     decision_input["source_manifest"] = sources.manifest();
     decision_input["decision_lineage"] = serde_json::to_value(&run.lineage)?;
     let input = serde_json::to_string(&decision_input)?;
-    *ctx.budget.lock().unwrap() = Some(budget::Budget::new(&catalog, config, input.len())?);
+    *ctx.budget.lock().unwrap() = Some(budget::Budget::new(
+        &catalog,
+        config,
+        input.len(),
+        snapshot.user_images.len(),
+    )?);
     let probe = async {
         if !ctx.healthy() {
             with_retry(&ctx, "preflight", &config.moderator, "moderator", "This is a Fusion readiness check. Reply READY. Do not investigate, use tools, or discuss a task.", None).await?;
