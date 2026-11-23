@@ -26,15 +26,28 @@
 
 use crate::proc::NoWindow;
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// How many commits one log read asks for. A page, not the history: a phone
-/// scrolls a screen at a time and a repository with 10⁵ commits is exactly the
-/// read that should not happen when a sheet opens.
+/// How many commits one page of the history asks for. A page, not the history: a
+/// phone scrolls a screen at a time and a repository with 10⁵ commits is exactly
+/// the read that should not happen when a sheet opens.
 const COMMIT_LIMIT: usize = 200;
+
+/// How many lanes the picture draws before it stops widening.
+///
+/// A gutter is only as wide as the row that carries it — a row with one lane is
+/// two cells and its subject starts immediately — so the width a page costs is
+/// the width of its busiest row, and a wider window is affordable: ten lanes is
+/// twenty cells beside the subject in the one row that needs them, not in every
+/// row. A line past the tenth is drawn *in* the tenth column, sharing it with the
+/// other lines that run past the window. It keeps its commits — each one still
+/// gets its own row and a mark — but it no longer has a column of its own: those
+/// commits are drawn with `*` instead of `o`, so the tenth column's own line and
+/// the folded ones do not read as one line.
+pub const LANE_WINDOW: usize = 10;
 
 /// Budget for one read-only query (`rev-parse`, `log`).
 const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -43,9 +56,10 @@ const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 /// read gets room for a large commit on a slow disk.
 const SHOW_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Ceiling for a single read's stdout. `log --max-count=200` is a few hundred
-/// kilobytes; a patch can be far larger, and it is bounded here rather than in
-/// memory after the fact.
+/// Ceiling for a single read's stdout. A page is a few hundred kilobytes (a page
+/// is read at `COMMIT_LIMIT` rows whatever the depth, so this bound does not
+/// move with the reader's scroll); a patch can be far larger, and it is bounded
+/// here rather than in memory after the fact.
 const OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 
 /// How long a killed child gets to actually die before the read gives up on
@@ -61,11 +75,6 @@ const PATCH_MAX_BYTES: usize = 256 * 1024;
 
 const FIELD: char = '\u{1f}';
 const RECORD: char = '\u{1e}';
-
-/// A parent that lies past the page the log asked for. Its lane is kept — a line
-/// running off the bottom says the history continues, which is true — but it can
-/// never be claimed by a commit, so the line is never handed to another branch.
-const GHOST: usize = usize::MAX;
 
 /// How many times the layout may be laid out again after dropping a lane that
 /// carried nothing.
@@ -125,8 +134,91 @@ pub struct GraphListing {
     /// several checkouts.
     pub path: String,
     pub commits: Vec<GraphRow>,
-    /// The log was cut at [`COMMIT_LIMIT`]; the oldest row is not the root.
+    /// Whether more commits exist past this page. The same fact as
+    /// `!cursor.is_empty()`, kept because a client that cannot page (an older
+    /// phone, an older desktop) still has to know where the list stops.
     pub truncated: bool,
+    /// What to ask for the next page with: hand it back verbatim as the next
+    /// read's cursor. Empty on the last page — the read that answers it is the
+    /// one that showed the root commit.
+    ///
+    /// Opaque to every client on purpose. It is the log's *frontier*, not a
+    /// number: one entry per open lane (the commit that lane is waiting for,
+    /// empty when the column is free) plus the refs the pages above have not
+    /// shown. That is what lets the next page continue from where this one
+    /// stopped instead of from the top of the history, and it is also what lets
+    /// the drawing carry on in the same columns.
+    pub cursor: String,
+}
+
+/// Where a page resumes: the open lanes, and the refs still unshown.
+///
+/// Both halves are needed. The lanes alone lose a branch tip that has not been
+/// reached yet — a tip is not an ancestor of anything above it — and the result
+/// is a page missing exactly the commits of a branch that had not started
+/// showing. `tips` alone cannot continue the drawing, because it says nothing
+/// about which column a line was in.
+#[derive(Default)]
+struct PageCursor {
+    /// One entry per lane column: the sha that column waits for, `""` when the
+    /// column is free.
+    lanes: Vec<String>,
+    /// Ref tips the pages above have not shown yet.
+    tips: Vec<String>,
+}
+
+/// The cursor's on-the-wire spelling.
+///
+/// Plain text rather than JSON because it travels in a string field and only
+/// this module reads it: shas are hex, so `,` and `|` cannot occur inside one.
+/// A version tag leads it, so a future change to the shape can be told apart
+/// from this one instead of being misread as lanes.
+const CURSOR_VERSION: &str = "1";
+
+impl PageCursor {
+    fn decode(text: &str) -> Self {
+        let mut parts = text.splitn(3, '|');
+        if parts.next() != Some(CURSOR_VERSION) {
+            return Self::default();
+        }
+        let lanes = parts
+            .next()
+            .map(|raw| raw.split(',').map(str::to_string).collect())
+            .unwrap_or_default();
+        let tips = parts
+            .next()
+            .map(|raw| {
+                raw.split(',')
+                    .filter(|sha| !sha.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self { lanes, tips }
+    }
+
+    fn encode(&self) -> String {
+        format!(
+            "{CURSOR_VERSION}|{}|{}",
+            self.lanes.join(","),
+            self.tips.join(",")
+        )
+    }
+
+    /// Whether this is the first page: nothing read yet.
+    fn is_start(&self) -> bool {
+        self.lanes.iter().all(String::is_empty) && self.tips.is_empty()
+    }
+
+    /// The revs git should walk from: every lane's target and every unshown tip.
+    fn revs(&self) -> Vec<&str> {
+        self.lanes
+            .iter()
+            .chain(self.tips.iter())
+            .map(String::as_str)
+            .filter(|sha| !sha.is_empty())
+            .collect()
+    }
 }
 
 /// One commit's detail: its stat and patch, already bounded.
@@ -395,9 +487,31 @@ fn repository(cwd: &Path) -> Option<(std::path::PathBuf, String)> {
 
 /// The session workspace's history: the log as a lane graph.
 ///
-/// A workspace that is not a repository answers [`GraphListing::is_repo`]
-/// `false` with nothing in it, which is what the phone draws nothing for.
-pub fn list(workspace: &str) -> Result<GraphListing, crate::Error> {
+/// `cursor` is what the caller's last page answered with — empty for the first
+/// page. A page is a window into the log, and the phone reads it a page at a
+/// time rather than opening a sheet on 10⁵ commits. A workspace that is not a
+/// repository answers [`GraphListing::is_repo`] `false` with nothing in it, which
+/// is what the phone draws nothing for.
+pub fn list(workspace: &str, cursor: &str) -> Result<GraphListing, crate::Error> {
+    page(workspace, cursor, COMMIT_LIMIT)
+}
+
+/// One page of the history: `take` commits from where `cursor` stopped.
+///
+/// Split from [`list`] so a test can page a handful of commits instead of
+/// building two hundred to see a second page.
+///
+/// The page is read *from the cursor*, never from the top of the log: the cursor
+/// names the commits the page above stopped in front of, so the cost of a read
+/// is one page whatever the reader's depth. Reading from the top instead (with
+/// `--skip`, or by asking for `skip + take` commits and dropping the first
+/// `skip`) makes every page cost what the whole history above it cost, which is
+/// the read that turns a long scroll into a slow one.
+///
+/// The same cursor is what keeps the *picture* continuous: its lanes say which
+/// column is waiting for which commit, so the page opens the lines the page above
+/// left running, in the columns it left them in.
+fn page(workspace: &str, cursor: &str, take: usize) -> Result<GraphListing, crate::Error> {
     let root = Path::new(workspace);
     let empty = |path: String| GraphListing {
         is_repo: false,
@@ -405,42 +519,59 @@ pub fn list(workspace: &str) -> Result<GraphListing, crate::Error> {
         path,
         commits: Vec::new(),
         truncated: false,
+        cursor: String::new(),
     };
     let Some((toplevel, repo_name)) = repository(root) else {
         return Ok(empty(workspace.to_string()));
     };
+    let cursor = PageCursor::decode(cursor);
     // Every branch, tag and remote-tracking branch: the log describes the whole
     // repository, not just the checkout. `--all` would also pull in `refs/stash`
     // (a stash is a commit tree) as if it were a line of work, and naming `HEAD`
     // would be fatal on an unborn branch — taking every other branch's commits
     // down with it.
+    //
+    // A continuation names its own revs instead: the refs are already described
+    // by the cursor's unshown tips, and passing them again would restart the walk
+    // at every tip — answering with the first page over and over.
+    //
     // `%an` (author), not `%cn` (committer). They differ whenever someone else
     // lands a change — a squash merge on GitHub rewrites the committer to
     // "GitHub", a rebase or a cherry-pick to whoever ran it — and the author is
     // the person the row is about. Reading the committer there made a page of
     // real work look like it was all done by GitHub.
+    //
+    // `--date-order`, not `--topo-order`: both never show a parent before its
+    // children, but only the date walk can be cut and continued. A topological
+    // order is computed for the whole graph, so asking for it again from below a
+    // cut can order two live branches differently from the way the walk above
+    // had them queued — the page after a seam would then hold the right commits
+    // in a different order than one uninterrupted read. The date walk's order is
+    // a property of the remaining commits alone.
     let pretty = "--pretty=format:%x1e%h%x1f%H%x1f%P%x1f%cd%x1f%an%x1f%D%x1f%s";
-    let limit = format!("--max-count={COMMIT_LIMIT}");
-    let output = git(
-        &toplevel,
-        &[
-            "log",
-            "--decorate=short",
-            // Minute precision, no zone: a `+0800` in every one of 200 rows is
-            // six cells that repeat what the local clock already says.
-            "--date=format:%Y-%m-%d %H:%M",
-            "--topo-order",
-            limit.as_str(),
-            pretty,
-            "--branches",
-            "--remotes",
-            "--tags",
-            // `--` ends revision parsing: a branch named like a path would
-            // otherwise be resolved as the path and log nothing.
-            "--",
-        ],
-        QUERY_TIMEOUT,
-    )?;
+    // One past the page: whether another page follows is answered by the read
+    // itself rather than by a count that has to be trusted.
+    let limit = format!("--max-count={}", take + 1);
+    let mut args: Vec<String> = vec![
+        "log".to_string(),
+        "--decorate=short".to_string(),
+        // Minute precision, no zone: a `+0800` in every one of 200 rows is
+        // six cells that repeat what the local clock already says.
+        "--date=format:%Y-%m-%d %H:%M".to_string(),
+        "--date-order".to_string(),
+        limit,
+        pretty.to_string(),
+    ];
+    if cursor.is_start() {
+        args.extend(["--branches", "--remotes", "--tags"].map(str::to_string));
+    } else {
+        args.extend(cursor.revs().into_iter().map(str::to_string));
+    }
+    // `--` ends revision parsing: a branch named like a path would otherwise be
+    // resolved as the path and log nothing.
+    args.push("--".to_string());
+    let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = git(&toplevel, &borrowed, QUERY_TIMEOUT)?;
     // A repository with no commit is not an error the reader can act on; it is
     // an empty log.
     let text = if output.success {
@@ -450,9 +581,31 @@ pub fn list(workspace: &str) -> Result<GraphListing, crate::Error> {
     } else {
         return Err(failure(&output).into());
     };
-    let entries = parse_entries(&text);
-    let truncated = entries.len() >= COMMIT_LIMIT;
-    let gutters = graph(&entries);
+    let mut entries = parse_entries(&text);
+    let truncated = entries.len() > take;
+    entries.truncate(take);
+    let (gutters, lanes) = graph(&entries, &cursor.lanes);
+    let shown: Vec<&str> = entries.iter().map(|entry| entry.id.as_str()).collect();
+    let next = if truncated {
+        // The lanes the page ended with, plus the refs still unshown. A tip the
+        // pages above have not reached is not an ancestor of anything above the
+        // seam, so leaving it out would drop a whole branch from the page after.
+        let tips = if cursor.is_start() {
+            ref_tips(&toplevel)
+        } else {
+            cursor.tips.clone()
+        };
+        PageCursor {
+            lanes,
+            tips: tips
+                .into_iter()
+                .filter(|tip| !shown.contains(&tip.as_str()))
+                .collect(),
+        }
+        .encode()
+    } else {
+        String::new()
+    };
     let commits = entries
         .into_iter()
         .zip(gutters)
@@ -473,7 +626,43 @@ pub fn list(workspace: &str) -> Result<GraphListing, crate::Error> {
         path: reported_root(&toplevel).display().to_string(),
         commits,
         truncated,
+        cursor: next,
     })
+}
+
+/// The shas the log walks from: every branch, tag and remote-tracking branch.
+///
+/// The same set the first page's `--branches --remotes --tags` names, read as
+/// shas so a continuation can carry the ones it has not shown yet.
+fn ref_tips(toplevel: &Path) -> Vec<String> {
+    let output = match git(
+        toplevel,
+        &[
+            "for-each-ref",
+            "--format=%(objectname)",
+            "refs/heads",
+            "refs/remotes",
+            "refs/tags",
+        ],
+        QUERY_TIMEOUT,
+    ) {
+        Ok(output) if output.success => output,
+        // A cursor without tips still pages; it can only lose a branch tip that
+        // had not been reached. Better a page than a failure to read history.
+        _ => return Vec::new(),
+    };
+    let mut seen: Vec<String> = Vec::new();
+    for sha in output
+        .stdout
+        .lines()
+        .map(str::trim)
+        .filter(|sha| !sha.is_empty())
+    {
+        if !seen.iter().any(|already| already == sha) {
+            seen.push(sha.to_string());
+        }
+    }
+    seen
 }
 
 /// One commit's patch: `git show --stat --patch`, bounded.
@@ -563,10 +752,12 @@ fn parse_entries(text: &str) -> Vec<Entry> {
 }
 
 /// One line of work being drawn: the commit it is waiting for and what opened it.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Lane {
-    /// The entry this line waits for, or [`GHOST`] past the page.
-    target: usize,
+    /// The commit this line waits for — a sha, not a position, so a line that runs
+    /// off the bottom of the page is an ordinary open lane and the next page's
+    /// cursor can pick it up.
+    target: String,
     /// The commit and the index of the parent in its list that opened this line,
     /// when a merge's *extra* parent did. `None` for a line that starts at the
     /// top of the page or carries a commit's first parent.
@@ -576,24 +767,38 @@ struct Lane {
 }
 
 /// The graph gutter for each entry, one string per row and every string the same
-/// width so the subjects line up in one column.
+/// width so the subjects line up in one column — and the lanes the page ends
+/// with, which the next page resumes from.
+///
+/// `seed` is that same lane row from the page above: one entry per column, the
+/// sha it waits for or `""` where the column is free. A first page seeds nothing.
 ///
 /// The model is tig's: a *lane* is a column waiting for a commit, a commit claims
 /// the leftmost lane waiting for it, its first parent inherits that lane, and
 /// each further parent opens a column to the right. Read
 /// `tui/src/workbench/git_panel.rs` for why each rule below is what it is; this
 /// is the same algorithm, kept identical so both surfaces draw one picture.
-fn graph(entries: &[Entry]) -> Vec<String> {
-    let position: HashMap<&str, usize> = entries
+fn graph(entries: &[Entry], seed: &[String]) -> (Vec<String>, Vec<String>) {
+    let seeded: Vec<Option<Lane>> = seed
         .iter()
-        .enumerate()
-        .map(|(at, entry)| (entry.id.as_str(), at))
+        .map(|sha| {
+            (!sha.is_empty()).then(|| Lane {
+                target: sha.clone(),
+                opened_by: None,
+                // A seeded lane has already drawn its commit — the page above —
+                // so a second line joining it here is not a lane that carried
+                // nothing.
+                hosted: true,
+            })
+        })
         .collect();
     let mut covered: HashSet<(usize, usize)> = HashSet::new();
     let mut rows = Vec::new();
+    let mut lanes: Vec<Option<Lane>> = seeded.clone();
     for pass in 1..=PASSES {
-        let (drawn, discovered) = draw(entries, &position, &covered);
+        let (drawn, discovered, ended) = draw(entries, &covered, seeded.clone());
         rows = drawn;
+        lanes = ended;
         let mut fresh: Vec<(usize, usize)> = Vec::new();
         for edge in discovered {
             if !covered.contains(&edge) && !fresh.contains(&edge) {
@@ -605,23 +810,33 @@ fn graph(entries: &[Entry]) -> Vec<String> {
         }
         covered.extend(fresh);
     }
-    let width = rows.iter().map(Vec::len).max().unwrap_or(0);
-    rows.into_iter()
-        .map(|mut cells| {
-            cells.resize(width, ' ');
-            cells.into_iter().collect()
-        })
-        .collect()
+    // Each gutter keeps the width of its own row: a row with one lane is two
+    // cells, so its subject starts right after that lane instead of after the
+    // page's busiest row. Nothing pads a row to the widest one, which is what
+    // makes a ten-lane window affordable — the page pays for its busiest row,
+    // not for its busiest row in every row.
+    let gutters = rows
+        .into_iter()
+        .map(|cells| cells.into_iter().collect())
+        .collect();
+    let mut ended: Vec<String> = lanes
+        .into_iter()
+        .map(|lane| lane.map(|lane| lane.target).unwrap_or_default())
+        .collect();
+    while ended.last().is_some_and(String::is_empty) {
+        ended.pop();
+    }
+    (gutters, ended)
 }
 
-/// One pass over the log: the rows, and the parent links whose lane turned out to
-/// carry no commit of its own.
-fn draw(
-    entries: &[Entry],
-    position: &HashMap<&str, usize>,
-    covered: &HashSet<(usize, usize)>,
-) -> (Vec<Vec<char>>, Vec<(usize, usize)>) {
-    let mut lanes: Vec<Option<Lane>> = Vec::new();
+/// One pass over the layout: the drawn rows, the parent links whose lane turned
+/// out to carry no commit of its own, and the lanes still open at the bottom.
+type Pass = (Vec<Vec<char>>, Vec<(usize, usize)>, Vec<Option<Lane>>);
+
+/// One pass over the log: the rows, the parent links whose lane turned out to
+/// carry no commit of its own, and the lanes still open at the bottom.
+fn draw(entries: &[Entry], covered: &HashSet<(usize, usize)>, seeded: Vec<Option<Lane>>) -> Pass {
+    let mut lanes: Vec<Option<Lane>> = seeded;
     let mut rows: Vec<Vec<char>> = Vec::with_capacity(entries.len());
     let mut empty: Vec<(usize, usize)> = Vec::new();
     for (at, entry) in entries.iter().enumerate() {
@@ -630,7 +845,7 @@ fn draw(
         let waiting: Vec<usize> = lanes
             .iter()
             .enumerate()
-            .filter(|(_, lane)| lane.is_some_and(|lane| lane.target == at))
+            .filter(|(_, lane)| lane.as_ref().is_some_and(|lane| lane.target == entry.id))
             .map(|(column, _)| column)
             .collect();
         let (mine, closed) = match waiting.split_first() {
@@ -646,7 +861,7 @@ fn draw(
                     }
                 };
                 lanes[column] = Some(Lane {
-                    target: at,
+                    target: entry.id.clone(),
                     opened_by: None,
                     hosted: false,
                 });
@@ -656,7 +871,7 @@ fn draw(
         // A line closing here that never drew a commit was opened for a parent
         // another line also reaches: its history is already on the page.
         for &column in &closed {
-            if let Some(lane) = lanes[column] {
+            if let Some(lane) = &lanes[column] {
                 if !lane.hosted {
                     if let Some(edge) = lane.opened_by {
                         empty.push(edge);
@@ -667,16 +882,11 @@ fn draw(
         if let Some(lane) = lanes[mine].as_mut() {
             lane.hosted = true;
         }
-        let parents: Vec<usize> = entry
-            .parents
-            .iter()
-            .map(|parent| position.get(parent.as_str()).copied().unwrap_or(GHOST))
-            .collect();
         // The extra parents, each in a column right of this one: the leftmost one
         // that is free, and — this is what keeps the page narrow — a column a
         // lane is giving up on *this* row.
-        let mut opened: Vec<(usize, usize, usize)> = Vec::new();
-        for (index, &parent) in parents.iter().enumerate().skip(1) {
+        let mut opened: Vec<(usize, String, usize)> = Vec::new();
+        for (index, parent) in entry.parents.iter().enumerate().skip(1) {
             if covered.contains(&(at, index)) {
                 continue;
             }
@@ -691,7 +901,7 @@ fn draw(
                     lanes.len() - 1
                 }
             };
-            opened.push((column, parent, index));
+            opened.push((column, parent.clone(), index));
         }
         let rightmost = opened
             .iter()
@@ -703,32 +913,81 @@ fn draw(
             .rposition(Option::is_some)
             .unwrap_or(0)
             .max(rightmost);
-        let mut cells = vec![' '; 2 * (width + 1)];
+        // Every lane past the window is drawn in the window's last column: the
+        // picture stops widening there, and the lines beyond it stay on the page
+        // as one bundle instead of disappearing. A commit on one of them still
+        // gets its dot, in that same column, so its row says where the work
+        // landed even though the line it sits on is shared.
+        let visible = width.min(LANE_WINDOW - 1);
+        let mut up = vec![false; visible + 1];
+        let mut down = vec![false; visible + 1];
+        let mut left = vec![false; visible + 1];
+        let mut right = vec![false; visible + 1];
+        // Where the commit itself landed, and whether it joins lines. Several
+        // lanes can fold into one column, but only one of them is this row's.
+        let mut marks = vec![false; visible + 1];
+        let mut joins = vec![false; visible + 1];
+        // Whether this commit's own line is one of the folded ones. It is drawn
+        // in the bundle column like the others, but with its own glyph: inside
+        // the window a dot says "this line", here it would have to say "one of
+        // several lines that are not drawn", and the two would then read alike.
+        let folded = mine > visible;
         for column in 0..=width {
-            let up = lanes.get(column).is_some_and(|lane| lane.is_some()) && column != mine;
+            let fold = column.min(visible);
+            let column_up = lanes.get(column).is_some_and(|lane| lane.is_some()) && column != mine;
             // A column a line gives up on and another takes over in the same row
             // continues below: the vertical passes through it.
-            let down = if opened.iter().any(|(taken, _, _)| *taken == column) {
+            let column_down = if opened.iter().any(|(taken, _, _)| *taken == column) {
                 true
             } else if closed.contains(&column) {
                 false
             } else {
-                up
+                column_up
             };
-            let right = column >= mine && column < rightmost;
-            let left = column > mine && column <= rightmost;
-            cells[2 * column] = if column == mine {
+            // The bundle carries the directions of every lane inside it, so a
+            // thread that runs through it is still drawn.
+            up[fold] |= column_up;
+            down[fold] |= column_down;
+            right[fold] |= column >= mine && column < rightmost;
+            left[fold] |= column > mine && column <= rightmost;
+            if column == mine {
+                marks[fold] = true;
+                joins[fold] = entry.parents.len() > 1;
+            }
+        }
+        // The bundle closes at the window's edge: a connector in its last cell
+        // would run the horizontal out of the picture and into the fields.
+        right[visible] = false;
+        let mut cells = vec![' '; 2 * (visible + 1)];
+        for column in 0..=visible {
+            cells[2 * column] = if marks[column] {
                 // `M` is a commit that joins lines, `o` one that only continues
-                // its own — tig's two glyphs.
-                if parents.len() > 1 {
+                // its own — tig's two glyphs — and `*` one whose line has no
+                // column of its own because the picture stopped widening. A
+                // folded commit that joins lines is `*` too: the elbow a merge
+                // needs cannot be drawn past the window's edge, so the ring would
+                // promise a shape the row cannot show.
+                if folded && column == visible {
+                    '*'
+                } else if joins[column] {
                     'M'
                 } else {
                     'o'
                 }
             } else {
-                junction(up, down, left, right)
+                let thread = junction(up[column], down[column], left[column], right[column]);
+                // The bundle's thread is not this column's own line: a `│` here
+                // reads exactly like a lane, and nothing on the row says the work
+                // continues past the window rather than in this column. `┊` keeps
+                // the column, its width and its colour and says which one it is.
+                // A connector keeps its shape — a `┬` is a shape, not a thread.
+                if column == visible && width > visible && thread == '│' {
+                    '┊'
+                } else {
+                    thread
+                }
             };
-            if column >= mine && column < rightmost {
+            if right[column] {
                 cells[2 * column + 1] = '─';
             }
         }
@@ -736,12 +995,12 @@ fn draw(
         for &column in &closed {
             lanes[column] = None;
         }
-        lanes[mine] = parents.first().map(|&target| Lane {
-            target,
+        lanes[mine] = entry.parents.first().map(|target| Lane {
+            target: target.clone(),
             opened_by: None,
             hosted: false,
         });
-        for &(column, target, index) in &opened {
+        for (column, target, index) in opened {
             if column >= lanes.len() {
                 lanes.resize(column + 1, None);
             }
@@ -755,7 +1014,7 @@ fn draw(
             lanes.pop();
         }
     }
-    (rows, empty)
+    (rows, empty, lanes)
 }
 
 /// The glyph where a lane meets the row's horizontal: which of the four

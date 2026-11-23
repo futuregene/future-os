@@ -708,6 +708,15 @@ export interface GitGraphListing {
   commits: GitGraphRow[];
   /** The log was cut at the page size; the oldest row is not the root. */
   truncated: boolean;
+  /**
+   * Where this page stopped, for the next read; "" on the last page. Opaque —
+   * the host that wrote it is the only reader, and a sheet only hands it back.
+   *
+   * A position rather than a count, which keeps a deep page as cheap as the first
+   * and lets the appended rows continue the lanes above them. Absent from a host
+   * that predates paging, which then answers every request with its first page.
+   */
+  cursor?: string;
 }
 
 /** One commit's `git show --stat --patch`, already bounded by the host. */

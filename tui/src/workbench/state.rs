@@ -845,6 +845,14 @@ pub struct GitView {
     pub detail: Vec<String>,
     /// The revision the log is filtered to (`feature`, a tag, a sha).
     pub filter: Option<String>,
+    /// Whether the log continues past the last row: pressing down (or paging)
+    /// there reads the next one. Only the commits tab can say yes.
+    pub more: bool,
+    /// Where the log's page on screen stopped: the read of the next page starts
+    /// there rather than at the top of the history, so a deep page costs what the
+    /// first one did — and its rows continue these lanes. Empty for a section
+    /// that is not the log, and on the last page.
+    pub cursor: String,
     /// The read failed; painted in place of the list.
     pub error: Option<String>,
 }

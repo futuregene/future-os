@@ -15,7 +15,7 @@ vi.mock("../../integrations/tauri/invoke", () => ({
   invokeCommand: (...args: Parameters<typeof invoke>) => invoke(...args),
 }));
 
-const listRemote = vi.fn<(desktopId: string, sessionId: string) => Promise<unknown>>();
+const listRemote = vi.fn<(desktopId: string, sessionId: string, cursor?: string) => Promise<unknown>>();
 const getRemote = vi.fn<(desktopId: string, sessionId: string, sha: string) => Promise<unknown>>();
 vi.mock("../remote-peer/remotePeerClient", () => ({
   listRemoteGitCommits: (...args: Parameters<typeof listRemote>) => listRemote(...args),
@@ -33,14 +33,24 @@ beforeEach(() => {
 
 it("asks this machine for a local workspace", async () => {
   await listGitHistory({ kind: "local", path: "/Users/reader/repo" });
-  expect(invoke).toHaveBeenCalledWith("get_git_history", { path: "/Users/reader/repo" });
+  expect(invoke).toHaveBeenCalledWith("get_git_history", { path: "/Users/reader/repo", cursor: "" });
   expect(listRemote).not.toHaveBeenCalled();
 });
 
 it("asks the peer for a remote conversation", async () => {
   await listGitHistory({ desktopId: "desktop_a", kind: "remote", sessionId: "sess_1" });
-  expect(listRemote).toHaveBeenCalledWith("desktop_a", "sess_1");
+  expect(listRemote).toHaveBeenCalledWith("desktop_a", "sess_1", "");
   expect(invoke).not.toHaveBeenCalled();
+});
+
+it("hands the cursor of the page before straight back to the reader of the log", async () => {
+  // A cursor is a position in the log, not a count of rows held: it crosses
+  // the boundary untouched, which is why a deep page costs what the first did.
+  const cursor = "1|aaaa,bbbb|cccc";
+  await listGitHistory({ kind: "local", path: "/Users/reader/repo" }, cursor);
+  expect(invoke).toHaveBeenCalledWith("get_git_history", { path: "/Users/reader/repo", cursor });
+  await listGitHistory({ desktopId: "desktop_a", kind: "remote", sessionId: "sess_1" }, cursor);
+  expect(listRemote).toHaveBeenLastCalledWith("desktop_a", "sess_1", cursor);
 });
 
 it("reads a local commit's patch from this machine", async () => {

@@ -291,6 +291,10 @@ pub enum WbAction {
     GitFilter(Option<String>),
     /// `r` in the `/git` panel: re-read the current section.
     GitRefresh,
+    /// Down (or a page key) at the last row of the `/git` log while it says the
+    /// history goes on: read the next page and append it. The cursor stays put,
+    /// so the rows land under the key that asked for them.
+    GitMore,
     /// The `/git` cursor moved: load that row's detail.
     SelectGit(usize),
     /// `enter` on a `/git` worktree row: move the session's workspace to that
@@ -3028,11 +3032,17 @@ impl Workbench {
                 let page = self.list_page.max(1);
                 let back = key == "pageUp";
                 let next = git.page(self.workflow_index, page, !back);
-                self.workflow_index = next;
-                self.overlay_scroll = 0;
-                git.selectable(next)
-                    .then_some(vec![WbAction::SelectGit(next)])
-                    .unwrap_or_default()
+                // Paging down at the bottom of the log asks for the next page
+                // instead of doing nothing: the panel scrolls, it does not stop.
+                if !back && next == self.workflow_index && git.more {
+                    vec![WbAction::GitMore]
+                } else {
+                    self.workflow_index = next;
+                    self.overlay_scroll = 0;
+                    git.selectable(next)
+                        .then_some(vec![WbAction::SelectGit(next)])
+                        .unwrap_or_default()
+                }
             }
             "home" | "g" if !self.git_detail_focus => match git.first() {
                 Some(index) => {
@@ -3102,6 +3112,12 @@ impl Workbench {
             return Vec::new();
         };
         let next = git.step(self.workflow_index, direction);
+        // The bottom of the page and the log goes on: the same key keeps
+        // walking, into rows this read did not have. The cursor stays on the last
+        // row, so the rows land under the finger that asked for them.
+        if direction > 0 && next == self.workflow_index && git.more {
+            return vec![WbAction::GitMore];
+        }
         self.workflow_index = next;
         // Another row is another document: a patch left half-read must not carry
         // its scroll onto one the reader has not seen — nor its horizontal pan,
@@ -7392,6 +7408,8 @@ mod tests {
                 selected: 0,
                 detail: Vec::new(),
                 filter: None,
+                more: false,
+                cursor: String::new(),
                 error: None,
             });
             let (mut workbench, _rows) = frame(&data, 120, 38);
@@ -13052,6 +13070,94 @@ mod tests {
         assert_eq!(
             wb.workflow_index, 0,
             "the click moved the cursor onto a drawing"
+        );
+    }
+
+    /// The bottom of the log is not the end of it: `down`, `j`, `pagedown` and
+    /// `space` on the last row read the next page instead of stopping, and the
+    /// cursor stays on that row so the new rows land under the key that asked.
+    /// The same keys are inert when the read said there is nothing older.
+    #[test]
+    fn the_git_panel_reads_the_next_page_at_the_bottom_of_the_log() {
+        let mut data = demo::chat();
+        data.git = Some(demo::git());
+        let mut wb = workbench();
+        wb.overlay = Some(Overlay::Git);
+        // 80 columns is the single-column layout, where the page keys are the
+        // list's: beside a detail pane they page the detail instead (asserted at
+        // the end), and `↓`/`space` are what read on.
+        wb.render(&data, 80, 38);
+        assert!(!wb.git_split, "80 columns is the single-column layout");
+        let bottom = data
+            .git
+            .as_ref()
+            .and_then(|git| git.last())
+            .expect("the demo log has a last row");
+        wb.workflow_index = bottom;
+
+        // The demo log is the whole of its history: the key keeps walking the
+        // rows it has (re-reading the last one) and asks for nothing.
+        for key in ["down", "j", "pageDown", "space"] {
+            let actions = wb.handle(WbEvent::Key(key.into()), &data);
+            assert!(
+                !actions.contains(&WbAction::GitMore),
+                "`{key}` asked for a page the read said does not exist"
+            );
+            assert_eq!(wb.workflow_index, bottom);
+        }
+
+        // The title says the log goes on only while it does — the marker the
+        // hint beside the list names.
+        let marker = t(wb.lang, Key::GitMore);
+        let paints_marker = |wb: &mut Workbench, data: &crate::workbench::state::WorkbenchData| {
+            wb.render(data, 80, 38)
+                .iter()
+                .any(|row| crate::utils::strip_ansi_codes(row).contains(marker))
+        };
+        assert!(
+            !paints_marker(&mut wb, &data),
+            "a log that ends where it ends says it goes on"
+        );
+
+        data.git.as_mut().expect("the panel").more = true;
+        assert!(
+            paints_marker(&mut wb, &data),
+            "the list title does not say the log goes on"
+        );
+        wb.overlay = Some(Overlay::Git);
+        for key in ["down", "j", "pageDown", "space"] {
+            assert_eq!(
+                wb.handle(WbEvent::Key(key.into()), &data),
+                vec![WbAction::GitMore],
+                "`{key}` at the bottom of a page did not read the next one"
+            );
+            assert_eq!(
+                wb.workflow_index, bottom,
+                "`{key}` moved the cursor off the row the new page continues"
+            );
+        }
+
+        // Upwards is still the rows already read: a page key back must not ask
+        // the loop for more.
+        let up = wb.handle(WbEvent::Key("pageUp".into()), &data);
+        assert!(!up.contains(&WbAction::GitMore));
+        assert_ne!(wb.workflow_index, bottom, "`pageUp` did not page upwards");
+
+        // Beside the detail, the page keys are the detail's — the panel's own
+        // rule — so the log's way on is `↓`/`space` alone.
+        wb.workflow_index = bottom;
+        wb.render(&data, 120, 38);
+        assert!(wb.git_split, "120 columns is the split layout");
+        let detail_paged = wb.handle(WbEvent::Key("pageDown".into()), &data);
+        assert!(
+            !detail_paged.contains(&WbAction::GitMore),
+            "the page key that scrolls the detail also read the log"
+        );
+        assert_eq!(wb.workflow_index, bottom);
+        assert_eq!(
+            wb.handle(WbEvent::Key("space".into()), &data),
+            vec![WbAction::GitMore],
+            "space is the list's page key in the split layout"
         );
     }
 

@@ -247,8 +247,11 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
    * means the workspace is not a Git repository — the sheet offers no Git entry
    * in that case, so this is called when the sheet opens and the entry appears
    * only after the desktop has said yes.
+   *
+   * `cursor` is where the caller's last page stopped, empty for the first one:
+   * one page, then the next, each read from where the last one ended.
    */
-  listGitCommits(): Promise<GitGraphListing>;
+  listGitCommits(cursor?: string): Promise<GitGraphListing>;
   /** One commit's stat and patch, by abbreviated id. */
   getGitCommit(gitRef: string): Promise<GitCommitDetail>;
   listSkills(): Promise<RemoteSkill[]>;

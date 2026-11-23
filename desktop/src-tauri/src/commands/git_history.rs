@@ -16,17 +16,23 @@
 //! keeps the read free of a second store lookup on every scroll.
 
 /// The commit log of a workspace, as a lane graph.
+///
+/// `cursor` is what the panel's last page answered with, empty for the first
+/// page: the panel appends a page at a time, the same way the phone's sheet does,
+/// and both read the one page size the host keeps.
 #[tauri::command]
 pub async fn get_git_history(
     path: String,
+    cursor: Option<String>,
 ) -> Result<future_host::git_history::GraphListing, crate::AppError> {
+    let cursor = cursor.unwrap_or_default();
     future_host::runtime::run_blocking(move || {
         let _request =
             future_host::request_scope::admit().map_err(|e| crate::AppError::from(e.message()))?;
         // The read answers with `future_host::Error`, which `AppError` carries
         // through `From`: the closure's return type converts it, so there is
         // nothing to map and nothing to wrap.
-        future_host::git_history::list(&path)
+        future_host::git_history::list(&path, &cursor)
     })
     .await?
 }
