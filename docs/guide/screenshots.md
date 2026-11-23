@@ -869,6 +869,11 @@ Pagination belongs to `document.css`: an item may break across pages, but a
 heading never ends a page without its prose, and a figure or a pair never splits
 in two — there is no need to pad an item to make it line up with a page.
 
+A content file may also carry a `style` string, appended after `document.css`
+for that one document. Use it when a page rhythm the shared sheet cannot express
+is worth having — a short brief whose items must stay with their figures, for
+instance — rather than editing the shared sheet for one document's sake.
+
 For command-line output, capture the real stdout and render it in a terminal
 frame:
 

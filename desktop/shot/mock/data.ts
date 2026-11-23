@@ -2210,19 +2210,58 @@ export const remoteFileListing = {
  * it, so a picture that came out in one colour is visibly wrong.
  */
 export const gitHistoryCommits = [
-  { short: "9f2c1a7", when: "12 minutes ago", who: "Rin", decorations: "HEAD -> main, origin/main", subject: "Show the lane picture in review", graph: "o     " },
-  { short: "4b8e03c", when: "48 minutes ago", who: "Rin", decorations: "", subject: "Merge branch 'feat/lane-graph'", graph: "M─┐   " },
-  { short: "c17d5b2", when: "1 hour ago", who: "Kai", decorations: "", subject: "Decode the gutter into strokes", graph: "│ o   " },
-  { short: "8a44f19", when: "2 hours ago", who: "Kai", decorations: "", subject: "Draw turns as quadratic curves", graph: "│ o   " },
-  { short: "2e5b7a8", when: "3 hours ago", who: "Jun", decorations: "", subject: "Merge branch 'release/1.4'", graph: "M─┤   " },
+  { short: "9f2c1a7", when: "12 minutes ago", who: "Rin", decorations: "HEAD -> main, origin/main", subject: "Show the lane picture in review", graph: "o " },
+  { short: "4b8e03c", when: "48 minutes ago", who: "Rin", decorations: "", subject: "Merge branch 'feat/lane-graph'", graph: "M─┐ " },
+  { short: "c17d5b2", when: "1 hour ago", who: "Kai", decorations: "", subject: "Decode the gutter into strokes", graph: "│ o " },
+  { short: "8a44f19", when: "2 hours ago", who: "Kai", decorations: "", subject: "Draw turns as quadratic curves", graph: "│ o " },
+  { short: "2e5b7a8", when: "3 hours ago", who: "Jun", decorations: "", subject: "Merge branch 'release/1.4'", graph: "M─┤ " },
   { short: "d90c6e3", when: "4 hours ago", who: "Jun", decorations: "", subject: "Merge branch 'fix/patch-bound'", graph: "M─│─┐ " },
   { short: "b0f39d1", when: "5 hours ago", who: "Dee", decorations: "", subject: "Bound the patch at a page size", graph: "│ o │ " },
   { short: "6cd2e84", when: "6 hours ago", who: "Dee", decorations: "", subject: "Colour a patch line by its role", graph: "│ │ o " },
   { short: "77b0f4e", when: "7 hours ago", who: "Jun", decorations: "origin/release/1.4", subject: "Keep the abbreviated sha as the key", graph: "│ o │ " },
   { short: "1a2b3c4", when: "9 hours ago", who: "Dee", decorations: "", subject: "Read the log once per page", graph: "│ │ o " },
   { short: "f58a1b9", when: "11 hours ago", who: "Rin", decorations: "", subject: "Report a plain directory as not a repo", graph: "o─│─┘ " },
-  { short: "38e7c0a", when: "13 hours ago", who: "Rin", decorations: "tag: v1.3.2", subject: "Close the feature branch", graph: "o─┘   " },
-  { short: "5d6e7f8", when: "yesterday", who: "Rin", decorations: "", subject: "Start the lane picture", graph: "o     " },
+  { short: "38e7c0a", when: "13 hours ago", who: "Rin", decorations: "tag: v1.3.2", subject: "Close the feature branch", graph: "o─┘ " },
+  { short: "5d6e7f8", when: "yesterday", who: "Rin", decorations: "", subject: "Start the lane picture", graph: "o " },
+];
+
+/**
+ * A busier month: eleven branches of work open at once.
+ *
+ * The gutters are copied cell for cell from what the host's layout function
+ * prints for such a repository (a real one with eleven branches, merged in one
+ * octopus merge), because the sheet decodes glyphs: an invented grid draws a
+ * picture nobody has. Two things are visible in it at once.
+ *
+ * A row is only as wide as its own lanes. The three newest rows are main's own
+ * commits — one lane, two cells wide — so their subjects start right after the
+ * line instead of after the busiest row of the page; the merge and the branch
+ * rows below it carry ten lanes and are twenty cells wide.
+ *
+ * The window still stops the picture at ten columns, and the two lines past it
+ * (`stimuli`, `robustness`) are drawn *in* the tenth column with `*`: the work is
+ * kept, and the mark says the commit is not that column's own. No thread runs
+ * through those marks, so they stay separate points rather than one line.
+ *
+ * `?gitlanes=window` selects it; the ordinary history above is the default.
+ */
+export const gitHistoryWindowCommits = [
+  { short: "dcbbe63", when: "2026-11-15 14:00", who: "Lixin Zhou", decorations: "tag: draft-v3", subject: "Freeze the analysis for the fourth draft", graph: "o " },
+  { short: "cb7281c", when: "2026-11-15 11:00", who: "Lixin Zhou", decorations: "", subject: "Reword the model-selection paragraph", graph: "o " },
+  { short: "f91c61a", when: "2026-11-15 09:00", who: "Lixin Zhou", decorations: "", subject: "Drop the practice trials from the comparison", graph: "o " },
+  { short: "d4c1a74", when: "2026-11-14 20:00", who: "Lixin Zhou", decorations: "HEAD -> main, origin/main", subject: "Merge every analysis branch onto main", graph: "M─┬─┬─┬─┬─┬─┬─┬─┬─┐ " },
+  { short: "1372dc5", when: "2026-11-12 19:00", who: "Mei Tan", decorations: "origin/stimuli", subject: "Draft the stimuli table for the supplement", graph: "│ │ │ │ │ │ │ │ │ * " },
+  { short: "ca9c198", when: "2026-11-11 18:00", who: "Mei Tan", decorations: "origin/robustness", subject: "Re-run the fits under the robustness prior", graph: "│ │ │ │ │ │ │ │ │ * " },
+  { short: "e44045a", when: "2026-11-10 17:00", who: "Mei Tan", decorations: "origin/models", subject: "Compare the model-free and model-based learners", graph: "│ │ │ │ │ │ │ │ │ o " },
+  { short: "3371042", when: "2026-11-09 16:00", who: "Mei Tan", decorations: "origin/text", subject: "Draft the model-selection paragraph", graph: "│ │ │ │ │ │ │ │ o ┊ " },
+  { short: "92a98d2", when: "2026-11-08 15:00", who: "Lixin Zhou", decorations: "origin/hierarchical", subject: "Fit the hierarchical prior over both cohorts", graph: "│ │ │ │ │ │ │ o │ ┊ " },
+  { short: "d2b6b2a", when: "2026-11-07 14:00", who: "Mei Tan", decorations: "origin/comparison", subject: "Compare the hierarchical and per-subject fits", graph: "│ │ │ │ │ │ o │ │ ┊ " },
+  { short: "531172e", when: "2026-11-06 13:00", who: "Mei Tan", decorations: "origin/qc", subject: "Flag the trials that fail the time screen", graph: "│ │ │ │ │ o │ │ │ ┊ " },
+  { short: "b2e8733", when: "2026-11-05 12:00", who: "Lixin Zhou", decorations: "origin/figures", subject: "Regenerate the supplement figures", graph: "│ │ │ │ o │ │ │ │ ┊ " },
+  { short: "929cc97", when: "2026-11-04 11:00", who: "Mei Tan", decorations: "origin/tolerance", subject: "Tighten the tolerance so subject 12 converges", graph: "│ │ │ o │ │ │ │ │ ┊ " },
+  { short: "c34b8a5", when: "2026-11-03 10:00", who: "Mei Tan", decorations: "origin/reversal", subject: "Report the reversal coefficients per condition", graph: "│ │ o │ │ │ │ │ │ ┊ " },
+  { short: "f2693da", when: "2026-11-02 09:00", who: "Lixin Zhou", decorations: "origin/mixture", subject: "Fit the latent-mixture model over both cohorts", graph: "│ o │ │ │ │ │ │ │ ┊ " },
+  { short: "cace15d", when: "2026-11-01 09:00", who: "Lixin Zhou", decorations: "", subject: "Initial repository layout", graph: "o─┴─┴─┴─┴─┴─┴─┴─┴─┘ " },
 ];
 
 /**

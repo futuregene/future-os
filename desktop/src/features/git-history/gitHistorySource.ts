@@ -28,11 +28,22 @@ export function gitSourceReady(source: GitHistorySource | null): boolean {
   return source.kind === "local" ? source.path.length > 0 : true;
 }
 
-export async function listGitHistory(source: GitHistorySource): Promise<GitGraphListing> {
+/**
+ * One page of a history.
+ *
+ * `cursor` is where the caller's last page stopped ("" for the first page):
+ * both paths read the log a page at a time, so a repository with 10⁵ commits is
+ * never one reply and the view appends what it lacks. The host reads the next
+ * page from that cursor, so page 500 costs what page 1 did.
+ */
+export async function listGitHistory(
+  source: GitHistorySource,
+  cursor = "",
+): Promise<GitGraphListing> {
   if (source.kind === "local") {
-    return invokeCommand<GitGraphListing>("get_git_history", { path: source.path });
+    return invokeCommand<GitGraphListing>("get_git_history", { path: source.path, cursor });
   }
-  return listRemoteGitCommits(source.desktopId, source.sessionId);
+  return listRemoteGitCommits(source.desktopId, source.sessionId, cursor);
 }
 
 export async function getGitCommit(

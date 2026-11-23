@@ -167,17 +167,19 @@ describe("the picker's trigger", () => {
 });
 
 describe("the device sheet", () => {
-  it("explains the connection the dot was painting, and reconnects from there", () => {
+  it("explains the connection the dot was painting, and asks for nothing while it is green", () => {
     const onReconnect = jest.fn();
     const tree = render([], undefined, { onReconnect });
     openPicker(tree);
 
     expect(painted(tree)).toContain("Connected");
     expect(painted(tree)).toContain("The phone is connected to the desktop");
-    const action = tree.root.findAll(node =>
-      node.props.accessibilityRole === "button" && node.props.accessibilityLabel === "Reconnect")[0]!;
-    act(() => action.props.onPress());
-    expect(onReconnect).toHaveBeenCalledTimes(1);
+    // The sheet is opened just as often to switch machines as to repair one, so
+    // a healthy connection gets its state and no "Reconnect" under it.
+    expect(tree.root.findAll(node =>
+      node.props.accessibilityRole === "button" && node.props.accessibilityLabel === "Reconnect"))
+      .toHaveLength(0);
+    expect(onReconnect).not.toHaveBeenCalled();
   });
 
   it("reaches every machine at once when some of them are down", () => {

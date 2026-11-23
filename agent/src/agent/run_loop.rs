@@ -26,6 +26,14 @@ const MAX_STREAM_RETRIES: usize = 5;
 /// finish on the fifth identical attempt either, and every attempt is billed.
 const MAX_OUTPUT_LIMIT_CONTINUATIONS: usize = 2;
 
+/// How many times one run re-sends a step the provider cut with its repetition
+/// guard (`finish_reason=repetition`), and only when that cut left neither text
+/// nor a tool call. Nothing was produced, so the request can be repeated as it
+/// is; anything visible would be the user's to judge, not ours to silently
+/// regenerate. Bounded because a model that keeps looping must end as an
+/// `incomplete` run the user sees, not as an endless in-run loop.
+const MAX_REPETITION_RETRIES: usize = 2;
+
 #[derive(Debug, Default)]
 struct AccumulatedReasoningBlock {
     id: String,
@@ -297,6 +305,14 @@ impl Loop {
             0
         };
         let mut stream_retry_attempt = 0;
+        // A repetition cut is a third budget, not a connection retry: the link
+        // was fine, the provider stopped a looping model.
+        let max_repetition_retries = if self.config.max_retries > 0 {
+            MAX_REPETITION_RETRIES
+        } else {
+            0
+        };
+        let mut repetition_retry_attempt = 0;
         let mut reconnecting = false;
         let mut retry_text = String::new();
         // Set when this run schedules a continuation after the model's output
@@ -1319,6 +1335,7 @@ impl Loop {
                                 | FinishReason::Error
                                 | FinishReason::Cancelled
                                 | FinishReason::Paused
+                                | FinishReason::Repetition
                                 | FinishReason::Unknown(_)
                         ) {
                             stream_truncated = true;
@@ -1328,6 +1345,7 @@ impl Loop {
                                 FinishReason::Error => "finish_error",
                                 FinishReason::Cancelled => "provider_cancelled",
                                 FinishReason::Paused => "model_paused",
+                                FinishReason::Repetition => "provider_repetition",
                                 FinishReason::Unknown(_) => "finish_unknown",
                                 _ => "finish_incomplete",
                             });
@@ -1583,6 +1601,37 @@ impl Loop {
                 // model step resets this budget. Retries do not consume turns.
                 continue;
             }
+            // The provider's repetition guard cut the stream. When it cut during
+            // thinking — no text, no tool call — nothing was produced and nothing
+            // is left to keep, so the same request is simply sent again. That is
+            // what a user does by hand after such a cut ("继续"), and doing it
+            // here keeps a long unattended run from dying on one bad sample.
+            // A cut that produced text or a tool call is NOT retried: re-sending
+            // would silently regenerate visible, possibly side-effecting output.
+            if truncation_detected_by == Some("provider_repetition")
+                && stream_error.is_none()
+                && !interrupted_after_stream
+                && assistant_text.is_empty()
+                && agent_tool_calls.is_empty()
+                && repetition_retry_attempt < max_repetition_retries
+            {
+                repetition_retry_attempt += 1;
+                // Leave a trace: a silent self-heal would hide that the provider
+                // is cutting this conversation, and the attempt number is what
+                // tells one bad sample from a model stuck in a loop.
+                tracing::warn!(
+                    turn,
+                    attempt = repetition_retry_attempt,
+                    max_retries = max_repetition_retries,
+                    detected_by = "provider_repetition",
+                    output_len = assistant_text.len(),
+                    tool_calls_so_far = agent_tool_calls.len(),
+                    "model stream ended in repetition with no output; retrying the same turn"
+                );
+                // No partial assistant is built: there is no content to keep, and
+                // an empty one would be rejected by the next request anyway.
+                continue;
+            }
             if stream_error.is_some() || interrupted_after_stream {
                 let reason = if interrupted_after_stream {
                     "interrupt"
@@ -1821,6 +1870,7 @@ impl Loop {
             // A complete model step ends the output-budget episode: the next
             // cut of either kind starts from a fresh allowance.
             output_limit_continuations = 0;
+            repetition_retry_attempt = 0;
             fusion_report_prefix = None;
             output_limit_continuation_pending = false;
             output_limit_continuation_had_visible_output = false;
@@ -2543,6 +2593,20 @@ mod tests {
         ModelStreamEvent::Finish {
             reason: FinishReason::Stop,
             usage: None,
+        }
+    }
+
+    fn ev_repetition() -> ModelStreamEvent {
+        ModelStreamEvent::Finish {
+            reason: FinishReason::Repetition,
+            usage: None,
+        }
+    }
+
+    fn ev_reasoning(text: &str) -> ModelStreamEvent {
+        ModelStreamEvent::ReasoningDelta {
+            id: "reasoning".to_string(),
+            text: text.to_string(),
         }
     }
 
@@ -4141,6 +4205,7 @@ mod tests {
             (FinishReason::Cancelled, Some("[PROVIDER_CANCELLED]")),
             (FinishReason::Paused, Some("[MODEL_PAUSED]")),
             (FinishReason::Incomplete, Some("[RESPONSE_UNCONFIRMED]")),
+            (FinishReason::Repetition, Some("[RESPONSE_UNCONFIRMED]")),
             (
                 FinishReason::Unknown("new_reason".into()),
                 Some("[RESPONSE_UNCONFIRMED]"),
@@ -4249,6 +4314,127 @@ mod tests {
         assert_eq!(trunc.detected_by, "finish_incomplete");
         assert_eq!(trunc.tool_calls_so_far, 1);
         assert_eq!(trunc.output_len, "working".len());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn repetition_cut_without_output_is_retried_twice_then_ends_the_run() {
+        // A gateway repetition guard cut the model while it was still thinking:
+        // no text and no tool call, so the same request is worth sending again.
+        // Three cuts in a row spend the allowance and the run ends as before.
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![ev_reasoning("looping draft"), ev_repetition()]),
+            Script::Events(vec![ev_repetition()]),
+            Script::Events(vec![ev_repetition()]),
+        ]);
+        let loop_ = Loop::new(provider.clone(), "mock");
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(text.is_empty());
+        // One request plus the bounded two retries — not one more.
+        assert_eq!(provider.requests.lock().len(), 3);
+        assert!(loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+        let trunc = loop_.stream_truncation.lock().clone().expect("truncation");
+        // The reason keeps its own category instead of degrading to an
+        // unconfirmed/unknown one.
+        assert_eq!(trunc.detected_by, "provider_repetition");
+        assert_eq!(trunc.output_len, 0);
+        assert_eq!(trunc.tool_calls_so_far, 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn repetition_cut_recovers_on_the_retry_without_consuming_a_turn() {
+        // Two cuts, then a normal answer: the run finishes inside the same turn
+        // even though `max_turns` allows only one.
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![ev_repetition()]),
+            Script::Events(vec![ev_repetition()]),
+            Script::Events(vec![ev_text("done"), ev_stop()]),
+        ]);
+        let loop_ = Loop::new(provider.clone(), "mock").with_config(crate::types::AgentConfig {
+            max_turns: 1,
+            ..Default::default()
+        });
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "done");
+        assert_eq!(provider.requests.lock().len(), 3);
+        assert!(!loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+        assert!(loop_.stream_truncation.lock().is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn repetition_cut_after_visible_output_is_never_retried() {
+        // Visible text is the user's to judge: re-sending the request would
+        // silently regenerate it. The run ends at the cut, as before.
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            ev_text("synthetic partial"),
+            ev_repetition(),
+        ])]);
+        let loop_ = Loop::new(provider.clone(), "mock");
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "synthetic partial");
+        assert_eq!(provider.requests.lock().len(), 1);
+        assert!(loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+        let trunc = loop_.stream_truncation.lock().clone().expect("truncation");
+        assert_eq!(trunc.detected_by, "provider_repetition");
+        assert_eq!(trunc.output_len, "synthetic partial".len());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn repetition_cut_with_a_tool_call_is_never_retried() {
+        // A tool call may already have side effects once its arguments are
+        // complete, so its presence also rules the retry out.
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            ev_toolcall_start(0, "call_1", "echo", "{}"),
+            ev_toolcall_end(),
+            ev_repetition(),
+        ])]);
+        let loop_ = Loop::new(provider.clone(), "mock");
+        let _ = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(provider.requests.lock().len(), 1);
+        let trunc = loop_.stream_truncation.lock().clone().expect("truncation");
+        assert_eq!(trunc.detected_by, "provider_repetition");
+        assert_eq!(trunc.tool_calls_so_far, 1);
     }
 
     #[tokio::test(flavor = "current_thread")]

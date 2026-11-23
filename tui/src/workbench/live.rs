@@ -384,7 +384,22 @@ pub enum Loaded {
         rev: u64,
         view: super::state::GitView,
     },
+    GitPage(GitPage),
     State(Result<RpcSessionState, String>),
+}
+
+/// The next page of the `/git` log, and the view it was asked for.
+pub struct GitPage {
+    /// The section and filter the page belongs to. A page read for a tab the
+    /// reader has left is dropped rather than appended under rows it does not
+    /// continue.
+    pub section: super::state::GitSection,
+    pub filter: Option<String>,
+    /// The cursor the panel held when the page was asked for. The page resumes
+    /// there, and the check against the view's cursor now is what discards a page
+    /// the log has moved out from under: a refresh, another tab, another filter.
+    pub cursor: String,
+    pub page: Result<(Vec<super::state::GitRow>, bool, String), String>,
 }
 
 /// The agent's answer to the two reads a switch makes, handed from the task
@@ -1994,6 +2009,7 @@ impl Live {
             | WbAction::GitSection(_)
             | WbAction::GitFilter(_)
             | WbAction::GitRefresh
+            | WbAction::GitMore
             | WbAction::SelectGit(_)
             | WbAction::GitWorktree(_)
             | WbAction::CopyText(_)
@@ -3037,6 +3053,75 @@ impl Live {
             return false;
         }
         self.git = Some(view);
+        true
+    }
+
+    /// Read the next page of the `/git` log off the loop.
+    ///
+    /// The same read as opening the panel, `skip` rows in: the panel costs a
+    /// `git log` per page, and the loop must not sit through it while the reader
+    /// is holding a key down. Returns whether a read was started; a surface with
+    /// no driver reads it itself (`run`).
+    pub fn begin_git_page(
+        &mut self,
+        cwd: std::path::PathBuf,
+        section: super::state::GitSection,
+        filter: Option<String>,
+        cursor: String,
+    ) -> bool {
+        let Some(tx) = self.load_tx.clone() else {
+            return false;
+        };
+        tokio::task::spawn_blocking(move || {
+            let page = super::git_panel::page(&cwd, filter.as_deref(), &cursor);
+            let _ = tx.send(Loaded::GitPage(GitPage {
+                section,
+                filter,
+                cursor,
+                page,
+            }));
+        });
+        true
+    }
+
+    /// Append one page to the `/git` view it belongs to.
+    ///
+    /// The page is dropped when the view it was read against is gone: another
+    /// tab, another filter, a refresh, or a log that has moved since. Appending
+    /// there would stitch two different logs into one picture.
+    /// Returns whether a frame is owed.
+    pub fn install_git_page(&mut self, page: GitPage) -> bool {
+        let belongs = self.git.as_ref().is_some_and(|git| {
+            git.section == page.section && git.filter == page.filter && git.cursor == page.cursor
+        });
+        if !belongs {
+            return false;
+        }
+        match page.page {
+            Ok((rows, more, cursor)) => {
+                let Some(git) = self.git.as_mut() else {
+                    return false;
+                };
+                // A commit that landed between the two reads shifts the page's
+                // start and its row arrives twice; the key says it is the same
+                // row, the same way the host's own paging dedupes.
+                let held: std::collections::HashSet<String> =
+                    git.rows.iter().filter_map(|row| row.key.clone()).collect();
+                let fresh = rows
+                    .into_iter()
+                    .filter(|row| row.key.as_ref().is_none_or(|key| !held.contains(key)));
+                git.rows.extend(fresh);
+                git.more = more;
+                // Where *this* page stopped, which is where the next one starts.
+                git.cursor = cursor;
+            }
+            Err(error) => {
+                // The rows already read stay: one failed page is not a failed
+                // log, and the next `↓` asks again. `more` is left alone so it
+                // can.
+                self.notice = Some(error);
+            }
+        }
         true
     }
 
@@ -5731,6 +5816,147 @@ mod tests {
 
     use crate::components::chat_area::{ChatMessage, ChatRole, RowAction};
     use crate::rpc::types::SessionSummary;
+
+    /// The next page of `/git` joins only the view it was laid out against: a
+    /// page for another tab, another filter, or a log that moved since the rows
+    /// were counted is dropped rather than stitched onto rows it does not
+    /// continue.
+    #[tokio::test]
+    async fn a_git_page_joins_only_the_view_it_was_laid_out_against() {
+        use crate::workbench::state::{GitRow, GitSection, GitView};
+
+        let (mock, _seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
+            ("get_state", r#"{"sessionId":"s1","model":"future/old"}"#),
+            ("get_session_entries", r#"{"entries":[]}"#),
+        ]);
+        let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
+        let (mut live, _events) = Live::attach(&addr, Some("s1"), false, None)
+            .await
+            .expect("attach to the test agent");
+
+        fn row(key: &str) -> GitRow {
+            GitRow {
+                key: Some(key.into()),
+                columns: Vec::new(),
+                prefix: "● ".into(),
+                pieces: vec![key.into()],
+                kinds: Vec::new(),
+            }
+        }
+        fn git_view(rows: Vec<GitRow>, more: bool) -> GitView {
+            GitView {
+                repo: "future-os".into(),
+                section: GitSection::Commits,
+                rows,
+                selected: 0,
+                detail: Vec::new(),
+                filter: None,
+                more,
+                cursor: String::new(),
+                error: None,
+            }
+        }
+        let keys = |live: &Live| -> Vec<String> {
+            live.git()
+                .map(|git| git.rows.iter().filter_map(|row| row.key.clone()).collect())
+                .unwrap_or_default()
+        };
+        let next_page = |section, filter: Option<&str>, cursor: &str, page| GitPage {
+            section,
+            filter: filter.map(str::to_owned),
+            cursor: cursor.to_owned(),
+            page,
+        };
+
+        live.set_git(Some(git_view(vec![row("a"), row("b")], true)));
+        // The page continues the two rows on screen, and it is the one that ends
+        // the log — so it answers with no cursor, which is what the next `↓`
+        // reads as "nothing after this".
+        assert!(live.install_git_page(next_page(
+            GitSection::Commits,
+            None,
+            "",
+            Ok((vec![row("c")], false, String::new()))
+        )));
+        assert_eq!(keys(&live), vec!["a", "b", "c"]);
+        assert!(
+            !live.git().expect("the panel").more,
+            "the page ended the log"
+        );
+        assert_eq!(live.git().expect("the panel").cursor, "");
+
+        // A commit landed between the reads and shifted the page by one: the row
+        // read twice arrives twice, and the key is what keeps it one row. The
+        // page says where it stopped, and that is where the next one starts.
+        assert!(live.install_git_page(next_page(
+            GitSection::Commits,
+            None,
+            "",
+            Ok((vec![row("c"), row("d")], true, "1|abc,|".into()))
+        )));
+        assert_eq!(keys(&live), vec!["a", "b", "c", "d"]);
+        assert!(live.git().expect("the panel").more, "the log goes on");
+        assert_eq!(
+            live.git().expect("the panel").cursor,
+            "1|abc,|",
+            "the view holds where its last page stopped"
+        );
+
+        // Another tab, another filter, and a page asked from a cursor the view
+        // no longer holds are all pages that do not continue what is on screen —
+        // the last one is what a refresh, or a page still in flight when the
+        // reader moved on, looks like.
+        let dropped = [
+            next_page(
+                GitSection::Refs,
+                None,
+                "1|abc,|",
+                Ok((vec![row("e")], false, String::new())),
+            ),
+            next_page(
+                GitSection::Commits,
+                Some("feature"),
+                "1|abc,|",
+                Ok((vec![row("e")], false, String::new())),
+            ),
+            next_page(
+                GitSection::Commits,
+                None,
+                "",
+                Ok((vec![row("e")], false, String::new())),
+            ),
+        ];
+        for page in dropped {
+            assert!(
+                !live.install_git_page(page),
+                "a page for another view joined this one"
+            );
+        }
+        assert_eq!(keys(&live), vec!["a", "b", "c", "d"]);
+
+        // A failed read keeps the rows, where the next page starts and what they
+        // say about the end of the log, and tells the reader why the page did not
+        // arrive.
+        assert!(live.install_git_page(next_page(
+            GitSection::Commits,
+            None,
+            "1|abc,|",
+            Err("git log failed".into())
+        )));
+        assert_eq!(keys(&live), vec!["a", "b", "c", "d"]);
+        assert!(
+            live.git().expect("the panel").more,
+            "a failed page is not the end of the log"
+        );
+        assert_eq!(
+            live.git().expect("the panel").cursor,
+            "1|abc,|",
+            "the retry asks from the same place"
+        );
+        assert_eq!(live.notice.as_deref(), Some("git log failed"));
+
+        live.client.disconnect();
+    }
 
     /// `enter` is a frame, not a round trip: the reader's line is in the
     /// transcript and the activity row is clocking the wait *before* the first

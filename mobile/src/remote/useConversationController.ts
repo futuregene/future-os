@@ -374,15 +374,20 @@ export function useConversationController({
    * where the checkout is. A workspace that is not a repository answers
    * `isRepo: false` with an empty list rather than an error, which is what lets
    * the sheet decide to offer Nothing.
+   *
+   * `cursor` is where the sheet's last page stopped, empty for the first one: the
+   * history is read a page at a time, so a repository with 10⁵ commits is never
+   * one reply — and the page is read from that cursor, so a deep one costs what
+   * the first did.
    */
-  const listGitCommits = useCallback(async () => {
+  const listGitCommits = useCallback(async (cursor = "") => {
     const client = clientRef.current;
     const sessionId = selectedRef.current;
     const epoch = conversationEpochRef.current;
     if (!client || !sessionId) throw new Error("git_no_session");
     const response = await requestReadPage<GitGraphListing>(
       client,
-      { type: "list_git_commits", sessionId },
+      { type: "list_git_commits", sessionId, cursor },
       sessionId,
       () => clientRef.current === client && selectedRef.current === sessionId
         && conversationEpochRef.current === epoch,

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
@@ -35,6 +35,10 @@ const CROSSING_GAP = 3;
 const THREAD_WIDTH = 2;
 /** The commit's dot. A merge's is a ring, so `o` and `M` stay telling apart. */
 const DOT_RADIUS = 3.75;
+// Half-diagonal of the diamond drawn for a commit whose line is past the lane
+// window: a little larger than the disc so the two read as different marks at
+// the same 14pt pitch, not as a disc that came out small.
+const FOLD_RADIUS = DOT_RADIUS + 1;
 const DOT_STROKE = 1.75;
 /** Room left and right of the picture, so a dot on lane 0 is not clipped. */
 const GUTTER_PAD = LANE_PITCH / 2;
@@ -67,6 +71,12 @@ const META_LINE = 14;
  * An in-screen surface rather than a native Modal, for the same reason
  * `SessionFilesPanel` is: file previews and download dialogs can present above it
  * on iOS without competing UIKit modal presentations.
+ *
+ * The log is read a page at a time — the host caps one reply at 200 commits — so
+ * reaching the end of the list appends the next page instead of stopping there.
+ * The host lays each page out from the top of the history, which is what makes
+ * the appended rows continue the lanes already on screen rather than starting
+ * every line again at the left edge.
  */
 export function GitGraphPanel({
   online,
@@ -78,7 +88,8 @@ export function GitGraphPanel({
 }: {
   online: boolean;
   supported: boolean;
-  listCommits: () => Promise<GitGraphListing>;
+  /** One page of the log, read from `cursor`: the sheet appends what it lacks. */
+  listCommits: (cursor?: string) => Promise<GitGraphListing>;
   getCommit: (gitRef: string) => Promise<GitCommitDetail>;
   onClose: () => void;
   /**
@@ -101,6 +112,36 @@ export function GitGraphPanel({
     failed: boolean;
   } | null>(null);
   const [selected, setSelected] = useState<GitGraphRow | null>(null);
+  // The pages past the first. Keyed by the same identity object as the first
+  // page, so a refresh (or another conversation) drops them instead of stitching
+  // two different reads into one list — the derived value below simply stops
+  // matching.
+  const [older, setOlder] = useState<{
+    request: object;
+    rows: GitGraphRow[];
+    /** Whether the page read last said another one follows. */
+    truncated: boolean;
+    /** Where that page stopped; "" once the last one answered. */
+    cursor: string;
+    /**
+     * A host that predates paging answered with the first page again: nothing
+     * new arrived but it still claims more. The list stops offering a button
+     * that cannot advance, and says the rest is not shown.
+     */
+    stale: boolean;
+    loading: boolean;
+    failed: boolean;
+  } | null>(null);
+  // One page in flight at a time: `onEndReached` fires again on every re-render
+  // near the end of a list, and without this one scroll would append the same
+  // page three times.
+  const askingRef = useRef(false);
+  // Whether the reader has scrolled this list at all. React Native's list calls
+  // `onEndReached` on mount, before it has measured the content, so without this
+  // the sheet reads a second page every time it opens — a page nobody asked for,
+  // and on a history shorter than the screen the one thing that would have hidden
+  // the "load older" button. Reaching the end means scrolling to it.
+  const scrolledRef = useRef(false);
 
   // One identity object per read, so an answer that arrives after the sheet was
   // refreshed (or after the reader opened another commit) is discarded rather
@@ -117,6 +158,8 @@ export function GitGraphPanel({
 
   useEffect(() => {
     let current = true;
+    // A new read starts at the top of a list that has not been scrolled yet.
+    scrolledRef.current = false;
     if (request.online && request.supported) {
       void request.listCommits().then(
         next => { if (current) setResult({ request, listing: next, failed: false }); },
@@ -156,8 +199,77 @@ export function GitGraphPanel({
       : failed ? t("git.loadFailed")
         : t("git.empty");
 
-  const commits = useMemo(() => listing?.commits ?? [], [listing]);
-  const lanes = useMemo(() => Math.max(1, laneCount(commits)), [commits]);
+  // The pages this reader asked for, when they belong to the read on screen.
+  const appended = older?.request === request ? older : null;
+  const commits = useMemo(() => {
+    const first = listing?.commits ?? [];
+    return appended && appended.rows.length > 0 ? [...first, ...appended.rows] : first;
+  }, [listing, appended]);
+  // Whether the log goes on: the page read last is the authority once there is
+  // one, and the first page's own flag says so before that.
+  const more = appended ? appended.truncated : listing?.truncated === true;
+
+  /**
+   * Append the next page.
+   *
+   * The cursor is where the page on screen stopped: the host reads the next page
+   * from it, so the appended rows continue the lanes above them even when those
+   * rows arrived minutes ago — and the read costs one page however far the reader
+   * has scrolled.
+   */
+  const loadOlder = async () => {
+    const asked = request;
+    if (!asked.online || !asked.supported || !settled || !listing) return;
+    if (askingRef.current || !more) return;
+    askingRef.current = true;
+    const cursor = appended?.cursor ?? listing.cursor ?? "";
+    setOlder(prev => ({
+      request: asked,
+      rows: prev?.request === asked ? prev.rows : [],
+      truncated: prev?.request === asked ? prev.truncated : more,
+      cursor: prev?.request === asked ? prev.cursor : cursor,
+      stale: prev?.request === asked ? prev.stale : false,
+      loading: true,
+      failed: false,
+    }));
+    try {
+      const next = await asked.listCommits(cursor);
+      setOlder(prev => {
+        const rows = prev?.request === asked ? prev.rows : [];
+        // A commit that landed between the two reads shifts the page's start and
+        // the row arrives twice; the sha is what says it is the same commit.
+        const seen = new Set([...(listing.commits), ...rows].map(row => row.short));
+        const fresh = next.commits.filter(row => !seen.has(row.short));
+        // A host that cannot page answers every request with the first page:
+        // nothing new arrives, yet it still reports more. Stopping is what keeps
+        // the button from doing nothing forever. Read off the rows rather than
+        // the cursor, so it holds for a host that sends no cursor at all.
+        const stale = fresh.length === 0 && next.truncated;
+        return {
+          request: asked,
+          rows: [...rows, ...fresh],
+          truncated: stale ? false : next.truncated,
+          cursor: next.cursor ?? "",
+          stale,
+          loading: false,
+          failed: false,
+        };
+      });
+    } catch {
+      setOlder(prev => ({
+        request: asked,
+        rows: prev?.request === asked ? prev.rows : [],
+        truncated: prev?.request === asked ? prev.truncated : more,
+        cursor: prev?.request === asked ? prev.cursor : cursor,
+        stale: prev?.request === asked ? prev.stale : false,
+        loading: false,
+        failed: true,
+      }));
+    } finally {
+      askingRef.current = false;
+    }
+  };
+
   // Decoded once per page rather than once per row: it is one linear pass, and
   // a row cannot be decoded alone anyway — whether a thread exists above a dot
   // depends on the row before it.
@@ -174,7 +286,10 @@ export function GitGraphPanel({
     () => ({ pitch: LANE_PITCH, radius: TURN_RADIUS, gap: CROSSING_GAP }),
     [],
   );
-  const pictureWidth = lanes * LANE_PITCH + GUTTER_PAD;
+  // One gutter width per row, not one for the page: a row with a single lane
+  // paints two lanes' width, so its subject starts right after the line instead
+  // of after the busiest row of the page.
+  const widthOf = (row: { graph: string }) => Math.max(1, laneCount([row])) * LANE_PITCH + GUTTER_PAD;
 
   return (
     <View style={styles.panel}>
@@ -217,8 +332,46 @@ export function GitGraphPanel({
             </View>
           }
           ListFooterComponent={
-            listing?.truncated ? <Text style={styles.footer}>{t("git.truncated")}</Text> : undefined
+            commits.length === 0
+              ? undefined
+              : more
+                ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={appended?.failed ? t("git.loadMoreFailed") : t("git.loadMore")}
+                      onPress={() => { void loadOlder(); }}
+                      style={styles.loadMore}
+                    >
+                      {appended?.loading
+                        ? <ActivityIndicator color={colors.inkMuted} size="small" />
+                        : null}
+                      <Text style={styles.loadMoreLabel}>
+                        {appended?.failed
+                          ? t("git.loadMoreFailed")
+                          : appended?.loading ? t("git.loadingMore") : t("git.loadMore")}
+                      </Text>
+                    </Pressable>
+                  )
+                // Only once the reader has paged: a history that fit in one page
+                // has nothing to explain, and a line saying "this is the oldest
+                // commit" under a five-commit log answers a question nobody had.
+                : appended?.stale
+                  ? <Text style={styles.footer}>{t("git.truncated")}</Text>
+                  : appended
+                    ? <Text style={styles.footer}>{t("git.historyEnd")}</Text>
+                    : undefined
           }
+          // Reaching the end appends the next page: on a phone, the log is
+          // scrolled and rarely paged by hand. Only a scroll counts as reaching
+          // it — see `scrolledRef`. The footer above stays a button as well, so
+          // the same page can be asked for by a press that a screen reader can
+          // find.
+          onScroll={() => { scrolledRef.current = true; }}
+          scrollEventThrottle={16}
+          onEndReached={commits.length === 0
+            ? undefined
+            : () => { if (scrolledRef.current) void loadOlder(); }}
+          onEndReachedThreshold={0.6}
           renderItem={({ item, index }) => (
             <CommitRow
               commit={item}
@@ -226,7 +379,7 @@ export function GitGraphPanel({
               row={geometry[index] ?? null}
               height={rowHeight}
               center={dotCenter}
-              width={pictureWidth}
+              width={widthOf(item)}
               metrics={metrics}
               onPress={() => setSelected(item)}
             />
@@ -297,6 +450,10 @@ function CommitRow({
               stroke={thread.color}
               strokeWidth={THREAD_WIDTH}
               strokeLinecap="round"
+              // The bundle's thread on a row with no commit in that column:
+              // dashed, so the work continuing past the window is not read as a
+              // lane of this row's own.
+              strokeDasharray={thread.dashed ? `${THREAD_WIDTH} ${THREAD_WIDTH * 2}` : undefined}
             />
           ))}
           {drawing?.runs.map((run, index) => (
@@ -312,16 +469,26 @@ function CommitRow({
           {drawing?.dots.map((dot, index) => (
             // A merge is a ring, a plain commit a disc — the same distinction the
             // TUI's `M` and `o` make, drawn the same way so a reader who knows
-            // one reads the other.
-            <Circle
-              key={`d${index}`}
-              cx={dot.x}
-              cy={dot.y}
-              r={dot.merged ? DOT_RADIUS + DOT_STROKE / 2 : DOT_RADIUS}
-              fill={dot.merged ? "none" : dot.color}
-              stroke={dot.color}
-              strokeWidth={dot.merged ? DOT_STROKE : 0}
-            />
+            // one reads the other. A commit whose line is folded into the bundle
+            // is a diamond, the TUI's `*`: a disc there would claim it sat on the
+            // line that column draws, and that column is shared by several.
+            dot.folded ? (
+              <Path
+                key={`d${index}`}
+                d={`M ${dot.x} ${dot.y - FOLD_RADIUS} L ${dot.x + FOLD_RADIUS} ${dot.y} L ${dot.x} ${dot.y + FOLD_RADIUS} L ${dot.x - FOLD_RADIUS} ${dot.y} Z`}
+                fill={dot.color}
+              />
+            ) : (
+              <Circle
+                key={`d${index}`}
+                cx={dot.x}
+                cy={dot.y}
+                r={dot.merged ? DOT_RADIUS + DOT_STROKE / 2 : DOT_RADIUS}
+                fill={dot.merged ? "none" : dot.color}
+                stroke={dot.color}
+                strokeWidth={dot.merged ? DOT_STROKE : 0}
+              />
+            )
           ))}
         </Svg>
       </View>
@@ -511,6 +678,18 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   emptyContent: { alignItems: "center", gap: spacing.md },
   status: { color: theme.colors.inkMuted, textAlign: "center", fontSize: theme.font(14) },
   footer: { color: theme.colors.inkMuted, fontSize: theme.font(12), paddingVertical: spacing.md, textAlign: "center" },
+  // The paging row: a full touch target rather than a line of text, because it
+  // is the only way to the older half of a long history.
+  loadMore: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.sm,
+    minHeight: layout.touchTarget,
+    paddingHorizontal: spacing.md,
+    marginBottom: spacing.sm,
+  },
+  loadMoreLabel: { color: theme.colors.accent, fontSize: theme.font(13) },
   retry: { minHeight: layout.touchTarget, justifyContent: "center", paddingHorizontal: spacing.md, borderRadius: radius.md },
   retryLabel: { color: theme.colors.accent, fontSize: theme.font(14) },
   detail: { padding: layout.gutter, paddingBottom: spacing.lg },
