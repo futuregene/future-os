@@ -133,11 +133,19 @@ mod tests {
         assert_eq!(inside_abs["relativePath"], "deep/a.txt");
         assert_eq!(inside_abs["insideWorkspace"], true);
 
-        // Absolute path outside the workspace (e.g. ~/Desktop) → full path, no relative.
-        let outside = resolve("/Users/tao/Desktop/note.txt");
+        // Absolute path outside the workspace (e.g. ~/Desktop) → full path, no
+        // relative. Spelled for the running platform on purpose: a drive-less
+        // `/Users/...` is absolute only off Windows, where it is read as a
+        // workspace path instead (see `file_reference_drive_less_root_path_…`).
+        let outside_target = if cfg!(windows) {
+            "C:/Users/tao/Desktop/note.txt"
+        } else {
+            "/Users/tao/Desktop/note.txt"
+        };
+        let outside = resolve(outside_target);
         assert_eq!(outside.status, "resolved");
         let outside = outside.data.expect("data");
-        assert_eq!(outside["path"], "/Users/tao/Desktop/note.txt");
+        assert_eq!(outside["path"], outside_target);
         assert_eq!(outside["insideWorkspace"], false);
         assert!(outside["relativePath"].is_null());
 

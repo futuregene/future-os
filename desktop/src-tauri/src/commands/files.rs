@@ -257,14 +257,34 @@ fn reveal_in_file_manager_with(
 /// argument and cannot be reinterpreted.
 #[cfg(target_os = "windows")]
 fn reveal_with_system(path: &Path) -> Result<(), crate::AppError> {
+    use std::os::windows::process::CommandExt;
+
     // `explorer` returns exit code 1 even on success, so its status is not
-    // evidence either way; only a failure to spawn is. `/select,` needs the
-    // path as its own argument to keep quoting intact.
+    // evidence either way; only a failure to spawn is.
     std::process::Command::new("explorer")
-        .arg(format!("/select,{}", path.display()))
+        .raw_arg(select_argument(path))
         .spawn()
         .map(|_| ())
         .map_err(|error| format!("Failed to reveal {}: {error}", path.display()).into())
+}
+
+/// The `/select,<path>` fragment Explorer parses, with the quotes around the
+/// *path* rather than around the whole switch.
+///
+/// `Command::arg` quotes its argument when it contains a space, producing
+/// `"/select,C:\a b.pdf"`, which Explorer does not parse: it opens Documents
+/// instead — a file whose name has a space seemed to reveal nowhere near itself.
+/// The documented form is `/select,"C:\a b.pdf"`, and only a raw command-line
+/// fragment can express it. The path is never passed through a shell, so the
+/// only escaping that matters is the closing quote: a trailing separator would
+/// escape it, hence the trim (a bare `C:\` root keeps its separator).
+#[cfg(target_os = "windows")]
+fn select_argument(path: &Path) -> String {
+    let mut target = path.display().to_string();
+    while target.len() > 3 && (target.ends_with('\\') || target.ends_with('/')) {
+        target.pop();
+    }
+    format!("/select,\"{target}\"")
 }
 
 /// macOS selects the item inside Finder; `-R` is a no-op "reveal" that never
@@ -464,6 +484,23 @@ mod tests {
         std::fs::write(agent_dir.join("auth.json"), "{}").unwrap();
         let cred = agent_dir.join("auth.json");
         assert!(open_path_with(cred.to_str().unwrap(), |_| unreachable!()).is_err());
+    }
+
+    /// Explorer parses `/select,"<path>"` and not `"/select,<path>"`: with the
+    /// switch inside the quotes it falls back to Documents, so "show in folder"
+    /// on a file whose name has a space opened the wrong folder entirely.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_reveal_quotes_the_path_rather_than_the_switch() {
+        assert_eq!(
+            select_argument(Path::new(r"C:\a b\c.pdf")),
+            "/select,\"C:\\a b\\c.pdf\""
+        );
+        // A trailing separator would escape the closing quote.
+        assert_eq!(
+            select_argument(Path::new(r"C:\a b\")),
+            "/select,\"C:\\a b\""
+        );
     }
 
     #[test]
