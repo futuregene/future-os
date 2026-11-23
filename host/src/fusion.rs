@@ -798,6 +798,7 @@ fn attempt_settings(
         max_output_tokens: 0, // Filled by per-attempt context allocation.
         context_window: 0,
         max_public_bytes: 0,
+        user_image_limit: 0,
         report_revision: 0,
         timeout_ms: if idle_timeout_ms.is_some() {
             0

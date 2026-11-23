@@ -115,6 +115,9 @@ pub struct StepSettings {
     pub context_window: usize,
     #[serde(default)]
     pub max_public_bytes: usize,
+    /// Maximum number of current user images that can fit this step.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub user_image_limit: usize,
     /// Same-session report repairs; investigation tools are disabled after zero.
     #[serde(default)]
     pub report_revision: u32,
@@ -123,6 +126,10 @@ pub struct StepSettings {
     pub idle_timeout_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_reason: Option<String>,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

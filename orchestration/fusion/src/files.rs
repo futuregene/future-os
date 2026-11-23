@@ -294,8 +294,8 @@ impl Snapshot {
         Ok(value)
     }
 
-    pub fn load_user_images(&self) -> Result<Vec<String>> {
-        if self.user_images.is_empty() {
+    pub fn load_user_images(&self, limit: usize) -> Result<Vec<String>> {
+        if limit == 0 || self.user_images.is_empty() {
             return Ok(Vec::new());
         }
         ensure!(
@@ -310,8 +310,8 @@ impl Snapshot {
         );
         let mut remaining = MAX_USER_IMAGE_TOTAL_BYTES;
         let mut previous_index = 0;
-        let mut images = Vec::with_capacity(self.user_images.len());
-        for image in &self.user_images {
+        let mut images = Vec::with_capacity(limit.min(self.user_images.len()));
+        for image in self.user_images.iter().take(limit) {
             ensure!(
                 image.index > previous_index
                     && image.bytes > 0
@@ -647,7 +647,8 @@ mod tests {
         assert_eq!(snapshot.unavailable_user_images, 2);
         assert_eq!(snapshot.user_images[0].index, 2);
         assert_eq!(snapshot.user_images[1].index, 4);
-        assert_eq!(snapshot.load_user_images().unwrap(), [IMAGE, IMAGE]);
+        assert_eq!(snapshot.load_user_images(2).unwrap(), [IMAGE, IMAGE]);
+        assert_eq!(snapshot.load_user_images(1).unwrap(), [IMAGE]);
         let manifest = std::fs::read_to_string(path.join("manifest.json")).unwrap();
         assert!(!manifest.contains(IMAGE));
         assert!(!manifest.contains("example.invalid"));
@@ -664,7 +665,8 @@ mod tests {
             IMAGE.replace('W', "X"),
         )
         .unwrap();
-        assert!(snapshot.load_user_images().is_err());
+        assert!(snapshot.load_user_images(2).is_err());
+        assert!(snapshot.load_user_images(0).unwrap().is_empty());
     }
 
     #[test]
@@ -757,7 +759,7 @@ mod tests {
         assert!(!manifest.contains("user_images"));
         assert!(Snapshot::load(Path::new(&snapshot.root))
             .unwrap()
-            .load_user_images()
+            .load_user_images(1)
             .unwrap()
             .is_empty());
         std::fs::write(workspace.join("a.rs"), "changed").unwrap();

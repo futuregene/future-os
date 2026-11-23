@@ -1286,7 +1286,12 @@ impl ServerSession {
                 Vec::new()
             };
             let user_images = if execution.include_user_images {
-                crate::fusion::UserImageContext::for_role(&snapshot, model_supports_images)?
+                let limit = if model_supports_images {
+                    execution.settings.user_image_limit
+                } else {
+                    0
+                };
+                crate::fusion::UserImageContext::for_role(&snapshot, limit)?
             } else {
                 crate::fusion::UserImageContext::default()
             };
