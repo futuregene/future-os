@@ -265,6 +265,11 @@ fn invoke(args: Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
             !parent.tool_call_id.is_empty(),
             "Missing Fusion tool call identity"
         );
+        let args = if answer_only {
+            recover_closed_tool_arguments(args, parent_request.as_deref())
+        } else {
+            args
+        };
         let (mut input, revisit) = parse_tool_input(args, answer_only)?;
         input.answer_only = answer_only;
         if answer_only {
@@ -605,6 +610,24 @@ pub(crate) fn query_discussion(
     Ok(serde_json::to_value(discussion)?)
 }
 
+fn recover_closed_tool_arguments(args: Value, parent_request: Option<&str>) -> Value {
+    let (Value::String(raw), Some(question)) = (&args, parent_request) else {
+        return args;
+    };
+    match serde_json::from_str::<Value>(raw) {
+        Ok(object @ Value::Object(_)) => object,
+        // A transport parse failure leaves the original argument string. A
+        // closed request has a preserved question and needs no model-supplied
+        // scope, evidence or revisit data to enter the discussion.
+        Err(_) if raw.trim_start().starts_with('{') => serde_json::json!({
+            "question": question,
+            "goal": "Answer the preserved user request.",
+            "background": "Use the supplied question and its original scope."
+        }),
+        _ => args,
+    }
+}
+
 fn parse_tool_input(
     mut args: Value,
     answer_only: bool,
@@ -736,6 +759,25 @@ fn request_context_bytes(request: &crate::llm::schema::ModelRequest) -> Result<u
 
 #[cfg(test)]
 mod input_contract_tests {
+    #[test]
+    fn malformed_closed_arguments_use_only_the_preserved_question() {
+        let malformed = serde_json::json!(r#"{"question":"\(x\)","read_scope":["other"]}"#);
+        assert_eq!(
+            super::recover_closed_tool_arguments(malformed.clone(), None),
+            malformed
+        );
+        let recovered = super::recover_closed_tool_arguments(malformed, Some("Original problem"));
+        let (input, revisit) = super::parse_tool_input(recovered, true).unwrap();
+        assert_eq!(input.question, "Original problem");
+        assert!(input.read_scope.is_empty());
+        assert!(input.evidence.is_empty());
+        assert!(revisit.is_none());
+
+        let wrapped = serde_json::json!(r#"{"parent_request":"Override"}"#);
+        let recovered = super::recover_closed_tool_arguments(wrapped, Some("Original problem"));
+        assert!(super::parse_tool_input(recovered, true).is_err());
+    }
+
     #[test]
     fn closed_fusion_ignores_redundant_constants_but_keeps_ownership_checks() {
         // bbeh:72, whose constants were already in the preserved parent input.

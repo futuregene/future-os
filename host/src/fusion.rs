@@ -486,23 +486,26 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         store.phase(&run.id, owner, "synthesizing")?,
         "Fusion stopped"
     );
-    // One current report per role. Pack the chosen mix together, including
-    // analysis-only roles; separate pools could overbook the final moderator.
-    let mut current = analyses
-        .iter()
-        .map(|analysis| {
-            let reviewed = reviews
-                .iter()
-                .find(|r| r["participant"] == analysis["participant"]);
-            let mut source = reviewed.unwrap_or(analysis).clone();
-            source["source_phase"] = json!(if reviewed.is_some() {
-                "reviewing"
-            } else {
-                "analysis_only"
-            });
-            source
-        })
-        .collect::<Vec<_>>();
+    // Pack original and revised reports against the same moderator budget.
+    // A review updates a candidate without replacing its original reasoning.
+    let analysis_count = analyses.len();
+    let mut current = Vec::with_capacity(analysis_count + reviews.len());
+    for mut analysis in analyses {
+        let reviewed = reviews
+            .iter()
+            .find(|r| r["participant"] == analysis["participant"]);
+        analysis["source_phase"] = json!(if reviewed.is_some() {
+            "initial_analysis"
+        } else {
+            "analysis_only"
+        });
+        current.push(analysis);
+        if let Some(review) = reviewed {
+            let mut review = review.clone();
+            review["source_phase"] = json!("reviewing");
+            current.push(review);
+        }
+    }
     fit_material(&ctx, "synthesizing", &mut current)?;
     let report = ctx.report();
     let coverage = json!({"strategy":report.strategy,"completed_phases":report.completed_phases,"skipped_phases":report.skipped_phases,"analysis_participants":report.analysis_participants,"review_participants":report.review_participants,"degradations":report.degradations});
@@ -547,12 +550,16 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         "You are the moderator. Give the main agent a self-contained answer to the original task. \
         {grounding} \
         Judge consequential claims by their support in the original task and participant material. \
+        Apply the user's decision rule as written, including explicit defaults and thresholds. \
+        Give a concrete derivation or exact source passage priority over a competing assertion. \
+        Before changing an answer supported by such a derivation, identify the specific step that fails or the contrary evidence and its effect under the original criterion. \
+        Before declaring insufficient information, check whether the claimed gap actually changes the decision under the user's rule. \
         Distinguish supplied observations and derivations from assumptions, inferred intentions, and preferences. \
         Count independent support separately from agreement that repeats a premise. \
         For a material change of position, identify the new evidence or corrected inference that justifies it under the original decision criterion; do not silently substitute another criterion. \
         Resolve a decisive objection against its source even if only one participant raised it; voting and confidence do not answer a counterexample. \
         Preserve the best supported answer unless that check actually overturns its support. \
-        Earlier excerpts are context for that check; represent the current positions faithfully and preserve an earlier valid objection if the reviews did not answer it. \
+        Compare revised positions with their preserved initial candidates. A revision or a majority does not by itself defeat an earlier derivation. Preserve an earlier valid objection if the reviews did not answer it. \
         If an assumption is necessary to choose, state it and how it affects the answer; if the decision can proceed under it, give the useful conditional conclusion. \
         Do not invent facts, proposals or user requirements. Treat verification labels and reports with validation errors as participant claims; unmatched quotations do not establish evidence. \
         Report any unresolved issue that changes the result. Respect the actual coverage. Missing reviews mean no cross-review. \
@@ -617,7 +624,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     }
     ctx.update(|report| report.complete("synthesizing"))?;
     let report = ctx.report();
-    let completeness = if analyses.len() == 1 {
+    let completeness = if analysis_count == 1 {
         "single"
     } else if !report.degradations.is_empty() || !report.skipped_phases.is_empty() {
         "partial"
@@ -1152,6 +1159,10 @@ async fn step_inner(
         let prepared = match phase.as_str() {
             "issue_mapping" => mapping::expand_citations(text, source_prompt)?,
             "reviewing" => review::expand_citations(text, source_prompt)?,
+            "synthesizing" => match ctx.synthesis_audit.lock().unwrap().as_ref() {
+                Some(packet) => deliberation::prepare_report(text, packet)?,
+                None => text.to_owned(),
+            },
             _ => text.to_owned(),
         };
         let text = prepared.as_str();
