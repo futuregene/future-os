@@ -52,7 +52,8 @@ the wire shape.
 
 Other parameters (each with an identically named environment variable): `--port` / `PORT`,
 `--skills` / `SKILLS_ROOT`, `FUTURE_BASE_URL` / `FUTURE_MODEL` (the account's `base_url` wins, and
-the model is `pplx-decider-v1.2`), `LOCAL_ONLY=1` (force local fallback), `NONE_GATE_THRESHOLD` (0.15 for Jev) / `NONE_GATE_THRESHOLD_DECIDER` (0.015),
+the model is `decider`, the backend-neutral route the gateway resolves to the evaluated model),
+`LOCAL_ONLY=1` (force local fallback), `NONE_GATE_THRESHOLD` (0.15 for Jev) / `NONE_GATE_THRESHOLD_DECIDER` (0.015),
 `CHUNK_SIZE=254`, `SHORTLIST=3`, `MIN_QUERY_CHARS=6`.
 
 `SHORTLIST` **does not participate in the decision** (that reads the top-1 name plus the none

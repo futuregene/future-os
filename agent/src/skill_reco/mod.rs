@@ -1280,7 +1280,7 @@ mod tests {
             Outcome::Recommended { .. }
         ));
         assert_eq!(
-            decide(&body, &cands, "pplx-decider-v1.2"),
+            decide(&body, &cands, "decider"),
             Outcome::Refused {
                 none_probability: 0.02
             }
@@ -1288,10 +1288,11 @@ mod tests {
         // Below both gates, decider still recommends.
         let low = response_with(&[("future-web", 0.99), (NONE_OPTION, 0.01)]);
         assert!(matches!(
-            decide(&low, &cands, "pplx-decider-v1.2"),
+            decide(&low, &cands, "decider"),
             Outcome::Recommended { .. }
         ));
         assert_eq!(none_gate("typesafe/jev-1.13-20260917"), NONE_GATE_THRESHOLD);
+        assert_eq!(none_gate("decider"), NONE_GATE_THRESHOLD_DECIDER);
         assert_eq!(
             none_gate("pplx-decider-flash-v1.2"),
             NONE_GATE_THRESHOLD_DECIDER
@@ -1328,7 +1329,7 @@ mod tests {
     #[test]
     fn build_request_matches_the_gateway_shape() {
         let cands = vec![cand("a"), cand("b")];
-        let req = build_request("hello", &cands, "pplx-decider-v1.2");
+        let req = build_request("hello", &cands, "decider");
         let question = &req["questions"]["chunk_0"];
         let opts = &question["criteria"];
         assert!(
@@ -1359,7 +1360,7 @@ mod tests {
             "dropping this collapsed refusal in the evaluation: {instructions}"
         );
         assert_eq!(req["state"]["request"], serde_json::json!("hello"));
-        assert_eq!(req["model"], serde_json::json!("pplx-decider-v1.2"));
+        assert_eq!(req["model"], serde_json::json!("decider"));
     }
 
     #[test]
@@ -1655,7 +1656,7 @@ mod tests {
             "the account credential must authenticate the call: {head}"
         );
         let body: serde_json::Value = serde_json::from_str(body).unwrap();
-        assert_eq!(body["model"], serde_json::json!("pplx-decider-v1.2"));
+        assert_eq!(body["model"], serde_json::json!("decider"));
         assert_eq!(
             body["state"]["request"],
             serde_json::json!("帮我把这张照片转成水彩风格")

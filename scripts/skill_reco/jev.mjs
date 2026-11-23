@@ -25,8 +25,12 @@ const RETRYABLE = new Set([429, 500, 502, 503, 529]);
 
 /** The gateway's origin when the account has no `base_url` of its own. */
 export const DEFAULT_FUTURE_BASE = "https://future-os.cn/api";
-/** The model id the gateway resolves for the skill recommender. */
-export const DEFAULT_SKILL_RECO_MODEL = "pplx-decider-v1.2";
+/**
+ * The model id the gateway resolves for the skill recommender. `decider` is the
+ * backend-neutral route: the gateway maps it to the currently evaluated model,
+ * so the demo keeps matching the agent across a backend upgrade.
+ */
+export const DEFAULT_SKILL_RECO_MODEL = "decider";
 /** The `auth.json` entry that authorises the call — the Future account itself. */
 export const FUTURE_PROVIDER = "future";
 /** The system-one endpoint under the gateway origin. */

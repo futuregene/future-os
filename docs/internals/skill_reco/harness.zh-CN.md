@@ -44,7 +44,8 @@ roster: 141 skills (builtin 15 + third-party 126) from .../skills
 只用来看 UI 和接口形状。
 
 其他参数（都有同名环境变量）：`--port` / `PORT`、`--skills` / `SKILLS_ROOT`、
-`FUTURE_BASE_URL` / `FUTURE_MODEL`（默认跟随账号的 `base_url`，模型为 `jev`）、
+`FUTURE_BASE_URL` / `FUTURE_MODEL`（默认跟随账号的 `base_url`，模型为 `decider`——后端无关的别名，
+由网关解析到当前评测模型）、
 `LOCAL_ONLY=1`（强制本地回退）、
 `NONE_GATE_THRESHOLD=0.15`、`CHUNK_SIZE=254`、`SHORTLIST=3`、
 `MIN_QUERY_CHARS=6`。
@@ -235,7 +236,7 @@ python3 order-sensitivity.py --runs 8       # 顺序敏感性 vs 运行间噪音
 |---|---|---|---|
 | 端点 | `{账号 base_url}/v1/systemone` | 同 | 一致 |
 | 凭据 | `auth.json` 的 `future` 项 | 同 | 一致 |
-| 模型 | `jev` | 同 | 一致 |
+| 模型 | `decider`（网关解析到评测模型） | 同 | 一致 |
 | 门控阈值 | 0.15 | 0.15 | 一致 |
 | 候选上限 / 描述长度 | 254 / 220 | 254 / 220 | 一致 |
 | none 选项文案 | 逐字相同 | 逐字相同 | 一致 |
