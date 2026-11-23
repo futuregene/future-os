@@ -287,7 +287,15 @@ fn plan(
         .saturating_add(summary_budget)
         .saturating_add(64);
     if required > maximum_target {
-        return Err(ContextError::BudgetExceeded(format!("protected text and recent history need at least {required} tokens, but compacted history can use {maximum_target}; split large input material or use a new session")));
+        // This refusal has no user-side remedy when the fixed context dominates the
+        // window: the summary slot alone (`window/8`) can exceed a `maximum_target`
+        // derived from a small `history_room`, so shrinking the conversation or
+        // starting a new session changes nothing. Name the three quantities that
+        // make up the shortfall instead of blaming the input.
+        return Err(ContextError::BudgetExceeded(format!(
+            "this compaction cannot fit the model window: {fixed} tokens of fixed context (system prompt, tool definitions and project context) leave {history_room} tokens of history, but required {required} exceeds maximum_target {maximum_target} and the summary alone needs {summary_budget} tokens",
+            fixed = prompt.usage.fixed_input_tokens,
+        )));
     }
     let target_tokens = super::budget::TARGET_HISTORY
         .min(maximum_target)
@@ -1361,6 +1369,96 @@ mod tests {
         }
         assert!(
             matches!(&original[2].content[0], ContentBlock::ToolResult { content, .. } if content.len() == 990_000)
+        );
+    }
+
+    /// The shape in which compaction can never succeed: on a 40 960-token window the
+    /// fixed context (system prompt, tool definitions and project context) takes ~26 K
+    /// tokens, leaving ~4.7 K of history, while the summary slot alone is
+    /// `window/8 = 5 120`. Shrinking the conversation cannot help — the conversation is
+    /// already tiny — and a new session inherits the same window and fixed context. The
+    /// error used to advise both, so this pins the message to the three quantities that
+    /// actually conflict: fixed context, remaining history and the summary request.
+    #[test]
+    fn impossible_budget_error_names_the_window_shortfall_not_the_user_input() {
+        let window = 40_960;
+        let (reserve_tokens, keep_recent_tokens) = crate::compaction::context_token_budgets(window);
+        let manager = ContextManager {
+            enabled: true,
+            reserve_tokens,
+            keep_recent_tokens,
+            context_window: window,
+            model: "small-window".into(),
+        };
+        let messages = vec![
+            projected("user", "old goal", "u1"),
+            projected("assistant", "old answer", "a1"),
+            projected("user", "latest question", "u2"),
+        ];
+        let mut prompt = PromptContext {
+            messages: messages.clone(),
+            message_tokens: Vec::new(),
+            usage: ContextUsage::default(),
+        };
+        // 104 000 ASCII characters ≈ 26 000 tokens of fixed input plus an 8 192-token
+        // output reserve: the numbers measured on the model whose compaction always fails.
+        super::super::set_request_budget(&mut prompt, &"s".repeat(104_000), &[], 8_192);
+        let fixed = prompt.usage.fixed_input_tokens;
+        let history_room = manager.input_limit(&prompt) - fixed;
+        let maximum_target =
+            super::super::budget::MAX_EXPANDED_HISTORY.min(history_room.saturating_mul(3) / 4);
+        // 5 120 is the summary slot the runtime plans with here: `window/8` (5 120)
+        // clamped to EVIDENCE_TOKENS (2 048) + `window/16` (2 560) + 512.
+        let summary_cap = 5_120;
+        let summary_budget = (window as u64 / 8).min(summary_cap);
+        // The whole history fits inside the manual recent tail, so every turn is
+        // summarized and `required` is the protected user directives plus the summary.
+        let required = projected_token_cost(&messages[0])
+            + projected_token_cost(&messages[2])
+            + summary_budget
+            + 64;
+        assert!(
+            required > maximum_target,
+            "the fixture must fail the budget check ({required} <= {maximum_target})"
+        );
+
+        let error = match plan(
+            &manager,
+            prompt,
+            CompactionTrigger::Manual,
+            CompactionPhase::Standalone,
+            None,
+            None,
+            summary_cap,
+        ) {
+            Ok(_) => panic!("a summary slot larger than the entire history target cannot plan"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        // ② Neither remedy can help this shape, so neither may be suggested.
+        assert!(!message.contains("split large input material"), "{message}");
+        assert!(!message.contains("use a new session"), "{message}");
+        // ① The two budgets that conflict...
+        assert!(
+            message.contains(&format!("required {required}")),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!("maximum_target {maximum_target}")),
+            "{message}"
+        );
+        // ③ ...and the three quantities: fixed context, history room, summary need.
+        assert!(
+            message.contains(&format!("{fixed} tokens of fixed context")),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!("{history_room} tokens of history")),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!("needs {summary_budget} tokens")),
+            "{message}"
         );
     }
 
