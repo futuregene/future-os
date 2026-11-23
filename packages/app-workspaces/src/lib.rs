@@ -717,12 +717,25 @@ pub fn name_from_path(path: &Path) -> String {
         .to_string()
 }
 
-/// A fresh row id (`ws-20260924-141714-3fa9c1`). The shape matches the
-/// desktop's other ids: a prefix, local time, and three random bytes.
+/// A fresh row id (`ws-20260924-141714-3fa9c1b7d204e86f`). The shape matches the
+/// desktop's other ids: a prefix, local time, and a random suffix.
+///
+/// The suffix is the id's *whole* collision budget for anything minted inside
+/// the same second — the timestamp above it is identical for the whole burst —
+/// so its width is a correctness property and not a style choice. Three random
+/// bytes made a burst of a few hundred rows collide about once in a thousand
+/// bursts: measured 2026-11-23 as `UNIQUE constraint failed: workspaces.id` in
+/// `the_handshake_confirmation_does_not_grow_with_the_catalogue`, whose 210
+/// conversations are created in ~80 ms, and reproduced directly at 2 collisions
+/// in 2 000 bursts of 210 ids. Those same ids are primary keys on every row kind
+/// this crate and the Host store create (`ws`, `thread`, `event`, `artifact`,
+/// `approval`, …), so the burst width is what a bulk import hits, not just a
+/// test. Eight bytes of a v4 UUID (60 bits after its version nibble) put a
+/// burst of n ids in one second at n²/2^61 of a repeat.
 pub fn new_id(prefix: &str) -> String {
     let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
     let random = uuid::Uuid::new_v4();
-    let suffix: String = random.as_bytes()[..3]
+    let suffix: String = random.as_bytes()[..8]
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();
@@ -1525,8 +1538,6 @@ mod tests {
         assert!(!is_chat_directory(""));
     }
 
-    /// Ids are opaque, but they keep the desktop's shape: prefix, local time,
-    /// three random bytes — and two ids never collide.
     /// A cwd that cannot be classified against a root must never be classified
     /// as a scratch directory: "the home is unknown" is not "it is a chat".
     #[test]
@@ -1620,6 +1631,8 @@ mod tests {
         assert!(std::error::Error::source(&invalid).is_none());
     }
 
+    /// Ids are opaque, but they keep the desktop's shape: prefix, local time,
+    /// and a random suffix.
     #[test]
     fn new_id_keeps_the_shared_shape_and_does_not_repeat() {
         let id = new_id("ws");
@@ -1628,8 +1641,28 @@ mod tests {
         assert_eq!(parts[0], "ws");
         assert_eq!(parts[1].len(), 8, "date: {id}");
         assert_eq!(parts[2].len(), 6, "time: {id}");
-        assert_eq!(parts[3].len(), 6, "random suffix: {id}");
+        assert_eq!(parts[3].len(), 16, "random suffix: {id}");
         assert!(parts[3].chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(new_id("ws"), new_id("ws"));
+    }
+
+    /// A burst of ids minted inside one second never repeats.
+    ///
+    /// Every id in such a burst carries the same timestamp, so the suffix alone
+    /// separates them — the failure this test exists for was
+    /// `UNIQUE constraint failed: workspaces.id` from 210 conversations created
+    /// in 80 ms, i.e. a burst whose ids shared one second. Twenty thousand ids
+    /// is far past any burst a caller mints in a second and still cheap; at the
+    /// old three-byte suffix it repeats about twelve times per run, and at the
+    /// current eight it needs roughly 2^61 draws to repeat at all.
+    #[test]
+    fn a_burst_minted_in_one_second_never_repeats() {
+        const BURST: usize = 20_000;
+        let ids: std::collections::HashSet<String> = (0..BURST).map(|_| new_id("ws")).collect();
+        assert_eq!(
+            ids.len(),
+            BURST,
+            "a one-second burst of {BURST} ids must not repeat an id"
+        );
     }
 }

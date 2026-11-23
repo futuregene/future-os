@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { BackHandler, FlatList } from "react-native";
-import Svg, { Circle, Line as SvgLine } from "react-native-svg";
+import Svg, { Circle, Line as SvgLine, Path } from "react-native-svg";
 import { GitGraphPanel } from "../components/GitGraphPanel";
 import type { GitCommitDetail, GitGraphListing } from "../../../remote/types";
 
@@ -88,7 +88,7 @@ const detail: GitCommitDetail = {
 };
 
 let tree: ReactTestRenderer;
-const listCommits = jest.fn<Promise<GitGraphListing>, [number?]>(async () => listing);
+const listCommits = jest.fn<Promise<GitGraphListing>, [string?]>(async () => listing);
 const getCommit = jest.fn<Promise<GitCommitDetail>, [string]>(async () => detail);
 const onClose = jest.fn();
 const removeBack = jest.fn();
@@ -106,6 +106,13 @@ const mount = async (overrides: Partial<Parameters<typeof GitGraphPanel>[0]> = {
   await act(async () => { await Promise.resolve(); });
 };
 const commits = () => tree.root.findByType(FlatList);
+/** A finger's way to the end: scroll the list, and only then let it report that
+ * the end has been reached. Both happen in that order for a reader, and a list
+ * nobody has scrolled is still at its top as far as the panel is concerned. */
+const reachEnd = async () => {
+  act(() => { commits().props.onScroll!(); });
+  await act(async () => { await commits().props.onEndReached!(); });
+};
 
 test("the first commit is not flush against the surface above it", async () => {
   await mount();
@@ -212,6 +219,79 @@ test("a merge is drawn as a ring and a plain commit as a disc", async () => {
   const rings = rowPress("9b30d18").findAllByType(Circle);
   expect(rings).toHaveLength(1);
   expect(rings[0]!.props.fill).toBe("none");
+});
+
+/**
+ * The lane window's own mark. `*` is what the host writes for a commit whose
+ * line is folded into the sixth column: that column is not the commit's own, so
+ * a disc there would claim it is the column's commit — which is exactly what the
+ * user saw as "they are joined into one line".
+ */
+test("a commit past the lane window is a diamond, not the column's disc", async () => {
+  const folded: GitGraphListing = {
+    ...listing,
+    commits: [
+      { short: "aaa111", when: "2026-11-11 18:42", who: "Lixin Zhou", decorations: "", subject: "trunk tip", graph: "o           " },
+      { short: "bbb222", when: "2026-11-11 16:05", who: "Mei Tan", decorations: "origin/seventh", subject: "folded branch tip", graph: "│ │ │ │ │ * " },
+    ],
+  };
+  await mount({ listCommits: jest.fn(async () => folded) });
+
+  const row = rowPress("bbb222");
+  expect(row.findAllByType(Circle)).toHaveLength(0);
+  const [diamond] = row.findAllByType(Path);
+  expect(diamond).toBeDefined();
+  // `M <x> <top> L <right> <axis> L <x> <bottom> L <left> <axis> Z`: a square
+  // turned 45°, four points on the dot's column and axis.
+  const [x, top, right, axis, xAgain, bottom, left, axisAgain] = (diamond!.props.d as string)
+    .match(/-?\d+(\.\d+)?/g)!
+    .map(Number) as [number, number, number, number, number, number, number, number];
+  expect(xAgain).toBe(x);
+  expect(axisAgain).toBe(axis);
+  // A square, not a lozenge: the two half-diagonals agree.
+  expect(right - x).toBe(x - left);
+  expect(axis - top).toBe(bottom - axis);
+  // It sits one lane past the last thread the row draws — the bundle's own
+  // column — read off the row rather than pinned, so a pitch change does not
+  // come back here.
+  const xs = [...new Set(row.findAllByType(SvgLine).map(node => node.props.x1 as number))]
+    .sort((a, b) => a - b);
+  expect(x).toBe(xs.at(-1)! + (xs[1]! - xs[0]!));
+  const disc = rowPress("aaa111").findAllByType(Circle)[0]!;
+  expect(right - x).toBeGreaterThan(disc.props.r as number);
+  // The bundling column keeps the lane colour the decoder assigned it: lane 5
+  // in this file's three-colour palette (5 % 3 = 2).
+  expect(diamond!.props.fill).toBe("#a16207");
+});
+
+/**
+ * The bundle's thread, on a row that has no commit in that column. `┊` is what
+ * the host writes there: the lines past the window still run, but nothing
+ * landed in that column, so the stroke is dashed rather than claiming a lane of
+ * this row's own.
+ */
+test("the bundle's thread is drawn dashed, and a lane's is solid", async () => {
+  const bundled: GitGraphListing = {
+    ...listing,
+    commits: [
+      { short: "aaa111", when: "2026-11-11 18:42", who: "Lixin Zhou", decorations: "", subject: "trunk tip", graph: "o " },
+      { short: "bbb222", when: "2026-11-11 16:05", who: "Mei Tan", decorations: "", subject: "inside the window", graph: "│ ┊ " },
+      { short: "ccc333", when: "2026-11-11 14:20", who: "Mei Tan", decorations: "", subject: "a plain lane", graph: "│ │ " },
+    ],
+  };
+  await mount({ listCommits: jest.fn(async () => bundled) });
+
+  const dashedOf = (sha: string) =>
+    rowPress(sha).findAllByType(SvgLine).map(node => node.props.strokeDasharray);
+  // The bundle's thread is the second line of its row, and only that one is
+  // dashed: its neighbour in the same row is an ordinary lane.
+  expect(dashedOf("bbb222")).toEqual([undefined, "2 4"]);
+  expect(dashedOf("ccc333")).toEqual([undefined, undefined]);
+  // Whatever the stroke, the column keeps its width: a dashed thread is still a
+  // lane, so the row is laid out exactly as its solid neighbour is.
+  const lane = (sha: string) =>
+    [...new Set(rowPress(sha).findAllByType(SvgLine).map(node => node.props.x1 as number))];
+  expect(lane("bbb222")).toEqual(lane("ccc333"));
 });
 
 /** Neither page has a header bar, and the list has no control of its own. */
@@ -479,19 +559,36 @@ const olderPage: GitGraphListing = {
   truncated: false,
 };
 
+test("opening the sheet reads one page, and the next one waits for a scroll", async () => {
+  listCommits.mockResolvedValueOnce({ ...listing, truncated: true, cursor: "at:5" });
+  listCommits.mockResolvedValue(olderPage);
+  await mount();
+  // React Native's list reports the end as soon as it mounts, before anything is
+  // measured. A sheet that read the next page then would cost a read every time
+  // it opened, and on a history shorter than the screen it would paint the
+  // second page under the reader without a gesture.
+  await act(async () => { await commits().props.onEndReached!(); });
+  expect(listCommits).toHaveBeenCalledTimes(1);
+  expect(commits().props.data).toHaveLength(5);
+  // The same report, after a scroll, is a reader reaching the end.
+  await reachEnd();
+  expect(listCommits).toHaveBeenCalledTimes(2);
+  expect(commits().props.data).toHaveLength(7);
+});
+
 test("reaching the end appends the next page instead of stopping there", async () => {
-  listCommits.mockResolvedValueOnce({ ...listing, truncated: true });
+  listCommits.mockResolvedValueOnce({ ...listing, truncated: true, cursor: "at:5" });
   listCommits.mockResolvedValueOnce(olderPage);
   await mount();
   expect(commits().props.data).toHaveLength(5);
   // The first page says the log goes on, so the footer offers the rest.
   expect(hasButton("git.loadMore")).toBe(true);
 
-  await act(async () => { await commits().props.onEndReached!(); });
+  await reachEnd();
 
-  // The offset is what the sheet already holds: the pages are one window into
-  // one log rather than a cursor of their own.
-  expect(listCommits).toHaveBeenLastCalledWith(5);
+  // The cursor is where the page on screen stopped: the host reads the next page
+  // from it, rather than counting rows the sheet happens to hold.
+  expect(listCommits).toHaveBeenLastCalledWith("at:5");
   expect(commits().props.data).toHaveLength(7);
   expect(commits().props.data.at(-1)!.short).toBe("0d4b7a9");
   // The appended rows are drawn with the lanes of the rows above them: a page
@@ -512,7 +609,11 @@ test("one scroll asks for one page, however often the list reports its end", asy
   await mount();
   // `onEndReached` fires again on every re-render near the end of a list; the
   // rows must not be appended twice for one scroll.
-  act(() => { void commits().props.onEndReached!(); void commits().props.onEndReached!(); });
+  act(() => {
+    commits().props.onScroll!();
+    void commits().props.onEndReached!();
+    void commits().props.onEndReached!();
+  });
   expect(listCommits).toHaveBeenCalledTimes(2);
 
   await act(async () => { settle(olderPage); });
@@ -520,10 +621,10 @@ test("one scroll asks for one page, however often the list reports its end", asy
 });
 
 test("a page that fails keeps what was read and offers the retry", async () => {
-  listCommits.mockResolvedValueOnce({ ...listing, truncated: true });
+  listCommits.mockResolvedValueOnce({ ...listing, truncated: true, cursor: "at:5" });
   listCommits.mockRejectedValueOnce(new Error("nope"));
   await mount();
-  await act(async () => { await commits().props.onEndReached!(); });
+  await reachEnd();
 
   // The rows already on screen stay: a failed page is not a failed history.
   expect(commits().props.data).toHaveLength(5);
@@ -531,7 +632,9 @@ test("a page that fails keeps what was read and offers the retry", async () => {
 
   listCommits.mockResolvedValueOnce(olderPage);
   await act(async () => { await button("git.loadMoreFailed").props.onPress(); });
-  expect(listCommits).toHaveBeenLastCalledWith(5);
+  // The retry asks from the same place: the page that failed left the cursor
+  // where it was, so nothing is skipped and nothing repeats.
+  expect(listCommits).toHaveBeenLastCalledWith("at:5");
   expect(commits().props.data).toHaveLength(7);
 });
 
@@ -541,7 +644,7 @@ test("a desktop too old to page stops at the page it has, and says so", async ()
   listCommits.mockResolvedValueOnce({ ...listing, truncated: true });
   listCommits.mockResolvedValueOnce({ ...listing, truncated: true });
   await mount();
-  await act(async () => { await commits().props.onEndReached!(); });
+  await reachEnd();
 
   expect(listCommits).toHaveBeenCalledTimes(2);
   // No row is drawn twice…

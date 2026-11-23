@@ -278,6 +278,19 @@ pub const ALLOW: &[Allow] = &[
         "new session",
         "the title a nameless session falls back to — a title is content",
     ),
+    // The `/git` log turns an unborn branch into an empty log: `git_log` compares
+    // the read's stderr against this phrase with `contains`, and answers with no
+    // rows instead of git's fatal message. The empty panel is drawn from the
+    // table (`Key::GitNoMessage`), so this phrase is never drawn — it is git's
+    // own output, matched rather than printed, and translating it would only stop
+    // the match. An in-source `// i18n:` marker cannot carry it: rustfmt moves a
+    // long trailing comment onto its own line, and a marker exempts exactly the
+    // literal's line.
+    Allow::not_chrome(
+        "workbench/git_panel.rs",
+        "does not have any commits",
+        "matches git's stderr for an unborn branch to yield an empty log — never drawn",
+    ),
     // The `/git` detail pane colours a patch line by the prefix it starts with.
     // These seven are tokens of git's *diff header* — the line git printed, not
     // text this tree writes: `git_detail_line` compares against them to decide

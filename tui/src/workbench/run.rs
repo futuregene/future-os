@@ -1335,13 +1335,13 @@ async fn quit(
         if let WbAction::GitMore = action {
             let cwd = live.data(frame).session.cwd;
             if let Some(git) = live.git().cloned() {
-                let skip = git.rows.len();
+                let cursor = git.cursor.clone();
                 let started = !cwd.trim().is_empty()
                     && live.begin_git_page(
                         std::path::PathBuf::from(&cwd),
                         git.section,
                         git.filter.clone(),
-                        skip,
+                        cursor.clone(),
                     );
                 if !started && !cwd.trim().is_empty() {
                     // No driver behind this surface (never in the running app):
@@ -1349,12 +1349,12 @@ async fn quit(
                     let page = super::git_panel::page(
                         std::path::Path::new(&cwd),
                         git.filter.as_deref(),
-                        skip,
+                        &cursor,
                     );
                     live.install_git_page(super::live::GitPage {
                         section: git.section,
                         filter: git.filter.clone(),
-                        skip,
+                        cursor,
                         page,
                     });
                 }
@@ -5778,6 +5778,7 @@ mod driver_tests {
                 detail: Vec::new(),
                 filter: None,
                 more: false,
+                cursor: String::new(),
                 error: None,
             }));
             driver.workbench.overlay = Some(Overlay::Git);
@@ -7196,6 +7197,7 @@ mod driver_tests {
                 detail: Vec::new(),
                 filter: None,
                 more: false,
+                cursor: String::new(),
                 error: None,
             }));
             driver.workbench.overlay = Some(Overlay::Git);
