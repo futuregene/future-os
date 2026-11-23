@@ -13,7 +13,7 @@
         { "tap": "展开上下文面板" },
         { "wait": 1200 },
         {
-          "eval": "(() => { const sel = document.querySelector('#context-panel-view'); if (!sel) throw new Error('the context panel has no view selector'); const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set; setter.call(sel, 'review'); sel.dispatchEvent(new Event('change', { bubbles: true })); return 'switched to ' + sel.value; })()"
+          "eval": "(() => { const seg = document.querySelector('#context-panel-view [data-context-tab=\"review\"]'); if (!seg) throw new Error('the context panel has no Review tab: ' + (document.querySelector('#context-panel-view')?.textContent || '(no view switch)')); seg.click(); return 'switched to review'; })()"
         },
         { "wait": 2000 },
         {
