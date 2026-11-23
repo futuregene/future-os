@@ -21,6 +21,7 @@ import {
   abortRun,
   archiveFinishedRuns,
 } from "../../integrations/storage/threadStore";
+import { cn } from "../../lib/cn";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { startWindowDrag } from "../../lib/windowDrag";
 import { EmptyState } from "../ui/EmptyState";
@@ -66,6 +67,31 @@ const pendingTabs = [
   { value: "files", labelKey: "contextPanel.files" },
   { value: "runs", labelKey: "contextPanel.runs" },
 ] satisfies Array<{ value: ContextTab; labelKey: string }>;
+
+/**
+ * Width one segment needs to hold its label, padding included. The longest
+ * label is a single word (`contextPanel.review`: two CJK glyphs, or six Latin
+ * ones), so this is generous at the default text size and still fits the
+ * largest one.
+ */
+const TAB_SEGMENT_WIDTH = 72;
+/** The header's own horizontal padding (`px-4`). */
+const HEADER_PADDING = 32;
+/** The gap between the tabs and the collapse button. */
+const HEADER_GAP = 8;
+/** The collapse button at the header's right edge. */
+const COLLAPSE_BUTTON_WIDTH = 32;
+
+/**
+ * Whether the panel is wide enough to lay the tabs out side by side instead of
+ * behind a dropdown. A segment squeezed below `TAB_SEGMENT_WIDTH` would truncate
+ * its label, so the picker keeps the dropdown until there is room for all of
+ * them plus the collapse button and the header's padding.
+ */
+function fitsInlineTabs(panelWidth: number, tabCount: number): boolean {
+  return panelWidth
+    >= HEADER_PADDING + HEADER_GAP + COLLAPSE_BUTTON_WIDTH + tabCount * TAB_SEGMENT_WIDTH;
+}
 
 interface ContextPanelProps {
   activeThread: StoredThread | null;
@@ -150,6 +176,10 @@ export function ContextPanel({
       ? gitTabs
       : fileTabs;
   const changePreview = reviewCapabilities?.changePreview ?? "ready";
+  // The tabs sit side by side when the panel is wide enough for all of them;
+  // otherwise the picker stays a dropdown, where a squeezed segment would only
+  // truncate its own label.
+  const inlineTabs = fitsInlineTabs(width, tabs.length);
   const hasContextData
     = runs.length > 0
       || artifacts.length > 0
@@ -392,30 +422,75 @@ export function ContextPanel({
         tabIndex={0}
       />
       <header
-        className="flex h-12 shrink-0 select-none items-center justify-between px-4"
+        className="flex h-12 shrink-0 select-none items-center justify-between gap-2 px-4"
         onMouseDown={startWindowDrag}
       >
-        <div className="inline-block max-w-full">
-          <label className="sr-only" htmlFor="context-panel-view">
-            {t("contextPanel.panelView")}
-          </label>
-          <Select
-            className="w-fit min-w-24 max-w-full py-0 font-normal hover:border-line"
-            id="context-panel-view"
-            onChange={event => onTabChange(event.target.value as ContextTab)}
-            size="sm"
-            value={activeTab}
-            wrapperClassName="max-w-full"
-          >
-            {tabs.map(tab => (
-              <option key={tab.value} value={tab.value}>
-                {t(tab.labelKey)}
-              </option>
-            ))}
-          </Select>
-        </div>
+        {inlineTabs
+          ? (
+              // One click per tab instead of open-the-dropdown-then-pick. The
+              // same segmented control the remote files panel puts in this slot
+              // (`PeerPanelTab`, RemoteFilesPanel), so the panel's header does
+              // not change shape when the conversation is on another machine.
+              // `#context-panel-view` is the panel's view-switch anchor either
+              // way — screenshot scenarios use it to tell an open panel from a
+              // closed one.
+              <div
+                aria-label={t("contextPanel.panelView")}
+                className="grid min-w-0 flex-1 gap-1 rounded-md border border-line-soft p-0.5"
+                id="context-panel-view"
+                role="group"
+                style={{ gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))` }}
+              >
+                {tabs.map((tab) => {
+                  const selected = tab.value === activeTab;
+                  return (
+                    <button
+                      aria-pressed={selected}
+                      className={cn(
+                        "h-7 min-w-0 truncate rounded px-2 text-sm font-medium transition-colors",
+                        // The selected segment takes the accent tint rather than
+                        // a raised surface: in the dark palettes `surface` and
+                        // `surface-subtle` are one shade apart, and a segment
+                        // chosen by name has to be readable at a glance.
+                        selected
+                          ? "bg-accent-soft/70 text-accent"
+                          : "text-ink-soft hover:text-ink",
+                      )}
+                      data-context-tab={tab.value}
+                      key={tab.value}
+                      onClick={() => onTabChange(tab.value)}
+                      title={t(tab.labelKey)}
+                      type="button"
+                    >
+                      {t(tab.labelKey)}
+                    </button>
+                  );
+                })}
+              </div>
+            )
+          : (
+              <div className="inline-block max-w-full">
+                <label className="sr-only" htmlFor="context-panel-view">
+                  {t("contextPanel.panelView")}
+                </label>
+                <Select
+                  className="w-fit min-w-24 max-w-full py-0 font-normal hover:border-line"
+                  id="context-panel-view"
+                  onChange={event => onTabChange(event.target.value as ContextTab)}
+                  size="sm"
+                  value={activeTab}
+                  wrapperClassName="max-w-full"
+                >
+                  {tabs.map(tab => (
+                    <option key={tab.value} value={tab.value}>
+                      {t(tab.labelKey)}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            )}
         <IconButton
-          className="size-8"
+          className="size-8 shrink-0"
           icon={<PanelRightClose className="size-3.5" />}
           label={t("contextPanel.collapse")}
           onClick={onToggleExpanded}
