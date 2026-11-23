@@ -46,7 +46,28 @@ pub(super) async fn collect(
     };
     // Agent owns output continuation inside the accepted child run. An
     // output-limit terminal here has already used its available allowance.
-    let original = session.generate(message, false).await?;
+    let original = match session.generate(message, false).await {
+        Ok(text) => text,
+        Err(error)
+            if phase == "synthesizing" && failure_kind(&error) == FailureKind::InvalidOutput =>
+        {
+            let text = session.generate(
+                "The previous generation did not return a usable final report. Submit the complete report in the original format using your existing work and the original sources. Do not restart the discussion or add evidence.".into(),
+                true,
+            ).await?;
+            return Ok(Report {
+                text: check(&text).map_err(|error| {
+                    failure(
+                        FailureKind::InvalidOutput,
+                        format!("Report validation failed after empty-response recovery: {error}"),
+                    )
+                })?,
+                validation_errors: vec![],
+                generation: 1,
+            });
+        }
+        Err(error) => return Err(error),
+    };
     let first_error = match check(&original) {
         Ok(text) => {
             return Ok(Report {
@@ -58,7 +79,7 @@ pub(super) async fn collect(
         Err(error) => error.to_string(),
     };
     let message = format!(
-        "You have ONE report repair opportunity. Revise ONLY your last final report using the existing work in this conversation. Do not repeat the task, investigate again, call tools or add new facts. Fix ALL listed fields, not only the first error. For formatting errors, return one JSON object with escaped string values. For disposition citation errors, fix only the failing basis entry. Prefer a source_path to a relevant text field of the named source. Otherwise copy an exact quote from that source. Preserve unaffected dispositions. Preserve valid content and the current answer unless the reported source error changes its support; then correct the inference and resulting answer explicitly. Return a complete replacement report in the same required format. Participant quotations must copy the named participant’s visible wording; typography differences are allowed, paraphrases are not quotes. Evidence citations must identify a supplied source, its version and a matching original excerpt. If a verified_fact cannot cite a source, qualify it as an unverified_claim rather than inventing a reference. No commentary about the revision. Validation feedback: {first_error}. Final report capacity: {capacity} UTF-8 bytes in its downstream representation; this is not a thinking-token budget."
+        "You have ONE report repair opportunity. Revise ONLY your last final report using the existing work in this conversation. Do not repeat the task, investigate again, call tools or add new facts. Fix ALL listed fields, not only the first error. For formatting errors, return one JSON object with escaped string values. For disposition citation errors, fix only the failing basis entry. Prefer a source_path to a relevant text field of the named source. For participant reports, /response selects the report itself. Otherwise copy an exact quote from that source. Validation error messages are diagnostics, not source evidence. Preserve unaffected dispositions. Preserve valid content and the current answer unless the reported source error changes its support; then correct the inference and resulting answer explicitly. Return a complete replacement report in the same required format. Participant quotations must copy the named participant’s visible wording; typography differences are allowed, paraphrases are not quotes. Evidence citations must identify a supplied source, its version and a matching original excerpt. If a verified_fact cannot cite a source, qualify it as an unverified_claim rather than inventing a reference. No commentary about the revision. Validation feedback: {first_error}. Final report capacity: {capacity} UTF-8 bytes in its downstream representation; this is not a thinking-token budget."
     );
     let repaired = match session.generate(message, true).await {
         Ok(text) => text,
@@ -193,6 +214,32 @@ mod tests {
             assert_eq!(session.requests, 1);
         }
     }
+    #[tokio::test]
+    async fn missing_synthesis_gets_one_report_only_attempt_with_validation() {
+        struct MissingSynthesis(Vec<bool>);
+        impl ReportSession for MissingSynthesis {
+            async fn generate(&mut self, _: String, report_only: bool) -> Result<String> {
+                self.0.push(report_only);
+                if report_only {
+                    Ok("Recovered report".into())
+                } else {
+                    Err(failure(
+                        FailureKind::InvalidOutput,
+                        "Missing Fusion model response",
+                    ))
+                }
+            }
+        }
+        let mut session = MissingSynthesis(vec![]);
+        let error = collect(&mut session, "Task".into(), "synthesizing", 100, |_| {
+            anyhow::bail!("Invalid citation")
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(session.0, [false, true]);
+        assert!(error.to_string().contains("Invalid citation"));
+    }
+
     #[tokio::test]
     async fn oversized_report_is_revised_without_repeating_investigation() {
         let mut session = WorkingSession {
