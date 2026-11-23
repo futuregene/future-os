@@ -4410,20 +4410,23 @@ mod tests {
             .load(std::sync::atomic::Ordering::SeqCst));
         assert!(loop_.stream_truncation.lock().is_none());
         assert_eq!(messages.last().unwrap().text(), "the answer");
-        let requests = provider.requests.lock();
-        assert_eq!(requests.len(), 2, "exactly one retry");
-        let retry = &requests[1];
-        assert!(retry
-            .last()
-            .expect("retry instruction")
-            .text()
-            .contains("ended without an answer"));
-        assert!(
-            !retry
-                .iter()
-                .any(|message| message.text().contains("synthetic draft")),
-            "a reasoning-only assistant message must not be replayed"
-        );
+        // Scoped so the guard is not held across the next scenario's await.
+        {
+            let requests = provider.requests.lock();
+            assert_eq!(requests.len(), 2, "exactly one retry");
+            let retry = &requests[1];
+            assert!(retry
+                .last()
+                .expect("retry instruction")
+                .text()
+                .contains("ended without an answer"));
+            assert!(
+                !retry
+                    .iter()
+                    .any(|message| message.text().contains("synthetic draft")),
+                "a reasoning-only assistant message must not be replayed"
+            );
+        }
 
         // Reasoning only, twice: the retry budget is one step, and the run is
         // still reported as incomplete. The thought that was streamed stays in
