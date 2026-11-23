@@ -313,6 +313,14 @@ impl Loop {
             0
         };
         let mut repetition_retry_attempt = 0;
+        // A model step that ends `stop` with no answer and no tool call did not
+        // answer. When the turn went into thinking and stopped right after it,
+        // one retry with thinking switched off is the recovery that usually
+        // returns the answer; the retry is request-only and never mutates the
+        // session's thinking level.
+        let mut empty_answer_retry_attempt = 0;
+        let mut empty_answer_retry_pending = false;
+        let mut empty_answer_thinking_off = false;
         let mut reconnecting = false;
         let mut retry_text = String::new();
         // Set when this run schedules a continuation after the model's output
@@ -663,6 +671,21 @@ impl Loop {
             // model to pick it up mid-thought instead of starting over — the
             // failure mode that made an unattended worker re-solve the same
             // task from scratch on every retry.
+            if empty_answer_retry_pending {
+                // The previous attempt thought and then stopped without a word
+                // of answer. The thought itself is not replayed (a
+                // reasoning-only assistant turn is rejected upstream), so the
+                // retry has to be told what happened and asked for the answer.
+                let mut retry = AgentMessage {
+                    role: "user".into(),
+                    content: vec![ContentBlock::text(
+                        "[Your previous attempt ended without an answer: you finished thinking and stopped. Answer the last user message now, directly and completely. Do not restate the analysis, the plan or the problem.]",
+                    )],
+                    ..Default::default()
+                };
+                retry.ensure_journal_entry_id();
+                work_messages.push(retry);
+            }
             if output_limit_continuation_pending {
                 // A cut mid-reply leaves a prefix the model can keep extending;
                 // a cut where the whole budget went to reasoning leaves nothing
@@ -719,6 +742,11 @@ impl Loop {
                     "Fusion closed-task request policy v3"
                 );
             }
+            // Consume the empty-answer retry flags for exactly this request:
+            // the next step keeps the configured thinking level again.
+            let thinking_off_retry = empty_answer_thinking_off;
+            empty_answer_thinking_off = false;
+            empty_answer_retry_pending = false;
             let stage_request = async {
                 let request = crate::llm::schema::ModelRequest {
                     model: ctx.model.clone(),
@@ -733,7 +761,21 @@ impl Loop {
                     system_prompt: request_system_prompt.to_string(),
                 };
                 let stream = async {
-                    if let Some(stage) = fusion_stage {
+                    if thinking_off_retry {
+                        // An empty answer that came after a thought is retried
+                        // once with thinking off: the same request would very
+                        // likely spend the retry thinking again. The scoped
+                        // target keeps the session's configured level intact.
+                        self.provider
+                            .stream_model_with_controls(
+                                request,
+                                crate::llm::schema::RequestControls {
+                                    thinking_level: Some("off".into()),
+                                    ..Default::default()
+                                },
+                            )
+                            .await
+                    } else if let Some(stage) = fusion_stage {
                         self.provider
                             .stream_model_with_controls(request, stage.controls())
                             .await
@@ -1632,6 +1674,57 @@ impl Loop {
                 // an empty one would be rejected by the next request anyway.
                 continue;
             }
+            // A model step that ends `stop` with no text and no tool call has
+            // not answered, yet it used to be committed as a completed run with
+            // an empty reply. Two shapes reach us: the model thought and stopped
+            // right after the thought (the reasoning stream was the whole
+            // output), or it produced nothing at all. The first is retried once
+            // with thinking off — that request usually comes back with the
+            // answer — and a step still empty afterwards is reported as
+            // incomplete instead of silently completing.
+            let reasoning_bytes: usize = reasoning_blocks.iter().map(|b| b.text.len()).sum();
+            let empty_answer = truncation_detected_by.is_none()
+                && stream_error.is_none()
+                && !interrupted_after_stream
+                && assistant_text.trim().is_empty()
+                && agent_tool_calls.is_empty();
+            if empty_answer
+                && reasoning_bytes > 0
+                && empty_answer_retry_attempt == 0
+                && fusion_stage.is_none()
+                && self.config.max_retries > 0
+            {
+                empty_answer_retry_attempt += 1;
+                empty_answer_retry_pending = true;
+                empty_answer_thinking_off = true;
+                tracing::warn!(
+                    turn,
+                    reasoning_bytes,
+                    "model stopped after thinking with no answer; retrying the turn with thinking off"
+                );
+                // The thought is not replayed: a reasoning-only assistant turn
+                // is rejected upstream. Only the retry instruction is added.
+                continue;
+            }
+            if empty_answer && fusion_stage != Some(crate::fusion::ParentStage::Routing) {
+                // Nothing was answered: the run must not be committed as a
+                // completed empty reply. The thought that was streamed (if any)
+                // still reaches the history below; only the run terminal says
+                // "no answer".
+                self.stream_incomplete
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                *self.stream_truncation.lock() = Some(crate::agent::StreamTruncation {
+                    turns_so_far: turn as i32,
+                    output_len: 0,
+                    tool_calls_so_far: 0,
+                    detected_by: "empty_answer".to_string(),
+                });
+                tracing::warn!(
+                    turn,
+                    reasoning_bytes,
+                    "model produced no answer; ending the run as incomplete"
+                );
+            }
             if stream_error.is_some() || interrupted_after_stream {
                 let reason = if interrupted_after_stream {
                     "interrupt"
@@ -1871,6 +1964,7 @@ impl Loop {
             // cut of either kind starts from a fresh allowance.
             output_limit_continuations = 0;
             repetition_retry_attempt = 0;
+            empty_answer_retry_attempt = 0;
             fusion_report_prefix = None;
             output_limit_continuation_pending = false;
             output_limit_continuation_had_visible_output = false;
@@ -4254,36 +4348,122 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn normal_reasoning_only_and_empty_replies_are_not_transport_errors() {
-        for reasoning in [false, true] {
-            let mut events = Vec::new();
-            if reasoning {
-                events.push(ModelStreamEvent::ReasoningDelta {
+    async fn empty_replies_end_incomplete_and_a_reasoning_only_one_is_retried() {
+        // A `stop` carrying no answer is not a completed reply. A step that
+        // spent the turn thinking is retried once with thinking off, because
+        // the same request tends to think and stop again. A step with no
+        // thought at all has nothing to retry and is reported as incomplete
+        // straight away.
+        let loop_ = Loop::new(
+            ScriptedProvider::new(vec![Script::Events(vec![ev_stop()])]),
+            "mock",
+        );
+        let (text, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(text.is_empty());
+        assert_eq!(messages.len(), 1, "no empty assistant turn is kept");
+        assert!(loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+        let truncation = loop_.stream_truncation.lock().clone().unwrap();
+        assert_eq!(truncation.detected_by, "empty_answer");
+        assert!(truncation
+            .error_message()
+            .starts_with("[RESPONSE_UNCONFIRMED]"));
+
+        // Reasoning only, answered on the retry: the second request carries the
+        // "you stopped without an answer" instruction, and the thought itself
+        // is not replayed (a reasoning-only assistant turn is rejected
+        // upstream).
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                ModelStreamEvent::ReasoningDelta {
                     id: "r".into(),
                     text: "synthetic draft".into(),
-                });
-            }
-            events.push(ev_stop());
-            let loop_ = Loop::new(ScriptedProvider::new(vec![Script::Events(events)]), "mock");
-            let (text, messages) = loop_
-                .run_streaming_with_messages(
-                    user_messages("hi"),
-                    &StreamContext::default(),
-                    noop_on_text,
-                    noop_on_event,
-                    None,
-                )
-                .await
-                .unwrap();
-            assert!(text.is_empty());
-            assert!(!loop_
-                .stream_incomplete
-                .load(std::sync::atomic::Ordering::SeqCst));
-            assert!(loop_.stream_truncation.lock().is_none());
-            if reasoning {
-                assert_eq!(messages.last().unwrap().reasoning_text(), "synthetic draft");
-            }
-        }
+                },
+                ev_stop(),
+            ]),
+            Script::Events(vec![ev_text("the answer"), ev_stop()]),
+        ]);
+        let loop_ = Loop::new(provider.clone(), "mock");
+        let (text, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "the answer");
+        assert!(!loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+        assert!(loop_.stream_truncation.lock().is_none());
+        assert_eq!(messages.last().unwrap().text(), "the answer");
+        let requests = provider.requests.lock();
+        assert_eq!(requests.len(), 2, "exactly one retry");
+        let retry = &requests[1];
+        assert!(retry
+            .last()
+            .expect("retry instruction")
+            .text()
+            .contains("ended without an answer"));
+        assert!(
+            !retry
+                .iter()
+                .any(|message| message.text().contains("synthetic draft")),
+            "a reasoning-only assistant message must not be replayed"
+        );
+
+        // Reasoning only, twice: the retry budget is one step, and the run is
+        // still reported as incomplete. The thought that was streamed stays in
+        // the recorded history so the transcript is not blank.
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                ModelStreamEvent::ReasoningDelta {
+                    id: "r".into(),
+                    text: "first thought".into(),
+                },
+                ev_stop(),
+            ]),
+            Script::Events(vec![
+                ModelStreamEvent::ReasoningDelta {
+                    id: "r".into(),
+                    text: "second thought".into(),
+                },
+                ev_stop(),
+            ]),
+        ]);
+        let loop_ = Loop::new(provider, "mock");
+        let (text, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(text.is_empty());
+        assert_eq!(messages.last().unwrap().reasoning_text(), "second thought");
+        assert!(loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            loop_.stream_truncation.lock().as_ref().unwrap().detected_by,
+            "empty_answer"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
