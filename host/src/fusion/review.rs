@@ -27,9 +27,10 @@ pub(super) fn prompt(
         .context("Missing reviewer's first answer")?;
     let packet = json!({"participant":participant,"task":super::evidence::prompt_input(input),"decision_lineage":lineage,"original_analysis":own["response"].as_str().context("Missing original public answer")?,"moderator_map":mapping,"source_manifest":super::evidence::Sources::new(input, snapshot).manifest()});
     Ok(format!(
-        "{INSTRUCTIONS}\n{}\n{}\nReview packet:\n{}",
+        "{INSTRUCTIONS}\n{}\n{}\n{}\nReview packet:\n{}",
         future_fusion::GROUNDING_POLICY,
         super::evidence::POLICY,
+        super::evidence::COVERAGE_CHECK,
         serde_json::to_string(&packet)?
     ))
 }

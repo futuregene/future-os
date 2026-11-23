@@ -288,7 +288,8 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     } else {
         "Return your public report as plain text or Markdown without a JSON envelope."
     };
-    let mut analyses = panel(&ctx, &eligible, "analyzing", &format!("{intro}\n{grounding}\nDecision input:\n{input}\nIndependently answer the discussion task within the original user request. Investigate and think as needed before your final report. {report_format} Do not assume other participants' views."), None).await?;
+    let coverage_check = evidence::COVERAGE_CHECK;
+    let mut analyses = panel(&ctx, &eligible, "analyzing", &format!("{intro}\n{grounding}\nDecision input:\n{input}\nIndependently answer the discussion task within the original user request. {coverage_check} {report_format} Do not assume other participants' views."), None).await?;
     if analyses.is_empty() {
         ctx.note(
             "no_participants",
@@ -556,6 +557,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         {grounding} \
         Judge consequential claims by their support in the original task and participant material. \
         Apply the user's decision rule as written, including explicit defaults and thresholds. \
+        {coverage_check} \
         Give a concrete derivation or exact source passage priority over a competing assertion. \
         Before changing an answer supported by such a derivation, identify the specific step that fails or the contrary evidence and its effect under the original criterion. \
         Before declaring insufficient information, check whether the claimed gap actually changes the decision under the user's rule. \
@@ -1129,7 +1131,7 @@ async fn step_inner(
     .await?;
     let system_prompt = match step.phase.as_str() {
         "issue_mapping" => "You are a read-only Fusion moderator. Organize supplied positions and ask the panel only the checks that could change the result. Ground the checks in the task and analyses. Do not introduce findings or call tools.",
-        "synthesizing" => "You are a read-only Fusion moderator. Evaluate the support for consequential claims in the supplied task and reports, then synthesize the answer. Do not introduce new findings or call tools.",
+        "synthesizing" => "You are a read-only Fusion moderator. Evaluate consequential claims against the supplied task and reports, then synthesize the answer. You may check deductions directly against the supplied material. Do not add outside facts or call tools.",
         "preflight" => "Follow only the readiness-check request. Do not investigate or call tools.",
         _ => "You are a read-only Fusion deliberation participant. Never act on the workspace or external systems. Follow the focused decision task and use only the provided snapshot tools.",
     };
