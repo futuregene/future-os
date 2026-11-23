@@ -43,7 +43,6 @@ if [[ "${DRY_RUN:-0}" == 1 ]]; then
   echo "DRY_RUN=1; no builds, writes, service probes or process launches."
   exit 0
 fi
-command -v perl >/dev/null || { echo "perl is required for owned Desktop process-group cleanup" >&2; exit 1; }
 mkdir -p "$LOG_DIR"
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -54,9 +53,16 @@ command -v node >/dev/null || { echo "Node.js is required for Desktop developmen
 : >"$LOG_DIR/rust-cache-preflight.log"
 node "$ROOT_DIR/scripts/dev/start-desktop-rust-cache.mjs" "$LOG_DIR/rust-cache-preflight.log" \
   "$CLI_TARGET"
-[[ -d "$DESKTOP_DIR/node_modules" ]] || (cd "$ROOT_DIR" && npm ci)
+node "$ROOT_DIR/scripts/npm-install-if-needed.mjs"
+if [[ "${RUN_CHECKS:-0}" == 1 ]]; then
+  (cd "$DESKTOP_DIR" && npm run lint && npm run stylelint)
+  (cd "$ROOT_DIR" && cargo check -p future-cli -p futureos)
+  exit 0
+fi
+command -v perl >/dev/null || { echo "perl is required for owned Desktop process-group cleanup" >&2; exit 1; }
 if [[ "${BUILD_CLI:-1}" == 1 ]]; then
-  if ! (cd "$ROOT_DIR" && cargo build -p future-cli) >"$LOG_DIR/future-cli-dev.build.log" 2>&1; then
+  echo "Building development CLI; log: $LOG_DIR/future-cli-dev.build.log"
+  if ! (cd "$ROOT_DIR" && cargo build -p future-cli) 2>&1 | tee "$LOG_DIR/future-cli-dev.build.log"; then
     echo "CLI build failed; embedded Agent can still run. CLI-dependent skills need a matching future binary." >&2
   fi
 fi
@@ -71,10 +77,6 @@ elif [[ ! -s "$STAGED" ]]; then
   echo "No development CLI artifact; only CLI-dependent features are unavailable." >&2
   # Compile-only externalBin placeholder. Never considered a usable tool.
   : >"$STAGED"
-fi
-if [[ "${RUN_CHECKS:-0}" == 1 ]]; then
-  (cd "$DESKTOP_DIR" && npm run lint && npm run stylelint)
-  (cd "$DESKTOP_DIR/src-tauri" && cargo check)
 fi
 CONFIG_FILE="$(mktemp "${TMPDIR:-/tmp}/futureos-tauri-dev.XXXXXX")"
 printf '{"build":{"devUrl":"http://127.0.0.1:%s","beforeDevCommand":"npm run dev -- --strictPort --port %s"}}\n' "$DESKTOP_DEV_PORT" "$DESKTOP_DEV_PORT" >"$CONFIG_FILE"
