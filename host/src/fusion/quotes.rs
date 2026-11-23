@@ -65,20 +65,31 @@ pub(super) fn contains(source: &str, excerpt: &str) -> bool {
             _ => false,
         }
     }
-    // A copied quotation can render an inline variable as A instead of $A$.
+    // A copied quotation can render $A$ or $n-2$ without the delimiters.
     // Keep currency, escaped dollar signs, and display math delimiters literal.
-    fn inline_variable(chars: &[char], start: usize) -> bool {
-        matches!(chars.get(start..start + 3), Some(['$', name, '$']) if name.is_alphabetic())
-            && !matches!(
-                start.checked_sub(1).and_then(|index| chars.get(index)),
-                Some('\\' | '$')
-            )
-            && chars.get(start + 3) != Some(&'$')
+    fn inline_math_end(chars: &[char], start: usize) -> Option<usize> {
+        if matches!(
+            start.checked_sub(1).and_then(|index| chars.get(index)),
+            Some('\\' | '$')
+        ) {
+            return None;
+        }
+        let end = match chars.get(start + 1..)? {
+            [name, '$', ..] if name.is_alphabetic() => start + 2,
+            [name, '+' | '-', digit, rest @ ..]
+                if name.is_alphabetic() && digit.is_ascii_digit() =>
+            {
+                start + 4 + rest.iter().position(|c| !c.is_ascii_digit())?
+            }
+            _ => return None,
+        };
+        (chars.get(end) == Some(&'$') && chars.get(end + 1) != Some(&'$')).then_some(end)
     }
     fn normalize(text: &str) -> String {
         let chars: Vec<char> = text.chars().collect();
         let mut result = String::new();
         let mut whitespace = false;
+        let mut inline_math_end_index = None;
         let chinese = |c: char| matches!(c, '\u{2e80}'..='\u{9fff}' | '\u{f900}'..='\u{faff}');
         for (index, &c) in chars.iter().enumerate() {
             if c.is_whitespace() {
@@ -90,14 +101,18 @@ pub(super) fn contains(source: &str, excerpt: &str) -> bool {
                 index.checked_sub(1).map(|previous| chars[previous]),
                 chars.get(index + 1).copied(),
             );
-            if markup
-                || c == '$'
-                    && (inline_variable(&chars, index)
-                        || index
-                            .checked_sub(2)
-                            .is_some_and(|start| inline_variable(&chars, start)))
-            {
+            if markup {
                 continue;
+            }
+            if c == '$' {
+                if inline_math_end_index == Some(index) {
+                    inline_math_end_index = None;
+                    continue;
+                }
+                inline_math_end_index = inline_math_end(&chars, index);
+                if inline_math_end_index.is_some() {
+                    continue;
+                }
             }
             let c = match c {
                 '\'' | '"' | '‘' | '’' | '“' | '”' | '＇' | '＂' | '「' | '」' | '『' | '』' => {
@@ -138,6 +153,17 @@ mod tests {
         assert!(!contains("Pay $5 and keep $6", "Pay 5 and keep 6"));
         assert!(!contains(r"Write \$A$ literally", "Write A literally"));
         assert!(!contains("Figure $$A$$", "Figure A"));
+    }
+    #[test]
+    fn rendered_inline_arithmetic_keeps_the_index_and_operator() {
+        let source = "for all $i$ between 1 and $n-2$ inclusive, if the $i$th step is upward, the $i+1$st step must be rightward";
+        let excerpt = "for all i between 1 and n-2 inclusive, if the ith step is upward, the i+1st step must be rightward";
+        assert!(contains(source, excerpt));
+        assert!(!contains(source, &excerpt.replace("n-2", "n-1")));
+        assert!(!contains(source, &excerpt.replace("i+1", "i-1")));
+        assert!(!contains("Use $$n-2$$ here", "Use n-2 here"));
+        assert!(!contains(r"Use \$n-2$ here", "Use n-2 here"));
+        assert!(!contains("Pay $5-2$ here", "Pay 5-2 here"));
     }
     #[test]
     fn tolerates_quotes_and_whitespace_without_changing_words() {
