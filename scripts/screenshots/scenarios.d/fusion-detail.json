@@ -270,7 +270,7 @@
           "tap": "展开上下文面板"
         },
         {
-          "eval": "(() => {const s=document.querySelector('#context-panel-view');s.value='runs';s.dispatchEvent(new Event('change',{bubbles:true}));})()"
+          "eval": "(() => {const seg=document.querySelector('#context-panel-view [data-context-tab=\"runs\"]');if(!seg)throw new Error('no Runs tab');seg.click();})()"
         },
         {
           "wait": 500
@@ -282,7 +282,7 @@
           "wait": 700
         },
         {
-          "eval": "(() => {if(!document.querySelector('[data-fusion-panel=detail]')||document.querySelector('#context-panel-view').value!=='runs')throw new Error('Fusion opened generic inspector');return 'Runs opens the dedicated discussion panel';})()"
+          "eval": "(() => {if(!document.querySelector('[data-fusion-panel=detail]')||document.querySelector('#context-panel-view [data-context-tab=\"runs\"]')?.getAttribute('aria-pressed')!=='true')throw new Error('Fusion opened generic inspector');return 'Runs opens the dedicated discussion panel';})()"
         },
         {
           "shot": "d-fusion-detail-from-runs.png"
@@ -320,7 +320,7 @@
           "wait": 300
         },
         {
-          "eval": "(() => {if(!document.querySelector('[data-runs-scroll]')||document.querySelector('#context-panel-view').value!=='runs')throw new Error('not back in Runs');if([...document.querySelectorAll('#context-panel-view option')].some(o=>o.value==='fusion'))throw new Error('standalone discussion type still exists');return 'Fusion belongs to Runs';})()"
+          "eval": "(() => {if(!document.querySelector('[data-runs-scroll]')||document.querySelector('#context-panel-view [data-context-tab=\"runs\"]')?.getAttribute('aria-pressed')!=='true')throw new Error('not back in Runs');if(document.querySelector('#context-panel-view [data-context-tab=\"fusion\"], #context-panel-view option[value=\"fusion\"]'))throw new Error('standalone discussion type still exists');return 'Fusion belongs to Runs';})()"
         },
         {
           "shot": "d-fusion-back-to-runs.png"
