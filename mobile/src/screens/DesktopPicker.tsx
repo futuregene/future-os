@@ -38,7 +38,8 @@ import { createThemedStyles, useTheme } from "../theme/ThemeContext";
  * to tap when something was wrong. They answer one question ("which of my
  * machines can I use, and what do I do about the rest"), so a tap on either part
  * of the same control opens the one sheet, and the state the dot is painting is
- * the first thing the sheet says.
+ * the first thing the sheet says — when it has anything to say at all: a set
+ * that is green end to end is a title, then the machines.
  */
 export function DesktopPicker({
   filter,
@@ -105,15 +106,28 @@ export function DesktopPicker({
   const scopeName = selected ? desktopName(selected) : t("desktops.filterAll");
   const stateOf = (desktopId: string) => machines?.find(machine => machine.desktopId === desktopId);
   /**
+   * Whether the block above the rows has anything to say.
+   *
+   * Green end to end it said "已连接 / 手机已连接到桌面端" above a list in which
+   * every row already carries that dot and that word — the trigger's own dot
+   * repeated, and the one sentence a reader opens this sheet to get past. The
+   * block is a fault report, and it earns its place exactly when cannot be
+   * skipped: some machine is down, held by another device, or not answering at
+   * all — the cases where it names something the rows cannot.
+   */
+  const showStatus = status.state !== "up";
+  /**
    * Whether the rows need to answer for themselves.
    *
    * With one machine the block above is already its answer — its title is that
    * machine's state — and a second "已连接" a few lines lower reads as a
-   * repeat rather than as a second fact. With several, the block answers for the
-   * set ("some desktops are not connected") and the rows are the only place that
-   * says which, so they carry their own dot and state.
+   * repeat rather than as a second fact. That holds only while the block is
+   * drawn: with the set green the block is gone, so the row is the only place
+   * the machine's state is left, and it takes over that line. With several, the
+   * block answers for the set ("some desktops are not connected") and the rows
+   * are the only place that says which, so they carry their own dot and state.
    */
-  const perMachineState = (machines?.length ?? 0) > 1;
+  const perMachineState = (machines?.length ?? 0) > 1 || !showStatus;
   /** Connected, and held by another device. */
   const standby = (desktopId: string) => {
     const machine = stateOf(desktopId);
@@ -203,8 +217,9 @@ export function DesktopPicker({
           </View>
           {/* The state the header's dot was painting, in words, with the action
               that reaches the machines again: the dot said something was wrong
-              and this is where the reader finds out what. */}
-          <ConnectionStatusBlock machines={machines} {...connection} />
+              and this is where the reader finds out what — so it is drawn only
+              when there is something wrong (`showStatus`). */}
+          {showStatus ? <ConnectionStatusBlock machines={machines} {...connection} /> : null}
           {/* Every row carries the same leading icon column, and the chosen one
               is tinted behind the check: without them "all desktops" sits flush
               with the sheet title and reads as a heading for the machines below

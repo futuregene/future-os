@@ -540,7 +540,7 @@ test("a desktop that has never answered gets the terminal page, not the wait", (
   }
 });
 
-test("a picker row is the desktop's name and nothing else", () => {
+test("a picker row is the desktop's name, and its state only where nothing above says it", () => {
   act(() => pickerButton().props.onPress());
   // Host nodes only: a composite and its host both carry the row's props.
   // Rows are radios — one of them is the answer in force, which is not a
@@ -553,12 +553,17 @@ test("a picker row is the desktop's name and nothing else", () => {
   // copy is the texts it holds — the machine's name.
   const labels = rows.map(row =>
     row.findAllByType(Text).flatMap(text => text.props.children as string[]).join(" "));
-  // One machine, so the sheet's block above is already its answer: repeating
-  // "已连接" under the name would be the same fact a few lines lower. The state
-  // moves onto the rows only when there are several to tell apart (see the
-  // picker's own tests); a peer no runtime has reported yet keeps its name and
-  // stays selectable, because missing data is not evidence of a fault.
-  expect(labels).toEqual(["desktops.filterAll", "A very long desktop name", "desktop_2"]);
+  // One machine, so the sheet used to leave its block to speak for it and the
+  // row stayed silent. The block is not drawn while the set is green
+  // (`showStatus` in the picker), which would leave the sheet naming no
+  // machine's state at all — so the row takes that line over. A peer no runtime
+  // has reported yet keeps its name and stays selectable, because missing data
+  // is not evidence of a fault.
+  expect(labels).toEqual([
+    "desktops.filterAll",
+    "A very long desktop name connection.machine.connected",
+    "desktop_2",
+  ]);
 });
 
 test("the status dot answers for every machine, and reconnect reaches them all", () => {

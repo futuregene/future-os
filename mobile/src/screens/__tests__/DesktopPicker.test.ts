@@ -167,19 +167,40 @@ describe("the picker's trigger", () => {
 });
 
 describe("the device sheet", () => {
-  it("explains the connection the dot was painting, and asks for nothing while it is green", () => {
+  it("says nothing while the set is green, and asks for nothing either", () => {
     const onReconnect = jest.fn();
     const tree = render([], undefined, { onReconnect });
     openPicker(tree);
 
-    expect(painted(tree)).toContain("Connected");
-    expect(painted(tree)).toContain("The phone is connected to the desktop");
+    // The block used to open with "Connected / the phone is connected to the
+    // desktop" over a list whose every row already said so, right under a
+    // trigger whose dot was green — the sentence a reader opens this sheet to
+    // get past. It is a fault report now: drawn only when it has something to
+    // name that the rows cannot.
+    expect(painted(tree)).not.toContain("The phone is connected to the desktop");
+    expect(painted(tree)).not.toContain("Connected");
     // The sheet is opened just as often to switch machines as to repair one, so
-    // a healthy connection gets its state and no "Reconnect" under it.
+    // a healthy connection gets no "Reconnect" either.
     expect(tree.root.findAll(node =>
       node.props.accessibilityRole === "button" && node.props.accessibilityLabel === "Reconnect"))
       .toHaveLength(0);
     expect(onReconnect).not.toHaveBeenCalled();
+    // The state is still in the trigger's own name, which is what a screen
+    // reader reads where the eye sees the dot.
+    expect(trigger(tree).props.accessibilityLabel).toBe("Desktops: All desktops, Connected");
+  });
+
+  it("leaves the one machine's state on its row when there is no block to say it", () => {
+    const tree = render([
+      { desktopId: "desk_a", label: "Lab MacBook Pro", active: true, status: "connected", control: "active" },
+    ]);
+    openPicker(tree);
+
+    // With a single machine the block spoke for it, so the row stayed silent.
+    // The block is gone while the set is green, which would leave the sheet
+    // naming no machine's state at all — so the row takes the line over.
+    expect(painted(tree)).toContain("Connected");
+    expect(machineDotColor(tree, "desk_a")).toBe(lightColors.success);
   });
 
   it("reaches every machine at once when some of them are down", () => {
