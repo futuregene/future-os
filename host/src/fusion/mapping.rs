@@ -332,7 +332,7 @@ mod tests {
         ]);
         let prompt = format!("\nDecision input:\n{input}\nIndependent analyses:\n{analyses}");
         let mut map = serde_json::json!({"consensus":[{"point":"Keep data","sources":[
-            {"participant":"P1","quote_path":"/answer"},{"participant":"P2","quote_path":"/response"}
+            {"participant":"P1","quote_path":"/answer"},{"participant":"P2","quote_path":"/response","quote":"Keep data"}
         ]}],"issues":[],"excluded":[]});
         let expanded = expand_citations(&map.to_string(), &prompt).unwrap();
         validate_shape(&expanded, 2).unwrap();
@@ -342,10 +342,10 @@ mod tests {
             expanded["consensus"][0]["sources"][0]["quote"],
             "Keep \"existing data\"."
         );
-        assert_eq!(
-            expanded["consensus"][0]["sources"][1]["quote"],
-            "Keep data."
-        );
+        assert_eq!(expanded["consensus"][0]["sources"][1]["quote"], "Keep data");
+        map["consensus"][0]["sources"][1]["quote"] = serde_json::json!("existing data");
+        assert!(expand_citations(&map.to_string(), &prompt).is_err());
+        map["consensus"][0]["sources"][1]["quote"] = serde_json::json!("Keep data");
         map["consensus"][0]["sources"][1]["quote_path"] = serde_json::json!("/answer");
         assert!(expand_citations(&map.to_string(), &prompt).is_err());
         map["consensus"][0]["sources"][1]["quote_path"] = serde_json::json!("/response");

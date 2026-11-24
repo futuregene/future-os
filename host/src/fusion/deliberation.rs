@@ -1,5 +1,5 @@
 //! A complete ledger of consequential disagreements, separate from prose packing.
-use super::quotes::select_text as source_text;
+use super::quotes::{contains_report, select_text as source_text};
 use anyhow::{ensure, Context, Result};
 use future_fusion::{parse_json, Consultation};
 use serde::{Deserialize, Serialize};
@@ -393,12 +393,23 @@ pub(super) fn validate(text: &str, packet: &Value, closed: bool) -> Result<()> {
             };
             let (material, decoded) = citation_material(source, &basis.source_id);
             match (&basis.source_path, &basis.quote) {
-                (Some(path), None) => {
-                    if citation_text(source, &basis.source_id, decoded.as_ref(), path).is_none() {
-                        errors.push(format!(
+                (Some(path), quote) => {
+                    match citation_text(source, &basis.source_id, decoded.as_ref(), path) {
+                        None => errors.push(format!(
                             "{field}.source_path {path:?} is not a text field in source {:?}",
                             basis.source_id
-                        ));
+                        )),
+                        Some(selected)
+                            if quote
+                                .as_deref()
+                                .is_some_and(|excerpt| !contains_report(selected, excerpt)) =>
+                        {
+                            errors.push(format!(
+                                "{field}.quote does not match the text at source_path {path:?} in source {:?}",
+                                basis.source_id
+                            ));
+                        }
+                        Some(_) => {}
                     }
                 }
                 (None, Some(quote)) => {
@@ -418,7 +429,7 @@ pub(super) fn validate(text: &str, packet: &Value, closed: bool) -> Result<()> {
                         }
                     }
                 }
-                _ => errors.push(format!("{field}: supply one of source_path and quote")),
+                (None, None) => errors.push(format!("{field}: supply source_path or quote")),
             }
         }
         if d.decision == Decision::Unresolved && audit.resolution == Resolution::Settled {
@@ -535,7 +546,7 @@ pub(super) fn attach(
     if let Some(raw) = value.get("decision_audit") {
         let mut audit: Audit = serde_json::from_value(raw.clone())?;
         for basis in audit.dispositions.iter_mut().flat_map(|d| &mut d.basis) {
-            if let Some(path) = basis.source_path.take() {
+            if let (Some(path), None) = (basis.source_path.take(), &basis.quote) {
                 let source = &packet["sources"][&basis.source_id];
                 let (_, decoded) = citation_material(source, &basis.source_id);
                 basis.quote = Some(
@@ -845,9 +856,9 @@ mod tests {
     }
 
     #[test]
-    fn source_paths_reject_invalid_fields_and_ambiguous_citations() {
+    fn source_paths_accept_redundant_quotes_only_from_the_selected_field() {
         let (mut value, mut packet) = fixture();
-        packet["sources"]["report:P1"] = json!({"response":"{\"participant\":\"P1\",\"reason\":\" \",\"count\":5,\"text\":\"Original evidence\"}"});
+        packet["sources"]["report:P1"] = json!({"response":"{\"participant\":\"P1\",\"reason\":\" \",\"count\":5,\"text\":\"Original evidence\",\"other\":\"Different passage\"}"});
         for path in [
             "/missing",
             "/participant",
@@ -864,8 +875,17 @@ mod tests {
             );
         }
         value["decision_audit"]["dispositions"][0]["basis"] =
-            json!([{"source_id":"report:P1","source_path":"/text","quote":"Original evidence"}]);
+            json!([{"source_id":"report:P1","source_path":"/text","quote":"Different passage"}]);
         assert!(validate(&value.to_string(), &packet, false).is_err());
+        value["decision_audit"]["dispositions"][0]["basis"][0]["quote"] = json!("evidence");
+        let report = value.to_string();
+        validate(&report, &packet, false).unwrap();
+        let mut result = future_fusion::Conclusion::default();
+        attach(&mut result, &report, &packet).unwrap();
+        assert_eq!(
+            result.decision_audit.unwrap()["dispositions"][0]["basis"][0],
+            json!({"source_id":"report:P1","quote":"evidence"})
+        );
     }
 
     #[test]

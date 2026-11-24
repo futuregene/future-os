@@ -412,6 +412,7 @@ mod tests {
         let (mut review, prompt, task) = fixture();
         review["mapping_corrections"] = json!([{
             "summary_path":"/moderator_map/issues/0/stances/0/position", "source_path":"/original_analysis",
+            "source_quote":"I prefer SQLite.",
             "correction":"This is a preference, not proof", "reason":"The original is qualified"
         }]);
         let expanded = expand_citations(&review.to_string(), &prompt, &task).unwrap();
@@ -419,7 +420,7 @@ mod tests {
         let expanded: Value = parse_json(&expanded).unwrap();
         assert_eq!(
             expanded["mapping_corrections"][0]["source_quote"],
-            "I prefer SQLite. Keep data."
+            "I prefer SQLite."
         );
         assert_eq!(
             expanded["mapping_corrections"][0]["summary_quote"],

@@ -26,14 +26,18 @@ pub(super) fn expand<'a>(
     let Some(path) = row.remove(path_key) else {
         return Ok(());
     };
-    ensure!(
-        !row.contains_key(quote_key),
-        "Supply either {path_key} or {quote_key}"
-    );
     let path = path.as_str().context("Source path must be a string")?;
-    let quote = resolve(path)
+    let selected = resolve(path)
         .with_context(|| format!("{path_key} {path:?} does not select visible source text"))?;
-    row.insert(quote_key.into(), Value::String(quote.into()));
+    if let Some(excerpt) = row.get(quote_key) {
+        let excerpt = excerpt.as_str().context("Source quote must be a string")?;
+        ensure!(
+            contains_report(selected, excerpt),
+            "{quote_key} does not match the text at {path_key} {path:?}"
+        );
+    } else {
+        row.insert(quote_key.into(), Value::String(selected.into()));
+    }
     Ok(())
 }
 
