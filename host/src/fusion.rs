@@ -552,12 +552,14 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     } else {
         "Return only a plain text or Markdown answer without a fixed template or meeting recap."
     };
+    let decisive_comparison = evidence::DECISIVE_COMPARISON;
     let mut prompt = format!(
         "You are the moderator. Give the main agent a self-contained answer to the discussion task within the original user request. \
         {grounding} \
         Judge consequential claims by their support in the original task and participant material. \
         Apply the user's decision rule as written, including explicit defaults and thresholds. \
         {coverage_check} \
+        {decisive_comparison} \
         Give a concrete derivation or exact source passage priority over a competing assertion. \
         Before changing an answer supported by such a derivation, identify the specific step that fails or the contrary evidence and its effect under the original criterion. \
         Before declaring insufficient information, check whether the claimed gap actually changes the decision under the user's rule. \
