@@ -613,10 +613,16 @@ export function ChatScreen() {
   const [queueAttachRow, setQueueAttachRow] = useState<SessionQueueRow | null>(null);
   const openQueueAttachments = useCallback((id: string) => {
     const row = queuedRows.find(item => item.runId === id);
-    // A row that does not report its files cannot be added to: the new ones would
-    // be sent and the ones this phone cannot see would be lost.
-    if (!row || row.attachments === undefined)
+    if (!row)
       return;
+    // A row that does not report its files cannot be added to: the new ones would
+    // be sent and the ones this phone cannot see would be lost. A desktop too old
+    // to report them leaves this undefined, and the "+" used to do nothing at all
+    // — the panel's editor already says the same about saving such a row.
+    if (row.attachments === undefined) {
+      showToast(t("chat.queue.addDropsFiles"));
+      return;
+    }
     // The composer's paperclip is disabled for the same reason, and says nothing
     // about it. This control is the one a reader reaches for while messages wait,
     // so it explains itself instead of opening a picker whose files could only
@@ -876,10 +882,13 @@ export function ChatScreen() {
     remote.desktopOnline,
     i18n.language,
   );
-  const { sendFromComposer, dismissSuggestedSkill, installSuggestedSkill, installingSkill }
+  const { sendFromComposer, dismissSuggestedSkill, installSuggestedSkill, installingSkill, holdingSend }
     = useComposerSubmission({
       remote, t, message, attachments, choice, clearChoice, restoring, setMessage, send: sendAndReadQueue,
-      recommendation: skillRecommendation, scrollToLatest
+      recommendation: skillRecommendation, scrollToLatest,
+      // One value for "the session is compacting": a manual compaction started
+      // here is this screen's own attempt until the Agent's flag catches up.
+      compacting: remote.compacting || compactContext.pending,
     });
 
   const paging = useTimelinePaging(
@@ -1175,6 +1184,7 @@ export function ChatScreen() {
                     setSelector={setSelector}
                     onCompactContext={compactContext.compact}
                     compactionPending={compactContext.pending}
+                    sendHolding={holdingSend}
                     archived={selectedSession?.archived === true}
                     onRestore={selectedSession?.archived === true
                       && Boolean(selectedSession.threadId)

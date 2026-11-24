@@ -603,6 +603,13 @@ export const resources = {
           editLabel: "Queued message text",
           choiceChange: "Change the answer to \"{{title}}\": {{label}}",
           editDropsFiles: "This desktop does not report the files this message carries, so saving sends the new text only.",
+          /**
+           * The same host gap seen from the "+": it draws because the row is
+           * there, but the files a reader adds could not be sent with a message
+           * whose own files this phone cannot see — so the control explains
+           * itself instead of opening a picker that leads nowhere.
+           */
+          addDropsFiles: "This desktop does not report this message's files, so files can't be added to it here.",
           previewAttachment: "Open {{name}}",
           removeAttachment: "Remove {{name}}",
           addAttachment: "Add photos or files",
@@ -712,6 +719,19 @@ export const resources = {
          */
         attachmentsUnsupported:
           "This desktop can't receive files. Attach them in the conversation on the desktop itself.",
+        /**
+         * A file that never reached the desktop: the upload died, the desktop
+         * could not claim it, or it had already expired the upload it was handed.
+         * "Message failed to send" sent the reader to the words, which were fine.
+         */
+        attachmentUploadFailed:
+          "The files didn't transfer, so nothing was sent. Try sending again.",
+        /**
+         * The bytes could not be read at all — the phone's own temp copy of a
+         * photo, or an image the desktop could not decode.
+         */
+        attachmentUnreadable:
+          "This file could not be read, so it was not sent. Add it again.",
         noHistory: "No messages yet.",
         loadingHistory: "Loading messages…",
         syncingLatest: "Syncing…",
@@ -765,6 +785,7 @@ export const resources = {
         responseIncomplete: "Response not completed",
         responseStopped: "You stopped this response",
         responseCompleted: "Completed",
+        sendAfterCompaction: "Sending when compaction finishes…",
         generating: "Generating…",
         retry: "Retry",
         continue: "Continue",
@@ -1898,6 +1919,7 @@ export const resources = {
           editLabel: "队列消息内容",
           choiceChange: "更换这条消息里的选择：{{title}} · {{label}}",
           editDropsFiles: "这个桌面没有上报这条消息带的文件，保存只会重发文字。",
+          addDropsFiles: "这个桌面没有上报这条消息带的文件，所以没法在这里添加。",
           previewAttachment: "打开 {{name}}",
           removeAttachment: "移除 {{name}}",
           addAttachment: "添加图片或文件",
@@ -1974,6 +1996,8 @@ export const resources = {
         sessionNotOnDesktop: "该会话不在当前连接的设备上。请到拥有它的那台设备上打开。",
         promptTooLarge: "这条消息太长了，无法发送。请将其缩短到 512 KB 以内。",
         attachmentsUnsupported: "这台电脑无法接收文件。请在桌面端的对话里添加附件。",
+        attachmentUploadFailed: "文件没有传到桌面端，消息没有发出去。请重新发送一次。",
+        attachmentUnreadable: "这个文件读不出来，没能发出去。请重新添加。",
         noHistory: "还没有消息。",
         loadingHistory: "正在加载消息…",
         syncingLatest: "正在同步…",
@@ -2020,6 +2044,7 @@ export const resources = {
         responseIncomplete: "本次回复未完成",
         responseStopped: "你已停止本次回复",
         responseCompleted: "已完成",
+        sendAfterCompaction: "压缩完成后发送…",
         generating: "正在生成…",
         retry: "重试",
         continue: "继续",

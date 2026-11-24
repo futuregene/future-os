@@ -239,6 +239,27 @@ describe("sending", () => {
     ["run_not_queued: run `run_a` is not queued", "t:chat.queue.rowGone"],
     // A machine that takes no files at all: the sentence says what to do instead.
     ["attachment_unsupported_desktop", "t:chat.attachmentsUnsupported"],
+    // A file that never got there fails as a file, not as a message: the upload
+    // died on the phone, or the desktop could not claim what it was handed (it
+    // had expired, it was still arriving, it had been claimed already).
+    ["upload_chunk_failed", "t:chat.attachmentUploadFailed"],
+    ["An uploaded attachment expired; upload it again.", "t:chat.attachmentUploadFailed"],
+    ["An attachment is still uploading.", "t:chat.attachmentUploadFailed"],
+    ["Upload is incomplete (4096 of 5120 bytes).", "t:chat.attachmentUploadFailed"],
+    // The bytes themselves: the phone's temp copy is gone, or the desktop could
+    // not decode what arrived.
+    ["attachment_read_stalled", "t:chat.attachmentUnreadable"],
+    ["Undecodable image: bad header", "t:chat.attachmentUnreadable"],
+    // The desktop's own quotas, said with the numbers it refuses on. The phone
+    // counts the same few, so this is a disagreement about a file, not a send
+    // fault.
+    [
+      "Transfer file exceeds the 10 MiB limit (12000000 bytes).",
+      "t:attachment.errors.attachment_file_too_large",
+    ],
+    ["A message can contain at most 10 images.", "t:attachment.errors.attachment_image_count"],
+    // The connection was handed over under the send: nothing was delivered.
+    ["client_closed", "t:chat.sendOffline"],
   ])("a failed send reports %s and hands the draft back", async (error, expectedToast) => {
     const remote = remoteFor({ sendMessage: jest.fn(async () => { throw new Error(error); }) });
     const { setAttachments, setMessage, setTransferProgress } = mount({ remote, message: "keep me", attachments: [attachment] });
