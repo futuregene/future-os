@@ -566,8 +566,8 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         Count independent support separately from agreement that repeats a premise. \
         For a material change of position, identify the new evidence or corrected inference that justifies it under the original decision criterion; do not silently substitute another criterion. \
         Resolve a decisive objection against its source even if only one participant raised it; voting and confidence do not answer a counterexample. \
-        Preserve the best supported answer unless that check actually overturns its support. \
-        Compare revised positions with their preserved initial candidates. A revision or a majority does not by itself defeat an earlier derivation. Preserve an earlier valid objection if the reviews did not answer it. \
+        Count each validated, complete review once and group equivalent current recommendations under the same user criterion. Use the post-review majority by default. \
+        Reconsider an earlier derivation as evidence, without counting it as another vote after that member revised. Override the reviewed majority only after identifying and citing the specific failed step or evidence that overturns its support, and explain how that changes the result. A plausible alternate reading alone is insufficient. Preserve earlier objections the reviews did not answer. \
         If an assumption is necessary to choose, state it and how it affects the answer; if the decision can proceed under it, give the useful conditional conclusion. \
         Do not invent facts, proposals or user requirements. Treat verification labels and reports with validation errors as participant claims; unmatched quotations do not establish evidence. \
         Report any unresolved issue that changes the result. Respect the actual coverage. Missing reviews mean no cross-review. \

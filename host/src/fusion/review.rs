@@ -11,6 +11,7 @@ For each consequential own position, quote your original answer and state whethe
 Keep the original evidential standard: a claim that is not contradicted is not thereby established. Use a countermodel or missing premise to challenge an unsupported selection. Entity labels do not supply unknown attributes. Return ONLY JSON. current_answer must directly answer the assigned discussion task with your current, self-contained position, including any material uncertainty; the remaining fields explain only consequential changes, not a full meeting transcript:
 {"participant":"your ID","current_answer":"your current answer to the assigned discussion task","responses":[{"participant":"other ID","quote":"exact excerpt from their source quote in moderator_map","decision":"agree|disagree|qualify|insufficient_information","reason":"reason"}],"self_review":[{"original_quote":"exact excerpt from your original_analysis","decision":"maintain|revise|withdraw","updated_position":"your current position","reason":"why"}],"mapping_corrections":[{"summary_quote":"exact excerpt from moderator_map","source_quote":"exact visible original excerpt supporting your correction","correction":"what the map got wrong","reason":"why"}],"additions":[{"kind":"proposal|unverified_claim|verified_fact","content":"new material","evidence":[{"source_id":"request or evidence:N or snapshot:<path>","sha256":"version from the source manifest or read tool","quote":"exact source excerpt"}]}]}
 Optionally add objections:[{"participant":"source participant ID","quote":"exact excerpt from your original_analysis, current_answer, or the named participant source quote in moderator_map","reason":"decisive counterexample or missing premise","effect":"how it could change the answer"}]. Include only decision-critical objections that still need explicit disposition, not stylistic differences. A new counterexample may quote your own current_answer. These remain attributed arguments, not verified facts.
+Also supply recommendation as a short standalone statement of your current conclusion, including conditions that affect its application. For a closed task, use the exact complete answer in the requested format. Put supporting reasoning in current_answer. Omit recommendation or use null when you cannot support one definite choice. The recommendation reflects this review, including any change from the first answer.
 For a mapping correction, summary_path selects text within moderator_map (with or without a /moderator_map prefix). For source_path, /original_analysis selects your own visible report, /original_analysis/answer selects a field when that report is JSON, and /moderator_map/.../quote selects a visible participant excerpt. Use source_quote to copy a short exact excerpt from a plain-text report. Inline request and evidence references can omit sha256; the host fills it from the frozen source. A proposal or unverified_claim may omit evidence. For snapshot references also include start_line and end_line (one-based, at most 400 lines) matching the read tool result. Inline sources do not use line fields. Never cite a moderator/participant statement, background summary or a fabricated label as source-verified evidence. An unavailable source must remain an unverified_claim. All four arrays must exist and may be empty except self_review, which must address your own answer. Do not repeat the entire original plan. A verified_fact label is not a claim that the whole proposal was tested."#;
 
 pub(super) fn prompt(
@@ -41,6 +42,8 @@ pub(super) fn prompt(
 struct Review {
     participant: String,
     current_answer: String,
+    #[serde(default)]
+    recommendation: Option<String>,
     responses: Vec<Response>,
     self_review: Vec<Revision>,
     mapping_corrections: Vec<Correction>,
@@ -226,6 +229,13 @@ pub(super) fn validate(
     ensure!(
         !review.current_answer.trim().is_empty(),
         "Missing current answer to the topic"
+    );
+    ensure!(
+        review
+            .recommendation
+            .as_ref()
+            .is_none_or(|text| !text.trim().is_empty()),
+        "Use null for an absent recommendation"
     );
     let own = packet["original_analysis"]
         .as_str()
