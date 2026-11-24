@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) const INSTRUCTIONS: &str = r#"You are the moderator organizing the supplied analyses and deciding what is worth checking. Return ONLY JSON with these four arrays:
 {"consensus":[{"point":"existing shared view","sources":[{"participant":"P1","quote":"exact excerpt"}]}],"issues":[{"topic":"existing disagreement","stances":[{"participant":"P1","status":"stated","position":"faithful summary","quote":"exact excerpt"},{"participant":"P2","status":"not_mentioned","position":"","quote":""}]}],"excluded":[{"participant":"P1","quote":"exact excerpt of existing statement","reason":"why it is outside an existing boundary or unsuitable for continued discussion","basis":"exact excerpt of an existing task boundary from Decision input"}],"review_focus":["question whose resolution could change the conclusion or next action"]}
-For a participant citation, use a short exact quote from the visible response. When the response is a JSON object, quote_path may instead select a relevant string in that response, such as /answer or /support. For a plain-text response, supply quote.
+For a participant citation, prefer a short exact quote from the visible response. When the response is a JSON object, quote_path may instead select a relevant string in that response, such as /answer or /support. Use quote_path /response only if the entire visible response is relevant and fits the report capacity.
 1. Consensus is ONLY the intersection explicitly stated by EVERY supplied participant. Cite an exact excerpt from each participant. Agreement does not establish truth. Do not upgrade shared assumptions to verified facts.
 2. Issues contain ONLY materially different existing claims, with at least two explicitly stated positions. Include every supplied participant once; mark an unmentioned position as not_mentioned with empty position and quote. Silence is not opposition. Preserve qualifications; do not invent a conflict from complementary details or omissions.
 3. Excluded contains ONLY existing statements that exceed explicit task constraints/scope or are otherwise unsuitable under an existing boundary in Decision input. Quote both the statement and that boundary. Do not exclude a minority view, an unfamiliar approach or a statement merely because you think it is wrong. With no applicable existing boundary, do not invent one.
@@ -155,7 +155,8 @@ pub(super) fn expand_citations(text: &str, prompt: &str) -> Result<String> {
         .iter()
         .filter_map(|row| {
             let id = row["participant"].as_str()?;
-            Some((id, parse_json::<Value>(row["response"].as_str()?).ok()?))
+            let response = row["response"].as_str()?;
+            Some((id, (response, parse_json::<Value>(response).ok())))
         })
         .collect();
     let expand_rows = |rows: &mut Value| -> Result<()> {
@@ -170,7 +171,11 @@ pub(super) fn expand_citations(text: &str, prompt: &str) -> Result<String> {
                 .and_then(Value::as_str)
                 .and_then(|id| sources.get(id));
             expand(row, "quote_path", "quote", |path| {
-                source.and_then(|value| select_text(value, path))
+                let (response, fields) = source?;
+                if path == "/response" {
+                    return Some(*response).filter(|text| !text.trim().is_empty());
+                }
+                select_text(fields.as_ref()?, path)
             })?;
         }
         Ok(())
@@ -323,11 +328,11 @@ mod tests {
         });
         let analyses = serde_json::json!([
             {"participant":"P1","response":serde_json::json!({"answer":r#"Keep "existing data"."#}).to_string()},
-            {"participant":"P2","response":"{\"answer\":\"Keep data.\"}"}
+            {"participant":"P2","response":"Keep data."}
         ]);
         let prompt = format!("\nDecision input:\n{input}\nIndependent analyses:\n{analyses}");
         let mut map = serde_json::json!({"consensus":[{"point":"Keep data","sources":[
-            {"participant":"P1","quote_path":"/answer"},{"participant":"P2","quote_path":"/answer"}
+            {"participant":"P1","quote_path":"/answer"},{"participant":"P2","quote_path":"/response"}
         ]}],"issues":[],"excluded":[]});
         let expanded = expand_citations(&map.to_string(), &prompt).unwrap();
         validate_shape(&expanded, 2).unwrap();
@@ -337,6 +342,13 @@ mod tests {
             expanded["consensus"][0]["sources"][0]["quote"],
             "Keep \"existing data\"."
         );
+        assert_eq!(
+            expanded["consensus"][0]["sources"][1]["quote"],
+            "Keep data."
+        );
+        map["consensus"][0]["sources"][1]["quote_path"] = serde_json::json!("/answer");
+        assert!(expand_citations(&map.to_string(), &prompt).is_err());
+        map["consensus"][0]["sources"][1]["quote_path"] = serde_json::json!("/response");
         map["consensus"][0]["sources"][0]["participant"] = serde_json::json!("P3");
         assert!(expand_citations(&map.to_string(), &prompt).is_err());
     }

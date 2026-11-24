@@ -79,7 +79,7 @@ pub(super) async fn collect(
         Err(error) => error.to_string(),
     };
     let citation_repair = match phase {
-        "issue_mapping" => "For a participant citation, copy a short exact quote from the named participant’s visible response. If the visible response is a JSON object, quote_path may select a relevant substantive string such as /answer or /support. For a plain-text response, supply quote.",
+        "issue_mapping" => "For a participant citation, copy a short exact quote from the named participant’s visible response. If the visible response is a JSON object, quote_path may select a relevant substantive string such as /answer or /support. Use quote_path /response only if the entire visible response is relevant and fits the report capacity.",
         "reviewing" => "In a mapping correction, use a short exact source_quote or select your own report with source_path /original_analysis. A nested field such as /original_analysis/answer is available when your report is JSON. For another participant, cite only their visible quote under moderator_map.",
         "synthesizing" => "For disposition citation errors, fix only the failing basis entry. Prefer a source_path to a relevant text field of the named source. For participant reports, /response selects the report itself. Otherwise copy an exact quote from that source.",
         _ => "",
