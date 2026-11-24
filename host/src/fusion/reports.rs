@@ -78,8 +78,13 @@ pub(super) async fn collect(
         }
         Err(error) => error.to_string(),
     };
+    let citation_repair = if phase == "issue_mapping" {
+        "For a participant citation, copy a short exact quote from the named participant’s visible response. If the visible response is a JSON object, quote_path may select a relevant substantive string such as /answer or /support. For a plain-text response, supply quote."
+    } else {
+        "For disposition citation errors, fix only the failing basis entry. Prefer a source_path to a relevant text field of the named source. For participant reports, /response selects the report itself. Otherwise copy an exact quote from that source."
+    };
     let message = format!(
-        "You have ONE report repair opportunity. Revise ONLY your last final report using the existing work in this conversation. Do not repeat the task, investigate again, call tools or add new facts. Fix ALL listed fields, not only the first error. For formatting errors, return one JSON object with escaped string values. For disposition citation errors, fix only the failing basis entry. Prefer a source_path to a relevant text field of the named source. For participant reports, /response selects the report itself. Otherwise copy an exact quote from that source. Validation error messages are diagnostics, not source evidence. Preserve unaffected dispositions. Preserve valid content and the current answer unless the reported source error changes its support; then correct the inference and resulting answer explicitly. Return a complete replacement report in the same required format. Participant quotations must copy the named participant’s visible wording; typography differences are allowed, paraphrases are not quotes. Evidence citations must identify a supplied source, its version and a matching original excerpt. If a verified_fact cannot cite a source, qualify it as an unverified_claim rather than inventing a reference. No commentary about the revision. Validation feedback: {first_error}. Final report capacity: {capacity} UTF-8 bytes in its downstream representation; this is not a thinking-token budget."
+        "You have ONE report repair opportunity. Revise ONLY your last final report using the existing work in this conversation. Do not repeat the task, investigate again, call tools or add new facts. Fix ALL listed fields, not only the first error. For formatting errors, return one JSON object with escaped string values. {citation_repair} Validation error messages are diagnostics, not source evidence. Preserve unaffected dispositions. Preserve valid content and the current answer unless the reported source error changes its support; then correct the inference and resulting answer explicitly. Return a complete replacement report in the same required format. Participant quotations must copy the named participant’s visible wording; typography differences are allowed, paraphrases are not quotes. Evidence citations must identify a supplied source, its version and a matching original excerpt. If a verified_fact cannot cite a source, qualify it as an unverified_claim rather than inventing a reference. No commentary about the revision. Validation feedback: {first_error}. Final report capacity: {capacity} UTF-8 bytes in its downstream representation; this is not a thinking-token budget."
     );
     let repaired = match session.generate(message, true).await {
         Ok(text) => text,
@@ -290,6 +295,9 @@ mod tests {
         assert!(answer.text.contains("consensus"));
         assert_eq!(session.requests.len(), 2);
         assert!(session.requests[1].1);
+        assert!(session.requests[1].0.contains("quote_path"));
+        assert!(session.requests[1].0.contains("short exact quote"));
+        assert!(!session.requests[1].0.contains("/response"));
     }
     #[tokio::test]
     async fn stops_after_one_repair_and_retains_unvalidated_public_report() {

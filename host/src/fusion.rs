@@ -289,7 +289,8 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         "Return your public report as plain text or Markdown without a JSON envelope."
     };
     let coverage_check = evidence::COVERAGE_CHECK;
-    let mut analyses = panel(&ctx, &eligible, "analyzing", &format!("{intro}\n{grounding}\nDecision input:\n{input}\nIndependently answer the discussion task within the original user request. {coverage_check} {report_format} Do not assume other participants' views."), None).await?;
+    let reproducible_check = evidence::REPRODUCIBLE_CHECK;
+    let mut analyses = panel(&ctx, &eligible, "analyzing", &format!("{intro}\n{grounding}\nDecision input:\n{input}\nIndependently answer the discussion task within the original user request. {coverage_check} {reproducible_check} {report_format} Do not assume other participants' views."), None).await?;
     if analyses.is_empty() {
         ctx.note(
             "no_participants",
@@ -304,6 +305,8 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     }
     let closed_consensus =
         run.input.answer_only && answer::clear_agreement(&analyses, config.panel.len());
+    // The map can cite fields in the original structured reports.
+    let mut mapping_analyses = analyses.clone();
     if run.input.answer_only {
         for analysis in &mut analyses {
             if let Some(parsed) = analysis["response"]
@@ -335,7 +338,6 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
             report.note("participants_reduced", "analyzing", None, None);
         }
     })?;
-    let mut mapping_analyses = analyses.clone();
     fit_material(&ctx, "analyzing", &mut mapping_analyses)?;
     let first = serde_json::to_string(&mapping_analyses)?;
     let mut issues = json!({"issues":[]});
