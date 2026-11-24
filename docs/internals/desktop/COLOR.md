@@ -178,7 +178,7 @@ Checked when a color theme is added, and pinned for the terminal palettes by
 | `surface`        | `#ffffff` | `#161b22` | card / panel / popup surface         |
 | `surface-panel`  | `#f8faff` | `#11161d` | right context panel base             |
 | `surface-subtle` | `#f1f4f8` | `#1d232c` | secondary surface (hover, segmented) |
-| `surface-selected` | accent 14% in `surface` | accent 20% in `surface` | a list's current row (rail selection) |
+| `surface-selected` | accent 14% in `surface` | accent 20% in `surface` | a list's current row, or a toggle's chosen side |
 | `code-surface`   | `#f6f8fa` | `#0f141a` | code block background                |
 | `line`           | `#d9dee7` | `#2b333d` | standard border                      |
 | `line-soft`      | `#e8edf4` | `#222a34` | soft border / divider                |
@@ -301,8 +301,10 @@ can be forgotten when a theme is added.
 
 - Text → `ink` / `ink-soft` / `ink-muted` / `ink-strong`
 - Background → `canvas` / `surface` / `surface-panel` / `surface-subtle` / `code-surface`
-- A list's *current* row → `surface-selected` (`surface-subtle` is hover: never
-  paint selection with it, or hovering a second row makes the two identical)
+- A list's *current* row, or the chosen side of a two-way toggle → `surface-selected`
+  (`surface-subtle` is hover: never paint selection with it, or hovering a second
+  row makes the two identical; `surface` on a `surface-subtle` track is 1.05:1 in
+  the dark rendition, so it reads as unpainted)
 - Border → `line` / `line-soft`
 - Primary action / active → `accent` for text, border and icons; `accent-fill`
   (+ `accent-fill-hover` / `accent-fill-disabled`) for solid buttons; focus ring → `focus`
