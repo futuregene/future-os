@@ -290,7 +290,7 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     };
     let coverage_check = evidence::COVERAGE_CHECK;
     let reproducible_check = evidence::REPRODUCIBLE_CHECK;
-    let mut analyses = panel(&ctx, &eligible, "analyzing", &format!("{intro}\n{grounding}\nDecision input:\n{input}\nIndependently answer the discussion task within the original user request. {coverage_check} {reproducible_check} {report_format} Do not assume other participants' views."), None).await?;
+    let analyses = panel(&ctx, &eligible, "analyzing", &format!("{intro}\n{grounding}\nDecision input:\n{input}\nIndependently answer the discussion task within the original user request. {coverage_check} {reproducible_check} {report_format} Do not assume other participants' views."), None).await?;
     if analyses.is_empty() {
         ctx.note(
             "no_participants",
@@ -305,18 +305,8 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     }
     let closed_consensus =
         run.input.answer_only && answer::clear_agreement(&analyses, config.panel.len());
-    // The map can cite fields in the original structured reports.
+    // Keep the original structured fields addressable in mapping and review.
     let mut mapping_analyses = analyses.clone();
-    if run.input.answer_only {
-        for analysis in &mut analyses {
-            if let Some(parsed) = analysis["response"]
-                .as_str()
-                .and_then(|s| answer::parse(s).ok())
-            {
-                analysis["response"] = json!(answer::public_text(parsed));
-            }
-        }
-    }
     let active = analyses
         .iter()
         .filter_map(|v| {
@@ -499,6 +489,13 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     let analysis_count = analyses.len();
     let mut current = Vec::with_capacity(analysis_count + reviews.len());
     for mut analysis in analyses {
+        if let Some(parsed) = analysis["response"]
+            .as_str()
+            .filter(|_| run.input.answer_only)
+            .and_then(|text| answer::parse(text).ok())
+        {
+            analysis["response"] = json!(answer::public_text(parsed));
+        }
         let reviewed = reviews
             .iter()
             .find(|r| r["participant"] == analysis["participant"]);

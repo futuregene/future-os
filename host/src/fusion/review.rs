@@ -11,7 +11,7 @@ For each consequential own position, quote your original answer and state whethe
 Keep the original evidential standard: a claim that is not contradicted is not thereby established. Use a countermodel or missing premise to challenge an unsupported selection. Entity labels do not supply unknown attributes. Return ONLY JSON. current_answer must directly answer the assigned discussion task with your current, self-contained position, including any material uncertainty; the remaining fields explain only consequential changes, not a full meeting transcript:
 {"participant":"your ID","current_answer":"your current answer to the assigned discussion task","responses":[{"participant":"other ID","quote":"exact excerpt from their source quote in moderator_map","decision":"agree|disagree|qualify|insufficient_information","reason":"reason"}],"self_review":[{"original_quote":"exact excerpt from your original_analysis","decision":"maintain|revise|withdraw","updated_position":"your current position","reason":"why"}],"mapping_corrections":[{"summary_quote":"exact excerpt from moderator_map","source_quote":"exact visible original excerpt supporting your correction","correction":"what the map got wrong","reason":"why"}],"additions":[{"kind":"proposal|unverified_claim|verified_fact","content":"new material","evidence":[{"source_id":"request or evidence:N or snapshot:<path>","sha256":"version from the source manifest or read tool","quote":"exact source excerpt"}]}]}
 Optionally add objections:[{"participant":"source participant ID","quote":"exact excerpt from your original_analysis, current_answer, or the named participant source quote in moderator_map","reason":"decisive counterexample or missing premise","effect":"how it could change the answer"}]. Include only decision-critical objections that still need explicit disposition, not stylistic differences. A new counterexample may quote your own current_answer. These remain attributed arguments, not verified facts.
-For a mapping correction, you can use summary_path within moderator_map and source_path starting with /original_analysis/ or /moderator_map/ instead of copying those quotes. Paths under /moderator_map/ used as original sources must point to a participant quote. Inline request and evidence references can omit sha256; the host fills it from the frozen source. A proposal or unverified_claim may omit evidence. For snapshot references also include start_line and end_line (one-based, at most 400 lines) matching the read tool result. Inline sources do not use line fields. Never cite a moderator/participant statement, background summary or a fabricated label as source-verified evidence. An unavailable source must remain an unverified_claim. All four arrays must exist and may be empty except self_review, which must address your own answer. Do not repeat the entire original plan. A verified_fact label is not a claim that the whole proposal was tested."#;
+For a mapping correction, summary_path selects text within moderator_map (with or without a /moderator_map prefix). For source_path, /original_analysis selects your own visible report, /original_analysis/answer selects a field when that report is JSON, and /moderator_map/.../quote selects a visible participant excerpt. Use source_quote to copy a short exact excerpt from a plain-text report. Inline request and evidence references can omit sha256; the host fills it from the frozen source. A proposal or unverified_claim may omit evidence. For snapshot references also include start_line and end_line (one-based, at most 400 lines) matching the read tool result. Inline sources do not use line fields. Never cite a moderator/participant statement, background summary or a fabricated label as source-verified evidence. An unavailable source must remain an unverified_claim. All four arrays must exist and may be empty except self_review, which must address your own answer. Do not repeat the entire original plan. A verified_fact label is not a claim that the whole proposal was tested."#;
 
 pub(super) fn prompt(
     participant: &str,
@@ -150,9 +150,8 @@ pub(super) fn expand_citations(
         .context("Missing review packet")?;
     let packet: Value = serde_json::from_str(packet)?;
     let mapping = &packet["moderator_map"];
-    let own = packet["original_analysis"]
-        .as_str()
-        .and_then(|text| parse_json::<Value>(text).ok());
+    let own = packet["original_analysis"].as_str();
+    let own_fields = own.and_then(|text| parse_json::<Value>(text).ok());
     let evidence = super::evidence::Sources::new(task, None);
     if let Some(corrections) = review
         .get_mut("mapping_corrections")
@@ -161,10 +160,16 @@ pub(super) fn expand_citations(
         for row in corrections.iter_mut().filter_map(Value::as_object_mut) {
             expand(row, "summary_path", "summary_quote", |path| {
                 select_text(mapping, path)
+                    .or_else(|| select_text(mapping, path.strip_prefix("/moderator_map")?))
             })?;
             expand(row, "source_path", "source_quote", |path| {
+                if path == "/original_analysis" {
+                    return own.filter(|text| !text.trim().is_empty());
+                }
                 if let Some(path) = path.strip_prefix("/original_analysis") {
-                    return own.as_ref().and_then(|value| select_text(value, path));
+                    return own_fields
+                        .as_ref()
+                        .and_then(|value| select_text(value, path));
                 }
                 let path = path.strip_prefix("/moderator_map")?;
                 let (parent, field) = path.rsplit_once('/')?;
@@ -390,6 +395,28 @@ mod tests {
         assert!(prompt.contains("I prefer SQLite."));
         assert!(prompt.contains("Use files."));
         validate(&review.to_string(), &prompt, "P1", &task, None).unwrap();
+    }
+
+    #[test]
+    fn correction_can_reference_the_reviewers_own_plain_report() {
+        let (mut review, prompt, task) = fixture();
+        review["mapping_corrections"] = json!([{
+            "summary_path":"/moderator_map/issues/0/stances/0/position", "source_path":"/original_analysis",
+            "correction":"This is a preference, not proof", "reason":"The original is qualified"
+        }]);
+        let expanded = expand_citations(&review.to_string(), &prompt, &task).unwrap();
+        validate(&expanded, &prompt, "P1", &task, None).unwrap();
+        let expanded: Value = parse_json(&expanded).unwrap();
+        assert_eq!(
+            expanded["mapping_corrections"][0]["source_quote"],
+            "I prefer SQLite. Keep data."
+        );
+        assert_eq!(
+            expanded["mapping_corrections"][0]["summary_quote"],
+            "SQLite"
+        );
+        review["mapping_corrections"][0]["source_path"] = json!("/original_analysis/answer");
+        assert!(expand_citations(&review.to_string(), &prompt, &task).is_err());
     }
     #[test]
     fn quote_layout_changes_pass_and_repair_feedback_names_all_bad_fields() {
