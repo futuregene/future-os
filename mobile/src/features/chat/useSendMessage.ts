@@ -156,8 +156,34 @@ export function sendFailureText(error: unknown, holder: string | undefined): Fai
   // else: the reader can act on a file, not on a send that "failed".
   const attachment = attachmentFailureText(code);
   if (attachment) return attachment;
+  // Everything this build can name is above. What is left is a refusal only the
+  // desktop (or the Agent behind it) knows the reason for — and "message failed
+  // to send" reads as a verdict on the words, which is the one thing that was
+  // fine. So the unknown remainder carries the desktop's own words: the reader
+  // learns it was not their text, and a report of a failure no build can name
+  // arrives with what is needed to name it (the desktop that answered is another
+  // machine, and its log is not reachable from the phone).
+  const detail = code.replace(/\s+/g, " ").trim();
+  if (detail)
+    return {
+      key: "chat.sendFailedWith",
+      params: {
+        detail: detail.length > SEND_FAILURE_DETAIL_LIMIT
+          ? `${detail.slice(0, SEND_FAILURE_DETAIL_LIMIT).trimEnd()}…`
+          : detail,
+      },
+    };
   return { key: "chat.sendFailed" };
 }
+
+/**
+ * How much of the desktop's own words a send failure shows.
+ *
+ * One line, not a stack trace: a toast has room for a sentence, and the point is
+ * to name the cause rather than to be complete. The whole text is still in the
+ * app's console log when a report needs more.
+ */
+export const SEND_FAILURE_DETAIL_LIMIT = 140;
 
 export interface SendMessageOptions {
   remote: Remote;

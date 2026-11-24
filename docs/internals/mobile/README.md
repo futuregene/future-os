@@ -173,6 +173,16 @@ development and distribution maintenance.
   working.
 - The chat top shows "Workspace · Name" or "Non-workspace session", including
   for newly created sessions before any message is sent.
+- A failed send names which failure it was instead of one sentence for all of
+  them: the desktop still running a reply, another device holding it, a prompt
+  too large, a compaction in progress, a dropped connection, a file that never
+  transferred, a file the desktop's own quotas refused, or a waiting message
+  that left the queue before it could be changed. Whatever is left over — a
+  refusal only the paired machine (or the Agent behind it) can name — is shown
+  with that machine's own words, on one line. The old catch-all pointed at the
+  message's text, which is the one part that was fine; and the machine that
+  refused is another computer whose log the phone cannot read, so the wording
+  is also the only diagnosis a report of it can carry.
 - System notification permission is requested after pairing connects.
   Notifications fire when the current desktop's task completes or fails —
   including the currently open session; manual stop does not send a completion
