@@ -2004,7 +2004,10 @@ def embed_image(path: Path, width: int) -> str:
 def build_pdf(args: argparse.Namespace) -> int:
     content = json.loads(Path(args.content).read_text(encoding="utf-8"))
     shots = Path(args.out).resolve()
-    style = (SCRIPTS / "document.css").read_text(encoding="utf-8")
+    # `style` lets one document add rules on top of the shared sheet, for a page
+    # rhythm the defaults cannot express (a short brief that keeps each item
+    # with its figures, say) without changing every other document.
+    style = (SCRIPTS / "document.css").read_text(encoding="utf-8") + content.get("style", "")
 
     def figure(spec: dict) -> str:
         source = shots / spec["file"]

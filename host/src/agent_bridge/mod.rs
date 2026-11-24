@@ -144,7 +144,9 @@ use self::reconciliation::{
     WATCHDOG_ORPHAN_SECS, WATCHDOG_RECONCILE_GIVE_UP_PASSES,
 };
 use self::replica::AGENT_REPLICAS;
-use self::run_control::{mark_run_completed_if_active, mark_run_failed_if_active};
+use self::run_control::{
+    mark_run_cancelled_if_active, mark_run_completed_if_active, mark_run_failed_if_active,
+};
 pub use self::session::workspace_path_for_thread;
 use self::session::{
     ensure_agent_session, ensure_named_agent_session, set_agent_choice_cards,

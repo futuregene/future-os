@@ -180,7 +180,27 @@ fn resolve_file_reference(
     let absolute = if raw_ref.is_absolute() {
         std::path::PathBuf::from(raw)
     } else if let Some(root) = workspace_path.as_deref() {
-        std::path::Path::new(root).join(raw)
+        // A leading separator with no drive in front of it (`/notes/a.md`, the
+        // POSIX spelling a model writes for a file it just saved) is *rooted*
+        // on Windows, not relative: `join` keeps the workspace's drive and
+        // throws the workspace away, so `D:\work` + `/a.md` became `D:\a.md`.
+        // That path does not exist, and "show in folder" on it opened
+        // Documents — the opposite of what the link promised. Such a path names
+        // a workspace file, so unless the drive-less form already spells the
+        // workspace out (`/work/a.md` for `D:\work`), the separator is dropped
+        // and the rest is anchored at the workspace root. On Unix `/a.md` is
+        // absolute and never reaches this arm.
+        let root_path = std::path::Path::new(root);
+        let rooted = root_path.join(raw);
+        let relative = raw.trim_start_matches(['/', '\\']);
+        if relative.is_empty() || rooted.strip_prefix(root_path).is_ok() {
+            // A bare separator names a root rather than a file, and a path that
+            // already lies inside the workspace keeps the spelling it was
+            // written with.
+            rooted
+        } else {
+            root_path.join(relative)
+        }
     } else {
         // No workspace root to anchor a relative path; treat it as absolute.
         std::path::PathBuf::from(format!("/{raw}"))
@@ -419,6 +439,43 @@ mod tests {
         let file = resolve_file_reference(&conn, "ws1", "/").expect("resolve");
         assert_eq!(file.name, "");
         assert!(!file.inside_workspace);
+    }
+
+    /// A destination rooted without a drive (`/notes/a.md`) names a workspace
+    /// file. Windows treats it as *rooted* rather than absolute, and joining it
+    /// kept the workspace's drive while dropping the workspace itself — the
+    /// link then pointed at `D:\notes\a.md`, which does not exist, and "show in
+    /// folder" opened Documents. Off Windows `/notes/a.md` really is absolute,
+    /// so the arm only exists here.
+    #[cfg(windows)]
+    #[test]
+    fn file_reference_drive_less_root_path_is_anchored_at_the_workspace() {
+        let conn = test_conn();
+        conn.execute_batch(
+            "INSERT INTO workspaces (
+                 id, name, kind, path, cleanup_status, created_at, updated_at
+             ) VALUES ('ws2', 'WS2', 'temporary', 'C:\\work\\proj', 'active', 1, 1);",
+        )
+        .expect("seed workspace");
+
+        let file = resolve_file_reference(&conn, "ws2", "/notes/a.md").expect("resolve");
+        let expected = std::path::Path::new(r"C:\work\proj").join("notes/a.md");
+        assert_eq!(file.path, expected.to_string_lossy());
+        assert_eq!(file.name, "a.md");
+        assert!(file.inside_workspace);
+        assert_eq!(file.relative_path.as_deref(), Some("notes/a.md"));
+
+        // Backslashes are the same spelling on Windows.
+        let backslashed = resolve_file_reference(&conn, "ws2", r"\notes\b.md").expect("resolve");
+        assert_eq!(
+            backslashed.path,
+            expected.with_file_name("b.md").to_string_lossy()
+        );
+
+        // A bare separator stays a root: it belongs to no workspace file.
+        let root = resolve_file_reference(&conn, "ws2", "/").expect("resolve");
+        assert_eq!(root.name, "");
+        assert!(!root.inside_workspace);
     }
 
     /// A path the model wrote as absolute is kept verbatim instead of being

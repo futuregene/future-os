@@ -70,6 +70,51 @@ export const QUEUED_SEND_POLICY = "enqueue_coalescing";
  * The send queue and a failed manual send both report through this, so the
  * wording of "the desktop is busy" is one sentence rather than two.
  */
+/**
+ * What a file that never got there means, when the failure was about the file.
+ *
+ * A prompt with attachments fails in three places, and only the last is the
+ * prompt. The phone reads its own copy back, the desktop takes the upload and
+ * then claims it for the conversation, and either can refuse. Every one of those
+ * arrived as "message failed to send", which points at the words instead — and on
+ * the one path that adds files to a waiting message it also read as a send fault
+ * for a message whose words were fine. The desktop answers most of these in prose
+ * rather than in a code, so the phrases are matched, as the queue's own refusals
+ * already are.
+ *
+ * Null means the failure was not about the files, and the caller keeps looking.
+ */
+function attachmentFailureText(code: string): FailureText | null {
+  // The phone's own copy: a camera or a conversion left a temp file that is empty
+  // or gone by the time the transfer reads it back, or the desktop could not
+  // decode the bytes it received.
+  if (code === "attachment_read_stalled"
+    || code.includes("Unreadable image")
+    || code.includes("Undecodable image"))
+    return { key: "chat.attachmentUnreadable" };
+  if (code === "upload_chunk_failed"
+    || code === "invalid_upload_chunk_size"
+    || code === "download_chunk_failed"
+    || code.includes("Upload expired or does not exist")
+    || code.includes("uploaded attachment expired")
+    || code.includes("An attachment is still uploading")
+    || code.includes("Upload is incomplete")
+    || code.includes("same attachment cannot be added twice"))
+    return { key: "chat.attachmentUploadFailed" };
+  // The desktop's quotas, said with its own numbers. The phone counts the same
+  // few, so reaching one of these means the two disagreed about a file — the
+  // sentence names the limit rather than pretending the send faulted.
+  if (code.includes("10 MiB") || code.includes("10 MB"))
+    return { key: "attachment.errors.attachment_file_too_large" };
+  if (code.includes("20 MiB") || code.includes("20 MB"))
+    return { key: "attachment.errors.attachment_total_size" };
+  if (/at most \d+ attachments?/.test(code))
+    return { key: "attachment.errors.attachment_count" };
+  if (/at most \d+ images?/.test(code))
+    return { key: "attachment.errors.attachment_image_count" };
+  return null;
+}
+
 export function sendFailureText(error: unknown, holder: string | undefined): FailureText {
   const code = error instanceof Error ? error.message : "";
   // `superseded` is the desktop refusing because another device holds it. The
@@ -103,9 +148,42 @@ export function sendFailureText(error: unknown, holder: string | undefined): Fai
   // timed out or lost its socket is the same story.
   if (code === "not_connected" || code === "pairing_changed"
     || code === "remote_access_changed") return { key: "chat.sendOffline" };
+  // The client was closed under the send (a generation swap, the app handing the
+  // connection over): nothing was delivered, and it is not the text's fault.
+  if (code === "client_closed") return { key: "chat.sendOffline" };
   if (classifyNatsError(error)) return { key: "chat.sendOffline" };
+  // A file that never got there, before the one sentence that covers everything
+  // else: the reader can act on a file, not on a send that "failed".
+  const attachment = attachmentFailureText(code);
+  if (attachment) return attachment;
+  // Everything this build can name is above. What is left is a refusal only the
+  // desktop (or the Agent behind it) knows the reason for — and "message failed
+  // to send" reads as a verdict on the words, which is the one thing that was
+  // fine. So the unknown remainder carries the desktop's own words: the reader
+  // learns it was not their text, and a report of a failure no build can name
+  // arrives with what is needed to name it (the desktop that answered is another
+  // machine, and its log is not reachable from the phone).
+  const detail = code.replace(/\s+/g, " ").trim();
+  if (detail)
+    return {
+      key: "chat.sendFailedWith",
+      params: {
+        detail: detail.length > SEND_FAILURE_DETAIL_LIMIT
+          ? `${detail.slice(0, SEND_FAILURE_DETAIL_LIMIT).trimEnd()}…`
+          : detail,
+      },
+    };
   return { key: "chat.sendFailed" };
 }
+
+/**
+ * How much of the desktop's own words a send failure shows.
+ *
+ * One line, not a stack trace: a toast has room for a sentence, and the point is
+ * to name the cause rather than to be complete. The whole text is still in the
+ * app's console log when a report needs more.
+ */
+export const SEND_FAILURE_DETAIL_LIMIT = 140;
 
 export interface SendMessageOptions {
   remote: Remote;

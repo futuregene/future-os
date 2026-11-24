@@ -1,6 +1,12 @@
 import { createElement, useLayoutEffect } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { useSendMessage, QUEUED_SEND_POLICY, type SendMessageApi } from "../useSendMessage";
+import {
+  useSendMessage,
+  QUEUED_SEND_POLICY,
+  SEND_FAILURE_DETAIL_LIMIT,
+  sendFailureText,
+  type SendMessageApi,
+} from "../useSendMessage";
 import { showToast } from "../utils";
 import type { HistoryAttachment, MobileAttachment, TimelineItem } from "../../../remote/types";
 
@@ -199,7 +205,7 @@ describe("sending", () => {
     const { setMessage } = mount({ remote, message: "ask #Fix the flaky test", sessionRefs: refs });
     await act(async () => { await api.send(); });
     expect(setMessage).toHaveBeenCalledWith("ask #Fix the flaky test");
-    expect(toast).toHaveBeenCalledWith("t:chat.sendFailed");
+    expect(toast).toHaveBeenCalledWith("t:chat.sendFailedWith");
   });
 
   test("an unknown total leaves the bar indeterminate instead of dividing by zero", async () => {
@@ -223,7 +229,9 @@ describe("sending", () => {
   test.each([
     ["send_compacting", "t:chat.compacting"],
     ["prompt_too_large", "t:chat.promptTooLarge"],
-    ["send_disconnected", "t:chat.sendFailed"],
+    // Nothing this build can name: the desktop's own words ride along, so the
+    // sentence does not blame a message that was never the problem.
+    ["send_disconnected", "t:chat.sendFailedWith"],
     // The desktop answered for itself: a run is still in flight there.
     ["session_busy: this session is still running; wait for it to finish or abort it first.", "t:chat.sessionBusy"],
     // Nothing left this device: the pairing is gone, so the text was never sent.
@@ -239,6 +247,27 @@ describe("sending", () => {
     ["run_not_queued: run `run_a` is not queued", "t:chat.queue.rowGone"],
     // A machine that takes no files at all: the sentence says what to do instead.
     ["attachment_unsupported_desktop", "t:chat.attachmentsUnsupported"],
+    // A file that never got there fails as a file, not as a message: the upload
+    // died on the phone, or the desktop could not claim what it was handed (it
+    // had expired, it was still arriving, it had been claimed already).
+    ["upload_chunk_failed", "t:chat.attachmentUploadFailed"],
+    ["An uploaded attachment expired; upload it again.", "t:chat.attachmentUploadFailed"],
+    ["An attachment is still uploading.", "t:chat.attachmentUploadFailed"],
+    ["Upload is incomplete (4096 of 5120 bytes).", "t:chat.attachmentUploadFailed"],
+    // The bytes themselves: the phone's temp copy is gone, or the desktop could
+    // not decode what arrived.
+    ["attachment_read_stalled", "t:chat.attachmentUnreadable"],
+    ["Undecodable image: bad header", "t:chat.attachmentUnreadable"],
+    // The desktop's own quotas, said with the numbers it refuses on. The phone
+    // counts the same few, so this is a disagreement about a file, not a send
+    // fault.
+    [
+      "Transfer file exceeds the 10 MiB limit (12000000 bytes).",
+      "t:attachment.errors.attachment_file_too_large",
+    ],
+    ["A message can contain at most 10 images.", "t:attachment.errors.attachment_image_count"],
+    // The connection was handed over under the send: nothing was delivered.
+    ["client_closed", "t:chat.sendOffline"],
   ])("a failed send reports %s and hands the draft back", async (error, expectedToast) => {
     const remote = remoteFor({ sendMessage: jest.fn(async () => { throw new Error(error); }) });
     const { setAttachments, setMessage, setTransferProgress } = mount({ remote, message: "keep me", attachments: [attachment] });
@@ -248,6 +277,41 @@ describe("sending", () => {
     // Nothing vanishes: the attachments stay in the composer for a retry.
     expect(setAttachments).not.toHaveBeenCalled();
     expect(setTransferProgress).toHaveBeenLastCalledWith(null);
+  });
+
+  /**
+   * Everything this build can name has a sentence of its own. What is left is a
+   * refusal only the paired machine knows the reason for, and the old fallback
+   * ("message failed to send") pointed at the words — the one part that was
+   * fine. A third report of the same toast on the same path could not be
+   * diagnosed at all, because the desktop that answered is another machine whose
+   * log the phone cannot read: so the unknown remainder says what it was told.
+   */
+  test("a refusal no sentence covers carries the desktop's own words", () => {
+    const failure = sendFailureText(
+      new Error("Unable to cancel the queued message: transport error"),
+      undefined,
+    );
+    expect(failure.key).toBe("chat.sendFailedWith");
+    expect(failure.params).toEqual({
+      detail: "Unable to cancel the queued message: transport error",
+    });
+  });
+
+  test("the words ride along on one line, cut to a toast's worth", () => {
+    const long = `Attachment transfer refused.\n\n${"x".repeat(400)}`;
+    const failure = sendFailureText(new Error(long), undefined);
+    expect(failure.key).toBe("chat.sendFailedWith");
+    const detail = (failure.params as { detail: string }).detail;
+    // A toast is one line: newlines and runs of spaces become single spaces.
+    expect(detail.startsWith("Attachment transfer refused. x")).toBe(true);
+    expect(detail.length).toBe(SEND_FAILURE_DETAIL_LIMIT + 1);
+    expect(detail.endsWith("…")).toBe(true);
+  });
+
+  test("a failure with no words keeps the plain sentence", () => {
+    for (const error of [new Error(""), new Error("   "), "boom", undefined])
+      expect(sendFailureText(error, undefined).key).toBe("chat.sendFailed");
   });
 
   test("a rejection that is not an Error still restores the draft", async () => {
@@ -359,7 +423,10 @@ describe("retrying a failed answer", () => {
     ];
     mount({ remote });
     await act(async () => { api.retryMessage(assistant({ id: "a1" })); await Promise.resolve(); await Promise.resolve(); });
-    expect(toast).toHaveBeenCalledWith("t:chat.sendFailed");
+    // Not one sentence for every refusal: the desktop's word is what the reader
+    // can act on, and a retry that could not re-attach its file is not the text's
+    // fault.
+    expect(toast).toHaveBeenCalledWith("t:chat.sendFailedWith");
     expect(remote.sendMessage).not.toHaveBeenCalled();
   });
 
@@ -471,7 +538,7 @@ describe("continuing a truncated answer", () => {
     const remote = remoteFor({ continueRun: jest.fn(async () => { throw new Error("nope"); }) });
     mount({ remote });
     await act(async () => { api.continueMessage(assistant({ id: "a1" })); await Promise.resolve(); });
-    expect(toast).toHaveBeenCalledWith("t:chat.sendFailed");
+    expect(toast).toHaveBeenCalledWith("t:chat.sendFailedWith");
   });
 
   // The desktop answered "no" instead of dropping the request: the reply is no

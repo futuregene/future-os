@@ -230,7 +230,7 @@ fn open_path_with_system(path: &str) -> Result<(), crate::AppError> {
 /// would launch the editor/PDF viewer instead, which is a different question.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub fn reveal_in_file_manager(path: String) -> Result<(), crate::AppError> {
-    reveal_in_file_manager_with(&path, reveal_with_system)
+    reveal_in_file_manager_with(&path, reveal_with_system, open_folder_with_system)
 }
 
 /// Validation + revealer, with the OS layer injectable so both arms are
@@ -239,9 +239,16 @@ pub fn reveal_in_file_manager(path: String) -> Result<(), crate::AppError> {
 /// Same credential guard as [`open_path_with`]: revealing a credential file's
 /// folder would show a directory the webview must not lead a user to, and a
 /// window left standing on it is the one thing a later screenshot could capture.
+///
+/// A path that no longer exists never reaches the OS as-is: `explorer /select`
+/// on a missing item answers by opening Documents, which says nothing about the
+/// link and reads as the same bug the link arrived to report. The link falls
+/// back to the deepest folder that still exists, and opens nothing at all when
+/// even that is gone — no window beats the wrong one.
 fn reveal_in_file_manager_with(
     path: &str,
-    reveal: impl Fn(&Path) -> Result<(), crate::AppError>,
+    mut reveal: impl FnMut(&Path) -> Result<(), crate::AppError>,
+    mut open_folder: impl FnMut(&Path) -> Result<(), crate::AppError>,
 ) -> Result<(), crate::AppError> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -249,7 +256,36 @@ fn reveal_in_file_manager_with(
     }
     let target = Path::new(trimmed);
     ensure_path_allowed(target)?;
-    reveal(target)
+    match nearest_existing(target) {
+        // The file is there: select it, exactly as before.
+        Some(existing) if existing == target => reveal(target),
+        Some(folder) => {
+            // The walk up leaves the requested path, so what replaces it is
+            // checked on its own too (a link may aim *through* a credential
+            // file, whose own name the first guard let pass).
+            ensure_path_allowed(folder)?;
+            open_folder(folder)
+        }
+        None => {
+            Err(format!("Nothing to reveal for {trimmed}: no part of that path exists.").into())
+        }
+    }
+}
+
+/// The deepest ancestor of `path` that exists, or `None` when not one part of
+/// it does (an unmounted drive, a folder moved away with everything under it).
+///
+/// `Path::ancestors` starts at the path itself, so an existing file or folder
+/// answers with itself — only a missing subject climbs.
+fn nearest_existing(path: &Path) -> Option<&Path> {
+    path.ancestors().find(|candidate| candidate.exists())
+}
+
+/// Open a folder in the OS file manager; the fallback for a revealed item that
+/// is gone.
+fn open_folder_with_system(folder: &Path) -> Result<(), crate::AppError> {
+    open::that(folder)
+        .map_err(|error| format!("Failed to open {}: {error}", folder.display()).into())
 }
 
 /// The platform arms of [`reveal_in_file_manager`]. Built from `explorer`/`open`
@@ -257,14 +293,34 @@ fn reveal_in_file_manager_with(
 /// argument and cannot be reinterpreted.
 #[cfg(target_os = "windows")]
 fn reveal_with_system(path: &Path) -> Result<(), crate::AppError> {
+    use std::os::windows::process::CommandExt;
+
     // `explorer` returns exit code 1 even on success, so its status is not
-    // evidence either way; only a failure to spawn is. `/select,` needs the
-    // path as its own argument to keep quoting intact.
+    // evidence either way; only a failure to spawn is.
     std::process::Command::new("explorer")
-        .arg(format!("/select,{}", path.display()))
+        .raw_arg(select_argument(path))
         .spawn()
         .map(|_| ())
         .map_err(|error| format!("Failed to reveal {}: {error}", path.display()).into())
+}
+
+/// The `/select,<path>` fragment Explorer parses, with the quotes around the
+/// *path* rather than around the whole switch.
+///
+/// `Command::arg` quotes its argument when it contains a space, producing
+/// `"/select,C:\a b.pdf"`, which Explorer does not parse: it opens Documents
+/// instead — a file whose name has a space seemed to reveal nowhere near itself.
+/// The documented form is `/select,"C:\a b.pdf"`, and only a raw command-line
+/// fragment can express it. The path is never passed through a shell, so the
+/// only escaping that matters is the closing quote: a trailing separator would
+/// escape it, hence the trim (a bare `C:\` root keeps its separator).
+#[cfg(target_os = "windows")]
+fn select_argument(path: &Path) -> String {
+    let mut target = path.display().to_string();
+    while target.len() > 3 && (target.ends_with('\\') || target.ends_with('/')) {
+        target.pop();
+    }
+    format!("/select,\"{target}\"")
 }
 
 /// macOS selects the item inside Finder; `-R` is a no-op "reveal" that never
@@ -466,19 +522,54 @@ mod tests {
         assert!(open_path_with(cred.to_str().unwrap(), |_| unreachable!()).is_err());
     }
 
+    /// Explorer parses `/select,"<path>"` and not `"/select,<path>"`: with the
+    /// switch inside the quotes it falls back to Documents, so "show in folder"
+    /// on a file whose name has a space opened the wrong folder entirely.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_reveal_quotes_the_path_rather_than_the_switch() {
+        assert_eq!(
+            select_argument(Path::new(r"C:\a b\c.pdf")),
+            "/select,\"C:\\a b\\c.pdf\""
+        );
+        // A trailing separator would escape the closing quote.
+        assert_eq!(
+            select_argument(Path::new(r"C:\a b\")),
+            "/select,\"C:\\a b\""
+        );
+    }
+
     #[test]
     fn reveal_path_validates_before_reaching_the_os() {
         let _home = crate::auth_store::test_support::HomeGuard::new("files_reveal_seam");
-        assert!(reveal_in_file_manager_with("   ", |_| unreachable!()).is_err());
-        assert!(reveal_in_file_manager_with("/tmp/ok", |path| {
-            assert_eq!(path, std::path::Path::new("/tmp/ok"));
-            Ok(())
-        })
-        .is_ok());
         assert!(
-            reveal_in_file_manager_with("/tmp/err", |_| Err("os failed".to_string().into()))
-                .is_err()
+            reveal_in_file_manager_with("   ", |_| unreachable!(), |_| unreachable!()).is_err()
         );
+
+        // An item that exists is still selected in place: the fallback must not
+        // hijack the ordinary case.
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("present.txt");
+        fs::write(&file, b"x").unwrap();
+        let mut revealed = None;
+        reveal_in_file_manager_with(
+            file.to_str().unwrap(),
+            |path| {
+                revealed = Some(path.to_path_buf());
+                Ok(())
+            },
+            |_| panic!("an existing file must not open its folder"),
+        )
+        .expect("reveal");
+        assert_eq!(revealed.as_deref(), Some(file.as_path()));
+
+        assert!(reveal_in_file_manager_with(
+            file.to_str().unwrap(),
+            |_| Err("os failed".to_string().into()),
+            |_| unreachable!()
+        )
+        .is_err());
+
         // The credential guard holds here too: a window standing on the folder
         // of `auth.json` is exposure the raw-bytes guard exists to prevent.
         let home = std::env::var("HOME").expect("test home");
@@ -486,7 +577,70 @@ mod tests {
         std::fs::create_dir_all(&agent_dir).unwrap();
         std::fs::write(agent_dir.join("auth.json"), "{}").unwrap();
         let cred = agent_dir.join("auth.json");
-        assert!(reveal_in_file_manager_with(cred.to_str().unwrap(), |_| unreachable!()).is_err());
+        assert!(reveal_in_file_manager_with(
+            cred.to_str().unwrap(),
+            |_| unreachable!(),
+            |_| unreachable!()
+        )
+        .is_err());
+    }
+
+    /// `explorer /select` on a path that no longer exists answers by opening
+    /// Documents, so a link to a moved file looked like a bug in the link. The
+    /// fallback lands on the deepest folder that still exists instead.
+    #[test]
+    fn reveal_falls_back_to_the_nearest_existing_folder() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("files_reveal_gone");
+        let directory = tempfile::tempdir().unwrap();
+        let kept = directory.path().join("kept");
+        fs::create_dir(&kept).unwrap();
+        let gone = kept.join("moved-away").join("report.pdf");
+
+        let mut opened = None;
+        reveal_in_file_manager_with(
+            gone.to_str().unwrap(),
+            |_| panic!("a missing file must not be revealed as-is"),
+            |folder| {
+                opened = Some(folder.to_path_buf());
+                Ok(())
+            },
+        )
+        .expect("fallback");
+        assert_eq!(opened.as_deref(), Some(kept.as_path()));
+
+        // A missing file whose own folder still exists lands one level up from
+        // the path, which is the ordinary case for a file that was deleted.
+        let deleted = kept.join("deleted.pdf");
+        let mut opened = None;
+        reveal_in_file_manager_with(
+            deleted.to_str().unwrap(),
+            |_| panic!("a missing file must not be revealed as-is"),
+            |folder| {
+                opened = Some(folder.to_path_buf());
+                Ok(())
+            },
+        )
+        .expect("fallback");
+        assert_eq!(opened.as_deref(), Some(kept.as_path()));
+    }
+
+    /// Nothing left to open means no window: `explorer` would answer a missing
+    /// path with Documents, which is the failure this whole fallback replaces.
+    #[test]
+    fn reveal_opens_nothing_when_no_part_of_the_path_exists() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("files_reveal_none");
+        // Relative and absent all the way up, so `ancestors` yields no existing
+        // candidate on either platform — a name no fixture directory carries.
+        let ghost = std::path::Path::new("futureos-no-such-root-cov100/gone/report.pdf");
+        assert_eq!(nearest_existing(ghost), None);
+
+        let err = reveal_in_file_manager_with(
+            ghost.to_str().unwrap(),
+            |_| panic!("nothing exists to reveal"),
+            |_| panic!("nothing exists to open"),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("Nothing to reveal"), "{err}");
     }
 
     #[test]
