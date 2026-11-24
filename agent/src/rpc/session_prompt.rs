@@ -420,12 +420,35 @@ impl ServerSession {
         let queue_only = self.runtime.snapshot().is_some()
             || self.runtime.has_owned_task()
             || self.scheduler.active().is_some();
-        let (ack, superseded, superseded_active) = if busy_policy
-            == crate::runtime::BusyPolicy::SupersedeSession
-        {
-            let (ack, cancelled, active) =
-                self.scheduler
-                    .supersede(client_request_id, requested_run_id, payload)?;
+        // A manual compaction settles the queue question before the busy policy
+        // can. A superseding prompt means "drop what is waiting, run mine" —
+        // but while the fence is up there is no active run to interrupt, and the
+        // messages already queued are not stale leftovers to cancel: they have
+        // waited exactly as long as this one does, behind the same summary.
+        // Interrupting anything there would be a claim the session cannot honour
+        // (the transcript is being replaced, so no run may start), and it would
+        // throw away a peer's acceptance for nothing. The prompt is therefore
+        // accepted as a plain append — `replace_queued: false` — and runs in
+        // arrival order once the checkpoint lands.
+        //
+        // The fence is read *before* the acceptance because it decides the
+        // operation, and it cannot miss the compaction's own wake: that wake is
+        // delivered under this session's write guard, which this call holds for
+        // its whole body, so it either ran already — the flag is clear and this
+        // is an ordinary prompt — or it waits for the lock and finds this one
+        // queued.
+        let fence_up = self
+            .compaction_in_progress
+            .load(std::sync::atomic::Ordering::Acquire);
+        let supersede = busy_policy == crate::runtime::BusyPolicy::SupersedeSession;
+        let replace_queued = supersede && !fence_up;
+        let (ack, superseded, superseded_active) = if supersede {
+            let (ack, cancelled, active) = self.scheduler.supersede(
+                client_request_id,
+                requested_run_id,
+                payload,
+                replace_queued,
+            )?;
             (ack, cancelled, active)
         } else {
             (
@@ -506,9 +529,10 @@ impl ServerSession {
             ack.run_id.clone(),
             AcceptedRunSnapshot { run_loop, settings },
         );
-        if busy_policy == crate::runtime::BusyPolicy::SupersedeSession
-            && (superseded_active.is_some() || self.runtime.snapshot().is_some())
-        {
+        // Only a supersede that actually replaced the queue asked for the
+        // interruption this delivers: an append (the compaction case) leaves any
+        // run alone.
+        if replace_queued && (superseded_active.is_some() || self.runtime.snapshot().is_some()) {
             if let Some(active) = self.runtime.snapshot() {
                 let _ = self.runtime.request_abort(Some(&active.run_id));
             }

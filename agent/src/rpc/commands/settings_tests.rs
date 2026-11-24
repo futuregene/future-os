@@ -658,6 +658,95 @@ fn compact_ack_does_not_wait_for_the_summary_provider() {
     ));
 }
 
+/// A prompt that asked to supersede still only queues while the summary owns the
+/// transcript: there is nothing to interrupt, and the messages already waiting
+/// are peers rather than stale leftovers, so it appends behind them.
+#[tokio::test(flavor = "current_thread")]
+async fn a_superseding_prompt_during_compaction_appends_instead_of_replacing() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    session
+        .read()
+        .compaction_in_progress
+        .store(true, std::sync::atomic::Ordering::Release);
+
+    // The reader's first message, written while the summary owns the
+    // transcript: accepted, receipted, waiting.
+    let mut first = make_cmd("prompt");
+    first.message = "first while compacting".to_string();
+    first.busy_policy = "enqueue_if_busy".to_string();
+    first.client_request_id = "first-during-compaction".to_string();
+    let resp = parse_response(&handle_command_internal(&state, first));
+    assert_eq!(resp["success"], true, "{resp}");
+    assert_eq!(resp["data"]["accepted_state"], "queued");
+
+    // A second message that asked to supersede: during a compaction there is no
+    // run to interrupt and the first message is a peer, not a stale leftover, so
+    // it appends behind it — and says so with its real queue position.
+    let mut second = make_cmd("prompt");
+    second.message = "second while compacting".to_string();
+    second.busy_policy = "supersede_session".to_string();
+    second.client_request_id = "second-during-compaction".to_string();
+    let resp = parse_response(&handle_command_internal(&state, second));
+    assert_eq!(resp["success"], true, "{resp}");
+    assert_eq!(resp["data"]["accepted_state"], "queued");
+    assert_eq!(resp["data"]["queue_position"], 2);
+
+    let held = session.read().scheduler.queued();
+    assert_eq!(
+        held.iter()
+            .map(|request| request.client_request_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["first-during-compaction", "second-during-compaction"]
+    );
+    // Nothing was thrown away and nothing was interrupted: the first message
+    // keeps its durable acceptance, and the compaction is still running.
+    assert!(session
+        .read()
+        .session_manager
+        .queued_receipt("default", "first-during-compaction")
+        .unwrap()
+        .is_some());
+    assert!(session.read().runtime.snapshot().is_none());
+    assert!(session
+        .read()
+        .compaction_in_progress
+        .load(std::sync::atomic::Ordering::Acquire));
+
+    // The checkpoint lands: the first message runs, the second keeps its place
+    // behind it.
+    std::fs::create_dir_all(&session.read().cwd).unwrap();
+    session
+        .read()
+        .compaction_in_progress
+        .store(false, std::sync::atomic::Ordering::Release);
+    session.write().on_compaction_finished();
+    let active_run = session
+        .read()
+        .scheduler
+        .active()
+        .map(|(active, _)| active.client_request_id.clone());
+    assert_eq!(active_run.as_deref(), Some("first-during-compaction"));
+    assert_eq!(
+        session
+            .read()
+            .scheduler
+            .queued()
+            .iter()
+            .map(|request| request.client_request_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["second-during-compaction"]
+    );
+    let active_run_id = session
+        .read()
+        .scheduler
+        .active()
+        .map(|(active, _)| active.run_id);
+    if let Some(run_id) = active_run_id {
+        session.write().abort_run(Some(&run_id)).unwrap();
+    }
+}
+
 /// The end-to-end version of the hold: a real `compact` thread summarises, the
 /// reader writes into the session mid-summary, and the message runs when the
 /// summary settles — the wake goes from the worker thread through the session's

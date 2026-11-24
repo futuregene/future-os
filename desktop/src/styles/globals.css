@@ -18,16 +18,17 @@
   --color-surface: #ffffff;
   --color-surface-panel: #f8faff;
   --color-surface-subtle: #f1f4f8;
-  /* The surface a list's *current* row is painted with, as opposed to a hovered
-     one. Not a palette entry: it is derived from the palette's own accent and
-     surface, so every theme keeps the mark in its own hue. `surface-subtle` is
-     only 1.07:1 against `surface` in the dark rendition — the open conversation
-     in the rail read as "did I click that?", and hover drew the same colour as
-     selection. The accent share is the difference: 1.20:1 here, 1.35:1 below
-     (a dark neutral has less room to move, so it takes more of the accent). The
-     light share stops where `ink-muted` — the tone of a row's timestamp — stops
-     clearing its floor; that label takes one step of ink on the open row
-     instead (see `ThreadListItem`). */
+  /* The surface a list's *current* row — or a two-way toggle's chosen side — is
+     painted with, as opposed to a hovered one. Not a palette entry: it is
+     derived from the palette's own accent and surface, so every theme keeps the
+     mark in its own hue. `surface-subtle` is only 1.07:1 against `surface` in
+     the dark rendition — the open conversation in the rail read as "did I click
+     that?", the composer's workspace/chat chips had the same problem, and hover
+     drew the same colour as selection. The accent share is the difference:
+     1.20:1 here, 1.35:1 below (a dark neutral has less room to move, so it
+     takes more of the accent). The light share stops where `ink-muted` — the
+     tone of a row's timestamp — stops clearing its floor; that label takes one
+     step of ink on the open row instead (see `ThreadListItem`). */
   --color-surface-selected: color-mix(in oklab, var(--color-accent) 14%, var(--color-surface));
   --color-code-surface: #f6f8fa;
   --color-line: #d9dee7;
