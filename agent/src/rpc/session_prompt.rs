@@ -1781,6 +1781,20 @@ impl ServerSession {
                     .rev()
                     .find(|message| message.role == "assistant")
                     .is_some_and(|message| crate::prompt::reply_offers_choice(&message.text()));
+            // The guard rail around the card's tolerance: a reply that spells
+            // `futureos-choice` yet yields no card reaches the reader as raw
+            // source — the 2026-11-24 tag-form replies did, silently. Tolerating
+            // one spelling must not hide the next, so it is said out loud once
+            // per run, with a phrase that greps.
+            if let Some(text) = messages_arc
+                .read()
+                .iter()
+                .rev()
+                .find(|message| message.role == "assistant")
+                .map(|message| message.text())
+            {
+                crate::prompt::report_unrecognized_choice(&task_lease.run_id, &text);
+            }
             // Clones for the blocking commit task: run_error and task_lease are
             // still needed after the task completes (terminal event dispatch).
             let commit_run_id = task_lease.run_id.clone();

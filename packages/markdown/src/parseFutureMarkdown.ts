@@ -38,6 +38,7 @@ import { unified } from "unified";
 import { localFilePath } from "./localPath";
 import { htmlBlockToNodes } from "./htmlBlocks";
 import { repairNestedDocumentFence } from "./fenceNesting";
+import { normalizeChoiceTagBlocks } from "./choiceTagBlocks";
 import { remarkLatexMath } from "./remarkLatexMath";
 import { remarkMathFence } from "./remarkMathFence";
 import { remarkCurrencyMath } from "./remarkCurrencyMath";
@@ -92,9 +93,14 @@ export function parseFutureMarkdown(raw: string, parsedTree?: Root, cache = true
   // Bound both conversion and downstream recursive renderers. Inspect the AST
   // iteratively so hostile nesting cannot overflow this guard itself. Preserve
   // the entire source as text rather than silently dropping the deep tail.
+  // A closed `<futureos-choice>` pair is read as the fence it stands for and
+  // then goes through `parseChoiceCard` like every other card — one parser, one
+  // set of field rules (`choiceTagBlocks.ts`).
   const nodes: MarkdownNode[] = exceedsNestingLimit(tree)
     ? [{ type: "paragraph", children: [{ type: "text", text: raw }] }]
-    : tree.children.flatMap((node) => blockToFutureNode(node, context));
+    : normalizeChoiceTagBlocks(tree.children, raw).flatMap((node) =>
+        blockToFutureNode(node, context),
+      );
   const references = collectReferences(nodes);
   const document = { nodes, raw, references };
   if (cache) {
