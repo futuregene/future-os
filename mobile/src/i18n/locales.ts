@@ -688,6 +688,15 @@ export const resources = {
         loadFailed: "Could not load the conversation.",
         sendFailed: "Message failed to send.",
         /**
+         * The same failure with the desktop's own reason attached.
+         *
+         * Everything this build can name has its own sentence; this is what is
+         * left, where the reason lives on the paired machine and only that
+         * machine's words can name it. Saying "the message failed" there sends
+         * the reader to reword a message that was never the problem.
+         */
+        sendFailedWith: "Message failed to send: {{detail}}",
+        /**
          * A continuation the desktop refused because the reply it points at can
          * no longer be picked up (it finished, it was stopped, or its restart
          * record is gone). "Message failed to send" would read as a network
@@ -785,7 +794,6 @@ export const resources = {
         responseIncomplete: "Response not completed",
         responseStopped: "You stopped this response",
         responseCompleted: "Completed",
-        sendAfterCompaction: "Sending when compaction finishes…",
         generating: "Generating…",
         retry: "Retry",
         continue: "Continue",
@@ -1987,6 +1995,7 @@ export const resources = {
         tokens: "{{formattedCount}} tokens",
         loadFailed: "无法加载会话。",
         sendFailed: "消息发送失败。",
+        sendFailedWith: "消息发送失败：{{detail}}",
         continueUnavailable: "这条回复已经无法继续，请重新发送。",
         sessionBusy: "这条回复还在生成中，等它跑完再发。",
         sendInFlight: "上一条还在发送，稍等一下就好了。",
@@ -2044,7 +2053,6 @@ export const resources = {
         responseIncomplete: "本次回复未完成",
         responseStopped: "你已停止本次回复",
         responseCompleted: "已完成",
-        sendAfterCompaction: "压缩完成后发送…",
         generating: "正在生成…",
         retry: "重试",
         continue: "继续",

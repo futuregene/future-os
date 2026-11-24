@@ -310,7 +310,7 @@ function ComposerImpl({
   const captureOperation = useOperationLifetime(draftKey);
   const { attachments, attachmentsRef, setAttachments, attachError, setAttachError, dragState, addAttachmentPaths, attachPastedFiles, attachNativeClipboardImage, handleAttachFiles, removeAttachment }
     = useComposerAttachments({ disabled, onDragStateChange, captureOperation });
-  const sendStateRef = useCommittedRef({ disabled, sending, compactionPending, onSend, preparing });
+  const sendStateRef = useCommittedRef({ disabled, sending, onSend, preparing });
   useEffect(() => {
     recommendPendingRef.current = false;
     evaluatedDraftRef.current = null;
@@ -618,7 +618,6 @@ function ComposerImpl({
       || preparing
       || sendPending
       || sending
-      || compactionPending
       || recommendPendingRef.current
     ) {
       return;
@@ -742,7 +741,7 @@ function ComposerImpl({
    */
   function sendNow(evaluatedText?: string) {
     const state = sendStateRef.current;
-    if (!editorRef.current || state.disabled || state.preparing || state.sending || state.compactionPending)
+    if (!editorRef.current || state.disabled || state.preparing || state.sending)
       return;
     const submittedText = editorRef.current?.getContent() ?? "";
     const trimmed = submittedText.trim();

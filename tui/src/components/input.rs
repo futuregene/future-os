@@ -392,7 +392,7 @@ impl Input {
     }
 
     /// Hand a taken [`PendingDraft`] back — the draft it belongs to is on
-    /// screen again (a submission that was refused: compaction is running).
+    /// screen again (a submission the agent refused).
     pub fn restore_pending(&mut self, pending: PendingDraft) {
         self.pastes = pending.pastes;
         self.attachments = pending.attachments;

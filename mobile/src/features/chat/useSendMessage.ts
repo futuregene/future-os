@@ -156,8 +156,34 @@ export function sendFailureText(error: unknown, holder: string | undefined): Fai
   // else: the reader can act on a file, not on a send that "failed".
   const attachment = attachmentFailureText(code);
   if (attachment) return attachment;
+  // Everything this build can name is above. What is left is a refusal only the
+  // desktop (or the Agent behind it) knows the reason for — and "message failed
+  // to send" reads as a verdict on the words, which is the one thing that was
+  // fine. So the unknown remainder carries the desktop's own words: the reader
+  // learns it was not their text, and a report of a failure no build can name
+  // arrives with what is needed to name it (the desktop that answered is another
+  // machine, and its log is not reachable from the phone).
+  const detail = code.replace(/\s+/g, " ").trim();
+  if (detail)
+    return {
+      key: "chat.sendFailedWith",
+      params: {
+        detail: detail.length > SEND_FAILURE_DETAIL_LIMIT
+          ? `${detail.slice(0, SEND_FAILURE_DETAIL_LIMIT).trimEnd()}…`
+          : detail,
+      },
+    };
   return { key: "chat.sendFailed" };
 }
+
+/**
+ * How much of the desktop's own words a send failure shows.
+ *
+ * One line, not a stack trace: a toast has room for a sentence, and the point is
+ * to name the cause rather than to be complete. The whole text is still in the
+ * app's console log when a report needs more.
+ */
+export const SEND_FAILURE_DETAIL_LIMIT = 140;
 
 export interface SendMessageOptions {
   remote: Remote;
@@ -187,8 +213,7 @@ export function useSendMessage(options: SendMessageOptions): SendMessageApi {
     intent?: SendMessageIntent,
   ): Promise<boolean> => {
     const { remote, t, message, attachments, setMessage, setAttachments, setTransferProgress,
-      sessionRefs = {}, compactionPending = false, streaming } = inputRef.current;
-    if (compactionPending || remote.compacting) { showToast(t("chat.compacting")); return false; }
+      sessionRefs = {}, streaming } = inputRef.current;
     const draftValue = (override ?? message).trim();
     const value = expandSessionReferences(draftValue, sessionRefs);
     if (!value && !attachments.length) return false;
@@ -226,10 +251,8 @@ export function useSendMessage(options: SendMessageOptions): SendMessageApi {
 
   const retryMessage = useCallback(
     (item: TimelineItem) => {
-      const { remote, t, compactionPending } = inputRef.current;
-      const compacting = compactionPending || remote.compacting;
+      const { remote, t } = inputRef.current;
       const isCurrent = captureOperation();
-      if (compacting) { showToast(t("chat.compacting")); return; }
       if (item.kind !== "message" || item.role !== "assistant") return;
       const items = remote.timeline.items;
       const index = items.findIndex(entry => entry.id === item.id);
