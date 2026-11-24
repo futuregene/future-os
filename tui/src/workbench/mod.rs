@@ -4317,16 +4317,10 @@ impl Workbench {
         if text.is_empty() {
             return Vec::new();
         }
-        // A compaction holds the session: the agent answers a prompt with
-        // `session_busy` until its checkpoint lands, so the draft stays exactly
-        // where the reader can see it and the notice says why. Anything that is
-        // not a prompt (`/compact`'s own second press, a picker's verb) is
-        // still the reader's to run.
-        if data.compacting && known_command(&text).is_none() {
-            return vec![WbAction::Notice(
-                t(self.lang, Key::ComposerCompacting).to_string(),
-            )];
-        }
+        // A compaction no longer holds the draft: the agent accepts a prompt
+        // while it summarises and keeps it at the front of the session's queue,
+        // so the message runs when the checkpoint lands. Only a slash verb still
+        // needs the session to itself (`/compact` refuses a busy one).
         if let Some(task) = future_fusion::fusion_prompt(&text) {
             if data.fusion_enabled == Some(false) {
                 return vec![WbAction::Notice(t(self.lang, Key::FusionDisabled).into())];
@@ -11293,31 +11287,19 @@ mod tests {
         workbench.handle(WbEvent::Key("enter".into()), data)
     }
 
-    /// While a compaction holds the session, `enter` on a prompt leaves the
-    /// draft and says why: the agent refuses a prompt with `session_busy` until
-    /// its checkpoint lands, so sending one would be a card that never runs.
-    /// A slash verb is still the reader's — `/compact` itself, a picker.
+    /// While a compaction runs, `enter` on a prompt still sends it: the agent
+    /// keeps it in the session's queue and runs it once the checkpoint lands,
+    /// which is what makes writing during a long summary possible at all.
     #[test]
-    fn enter_cannot_send_a_prompt_while_a_compaction_holds_the_session() {
+    fn enter_sends_a_prompt_while_a_compaction_holds_the_session() {
         let mut data = demo::chat();
         data.compacting = true;
         let (mut workbench, _rows) = frame(&data, 120, 38);
         let actions = submit_draft(&mut workbench, &mut data, "hello");
         assert_eq!(
             actions,
-            vec![WbAction::Notice(
-                t(workbench.lang, Key::ComposerCompacting).to_string()
-            )],
-            "the draft stays, and nothing is submitted"
-        );
-        assert_eq!(data.input.text, "hello");
-
-        // The same box, with no compaction: the prompt goes out.
-        let mut data = demo::chat();
-        let (mut workbench, _rows) = frame(&data, 120, 38);
-        assert_eq!(
-            submit_draft(&mut workbench, &mut data, "hello"),
-            vec![WbAction::Submit("hello".into())]
+            vec![WbAction::Submit("hello".into())],
+            "the prompt goes out; the agent queues it behind the summary"
         );
     }
 

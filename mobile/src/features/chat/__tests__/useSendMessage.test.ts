@@ -282,13 +282,14 @@ describe("sending", () => {
     expect(toast).toHaveBeenCalledWith("t:chat.standbyCannotSendUnknown");
   });
 
-  test("a manual compaction in flight blocks the send without eating the draft", async () => {
+  test("a manual compaction no longer blocks the send", async () => {
+    // The Agent accepts a prompt while it compacts and queues it, so the phone
+    // hands it over and the draft leaves with it.
     const remote = remoteFor();
     const { setMessage } = mount({ remote, message: "keep me", compactionPending: true });
     await act(async () => { await api.send(); });
-    expect(toast).toHaveBeenCalledWith("t:chat.compacting");
-    expect(remote.sendMessage).not.toHaveBeenCalled();
-    expect(setMessage).not.toHaveBeenCalled();
+    expect(remote.sendMessage).toHaveBeenCalledTimes(1);
+    expect(setMessage).toHaveBeenCalledWith("");
   });
 });
 
@@ -404,13 +405,12 @@ describe("retrying a failed answer", () => {
     expect(remote.sendMessage).not.toHaveBeenCalled();
   });
 
-  test("a retry while a compaction is pending only tells the user why", async () => {
+  test("a retry while a compaction is pending goes out like any other send", async () => {
     const remote = remoteFor();
     remote.timeline.items = [userMessage({ id: "u1" }), assistant({ id: "a1" })];
     mount({ remote, compactionPending: true });
     await act(async () => { api.retryMessage(assistant({ id: "a1" })); await Promise.resolve(); });
-    expect(toast).toHaveBeenCalledWith("t:chat.compacting");
-    expect(remote.sendMessage).not.toHaveBeenCalled();
+    expect(remote.sendMessage).toHaveBeenCalledTimes(1);
   });
 });
 

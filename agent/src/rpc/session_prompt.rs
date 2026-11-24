@@ -438,6 +438,23 @@ impl ServerSession {
         if ack.accepted_state == crate::runtime::RunAcceptedState::Existing {
             return Ok(ack);
         }
+        // A manual compaction owns the transcript until it commits. A prompt
+        // written into it is still accepted — that is a message, not a change to
+        // the conversation the summary reads — but it must not start: the run
+        // would append to the very transcript being replaced, and the summary's
+        // commit would then disagree with it. It waits exactly like a prompt
+        // written behind a run, and `on_compaction_finished` starts it when the
+        // fence opens.
+        //
+        // The fence is read *after* the acceptance, so a compaction that settled
+        // in between cannot be missed: its wake runs under this session's lock
+        // (`on_compaction_finished` takes the write guard), so it either ran
+        // before this point — its flag is already clear and this prompt starts
+        // itself — or it runs after this insertion and finds the prompt waiting.
+        let compacting = self
+            .compaction_in_progress
+            .load(std::sync::atomic::Ordering::Acquire);
+        let queue_only = queue_only || compacting;
         if queue_only && !self.ephemeral {
             // Store the accepted input without resolving live attachment paths.
             let mut message = build_user_message_with_model_context(
@@ -495,6 +512,12 @@ impl ServerSession {
             if let Some(active) = self.runtime.snapshot() {
                 let _ = self.runtime.request_abort(Some(&active.run_id));
             }
+        }
+        if compacting {
+            // Held, at its place in the queue, with its durable acceptance
+            // written above: a session that restarts mid-compaction still
+            // restores it.
+            return Ok(ack);
         }
         if self.runtime.snapshot().is_none() {
             if self.runtime.has_owned_task() || self.scheduler.active().is_some() {
@@ -609,11 +632,12 @@ impl ServerSession {
     /// The distinction is the staleness rule's, not a convenience: a row queued
     /// into a long turn was waiting for *that run*, so the run's length never
     /// makes it stale (see [`crate::runtime::QueueBoundary`]).
+    #[cfg(test)]
     pub(super) fn start_next_scheduled_after_run(&mut self) -> Result<crate::runtime::RunAck> {
         self.start_next_scheduled_at(crate::runtime::QueueBoundary::AfterRun)
     }
 
-    fn start_next_scheduled_at(
+    pub(super) fn start_next_scheduled_at(
         &mut self,
         boundary: crate::runtime::QueueBoundary,
     ) -> Result<crate::runtime::RunAck> {
@@ -2134,10 +2158,44 @@ impl ServerSession {
         // affect an already streaming response.
         r#loop.preflight_context_check = true;
     }
+}
 
-    /// Read cwd-scoped context fresh for a run or explicit config reload.
-    /// Return the actual selected file names alongside the assembled prompt.
-    pub(super) fn build_system_prompt(
+/// The session-owned half of a system prompt.
+///
+/// `build_prompt` mixes two kinds of input: the session's own identity (who is
+/// asking, what the reader appended, whether a card may be drawn) and the run's
+/// surroundings (cwd, tools, model, context files). A manual compaction runs
+/// *outside* the session's lock, so it cannot read the identity from
+/// `ServerSession` when it builds its summary request; it captures this small
+/// owned copy first instead. Every field is a `String`/`bool` clone, which is
+/// what lets [`super::standalone_compaction::StandaloneCompaction`] hold it
+/// permanently without keeping the session alive.
+#[derive(Debug, Clone)]
+pub(crate) struct PromptIdentity {
+    session_id: String,
+    append_prompt: String,
+    custom_prompt: String,
+    is_subsession: bool,
+    choice_cards: bool,
+}
+
+impl PromptIdentity {
+    pub(super) fn of(session: &ServerSession) -> Self {
+        Self {
+            session_id: session.session_id.clone(),
+            append_prompt: session.append_system_prompt.clone(),
+            custom_prompt: session.custom_system_prompt.clone(),
+            // A session with a parent already sits in a lineage, and the agent
+            // refuses a deeper chain (`reject_deep_parent`). Reading the field
+            // rather than walking the chain keeps this O(1) on every run and
+            // matches the guard: both answer "may this session start one?".
+            is_subsession: !session.parent_session_id.is_empty(),
+            choice_cards: session.choice_cards,
+        }
+    }
+
+    /// Build the prompt for these surroundings, exactly as a run would.
+    pub(super) fn build(
         &self,
         cwd: &str,
         tools: Vec<crate::types::AgentTool>,
@@ -2181,17 +2239,32 @@ impl ServerSession {
             // run — which is exactly what the old in-memory-only append (into
             // `agent_loop.system_prompt`, overwritten at each run boundary)
             // failed to survive.
-            append_prompt: self.append_system_prompt.clone(),
-            custom_prompt: self.custom_system_prompt.clone(),
+            append_prompt: self.append_prompt.clone(),
+            custom_prompt: self.custom_prompt.clone(),
             // A session with a parent already sits in a lineage, and the agent
             // refuses a deeper chain (`reject_deep_parent`). Reading the field
             // rather than walking the chain keeps this O(1) on every run and
             // matches the guard: both answer "may this session start one?".
-            is_subsession: !self.parent_session_id.is_empty(),
+            is_subsession: self.is_subsession,
             choice_cards: self.choice_cards,
             ..Default::default()
         });
         (prompt, context_files)
+    }
+}
+
+impl ServerSession {
+    /// Read cwd-scoped context fresh for a run or explicit config reload.
+    /// Return the actual selected file names alongside the assembled prompt.
+    pub(super) fn build_system_prompt(
+        &self,
+        cwd: &str,
+        tools: Vec<crate::types::AgentTool>,
+        model: &str,
+        thinking_level: &str,
+        no_context_files: bool,
+    ) -> (String, Vec<String>) {
+        PromptIdentity::of(self).build(cwd, tools, model, thinking_level, no_context_files)
     }
 
     /// The system prompt this session's next run would send, built exactly the
