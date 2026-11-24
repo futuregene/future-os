@@ -4,7 +4,10 @@ mod project_context;
 pub(crate) use project_context::load_project_context;
 
 mod choice_card;
-pub use choice_card::reply_offers_choice;
+pub use choice_card::{
+    choice_syntax_without_card, contains_choice_card, reply_offers_choice,
+    report_unrecognized_choice,
+};
 
 use crate::skills::Skill;
 use crate::types::AgentTool;
