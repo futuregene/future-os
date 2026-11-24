@@ -172,6 +172,14 @@ pub async fn agent_prompt_with_acceptance(
         // settled the row to `running` and the session observer owns its
         // projection from here — do not rewrite the row as failed.
         Ok(response) if response.termination_kind.as_deref() == Some("run_queued") => {}
+        // The Agent ended this run because someone stopped it — possibly a
+        // client other than this one (the phone's stop button). That is a stop,
+        // not a failure of the model, so the row says `cancelled` and every
+        // reader draws the stopped reply instead of "模型服务异常".
+        Ok(response) if response.termination_kind.as_deref() == Some("run_cancelled") => {
+            let error = stream::termination_error(response.termination_kind.as_deref());
+            mark_run_cancelled_if_active(request.run_id.as_deref(), error);
+        }
         Ok(response) => {
             let error = stream::termination_error(response.termination_kind.as_deref());
             mark_run_failed_if_active(request.run_id.as_deref(), error);

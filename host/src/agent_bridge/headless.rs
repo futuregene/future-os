@@ -242,23 +242,33 @@ async fn run_prepared_prompt_inner(
 
     match result {
         // Stream closed before `agent_end`: the text is a truncated prefix, not
-        // a finished answer. Persist it (so the partial isn't lost) but mark the
-        // run failed rather than completed — and *return* that failure, because
-        // a caller that only sees `Ok` records the run as a success with an
-        // empty answer (a cancelled or restarted run reached the task ledger as
-        // `completed` exactly this way).
+        // a finished answer. Persist it (so the partial isn't lost) but settle
+        // the run as not-completed — and *return* that failure, because a caller
+        // that only sees `Ok` records the run as a success with an empty answer
+        // (a cancelled or restarted run reached the task ledger as `completed`
+        // exactly this way).
         Ok(response) if !response.complete => {
             let message = super::stream::termination_error(response.termination_kind.as_deref());
+            // A run the Agent reports as *cancelled* was stopped on purpose —
+            // by this client's phone, another paired desktop, or an IM `/stop`.
+            // Record it as `cancelled` (the status the local stop already
+            // writes) so every reader draws the stopped reply; a `failed` row
+            // carrying this error read as "模型服务异常 / 请稍后重试" over a stop
+            // the user chose (measured 2026-11-24). Any other incomplete ending
+            // stays a failure.
+            let cancelled = response.termination_kind.as_deref() == Some("run_cancelled");
             let _ = store::update_run_status_if_active(store::UpdateRunStatusInput {
                 run_id: run_id.clone(),
-                status: "failed".to_string(),
+                status: if cancelled { "cancelled" } else { "failed" }.to_string(),
                 error_message: Some(message.to_string()),
-                error_type: Some(
+                error_type: Some(if cancelled {
+                    "cancelled".to_string()
+                } else {
                     response
                         .termination_kind
                         .clone()
-                        .unwrap_or_else(|| "stream_interrupted".to_string()),
-                ),
+                        .unwrap_or_else(|| "stream_interrupted".to_string())
+                }),
             });
             Err(crate::Error::Message(message.to_string()))
         }
@@ -564,6 +574,44 @@ mod tests {
             .expect("get run")
             .expect("some");
         assert_eq!(run.status, "failed");
+    }
+
+    #[tokio::test]
+    async fn run_prepared_prompt_records_a_stop_as_cancelled_not_a_failure() {
+        let home = TestHome::new("headless-cancelled");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-headless-cancelled"));
+        let prepared = prepare_prompt_persisted(&thread, "hello".to_string(), None, None, vec![])
+            .expect("prepare");
+        let run_id = prepared.run_id.clone();
+
+        mock.push_data(
+            "get_state",
+            serde_json::json!({ "sessionId": "sess-headless-cancelled", "cwd": workspace.path }),
+        );
+        mock.push_stream(StreamScript::Events(
+            vec![
+                stream_event(&run_id, 0, "text_chunk", r#"{"text":"half an answer"}"#),
+                stream_event(&run_id, 1, "agent_end", r#"{"state":"cancelled"}"#),
+            ],
+            None,
+        ));
+
+        // The Agent ended this run because somebody stopped it — the phone's
+        // stop button, in the case this guards — so nothing in this process
+        // asked. The caller still hears the reply did not finish, but the row
+        // says *cancelled*: a `failed` row carrying `[RUN_CANCELLED]` drew
+        // "模型服务异常 / 请稍后重试" over a stop the reader chose (2026-11-24).
+        let error = run_prepared_prompt(prepared)
+            .await
+            .expect_err("a stopped run answers nothing");
+        assert!(error.to_string().contains("[RUN_CANCELLED]"), "{error}");
+        let run = crate::store::get_run(&run_id)
+            .expect("get run")
+            .expect("some");
+        assert_eq!(run.status, "cancelled");
+        assert_eq!(run.error_type.as_deref(), Some("cancelled"));
     }
 
     #[tokio::test]

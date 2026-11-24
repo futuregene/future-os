@@ -196,6 +196,28 @@ describe("applyRunMetadata", () => {
     expect(result[1]?.terminationNotice).toContain("stopped this response manually");
   });
 
+  it("reads a stop recorded as a failure as the stop it was", () => {
+    // The phone's stop button used to leave the desktop with a `failed` row
+    // carrying the Agent's `[RUN_CANCELLED] …` text, which drew "Model service
+    // error / try again later" over a reply the reader had stopped on purpose.
+    // Those rows are already on disk, so they still have to read as a stop.
+    const result = applyRunMetadata(
+      [user("u1"), assistant("a1")],
+      [run("r1", {
+        status: "failed",
+        errorMessage: "[RUN_CANCELLED] run was cancelled before it answered",
+      })],
+    );
+    expect(result[1]).toMatchObject({
+      id: "a1",
+      runId: "r1",
+      status: "complete",
+      stopped: true,
+    });
+    expect(result[1]?.terminationTitle).toBeUndefined();
+    expect(result[1]?.terminationNotice).toContain("stopped this response manually");
+  });
+
   it("uses the run start for a stopped reply with a later persisted partial", () => {
     const startedAt = Date.parse("2026-07-01T10:00:00.000Z");
     const result = applyRunMetadata(
@@ -681,6 +703,13 @@ describe("recoverFailedRuns", () => {
     const result = recoverFailedRuns(messages, [
       run("r2", { status: "completed", ...r2Window }),
       run("r1", { status: "cancelled", ...r1Window }),
+      // A stop written as a failure before the settlement fix: still a stop, so
+      // it gets no failure bubble either.
+      run("r3", {
+        status: "failed",
+        errorMessage: "[RUN_CANCELLED] run was cancelled before it answered",
+        ...r1Window,
+      }),
     ]);
     expect(result).toBe(messages);
   });

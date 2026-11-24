@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@future-os/thread-projection";
 import type { StoredRun, StoredRunEvent } from "../../../integrations/storage/threadStore";
-import { buildAssistantRunProjection, matchesSettledRun } from "@future-os/thread-projection";
+import { buildAssistantRunProjection, isCancelledRunError, matchesSettledRun } from "@future-os/thread-projection";
 import { listRunEventsBulk, storedTimeToIso } from "../../../integrations/storage/threadStore";
 import { buildAgentFailureContent, buildAgentFailureTitle, userStoppedNotice } from "../agentMessageFormatters";
 import { isCompactionDivider } from "../messages/compactionMarkers";
@@ -128,22 +128,30 @@ export function applyJournalRunOutcomes(messages: AgentMessage[]): AgentMessage[
 }
 
 function applyRunToMessage(message: AgentMessage, run: StoredRun): AgentMessage {
+  // Two shapes mean the user stopped this run: rows written as `cancelled`
+  // (every local stop, and every stop another client's Agent ending reports
+  // since the fix), and older `failed` rows carrying the Agent's
+  // `[RUN_CANCELLED] …` text — a client that saw another client's stop used to
+  // settle it as a failure, which drew "模型服务异常 / 请稍后重试" over a reply
+  // the reader had deliberately stopped. Both are a stop to the reader.
+  const stopped = run.status === "cancelled"
+    || (run.status === "failed" && isCancelledRunError(run.errorMessage));
+  const failed = run.status === "failed" && !stopped;
   // Stopped replies keep the persisted run start, even when the agent saved a
   // partial assistant entry later in the run. Other reply-less exchanges retain
   // their existing end-time fallback; real replies keep their recorded time.
   const isEmpty = !message.content.trim() && !message.segments?.length;
   let replyTime: string | null = null;
-  if (run.status === "cancelled")
+  if (stopped)
     replyTime = runStartedIso(run);
   else if (isEmpty)
     replyTime = runEndedIso(run);
-  const stopped = run.status === "cancelled";
   const terminationNotice = stopped
     ? userStoppedNotice()
-    : run.status === "failed"
+    : failed
       ? buildAgentFailureContent(run.errorMessage ?? "")
       : undefined;
-  const terminationTitle = run.status === "failed"
+  const terminationTitle = failed
     ? buildAgentFailureTitle(run.errorMessage ?? "")
     : undefined;
   return {
@@ -156,7 +164,7 @@ function applyRunToMessage(message: AgentMessage, run: StoredRun): AgentMessage 
     terminationNotice,
     terminationTitle,
     runError: run.errorMessage ?? message.runError,
-    status: run.status === "failed" ? "failed" : (message.status ?? "complete"),
+    status: failed ? "failed" : (message.status ?? "complete"),
     durationMs: message.durationMs ?? runDurationMs(run),
     createdAt: replyTime ?? message.createdAt,
   };
@@ -335,6 +343,10 @@ export function recoverFailedRuns(messages: AgentMessage[], runs: StoredRun[]): 
     return messages;
   const orphans = runs.filter(run =>
     run.status === "failed"
+    // A stop recorded as a failure is not a failure to recover: it has no
+    // reply to rebuild, and a failed bubble would call the user's own stop a
+    // model error.
+    && !isCancelledRunError(run.errorMessage)
     && !messages.some(message => message.role === "assistant" && message.runId === run.id)
     && isOrphanRun(run, timestamps));
   if (orphans.length === 0)
