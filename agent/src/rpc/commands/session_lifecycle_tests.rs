@@ -3002,3 +3002,46 @@ fn nfs_new_session_is_durable_before_it_is_announced_and_can_be_deleted() {
     assert_eq!(deleted["success"], true, "{deleted}");
     assert!(!state.session_manager.contains(id).unwrap());
 }
+
+/// A storage failure during Fusion cleanup is not "the session is busy".
+///
+/// Measured trigger: at `ulimit -n 256` (bash lowers the hard limit too, so the
+/// suite's descriptor raise cannot lift it) the full lib suite drove the process
+/// to its descriptor ceiling, this deletion's cleanup could not open
+/// `fusion.db`, and the old mapping answered `session_busy` — advice to retry
+/// that an exhausted descriptor table cannot honour. The fixture reaches the
+/// same cleanup branch deterministically instead of relying on a process-wide
+/// descriptor limit: `fusion.db` exists, so cleanup is attempted, and it is not
+/// a database, so opening it fails.
+#[test]
+fn delete_session_reports_a_fusion_cleanup_storage_failure_as_delete_failed() {
+    let _home = TestHome::new();
+    let fusion_dir = crate::utils::future_home().join("fusion");
+    std::fs::create_dir_all(&fusion_dir).unwrap();
+    std::fs::write(fusion_dir.join("fusion.db"), b"not a sqlite database").unwrap();
+    let state = make_app_state();
+    save_via(
+        &state,
+        "ghost",
+        "mock",
+        vec![crate::session::SessionEntry::new_user(
+            "user",
+            serde_json::json!("x"),
+        )],
+    );
+
+    let resp = parse_response(&handle_command_internal(
+        &state,
+        make_cmd_for("delete_session", "ghost"),
+    ));
+
+    assert_eq!(resp["success"], false, "{resp}");
+    assert_eq!(resp["error_code"], "delete_failed", "{resp}");
+    assert_eq!(resp["error_data"]["session_id"], "ghost");
+    // SQLITE_NOTADB: the store's own diagnosis reaches the client, so the
+    // failure reads as storage rather than as a lock to wait on.
+    assert_eq!(resp["error_data"]["sqlite_code"], 26, "{resp}");
+    let message = resp["error"].as_str().unwrap();
+    assert!(message.contains("Fusion cleanup failed"), "{resp}");
+    assert!(message.contains("(sqlite code 26)"), "{resp}");
+}
