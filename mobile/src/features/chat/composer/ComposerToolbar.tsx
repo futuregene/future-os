@@ -21,6 +21,8 @@ interface Props {
   openAttachmentMenu: () => void;
   stopRequest: ReturnType<typeof useStopRequest>;
   skillEvaluating: boolean;
+  /** A send tapped during a compaction is waiting for it to finish. */
+  sendHolding: boolean;
   canSend: boolean;
   /** The ordinary send (a run is not streaming); answers whether it landed. */
   send: () => Promise<boolean>;
@@ -30,7 +32,7 @@ interface Props {
   onOpenQueueChoice: () => void;
 }
 
-export function ComposerToolbar({ remote, t, compactToolbar, compacting, activeModelLabel, selector, setSelector, completion, editable, openAttachmentMenu, stopRequest, skillEvaluating, canSend, send, hasDraft, onOpenQueueChoice }: Props) {
+export function ComposerToolbar({ remote, t, compactToolbar, compacting, activeModelLabel, selector, setSelector, completion, editable, openAttachmentMenu, stopRequest, skillEvaluating, sendHolding, canSend, send, hasDraft, onOpenQueueChoice }: Props) {
   const styles = useStyles();
   const { colors } = useTheme();
   // The effort this conversation actually runs at on the selected model. A level
@@ -200,13 +202,9 @@ export function ComposerToolbar({ remote, t, compactToolbar, compacting, activeM
         )
       ) : (
         <Pressable
-          accessibilityLabel={t(
-            skillEvaluating
-              ? "chat.findingSkill"
-              : compacting ? "chat.compacting" : "chat.send",
-          )}
+          accessibilityLabel={t(skillEvaluating ? "chat.findingSkill" : "chat.send")}
           accessibilityRole="button"
-          accessibilityState={{ disabled: !canSend, busy: compacting || skillEvaluating }}
+          accessibilityState={{ disabled: !canSend, busy: sendHolding || skillEvaluating }}
           disabled={!canSend}
           onPress={() => { if (canSend) void send(); }}
           style={({ pressed }) => [
@@ -215,7 +213,10 @@ export function ComposerToolbar({ remote, t, compactToolbar, compacting, activeM
             pressed && styles.sendPressed,
           ]}
         >
-          {compacting || skillEvaluating ? (
+          {/* Compaction is not a reason to be disabled: the tap is taken and held
+              until the Agent's fence opens (`useComposerSubmission`). The spinner
+              therefore belongs to the held send, not to the compaction. */}
+          {sendHolding || skillEvaluating ? (
             <ActivityIndicator color={colors.surface} size="small" />
           ) : (
             <Send color={colors.surface} size={17} />

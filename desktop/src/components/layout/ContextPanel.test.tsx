@@ -199,6 +199,11 @@ function baseProps(overrides: Partial<Parameters<typeof ContextPanel>[0]> = {}):
 
 type PanelProps = Parameters<typeof ContextPanel>[0];
 
+/** The header's one-click tab segments (empty when the panel shows the dropdown). */
+function tabButtons(container: HTMLElement): HTMLButtonElement[] {
+  return [...container.querySelectorAll<HTMLButtonElement>("header [role=\"group\"] button")];
+}
+
 beforeEach(() => {
   panels.context = null;
   panels.detail = null;
@@ -263,16 +268,41 @@ describe("context panel shell", () => {
     view.unmount();
   });
 
-  it("offers only the non-git tabs for a chat thread and routes the picker", () => {
+  it("offers only the non-git tabs for a chat thread and routes the click", () => {
     const p = baseProps();
     const view = mount(<ContextPanel {...p} />);
+    const tabs = tabButtons(view.container);
+    expect(tabs.map(button => button.textContent)).toEqual(["Files", "Runs"]);
+    act(() => tabs[1]!.click());
+    expect(p.onTabChange).toHaveBeenCalledWith("runs");
+    view.unmount();
+  });
+
+  it("marks the active tab and switches in one click when the panel is wide enough", () => {
+    const p = baseProps({ width: 420 });
+    const view = mount(<ContextPanel {...p} />);
+    // The panel is a column-width sidebar by default, so the tabs are segments
+    // rather than a dropdown: picking one is one click, not open-then-pick.
+    expect(view.container.querySelector("select#context-panel-view")).toBeNull();
+    expect(tabButtons(view.container).map(button => button.getAttribute("aria-pressed")))
+      .toEqual(["true", "false"]);
+    view.unmount();
+  });
+
+  it("keeps the dropdown when the panel is too narrow to hold every segment", () => {
+    // Narrower than the three segments plus the collapse button: a side-by-side
+    // row would truncate the labels, so the picker stays a dropdown instead.
+    mocks.data = { reviewCapabilities: capabilities };
+    const p = baseProps({ activeThread: thread("t1", { mode: "workspace", workspaceId: "w-t1" }), width: 240 });
+    const view = mount(<ContextPanel {...p} />);
+    expect(tabButtons(view.container)).toEqual([]);
     const select = view.container.querySelector<HTMLSelectElement>("select#context-panel-view")!;
-    expect([...select.options].map(option => option.value)).toEqual(["files", "runs"]);
+    expect([...select.options].map(option => option.value)).toEqual(["files", "runs", "review"]);
     act(() => {
-      select.value = "runs";
+      select.value = "review";
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
-    expect(p.onTabChange).toHaveBeenCalledWith("runs");
+    expect(p.onTabChange).toHaveBeenCalledWith("review");
     view.unmount();
   });
 
@@ -280,8 +310,8 @@ describe("context panel shell", () => {
     mocks.data = { reviewCapabilities: capabilities };
     const p = baseProps({ activeThread: thread("t1", { mode: "workspace", workspaceId: "w-t1" }) });
     const view = mount(<ContextPanel {...p} />);
-    expect([...view.container.querySelectorAll<HTMLOptionElement>("option")].map(option => option.value))
-      .toEqual(["files", "runs", "review"]);
+    expect(tabButtons(view.container).map(button => button.textContent))
+      .toEqual(["Files", "Runs", "Review"]);
     view.unmount();
   });
 
@@ -290,8 +320,8 @@ describe("context panel shell", () => {
     const view = mount(<ContextPanel {...p} />);
     // The Review tab is not offered yet, so the panel falls back to the first tab
     // instead of rendering a panel no tab can reach.
-    expect([...view.container.querySelectorAll<HTMLOptionElement>("option")].map(option => option.value))
-      .toEqual(["files", "runs"]);
+    expect(tabButtons(view.container).map(button => button.textContent))
+      .toEqual(["Files", "Runs"]);
     expect(p.onTabChange).toHaveBeenCalledWith("files");
     view.unmount();
   });
