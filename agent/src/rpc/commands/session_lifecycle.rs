@@ -368,6 +368,73 @@ fn deletion_failure(
     }
 }
 
+/// Fusion refuses a deletion for two reasons that need different answers.
+/// Child runs still stopping are `session_busy`: wait for them, then retry.
+/// A store that cannot be read is not busy — retrying cannot make a failing
+/// `open` succeed — so it keeps the storage layer's identity as
+/// `delete_failed`, carrying the numbers the layer below reported.
+///
+/// Measured under `ulimit -n 256` (bash sets the hard limit as well, so the
+/// suite's descriptor raise cannot lift it): the full lib suite drove the
+/// process to its descriptor ceiling, this cleanup failed to open `fusion.db`,
+/// and the client was told `session_busy` for a deletion no retry could make
+/// succeed.
+fn fusion_cleanup_failure(
+    session_id: &str,
+    error: &anyhow::Error,
+) -> future_rpc::session_deletion::DeleteSessionResult {
+    if let Some(stopping) = error.downcast_ref::<FusionChildrenStopping>() {
+        return deletion_failure(
+            session_id,
+            "session_busy",
+            stopping.to_string(),
+            serde_json::json!({"retryable":true}),
+        );
+    }
+    let errno = error.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::raw_os_error)
+    });
+    // SQLite hides a descriptor ceiling behind `SQLITE_CANTOPEN`, with no
+    // errno of its own, so the SQLite code travels beside it.
+    let sqlite_code =
+        error
+            .chain()
+            .find_map(|cause| match cause.downcast_ref::<rusqlite::Error>() {
+                Some(rusqlite::Error::SqliteFailure(failure, _)) => Some(failure.extended_code),
+                _ => None,
+            });
+    let mut message = format!("Fusion cleanup failed: {error:#}");
+    if let Some(errno) = errno {
+        message.push_str(&format!(" (errno {errno})"));
+    }
+    if let Some(code) = sqlite_code {
+        message.push_str(&format!(" (sqlite code {code})"));
+    }
+    let mut data = serde_json::json!({"session_id": session_id, "retryable": true});
+    if let Some(errno) = errno {
+        data["errno"] = errno.into();
+    }
+    if let Some(code) = sqlite_code {
+        data["sqlite_code"] = code.into();
+    }
+    deletion_failure(session_id, "delete_failed", message, data)
+}
+
+/// Child runs are still stopping, so the deletion is retryable rather than
+/// failed: this is the one cleanup outcome that really is `session_busy`.
+#[derive(Debug)]
+struct FusionChildrenStopping;
+
+impl std::fmt::Display for FusionChildrenStopping {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Fusion child runs are stopping; retry session deletion")
+    }
+}
+
+impl std::error::Error for FusionChildrenStopping {}
+
 /// Fence live writers before deleting; busy sessions retain their durable
 /// outbox intent while the remaining sessions share one transaction/reclaim.
 fn delete_sessions(
@@ -396,21 +463,15 @@ fn delete_sessions(
                             .into_iter()
                             .collect::<Vec<_>>();
                         let deleted = delete_sessions(state, &children);
-                        anyhow::ensure!(
-                            deleted.iter().all(|r| r.deleted),
-                            "Fusion child runs are stopping; retry session deletion"
-                        );
+                        if !deleted.iter().all(|r| r.deleted) {
+                            return Err(FusionChildrenStopping.into());
+                        }
                     }
                     Ok(())
                 })();
                 match cleanup {
                     Ok(()) => ready.push(session_id.clone()),
-                    Err(error) => results.push(deletion_failure(
-                        session_id,
-                        "session_busy",
-                        error.to_string(),
-                        serde_json::json!({"retryable":true}),
-                    )),
+                    Err(error) => results.push(fusion_cleanup_failure(session_id, &error)),
                 }
             }
         }
