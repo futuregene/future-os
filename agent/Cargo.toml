@@ -21,6 +21,9 @@ future-logging = { path = "../packages/logging" }
 future-fusion = { path = "../orchestration/fusion" }
 future-rpc = { path = "../packages/rpc" }
 future-http = { path = "../packages/http" }
+# The process descriptor budget and the fields a failed store open reports
+# (`rpc/broadcaster/journal_writer.rs`): the same copy the Desktop host uses.
+future-fd = { path = "../packages/fd" }
 tokio.workspace = true
 parking_lot.workspace = true
 crossbeam-channel = "0.5"

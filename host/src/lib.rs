@@ -20,6 +20,9 @@ pub mod run_error;
 
 pub mod runtime;
 
+/// This process's descriptor budget and what a failed store open reports.
+pub mod fd;
+
 pub mod events;
 
 pub mod auth_store;

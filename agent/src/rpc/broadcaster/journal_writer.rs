@@ -629,6 +629,23 @@ fn flush_and_schedule(
     (failed, bytes, due)
 }
 
+/// The message a storage failure publishes — the error chain, then the process
+/// budget and SQLite code.
+///
+/// The chain alone cannot say which failure this was: SQLite reports a
+/// descriptor ceiling *and* an `open` that hit `ENOSPC` as `code=14` ("unable to
+/// open database file"). Measured 2026-11-24 10:08:52Z, `SQLITE_FULL` beside
+/// `CANTOPEN` in the same window. With the descriptor count and the limit pair
+/// on the line, the next `event journal append failed` says whether the process
+/// ran out of descriptors or the disk ran out of space.
+pub(super) fn storage_failure(error: &anyhow::Error) -> String {
+    let cause: &(dyn std::error::Error + 'static) = error.as_ref();
+    format!(
+        "event batch commit failed: {error:#}; {}",
+        future_fd::open_failure_detail(future_fd::sqlite_code_in_chain(cause))
+    )
+}
+
 fn flush_event_batch(
     store: &crate::session::sqlite_store::SqliteStore,
     session_id: &str,
@@ -678,7 +695,7 @@ fn flush_event_batch(
         // agent restarted. Retry the events singly to find the ones this journal
         // refuses, drop those, and keep the journal live for everything else.
         Err(error) if is_event_rejected(&error) => {
-            let refused = format!("event batch commit failed: {error:#}");
+            let refused = storage_failure(&error);
             let mut retry = Vec::new();
             let mut storage_failed = false;
             // Replies are held until the batch's outcome is decided: a durable
@@ -740,9 +757,7 @@ fn flush_event_batch(
                     // Still a storage problem: keep it for the next attempt.
                     Err(error) => {
                         storage_failed = true;
-                        let unavailable = AppendFailure::Unavailable(format!(
-                            "event batch commit failed: {error:#}"
-                        ));
+                        let unavailable = AppendFailure::Unavailable(storage_failure(&error));
                         match item.reply.take() {
                             Some(reply) => replies.push(Deferred {
                                 reply,
@@ -763,7 +778,7 @@ fn flush_event_batch(
             !storage_failed
         }
         Err(error) => {
-            let message = format!("event batch commit failed: {error:#}");
+            let message = storage_failure(&error);
             health.fail(message.clone());
             let mut retry = Vec::new();
             for mut item in pending.drain(..) {

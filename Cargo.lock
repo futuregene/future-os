@@ -1839,6 +1839,7 @@ dependencies = [
  "fd-lock",
  "flate2",
  "fs2",
+ "future-fd",
  "future-fusion",
  "future-http",
  "future-logging",
@@ -2002,6 +2003,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "future-fd"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rusqlite",
+]
+
+[[package]]
 name = "future-fusion"
 version = "0.1.0"
 dependencies = [
@@ -2056,6 +2065,7 @@ dependencies = [
  "future-app-settings",
  "future-app-workspaces",
  "future-config",
+ "future-fd",
  "future-fusion",
  "future-http",
  "future-logging",
@@ -2086,6 +2096,7 @@ dependencies = [
  "tokio-rustls",
  "tonic",
  "tracing",
+ "tracing-subscriber",
  "uuid",
  "windows-sys 0.61.2",
 ]

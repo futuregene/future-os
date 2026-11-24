@@ -550,3 +550,33 @@ fn refused_batch_with_only_durable_storage_failures_stays_unhealthy() {
     );
     assert_eq!(writer.commit_count(), 0);
 }
+
+/// A storage failure publishes the process budget and the SQLite code beside
+/// the error chain.
+///
+/// This is the line the operator reads. On 2026-11-24 10:08:52Z the log carried
+/// `SQLITE_FULL` (13) and `unable to open database file` / `CANTOPEN` (14) in
+/// the same window, and the descriptor count is what tells a real full disk
+/// apart from an `open` that hit `ENOSPC` under a descriptor ceiling. Without
+/// `fds=`/`limit=` on the line, the next one is guessed at again.
+#[test]
+fn a_storage_failure_names_the_descriptor_budget_and_the_sqlite_code() {
+    let sqlite = rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error {
+            code: rusqlite::ErrorCode::CannotOpen,
+            extended_code: 14,
+        },
+        Some("unable to open database file".into()),
+    );
+    let message = super::super::journal_writer::storage_failure(&anyhow::Error::new(sqlite));
+
+    assert!(message.contains("event batch commit failed"), "{message}");
+    assert!(
+        message.contains("unable to open database file"),
+        "{message}"
+    );
+    assert!(message.contains("fds="), "{message}");
+    assert!(message.contains("limit="), "{message}");
+    assert!(message.contains("code=14"), "{message}");
+    assert!(message.contains("13=disk full"), "{message}");
+}

@@ -31,6 +31,7 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 future-app-settings = { path = "../packages/app-settings" }
 future-app-workspaces = { path = "../packages/app-workspaces" }
 future-config = { path = "../packages/config" }
+future-fd = { path = "../packages/fd" }
 future-http = { path = "../packages/http" }
 future-remote-client = { path = "../packages/remote-client" }
 future-remote-server = { path = "../packages/remote-server" }
@@ -74,6 +75,7 @@ windows-sys = { version = "0.61", features = ["Win32_System_WindowsProgramming"]
 
 
 [dev-dependencies]
+tracing-subscriber.workspace = true
 future-remote-server = { path = "../packages/remote-server", features = ["test-support"] }
 future-remote-client = { path = "../packages/remote-client", features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util"] }

@@ -187,17 +187,42 @@ pub(super) fn connect() -> Result<PooledConnection, crate::Error> {
         }
     }
     ensure_app_dirs()?;
-    let conn = Connection::open(&path)?;
+    // The open is where a descriptor ceiling or a full disk lands, and SQLite
+    // reports both as `code=14`. Log the budget beside the code so the next
+    // such line is read for what it is instead of as "the database is broken".
+    let conn = match open_connection(&path) {
+        Ok(conn) => conn,
+        Err(error) => {
+            tracing::error!(
+                event = "store_open_failed",
+                path = %path.display(),
+                "app store could not be opened: {error}; {}",
+                crate::fd::open_failure_detail(crate::fd::sqlite_code(&error))
+            );
+            return Err(error);
+        }
+    };
+    Ok(PooledConnection {
+        conn: Some(conn),
+        path,
+    })
+}
+
+/// Open the app database and apply the PRAGMAs every connection needs.
+///
+/// Split from [`connect`] for one reason: the failure is logged there, once,
+/// with the descriptor budget beside the SQLite code (`fd::open_failure_detail`)
+/// — including a failure that happens after `Connection::open` such as the
+/// `-wal`/`-shm` side files a busy machine can exhaust descriptors on.
+fn open_connection(path: &std::path::Path) -> Result<Connection, crate::Error> {
+    let conn = Connection::open(path)?;
     super::migrations::admit(&conn)?;
     conn.execute_batch(
         future_rpc::storage::StorageMode::from_env()
             .map_err(crate::Error::from)?
             .pragmas(),
     )?;
-    Ok(PooledConnection {
-        conn: Some(conn),
-        path,
-    })
+    Ok(conn)
 }
 
 pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::Error> {
@@ -606,6 +631,75 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// A `MakeWriter` that keeps everything the subscriber formats, so a test
+    /// can assert on the line an operator would read in the host log.
+    #[derive(Clone, Default)]
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+        type Writer = Capture;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    impl Capture {
+        fn text(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().unwrap_or_else(|error| error.into_inner()))
+                .into_owned()
+        }
+    }
+
+    /// A store that cannot be opened says *why* in the same line that says it
+    /// could not be opened: the descriptor count, the limit pair and the SQLite
+    /// code, with what 13/14 mean. Without those fields the 2026-11-24 window
+    /// (SQLITE_FULL ×13 beside CANTOPEN ×14) reads as "the database is broken",
+    /// and the descriptor ceiling this host now raises is mistaken for it.
+    #[test]
+    fn a_store_that_cannot_open_logs_the_budget_and_the_code() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("store-open-failure");
+        // A directory where the database file belongs: `open` fails with
+        // SQLITE_CANTOPEN (14), the code the incident's log carried.
+        std::fs::create_dir_all(db_path().expect("app db path"))
+            .expect("occupy the database path with a directory");
+
+        let capture = Capture::default();
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(capture.clone())
+                .with_ansi(false)
+                .finish(),
+        );
+
+        let error =
+            crate::store::initialize_app_store().expect_err("a directory is not a database");
+        let logged = capture.text();
+        assert!(
+            !logged.is_empty(),
+            "the failure must be logged, not only returned: {error}"
+        );
+        assert!(logged.contains("store_open_failed"), "{logged}");
+        assert!(logged.contains("fds="), "{logged}");
+        assert!(logged.contains("limit="), "{logged}");
+        assert!(logged.contains("code=14"), "{logged}");
+        assert!(logged.contains("13=disk full"), "{logged}");
+        assert!(logged.contains("14=cannot open"), "{logged}");
+    }
 
     #[test]
     fn title_seed_migration_upgrades_the_released_schema() {

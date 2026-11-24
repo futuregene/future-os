@@ -30,7 +30,12 @@ pub fn prepare_process() {
 pub fn prepare_process_for(component: future_logging::Component) {
     static PREPARED: std::sync::Once = std::sync::Once::new();
     PREPARED.call_once(|| {
-        // First, before anything can write to a terminal: a GUI launch has no
+        // First, and before any store or session is opened: the soft descriptor
+        // limit of a Finder/launchd launch is 256, and this process holds every
+        // session's SQLite handles. The outcome is reported from `start_logging`
+        // — there is no host log to write to yet.
+        crate::fd::raise_at_startup();
+        // Next, before anything can write to a terminal: a GUI launch has no
         // writable stderr, and the panic a failed write raises ends the task
         // that emitted it — including, on this path, the task that would have
         // rebuilt a dropped remote link. See
@@ -94,6 +99,16 @@ pub fn start_logging() -> Result<future_logging::FileGuard, crate::Error> {
         std::env::var("FUTURE_DESKTOP_AGENT_MODE").unwrap_or_else(|_| "auto".into()),
         path.display()
     ));
+    // The budget `prepare_process_for` set before this log existed. A refused
+    // raise is a warning because the launch then runs on the limit it inherited
+    // and will report a descriptor ceiling as a store error later.
+    if let Some(budget) = crate::fd::startup_budget() {
+        if budget.error.is_some() {
+            tracing::warn!(event = "fd_budget", "{}", budget.line());
+        } else {
+            tracing::info!(event = "fd_budget", "{}", budget.line());
+        }
+    }
     Ok(guard)
 }
 
@@ -369,6 +384,13 @@ mod tests {
         let log = std::fs::read_to_string(home.join("app/logs/desktop.log"))
             .expect("the child's host log");
         assert!(log.contains("the terminal is gone"), "{log}");
+        // The descriptor budget the launch runs under is on the record, so a
+        // later "app store could not be opened" can be read against it instead
+        // of as a broken database.
+        assert!(
+            log.contains("fd budget:"),
+            "the launch must record its descriptor budget: {log}"
+        );
         // The remote stack reports through its own sink because a windowless
         // launch has no stderr to print to: those lines used to panic the task
         // that wrote them and reached no file at all.
